@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q21_vgen",
+ "function": "accel_tpch_q21_vgen",
+ "store": "verus",
+ "build_ms": 30367.7,
+ "state_mb": 855.547,
+ "rss_mb_settled_before": 65.8477,
+ "rss_mb_settled_after": 921.395,
+ "rss_mb_peak_build": 14105,
+ "speedup_geomean": 160.0600523987596,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'INDIA'",
+   "base_us": 429496.973,
+   "accel_us": 2646.182,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'IRAQ'",
+   "base_us": 448730.159,
+   "accel_us": 2773.554,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL'",
+   "base_us": 443622.03,
+   "accel_us": 2807.608,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'GERMANY'",
+   "base_us": 446808.948,
+   "accel_us": 2811.3,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'ROMANIA'",
+   "base_us": 439664.466,
+   "accel_us": 2686.58,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'CANADA'",
+   "base_us": 436386.285,
+   "accel_us": 2796.362,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'ETHIOPIA'",
+   "base_us": 437249.681,
+   "accel_us": 2730.207,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'KENYA'",
+   "base_us": 437356.151,
+   "accel_us": 2738.326,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  }
+ ],
+ "wall_s": 94.5,
+ "query": 21,
+ "system": "verus",
+ "rep": 0,
+ "seed": 3759203670,
+ "note": "",
+ "counts_cover_all_draws": true
+}

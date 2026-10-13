@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q20_vgen",
+ "function": "accel_tpch_q20_vgen",
+ "store": "verus",
+ "build_ms": 215289,
+ "state_mb": 5095.95,
+ "rss_mb_settled_before": 65.8047,
+ "rss_mb_settled_after": 5161.75,
+ "rss_mb_peak_build": 11365.6,
+ "speedup_geomean": 3.871679463316437,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1997-01-01', 'green%', 'PERU', DATE '1998-01-01'",
+   "base_us": 296808.424,
+   "accel_us": 72521.566,
+   "base_rows": 3577,
+   "accel_rows": 3577,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'honeydew%', 'RUSSIA', DATE '1997-01-01'",
+   "base_us": 277121.339,
+   "accel_us": 70272.351,
+   "base_rows": 3439,
+   "accel_rows": 3439,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'smoke%', 'CHINA', DATE '1998-01-01'",
+   "base_us": 275061.848,
+   "accel_us": 71051.632,
+   "base_rows": 3549,
+   "accel_rows": 3549,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'hot%', 'GERMANY', DATE '1997-01-01'",
+   "base_us": 274332.842,
+   "accel_us": 70860.016,
+   "base_rows": 3644,
+   "accel_rows": 3644,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'goldenrod%', 'MOROCCO', DATE '1997-01-01'",
+   "base_us": 273058.526,
+   "accel_us": 71252.487,
+   "base_rows": 3572,
+   "accel_rows": 3572,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'navajo%', 'IRAN', DATE '1997-01-01'",
+   "base_us": 273912.025,
+   "accel_us": 73846.249,
+   "base_rows": 3622,
+   "accel_rows": 3622,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'maroon%', 'ETHIOPIA', DATE '1998-01-01'",
+   "base_us": 270970.797,
+   "accel_us": 70813.49,
+   "base_rows": 3528,
+   "accel_rows": 3528,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'rose%', 'ARGENTINA', DATE '1996-01-01'",
+   "base_us": 277611.789,
+   "accel_us": 72346.079,
+   "base_rows": 3539,
+   "accel_rows": 3539,
+   "match": true
+  }
+ ],
+ "wall_s": 266.3,
+ "query": 20,
+ "system": "verus",
+ "rep": 0,
+ "seed": 3759203670,
+ "note": "",
+ "counts_cover_all_draws": true
+}

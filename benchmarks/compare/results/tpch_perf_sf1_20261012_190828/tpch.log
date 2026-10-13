@@ -1,0 +1,52 @@
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare tpch /flash1/akhilvb/tpch/work_tpch/cmp_tpch_base.duckdb base /flash1/akhilvb/tpch/work_tpch/tpch_base.tsv 2 3 1 1
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare tpch /flash1/akhilvb/tpch/work_tpch/cmp_tpch_cpp.duckdb accel /flash1/akhilvb/tpch/work_tpch/tpch_cpp.tsv 2 3 1 1
+built tpch:1 in 0.0861007s, rss 0.484585 GB
+built tpch:2 in 0.437046s, rss 0.53931 GB
+built tpch:3 in 3.31252s, rss 0.791714 GB
+built tpch:4 in 1.53724s, rss 0.802097 GB
+built tpch:5 in 2.33179s, rss 0.849899 GB
+built tpch:6 in 0.120627s, rss 1.19274 GB
+built tpch:7 in 0.393216s, rss 1.29255 GB
+built tpch:8 in 2.76003s, rss 1.34802 GB
+built tpch:9 in 5.02893s, rss 1.76307 GB
+tpch_q10_aux_build: customers 266 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 238 ms
+tpch_q10_aux_build: total_build_state 560 ms
+tpch_q10_aux_build: 44 windows, 1511717 window entries, 591463 month entries
+built tpch:10 in 0.62543s, rss 1.75938 GB
+built tpch:11 in 0.775303s, rss 1.81669 GB
+built tpch:12 in 2.68982s, rss 1.80904 GB
+built tpch:13 in 2.07191s, rss 1.93888 GB
+built tpch:14 in 0.10436s, rss 1.93374 GB
+built tpch:15 in 0.409192s, rss 1.9735 GB
+built tpch:16 in 0.280522s, rss 2.01902 GB
+built tpch:17 in 3.10746s, rss 2.21838 GB
+built tpch:18 in 0.156144s, rss 2.20687 GB
+built tpch:19 in 0.134517s, rss 2.13209 GB
+built tpch:20 in 0.767162s, rss 2.25926 GB
+built tpch:21 in 0.382278s, rss 2.29928 GB
+built tpch:22 in 0.10828s, rss 2.29642 GB
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare tpch /flash1/akhilvb/tpch/work_tpch/cmp_tpch_verus.duckdb accel /flash1/akhilvb/tpch/work_tpch/tpch_verus.tsv 2 3 1 1
+built tpch_q1_vgen in 6.24857s, rss 0.719246 GB
+built tpch_q2_vgen in 2.87626s, rss 0.474545 GB
+built tpch_q3_vgen in 11.3925s, rss 0.76516 GB
+built tpch_q4_vgen in 3.39049s, rss 1.1182 GB
+built tpch_q5_vgen in 2.06719s, rss 2.07336 GB
+built tpch_q6_vgen in 4.61354s, rss 2.08419 GB
+built tpch_q7_vgen in 2.96618s, rss 2.21157 GB
+built tpch_q8_vgen in 5.55503s, rss 2.40349 GB
+built tpch_q9_vgen in 17.2386s, rss 2.63726 GB
+built tpch_q10_vgen in 16.1362s, rss 2.5266 GB
+built tpch_q11_vgen in 5.92452s, rss 2.65691 GB
+built tpch_q12_vgen in 0.758773s, rss 2.70498 GB
+built tpch_q13_vgen in 4.17133s, rss 2.5178 GB
+built tpch_q14_vgen in 36.7376s, rss 2.44362 GB
+built tpch_q15_vgen in 4.35394s, rss 2.55202 GB
+built tpch_q16_vgen in 8.63182s, rss 3.02202 GB
+built tpch_q17_vgen in 4.32758s, rss 2.84734 GB
+built tpch_q18_vgen in 7.52171s, rss 3.23246 GB
+built tpch_q19_vgen in 0.0875138s, rss 3.20155 GB
+built tpch_q20_vgen in 7.63967s, rss 3.33055 GB
+built tpch_q21_vgen in 2.03917s, rss 3.79608 GB
+built tpch_q22_vgen in 23.7681s, rss 3.90216 GB

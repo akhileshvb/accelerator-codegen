@@ -1,0 +1,14 @@
+mode=multi out=/home/akhilvb/accelerator-codegen/benchmarks/compare/results/rf_interval_multi_sf20_20261008_112014 sf=20 intervals=[60 30 15 10 5] readers=8 systems=cpp verus_cpp verus repeats=3 sets=8 seed=267713173 rf_sets=40 start=Thu Oct  8 11:20:14 AM EDT 2026
+=== T=60s (wps=0.016666666666666666, 240s per run) start 11:20:14
+=== T=60s exit 0 15:27:21
+=== T=30s (wps=0.03333333333333333, 120s per run) start 15:27:21
+=== T=30s exit 0 19:05:24
+=== T=15s (wps=0.06666666666666667, 60s per run) start 19:05:24
+=== T=15s exit 0 22:29:14
+=== T=10s (wps=0.1, 60s per run) start 22:29:14
+=== T=10s exit 0 01:54:16
+=== T=5s (wps=0.2, 60s per run) start 01:54:16
+=== T=5s exit 0 05:17:32
+mode=multi out=benchmarks/compare/results/rf_interval_multi_sf20_20261008_112014 sf=20 intervals=[90] readers=8 systems=cpp verus_cpp verus repeats=3 sets=8 seed=267713173 rf_sets=40 start=Fri Oct  9 09:28:19 AM EDT 2026
+=== T=90s (wps=0.011111111111111112, 360s per run) start 09:28:19
+=== T=90s exit 0 14:06:06

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q12_vgen",
+ "function": "accel_tpch_q12_vgen",
+ "store": "verus",
+ "build_ms": 20350.9,
+ "state_mb": 411.34,
+ "rss_mb_settled_before": 65.8281,
+ "rss_mb_settled_after": 477.168,
+ "rss_mb_peak_build": 7897.69,
+ "speedup_geomean": 210.89121312833814,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'AIR', 'MAIL', DATE '1997-01-01', DATE '1998-01-01'",
+   "base_us": 123191.325,
+   "accel_us": 586.846,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'RAIL', 'MAIL', DATE '1995-01-01', DATE '1996-01-01'",
+   "base_us": 124819.487,
+   "accel_us": 580.34,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'FOB', 'SHIP', DATE '1996-01-01', DATE '1997-01-01'",
+   "base_us": 123911.415,
+   "accel_us": 601.169,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'RAIL', 'SHIP', DATE '1994-01-01', DATE '1995-01-01'",
+   "base_us": 123939.495,
+   "accel_us": 578.395,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'FOB', 'TRUCK', DATE '1997-01-01', DATE '1998-01-01'",
+   "base_us": 125230.146,
+   "accel_us": 579.752,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'SHIP', 'MAIL', DATE '1994-01-01', DATE '1995-01-01'",
+   "base_us": 124244.141,
+   "accel_us": 577.378,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'RAIL', 'TRUCK', DATE '1995-01-01', DATE '1996-01-01'",
+   "base_us": 125804.939,
+   "accel_us": 615.113,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'MAIL', 'TRUCK', DATE '1995-01-01', DATE '1996-01-01'",
+   "base_us": 124041.564,
+   "accel_us": 601.008,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 38.6,
+ "query": 12,
+ "system": "verus",
+ "rep": 2,
+ "seed": 3759203672,
+ "note": "",
+ "counts_cover_all_draws": true
+}

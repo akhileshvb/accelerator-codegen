@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:8",
+ "function": "accel_tpch_q8_aux",
+ "store": "cpp",
+ "build_ms": 68020.7,
+ "state_mb": 1319.61,
+ "rss_mb_settled_before": 64.1328,
+ "rss_mb_settled_after": 1383.75,
+ "rss_mb_peak_build": 2849.76,
+ "speedup_geomean": 449.3960796633025,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'ETHIOPIA', 'AFRICA', 'MEDIUM BURNISHED NICKEL'",
+   "base_us": 190188.593,
+   "accel_us": 426.711,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'EGYPT', 'MIDDLE EAST', 'LARGE BRUSHED STEEL'",
+   "base_us": 202514.215,
+   "accel_us": 441.395,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'RUSSIA', 'EUROPE', 'LARGE PLATED NICKEL'",
+   "base_us": 188976.269,
+   "accel_us": 431.913,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'INDIA', 'ASIA', 'SMALL PLATED COPPER'",
+   "base_us": 191789.234,
+   "accel_us": 425.375,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'JORDAN', 'MIDDLE EAST', 'SMALL BURNISHED STEEL'",
+   "base_us": 195043.911,
+   "accel_us": 419.863,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'PERU', 'AMERICA', 'SMALL ANODIZED BRASS'",
+   "base_us": 192248.482,
+   "accel_us": 420.619,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'JAPAN', 'ASIA', 'PROMO BURNISHED BRASS'",
+   "base_us": 193510.094,
+   "accel_us": 440.263,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'INDONESIA', 'ASIA', 'LARGE BURNISHED COPPER'",
+   "base_us": 194028.013,
+   "accel_us": 439.099,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 97.5,
+ "query": 8,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 3759203672,
+ "note": "",
+ "counts_cover_all_draws": true
+}

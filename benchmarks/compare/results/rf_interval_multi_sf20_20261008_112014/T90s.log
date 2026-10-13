@@ -1,0 +1,56 @@
+parameter draws: 3 repetition(s) x 8 sets, seeds 267713173..267713175
+multi base (22 accelerators, rotate readers, rates wps0.0111111, 3 repetition(s)) 09:28:21
+  cost models: config/qN_aux_cost_model_sf20.json (SF20)
+  build 0s
+  wps0.0111111 rep 0: qps 2  writes 28 (0.1/s of 0.0111111) commit p50 3.1ms p99 447.9ms max 448ms  errors read 0 write 0
+  wps0.0111111 rep 1: qps 2  writes 28 (0.1/s of 0.0111111) commit p50 5.6ms p99 444.7ms max 445ms  errors read 0 write 0
+  wps0.0111111 rep 2: qps 2  writes 28 (0.1/s of 0.0111111) commit p50 4.6ms p99 436.4ms max 436ms  errors read 0 write 0
+multi cpp (22 accelerators, rotate readers, rates wps0.0111111, 3 repetition(s)) 09:58:02
+  cost models: config/qN_aux_cost_model_sf20.json (SF20)
+  build 637s
+  wps0.0111111 rep 0: qps 7931  writes 34 (0.1/s of 0.0111111) commit p50 254.6ms p99 44648.1ms max 44648ms  errors read 0 write 0
+  wps0.0111111 rep 1: qps 9353  writes 34 (0.1/s of 0.0111111) commit p50 635.4ms p99 44884.0ms max 44884ms  errors read 0 write 0
+  wps0.0111111 rep 2: qps 8665  writes 34 (0.1/s of 0.0111111) commit p50 294.2ms p99 46976.1ms max 46976ms  errors read 0 write 0
+multi verus_cpp (22 accelerators, rotate readers, rates wps0.0111111, 3 repetition(s)) 10:34:41
+  cost models: config/verus/qN_aux_cost_model_sf20.json (SF20)
+  build 4600s
+  wps0.0111111 rep 0: qps 67  writes 34 (0.1/s of 0.0111111) commit p50 1248.6ms p99 77569.3ms max 77569ms  errors read 0 write 0
+  wps0.0111111 rep 1: qps 66  writes 34 (0.1/s of 0.0111111) commit p50 1236.0ms p99 77187.2ms max 77187ms  errors read 0 write 0
+  wps0.0111111 rep 2: qps 51  writes 34 (0.1/s of 0.0111111) commit p50 1235.5ms p99 77675.1ms max 77675ms  errors read 0 write 0
+multi verus (22 accelerators, rotate readers, rates wps0.0111111, 3 repetition(s)) 12:21:31
+  cost models: config/verus/qN_aux_cost_model_sf20.json (SF20)
+  build 4587s
+  wps0.0111111 rep 0: qps 20  writes 34 (0.1/s of 0.0111111) commit p50 1773.4ms p99 82747.0ms max 82747ms  errors read 0 write 0
+  wps0.0111111 rep 1: qps 23  writes 27 (0.1/s of 0.0111111) commit p50 1765.3ms p99 83632.5ms max 83632ms  errors read 0 write 0
+  wps0.0111111 rep 2: qps 18  writes 34 (0.1/s of 0.0111111) commit p50 1775.9ms p99 82950.1ms max 82950ms  errors read 0 write 0
+
+=== wps0.0111111
+
+multi-accelerator (one process, one writer maintaining all): per-query read p50 ms, median [min-max] over 3 repetition(s) with different parameter draws
+   q                     base                      cpp                verus_cpp                    verus
+   1 4927.00 [4916.82-4933.94]         0.28 [0.27-0.28]         0.35 [0.34-0.37]         0.38 [0.37-0.38]
+   2   412.04 [411.70-412.96]         0.40 [0.39-0.40]      26.81 [26.66-28.57]      29.55 [29.38-31.14]
+   3 2496.85 [2494.24-2504.48]         0.29 [0.28-0.29]         1.12 [0.95-1.13]         1.28 [1.07-1.32]
+   4 2135.23 [2126.43-2145.16]         0.23 [0.23-0.24]         0.25 [0.25-0.26]         0.26 [0.25-0.26]
+   5 3021.51 [3009.41-3038.37]         0.25 [0.25-0.26]         0.31 [0.31-0.32]         0.31 [0.31-0.32]
+   6   793.11 [792.50-811.18]         0.24 [0.24-0.25]         0.68 [0.65-0.80]         0.70 [0.64-0.80]
+   7 1973.45 [1967.47-1977.17]         0.25 [0.25-0.26]         0.24 [0.24-0.24]         0.24 [0.24-0.24]
+   8 2035.06 [2031.57-2040.79]         0.23 [0.23-0.23]         0.22 [0.21-0.22]         0.22 [0.22-0.22]
+   9 8372.49 [8359.41-8380.92]         0.22 [0.22-0.23]         0.44 [0.44-0.44]         0.44 [0.42-0.44]
+  10 3948.35 [3933.33-3955.34]         0.29 [0.29-0.30]    232.95 [28.22-234.14]   208.98 [186.19-227.42]
+  11   287.03 [287.02-287.88]         0.82 [0.81-0.86]         6.00 [5.82-6.11]         5.90 [5.60-5.96]
+  12 1933.01 [1926.87-1948.74]         0.25 [0.25-0.26]         0.40 [0.37-0.40]         0.34 [0.33-0.35]
+  13 7092.93 [7042.29-7131.78]         0.19 [0.19-0.19]         0.23 [0.23-0.23]         0.23 [0.23-0.24]
+  14 1586.28 [1576.23-1601.94]         0.19 [0.19-0.19]         0.22 [0.22-0.22]         0.22 [0.22-0.22]
+  15 1140.86 [1140.65-1156.44]         0.24 [0.23-0.24]   234.03 [179.84-304.45]   238.87 [174.78-300.04]
+  16   949.70 [948.02-954.77]         4.08 [4.08-4.27]      41.12 [40.20-43.02]      39.49 [39.06-40.14]
+  17 8993.78 [8982.82-9007.96]         0.21 [0.21-0.22]         0.25 [0.25-0.26]         0.25 [0.25-0.26]
+  18 7177.26 [7147.29-7178.55]         0.53 [0.50-0.56]         0.75 [0.72-0.79]         0.68 [0.65-0.69]
+  19 3560.69 [3542.24-3561.18]         0.21 [0.21-0.22]         0.36 [0.36-0.37]         0.35 [0.34-0.35]
+  20 3558.24 [3543.07-3571.56]         5.26 [4.99-5.76]      54.46 [53.67-54.49]      54.03 [53.46-54.18]
+  21 7638.97 [7629.02-7646.70]         0.27 [0.26-0.27]         2.06 [2.03-2.11]         2.00 [2.00-2.09]
+  22 1466.41 [1451.72-1472.83]         0.24 [0.23-0.24]         0.59 [0.53-0.62]         0.48 [0.48-0.52]
+totals base: qps 2 [2-2], writes/s 0.1 [0.1-0.1], commit p50 ms 4.6 [3.1-5.6], p99 ms 444.7 [436.4-447.9]
+totals cpp: qps 8665 [7931-9353], writes/s 0.1 [0.1-0.1], commit p50 ms 294.2 [254.6-635.4], p99 ms 44884.0 [44648.1-46976.1]
+totals verus_cpp: qps 66 [51-67], writes/s 0.1 [0.1-0.1], commit p50 ms 1236.0 [1235.5-1248.6], p99 ms 77569.3 [77187.2-77675.1]
+totals verus: qps 20 [18-23], writes/s 0.1 [0.1-0.1], commit p50 ms 1773.4 [1765.3-1775.9], p99 ms 82950.1 [82747.0-83632.5]

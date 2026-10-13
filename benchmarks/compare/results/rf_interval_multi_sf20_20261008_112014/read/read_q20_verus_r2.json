@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q20_vgen",
+ "function": "accel_tpch_q20_vgen",
+ "store": "verus",
+ "build_ms": 215289,
+ "state_mb": 5095.95,
+ "rss_mb_settled_before": 65.8047,
+ "rss_mb_settled_after": 5161.75,
+ "rss_mb_peak_build": 11365.6,
+ "speedup_geomean": 3.8358858970166603,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1995-01-01', 'powder%', 'PERU', DATE '1996-01-01'",
+   "base_us": 274122.28,
+   "accel_us": 70433.857,
+   "base_rows": 3595,
+   "accel_rows": 3595,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-01-01', 'blanched%', 'RUSSIA', DATE '1994-01-01'",
+   "base_us": 279481.745,
+   "accel_us": 72960.67,
+   "base_rows": 3515,
+   "accel_rows": 3515,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'royal%', 'GERMANY', DATE '1998-01-01'",
+   "base_us": 273837.565,
+   "accel_us": 71053.849,
+   "base_rows": 3632,
+   "accel_rows": 3632,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'brown%', 'JAPAN', DATE '1997-01-01'",
+   "base_us": 273440.905,
+   "accel_us": 71181.611,
+   "base_rows": 3656,
+   "accel_rows": 3656,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'blush%', 'BRAZIL', DATE '1997-01-01'",
+   "base_us": 275259.21,
+   "accel_us": 72730.159,
+   "base_rows": 3571,
+   "accel_rows": 3571,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'green%', 'EGYPT', DATE '1996-01-01'",
+   "base_us": 276550.85,
+   "accel_us": 73958.897,
+   "base_rows": 3629,
+   "accel_rows": 3629,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-01-01', 'rosy%', 'IRAN', DATE '1994-01-01'",
+   "base_us": 277765.41,
+   "accel_us": 73585.607,
+   "base_rows": 3648,
+   "accel_rows": 3648,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'peru%', 'JAPAN', DATE '1996-01-01'",
+   "base_us": 282712.232,
+   "accel_us": 71112.332,
+   "base_rows": 3610,
+   "accel_rows": 3610,
+   "match": true
+  }
+ ],
+ "wall_s": 266.3,
+ "query": 20,
+ "system": "verus",
+ "rep": 2,
+ "seed": 3759203672,
+ "note": "",
+ "counts_cover_all_draws": true
+}

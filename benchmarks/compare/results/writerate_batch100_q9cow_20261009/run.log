@@ -1,0 +1,161 @@
+Running as unit: run-p3416277-i15992800.scope; invocation ID: 9358da9d3af840808ec1c4dfed053aca
+parameter draws: 3 repetition(s) x 8 sets, seeds 3421135405..3421135407
+multi cpp (22 accelerators, rotate readers, rates wps0.25 wps1 wps2.5 wps10 wps25, 3 repetition(s)) 20:59:49
+  cost models: config/qN_aux_cost_model_sf20.json (SF20)
+  build 694s
+    wps0.25 rep 0: qps 2797  writes 15 (0.2/s of 0.25) commit p50 365.4ms p99 5002.9ms max 5003ms  errors read 0 write 0
+    wps0.25 rep 1: qps 7300  writes 15 (0.2/s of 0.25) commit p50 261.1ms p99 424.8ms max 425ms  errors read 0 write 0
+    wps0.25 rep 2: qps 7020  writes 15 (0.2/s of 0.25) commit p50 259.0ms p99 449.3ms max 449ms  errors read 0 write 0
+       wps1 rep 0: qps 5928  writes 60 (1.0/s of 1) commit p50 258.9ms p99 495.6ms max 544ms  errors read 0 write 0
+       wps1 rep 1: qps 5563  writes 60 (1.0/s of 1) commit p50 294.6ms p99 467.7ms max 474ms  errors read 0 write 0
+       wps1 rep 2: qps 5521  writes 60 (1.0/s of 1) commit p50 298.8ms p99 474.2ms max 476ms  errors read 0 write 0
+     wps2.5 rep 0: qps 2520  writes 150 (2.5/s of 2.5) commit p50 322.7ms p99 539.5ms max 547ms  errors read 0 write 0
+     wps2.5 rep 1: qps 1961  writes 149 (2.5/s of 2.5) commit p50 350.4ms p99 589.8ms max 1178ms  errors read 0 write 0
+     wps2.5 rep 2: qps 1650  writes 148 (2.5/s of 2.5) commit p50 390.0ms p99 614.3ms max 615ms  errors read 0 write 0
+      wps10 rep 0: qps 1384  writes 140 (2.3/s of 10) commit p50 425.1ms p99 656.5ms max 657ms  errors read 0 write 0
+      wps10 rep 1: qps 1403  writes 139 (2.3/s of 10) commit p50 422.6ms p99 681.8ms max 691ms  errors read 0 write 0
+      wps10 rep 2: qps 1401  writes 140 (2.3/s of 10) commit p50 409.2ms p99 692.8ms max 1167ms  errors read 0 write 0
+      wps25 rep 0: qps 1252  writes 129 (2.1/s of 25) commit p50 456.9ms p99 766.0ms max 887ms  errors read 0 write 0
+      wps25 rep 1: qps 1189  writes 123 (2.0/s of 25) commit p50 479.8ms p99 768.2ms max 772ms  errors read 0 write 0
+      wps25 rep 2: qps 1078  writes 113 (1.9/s of 25) commit p50 527.1ms p99 989.5ms max 1014ms  errors read 0 write 0
+
+=== wps0.25
+
+multi-accelerator (one process, one writer maintaining all): per-query read p50 ms, median [min-max] over 3 repetition(s) with different parameter draws
+   q                      cpp
+   1         0.43 [0.42-0.45]
+   2         0.62 [0.61-0.65]
+   3         0.43 [0.42-0.44]
+   4         0.35 [0.34-0.35]
+   5         0.36 [0.35-0.37]
+   6         0.35 [0.34-0.36]
+   7         0.37 [0.36-0.38]
+   8         0.31 [0.31-0.32]
+   9         0.36 [0.35-0.37]
+  10         0.46 [0.45-0.48]
+  11         1.40 [1.33-1.48]
+  12         0.38 [0.38-0.39]
+  13         0.30 [0.29-0.31]
+  14         0.30 [0.29-0.31]
+  15         0.37 [0.37-0.38]
+  16         6.92 [6.73-7.00]
+  17         0.31 [0.31-0.32]
+  18         0.74 [0.70-0.80]
+  19         0.32 [0.32-0.33]
+  20         5.09 [5.07-5.69]
+  21         0.39 [0.38-0.40]
+  22         0.36 [0.36-0.38]
+totals cpp: qps 7020 [2797-7300], writes/s 0.2 [0.2-0.2], commit p50 ms 261.1 [259.0-365.4], p99 ms 449.3 [424.8-5002.9]
+
+=== wps1
+
+multi-accelerator (one process, one writer maintaining all): per-query read p50 ms, median [min-max] over 3 repetition(s) with different parameter draws
+   q                      cpp
+   1         0.44 [0.43-0.44]
+   2         0.60 [0.60-0.61]
+   3         0.44 [0.43-0.44]
+   4         0.35 [0.35-0.36]
+   5         0.36 [0.35-0.37]
+   6         0.35 [0.35-0.36]
+   7         0.37 [0.37-0.38]
+   8         0.32 [0.32-0.33]
+   9         0.36 [0.36-0.37]
+  10         0.47 [0.46-0.48]
+  11         1.35 [1.34-1.35]
+  12         0.39 [0.39-0.40]
+  13         0.31 [0.30-0.31]
+  14         0.31 [0.30-0.31]
+  15         0.38 [0.38-0.39]
+  16         6.78 [6.73-6.79]
+  17         0.32 [0.31-0.32]
+  18         0.99 [0.80-1.07]
+  19         0.34 [0.33-0.34]
+  20         6.32 [5.67-6.38]
+  21         0.39 [0.39-0.40]
+  22         0.37 [0.37-0.38]
+totals cpp: qps 5563 [5521-5928], writes/s 1.0 [1.0-1.0], commit p50 ms 294.6 [258.9-298.8], p99 ms 474.2 [467.7-495.6]
+
+=== wps2.5
+
+multi-accelerator (one process, one writer maintaining all): per-query read p50 ms, median [min-max] over 3 repetition(s) with different parameter draws
+   q                      cpp
+   1         0.66 [0.62-0.75]
+   2         0.87 [0.85-0.90]
+   3         0.64 [0.60-0.73]
+   4         0.51 [0.47-0.57]
+   5         0.52 [0.48-0.60]
+   6         0.50 [0.46-0.58]
+   7         0.53 [0.51-0.60]
+   8         0.48 [0.44-0.55]
+   9         0.56 [0.52-0.67]
+  10         0.72 [0.66-0.85]
+  11         2.46 [2.33-2.72]
+  12         0.59 [0.54-0.69]
+  13         0.46 [0.42-0.54]
+  14         0.45 [0.41-0.54]
+  15         0.57 [0.53-0.66]
+  16      11.53 [10.40-12.76]
+  17         0.44 [0.42-0.48]
+  18         2.64 [1.94-3.31]
+  19         0.47 [0.44-0.50]
+  20       10.36 [9.66-11.47]
+  21         0.53 [0.51-0.54]
+  22         0.51 [0.49-0.52]
+totals cpp: qps 1961 [1650-2520], writes/s 2.5 [2.5-2.5], commit p50 ms 350.4 [322.7-390.0], p99 ms 589.8 [539.5-614.3]
+
+=== wps10
+
+multi-accelerator (one process, one writer maintaining all): per-query read p50 ms, median [min-max] over 3 repetition(s) with different parameter draws
+   q                      cpp
+   1         0.78 [0.67-0.86]
+   2         0.90 [0.84-0.95]
+   3         0.72 [0.63-0.83]
+   4         0.61 [0.50-0.66]
+   5         0.64 [0.52-0.69]
+   6         0.62 [0.51-0.66]
+   7         0.60 [0.51-0.68]
+   8         0.59 [0.48-0.65]
+   9         0.73 [0.58-0.80]
+  10         0.92 [0.74-1.02]
+  11         2.91 [2.35-3.12]
+  12         0.76 [0.58-0.82]
+  13         0.58 [0.45-0.62]
+  14         0.58 [0.44-0.62]
+  15         0.69 [0.53-0.75]
+  16      13.53 [10.60-14.13]
+  17         0.49 [0.42-0.52]
+  18         4.57 [4.08-4.60]
+  19         0.50 [0.46-0.54]
+  20      11.76 [11.46-12.45]
+  21         0.55 [0.52-0.58]
+  22         0.52 [0.50-0.55]
+totals cpp: qps 1401 [1384-1403], writes/s 2.3 [2.3-2.3], commit p50 ms 422.6 [409.2-425.1], p99 ms 681.8 [656.5-692.8]
+
+=== wps25
+
+multi-accelerator (one process, one writer maintaining all): per-query read p50 ms, median [min-max] over 3 repetition(s) with different parameter draws
+   q                      cpp
+   1         0.77 [0.68-0.88]
+   2         0.89 [0.85-0.95]
+   3         0.69 [0.63-0.85]
+   4         0.59 [0.50-0.68]
+   5         0.62 [0.52-0.70]
+   6         0.60 [0.50-0.68]
+   7         0.59 [0.51-0.67]
+   8         0.59 [0.47-0.68]
+   9         0.70 [0.58-0.82]
+  10         0.92 [0.73-1.04]
+  11         2.88 [2.33-3.15]
+  12         0.74 [0.60-0.84]
+  13         0.58 [0.46-0.65]
+  14         0.55 [0.44-0.64]
+  15         0.66 [0.52-0.74]
+  16      13.25 [10.26-14.01]
+  17         0.47 [0.43-0.54]
+  18         5.38 [5.19-6.29]
+  19         0.50 [0.47-0.55]
+  20      12.86 [12.70-13.95]
+  21         0.54 [0.53-0.58]
+  22         0.52 [0.50-0.56]
+totals cpp: qps 1189 [1078-1252], writes/s 2.0 [1.9-2.1], commit p50 ms 479.8 [456.9-527.1], p99 ms 768.2 [766.0-989.5]
+=== DONE Fri Oct  9 09:31:31 PM EDT 2026

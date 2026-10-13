@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:17",
+ "function": "accel_tpch_q17_aux",
+ "store": "cpp",
+ "build_ms": 88766.3,
+ "state_mb": 3237.34,
+ "rss_mb_settled_before": 64.1484,
+ "rss_mb_settled_after": 3301.48,
+ "rss_mb_peak_build": 10861.4,
+ "speedup_geomean": 2281.0308961092987,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#35', 'WRAP PKG'",
+   "base_us": 1067342.809,
+   "accel_us": 461.102,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#24', 'MED JAR'",
+   "base_us": 1066634.73,
+   "accel_us": 474.188,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#41', 'JUMBO BOX'",
+   "base_us": 1054459.307,
+   "accel_us": 457.179,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#55', 'WRAP BOX'",
+   "base_us": 1050256.787,
+   "accel_us": 473.583,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#42', 'WRAP BOX'",
+   "base_us": 1056637.431,
+   "accel_us": 445.262,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#52', 'LG BAG'",
+   "base_us": 1055101.459,
+   "accel_us": 463.588,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#25', 'LG DRUM'",
+   "base_us": 1042600.9,
+   "accel_us": 469.168,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#53', 'SM PACK'",
+   "base_us": 1078309.648,
+   "accel_us": 470.296,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 245.2,
+ "query": 17,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 3759203671,
+ "note": "",
+ "counts_cover_all_draws": true
+}

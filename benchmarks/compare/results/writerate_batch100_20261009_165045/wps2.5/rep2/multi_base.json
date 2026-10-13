@@ -1,0 +1,1252 @@
+{
+ "mode": "multi",
+ "phase": "base",
+ "accelerators": 22,
+ "store": "none",
+ "reader_mode": "rotate",
+ "readers": 8,
+ "reader_threads": 8,
+ "seconds": 60,
+ "build_ms": 0,
+ "build_ms_by_accel": {},
+ "rss_mb_after_build": {},
+ "rss_mb_end": 5756.59,
+ "rss_mb_peak": 10559.7,
+ "reads": 179,
+ "qps": 2.98333,
+ "read_total_us": 453513000.0,
+ "read_errors": 0,
+ "read_error_example": "",
+ "rf_batch_orders": 100,
+ "rf_source": "clone",
+ "rf_only": false,
+ "dim_after_rf": false,
+ "writes_per_sec_target": 2.5,
+ "writes": 105,
+ "writes_total": 111,
+ "writes_per_sec": 1.75,
+ "commit_p50_us": 126416,
+ "commit_p99_us": 3133710.0,
+ "commit_total_us": 43704900.0,
+ "max_commit_us": 3346510.0,
+ "write_errors": 0,
+ "write_error_example": "",
+ "write_kinds": {
+  "customer update": 2,
+  "lineitem update": 3,
+  "orders update": 2,
+  "part delete": 2,
+  "part insert": 2,
+  "partsupp update": 3,
+  "rf1": 45,
+  "rf2": 44,
+  "supplier delete": 3,
+  "supplier insert": 3,
+  "supplier update": 2
+ },
+ "write_log": [
+  [
+   2.27188,
+   "supplier insert",
+   198200.45,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   2.470115,
+   "rf2",
+   17051.605,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   2.671979,
+   "rf1",
+   1629920.866,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   4.301942,
+   "rf2",
+   92128.112,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   4.394128,
+   "rf1",
+   816434.67,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   5.210584,
+   "partsupp update",
+   7233.93,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   5.21786,
+   "rf2",
+   15987.184,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   5.610976,
+   "rf1",
+   670214.773,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   6.281234,
+   "rf2",
+   26194.492,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   6.410972,
+   "rf1",
+   1189284.656,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   7.600278,
+   "lineitem update",
+   11721.364,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   7.61204,
+   "rf2",
+   22094.735,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   8.00098,
+   "rf1",
+   467205.73,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   8.468225,
+   "rf2",
+   26320.963,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   8.800451,
+   "rf1",
+   429938.497,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   9.230407,
+   "orders update",
+   12799.374,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   9.600811,
+   "rf2",
+   34012.688,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   10.000396,
+   "rf1",
+   243969.071,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   10.40037,
+   "rf2",
+   33951.361,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   10.800403,
+   "rf1",
+   1243022.122,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   12.043447,
+   "supplier update",
+   5032.39,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   12.048515,
+   "rf2",
+   22943.791,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   12.443574,
+   "rf1",
+   359425.978,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   12.843544,
+   "rf2",
+   33524.373,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   13.24357,
+   "rf1",
+   352325.969,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   13.64351,
+   "customer update",
+   2678.531,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   14.043951,
+   "rf2",
+   38794.311,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   14.44357,
+   "rf1",
+   2218660.438,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   16.66228,
+   "rf2",
+   23891.244,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   16.686227,
+   "rf1",
+   326646.803,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   17.062375,
+   "part delete",
+   2846.565,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   17.462662,
+   "rf2",
+   8447.724,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   17.862982,
+   "rf1",
+   3133711.395,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   20.996729,
+   "rf2",
+   476175.029,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   21.472968,
+   "rf1",
+   661765.978,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   22.134765,
+   "part insert",
+   177008.714,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   22.311817,
+   "rf2",
+   2820883.931,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   25.132759,
+   "rf1",
+   571988.185,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   25.704773,
+   "rf2",
+   156192.319,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   25.861001,
+   "rf1",
+   259389.703,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   26.120407,
+   "supplier delete",
+   104956.649,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   26.504868,
+   "rf2",
+   115222.676,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   26.904878,
+   "rf1",
+   468587.733,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   27.373491,
+   "rf2",
+   112001.804,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   27.704934,
+   "rf1",
+   321385.23,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   28.104893,
+   "supplier insert",
+   98349.732,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   28.50498,
+   "rf2",
+   132624.189,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   28.904998,
+   "rf1",
+   249446.756,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   29.304964,
+   "rf2",
+   58929.189,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   29.705022,
+   "rf1",
+   330750.016,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   30.104902,
+   "partsupp update",
+   135229.985,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   30.504973,
+   "rf2",
+   139501.538,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   30.904999,
+   "rf1",
+   368721.48,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   31.304944,
+   "rf2",
+   166262.768,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   31.704968,
+   "rf1",
+   410501.04,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   32.115482,
+   "lineitem update",
+   96959.784,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   32.504929,
+   "rf2",
+   126415.846,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   32.904881,
+   "rf1",
+   475203.538,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   33.380107,
+   "rf2",
+   106477.79,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   33.704945,
+   "rf1",
+   408479.875,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   34.113441,
+   "orders update",
+   4509.941,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   34.504856,
+   "rf2",
+   15003.556,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   34.904964,
+   "rf1",
+   259822.128,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   35.304861,
+   "rf2",
+   33199.658,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   35.704893,
+   "rf1",
+   230600.318,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   36.104839,
+   "supplier update",
+   7489.998,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   36.504961,
+   "rf2",
+   28092.725,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   36.907771,
+   "rf1",
+   222217.882,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   37.304858,
+   "rf2",
+   32555.77,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   37.70488,
+   "rf1",
+   163809.716,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   38.104828,
+   "customer update",
+   2927.776,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   38.504851,
+   "rf2",
+   15199.68,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   38.904966,
+   "rf1",
+   638668.424,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   39.543672,
+   "rf2",
+   36331.538,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   39.704886,
+   "rf1",
+   203599.335,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   40.104842,
+   "part delete",
+   9883.689,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   40.505001,
+   "rf2",
+   85996.872,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   40.904884,
+   "rf1",
+   2013683.328,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   42.9186,
+   "rf2",
+   27900.461,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   42.946557,
+   "rf1",
+   533505.908,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   43.480083,
+   "part insert",
+   17082.817,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   43.718677,
+   "rf2",
+   29079.381,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   44.118697,
+   "rf1",
+   362305.546,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   44.518678,
+   "rf2",
+   19983.439,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   44.919722,
+   "rf1",
+   1267701.978,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   46.187442,
+   "supplier delete",
+   112597.028,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   46.30007,
+   "rf2",
+   24969.903,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   46.587813,
+   "rf1",
+   1648510.611,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   48.236355,
+   "rf2",
+   17099.957,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   48.253512,
+   "rf1",
+   894322.383,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   49.147854,
+   "supplier insert",
+   198383.621,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   49.346271,
+   "rf2",
+   33833.713,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   49.54797,
+   "rf1",
+   3346511.853,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   52.894521,
+   "rf2",
+   15584.9,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   52.91016,
+   "rf1",
+   2242795.634,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   55.152979,
+   "partsupp update",
+   23609.08,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   55.17662,
+   "rf2",
+   83429.218,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   55.553982,
+   "rf1",
+   1626632.391,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   57.180649,
+   "rf2",
+   33207.71,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   57.213923,
+   "rf1",
+   432511.065,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   57.646453,
+   "lineitem update",
+   12641.674,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   57.980725,
+   "rf2",
+   31921.781,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   58.380746,
+   "rf1",
+   1082337.664,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   59.463122,
+   "rf2",
+   34192.84,
+   0.0,
+   0.0,
+   0
+  ],
+  [
+   59.497376,
+   "rf1",
+   2282668.704,
+   0.0,
+   0.0,
+   0
+  ]
+ ],
+ "hits": 0,
+ "fallbacks": 0,
+ "rep": 2,
+ "per_accel": [
+  {
+   "accel": "tpch:1",
+   "reads": 7,
+   "read_p50_us": 584232.231,
+   "read_p99_us": 820324.021,
+   "read_max_us": 820324.021,
+   "read_mean_us": 591429.846286,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:2",
+   "reads": 7,
+   "read_p50_us": 444734.077,
+   "read_p99_us": 583045.953,
+   "read_max_us": 583045.953,
+   "read_mean_us": 457814.682429,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:3",
+   "reads": 7,
+   "read_p50_us": 1086417.91,
+   "read_p99_us": 1685329.051,
+   "read_max_us": 1685329.051,
+   "read_mean_us": 1083327.390857,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:4",
+   "reads": 7,
+   "read_p50_us": 1024463.15,
+   "read_p99_us": 1219927.303,
+   "read_max_us": 1219927.303,
+   "read_mean_us": 998510.141143,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:5",
+   "reads": 7,
+   "read_p50_us": 774003.91,
+   "read_p99_us": 1847450.951,
+   "read_max_us": 1847450.951,
+   "read_mean_us": 893136.033143,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:6",
+   "reads": 7,
+   "read_p50_us": 232748.462,
+   "read_p99_us": 483417.607,
+   "read_max_us": 483417.607,
+   "read_mean_us": 271796.086714,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:7",
+   "reads": 7,
+   "read_p50_us": 630110.452,
+   "read_p99_us": 1877046.056,
+   "read_max_us": 1877046.056,
+   "read_mean_us": 838856.002,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:8",
+   "reads": 10,
+   "read_p50_us": 883329.333,
+   "read_p99_us": 3238570.445,
+   "read_max_us": 3238570.445,
+   "read_mean_us": 1300599.1084,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:9",
+   "reads": 9,
+   "read_p50_us": 7641990.821,
+   "read_p99_us": 11812775.479,
+   "read_max_us": 11812775.479,
+   "read_mean_us": 7676201.487556,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:10",
+   "reads": 11,
+   "read_p50_us": 1645237.777,
+   "read_p99_us": 3602663.617,
+   "read_max_us": 3602663.617,
+   "read_mean_us": 1832386.606273,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:11",
+   "reads": 10,
+   "read_p50_us": 352266.387,
+   "read_p99_us": 616043.62,
+   "read_max_us": 616043.62,
+   "read_mean_us": 349315.7763,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:12",
+   "reads": 10,
+   "read_p50_us": 664959.32,
+   "read_p99_us": 851897.263,
+   "read_max_us": 851897.263,
+   "read_mean_us": 601054.4715,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:13",
+   "reads": 8,
+   "read_p50_us": 5052254.463,
+   "read_p99_us": 5186342.548,
+   "read_max_us": 5186342.548,
+   "read_mean_us": 4835855.6315,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:14",
+   "reads": 8,
+   "read_p50_us": 1204175.79,
+   "read_p99_us": 3501333.793,
+   "read_max_us": 3501333.793,
+   "read_mean_us": 1335093.99875,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:15",
+   "reads": 8,
+   "read_p50_us": 460314.231,
+   "read_p99_us": 616571.214,
+   "read_max_us": 616571.214,
+   "read_mean_us": 448524.79925,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:16",
+   "reads": 8,
+   "read_p50_us": 2521429.604,
+   "read_p99_us": 4396761.64,
+   "read_max_us": 4396761.64,
+   "read_mean_us": 2471523.261,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:17",
+   "reads": 8,
+   "read_p50_us": 16972800.509,
+   "read_p99_us": 19322387.955,
+   "read_max_us": 19322387.955,
+   "read_mean_us": 16080397.317125,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:18",
+   "reads": 8,
+   "read_p50_us": 3908543.699,
+   "read_p99_us": 6698250.611,
+   "read_max_us": 6698250.611,
+   "read_mean_us": 4525908.591125,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 4
+  },
+  {
+   "accel": "tpch:19",
+   "reads": 8,
+   "read_p50_us": 473439.739,
+   "read_p99_us": 1139293.773,
+   "read_max_us": 1139293.773,
+   "read_mean_us": 574593.421625,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:20",
+   "reads": 8,
+   "read_p50_us": 4155432.074,
+   "read_p99_us": 4586534.538,
+   "read_max_us": 4586534.538,
+   "read_mean_us": 3597352.424375,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:21",
+   "reads": 8,
+   "read_p50_us": 3467135.172,
+   "read_p99_us": 5124907.697,
+   "read_max_us": 5124907.697,
+   "read_mean_us": 3615545.97225,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:22",
+   "reads": 8,
+   "read_p50_us": 690725.34,
+   "read_p99_us": 1226737.527,
+   "read_max_us": 1226737.527,
+   "read_mean_us": 742330.603625,
+   "store_wait_mean_us": 0.0,
+   "store_wait_p99_us": 0.0,
+   "store_wait_max_us": 0.0,
+   "reads_waited_over_1ms": 0,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  }
+ ],
+ "wall_s": 1261.6,
+ "system": "base",
+ "queries": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  21,
+  22
+ ],
+ "rate": "wps2.5",
+ "seed": 3421135407
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:17",
+ "function": "accel_tpch_q17_aux",
+ "store": "cpp",
+ "build_ms": 88766.3,
+ "state_mb": 3237.34,
+ "rss_mb_settled_before": 64.1484,
+ "rss_mb_settled_after": 3301.48,
+ "rss_mb_peak_build": 10861.4,
+ "speedup_geomean": 2271.152028304072,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#33', 'JUMBO CASE'",
+   "base_us": 1044897.165,
+   "accel_us": 485.723,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#51', 'LG BAG'",
+   "base_us": 1048353.48,
+   "accel_us": 449.926,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#41', 'LG CAN'",
+   "base_us": 1041230.832,
+   "accel_us": 449.787,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#21', 'LG PACK'",
+   "base_us": 1052495.889,
+   "accel_us": 451.414,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#55', 'WRAP PKG'",
+   "base_us": 1090997.39,
+   "accel_us": 464.88,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#23', 'WRAP DRUM'",
+   "base_us": 1048967.841,
+   "accel_us": 456.978,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#12', 'SM CASE'",
+   "base_us": 1040151.895,
+   "accel_us": 459.402,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#32', 'SM BOX'",
+   "base_us": 1048540.763,
+   "accel_us": 488.772,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 245.2,
+ "query": 17,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 3759203672,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q9_vgen",
+ "function": "accel_tpch_q9_vgen",
+ "store": "verus",
+ "build_ms": 463894,
+ "state_mb": 2500.36,
+ "rss_mb_settled_before": 65.793,
+ "rss_mb_settled_after": 2566.15,
+ "rss_mb_peak_build": 18865.9,
+ "speedup_geomean": 667.9635091331749,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'%slate%'",
+   "base_us": 533681.712,
+   "accel_us": 823.386,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'%midnight%'",
+   "base_us": 544509.069,
+   "accel_us": 839.064,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'%saddle%'",
+   "base_us": 539941.163,
+   "accel_us": 794.796,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'%peru%'",
+   "base_us": 539616.807,
+   "accel_us": 829.249,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'%puff%'",
+   "base_us": 542899.128,
+   "accel_us": 754.464,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'%turquoise%'",
+   "base_us": 540688.23,
+   "accel_us": 812.492,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'%forest%'",
+   "base_us": 545140.392,
+   "accel_us": 803.67,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  },
+  {
+   "args": "'%wheat%'",
+   "base_us": 540211.697,
+   "accel_us": 823.306,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  }
+ ],
+ "wall_s": 543.4,
+ "query": 9,
+ "system": "verus",
+ "rep": 0,
+ "seed": 3759203670,
+ "note": "",
+ "counts_cover_all_draws": true
+}

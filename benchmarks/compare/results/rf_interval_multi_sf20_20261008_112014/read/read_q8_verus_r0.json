@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q8_vgen",
+ "function": "accel_tpch_q8_vgen",
+ "store": "verus",
+ "build_ms": 167718,
+ "state_mb": 2148.02,
+ "rss_mb_settled_before": 65.8086,
+ "rss_mb_settled_after": 2213.82,
+ "rss_mb_peak_build": 11530.9,
+ "speedup_geomean": 466.4648833653159,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'INDONESIA', 'ASIA', 'STANDARD POLISHED STEEL'",
+   "base_us": 210337.692,
+   "accel_us": 453.385,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'INDIA', 'ASIA', 'STANDARD ANODIZED TIN'",
+   "base_us": 209806.496,
+   "accel_us": 428.146,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'CHINA', 'ASIA', 'STANDARD PLATED TIN'",
+   "base_us": 210495.244,
+   "accel_us": 437.39,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'UNITED KINGDOM', 'EUROPE', 'PROMO BRUSHED STEEL'",
+   "base_us": 205994.547,
+   "accel_us": 413.743,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'INDIA', 'ASIA', 'PROMO POLISHED BRASS'",
+   "base_us": 216535.915,
+   "accel_us": 544.063,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'INDONESIA', 'ASIA', 'PROMO ANODIZED BRASS'",
+   "base_us": 213080.093,
+   "accel_us": 441.018,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL', 'AMERICA', 'MEDIUM POLISHED BRASS'",
+   "base_us": 201434.227,
+   "accel_us": 419.114,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'FRANCE', 'EUROPE', 'STANDARD BRUSHED BRASS'",
+   "base_us": 207290.178,
+   "accel_us": 465.555,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 197.5,
+ "query": 8,
+ "system": "verus",
+ "rep": 0,
+ "seed": 3759203670,
+ "note": "",
+ "counts_cover_all_draws": true
+}

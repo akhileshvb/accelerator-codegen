@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q19_vgen",
+ "function": "accel_tpch_q19_vgen",
+ "store": "verus",
+ "build_ms": 1721.05,
+ "state_mb": 506.156,
+ "rss_mb_settled_before": 65.832,
+ "rss_mb_settled_after": 571.988,
+ "rss_mb_peak_build": 3026.43,
+ "speedup_geomean": 353.8249600226589,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#54', 10, 'Brand#32', 14, 'Brand#43', 24",
+   "base_us": 203812.753,
+   "accel_us": 554.45,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#24', 10, 'Brand#51', 19, 'Brand#31', 20",
+   "base_us": 206847.493,
+   "accel_us": 561.183,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#41', 6, 'Brand#25', 10, 'Brand#24', 20",
+   "base_us": 210880.437,
+   "accel_us": 593.69,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#55', 9, 'Brand#15', 19, 'Brand#53', 30",
+   "base_us": 208892.719,
+   "accel_us": 617.277,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#14', 9, 'Brand#53', 20, 'Brand#31', 22",
+   "base_us": 208116.294,
+   "accel_us": 607.35,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#45', 2, 'Brand#22', 12, 'Brand#15', 25",
+   "base_us": 207790.594,
+   "accel_us": 585.466,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#35', 1, 'Brand#11', 18, 'Brand#44', 21",
+   "base_us": 207535.137,
+   "accel_us": 600.591,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#11', 2, 'Brand#55', 15, 'Brand#53', 21",
+   "base_us": 211575.204,
+   "accel_us": 589.516,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 32.3,
+ "query": 19,
+ "system": "verus",
+ "rep": 0,
+ "seed": 3759203670,
+ "note": "",
+ "counts_cover_all_draws": true
+}

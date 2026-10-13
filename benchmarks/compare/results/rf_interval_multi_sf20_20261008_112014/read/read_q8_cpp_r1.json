@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:8",
+ "function": "accel_tpch_q8_aux",
+ "store": "cpp",
+ "build_ms": 68020.7,
+ "state_mb": 1319.61,
+ "rss_mb_settled_before": 64.1328,
+ "rss_mb_settled_after": 1383.75,
+ "rss_mb_peak_build": 2849.76,
+ "speedup_geomean": 443.20857923032713,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'INDIA', 'ASIA', 'SMALL BRUSHED TIN'",
+   "base_us": 193837.354,
+   "accel_us": 439.095,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'EGYPT', 'MIDDLE EAST', 'LARGE BRUSHED COPPER'",
+   "base_us": 199590.67,
+   "accel_us": 431.926,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'VIETNAM', 'ASIA', 'PROMO BRUSHED NICKEL'",
+   "base_us": 200214.56,
+   "accel_us": 439.218,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'VIETNAM', 'ASIA', 'SMALL BRUSHED TIN'",
+   "base_us": 196934.402,
+   "accel_us": 484.839,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'JORDAN', 'MIDDLE EAST', 'PROMO POLISHED NICKEL'",
+   "base_us": 192401.58,
+   "accel_us": 422.444,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'MOROCCO', 'AFRICA', 'SMALL BURNISHED BRASS'",
+   "base_us": 197054.26,
+   "accel_us": 442.198,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL', 'AMERICA', 'SMALL BRUSHED COPPER'",
+   "base_us": 196640.945,
+   "accel_us": 438.409,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'RUSSIA', 'EUROPE', 'ECONOMY BRUSHED BRASS'",
+   "base_us": 192337.503,
+   "accel_us": 444.172,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 97.5,
+ "query": 8,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 3759203671,
+ "note": "",
+ "counts_cover_all_draws": true
+}

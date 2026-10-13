@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q2_vgen",
+ "function": "accel_tpch_q2_vgen",
+ "store": "verus",
+ "build_ms": 148445,
+ "state_mb": 2475.74,
+ "rss_mb_settled_before": 65.8438,
+ "rss_mb_settled_after": 2541.58,
+ "rss_mb_peak_build": 3911.71,
+ "speedup_geomean": 5.3873698562898165,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "12, '%NICKEL', 'AMERICA'",
+   "base_us": 141398.459,
+   "accel_us": 25337.556,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "4, '%NICKEL', 'MIDDLE EAST'",
+   "base_us": 159185.336,
+   "accel_us": 30859.033,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "34, '%TIN', 'EUROPE'",
+   "base_us": 173240.262,
+   "accel_us": 35827.776,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "25, '%TIN', 'AFRICA'",
+   "base_us": 159892.904,
+   "accel_us": 36251.355,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "36, '%COPPER', 'ASIA'",
+   "base_us": 142410.923,
+   "accel_us": 24761.47,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "44, '%BRASS', 'EUROPE'",
+   "base_us": 164214.029,
+   "accel_us": 25523.243,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "17, '%STEEL', 'AMERICA'",
+   "base_us": 170011.5,
+   "accel_us": 31432.32,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "1, '%NICKEL', 'AMERICA'",
+   "base_us": 157896.47,
+   "accel_us": 27342.351,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  }
+ ],
+ "wall_s": 175.6,
+ "query": 2,
+ "system": "verus",
+ "rep": 0,
+ "seed": 3759203670,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q7_vgen",
+ "function": "accel_tpch_q7_vgen",
+ "store": "verus",
+ "build_ms": 70435.9,
+ "state_mb": 5215.45,
+ "rss_mb_settled_before": 73.9297,
+ "rss_mb_settled_after": 5289.38,
+ "rss_mb_peak_build": 9266.66,
+ "speedup_geomean": 282.1423760564227,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'MOZAMBIQUE', 'ALGERIA'",
+   "base_us": 145885.866,
+   "accel_us": 449.7,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'SAUDI ARABIA', 'IRAQ'",
+   "base_us": 133408.063,
+   "accel_us": 489.573,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'JAPAN', 'UNITED KINGDOM'",
+   "base_us": 139046.212,
+   "accel_us": 489.621,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ROMANIA', 'INDONESIA'",
+   "base_us": 135107.93,
+   "accel_us": 490.95,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'INDIA', 'UNITED KINGDOM'",
+   "base_us": 139900.076,
+   "accel_us": 491.49,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'KENYA', 'ETHIOPIA'",
+   "base_us": 134281.519,
+   "accel_us": 496.491,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'MOROCCO', 'JORDAN'",
+   "base_us": 134502.649,
+   "accel_us": 515.777,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'MOZAMBIQUE', 'FRANCE'",
+   "base_us": 133425.272,
+   "accel_us": 460.857,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  }
+ ],
+ "wall_s": 90.8,
+ "query": 7,
+ "system": "verus",
+ "rep": 0,
+ "seed": 3759203670,
+ "note": "",
+ "counts_cover_all_draws": true
+}

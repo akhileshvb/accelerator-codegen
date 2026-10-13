@@ -1,0 +1,3186 @@
+{
+ "mode": "multi",
+ "phase": "accel",
+ "accelerators": 22,
+ "store": "verus",
+ "reader_mode": "rotate",
+ "readers": 8,
+ "reader_threads": 8,
+ "seconds": 60,
+ "build_ms": 4737340.0,
+ "build_ms_by_accel": {
+  "tpch_q1_vgen": 145380.440648,
+  "tpch_q2_vgen": 141683.431507,
+  "tpch_q3_vgen": 402691.402936,
+  "tpch_q4_vgen": 68927.203296,
+  "tpch_q5_vgen": 38242.979394,
+  "tpch_q6_vgen": 73728.043501,
+  "tpch_q7_vgen": 67920.380506,
+  "tpch_q8_vgen": 166214.000075,
+  "tpch_q9_vgen": 538153.611535,
+  "tpch_q10_vgen": 559789.363168,
+  "tpch_q11_vgen": 202497.196768,
+  "tpch_q12_vgen": 19299.614754,
+  "tpch_q13_vgen": 88297.583846,
+  "tpch_q14_vgen": 754689.779834,
+  "tpch_q15_vgen": 104799.894135,
+  "tpch_q16_vgen": 196428.175488,
+  "tpch_q17_vgen": 133866.980121,
+  "tpch_q18_vgen": 177309.014367,
+  "tpch_q19_vgen": 1873.834585,
+  "tpch_q20_vgen": 212678.170295,
+  "tpch_q21_vgen": 36170.104581,
+  "tpch_q22_vgen": 606695.698781
+ },
+ "rss_mb_after_build": {
+  "tpch_q1_vgen": [
+   10823.722656,
+   27079.871094
+  ],
+  "tpch_q2_vgen": [
+   5131.0625,
+   27079.871094
+  ],
+  "tpch_q3_vgen": [
+   14536.339844,
+   27079.871094
+  ],
+  "tpch_q4_vgen": [
+   13280.058594,
+   27079.871094
+  ],
+  "tpch_q5_vgen": [
+   12051.402344,
+   27079.871094
+  ],
+  "tpch_q6_vgen": [
+   11354.773438,
+   27079.871094
+  ],
+  "tpch_q7_vgen": [
+   16871.414062,
+   27079.871094
+  ],
+  "tpch_q8_vgen": [
+   18401.34375,
+   27079.871094
+  ],
+  "tpch_q9_vgen": [
+   24210.0625,
+   34182.871094
+  ],
+  "tpch_q10_vgen": [
+   23648.417969,
+   34182.871094
+  ],
+  "tpch_q11_vgen": [
+   26723.371094,
+   34182.871094
+  ],
+  "tpch_q12_vgen": [
+   27334.292969,
+   34182.871094
+  ],
+  "tpch_q13_vgen": [
+   27265.230469,
+   34182.871094
+  ],
+  "tpch_q14_vgen": [
+   28421.890625,
+   34182.871094
+  ],
+  "tpch_q15_vgen": [
+   30715.574219,
+   35737.601562
+  ],
+  "tpch_q16_vgen": [
+   38229.519531,
+   38715.738281
+  ],
+  "tpch_q17_vgen": [
+   33839.5625,
+   39616.914062
+  ],
+  "tpch_q18_vgen": [
+   41924.367188,
+   45863.304688
+  ],
+  "tpch_q19_vgen": [
+   40429.78125,
+   45863.304688
+  ],
+  "tpch_q20_vgen": [
+   44938.015625,
+   49947.171875
+  ],
+  "tpch_q21_vgen": [
+   47802.597656,
+   50183.476562
+  ],
+  "tpch_q22_vgen": [
+   48543.707031,
+   50183.476562
+  ]
+ },
+ "rss_mb_end": 48864.6,
+ "rss_mb_peak": 52359.4,
+ "reads": 17232,
+ "qps": 287.2,
+ "read_total_us": 479056000.0,
+ "read_errors": 0,
+ "read_error_example": "",
+ "rf_batch_orders": 100,
+ "rf_source": "clone",
+ "rf_only": false,
+ "dim_after_rf": false,
+ "writes_per_sec_target": 1,
+ "writes": 60,
+ "writes_total": 65,
+ "writes_per_sec": 1,
+ "commit_p50_us": 484661,
+ "commit_p99_us": 619263,
+ "commit_total_us": 28037700.0,
+ "max_commit_us": 625398,
+ "write_errors": 0,
+ "write_error_example": "",
+ "write_kinds": {
+  "customer update": 2,
+  "lineitem update": 1,
+  "orders update": 1,
+  "part delete": 2,
+  "part insert": 2,
+  "partsupp update": 1,
+  "rf1": 26,
+  "rf2": 26,
+  "supplier delete": 2,
+  "supplier insert": 1,
+  "supplier update": 1
+ },
+ "commit_breakdown_mean_us": {
+  "statement": 86181.325533,
+  "pre_commit_all": 351868.9905,
+  "engine_commit": 2446.557217,
+  "install_all": 26736.567483
+ },
+ "writes_by_accels_maintained": {
+  "10": 4,
+  "12": 1,
+  "17": 1,
+  "19": 52,
+  "5": 1,
+  "8": 2,
+  "9": 4
+ },
+ "writes_maintaining_none": 0,
+ "write_log": [
+  [
+   0.000244,
+   "rf1",
+   608052.418,
+   404370.571,
+   30858.448,
+   19
+  ],
+  [
+   1.000123,
+   "rf2",
+   493388.011,
+   424985.686,
+   30047.877,
+   19
+  ],
+  [
+   2.000224,
+   "rf1",
+   603890.679,
+   394051.473,
+   29991.295,
+   19
+  ],
+  [
+   3.000162,
+   "part delete",
+   182314.475,
+   141912.54,
+   34414.731,
+   9
+  ],
+  [
+   4.000912,
+   "rf2",
+   467068.21,
+   432787.608,
+   2401.492,
+   19
+  ],
+  [
+   5.00023,
+   "rf1",
+   604360.312,
+   399854.709,
+   32263.172,
+   19
+  ],
+  [
+   6.000783,
+   "rf2",
+   484661.186,
+   398442.376,
+   34531.079,
+   19
+  ],
+  [
+   7.000748,
+   "rf1",
+   625398.411,
+   418441.742,
+   31782.007,
+   19
+  ],
+  [
+   8.000133,
+   "part insert",
+   120833.183,
+   81637.265,
+   32975.096,
+   9
+  ],
+  [
+   9.000456,
+   "rf2",
+   432736.1,
+   396533.588,
+   1088.651,
+   19
+  ],
+  [
+   10.000184,
+   "rf1",
+   585582.259,
+   387084.891,
+   33197.218,
+   19
+  ],
+  [
+   11.000258,
+   "rf2",
+   467993.096,
+   395103.871,
+   31899.8,
+   19
+  ],
+  [
+   12.000909,
+   "rf1",
+   586332.142,
+   386508.389,
+   31525.041,
+   19
+  ],
+  [
+   13.00012,
+   "supplier delete",
+   406803.069,
+   338932.442,
+   32538.534,
+   10
+  ],
+  [
+   14.000242,
+   "rf2",
+   410952.417,
+   377198.611,
+   5049.048,
+   19
+  ],
+  [
+   15.000567,
+   "rf1",
+   586883.886,
+   398785.582,
+   27329.845,
+   19
+  ],
+  [
+   16.000119,
+   "rf2",
+   479174.73,
+   401804.975,
+   40068.146,
+   19
+  ],
+  [
+   17.000234,
+   "rf1",
+   610654.797,
+   401408.953,
+   29526.868,
+   19
+  ],
+  [
+   18.000159,
+   "supplier insert",
+   283244.783,
+   216580.033,
+   33169.134,
+   10
+  ],
+  [
+   19.00012,
+   "rf2",
+   481099.625,
+   404657.568,
+   4408.216,
+   19
+  ],
+  [
+   20.000231,
+   "rf1",
+   607792.739,
+   408296.253,
+   32222.08,
+   19
+  ],
+  [
+   21.000609,
+   "rf2",
+   464141.042,
+   400123.275,
+   34747.996,
+   19
+  ],
+  [
+   22.001045,
+   "rf1",
+   576051.539,
+   369807.724,
+   32385.306,
+   19
+  ],
+  [
+   23.000163,
+   "partsupp update",
+   172834.691,
+   136856.317,
+   32338.787,
+   5
+  ],
+  [
+   24.000199,
+   "rf2",
+   482965.86,
+   411093.444,
+   1194.947,
+   19
+  ],
+  [
+   25.000237,
+   "rf1",
+   601453.589,
+   391885.526,
+   33678.733,
+   19
+  ],
+  [
+   26.000774,
+   "rf2",
+   466390.507,
+   400858.791,
+   33704.454,
+   19
+  ],
+  [
+   27.000997,
+   "rf1",
+   611051.473,
+   397815.623,
+   31420.849,
+   19
+  ],
+  [
+   28.000154,
+   "lineitem update",
+   192324.909,
+   153029.779,
+   35567.263,
+   17
+  ],
+  [
+   29.00041,
+   "rf2",
+   492440.766,
+   415075.083,
+   3332.903,
+   19
+  ],
+  [
+   30.000111,
+   "rf1",
+   574379.56,
+   372677.412,
+   31693.858,
+   19
+  ],
+  [
+   31.000209,
+   "rf2",
+   458276.85,
+   387515.752,
+   31937.337,
+   19
+  ],
+  [
+   32.000223,
+   "rf1",
+   591768.765,
+   391266.666,
+   28817.933,
+   19
+  ],
+  [
+   33.000126,
+   "orders update",
+   86920.142,
+   47516.252,
+   35403.747,
+   12
+  ],
+  [
+   34.000095,
+   "rf2",
+   427108.603,
+   394367.747,
+   1507.354,
+   19
+  ],
+  [
+   35.000263,
+   "rf1",
+   613296.345,
+   401310.113,
+   36447.547,
+   19
+  ],
+  [
+   36.000825,
+   "rf2",
+   513126.068,
+   406293.143,
+   32566.045,
+   19
+  ],
+  [
+   37.000984,
+   "rf1",
+   599567.463,
+   392397.787,
+   29241.059,
+   19
+  ],
+  [
+   38.00007,
+   "supplier update",
+   131152.504,
+   95333.754,
+   32720.63,
+   10
+  ],
+  [
+   39.000222,
+   "rf2",
+   423682.684,
+   386606.834,
+   1085.558,
+   19
+  ],
+  [
+   40.000126,
+   "rf1",
+   608142.546,
+   413963.455,
+   27084.705,
+   19
+  ],
+  [
+   41.000604,
+   "rf2",
+   499267.813,
+   408036.29,
+   35883.831,
+   19
+  ],
+  [
+   42.000939,
+   "rf1",
+   595359.536,
+   396822.172,
+   28198.731,
+   19
+  ],
+  [
+   43.000123,
+   "customer update",
+   119147.216,
+   83048.552,
+   32321.95,
+   8
+  ],
+  [
+   44.000266,
+   "rf2",
+   445792.769,
+   395339.125,
+   8597.292,
+   19
+  ],
+  [
+   45.000229,
+   "rf1",
+   601702.894,
+   407721.489,
+   31910.78,
+   19
+  ],
+  [
+   46.000682,
+   "rf2",
+   474843.117,
+   409098.332,
+   33287.287,
+   19
+  ],
+  [
+   47.001159,
+   "rf1",
+   589105.863,
+   388327.14,
+   32382.314,
+   19
+  ],
+  [
+   48.000167,
+   "part delete",
+   191461.347,
+   152275.181,
+   33390.624,
+   9
+  ],
+  [
+   49.000725,
+   "rf2",
+   432598.941,
+   400250.588,
+   2547.863,
+   19
+  ],
+  [
+   50.000235,
+   "rf1",
+   596493.844,
+   394144.341,
+   31901.728,
+   19
+  ],
+  [
+   51.000801,
+   "rf2",
+   500396.937,
+   400747.538,
+   39224.606,
+   19
+  ],
+  [
+   52.000759,
+   "rf1",
+   610752.548,
+   404871.683,
+   29963.678,
+   19
+  ],
+  [
+   53.000123,
+   "part insert",
+   126782.634,
+   85678.045,
+   34802.035,
+   9
+  ],
+  [
+   54.000135,
+   "rf2",
+   473933.014,
+   432578.849,
+   1087.928,
+   19
+  ],
+  [
+   55.000235,
+   "rf1",
+   602565.321,
+   399565.573,
+   33667.24,
+   19
+  ],
+  [
+   56.000515,
+   "rf2",
+   478197.724,
+   404302.065,
+   34572.63,
+   19
+  ],
+  [
+   57.000882,
+   "rf1",
+   619263.388,
+   417406.673,
+   32837.477,
+   19
+  ],
+  [
+   58.000085,
+   "supplier delete",
+   401236.097,
+   345652.748,
+   34188.751,
+   10
+  ],
+  [
+   59.000367,
+   "rf2",
+   462529.773,
+   411099.443,
+   5262.515,
+   19
+  ]
+ ],
+ "hits": 18599,
+ "fallbacks": 0,
+ "rep": 0,
+ "per_accel": [
+  {
+   "accel": "tpch_q1_vgen",
+   "reads": 782,
+   "read_p50_us": 416.211,
+   "read_p99_us": 884.034,
+   "read_max_us": 1799.35,
+   "read_mean_us": 444.71223,
+   "store_wait_mean_us": 2.079729,
+   "store_wait_p99_us": 17.622,
+   "store_wait_max_us": 18.638,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 53,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 53,
+     "mean_us": 73593.337868,
+     "max_us": 89228.697
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 199313501.0,
+     "pred_rebuild_all_us": 199263500.0,
+     "pred_invalidate_us": 199263500.0,
+     "actual_us": 3133.305
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 477.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5954.538462,
+     "pred_rebuild_partition_us": 199313501.0,
+     "pred_rebuild_all_us": 199263500.0,
+     "pred_invalidate_us": 199263500.0,
+     "actual_us": 74621.270962
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 399.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5798.769231,
+     "pred_rebuild_partition_us": 199313501.0,
+     "pred_rebuild_all_us": 199263500.0,
+     "pred_invalidate_us": 199263500.0,
+     "actual_us": 75275.406038
+    }
+   },
+   "pre_commit_mean_us": 60258.478683,
+   "pre_commit_max_us": 89228.697,
+   "install_mean_us": 51.837833,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q2_vgen",
+   "reads": 782,
+   "read_p50_us": 22366.426,
+   "read_p99_us": 42696.712,
+   "read_max_us": 52402.353,
+   "read_mean_us": 24311.985207,
+   "store_wait_mean_us": 1.579362,
+   "store_wait_p99_us": 3.709,
+   "store_wait_max_us": 18.04,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 9,
+   "maintained_by_kind": {
+    "part delete": 2,
+    "part insert": 2,
+    "partsupp update": 1,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 9,
+     "mean_us": 6811.075111,
+     "max_us": 12143.241
+    }
+   },
+   "actions_by_kind": {
+    "part delete": {
+     "ApplyDelta": 2
+    },
+    "part insert": {
+     "ApplyDelta": 2
+    },
+    "partsupp update": {
+     "ApplyDelta": 1
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "part delete": {
+     "n": 2,
+     "rows_touched": 5.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5010.0,
+     "pred_rebuild_partition_us": 10829876.0,
+     "pred_rebuild_all_us": 10779875.0,
+     "pred_invalidate_us": 10779875.0,
+     "actual_us": 9669.272
+    },
+    "part insert": {
+     "n": 2,
+     "rows_touched": 5.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5010.0,
+     "pred_rebuild_partition_us": 10829876.0,
+     "pred_rebuild_all_us": 10779875.0,
+     "pred_invalidate_us": 10779875.0,
+     "actual_us": 12043.647
+    },
+    "partsupp update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 10829876.0,
+     "pred_rebuild_all_us": 10779875.0,
+     "pred_invalidate_us": 10779875.0,
+     "actual_us": 2260.139
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 80.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5160.0,
+     "pred_rebuild_partition_us": 10829876.0,
+     "pred_rebuild_all_us": 10779875.0,
+     "pred_invalidate_us": 10779875.0,
+     "actual_us": 4207.1885
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 81.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5162.0,
+     "pred_rebuild_partition_us": 10829876.0,
+     "pred_rebuild_all_us": 10779875.0,
+     "pred_invalidate_us": 10779875.0,
+     "actual_us": 6248.56
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 10829876.0,
+     "pred_rebuild_all_us": 10779875.0,
+     "pred_invalidate_us": 10779875.0,
+     "actual_us": 950.762
+    }
+   },
+   "pre_commit_mean_us": 1022.807267,
+   "pre_commit_max_us": 12143.241,
+   "install_mean_us": 3.467817,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q3_vgen",
+   "reads": 783,
+   "read_p50_us": 1030.222,
+   "read_p99_us": 356899.49,
+   "read_max_us": 369512.662,
+   "read_mean_us": 10311.838147,
+   "store_wait_mean_us": 8774.73594,
+   "store_wait_p99_us": 349898.373,
+   "store_wait_max_us": 368329.41,
+   "reads_waited_over_1ms": 23,
+   "maintained_writes": 56,
+   "maintained_by_kind": {
+    "customer update": 2,
+    "lineitem update": 1,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 56,
+     "mean_us": 14500.873429,
+     "max_us": 45248.739
+    }
+   },
+   "actions_by_kind": {
+    "customer update": {
+     "ApplyDelta": 2
+    },
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "customer update": {
+     "n": 2,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 434041001.0,
+     "pred_rebuild_all_us": 433991000.0,
+     "pred_invalidate_us": 433991000.0,
+     "actual_us": 22648.7095
+    },
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 434041001.0,
+     "pred_rebuild_all_us": 433991000.0,
+     "pred_invalidate_us": 433991000.0,
+     "actual_us": 8415.756
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 434041001.0,
+     "pred_rebuild_all_us": 433991000.0,
+     "pred_invalidate_us": 433991000.0,
+     "actual_us": 8636.437
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 434041001.0,
+     "pred_rebuild_all_us": 433991000.0,
+     "pred_invalidate_us": 433991000.0,
+     "actual_us": 13148.346269
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 434041001.0,
+     "pred_rebuild_all_us": 433991000.0,
+     "pred_invalidate_us": 433991000.0,
+     "actual_us": 15686.242192
+    }
+   },
+   "pre_commit_mean_us": 12366.786383,
+   "pre_commit_max_us": 45248.739,
+   "install_mean_us": 54.507033,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q4_vgen",
+   "reads": 783,
+   "read_p50_us": 310.544,
+   "read_p99_us": 575.138,
+   "read_max_us": 781.6,
+   "read_mean_us": 329.002507,
+   "store_wait_mean_us": 2.116142,
+   "store_wait_p99_us": 17.978,
+   "store_wait_max_us": 18.628,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 54,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 54,
+     "mean_us": 11217.770778,
+     "max_us": 21395.716
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 95831251.0,
+     "pred_rebuild_all_us": 95781250.0,
+     "pred_invalidate_us": 95781250.0,
+     "actual_us": 5053.113
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 95831251.0,
+     "pred_rebuild_all_us": 95781250.0,
+     "pred_invalidate_us": 95781250.0,
+     "actual_us": 3479.817
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 95831251.0,
+     "pred_rebuild_all_us": 95781250.0,
+     "pred_invalidate_us": 95781250.0,
+     "actual_us": 9753.203923
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 95831251.0,
+     "pred_rebuild_all_us": 95781250.0,
+     "pred_invalidate_us": 95781250.0,
+     "actual_us": 13217.053462
+    }
+   },
+   "pre_commit_mean_us": 9301.234083,
+   "pre_commit_max_us": 21395.716,
+   "install_mean_us": 49.574483,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q5_vgen",
+   "reads": 783,
+   "read_p50_us": 370.317,
+   "read_p99_us": 720.365,
+   "read_max_us": 186385.193,
+   "read_mean_us": 635.198203,
+   "store_wait_mean_us": 238.921913,
+   "store_wait_p99_us": 3.192,
+   "store_wait_max_us": 185987.962,
+   "reads_waited_over_1ms": 1,
+   "maintained_writes": 60,
+   "maintained_by_kind": {
+    "customer update": 2,
+    "lineitem update": 1,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 60,
+     "mean_us": 7938.4499,
+     "max_us": 39836.701
+    }
+   },
+   "actions_by_kind": {
+    "customer update": {
+     "ApplyDelta": 2
+    },
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "customer update": {
+     "n": 2,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 118165251.0,
+     "pred_rebuild_all_us": 118115250.0,
+     "pred_invalidate_us": 118115250.0,
+     "actual_us": 5415.473
+    },
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 118165251.0,
+     "pred_rebuild_all_us": 118115250.0,
+     "pred_invalidate_us": 118115250.0,
+     "actual_us": 61.075
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 118165251.0,
+     "pred_rebuild_all_us": 118115250.0,
+     "pred_invalidate_us": 118115250.0,
+     "actual_us": 3145.717
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 118165251.0,
+     "pred_rebuild_all_us": 118115250.0,
+     "pred_invalidate_us": 118115250.0,
+     "actual_us": 5861.452462
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 118165251.0,
+     "pred_rebuild_all_us": 118115250.0,
+     "pred_invalidate_us": 118115250.0,
+     "actual_us": 7642.148192
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 118165251.0,
+     "pred_rebuild_all_us": 118115250.0,
+     "pred_invalidate_us": 118115250.0,
+     "actual_us": 38349.6205
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 118165251.0,
+     "pred_rebuild_all_us": 118115250.0,
+     "pred_invalidate_us": 118115250.0,
+     "actual_us": 1430.578
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 118165251.0,
+     "pred_rebuild_all_us": 118115250.0,
+     "pred_invalidate_us": 118115250.0,
+     "actual_us": 33045.82
+    }
+   },
+   "pre_commit_mean_us": 7459.847767,
+   "pre_commit_max_us": 39836.701,
+   "install_mean_us": 45.228433,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q6_vgen",
+   "reads": 783,
+   "read_p50_us": 675.145,
+   "read_p99_us": 1082.811,
+   "read_max_us": 1521.554,
+   "read_mean_us": 701.403526,
+   "store_wait_mean_us": 1.409553,
+   "store_wait_p99_us": 10.194,
+   "store_wait_max_us": 18.866,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 53,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 53,
+     "mean_us": 660.809717,
+     "max_us": 1643.866
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 151049751.0,
+     "pred_rebuild_all_us": 150999750.0,
+     "pred_invalidate_us": 150999750.0,
+     "actual_us": 22.074
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 477.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5954.538462,
+     "pred_rebuild_partition_us": 151049751.0,
+     "pred_rebuild_all_us": 150999750.0,
+     "pred_invalidate_us": 150999750.0,
+     "actual_us": 625.174269
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 399.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5798.769231,
+     "pred_rebuild_partition_us": 151049751.0,
+     "pred_rebuild_all_us": 150999750.0,
+     "pred_invalidate_us": 150999750.0,
+     "actual_us": 721.011923
+    }
+   },
+   "pre_commit_mean_us": 540.415583,
+   "pre_commit_max_us": 1643.866,
+   "install_mean_us": 32.423417,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q7_vgen",
+   "reads": 783,
+   "read_p50_us": 292.956,
+   "read_p99_us": 567.982,
+   "read_max_us": 373033.42,
+   "read_mean_us": 1235.513874,
+   "store_wait_mean_us": 923.224766,
+   "store_wait_p99_us": 17.72,
+   "store_wait_max_us": 372682.917,
+   "reads_waited_over_1ms": 2,
+   "maintained_writes": 60,
+   "maintained_by_kind": {
+    "customer update": 2,
+    "lineitem update": 1,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 60,
+     "mean_us": 16393.588433,
+     "max_us": 27700.19
+    }
+   },
+   "actions_by_kind": {
+    "customer update": {
+     "ApplyDelta": 2
+    },
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "customer update": {
+     "n": 2,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 85213251.0,
+     "pred_rebuild_all_us": 85163250.0,
+     "pred_invalidate_us": 85163250.0,
+     "actual_us": 7802.617
+    },
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 85213251.0,
+     "pred_rebuild_all_us": 85163250.0,
+     "pred_invalidate_us": 85163250.0,
+     "actual_us": 12311.88
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 85213251.0,
+     "pred_rebuild_all_us": 85163250.0,
+     "pred_invalidate_us": 85163250.0,
+     "actual_us": 14042.462
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 85213251.0,
+     "pred_rebuild_all_us": 85163250.0,
+     "pred_invalidate_us": 85163250.0,
+     "actual_us": 15413.645962
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 85213251.0,
+     "pred_rebuild_all_us": 85163250.0,
+     "pred_invalidate_us": 85163250.0,
+     "actual_us": 17676.496308
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 85213251.0,
+     "pred_rebuild_all_us": 85163250.0,
+     "pred_invalidate_us": 85163250.0,
+     "actual_us": 26047.388
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 85213251.0,
+     "pred_rebuild_all_us": 85163250.0,
+     "pred_invalidate_us": 85163250.0,
+     "actual_us": 1517.065
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 85213251.0,
+     "pred_rebuild_all_us": 85163250.0,
+     "pred_invalidate_us": 85163250.0,
+     "actual_us": 27700.19
+    }
+   },
+   "pre_commit_mean_us": 15103.9918,
+   "pre_commit_max_us": 27700.19,
+   "install_mean_us": 46.570817,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q8_vgen",
+   "reads": 783,
+   "read_p50_us": 265.863,
+   "read_p99_us": 538.192,
+   "read_max_us": 1066.131,
+   "read_mean_us": 285.050805,
+   "store_wait_mean_us": 1.40124,
+   "store_wait_p99_us": 7.421,
+   "store_wait_max_us": 24.358,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 64,
+   "maintained_by_kind": {
+    "customer update": 2,
+    "lineitem update": 1,
+    "orders update": 1,
+    "part delete": 2,
+    "part insert": 2,
+    "rf1": 26,
+    "rf2": 26,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 64,
+     "mean_us": 52048.916984,
+     "max_us": 79321.918
+    }
+   },
+   "actions_by_kind": {
+    "customer update": {
+     "ApplyDelta": 2
+    },
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "part delete": {
+     "ApplyDelta": 2
+    },
+    "part insert": {
+     "ApplyDelta": 2
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "customer update": {
+     "n": 2,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 5464.6365
+    },
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 8729.752
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 2781.161
+    },
+    "part delete": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 21291.1725
+    },
+    "part insert": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 1537.586
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 63710.462577
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 57171.046462
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 43095.2275
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 1335.563
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 483988501.0,
+     "pred_rebuild_all_us": 483938500.0,
+     "pred_invalidate_us": 483938500.0,
+     "actual_us": 32587.731
+    }
+   },
+   "pre_commit_mean_us": 51791.940733,
+   "pre_commit_max_us": 79321.918,
+   "install_mean_us": 46.7928,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q9_vgen",
+   "reads": 783,
+   "read_p50_us": 497.178,
+   "read_p99_us": 1170.776,
+   "read_max_us": 1929.467,
+   "read_mean_us": 537.902176,
+   "store_wait_mean_us": 1.557397,
+   "store_wait_p99_us": 17.447,
+   "store_wait_max_us": 17.93,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 63,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "orders update": 1,
+    "part delete": 2,
+    "part insert": 2,
+    "partsupp update": 1,
+    "rf1": 26,
+    "rf2": 26,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 63,
+     "mean_us": 23332.797889,
+     "max_us": 210251.978
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "part delete": {
+     "ApplyDelta": 2
+    },
+    "part insert": {
+     "ApplyDelta": 2
+    },
+    "partsupp update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 2080.465
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 7805.615
+    },
+    "part delete": {
+     "n": 2,
+     "rows_touched": 5.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5010.0,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 41243.748
+    },
+    "part insert": {
+     "n": 2,
+     "rows_touched": 5.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5010.0,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 5606.576
+    },
+    "partsupp update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 133478.443
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 11101.843808
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 12993.205615
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 80.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5160.0,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 209436.72
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 81.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5162.0,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 187411.549
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 32908001.0,
+     "pred_rebuild_all_us": 32858000.0,
+     "pred_invalidate_us": 32858000.0,
+     "actual_us": 144.822
+    }
+   },
+   "pre_commit_mean_us": 23535.607567,
+   "pre_commit_max_us": 210251.978,
+   "install_mean_us": 50.206167,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q10_vgen",
+   "reads": 781,
+   "read_p50_us": 139887.675,
+   "read_p99_us": 268728.976,
+   "read_max_us": 329705.848,
+   "read_mean_us": 121930.983554,
+   "store_wait_mean_us": 1.579918,
+   "store_wait_p99_us": 3.972,
+   "store_wait_max_us": 17.881,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 56,
+   "maintained_by_kind": {
+    "customer update": 2,
+    "lineitem update": 1,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 56,
+     "mean_us": 14590.091571,
+     "max_us": 21344.111
+    }
+   },
+   "actions_by_kind": {
+    "customer update": {
+     "ApplyDelta": 2
+    },
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "customer update": {
+     "n": 2,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 541728501.0,
+     "pred_rebuild_all_us": 541678500.0,
+     "pred_invalidate_us": 541678500.0,
+     "actual_us": 77.971
+    },
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 541728501.0,
+     "pred_rebuild_all_us": 541678500.0,
+     "pred_invalidate_us": 541678500.0,
+     "actual_us": 37.564
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 541728501.0,
+     "pred_rebuild_all_us": 541678500.0,
+     "pred_invalidate_us": 541678500.0,
+     "actual_us": 31.016
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 541728501.0,
+     "pred_rebuild_all_us": 541678500.0,
+     "pred_invalidate_us": 541678500.0,
+     "actual_us": 13939.277154
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 541728501.0,
+     "pred_rebuild_all_us": 541678500.0,
+     "pred_invalidate_us": 541678500.0,
+     "actual_us": 17476.9
+    }
+   },
+   "pre_commit_mean_us": 12536.986383,
+   "pre_commit_max_us": 21344.111,
+   "install_mean_us": 41.419233,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q11_vgen",
+   "reads": 785,
+   "read_p50_us": 4714.652,
+   "read_p99_us": 341921.289,
+   "read_max_us": 371334.268,
+   "read_mean_us": 41369.474294,
+   "store_wait_mean_us": 30911.740604,
+   "store_wait_p99_us": 336615.211,
+   "store_wait_max_us": 366248.794,
+   "reads_waited_over_1ms": 96,
+   "maintained_writes": 9,
+   "maintained_by_kind": {
+    "part delete": 2,
+    "part insert": 2,
+    "partsupp update": 1,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 9,
+     "mean_us": 987.855,
+     "max_us": 2659.621
+    }
+   },
+   "actions_by_kind": {
+    "part delete": {
+     "ApplyDelta": 2
+    },
+    "part insert": {
+     "ApplyDelta": 2
+    },
+    "partsupp update": {
+     "ApplyDelta": 1
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "part delete": {
+     "n": 2,
+     "rows_touched": 4.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5008.0,
+     "pred_rebuild_partition_us": 193213251.0,
+     "pred_rebuild_all_us": 193163250.0,
+     "pred_invalidate_us": 193163250.0,
+     "actual_us": 256.7645
+    },
+    "part insert": {
+     "n": 2,
+     "rows_touched": 4.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5008.0,
+     "pred_rebuild_partition_us": 193213251.0,
+     "pred_rebuild_all_us": 193163250.0,
+     "pred_invalidate_us": 193163250.0,
+     "actual_us": 294.549
+    },
+    "partsupp update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 193213251.0,
+     "pred_rebuild_all_us": 193163250.0,
+     "pred_invalidate_us": 193163250.0,
+     "actual_us": 251.687
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 80.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5160.0,
+     "pred_rebuild_partition_us": 193213251.0,
+     "pred_rebuild_all_us": 193163250.0,
+     "pred_invalidate_us": 193163250.0,
+     "actual_us": 2430.907
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 81.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5162.0,
+     "pred_rebuild_partition_us": 193213251.0,
+     "pred_rebuild_all_us": 193163250.0,
+     "pred_invalidate_us": 193163250.0,
+     "actual_us": 2659.621
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 193213251.0,
+     "pred_rebuild_all_us": 193163250.0,
+     "pred_invalidate_us": 193163250.0,
+     "actual_us": 14.946
+    }
+   },
+   "pre_commit_mean_us": 148.94645,
+   "pre_commit_max_us": 2659.621,
+   "install_mean_us": 2.3919,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q12_vgen",
+   "reads": 785,
+   "read_p50_us": 489.266,
+   "read_p99_us": 1706.754,
+   "read_max_us": 376249.82,
+   "read_mean_us": 3798.907945,
+   "store_wait_mean_us": 3275.410829,
+   "store_wait_p99_us": 18.479,
+   "store_wait_max_us": 375722.791,
+   "reads_waited_over_1ms": 8,
+   "maintained_writes": 54,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 54,
+     "mean_us": 12091.060222,
+     "max_us": 30173.107
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 23617426.0,
+     "pred_rebuild_all_us": 23567425.0,
+     "pred_invalidate_us": 23567425.0,
+     "actual_us": 44.499
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 23617426.0,
+     "pred_rebuild_all_us": 23567425.0,
+     "pred_invalidate_us": 23567425.0,
+     "actual_us": 6955.248
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 23617426.0,
+     "pred_rebuild_all_us": 23567425.0,
+     "pred_invalidate_us": 23567425.0,
+     "actual_us": 8491.200615
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 23617426.0,
+     "pred_rebuild_all_us": 23567425.0,
+     "pred_invalidate_us": 23567425.0,
+     "actual_us": 16351.780346
+    }
+   },
+   "pre_commit_mean_us": 9817.28165,
+   "pre_commit_max_us": 20285.156,
+   "install_mean_us": 44.565,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q13_vgen",
+   "reads": 785,
+   "read_p50_us": 277.14,
+   "read_p99_us": 511.589,
+   "read_max_us": 325074.111,
+   "read_mean_us": 711.504163,
+   "store_wait_mean_us": 415.264161,
+   "store_wait_p99_us": 13.679,
+   "store_wait_max_us": 324720.677,
+   "reads_waited_over_1ms": 1,
+   "maintained_writes": 55,
+   "maintained_by_kind": {
+    "customer update": 2,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 55,
+     "mean_us": 3675.626055,
+     "max_us": 5723.146
+    }
+   },
+   "actions_by_kind": {
+    "customer update": {
+     "ApplyDelta": 2
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "customer update": {
+     "n": 2,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 14901026.0,
+     "pred_rebuild_all_us": 14851025.0,
+     "pred_invalidate_us": 14851025.0,
+     "actual_us": 89.728
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 14901026.0,
+     "pred_rebuild_all_us": 14851025.0,
+     "pred_invalidate_us": 14851025.0,
+     "actual_us": 110.715
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 100.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5200.0,
+     "pred_rebuild_partition_us": 14901026.0,
+     "pred_rebuild_all_us": 14851025.0,
+     "pred_invalidate_us": 14851025.0,
+     "actual_us": 3927.688962
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 100.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5200.0,
+     "pred_rebuild_partition_us": 14901026.0,
+     "pred_rebuild_all_us": 14851025.0,
+     "pred_invalidate_us": 14851025.0,
+     "actual_us": 3836.513423
+    }
+   },
+   "pre_commit_mean_us": 3129.698133,
+   "pre_commit_max_us": 5723.146,
+   "install_mean_us": 29.437217,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q14_vgen",
+   "reads": 785,
+   "read_p50_us": 267.699,
+   "read_p99_us": 422.033,
+   "read_max_us": 1528.329,
+   "read_mean_us": 283.096484,
+   "store_wait_mean_us": 1.325364,
+   "store_wait_p99_us": 2.471,
+   "store_wait_max_us": 17.546,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 57,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "part delete": 2,
+    "part insert": 2,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 57,
+     "mean_us": 17384.608842,
+     "max_us": 25081.331
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "part delete": {
+     "ApplyDelta": 2
+    },
+    "part insert": {
+     "ApplyDelta": 2
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 929851001.0,
+     "pred_rebuild_all_us": 929801000.0,
+     "pred_invalidate_us": 929801000.0,
+     "actual_us": 4815.76
+    },
+    "part delete": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 929851001.0,
+     "pred_rebuild_all_us": 929801000.0,
+     "pred_invalidate_us": 929801000.0,
+     "actual_us": 7166.83
+    },
+    "part insert": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 929851001.0,
+     "pred_rebuild_all_us": 929801000.0,
+     "pred_invalidate_us": 929801000.0,
+     "actual_us": 918.2815
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 477.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5954.538462,
+     "pred_rebuild_partition_us": 929851001.0,
+     "pred_rebuild_all_us": 929801000.0,
+     "pred_invalidate_us": 929801000.0,
+     "actual_us": 19560.375538
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 399.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5798.769231,
+     "pred_rebuild_partition_us": 929851001.0,
+     "pred_rebuild_all_us": 929801000.0,
+     "pred_invalidate_us": 929801000.0,
+     "actual_us": 17744.882962
+    }
+   },
+   "pre_commit_mean_us": 15276.4495,
+   "pre_commit_max_us": 25081.331,
+   "install_mean_us": 35.115367,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q15_vgen",
+   "reads": 782,
+   "read_p50_us": 182761.244,
+   "read_p99_us": 345799.769,
+   "read_max_us": 539161.824,
+   "read_mean_us": 200095.848786,
+   "store_wait_mean_us": 482.147726,
+   "store_wait_p99_us": 17.516,
+   "store_wait_max_us": 375775.07,
+   "reads_waited_over_1ms": 1,
+   "maintained_writes": 57,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "rf1": 26,
+    "rf2": 26,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 57,
+     "mean_us": 4447.663877,
+     "max_us": 7595.928
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 140621001.0,
+     "pred_rebuild_all_us": 140571000.0,
+     "pred_invalidate_us": 140571000.0,
+     "actual_us": 120.18
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 477.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5954.538462,
+     "pred_rebuild_partition_us": 140621001.0,
+     "pred_rebuild_all_us": 140571000.0,
+     "pred_invalidate_us": 140571000.0,
+     "actual_us": 5943.144385
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 399.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5798.769231,
+     "pred_rebuild_partition_us": 140621001.0,
+     "pred_rebuild_all_us": 140571000.0,
+     "pred_invalidate_us": 140571000.0,
+     "actual_us": 3797.064654
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 140621001.0,
+     "pred_rebuild_all_us": 140571000.0,
+     "pred_invalidate_us": 140571000.0,
+     "actual_us": 39.0095
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 140621001.0,
+     "pred_rebuild_all_us": 140571000.0,
+     "pred_invalidate_us": 140571000.0,
+     "actual_us": 29.938
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 140621001.0,
+     "pred_rebuild_all_us": 140571000.0,
+     "pred_invalidate_us": 140571000.0,
+     "actual_us": 43.269
+    }
+   },
+   "pre_commit_mean_us": 3939.147033,
+   "pre_commit_max_us": 7595.928,
+   "install_mean_us": 35.568033,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q16_vgen",
+   "reads": 783,
+   "read_p50_us": 41112.304,
+   "read_p99_us": 392541.165,
+   "read_max_us": 411627.848,
+   "read_mean_us": 98416.319036,
+   "store_wait_mean_us": 54828.07184,
+   "store_wait_p99_us": 349870.613,
+   "store_wait_max_us": 375846.071,
+   "reads_waited_over_1ms": 190,
+   "maintained_writes": 9,
+   "maintained_by_kind": {
+    "part delete": 2,
+    "part insert": 2,
+    "partsupp update": 1,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 9,
+     "mean_us": 31797.122889,
+     "max_us": 62342.787
+    }
+   },
+   "actions_by_kind": {
+    "part delete": {
+     "ApplyDelta": 2
+    },
+    "part insert": {
+     "ApplyDelta": 2
+    },
+    "partsupp update": {
+     "ApplyDelta": 1
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "part delete": {
+     "n": 2,
+     "rows_touched": 5.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5010.0,
+     "pred_rebuild_partition_us": 166729251.0,
+     "pred_rebuild_all_us": 166679250.0,
+     "pred_invalidate_us": 166679250.0,
+     "actual_us": 57295.139
+    },
+    "part insert": {
+     "n": 2,
+     "rows_touched": 5.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5010.0,
+     "pred_rebuild_partition_us": 166729251.0,
+     "pred_rebuild_all_us": 166679250.0,
+     "pred_invalidate_us": 166679250.0,
+     "actual_us": 61125.4165
+    },
+    "partsupp update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 166729251.0,
+     "pred_rebuild_all_us": 166679250.0,
+     "pred_invalidate_us": 166679250.0,
+     "actual_us": 784.737
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 80.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5160.0,
+     "pred_rebuild_partition_us": 166729251.0,
+     "pred_rebuild_all_us": 166679250.0,
+     "pred_invalidate_us": 166679250.0,
+     "actual_us": 16795.3985
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 81.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5162.0,
+     "pred_rebuild_partition_us": 166729251.0,
+     "pred_rebuild_all_us": 166679250.0,
+     "pred_invalidate_us": 166679250.0,
+     "actual_us": 14214.375
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 166729251.0,
+     "pred_rebuild_all_us": 166679250.0,
+     "pred_invalidate_us": 166679250.0,
+     "actual_us": 743.086
+    }
+   },
+   "pre_commit_mean_us": 4770.250167,
+   "pre_commit_max_us": 62342.787,
+   "install_mean_us": 2.395467,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q17_vgen",
+   "reads": 785,
+   "read_p50_us": 328.587,
+   "read_p99_us": 338304.318,
+   "read_max_us": 369713.473,
+   "read_mean_us": 11995.317385,
+   "store_wait_mean_us": 10684.460451,
+   "store_wait_p99_us": 337117.201,
+   "store_wait_max_us": 369383.896,
+   "reads_waited_over_1ms": 28,
+   "maintained_writes": 57,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "part delete": 2,
+    "part insert": 2,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 57,
+     "mean_us": 108757.031561,
+     "max_us": 131214.52
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "part delete": {
+     "ApplyDelta": 2
+    },
+    "part insert": {
+     "ApplyDelta": 2
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 50016.0,
+     "pred_rebuild_partition_us": 110754751.0,
+     "pred_rebuild_all_us": 110704750.0,
+     "pred_invalidate_us": 110704750.0,
+     "actual_us": 104399.557
+    },
+    "part delete": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 50002.0,
+     "pred_rebuild_partition_us": 110754751.0,
+     "pred_rebuild_all_us": 110704750.0,
+     "pred_invalidate_us": 110704750.0,
+     "actual_us": 66.376
+    },
+    "part insert": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 50002.0,
+     "pred_rebuild_partition_us": 110754751.0,
+     "pred_rebuild_all_us": 110704750.0,
+     "pred_invalidate_us": 110704750.0,
+     "actual_us": 69.123
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 477.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 50954.538462,
+     "pred_rebuild_partition_us": 110754751.0,
+     "pred_rebuild_all_us": 110704750.0,
+     "pred_invalidate_us": 110704750.0,
+     "actual_us": 119511.470346
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 399.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 50798.769231,
+     "pred_rebuild_partition_us": 110754751.0,
+     "pred_rebuild_all_us": 110704750.0,
+     "pred_invalidate_us": 110704750.0,
+     "actual_us": 114891.615962
+    }
+   },
+   "pre_commit_mean_us": 95872.117067,
+   "pre_commit_max_us": 131214.52,
+   "install_mean_us": 41.615267,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q18_vgen",
+   "reads": 785,
+   "read_p50_us": 1166.209,
+   "read_p99_us": 2181.348,
+   "read_max_us": 5204.68,
+   "read_mean_us": 1206.963452,
+   "store_wait_mean_us": 1.523439,
+   "store_wait_p99_us": 3.428,
+   "store_wait_max_us": 18.037,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 56,
+   "maintained_by_kind": {
+    "customer update": 2,
+    "lineitem update": 1,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 56,
+     "mean_us": 4134.532161,
+     "max_us": 6465.86
+    }
+   },
+   "actions_by_kind": {
+    "customer update": {
+     "ApplyDelta": 2
+    },
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "customer update": {
+     "n": 2,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 165649501.0,
+     "pred_rebuild_all_us": 165599500.0,
+     "pred_invalidate_us": 165599500.0,
+     "actual_us": 419.995
+    },
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 165649501.0,
+     "pred_rebuild_all_us": 165599500.0,
+     "pred_invalidate_us": 165599500.0,
+     "actual_us": 471.766
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 165649501.0,
+     "pred_rebuild_all_us": 165599500.0,
+     "pred_invalidate_us": 165599500.0,
+     "actual_us": 485.344
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 165649501.0,
+     "pred_rebuild_all_us": 165599500.0,
+     "pred_invalidate_us": 165599500.0,
+     "actual_us": 3056.812769
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 165649501.0,
+     "pred_rebuild_all_us": 165599500.0,
+     "pred_invalidate_us": 165599500.0,
+     "actual_us": 5779.214192
+    }
+   },
+   "pre_commit_mean_us": 3568.78125,
+   "pre_commit_max_us": 6465.86,
+   "install_mean_us": 50.81835,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 4
+  },
+  {
+   "accel": "tpch_q19_vgen",
+   "reads": 785,
+   "read_p50_us": 420.619,
+   "read_p99_us": 806.354,
+   "read_max_us": 3566.231,
+   "read_mean_us": 448.764414,
+   "store_wait_mean_us": 1.940587,
+   "store_wait_p99_us": 8.671,
+   "store_wait_max_us": 18.583,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 57,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "part delete": 2,
+    "part insert": 2,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 57,
+     "mean_us": 664.31786,
+     "max_us": 19947.555
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "part delete": {
+     "ApplyDelta": 2
+    },
+    "part insert": {
+     "ApplyDelta": 2
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 5315501.0,
+     "pred_rebuild_all_us": 5265500.0,
+     "pred_invalidate_us": 5265500.0,
+     "actual_us": 47.541
+    },
+    "part delete": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 5315501.0,
+     "pred_rebuild_all_us": 5265500.0,
+     "pred_invalidate_us": 5265500.0,
+     "actual_us": 9994.61
+    },
+    "part insert": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 5315501.0,
+     "pred_rebuild_all_us": 5265500.0,
+     "pred_invalidate_us": 5265500.0,
+     "actual_us": 40.8225
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 477.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5954.538462,
+     "pred_rebuild_partition_us": 5315501.0,
+     "pred_rebuild_all_us": 5265500.0,
+     "pred_invalidate_us": 5265500.0,
+     "actual_us": 378.8145
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 399.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5798.769231,
+     "pred_rebuild_partition_us": 5315501.0,
+     "pred_rebuild_all_us": 5265500.0,
+     "pred_invalidate_us": 5265500.0,
+     "actual_us": 303.789808
+    }
+   },
+   "pre_commit_mean_us": 609.574117,
+   "pre_commit_max_us": 19947.555,
+   "install_mean_us": 65.221083,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q20_vgen",
+   "reads": 782,
+   "read_p50_us": 60093.787,
+   "read_p99_us": 102185.763,
+   "read_max_us": 386336.936,
+   "read_mean_us": 63483.418023,
+   "store_wait_mean_us": 919.833293,
+   "store_wait_p99_us": 17.721,
+   "store_wait_max_us": 323749.506,
+   "reads_waited_over_1ms": 3,
+   "maintained_writes": 62,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "part delete": 2,
+    "part insert": 2,
+    "partsupp update": 1,
+    "rf1": 26,
+    "rf2": 26,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 62,
+     "mean_us": 7917.164839,
+     "max_us": 12084.79
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "part delete": {
+     "ApplyDelta": 2
+    },
+    "part insert": {
+     "ApplyDelta": 2
+    },
+    "partsupp update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 9229101.0,
+     "pred_rebuild_all_us": 9179100.0,
+     "pred_invalidate_us": 9179100.0,
+     "actual_us": 132.697
+    },
+    "part delete": {
+     "n": 2,
+     "rows_touched": 5.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5010.0,
+     "pred_rebuild_partition_us": 9229101.0,
+     "pred_rebuild_all_us": 9179100.0,
+     "pred_invalidate_us": 9179100.0,
+     "actual_us": 98.7335
+    },
+    "part insert": {
+     "n": 2,
+     "rows_touched": 5.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5010.0,
+     "pred_rebuild_partition_us": 9229101.0,
+     "pred_rebuild_all_us": 9179100.0,
+     "pred_invalidate_us": 9179100.0,
+     "actual_us": 2008.3075
+    },
+    "partsupp update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 9229101.0,
+     "pred_rebuild_all_us": 9179100.0,
+     "pred_invalidate_us": 9179100.0,
+     "actual_us": 67.94
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 477.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5954.538462,
+     "pred_rebuild_partition_us": 9229101.0,
+     "pred_rebuild_all_us": 9179100.0,
+     "pred_invalidate_us": 9179100.0,
+     "actual_us": 9819.754346
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 399.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5798.769231,
+     "pred_rebuild_partition_us": 9229101.0,
+     "pred_rebuild_all_us": 9179100.0,
+     "pred_invalidate_us": 9179100.0,
+     "actual_us": 8684.721808
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 80.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5160.0,
+     "pred_rebuild_partition_us": 9229101.0,
+     "pred_rebuild_all_us": 9179100.0,
+     "pred_invalidate_us": 9179100.0,
+     "actual_us": 1801.2995
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 81.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5162.0,
+     "pred_rebuild_partition_us": 9229101.0,
+     "pred_rebuild_all_us": 9179100.0,
+     "pred_invalidate_us": 9179100.0,
+     "actual_us": 1661.995
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 9229101.0,
+     "pred_rebuild_all_us": 9179100.0,
+     "pred_invalidate_us": 9179100.0,
+     "actual_us": 68.527
+    }
+   },
+   "pre_commit_mean_us": 7613.587983,
+   "pre_commit_max_us": 12084.79,
+   "install_mean_us": 2831.776233,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q21_vgen",
+   "reads": 782,
+   "read_p50_us": 2170.374,
+   "read_p99_us": 350209.447,
+   "read_max_us": 370293.306,
+   "read_mean_us": 29086.385485,
+   "store_wait_mean_us": 23965.145434,
+   "store_wait_p99_us": 347766.864,
+   "store_wait_max_us": 368029.172,
+   "reads_waited_over_1ms": 68,
+   "maintained_writes": 58,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26,
+    "supplier delete": 2,
+    "supplier insert": 1,
+    "supplier update": 1
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 58,
+     "mean_us": 12748.155448,
+     "max_us": 18473.793
+    }
+   },
+   "actions_by_kind": {
+    "lineitem update": {
+     "ApplyDelta": 1
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    },
+    "supplier delete": {
+     "ApplyDelta": 2
+    },
+    "supplier insert": {
+     "ApplyDelta": 1
+    },
+    "supplier update": {
+     "ApplyDelta": 1
+    }
+   },
+   "decisions_by_kind": {
+    "lineitem update": {
+     "n": 1,
+     "rows_touched": 8.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5016.0,
+     "pred_rebuild_partition_us": 48269501.0,
+     "pred_rebuild_all_us": 48219500.0,
+     "pred_invalidate_us": 48219500.0,
+     "actual_us": 3148.443
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 48269501.0,
+     "pred_rebuild_all_us": 48219500.0,
+     "pred_invalidate_us": 48219500.0,
+     "actual_us": 17.516
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 577.269231,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 6154.538462,
+     "pred_rebuild_partition_us": 48269501.0,
+     "pred_rebuild_all_us": 48219500.0,
+     "pred_invalidate_us": 48219500.0,
+     "actual_us": 13740.153462
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 499.384615,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5998.769231,
+     "pred_rebuild_partition_us": 48269501.0,
+     "pred_rebuild_all_us": 48219500.0,
+     "pred_invalidate_us": 48219500.0,
+     "actual_us": 14566.913
+    },
+    "supplier delete": {
+     "n": 2,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 48269501.0,
+     "pred_rebuild_all_us": 48219500.0,
+     "pred_invalidate_us": 48219500.0,
+     "actual_us": 79.1075
+    },
+    "supplier insert": {
+     "n": 1,
+     "rows_touched": 1.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5002.0,
+     "pred_rebuild_partition_us": 48269501.0,
+     "pred_rebuild_all_us": 48219500.0,
+     "pred_invalidate_us": 48219500.0,
+     "actual_us": 58.86
+    },
+    "supplier update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 48269501.0,
+     "pred_rebuild_all_us": 48219500.0,
+     "pred_invalidate_us": 48219500.0,
+     "actual_us": 26.254
+    }
+   },
+   "pre_commit_mean_us": 11335.3668,
+   "pre_commit_max_us": 18473.793,
+   "install_mean_us": 2835.8759,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch_q22_vgen",
+   "reads": 782,
+   "read_p50_us": 728.171,
+   "read_p99_us": 1446.846,
+   "read_max_us": 1756.704,
+   "read_mean_us": 766.449536,
+   "store_wait_mean_us": 2.389437,
+   "store_wait_p99_us": 18.078,
+   "store_wait_max_us": 25.643,
+   "reads_waited_over_1ms": 0,
+   "maintained_writes": 55,
+   "maintained_by_kind": {
+    "customer update": 2,
+    "orders update": 1,
+    "rf1": 26,
+    "rf2": 26
+   },
+   "actions": {
+    "ApplyDelta": {
+     "n": 55,
+     "mean_us": 2243.958855,
+     "max_us": 3119.062
+    }
+   },
+   "actions_by_kind": {
+    "customer update": {
+     "ApplyDelta": 2
+    },
+    "orders update": {
+     "ApplyDelta": 1
+    },
+    "rf1": {
+     "ApplyDelta": 26
+    },
+    "rf2": {
+     "ApplyDelta": 26
+    }
+   },
+   "decisions_by_kind": {
+    "customer update": {
+     "n": 2,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 783203501.0,
+     "pred_rebuild_all_us": 783153500.0,
+     "pred_invalidate_us": 783153500.0,
+     "actual_us": 857.7015
+    },
+    "orders update": {
+     "n": 1,
+     "rows_touched": 2.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5004.0,
+     "pred_rebuild_partition_us": 783203501.0,
+     "pred_rebuild_all_us": 783153500.0,
+     "pred_invalidate_us": 783153500.0,
+     "actual_us": 18.221
+    },
+    "rf1": {
+     "n": 26,
+     "rows_touched": 100.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5200.0,
+     "pred_rebuild_partition_us": 783203501.0,
+     "pred_rebuild_all_us": 783153500.0,
+     "pred_invalidate_us": 783153500.0,
+     "actual_us": 2252.911038
+    },
+    "rf2": {
+     "n": 26,
+     "rows_touched": 100.0,
+     "partitions": 1.0,
+     "pred_apply_delta_us": 5200.0,
+     "pred_rebuild_partition_us": 783203501.0,
+     "pred_rebuild_all_us": 783153500.0,
+     "pred_invalidate_us": 783153500.0,
+     "actual_us": 2427.247154
+    }
+   },
+   "pre_commit_mean_us": 1869.6941,
+   "pre_commit_max_us": 3119.062,
+   "install_mean_us": 20339.759633,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  }
+ ],
+ "wall_s": 5918.2,
+ "system": "verus",
+ "queries": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  21,
+  22
+ ],
+ "rate": "wps1",
+ "seed": 3421135405
+}
