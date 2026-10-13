@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/any_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/prims/dense_id_array.hpp"
 #include "tpch/q12/layout.hpp"
 
@@ -75,90 +76,13 @@ struct TpchQ12DayShipmodeStats {
   int64_t low_line_count = 0;
 };
 
-// Copy-on-write paged dense array indexed by order key, three levels:
-// directory table -> directory (128 page pointers) -> page (4096 values).
-// Copying the struct copies only the directory table (one shared_ptr per 512K
-// keys); Set() clones a directory / a page only while it is still shared with
-// another (published) copy, so a point write copies one directory (1 KiB) and
-// one small page. A published copy is never mutated: writers always work on
-// their own copy.
-template <typename T> struct TpchQ12PagedArray {
-  static constexpr std::size_t kPageShift = 12;
-  static constexpr std::size_t kPageSize = std::size_t(1) << kPageShift;
-  static constexpr std::size_t kPageMask = kPageSize - 1;
-  static constexpr std::size_t kDirShift = 7;
-  static constexpr std::size_t kDirPages = std::size_t(1) << kDirShift;
-  static constexpr std::size_t kKeyShiftToDir = kPageShift + kDirShift;
-  static constexpr std::size_t kMaxDirs = 512;
-  static constexpr int64_t kMaxId = static_cast<int64_t>(kMaxDirs)
-                                    << kKeyShiftToDir;
-
-  using Page = std::array<T, kPageSize>;
-  struct Dir {
-    std::array<std::shared_ptr<Page>, kDirPages> pages;
-  };
-
-  std::vector<std::shared_ptr<Dir>> dirs;
-
-  static bool Fits(int64_t key) { return key >= 0 && key < kMaxId; }
-  void Clear() { dirs.clear(); }
-
-  T Get(int64_t key) const {
-    if (!Fits(key))
-      return T{};
-    const auto id = static_cast<std::size_t>(key);
-    const auto dir = id >> kKeyShiftToDir;
-    if (dir >= dirs.size() || !dirs[dir])
-      return T{};
-    const auto &page = dirs[dir]->pages[(id >> kPageShift) & (kDirPages - 1)];
-    return page ? (*page)[id & kPageMask] : T{};
-  }
-
-  bool Set(int64_t key, T value) {
-    if (!Fits(key))
-      return false;
-    const auto id = static_cast<std::size_t>(key);
-    const auto dir_index = id >> kKeyShiftToDir;
-    if (dirs.size() <= dir_index)
-      dirs.resize(dir_index + 1);
-    auto &dir = dirs[dir_index];
-    if (!dir)
-      dir = std::make_shared<Dir>();
-    else if (dir.use_count() > 1)
-      dir = std::make_shared<Dir>(*dir);
-    auto &page = dir->pages[(id >> kPageShift) & (kDirPages - 1)];
-    if (!page)
-      page = std::make_shared<Page>();
-    else if (page.use_count() > 1)
-      page = std::make_shared<Page>(*page);
-    (*page)[id & kPageMask] = value;
-    return true;
-  }
-
-  // Calls fn(key, value) for every non-zero slot, ascending by key.
-  template <typename Fn> void ForEachNonZero(Fn &&fn) const {
-    for (std::size_t d = 0; d < dirs.size(); ++d) {
-      if (!dirs[d])
-        continue;
-      for (std::size_t p = 0; p < kDirPages; ++p) {
-        const auto &page = dirs[d]->pages[p];
-        if (!page)
-          continue;
-        const int64_t base = static_cast<int64_t>(
-            (d << kKeyShiftToDir) | (p << kPageShift));
-        for (std::size_t slot = 0; slot < kPageSize; ++slot)
-          if ((*page)[slot] != T{})
-            fn(base + static_cast<int64_t>(slot), (*page)[slot]);
-      }
-    }
-  }
-};
-
 struct TpchQ12State {
-  TpchQ12PagedArray<uint8_t> order_priorities;
+  // Per-orderkey columns; a published copy is never mutated (writers work on
+  // their own copy, which shares untouched chunks).
+  core::AnyKeyCowArray<uint8_t, 12> order_priorities{};
   // Number of qualifying lineitems counted for each present order. An order
   // can be removed without moving contributions only when this is zero.
-  TpchQ12PagedArray<uint16_t> line_counts;
+  core::AnyKeyCowArray<uint16_t, 12> line_counts{};
   std::map<int32_t, std::unordered_map<std::string, TpchQ12DayShipmodeStats>>
       day_partitions;
 
