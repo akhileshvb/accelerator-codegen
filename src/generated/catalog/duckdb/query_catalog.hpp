@@ -137,6 +137,43 @@ SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection,
 core::MutationBatch BuildSharedMutation(const SharedQueryCatalogEntry &entry,
                                         const SharedProbe &probe);
 
+// ---- batched writes: many distinct rows per write transaction ----
+//
+// An additive rowid probe (update_sql "UPDATE <table> SET <column> = <column>
+// + <delta> WHERE rowid = <id>"), the form every SEC-EDGAR probe has.
+struct RowidProbeTarget {
+  std::string table;
+  std::string column;
+  int64_t rowid = 0;
+};
+// Throws if `probe` is not an additive rowid probe.
+RowidProbeTarget ParseRowidProbe(const SharedProbe &probe);
+
+// A pool of distinct rows of one table/column for batched writes: the
+// catalog's invalidating candidates (probe_select_sql, the rows feeding the
+// query result) first, then filler rows of the same table/column if the
+// query has fewer candidates than wanted.
+struct BatchWritePool {
+  std::string table;
+  std::string column;
+  std::vector<SharedProbe> probes;  // distinct rowids, invalidating first
+  std::vector<int64_t> rowids;      // probes[i]'s rowid
+  std::size_t invalidating = 0;     // probes[0, invalidating) are candidates
+};
+
+// Up to `want` distinct rows (throws if fewer than `min_rows`).
+// `filler_select_sql` has probe_select_sql's columns (build_probe reads it)
+// and a trailing LIMIT, which is replaced; null: no filler.
+BatchWritePool CollectBatchWritePool(::duckdb::Connection &connection,
+                                     const SharedQueryCatalogEntry &entry,
+                                     std::size_t want, std::size_t min_rows,
+                                     const char *filler_select_sql);
+
+// One mutation carrying every probe's current old/new row (one table).
+core::MutationBatch BuildSharedBatchMutation(
+    const SharedQueryCatalogEntry &entry,
+    const std::vector<const SharedProbe *> &probes);
+
 core::QueryArguments ToCoreArguments(const SharedQueryArguments &arguments);
 
 // ---- value helpers for the queries' probe builders ----

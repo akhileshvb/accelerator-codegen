@@ -1,43 +1,45 @@
 #include "sec_edgar/q24/duckdb/aux/parallel/module.hpp"
 
 #include "accelerator_codegen/runtime/parallel/aux_parallel_scan.hpp"
+#include "sec_edgar/q24/duckdb/base/query.hpp"
 
 #include <algorithm>
-#include <set>
-#include <stdexcept>
-#include <unordered_map>
 #include <vector>
-#include "sec_edgar/q24/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-using accelerator_codegen::ChunkDouble;
-using accelerator_codegen::ChunkInt32;
-using accelerator_codegen::ChunkString;
-using accelerator_codegen::ScanSecEdgarParallel;
-using accelerator_codegen::SecEdgarNumScan;
-using accelerator_codegen::SecEdgarPreScan;
-
 namespace {
-constexpr int32_t kFirstDate = 20230101;
-constexpr int32_t kLastDate = 20231231;
 
-const SecEdgarQ24StateImage *AsImage(const core::StateImage &image,
-                                     SecEdgarQ24ImageKind kind) {
-  const auto *payload = image.As<SecEdgarQ24StateImage>();
-  return payload && payload->kind == kind && payload->state ? payload : nullptr;
-}
+// Zero-copy string column view over a DataChunk vector.
+struct ChunkStrings {
+  duckdb::UnifiedVectorFormat fmt;
+  const duckdb::string_t *data = nullptr;
+  void Init(duckdb::Vector &vec, duckdb::idx_t n) {
+    vec.ToUnifiedFormat(n, fmt);
+    data = duckdb::UnifiedVectorFormat::GetData<duckdb::string_t>(fmt);
+  }
+  Q24Str At(duckdb::idx_t i) const {
+    const auto idx = fmt.sel->get_index(i);
+    if (!fmt.validity.RowIsValid(idx)) return Q24Str::Null();
+    return Q24Str::Of(data[idx].GetData(), data[idx].GetSize());
+  }
+};
+
 } // namespace
 
 void SecEdgarQ24ParallelModule::Build(core::AuxEngineServices &services,
                                       core::StateBuilder &builder) {
-  EmitState(BuildState(services), builder);
+  SecEdgarQ24Module::EmitStateImages(kId, BuildState(services), builder);
 }
 
 core::StagedMaintenanceOutcome SecEdgarQ24ParallelModule::StageMaintenance(
     core::AuxEngineServices &services, const core::InvalidationPlan &plan,
     core::AuxTxnBuffer &buffer) {
-  return accelerator_codegen::AdoptParallelMaintenance(
-      inner_.StageMaintenance(services, plan, buffer), kId, services);
+  auto outcome = inner_.StageMaintenance(services, plan, buffer);
+  // The shared incremental state is exact, so (unlike the other SEC EDGAR
+  // parallel modules) ApplyDelta payloads are published as-is under this
+  // module's accelerator id.
+  for (auto &image : outcome.updates) image.accelerator = kId;
+  return outcome;
 }
 
 bool SecEdgarQ24ParallelModule::CheckValidity(core::AuxEngineServices &services,
@@ -50,225 +52,92 @@ bool SecEdgarQ24ParallelModule::CheckValidity(core::AuxEngineServices &services,
 void SecEdgarQ24ParallelModule::Execute(core::AuxEngineServices &services,
                                         const core::QueryArguments &arguments,
                                         core::AuxRowSink &sink) {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {core::SecEdgarQ24Layout::kTagVersions,
-                                     core::SecEdgarQ24Layout::kGroupAggregates});
-  SecEdgarQ24State state;
-  bool have_tags = false;
-  bool have_aggregates = false;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::SecEdgarQ24Layout::kTagVersions) {
-      const auto *typed = AsImage(image, SecEdgarQ24ImageKind::TagVersions);
-      if (typed) {
-        state.tag_versions = typed->state->tag_versions;
-        have_tags = true;
-      }
-    } else if (image.partition == core::SecEdgarQ24Layout::kGroupAggregates) {
-      const auto *typed = AsImage(image, SecEdgarQ24ImageKind::Aggregates);
-      if (typed) {
-        state.aggregates = typed->state->aggregates;
-        have_aggregates = true;
-      }
-    }
+  std::string bucket;
+  if (!SecEdgarQ24Module::ParseArguments(arguments, bucket)) {
+    SecEdgarQ24Module::EmitOutput(Q24GroupState(), std::string(), sink);
+    return;
   }
-  if (!snapshot.available || !have_tags || !have_aggregates ||
-      state.tag_versions.size() != state.aggregates.size()) {
+  std::shared_ptr<const Q24GroupState> groups;
+  if (!inner_.LoadGroups(services, groups)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitOutput(state, sink);
+  SecEdgarQ24Module::EmitOutput(*groups, bucket, sink);
 }
 
 void SecEdgarQ24ParallelModule::ExecuteFallback(core::AuxEngineServices &services,
-                                                const core::QueryArguments &,
+                                                const core::QueryArguments &arguments,
                                                 core::AuxRowSink &sink) {
-  EmitOutput(BuildState(services), sink);
+  std::string bucket;
+  if (!SecEdgarQ24Module::ParseArguments(arguments, bucket)) {
+    SecEdgarQ24Module::EmitOutput(Q24GroupState(), std::string(), sink);
+    return;
+  }
+  const auto state = BuildState(services);
+  SecEdgarQ24Module::EmitOutput(*state.groups, bucket, sink);
 }
 
 SecEdgarQ24State
 SecEdgarQ24ParallelModule::BuildState(core::AuxEngineServices &services) const {
   const auto workers = std::max<std::size_t>(1, services.WorkerCount());
-  const auto num_spec =
-      SecEdgarNumScan({"adsh", "tag", "version", "uom", "value", "ddate"});
 
-  std::vector<std::set<SecEdgarQ24TagVersionKey>> local_groups(workers);
-  auto consume_groups = [&](duckdb::idx_t worker, duckdb::DataChunk &chunk) {
-    auto &groups = local_groups[worker];
-    for (duckdb::idx_t row = 0; row < chunk.size(); ++row) {
-      if (ChunkString(chunk, 3, row) != "USD") {
-        continue;
-      }
-      bool value_null = false;
-      (void)ChunkDouble(chunk, 4, row, value_null);
-      if (value_null) {
-        continue;
-      }
-      const auto ddate = ChunkInt32(chunk, 5, row);
-      if (ddate < kFirstDate || ddate > kLastDate) {
-        continue;
-      }
-      groups.insert({ChunkString(chunk, 1, row), ChunkString(chunk, 2, row)});
-    }
-  };
-  if (!ScanSecEdgarParallel(services, num_spec, consume_groups)) {
-    if (!initial_scan) {
-      throw std::logic_error("SEC EDGAR Q24 parallel requires a scan source");
-    }
-    initial_scan->ScanNum([&](const SecEdgarQ24NumInput &input) {
-      if (input.uom == "USD" && !input.value_is_null && input.ddate >= kFirstDate &&
-          input.ddate <= kLastDate) {
-        local_groups[0].insert({input.tag, input.version});
-      }
-    });
-  }
+  // 1. pre -> exact membership base (worker-local dictionaries, then merge).
+  std::vector<Q24RawPre> parts(workers);
+  const bool pre_ok = ScanSecEdgarParallel(
+      services, CreateSecEdgarQ24PreScanSpec(),
+      [&](duckdb::idx_t worker, duckdb::DataChunk &chunk) {
+        ChunkStrings a, t, v;
+        a.Init(chunk.data[0], chunk.size());
+        t.Init(chunk.data[1], chunk.size());
+        v.Init(chunk.data[2], chunk.size());
+        auto &part = parts[worker];
+        for (duckdb::idx_t i = 0; i < chunk.size(); ++i)
+          part.Add(a.At(i), t.At(i), v.At(i));
+      });
+  if (!pre_ok) return inner_.BuildState(services); // no native scan context
 
   SecEdgarQ24State state;
-  std::set<SecEdgarQ24TagVersionKey> groups;
-  for (const auto &part : local_groups) {
-    groups.insert(part.begin(), part.end());
-  }
-  state.tag_versions.assign(groups.begin(), groups.end());
-  state.aggregates.resize(state.tag_versions.size());
-  std::unordered_map<SecEdgarQ24TagVersionKey, uint32_t, SecEdgarQ24TagVersionKeyHash>
-      group_index;
-  group_index.reserve(state.tag_versions.size() * 2);
-  for (uint32_t i = 0; i < state.tag_versions.size(); ++i) {
-    group_index.emplace(state.tag_versions[i], i);
-  }
+  auto pre = std::make_shared<Q24PreState>();
+  pre->base = BuildQ24PreBase(parts);
+  const Q24PreBase &base = *pre->base;
 
-  const auto &group_ids = group_index;
-  std::vector<SecEdgarQ24PreMembership> local_pre(workers);
-  auto consume_pre = [&](duckdb::idx_t worker, duckdb::DataChunk &chunk) {
-    auto &membership = local_pre[worker];
-    for (duckdb::idx_t row = 0; row < chunk.size(); ++row) {
-      const SecEdgarQ24TagVersionKey key{ChunkString(chunk, 1, row),
-                                         ChunkString(chunk, 2, row)};
-      if (group_ids.find(key) == group_ids.end()) {
-        continue;
-      }
-      membership.Insert(ChunkString(chunk, 0, row), key.tag, key.version);
-    }
-  };
-  if (!ScanSecEdgarParallel(services, SecEdgarPreScan({"adsh", "tag", "version"}),
-                            consume_pre)) {
-    if (!initial_scan) {
-      throw std::logic_error("SEC EDGAR Q24 parallel requires a scan source");
-    }
-    initial_scan->ScanPre([&](const SecEdgarQ24PreInput &input) {
-      if (group_index.find({input.tag, input.version}) == group_index.end()) {
-        return;
-      }
-      local_pre[0].Insert(input.adsh, input.tag, input.version);
-    });
-  }
-  for (auto &part : local_pre) {
-    for (uint32_t adsh_id = 0; adsh_id < part.adshs.size(); ++adsh_id) {
-      if (adsh_id >= part.by_adsh.size()) {
-        continue;
-      }
-      for (const auto tv_id : part.by_adsh[adsh_id]) {
-        if (tv_id >= part.tvs.size()) {
-          continue;
+  // 2. qualifying num rows without a pre match (read-only probes per worker).
+  std::vector<Q24OrphanAccumulator> accs(workers);
+  ScanSecEdgarParallel(
+      services, CreateSecEdgarQ24AuxNumScanSpec(),
+      [&](duckdb::idx_t worker, duckdb::DataChunk &chunk) {
+        const auto n = chunk.size();
+        ChunkStrings a, t, v, uom;
+        a.Init(chunk.data[0], n);
+        t.Init(chunk.data[1], n);
+        v.Init(chunk.data[2], n);
+        uom.Init(chunk.data[4], n);
+        duckdb::UnifiedVectorFormat value_fmt, date_fmt;
+        chunk.data[3].ToUnifiedFormat(n, value_fmt);
+        chunk.data[5].ToUnifiedFormat(n, date_fmt);
+        const auto *values = duckdb::UnifiedVectorFormat::GetData<double>(value_fmt);
+        const auto *dates = duckdb::UnifiedVectorFormat::GetData<int32_t>(date_fmt);
+        auto &acc = accs[worker];
+        for (duckdb::idx_t i = 0; i < n; ++i) {
+          // Pushed-down filters are re-checked: cheap and keeps the result
+          // exact even if a scan implementation only applies them partially.
+          const auto vi = value_fmt.sel->get_index(i);
+          const auto di = date_fmt.sel->get_index(i);
+          if (!value_fmt.validity.RowIsValid(vi) ||
+              !date_fmt.validity.RowIsValid(di))
+            continue;
+          int32_t year;
+          if (!Q24DdateYear(dates[di], year)) continue;
+          const Q24Str u = uom.At(i);
+          if (u.null) continue;
+          const Q24Str as = a.At(i), ts = t.At(i), vs = v.At(i);
+          if (!base.Contains(as, ts, vs)) acc.Add(as, ts, vs, year, u, values[vi]);
         }
-        const auto &tv = part.tvs[tv_id];
-        state.pre_membership.Insert(part.adshs[adsh_id], tv.tag, tv.version);
-      }
-    }
-  }
-  state.pre_membership.Finalize();
-
-  std::vector<std::vector<SecEdgarQ24Aggregate>> local_agg(workers);
-  for (auto &part : local_agg) {
-    part.assign(state.aggregates.size(), {});
-  }
-  const auto &membership = state.pre_membership;
-  auto consume_num = [&](duckdb::idx_t worker, duckdb::DataChunk &chunk) {
-    auto &aggs = local_agg[worker];
-    for (duckdb::idx_t row = 0; row < chunk.size(); ++row) {
-      if (ChunkString(chunk, 3, row) != "USD") {
-        continue;
-      }
-      bool value_null = false;
-      const double value = ChunkDouble(chunk, 4, row, value_null);
-      if (value_null) {
-        continue;
-      }
-      const auto ddate = ChunkInt32(chunk, 5, row);
-      if (ddate < kFirstDate || ddate > kLastDate) {
-        continue;
-      }
-      const auto adsh = ChunkString(chunk, 0, row);
-      const auto tag = ChunkString(chunk, 1, row);
-      const auto version = ChunkString(chunk, 2, row);
-      if (membership.Contains(adsh, tag, version)) {
-        continue;
-      }
-      const auto group_it = group_ids.find({tag, version});
-      if (group_it != group_ids.end()) {
-        aggs[group_it->second].count++;
-        aggs[group_it->second].total += value;
-      }
-    }
-  };
-  if (!ScanSecEdgarParallel(services, num_spec, consume_num)) {
-    initial_scan->ScanNum([&](const SecEdgarQ24NumInput &input) {
-      if (input.uom != "USD" || input.value_is_null || input.ddate < kFirstDate ||
-          input.ddate > kLastDate) {
-        return;
-      }
-      if (state.pre_membership.Contains(input.adsh, input.tag, input.version)) {
-        return;
-      }
-      const auto group_it = group_index.find({input.tag, input.version});
-      if (group_it != group_index.end()) {
-        local_agg[0][group_it->second].count++;
-        local_agg[0][group_it->second].total += input.value;
-      }
-    });
-  }
-  for (const auto &part : local_agg) {
-    for (std::size_t i = 0; i < part.size(); ++i) {
-      state.aggregates[i].count += part[i].count;
-      state.aggregates[i].total += part[i].total;
-    }
-  }
+      });
+  for (std::size_t w = 1; w < workers; ++w) accs[0].MergeFrom(accs[w]);
+  state.pre = std::move(pre);
+  state.groups = accs[0].Finish();
   return state;
-}
-
-void SecEdgarQ24ParallelModule::EmitOutput(const SecEdgarQ24State &state,
-                                           core::AuxRowSink &sink) const {
-  sink.Begin({{{"tag", core::AuxType::String, false},
-               {"version", core::AuxType::String, false},
-               {"cnt", core::AuxType::Int64, false},
-               {"total", core::AuxType::Double, false}}});
-  for (const auto &row : BuildSecEdgarQ24Output(state)) {
-    sink.WriteRow({{core::AuxValue::Of(core::AuxType::String, row.tag),
-                    core::AuxValue::Of(core::AuxType::String, row.version),
-                    core::AuxValue::Of(core::AuxType::Int64, row.count),
-                    core::AuxValue::Of(core::AuxType::Double, row.total)}});
-  }
-  sink.End();
-}
-
-void SecEdgarQ24ParallelModule::EmitState(const SecEdgarQ24State &state,
-                                          core::StateBuilder &builder) const {
-  const auto typed = std::make_shared<const SecEdgarQ24State>(state);
-  auto make = [&](SecEdgarQ24ImageKind kind)
-      -> std::shared_ptr<const SecEdgarQ24StateImage> {
-    auto image = std::make_shared<SecEdgarQ24StateImage>();
-    image->kind = kind;
-    image->state = typed;
-    return image;
-  };
-  builder.Write(core::StateImage::Make(
-      kId, core::SecEdgarQ24Layout::kPreMembership, 0,
-      make(SecEdgarQ24ImageKind::PreMembership)));
-  builder.Write(core::StateImage::Make(
-      kId, core::SecEdgarQ24Layout::kTagVersions, 0,
-      make(SecEdgarQ24ImageKind::TagVersions)));
-  builder.Write(core::StateImage::Make(kId, core::SecEdgarQ24Layout::kGroupAggregates,
-                                       0, make(SecEdgarQ24ImageKind::Aggregates)));
-  builder.Finish();
 }
 
 } // namespace accelerator_codegen::aux_state::query

@@ -62,6 +62,7 @@ struct SecEdgarQ24ProfileCounters {
 NativeScanSpec CreateSecEdgarQ24PreScanSpec();
 NativeScanSpec CreateSecEdgarQ24NumScanSpec();
 NativeScanSpec CreateSecEdgarQ24NumFusedScanSpec();
+NativeScanSpec CreateSecEdgarQ24AuxNumScanSpec();
 
 using PostgresChunkScanner = std::function<void(
     const NativeScanSpec &scan_spec,

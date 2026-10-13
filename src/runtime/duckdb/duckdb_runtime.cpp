@@ -1625,6 +1625,25 @@ void DuckdbRuntime::ApplyBatch(std::vector<SharedProbe> &probes) {
           .count()));
 }
 
+void DuckdbRuntime::ApplyBatchWrite(const std::string &sql,
+                                    const core::MutationBatch &mutation) {
+  core::ClearMaintenanceDecisionLog();
+  const auto start = std::chrono::steady_clock::now();
+  connection_.BeginTransaction();
+  auto result = connection_.Query(sql);
+  if (result == nullptr || result->HasError()) {
+    const auto error = result ? result->GetError() : "DuckDB batch write failed";
+    connection_.Rollback();
+    Require(false, error);
+  }
+  backend_.CaptureMutation(mutation);
+  CommitWrite();
+  const auto end = std::chrono::steady_clock::now();
+  core::RecordMaintenanceActualCostUs(static_cast<double>(
+      std::chrono::duration_cast<std::chrono::microseconds>(end - start)
+          .count()));
+}
+
 void DuckdbRuntime::ApplyRfChunk(int write_seq, int order_count) {
   if (entry_.workload != SharedWorkloadKind::Tpch) {
     throw std::runtime_error("ApplyRfChunk is only supported for TPC-H");

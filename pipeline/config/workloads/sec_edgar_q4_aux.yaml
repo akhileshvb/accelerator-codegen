@@ -17,7 +17,11 @@ allow_unsuccessful_design: false
 
 reference_sql_path: benchmarks/sec_edgar/queries/q4.sql
 
-parameters: []
+parameters:   # spec: benchmarks/sec_edgar/params/q4.json (zero-arg function = defaults)
+  - {name: sic_lo, type: INTEGER, default: 4000, domain: "see joint_domain in the json spec"}
+  - {name: sic_hi, type: INTEGER, default: 4999, domain: "see joint_domain in the json spec"}
+  - {name: stmt, type: VARCHAR, default: "EQ", domain: ["BS", "IS", "CF", "EQ", "CI"]}
+  - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
 
 dependent_tables:
   - name: num

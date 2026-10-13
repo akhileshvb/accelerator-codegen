@@ -71,6 +71,8 @@ namespace accelerator_codegen::aux_state::engine::postgres::aux_server {
 void DefineGucs();
 // accel.log_decisions: log every accelerator decision (diagnostics).
 bool LogDecisions();
+// accel.build_tuning: planner settings for state builds (engine_runtime.hpp).
+bool BuildTuning();
 // True in the worker process.
 bool InServer();
 // accel.shared_state is on (and this is not the worker).

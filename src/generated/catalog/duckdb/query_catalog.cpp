@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <unordered_set>
 #include <stdexcept>
 #include <utility>
 
@@ -378,6 +379,103 @@ core::MutationBatch BuildSharedMutation(const SharedQueryCatalogEntry &entry,
   if (probe.toggles && probe.flipped)
     std::swap(mutation.old_rows, mutation.new_rows);
   (void)entry;
+  return mutation;
+}
+
+RowidProbeTarget ParseRowidProbe(const SharedProbe &probe) {
+  // "UPDATE <table> SET <column> = <column> + <delta> WHERE rowid = <id>"
+  const auto &sql = probe.update_sql;
+  const auto fail = [&]() {
+    throw std::runtime_error("not an additive rowid probe: " + sql);
+  };
+  if (probe.toggles || probe.repeats || sql.rfind("UPDATE ", 0) != 0)
+    fail();
+  const auto set_pos = sql.find(" SET ");
+  const auto eq_pos = sql.find(" = ", set_pos == std::string::npos ? 0 : set_pos);
+  const auto plus_pos = sql.find(" + ", eq_pos == std::string::npos ? 0 : eq_pos);
+  const auto where_pos = sql.rfind(" WHERE rowid = ");
+  if (set_pos == std::string::npos || eq_pos == std::string::npos ||
+      plus_pos == std::string::npos || where_pos == std::string::npos ||
+      !(set_pos < eq_pos && eq_pos < plus_pos && plus_pos < where_pos))
+    fail();
+  RowidProbeTarget target;
+  target.table = sql.substr(7, set_pos - 7);
+  target.column = sql.substr(set_pos + 5, eq_pos - set_pos - 5);
+  if (sql.substr(eq_pos + 3, plus_pos - eq_pos - 3) != target.column)
+    fail();
+  std::size_t parsed = 0;
+  const auto id_text = sql.substr(where_pos + 15);
+  target.rowid = std::stoll(id_text, &parsed);
+  if (parsed != id_text.size())
+    fail();
+  return target;
+}
+
+BatchWritePool CollectBatchWritePool(::duckdb::Connection &connection,
+                                     const SharedQueryCatalogEntry &entry,
+                                     std::size_t want, std::size_t min_rows,
+                                     const char *filler_select_sql) {
+  Require(static_cast<bool>(entry.build_probe),
+          "missing build_probe for Q" + std::to_string(entry.query_id));
+  BatchWritePool pool;
+  std::unordered_set<int64_t> seen;
+  const auto take = [&](const std::string &sql, bool invalidating) {
+    auto result = connection.Query(sql);
+    Require(result != nullptr && !result->HasError(),
+            result ? ("batch pool select failed for Q" + std::to_string(entry.query_id) +
+                      ": " + result->GetError())
+                   : "batch pool select returned null");
+    auto &rows = result->Cast<::duckdb::MaterializedQueryResult>();
+    for (::duckdb::idx_t row = 0; row < rows.RowCount() && pool.probes.size() < want; ++row) {
+      auto probe = entry.build_probe(rows, row);
+      const auto target = ParseRowidProbe(probe);
+      if (pool.table.empty()) {
+        pool.table = target.table;
+        pool.column = target.column;
+      }
+      Require(target.table == pool.table && target.column == pool.column,
+              "batch pool rows must update one table/column");
+      if (!seen.insert(target.rowid).second)
+        continue; // a row repeated by a join: count it once
+      pool.rowids.push_back(target.rowid);
+      pool.probes.push_back(std::move(probe));
+      if (invalidating)
+        ++pool.invalidating;
+    }
+  };
+  // Over-fetch: joins (e.g. num x pre) repeat rows.
+  const int limit = static_cast<int>(std::min<std::size_t>(want * 2 + 16, 1u << 30));
+  take(ExpandProbeSelectLimit(entry.probe_select_sql, limit), true);
+  if (pool.probes.size() < want && filler_select_sql != nullptr) {
+    const int filler_limit = static_cast<int>(
+        std::min<std::size_t>(want + pool.probes.size() + 16, 1u << 30));
+    take(ExpandProbeSelectLimit(filler_select_sql, filler_limit), false);
+  }
+  Require(pool.probes.size() >= min_rows,
+          "Q" + std::to_string(entry.query_id) + ": only " +
+              std::to_string(pool.probes.size()) + " distinct rows for a batch of " +
+              std::to_string(min_rows));
+  return pool;
+}
+
+core::MutationBatch BuildSharedBatchMutation(
+    const SharedQueryCatalogEntry &entry,
+    const std::vector<const SharedProbe *> &probes) {
+  Require(!probes.empty(), "empty batch mutation");
+  core::MutationBatch mutation;
+  mutation.table = probes.front()->table;
+  mutation.kind = probes.front()->kind;
+  mutation.updated_columns = probes.front()->updated_columns;
+  mutation.old_rows.reserve(probes.size());
+  mutation.new_rows.reserve(probes.size());
+  for (const auto *probe : probes) {
+    Require(probe->table == mutation.table && probe->kind == mutation.kind &&
+                probe->updated_columns == mutation.updated_columns,
+            "batch mutation rows must share table, kind and columns");
+    auto one = BuildSharedMutation(entry, *probe);
+    mutation.old_rows.push_back(std::move(one.old_rows.front()));
+    mutation.new_rows.push_back(std::move(one.new_rows.front()));
+  }
   return mutation;
 }
 

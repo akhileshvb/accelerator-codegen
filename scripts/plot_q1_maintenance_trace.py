@@ -6,11 +6,14 @@ Input: the CSV from `maintenance_choice_demo <db> 1 trace <base db> <out.csv>`
 maintenance, plus the query). Speedup of query i = plain DuckDB's ms / the
 strategy's ms.
 
-Usage: plot_q1_maintenance_trace.py <q1_trace.csv> <out.pdf> [title]
+Usage: plot_q1_maintenance_trace.py [--read] <q1_trace.csv> <out.pdf> [title]
+
+--read: the query alone (read_ms column), without the write before it.
 """
 import csv
 import sys
 from collections import defaultdict
+from statistics import median
 
 import matplotlib
 
@@ -30,15 +33,21 @@ BULK_COLOR = "#2ca02c"
 
 
 def main():
-    path, out = sys.argv[1], sys.argv[2]
-    title = sys.argv[3] if len(sys.argv) > 3 else "Cost Model: TPC-H (SF=1), Q1 under Write Load"
-    ms = defaultdict(dict)
+    args = sys.argv[1:]
+    read_only = "--read" in args
+    args = [a for a in args if a != "--read"]
+    path, out = args[0], args[1]
+    column = "read_ms" if read_only else "ms"
+    title = args[2] if len(args) > 2 else "Cost Model: TPC-H (SF=1), Q1 under Write Load"
+    # Per query and strategy: the median over rounds (TRACE_ROUNDS).
+    samples = defaultdict(lambda: defaultdict(list))
     phase, write = {}, {}
     for r in csv.DictReader(open(path)):
         i = int(r["index"])
-        ms[r["strategy"]][i] = float(r["ms"])
+        samples[r["strategy"]][i].append(float(r[column]))
         phase[i] = r["phase"]
         write[i] = r["write"]
+    ms = {s: {i: median(v) for i, v in per.items()} for s, per in samples.items()}
     xs = sorted(phase)
 
     plt.rcParams.update({"font.size": 13})
@@ -60,7 +69,7 @@ def main():
         top = max(top, max(ys))
         speed.plot(xs, ys, color=color, linewidth=lw, zorder=3 if name == "selected" else 2)
     speed.set_ylim(0, top * 1.12)
-    speed.set_ylabel("Speedup vs DuckDB")
+    speed.set_ylabel("Read speedup vs DuckDB" if read_only else "Speedup vs DuckDB")
     marker_y = top * 0.14
     point_x = [i for i in xs if write[i] == "point"]
     bulk_x = [i for i in xs if write[i] == "bulk"]

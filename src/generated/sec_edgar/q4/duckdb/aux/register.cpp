@@ -2,7 +2,8 @@
 // Registers the catalog entry (SQL, probes, benchmark arguments), the
 // table function accel_sec_edgar_q4_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
-#include "sec_edgar/q4/duckdb/aux/module.hpp"
+#include "sec_edgar/q4/duckdb/aux/duckdb_scan.hpp"
+#include "sec_edgar/q4/common/aux/module.hpp"
 #include "sec_edgar/q4/duckdb/aux/parallel/module.hpp"
 #include "sec_edgar/q4/layout.hpp"
 #include "sec_edgar/duckdb_probes.hpp"
@@ -98,52 +99,15 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
-struct SecEdgarQ4Scan : SecEdgarQ4InitialScan {
-  explicit SecEdgarQ4Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanSub(
-      const std::function<void(const SecEdgarQ4SubInput &)> &consumer) const override {
-    ScanQuery(connection, "SELECT adsh, cik, sic FROM sub",
-              [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(1, row))),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(2, row)))});
-              });
-  }
-  void ScanTag(
-      const std::function<void(const SecEdgarQ4TagInput &)> &consumer) const override {
-    ScanQuery(connection, "SELECT tag, version, abstract, tlabel FROM tag",
-              [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(2, row))),
-                          result.GetValue(3, row).ToString()});
-              });
-  }
-  void ScanPre(
-      const std::function<void(const SecEdgarQ4PreInput &)> &consumer) const override {
-    ScanQuery(connection, "SELECT adsh, tag, version, stmt FROM pre",
-              [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          result.GetValue(2, row).ToString(),
-                          result.GetValue(3, row).ToString()});
-              });
-  }
-  void ScanNum(
-      const std::function<void(const SecEdgarQ4NumInput &)> &consumer) const override {
-    ScanQuery(connection, "SELECT adsh, tag, version, uom, value FROM num",
-              [&](auto &result, ::duckdb::idx_t row) {
-                const auto value = result.GetValue(4, row);
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          result.GetValue(2, row).ToString(),
-                          result.GetValue(3, row).ToString(),
-                          value.IsNull() ? 0.0 : std::stod(value.ToString()),
-                          value.IsNull()});
-              });
-  }
-  ::duckdb::Connection &connection;
-};
+// The scan pushes the bridge join down into DuckDB (duckdb_scan.cpp) instead of
+// materializing num row by row.
+using SecEdgarQ4Scan = query::SecEdgarQ4DuckDbScan;
+
+// accel_sec_edgar_q4_aux() = the template defaults (4000, 4999, 'EQ', 'USD');
+// accel_sec_edgar_q4_aux(sic_lo, sic_hi, stmt, uom) answers any parameters.
+const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
+    {::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER,
+     ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR}};
 
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ4Layout::kAccelerator,
@@ -152,7 +116,8 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ4Config c{1, 2, 3, 4};
       return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4Module>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
@@ -162,7 +127,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ4Config c{1, 2, 3, 4};
       return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4ParallelModule>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 #endif
 
 } // namespace

@@ -95,7 +95,7 @@ set(ACCEL_AUX_COPTS "" CACHE STRING "extra compile options for the C++ aux modul
 if(ACCEL_AUX_COPTS)
     set(_accel_cpp_aux_srcs "")
     foreach(_src IN LISTS ACCEL_GENERATED_SOURCES)
-        if(_src MATCHES "/duckdb/aux/[^/]+\\.cpp$")
+        if(_src MATCHES "/(duckdb/aux|common)/[^/]+\\.cpp$")
             list(APPEND _accel_cpp_aux_srcs "${_src}")
         endif()
     endforeach()
@@ -125,6 +125,23 @@ function(accel_apply_stateless_copts)
     endif()
 endfunction()
 accel_apply_stateless_copts(${ACCEL_GENERATED_SOURCES})
+
+# SEC-EDGAR accelerators (shared state, DuckDB aux, Postgres aux/extension) are
+# always compiled for this machine's CPU, so every loop can use AVX-512/AVX2/BMI,
+# not just the hand-written kernels behind __builtin_cpu_supports. Source
+# properties are directory-scoped, so this also reaches accelerator_codegen_pg.
+# The DuckDB base kernels already get ACCEL_STATELESS_COPTS. The library becomes
+# CPU-specific; -DACCEL_SEC_EDGAR_COPTS= (empty) restores the portable build.
+set(ACCEL_SEC_EDGAR_COPTS "-march=native" CACHE STRING "extra compile options for the SEC-EDGAR accelerator sources")
+if(ACCEL_SEC_EDGAR_COPTS)
+    file(GLOB_RECURSE _accel_sec_edgar_srcs CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/sec_edgar/*.cpp")
+    list(FILTER _accel_sec_edgar_srcs EXCLUDE REGEX "/duckdb/base/")
+    if(_accel_sec_edgar_srcs)
+        separate_arguments(_opts UNIX_COMMAND "${ACCEL_SEC_EDGAR_COPTS}")
+        set_property(SOURCE ${_accel_sec_edgar_srcs} APPEND PROPERTY COMPILE_OPTIONS ${_opts})
+    endif()
+endif()
 
 target_include_directories(accelerator_codegen
     PUBLIC
@@ -414,11 +431,65 @@ accel_add_shared_interface_test(test_shared_tpch_q10 tests/aux_state/test_shared
 accel_add_shared_interface_test(test_shared_tpch_q12 tests/aux_state/test_shared_tpch_q12.cpp)
 accel_add_shared_interface_test(test_shared_tpch_q14 tests/aux_state/test_shared_tpch_q14.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q1 tests/aux_state/test_shared_sec_edgar_q1.cpp)
+accel_add_shared_interface_test(test_shared_sec_edgar_q1_random tests/aux_state/test_shared_sec_edgar_q1_random.cpp)
+accel_add_shared_interface_test(test_sec_edgar_q1_units tests/aux_state/test_sec_edgar_q1_units.cpp)
+target_include_directories(test_sec_edgar_q1_units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/generated)
+accel_add_shared_interface_test(test_sec_edgar_q1_duckdb_differential tests/aux_state/test_sec_edgar_q1_duckdb_differential.cpp)
+add_executable(test_sec_edgar_q1_shared_differential tests/aux_state/test_sec_edgar_q1_shared_differential.cpp)
+target_link_libraries(test_sec_edgar_q1_shared_differential PRIVATE accelerator_codegen duckdb_sibling)
+add_executable(benchmark_sec_edgar_q1_micro benchmarks/aux_state/benchmark_sec_edgar_q1_micro.cpp)
+target_link_libraries(benchmark_sec_edgar_q1_micro PRIVATE accelerator_codegen duckdb_sibling)
 accel_add_shared_interface_test(test_shared_sec_edgar_q2 tests/aux_state/test_shared_sec_edgar_q2.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q3 tests/aux_state/test_shared_sec_edgar_q3.cpp)
+
+# Q3: randomized differential test of the aux accelerator vs plain DuckDB SQL
+# (in-memory synthetic data, production DDL; no external database needed).
+add_executable(test_sec_edgar_q3_differential tests/aux_state/test_sec_edgar_q3_differential.cpp)
+target_link_libraries(test_sec_edgar_q3_differential PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(test_sec_edgar_q3_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+if(ACCEL_ENABLE_PARALLEL_AUX)
+    target_compile_definitions(test_sec_edgar_q3_differential PRIVATE ACCEL_ENABLE_PARALLEL_AUX)
+endif()
+if(BUILD_TESTING)
+    add_test(NAME test_sec_edgar_q3_differential
+             COMMAND test_sec_edgar_q3_differential 300 3
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+add_executable(bench_sec_edgar_q3_aux benchmarks/aux_state/bench_sec_edgar_q3_aux.cpp)
+target_link_libraries(bench_sec_edgar_q3_aux PRIVATE accelerator_codegen duckdb_sibling)
 accel_add_shared_interface_test(test_shared_sec_edgar_q4 tests/aux_state/test_shared_sec_edgar_q4.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q6 tests/aux_state/test_shared_sec_edgar_q6.cpp)
+add_executable(bench_q6_maintenance benchmarks/sec_edgar/bench_q6_maintenance.cpp)
+target_link_libraries(bench_q6_maintenance PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(bench_q6_maintenance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+add_executable(bench_q6_structural benchmarks/sec_edgar/bench_q6_structural.cpp)
+target_link_libraries(bench_q6_structural PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(bench_q6_structural PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+add_executable(measure_q6_aux_heap benchmarks/sec_edgar/measure_q6_aux_heap.cpp)
+target_link_libraries(measure_q6_aux_heap PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(measure_q6_aux_heap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+accel_add_shared_interface_test(test_sec_edgar_q6_state tests/aux_state/test_sec_edgar_q6_state.cpp)
+accel_add_shared_interface_test(test_sec_edgar_q6_differential tests/aux_state/test_sec_edgar_q6_differential.cpp)
+if(BUILD_TESTING)
+    # The differential tests read config/*.json relative to the source root.
+    set_tests_properties(test_sec_edgar_q6_state_unit_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    set_tests_properties(test_sec_edgar_q6_differential_unit_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    foreach(_q6_case IN ITEMS "synthetic;11;400" "synthetic;12;400;parallel" "synthetic-large;13;250")
+        list(GET _q6_case 0 _q6_mode)
+        list(GET _q6_case 1 _q6_seed)
+        string(REPLACE ";" "_" _q6_name "${_q6_case}")
+        add_test(NAME sec_edgar_q6_differential_${_q6_name}
+                 COMMAND test_sec_edgar_q6_differential ${_q6_case}
+                 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endforeach()
+endif()
 accel_add_shared_interface_test(test_shared_sec_edgar_q24 tests/aux_state/test_shared_q24.cpp)
+accel_add_shared_interface_test(test_sec_edgar_q24_duckdb_differential tests/aux_state/test_sec_edgar_q24_duckdb_differential.cpp)
+
+add_executable(benchmark_sec_edgar_q24_micro
+    benchmarks/aux_state/benchmark_sec_edgar_q24_micro.cpp
+)
+target_link_libraries(benchmark_sec_edgar_q24_micro PRIVATE accelerator_codegen duckdb_sibling)
 
 add_executable(test_shared_incremental_differential
     tests/aux_state/test_shared_incremental_differential.cpp
@@ -524,6 +595,26 @@ target_link_libraries(benchmark_shared_duckdb_write_interval
         accelerator_codegen
         duckdb_sibling
 )
+
+add_executable(bench_sec_edgar_batch_apply
+    benchmarks/aux_state/bench_sec_edgar_batch_apply.cpp
+)
+target_link_libraries(bench_sec_edgar_batch_apply PRIVATE accelerator_codegen duckdb_sibling)
+
+add_executable(test_sec_edgar_q4_duckdb_differential
+    tests/aux_state/test_sec_edgar_q4_duckdb_differential.cpp
+)
+
+target_link_libraries(test_sec_edgar_q4_duckdb_differential
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_sec_edgar_q4_duckdb_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+if(ACCEL_ENABLE_PARALLEL_AUX)
+    target_compile_definitions(test_sec_edgar_q4_duckdb_differential PRIVATE ACCEL_ENABLE_PARALLEL_AUX)
+endif()
 
 add_executable(measure_shared_sec_edgar_aux_memory
     benchmarks/aux_state/measure_shared_sec_edgar_aux_memory.cpp
@@ -1620,6 +1711,17 @@ accel_add_aux_state_query(
 	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
 )
 
+# SEC EDGAR Q6 on PostgreSQL: libpq-only differential / SF3 check / benchmark
+# against a running server (see the file header for modes).
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_sec_edgar_q6_postgres_differential.cpp")
+    find_library(_Q6_PG_LIBPQ pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    add_executable(test_sec_edgar_q6_postgres_differential
+        tests/aux_state/test_sec_edgar_q6_postgres_differential.cpp)
+    target_link_libraries(test_sec_edgar_q6_postgres_differential PRIVATE ${_Q6_PG_LIBPQ})
+    target_include_directories(test_sec_edgar_q6_postgres_differential PRIVATE ${ACCEL_PG_INCLUDEDIR})
+endif()
+
 # ---------------------------------------------------------------------------
 # PostgreSQL TPC-H differential harness
 # ---------------------------------------------------------------------------
@@ -1714,6 +1816,23 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     if(BUILD_TESTING)
         add_test(NAME postgres_tpch_differential COMMAND test_postgres_tpch_differential)
     endif()
+
+    # SEC EDGAR Q1 on PostgreSQL: differential (random / concurrent / sf3) and benchmark.
+    # Plain libpq clients; they need the extension installed in the target database.
+    foreach(_sec_q1_target IN ITEMS test_postgres_sec_edgar_q1_differential benchmark_postgres_sec_edgar_q1)
+        if(_sec_q1_target STREQUAL "test_postgres_sec_edgar_q1_differential")
+            set(_sec_q1_src tests/aux_state/test_postgres_sec_edgar_q1_differential.cpp)
+        else()
+            set(_sec_q1_src benchmarks/postgres/benchmark_postgres_sec_edgar_q1.cpp)
+        endif()
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_sec_q1_src}")
+            add_executable(${_sec_q1_target} ${_sec_q1_src})
+            find_library(LIBPQ_SEC_Q1_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+            find_package(Threads REQUIRED)
+            target_link_libraries(${_sec_q1_target} PRIVATE ${LIBPQ_SEC_Q1_LIB} Threads::Threads)
+            target_include_directories(${_sec_q1_target} PRIVATE ${ACCEL_PG_INCLUDEDIR})
+        endif()
+    endforeach()
 
     # Shared PG SQL-vs-accel bench used by baseline / speedup / profile digests.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/postgres/benchmark_postgres_tpch_aux.cpp")
@@ -2217,3 +2336,45 @@ if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
         endif()
     endif()
 endif()
+
+# SEC EDGAR Q2 aux: differential test (maintenance matrix, random parameters).
+accel_add_shared_interface_test(test_sec_edgar_q2_differential
+	tests/aux_state/test_sec_edgar_q2_differential.cpp)
+
+# SEC EDGAR Q2 aux: read-only + write-rate sweep (aux vs plain DuckDB).
+add_executable(benchmark_sec_edgar_q2_sweep
+	benchmarks/aux_state/benchmark_sec_edgar_q2_sweep.cpp)
+target_link_libraries(benchmark_sec_edgar_q2_sweep PRIVATE accelerator_codegen duckdb_sibling)
+add_executable(measure_sec_edgar_q2_state
+	benchmarks/aux_state/measure_sec_edgar_q2_state.cpp)
+target_link_libraries(measure_sec_edgar_q2_state PRIVATE accelerator_codegen duckdb_sibling)
+add_executable(check_sec_edgar_q2_params
+	benchmarks/aux_state/check_sec_edgar_q2_params.cpp)
+target_link_libraries(check_sec_edgar_q2_params PRIVATE accelerator_codegen duckdb_sibling)
+# SEC EDGAR Q6 aux: (fy, stmt, uom) parameter sweep against plain SQL.
+add_executable(check_sec_edgar_q6_params
+	benchmarks/aux_state/check_sec_edgar_q6_params.cpp)
+target_link_libraries(check_sec_edgar_q6_params PRIVATE accelerator_codegen duckdb_sibling)
+
+# ---------------------------------------------------------------------------
+# SEC-EDGAR Q4 PostgreSQL differential (psql client only; no server SDK needed
+# to build it, a running server with the extension installed to run it).
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_postgres_sec_edgar_q4_differential.cpp")
+    add_executable(test_postgres_sec_edgar_q4_differential
+        tests/aux_state/test_postgres_sec_edgar_q4_differential.cpp)
+    target_include_directories(test_postgres_sec_edgar_q4_differential PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_compile_definitions(test_postgres_sec_edgar_q4_differential PRIVATE
+        ACCEL_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
+# SEC-EDGAR Q2 PostgreSQL client tests (libpq only).
+include(cmake/PostgresSecEdgarQ2Tests.cmake)
+
+# Q3 parameter sweep (accel_sec_edgar_q3_aux(fy, uom)) against plain SQL on a real database.
+add_executable(check_sec_edgar_q3_params
+	benchmarks/aux_state/check_sec_edgar_q3_params.cpp)
+target_link_libraries(check_sec_edgar_q3_params PRIVATE accelerator_codegen duckdb_sibling)

@@ -63,4 +63,31 @@ inline SharedProbe BuildSecNumRowidProbe(::duckdb::MaterializedQueryResult &resu
   return probe;
 }
 
+// Filler rows for batched writes (CollectBatchWritePool), used when a query's
+// probe_select_sql (the rows feeding its result) has fewer distinct rows than
+// a batch run touches: rows of the same table/column that pass the query's
+// own predicate on that table, so every write still moves a value the query
+// reads. Same columns as the query's probe_select_sql. Null: none.
+inline const char *BatchFillerSelectSql(int query_id) {
+  switch (query_id) {
+  case 1:
+    return "SELECT adsh, line, stmt, rfile, rowid FROM pre WHERE stmt IS NOT NULL "
+           "AND line IS NOT NULL LIMIT 1";
+  case 2:
+    return "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
+           "n.value FROM num n WHERE n.uom = 'pure' AND n.value IS NOT NULL LIMIT 1";
+  case 3:
+  case 4:
+  case 6:
+    return "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
+           "n.value FROM num n WHERE n.uom = 'USD' AND n.value IS NOT NULL LIMIT 1";
+  case 24:
+    return "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
+           "n.value FROM num n WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 "
+           "AND 20231231 AND n.value IS NOT NULL LIMIT 1";
+  default:
+    return nullptr;
+  }
+}
+
 } // namespace accelerator_codegen::aux_state::engine::sec_edgar_probes

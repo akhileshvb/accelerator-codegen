@@ -2,6 +2,7 @@
 // Registers the catalog entry (SQL, probes, benchmark arguments), the
 // table function accel_sec_edgar_q2_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
+#include "sec_edgar/q2/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q2/duckdb/aux/module.hpp"
 #include "sec_edgar/q2/duckdb/aux/parallel/module.hpp"
 #include "sec_edgar/q2/layout.hpp"
@@ -85,31 +86,13 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
-struct SecEdgarQ2Scan : SecEdgarQ2InitialScan {
-  explicit SecEdgarQ2Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanNum(
-      const std::function<void(const SecEdgarQ2NumInput &)> &consumer) override {
-    ScanQuery(connection, "SELECT adsh, tag, uom, value FROM num",
-              [&](auto &result, ::duckdb::idx_t row) {
-                const auto value = result.GetValue(3, row);
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          result.GetValue(2, row).ToString(),
-                          value.IsNull() ? 0.0 : std::stod(value.ToString()),
-                          value.IsNull()});
-              });
-  }
-  void ScanSub(
-      const std::function<void(const SecEdgarQ2SubInput &)> &consumer) override {
-    ScanQuery(connection, "SELECT adsh, name, fy FROM sub",
-              [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(2, row)))});
-              });
-  }
-  ::duckdb::Connection &connection;
-};
+// The data access is columnar SQL on the runtime's connection (duckdb_scan.cpp).
+using SecEdgarQ2Scan = SecEdgarQ2DuckdbScan;
+
+// accel_sec_edgar_q2_aux() uses the template defaults (fy 2022, uom 'pure');
+// accel_sec_edgar_q2_aux(fy BIGINT, uom VARCHAR) binds the template literals.
+const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
+    {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR}};
 
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ2Layout::kAccelerator,
@@ -118,7 +101,8 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ2Config c{1, 2};
       return MakeBinding<SecEdgarQ2Scan, SecEdgarQ2Module>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
@@ -126,9 +110,11 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     std::string("accel_") + core::SecEdgarQ2Layout::kAccelerator + "_aux_parallel",
     {},
     [](::duckdb::Connection &connection) {
-      const SecEdgarQ2Config c{1, 2};
+      SecEdgarQ2Config c{1, 2};
+      c.build_threads = 0; // parallel variant: automatic worker count
       return MakeBinding<SecEdgarQ2Scan, SecEdgarQ2ParallelModule>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 #endif
 
 } // namespace

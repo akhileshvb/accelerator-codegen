@@ -54,6 +54,7 @@ extern "C" {
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/snapmgr.h"
+#include "utils/guc.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/namespace.h"

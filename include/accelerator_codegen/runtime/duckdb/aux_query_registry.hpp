@@ -43,6 +43,9 @@ struct AuxQuery {
   std::string table_function;
   std::vector<::duckdb::LogicalType> argument_types;
   std::function<std::unique_ptr<DuckdbRuntime::Binding>(::duckdb::Connection &)> make_binding;
+  // Further SQL signatures of the same table function (overloads), e.g. a
+  // parameterless form next to `argument_types`.
+  std::vector<std::vector<::duckdb::LogicalType>> overload_argument_types;
 };
 
 void RegisterAuxQuery(AuxQuery query);

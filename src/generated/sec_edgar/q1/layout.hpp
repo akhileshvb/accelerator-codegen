@@ -11,12 +11,12 @@ namespace accelerator_codegen::aux_state::core {
 struct SecEdgarQ1Layout {
   static constexpr const char *kAccelerator = "sec_edgar_q1";
   static constexpr const char *kParallelAccelerator = "sec_edgar_q1_aux_parallel";
-  static constexpr PartitionId kGroupKeys = 0;
-  static constexpr PartitionId kGroupAggregates = 1;
+  // The whole state (group aggregates + per-group accession refcounts +
+  // accession dictionary) is one immutable image: a maintenance step publishes
+  // a new image that shares every untouched refcount chunk with the previous.
+  static constexpr PartitionId kState = 0;
 
-  static constexpr std::array<PartitionId, 2> Partitions() {
-    return {kGroupKeys, kGroupAggregates};
-  }
+  static constexpr std::array<PartitionId, 1> Partitions() { return {kState}; }
 };
 
 } // namespace accelerator_codegen::aux_state::core

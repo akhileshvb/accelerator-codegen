@@ -3,7 +3,9 @@ query_number: 24
 engine_name: duckdb
 query_id: "24"
 reference_sql_path: benchmarks/sec_edgar/queries/q24.sql
-parameters: []
+parameters:   # spec: benchmarks/sec_edgar/params/q24.json (zero-arg function = defaults)
+  - {name: year, type: BIGINT, default: 2023, domain: [2019, 2020, 2021, 2022, 2023, 2024]}
+  - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
 output_schema:
   - {name: tag, type: VARCHAR}
   - {name: version, type: VARCHAR}

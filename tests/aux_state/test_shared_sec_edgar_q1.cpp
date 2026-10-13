@@ -13,7 +13,7 @@
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
-#include "sec_edgar/q1/duckdb/aux/module.hpp"
+#include "sec_edgar/q1/common/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::SecEdgarQ1Config;
@@ -46,7 +46,7 @@ public:
     for (const auto &[partition, image] : images) {
       snapshot.partitions.push_back(image);
     }
-    snapshot.available = snapshot.partitions.size() == 2;
+    snapshot.available = !snapshot.partitions.empty();
     return snapshot;
   }
 
@@ -87,7 +87,7 @@ public:
       images.emplace(image.partition, std::move(image));
     }
     version = 1;
-    valid = images.size() == 2;
+    valid = !images.empty();
   }
 
   std::map<PartitionId, StateImage> images;
@@ -240,7 +240,8 @@ int main() {
   coordinator.OnMutation(group_change);
   coordinator.PreCommit();
   coordinator.Commit();
-  assert(!module.CheckValidity(services, {}));
+  // Group moves are maintained incrementally now (no invalidation).
+  assert(module.CheckValidity(services, {}));
   ExecuteAndRequire(module, services, 3, 12, 12, 206.0 / 12.0);
 
   MutationBatch bulk;
@@ -254,7 +255,9 @@ int main() {
   coordinator.OnMutation(bulk);
   coordinator.PreCommit();
   coordinator.Commit();
-  assert(!module.CheckValidity(services, {}));
+  // The default CostModelParams allow ApplyDelta up to 2^20 rows, so this bulk
+  // batch is still maintained incrementally (state stays valid).
+  assert(module.CheckValidity(services, {}));
   ExecuteAndRequire(module, services, 3, 1037, 1037, 1231.0 / 1037.0);
 
   return 0;

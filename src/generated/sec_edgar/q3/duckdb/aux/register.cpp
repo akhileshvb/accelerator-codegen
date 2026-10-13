@@ -101,29 +101,49 @@ using namespace scan;
 
 struct SecEdgarQ3Scan : SecEdgarQ3InitialScan {
   explicit SecEdgarQ3Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanNum(
-      const std::function<void(const SecEdgarQ3NumInput &)> &consumer) override {
-    ScanQuery(connection, "SELECT adsh, uom, value FROM num",
+  // Pushes the value filter and the per-(adsh, uom) aggregation into DuckDB
+  // (one parallel GROUP BY over num) instead of streaming every num row
+  // through C++.
+  void ScanNumAggregates(
+      const std::function<void(const SecEdgarQ3NumAggInput &)> &consumer) override {
+    ScanQuery(connection,
+              "SELECT adsh, uom, SUM(value), COUNT(*) FROM num "
+              "WHERE value IS NOT NULL AND adsh IS NOT NULL AND uom IS NOT NULL "
+              "GROUP BY adsh, uom",
               [&](auto &result, ::duckdb::idx_t row) {
-                const auto value = result.GetValue(2, row);
                 consumer({result.GetValue(0, row).ToString(),
                           result.GetValue(1, row).ToString(),
-                          value.IsNull() ? 0.0 : std::stod(value.ToString()),
-                          value.IsNull()});
+                          result.GetValue(2, row).template GetValue<double>(),
+                          result.GetValue(3, row).template GetValue<int64_t>()});
               });
   }
   void ScanSub(
       const std::function<void(const SecEdgarQ3SubInput &)> &consumer) override {
     ScanQuery(connection, "SELECT adsh, name, cik, fy FROM sub",
               [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(2, row))),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(3, row)))});
+                SecEdgarQ3SubInput input;
+                input.adsh = result.GetValue(0, row).ToString();
+                const auto name = result.GetValue(1, row);
+                input.name_is_null = name.IsNull();
+                if (!input.name_is_null) {
+                  input.name = name.ToString();
+                }
+                const auto cik = result.GetValue(2, row);
+                input.cik_is_null = cik.IsNull();
+                input.cik = input.cik_is_null ? 0 : SafeInt32(cik);
+                const auto fy = result.GetValue(3, row);
+                input.fy_is_null = fy.IsNull();
+                input.fy = input.fy_is_null ? 0 : SafeInt32(fy);
+                consumer(input);
               });
   }
   ::duckdb::Connection &connection;
 };
+
+// accel_sec_edgar_q3_aux() uses the defaults (fy 2022, uom 'USD');
+// accel_sec_edgar_q3_aux(fy BIGINT, uom VARCHAR) answers any (fy, uom).
+const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
+    {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR}};
 
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ3Layout::kAccelerator,
@@ -132,7 +152,8 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ3Config c{1, 2};
       return MakeBinding<SecEdgarQ3Scan, SecEdgarQ3Module>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
@@ -142,7 +163,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ3Config c{1, 2};
       return MakeBinding<SecEdgarQ3Scan, SecEdgarQ3ParallelModule>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 #endif
 
 } // namespace

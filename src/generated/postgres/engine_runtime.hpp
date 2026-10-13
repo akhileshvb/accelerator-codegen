@@ -10,6 +10,8 @@
 
 #include "postgres/engine_helpers.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
+
+#include <unordered_set>
 #include "accelerator_codegen/stateful/postgres/aux_server.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
@@ -119,6 +121,43 @@ private:
 
 namespace auxsync = accelerator_codegen::aux_state::engine::postgres::aux_sync;
 
+// Planner settings for the one-off state build (restored afterwards, also on
+// error: the GUC nest level unwinds with the transaction).  The build queries
+// join and aggregate whole tables (tens of millions of rows) whose join
+// cardinalities PostgreSQL badly underestimates; with the session defaults it
+// picks nested loops over millions of outer rows and spilling hash
+// aggregates.  Hash joins/aggregates in memory are several times faster, and
+// JIT compilation buys nothing for a single scan.  SET accel.build_tuning =
+// off keeps the session settings.
+class BuildGucScope {
+public:
+  explicit BuildGucScope(bool wanted) {
+    if (!wanted || !aux_server::BuildTuning()) {
+      return;
+    }
+    nest = NewGUCNestLevel();
+    Set("work_mem", "1GB");
+    Set("enable_nestloop", "off");
+    Set("enable_mergejoin", "off");
+    Set("jit", "off");
+  }
+  ~BuildGucScope() { Restore(); }
+  void Restore() {
+    if (nest > 0) {
+      AtEOXact_GUC(true, nest);
+      nest = 0;
+    }
+  }
+
+private:
+  static void Set(const char *name, const char *value) {
+    (void)set_config_option(name, value, PGC_USERSET, PGC_S_SESSION,
+                            GUC_ACTION_SAVE, true, 0, false);
+  }
+  int nest = 0;
+};
+
+
 // Per-backend Runtime.  The Aux store is process-local; aux_sync decides when
 // it may serve a hit for the statement snapshot (cross-backend protocol, see
 // aux_sync.hpp):
@@ -152,8 +191,9 @@ public:
 
   Runtime(const char *cost_model_env, const char *default_config_path,
           core::AcceleratorId accelerator, Config config,
-          std::vector<CollationKey> c_collation_keys_p = {})
-      : c_collation_keys(std::move(c_collation_keys_p)),
+          std::vector<CollationKey> c_collation_keys_p = {},
+          bool tune_build_p = false)
+      : c_collation_keys(std::move(c_collation_keys_p)), tune_build(tune_build_p),
         store([]() {
           return accelerator_codegen::aux_state::engine::postgres::
               AuxMutationEpoch();
@@ -221,6 +261,16 @@ public:
       Rebuild();
       hit = HitAllowed(statement);
       rebuilt = hit;
+    }
+    if (hit && !marker.own_commits.empty()) {
+      // S covers base, sees every own commit, and (counters, read after S)
+      // no other dependency writer committed or is in flight: the writers
+      // visible in S are exactly base + own commits, so S is the new base.
+      auxsync::SnapMark rebased = auxsync::MarkOf(statement);
+      if (rebased.ok) {
+        marker.base = std::move(rebased);
+        marker.own_commits.clear();
+      }
     }
     observed_mutations = accel_pg_get_observer_mutation_count();
     if (aux_server::LogDecisions()) {
@@ -468,14 +518,57 @@ public:
   }
 
 private:
-  static constexpr std::size_t kMaxOwnCommits = 1024;
+  // Own commits are dropped (folded into `base`) by the first hit after them
+  // (Execute) and by the server's rebase, so this bound is only reached by a
+  // writer that commits this many times without any read in between.
+  static constexpr std::size_t kMaxOwnCommits = std::size_t{1} << 20;
   static constexpr std::size_t kRebaseOwnCommits = 64;
   static constexpr int64_t kBehindRebuildMs = 30000;
   int64_t behind_since_ms = 0; // first declined read of a synced state behind the counters
+  // Committed transactions whose writes the store maintained locally.  A
+  // statement snapshot S sees all of them iff the newest precedes S.xmax and
+  // none is listed running in S: O(|S.xip|) per check, independent of how
+  // many commits are pending.
+  struct OwnCommits {
+    std::unordered_set<TransactionId> set;
+    TransactionId latest = InvalidTransactionId;
+    void push_back(TransactionId xid) {
+      set.insert(xid);
+      if (!TransactionIdIsValid(latest) || TransactionIdFollows(xid, latest)) {
+        latest = xid;
+      }
+    }
+    std::size_t size() const { return set.size(); }
+    bool empty() const { return set.empty(); }
+    void clear() {
+      set.clear();
+      latest = InvalidTransactionId;
+    }
+    bool AllSeenBy(Snapshot snapshot) const {
+      if (set.empty()) {
+        return true;
+      }
+      if (!auxsync::UsableSnapshot(snapshot) ||
+          !TransactionIdPrecedes(latest, snapshot->xmax)) {
+        return false;
+      }
+      for (uint32 i = 0; i < snapshot->xcnt; ++i) {
+        if (set.count(snapshot->xip[i])) {
+          return false;
+        }
+      }
+      for (int32 i = 0; i < snapshot->subxcnt; ++i) {
+        if (set.count(snapshot->subxip[i])) {
+          return false;
+        }
+      }
+      return true;
+    }
+  };
   struct SyncMarker {
     bool synced = false;
     auxsync::SnapMark base;
-    std::vector<TransactionId> own_commits;
+    OwnCommits own_commits;
     std::vector<uint64_t> seq;
   };
 
@@ -521,10 +614,8 @@ private:
     if (!auxsync::Covers(statement, marker.base)) {
       return false;
     }
-    for (auto xid : marker.own_commits) {
-      if (!auxsync::Sees(statement, xid)) {
-        return false;
-      }
+    if (!marker.own_commits.AllSeenBy(statement)) {
+      return false;
     }
     // Read after the statement snapshot was taken.  Writers still in flight
     // are fine as long as S cannot see them (ReadCountersFor).
@@ -553,11 +644,15 @@ private:
     auxsync::SnapMark base = auxsync::MarkOf(fresh);
     PushActiveSnapshot(fresh);
     Builder builder;
-    try {
-      module.Build(backend, builder);
-    } catch (...) {
-      PopActiveSnapshot();
-      throw;
+    {
+      BuildGucScope tuning(tune_build);
+      try {
+        module.Build(backend, builder);
+      } catch (...) {
+        tuning.Restore();
+        PopActiveSnapshot();
+        throw;
+      }
     }
     PopActiveSnapshot();
     if (!builder.finished) {
@@ -632,6 +727,10 @@ private:
   }
 
   std::vector<CollationKey> c_collation_keys;
+  // Build with BuildGucScope: for builds that join/aggregate the whole num
+  // table, where the session's planner settings pick nested loops / spilling
+  // aggregates (q4, q6, q24); others keep the session settings.
+  bool tune_build = false;
   PostgresStateStore store;
   core::AuxTransactionCoordinator coordinator;
   accelerator_codegen::aux_state::engine::postgres::PostgresAuxBackend backend;

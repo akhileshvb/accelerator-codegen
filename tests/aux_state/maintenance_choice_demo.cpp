@@ -122,7 +122,13 @@ int main(int argc, char **argv) {
 
   if (argc > 5 && std::string(argv[3]) == "trace") {
     const std::string aux_sql = accelerator_codegen::test_support::CrossAccelAuxSql(q);
-    const std::string ref_sql = accelerator_codegen::test_support::CrossAccelReferenceSql(q);
+    // The plain-DuckDB side runs SQL; Q6's shared reference is the stateless
+    // accelerator, so use the TPC-H SQL with the same parameters instead.
+    const std::string ref_sql =
+        q == 6 ? "SELECT sum(l_extendedprice * l_discount) AS revenue FROM lineitem "
+                 "WHERE l_shipdate >= DATE '1995-01-01' AND l_shipdate < DATE '1996-01-01' "
+                 "AND l_discount BETWEEN 0.02 AND 0.04 AND l_quantity < 25"
+               : accelerator_codegen::test_support::CrossAccelReferenceSql(q);
     const std::string point = "l_orderkey = 1 AND l_linenumber = 1";
     const std::string bulk = "l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1995-12-31'";
     struct Step {
@@ -148,7 +154,14 @@ int main(int argc, char **argv) {
       }
     };
     FILE *out = std::fopen(argv[5], "w");
-    std::fprintf(out, "index,phase,write,strategy,ms,action\n");
+    std::fprintf(out, "index,phase,write,strategy,ms,action,round,read_ms\n");
+    // TRACE_ROUNDS (default 1): repeat the whole trace, rotating which
+    // strategy runs first each round, so no strategy always runs on a colder
+    // process (the plot takes the per-query median over rounds).
+    const char *rounds_env = std::getenv("TRACE_ROUNDS");
+    const int rounds = rounds_env && *rounds_env ? std::max(1, std::atoi(rounds_env)) : 1;
+    int round = 0;
+    double read_ms = 0; // the query alone, without the write before it
     // Each strategy writes +1 then -1 alternately per shape: the data returns.
     auto run = [&](const std::string &label, auto &&write_and_read) {
       int sign[2] = {1, 1};
@@ -164,42 +177,49 @@ int main(int argc, char **argv) {
         }
         std::string action;
         const double ms = write_and_read(where, delta, action);
-        std::fprintf(out, "%zu,%c,%s,%s,%.3f,%s\n", i, step.phase, step.kind, label.c_str(), ms,
-                     action.c_str());
+        std::fprintf(out, "%zu,%c,%s,%s,%.3f,%s,%d,%.3f\n", i, step.phase, step.kind, label.c_str(), ms,
+                     action.c_str(), round, read_ms);
       }
       std::fflush(out);
     };
-    {
-      duckdb::DuckDB base_db(argv[4]);
-      duckdb::Connection b(base_db);
-      query(b, ref_sql); // warm
-      run("base", [&](const std::string &where, int delta, std::string &) {
-        const auto t = Clock::now();
-        if (!where.empty())
-          Exec(b, "UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(delta) + ") WHERE " + where);
-        query(b, ref_sql);
-        return ms_since(t);
-      });
-    }
-    runtime.SetExpectedQueriesBeforeNextWrite(10);
-    const std::vector<std::pair<std::string, std::string>> strategies = {
-        {"selected", ""}, {"ApplyDelta", "ApplyDelta"}, {"RebuildAll", "RebuildAll"}};
-    for (const auto &[label, force] : strategies) {
-      core::SetForcedMaintenanceActionName(force);
-      query(c, aux_sql); // warm
-      run(label, [&](const std::string &where, int delta, std::string &action) {
-        const auto t = Clock::now();
-        if (!where.empty()) {
-          core::ClearMaintenanceDecisionLog();
-          runtime.ApplyWrite("UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(delta) +
-                             ") WHERE " + where);
-          const auto log = core::LastMaintenanceDecision();
-          action = log && log->valid ? Name(log->selected) : "";
-        }
-        query(c, aux_sql);
-        return ms_since(t);
-      });
-      accelerator_codegen::test_support::RequireCrossAccelQueryCorrectness(c, q, "Q" + std::to_string(q));
+    for (round = 0; round < rounds; ++round) {
+      {
+        duckdb::DuckDB base_db(argv[4]);
+        duckdb::Connection b(base_db);
+        query(b, ref_sql); // warm
+        run("base", [&](const std::string &where, int delta, std::string &) {
+          const auto t = Clock::now();
+          if (!where.empty())
+            Exec(b, "UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(delta) + ") WHERE " + where);
+          const auto r = Clock::now();
+          query(b, ref_sql);
+          read_ms = ms_since(r);
+          return ms_since(t);
+        });
+      }
+      runtime.SetExpectedQueriesBeforeNextWrite(10);
+      const std::vector<std::pair<std::string, std::string>> strategies = {
+          {"selected", ""}, {"ApplyDelta", "ApplyDelta"}, {"RebuildAll", "RebuildAll"}};
+      for (std::size_t n = 0; n < strategies.size(); ++n) {
+        const auto &[label, force] = strategies[(n + round) % strategies.size()];
+        core::SetForcedMaintenanceActionName(force);
+        query(c, aux_sql); // warm
+        run(label, [&](const std::string &where, int delta, std::string &action) {
+          const auto t = Clock::now();
+          if (!where.empty()) {
+            core::ClearMaintenanceDecisionLog();
+            runtime.ApplyWrite("UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(delta) +
+                               ") WHERE " + where);
+            const auto log = core::LastMaintenanceDecision();
+            action = log && log->valid ? Name(log->selected) : "";
+          }
+          const auto r = Clock::now();
+          query(c, aux_sql);
+          read_ms = ms_since(r);
+          return ms_since(t);
+        });
+        accelerator_codegen::test_support::RequireCrossAccelQueryCorrectness(c, q, "Q" + std::to_string(q));
+      }
     }
     core::SetForcedMaintenanceActionName("");
     std::fclose(out);
