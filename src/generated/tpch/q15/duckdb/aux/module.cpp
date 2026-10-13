@@ -225,42 +225,20 @@ bool ReadSupplier(const core::AuxRow &row, TpchQ15SupplierInput &out) {
 
 // ── State containers ──────────────────────────────────────────────────────
 
-int64_t TpchQ15RevArray::Get(int64_t suppkey) const {
-  const auto it = chunks.find(suppkey >> kQ15RevChunkShift);
-  return it == chunks.end() ? 0 : it->second->v[suppkey & (kQ15RevChunkSize - 1)];
-}
-
-int64_t TpchQ15RevArray::Add(int64_t suppkey, int64_t delta) {
-  auto &slot = chunks[suppkey >> kQ15RevChunkShift];
-  if (!slot)
-    slot = std::make_shared<TpchQ15RevChunk>();
-  else if (slot.use_count() > 1)
-    slot = std::make_shared<TpchQ15RevChunk>(*slot);
-  int64_t &cell = slot->v[suppkey & (kQ15RevChunkSize - 1)];
-  const int64_t old = cell;
-  cell += delta;
-  return old;
-}
-
 void TpchQ15WindowState::Rescan() {
   int64_t count = 0;
   int64_t max_rev = std::numeric_limits<int64_t>::min();
   winners.clear();
-  for (const auto &[cid, chunk] : rev.chunks) {
-    for (int64_t i = 0; i < kQ15RevChunkSize; ++i) {
-      const int64_t r = chunk->v[i];
-      if (r == 0)
-        continue;
-      ++count;
-      if (r > max_rev) {
-        max_rev = r;
-        winners.clear();
-        winners.push_back((cid << kQ15RevChunkShift) | i);
-      } else if (r == max_rev) {
-        winners.push_back((cid << kQ15RevChunkShift) | i);
-      }
+  rev.ForEachNonZero([&](int64_t key, int64_t r) {
+    ++count;
+    if (r > max_rev) {
+      max_rev = r;
+      winners.clear();
+      winners.push_back(key);
+    } else if (r == max_rev) {
+      winners.push_back(key);
     }
-  }
+  });
   nonzero = count;
   empty = count == 0;
   max_revenue = count == 0 ? 0 : max_rev;
@@ -417,14 +395,10 @@ std::vector<uint8_t> EncodeTpchQ15Window(int32_t month_key,
   writer.I32(month_key);
   writer.U32(static_cast<uint32_t>(win.winners.empty() ? 0 : 1)); // has_winners
   writer.I64(win.nonzero);
-  for (const auto &[cid, chunk] : win.rev.chunks) {
-    for (int64_t i = 0; i < kQ15RevChunkSize; ++i) {
-      if (chunk->v[i] == 0)
-        continue;
-      writer.I64((cid << kQ15RevChunkShift) | i);
-      writer.I64(chunk->v[i]);
-    }
-  }
+  win.rev.ForEachNonZero([&](int64_t key, int64_t r) {
+    writer.I64(key);
+    writer.I64(r);
+  });
   writer.I64(win.max_revenue);
   writer.I64(static_cast<int64_t>(win.winners.size()));
   for (const auto sk : win.winners)

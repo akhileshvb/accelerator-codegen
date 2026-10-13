@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -70,21 +71,42 @@ struct TpchQ15SupplierRecord {
   std::string phone;
 };
 
-// Dense revenue array indexed by suppkey, split into fixed-size chunks that are
-// shared between versions and copied on write (only the touched chunks are
-// cloned; a cloned chunk is uniquely owned by the working copy until it is
-// published).
-constexpr int kQ15RevChunkShift = 11;
-constexpr int64_t kQ15RevChunkSize = int64_t{1} << kQ15RevChunkShift;
-struct TpchQ15RevChunk {
-  int64_t v[kQ15RevChunkSize] = {};
-};
-
+// Revenue per suppkey: copy-on-write chunks shared between versions (only the
+// touched chunks are cloned; a cloned chunk is uniquely owned by the working
+// copy until it is published). Absent keys read 0. Keys outside the dense range
+// (negative or huge) live in a small ordered overflow map.
 struct TpchQ15RevArray {
-  std::map<int64_t, std::shared_ptr<TpchQ15RevChunk>> chunks;
-  int64_t Get(int64_t suppkey) const;
-  // Adds delta (copy-on-write on the touched chunk); returns the old value.
-  int64_t Add(int64_t suppkey, int64_t delta);
+  static constexpr int64_t kMaxDenseKey = int64_t{1} << 28;
+  core::ChunkedCowArray<int64_t, 11> dense{};
+  std::map<int64_t, int64_t> overflow;
+
+  // Adds delta to the key's revenue; returns the old value.
+  int64_t Add(int64_t suppkey, int64_t delta) {
+    int64_t &cell = suppkey >= 0 && suppkey < kMaxDenseKey
+                        ? dense.Mutable(suppkey)
+                        : overflow[suppkey];
+    const int64_t old = cell;
+    cell += delta;
+    return old;
+  }
+  // fn(suppkey, revenue) for every non-zero entry, ascending by suppkey.
+  template <typename F> void ForEachNonZero(F &&fn) const {
+    auto it = overflow.begin();
+    for (; it != overflow.end() && it->first < 0; ++it)
+      if (it->second != 0)
+        fn(it->first, it->second);
+    for (std::size_t ci = 0; ci < dense.NumChunks(); ++ci) {
+      const auto *chunk = dense.ChunkAt(ci);
+      if (!chunk)
+        continue;
+      for (std::size_t i = 0; i < chunk->size(); ++i)
+        if ((*chunk)[i] != 0)
+          fn(dense.ChunkBase(ci) + static_cast<int64_t>(i), (*chunk)[i]);
+    }
+    for (; it != overflow.end(); ++it)
+      if (it->second != 0)
+        fn(it->first, it->second);
+  }
 };
 
 struct TpchQ15WindowState {
