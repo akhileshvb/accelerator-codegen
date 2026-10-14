@@ -43,6 +43,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "accelerator_codegen/stateful/core/aux_cost_model_path.hpp"
 #include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
@@ -100,7 +101,11 @@ struct BuildStats {
 };
 BuildStats &GetBuildStats();
 
-std::string ResolveCostModelPath(const char *env_name, const char *default_relative_path);
+// The query's cost model: `env_name` when set, else the first of
+// <stem>_mysql.json and <stem>.json found in ACCELERATOR_CODEGEN_CONFIG_DIR,
+// the query's directory, then the source checkout in Docker; "" when none.
+std::string ResolveCostModelPath(const char *env_name, const core::AuxCostModelLocation &location);
+
 // The database the scan connections use: ACCEL_MYSQL_DB / MYSQL_DATABASE from
 // the server's environment, or this override (mysql_accel_set_scan_database).
 // Aux states already built are not affected: invalidate them to rebuild.
@@ -276,15 +281,15 @@ private:
 template <typename Module, typename Config, typename ScanT>
 class Runtime final {
 public:
-  Runtime(const char *cost_model_env, const char *default_config_path,
+  Runtime(const char *cost_model_env, core::AuxCostModelLocation cost_model,
           core::AcceleratorId accelerator, Config config)
       : store(), coordinator(),
         backend(
             coordinator, store,
             [] { return core::VisibilityToken{}; },
-            [cost_model_env, default_config_path] {
+            [cost_model_env, cost_model] {
               return core::LoadAuxCostModelJson(
-                  ResolveCostModelPath(cost_model_env, default_config_path));
+                  ResolveCostModelPath(cost_model_env, cost_model));
             }),
         scan(), module(config, &scan), accelerator(std::move(accelerator)) {
     auto module_view = std::shared_ptr<Module>(&module, [](Module *) {});

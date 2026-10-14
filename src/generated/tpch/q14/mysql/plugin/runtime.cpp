@@ -11,6 +11,7 @@
 #include "accelerator_codegen/stateful/prims/decimal_text.hpp"
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q14/mysql/aux/module.hpp"
+#include "tpch/q14/cost_model.hpp"
 #include "tpch/q14/layout.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
@@ -107,7 +108,7 @@ Runtime<query::TpchQ14Module, query::TpchQ14Config, TpchQ14Scan> &
 Q14Runtime() {
   static Runtime<query::TpchQ14Module, query::TpchQ14Config, TpchQ14Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q14_COST_MODEL",
-              "config/q14_aux_cost_model.json",
+              core::kTpchQ14CostModel,
               core::TpchQ14Layout::kAccelerator, query::TpchQ14Config{mysql_tbl::kPart, mysql_tbl::kLineitem});
   return runtime;
 }

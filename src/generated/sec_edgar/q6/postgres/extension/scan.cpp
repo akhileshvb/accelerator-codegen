@@ -3,6 +3,7 @@
 
 // The module header pulls in DuckDB types; include it before PostgreSQL headers.
 #include "sec_edgar/q6/common/module.hpp"
+#include "sec_edgar/q6/cost_model.hpp"
 #include "sec_edgar/q6/layout.hpp"
 
 #include <stdexcept>
@@ -283,7 +284,7 @@ Q6Runtime() {
   static Runtime<query::SecEdgarQ6Module, query::SecEdgarQ6Config,
                  SecEdgarQ6PgScan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q6_COST_MODEL",
-              "config/sec_edgar_q6_aux_cost_model.json",
+              core::kSecEdgarQ6CostModel,
               core::SecEdgarQ6Layout::kAccelerator,
               query::SecEdgarQ6Config{kNumTable, kSubTable, kPreTable},
               {{"sub", "name"}, {"num", "tag"}, {"pre", "plabel"}},

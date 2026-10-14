@@ -30,6 +30,7 @@
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "accelerator_codegen/stateful/core/aux_cost_model_path.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_state_store.hpp"
@@ -65,74 +66,24 @@ namespace detail {
 namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 
-inline bool FileReadable(const std::string &path) {
-  std::ifstream input(path);
-  return input.good();
-}
-
-inline std::string Basename(const char *path) {
-  if (!path || !*path) {
-    return "";
-  }
-  const std::string text(path);
-  const auto slash = text.find_last_of('/');
-  return slash == std::string::npos ? text : text.substr(slash + 1);
-}
-
-inline std::string PostgresCostModelBasename(const std::string &basename) {
-  // q1_aux_cost_model.json -> q1_aux_cost_model_postgres.json
-  static constexpr char kSuffix[] = "_aux_cost_model.json";
-  const auto pos = basename.rfind(kSuffix);
-  if (pos == std::string::npos || pos + sizeof(kSuffix) - 1 != basename.size()) {
-    return "";
-  }
-  return basename.substr(0, pos) + "_aux_cost_model_postgres.json";
-}
-
+// The query's cost model: `env_name` when set, else the first of
+// <stem>_postgres.json and <stem>.json found in ACCELERATOR_CODEGEN_CONFIG_DIR,
+// the query's directory, then the source checkout in Docker (/accel-src, its
+// copy of the query's directory, /tmp/accel-codegen-src); "" when none exists.
 inline std::string ResolveCostModelPath(const char *env_name,
-                                 const char *default_relative_path) {
+                                        const core::AuxCostModelLocation &location) {
   if (const char *path = std::getenv(env_name); path && *path) {
     return path;
   }
-  if (!default_relative_path || !*default_relative_path) {
-    return "";
-  }
-  std::vector<std::string> candidates;
-  const std::string basename = Basename(default_relative_path);
-  const std::string pg_basename = PostgresCostModelBasename(basename);
-  auto PushPair = [&](const std::string &dir_prefix, const std::string &rel) {
-    if (!pg_basename.empty()) {
-      // Prefer engine-specific calibration when present.
-      if (!dir_prefix.empty()) {
-        candidates.push_back(dir_prefix + pg_basename);
-      } else if (rel.size() >= basename.size()) {
-        candidates.push_back(rel.substr(0, rel.size() - basename.size()) +
-                             pg_basename);
-      }
-    }
-    if (!dir_prefix.empty()) {
-      candidates.push_back(dir_prefix + basename);
-    } else {
-      candidates.push_back(rel);
-    }
-  };
+  core::AuxCostModelLookup lookup;
+  lookup.engine = "postgres";
   if (const char *config_dir = std::getenv("ACCELERATOR_CODEGEN_CONFIG_DIR");
       config_dir && *config_dir) {
-    const std::string prefix = std::string(config_dir) + "/";
-    PushPair(prefix, prefix + basename);
+    lookup.dirs_before.push_back(config_dir);
   }
-  PushPair("", default_relative_path);
-  PushPair("/accel-src/", std::string("/accel-src/") + default_relative_path);
-  PushPair("/accel-src/config/",
-           std::string("/accel-src/config/") + basename);
-  PushPair("/tmp/accel-codegen-src/",
-           std::string("/tmp/accel-codegen-src/") + default_relative_path);
-  for (const auto &candidate : candidates) {
-    if (FileReadable(candidate)) {
-      return candidate;
-    }
-  }
-  return "";
+  lookup.dirs_after = {"/accel-src", std::string("/accel-src/") + location.dir,
+                       "/tmp/accel-codegen-src"};
+  return core::ResolveAuxCostModelPath(location, lookup);
 }
 
 // AuxDate uses Unix-epoch days, while PostgreSQL's DateADT uses days since

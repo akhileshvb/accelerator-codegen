@@ -3,6 +3,7 @@
 // table function accel_tpch_q8_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
 #include "tpch/q8/duckdb/aux/module.hpp"
+#include "tpch/q8/cost_model.hpp"
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
@@ -94,7 +95,8 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{8,
                           std::string{"PROMO BRUSHED BRASS"})}},
      4,
      false,
-     BuildTpchQ8Probe}};
+     BuildTpchQ8Probe,
+     core::kTpchQ8CostModel}};
 
 } // namespace q8_catalog
 } // namespace

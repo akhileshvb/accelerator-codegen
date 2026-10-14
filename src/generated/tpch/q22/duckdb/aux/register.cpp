@@ -3,6 +3,7 @@
 // table function accel_tpch_q22_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
 #include "tpch/q22/duckdb/aux/module.hpp"
+#include "tpch/q22/cost_model.hpp"
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
@@ -87,7 +88,8 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{22,
        core::AuxValue::Of(core::AuxType::String, std::string{"32"})}},
      2,
      false,
-     BuildTpchQ22Probe}};
+     BuildTpchQ22Probe,
+     core::kTpchQ22CostModel}};
 
 } // namespace q22_catalog
 } // namespace

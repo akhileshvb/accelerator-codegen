@@ -2,6 +2,7 @@
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 #include "sec_edgar/q3/postgres/aux/module.hpp"
+#include "sec_edgar/q3/cost_model.hpp"
 #include "sec_edgar/q3/layout.hpp"
 
 #include "postgres/engine_runtime.hpp"
@@ -73,7 +74,7 @@ Q3Runtime() {
   static Runtime<query::SecEdgarQ3Module, query::SecEdgarQ3Config,
                  SecEdgarQ3PgScan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q3_COST_MODEL",
-              "config/sec_edgar_q3_aux_cost_model.json",
+              core::kSecEdgarQ3CostModel,
               core::SecEdgarQ3Layout::kAccelerator,
               query::SecEdgarQ3Config{
                   kSecEdgarNum, kSecEdgarSub,

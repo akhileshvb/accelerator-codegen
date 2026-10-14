@@ -10,6 +10,7 @@
 // The module header has no engine types, but keep the project-wide order:
 // query headers before PostgreSQL headers.
 #include "sec_edgar/q24/common/module.hpp"
+#include "sec_edgar/q24/cost_model.hpp"
 #include "sec_edgar/q24/layout.hpp"
 
 #include <deque>
@@ -276,7 +277,7 @@ Q24Runtime() {
   static Runtime<query::SecEdgarQ24Module, query::SecEdgarQ24Config,
                  SecEdgarQ24Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q24_COST_MODEL",
-              "config/sec_edgar_q24_aux_cost_model.json",
+              core::kSecEdgarQ24CostModel,
               core::SecEdgarQ24Layout::kAccelerator,
               query::SecEdgarQ24Config{kNumTableId,
                                        kPreTableId,

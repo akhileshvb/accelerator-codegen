@@ -1477,8 +1477,7 @@ DuckdbRuntime::DuckdbRuntime(::duckdb::Connection &connection,
                [] { return DuckDBAuxBackend::ReaderVisibility(); },
                [entry] {
                  return core::LoadAuxCostModelJson(
-                     harness::SharedCostModelConfigPath(entry.workload,
-                                                        entry.query_id));
+                     harness::SharedCostModelConfigPath(entry));
                },
                [expected = expected_queries_before_write_]() {
                  return *expected;

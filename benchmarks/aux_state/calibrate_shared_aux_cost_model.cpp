@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
     } else {
       const int query_id = std::stoi(argv[2]);
       entry = LookupSharedQuery(workload, query_id);
-      out_path = argc > 4 ? argv[4] : SharedCostModelConfigPath(entry.workload, query_id);
+      out_path = argc > 4 ? argv[4] : SharedCostModelConfigPath(entry);
     }
 
     core::AuxCalibrationConfig config;

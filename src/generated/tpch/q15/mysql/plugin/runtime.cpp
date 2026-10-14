@@ -8,6 +8,7 @@
 
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q15/mysql/aux/module.hpp"
+#include "tpch/q15/cost_model.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
 namespace {
@@ -88,7 +89,7 @@ Runtime<query::TpchQ15Module, query::TpchQ15Config, TpchQ15Scan> &
 Q15Runtime() {
   static Runtime<query::TpchQ15Module, query::TpchQ15Config, TpchQ15Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q15_COST_MODEL",
-              "config/q15_aux_cost_model.json",
+              core::kTpchQ15CostModel,
               query::TpchQ15Layout::kAccelerator,
               query::TpchQ15Config{mysql_tbl::kLineitem, mysql_tbl::kSupplier});
   return runtime;

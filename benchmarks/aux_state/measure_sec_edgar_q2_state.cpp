@@ -12,6 +12,7 @@
 #include "accelerator_codegen/stateful/duckdb/duckdb_aux_backend.hpp"
 #include "accelerator_codegen/stateful/duckdb/duckdb_state_store.hpp"
 #include "duckdb.hpp"
+#include "sec_edgar/q2/cost_model.hpp"
 #include "sec_edgar/q2/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q2/duckdb/aux/module.hpp"
 
@@ -107,7 +108,7 @@ int main(int argc, char **argv) {
   namespace eng = accelerator_codegen::aux_state::engine::duckdb;
   eng::DuckDBStateStore store(SecEdgarQ2Module::kId);
   core::AuxTransactionCoordinator coordinator;
-  const auto cost = core::LoadAuxCostModelJson("config/sec_edgar_q2_aux_cost_model.json");
+  const auto cost = core::LoadAuxCostModelJson(core::AuxCostModelDefaultPath(core::kSecEdgarQ2CostModel));
   eng::DuckDBAuxBackend backend(
       coordinator, store, [](const duckdb::TableMutationEvent &) { return core::MutationBatch{}; },
       [] { return core::VisibilityToken{}; }, [cost] { return cost; }, [] { return 10.0; });

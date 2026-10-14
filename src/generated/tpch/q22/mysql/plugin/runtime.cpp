@@ -8,6 +8,7 @@
 
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q22/mysql/aux/module.hpp"
+#include "tpch/q22/cost_model.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
 namespace {
@@ -76,7 +77,7 @@ Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Scan> &
 Q22Runtime() {
   static Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q22_COST_MODEL",
-              "config/q22_aux_cost_model.json",
+              core::kTpchQ22CostModel,
               query::TpchQ22Layout::kAccelerator,
               query::TpchQ22Config{mysql_tbl::kOrders, mysql_tbl::kCustomer});
   return runtime;

@@ -3,6 +3,7 @@
 // table function accel_tpch_q20_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
 #include "tpch/q20/duckdb/aux/module.hpp"
+#include "tpch/q20/cost_model.hpp"
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
@@ -91,7 +92,8 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{20,
        core::AuxValue::Of(core::AuxType::String, std::string{"RUSSIA"})}},
      1,
      false,
-     BuildTpchQ20Probe}};
+     BuildTpchQ20Probe,
+     core::kTpchQ20CostModel}};
 
 } // namespace q20_catalog
 } // namespace

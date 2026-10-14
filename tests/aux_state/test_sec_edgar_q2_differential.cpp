@@ -44,6 +44,7 @@
 #include "accelerator_codegen/stateful/maintenance/cost_model.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
+#include "sec_edgar/q2/cost_model.hpp"
 #include "sec_edgar/q2/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q2/duckdb/aux/module.hpp"
 #include "sec_edgar/q2/duckdb/aux/parallel/module.hpp"
@@ -322,7 +323,7 @@ struct Harness {
     // The repository cost model (run from the repository root).
     const char *path = std::getenv("ACCEL_Q2_COST_MODEL");
     const auto cost = core::LoadAuxCostModelJson(
-        path ? path : "config/sec_edgar_q2_aux_cost_model.json");
+        path ? path : core::AuxCostModelDefaultPath(core::kSecEdgarQ2CostModel));
     store = std::make_unique<engine::duckdb::DuckDBStateStore>(
         parallel ? SecEdgarQ2ParallelModule::kId : SecEdgarQ2Module::kId);
     scan = std::make_unique<SecEdgarQ2DuckdbScan>(con);

@@ -9,6 +9,7 @@
 
 // Include the module header before PostgreSQL headers (macro collisions).
 #include "sec_edgar/q1/common/module.hpp"
+#include "sec_edgar/q1/cost_model.hpp"
 #include "sec_edgar/q1/layout.hpp"
 
 #include <stdexcept>
@@ -173,7 +174,7 @@ Q1Runtime &SecEdgarQ1RuntimeInstance(const int (&attno)[4]) {
       config.pre_attnums.push_back(a - 1);
     }
     runtime = new Q1Runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q1_COST_MODEL",
-                            "config/sec_edgar_q1_aux_cost_model.json",
+                            core::kSecEdgarQ1CostModel,
                             core::SecEdgarQ1Layout::kAccelerator, std::move(config));
   }
   return *runtime;

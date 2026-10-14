@@ -3,6 +3,7 @@
 // table function accel_sec_edgar_q4_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
 #include "sec_edgar/q4/duckdb/aux/duckdb_scan.hpp"
+#include "sec_edgar/q4/cost_model.hpp"
 #include "sec_edgar/q4/common/aux/module.hpp"
 #include "sec_edgar/q4/duckdb/aux/parallel/module.hpp"
 #include "sec_edgar/q4/layout.hpp"
@@ -85,7 +86,8 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{4,
      {},
      1,
      false,
-     BuildSecEdgarQ4Probe}};
+     BuildSecEdgarQ4Probe,
+     core::kSecEdgarQ4CostModel}};
 
 } // namespace q4_catalog
 } // namespace

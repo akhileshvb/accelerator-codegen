@@ -115,6 +115,7 @@ function(accel_collect_stateful_sources OUT_VAR)
         src/stateful/core/aux_maintenance_policy.cpp
         src/stateful/core/aux_maintenance_decision_log.cpp
         src/stateful/core/aux_calibration.cpp
+        src/stateful/core/aux_cost_model_path.cpp
         src/stateful/core/aux_store_diagnostics.cpp
         src/stateful/core/aux_execute_stats.cpp
         src/stateful/maintenance/maintenance_action.cpp
