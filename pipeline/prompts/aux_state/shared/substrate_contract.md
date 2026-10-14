@@ -1,6 +1,6 @@
 # Substrate contract (stable — do not regenerate)
 
-Hand-written APIs in `include/accelerator_codegen/stateful/`:
+Hand-written APIs in `substrate/aux/`:
 
 - **PartitionedStateStore** (`state/partitioned_state_store.hpp`) — partitioned payload storage with per-slot versions; invalidation and staged reads via `AuxStateStore`.
 - **AuxRegistry** (`core/aux_registry.hpp`) — transaction coordinator registering `AuxQueryModule` instances; routes mutations, txn buffers, and staged maintenance across modules.
@@ -19,7 +19,7 @@ Hand-written APIs in `include/accelerator_codegen/stateful/`:
 
 ## Engine adapters
 
-Owned by `workload_kind: engine_backend` under `stateful/{engine}/` and `runtime/{engine}/`.
+Owned by `workload_kind: engine_backend` under `backends/{engine}/`.
 
 - **typed_in_process** — typed `StateImage` payloads; no byte serialization on the hot path.
 - **serialized_boundary** — encode/decode only at a process / shared-memory boundary (`byte_stream.hpp`); modules still see typed snapshots after decode.

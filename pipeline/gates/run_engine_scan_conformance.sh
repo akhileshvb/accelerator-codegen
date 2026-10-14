@@ -83,7 +83,7 @@ if status == "pass":
         notes.append("missing: " + "; ".join(missing))
     else:
         contract_rel = targets.get("contract_test") or (
-            f"tests/engine_backend/test_{engine}_contract.cpp" if engine else ""
+            f"backends/{engine}/tests/test_{engine}_contract.cpp" if engine else ""
         )
         if contract_rel:
             cpath = repo / contract_rel

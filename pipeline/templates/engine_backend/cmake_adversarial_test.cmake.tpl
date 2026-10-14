@@ -4,7 +4,7 @@
 #
 # if({{build_flag_condition}})
 #   add_executable(test_{{engine_name}}_adversarial
-#       tests/engine_backend/test_{{engine_name}}_adversarial.cpp
+#       backends/{{engine_name}}/tests/test_{{engine_name}}_adversarial.cpp
 #   )
 #   target_link_libraries(test_{{engine_name}}_adversarial
 #       PRIVATE

@@ -11,8 +11,8 @@ requires_base_accelerator: true
 prerequisite_workload: tpch_q13
 prerequisite_min_stage: implementation
 reference_accelerators:
-  - src/generated/tpch/q3/aux/module.cpp
-  - src/generated/tpch/q18/aux/module.cpp
+  - accelerators/tpch/q3/duckdb/aux/module.cpp
+  - accelerators/tpch/q18/duckdb/aux/module.cpp
 
 allow_poor_fitness: false
 allow_unsuccessful_design: false
@@ -38,7 +38,7 @@ output_schema:
   - name: custdist
     type: BIGINT
 
-cost_model_config: config/q13_aux_cost_model.json
+cost_model_config: accelerators/tpch/q13/config/q13_aux_cost_model.json
 
 optimization_guidance: |
   Q13 is a customer→order-count histogram after filtering o_comment NOT LIKE pattern.

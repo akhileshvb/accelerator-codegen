@@ -3,7 +3,7 @@
 Design a **native storage** adapter for **{{display_name}}** (`{{engine_name}}`)
 on the **fixed substrate** (aux/txn/store). From-scratch: substrate + this
 engine's SDK hints + `pipeline/templates/engine_backend/`. Do **not** read or
-copy any other `runtime|stateful/{engine}` tree. Do not implement code here.
+copy any other `backends/{engine}/` tree. Do not implement code here.
 
 {{hard_guidelines}}
 
@@ -38,9 +38,9 @@ Also fill `store_mode`, `native_scan_plan.symbol`, `mutation_capture_plan.hook`,
 
 ## Required reads
 
-- `include/accelerator_codegen/stateful/core/aux_types.hpp`
-- `include/accelerator_codegen/stateful/core/aux_registry.hpp`
-- `include/accelerator_codegen/stateful/state/partitioned_state_store.hpp`
+- `substrate/aux/core/aux_types.hpp`
+- `substrate/aux/core/aux_registry.hpp`
+- `substrate/aux/state/partitioned_state_store.hpp`
 - `pipeline/prompts/engine_backend/layers.md`
 - `pipeline/prompts/engine_backend/acceptance_checklist.md`
 - `pipeline/prompts/engine_backend/layer_contracts.md`

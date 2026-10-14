@@ -9,9 +9,8 @@
 #include <iostream>
 #include <string>
 
-#include "accelerator_codegen/runtime/native_scan.hpp"
-#include "accelerator_codegen/stateful/core/aux_registry.hpp"
-#include "accelerator_codegen/stateful/core/aux_types.hpp"
+#include "substrate/aux/core/aux_registry.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 // TODO: #include this engine's adapters after inspecting implementation.
 
 namespace {

@@ -1,5 +1,5 @@
 // GENERATED BACKEND — engine-local scan helper .cpp stub
-#include "accelerator_codegen/runtime/{{engine_name}}/scan_adapter.hpp"
+#include "backends/{{engine_name}}/engine/scan_adapter.hpp"
 
 namespace accelerator_codegen::aux_state::engine::{{engine_name}} {
 

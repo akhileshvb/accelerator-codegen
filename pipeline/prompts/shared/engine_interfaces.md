@@ -1,12 +1,12 @@
 # Engine interfaces (query modules vs adapters)
 
-**Base kernels are per `engine_name`.** There is no shared portable scan IR (`DataChunk` / `ScanNativeBaseTable` → chunk consumer). Each accelerator owns that engine’s native base consume path under `src/generated/{benchmark}/q{N}/{engine}/`.
+**Base kernels are per `engine_name`.** There is no shared portable scan IR (`DataChunk` / `ScanNativeBaseTable` → chunk consumer). Each accelerator owns that engine’s native base consume path under `accelerators/{benchmark}/q{N}/{engine}/`.
 
 **Shared substrate is aux/txn only:** `MutationBatch`, `AuxRow`, `AuxQueryModule`, coordinator, `AuxStateStore`, maintenance, calibration. Aux modules speak those contracts on every engine; base kernels do not.
 
 **`engine_name` is required** (CLI / `ACCEL_WORKLOAD_ENGINE_NAME` / workload YAML). There is no silent default to `duckdb` or `postgres`. Stage prompts inject an **Engine host** block for the selected engine only.
 
-DuckDB’s `DataChunk`-shaped helpers are **host-private** under `runtime/duckdb/native_scan.hpp` (and duckdb-targeted kernels). Other engines define their own typed scan/consume helpers under `runtime/{engine}/` — never a cross-engine chunk IR.
+DuckDB’s `DataChunk`-shaped helpers are **host-private** under `backends/duckdb/engine/native_scan.hpp` (and duckdb-targeted kernels). Other engines define their own typed scan/consume helpers under `backends/{engine}/engine/` — never a cross-engine chunk IR.
 
 For non-duckdb hosts, accelerator implementation may **bootstrap** missing query SQL entrypoints + differential on the existing `engine_backend` surface (`pipeline/prompts/shared/query_host_bootstrap.md`) — never a second adapter tree.
 
@@ -21,8 +21,8 @@ Minimal surface per query **and** `engine_name`:
 Paths:
 
 ```
-src/generated/{benchmark}/q{N}/{engine}/base/...
-src/generated/{benchmark}/q{N}/{engine}/aux/...
+accelerators/{benchmark}/q{N}/{engine}/base/...
+accelerators/{benchmark}/q{N}/{engine}/aux/...
 ```
 
 Optional: `fused.hpp` + `fused_scan.cpp` for SEC-EDGAR or TPC-H fused paths when **this** host supports them. Fused / DuckDB-specific micro-APIs are **optional duckdb host paths**, not required for every engine.
@@ -34,13 +34,13 @@ Backends name no query; never add a query to a backend file, catalog array, swit
 - **duckdb:** `q{N}/duckdb/base/single-threaded/register.cpp` (`BaseFunctionSetRegistrar`);
   `q{N}/duckdb/aux/register.cpp` (`SharedQueryRegistrar` catalog entry + `AuxQueryRegistrar`:
   table function, argument types, `MakeBinding<Scan, Module>` with the query's InitialScan)
-- **other engines:** the backend's registries (`engine_backend`-owned, under `src/generated/{engine}/`
-  or `runtime|stateful/{engine}/`), called from `src/generated/{bench}/q{N}/{engine}/` — do not invent
+- **other engines:** the backend's registries (`engine_backend`-owned, under `backends/{engine}/api/`
+  or `backends/{engine}/`), called from `accelerators/{bench}/q{N}/{engine}/` — do not invent
   a parallel adapter tree
 
 Scan contract: kernels consume **engine-local** native storage / batch types for `{{engine_name}}`. Do **not** require `NativeScanSpec` → portable `DataChunk`. DuckDB may use its private `NativeScanSpec` + `DataChunk` types; other engines use their own helpers (slots, tuples, typed rebuild callbacks).
 
-Catalog registration is per engine: the registry is `src/generated/catalog/{engine}/query_catalog.{hpp,cpp}`; the entry is registered from the query's directory.
+Catalog registration is per engine: the registry is `backends/{engine}/api/catalog/query_catalog.{hpp,cpp}`; the entry is registered from the query's directory.
 
 ## Aux-state
 
@@ -76,15 +76,15 @@ Do **not** hard-code a second engine's file layout into query modules. When an e
 
 ### What query agents must not regenerate
 
-Fixed substrate under `include/accelerator_codegen/stateful/`:
+Fixed substrate under `substrate/aux/`:
 
 - `PartitionedStateStore`, `AuxStateStore`, `AuxRegistry` / txn coordinator
 - `aux_calibration.hpp` runner
 - `maintenance/action_selector.hpp`, `cost_model.hpp`
 
-Engine adapters under `stateful/{engine}/` and `runtime/{engine}/` are owned by the **engine_backend** pipeline.
+Engine adapters under `backends/{engine}/` are owned by the **engine_backend** pipeline.
 
-Agents own partition layouts (`src/generated/{bench}/q{N}/layout.hpp`), payload structs, mutation interpretation, incremental accumulators, maintenance staging logic (including rebuild→resync), and cost-model JSON coefficients.
+Agents own partition layouts (`accelerators/{bench}/q{N}/layout.hpp`), payload structs, mutation interpretation, incremental accumulators, maintenance staging logic (including rebuild→resync), and cost-model JSON coefficients.
 
 ## Optimization priorities
 

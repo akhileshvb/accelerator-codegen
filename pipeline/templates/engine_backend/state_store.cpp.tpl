@@ -1,5 +1,5 @@
 // GENERATED BACKEND
-#include "accelerator_codegen/stateful/{{engine_name}}/{{engine_name}}_state_store.hpp"
+#include "backends/{{engine_name}}/state/{{engine_name}}_state_store.hpp"
 
 #include <utility>
 

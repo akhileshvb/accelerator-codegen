@@ -11,8 +11,8 @@ requires_base_accelerator: true
 prerequisite_workload: tpch_q15
 prerequisite_min_stage: implementation
 reference_accelerators:
-  - src/generated/tpch/q6/aux/module.cpp
-  - src/generated/tpch/q11/aux/module.cpp
+  - accelerators/tpch/q6/duckdb/aux/module.cpp
+  - accelerators/tpch/q11/duckdb/aux/module.cpp
 
 allow_poor_fitness: false
 allow_unsuccessful_design: false
@@ -44,7 +44,7 @@ output_schema:
   - name: total_revenue
     type: DECIMAL
 
-cost_model_config: config/q15_aux_cost_model.json
+cost_model_config: accelerators/tpch/q15/config/q15_aux_cost_model.json
 
 optimization_guidance: |
   Q15 finds suppliers with MAX quarterly revenue (3-month shipdate window from start_date).

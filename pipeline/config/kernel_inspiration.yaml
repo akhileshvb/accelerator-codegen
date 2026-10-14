@@ -5,48 +5,48 @@ categories:
   - name: Fused scan (ScanFilteredConsumer)
     summary: Production path for filtered table scans; use SelectProjectedColumn per column.
     paths:
-      - src/generated/tpch/q1/base/single-threaded/fused_scan.cpp
-      - src/generated/tpch/q1/base/fused.hpp
-      - src/generated/sec_edgar/q1/duckdb/base/single-threaded/package.cpp
-      - benchmarks/tpch/single-threaded/benchmark_tpch_breakdown.cpp
+      - accelerators/tpch/q1/duckdb/base/single-threaded/fused_scan.cpp
+      - accelerators/tpch/q1/duckdb/base/fused.hpp
+      - accelerators/sec_edgar/q1/duckdb/base/single-threaded/package.cpp
+      - eval/bench/tpch/single-threaded/benchmark_tpch_breakdown.cpp
 
   - name: Dictionary / FLAT fast paths
     summary: Chunk-level layout dispatch; avoid generic UnifiedVectorFormat per row.
     paths:
-      - src/generated/tpch/q3/base/single-threaded/kernel.cpp
-      - src/generated/tpch/q14/base/single-threaded/kernel.cpp
+      - accelerators/tpch/q3/duckdb/base/single-threaded/kernel.cpp
+      - accelerators/tpch/q14/duckdb/base/single-threaded/kernel.cpp
 
   - name: Fixed slots + generic overflow
     summary: Dense O(1) group indexing for bounded keys; hash map for rare groups.
     paths:
-      - src/generated/tpch/q12/base/single-threaded/kernel.cpp
+      - accelerators/tpch/q12/duckdb/base/single-threaded/kernel.cpp
 
   - name: Group interning + dense aggregates
     summary: >-
       Intern GROUP BY / dimension keys during build or bind; store uint32_t group_id on
       lookup rows; update vector-indexed sums on consume — never hash std::string per row.
     paths:
-      - src/generated/tpch/q16/base/single-threaded/kernel.cpp
-      - src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp
-      - src/generated/sec_edgar/q3/base/single-threaded/kernel.cpp
+      - accelerators/tpch/q16/duckdb/base/single-threaded/kernel.cpp
+      - accelerators/sec_edgar/q1/duckdb/base/single-threaded/kernel.cpp
+      - accelerators/sec_edgar/q3/duckdb/base/single-threaded/kernel.cpp
 
   - name: Multi-table fused scans
     summary: Optional fused paths behind feature flags in kernel + query_runtime.
     paths:
-      - src/generated/tpch/q2/base/single-threaded/kernel.cpp
-      - src/generated/tpch/q4/base/single-threaded/kernel.cpp
-      - src/generated/tpch/q8/base/single-threaded/kernel.cpp
-      - src/generated/tpch/q10/base/single-threaded/kernel.cpp
+      - accelerators/tpch/q2/duckdb/base/single-threaded/kernel.cpp
+      - accelerators/tpch/q4/duckdb/base/single-threaded/kernel.cpp
+      - accelerators/tpch/q8/duckdb/base/single-threaded/kernel.cpp
+      - accelerators/tpch/q10/duckdb/base/single-threaded/kernel.cpp
 
   - name: Scan adapter + native bind
     summary: NativeScanSpec, filter pushdown, row-count helpers.
     paths:
-      - src/runtime/duckdb/duckdb_scan_adapter.cpp
-      - include/accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp
+      - backends/duckdb/engine/duckdb_scan_adapter.cpp
+      - backends/duckdb/engine/duckdb_scan_adapter.hpp
 
   - name: Benchmark harness patterns
     summary: Median timing, profile mode aligned with production path.
     paths:
-      - benchmarks/tpch/single-threaded/benchmark_q3.cpp
-      - benchmarks/tpch/single-threaded/benchmark_q12.cpp
-      - benchmarks/sec_edgar/single-threaded/benchmark_q1.cpp
+      - accelerators/tpch/q3/bench/benchmark_q3.cpp
+      - accelerators/tpch/q12/bench/benchmark_q12.cpp
+      - accelerators/sec_edgar/q1/bench/benchmark_q1.cpp

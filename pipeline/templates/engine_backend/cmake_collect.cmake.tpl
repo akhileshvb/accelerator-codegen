@@ -3,10 +3,10 @@
 #
 # function({{collect_fn}})
 #   set(srcs
-#     src/runtime/{{engine_name}}/scan_adapter.cpp
-#     src/stateful/{{engine_name}}/{{engine_name}}_aux_backend.cpp
-#     src/stateful/{{engine_name}}/{{engine_name}}_state_store.cpp
-#     src/stateful/{{engine_name}}/{{engine_name}}_mutation_capture.cpp
+#     backends/{{engine_name}}/engine/scan_adapter.cpp
+#     backends/{{engine_name}}/state/{{engine_name}}_aux_backend.cpp
+#     backends/{{engine_name}}/state/{{engine_name}}_state_store.cpp
+#     backends/{{engine_name}}/engine/{{engine_name}}_mutation_capture.cpp
 #   )
 #   set(${ARGV0} "${srcs}" PARENT_SCOPE)
 # endfunction()

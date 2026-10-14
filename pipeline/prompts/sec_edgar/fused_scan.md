@@ -9,7 +9,7 @@ The timed benchmark runs `SELECT * FROM {{function_name}}()` through `query_runt
 | `{{kernel_path}}` | `CreateQ{N}Kernel`, profiling kernel, aggregation logic |
 | `{{package_path}}` | `NativeScanSpec`, bind, table function; sets `package.create_fused_kernel` / `package.fused_scan` (the runtime calls them; no shared file to edit) |
 | `{{fused_scan_path}}` (optional) | Fused scan implementation — auto-compiled when present (see `cmake/BaseQuery.cmake`) |
-| `{{fused_header_path}}` (optional) | Fused kernel API (mirror `src/generated/tpch/q1/base/fused.hpp`) |
+| `{{fused_header_path}}` (optional) | Fused kernel API (mirror `accelerators/tpch/q1/duckdb/base/fused.hpp`) |
 
 Do **not** edit `CMakeLists.txt`. Optional `fused_scan.cpp` under `base/single-threaded/` is picked up automatically.
 
@@ -17,10 +17,10 @@ Do **not** edit `CMakeLists.txt`. Optional `fused_scan.cpp` under `base/single-t
 
 Read these before implementing:
 
-- `src/generated/tpch/q1/base/single-threaded/fused_scan.cpp` — fused `ScanFilteredConsumer` + `SelectProjectedColumn` per column
-- `src/generated/tpch/q1/base/fused.hpp` — fused kernel API
-- `src/generated/sec_edgar/q1/duckdb/base/single-threaded/package.cpp` — fused hook pattern (`create_fused_kernel` / `fused_scan`)
-- `benchmarks/tpch/single-threaded/benchmark_q1.cpp` — profile path matches production fused scan
+- `accelerators/tpch/q1/duckdb/base/single-threaded/fused_scan.cpp` — fused `ScanFilteredConsumer` + `SelectProjectedColumn` per column
+- `accelerators/tpch/q1/duckdb/base/fused.hpp` — fused kernel API
+- `accelerators/sec_edgar/q1/duckdb/base/single-threaded/package.cpp` — fused hook pattern (`create_fused_kernel` / `fused_scan`)
+- `accelerators/tpch/q1/bench/benchmark_q1.cpp` — profile path matches production fused scan
 
 ## Fused scan rules
 
@@ -32,6 +32,6 @@ Read these before implementing:
 
 ## Scan adapter
 
-You may edit `src/runtime/duckdb/duckdb_scan_adapter.cpp` and `include/accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp` to add filter pushdown or row-count helpers.
+You may edit `backends/duckdb/engine/duckdb_scan_adapter.cpp` and `backends/duckdb/engine/duckdb_scan_adapter.hpp` to add filter pushdown or row-count helpers.
 
 Layout reference: `pipeline/prompts/shared/generated_layout.md`.

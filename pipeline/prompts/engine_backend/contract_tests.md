@@ -3,7 +3,7 @@
 Every `engine_backend` implementation ships **one harness per layer** (see
 `pipeline/prompts/engine_backend/layers.md`). Tests prove the adapter against
 the fixed substrate **without** generated query accelerators
-(`src/generated/{tpch|sec_edgar}/q*/**`).
+(`accelerators/{tpch|sec_edgar}/q*/**`).
 
 Soft stubs, “throws when build flag OFF”, `(void)` placeholder asserts,
 **SKIP-then-PASS**, or **client-protocol scan shims** are **failures**.
@@ -15,14 +15,14 @@ layers. Architecture audit judges the **same** rules.
 
 | Layer | Conventional path | Gate |
 |-------|-------------------|------|
-| `store` | `tests/engine_backend/test_{engine}_store.cpp` | `engine_store` |
-| `aux_backend` | `tests/engine_backend/test_{engine}_aux_backend.cpp` | `engine_aux_backend` |
-| `txn` | `tests/engine_backend/test_{engine}_txn.cpp` | `engine_txn` |
-| `mutations` | `tests/engine_backend/test_{engine}_mutations.cpp` | `engine_mutations` |
-| `scan` | `tests/engine_backend/test_{engine}_scan.cpp` | `engine_scan` |
-| `runtime` | `tests/engine_backend/test_{engine}_runtime.cpp` | `engine_runtime` |
-| `visibility` | `tests/engine_backend/test_{engine}_visibility.cpp` | `engine_visibility` |
-| `host` | `tests/engine_backend/test_{engine}_host.cpp` | `engine_host` (skip if host not required) |
+| `store` | `backends/{engine}/tests/test_{engine}_store.cpp` | `engine_store` |
+| `aux_backend` | `backends/{engine}/tests/test_{engine}_aux_backend.cpp` | `engine_aux_backend` |
+| `txn` | `backends/{engine}/tests/test_{engine}_txn.cpp` | `engine_txn` |
+| `mutations` | `backends/{engine}/tests/test_{engine}_mutations.cpp` | `engine_mutations` |
+| `scan` | `backends/{engine}/tests/test_{engine}_scan.cpp` | `engine_scan` |
+| `runtime` | `backends/{engine}/tests/test_{engine}_runtime.cpp` | `engine_runtime` |
+| `visibility` | `backends/{engine}/tests/test_{engine}_visibility.cpp` | `engine_visibility` |
+| `host` | `backends/{engine}/tests/test_{engine}_host.cpp` | `engine_host` (skip if host not required) |
 
 Start from `pipeline/templates/engine_backend/test_engine_layer.cpp.tpl`.
 Register via `cmake_layer_test.cmake.tpl`.
@@ -37,7 +37,7 @@ Validation authors unseen `test_{engine}_adversarial.cpp` (`adversarial_tests.md
 2. **Assert values**, not merely “didn’t crash”.
 3. **No TODO / `Fail("…not implemented")` left in `main`.**
 4. **No TPC-H / SEC modules** or other generated accelerators.
-5. **Seed data inside the harness** (or a tiny fixture owned by `tests/engine_backend/`).
+5. **Seed data inside the harness** (or a tiny fixture owned by `backends/{engine}/tests/`).
 6. **No soft skip.** If the engine SDK / host cannot start, exit non-zero.
 7. **Layer `mutations`:** drive INSERT/UPDATE/DELETE through the real capture hook.
    Hand-built `MutationBatch` is allowed in `aux_backend` / `txn` only.

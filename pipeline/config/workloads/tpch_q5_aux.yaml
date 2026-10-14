@@ -11,9 +11,9 @@ requires_base_accelerator: true
 prerequisite_workload: tpch_q5
 prerequisite_min_stage: implementation
 reference_accelerators:
-  - src/generated/tpch/q10/aux/module.cpp
-  - src/generated/tpch/q9/aux/module.cpp
-  - src/generated/tpch/q3/aux/module.cpp
+  - accelerators/tpch/q10/duckdb/aux/module.cpp
+  - accelerators/tpch/q9/duckdb/aux/module.cpp
+  - accelerators/tpch/q3/duckdb/aux/module.cpp
 
 allow_poor_fitness: false
 allow_unsuccessful_design: false
@@ -49,7 +49,7 @@ output_schema:
   - name: revenue
     type: DECIMAL
 
-cost_model_config: config/q5_aux_cost_model.json
+cost_model_config: accelerators/tpch/q5/config/q5_aux_cost_model.json
 
 # Injected into every optimization attempt (hypothesis + patch). Keep concrete.
 optimization_guidance: |

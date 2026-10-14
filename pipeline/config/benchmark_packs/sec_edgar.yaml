@@ -10,17 +10,15 @@ ctest_smoke_suffix: _smoke_test
 dataset_key: sec_edgar_sf3
 db_env_var: ACCEL_SEC_EDGAR_DB
 ctest_resource_lock: sec_edgar_db
-schema_reference_path: benchmarks/sec_edgar/schema_reference.md
+schema_reference_path: eval/bench/sec_edgar/schema_reference.md
 test_template_path: pipeline/templates/sec_edgar/test_template.cpp
 benchmark_template_path: pipeline/templates/sec_edgar/benchmark_template.cpp
 
 write_paths:
-  - include/accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp
-  - src/generated/sec_edgar/**
-  - src/runtime/duckdb/duckdb_scan_adapter.cpp
-  - tests/single-threaded/test_sec_edgar_q*
-  - tests/test_support/sec_edgar_q*
-  - benchmarks/sec_edgar/**
+  - backends/duckdb/engine/duckdb_scan_adapter.hpp
+  - accelerators/sec_edgar/**
+  - backends/duckdb/engine/duckdb_scan_adapter.cpp
+  - eval/bench/sec_edgar/**
 
 allowed_commands:
   - "^ctest -R sec_edgar_q\\d+.*$"
@@ -43,14 +41,14 @@ post_audit_gates:
   - fairness
 
 snapshot_paths:
-  - src/generated/sec_edgar/q{N}/base/query.hpp
-  - src/generated/sec_edgar/q{N}/base/fused.hpp
-  - src/generated/sec_edgar/q{N}/base/single-threaded/kernel.cpp
-  - src/generated/sec_edgar/q{N}/base/single-threaded/package.cpp
-  - src/generated/sec_edgar/q{N}/base/single-threaded/fused_scan.cpp
+  - accelerators/sec_edgar/q{N}/duckdb/base/query.hpp
+  - accelerators/sec_edgar/q{N}/duckdb/base/fused.hpp
+  - accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/kernel.cpp
+  - accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/package.cpp
+  - accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/fused_scan.cpp
 
 fairness:
   cardinality_constants: []
   kernel_search_paths:
-    - src/generated/sec_edgar/q{N}/base/single-threaded/kernel.cpp
-    - src/generated/sec_edgar/q{N}/base/single-threaded/fused_scan.cpp
+    - accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/kernel.cpp
+    - accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/fused_scan.cpp

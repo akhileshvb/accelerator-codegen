@@ -21,7 +21,7 @@ violate the hard constraints — do not rewrite the adapter yourself.
 - Analysis: `{{artifacts_path}}/backend_analysis.json`
 - Adapter trees:
 {{engine_target_paths}}
-- Layer harnesses under `tests/engine_backend/test_{{engine_name}}_*.cpp`
+- Layer harnesses under `backends/{{engine_name}}/tests/test_{{engine_name}}_*.cpp`
 
 ## Hard constraints to verify (engine-agnostic)
 

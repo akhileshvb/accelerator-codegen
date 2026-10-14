@@ -3,8 +3,8 @@
 # HEAD exported WITHOUT git history (a fresh one-commit repo), minus every
 # accelerator (per-query C++ trees, hand-written Verus kernels and their
 # tests/specs, pipeline artifacts).  What stays: the substrate, the runtime
-# backends, src/verus/{common,substrate,prooflib,sql2verus} (prooflib and the
-# playbook as seeded), the query SQL, and the pipeline.
+# backends, substrate/verus/{common,store,kit,sql2verus} and accelerators/prooflib
+# (prooflib and the playbook as seeded), the query SQL, and the pipeline.
 #
 # Also sets up what is gitignored: .env, the pipeline's Codex home (config and
 # MCP launcher only, no memories; paths rewritten), the orchestrator venv.
@@ -21,8 +21,8 @@ git -C "${SRC}" archive HEAD | tar -x -C "${DEST}"
 cd "${DEST}"
 shopt -s nullglob
 remove=(
-  src/generated/tpch/q[0-9]* src/generated/sec_edgar/q[0-9]*
-  workloads/tpch/*.inputs
+  accelerators/tpch/q[0-9]* accelerators/sec_edgar/q[0-9]*
+  workloads/*/q[0-9]*.inputs
   pipeline/artifacts pipeline/verus_runs
 )
 for p in "${remove[@]}"; do rm -rf -- "${DEST:?}/${p}"; done

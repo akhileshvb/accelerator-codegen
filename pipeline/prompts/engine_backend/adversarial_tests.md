@@ -8,7 +8,7 @@ harness. Goal: catch gaps that the known **layer** harnesses did not cover.
 
 | Item | Conventional path |
 |------|-------------------|
-| Adversarial test source | `tests/engine_backend/test_{engine}_adversarial.cpp` |
+| Adversarial test source | `backends/{engine}/tests/test_{engine}_adversarial.cpp` |
 | CMake target | `test_{engine}_adversarial` |
 | CTest name | `engine_{engine}_adversarial` |
 
@@ -17,8 +17,8 @@ CMake hint: `pipeline/templates/engine_backend/cmake_adversarial_test.cmake.tpl`
 
 ## Process
 
-1. Read the adapter under `runtime/{engine}` + `stateful/{engine}` (+ host if any).
-2. Read `tests/engine_backend/test_{engine}_*.cpp` layer harnesses — **do not duplicate** them;
+1. Read the adapter under `backends/{engine}/` (state, engine, api; + host if any).
+2. Read `backends/{engine}/tests/test_{engine}_*.cpp` layer harnesses — **do not duplicate** them;
    add **new** scenarios.
 3. Invent ≥4 adversarial cases from the categories below (pick those that stress
    *this* implementation’s weak points).

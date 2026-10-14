@@ -12,20 +12,15 @@ shared_paths:
   - cmake/**
   # Engine backends: generic only (queries register from their own
   # directories), so these change only for engine-level additions.
-  - src/generated/catalog/**
-  - src/generated/postgres/**
-  - src/generated/mysql/**
-  - src/runtime/**
-  - src/stateful/duckdb/**
-  - src/stateful/postgres/**
-  - src/stateful/mysql/**
-  - tests/test_support/cross_accel_helpers.cpp
-  - tests/test_support/cross_accel_helpers.hpp
-  - benchmarks/tpch/single-threaded/tpch_arg_variants.cpp
-  - benchmarks/tpch/single-threaded/tpch_arg_variants.hpp
+  - backends/*/api/**
+  - backends/*/engine/**
+  - backends/*/state/**
+  - eval/tests/test_support/cross_accel_helpers.cpp
+  - eval/tests/test_support/cross_accel_helpers.hpp
+  - eval/bench/tpch/single-threaded/tpch_arg_variants.cpp
+  - eval/bench/tpch/single-threaded/tpch_arg_variants.hpp
   # Shared primitives library: changed only through primitive_publish.
-  - include/accelerator_codegen/stateful/prims/**
-  - tests/aux_state/test_prims.cpp
+  - accelerators/prims/**
 
 datasets:
   tpch_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
@@ -110,16 +105,12 @@ stage_max_turns:
 write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
-  - src/generated/tpch/q*
-  - src/generated/sec_edgar/q*
-  - src/generated/catalog/**
-  - tests/single-threaded/test_tpch_q*
-  - tests/single-threaded/test_sec_edgar_q*
-  - tests/test_support/q*
-  - tests/test_support/cross_accel_helpers.cpp
-  - tests/test_support/cross_accel_helpers.hpp
-  - benchmarks/tpch/single-threaded/benchmark_q*
-  - benchmarks/sec_edgar/single-threaded/benchmark_q*
+  # a query owns its whole directory: kernels, tests, benchmarks, cost models
+  - accelerators/tpch/q*/**
+  - accelerators/sec_edgar/q*/**
+  - backends/*/api/catalog/**
+  - eval/tests/test_support/cross_accel_helpers.cpp
+  - eval/tests/test_support/cross_accel_helpers.hpp
   - pipeline/artifacts/**
 
 allowed_commands:

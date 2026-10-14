@@ -155,7 +155,7 @@ int64_t TypedDecimalRaw(const std::vector<std::string> &cols, int attribute) {
 
 
 def copy_aux_trees() -> None:
-    src_root = ROOT / "src/generated/tpch"
+    src_root = ROOT / "accelerators/tpch"
     for qdir in sorted(src_root.glob("q*/postgres/aux")):
         dest = qdir.parent.parent / "mysql" / "aux"
         dest.mkdir(parents=True, exist_ok=True)
@@ -256,7 +256,6 @@ def transform_runtime() -> None:
     prefix = re.sub(r"extern \"C\" \{\n#include \"cstdio\".*?}\n\n", "", prefix, flags=re.S)
     prefix = prefix.replace("PostgresCostModelBasename", "MysqlCostModelBasename")
     prefix = prefix.replace("_aux_cost_model_postgres.json", "_aux_cost_model_mysql.json")
-    prefix = prefix.replace('lookup.engine = "postgres"', 'lookup.engine = "mysql"')
     prefix = prefix.replace("ACCELERATOR_CODEGEN_POSTGRES_", "ACCELERATOR_CODEGEN_MYSQL_")
     prefix = prefix.replace("engine-specific calibration when present.", "MySQL-specific calibration when present.")
 
@@ -501,7 +500,7 @@ std::string ExecuteMysqlTpchQ22(const core::QueryArguments &arguments);
 
 def copy_cost_models() -> None:
     for q in range(1, 23):
-        cfg = ROOT / "accelerators" / "tpch" / f"q{q}" / "config"
+        cfg = ROOT / f"accelerators/tpch/q{q}/config"
         src = cfg / f"q{q}_aux_cost_model.json"
         dest = cfg / f"q{q}_aux_cost_model_mysql.json"
         data = json.loads(src.read_text())

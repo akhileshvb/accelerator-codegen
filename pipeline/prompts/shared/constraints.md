@@ -4,7 +4,7 @@ See also `hard_guidelines.md` (native base storage, fair benchmarks, scale-safe 
 
 Single-threaded production path per connection unless the workload explicitly documents otherwise.
 
-- **`engine_name` is required** — never default to `duckdb` or `postgres`. Emit kernels under `src/generated/{benchmark}/q{N}/{engine}/`.
+- **`engine_name` is required** — never default to `duckdb` or `postgres`. Emit kernels under `accelerators/{benchmark}/q{N}/{engine}/`.
 - Base tables: use **this engine’s** native scan/storage APIs. Do not bypass with unfair client SQL on the hot path. Do **not** assume a shared `DataChunk` / `ScanNativeBaseTable` portable IR.
 - Aux state (when applicable): custom storage is allowed and preferred; do **not** cache final query answers / precomputed final results as aux. Intermediate aux structures may be redesigned when speedups stall. Aux modules still speak shared `MutationBatch` / `AuxQueryModule` / `AuxStateStore`.
 - Base (non-aux) kernels: no persistent auxiliary state, materialized views, or accelerator-specific indexes across executions; transient state rebuilt per execution. Base consume is **engine-local**.

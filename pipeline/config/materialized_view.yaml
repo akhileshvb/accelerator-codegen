@@ -3,7 +3,7 @@
 # No C++ aux modules or extension kernels for this kind.
 
 write_paths:
-  - src/generated/tpch/q*/postgres/matview/**
+  - accelerators/tpch/q*/postgres/matview/**
   - scripts/postgres_matview_*.sh
   - pipeline/gates/run_mv_*.sh
   - pipeline/gates/mv_gate_common.sh

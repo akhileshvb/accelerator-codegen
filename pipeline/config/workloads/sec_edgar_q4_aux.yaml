@@ -15,9 +15,9 @@ reference_accelerators: []
 allow_poor_fitness: false
 allow_unsuccessful_design: false
 
-reference_sql_path: benchmarks/sec_edgar/queries/q4.sql
+reference_sql_path: eval/bench/sec_edgar/queries/q4.sql
 
-parameters:   # spec: benchmarks/sec_edgar/params/q4.json (zero-arg function = defaults)
+parameters:   # spec: eval/bench/sec_edgar/params/q4.json (zero-arg function = defaults)
   - {name: sic_lo, type: INTEGER, default: 4000, domain: "see joint_domain in the json spec"}
   - {name: sic_hi, type: INTEGER, default: 4999, domain: "see joint_domain in the json spec"}
   - {name: stmt, type: VARCHAR, default: "EQ", domain: ["BS", "IS", "CF", "EQ", "CI"]}
@@ -36,7 +36,7 @@ output_schema:
   - {name: cik, type: INTEGER}
   - {name: total_value, type: DOUBLE}
 
-cost_model_config: config/sec_edgar_q4_aux_cost_model.json
+cost_model_config: accelerators/sec_edgar/q4/config/sec_edgar_q4_aux_cost_model.json
 
 speedup_verification:
   min_speedup_vs_base: 2.0

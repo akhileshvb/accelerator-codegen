@@ -87,7 +87,7 @@ if [[ "${ENGINE_NAME}" != "duckdb" ]]; then
     fi
     if [[ ! -x "${BUILD}/${DIFF_TARGET}" ]]; then
       STATUS="fail"
-      REASON="missing ${DIFF_TARGET} for engine=${ENGINE_NAME} (no DuckDB fallback). Run host_bootstrap / implement query host SQL entrypoints + ${DIFF_SOURCE:-tests/aux_state/${DIFF_TARGET}.cpp}. ${HOST_HINT}"
+      REASON="missing ${DIFF_TARGET} for engine=${ENGINE_NAME} (no DuckDB fallback). Run host_bootstrap / implement query host SQL entrypoints + ${DIFF_SOURCE:-eval/tests/${DIFF_TARGET}.cpp}. ${HOST_HINT}"
       RC=1
       LOG="${BUILD_LOG}"
     else

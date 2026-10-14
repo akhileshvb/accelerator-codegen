@@ -2,9 +2,9 @@
 
 #include <memory>
 
-#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
-#include "accelerator_codegen/runtime/duckdb/kernel.hpp"
-#include "accelerator_codegen/runtime/duckdb/query_runtime.hpp"
+#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/kernel.hpp"
+#include "backends/duckdb/api/query_runtime.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 

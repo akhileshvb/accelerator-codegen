@@ -32,7 +32,7 @@ Work like a **Cursor agent** doing performance engineering on **two equal axes**
 
 {{optimization_edit_paths}}
 
-Do **not** edit `src/generated/tpch/q{{query_number}}/base/**` (base kernel — reference only via search tools).
+Do **not** edit `accelerators/tpch/q{{query_number}}/<engine>/base/**` (base kernel — reference only via search tools).
 
 ## Search tools (reference accelerators)
 
@@ -40,7 +40,7 @@ Do **not** edit `src/generated/tpch/q{{query_number}}/base/**` (base kernel — 
 |------|---------|
 | `rip_grep` | Fast text search with context — patterns, symbols, comments across aux modules |
 | `ast_grep` | Structural C++ search — classes, functions, calls (`$VAR`, `$$$` metavariables) |
-| `glob_files` | Find aux paths under `src/generated/tpch/q*/aux/` |
+| `glob_files` | Find aux paths under `accelerators/tpch/q*/<engine>/aux/` |
 | `grep_context` | Single-file snippet when you already know the path |
 
 ## Workflow

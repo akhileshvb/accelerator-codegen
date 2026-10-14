@@ -52,7 +52,7 @@ output_schema:
   - name: c_comment
     type: VARCHAR
 
-cost_model_config: config/q10_aux_cost_model.json
+cost_model_config: accelerators/tpch/q10/config/q10_aux_cost_model.json
 
 cmake:
   query_num: 10

@@ -11,9 +11,9 @@ requires_base_accelerator: true
 prerequisite_workload: tpch_q16
 prerequisite_min_stage: implementation
 reference_accelerators:
-  - src/generated/tpch/q11/aux/module.cpp
-  - src/generated/tpch/q14/aux/module.cpp
-  - src/generated/tpch/q17/aux/module.cpp
+  - accelerators/tpch/q11/duckdb/aux/module.cpp
+  - accelerators/tpch/q14/duckdb/aux/module.cpp
+  - accelerators/tpch/q17/duckdb/aux/module.cpp
 
 allow_poor_fitness: false
 allow_unsuccessful_design: false
@@ -63,7 +63,7 @@ output_schema:
   - name: supplier_cnt
     type: BIGINT
 
-cost_model_config: config/q16_aux_cost_model.json
+cost_model_config: accelerators/tpch/q16/config/q16_aux_cost_model.json
 
 cmake:
   query_num: 16

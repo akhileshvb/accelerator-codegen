@@ -2,7 +2,7 @@
 #
 # if({{build_flag_condition}})
 #   add_executable(test_{{engine_name}}_{{layer_id}}
-#       tests/engine_backend/test_{{engine_name}}_{{layer_id}}.cpp
+#       backends/{{engine_name}}/tests/test_{{engine_name}}_{{layer_id}}.cpp
 #   )
 #   target_link_libraries(test_{{engine_name}}_{{layer_id}}
 #       PRIVATE

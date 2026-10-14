@@ -3,7 +3,7 @@
 Engine-agnostic. Adapter types live in
 `accelerator_codegen::aux_state::engine::{engine}` — **never** in `core::`.
 Fill `pipeline/templates/engine_backend/` (keep that namespace). Do **not**
-read another engine’s `runtime|stateful/` tree.
+read another engine’s `backends/<engine>/` tree.
 
 If `backend_analysis.json` `harness_plan` contradicts this file or
 `acceptance_checklist.md`, **follow this file**.
@@ -12,9 +12,9 @@ If `backend_analysis.json` `harness_plan` contradicts this file or
 
 ## `store`
 
-**Read first:** `include/accelerator_codegen/stateful/core/aux_types.hpp`
+**Read first:** `substrate/aux/core/aux_types.hpp`
 (`AuxStateStore`, `QueryKey`, `VisibilityToken`, `ValidityCode::NotVisible`),
-`include/accelerator_codegen/stateful/state/partitioned_state_store.hpp`.
+`substrate/aux/state/partitioned_state_store.hpp`.
 
 `{Engine}StateStore` wraps `PartitionedStateStore`. Typed `StateImage` payloads
 for `typed_in_process`.
@@ -110,10 +110,10 @@ calls the toy Runtime; same golden as `runtime`.
 
 The backend is generated once and must serve any number of queries without
 being edited: it **names no query**.  Query pipelines add each query under
-`src/generated/<bench>/q<N>/<engine>/` and plug it in with static registrars,
+`accelerators/<bench>/q<N>/<engine>/` and plug it in with static registrars,
 so the backend exposes registries plus generic dispatch over them:
 
-- **catalog** (`src/generated/catalog/<engine>/query_catalog.{hpp,cpp}`):
+- **catalog** (`backends/<engine>/api/catalog/query_catalog.{hpp,cpp}`):
   `Register…(Entry)` + a `…Registrar` struct; lookups and query lists iterate
   the registry (sorted by query id).
 - **SQL entry points**: one generic implementation the host calls with the
@@ -131,7 +131,7 @@ so the backend exposes registries plus generic dispatch over them:
   Per-query MODULE-side code (scans using server APIs, symbol shims) is
   globbed into the MODULE from the query directories.
 
-The build must succeed with **every** `src/generated/<bench>/q<N>/` removed
+The build must succeed with **every** `accelerators/<bench>/q<N>/` removed
 (zero registered queries), and `scripts/check_backend_query_free.py --engine
 <engine>` must pass (the `engine_build` gate runs it).  Engine-level helpers a
 query needs (e.g. a key-list predicate, a collation-safe literal) belong in the

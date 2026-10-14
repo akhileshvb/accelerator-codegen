@@ -22,7 +22,7 @@ import duckdb
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT.parent / "accelerator-codegen-duckdb" / "sec_edgar_sf3.duckdb"
 DEFAULT_DEST = ROOT.parent / "accelerator-codegen-duckdb" / "sec_edgar_test.duckdb"
-SCHEMA_PATH = ROOT / "benchmarks" / "sec_edgar" / "schema.sql"
+SCHEMA_PATH = ROOT / "eval" / "bench" / "sec_edgar" / "schema.sql"
 
 PROBE_CHECKS = {
     "q1": "SELECT adsh, line, stmt, rfile FROM pre WHERE stmt IS NOT NULL ORDER BY adsh, line LIMIT 1",

@@ -3,7 +3,7 @@
 
 #include <functional>
 
-#include "accelerator_codegen/stateful/core/aux_registry.hpp"
+#include "substrate/aux/core/aux_registry.hpp"
 
 namespace accelerator_codegen::aux_state::engine::{{engine_name}} {
 

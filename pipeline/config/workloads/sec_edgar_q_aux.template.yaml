@@ -17,7 +17,7 @@ reference_accelerators: []
 allow_poor_fitness: false
 allow_unsuccessful_design: false
 
-reference_sql_path: benchmarks/sec_edgar/queries/q0.sql
+reference_sql_path: eval/bench/sec_edgar/queries/q0.sql
 
 parameters: []
 dependent_tables: []
@@ -25,7 +25,7 @@ partitioning: {}
 
 output_schema: []
 
-cost_model_config: config/sec_edgar_q0_aux_cost_model.json
+cost_model_config: accelerators/sec_edgar/q0/config/sec_edgar_q0_aux_cost_model.json
 
 speedup_verification:
   min_speedup_vs_base: 2.0

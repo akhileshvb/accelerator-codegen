@@ -1,6 +1,6 @@
 -- One-time preparation of a SEC-EDGAR PostgreSQL database for the
 -- accelerator_codegen SEC-EDGAR aux accelerators (q1, q2, q3, q4, q6, q24).
--- Run after loading benchmarks/sec_edgar/schema.sql data and before
+-- Run after loading eval/bench/sec_edgar/schema.sql data and before
 -- CREATE EXTENSION / installing the capture triggers. Idempotent.
 --
 --  * C collation on ORDER BY text keys: the accelerators order byte-wise, so

@@ -5,7 +5,7 @@
 #
 # if({{build_flag_condition}})
 #   add_executable(test_{{engine_name}}_contract
-#       tests/engine_backend/test_{{engine_name}}_contract.cpp
+#       backends/{{engine_name}}/tests/test_{{engine_name}}_contract.cpp
 #   )
 #   target_link_libraries(test_{{engine_name}}_contract
 #       PRIVATE
@@ -17,7 +17,7 @@
 #           ${CMAKE_CURRENT_SOURCE_DIR}/tests
 #           # Postgres: ${ACCEL_PG_INCLUDEDIR_SERVER} from FindAccelPostgreSQL
 #   )
-#   # Postgres harnesses: #include "accelerator_codegen/engine_backend/postgres_tooling.hpp"
+#   # Postgres harnesses: #include "backends/postgres/tests/postgres_tooling.hpp"
 #   # and call accel::postgres::DiscoverTools() — fail closed if !ok.
 #   add_test(NAME engine_{{engine_name}}_contract COMMAND test_{{engine_name}}_contract)
 # endif()

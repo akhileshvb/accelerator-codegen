@@ -187,7 +187,7 @@ fi
 if [[ "${STATUS}" == "pass" ]]; then
   if ! BACKEND_LOG="$(python3 "${ROOT}/scripts/check_backend_query_free.py" --engine "${ENGINE_NAME}" 2>&1)"; then
     STATUS="fail"
-    REASON="per-query code in the ${ENGINE_NAME} backend: register from src/generated/${BENCHMARK_NAME}/q${QUERY}/ instead (scripts/check_backend_query_free.py)"
+    REASON="per-query code in the ${ENGINE_NAME} backend: register from accelerators/${BENCHMARK_NAME}/q${QUERY}/ instead (scripts/check_backend_query_free.py)"
     LOG="${BACKEND_LOG}"
   fi
 fi

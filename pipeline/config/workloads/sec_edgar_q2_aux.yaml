@@ -15,9 +15,9 @@ reference_accelerators: []
 allow_poor_fitness: false
 allow_unsuccessful_design: false
 
-reference_sql_path: benchmarks/sec_edgar/queries/q2.sql
+reference_sql_path: eval/bench/sec_edgar/queries/q2.sql
 
-parameters:   # spec: benchmarks/sec_edgar/params/q2.json (zero-arg function = defaults)
+parameters:   # spec: eval/bench/sec_edgar/params/q2.json (zero-arg function = defaults)
   - {name: fy, type: BIGINT, default: 2022, domain: [2021, 2022, 2023, 2024]}
   - {name: uom, type: VARCHAR, default: "pure", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
 
@@ -34,7 +34,7 @@ output_schema:
   - {name: tag, type: VARCHAR}
   - {name: value, type: DOUBLE}
 
-cost_model_config: config/sec_edgar_q2_aux_cost_model.json
+cost_model_config: accelerators/sec_edgar/q2/config/sec_edgar_q2_aux_cost_model.json
 
 speedup_verification:
   min_speedup_vs_base: 2.0

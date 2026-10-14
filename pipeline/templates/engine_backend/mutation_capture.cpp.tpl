@@ -1,5 +1,5 @@
 // GENERATED BACKEND
-#include "accelerator_codegen/stateful/{{engine_name}}/{{engine_name}}_mutation_capture.hpp"
+#include "backends/{{engine_name}}/engine/{{engine_name}}_mutation_capture.hpp"
 
 namespace accelerator_codegen::aux_state::engine::{{engine_name}} {
 

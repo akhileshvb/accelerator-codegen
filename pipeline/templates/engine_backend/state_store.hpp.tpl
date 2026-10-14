@@ -3,8 +3,8 @@
 
 #include <functional>
 
-#include "accelerator_codegen/stateful/core/aux_types.hpp"
-#include "accelerator_codegen/stateful/state/partitioned_state_store.hpp"
+#include "substrate/aux/core/aux_types.hpp"
+#include "substrate/aux/state/partitioned_state_store.hpp"
 
 namespace accelerator_codegen::aux_state::engine::{{engine_name}} {
 

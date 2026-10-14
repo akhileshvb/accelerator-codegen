@@ -23,25 +23,25 @@ You are bootstrapping the **query-facing host** for **`{{engine_name}}`** so lat
 | Cross-accel ctest (phase 2) | `{{cross_accel_ctest_regex}}` |
 | Build dir | `{{build_dir}}` |
 | Dataset / SDK env | `{{dataset_env}}` |
-| Query tree | `src/generated/{bench}/q*/{{engine_name}}/` |
-| Catalog registry | `src/generated/catalog/{{engine_name}}/query_catalog.{hpp,cpp}` (entries registered from each query's directory) |
+| Query tree | `accelerators/{bench}/q*/{{engine_name}}/` |
+| Catalog registry | `backends/{{engine_name}}/api/catalog/query_catalog.{hpp,cpp}` (entries registered from each query's directory) |
 
-Prefer these conventions. If an engine already uses a slightly different file under `src/generated/{{engine_name}}/` or `runtime|stateful/{{engine_name}}/`, extend that file instead of creating a parallel tree.
+Prefer these conventions. If an engine already uses a slightly different file under `backends/{{engine_name}}/api/` or `backends/{{engine_name}}/`, extend that file instead of creating a parallel tree.
 
 ## Ordered plan (minimize time-to-gate-pass)
 
 ### Phase 1 — required for `host_bootstrap` gate (do this first)
 
 1. **Locate existing host**
-   - Read `{{register_path}}` (and sibling files under `src/generated/{{engine_name}}/`, `src/runtime/{{engine_name}}/`, `src/stateful/{{engine_name}}/`).
+   - Read `{{register_path}}` (and sibling files under `backends/{{engine_name}}/api/`, `backends/{{engine_name}}/engine/`, `backends/{{engine_name}}/state/`).
    - Skim duckdb reference surfaces only as templates (structure, not DataChunk IR):
-     - `tests/aux_state/test_tpch_shared_differential.cpp`
-     - `tests/aux_state/test_aux_multi_connection_stress.cpp` / `test_cross_accel_correctness.cpp` (phase 2)
+     - `eval/tests/test_tpch_shared_differential.cpp`
+     - `eval/tests/test_aux_multi_connection_stress.cpp` / `test_cross_accel_correctness.cpp` (phase 2)
      - Nearby `add_executable(test_tpch_shared_differential …)` in root `CMakeLists.txt`
-   - Reuse this engine’s `engine_backend` adapters for **mutation / txn / store / tooling** and any **engine-local** rebuild scan helper. Do **not** invent `runtime/{{engine_name}}2`. Do **not** require `ScanNativeBaseTable` → DataChunk.
+   - Reuse this engine’s `engine_backend` adapters for **mutation / txn / store / tooling** and any **engine-local** rebuild scan helper. Do **not** invent a parallel `backends/{{engine_name}}2/`. Do **not** require `ScanNativeBaseTable` → DataChunk.
 
 2. **SQL entrypoints (shared, append-only)**
-   - In the backend (`src/generated/{{engine_name}}/`, `runtime|stateful/{{engine_name}}/`), add generic **registries** + dispatch so each later query registers its base + aux call paths from its own directory (`{{register_path}}`) via static registrars, through **this host’s** native APIs + `AuxQueryModule`. The backend must name no query and must still build with every `src/generated/<bench>/q<N>/` removed.
+   - In the backend (`backends/{{engine_name}}/api/`, `backends/{{engine_name}}/`), add generic **registries** + dispatch so each later query registers its base + aux call paths from its own directory (`{{register_path}}`) via static registrars, through **this host’s** native APIs + `AuxQueryModule`. The backend must name no query and must still build with every `accelerators/<bench>/q<N>/` removed.
    - You do **not** need a full TPC-H Q{{query_number}} kernel here — registries + generic dispatch that **link and load** (with zero or one registered query) are enough for bootstrap.
    - Never wire this host through DuckDB `RegisterAcceleratorFunctions` or `*.duckdb` as the execution host when `{{engine_name}}≠duckdb`.
 
@@ -71,8 +71,8 @@ Prefer these conventions. If an engine already uses a slightly different file un
 
 Replicate duckdb gate surfaces under engine-native names (same semantics, host `{{engine_name}}`, export `ACCEL_ENGINE_NAME={{engine_name}}`):
 
-- `tests/aux_state/test_{{engine_name}}_aux_multi_connection_stress.cpp` → ctest `{{multi_conn_ctest_regex}}`
-- `tests/aux_state/test_{{engine_name}}_cross_accel.cpp` (or peer naming) → ctest `{{cross_accel_ctest_regex}}`
+- `eval/tests/test_{{engine_name}}_aux_multi_connection_stress.cpp` → ctest `{{multi_conn_ctest_regex}}`
+- `eval/tests/test_{{engine_name}}_cross_accel.cpp` (or peer naming) → ctest `{{cross_accel_ctest_regex}}`
 - Bench / calibrate hooks driven by `ACCEL_ENGINE_NAME` + host work dir when straightforward
 
 If turns are short after Phase 1, prefer a clean gate pass over incomplete Phase 2 stubs. Per-query stages can finish missing harnesses, but shared CMake + registration helpers should already exist.

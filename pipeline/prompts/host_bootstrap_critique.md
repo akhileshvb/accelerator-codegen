@@ -29,7 +29,7 @@ write the two files (heredoc `cat > …`) and **stop**.
 1. `pipeline/prompts/shared/query_host_bootstrap.md`
 2. `pipeline/prompts/host_bootstrap.md` (phase 1 only)
 3. Registration / extension sources at `{{register_path}}` and
-   `src/runtime/{{engine_name}}/` / `src/stateful/{{engine_name}}/`
+   `backends/{{engine_name}}/engine/` / `backends/{{engine_name}}/state/`
 4. `{{differential_source}}` and the CMake target for `{{differential_binary}}`
 5. Gate JSON if present
 
@@ -44,7 +44,7 @@ this host even though the binary built. Typical holes:
 - CMake target name is not `{{differential_binary}}`, or postgres target is
   only wired for host-make / `build-release` and not the Docker Ninja tree
 - Second adapter tree (duplicate store/aux/txn) instead of reusing
-  `runtime|stateful/{{engine_name}}`
+  `backends/{{engine_name}}/`
 - Server-only symbols in the host shared library (postgres: `postgres.h` in
   `accelerator_codegen`, not the MODULE)
 - SQL entrypoints missing / named away from the conventional register surface

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "src" / "generated" / "tpch"
+OUT = ROOT / "accelerators" / "tpch"
 
 # view_definition only (no CREATE) — fed to pgivm.create_immv
 DEFINITIONS: dict[int, str] = {

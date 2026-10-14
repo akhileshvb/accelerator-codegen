@@ -1,6 +1,6 @@
 # Read-path scaffold (agent-generated `aux/module.cpp`)
 
-Port from shipped modules under `src/generated/tpch/q{1,3,10,12,14}/aux/module.cpp`. Every aux query implements the same `AuxQueryModule` surface.
+Port from shipped modules under `accelerators/tpch/q{1,3,10,12,14}/aux/module.cpp`. Every aux query implements the same `AuxQueryModule` surface.
 
 ## Module methods (required)
 
@@ -54,7 +54,7 @@ In `InterpretMutation` / `AccumulateMutation` / `StageMaintenance`:
 ## Serialized-boundary encoding
 
 Only when an engine adapter uses `serialized_boundary` store mode: implement
-`Encode*` / `Decode*` with `accelerator_codegen/stateful/core/byte_stream.hpp`
+`Encode*` / `Decode*` with `substrate/aux/core/byte_stream.hpp`
 at the process/SHM boundary. Typed in-process adapters keep `StateImage`
 payloads without byte round-trips on the hot path.
 
@@ -62,7 +62,7 @@ payloads without byte round-trips on the hot path.
 
 | Pattern | Reference |
 |---------|-----------|
-| Single-partition | `src/generated/tpch/q14/aux/module.cpp` |
-| Multi-partition window | `src/generated/tpch/q10/aux/module.cpp`, `q12/aux/module.cpp` |
-| Prefix / cumulative | `src/generated/tpch/q1/aux/module.cpp` |
-| SEC EDGAR append workload | `src/generated/sec_edgar/q1/aux/module.cpp` |
+| Single-partition | `accelerators/tpch/q14/duckdb/aux/module.cpp` |
+| Multi-partition window | `accelerators/tpch/q10/duckdb/aux/module.cpp`, `q12/aux/module.cpp` |
+| Prefix / cumulative | `accelerators/tpch/q1/duckdb/aux/module.cpp` |
+| SEC EDGAR append workload | `accelerators/sec_edgar/q1/<engine>/aux/module.cpp` |

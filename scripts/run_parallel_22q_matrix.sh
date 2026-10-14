@@ -38,7 +38,7 @@ DB="${DUCKDB_ROOT}/tpch_sf${SCALE}.duckdb"
 OUT="${ROOT}/eval/bench/tpch/results/sf${SCALE}_parallel_22q"
 LOG="${OUT}/campaign.log"
 CSV="${OUT}/geomean_by_query.csv"
-PLOT_SCRIPT="${ROOT}/benchmarks/tpch/plot_sf${SCALE}_parallel_speedup.py"
+PLOT_SCRIPT="${ROOT}/eval/bench/tpch/plot_sf${SCALE}_parallel_speedup.py"
 
 IFS=',' read -r -a THREADS <<< "${THREAD_LIST}"
 

@@ -4,16 +4,10 @@ write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
   # the query's own tree: module, layout, registrars (engine backends name no query)
-  - src/generated/sec_edgar/q*/**
-  - src/generated/catalog/**
-  - config/sec_edgar_q*_aux_cost_model.json
-  - tests/single-threaded/test_sec_edgar_q*_*.cpp
-  - tests/test_support/sec_edgar_q*_aux_helpers.hpp
-  - tests/test_support/cross_accel_helpers.cpp
-  - tests/test_support/cross_accel_helpers.hpp
-  - benchmarks/sec_edgar/single-threaded/benchmark_q*_aux.cpp
-  - benchmarks/sec_edgar/single-threaded/benchmark_q*_hybrid_eval.cpp
-  - benchmarks/sec_edgar/single-threaded/calibrate_q*_aux_cost_model.cpp
+  - accelerators/sec_edgar/q*/**
+  - backends/*/api/catalog/**
+  - eval/tests/test_support/cross_accel_helpers.cpp
+  - eval/tests/test_support/cross_accel_helpers.hpp
 
 allowed_commands:
   - "^cmake -S \\. -B build-release( .*)?$"

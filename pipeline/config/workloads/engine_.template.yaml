@@ -6,7 +6,7 @@
 # templates + these SDK hints only.
 #
 # Outcome: sequential layers in prompts/engine_backend/layers.md, each with
-# tests/engine_backend/test_<engine>_<layer>.cpp. Validation adds unseen
+# backends/<engine>/tests/test_<engine>_<layer>.cpp. Validation adds unseen
 # adversarial tests.
 
 workload_kind: engine_backend

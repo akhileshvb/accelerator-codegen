@@ -2,8 +2,8 @@ benchmark_name: sec_edgar
 query_number: 2
 engine_name: duckdb
 query_id: "2"
-reference_sql_path: benchmarks/sec_edgar/queries/q2.sql
-parameters:   # spec: benchmarks/sec_edgar/params/q2.json (zero-arg function = defaults)
+reference_sql_path: eval/bench/sec_edgar/queries/q2.sql
+parameters:   # spec: eval/bench/sec_edgar/params/q2.json (zero-arg function = defaults)
   - {name: fy, type: BIGINT, default: 2022, domain: [2021, 2022, 2023, 2024]}
   - {name: uom, type: VARCHAR, default: "pure", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
 output_schema:

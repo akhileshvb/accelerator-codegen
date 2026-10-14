@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Calibrate the TPC-H accelerators' maintenance cost models on the refresh functions, at one scale factor.
 
-The default models (config/qN_aux_cost_model.json) are fitted on UPDATE calibration writes over small date ranges,
+The default models (accelerators/tpch/qN/config/qN_aux_cost_model.json) are fitted on UPDATE calibration writes over small date ranges,
 which extrapolate badly to the refresh functions: an RF touches ~0.1% of the orders spread over every key range, so a
 module's fixed per-partition costs dominate and the per-row fit predicts far too much (Q9 at SF1: ~45 s predicted for
 an ApplyDelta that takes a fraction of that).  This measures the two options the policy weighs on the writes the
@@ -31,7 +31,7 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUN_COMPARE = os.path.join(ROOT, "benchmarks", "compare", "run_compare.py")
+RUN_COMPARE = os.path.join(ROOT, "eval", "compare", "run_compare.py")
 
 
 def cycle(a, system, q, action, out):
@@ -51,10 +51,11 @@ def cycle(a, system, q, action, out):
 
 def calibrate_one(a, system, q, out_root, scale):
     """One query: returns a line to print."""
-    cdir = os.path.join(ROOT, "accelerators", "tpch", f"q{q}", "config", *(["verus"] if system.startswith("verus") else []))
+    qcfg = os.path.join(ROOT, "accelerators", "tpch", f"q{q}", "config")
+    cdir = os.path.join(qcfg, *(["verus"] if system.startswith("verus") else []))
     default = os.path.join(cdir, f"q{q}_aux_cost_model.json")
     if not os.path.exists(default):
-        default = os.path.join(ROOT, "accelerators", "tpch", f"q{q}", "config", f"q{q}_aux_cost_model.json")
+        default = os.path.join(qcfg, f"q{q}_aux_cost_model.json")
     actions = ("ApplyDelta",) if a.rebuild_from_build else ("ApplyDelta", "RebuildAll")
     measured = {}
     for action in actions:
