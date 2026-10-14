@@ -36,8 +36,8 @@ int main(int argc, char **argv) {
     using namespace accelerator_codegen::aux_state;
     using namespace accelerator_codegen::aux_state::harness;
     using namespace accelerator_codegen::aux_state::engine;
-    duckdb::DuckDB database(db_path);
-    duckdb::Connection connection(database);
+    ::duckdb::DuckDB database(db_path);
+    ::duckdb::Connection connection(database);
     SharedQueryCatalogEntry entry;
     std::string out_path;
     if (workload == "verus") {
@@ -52,8 +52,8 @@ int main(int argc, char **argv) {
         auto row = connection.Query(std::string("SELECT ") + argv[5]);
         if (!row || row->HasError() || row->RowCount() != 1)
           throw std::runtime_error(std::string("params: ") + (row ? row->GetError() : argv[5]));
-        std::vector<duckdb::Value> values;
-        for (duckdb::idx_t c = 0; c < row->ColumnCount(); ++c)
+        std::vector<::duckdb::Value> values;
+        for (::duckdb::idx_t c = 0; c < row->ColumnCount(); ++c)
           values.push_back(row->GetValue(c, 0));
         entry.benchmark_arguments.values = AuxArgumentsFromValues(entry, values).values;
       }

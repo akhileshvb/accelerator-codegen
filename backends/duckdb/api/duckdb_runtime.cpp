@@ -48,8 +48,8 @@
 #include "substrate/aux/core/aux_maintenance_policy.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
-#include "eval/harness/aux_state_footprint.hpp"
-#include "eval/harness/cost_calibration.hpp"
+#include "backends/duckdb/api/cost_model_path.hpp"
+#include "substrate/aux/state/aux_state_footprint.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 
 namespace accelerator_codegen::aux_state::engine::duckdb {
@@ -631,7 +631,7 @@ DuckdbRuntime::DuckdbRuntime(::duckdb::Connection &connection,
                [] { return DuckDBAuxBackend::ReaderVisibility(); },
                [entry] {
                  return core::LoadAuxCostModelJson(
-                     harness::SharedCostModelConfigPath(entry));
+                     SharedCostModelConfigPath(entry));
                },
                [expected = expected_queries_before_write_]() {
                  return *expected;
@@ -870,8 +870,7 @@ uint64_t DuckdbRuntime::AuxStateFootprintBytes() const {
   if (verus_store_) {
     return 0; // the Verus store's states are not measured
   }
-  return harness::ComputeAuxStateFootprintBytes(state_store_,
-                                                entry_.accelerator_id);
+  return ComputeAuxStateFootprintBytes(state_store_, entry_.accelerator_id);
 }
 
 DuckdbRuntime::~DuckdbRuntime() {
