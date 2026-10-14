@@ -16,14 +16,14 @@
 # Outputs:
 #   build-release/q{N}_aux_bench_sf20/results.csv
 #   build-release/tpch_aux_sf20_sweep_summary.csv
-#   benchmarks/tpch/results/tpch_aux_sf20_sweep.log
+#   eval/bench/tpch/results/tpch_aux_sf20_sweep.log
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DUCKDB_ROOT="${DUCKDB_ROOT:-${ROOT}/../accelerator-codegen-duckdb}"
 BUILD="${BUILD:-${ROOT}/build-release}"
 CONFIG="${CONFIG:-${ROOT}/pipeline/config/benchmark_packs/tpch_sf20_aux_sweep.yaml}"
-OUT_DIR="${OUT_DIR:-${ROOT}/benchmarks/tpch/results}"
+OUT_DIR="${OUT_DIR:-${ROOT}/eval/bench/tpch/results}"
 LOG="${LOG:-${OUT_DIR}/tpch_aux_sf20_sweep.log}"
 
 MODE="${1:-full}" # smoke | full
@@ -173,7 +173,7 @@ run_query_sweep() {
     # Work DB copies are large (~SF size). Prefer ACCEL_AUX_BENCH_WORK_ROOT on
     # a big disk (e.g. /ssd1/akhilvb/aux_bench); default remains under BUILD.
     export ACCEL_AUX_BENCH_WORK_DIR="${ACCEL_AUX_BENCH_WORK_ROOT:-${BUILD}}/q${query}_aux_bench_${DB_LABEL}"
-    export ACCEL_AUX_BENCH_BASELINE_CACHE="${ROOT}/config/q${query}_aux_benchmark_baseline_sf20.json"
+    export ACCEL_AUX_BENCH_BASELINE_CACHE="${ROOT}/accelerators/tpch/q${query}/config/q${query}_aux_benchmark_baseline_sf20.json"
     export ACCEL_REPO_ROOT="${ROOT}"
     export ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB=1
     bash "${ROOT}/scripts/run_aux_bench_sweep.sh" "${query}"

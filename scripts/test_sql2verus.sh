@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Test sql2verus on the query corpora in src/verus/sql2verus/tests/<suite>/:
+# Test sql2verus on the query corpora in substrate/verus/sql2verus/tests/<suite>/:
 # every query must be translated or refused as expected.txt says, and every
 # generated spec (definitions and facts), with its default kernel obligations
 # (gen_obligations.rs) and kernel stub, must pass Verus.  With obligations,
 # the derived glue must work too: the store adapter (gen_world.rs, verified
-# against the verified store, src/verus/substrate) and the C ABI (gen_ffi.rs)
+# against the verified store, substrate/verus/store) and the C ABI (gen_ffi.rs)
 # compile into a static library; its C header compiles as C and C++; and a C
 # program that references every function links and drives the store.
 #   expected.txt: <query> ok | <query> ok-spec <text the obligations refusal
 #   must contain> | <query> refused <text the refusal must contain>
 #   A <query>.inputs next to a query declares its kernel inputs (default:
 #   every table whole).  Suite `queries`: the production queries with declared
-#   inputs (src/verus/sql2verus/queries/<q>.inputs), each expected ok.
+#   inputs (workloads/tpch/<q>.inputs), each expected ok.
 #   scripts/test_sql2verus.sh [-j N] [suite ...]      (default: all suites)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-T="$ROOT/src/verus/sql2verus"
+T="$ROOT/substrate/verus/sql2verus"
 VERUS="${VERUS_BIN:-$ROOT/tools/verus/verus-x86-linux/verus}"
 JOBS=4
 if [ "${1:-}" = "-j" ]; then JOBS=$2; shift 2; fi
@@ -23,15 +23,15 @@ SUITES=("$@"); [ ${#SUITES[@]} -eq 0 ] && SUITES=($(ls "$T/tests") queries)
 cargo build --release --quiet --manifest-path "$T/Cargo.toml"
 BIN="${CARGO_TARGET_DIR:-$T/target}/release/sql2verus"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
-"$VERUS" "$ROOT/src/verus/common/src/lib.rs" --crate-type=lib --crate-name=verus_common \
+"$VERUS" "$ROOT/substrate/verus/common/src/lib.rs" --crate-type=lib --crate-name=verus_common \
   --export "$WORK/verus_common.vir" --compile -o "$WORK/libverus_common.rlib" >/dev/null
-"$VERUS" "$ROOT/src/verus/substrate/src/lib.rs" --crate-type=lib --crate-name=verus_substrate \
+"$VERUS" "$ROOT/substrate/verus/store/src/lib.rs" --crate-type=lib --crate-name=verus_substrate \
   --export "$WORK/verus_substrate.vir" --compile -o "$WORK/libverus_substrate.rlib" >/dev/null
 one() { # suite query expectation...
   local suite=$1 q=$2; shift 2; local want="$*"
   local d="$WORK/$suite/$q"; mkdir -p "$d"
   local dir="$T/tests/$suite" schema
-  if [ "$suite" = queries ]; then dir="$T/queries"; schema="$dir/tpch_schema.sql"; else schema="$dir/schema.sql"; fi
+  if [ "$suite" = queries ]; then dir="$ROOT/workloads/tpch"; schema="$dir/schema.sql"; else schema="$dir/schema.sql"; fi
   local inp=(); [ -f "$dir/$q.inputs" ] && inp=(--inputs "$dir/$q.inputs")
   local out
   if ! out=$("$BIN" --schema "$schema" --query "$dir/$q.sql" --out "$d/gen_spec.rs" "${inp[@]}" \
@@ -100,13 +100,13 @@ open(d + '/hdr.cc', 'w').write('#include "q.h"\nint main() { return 0; }\n')
 PY
   gcc -std=c99 -Wall -Wextra -Werror -I"$d" "$d/link.c" "$d/libq.a" -lpthread -ldl -lm -o "$d/link" &&
     g++ -std=c++17 -Wall -Wextra -Werror -I"$d" -fsyntax-only "$d/hdr.cc" &&
-    g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -I"$d" -I"$ROOT/include" -fsyntax-only "$d/gen_glue.cpp" &&
+    g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -I"$d" -I"$ROOT" -I"$ROOT/accelerators" -fsyntax-only "$d/gen_glue.cpp" &&
     "$d/link"
 }
 export -f one glue_check; export BIN T VERUS WORK ROOT
 for s in "${SUITES[@]}"; do
   if [ "$s" = queries ]; then
-    for f in "$T"/queries/*.inputs; do echo "queries $(basename "$f" .inputs) ok"; done
+    for f in "$ROOT"/workloads/tpch/*.inputs; do echo "queries $(basename "$f" .inputs) ok"; done
   else
     grep -v '^#' "$T/tests/$s/expected.txt" | sed "s|^|$s |"
   fi

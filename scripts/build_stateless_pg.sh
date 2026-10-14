@@ -46,7 +46,7 @@ if ! command -v ninja >/dev/null || ! command -v pg_config >/dev/null || [ ! -d 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq && apt-get install -y -qq postgresql-server-dev-17 build-essential cmake ninja-build >/dev/null
 fi
-cmake -S '${SRC}/src/runtime/postgres_stateless' -B '${BUILD}' -G Ninja -DACCEL_ROOT='${SRC}' \
+cmake -S '${SRC}/backends/postgres/api/stateless' -B '${BUILD}' -G Ninja -DACCEL_ROOT='${SRC}' \
       -DACCEL_STATELESS_PG_LIB='${LIB}' -DACCEL_STATELESS_COPTS='${COPTS}' -DACCEL_STATELESS_QUERIES='${QUERIES}' >/dev/null
 if ! out=\$(ninja -C '${BUILD}' 2>&1); then echo \"\$out\" | grep -E 'error|FAILED|undefined' | head -40; exit 1; fi
 LIBDIR=\$(pg_config --pkglibdir)

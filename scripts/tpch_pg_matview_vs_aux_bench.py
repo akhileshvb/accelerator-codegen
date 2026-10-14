@@ -9,7 +9,7 @@ read medians + maintenance costs:
   aux     = touch UPDATE with mutation triggers (ApplyDelta on commit)
 
 Uses seed_1-compatible bindings (same as matview reference.sql / query.sql).
-IMMV is optional per query (see src/generated/tpch/q*/postgres/immv/).
+IMMV is optional per query (see accelerators/tpch/q*/postgres/immv/).
 """
 
 from __future__ import annotations

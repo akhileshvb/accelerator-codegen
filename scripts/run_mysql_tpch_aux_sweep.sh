@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # MySQL TPC-H aux sweep → shared-interface CSV (same columns as
-# benchmarks/aux_state/results/{postgres,duckdb}_*_sweep.csv).
+# eval/bench/aux_state/results/{postgres,duckdb}_*_sweep.csv).
 #
 # Default: SF=10 container, read-only (interval 0) then 10% point write-mix
 # (labeled write_interval_sec=2.0 to match DuckDB/Postgres 8-read / 1-write).
@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTAINER="${ACCEL_MYSQL_CONTAINER:-accel_mysql_sf10}"
 QUERIES="${ACCEL_MYSQL_SWEEP_QUERIES:-$(seq 1 22)}"
 SCALE="${ACCEL_MYSQL_SWEEP_SCALE:-sf10}"
-OUT="${ACCEL_SHARED_SWEEP_OUTPUT:-${ROOT}/benchmarks/aux_state/results/mysql_tpch_${SCALE}_aux_sweep.csv}"
+OUT="${ACCEL_SHARED_SWEEP_OUTPUT:-${ROOT}/eval/bench/aux_state/results/mysql_tpch_${SCALE}_aux_sweep.csv}"
 LOG="${ACCEL_MYSQL_SWEEP_LOG:-${OUT%.csv}.log}"
 RUN_RO="${ACCEL_MYSQL_SWEEP_READONLY:-1}"
 RUN_MIX="${ACCEL_MYSQL_SWEEP_WRITE_MIX:-1}"
@@ -22,7 +22,7 @@ if [[ "$OUT" == "$ROOT"/* ]]; then
   CONTAINER_OUT="/accel-src/${OUT#"$ROOT"/}"
 else
   CONTAINER_OUT="/accel-src/benchmarks/aux_state/results/mysql_tpch_${SCALE}_aux_sweep.csv"
-  OUT="${ROOT}/benchmarks/aux_state/results/mysql_tpch_${SCALE}_aux_sweep.csv"
+  OUT="${ROOT}/eval/bench/aux_state/results/mysql_tpch_${SCALE}_aux_sweep.csv"
 fi
 
 mkdir -p "$(dirname "$OUT")"
@@ -49,7 +49,6 @@ run_one() {
     -e MYSQL_PORT=3306 \
     -e TPCH_MYSQL_DB=accel_mysql_test \
     -e ACCEL_SRC=/accel-src \
-    -e ACCELERATOR_CODEGEN_CONFIG_DIR=/accel-src/config \
     -e ACCEL_MYSQL_SWEEP_SCALE="${SCALE}" \
     -e ACCEL_TPCH_Q11_FRACTION="${ACCEL_TPCH_Q11_FRACTION:-}" \
     -e ACCEL_SHARED_SWEEP_OUTPUT="${CONTAINER_OUT}" \

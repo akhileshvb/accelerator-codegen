@@ -6,7 +6,7 @@
 #   ./scripts/run_parallel_22q_matrix.sh --scale-factor 10
 #   ./scripts/run_parallel_22q_matrix.sh --scale-factor 10 --threads 1,2,4,8
 #
-# Produces benchmarks/tpch/results/sf{N}_parallel_22q/geomean_by_query.csv and plot PNG.
+# Produces eval/bench/tpch/results/sf{N}_parallel_22q/geomean_by_query.csv and plot PNG.
 set -euo pipefail
 
 ROOT=/home/akhilvb/accelerator-codegen
@@ -35,7 +35,7 @@ if [[ "${SCALE}" != "1" && "${SCALE}" != "10" ]]; then
 fi
 
 DB="${DUCKDB_ROOT}/tpch_sf${SCALE}.duckdb"
-OUT="${ROOT}/benchmarks/tpch/results/sf${SCALE}_parallel_22q"
+OUT="${ROOT}/eval/bench/tpch/results/sf${SCALE}_parallel_22q"
 LOG="${OUT}/campaign.log"
 CSV="${OUT}/geomean_by_query.csv"
 PLOT_SCRIPT="${ROOT}/benchmarks/tpch/plot_sf${SCALE}_parallel_speedup.py"

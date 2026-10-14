@@ -11,7 +11,7 @@ VERUS="${VERUS_BIN:-$ROOT/tools/verus/verus-x86-linux/verus}"
 OUT="${ACCEL_VERUS_LIB_DIR:-$ROOT/build-verus}"
 BENCH="$1"; MODE="${2:-}"
 WORLD="${BENCH}_world"
-DIR="$ROOT/src/generated/$BENCH/verus_world/$WORLD"
+DIR="$ROOT/accelerators/$BENCH/verus_world/$WORLD"
 RF=(-C opt-level=3 -C panic=abort -C codegen-units=1)
 args=("$DIR/crate/src/lib.rs" --crate-type=staticlib --crate-name="${WORLD}_verus"
       --import "verus_common=$OUT/verus_common.vir" --extern "verus_common=$OUT/libverus_common.rlib"

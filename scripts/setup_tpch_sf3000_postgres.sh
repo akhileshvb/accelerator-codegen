@@ -104,7 +104,7 @@ fi
 LI="$(psql_cmd -d "${DB}" -tAc 'SELECT COUNT(*) FROM lineitem' | tr -d '[:space:]')"
 echo "SF3000 Postgres ready: db=${DB} lineitem=${LI}"
 echo "Next (aux vs native write-mix, lean queries only):"
-echo "  ACCEL_PG_ALLOW_SMALL_DB=1 TPCH_PG_DB=${DB} OUT_DIR=benchmarks/tpch/results_pg_sf3000 \\"
+echo "  ACCEL_PG_ALLOW_SMALL_DB=1 TPCH_PG_DB=${DB} OUT_DIR=eval/bench/tpch/results_pg_sf3000 \\"
 echo "    QUERIES=1,5,6,7,8,9,10,11,12,14,15,16,17,18,19,21,22 \\"
 echo "    bash scripts/run_tpch_pg_matview_vs_aux_write_mix_sweep.sh"
 echo "(Prefer aux vs lean IMMV/MV columns; see docs/tpch_sf3000_aux_scale.md baseline pack.)"

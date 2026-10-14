@@ -22,7 +22,7 @@ cd "${DEST}"
 shopt -s nullglob
 remove=(
   src/generated/tpch/q[0-9]* src/generated/sec_edgar/q[0-9]*
-  src/verus/sql2verus/queries/*.inputs
+  workloads/tpch/*.inputs
   pipeline/artifacts pipeline/verus_runs
 )
 for p in "${remove[@]}"; do rm -rf -- "${DEST:?}/${p}"; done

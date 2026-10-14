@@ -51,10 +51,10 @@ def cycle(a, system, q, action, out):
 
 def calibrate_one(a, system, q, out_root, scale):
     """One query: returns a line to print."""
-    cdir = os.path.join(ROOT, "config", *(["verus"] if system.startswith("verus") else []))
+    cdir = os.path.join(ROOT, "accelerators", "tpch", f"q{q}", "config", *(["verus"] if system.startswith("verus") else []))
     default = os.path.join(cdir, f"q{q}_aux_cost_model.json")
     if not os.path.exists(default):
-        default = os.path.join(ROOT, "config", f"q{q}_aux_cost_model.json")
+        default = os.path.join(ROOT, "accelerators", "tpch", f"q{q}", "config", f"q{q}_aux_cost_model.json")
     actions = ("ApplyDelta",) if a.rebuild_from_build else ("ApplyDelta", "RebuildAll")
     measured = {}
     for action in actions:

@@ -1,0 +1,28 @@
+// GENERATED BACKEND
+#pragma once
+
+namespace duckdb {
+class Connection;
+class TableFunctionSet;
+} // namespace duckdb
+
+namespace accelerator_codegen {
+
+// Registers every accelerator table function on the connection's system
+// catalog: the base kernels' function sets (registered below by each query's
+// directory) and the aux-state table functions.
+void RegisterAcceleratorFunctions(duckdb::Connection &connection);
+
+// A base kernel's table function set.  Each query's directory registers its
+// factory with a static registrar, e.g. in
+// accelerators/<bench>/q<N>/duckdb/base/single-threaded/register.cpp:
+//
+//   duckdb::TableFunctionSet CreateQueryFunctionSet();
+//   static const BaseFunctionSetRegistrar kRegistrar{&CreateQueryFunctionSet};
+using TableFunctionSetFactory = duckdb::TableFunctionSet (*)();
+void RegisterBaseFunctionSet(TableFunctionSetFactory factory);
+struct BaseFunctionSetRegistrar {
+    explicit BaseFunctionSetRegistrar(TableFunctionSetFactory factory) { RegisterBaseFunctionSet(factory); }
+};
+
+} // namespace accelerator_codegen

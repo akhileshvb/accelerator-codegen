@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Verify a Verus kernel crate against the verified libraries (src/verus/common,
-# src/verus/substrate, src/verus/prooflib) and, unless --verify-only, compile
+# Verify a Verus kernel crate against the verified libraries (substrate/verus/common,
+# substrate/verus/store, accelerators/prooflib) and, unless --verify-only, compile
 # it to $OUT/lib<name>_verus.a for the engines (CMake links each
-# src/generated/<bench>/q<N>/verus_kit/<name>/ whose library exists).
+# accelerators/<bench>/q<N>/verus_kit/<name>/ whose library exists).
 #   scripts/build_verus_crate.sh <crate_dir> <name> [--verify-only | --no-verify | --rlib | --rlib-no-verify]
 # OUT: $ACCEL_VERUS_LIB_DIR (default build-verus).  The libraries are rebuilt
 # only when their sources change, under a lock (parallel pipeline runs).
@@ -18,7 +18,7 @@ mkdir -p "$OUT"
 (
   flock 9
   for lib in common substrate prooflib; do
-    src="$ROOT/src/verus/$lib/src"
+    case $lib in common) src="$ROOT/substrate/verus/common/src" ;; substrate) src="$ROOT/substrate/verus/store/src" ;; prooflib) src="$ROOT/accelerators/prooflib/src" ;; esac
     stamp="$OUT/verus_$lib.stamp"
     hash="$(cat "$src"/*.rs | sha256sum | cut -d' ' -f1)"
     [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$hash" ] && [ -f "$OUT/libverus_$lib.rlib" ] && continue

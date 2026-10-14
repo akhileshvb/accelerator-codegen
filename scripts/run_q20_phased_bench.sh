@@ -24,7 +24,7 @@ BUILD_DIR="${ROOT}/build"
 BENCH_BIN="${BUILD_DIR}/benchmark_tpch_q20_phased_eval"
 SOURCE_DB="${ACCEL_TPCH_DB:-/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb}"
 WORK_DIR="${ACCEL_Q20_PHASED_WORK_DIR:-${BUILD_DIR}/q20_phased_sf1}"
-COST_MODEL="${ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL:-${ROOT}/config/q20_aux_cost_model_phased.json}"
+COST_MODEL="${ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL:-${ROOT}/accelerators/tpch/q20/config/q20_aux_cost_model_phased.json}"
 POLICY="${ACCEL_Q20_PHASED_POLICY:-hybrid}"
 mkdir -p "${WORK_DIR}"
 

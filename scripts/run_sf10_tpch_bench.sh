@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT=/home/akhilvb/accelerator-codegen
 DUCKDB_ROOT=/home/akhilvb/accelerator-codegen-duckdb
 BUILD="${ROOT}/build-release"
-OUT_DIR="${ROOT}/benchmarks/tpch/results"
+OUT_DIR="${ROOT}/eval/bench/tpch/results"
 SF10_DB="${DUCKDB_ROOT}/tpch_sf10.duckdb"
 MIN_DISK_GB=20
 MIN_MEM_GB=16

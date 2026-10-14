@@ -34,7 +34,6 @@ docker run -d --name "$NAME" \
   --shm-size="${ACCEL_MYSQL_SHM_SIZE:-2g}" \
   -e MYSQL_ROOT_PASSWORD="${PASSWORD}" \
   -e MYSQL_DATABASE="${DATABASE}" \
-  -e ACCELERATOR_CODEGEN_CONFIG_DIR=/accel-src/config \
   -p "127.0.0.1:${PORT}:3306" \
   -v "${VOLUME_NAME}:/var/lib/mysql" \
   -v "${ROOT}:/accel-src" \

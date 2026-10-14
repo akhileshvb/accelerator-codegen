@@ -20,7 +20,6 @@ for q in $QUERIES; do
     -e ACCEL_ENGINE_NAME=mysql \
     -e ACCEL_WORKLOAD_KIND=aux_state \
     -e ACCEL_SRC=/accel-src \
-    -e ACCELERATOR_CODEGEN_CONFIG_DIR=/accel-src/config \
     -e ACCEL_MYSQL_DIFF_KIND="${KIND}" \
     -e ACCEL_MYSQL_DIFF_MODE="${MODE}" \
     -e ACCEL_MYSQL_DIFF_SKIP_WRITE_MAINT="${SKIP_WM}" \

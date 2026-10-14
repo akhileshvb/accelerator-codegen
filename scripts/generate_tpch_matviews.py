@@ -6,7 +6,7 @@ workload YAMLs under pipeline/config/workloads/tpch_q{N}_matview.yaml.
 
 Design notes: SF3000-lean answer / calendar / param-domain grains (Top-K,
 month starts, color tokens, 16 Q13 patterns, etc.) plus residual filters for
-seed_1 bindings from tests/test_support/q*_manifest.hpp. Lean IMMV queries
+seed_1 bindings from accelerators/tpch/q*/tests/q*_manifest.hpp. Lean IMMV queries
 (Q1,5–8,12,14,19) keep calendar/domain intermediate grains.
 """
 

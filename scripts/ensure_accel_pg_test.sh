@@ -13,11 +13,11 @@ LOAD_TPCH="${ACCEL_PG_ENSURE_TPCH:-0}"
 SO_PATH="/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so"
 
 REQUIRED_SOURCES=(
-  "src/generated/postgres/postgres_extension.cpp"
-  "src/generated/postgres/runtime.cpp"
-  "src/generated/postgres/transition_capture.cpp"
-  "src/stateful/postgres/postgres_aux_backend.cpp"
-  "src/stateful/postgres/postgres_bridge.cpp"
+  "backends/postgres/api/extension_api.cpp"
+  "backends/postgres/api/runtime.cpp"
+  "backends/postgres/engine/transition_capture.cpp"
+  "backends/postgres/state/postgres_aux_backend.cpp"
+  "backends/postgres/engine/postgres_bridge.cpp"
 )
 
 start_if_needed() {

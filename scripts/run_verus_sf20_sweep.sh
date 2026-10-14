@@ -5,7 +5,7 @@
 # one lock, for every accelerator of the database; scripts/gen_verus_world.py)
 # or STORE=verus (one store per accelerator).
 #
-# Writes (VERUS_KIT_WRITE_MODE, see tests/verification/verus_kit/verus_kit_runner.cpp):
+# Writes (VERUS_KIT_WRITE_MODE, see eval/tests/verus_kit/verus_kit_runner.cpp):
 #   auto (default)  rf (TPC-H RF1/RF2 mini-chunks on orders + lineitem) when the
 #                   query reads orders or lineitem, else rf_dim (parts and
 #                   suppliers with their partsupp rows): Q2, Q11, Q16
@@ -42,10 +42,10 @@ mkdir -p "${WORK}" "${OUT}"
 echo "db=${DB} out=${OUT} queries=[${QUERIES}] reps=${REPS} mixes=${MIXES} ops=${OPS} write_mode=${VERUS_KIT_WRITE_MODE} rf_chunk=${VERUS_KIT_RF_CHUNK} store=${ACCEL_AUX_STORE}"
 
 for q in ${QUERIES}; do
-  spec="${ROOT}/benchmarks/verus/tpch/q${q}"
+  spec="${ROOT}/accelerators/tpch/q${q}/tests/verus_workload"
   copy="${WORK}/sweep_q${q}.duckdb"
   # each kit's own SF20 cost model (scripts/calibrate_verus_sf20_cost_models.sh)
-  model="${ROOT}/config/verus/q${q}_aux_cost_model_sf20.json"
+  model="${ROOT}/accelerators/tpch/q${q}/config/verus/q${q}_aux_cost_model_sf20.json"
   [[ -f "${model}" ]] || echo "  warning: no calibrated cost model ${model} (the policy uses defaults)"
   export ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL="${model}"
   echo "=== q${q} $(date +%T)"

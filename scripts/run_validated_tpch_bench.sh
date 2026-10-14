@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT=/home/akhilvb/accelerator-codegen
 DUCKDB_ROOT=/home/akhilvb/accelerator-codegen-duckdb
 BUILD="${ROOT}/build-release"
-OUT_DIR="${ROOT}/benchmarks/tpch/results"
+OUT_DIR="${ROOT}/eval/bench/tpch/results"
 
 SCALE=1
 SESSION=1

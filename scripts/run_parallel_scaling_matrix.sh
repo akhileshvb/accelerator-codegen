@@ -9,7 +9,7 @@ set -euo pipefail
 
 ROOT=/home/akhilvb/accelerator-codegen
 SCRIPT="${ROOT}/scripts/run_validated_tpch_bench.sh"
-OUT_DIR="${ROOT}/benchmarks/tpch/results/parallel_matrix"
+OUT_DIR="${ROOT}/eval/bench/tpch/results/parallel_matrix"
 SCALE_LIST="1"
 THREAD_LIST="1,2,4,8,16"
 SEEDS="1-5"
@@ -50,7 +50,7 @@ for scale in "${SCALES[@]}"; do
     echo "=== matrix SF${scale} parallel threads=${threads} ==="
     if "${SCRIPT}" --scale-factor "${scale}" --session "${SESSION}" --seeds "${SEEDS}" \
         --accelerator-mode parallel --threads "${threads}"; then
-      csv="${ROOT}/benchmarks/tpch/results/validated_sf${scale}_session${SESSION}_parallel_t${threads}.csv"
+      csv="${ROOT}/eval/bench/tpch/results/validated_sf${scale}_session${SESSION}_parallel_t${threads}.csv"
       # Copy into matrix folder for archival
       if [[ -f "${csv}" ]]; then
         cp -f "${csv}" "${OUT_DIR}/"
@@ -70,7 +70,7 @@ for scale in "${SCALES[@]}"; do
   echo "=== matrix SF${scale} single threads=1 (self-scaling baseline) ==="
   if "${SCRIPT}" --scale-factor "${scale}" --session "${SESSION}" --seeds "${SEEDS}" \
       --accelerator-mode single --threads 1; then
-    csv="${ROOT}/benchmarks/tpch/results/validated_sf${scale}_session${SESSION}_single_t1.csv"
+    csv="${ROOT}/eval/bench/tpch/results/validated_sf${scale}_session${SESSION}_single_t1.csv"
     if [[ -f "${csv}" ]]; then
       cp -f "${csv}" "${OUT_DIR}/"
       echo "${scale},1,single,${csv},ok" >>"${SUMMARY}"

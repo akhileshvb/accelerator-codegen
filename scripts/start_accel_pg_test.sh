@@ -30,7 +30,6 @@ echo "=== starting ${NAME} (${IMAGE}) on 127.0.0.1:${PORT} ==="
 docker run -d --name "$NAME" \
   --shm-size="${ACCEL_PG_SHM_SIZE:-2g}" \
   -e POSTGRES_PASSWORD="${PGPASSWORD:-postgres}" \
-  -e ACCELERATOR_CODEGEN_CONFIG_DIR=/accel-src/config \
   -p "127.0.0.1:${PORT}:5432" \
   -v "${DATA_DIR}:/var/lib/postgresql/data" \
   -v "${ROOT}:/accel-src" \

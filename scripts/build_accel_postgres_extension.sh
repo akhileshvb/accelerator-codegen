@@ -11,9 +11,9 @@ fi
 
 # Require adapter sources on the host mount (fail closed — no stale-.so soft pass).
 for rel in \
-  src/runtime/postgres/postgres_extension.cpp \
-  src/stateful/postgres/postgres_aux_backend.cpp \
-  src/stateful/postgres/postgres_state_store.cpp
+  backends/postgres/engine/extension_engine.cpp \
+  backends/postgres/state/postgres_aux_backend.cpp \
+  backends/postgres/state/postgres_state_store.cpp
 do
   if [[ ! -f "${ROOT}/$rel" ]]; then
     echo "missing adapter source: ${ROOT}/${rel}" >&2

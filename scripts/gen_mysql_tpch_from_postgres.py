@@ -208,7 +208,7 @@ def postgres_to_mysql_sql(sql: str) -> str:
 
 
 def write_catalog() -> None:
-    src = (ROOT / "src/generated/catalog/postgres/query_catalog.cpp").read_text()
+    src = (ROOT / "backends/postgres/api/catalog/query_catalog.cpp").read_text()
     src = src.replace("PostgreSQL query catalog", "MySQL query catalog")
     src = src.replace("catalog/postgres/query_catalog.hpp", "catalog/mysql/query_catalog.hpp")
     src = src.replace("engine::postgres", "engine::mysql")
@@ -218,11 +218,11 @@ def write_catalog() -> None:
     src = src.replace("PostgresQueriesForWorkload", "MysqlQueriesForWorkload")
     src = src.replace("postgres query not found", "mysql query not found")
     src = postgres_to_mysql_sql(src)
-    dest_dir = ROOT / "src/generated/catalog/mysql"
+    dest_dir = ROOT / "backends/mysql/api/catalog"
     dest_dir.mkdir(parents=True, exist_ok=True)
     (dest_dir / "query_catalog.cpp").write_text(src)
 
-    hdr = (ROOT / "src/generated/catalog/postgres/query_catalog.hpp").read_text()
+    hdr = (ROOT / "backends/postgres/api/catalog/query_catalog.hpp").read_text()
     hdr = hdr.replace("PostgreSQL query catalog", "MySQL query catalog")
     hdr = hdr.replace("engine::postgres", "engine::mysql")
     hdr = hdr.replace("PostgresSharedQueryArguments", "MysqlSharedQueryArguments")
@@ -234,7 +234,7 @@ def write_catalog() -> None:
 
 
 def transform_runtime() -> None:
-    src = (ROOT / "src/generated/postgres/runtime.cpp").read_text()
+    src = (ROOT / "backends/postgres/api/runtime.cpp").read_text()
     start = src.find("// AuxDate uses Unix-epoch days")
     scans = src.find("void ScanTpchQ1Lineitems(")
     if start < 0 or scans < 0:
@@ -453,7 +453,7 @@ def transform_runtime() -> None:
         "} // namespace accelerator_codegen::aux_state::engine::postgres",
         "} // namespace accelerator_codegen::aux_state::engine::mysql",
     )
-    dest_dir = ROOT / "src/generated/mysql"
+    dest_dir = ROOT / "backends/mysql/api"
     dest_dir.mkdir(parents=True, exist_ok=True)
     (dest_dir / "runtime.cpp").write_text(body)
 
@@ -464,7 +464,7 @@ def transform_runtime() -> None:
 
 #include <string>
 
-#include "accelerator_codegen/stateful/core/aux_types.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
 
@@ -500,8 +500,8 @@ std::string ExecuteMysqlTpchQ22(const core::QueryArguments &arguments);
 
 
 def copy_cost_models() -> None:
-    cfg = ROOT / "config"
     for q in range(1, 23):
+        cfg = ROOT / "accelerators" / "tpch" / f"q{q}" / "config"
         src = cfg / f"q{q}_aux_cost_model.json"
         dest = cfg / f"q{q}_aux_cost_model_mysql.json"
         data = json.loads(src.read_text())

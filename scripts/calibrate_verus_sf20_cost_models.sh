@@ -30,13 +30,13 @@ export ACCEL_AUX_CALIBRATION_REBUILD_ONCE=1
 [[ -x "${CALIBRATOR}" ]] || {
   echo "no calibrator at ${CALIBRATOR}: cmake build-verus-duckdb -DACCEL_AUX_CALIBRATION=ON &&" \
        "cmake --build build-verus-duckdb --target calibrate_shared_aux_cost_model" >&2; exit 1; }
-mkdir -p "${WORK}" "${ROOT}/config/verus"
+mkdir -p "${WORK}"
 cd "${ROOT}"
 
 pass=0; fail=0
 for q in ${QUERIES}; do
-  out="${ROOT}/config/verus/q${q}_aux_cost_model_sf20.json"
-  params="$(grep -v '^[[:space:]]*--' "benchmarks/verus/tpch/q${q}/params.sql" | grep -v '^[[:space:]]*$' | head -1 || true)"
+  out="${ROOT}/accelerators/tpch/q${q}/config/verus/q${q}_aux_cost_model_sf20.json"
+  params="$(grep -v '^[[:space:]]*--' "accelerators/tpch/q${q}/tests/verus_workload/params.sql" | grep -v '^[[:space:]]*$' | head -1 || true)"
   copy="${WORK}/calibrate_q${q}.duckdb"
   echo "=== q${q} $(date +%T) params: ${params:-(none)}"
   cp "${DB}" "${copy}"

@@ -1,5 +1,0 @@
-#include "calibrate_aux_cost_model_common.hpp"
-
-int main(int argc, char **argv) {
-  return accelerator_codegen::calibration::CalibrateAndWriteCostModel(9, argc, argv);
-}

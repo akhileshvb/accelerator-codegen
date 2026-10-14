@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Calibrate DuckDB TPC-H aux cost models for Q1..Q22 into config/qN_aux_cost_model.json.
+# Calibrate DuckDB TPC-H aux cost models for Q1..Q22 into accelerators/tpch/qN/config/qN_aux_cost_model.json.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${BUILD:-/tmp/accel_duckdb_build}"
@@ -10,7 +10,6 @@ SAMPLES="${ACCEL_AUX_CALIBRATION_SAMPLES:-5}"
 WARMS="${ACCEL_AUX_CALIBRATION_WARMUPS:-1}"
 
 cd "${ROOT}"
-mkdir -p "${ROOT}/config"
 
 if [[ ! -x "${CALIBRATOR}" ]]; then
   echo "missing calibrator: ${CALIBRATOR}" >&2
@@ -24,12 +23,11 @@ fi
 
 export ACCEL_AUX_CALIBRATION_SAMPLES="${SAMPLES}"
 export ACCEL_AUX_CALIBRATION_WARMUPS="${WARMS}"
-export ACCELERATOR_CODEGEN_CONFIG_DIR="${ROOT}/config"
 
 pass=0
 fail=0
 for q in ${QUERIES}; do
-  out="${ROOT}/config/q${q}_aux_cost_model.json"
+  out="${ROOT}/accelerators/tpch/q${q}/config/q${q}_aux_cost_model.json"
   echo "=== DuckDB calibrate TPC-H Q${q} → ${out} ==="
   set +e
   log=$("${CALIBRATOR}" tpch "${q}" "${TPCH_DB}" "${out}" 2>&1)

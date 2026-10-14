@@ -12,7 +12,7 @@ function(accel_aux_state_dir BENCHMARK QUERY_NUM OUT_VAR)
         set(${OUT_VAR} "" PARENT_SCOPE)
         return()
     endif()
-    set(${OUT_VAR} "src/generated/${BENCHMARK}/q${QUERY_NUM}/${_engine}/aux" PARENT_SCOPE)
+    set(${OUT_VAR} "accelerators/${BENCHMARK}/q${QUERY_NUM}/${_engine}/aux" PARENT_SCOPE)
 endfunction()
 
 function(_accel_aux_existing_sources OUT_VAR)
@@ -73,7 +73,7 @@ function(accel_add_aux_cost_model_calibrator)
     endif()
 
     accel_aux_benchmark_slug("${CAL_BENCHMARK}" _bench_slug)
-    set(_wrapper "benchmarks/${_bench_slug}/single-threaded/calibrate_q${CAL_QUERY_NUM}_aux_cost_model.cpp")
+    set(_wrapper "accelerators/${_bench_slug}/q${CAL_QUERY_NUM}/bench/calibrate_q${CAL_QUERY_NUM}_aux_cost_model.cpp")
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_wrapper}")
         return()
     endif()
@@ -85,9 +85,9 @@ function(accel_add_aux_cost_model_calibrator)
 
     add_executable(${_target}
         ${_wrapper}
-        benchmarks/tpch/single-threaded/calibrate_aux_cost_model_common.cpp
-        tests/test_support/cross_accel_helpers.cpp
-        tests/test_support/multi_connection_stress.cpp
+        eval/bench/tpch/single-threaded/calibrate_aux_cost_model_common.cpp
+        eval/tests/test_support/cross_accel_helpers.cpp
+        eval/tests/test_support/multi_connection_stress.cpp
     )
     target_link_libraries(${_target}
         PRIVATE
@@ -96,17 +96,17 @@ function(accel_add_aux_cost_model_calibrator)
     )
     target_include_directories(${_target}
         PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests
-            ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded
+            ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
+            ${CMAKE_CURRENT_SOURCE_DIR}
     )
 endfunction()
 
 function(accel_add_tpch_aux_pipeline_targets QUERY_NUM)
     set(_q "${QUERY_NUM}")
-    set(_test_src "tests/single-threaded/test_tpch_q${_q}_aux.cpp")
-    set(_bench_src_per_query "benchmarks/tpch/single-threaded/benchmark_q${_q}_aux.cpp")
-    set(_bench_src_sweep "benchmarks/tpch/single-threaded/benchmark_tpch_aux_sweep.cpp")
-    set(_cal_src "benchmarks/tpch/single-threaded/calibrate_q${_q}_aux_cost_model.cpp")
+    set(_test_src "accelerators/tpch/q${_q}/tests/test_tpch_q${_q}_aux.cpp")
+    set(_bench_src_per_query "accelerators/tpch/q${_q}/bench/benchmark_q${_q}_aux.cpp")
+    set(_bench_src_sweep "eval/bench/tpch/single-threaded/benchmark_tpch_aux_sweep.cpp")
+    set(_cal_src "accelerators/tpch/q${_q}/bench/calibrate_q${_q}_aux_cost_model.cpp")
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_test_src}")
         set(_test_tgt "test_tpch_q${_q}_aux")
@@ -119,7 +119,7 @@ function(accel_add_tpch_aux_pipeline_targets QUERY_NUM)
             )
             target_include_directories(${_test_tgt}
                 PRIVATE
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
             )
         endif()
     endif()
@@ -128,9 +128,9 @@ function(accel_add_tpch_aux_pipeline_targets QUERY_NUM)
         set(_bench_tgt "benchmark_tpch_q${_q}_aux")
         if(NOT TARGET ${_bench_tgt})
             set(_bench_sources "${_bench_src_per_query}")
-            set(_baseline_cache "benchmarks/tpch/single-threaded/aux_benchmark_baseline_cache.cpp")
-            set(_sweep_session "benchmarks/tpch/single-threaded/aux_benchmark_sweep_session.cpp")
-            set(_arg_variants "benchmarks/tpch/single-threaded/tpch_arg_variants.cpp")
+            set(_baseline_cache "eval/bench/tpch/single-threaded/aux_benchmark_baseline_cache.cpp")
+            set(_sweep_session "eval/bench/tpch/single-threaded/aux_benchmark_sweep_session.cpp")
+            set(_arg_variants "eval/bench/tpch/single-threaded/tpch_arg_variants.cpp")
             if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_baseline_cache}")
                 list(APPEND _bench_sources "${_baseline_cache}")
             endif()
@@ -148,15 +148,15 @@ function(accel_add_tpch_aux_pipeline_targets QUERY_NUM)
             )
             target_include_directories(${_bench_tgt}
                 PRIVATE
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                    ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded
+                    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
+                    ${CMAKE_CURRENT_SOURCE_DIR}
             )
         endif()
     elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_bench_src_sweep}")
         set(_bench_tgt "benchmark_tpch_q${_q}_aux")
         if(NOT TARGET ${_bench_tgt})
-            set(_sweep_session "benchmarks/tpch/single-threaded/aux_benchmark_sweep_session.cpp")
-            set(_arg_variants "benchmarks/tpch/single-threaded/tpch_arg_variants.cpp")
+            set(_sweep_session "eval/bench/tpch/single-threaded/aux_benchmark_sweep_session.cpp")
+            set(_arg_variants "eval/bench/tpch/single-threaded/tpch_arg_variants.cpp")
             set(_bench_sources "${_bench_src_sweep}")
             if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_sweep_session}")
                 list(APPEND _bench_sources "${_sweep_session}")
@@ -176,8 +176,8 @@ function(accel_add_tpch_aux_pipeline_targets QUERY_NUM)
             )
             target_include_directories(${_bench_tgt}
                 PRIVATE
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                    ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded
+                    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
+                    ${CMAKE_CURRENT_SOURCE_DIR}
             )
         endif()
     endif()
@@ -188,7 +188,7 @@ function(accel_add_tpch_aux_pipeline_targets QUERY_NUM)
 endfunction()
 
 function(accel_register_tpch_aux_finalize_queries LIBRARY_TARGET TEST_ROOT)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/duckdb/duckdb_scan_adapter.cpp")
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/duckdb/engine/duckdb_scan_adapter.cpp")
         return()
     endif()
     accel_codegen_engine_name(_engine)
@@ -196,7 +196,7 @@ function(accel_register_tpch_aux_finalize_queries LIBRARY_TARGET TEST_ROOT)
         return()
     endif()
     file(GLOB _tpch_aux_finalize CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/tpch/q*/${_engine}/aux/finalize.cpp")
+        "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/tpch/q*/${_engine}/aux/finalize.cpp")
     foreach(_finalize IN LISTS _tpch_aux_finalize)
         if(_finalize MATCHES "/tpch/q([0-9]+)/[^/]+/aux/finalize\\.cpp$")
             set(_q "${CMAKE_MATCH_1}")
@@ -210,11 +210,11 @@ function(accel_register_tpch_aux_finalize_queries LIBRARY_TARGET TEST_ROOT)
 endfunction()
 
 function(accel_register_tpch_aux_pipeline_targets)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/duckdb/duckdb_scan_adapter.cpp")
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/duckdb/engine/duckdb_scan_adapter.cpp")
         return()
     endif()
     file(GLOB _tpch_aux_tests CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/single-threaded/test_tpch_q*_aux.cpp")
+        "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/tpch/q*/tests/test_tpch_q*_aux.cpp")
     foreach(_test_src IN LISTS _tpch_aux_tests)
         if(_test_src MATCHES "/test_tpch_q([0-9]+)_aux\\.cpp$")
             accel_add_tpch_aux_pipeline_targets("${CMAKE_MATCH_1}")
@@ -224,7 +224,7 @@ endfunction()
 
 function(accel_register_tpch_aux_ctests)
     file(GLOB _tpch_aux_tests CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/single-threaded/test_tpch_q*_aux.cpp")
+        "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/tpch/q*/tests/test_tpch_q*_aux.cpp")
     foreach(_test_src IN LISTS _tpch_aux_tests)
         if(_test_src MATCHES "/test_tpch_q([0-9]+)_aux\\.cpp$")
             set(_q "${CMAKE_MATCH_1}")

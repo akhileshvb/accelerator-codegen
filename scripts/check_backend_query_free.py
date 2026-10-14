@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Check that the engine backends and the substrate name no query.
 
-Queries register themselves from src/generated/<bench>/q<N>/ (static
+Queries register themselves from accelerators/<bench>/q<N>/ (static
 registrars against the backends' registries), so a backend file that mentions
 a specific query (TpchQ6..., sec_edgar_q2, "tpch/q21/...", accel_tpch_q1_aux)
 is per-query code in the wrong place.  Comments are ignored.
 
 A second check keeps the shared primitives library
-(include/accelerator_codegen/stateful/prims/) workload-agnostic: no identifier
+(accelerators/prims/) workload-agnostic: no identifier
 derived from the benchmark schemas (table and column names parsed from the
 schema SQL files below, plus tpch / sec_edgar / edgar) may appear there, comments
 and README included.  A small allowlist (GENERIC_WORDS) exempts schema names that
@@ -30,13 +30,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 COMMON = [
     "include/accelerator_codegen/stateful/**/*",
-    "include/accelerator_codegen/runtime/catalog/**/*",
-    "include/accelerator_codegen/verus/verus_kit.hpp",
-    "src/stateful/core/**/*",
-    "src/stateful/state/**/*",
-    "src/stateful/maintenance/**/*",
-    "src/verus_kit/**/*",
-    "src/runtime/catalog/**/*",
+    "backends/duckdb/api/**/*",
+    "substrate/verus/kit/verus_kit.hpp",
+    "substrate/aux/core/**/*",
+    "substrate/aux/state/**/*",
+    "substrate/aux/maintenance/**/*",
+    "substrate/verus/kit/**/*",
+    "backends/duckdb/api/**/*",
 ]
 ENGINE = {
     "duckdb": [
@@ -44,23 +44,23 @@ ENGINE = {
         "include/accelerator_codegen/stateful/duckdb/**/*",
         "src/runtime/duckdb/**/*",
         "src/stateful/duckdb/**/*",
-        "src/generated/catalog/duckdb/**/*",
+        "backends/duckdb/api/catalog/**/*",
     ],
     "postgres": [
-        "include/accelerator_codegen/runtime/postgres/**/*",
+        "backends/postgres/engine/**/*",
         "include/accelerator_codegen/stateful/postgres/**/*",
         "src/runtime/postgres/**/*",
         "src/stateful/postgres/**/*",
         "src/generated/postgres/**/*",
-        "src/generated/catalog/postgres/**/*",
+        "backends/postgres/api/catalog/**/*",
     ],
     "mysql": [
-        "include/accelerator_codegen/runtime/mysql/**/*",
+        "backends/mysql/engine/**/*",
         "include/accelerator_codegen/stateful/mysql/**/*",
-        "src/runtime/mysql/**/*",
+        "backends/mysql/engine/**/*",
         "src/stateful/mysql/**/*",
-        "src/generated/mysql/**/*",
-        "src/generated/catalog/mysql/**/*",
+        "backends/mysql/api/**/*",
+        "backends/mysql/api/catalog/**/*",
     ],
 }
 SUFFIXES = {".cpp", ".hpp", ".h", ".cc", ".sql"}
@@ -72,12 +72,12 @@ QUERY = re.compile(
     r"|\bq\d+v_|\bq\d+vs_"                 # a Verus kernel's C ABI (q21v_..., q21vs_...)
 )
 # ---- workload vocabulary for the primitives library -------------------------
-PRIMS_DIR = "include/accelerator_codegen/stateful/prims"
+PRIMS_DIR = "accelerators/prims"
 SCHEMA_FILES = [
     "scripts/postgres_tpch_schema.sql",
     "scripts/mysql_tpch_schema.sql",
-    "src/verus/sql2verus/queries/tpch_schema.sql",
-    "benchmarks/sec_edgar/schema.sql",
+    "workloads/tpch/schema.sql",
+    "workloads/sec_edgar/schema.sql",
 ]
 # Always denied (substring, case-insensitive), in addition to schema identifiers.
 BANNED_SUBSTRINGS = ("tpch", "sec_edgar", "edgar")

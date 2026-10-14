@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ACCEL_VERUS_LIB_DIR:-$ROOT/build-verus}"
 BENCH="$1"; KIT="$2"; CRATE_DIR="${3:-}"; MODE="${4:-}"
-WORLD_RS="$ROOT/src/generated/$BENCH/verus_world/${BENCH}_world/crate/src/world.rs"
+WORLD_RS="$ROOT/accelerators/$BENCH/verus_world/${BENCH}_world/crate/src/world.rs"
 mkdir -p "$OUT"
 
 if [ -n "$CRATE_DIR" ]; then

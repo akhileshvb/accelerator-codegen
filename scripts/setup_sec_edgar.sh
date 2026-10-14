@@ -3,13 +3,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SEC_DIR="${ROOT}/benchmarks/sec_edgar"
+SEC_DIR="${ROOT}/eval/bench/sec_edgar"
 YEARS="${1:-3}"
 DUCKDB_DEST="${ROOT}/../accelerator-codegen-duckdb/sec_edgar_sf3.duckdb"
 ORCH_VENV="${ROOT}/pipeline/orchestrator/.venv/bin/python"
 
 resolve_python() {
-  local venv_dir="${ROOT}/benchmarks/sec_edgar/.venv"
+  local venv_dir="${ROOT}/eval/bench/sec_edgar/.venv"
   local venv_py="${venv_dir}/bin/python"
 
   if [[ -n "${SEC_EDGAR_PYTHON:-}" ]] && "${SEC_EDGAR_PYTHON}" -c "import duckdb" 2>/dev/null; then

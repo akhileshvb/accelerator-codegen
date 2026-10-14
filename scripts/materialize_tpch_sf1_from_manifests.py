@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Materialize sf1_instances SQL from tpch_placeholders + C++ manifests.
 
-Keeps SQL aligned with tests/test_support/q*_manifest.hpp (accelerator bind args)
+Keeps SQL aligned with accelerators/tpch/q*/tests/q*_manifest.hpp (accelerator bind args)
 while using the real placeholder templates from tpch-utils.
 
 Usage:

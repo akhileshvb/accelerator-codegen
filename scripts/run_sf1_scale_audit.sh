@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Collect SF1 scale-sensitive profiles for all 22 parallel TPC-H kernels.
 # Usage: run_sf1_scale_audit.sh [threads]
-# Profiles at t=1 and t=8 by default; writes to benchmarks/tpch/results/sf10_scale_audit/profiles/
+# Profiles at t=1 and t=8 by default; writes to eval/bench/tpch/results/sf10_scale_audit/profiles/
 set -euo pipefail
 
 ROOT=/home/akhilvb/accelerator-codegen
 BUILD="${ROOT}/build-release-parallel"
 DB="${ACCEL_TPCH_DB:-/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb}"
-OUT="${ROOT}/benchmarks/tpch/results/sf10_scale_audit/profiles"
-LOG="${ROOT}/benchmarks/tpch/results/sf10_scale_audit/profile_campaign.log"
+OUT="${ROOT}/eval/bench/tpch/results/sf10_scale_audit/profiles"
+LOG="${ROOT}/eval/bench/tpch/results/sf10_scale_audit/profile_campaign.log"
 COMMIT=$(cd "${ROOT}" && git rev-parse HEAD)
 THREADS="${1:-all}"
 
-mkdir -p "${OUT}" "${ROOT}/benchmarks/tpch/results/sf10_scale_audit"
+mkdir -p "${OUT}" "${ROOT}/eval/bench/tpch/results/sf10_scale_audit"
 log() { echo "[$(date -Is)] $*" | tee -a "${LOG}"; }
 
 log "=== SF1 scale audit profile collection ==="

@@ -5,7 +5,7 @@
   scripts/pg_stateless_bench.py --mode sweep --threads-list 16,32 --seeds 20 --out results.csv
 
 Instances (query parametrizations + reference SQL) come from
-benchmarks/tpch/stateless_instances_sf1.jsonl (written by
+eval/bench/tpch/stateless_instances_sf1.jsonl (written by
 `stateless_matrix --emit-instances`).
 
 check: for every instance, the reference SQL (plain PostgreSQL), <schema>.accel_tpch_qN(args)
@@ -447,7 +447,7 @@ def main():
     ap.add_argument("--threads-list", default="4", help="participant counts for the parallel variants")
     ap.add_argument("--schema", default="public")
     ap.add_argument("--db", default=os.environ.get("TPCH_PG_DB", "accel_tpch_test"))
-    ap.add_argument("--instances", default=os.path.join(ROOT, "benchmarks/tpch/stateless_instances_sf1.jsonl"))
+    ap.add_argument("--instances", default=os.path.join(ROOT, "eval/bench/tpch/stateless_instances_sf1.jsonl"))
     ap.add_argument("--ref-cache", default=os.path.expanduser("~/.cache/accel_pg_refcache"))
     ap.add_argument("--ref-threads", type=int, default=8, help="participants used to compute uncached references")
     ap.add_argument("--statement-timeout", default="30min")

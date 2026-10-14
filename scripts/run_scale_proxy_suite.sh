@@ -4,11 +4,11 @@ set -euo pipefail
 
 ROOT=/home/akhilvb/accelerator-codegen
 BUILD="${ROOT}/build-release-parallel"
-OUT="${ROOT}/benchmarks/tpch/results/sf10_scale_audit/proxies"
+OUT="${ROOT}/eval/bench/tpch/results/sf10_scale_audit/proxies"
 LOG="${OUT}/proxy_campaign.log"
 PROXY="${BUILD}/benchmark_tpch_scale_proxy"
 
-mkdir -p "${OUT}" "${ROOT}/benchmarks/tpch/results/sf10_scale_audit"
+mkdir -p "${OUT}" "${ROOT}/eval/bench/tpch/results/sf10_scale_audit"
 log() { echo "[$(date -Is)] $*" | tee -a "${LOG}"; }
 
 if [[ ! -x "${PROXY}" ]]; then

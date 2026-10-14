@@ -37,6 +37,6 @@ bash "${ROOT}/scripts/ensure_accel_postgres_mutation_triggers.sh" "${DB}" || log
 
 log "smoke: Q6 write-mix"
 ACCEL_PG_SKIP_NATIVE=1 ACCEL_PG_REFRESH_SAMPLES=1 TPCH_PG_DB="${DB}" \
-  OUT_DIR="${ROOT}/benchmarks/tpch/results_pg_sf3000_smoke" \
+  OUT_DIR="${ROOT}/eval/bench/tpch/results_pg_sf3000_smoke" \
   bash "${ROOT}/scripts/run_tpch_pg_matview_vs_aux_write_mix_sweep.sh" smoke
 log "FINISH DONE"

@@ -12,14 +12,14 @@
 #
 # Usage: bash scripts/postgres_tpch_indexes_parallel_sf3000.sh
 # Env:   TPCH_PG_DB (accel_tpch_sf3000), IDX_MWM (12GB), IDX_WORKERS (2)
-#        LOG_DIR (benchmarks/tpch/results_pg_sf3000/index_build)
+#        LOG_DIR (eval/bench/tpch/results_pg_sf3000/index_build)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${TPCH_PG_DB:-accel_tpch_sf3000}"
 MWM="${IDX_MWM:-12GB}"
 WORKERS="${IDX_WORKERS:-2}"
-LOG_DIR="${LOG_DIR:-${ROOT}/benchmarks/tpch/results_pg_sf3000/index_build}"
+LOG_DIR="${LOG_DIR:-${ROOT}/eval/bench/tpch/results_pg_sf3000/index_build}"
 export PGPASSWORD="${PGPASSWORD:-postgres}"
 export PGHOST="${PG_HOST:-127.0.0.1}"
 export PGPORT="${PG_PORT:-${PGPORT:-5434}}"

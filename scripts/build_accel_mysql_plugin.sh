@@ -87,8 +87,8 @@ fi
 _ensure_ninja
 
 # Optional: a MySQL C client library for in-process table scans and snapshot
-# builds (src/generated/mysql/runtime.cpp). The plugin builds without it (CLI
-# scans); cmake/MySQLAdapter.cmake looks in /usr and /opt/accel-mysql-client.
+# builds (backends/mysql/api/runtime.cpp). The plugin builds without it (CLI
+# scans); backends/mysql/engine/MySQLAdapter.cmake looks in /usr and /opt/accel-mysql-client.
 # The server image has none, and its -devel RPM conflicts with the server
 # package, so on RPM systems unpack MariaDB Connector/C into /opt.
 _ensure_mysql_client() {
@@ -185,7 +185,7 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
     if docker exec "$NAME" mysqladmin ping -h 127.0.0.1 -uroot -p"${PASSWORD}" --silent >/dev/null 2>&1; then
       echo "mysqld reloaded with plugin .so"
       # (Re)register the UDFs: base + per-query fragments
-      # (src/generated/<bench>/q<N>/mysql/plugin/functions.sql). Idempotent
+      # (accelerators/<bench>/q<N>/mysql/plugin/functions.sql). Idempotent
       # (DROP FUNCTION IF EXISTS + CREATE FUNCTION); INSTALL PLUGIN fails when the
       # plugin is already loaded, so it is skipped. Disable: ACCEL_MYSQL_REGISTER_UDFS=0.
       if [[ "${ACCEL_MYSQL_REGISTER_UDFS:-1}" == "1" ]]; then

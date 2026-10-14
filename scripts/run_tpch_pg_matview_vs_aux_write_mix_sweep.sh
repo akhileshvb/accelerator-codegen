@@ -16,13 +16,13 @@
 #   WRITE_PCTS=0,10,50 QUERIES=1,6,14 bash scripts/run_tpch_pg_matview_vs_aux_write_mix_sweep.sh
 #
 # Outputs:
-#   benchmarks/tpch/results_pg_sf20/matview_vs_aux_write_mix.csv  (override with OUT_DIR/CSV)
+#   eval/bench/tpch/results_pg_sf20/matview_vs_aux_write_mix.csv  (override with OUT_DIR/CSV)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-full}"
 DB="${TPCH_PG_DB:-accel_tpch_sf20}"
-OUT_DIR="${OUT_DIR:-${ROOT}/benchmarks/tpch/results_pg_sf20}"
+OUT_DIR="${OUT_DIR:-${ROOT}/eval/bench/tpch/results_pg_sf20}"
 LOG="${LOG:-${OUT_DIR}/write_mix_sweep.log}"
 CSV="${CSV:-${OUT_DIR}/matview_vs_aux_write_mix.csv}"
 PYTHON="${ROOT}/.venv-pg-test/bin/python"

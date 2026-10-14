@@ -13,13 +13,13 @@
 # Env: SF (TPC-H scale factor, default 1; selects the database file and Q11's FRACTION = 0.0001/SF),
 #      ACCEL_TPCH_DB (database file, default ../accelerator-codegen-duckdb/tpch_sf${SF}.duckdb),
 #      QUERIES (comma list, default all 22), ACCEL_DUCKDB_ROOT (sibling DuckDB checkout),
-#      BUILD_DIR (default build-stateless), OUT_DIR (default benchmarks/tpch/results).
+#      BUILD_DIR (default build-stateless), OUT_DIR (default eval/bench/tpch/results).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 THREADS="${1:-16,32}"
 SEEDS="${2:-20}"
 BUILD_DIR="${BUILD_DIR:-${ROOT}/build-stateless}"
-OUT_DIR="${OUT_DIR:-${ROOT}/benchmarks/tpch/results}"
+OUT_DIR="${OUT_DIR:-${ROOT}/eval/bench/tpch/results}"
 SF="${SF:-1}"
 QUERIES="${QUERIES:-$(seq -s, 1 22)}"
 export ACCEL_DUCKDB_ROOT="${ACCEL_DUCKDB_ROOT:-$(cd "${ROOT}/../accelerator-codegen-duckdb" && pwd)}"

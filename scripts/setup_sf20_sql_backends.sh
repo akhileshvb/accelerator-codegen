@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # TPC-H SF20 databases for the Postgres and MySQL accelerator experiments
-# (benchmarks/compare/run_backends.sh).  Loads from the DuckDB SF20 file.
+# (eval/compare/run_backends.sh).  Loads from the DuckDB SF20 file.
 #
 #   bash scripts/setup_sf20_sql_backends.sh export     # DuckDB -> pipe-delimited files in $STAGE (~20 GB)
 #   bash scripts/setup_sf20_sql_backends.sh postgres   # database $PG_DB in the Postgres at $PG_PORT

@@ -13,13 +13,13 @@
 #    T-1 parallel workers), so the server needs max_worker_processes and max_parallel_workers >= T-1
 #    (this script checks; set them with ALTER SYSTEM + restart).
 #
-# Env: SF (TPC-H scale factor, default 1; selects benchmarks/tpch/stateless_instances_sf${SF}.jsonl,
+# Env: SF (TPC-H scale factor, default 1; selects eval/bench/tpch/stateless_instances_sf${SF}.jsonl,
 #      i.e. Q11's FRACTION = 0.0001/SF), QUERIES (comma list, default all 22),
 #      ACCEL_PG_CONTAINER (default accel_pg_test; the module is built and installed in it),
 #      TPCH_PG_DB (default accel_tpch_test for SF1, accel_tpch_sf${SF} otherwise — the name
 #      scripts/setup_sf20_sql_backends.sh uses),
 #      PGHOST/PGPORT/PGUSER/PGPASSWORD for the client (default 127.0.0.1:5434 postgres/postgres),
-#      OUT_DIR (default benchmarks/tpch/results), SKIP_BUILD=1 to reuse the installed module,
+#      OUT_DIR (default eval/bench/tpch/results), SKIP_BUILD=1 to reuse the installed module,
 #      STATELESS_SCHEMA (default public; the build drops every accel_tpch_qN* function in it, so
 #      use another schema on a database that also holds the stateful accelerator's functions),
 #      PYTHON (default python3; needs psycopg2),
@@ -33,11 +33,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 THREADS="${1:-16,32}"
 SEEDS="${2:-20}"
-OUT_DIR="${OUT_DIR:-${ROOT}/benchmarks/tpch/results}"
+OUT_DIR="${OUT_DIR:-${ROOT}/eval/bench/tpch/results}"
 SF="${SF:-1}"
 QUERIES="${QUERIES:-$(seq -s, 1 22)}"
 if [[ "$SF" == "1" ]]; then DB="${TPCH_PG_DB:-accel_tpch_test}"; else DB="${TPCH_PG_DB:-accel_tpch_sf${SF}}"; fi
-INSTANCES="${ROOT}/benchmarks/tpch/stateless_instances_sf${SF}.jsonl"
+INSTANCES="${ROOT}/eval/bench/tpch/stateless_instances_sf${SF}.jsonl"
 [[ -f "$INSTANCES" ]] || { echo "no instance file $INSTANCES (build-stateless/stateless_matrix --scale-factor ${SF} --emit-instances ...)" >&2; exit 1; }
 CONTAINER="${ACCEL_PG_CONTAINER:-accel_pg_test}"
 SCHEMA="${STATELESS_SCHEMA:-public}"

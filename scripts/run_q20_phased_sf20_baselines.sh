@@ -21,7 +21,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export ACCEL_TPCH_DB="${ACCEL_TPCH_DB:-/home/akhilvb/accelerator-codegen-duckdb/tpch_sf20.duckdb}"
 export ACCEL_Q20_PHASED_WORK_DIR="${ACCEL_Q20_PHASED_WORK_DIR:-${ROOT}/build/q20_phased_sf20}"
-export ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL="${ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL:-${ROOT}/config/q20_aux_cost_model_phased.json}"
+export ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL="${ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL:-${ROOT}/accelerators/tpch/q20/config/q20_aux_cost_model_phased.json}"
 
 RUN_INC="${RUN_ALWAYS_INCREMENTAL:-1}"
 RUN_REB="${RUN_ALWAYS_REBUILD:-1}"

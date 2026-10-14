@@ -6,7 +6,7 @@
 #     BENCHMARK sec_edgar
 #     QUERY_NUM 1
 #     LIBRARY_TARGET accelerator_codegen
-#     TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+#     TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}
 #     CTEST_RESOURCE_LOCK sec_edgar_db
 #   )
 
@@ -31,7 +31,7 @@ function(accel_add_base_query)
         return()
     endif()
 
-    set(_src_dir "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/${_bench}/q${_q}/${_engine}/base/single-threaded")
+    set(_src_dir "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/${_bench}/q${_q}/${_engine}/base/single-threaded")
     if(NOT EXISTS "${_src_dir}")
         message(STATUS "accel_add_base_query: skip ${_bench} q${_q}/${_engine} (no kernel dir)")
         return()
@@ -44,8 +44,8 @@ function(accel_add_base_query)
     set(_test_target "test_${_bench}_q${_q}")
     set(_bench_target "benchmark_${_bench}_q${_q}")
     set(_ctest_name "${_bench}_q${_q}_smoke_test")
-    set(_test_src "tests/single-threaded/${_test_target}.cpp")
-    set(_bench_src "benchmarks/${_bench}/single-threaded/benchmark_q${_q}.cpp")
+    set(_test_src "accelerators/${_bench}/q${_q}/tests/${_test_target}.cpp")
+    set(_bench_src "accelerators/${_bench}/q${_q}/bench/benchmark_q${_q}.cpp")
 
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_test_src}")
         message(STATUS "accel_add_base_query: skip ${_test_target} (missing test source)")
