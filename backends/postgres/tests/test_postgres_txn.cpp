@@ -106,7 +106,7 @@ void TestModuleLoad() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg'");
+  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg_test'");
   auto status = PQresultStatus(res);
   if (status != PGRES_COMMAND_OK) {
     std::cerr << "engine_txn[postgres] FAIL: MODULE LOAD failed — "
@@ -122,19 +122,19 @@ void TestModuleLoad() {
 
 void RegisterFunctions(PGconn *conn) {
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_init() "
-             "RETURNS integer AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_init' "
+             "RETURNS integer AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_init' "
              "LANGUAGE C STRICT", "register_init");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_capture(bigint, integer, bigint, text) "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_capture' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_capture' "
              "LANGUAGE C STRICT", "register_capture");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_read() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_read' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_read' "
              "LANGUAGE C STRICT", "register_read");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_epoch() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_epoch' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_epoch' "
              "LANGUAGE C STRICT", "register_epoch");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_reset() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_reset' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_reset' "
              "LANGUAGE C STRICT", "register_reset");
 }
 
@@ -142,7 +142,7 @@ void TestInitBridge() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
 
   std::string result = QueryOne(guard.conn, "SELECT pg_accel_txn_init()", "init");
@@ -160,7 +160,7 @@ void TestRollbackDoesNotPublish() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -187,7 +187,7 @@ void TestCommitPublishesOnce() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -215,7 +215,7 @@ void TestSecondTransactionCommitsDifferentImage() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -246,7 +246,7 @@ void TestCommitWithoutMutationProducesNoImage() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -263,7 +263,7 @@ void TestCaptureWithoutBridgeReturnsError() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
 
   std::string result = QueryOne(guard.conn,
@@ -279,7 +279,7 @@ void TestMultipleMutationsInOneTransaction() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -302,7 +302,7 @@ void TestAbortThenFreshTxnCanCommit() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 

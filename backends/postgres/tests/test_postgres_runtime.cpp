@@ -97,19 +97,19 @@ PGconn *Connect() {
 
 void RegisterRuntimeFunctions(PGconn *conn) {
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_init(text) "
-             "RETURNS integer AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_init' "
+             "RETURNS integer AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_init' "
              "LANGUAGE C STRICT", "register_runtime_init");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_build() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_build' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_build' "
              "LANGUAGE C STRICT", "register_runtime_build");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_execute() "
-             "RETURNS SETOF text AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_execute' "
+             "RETURNS SETOF text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_execute' "
              "LANGUAGE C STRICT", "register_runtime_execute");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_read() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_read' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_read' "
              "LANGUAGE C STRICT", "register_runtime_read");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_reset() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_reset' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_reset' "
              "LANGUAGE C STRICT", "register_runtime_reset");
 }
 
@@ -130,7 +130,7 @@ std::vector<std::string> CollectAll(PGconn *conn, const char *sql, const char *l
 void TestModuleLoad() {
   ConnGuard guard;
   guard.conn = Connect();
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   std::cout << "  [PASS] module_load\n";
 }
 
@@ -138,7 +138,7 @@ void TestSeedBuildExecuteGoldenRows() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeFunctions(guard.conn);
 
   Exec(guard.conn, "DROP TABLE IF EXISTS rt_test_golden CASCADE", "cleanup");
@@ -176,7 +176,7 @@ void TestReadStateAfterBuild() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeFunctions(guard.conn);
 
   Exec(guard.conn, "DROP TABLE IF EXISTS rt_test_readstate CASCADE", "cleanup");
@@ -204,7 +204,7 @@ void TestResetClearsState() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeFunctions(guard.conn);
 
   Exec(guard.conn, "DROP TABLE IF EXISTS rt_test_reset CASCADE", "cleanup");
@@ -234,7 +234,7 @@ void TestNullValues() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeFunctions(guard.conn);
 
   Exec(guard.conn, "DROP TABLE IF EXISTS rt_test_null CASCADE", "cleanup");
@@ -268,7 +268,7 @@ void TestSingleRowTable() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeFunctions(guard.conn);
 
   Exec(guard.conn, "DROP TABLE IF EXISTS rt_test_single CASCADE", "cleanup");
@@ -292,7 +292,7 @@ void TestInitWithoutTable() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeFunctions(guard.conn);
 
   Exec(guard.conn, "SELECT pg_accel_runtime_init('nonexistent_table_xyz')", "init");
@@ -308,7 +308,7 @@ void TestRuntimeUsesCoordinatorNotStoreBackdoor() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeFunctions(guard.conn);
 
   Exec(guard.conn, "DROP TABLE IF EXISTS rt_test_coord CASCADE", "cleanup");
@@ -332,7 +332,7 @@ void TestBuildThenExecuteMatchesGoldenRows() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeFunctions(guard.conn);
 
   Exec(guard.conn, "DROP TABLE IF EXISTS rt_test_match CASCADE", "cleanup");
@@ -384,7 +384,7 @@ void TestDmlCommitRematch() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeFunctions(guard.conn);
 
   // Ensure clean bridge state before this test.

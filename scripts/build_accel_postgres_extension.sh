@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # Build accelerator_codegen_pg (+ harnesses) inside accel_pg_test and install into PG 17 libdir.
+# The engine_backend layer harnesses LOAD a test-only variant,
+# accelerator_codegen_pg_test (production MODULE + gate-test UDFs from
+# backends/postgres/tests/). It is built and installed next to the production
+# .so when a requested target depends on it, or when ACCEL_PG_TEST_MODULE=1.
+# Experiments only ever load accelerator_codegen_pg, which has no test UDFs.
+# ACCEL_PG_BUILD_JOBS: ninja -j (default: nproc in the container).
 set -euo pipefail
 
 NAME="${ACCEL_PG_CONTAINER:-accel_pg_test}"
@@ -48,8 +54,11 @@ docker exec \
   -e ACCEL_PG_NINJA_TARGETS="${EXTRA_TARGETS}" \
   -e ACCEL_PG_REQUIRE_NINJA_TARGETS="${REQUIRE_TARGETS}" \
   -e ACCEL_CODEGEN_ENGINE="${ACCEL_CODEGEN_ENGINE:-postgres}" \
+  -e ACCEL_PG_BUILD_JOBS="${ACCEL_PG_BUILD_JOBS:-}" \
+  -e ACCEL_PG_TEST_MODULE="${ACCEL_PG_TEST_MODULE:-0}" \
   "$NAME" bash -lc '
 set -euo pipefail
+JOBS="${ACCEL_PG_BUILD_JOBS:-$(nproc)}"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq postgresql-server-dev-17 build-essential cmake ninja-build patchelf >/dev/null
@@ -59,7 +68,7 @@ if [[ ! -f /accel-build/duckdb/src/libduckdb.so ]]; then
   mkdir -p /accel-build/duckdb
   cd /accel-build/duckdb
   cmake /accel-duckdb -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=tpch
-  ninja -j"$(nproc)"
+  ninja -j"${JOBS}"
 fi
 rm -rf /accel-build/duckdb-sibling
 mkdir -p /accel-build/duckdb-sibling/build/release
@@ -84,14 +93,14 @@ cmake /accel-src -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DPG_CONFIG="${PG_CONFIG}" \
   -DACCEL_PG_BINDIR="${ACCEL_PG_BINDIR}"
 
-ninja accelerator_codegen accelerator_codegen_pg -j"$(nproc)"
+ninja accelerator_codegen accelerator_codegen_pg -j"${JOBS}"
 
 # Prefer `ninja -t query` over `ninja -t targets`: the default targets listing
 # only includes a small top-level subset (~phony / default), so executables like
 # test_postgres_tpch_differential are omitted and gates falsely report "missing".
 for t in ${ACCEL_PG_NINJA_TARGETS:-}; do
   if ninja -t query "${t}" >/dev/null 2>&1; then
-    ninja "${t}" -j"$(nproc)"
+    ninja "${t}" -j"${JOBS}"
   else
     if [[ "${ACCEL_PG_REQUIRE_NINJA_TARGETS:-0}" == "1" ]]; then
       echo "required ninja target missing: ${t}" >&2
@@ -101,9 +110,24 @@ for t in ${ACCEL_PG_NINJA_TARGETS:-}; do
   fi
 done
 
+# Test-only MODULE: when asked for, or when a requested target (a layer
+# harness) depends on it (add_dependencies in CMakeLists.txt).
+want_test_module="${ACCEL_PG_TEST_MODULE:-0}"
+for t in ${ACCEL_PG_NINJA_TARGETS:-}; do
+  if ninja -t query "${t}" 2>/dev/null | grep -q "accelerator_codegen_pg_test\.so"; then
+    want_test_module=1
+  fi
+done
+
 # Install MODULE next to libaccelerator_codegen / libduckdb for LOAD.
 PG_LIB=/usr/lib/postgresql/17/lib
 cp -f accelerator_codegen_pg.so "${PG_LIB}/"
+if [[ "${want_test_module}" == "1" ]]; then
+  ninja accelerator_codegen_pg_test -j"${JOBS}"
+  cp -f accelerator_codegen_pg_test.so "${PG_LIB}/"
+  patchelf --set-rpath "${PG_LIB}" "${PG_LIB}/accelerator_codegen_pg_test.so" || true
+  echo "installed accelerator_codegen_pg_test.so (gate-test variant) into ${PG_LIB}"
+fi
 cp -f libaccelerator_codegen.so "${PG_LIB}/"
 cp -f /accel-build/duckdb/src/libduckdb.so "${PG_LIB}/"
 patchelf --set-rpath "${PG_LIB}" "${PG_LIB}/accelerator_codegen_pg.so" || true

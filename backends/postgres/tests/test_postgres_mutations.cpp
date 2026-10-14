@@ -103,31 +103,31 @@ PGconn *Connect() {
 
 void RegisterFunctions(PGconn *conn) {
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_init() "
-             "RETURNS integer AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_init' "
+             "RETURNS integer AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_init' "
              "LANGUAGE C STRICT", "register_init");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_capture(bigint, integer, bigint, text) "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_capture' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_capture' "
              "LANGUAGE C STRICT", "register_capture");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_read() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_read' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_read' "
              "LANGUAGE C STRICT", "register_read");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_epoch() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_epoch' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_epoch' "
              "LANGUAGE C STRICT", "register_epoch");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_txn_reset() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_txn_reset' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_txn_reset' "
              "LANGUAGE C STRICT", "register_reset");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_mutations_trigger() "
-             "RETURNS trigger AS '$libdir/accelerator_codegen_pg', 'pg_accel_mutations_trigger' "
+             "RETURNS trigger AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_mutations_trigger' "
              "LANGUAGE C", "register_mutations_trigger");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_mutations_last() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_mutations_last' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_mutations_last' "
              "LANGUAGE C STRICT", "register_mutations_last");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_mutations_drain() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_mutations_drain' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_mutations_drain' "
              "LANGUAGE C STRICT", "register_mutations_drain");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_mutations_count() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_mutations_count' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_mutations_count' "
              "LANGUAGE C STRICT", "register_mutations_count");
 }
 
@@ -156,7 +156,7 @@ void TestModuleLoad() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg'");
+  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg_test'");
   auto status = PQresultStatus(res);
   if (status != PGRES_COMMAND_OK) {
     std::cerr << "engine_mutations[postgres] FAIL: MODULE LOAD failed — "
@@ -173,7 +173,7 @@ void TestInsertCapturesMutation() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -203,7 +203,7 @@ void TestDeleteCapturesOldRowValues() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -235,7 +235,7 @@ void TestUpdateCapturesOldAndNewRows() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -268,7 +268,7 @@ void TestMultipleMutationsInTransaction() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -297,7 +297,7 @@ void TestInsertWithNullLabel() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -331,7 +331,7 @@ void TestTriggerPassesThroughData() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_txn_init()", "init");
 
@@ -352,7 +352,7 @@ void TestTriggerWithoutBridgeInitDoesNotCrash() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
 
   SetupContractTable(guard.conn, "mut_test_no_init");

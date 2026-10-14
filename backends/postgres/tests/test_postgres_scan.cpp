@@ -105,17 +105,17 @@ PGconn *Connect() {
 
 void RegisterFunctions(PGconn *conn) {
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_scan_init() "
-             "RETURNS integer AS '$libdir/accelerator_codegen_pg', 'pg_accel_scan_init' "
+             "RETURNS integer AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_scan_init' "
              "LANGUAGE C STRICT", "register_init");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_scan_rows(text, text, text, text) "
-             "RETURNS SETOF text AS '$libdir/accelerator_codegen_pg', 'pg_accel_scan_rows' "
+             "RETURNS SETOF text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_scan_rows' "
              "LANGUAGE C STRICT", "register_scan_rows");
 }
 
 void TestModuleLoad() {
   ConnGuard guard;
   guard.conn = Connect();
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   std::cout << "  [PASS] module_load\n";
 }
 
@@ -123,7 +123,7 @@ void TestScanThreeRowsFullProjection() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_scan_init()", "init");
 
@@ -181,7 +181,7 @@ void TestScanNullHandling() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_scan_init()", "init");
 
@@ -238,7 +238,7 @@ void TestScanSubsetProjection() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_scan_init()", "init");
 
@@ -293,7 +293,7 @@ void TestScanWithFilter() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_scan_init()", "init");
 
@@ -347,7 +347,7 @@ void TestScanFilterMatchNone() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_scan_init()", "init");
 
@@ -379,7 +379,7 @@ void TestScanFilterOnIntegerColumn() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_scan_init()", "init");
 
@@ -428,7 +428,7 @@ void TestScanNonExistentTable() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_scan_init()", "init");
 
@@ -447,7 +447,7 @@ void TestScanColumnOrderPreserved() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_scan_init()", "init");
 

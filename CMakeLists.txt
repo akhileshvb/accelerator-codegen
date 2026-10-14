@@ -1006,13 +1006,16 @@ endif()
 
 # ---------------------------------------------------------------------------
 # PostgreSQL engine backend layer harnesses. store / aux_backend link the
-# library; the later layers are plain libpq tests against the PG server.
+# library (plus postgres_server_stubs.cpp for the server-only symbols the
+# library references); the later layers are plain libpq tests against the PG
+# server that LOAD the test-only MODULE accelerator_codegen_pg_test.
 # ---------------------------------------------------------------------------
 if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
     foreach(_layer IN ITEMS store aux_backend)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/tests/test_postgres_${_layer}.cpp")
             add_executable(test_postgres_${_layer}
                 backends/postgres/tests/test_postgres_${_layer}.cpp
+                backends/postgres/tests/postgres_server_stubs.cpp
             )
             target_link_libraries(test_postgres_${_layer}
                 PRIVATE
@@ -1046,8 +1049,8 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
                 PRIVATE
                     ${LIBPQ_LIB}
             )
-            if(TARGET accelerator_codegen_pg)
-                add_dependencies(test_postgres_${_layer} accelerator_codegen_pg)
+            if(TARGET accelerator_codegen_pg_test)
+                add_dependencies(test_postgres_${_layer} accelerator_codegen_pg_test)
             endif()
             if(BUILD_TESTING)
                 add_test(NAME engine_postgres_${_layer} COMMAND test_postgres_${_layer})

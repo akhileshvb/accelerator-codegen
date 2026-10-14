@@ -1,4 +1,5 @@
-// GENERATED BACKEND — txn + mutations + scan + runtime layer bridge header
+// GENERATED BACKEND — gate-test bridge header (txn / mutations / scan / runtime /
+// visibility toy bridges). Test MODULE accelerator_codegen_pg_test only.
 #pragma once
 
 #include <memory>
