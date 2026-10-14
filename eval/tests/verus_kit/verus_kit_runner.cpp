@@ -317,7 +317,7 @@ std::size_t TopLevel(const std::string &sql, const std::string &word) {
   return found;
 }
 
-Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql) {
+Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql, const std::vector<std::string> &tuples) {
   Ordering o;
   const auto ob = TopLevel(sql, "ORDER BY");
   if (ob == std::string::npos)
@@ -328,7 +328,27 @@ Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql) {
   auto stmt = c.Prepare(sql);
   if (!stmt || stmt->HasError())
     return o;
-  const auto names = stmt->GetNames();
+  auto names = stmt->GetNames();
+  // A parameter whose type only its value decides (e.g. `SUM(x) * $2`) leaves the statement
+  // unbound until it runs: its output names are placeholders ("unknown") until then, so take
+  // them from a run with the first tuple DuckDB can evaluate.
+  if (!stmt->GetStatementProperties().bound_all_parameters)
+    for (const auto &tuple : tuples) {
+      try {
+        duckdb::vector<duckdb::Value> values;
+        if (!tuple.empty()) {
+          auto t = Q(c, "SELECT " + tuple);
+          for (duckdb::idx_t i = 0; i < t->ColumnCount(); ++i)
+            values.push_back(t->GetValue(i, 0));
+        }
+        auto r = stmt->Execute(values, false);
+        if (!r || r->HasError())
+          continue;
+        names = r->names;
+        break;
+      } catch (const std::exception &) {
+      }
+    }
   std::stringstream items(sql.substr(ob + 8, (o.limited ? lim : sql.size()) - ob - 8));
   for (std::string item; std::getline(items, item, ',');) {
     std::stringstream words(item);
@@ -489,7 +509,7 @@ Setup Prepare(duckdb::Connection &setup, const std::string &id, const Spec &spec
   if (with_setup && !spec.setup.empty())
     Q(setup, spec.setup);
   accelerator_codegen::RegisterAcceleratorFunctions(setup);
-  s.ordering = MakeOrdering(setup, s.glue->query_sql);
+  s.ordering = MakeOrdering(setup, s.glue->query_sql, spec.params);
   return s;
 }
 
