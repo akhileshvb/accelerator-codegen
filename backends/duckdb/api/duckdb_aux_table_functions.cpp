@@ -16,7 +16,7 @@
 #include "substrate/aux/core/aux_types.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
-#include "substrate/verus/kit/verus_kit.hpp"
+#include "backends/duckdb/api/verus_host.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/on_create_conflict.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -457,7 +457,7 @@ AuxInitLocal(::duckdb::ExecutionContext &context, ::duckdb::TableFunctionInitInp
       BuildArguments(bind_data.entry, bind_data.arguments);
   const std::string accelerator_id = bind_data.entry.accelerator_id ? bind_data.entry.accelerator_id : "";
   if (auto *active = duckdb_backend::FindActive(*context.client.db, accelerator_id)) {
-    if (!active->UsesVerusStore() && !verus_kit::Find(accelerator_id)) {
+    if (!active->UsesVerusStore() && !duckdb::IsVerusKitAccelerator(accelerator_id)) {
       // C++ store: the read itself runs at the first AuxExecute call, streaming into chunks.
       local_state->streaming = true;
       local_state->arguments = arguments;
@@ -541,35 +541,10 @@ void RegisterRegisteredAuxFunctions(::duckdb::Catalog &catalog,
     RegisterAuxFunction(catalog, context, *entry, query->table_function, std::move(signatures));
   }
   // Verus accelerators registered through the host kit (generated glue).
-  for (const auto *glue : verus_kit::All()) {
-    const auto *kit_entry = VerusKitCatalogEntry(glue->id);
-    if (!kit_entry) {
-      continue;
-    }
-    ::duckdb::vector<::duckdb::LogicalType> types;
-    for (const auto kind : glue->params) {
-      switch (kind) {
-      case verus_kit::Kind::Text:
-        types.push_back(::duckdb::LogicalType::VARCHAR);
-        break;
-      case verus_kit::Kind::Date:
-        types.push_back(::duckdb::LogicalType::DATE);
-        break;
-      case verus_kit::Kind::Dec:
-        types.push_back(::duckdb::LogicalType::DOUBLE);
-        break;
-      case verus_kit::Kind::Bool:
-        types.push_back(::duckdb::LogicalType::BOOLEAN);
-        break;
-      case verus_kit::Kind::Int:
-        types.push_back(::duckdb::LogicalType::BIGINT);
-        break;
-      }
-    }
-    const std::string name = std::string("accel_") + glue->id;
+  for (auto &kit : duckdb::VerusKitTableFunctions()) {
     std::vector<::duckdb::vector<::duckdb::LogicalType>> signatures;
-    signatures.push_back(std::move(types));
-    RegisterAuxFunction(catalog, context, *kit_entry, name, std::move(signatures));
+    signatures.push_back(std::move(kit.argument_types));
+    RegisterAuxFunction(catalog, context, *kit.entry, kit.name, std::move(signatures));
   }
 }
 

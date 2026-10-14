@@ -4,13 +4,11 @@
 #include <cstdint>
 
 namespace accelerator_codegen::aux_state {
-class VersionedAuxStore;
-}
 
-namespace accelerator_codegen::aux_state::harness {
+class VersionedAuxStore;
 
 // Estimated bytes of the store's newest valid partitions.
 uint64_t ComputeAuxStateFootprintBytes(const VersionedAuxStore &store,
                                        const char *accelerator_id);
 
-} // namespace accelerator_codegen::aux_state::harness
+} // namespace accelerator_codegen::aux_state

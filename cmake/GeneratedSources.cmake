@@ -83,10 +83,13 @@ function(accel_collect_runtime_sources OUT_VAR)
                 backends/duckdb/api/query_runtime.cpp
                 backends/duckdb/api/register.cpp
                 backends/duckdb/api/duckdb_runtime.cpp
+                backends/duckdb/api/verus_host.cpp
+                backends/duckdb/api/cost_model_path.cpp
+                backends/duckdb/engine/scan.cpp
+                backends/duckdb/engine/capture.cpp
                 backends/duckdb/api/shared_query_engine.cpp
                 eval/harness/differential.cpp
                 eval/harness/cost_calibration.cpp
-                eval/harness/aux_state_footprint.cpp
                 eval/harness/tpch_rf.cpp
             )
             if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/duckdb/api/catalog/query_catalog.cpp")
@@ -108,6 +111,7 @@ function(accel_collect_stateful_sources OUT_VAR)
     set(_sources
         substrate/aux/state/invalidation_plan.cpp
         substrate/aux/state/versioned_aux_store.cpp
+        substrate/aux/state/aux_state_footprint.cpp
         substrate/aux/state/verus_aux_store.cpp
         substrate/verus/kit/verus_kit.cpp
         substrate/aux/core/aux_registry.cpp
