@@ -94,19 +94,19 @@ PGconn *Connect() {
 
 void RegisterFunctions(PGconn *conn) {
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_vis_init() "
-             "RETURNS integer AS '$libdir/accelerator_codegen_pg', 'pg_accel_vis_init' "
+             "RETURNS integer AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_vis_init' "
              "LANGUAGE C STRICT", "register_vis_init");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_vis_capture(bigint, integer, bigint, text) "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_vis_capture' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_vis_capture' "
              "LANGUAGE C STRICT", "register_vis_capture");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_vis_read() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_vis_read' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_vis_read' "
              "LANGUAGE C STRICT", "register_vis_read");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_vis_epoch() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_vis_epoch' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_vis_epoch' "
              "LANGUAGE C STRICT", "register_vis_epoch");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_vis_reset() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_vis_reset' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_vis_reset' "
              "LANGUAGE C STRICT", "register_vis_reset");
 }
 
@@ -119,7 +119,7 @@ void TestUncommittedWriteNotVisible() {
   ConnGuard conn;
   conn.conn = Connect();
 
-  Exec(conn.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(conn.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(conn.conn);
 
   // Initialize the bridge.
@@ -184,7 +184,7 @@ void TestSyncBarrierNotSleep() {
   ConnGuard conn;
   conn.conn = Connect();
 
-  Exec(conn.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(conn.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(conn.conn);
   Exec(conn.conn, "SELECT pg_accel_vis_init()", "init");
 
@@ -217,7 +217,7 @@ void TestRollbackKeepsStoreUnchanged() {
   ConnGuard conn;
   conn.conn = Connect();
 
-  Exec(conn.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(conn.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(conn.conn);
   Exec(conn.conn, "SELECT pg_accel_vis_init()", "init");
 
@@ -250,7 +250,7 @@ void TestEpochAndImageChangeAfterCommit() {
   ConnGuard conn;
   conn.conn = Connect();
 
-  Exec(conn.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(conn.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(conn.conn);
   Exec(conn.conn, "SELECT pg_accel_vis_init()", "init");
 
@@ -293,7 +293,7 @@ void TestModuleLoad() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg'");
+  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg_test'");
   auto status = PQresultStatus(res);
   if (status != PGRES_COMMAND_OK) {
     std::cerr << "engine_visibility[postgres] FAIL: MODULE LOAD failed — "
@@ -311,7 +311,7 @@ void TestResetClearsState() {
   ConnGuard conn;
   conn.conn = Connect();
 
-  Exec(conn.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(conn.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterFunctions(conn.conn);
   Exec(conn.conn, "SELECT pg_accel_vis_init()", "init");
 

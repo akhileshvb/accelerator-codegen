@@ -3,7 +3,7 @@
 // Build: test_postgres_host   CTest: engine_postgres_host
 //
 // Rule: host_glue, fail_closed
-// Evidence: Loadable MODULE (accelerator_codegen_pg) loads via LOAD.
+// Evidence: Loadable MODULE (accelerator_codegen_pg_test) loads via LOAD.
 //   One SQL/UDF (pg_accel_runtime_execute) calls the toy Runtime;
 //   same golden asserts as runtime layer. Server-only symbols
 //   (PG_MODULE_MAGIC, xact callbacks, trigger hooks) live only in
@@ -112,19 +112,19 @@ std::vector<std::string> CollectAll(PGconn *conn, const char *sql, const char *l
 
 void RegisterRuntimeUdfs(PGconn *conn) {
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_init(text) "
-             "RETURNS integer AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_init' "
+             "RETURNS integer AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_init' "
              "LANGUAGE C STRICT", "register_runtime_init");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_build() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_build' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_build' "
              "LANGUAGE C STRICT", "register_runtime_build");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_execute() "
-             "RETURNS SETOF text AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_execute' "
+             "RETURNS SETOF text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_execute' "
              "LANGUAGE C STRICT", "register_runtime_execute");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_read() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_read' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_read' "
              "LANGUAGE C STRICT", "register_runtime_read");
   Exec(conn, "CREATE OR REPLACE FUNCTION pg_accel_runtime_reset() "
-             "RETURNS text AS '$libdir/accelerator_codegen_pg', 'pg_accel_runtime_reset' "
+             "RETURNS text AS '$libdir/accelerator_codegen_pg_test', 'pg_accel_runtime_reset' "
              "LANGUAGE C STRICT", "register_runtime_reset");
 }
 
@@ -135,7 +135,7 @@ void TestModuleLoad() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg'");
+  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg_test'");
   auto status = PQresultStatus(res);
   if (status != PGRES_COMMAND_OK) {
     std::cerr << "engine_host[postgres] FAIL: MODULE LOAD failed — "
@@ -152,7 +152,7 @@ void TestUdfRegistration() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeUdfs(guard.conn);
   std::cout << "  [PASS] udf_registration\n";
 }
@@ -162,7 +162,7 @@ void TestSeedBuildExecuteGoldenRows() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeUdfs(guard.conn);
 
   // Ensure clean state.
@@ -212,7 +212,7 @@ void TestReadStateAfterBuild() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeUdfs(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_runtime_reset()", "reset");
 
@@ -247,7 +247,7 @@ void TestResetClearsState() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeUdfs(guard.conn);
 
   Exec(guard.conn, "DROP TABLE IF EXISTS host_test_reset CASCADE", "cleanup");
@@ -286,7 +286,7 @@ void TestFailClosed() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg'");
+  PGresult *res = PQexec(guard.conn, "LOAD 'accelerator_codegen_pg_test'");
   auto status = PQresultStatus(res);
   if (status != PGRES_COMMAND_OK) {
     std::cerr << "engine_host[postgres] FAIL: extension not loadable — "
@@ -303,7 +303,7 @@ void TestNullValues() {
   ConnGuard guard;
   guard.conn = Connect();
 
-  Exec(guard.conn, "LOAD 'accelerator_codegen_pg'", "load");
+  Exec(guard.conn, "LOAD 'accelerator_codegen_pg_test'", "load");
   RegisterRuntimeUdfs(guard.conn);
   Exec(guard.conn, "SELECT pg_accel_runtime_reset()", "reset");
 
