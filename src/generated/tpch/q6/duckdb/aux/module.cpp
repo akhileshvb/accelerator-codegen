@@ -269,6 +269,8 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ6LineitemDelta &delta,
   discount_raw = ScaleToRaw(discount_raw, discount_scale, 2);
   quantity_raw = ScaleToRaw(quantity_raw, quantity_scale, 2);
   extended_raw = ScaleToRaw(extended_raw, extended_scale, 2);
+  if (!::accelerator_codegen::Q6InDomain(discount_raw, quantity_raw))
+    return false;
   delta.shipdate_days = shipdate_days;
   delta.month_key = TpchQ6MonthKeyFromDays(shipdate_days);
   delta.discount_cent = static_cast<int8_t>(discount_raw);
@@ -443,19 +445,26 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ6Module::CreateTxnBuffer() const {
 
 void TpchQ6Module::ApplyLineitemInput(
     const TpchQ6LineitemInput &input,
-    std::unordered_map<core::PartitionId, Q6RevenueMatrix> &matrices) const {
+    std::unordered_map<core::PartitionId, Q6RevenueMatrix> &matrices,
+    std::set<core::PartitionId> &declined) const {
   const auto discount_raw =
       ScaleToRaw(input.discount_raw, input.discount_scale, 2);
   const auto quantity_raw =
       ScaleToRaw(input.quantity_raw, input.quantity_scale, 2);
   const auto extended_raw =
       ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2);
-  const auto contribution =
-      ::accelerator_codegen::Q6RowContributionRaw(extended_raw, discount_raw);
-  const auto discount_cent = static_cast<int8_t>(discount_raw);
   const auto month_partition = core::TpchQ6Layout::MonthPartition(
       TpchQ6MonthKeyFromDays(input.shipdate_days));
-  matrices[month_partition].AddRawCell(discount_cent, quantity_raw, contribution, 1);
+  auto &matrix = matrices[month_partition];
+  if (input.null_cell ||
+      !::accelerator_codegen::Q6InDomain(discount_raw, quantity_raw)) {
+    declined.insert(month_partition);
+    return;
+  }
+  const auto contribution =
+      ::accelerator_codegen::Q6RowContributionRaw(extended_raw, discount_raw);
+  matrix.AddRawCell(static_cast<int8_t>(discount_raw), quantity_raw,
+                    contribution, 1);
 }
 
 void TpchQ6Module::Build(core::AuxEngineServices &services,
@@ -464,12 +473,15 @@ void TpchQ6Module::Build(core::AuxEngineServices &services,
   if (!initial_scan)
     throw std::logic_error("TPC-H Q6 requires a typed initial scan source");
   std::unordered_map<core::PartitionId, Q6RevenueMatrix> matrices;
-  initial_scan->ScanLineitemGroups(
-      [&](const TpchQ6LineitemInput &input) { ApplyLineitemInput(input, matrices); });
+  std::set<core::PartitionId> declined;
+  initial_scan->ScanLineitemGroups([&](const TpchQ6LineitemInput &input) {
+    ApplyLineitemInput(input, matrices, declined);
+  });
   for (auto &entry : matrices) {
     auto image = NewStateImage(KindOf(entry.first), KeyOf(entry.first));
     image->matrix = entry.second;
     image->matrix.PrefixInPlace();
+    image->declined = declined.count(entry.first) != 0;
     builder.Write(core::StateImage::Make(
         core::TpchQ6Layout::kAccelerator, entry.first, 0,
         std::shared_ptr<const TpchQ6StateImage>(std::move(image))));
@@ -587,10 +599,11 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
         month_keys.insert(core::TpchQ6Layout::MonthKeyFromPartition(partition));
     }
     std::unordered_map<core::PartitionId, Q6RevenueMatrix> rebuilt;
+    std::set<core::PartitionId> declined;
     if (initial_scan) {
       initial_scan->ScanLineitemsForMonths(
           month_keys, [&](const TpchQ6LineitemInput &input) {
-            ApplyLineitemInput(input, rebuilt);
+            ApplyLineitemInput(input, rebuilt, declined);
           });
     }
     for (const auto partition : partitions) {
@@ -600,6 +613,7 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
         image->matrix = it->second;
         image->matrix.PrefixInPlace();
       }
+      image->declined = declined.count(partition) != 0;
       outcome.updates.push_back(core::StateImage::Make(
           core::TpchQ6Layout::kAccelerator, partition, 0,
           std::shared_ptr<const TpchQ6StateImage>(std::move(image))));
@@ -641,6 +655,7 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
     // Copy-on-write: a fresh image holding the old matrix plus the delta.
     auto image = NewStateImage(typed->kind, typed->key);
     image->matrix = typed->matrix;
+    image->declined = typed->declined; // its out-of-domain row is still there
     const uint32_t begin = group_begin[p], end = group_begin[p + 1];
     if (end - begin <= 3) {
       for (uint32_t i = begin; i < end; ++i) {
@@ -744,7 +759,7 @@ void TpchQ6Module::Execute(core::AuxEngineServices &services,
       params.quantity_upper_raw);
   for (const auto &image : snapshot.partitions) {
     const auto *typed = AsQ6Image(image);
-    if (!typed) {
+    if (!typed || typed->declined) {
       ExecuteFallback(services, arguments, sink);
       return;
     }

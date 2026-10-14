@@ -30,6 +30,8 @@ struct TpchQ6LineitemInput {
   int32_t quantity_scale = 2;
   int64_t extended_price_raw = 0;
   int32_t extended_price_scale = 2;
+  // l_discount or l_quantity is NULL (the row is outside the matrix domain).
+  bool null_cell = false;
 };
 
 class TpchQ6InitialScan {
@@ -62,6 +64,10 @@ struct TpchQ6StateImage {
   // The matrix (64-byte aligned prefix-sum block) lives in the image itself:
   // one allocation per published partition, no pointer chase on reads.
   ::accelerator_codegen::Q6RevenueMatrix matrix;
+  // The month holds a row outside the matrix domain (Q6InDomain, or a NULL
+  // discount or quantity): the matrix cannot answer for it, so queries that
+  // read this partition fall back to SQL. Cleared only by a rebuild.
+  bool declined = false;
 };
 
 struct TpchQ6LineitemDelta {
@@ -141,9 +147,11 @@ public:
 
 private:
   // Matrices are accumulated raw per partition; PrefixInPlace() before publish.
+  // A row outside the matrix domain adds its partition to `declined`.
   void ApplyLineitemInput(const TpchQ6LineitemInput &input,
                           std::unordered_map<core::PartitionId,
-                                             ::accelerator_codegen::Q6RevenueMatrix> &matrices) const;
+                                             ::accelerator_codegen::Q6RevenueMatrix> &matrices,
+                          std::set<core::PartitionId> &declined) const;
   void CollectQueryPartitions(const TpchQ6QueryParams &params,
                               std::vector<core::PartitionId> &partitions) const;
   void EmitResult(::accelerator_codegen::Q6AccT revenue,

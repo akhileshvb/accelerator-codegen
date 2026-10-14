@@ -76,6 +76,11 @@ bool Q6QuantityInRange(int64_t quantity_scaled) {
 
 } // namespace
 
+bool Q6InDomain(int64_t discount_raw, int64_t quantity_raw) {
+	return discount_raw >= 0 && discount_raw <= kQ6MaxDiscountCent && quantity_raw >= 0 &&
+	       quantity_raw <= int64_t {kQ6MaxQuantityBucket} * kQ6QuantityScale && quantity_raw % kQ6QuantityScale == 0;
+}
+
 Q6AccT Q6RowContributionRaw(int64_t extendedprice_raw, int64_t discount_raw) {
 	return ScaleContribution(extendedprice_raw, discount_raw);
 }

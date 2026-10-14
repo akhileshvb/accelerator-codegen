@@ -96,16 +96,29 @@ using namespace scan;
 
 struct TpchQ6Scan : TpchQ6InitialScan {
   explicit TpchQ6Scan(::duckdb::Connection &connection) : connection(connection) {}
+  // (shipdate, discount, quantity, price) as an input. A NULL shipdate never
+  // qualifies and is skipped; a NULL discount or quantity is flagged, so its
+  // month declines. A NULL price adds nothing (SUM skips it).
+  static void ConsumeRow(const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row,
+                         const std::function<void(const TpchQ6LineitemInput &)> &consumer) {
+    const auto shipdate = ChunkValue(chunk, 0, row);
+    if (shipdate.IsNull())
+      return;
+    const auto discount = ChunkValue(chunk, 1, row);
+    const auto quantity = ChunkValue(chunk, 2, row);
+    TpchQ6LineitemInput input{DateDays(shipdate), DecimalRaw(discount), 2,
+                              DecimalRaw(quantity), 2,
+                              DecimalRaw(ChunkValue(chunk, 3, row)), 2};
+    input.null_cell = discount.IsNull() || quantity.IsNull();
+    consumer(input);
+  }
   void ScanLineitems(
       const std::function<void(const TpchQ6LineitemInput &)> &consumer) override {
     ScanQueryStreaming(
         connection,
         "SELECT l_shipdate, l_discount, l_quantity, l_extendedprice FROM lineitem",
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({DateDays(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 3, row)), 2});
+          ConsumeRow(chunk, row, consumer);
         });
   }
   void ScanLineitemGroups(
@@ -116,10 +129,7 @@ struct TpchQ6Scan : TpchQ6InitialScan {
         "SUM(l_extendedprice)::DECIMAL(18,2) FROM lineitem "
         "GROUP BY date_trunc('month', l_shipdate), l_discount, l_quantity",
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({DateDays(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 3, row)), 2});
+          ConsumeRow(chunk, row, consumer);
         });
   }
   void ScanLineitemsForMonths(
@@ -143,10 +153,7 @@ struct TpchQ6Scan : TpchQ6InitialScan {
     ScanQueryStreaming(
         connection, sql.str(),
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({DateDays(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 3, row)), 2});
+          ConsumeRow(chunk, row, consumer);
         });
   }
   ::duckdb::Connection &connection;

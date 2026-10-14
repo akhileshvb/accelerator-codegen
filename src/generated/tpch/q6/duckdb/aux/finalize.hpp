@@ -80,6 +80,12 @@ struct Q6RangePlan {
 	}
 };
 
+// Whether a row (discount and quantity at scale 2) has an exact cell: discount
+// in [0.00, 0.10] and a whole quantity in [0, 50]. Whole quantities make every
+// quantity limit exact on the integer grid. A row outside the domain has no
+// cell; its month declines and queries over it fall back to SQL.
+bool Q6InDomain(int64_t discount_raw, int64_t quantity_raw);
+
 Q6AccT Q6RowContributionRaw(int64_t extendedprice_raw, int64_t discount_raw);
 
 void ApplyQ6CellContribution(Q6RevenueMatrix &matrix, int8_t discount_cent, int64_t quantity_scaled,

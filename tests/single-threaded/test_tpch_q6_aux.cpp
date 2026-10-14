@@ -177,5 +177,55 @@ int main() {
   coordinator.Commit();
 
   RequireRevenue(module, services, start_date, 60000);
+
+  // Rows outside the matrix domain decline their month: the query falls back
+  // to SQL instead of dropping them (quantity -1 qualifies l_quantity < 25)
+  // or wrapping them into a wrong cell (discount 2.59 is not 0.03).
+  {
+    Services domain;
+    domain.lineitems = {Lineitem(shipdate, 3, 1000, 10000),
+                        Lineitem(shipdate, 259, 1000, 10000),
+                        Lineitem(shipdate, 3, -100, 10000)};
+    TpchQ6Module q6(TpchQ6Config{0}, &domain);
+    Builder built;
+    q6.Build(domain, built);
+    assert(built.images.size() == 1);
+    assert(built.images[0].As<accelerator_codegen::aux_state::query::TpchQ6StateImage>()->declined);
+    domain.store.InstallBuild(std::move(built.images));
+    RequireRevenue(q6, domain, start_date, 60000);
+  }
+
+  // The same through maintenance: an out-of-domain insert or delete rebuilds.
+  {
+    Services delta;
+    delta.lineitems = {Lineitem(shipdate, 3, 1000, 10000)};
+    TpchQ6Module q6(TpchQ6Config{0}, &delta);
+    Builder built;
+    q6.Build(delta, built);
+    delta.store.InstallBuild(std::move(built.images));
+    AuxTransactionCoordinator writes;
+    writes.Register(std::make_shared<TpchQ6Module>(TpchQ6Config{0}, &delta));
+    writes.AttachServices(delta);
+
+    MutationBatch insert;
+    insert.table = 0;
+    insert.kind = MutationKind::Insert;
+    insert.new_rows = {Lineitem(shipdate, 3, -100, 10000)};
+    delta.lineitems.push_back(insert.new_rows.front());
+    writes.OnMutation(insert);
+    writes.PreCommit();
+    writes.Commit();
+    RequireRevenue(q6, delta, start_date, 60000);
+
+    MutationBatch remove;
+    remove.table = 0;
+    remove.kind = MutationKind::Delete;
+    remove.old_rows = insert.new_rows;
+    delta.lineitems.pop_back();
+    writes.OnMutation(remove);
+    writes.PreCommit();
+    writes.Commit();
+    RequireRevenue(q6, delta, start_date, 30000);
+  }
   return 0;
 }
