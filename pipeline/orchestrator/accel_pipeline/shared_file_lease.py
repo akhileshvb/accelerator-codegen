@@ -22,22 +22,17 @@ DEFAULT_SHARED_PATH_GLOBS = (
     "cmake/**",
     "cmake/*.cmake",
     # The engine backends (generic only: queries register from their own
-    # directories, so these change only for engine-level additions).
-    "src/generated/catalog/**",
-    "src/generated/postgres/**",
-    "src/generated/mysql/**",
-    "src/runtime/**",
-    "src/stateful/duckdb/**",
-    "src/stateful/postgres/**",
-    "src/stateful/mysql/**",
-    "tests/test_support/cross_accel_helpers.cpp",
-    "tests/test_support/cross_accel_helpers.hpp",
-    "benchmarks/tpch/single-threaded/tpch_arg_variants.cpp",
-    "benchmarks/tpch/single-threaded/tpch_arg_variants.hpp",
+    # directories, so these change only in engine_backend runs; builds that
+    # compile them take the lease).
+    "backends/**",
+    # Cross-query evaluation harnesses shared by every query.
+    "eval/tests/test_support/cross_accel_helpers.cpp",
+    "eval/tests/test_support/cross_accel_helpers.hpp",
+    "eval/bench/tpch/single-threaded/tpch_arg_variants.cpp",
+    "eval/bench/tpch/single-threaded/tpch_arg_variants.hpp",
     # Shared primitives library: changed only by primitive_publish; builds that
     # read it take the lease so a publish cannot land mid-compile.
-    "include/accelerator_codegen/stateful/prims/**",
-    "tests/aux_state/test_prims.cpp",
+    "accelerators/prims/**",
 )
 
 _LOCK_DIRNAME = ".locks"

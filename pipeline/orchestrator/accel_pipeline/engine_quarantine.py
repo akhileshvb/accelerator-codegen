@@ -14,12 +14,10 @@ from pathlib import Path
 from typing import Any
 
 
-# Product host / sibling adapter layouts that must not be visible to the agent.
+# Product host / sibling adapter layouts that must not be visible to the agent:
+# each engine backend is one tree, backends/<engine>/.
 _DEFAULT_FOREIGN_TREES = (
-    "include/accelerator_codegen/runtime/duckdb",
-    "src/runtime/duckdb",
-    "include/accelerator_codegen/stateful/duckdb",
-    "src/stateful/duckdb",
+    "backends/duckdb",
 )
 
 

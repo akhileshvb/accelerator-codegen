@@ -78,11 +78,17 @@ def make_shell_tools(ctx: ToolContext):
         if not _command_allowed(raw_cmd, allowed) and not _command_allowed(effective_cmd, allowed):
             raise PermissionError(f"command not allowlisted: {cmd}")
 
-        from accel_pipeline.write_ownership import shell_command_cross_query_write
+        from accel_pipeline.write_ownership import (
+            shell_command_cross_query_write,
+            shell_command_layer_write,
+        )
 
         cross = shell_command_cross_query_write(effective_cmd, query=int(ctx.query))
         if cross:
             raise PermissionError(cross)
+        layer = shell_command_layer_write(effective_cmd)
+        if layer:
+            raise PermissionError(layer)
 
         holder = ctx.pipeline_config.worker_id or worker_id_from_env(f"q{ctx.query}")
         lease_obj = None

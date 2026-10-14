@@ -108,17 +108,14 @@ def _seed_generated_sources(primary: Path, dest: Path) -> None:
     stale ``.o`` files that omitted ``accel_tpch_q*_aux`` table functions.
     """
     rels = (
-        "src/generated",
-        "src/harness",  # differential/catalog glue often dirty alongside catalog APIs
-        "src/runtime",
-        "src/stateful",
-        "include/accelerator_codegen",
-        "tests/single-threaded",
-        "tests/aux_state",
-        "config",
+        "accelerators",  # query trees, <bench>/common, prims (re-mirrored by refresh_prims)
+        "backends",
+        "substrate",
+        "eval/harness",  # differential/catalog glue often dirty alongside catalog APIs
+        "eval/tests",
+        "eval/bench/tpch/single-threaded",
+        "workloads",
         "cmake",
-        "benchmarks/tpch/single-threaded",
-        "benchmarks/sec_edgar/single-threaded",
     )
     for rel in rels:
         src = primary / rel
@@ -239,7 +236,7 @@ def _iter_owned_files(repo_root: Path, query: int, *, benchmark: str = "tpch") -
                 if fnmatch.fnmatch(rel, pat):
                     files.append(path)
         else:
-            # basename globs like tests/single-threaded/test_tpch_q4*.cpp
+            # basename globs (none today: a query's files all live under its directory)
             parent = root / Path(pat).parent
             name_pat = Path(pat).name
             if not parent.is_dir():

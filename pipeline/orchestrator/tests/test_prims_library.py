@@ -41,7 +41,7 @@ README = """\
 """
 
 TESTS = """\
-#include "accelerator_codegen/stateful/prims/existing.hpp"
+#include "prims/existing.hpp"
 static void TestExisting() {}
 int main() {
   TestExisting();
@@ -71,8 +71,8 @@ NEW_README = README.replace(
 ).replace("- Nothing: `Existing`.\n", "- Nothing: `Existing`.\n- Bounded FIFO: `RingBuffer`.\n")
 
 NEW_TESTS = (
-    '#include "accelerator_codegen/stateful/prims/existing.hpp"\n'
-    '#include "accelerator_codegen/stateful/prims/ring_buffer.hpp"\n'
+    '#include "prims/existing.hpp"\n'
+    '#include "prims/ring_buffer.hpp"\n'
     "static void TestExisting() {}\n"
     "static void TestRingBuffer() {\n"
     "  std::mt19937 rng(1);\n"
@@ -112,12 +112,12 @@ def primary(tmp_path):
     (root / P).mkdir(parents=True)
     (root / P / "existing.hpp").write_text(EXISTING)
     (root / P / "README.md").write_text(README)
-    (root / "tests/aux_state").mkdir(parents=True)
+    (root / pl.TESTS_REL).parent.mkdir(parents=True)
     (root / pl.TESTS_REL).write_text(TESTS)
     (root / "scripts").mkdir()
     shutil.copy(REAL_ROOT / "scripts/check_backend_query_free.py", root / "scripts")
     for rel in ("scripts/postgres_tpch_schema.sql", "scripts/mysql_tpch_schema.sql",
-                "src/verus/sql2verus/queries/tpch_schema.sql", "benchmarks/sec_edgar/schema.sql"):
+                "workloads/tpch/schema.sql", "eval/bench/sec_edgar/schema.sql"):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REAL_ROOT / rel, root / rel)
     for cmd in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
@@ -192,9 +192,9 @@ def test_existing_header_may_gain_lines(primary, fake):
 
 
 def test_changed_existing_header_rebuilds_dependents(primary, fake):
-    src = primary / "src/generated/some/dep.cpp"
+    src = primary / "accelerators/some/q1/duckdb/dep.cpp"
     src.parent.mkdir(parents=True)
-    src.write_text('#include "accelerator_codegen/stateful/prims/existing.hpp"\nint x;\n')
+    src.write_text('#include "prims/existing.hpp"\nint x;\n')
     build = primary / "build-release"
     build.mkdir()
     (build / "compile_commands.json").write_text(json.dumps([
@@ -206,9 +206,9 @@ def test_changed_existing_header_rebuilds_dependents(primary, fake):
 
 
 def test_dependent_build_failure_restores(primary, fake):
-    src = primary / "src/generated/some/dep.cpp"
+    src = primary / "accelerators/some/q1/duckdb/dep.cpp"
     src.parent.mkdir(parents=True)
-    src.write_text('#include "accelerator_codegen/stateful/prims/existing.hpp"\n')
+    src.write_text('#include "prims/existing.hpp"\n')
     build = primary / "build-release"
     build.mkdir()
     (build / "compile_commands.json").write_text(json.dumps([
@@ -251,7 +251,7 @@ def test_rejects_missing_tests(primary, fake):
 
 
 def test_rejects_trivial_or_non_random_tests(primary, fake):
-    thin = TESTS.replace('existing.hpp"', 'existing.hpp"\n#include "accelerator_codegen/stateful/prims/ring_buffer.hpp"')
+    thin = TESTS.replace('existing.hpp"', 'existing.hpp"\n#include "prims/ring_buffer.hpp"')
     res = publish(primary, stage_new_primitive(primary, tests=thin))
     assert not res["ok"] and any("add real tests" in p for p in res["problems"])
     nonrandom = NEW_TESTS.replace("std::mt19937 rng(1);", "int seed = 1;").replace("rng() >= 0", "seed >= 0") \
@@ -296,7 +296,7 @@ def test_test_failure_restores_backup(primary, fake):
 
 
 def test_rejects_unpublishable_paths(primary, fake):
-    res = publish(primary, ["src/generated/tpch/q1/aux/module.cpp"])
+    res = publish(primary, ["accelerators/tpch/q1/duckdb/aux/module.cpp"])
     assert not res["ok"] and "not publishable" in res["error"]
     res = publish(primary, [f"{P}/sub/dir.hpp"])
     assert not res["ok"]
@@ -357,10 +357,10 @@ def test_sync_owned_never_copies_prims(primary, tmp_path):
     wt = tmp_path / "wt"
     (wt / P).mkdir(parents=True)
     (wt / P / "evil.hpp").write_text("// evil\n")
-    (wt / "src/generated/tpch/q5/aux").mkdir(parents=True)
-    (wt / "src/generated/tpch/q5/aux/module.cpp").write_text("// q5\n")
+    (wt / "accelerators/tpch/q5/duckdb/aux").mkdir(parents=True)
+    (wt / "accelerators/tpch/q5/duckdb/aux/module.cpp").write_text("// q5\n")
     copied = sync_owned_to_primary(primary=primary, worktree=wt, query=5)
-    assert "src/generated/tpch/q5/aux/module.cpp" in copied
+    assert "accelerators/tpch/q5/duckdb/aux/module.cpp" in copied
     assert not any(c.startswith(P) for c in copied)
     assert not (primary / P / "evil.hpp").exists()
 
@@ -369,7 +369,7 @@ def test_sync_owned_never_copies_prims(primary, tmp_path):
 @pytest.mark.parametrize("stage_name", ["implementation", "optimization_worker", "optimization_unified_patch", ""])
 def test_write_policy_denies_direct_prims_writes(primary, rel, stage_name):
     ok, reason = write_allowed(primary, primary / rel, query=5, stage=stage_name,
-                               write_paths=[f"{P}/**", "tests/aux_state/**", "include/**"])
+                               write_paths=[f"{P}/**", "accelerators/**", "**"])
     assert not ok
     assert "primitive_publish" in reason
 

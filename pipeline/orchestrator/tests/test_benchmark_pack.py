@@ -89,7 +89,9 @@ def test_aux_workload_allows_cmake_edits() -> None:
     ), "agent must be able to register DuckDB SQL aux table functions"
 
 
-def test_aux_write_paths_allow_duckdb_table_function_registration() -> None:
+def test_aux_write_paths_register_from_query_dir_not_backend() -> None:
+    """The query registers its table function from its own directory; the DuckDB
+    backend's table-function file (backends/duckdb/**) is the engine_backend run's."""
     from accel_pipeline.config import apply_workload_overrides
     from accel_pipeline.tools.repo_tools import ToolContext, _is_writable
 
@@ -97,6 +99,7 @@ def test_aux_write_paths_allow_duckdb_table_function_registration() -> None:
     workload = load_workload("tpch_q2_aux", REPO_ROOT)
     merged = apply_workload_overrides(pipeline_config, workload)
     ctx = ToolContext(pipeline_config=merged, query=2, stage="implementation")
-    target = REPO_ROOT / "src/stateful/duckdb/duckdb_aux_table_functions.cpp"
+    target = REPO_ROOT / "backends/duckdb/api/duckdb_aux_table_functions.cpp"
     assert target.is_file()
-    assert _is_writable(ctx, target)
+    assert not _is_writable(ctx, target)
+    assert _is_writable(ctx, REPO_ROOT / "accelerators/tpch/q2/duckdb/aux/register.cpp")

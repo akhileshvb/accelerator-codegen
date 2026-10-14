@@ -47,7 +47,7 @@ def test_load_engine_mysql_workload():
         "host",
     ]
     store = w["implementation_layers"][0]
-    assert store["harness"] == "tests/engine_backend/test_mysql_store.cpp"
+    assert store["harness"] == "backends/mysql/tests/test_mysql_store.cpp"
     assert store["cmake_target"] == "test_mysql_store"
     assert store["gate"] == "engine_store"
     assert store["rules"] == ["store_roundtrip"]
@@ -56,12 +56,12 @@ def test_load_engine_mysql_workload():
     runtime = next(layer for layer in w["implementation_layers"] if layer["id"] == "runtime")
     assert runtime["rules"] == ["toy_runtime"]
     assert w["target_paths"]["adversarial_test"] == (
-        "tests/engine_backend/test_mysql_adversarial.cpp"
+        "backends/mysql/tests/test_mysql_adversarial.cpp"
     )
     assert w["cmake"]["collect_fn"] == "accel_collect_mysql_sources"
     assert w["cmake"]["build_flag"] == "ACCELERATOR_CODEGEN_BUILD_MYSQL"
-    assert any("runtime/mysql/**" in p for p in w["write_paths"])
-    assert any("tests/engine_backend/**" in p for p in w["write_paths"])
+    assert "backends/mysql/**" in w["write_paths"]
+    assert not any(p.startswith(("substrate", "accelerators", "workloads")) for p in w["write_paths"])
     assert "engine_store" in w["post_validation_gates"]
     assert "engine_adversarial" in w["post_validation_gates"]
     assert "engine_adversarial" not in w["post_implementation_gates"]
@@ -88,7 +88,7 @@ def test_engine_write_paths_allow_adapter_edits():
     merged = apply_workload_overrides(pc, w)
     ok, reason = write_allowed(
         REPO_ROOT,
-        "include/accelerator_codegen/runtime/mysql/scan_helper.hpp",
+        "backends/mysql/engine/scan_helper.hpp",
         query=0,
         stage="impl_scan",
         write_paths=merged.write_paths,
@@ -98,7 +98,7 @@ def test_engine_write_paths_allow_adapter_edits():
     assert ok, reason
     ok2, reason2 = write_allowed(
         REPO_ROOT,
-        "src/stateful/mysql/mysql_aux_backend.cpp",
+        "backends/mysql/state/mysql_aux_backend.cpp",
         query=0,
         stage="impl_aux_backend",
         write_paths=merged.write_paths,
@@ -108,7 +108,7 @@ def test_engine_write_paths_allow_adapter_edits():
     assert ok2, reason2
     ok3, reason3 = write_allowed(
         REPO_ROOT,
-        "tests/engine_backend/test_mysql_store.cpp",
+        "backends/mysql/tests/test_mysql_store.cpp",
         query=0,
         stage="impl_store",
         write_paths=merged.write_paths,
@@ -116,6 +116,24 @@ def test_engine_write_paths_allow_adapter_edits():
         benchmark="engine",
     )
     assert ok3, reason3
+    ok4, reason4 = write_allowed(
+        REPO_ROOT,
+        "backends/mysql/api/catalog/query_catalog.hpp",
+        query=0,
+        stage="impl_runtime",
+        write_paths=merged.write_paths,
+        pipeline_config=merged,
+        benchmark="engine",
+    )
+    assert ok4, reason4
+    # another engine's backend, the substrate and query directories stay closed
+    for rel in ("backends/duckdb/api/register.cpp", "substrate/aux/core/aux_types.hpp",
+                "accelerators/tpch/q6/mysql/aux/module.cpp", "workloads/tpch/q6.sql"):
+        ok5, reason5 = write_allowed(
+            REPO_ROOT, rel, query=0, stage="impl_runtime", write_paths=merged.write_paths + ["**"],
+            pipeline_config=merged, benchmark="engine",
+        )
+        assert not ok5, (rel, reason5)
 
 
 def test_critique_store_cannot_write_adapter():
@@ -124,7 +142,7 @@ def test_critique_store_cannot_write_adapter():
     merged = apply_workload_overrides(pc, w)
     ok, reason = write_allowed(
         REPO_ROOT,
-        "src/stateful/postgres/postgres_state_store.cpp",
+        "backends/postgres/state/postgres_state_store.cpp",
         query=0,
         stage="critique_store",
         write_paths=merged.write_paths,
@@ -521,7 +539,7 @@ def test_layer_critique_feedback_and_load(tmp_path):
                     {
                         "rule": "harness_gap",
                         "evidence": "TryPublish remaps partitions; harness only tests InvalidateAll",
-                        "paths": ["src/stateful/postgres/postgres_state_store.cpp"],
+                        "paths": ["backends/postgres/state/postgres_state_store.cpp"],
                     }
                 ],
                 "feedback_for_implementation": "Assert Invalidate(PartitionSet) after remap.",

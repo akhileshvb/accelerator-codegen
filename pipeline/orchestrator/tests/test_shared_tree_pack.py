@@ -24,11 +24,11 @@ from accel_pipeline.config import PipelineConfig
 
 
 def test_is_shared_path_defaults(tmp_path: Path):
-    (tmp_path / "src/generated/catalog").mkdir(parents=True)
-    f = tmp_path / "src/generated/catalog/query_catalog.cpp"
+    (tmp_path / "backends/duckdb/api/catalog").mkdir(parents=True)
+    f = tmp_path / "backends/duckdb/api/catalog/query_catalog.cpp"
     f.write_text("x\n", encoding="utf-8")
     assert is_shared_path(tmp_path, f)
-    q_aux = tmp_path / "src/generated/tpch/q2/aux/module.cpp"
+    q_aux = tmp_path / "accelerators/tpch/q2/duckdb/aux/module.cpp"
     q_aux.parent.mkdir(parents=True)
     q_aux.write_text("y\n", encoding="utf-8")
     assert not is_shared_path(tmp_path, q_aux)
@@ -56,7 +56,7 @@ def test_sticky_lease_auto_on_shared_write(tmp_path: Path):
     assert info is not None
     assert info.holder == "q2"
     # Non-shared path does not require/refresh lease semantics beyond None.
-    local = tmp_path / "src/generated/tpch/q2/aux/module.cpp"
+    local = tmp_path / "accelerators/tpch/q2/duckdb/aux/module.cpp"
     local.parent.mkdir(parents=True)
     local.write_text("z\n", encoding="utf-8")
     assert ensure_sticky_lease_for_write(tmp_path, holder="q2", path=local) is None
@@ -232,9 +232,9 @@ def test_ensure_worker_build_dir_retargets_source(tmp_path: Path, monkeypatch):
 def test_write_ownership_blocks_cross_query_and_shared_during_opt(tmp_path: Path):
     from accel_pipeline.write_ownership import write_allowed
 
-    owned = tmp_path / "src/generated/tpch/q7/aux/module.cpp"
-    foreign = tmp_path / "src/generated/tpch/q8/aux/module.cpp"
-    shared = tmp_path / "src/generated/catalog/query_catalog.cpp"
+    owned = tmp_path / "accelerators/tpch/q7/duckdb/aux/module.cpp"
+    foreign = tmp_path / "accelerators/tpch/q8/duckdb/aux/module.cpp"
+    shared = tmp_path / "eval/tests/test_support/cross_accel_helpers.cpp"
     for p in (owned, foreign, shared):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("x\n", encoding="utf-8")
@@ -244,7 +244,7 @@ def test_write_ownership_blocks_cross_query_and_shared_during_opt(tmp_path: Path
     )
     assert ok
     ok, reason = write_allowed(
-        tmp_path, foreign, query=7, stage="optimization", write_paths=["src/generated/tpch/q*/**"]
+        tmp_path, foreign, query=7, stage="optimization", write_paths=["accelerators/tpch/q*/**"]
     )
     assert not ok and "cross-query" in reason
     ok, reason = write_allowed(
@@ -256,7 +256,7 @@ def test_write_ownership_blocks_cross_query_and_shared_during_opt(tmp_path: Path
         shared,
         query=7,
         stage="implementation",
-        write_paths=["src/generated/catalog/**"],
+        write_paths=["eval/tests/test_support/**"],
     )
     assert ok
     ok, reason = write_allowed(
@@ -269,17 +269,17 @@ def test_shell_blocks_python_foreign_rewrite():
     from accel_pipeline.write_ownership import shell_command_cross_query_write
 
     assert shell_command_cross_query_write(
-        "sed -n '1,20p' src/generated/tpch/q22/aux/module.cpp", query=4
+        "sed -n '1,20p' accelerators/tpch/q22/duckdb/aux/module.cpp", query=4
     ) is None
     deny = shell_command_cross_query_write(
         "python3 - <<'PY'\nfrom pathlib import Path\n"
-        "Path('src/generated/tpch/q22/aux/module.cpp').write_text('x')\nPY",
+        "Path('accelerators/tpch/q22/duckdb/aux/module.cpp').write_text('x')\nPY",
         query=4,
     )
     assert deny and "Q22" in deny
     deny2 = shell_command_cross_query_write(
-        "cp pipeline/artifacts/tpch/q22/best_valid_baseline_snapshot/src/generated/tpch/q22/aux/module.hpp "
-        "src/generated/tpch/q22/aux/module.hpp",
+        "cp pipeline/artifacts/tpch/q22/best_valid_baseline_snapshot/accelerators/tpch/q22/duckdb/aux/module.hpp "
+        "accelerators/tpch/q22/duckdb/aux/module.hpp",
         query=19,
     )
     assert deny2 and "Q22" in deny2
@@ -323,8 +323,8 @@ def test_repo_context_pack_roundtrip(tmp_path: Path):
         pack_path,
     )
 
-    (tmp_path / "src/generated/tpch/q7/aux").mkdir(parents=True)
-    (tmp_path / "src/generated/tpch/q7/aux/module.cpp").write_text("x\n", encoding="utf-8")
+    (tmp_path / "accelerators/tpch/q7/duckdb/aux").mkdir(parents=True)
+    (tmp_path / "accelerators/tpch/q7/duckdb/aux/module.cpp").write_text("x\n", encoding="utf-8")
     out = ensure_repo_context_pack(tmp_path, force=True)
     assert out == pack_path(tmp_path)
     assert "SharedQueries" in out.read_text(encoding="utf-8")

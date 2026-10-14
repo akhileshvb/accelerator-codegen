@@ -1,4 +1,4 @@
-"""Growable primitives library: include/accelerator_codegen/stateful/prims/.
+"""Growable primitives library: accelerators/prims/.
 
 Accelerator modules build their versioned state from the generic primitives in
 that directory.  When none fits, an aux_state agent adds a new generic one.  The
@@ -6,8 +6,8 @@ library is shared by every worker, so it only changes through `primitive_publish
 (the C++ analogue of the Verus `prooflib_publish`):
 
 * the agent stages candidate files under ``pipeline/prims_staging/<repo-relative
-  path>`` (direct writes to prims/, its README and tests/aux_state/test_prims.cpp
-  are denied by ``write_ownership``);
+  path>`` (direct writes anywhere under accelerators/prims/ -- the headers, README.md
+  and tests/test_prims.cpp -- are denied by ``write_ownership``);
 * publish takes an exclusive lock, checks the candidates are additions only,
   structurally complete (header comment, README row, tests) and workload-agnostic,
   writes them into the PRIMARY tree with a backup, builds and runs ``test_prims``
@@ -34,9 +34,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-PRIMS_REL = "include/accelerator_codegen/stateful/prims"
+PRIMS_REL = "accelerators/prims"
 README_REL = f"{PRIMS_REL}/README.md"
-TESTS_REL = "tests/aux_state/test_prims.cpp"
+TESTS_REL = f"{PRIMS_REL}/tests/test_prims.cpp"
+# Include form of a primitive: "prims/<name>" (accelerators/ is an include root).
+INCLUDE_PREFIX = "prims"
 STAGING_REL = "pipeline/prims_staging"
 PROVENANCE_REL = "pipeline/prims_provenance.jsonl"
 LOCK_REL = "pipeline/.locks/prims.lock"
@@ -261,7 +263,7 @@ def _headers_including(primary: Path, changed: set[str]) -> tuple[set[Path], set
     """Source files (and headers, transitively) that include any of the changed prims headers."""
     inc = re.compile(r'#\s*include\s*[<"]([^>"]+)[>"]')
     files: list[Path] = []
-    for sub in ("src", "tests", "benchmarks", "include"):
+    for sub in ("accelerators", "eval", "backends", "substrate"):
         base = primary / sub
         if base.is_dir():
             files += [p for p in base.rglob("*") if p.suffix in _SOURCE_SUFFIXES and p.is_file()]
@@ -269,7 +271,7 @@ def _headers_including(primary: Path, changed: set[str]) -> tuple[set[Path], set
     for p in files:
         text = _read(p) or ""
         includes[p] = [m.group(1) for m in inc.finditer(text)]
-    targets = {f"{PRIMS_REL.split('include/', 1)[1]}/{name}" for name in changed}  # accelerator_codegen/.../x.hpp
+    targets = {f"{INCLUDE_PREFIX}/{name}" for name in changed}  # prims/x.hpp
     hit_headers: set[Path] = set()
     hit_sources: set[Path] = set()
     frontier = set(targets)
@@ -283,7 +285,7 @@ def _headers_including(primary: Path, changed: set[str]) -> tuple[set[Path], set
                     if p not in hit_headers:
                         hit_headers.add(p)
                         try:
-                            rel = str(p.relative_to(primary / "include"))
+                            rel = str(p.relative_to(primary))  # suffix-matched against include forms
                         except ValueError:
                             rel = p.name
                         if rel not in seen:
@@ -491,7 +493,7 @@ def primitive_publish(
     return {"ok": True, "published": changed, "new_headers": record["new_headers"],
             "changed_headers": record["changed_headers"],
             "note": "published; this worker's prims/ copy is refreshed. Include the header as "
-                    "accelerator_codegen/stateful/prims/<name>"}
+                    "\"prims/<name>\""}
 
 
 def publish_tool(pipeline_config: Any, query: int | str, files: list[str], rationale: str) -> str:

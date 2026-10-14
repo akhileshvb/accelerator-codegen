@@ -139,7 +139,8 @@ def test_apply_workload_overrides_strips_duckdb_tf_for_postgres():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("tpch_q3_aux", REPO_ROOT)
     merged = apply_workload_overrides(pc, w)
-    assert "src/stateful/duckdb/duckdb_aux_table_functions.cpp" not in merged.write_paths
+    assert "backends/duckdb/api/duckdb_aux_table_functions.cpp" not in merged.write_paths
+    assert not any(p.startswith("backends/") for p in merged.write_paths if "{engine}" not in p)
     assert any("postgres" in p for p in merged.write_paths)
 
 
@@ -161,5 +162,5 @@ def test_registration_is_per_query():
     for engine in ("duckdb", "postgres", "mysql"):
         host = engine_host_conventions(engine, "tpch", 7)
         for key in ("register_path", "aux_register_path"):
-            assert host[key].startswith(f"src/generated/tpch/q7/{engine}/"), (engine, key, host[key])
+            assert host[key].startswith(f"accelerators/tpch/q7/{engine}/"), (engine, key, host[key])
         assert host["registry"]
