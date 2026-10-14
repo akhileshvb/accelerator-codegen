@@ -188,6 +188,13 @@ class Db:
                                      autocommit=True, local_infile=False, read_timeout=int(a.query_timeout) + 600)
             self.cur = self.c.cursor()
             self.cur.execute("SET SESSION sql_mode = CONCAT(@@sql_mode, ',PIPES_AS_CONCAT')")
+            if accel:
+                # The test variant of the plugin also exports the engine_backend gate UDFs; measuring with it
+                # would not be measuring the production plugin (build it with scripts/build_accel_mysql_plugin.sh).
+                self.cur.execute("SELECT COUNT(*) FROM mysql.func WHERE name = 'mysql_accel_txn_init'")
+                if self.cur.fetchone()[0]:
+                    sys.exit("the MySQL server has the TEST variant of accelerator_codegen_mysql installed; "
+                             "rebuild the production plugin (scripts/build_accel_mysql_plugin.sh --prod) first")
             if accel:  # the plugin scans this database to build / rebuild state (a process-wide setting)
                 try:
                     self.cur.execute("SELECT mysql_accel_set_scan_database(%s)", (a.db,))
