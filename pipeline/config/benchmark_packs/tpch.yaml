@@ -16,12 +16,10 @@ db_env_var: ACCEL_TPCH_DB
 write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
-  - src/generated/tpch/**
-  - tests/single-threaded/test_tpch_q*
-  - tests/test_support/q*_manifest.hpp
-  - tests/test_support/cross_accel_helpers.cpp
-  - tests/test_support/cross_accel_helpers.hpp
-  - benchmarks/tpch/**
+  - accelerators/tpch/**
+  - eval/tests/test_support/cross_accel_helpers.cpp
+  - eval/tests/test_support/cross_accel_helpers.hpp
+  - eval/bench/tpch/**
 
 allowed_commands:
   - "^ctest -R tpch_q\\d+.*$"
@@ -47,5 +45,5 @@ fairness:
     - "600000"
     - "800000"
   kernel_search_paths:
-    - src/generated/tpch/q{N}/base/single-threaded/kernel.cpp
-    - src/generated/tpch/q{N}/base/single-threaded/fused_scan.cpp
+    - accelerators/tpch/q{N}/duckdb/base/single-threaded/kernel.cpp
+    - accelerators/tpch/q{N}/duckdb/base/single-threaded/fused_scan.cpp

@@ -11,7 +11,7 @@ requires_base_accelerator: false
 
 allow_poor_fitness: false
 
-reference_sql_path: src/generated/tpch/q16/postgres/matview/reference.sql
+reference_sql_path: accelerators/tpch/q16/postgres/matview/reference.sql
 seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
 
 parameters:

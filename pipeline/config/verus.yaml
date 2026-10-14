@@ -3,11 +3,11 @@
 # (stage_providers verus_* in models.codex.yaml).
 
 # Names (defaults derived from the benchmark and query):
-#   crate: tpch_q21_vgen          kernel crate src/generated/<bench>/q<N>/verus_kit/<crate>/crate, C ABI <crate>_verus.h
+#   crate: tpch_q21_vgen          kernel crate accelerators/<bench>/q<N>/verus_kit/<crate>/crate, C ABI <crate>_verus.h
 #   accelerator_id: tpch_q21_vgen table function accel_<id>
 #   ffi_prefix: tpchq21vgen       C names <prefix>_* / <prefix>s_*
-#   query_sql: src/verus/sql2verus/queries/q<N>.sql   the query with $n parameters
-#   schema_sql: src/verus/sql2verus/queries/<bench>_schema.sql
+#   query_sql: workloads/<bench>/q<N>.sql   the query with $n parameters
+#   schema_sql: workloads/<bench>/schema.sql
 test_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_test.duckdb   # correctness gates (copied per run)
 bench_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb   # optimization A/B (copied per run)
 # build_dir: build-release      # CMake build dir with the DuckDB engine (default: the pipeline's)
@@ -46,11 +46,11 @@ gates:
   frozen_param_sets: 8          # random domain tuples appended to tests/params.sql when the tests are frozen
 
 # Query parameters: every substitution parameter is a runtime $n parameter.  Benchmarks, profiles and the
-# gates draw random tuples from the TPC-H domain (benchmarks/compare/gen_tpch_params.py) with a new random
+# gates draw random tuples from the TPC-H domain (eval/compare/gen_tpch_params.py) with a new random
 # seed per run, recorded in <artifacts>/param_draws/; a paired comparison shares one draw.
 params:
   sets: 5                       # tuples per benchmark / profile draw
-  # generator: benchmarks/compare/gen_tpch_params.py
+  # generator: eval/compare/gen_tpch_params.py
   # seed: 1                     # tests only: pins the draw (a run never sets it)
 
 # Optimization loop (Verus global store: ACCEL_AUX_STORE=verus_global).  Hard ceilings always reach the audit;

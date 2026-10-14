@@ -12,13 +12,9 @@ allow_update_existing: false
 
 hide_foreign_engines: true
 agent_hidden_trees:
-  - include/accelerator_codegen/runtime/duckdb
-  - src/runtime/duckdb
-  - include/accelerator_codegen/stateful/duckdb
-  - src/stateful/duckdb
-  - src/generated/catalog/duckdb
-  - src/generated/tpch
-  - src/generated/sec_edgar
+  - backends/duckdb
+  - accelerators/tpch
+  - accelerators/sec_edgar
 
 # Server-extension packaging: host layer is required.
 requires_in_process_host: true
@@ -44,8 +40,8 @@ engine_sdk_hints:
   - "Connect from host: PGHOST=127.0.0.1 PGPORT=5434. Inside the container / docker exec: PGHOST=127.0.0.1 PGPORT=5432. Env: ACCEL_PG_DOCKER=1."
   - "In-process MODULE target name: `accelerator_codegen_pg`. Installed .so path in the container: `/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so`."
   - "Use PostgreSQL 17 server headers (SPI, table/heap AM, triggers, xact callbacks, `_PG_init`) from the in-container SDK. Server-only symbols belong only in the MODULE — never in a host shared library that standalone harnesses link."
-  - "Shared substrate (do not regenerate): include/accelerator_codegen/stateful/{core,state,maintenance}/ — MutationBatch, AuxStateStore, AuxEngineServices, coordinator."
-  - "Do not read or copy another engine's runtime|stateful tree. Do not depend on generated TPC-H/SEC query modules."
+  - "Shared substrate (do not regenerate): substrate/aux/{core,state,maintenance}/ — MutationBatch, AuxStateStore, AuxEngineServices, coordinator."
+  - "Do not read or copy another engine's backends/<engine>/ tree. Do not depend on generated TPC-H/SEC query modules."
 
 store_mode_candidates:
   - typed_in_process

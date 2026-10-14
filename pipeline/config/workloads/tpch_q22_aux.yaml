@@ -11,8 +11,8 @@ requires_base_accelerator: true
 prerequisite_workload: tpch_q22
 prerequisite_min_stage: implementation
 reference_accelerators:
-  - src/generated/tpch/q10/aux/module.cpp
-  - src/generated/tpch/q18/aux/module.cpp
+  - accelerators/tpch/q10/duckdb/aux/module.cpp
+  - accelerators/tpch/q18/duckdb/aux/module.cpp
 
 allow_poor_fitness: false
 allow_unsuccessful_design: false
@@ -52,7 +52,7 @@ output_schema:
   - name: totacctbal
     type: DECIMAL
 
-cost_model_config: config/q22_aux_cost_model.json
+cost_model_config: accelerators/tpch/q22/config/q22_aux_cost_model.json
 
 optimization_guidance: |
   Q22 aggregates customers in selected phone country codes with above-average

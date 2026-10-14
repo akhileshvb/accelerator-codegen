@@ -11,8 +11,8 @@ requires_base_accelerator: true
 prerequisite_workload: tpch_q18
 prerequisite_min_stage: implementation
 reference_accelerators:
-  - src/generated/tpch/q10/aux/module.cpp
-  - src/generated/tpch/q3/aux/module.cpp
+  - accelerators/tpch/q10/duckdb/aux/module.cpp
+  - accelerators/tpch/q3/duckdb/aux/module.cpp
 
 allow_poor_fitness: false
 allow_unsuccessful_design: false
@@ -48,7 +48,7 @@ output_schema:
   - name: sum_quantity
     type: DECIMAL
 
-cost_model_config: config/q18_aux_cost_model.json
+cost_model_config: accelerators/tpch/q18/config/q18_aux_cost_model.json
 
 # Relaxed optimization loop for structural read-path upgrades (compact_join / narrow_qualifying).
 optimization:

@@ -42,7 +42,7 @@ output_schema:
   - name: low_line_count
     type: BIGINT
 
-cost_model_config: config/q12_aux_cost_model.json
+cost_model_config: accelerators/tpch/q12/config/q12_aux_cost_model.json
 
 cmake:
   query_num: 12

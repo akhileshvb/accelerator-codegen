@@ -11,9 +11,9 @@ requires_base_accelerator: true
 prerequisite_workload: tpch_q11
 prerequisite_min_stage: implementation
 reference_accelerators:
-  - src/generated/tpch/q14/aux/module.cpp
-  - src/generated/tpch/q1/aux/module.cpp
-  - src/generated/tpch/q21/aux/module.cpp
+  - accelerators/tpch/q14/duckdb/aux/module.cpp
+  - accelerators/tpch/q1/duckdb/aux/module.cpp
+  - accelerators/tpch/q21/duckdb/aux/module.cpp
 
 allow_poor_fitness: false
 allow_unsuccessful_design: false
@@ -43,7 +43,7 @@ output_schema:
   - name: value
     type: DECIMAL
 
-cost_model_config: config/q11_aux_cost_model.json
+cost_model_config: accelerators/tpch/q11/config/q11_aux_cost_model.json
 
 aux_bench_sweep:
   suites: lineitem_only

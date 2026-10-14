@@ -11,8 +11,8 @@ requires_base_accelerator: true
 prerequisite_workload: tpch_q20
 prerequisite_min_stage: implementation
 reference_accelerators:
-  - src/generated/tpch/q2/aux/module.cpp
-  - src/generated/tpch/q11/aux/module.cpp
+  - accelerators/tpch/q2/duckdb/aux/module.cpp
+  - accelerators/tpch/q11/duckdb/aux/module.cpp
 
 allow_poor_fitness: false
 allow_unsuccessful_design: false
@@ -48,7 +48,7 @@ output_schema:
   - name: s_address
     type: VARCHAR
 
-cost_model_config: config/q20_aux_cost_model.json
+cost_model_config: accelerators/tpch/q20/config/q20_aux_cost_model.json
 
 optimization_guidance: |
   Q20 lists in-nation suppliers with excess availqty vs yearly shipped qty for

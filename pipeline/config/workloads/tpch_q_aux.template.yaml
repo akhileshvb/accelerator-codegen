@@ -26,7 +26,7 @@ partitioning: {}
 
 output_schema: []
 
-cost_model_config: config/q0_aux_cost_model.json
+cost_model_config: accelerators/tpch/q0/config/q0_aux_cost_model.json
 
 speedup_verification:
   min_speedup_vs_base: 2.0

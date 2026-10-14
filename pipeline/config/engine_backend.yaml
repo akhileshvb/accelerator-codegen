@@ -5,12 +5,8 @@ write_paths:
   - CMakeLists.txt
   - cmake/GeneratedSources.cmake
   - cmake/**
-  - include/accelerator_codegen/runtime/{engine}/**
-  - src/runtime/{engine}/**
-  - include/accelerator_codegen/stateful/{engine}/**
-  - src/stateful/{engine}/**
-  - src/generated/{engine}/**
-  - tests/engine_backend/**
+  # one glob owns the whole backend: state/ engine/ api/ tests/ bench/
+  - backends/{engine}/**
   - pipeline/artifacts/engines/{engine}/**
   - pipeline/artifacts/engines/**
 
@@ -33,49 +29,49 @@ implementation_layers:
   - id: store
     title: State store
     gate: engine_store
-    harness: tests/engine_backend/test_{engine}_store.cpp
+    harness: backends/{engine}/tests/test_{engine}_store.cpp
     cmake_target: test_{engine}_store
     rules: [store_roundtrip]
   - id: aux_backend
     title: Aux backend
     gate: engine_aux_backend
-    harness: tests/engine_backend/test_{engine}_aux_backend.cpp
+    harness: backends/{engine}/tests/test_{engine}_aux_backend.cpp
     cmake_target: test_{engine}_aux_backend
     rules: [aux_services]
   - id: txn
     title: Txn bridge
     gate: engine_txn
-    harness: tests/engine_backend/test_{engine}_txn.cpp
+    harness: backends/{engine}/tests/test_{engine}_txn.cpp
     cmake_target: test_{engine}_txn
     rules: [txn_lifecycle]
   - id: mutations
     title: Mutation capture
     gate: engine_mutations
-    harness: tests/engine_backend/test_{engine}_mutations.cpp
+    harness: backends/{engine}/tests/test_{engine}_mutations.cpp
     cmake_target: test_{engine}_mutations
     rules: [mutation_hooks]
   - id: scan
     title: Engine-local scan helper
     gate: engine_scan
-    harness: tests/engine_backend/test_{engine}_scan.cpp
+    harness: backends/{engine}/tests/test_{engine}_scan.cpp
     cmake_target: test_{engine}_scan
     rules: [native_scan, value_checked_scan]
   - id: runtime
     title: Toy Runtime
     gate: engine_runtime
-    harness: tests/engine_backend/test_{engine}_runtime.cpp
+    harness: backends/{engine}/tests/test_{engine}_runtime.cpp
     cmake_target: test_{engine}_runtime
     rules: [toy_runtime]
   - id: visibility
     title: Visibility
     gate: engine_visibility
-    harness: tests/engine_backend/test_{engine}_visibility.cpp
+    harness: backends/{engine}/tests/test_{engine}_visibility.cpp
     cmake_target: test_{engine}_visibility
     rules: [visibility]
   - id: host
     title: Host packaging
     gate: engine_host
-    harness: tests/engine_backend/test_{engine}_host.cpp
+    harness: backends/{engine}/tests/test_{engine}_host.cpp
     cmake_target: test_{engine}_host
     rules: [host_glue]
     skip_unless: requires_in_process_host
@@ -100,19 +96,19 @@ prompt_subdir: engine_backend
 
 # Conventional layout used when workload omits target_paths / cmake.
 default_target_paths:
-  state_store_header: include/accelerator_codegen/stateful/{engine}/{engine}_state_store.hpp
-  state_store_source: src/stateful/{engine}/{engine}_state_store.cpp
-  aux_backend_header: include/accelerator_codegen/stateful/{engine}/{engine}_aux_backend.hpp
-  aux_backend_source: src/stateful/{engine}/{engine}_aux_backend.cpp
-  scan_helper_header: include/accelerator_codegen/runtime/{engine}/scan_helper.hpp
-  scan_helper_source: src/runtime/{engine}/scan_helper.cpp
-  scan_adapter_header: include/accelerator_codegen/runtime/{engine}/scan_helper.hpp
-  scan_adapter_source: src/runtime/{engine}/scan_helper.cpp
-  stateful_dir: include/accelerator_codegen/stateful/{engine}
-  stateful_src_dir: src/stateful/{engine}
-  contract_test: tests/engine_backend/test_{engine}_runtime.cpp
+  state_store_header: backends/{engine}/state/{engine}_state_store.hpp
+  state_store_source: backends/{engine}/state/{engine}_state_store.cpp
+  aux_backend_header: backends/{engine}/state/{engine}_aux_backend.hpp
+  aux_backend_source: backends/{engine}/state/{engine}_aux_backend.cpp
+  scan_helper_header: backends/{engine}/engine/scan_helper.hpp
+  scan_helper_source: backends/{engine}/engine/scan_helper.cpp
+  scan_adapter_header: backends/{engine}/engine/scan_helper.hpp
+  scan_adapter_source: backends/{engine}/engine/scan_helper.cpp
+  stateful_dir: backends/{engine}/state
+  stateful_src_dir: backends/{engine}/state
+  contract_test: backends/{engine}/tests/test_{engine}_runtime.cpp
   contract_test_target: test_{engine}_runtime
-  adversarial_test: tests/engine_backend/test_{engine}_adversarial.cpp
+  adversarial_test: backends/{engine}/tests/test_{engine}_adversarial.cpp
   adversarial_test_target: test_{engine}_adversarial
 
 default_cmake:

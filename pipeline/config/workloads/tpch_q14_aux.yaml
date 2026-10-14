@@ -36,7 +36,7 @@ output_schema:
   - name: promo_revenue
     type: DECIMAL
 
-cost_model_config: config/q14_aux_cost_model.json
+cost_model_config: accelerators/tpch/q14/config/q14_aux_cost_model.json
 
 cmake:
   query_num: 14

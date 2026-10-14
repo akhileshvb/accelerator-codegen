@@ -34,9 +34,9 @@ tables:
 
 fairness:
   kernel_search_paths:
-    - src/generated/tpch/q{N}/postgres/aux/module.cpp
-    - src/generated/postgres/postgres_extension.cpp
-    - src/generated/postgres/runtime.cpp
+    - accelerators/tpch/q{N}/postgres/aux/module.cpp
+    - backends/postgres/api/extension_api.cpp
+    - backends/postgres/api/runtime.cpp
   cardinality_constants:
     - "150000"
     - "600000"

@@ -12,19 +12,10 @@ allow_update_existing: false
 
 hide_foreign_engines: true
 agent_hidden_trees:
-  - include/accelerator_codegen/runtime/duckdb
-  - src/runtime/duckdb
-  - include/accelerator_codegen/stateful/duckdb
-  - src/stateful/duckdb
-  - src/generated/catalog/duckdb
-  - include/accelerator_codegen/runtime/postgres
-  - src/runtime/postgres
-  - include/accelerator_codegen/stateful/postgres
-  - src/stateful/postgres
-  - src/generated/postgres
-  - src/generated/catalog/postgres
-  - src/generated/tpch
-  - src/generated/sec_edgar
+  - backends/duckdb
+  - backends/postgres
+  - accelerators/tpch
+  - accelerators/sec_edgar
 
 # Server plugin packaging: host layer is required (UDF / daemon / component plugin).
 requires_in_process_host: true
@@ -51,8 +42,8 @@ engine_sdk_hints:
   - "In-process plugin target name: `accelerator_codegen_mysql`. Installed .so path in the container: `/usr/lib/mysql/plugin/accelerator_codegen_mysql.so` (Oracle images may use `/usr/lib64/mysql/plugin`)."
   - "Use MySQL 8.4 server plugin / UDF / component headers (`mysql/plugin.h`, `mysql/udf_registration.h`, component services). Server-only symbols belong only in the plugin — never in a host shared library that standalone harnesses link. Client libmysql (`mysql_real_query` over the protocol) is not a native scan."
   - "Native scan must use in-process table/handler/plugin services (not a client SQL round-trip). Mutation capture should hook the engine (triggers that call a plugin UDF, audit/table APIs) so INSERT/UPDATE/DELETE produce MutationBatch."
-  - "Shared substrate (do not regenerate): include/accelerator_codegen/stateful/{core,state,maintenance}/ — MutationBatch, AuxStateStore, AuxEngineServices, coordinator."
-  - "Do not read or copy another engine's runtime|stateful tree. Do not depend on generated TPC-H/SEC query modules."
+  - "Shared substrate (do not regenerate): substrate/aux/{core,state,maintenance}/ — MutationBatch, AuxStateStore, AuxEngineServices, coordinator."
+  - "Do not read or copy another engine's backends/<engine>/ tree. Do not depend on generated TPC-H/SEC query modules."
 
 store_mode_candidates:
   - typed_in_process

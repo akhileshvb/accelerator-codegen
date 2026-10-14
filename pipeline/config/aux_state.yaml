@@ -4,19 +4,12 @@ write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
   # the query's own tree: module, layout, registrars (engine backends name no query)
-  - src/generated/tpch/q*/**
-  - src/generated/catalog/**
-  - config/q*_aux_cost_model.json
-  - tests/single-threaded/test_q*_*.cpp
-  - tests/single-threaded/test_tpch_q*_aux.cpp
-  - tests/test_support/q*_aux_helpers.hpp
-  - tests/test_support/cross_accel_helpers.cpp
-  - tests/test_support/cross_accel_helpers.hpp
-  - benchmarks/tpch/single-threaded/benchmark_q*_aux.cpp
-  - benchmarks/tpch/single-threaded/tpch_arg_variants.cpp
-  - benchmarks/tpch/single-threaded/tpch_arg_variants.hpp
-  - benchmarks/tpch/single-threaded/benchmark_q*_hybrid_eval.cpp
-  - benchmarks/tpch/single-threaded/calibrate_q*_aux_cost_model.cpp
+  - accelerators/tpch/q*/**
+  - backends/*/api/catalog/**
+  - eval/tests/test_support/cross_accel_helpers.cpp
+  - eval/tests/test_support/cross_accel_helpers.hpp
+  - eval/bench/tpch/single-threaded/tpch_arg_variants.cpp
+  - eval/bench/tpch/single-threaded/tpch_arg_variants.hpp
 
 allowed_commands:
   # Build / test (gates and agent loop)
@@ -131,9 +124,9 @@ post_audit_gates:
 # Optional static fairness scan paths (agent may request_gate fairness; not a hard fail gate).
 fairness:
   kernel_search_paths:
-    - src/generated/tpch/q{N}/aux/module.cpp
-    - src/generated/tpch/q{N}/aux/finalize.cpp
-    - src/generated/tpch/q{N}/base/single-threaded/kernel.cpp
+    - accelerators/tpch/q{N}/duckdb/aux/module.cpp
+    - accelerators/tpch/q{N}/duckdb/aux/finalize.cpp
+    - accelerators/tpch/q{N}/duckdb/base/single-threaded/kernel.cpp
 
 prompt_subdir: aux_state
 
