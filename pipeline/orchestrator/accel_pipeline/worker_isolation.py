@@ -56,7 +56,7 @@ def _rewrite_build_dir_patterns(patterns: list[str], build_dir_name: str) -> lis
         rf"^cmake -S \. -B {re.escape(build_dir_name)}( .*)?$",
         rf"^cmake --build {re.escape(build_dir_name)}( .*)?$",
         rf"^ctest --test-dir {re.escape(build_dir_name)}( .*)?$",
-        rf"^{re.escape(build_dir_name)}/(tests|benchmarks)/.*",
+        rf"^(\./)?{re.escape(build_dir_name)}/(test|benchmark|calibrate)_[A-Za-z0-9_]+( .*)?$",
     ]
     for g in generic:
         if g not in seen:

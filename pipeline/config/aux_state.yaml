@@ -5,7 +5,6 @@ write_paths:
   - cmake/AuxState.cmake
   # the query's own tree: module, layout, registrars (engine backends name no query)
   - accelerators/tpch/q*/**
-  - backends/*/api/catalog/**
   - eval/tests/test_support/cross_accel_helpers.cpp
   - eval/tests/test_support/cross_accel_helpers.hpp
   - eval/bench/tpch/single-threaded/tpch_arg_variants.cpp
@@ -21,7 +20,8 @@ allowed_commands:
   - "^ctest -R (q\\d+_|tpch_q\\d+_aux|test_cross_accel|test_aux_multi_connection).*"
   - "^ctest --test-dir build-release( .*)?$"
   - "^ctest -N( .*)?$"
-  - "^build-release/(tests|benchmarks)/.*"
+  # test / bench / calibrate binaries land in the build root (no tests/ or benchmarks/ subdir)
+  - "^(\\./)?build-release/(test|benchmark|calibrate)_[A-Za-z0-9_]+( .*)?$"
   - "^(\\.\\/)?build-release\\/test_tpch_shared_differential( .*)?$"
   - "^ACCEL_TPCH_DB=.+ (\\.\\/)?build-release\\/test_tpch_shared_differential( .*)?$"
   - "^ACCEL_ADV_[A-Z_]+=\\S+( ACCEL_ADV_[A-Z_]+=\\S+)* (\\.\\/)?build-release\\/test_tpch_shared_differential( .*)?$"

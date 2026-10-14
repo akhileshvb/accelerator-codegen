@@ -33,6 +33,8 @@ DEFAULT_SHARED_PATH_GLOBS = (
     # Shared primitives library: changed only by primitive_publish; builds that
     # read it take the lease so a publish cannot land mid-compile.
     "accelerators/prims/**",
+    # Helpers shared by one benchmark's queries (not owned by any one query run).
+    "accelerators/*/common/**",
 )
 
 _LOCK_DIRNAME = ".locks"
