@@ -64,3 +64,13 @@ DATE '2000-02-29', 0.06, 24.00, DATE '2000-03-01'
 DATE '2000-02-29', 0.00, 24.00, DATE '2000-03-01'
 DATE '2000-02-29', -0.06, 0.00, DATE '2000-03-01'
 DATE '2000-02-29', 9999999999999.99, 9999999999999.99, DATE '2000-03-01'
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 8 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+DATE '1995-01-01', 0.03, 25.00, DATE '1996-01-01'
+DATE '1997-01-01', 0.09, 24.00, DATE '1998-01-01'
+DATE '1995-01-01', 0.02, 25.00, DATE '1996-01-01'
+DATE '1993-01-01', 0.03, 25.00, DATE '1994-01-01'
+DATE '1993-01-01', 0.05, 24.00, DATE '1994-01-01'
+DATE '1994-01-01', 0.05, 25.00, DATE '1995-01-01'
+DATE '1994-01-01', 0.07, 25.00, DATE '1995-01-01'
+DATE '1993-01-01', 0.05, 25.00, DATE '1994-01-01'

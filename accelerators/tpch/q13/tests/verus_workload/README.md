@@ -29,3 +29,17 @@ constraints are relaxed, and every base-table insertion supplies all columns.
 `bench_txns/` separately exercises an ordinary point order insertion, two
 comment corrections across the predicate boundary, and cancellation, without
 benchmarking the adversarial full-table removals.
+
+## Parameters now (supersedes the parameter description above)
+
+These tests were written when $1, the o_comment NOT LIKE pattern ('%' || word1 || '%' || word2 || '%') was the literal '%unusual%accounts%' in the
+query. The kit now takes it as a runtime parameter (every TPC-H substitution
+parameter is one), so `params.sql` comes from `scripts/gen_verus_kit_params.py`:
+
+1. the curated tuples above, with '%unusual%accounts%' inserted at its position: each asks
+   the question it was written for, and the setup/transactions (built around
+   '%unusual%accounts%') keep their meaning;
+2. edge values of the new parameter, with the other parameters of the first
+   tuple;
+3. eight random sets from the TPC-H domain (`eval/compare/gen_tpch_params.py`,
+   fixed seed), under the pipeline's random-parameter marker.

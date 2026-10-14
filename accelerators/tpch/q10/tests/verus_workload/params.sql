@@ -24,3 +24,13 @@ DATE '1993-10-01', DATE '1993-10-01'
 DATE '1994-01-01', DATE '1993-10-01'
 DATE '1900-01-01', DATE '1900-04-01'
 DATE '2100-01-01', DATE '2100-04-01'
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 8 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+DATE '1994-01-01', DATE '1994-04-01'
+DATE '1993-12-01', DATE '1994-03-01'
+DATE '1993-10-01', DATE '1994-01-01'
+DATE '1994-05-01', DATE '1994-08-01'
+DATE '1993-09-01', DATE '1993-12-01'
+DATE '1995-01-01', DATE '1995-04-01'
+DATE '1994-03-01', DATE '1994-06-01'
+DATE '1994-02-01', DATE '1994-05-01'

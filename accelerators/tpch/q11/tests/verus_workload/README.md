@@ -29,3 +29,17 @@ total is negative, so its membership changes even though no sum changes.
 
 Transactions commit in filename order. No temporary objects or previously
 captured row identifiers are needed across connections or snapshots.
+
+## Parameters now (supersedes the parameter description above)
+
+These tests were written when $2, the HAVING fraction (0.0001 / SF) was the literal 0.0001 in the
+query. The kit now takes it as a runtime parameter (every TPC-H substitution
+parameter is one), so `params.sql` comes from `scripts/gen_verus_kit_params.py`:
+
+1. the curated tuples above, with 0.0001 inserted at its position: each asks
+   the question it was written for, and the setup/transactions (built around
+   0.0001) keep their meaning;
+2. edge values of the new parameter, with the other parameters of the first
+   tuple;
+3. eight random sets from the TPC-H domain (`eval/compare/gen_tpch_params.py`,
+   fixed seed), under the pipeline's random-parameter marker.

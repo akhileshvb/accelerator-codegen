@@ -39,3 +39,17 @@ so later requalification must recover the post-write neighborhood, not stale
 build-time data. Duplicate witness operations likewise intentionally preserve
 some answers. Snapshot isolation and concurrent readers are exercised by the
 pipeline, not by explicit BEGIN/COMMIT statements in these files.
+
+## Parameters now (supersedes the parameter description above)
+
+These tests were written when $2, the p_name LIKE pattern (color || '%') was the literal 'gainsboro%' in the
+query. The kit now takes it as a runtime parameter (every TPC-H substitution
+parameter is one), so `params.sql` comes from `scripts/gen_verus_kit_params.py`:
+
+1. the curated tuples above, with 'gainsboro%' inserted at its position: each asks
+   the question it was written for, and the setup/transactions (built around
+   'gainsboro%') keep their meaning;
+2. edge values of the new parameter, with the other parameters of the first
+   tuple;
+3. eight random sets from the TPC-H domain (`eval/compare/gen_tpch_params.py`,
+   fixed seed), under the pipeline's random-parameter marker.

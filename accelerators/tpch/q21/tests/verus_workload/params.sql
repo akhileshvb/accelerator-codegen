@@ -18,3 +18,13 @@
 ' SAUDI ARABIA'
 'NO SUCH NATION'
 NULL
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 8 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+'RUSSIA'
+'EGYPT'
+'ETHIOPIA'
+'JORDAN'
+'MOZAMBIQUE'
+'IRAN'
+'GERMANY'
+'MOROCCO'
