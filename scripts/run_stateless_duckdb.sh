@@ -30,7 +30,7 @@ mkdir -p "$OUT_DIR"
 STAMP="sf${SF}_$(uname -n | cut -d. -f1)_$(date +%Y%m%d_%H%M%S)"
 
 cmake -S "$ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DACCEL_CODEGEN_ENGINE=duckdb \
-      -DACCEL_ENABLE_PARALLEL_TPCH=ON >/dev/null
+      -DACCEL_ENABLE_PARALLEL_KERNELS=ON >/dev/null
 cmake --build "$BUILD_DIR" -j"$(nproc)" --target stateless_matrix >/dev/null
 
 echo "=== correctness (db=${ACCEL_TPCH_DB}, seeds=${SEEDS}) ==="

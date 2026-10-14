@@ -10,7 +10,7 @@
 #   ./scripts/run_validated_tpch_bench.sh 2                # legacy: session 2, SF1
 #
 # Production kernel paths are hardcoded (no ambient ACCEL_* required).
-# Parallel mode requires a build with -DACCEL_ENABLE_PARALLEL_TPCH=ON (build-release-parallel).
+# Parallel mode requires a build with -DACCEL_ENABLE_PARALLEL_KERNELS=ON (build-release-parallel).
 # This script clears experimental ACCEL_* / DUCKDB_* vars so shell inheritance cannot skew results.
 set -euo pipefail
 

@@ -67,7 +67,7 @@ if status == "pass" and kind == "docker":
 elif status == "pass":
     cfg = [
         "cmake", "-S", str(repo), "-B", str(build_dir),
-        "-DACCEL_ENABLE_PARALLEL_TPCH=OFF", "-DACCEL_ENABLE_PARALLEL_AUX=OFF",
+        "-DACCEL_ENABLE_PARALLEL_KERNELS=OFF", "-DACCEL_ENABLE_PARALLEL_AUX=OFF",
     ]
     build_flag = str((data.get("cmake") or {}).get("build_flag") or "")
     if build_flag:
