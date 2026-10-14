@@ -117,7 +117,7 @@ def primary(tmp_path):
     (root / "scripts").mkdir()
     shutil.copy(REAL_ROOT / "scripts/check_backend_query_free.py", root / "scripts")
     for rel in ("scripts/postgres_tpch_schema.sql", "scripts/mysql_tpch_schema.sql",
-                "workloads/tpch/schema.sql", "eval/bench/sec_edgar/schema.sql"):
+                "workloads/tpch/schema.sql", "workloads/sec_edgar/schema.sql"):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REAL_ROOT / rel, root / rel)
     for cmd in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
