@@ -6,15 +6,15 @@ Use these conventions when `benchmark_name: sec_edgar` and `workload_kind: aux_s
 
 | Role | Path |
 |------|------|
-| Public aux API | `src/generated/sec_edgar/q{N}/aux/module.hpp` |
-| Aux implementation | `src/generated/sec_edgar/q{N}/aux/module.cpp` |
-| Finalize payload | `src/generated/sec_edgar/q{N}/aux/finalize.cpp` |
-| Base kernel API | `src/generated/sec_edgar/q{N}/base/query.hpp` |
-| Kernel / package | `src/generated/sec_edgar/q{N}/base/single-threaded/` |
-| Cost model JSON | `config/sec_edgar_q{N}_aux_cost_model.json` |
-| Tests | `tests/single-threaded/test_sec_edgar_q{N}_aux.cpp`, `test_sec_edgar_q{N}_*.cpp` |
-| Write-freq benchmark | `benchmarks/sec_edgar/single-threaded/benchmark_q{N}_aux.cpp` |
-| Calibration | `benchmarks/sec_edgar/single-threaded/calibrate_q{N}_aux_cost_model.cpp` |
+| Public aux API | `accelerators/sec_edgar/q{N}/<engine>/aux/module.hpp` |
+| Aux implementation | `accelerators/sec_edgar/q{N}/<engine>/aux/module.cpp` |
+| Finalize payload | `accelerators/sec_edgar/q{N}/<engine>/aux/finalize.cpp` |
+| Base kernel API | `accelerators/sec_edgar/q{N}/<engine>/base/query.hpp` |
+| Kernel / package | `accelerators/sec_edgar/q{N}/<engine>/base/single-threaded/` |
+| Cost model JSON | `accelerators/sec_edgar/q{N}/config/sec_edgar_q{N}_aux_cost_model.json` |
+| Tests | `accelerators/sec_edgar/q{N}/tests/test_sec_edgar_q{N}_aux.cpp`, `test_sec_edgar_q{N}_*.cpp` |
+| Write-freq benchmark | `accelerators/sec_edgar/q{N}/bench/benchmark_q{N}_aux.cpp` |
+| Calibration | `accelerators/sec_edgar/q{N}/bench/calibrate_q{N}_aux_cost_model.cpp` |
 
 CMake:
 
@@ -51,5 +51,5 @@ Env: `ACCEL_SEC_EDGAR_DB` (not `ACCEL_TPCH_DB`).
 ## Cost model
 
 - Calibrate with `calibrate_sec_edgar_q{N}_aux_cost_model` against SF3
-- Initial JSON at `config/sec_edgar_q{N}_aux_cost_model.json`
+- Initial JSON at `accelerators/sec_edgar/q{N}/config/sec_edgar_q{N}_aux_cost_model.json`
 - Set `interference_us` using calibrated `CostModelParams.interference_*` fields in `StageMaintenance`

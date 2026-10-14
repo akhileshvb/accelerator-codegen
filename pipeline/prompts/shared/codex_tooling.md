@@ -7,7 +7,7 @@ You run under **Codex** with native edit/search/shell tools **plus** accelerator
 Concurrent pack workers use **per-query git worktrees** and private build dirs.
 
 - **Edit only this query's owned files** (listed in the task). Never create/modify/delete another `qN` aux/module/test/cost-model — not even to "fix" a peer compile error.
-- Peer compile noise is not your bug under worktree isolation. Do **not** `git restore` / `cp` / Python-rewrite foreign `src/generated/tpch/q*/**`.
+- Peer compile noise is not your bug under worktree isolation. Do **not** `git restore` / `cp` / Python-rewrite foreign `accelerators/tpch/q*/**`.
 - Always build/test against **this worker's build dir** (`build-release-<worker_id>` / `$ACCEL_PIPELINE_BUILD_DIR`). Never use shared `build-release/`.
 - Read-only inspection of **workload `reference_accelerators`** is OK. Broad grepping/editing of other pack queries is not.
 
@@ -34,7 +34,7 @@ Call these **by tool name** on server `accel_pipeline`. Do **not** use `list_mcp
 | `begin_ab_trial` / `run_quick_benchmark` / `end_ab_trial` | Exploratory A/B vs **best_valid_score** — **honor the signal** |
 | `request_structural_reanalysis` | Aux structural redesign escape hatch |
 | `record_optimization_trap` | Optional: add a short recurring anti-pattern to shared negative memory (advisory only) |
-| `primitive_publish` | Add a generic primitive to the shared `stateful/prims/` library (stage files under `pipeline/prims_staging/`; additions only) |
+| `primitive_publish` | Add a generic primitive to the shared `accelerators/prims/` library (stage files under `pipeline/prims_staging/`; additions only) |
 | `run_pipeline_command` | Allowlisted cmake/ctest only |
 
 If an MCP call fails, retry once; then fall back to Codex shell for build/ctest only — still prefer MCP for digests / A/B / correctness when the server is up.
@@ -101,7 +101,7 @@ Implementation is **sequential layers** (`layers.md`): `store` → `aux_backend`
 `txn` → `mutations` → `scan` → `runtime` → `visibility` → `host` (host skipped
 when not required).
 
-1. Implement **only this layer’s** objects + `tests/engine_backend/test_<engine>_<layer>.cpp`.
+1. Implement **only this layer’s** objects + `backends/<engine>/tests/test_<engine>_<layer>.cpp`.
 2. Wire CMake so this layer’s target actually builds.
 3. **Steer with MCP tools on server `accel_pipeline`** (these are **tools**, not
    resources — do **not** `list_mcp_resources`):
@@ -123,7 +123,7 @@ when not required).
 ### Engine backend validation stage
 
 1. Read the adapter + existing **layer** harnesses.
-2. Author unseen `tests/engine_backend/test_<engine>_adversarial.cpp` (≥4 new cases).
+2. Author unseen `backends/<engine>/tests/test_<engine>_adversarial.cpp` (≥4 new cases).
 3. Loop `request_gate` for layer gates (regression) and **`engine_adversarial`** until pass.
 4. Fix adapter bugs found by adversarial tests; never weaken asserts to greenwash.
 

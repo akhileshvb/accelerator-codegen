@@ -39,7 +39,7 @@ Set `interference_us` on each `ActionCandidate` using calibrated fields from `Co
 - `interference_invalidate_per_query_us`
 - `interference_query_slowdown_factor`
 
-Coefficients live in `config/q{N}_aux_cost_model.json` and are **calibrated** by the `aux_cost_model_calibrate` gate (multi-connection readers + writers + rebuild-under-load). Populate `interference_us` in `StageMaintenance` when building candidates passed to `services.ChooseMaintenance`.
+Coefficients live in `accelerators/tpch/q{N}/config/q{N}_aux_cost_model.json` and are **calibrated** by the `aux_cost_model_calibrate` gate (multi-connection readers + writers + rebuild-under-load). Populate `interference_us` in `StageMaintenance` when building candidates passed to `services.ChooseMaintenance`.
 
 ## Action selection
 
@@ -50,7 +50,7 @@ Coefficients live in `config/q{N}_aux_cost_model.json` and are **calibrated** by
 - Legal actions for each mutation batch (delta vs rebuild vs invalidate)
 - Feature counts passed into `MaintenanceRequest` (rows touched, partitions touched, fanout)
 - Cost estimates using `CostModelParams` loaded from per-query JSON
-- Initial JSON at `config/q{{query_number}}_aux_cost_model.json`
+- Initial JSON at `accelerators/tpch/q{{query_number}}/config/q{{query_number}}_aux_cost_model.json`
 
 The framework only compares totals; cost equations are per-accelerator.
 
@@ -64,7 +64,7 @@ v1: maintenance runs at commit via `StageMaintenance` outcomes; readers wait for
 
 ## Refresh-shaped writes (measured, TPC-H RF1/RF2 at SF20, 22 accelerators in one process)
 
-**Copy-on-write comes from `stateful/prims/`.** The substrate versions each partition payload as an opaque immutable pointer; inside a payload the module must produce a new immutable version per commit that *shares* untouched structure. Build the payload from the COW primitives (`prims/README.md`, "Which one to use"): copying one is pointer copies, a write clones only the touched chunk/shard once per version. Do not hand-roll a private sharded/chunked COW container in a module, and do not deep-copy the state per commit (`make_shared<State>(*old)` over O(rows) members). If no primitive fits the access pattern, write a generic one and publish it with `primitive_publish` (see `agent_boundary.md`), then use it.
+**Copy-on-write comes from `accelerators/prims/`.** The substrate versions each partition payload as an opaque immutable pointer; inside a payload the module must produce a new immutable version per commit that *shares* untouched structure. Build the payload from the COW primitives (`prims/README.md`, "Which one to use"): copying one is pointer copies, a write clones only the touched chunk/shard once per version. Do not hand-roll a private sharded/chunked COW container in a module, and do not deep-copy the state per commit (`make_shared<State>(*old)` over O(rows) members). If no primitive fits the access pattern, write a generic one and publish it with `primitive_publish` (see `agent_boundary.md`), then use it.
 
 An RF inserts or deletes ~0.1% of orders (+ their lineitems) with keys spread
 uniformly over the whole key space, so it touches nearly every partition,

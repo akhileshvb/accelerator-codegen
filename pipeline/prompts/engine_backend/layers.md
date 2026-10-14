@@ -9,9 +9,9 @@ if it was untested). Do not rewrite prior layers for style or convenience.
 
 The only query module allowed in this pipeline is a **toy** `AuxQueryModule`
 (+ toy `InitialScan` from the scan layer onward) owned by
-`tests/engine_backend/` — never generated TPC-H / SEC accelerators.
+`backends/{engine}/tests/` — never generated TPC-H / SEC accelerators.
 
-Do **not** regenerate `stateful/core|state|maintenance`.
+Do **not** regenerate `substrate/aux/{core,state,maintenance}`.
 
 | Order | `id` | Gate | What to implement | Harness must prove |
 |------|------|------|-------------------|--------------------|
@@ -25,11 +25,11 @@ Do **not** regenerate `stateful/core|state|maintenance`.
 | 8 | `host` | `engine_host` | If `requires_in_process_host`: loadable in-process MODULE/extension. Server-only symbols stay in the MODULE. One SQL/UDF entry that calls the **toy** Runtime. Skip this layer when the workload does not require a host. | Load the host → call the UDF → same golden asserts as `runtime`, through SQL. |
 
 Validation (after all layers + architecture audit) authors unseen
-`tests/engine_backend/test_{engine}_adversarial.cpp` and runs `engine_adversarial`.
+`backends/{engine}/tests/test_{engine}_adversarial.cpp` and runs `engine_adversarial`.
 
 ## Invariants
 
 - One `AuxEngineServices` (the aux backend). Scans are a separate object.
 - No portable cross-engine chunk IR.
-- No reading/copying another engine’s `runtime|stateful/{other}/` tree.
+- No reading/copying another engine’s `backends/{other}/` tree.
 - Fail closed: if the engine SDK / host cannot start, the harness exits non-zero.

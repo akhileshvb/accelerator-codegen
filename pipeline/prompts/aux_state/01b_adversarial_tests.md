@@ -18,7 +18,7 @@ Produce a small frozen contract that later correctness gates enforce via the **s
 
 - Analysis: `{{full_analysis_path}}`
 - Compact facts: `{{analysis_json}}`
-- Catalog contract (`src/generated/catalog/` / `probe_select` + `build_probe`) — read-only; do not invent private C++ APIs
+- Catalog contract (`backends/{engine}/api/catalog/` / `probe_select` + `build_probe`) — read-only; do not invent private C++ APIs
 - Shared harness: `RunAdversarialWriteDifferentialCheck` uses catalog probes + RF; your JSON only **configures** how hard that check is
 
 ## Deliverable (required)

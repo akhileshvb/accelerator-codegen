@@ -16,7 +16,7 @@ Reference SQL: `{{reference_sql_path}}` · Artifacts: `{{artifacts_path}}/`
 
 ## Files (patch stubs — do not rewrite from scratch)
 
-Paths are under `src/generated/.../q{{query_number}}/{{engine_name}}/`:
+Paths are under `accelerators/.../q{{query_number}}/{{engine_name}}/`:
 
 - `{{header_path}}`, `{{kernel_path}}`, `{{package_path}}`
 - `{{test_path}}`, `{{benchmark_path}}`
@@ -27,7 +27,7 @@ Paths are under `src/generated/.../q{{query_number}}/{{engine_name}}/`:
 
 {{engine_host_discovery}}
 
-When `engine_name` is not `duckdb`, **shared** SQL entrypoints + differential + gate harnesses are created in the **`host_bootstrap`** stage (once per engine, before parallel query workers). Per-query implementation only adds this query's files (kernel, module, registrars) in its own directory. If bootstrap artifacts are missing, follow `pipeline/prompts/shared/query_host_bootstrap.md` and/or re-run `--stage host_bootstrap`. Do not invent a second adapter tree. Never edit a backend's registration code (`src/runtime/duckdb/register.cpp`, catalogs, table-function / UDF / extension lists): register from the query's directory. `CMakeLists.txt` may be edited for targets when auto-discovery is insufficient.
+When `engine_name` is not `duckdb`, **shared** SQL entrypoints + differential + gate harnesses are created in the **`host_bootstrap`** stage (once per engine, before parallel query workers). Per-query implementation only adds this query's files (kernel, module, registrars) in its own directory. If bootstrap artifacts are missing, follow `pipeline/prompts/shared/query_host_bootstrap.md` and/or re-run `--stage host_bootstrap`. Do not invent a second adapter tree. Never edit a backend's registration code (`backends/duckdb/api/register.cpp`, catalogs, table-function / UDF / extension lists): register from the query's directory. `CMakeLists.txt` may be edited for targets when auto-discovery is insufficient.
 
 {{kernel_inspiration_section}}
 

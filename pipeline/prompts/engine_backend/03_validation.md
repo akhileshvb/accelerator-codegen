@@ -15,7 +15,7 @@ bugs until those tests pass.
 
 - Adapter sources under target paths:
 {{engine_target_paths}}
-- Known layer harnesses: `tests/engine_backend/test_{{engine_name}}_*.cpp`
+- Known layer harnesses: `backends/{{engine_name}}/tests/test_{{engine_name}}_*.cpp`
   (see `layers.md`)
 - Spec: `pipeline/prompts/engine_backend/adversarial_tests.md`
 - Analysis (context only): `{{artifacts_path}}/backend_analysis.json`
@@ -23,7 +23,7 @@ bugs until those tests pass.
 ## Mandates
 
 1. **Do not** weaken, delete, or dilute existing layer harnesses.
-2. **Do** author `tests/engine_backend/test_{{engine_name}}_adversarial.cpp` with
+2. **Do** author `backends/{{engine_name}}/tests/test_{{engine_name}}_adversarial.cpp` with
    ≥4 **new** cases after reading the implementation.
 3. Register CMake so `test_{{engine_name}}_adversarial` builds with the **same**
    enabled native/SDK path as the layer suite.

@@ -164,7 +164,7 @@ on these `rule` ids. Each rule is owned by one implementation layer.
 
 ### `independence`
 
-- No reading/copying another engine’s `runtime|stateful/{other}/` tree.
+- No reading/copying another engine’s `backends/{other}/` tree.
 - No dependence on generated query accelerators (`tpch` / `sec_edgar` / etc.)
   in layer harnesses.
 - No reintroduction of a shared portable chunk IR.

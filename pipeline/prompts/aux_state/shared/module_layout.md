@@ -4,17 +4,17 @@ Use `{{query_number}}` / `q{{query_number}}` placeholders. Derive exact paths in
 
 | Role | Typical path |
 |------|----------------|
-| Public aux API | `src/generated/tpch/q{{query_number}}/aux/module.hpp` |
-| Aux implementation | `src/generated/tpch/q{{query_number}}/aux/module.cpp` |
-| Finalize payload | `src/generated/tpch/q{{query_number}}/aux/finalize.cpp` |
-| Cost model JSON | `config/q{{query_number}}_aux_cost_model.json` |
-| Tests | `tests/single-threaded/test_tpch_q{{query_number}}_aux.cpp`, `test_q{{query_number}}_*.cpp` |
+| Public aux API | `accelerators/tpch/q{{query_number}}/<engine>/aux/module.hpp` |
+| Aux implementation | `accelerators/tpch/q{{query_number}}/<engine>/aux/module.cpp` |
+| Finalize payload | `accelerators/tpch/q{{query_number}}/<engine>/aux/finalize.cpp` |
+| Cost model JSON | `accelerators/tpch/q{{query_number}}/config/q{{query_number}}_aux_cost_model.json` |
+| Tests | `accelerators/tpch/q{{query_number}}/tests/test_tpch_q{{query_number}}_aux.cpp`, `test_q{{query_number}}_*.cpp` |
 
 Unit smoke fixtures must follow `unit_test_contract.md` (SQL polarity). `aux_correctness` also runs SF1 DuckDB differential via `test_tpch_shared_differential`.
 
-| Write-freq benchmark | `benchmarks/tpch/single-threaded/benchmark_q{{query_number}}_aux.cpp` |
-| Cost calibration | `benchmarks/tpch/single-threaded/calibrate_q{{query_number}}_aux_cost_model.cpp` — **thin wrapper only** (see below) |
-| Multi-connection stress | `tests/aux_state/test_aux_multi_connection_stress.cpp` (gate `aux_multi_connection`) |
+| Write-freq benchmark | `accelerators/tpch/q{{query_number}}/bench/benchmark_q{{query_number}}_aux.cpp` |
+| Cost calibration | `accelerators/tpch/q{{query_number}}/bench/calibrate_q{{query_number}}_aux_cost_model.cpp` — **thin wrapper only** (see below) |
+| Multi-connection stress | `eval/tests/test_aux_multi_connection_stress.cpp` (gate `aux_multi_connection`) |
 
 ### Cost calibrator (required shape)
 
@@ -28,9 +28,9 @@ int main(int argc, char **argv) {
 }
 ```
 
-Do **not** hand-write timing loops or CSV output here; that belongs in `benchmark_q{{query_number}}_aux.cpp`. The gate runs this binary to populate `interference_*` fields in `config/q{{query_number}}_aux_cost_model.json`.
+Do **not** hand-write timing loops or CSV output here; that belongs in `benchmark_q{{query_number}}_aux.cpp`. The gate runs this binary to populate `interference_*` fields in `accelerators/tpch/q{{query_number}}/config/q{{query_number}}_aux_cost_model.json`.
 
-SEC EDGAR: replace `tpch` → `sec_edgar` and cost model → `config/sec_edgar_q{{query_number}}_aux_cost_model.json`. See `pipeline/prompts/sec_edgar/aux_state_notes.md`.
+SEC EDGAR: replace `tpch` → `sec_edgar` and cost model → `accelerators/sec_edgar/q{{query_number}}/config/sec_edgar_q{{query_number}}_aux_cost_model.json`. See `pipeline/prompts/sec_edgar/aux_state_notes.md`.
 
 CMake: test/bench/calibrate targets are **auto-discovered** from `test_tpch_q*_aux.cpp` via `accel_register_tpch_aux_pipeline_targets()` in `CMakeLists.txt`. Edit `CMakeLists.txt` only when auto-discovery is insufficient; follow patterns in `cmake/AuxState.cmake` and neighboring queries.
 

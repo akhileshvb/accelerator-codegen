@@ -3,7 +3,7 @@
 Analyze **{{display_name}}** query **Q{{query_number}}** for host **`{{engine_name}}`** before any implementation.
 
 `engine_name` is **required**. Plan an **engine-specific** base consume path under
-`src/generated/{benchmark}/q{{query_number}}/{{engine_name}}/`. Do not assume a
+`accelerators/{benchmark}/q{{query_number}}/{{engine_name}}/`. Do not assume a
 shared portable `DataChunk` IR or a default host.
 
 {{hard_guidelines}}

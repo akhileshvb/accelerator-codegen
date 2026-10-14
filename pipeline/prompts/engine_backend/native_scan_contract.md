@@ -1,7 +1,7 @@
 # Engine-local base access (native scan)
 
 There is **no** shared portable scan IR. Each engine owns a typed helper under
-`runtime/{engine}/`. Do not invent a cross-engine chunk type or copy another
+`backends/{engine}/engine/`. Do not invent a cross-engine chunk type or copy another
 engine’s scan adapter.
 
 `engine_backend` may ship an **engine-local** typed scan helper used for aux

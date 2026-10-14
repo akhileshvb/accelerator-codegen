@@ -5,7 +5,7 @@ for accelerator `{{accel_id}}`. Read `contracts/host_glue.md` (it specifies
 the file completely), `ref/kit/verus_kit.hpp`, `ref/kit/aux_types.hpp`,
 `frozen/{{crate}}_verus.h`, `inputs/q.inputs` (what to deliver) and
 `query/query.sql`. Include the header as `#include "{{crate}}_verus.h"` and
-the kit as `#include "accelerator_codegen/verus/verus_kit.hpp"`.
+the kit as `#include "substrate/verus/kit/verus_kit.hpp"`.
 
 This code is trusted: the kernel's proof assumes it delivers exactly the
 declared inputs. Prefer plain, obviously-correct code to clever code.
