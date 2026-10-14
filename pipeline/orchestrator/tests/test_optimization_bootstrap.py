@@ -24,19 +24,20 @@ def test_optimization_unified_has_no_read_tools() -> None:
 
 
 def test_bootstrap_includes_full_sources(tmp_path: Path) -> None:
-    aux = tmp_path / "src/generated/tpch/q99/aux"
+    aux = tmp_path / "accelerators/tpch/q99/duckdb/aux"
     aux.mkdir(parents=True)
     (aux / "module.hpp").write_text("#pragma once\nstruct Foo {};\n", encoding="utf-8")
     (aux / "module.cpp").write_text('#include "module.hpp"\nvoid Bar() {}\n', encoding="utf-8")
     (aux / "finalize.cpp").write_text("void Fin() {}\n", encoding="utf-8")
-    tests = tmp_path / "tests/single-threaded"
+    tests = tmp_path / "accelerators/tpch/q99/tests"
     tests.mkdir(parents=True)
     (tests / "test_tpch_q99_aux.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
 
     workload = {
         "workload_kind": "aux_state",
         "query_number": 99,
-        "aux_state_subdir": "src/generated/tpch/q99/aux",
+        "engine_name": "duckdb",
+        "aux_state_subdir": "accelerators/tpch/q99/duckdb/aux",
         "aux_test_target": "test_tpch_q99_aux",
         "aux_bench_target": "benchmark_tpch_q99_aux",
     }

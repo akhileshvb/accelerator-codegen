@@ -214,8 +214,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "items": {"type": "string"},
                 "description": (
                     "Repo-relative paths of the files to publish: new/extended headers under "
-                    "include/accelerator_codegen/stateful/prims/, that directory's README.md, and "
-                    "tests/aux_state/test_prims.cpp. Each is staged as a FULL file under "
+                    "accelerators/prims/, that directory's README.md, and "
+                    "accelerators/prims/tests/test_prims.cpp. Each is staged as a FULL file under "
                     "pipeline/prims_staging/<same path>."
                 ),
             },

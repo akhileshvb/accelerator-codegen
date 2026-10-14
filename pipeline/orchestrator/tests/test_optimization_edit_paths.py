@@ -24,9 +24,10 @@ def test_aux_optimization_edit_paths_point_at_aux_module():
     edit = resolve_optimization_edit_paths(pc, workload, 18)
     base = resolve_workload_paths(pc, workload, 18)
     assert edit["is_aux"] is True
-    assert edit["primary_cpp"] == "src/generated/tpch/q18/aux/module.cpp"
-    assert edit["header"] == "src/generated/tpch/q18/aux/module.hpp"
-    assert edit["secondary_cpp"] == "src/generated/tpch/q18/aux/finalize.cpp"
-    assert "config/q18_aux_cost_model.json" in edit["all_paths"]
+    eng = workload["engine_name"]
+    assert edit["primary_cpp"] == f"accelerators/tpch/q18/{eng}/aux/module.cpp"
+    assert edit["header"] == f"accelerators/tpch/q18/{eng}/aux/module.hpp"
+    assert edit["secondary_cpp"] == f"accelerators/tpch/q18/{eng}/aux/finalize.cpp"
+    assert "accelerators/tpch/q18/config/q18_aux_cost_model.json" in edit["all_paths"]
     assert edit["base_kernel_path"] == base["kernel_path"]
-    assert "tests/single-threaded/test_tpch_q18_aux.cpp" in edit["all_paths"]
+    assert "accelerators/tpch/q18/tests/test_tpch_q18_aux.cpp" in edit["all_paths"]

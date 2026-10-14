@@ -95,7 +95,7 @@ def test_runtime_markdown_includes_structured_sections(tmp_path: Path):
             ]
         },
         "ab_trials": [],
-        "kernel_paths": {"kernel": "src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp"},
+        "kernel_paths": {"kernel": "accelerators/sec_edgar/q1/duckdb/base/single-threaded/kernel.cpp"},
     }
     md = format_runtime_markdown(state)
     assert "Episode history" in md

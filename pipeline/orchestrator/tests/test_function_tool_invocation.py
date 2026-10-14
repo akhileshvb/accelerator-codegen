@@ -28,7 +28,7 @@ MINIMAL_ARGS: dict[str, dict[str, Any]] = {
     "file_info": {"path": "pipeline/README.md"},
     # nothing staged: the tool must answer with a rejection, not crash
     "primitive_publish": {
-        "files": ["include/accelerator_codegen/stateful/prims/__not_staged__.hpp"],
+        "files": ["accelerators/prims/__not_staged__.hpp"],
         "rationale": "tool invocation test: nothing is staged",
     },
     "apply_patch": {
@@ -45,7 +45,7 @@ MINIMAL_ARGS: dict[str, dict[str, Any]] = {
     "read_reference_files": {
         "paths": [
             "pipeline/prompts/aux_state/shared/module_layout.md",
-            "config/q18_aux_cost_model.json",
+            "accelerators/tpch/q18/config/q18_aux_cost_model.json",
         ],
         "limit_per_file": 30,
     },

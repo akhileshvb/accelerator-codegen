@@ -53,7 +53,7 @@ def test_matview_paths_and_gate_context():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("tpch_q6_matview", REPO_ROOT)
     paths = resolve_workload_paths(pc, w, 6)
-    assert paths["matview_subdir"] == "src/generated/tpch/q6/postgres/matview"
+    assert paths["matview_subdir"] == "accelerators/tpch/q6/postgres/matview"
     assert paths["mv_create_sql"].endswith("create.sql")
     assert paths["mv_function_name"] == "accel_tpch_q6_mv"
     edit = resolve_optimization_edit_paths(pc, w, 6)

@@ -67,10 +67,10 @@ def _sample_analysis() -> dict:
         },
         "performance_hypotheses": {
             "base_path_cost_decomposition": {"dominant_scans": ["lineitem"]},
-            "initial_cost_model": {"config_path": "config/q1_aux_cost_model.json"},
+            "initial_cost_model": {"config_path": "accelerators/tpch/q1/config/q1_aux_cost_model.json"},
             "likely_best_actions": ["ApplyDelta"],
         },
-        "files_to_create": [{"path": "src/generated/tpch/q1/aux/module.cpp", "role": "kernel"}],
+        "files_to_create": [{"path": "accelerators/tpch/q1/duckdb/aux/module.cpp", "role": "kernel"}],
     }
 
 
@@ -156,7 +156,7 @@ class TestAnalysisContextSlicing:
                 },
                 "likely_bottlenecks": ["lineitem scan"],
                 "optimization_hypotheses": ["dense array for order totals"],
-                "files_to_create": [{"path": "src/generated/tpch/q18/base/single-threaded/kernel.cpp"}],
+                "files_to_create": [{"path": "accelerators/tpch/q18/duckdb/base/single-threaded/kernel.cpp"}],
             }
         )
         assert "lineitem aggregate" in payload

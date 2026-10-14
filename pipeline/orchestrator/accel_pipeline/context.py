@@ -126,8 +126,8 @@ def _accelerator_engine_host_block(workload: dict[str, Any]) -> str:
     if registry:
         lines.append(
             f"- **Registration:** this query registers itself from its own directory: {registry}. "
-            "The engine backend (src/runtime/<engine>, src/generated/<engine>, src/generated/catalog, "
-            "src/stateful/<engine>) names no query; never add per-query code or lists there."
+            "The engine backend (backends/<engine>/**, incl. its catalog in backends/<engine>/api/catalog/) "
+            "names no query and is owned by the engine_backend run; never add per-query code or lists there."
         )
     lines.extend(
         [
@@ -360,8 +360,8 @@ def build_prompt_context(
         )
         if is_aux:
             benchmark_notes += (
-                f"\n- SEC EDGAR aux state: `src/generated/sec_edgar/q{query}/aux/module.hpp` "
-                f"(base API: `src/generated/sec_edgar/q{query}/base/query.hpp`).\n"
+                f"\n- SEC EDGAR aux state: `accelerators/sec_edgar/q{query}/{engine_name or 'duckdb'}/aux/module.hpp` "
+                f"(base API: `accelerators/sec_edgar/q{query}/{engine_name or 'duckdb'}/base/query.hpp`).\n"
                 "- Write workload suite is **`filing_append`** / **`value_append`**, not TPC-H `lineitem` point updates.\n"
                 "- Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/prompts/sec_edgar/aux_state_notes.md`.\n"
                 "- Register with `accel_add_aux_state_query(BENCHMARK sec_edgar QUERY_NUM N ...)` in CMakeLists.txt.\n"

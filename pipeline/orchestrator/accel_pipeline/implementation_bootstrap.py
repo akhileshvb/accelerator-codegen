@@ -27,7 +27,9 @@ def build_implementation_bootstrap(
     analysis: dict[str, Any],
 ) -> str:
     benchmark = str(workload.get("benchmark_name", "tpch"))
+    engine = str(workload.get("engine_name") or "duckdb")
     q = f"q{query}"
+    qdir = f"accelerators/{benchmark}/{q}"
     lines = [
         "## Implementation bootstrap (authoritative — do not re-discover via list_dir/glob)",
         "",
@@ -51,13 +53,13 @@ def build_implementation_bootstrap(
                 ref_paths.append(ref_str)
             continue
         for suffix in ("aux/module.hpp", "aux/module.cpp", "aux/finalize.hpp", "aux/finalize.cpp"):
-            candidate = f"src/generated/{benchmark}/{ref_str}/{suffix}"
+            candidate = f"accelerators/{benchmark}/{ref_str}/{engine}/{suffix}"
             if _existing(repo, candidate):
                 ref_paths.append(candidate)
     if not ref_paths:
         for fallback_q in (14, 10, 3, 1):
             for suffix in ("aux/module.hpp", "aux/module.cpp"):
-                candidate = f"src/generated/{benchmark}/q{fallback_q}/{suffix}"
+                candidate = f"accelerators/{benchmark}/q{fallback_q}/{engine}/{suffix}"
                 if _existing(repo, candidate):
                     ref_paths.append(candidate)
     for path in ref_paths[:6]:
@@ -65,16 +67,16 @@ def build_implementation_bootstrap(
 
     lines.extend(["", "### Templates & gates (only if needed after module.cpp exists)", ""])
     templates = [
-        f"src/generated/{benchmark}/{q}/base/single-threaded/kernel.cpp",
-        f"src/generated/{benchmark}/{q}/base/query.hpp",
-        f"tests/single-threaded/test_tpch_{query}.cpp",
-        f"tests/test_support/q{query}_manifest.hpp",
-        f"tests/aux_state/test_shared_tpch_q14.cpp",
-        f"benchmarks/tpch/single-threaded/benchmark_q14.cpp",
-        f"config/q{query}_aux_cost_model.json",
-        f"src/generated/{benchmark}/q14/layout.hpp",
-        f"src/generated/{benchmark}/q14/duckdb/aux/register.cpp",
-        "tests/test_support/cross_accel_helpers.cpp",
+        f"{qdir}/{engine}/base/single-threaded/kernel.cpp",
+        f"{qdir}/{engine}/base/query.hpp",
+        f"{qdir}/tests/test_{benchmark}_{q}.cpp",
+        f"{qdir}/tests/{q}_manifest.hpp",
+        f"accelerators/{benchmark}/q14/tests/test_shared_{benchmark}_q14.cpp",
+        f"accelerators/{benchmark}/q14/bench/benchmark_q14.cpp",
+        f"{qdir}/config/{q}_aux_cost_model.json",
+        f"accelerators/{benchmark}/q14/layout.hpp",
+        f"accelerators/{benchmark}/q14/duckdb/aux/register.cpp",
+        "eval/tests/test_support/cross_accel_helpers.cpp",
         "pipeline/prompts/aux_state/shared/read_path_scaffold.md",
         "pipeline/prompts/aux_state/shared/unit_test_contract.md",
     ]

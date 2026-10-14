@@ -183,7 +183,7 @@ def _sample_valid_analysis() -> dict:
         "performance_hypotheses": {
             "base_path_cost_decomposition": _base_path_cost_decomposition(),
         },
-        "files_to_create": [{"path": "src/generated/tpch/q14/aux/module.cpp", "role": "aux_kernel"}],
+        "files_to_create": [{"path": "accelerators/tpch/q14/duckdb/aux/module.cpp", "role": "aux_kernel"}],
     }
 
 
@@ -315,9 +315,9 @@ class TestWorkloadConfig:
         assert tables == {"pre"}
 
         paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 1)
-        assert paths["aux_state_subdir"] == "src/generated/sec_edgar/q1/aux"
+        assert paths["aux_state_subdir"] == "accelerators/sec_edgar/q1/duckdb/aux"
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q1_aux"
-        assert paths["cost_model_config"] == "config/sec_edgar_q1_aux_cost_model.json"
+        assert paths["cost_model_config"] == "accelerators/sec_edgar/q1/config/sec_edgar_q1_aux_cost_model.json"
         assert workload.get("post_implementation_gates", [])[0] == "aux_correctness"
         assert "sec_edgar_q*_aux" in " ".join(workload.get("write_paths", []))
 
@@ -335,9 +335,9 @@ class TestWorkloadConfig:
         assert tables == {"num", "sub"}
 
         paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 2)
-        assert paths["aux_state_subdir"] == "src/generated/sec_edgar/q2/aux"
+        assert paths["aux_state_subdir"] == "accelerators/sec_edgar/q2/duckdb/aux"
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q2_aux"
-        assert paths["cost_model_config"] == "config/sec_edgar_q2_aux_cost_model.json"
+        assert paths["cost_model_config"] == "accelerators/sec_edgar/q2/config/sec_edgar_q2_aux_cost_model.json"
         assert paths["aux_bench_suites"] == "value_append"
 
 
@@ -351,7 +351,7 @@ class TestPromptRendering:
         pipeline_config = apply_workload_overrides(pipeline_config, workload)
         prompt = render_prompt(pipeline_config, "01_analysis.md", workload, 14, "analysis")
         lowered = prompt.lower()
-        assert "src/generated/tpch/q14/aux" not in lowered
+        assert "accelerators/tpch/q14/duckdb/aux" not in lowered
         assert "mirroring q14" not in lowered
         assert "reference implementation" not in lowered
         assert "{{aux_state_fitness}}" not in prompt

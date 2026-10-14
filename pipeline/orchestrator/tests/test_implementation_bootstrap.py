@@ -19,7 +19,7 @@ def test_implementation_bootstrap_lists_q18_files_and_references() -> None:
     text = build_implementation_bootstrap(REPO_ROOT, workload, 18, analysis)
     assert "module.hpp" in text
     assert "read_reference_files" in text
-    assert "src/generated/tpch/q10/aux/module.cpp" in text or "q10" in text
+    assert "accelerators/tpch/q10/duckdb/aux/module.cpp" in text or "q10" in text
 
 
 def test_implementation_prompt_includes_bootstrap() -> None:
@@ -40,12 +40,12 @@ def test_read_reference_files_batches_reads() -> None:
     out = read_reference_files(
         paths=[
             "pipeline/prompts/aux_state/shared/module_layout.md",
-            "config/q18_aux_cost_model.json",
+            "accelerators/tpch/q18/config/q18_aux_cost_model.json",
         ],
         limit_per_file=20,
     )
     assert "=== pipeline/prompts/aux_state/shared/module_layout.md ===" in out
-    assert "=== config/q18_aux_cost_model.json ===" in out
+    assert "=== accelerators/tpch/q18/config/q18_aux_cost_model.json ===" in out
     assert "Module layout" in out
 
 
@@ -56,5 +56,5 @@ def test_grep_context_rejects_directory() -> None:
     tools = make_repo_tools(ToolContext(pipeline_config, 18))
     grep_context = tools[8]
     wrapped = wrap_pipeline_tool(grep_context, "grep_context")
-    result = wrapped(path="include", pattern="AuxQueryModule")
+    result = wrapped(path="substrate", pattern="AuxQueryModule")
     assert "requires a file path" in result

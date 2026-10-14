@@ -18,12 +18,12 @@ def test_kernel_snapshot_roundtrip(tmp_path: Path):
         encoding="utf-8",
     )
 
-    header = repo / "src/generated/sec_edgar/q1/base/query.hpp"
-    kernel = repo / "src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp"
-    package = repo / "src/generated/sec_edgar/q1/base/single-threaded/package.cpp"
-    fused = repo / "src/generated/sec_edgar/q1/base/single-threaded/fused_scan.cpp"
-    runtime_hpp = repo / "src/generated/sec_edgar/runtime.hpp"
-    runtime_cpp = repo / "src/generated/sec_edgar/runtime.cpp"
+    header = repo / "accelerators/sec_edgar/q1/duckdb/base/query.hpp"
+    kernel = repo / "accelerators/sec_edgar/q1/duckdb/base/single-threaded/kernel.cpp"
+    package = repo / "accelerators/sec_edgar/q1/duckdb/base/single-threaded/package.cpp"
+    fused = repo / "accelerators/sec_edgar/q1/duckdb/base/single-threaded/fused_scan.cpp"
+    runtime_hpp = repo / "accelerators/sec_edgar/common/runtime.hpp"
+    runtime_cpp = repo / "accelerators/sec_edgar/common/runtime.cpp"
     for path in (header, kernel, package, fused, runtime_hpp, runtime_cpp):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"content:{path.name}:v1\n", encoding="utf-8")
@@ -37,13 +37,13 @@ def test_kernel_snapshot_roundtrip(tmp_path: Path):
         "bench_target": "benchmark_sec_edgar_q1",
         "artifact_namespace": "sec_edgar",
         "snapshot_paths": [
-            "src/generated/sec_edgar/q{N}/base/query.hpp",
-            "src/generated/sec_edgar/q{N}/base/fused.hpp",
-            "src/generated/sec_edgar/q{N}/base/single-threaded/kernel.cpp",
-            "src/generated/sec_edgar/q{N}/base/single-threaded/package.cpp",
-            "src/generated/sec_edgar/q{N}/base/single-threaded/fused_scan.cpp",
-            "src/generated/sec_edgar/runtime.hpp",
-            "src/generated/sec_edgar/runtime.cpp",
+            "accelerators/sec_edgar/q{N}/duckdb/base/query.hpp",
+            "accelerators/sec_edgar/q{N}/duckdb/base/fused.hpp",
+            "accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/kernel.cpp",
+            "accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/package.cpp",
+            "accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/fused_scan.cpp",
+            "accelerators/sec_edgar/common/runtime.hpp",
+            "accelerators/sec_edgar/common/runtime.cpp",
         ],
     }
     art = repo / "pipeline" / "artifacts" / "sec_edgar" / "q1"

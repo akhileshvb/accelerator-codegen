@@ -249,7 +249,7 @@ OPTIMIZATION_UNIFIED_TOOL_USAGE = """\
 ## Unified optimization workflow (fast experiment loop — like a Cursor agent)
 
 - **Editable sources are bootstrapped** in the user message (full contents, line numbers). Do not try to `read_file` — it is not available.
-- **Explore references with search:** use `rip_grep` (fast text+context) or `ast_grep` (structural C++ patterns) on other `src/generated/tpch/q*/aux/**` modules listed in the reference index.
+- **Explore references with search:** use `rip_grep` (fast text+context) or `ast_grep` (structural C++ patterns) on other `accelerators/tpch/q*/*/aux/**` modules listed in the reference index.
 - **Ambitious redesigns welcome:** new aux-state layouts, partition strategies, encode/decode versions, **incremental maintenance modes** (ApplyDelta / local rebuilds — not RebuildAll-per-write) — coordinate header + module + finalize + tests + cost model. Optimize **both** read hit latency and 10% write-mix health every attempt.
 - **Hypothesize → implement → hand off** in few turns (target ≤6 tool calls before `HYPOTHESIS_PATCH_COMPLETE`).
 - **Write big:** `write_file` per file for multi-region changes; large `apply_patch` hunks otherwise.
@@ -501,7 +501,7 @@ def build_tool_registry(
         )
 
     def primitive_publish(files: list[str], rationale: str) -> str:
-        """Publish staged primitives to the shared stateful/prims/ library (additions only)."""
+        """Publish staged primitives to the shared accelerators/prims/ library (additions only)."""
         from accel_pipeline.prims_library import publish_tool
 
         return publish_tool(pipeline_config, query, files, rationale)

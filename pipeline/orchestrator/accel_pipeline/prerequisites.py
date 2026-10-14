@@ -22,7 +22,7 @@ def base_smoke_test_ctest_regex(workload: dict, query: int) -> str:
 def base_accelerator_header_path(repo_root: Path, workload: dict, query: int) -> Path:
     benchmark = str(workload.get("benchmark_name", "tpch"))
     engine = str(workload.get("engine_name") or "").strip().lower()
-    base = repo_root / "src" / "generated" / benchmark / f"q{query}"
+    base = repo_root / "accelerators" / benchmark / f"q{query}"
     if engine and engine != "duckdb":
         return base / engine / "base" / "query.hpp"
     # Prefer per-engine layout when present, else legacy flat path.
@@ -35,7 +35,7 @@ def base_accelerator_header_path(repo_root: Path, workload: dict, query: int) ->
 def base_kernel_source_path(repo_root: Path, workload: dict, query: int) -> Path:
     benchmark = str(workload.get("benchmark_name", "tpch"))
     engine = str(workload.get("engine_name") or "").strip().lower()
-    base = repo_root / "src" / "generated" / benchmark / f"q{query}"
+    base = repo_root / "accelerators" / benchmark / f"q{query}"
     if engine and engine != "duckdb":
         return base / engine / "base" / "single-threaded" / "kernel.cpp"
     engine_path = base / "duckdb" / "base" / "single-threaded" / "kernel.cpp"

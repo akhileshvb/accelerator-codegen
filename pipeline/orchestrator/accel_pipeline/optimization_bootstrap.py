@@ -79,7 +79,7 @@ def format_reference_aux_index(
     exclude_query: int | None = None,
 ) -> str:
     """List other aux modules the agent can explore via rip_grep / ast_grep."""
-    pattern = f"src/generated/{benchmark}/q*/aux/module.cpp"
+    pattern = f"accelerators/{benchmark}/q*/*/aux/module.cpp"
     paths = sorted(repo_root.glob(pattern))
     lines = [
         "## Reference aux accelerators (read-only — use `rip_grep` / `ast_grep`, not read_file)",
@@ -106,10 +106,10 @@ def format_reference_aux_index(
         lines.append("(no other aux modules found)")
     lines.append("")
     lines.append(
-        "Example: `rip_grep('NationNamePartition', path='src/generated/tpch/q18/aux', context=5)`"
+        "Example: `rip_grep('NationNamePartition', path='accelerators/tpch/q18/duckdb/aux', context=5)`"
     )
     lines.append(
-        "Example: `ast_grep('class $C { $$$ }', path='src/generated/tpch/q14/aux', lang='cpp')`"
+        "Example: `ast_grep('class $C { $$$ }', path='accelerators/tpch/q14/duckdb/aux', lang='cpp')`"
     )
     return "\n".join(lines)
 

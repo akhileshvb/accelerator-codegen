@@ -22,7 +22,7 @@ def test_build_stub_values_sec_edgar():
         "create_fn": "CreateSecEdgarQ1FunctionSet",
         "test_target": "test_sec_edgar_q1",
         "bench_target": "benchmark_sec_edgar_q1",
-        "header_path": "src/generated/sec_edgar/q1/base/query.hpp",
+        "header_path": "accelerators/sec_edgar/q1/duckdb/base/query.hpp",
     }
     values = _build_stub_values(workload, paths, 1)
     assert values["type_prefix"] == "SecEdgarQ1"
@@ -75,7 +75,7 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
     )
 
     result = materialize_workload_stubs(pipeline_config, workload, 1)
-    header = repo / "src/generated/sec_edgar/q1/base/query.hpp"
+    header = repo / "accelerators/sec_edgar/q1/duckdb/base/query.hpp"
     assert header.is_file()
     assert "SecEdgarQ1" in header.read_text(encoding="utf-8")
     assert "query.hpp" in result["created"][0]

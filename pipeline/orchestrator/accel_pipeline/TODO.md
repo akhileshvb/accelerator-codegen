@@ -12,8 +12,8 @@ Tracked inline in source as `# TODO:` as well. Phase 2+ from the agent pipeline 
 ## Scaffold & build integration
 
 - [x] CMake aux-state scaffolding (`cmake/AuxState.cmake`, `accel_add_aux_state_query`)
-- [ ] Idempotent patch of `src/runtime/duckdb/register.cpp` and `CMakeLists.txt` from scaffold templates
-- [ ] `manifest.hpp.tpl` + seed directory scan for `tests/test_support/q{N}_manifest.hpp`
+- [ ] Idempotent patch of `backends/duckdb/api/register.cpp` and `CMakeLists.txt` from scaffold templates
+- [ ] `manifest.hpp.tpl` + seed directory scan for `accelerators/<bench>/q{N}/tests/q{N}_manifest.hpp`
 
 ## Gates & artifacts
 

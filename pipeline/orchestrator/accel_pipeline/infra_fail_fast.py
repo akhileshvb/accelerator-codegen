@@ -13,11 +13,11 @@ from accel_pipeline.shared_file_lease import release_sticky_lease, worker_id_fro
 _UNSUPPORTED = re.compile(r"unsupported shared query(?:\s+binding)?", re.IGNORECASE)
 _REBUILD_REVERT = re.compile(r"rebuild after (?:revert|restore) failed", re.IGNORECASE)
 _FOREIGN_COMPILE = re.compile(
-    r"(?:error|fatal error):.*?src/generated/(?:tpch|sec_edgar)/q(\d+)/",
+    r"(?:error|fatal error):.*?accelerators/(?:tpch|sec_edgar)/q(\d+)/",
     re.IGNORECASE | re.DOTALL,
 )
 _FOREIGN_COMPILE_PATH = re.compile(
-    r"src/generated/(?:tpch|sec_edgar)/q(\d+)/[^\s:]+",
+    r"accelerators/(?:tpch|sec_edgar)/q(\d+)/[^\s:]+",
     re.IGNORECASE,
 )
 
@@ -59,21 +59,20 @@ def release_shared_lease(repo_root: Path, *, query: int, worker_id: str | None =
 
 def _restore_aux_from_snapshot(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> list[str]:
     art = query_artifacts_dir(repo_root, query, workload=workload)
-    snap = art / "best_valid_baseline_snapshot" / "src" / "generated" / "tpch" / f"q{query}" / "aux"
-    dest = repo_root / "src" / "generated" / "tpch" / f"q{query}" / "aux"
+    # The snapshot mirrors repo-relative paths; everything a query owns (aux module,
+    # tests, cost model under config/) lives in its directory accelerators/<bench>/q<N>/.
+    snap_root = art / "best_valid_baseline_snapshot"
+    rel_q = Path("accelerators") / "tpch" / f"q{query}"
+    snap = snap_root / rel_q
     restored: list[str] = []
     if not snap.is_dir():
         return restored
-    dest.mkdir(parents=True, exist_ok=True)
-    for src in snap.iterdir():
+    for src in sorted(snap.rglob("*")):
         if src.is_file():
-            shutil.copy2(src, dest / src.name)
-            restored.append(str((dest / src.name).relative_to(repo_root)))
-    cfg_snap = art / "best_valid_baseline_snapshot" / "config" / f"q{query}_aux_cost_model.json"
-    if cfg_snap.is_file():
-        cfg_dest = repo_root / "config" / f"q{query}_aux_cost_model.json"
-        shutil.copy2(cfg_snap, cfg_dest)
-        restored.append(str(cfg_dest.relative_to(repo_root)))
+            dest = repo_root / src.relative_to(snap_root)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            restored.append(str(dest.relative_to(repo_root)))
     return restored
 
 

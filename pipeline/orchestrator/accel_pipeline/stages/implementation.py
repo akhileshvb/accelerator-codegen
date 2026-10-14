@@ -47,7 +47,7 @@ def _implementation_user_message(
             "Keep fixing and re-running steps 3–4 until both pass. "
         )
     else:
-        diff_src = str(host.get("differential_source") or f"tests/aux_state/{diff_bin}.cpp")
+        diff_src = str(host.get("differential_source") or f"eval/tests/{diff_bin}.cpp")
         multi = str(host.get("multi_conn_ctest_regex") or f"test_{engine}_aux_multi_connection_stress")
         diff_step = (
             f"3. Bootstrap/extend {engine} query host if needed "

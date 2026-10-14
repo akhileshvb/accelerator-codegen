@@ -290,7 +290,7 @@ def build_mcp_tool_callables(
         return json.dumps({"released": ok, "holder": holder})
 
     def primitive_publish(files: list[str], rationale: str) -> str:
-        """Publish staged primitives to the shared stateful/prims/ library (additions only)."""
+        """Publish staged primitives to the shared accelerators/prims/ library (additions only)."""
         from accel_pipeline.prims_library import publish_tool
 
         return publish_tool(pipeline_config, query, files, rationale)
@@ -540,10 +540,10 @@ def main(argv: list[str] | None = None) -> int:
 
     @_tool(annotations=_rw)
     def primitive_publish(files: list[str], rationale: str) -> str:
-        """Publish staged primitives to the shared stateful/prims/ library.
+        """Publish staged primitives to the shared accelerators/prims/ library.
 
-        files: repo-relative paths (e.g. include/accelerator_codegen/stateful/prims/foo.hpp,
-        include/accelerator_codegen/stateful/prims/README.md, tests/aux_state/test_prims.cpp),
+        files: repo-relative paths (e.g. accelerators/prims/foo.hpp,
+        accelerators/prims/README.md, accelerators/prims/tests/test_prims.cpp),
         each staged as a full file under pipeline/prims_staging/<same path>. Additions only,
         generic only; builds and runs test_prims before publishing. rationale: one line.
         """
