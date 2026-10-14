@@ -11,9 +11,10 @@
 // The catalog entry with the same accelerator id is registered next to it
 // (catalog/query_catalog.hpp, SharedQueryRegistrar).
 //
-// The scan helpers below are the backend's engine services for those
-// InitialScan implementations (SQL on the runtime's connection, value
-// decoding).  They are engine-level, not per query.
+// The scan helpers (engine/scan.hpp, included here) are the backend's
+// engine services for those InitialScan implementations (SQL on the
+// runtime's connection, value decoding).  They are engine-level, not per
+// query.
 
 #include <mutex>
 #include <cstdint>
@@ -27,6 +28,7 @@
 #include <vector>
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
+#include "backends/duckdb/engine/scan.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 
@@ -56,72 +58,6 @@ const AuxQuery *FindAuxQuery(const std::string &accelerator_id);
 struct AuxQueryRegistrar {
   explicit AuxQueryRegistrar(AuxQuery query) { RegisterAuxQuery(std::move(query)); }
 };
-
-// ---- scan helpers for InitialScan implementations ----
-namespace scan {
-
-void Require(bool condition, const std::string &message);
-std::string SqlDateLiteral(int32_t days);
-std::string SqlDateInPredicate(const char *column, const std::set<int32_t> &days);
-std::string SqlIntInPredicate(const char *column, const std::set<int32_t> &values);
-std::string SqlInt64InPredicate(const char *column, const std::unordered_set<int64_t> &values);
-// A DECIMAL's value at scale 2 (the aux kernels' fixed point).
-int64_t DecimalRaw(const ::duckdb::Value &value);
-int64_t SafeInt64(const ::duckdb::Value &value);
-int32_t SafeInt32(const ::duckdb::Value &value);
-int32_t DateDays(const ::duckdb::Value &value);
-char FirstChar(const ::duckdb::Value &value);
-// " LIMIT <n>" when the environment variable is set (bench scans).
-std::string OptionalBenchScanLimitSuffix(const char *env_name);
-
-// The connection a scan runs on: the runtime's, or a reader thread's private
-// one (counted as a table scan either way).
-::duckdb::Connection &ScanConnection(::duckdb::Connection &connection);
-
-// Serializes use of one connection across threads (ApplyWriteAll stages the
-// accelerators' maintenance in parallel, all on the writer's connection; a
-// DuckDB connection runs one query at a time and a streaming result dies when
-// another query runs on it). Hold it for a scan's whole duration, fetch loop
-// included. Recursive; a no-op (unowned lock) for a reader's private connection.
-using ScanLock = std::unique_lock<std::recursive_mutex>;
-ScanLock LockScan(::duckdb::Connection &connection);
-
-inline ::duckdb::Value ChunkValue(const ::duckdb::DataChunk &chunk, ::duckdb::idx_t col,
-                                  ::duckdb::idx_t row) {
-  return chunk.GetValue(col, row);
-}
-
-template <typename Callback>
-void ScanQuery(::duckdb::Connection &connection_p, const std::string &sql, Callback &&callback) {
-  auto lock = LockScan(connection_p);
-  auto &connection = ScanConnection(connection_p);
-  auto result = connection.Query(sql);
-  Require(result != nullptr && !result->HasError(), result ? result->GetError() : "DuckDB scan returned null");
-  for (::duckdb::idx_t row_index = 0; row_index < result->RowCount(); ++row_index) {
-    callback(*result, row_index);
-  }
-}
-
-// Streaming scan for large SF builds: avoids materializing the full result.
-template <typename Callback>
-void ScanQueryStreaming(::duckdb::Connection &connection_p, const std::string &sql, Callback &&callback) {
-  auto lock = LockScan(connection_p);
-  auto &connection = ScanConnection(connection_p);
-  auto result = connection.SendQuery(sql);
-  Require(result != nullptr && !result->HasError(), result ? result->GetError() : "DuckDB scan returned null");
-  while (true) {
-    auto chunk = result->Fetch();
-    if (!chunk || chunk->size() == 0) {
-      break;
-    }
-    for (::duckdb::idx_t row_index = 0; row_index < chunk->size(); ++row_index) {
-      callback(*chunk, row_index);
-    }
-  }
-  Require(!result->HasError(), result->GetError());
-}
-
-} // namespace scan
 
 // ---- binding a module and its scan to a connection ----
 
