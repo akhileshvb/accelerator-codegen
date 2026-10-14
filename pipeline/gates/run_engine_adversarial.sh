@@ -75,7 +75,7 @@ if status == "pass" and kind == "docker":
         extra_env.setdefault("PGDATABASE", "postgres")
         extra_env.setdefault(
             "ACCEL_POSTGRES_SO",
-            "/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so",
+            "/usr/lib/postgresql/17/lib/accelerator_codegen_pg_test.so",
         )
     elif engine == "mysql":
         extra_env.setdefault("ACCEL_MYSQL_DOCKER", "1")
@@ -137,7 +137,7 @@ if status == "pass" and kind == "docker":
 elif status == "pass":
     cfg = [
         "cmake", "-S", str(repo), "-B", str(build_dir),
-        "-DACCEL_ENABLE_PARALLEL_TPCH=OFF", "-DACCEL_ENABLE_PARALLEL_AUX=OFF",
+        "-DACCEL_ENABLE_PARALLEL_KERNELS=OFF", "-DACCEL_ENABLE_PARALLEL_AUX=OFF",
     ]
     cfg_proc = run_command(cfg, cwd=str(repo))
     if cfg_proc.returncode != 0:

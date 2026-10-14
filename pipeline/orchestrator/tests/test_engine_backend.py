@@ -30,10 +30,10 @@ def test_load_engine_mysql_workload():
     assert w["engine_name"] == "mysql"
     assert w["prompt_subdir"] == "engine_backend"
     assert w["target_paths"]["state_store_header"].endswith(
-        "stateful/mysql/mysql_state_store.hpp"
+        "backends/mysql/state/mysql_state_store.hpp"
     )
     assert w["target_paths"]["aux_backend_header"].endswith(
-        "stateful/mysql/mysql_aux_backend.hpp"
+        "backends/mysql/state/mysql_aux_backend.hpp"
     )
     ids = [layer["id"] for layer in w["implementation_layers"]]
     assert ids == [

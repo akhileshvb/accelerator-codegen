@@ -13,7 +13,7 @@
 #   )
 #   target_include_directories(test_{{engine_name}}_adversarial
 #       PRIVATE
-#           ${CMAKE_CURRENT_SOURCE_DIR}/tests
+#           ${CMAKE_CURRENT_SOURCE_DIR}   # include root
 #   )
 #   add_test(NAME engine_{{engine_name}}_adversarial COMMAND test_{{engine_name}}_adversarial)
 # endif()

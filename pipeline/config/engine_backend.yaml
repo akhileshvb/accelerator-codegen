@@ -3,12 +3,10 @@
 
 write_paths:
   - CMakeLists.txt
-  - cmake/GeneratedSources.cmake
   - cmake/**
   # one glob owns the whole backend: state/ engine/ api/ tests/ bench/
   - backends/{engine}/**
   - pipeline/artifacts/engines/{engine}/**
-  - pipeline/artifacts/engines/**
 
 allowed_commands:
   - "^cmake -S \\. -B build-release( .*)?$"

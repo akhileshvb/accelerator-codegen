@@ -106,6 +106,16 @@ Sync barrier (locks / notify), not `sleep`.
 Loadable MODULE/extension. Server-only symbols only in the MODULE. One SQL/UDF
 calls the toy Runtime; same golden as `runtime`.
 
+**Test code stays out of the production MODULE.** Gate-test UDFs and toy
+bridges (test-table setup, state inspection, runtime-layer drivers, the toy
+Runtime's SQL entry) live in `backends/<engine>/tests/` and build into a
+separate test-only MODULE/plugin (`<module>_test`, e.g.
+`accelerator_codegen_pg_test`); the layer harnesses load that test module
+themselves. The production MODULE/plugin used by accelerators and experiments
+holds only real entry points (txn/trigger hooks, mutation capture, query
+registries and their SQL entry points) and no function that creates tables
+or exposes internals.
+
 ### Query registries (every engine)
 
 The backend is generated once and must serve any number of queries without

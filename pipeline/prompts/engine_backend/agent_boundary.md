@@ -4,7 +4,8 @@
 
 - `backends/{engine}/engine/` and `backends/{engine}/api/` — engine-local scan helper, toy Runtime, query registries
 - `backends/{engine}/state/` — AuxBackend, StateStore; `backends/{engine}/engine/` — mutation/txn bridges
-- Optional `backends/{engine}/api/` — extension / UDF host glue (host layer)
+- Optional `backends/{engine}/api/` — extension / UDF host glue (host layer): real entry points only
+- `backends/{engine}/tests/` — gate-test UDFs and toy bridges (e.g. `extension_test_*.cpp`), built only into a test-only `<module>_test` MODULE/plugin that the layer harnesses load; never into the production MODULE/plugin
 - Query **registries** + generic dispatch (`layer_contracts.md`, "Query registries"): the backend names no query; queries register from `accelerators/{benchmark}/q{N}/{engine}/`
 - **`backends/{engine}/tests/test_{engine}_{layer}.cpp`** — one harness per layer in
   `layers.md` (implementation-owned)
@@ -13,6 +14,13 @@
 - Artifacts under `pipeline/artifacts/engines/{engine}/`
 
 `{engine}` is the workload `engine_name` (sanitized identifier).
+
+This run is the only writer of `backends/{engine}/**`. Query runs never write it:
+when an accelerator needs a generic engine-level helper the backend lacks, the
+query run logs a request to `pipeline/artifacts/backend_additions/{engine}.jsonl`
+(one JSON object per line: `benchmark`, `query`, `helper`, `reason`). Read that
+log if it exists and add the requested helpers that are generic (no query, table
+or benchmark names); note the ones you decline, and why, in your report.
 
 ## Must not modify
 

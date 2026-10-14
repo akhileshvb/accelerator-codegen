@@ -14,7 +14,7 @@
 #   )
 #   target_include_directories(test_{{engine_name}}_contract
 #       PRIVATE
-#           ${CMAKE_CURRENT_SOURCE_DIR}/tests
+#           ${CMAKE_CURRENT_SOURCE_DIR}   # include root
 #           # Postgres: ${ACCEL_PG_INCLUDEDIR_SERVER} from FindAccelPostgreSQL
 #   )
 #   # Postgres harnesses: #include "backends/postgres/tests/postgres_tooling.hpp"

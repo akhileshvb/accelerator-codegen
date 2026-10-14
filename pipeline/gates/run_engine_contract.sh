@@ -86,7 +86,7 @@ if status == "pass" and engine == "postgres":
                 "-e", f"PGUSER={os.environ.get('PGUSER', 'postgres')}",
                 "-e", f"PGPASSWORD={os.environ.get('PGPASSWORD', 'postgres')}",
                 "-e", "PGDATABASE=postgres",
-                "-e", "ACCEL_POSTGRES_SO=/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so",
+                "-e", "ACCEL_POSTGRES_SO=/usr/lib/postgresql/17/lib/accelerator_codegen_pg_test.so",
                 container,
                 f"/accel-build/accel/{cmake_target}",
             ]
@@ -107,7 +107,7 @@ if status == "pass" and engine == "postgres":
 elif status == "pass":
     cfg = [
         "cmake", "-S", str(repo), "-B", str(build_dir),
-        "-DACCEL_ENABLE_PARALLEL_TPCH=OFF", "-DACCEL_ENABLE_PARALLEL_AUX=OFF",
+        "-DACCEL_ENABLE_PARALLEL_KERNELS=OFF", "-DACCEL_ENABLE_PARALLEL_AUX=OFF",
     ]
     cfg_proc = run(cfg)
     if cfg_proc.returncode != 0:

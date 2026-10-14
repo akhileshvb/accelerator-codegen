@@ -13,6 +13,7 @@ allow_update_existing: false
 hide_foreign_engines: true
 agent_hidden_trees:
   - backends/duckdb
+  - backends/mysql
   - accelerators/tpch
   - accelerators/sec_edgar
 
@@ -33,12 +34,15 @@ host_runtime:
     # From-scratch: start the container only. Layer gates build via build_script;
     # do not fail closed on missing live adapter sources / a stale MODULE .so.
     ACCEL_PG_ENSURE_BUILD: "0"
+    # Layer gates load the test-only MODULE (gate-test UDFs); build/install it too.
+    ACCEL_PG_TEST_MODULE: "1"
 
 engine_sdk_hints:
   - "Postgres for this pipeline is Docker container `accel_pg_test` (postgres:17). Start with `ACCEL_PG_ENSURE_BUILD=0 bash scripts/ensure_accel_pg_test.sh` (container only until the host MODULE exists). Do not install a host pacman/$HOME/opt server SDK."
   - "Edit sources on the host (mounted in the container at `/accel-src`). Rebuild with `bash scripts/build_accel_postgres_extension.sh` (cmake/ninja inside the container)."
   - "Connect from host: PGHOST=127.0.0.1 PGPORT=5434. Inside the container / docker exec: PGHOST=127.0.0.1 PGPORT=5432. Env: ACCEL_PG_DOCKER=1."
   - "In-process MODULE target name: `accelerator_codegen_pg`. Installed .so path in the container: `/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so`."
+  - "Gate-test UDFs and toy bridges (table setup, inspection, runtime-layer drivers) go in `backends/postgres/tests/extension_test_*.cpp` and build only into the test MODULE `accelerator_codegen_pg_test` (`/usr/lib/postgresql/17/lib/accelerator_codegen_pg_test.so`); the layer harnesses `LOAD` that module themselves. The production MODULE `accelerator_codegen_pg` holds only real entry points (no test UDFs)."
   - "Use PostgreSQL 17 server headers (SPI, table/heap AM, triggers, xact callbacks, `_PG_init`) from the in-container SDK. Server-only symbols belong only in the MODULE — never in a host shared library that standalone harnesses link."
   - "Shared substrate (do not regenerate): substrate/aux/{core,state,maintenance}/ — MutationBatch, AuxStateStore, AuxEngineServices, coordinator."
   - "Do not read or copy another engine's backends/<engine>/ tree. Do not depend on generated TPC-H/SEC query modules."
