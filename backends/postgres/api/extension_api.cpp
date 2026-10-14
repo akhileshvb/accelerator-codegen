@@ -5,10 +5,6 @@
 // Per-query SQL functions register through backends/postgres/api/runtime.cpp.
 // Linked into the accelerator_codegen_pg MODULE alongside
 // backends/postgres/engine/extension_engine.cpp (which has PG_MODULE_MAGIC).
-//
-// The engine_backend `host` layer gate-test UDFs (pg_accel_host_*) are not
-// here: they live in backends/postgres/tests/extension_test_api.cpp, built only
-// into the test MODULE accelerator_codegen_pg_test.
 
 #include <string>
 

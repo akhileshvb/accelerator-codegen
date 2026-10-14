@@ -92,13 +92,12 @@ function(accel_build_postgres_extension)
 
   # Test-only MODULE for the engine_backend layer gates: the backend sources
   # above (no per-query code) plus the gate-test UDFs (toy txn / mutations /
-  # scan / runtime / visibility / host bridges) from backends/postgres/tests/.
+  # scan / runtime / visibility bridges) from backends/postgres/tests/.
   # The layer harnesses LOAD accelerator_codegen_pg_test; the production
   # accelerator_codegen_pg never contains these functions.
   set(_pg_test_sources "")
   foreach(_src IN ITEMS
-      backends/postgres/tests/extension_test_engine.cpp
-      backends/postgres/tests/extension_test_api.cpp)
+      backends/postgres/tests/extension_test_engine.cpp)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
       list(APPEND _pg_test_sources ${_src})
     endif()

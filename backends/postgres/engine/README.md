@@ -32,7 +32,7 @@ Docker (`accel_pg_test`) only changes how harnesses connect (TCP). Observer
 helpers (`accel_postgres_get_observer_mutation_count`, force-maintenance
 UDFs) live in the MODULE for differential and calibration.
 
-The engine_backend layer-gate UDFs (`pg_accel_{txn,mutations,scan,runtime,vis,host}_*`,
+The engine_backend layer-gate UDFs (`pg_accel_{txn,mutations,scan,runtime,vis}_*`,
 toy modules over a test bridge) are not in this MODULE. They live in
 `backends/postgres/tests/extension_test_*.cpp` and build into a separate
 test-only MODULE, `accelerator_codegen_pg_test` (the backend sources plus those
