@@ -1,4 +1,4 @@
-# Generic data-structure primitives (`stateful/prims/`)
+# Generic data-structure primitives (`accelerators/prims/`)
 
 A growing, workload-agnostic library. Accelerator modules build their versioned
 state from these instead of hand-rolling copy-on-write containers; when none fits,

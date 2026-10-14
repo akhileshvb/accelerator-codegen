@@ -20,8 +20,8 @@ read, fallback); the fuzz harnesses report it.
 **Calibration** (`aux_calibration.hpp`, engine-agnostic): the policy reads
 the query's cost model, `<stem>[_<engine>][_<scale>].json` in the directory
 the query declares (`<bench>/q<N>/cost_model.hpp`, today
-`config/qN_aux_cost_model*.json`), found by `ResolveAuxCostModelPath`
-(`aux_cost_model_path.hpp`); each engine runtime supplies its engine name,
+`accelerators/<bench>/q<N>/config/q<N>_aux_cost_model*.json`), found by `ResolveAuxCostModelPath`
+(`aux_cost_model_path.hpp`, in this directory); each engine runtime supplies its engine name,
 scale and extra directories. `CalibrateFromWrites`
 runs the module's `CalibrationWrites()` (real writes of increasing size and
 spread over its partitions, each with a revert and a control write on a
@@ -31,14 +31,14 @@ time for the commit (recorded in the decision log) plus the first read's
 cost over a hit, so the capture of the changed rows and the engine's commit,
 the same for every action, are not charged. It fits ApplyDelta = overhead +
 per row, RebuildPartition = base + per partition, RebuildAll = mean. The
-engine hooks: `DuckdbCalibrationEngine` (DuckDB runtime backend), and the
-PostgreSQL / MySQL calibrators' clients (`benchmarks/{postgres,mysql}/
+engine hooks: `DuckdbCalibrationEngine` (`backends/duckdb/api/duckdb_runtime.hpp`), and the
+PostgreSQL / MySQL calibrators' clients (`eval/bench/{postgres,mysql}/
 calibrate_*_tpch_aux_cost_model.cpp`, over the extension's SQL controls).
 
 # Concurrency: versioned state and pending commits
 
 All engines use one store, `VersionedAuxStore`
-(`state/versioned_aux_store.hpp`); each engine store only configures it.
+(`substrate/aux/state/versioned_aux_store.hpp`); each engine store only configures it.
 
 **Versions.** Each accelerator's state is a short list of versions. A version
 is the accelerator's whole state (an immutable partition map; unchanged
@@ -109,7 +109,7 @@ selected. A DuckDB build is current from the start time of a transaction
 begun when the build starts.
 
 **The verified Verus store.** A Verus accelerator's state can instead live
-in its Verus store (`substrate/verus/store`, `stateful/state/verus_aux_store.hpp`):
+in its Verus store (`substrate/verus/store`, `substrate/aux/state/verus_aux_store.hpp`):
 the same protocol (versions from engine epochs, a pending commit readers
 wait for, pruning to the floor) behind one verified reader-writer lock, with
 a proof that every kept version's state answers for the database at that
@@ -171,4 +171,4 @@ env/GUC).
 
 ## Generic data-structure primitives
 
-Moved to [`../prims/README.md`](../prims/README.md) (`accelerators/prims/`).
+Moved to [`accelerators/prims/README.md`](../../../accelerators/prims/README.md).

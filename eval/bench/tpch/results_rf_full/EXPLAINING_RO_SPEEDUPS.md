@@ -232,9 +232,9 @@ medians) and the Postgres RO series on the plot.
 
 | Item | Location |
 |------|----------|
-| RO plot + Postgres × table | `benchmarks/tpch/plot_sf20_rf_workload_speedup.py` |
-| Timers / build exclusion | `benchmarks/tpch/single-threaded/aux_benchmark_sweep_session.cpp` |
-| Per-query RO CSVs | `benchmarks/tpch/results_rf_full/csv/q*_results.csv` |
+| RO plot + Postgres × table | `eval/bench/tpch/plot_sf20_rf_workload_speedup.py` |
+| Timers / build exclusion | `eval/bench/tpch/single-threaded/aux_benchmark_sweep_session.cpp` |
+| Per-query RO CSVs | `eval/bench/tpch/results_rf_full/csv/q*_results.csv` |
 | Aux design (sufficient stats, not full-result cache) | `pipeline/prompts/aux_state/shared/aux_state_design.md` |
 | Hit / fallback API | `pipeline/prompts/aux_state/shared/read_path_scaffold.md` |
-| Query modules | `src/generated/tpch/q{1,4,5,6,7,14,15,17}/aux/` |
+| Query modules | `accelerators/tpch/q{1,4,5,6,7,14,15,17}/duckdb/aux/` (and `postgres/aux/`, `mysql/aux/`) |

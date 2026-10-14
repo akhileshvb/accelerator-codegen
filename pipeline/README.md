@@ -70,25 +70,47 @@ python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --dry-run
 
 ## Layout
 
+This directory (`pipeline/`) is the agent layer. It writes into the rest of the
+repository (see the layer table in the top-level `README.md`), and the
+substrate is read-only to it.
+
 - `config/` — orchestrator and model settings, workload YAML
 - `prompts/` — stage prompts and shared constraints
 - `gates/` — deterministic gate scripts (ctest, benchmarks, fairness)
 - `templates/scaffold/` — per-query stubs (kernel, package, the query's `register.cpp`) and CMake snippet
 - `artifacts/` — per-query pipeline state and reports
 - `orchestrator/` — Python package (`accel_pipeline`)
+- `verus/` — shared Verus state: the playbook (`playbook/`) and provenance logs
+- `catalog/`, `schemas/`, `fixtures/` — catalog data, JSON schemas, test fixtures
+
+### Layers and who may write them
+
+| Layer | Directory | Writer |
+|-------|-----------|--------|
+| Substrate | `substrate/aux/{core,state,maintenance,tests}`, `substrate/verus/{common,store,kit,sql2verus}` | nobody in a run (write-denied, `test_substrate_never_writable.py`) |
+| Engine backends | `backends/<engine>/{state,engine,api,tests,bench}` | the `engine_backend` run only |
+| Shared primitives / proof library | `accelerators/prims`, `accelerators/prooflib` | `primitive_publish` / `prooflib_publish`, additions only |
+| Per-query accelerators | `accelerators/<bench>/q<N>/` | the query's run |
+| Workload SQL | `workloads/<bench>/` | people |
 
 ### Where a query lives (engine backends name no query)
 
-Everything query-specific is under `accelerators/<bench>/q<N>/`: `layout.hpp`,
-and per engine `<engine>/{base,aux}/…` including the query's **registrars**
-(catalog entry, SQL entry points, runtime binding), plus `verus_kit/<crate>/`
-for Verus accelerators. The engine backends (`backends/<engine>/{state,engine,api,tests,bench}`;
-catalogs under `backends/<engine>/api/catalog`)
-hold registries and generic dispatch only, so adding a query edits no shared
-file and the backends build with every `q<N>/` removed.
-`scripts/check_backend_query_free.py` enforces it (run by the `aux_correctness`
-and `engine_build` gates); `scripts/run_duckdb_registry_checks.sh` runs the
-DuckDB accelerators end to end.
+Everything query-specific is under `accelerators/<bench>/q<N>/`: `cost_model.hpp`,
+`layout.hpp`, `config/` (cost-model JSON; `config/verus/` for Verus kits),
+`tests/`, `bench/`, and per engine `<engine>/{base,aux}/…` including the query's
+**registrars** (catalog entry, SQL entry points, runtime binding), plus
+`verus_kit/<crate>/` for Verus accelerators. The engine backends
+(`backends/<engine>/{state,engine,api,tests,bench}`; catalogs under
+`backends/<engine>/api/catalog`) hold registries and generic dispatch only, so
+adding a query edits no shared file and the backends build with every `q<N>/`
+removed. Query runs never write `backends/`: when a query needs an engine-level
+helper, the run records a request with the `backend_addition_record` tool and an
+`engine_backend` run implements it.
+`scripts/check_backend_query_free.py` enforces the first property (run by the
+`aux_correctness` and `engine_build` gates); `scripts/check_layer_includes.py`
+checks include direction between layers; `scripts/run_duckdb_registry_checks.sh`
+runs the DuckDB accelerators end to end. Include roots are the repository root
+and `accelerators/`; headers sit next to their sources.
 
 ## Shared primitives library (`accelerators/prims/`)
 

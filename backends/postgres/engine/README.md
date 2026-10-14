@@ -1,6 +1,9 @@
 # PostgreSQL engine adapter
 
-This directory is the PostgreSQL host boundary. The default
+This directory (`backends/postgres/engine/`) is the PostgreSQL host boundary; the rest of
+the backend is in `state/`, `api/` (incl. `api/catalog`), `tests/`.
+The module's SQL entry points are in `api/extension_api.cpp`, its engine glue in
+`engine/extension_engine.cpp`. The default
 `accelerator_codegen` target does not include PostgreSQL server headers.
 Enable `ACCELERATOR_CODEGEN_BUILD_POSTGRES=ON` with a PostgreSQL 17 server
 SDK to build the optional `accelerator_codegen_pg` MODULE.
@@ -11,22 +14,22 @@ SDK to build the optional `accelerator_codegen_pg` MODULE.
   SPI typed InitialScans in each query's `postgres/extension/scan.cpp`.
 - **Base SRFs** (`accel_tpch_qN`) alias aux Execute via each query's
   `postgres/base/base.cpp`.
-- **Backend vs. query code.** The backend (`src/generated/postgres/`:
-  `runtime.{hpp,cpp}` registry + dispatch, `engine_helpers.hpp`,
-  `engine_runtime.hpp`) names no query. Per-query code lives in
+- **Backend vs. query code.** The backend (`backends/postgres/`: `api/runtime.{hpp,cpp}` registry + dispatch,
+  `api/engine_helpers.hpp`, `api/engine_runtime.hpp`, `api/extension_api.cpp`,
+  `engine/extension_engine.cpp`) names no query. Per-query code lives in
   `accelerators/<bench>/q<N>/postgres/{aux/catalog.cpp,
   extension/scan.cpp, extension/functions.cpp, base/base.cpp}` and registers
   through static registrars; `backends/postgres/engine/PostgresAdapter.cmake` globs
-  `extension/*.cpp` and `base/*.cpp` into the MODULE. SQL functions are
+  each query's `postgres/extension/*.cpp` and `postgres/base/*.cpp` into the MODULE. SQL functions are
   created by `SELECT accel_postgres_register_queries();` from the
   registered per-query `CREATE FUNCTION` text (see
   `scripts/postgres_register_tpch_all.sql`).
 - **Mutations** go through statement-level transition triggers →
-  `AcceleratorCodegenCaptureTransition` (`transition_capture.cpp`) →
+  `AcceleratorCodegenCaptureTransition` (`engine/transition_capture.cpp`) →
   registered `PostgresAuxBackend` coordinators.
   Txn lifecycle is via `postgres_xact_callbacks` (`RegisterXactCallback`).
 - **Aux state** is the per-query in-process `PostgresStateStore`
-  (`stateful/postgres/`), not a serialized file-backed adapter.
+  (`backends/postgres/state/`), not a serialized file-backed adapter.
 
 Docker (`accel_pg_test`) only changes how harnesses connect (TCP). Observer
 helpers (`accel_postgres_get_observer_mutation_count`, force-maintenance
@@ -50,7 +53,7 @@ By default every backend holds a private copy of each accelerator's state,
 built on its first query, so memory grows with connections x state size and
 every new connection pays a build. With `accel.shared_state = on` a
 per-database background worker holds the one copy and all backends use it
-(`stateful/postgres/aux_server.{hpp,cpp}`, design notes at the top of the
+(`backends/postgres/state/aux_server.{hpp,cpp}`, design notes at the top of the
 header). Per-backend mode is unchanged and stays the default.
 
 - **Enable.** `SET accel.shared_state = on` (any scope), or server wide:
@@ -117,5 +120,5 @@ falls back to the shared DuckDB JSON. Search order:
 
 1. per-query env var (for example `ACCELERATOR_CODEGEN_POSTGRES_Q6_COST_MODEL`)
 2. `accelerators/tpch/q<query>/config/q<query>_aux_cost_model_postgres.json` (from
-   `scripts/calibrate_postgres_tpch_aux_cost_models.sh`)
+   `eval/bench/postgres/calibrate_postgres_tpch_aux_cost_model.cpp`)
 3. `accelerators/tpch/q<query>/config/q<query>_aux_cost_model.json`
