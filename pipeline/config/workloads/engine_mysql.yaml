@@ -34,10 +34,14 @@ host_runtime:
     # From-scratch: start the container only. Layer gates build via build_script;
     # do not fail closed on missing live adapter sources / a stale plugin .so.
     ACCEL_MYSQL_ENSURE_BUILD: "0"
+    # Layer gates need the gate-test UDFs (backends/mysql/tests/), which only
+    # the test variant of the plugin compiles in.
+    ACCEL_MYSQL_PLUGIN_VARIANT: "test"
 
 engine_sdk_hints:
   - "MySQL for this pipeline is Docker container `accel_mysql_test` (mysql:8.4). Start with `ACCEL_MYSQL_ENSURE_BUILD=0 bash scripts/ensure_accel_mysql_test.sh` (container only until the host plugin exists). Do not install a host pacman/$HOME/opt server SDK."
-  - "Edit sources on the host (mounted in the container at `/accel-src`). Rebuild with `bash scripts/build_accel_mysql_plugin.sh` (cmake/ninja inside the container)."
+  - "Edit sources on the host (mounted in the container at `/accel-src`). Rebuild with `bash scripts/build_accel_mysql_plugin.sh --test` (cmake/ninja inside the container); the layer harnesses need the test variant."
+  - "Gate-test UDFs and toy modules go in `backends/mysql/tests/` and build only into the test variant of the plugin (`-DACCEL_MYSQL_TEST_UDFS=ON`, selected by `--test`). The production plugin holds only the real entry points."
   - "Connect from host: MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3307 (user root, password mysql). Inside the container / docker exec: MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3306. Env: ACCEL_MYSQL_DOCKER=1."
   - "In-process plugin target name: `accelerator_codegen_mysql`. Installed .so path in the container: `/usr/lib/mysql/plugin/accelerator_codegen_mysql.so` (Oracle images may use `/usr/lib64/mysql/plugin`)."
   - "Use MySQL 8.4 server plugin / UDF / component headers (`mysql/plugin.h`, `mysql/udf_registration.h`, component services). Server-only symbols belong only in the plugin — never in a host shared library that standalone harnesses link. Client libmysql (`mysql_real_query` over the protocol) is not a native scan."

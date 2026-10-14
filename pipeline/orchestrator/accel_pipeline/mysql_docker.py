@@ -121,7 +121,7 @@ def format_agent_discovery_block(host: MysqlDockerHost | None) -> str:
         "### Host SDK discovery (Docker MySQL — use this)\n\n"
         "MySQL for this pipeline is a **persistent Docker container**. "
         "Edit sources on the host (mounted at `/accel-src`); rebuild via gates or "
-        "`bash scripts/build_accel_mysql_plugin.sh` (runs cmake/ninja **inside** the container).\n\n"
+        "`bash scripts/build_accel_mysql_plugin.sh` (runs cmake/ninja **inside** the container; add `--test` for the variant with the gate-test UDFs that layer harnesses need).\n\n"
         f"- **mode:** `docker`\n"
         f"- **container:** `{d['container']}` (`{d['image']}`)\n"
         f"- **connect (from host):** `{d['host']}:{d['port']}` "

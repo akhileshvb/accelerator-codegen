@@ -34,7 +34,7 @@
 #include "duckdb/main/materialized_query_result.hpp"
 
 #ifndef ACCEL_ENABLE_PARALLEL_KERNELS
-#error "test_tpch_parallel requires -DACCEL_ENABLE_PARALLEL_TPCH"
+#error "test_tpch_parallel requires -DACCEL_ENABLE_PARALLEL_KERNELS"
 #endif
 
 namespace {
