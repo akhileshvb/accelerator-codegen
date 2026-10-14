@@ -10,10 +10,19 @@
 # MCP launcher only, no memories; paths rewritten), the orchestrator venv.
 # The Verus binary is used in place (VERUS_BIN; the sandbox mounts it).
 #
-# usage: scripts/make_verus_clean_tree.sh <dest>   (dest must not exist)
+# --no-backends: also drop every engine backend (backends/*), for the clean
+# backend regeneration (docs/codebase-layout-proposal.md): the engine_backend
+# pipeline then regenerates them from the substrate. pipeline/artifacts (incl.
+# engines/ and backend_additions/) is dropped either way. accelerators/prims,
+# accelerators/prooflib and pipeline/verus/playbook are kept as they are at HEAD
+# (no seed snapshot is defined yet; reset them by hand if the run needs it).
+#
+# usage: scripts/make_verus_clean_tree.sh [--no-backends] <dest>   (dest must not exist)
 set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST="${1:?usage: make_verus_clean_tree.sh <dest>}"
+NO_BACKENDS=0
+if [[ "${1:-}" == "--no-backends" ]]; then NO_BACKENDS=1; shift; fi
+DEST="${1:?usage: make_verus_clean_tree.sh [--no-backends] <dest>}"
 [[ -e "${DEST}" ]] && { echo "${DEST} exists" >&2; exit 1; }
 DEST="$(mkdir -p "${DEST}" && cd "${DEST}" && pwd)"
 
@@ -25,6 +34,7 @@ remove=(
   workloads/*/q[0-9]*.inputs
   pipeline/artifacts pipeline/verus_runs
 )
+(( NO_BACKENDS )) && remove+=(backends/*)
 for p in "${remove[@]}"; do rm -rf -- "${DEST:?}/${p}"; done
 mkdir -p pipeline/artifacts
 # tracked symlinks into untracked build dirs (e.g. build-release -> build) dangle here
