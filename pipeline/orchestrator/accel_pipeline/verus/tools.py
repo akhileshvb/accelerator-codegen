@@ -136,7 +136,9 @@ def playbook_append(section: str, title: str, body: str, evidence: str) -> str:
 
 
 def backend_addition_record(engine: str, helper: str, reason: str) -> str:
-    """Record an engine-level helper the accelerator needs from the runtime backend (generic, not per query)."""
+    """Request a generic engine-level helper (no query names) from the engine_backend run.
+    Only logs the request (pipeline/artifacts/backend_additions/<engine>.jsonl): query runs never
+    write backends/, so the helper is not available in this run."""
     return _json(actions.backend_addition_record(_ctx(), engine, helper, reason))
 
 

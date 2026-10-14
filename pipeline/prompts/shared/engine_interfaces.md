@@ -6,9 +6,9 @@
 
 **`engine_name` is required** (CLI / `ACCEL_WORKLOAD_ENGINE_NAME` / workload YAML). There is no silent default to `duckdb` or `postgres`. Stage prompts inject an **Engine host** block for the selected engine only.
 
-DuckDB’s `DataChunk`-shaped helpers are **host-private** under `backends/duckdb/engine/native_scan.hpp` (and duckdb-targeted kernels). Other engines define their own typed scan/consume helpers under `backends/{engine}/engine/` — never a cross-engine chunk IR.
+DuckDB’s `DataChunk`-shaped helpers are **host-private** under `backends/duckdb/engine/native_scan.hpp` (and duckdb-targeted kernels). Other engines' `engine_backend` runs define their own typed scan/consume helpers under `backends/{engine}/engine/` — never a cross-engine chunk IR.
 
-For non-duckdb hosts, accelerator implementation may **bootstrap** missing query SQL entrypoints + differential on the existing `engine_backend` surface (`pipeline/prompts/shared/query_host_bootstrap.md`) — never a second adapter tree.
+Query runs **never write** `backends/{engine}/**`. For non-duckdb hosts, accelerator implementation may **bootstrap** the eval-side differential + gate harnesses on the existing `engine_backend` surface (`pipeline/prompts/shared/query_host_bootstrap.md`) — never a second adapter tree. A generic helper the backend lacks is a request for the engine_backend run (`pipeline/artifacts/backend_additions/{engine}.jsonl`), not a backend edit.
 
 ## Base kernels (query-owned, per engine)
 
@@ -82,7 +82,9 @@ Fixed substrate under `substrate/aux/`:
 - `aux_calibration.hpp` runner
 - `maintenance/action_selector.hpp`, `cost_model.hpp`
 
-Engine adapters under `backends/{engine}/` are owned by the **engine_backend** pipeline.
+Engine adapters under `backends/{engine}/` are owned by the **engine_backend** pipeline; query runs never write them.
+
+Each query declares where its cost-model JSON lives in `accelerators/{bench}/q{N}/cost_model.hpp` (`AuxCostModelLocation`) and passes it to every engine's registration (DuckDB `SharedQueryCatalogEntry::cost_model`; Postgres / MySQL `Runtime`).
 
 Agents own partition layouts (`accelerators/{bench}/q{N}/layout.hpp`), payload structs, mutation interpretation, incremental accumulators, maintenance staging logic (including rebuild→resync), and cost-model JSON coefficients.
 

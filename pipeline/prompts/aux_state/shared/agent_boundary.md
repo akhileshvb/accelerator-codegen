@@ -6,10 +6,10 @@
 - `InterpretMutation` relevance / column watches
 - Incremental accumulators in `CreateTxnBuffer` + `AccumulateMutation`
 - `StageMaintenance` action selection inputs and staged partition updates (rebuild must **resync**, not invalidate-only)
-- Initial `CostModelParams` coefficients in `accelerators/tpch/q{N}/config/q{N}_aux_cost_model.json`
+- Initial `CostModelParams` coefficients in `accelerators/{bench}/q{N}/config/q{N}_aux_cost_model.json` (SEC-EDGAR: `sec_edgar_q{N}_aux_cost_model.json`), and `accelerators/{bench}/q{N}/cost_model.hpp` naming that directory (`AuxCostModelLocation`); every engine's registration passes it on (DuckDB `SharedQueryCatalogEntry::cost_model`, the Postgres / MySQL `Runtime`)
 - `aux/module.{hpp,cpp}`, optional `aux/finalize.{hpp,cpp}`
 - Query-specific tests, benchmarks, and calibration binaries
-- **Shared registration / helpers (append-only):** every catalog, allowlist, host SQL entrypoint for the workload `engine_name` (default duckdb), cross-accel / multi-conn helper, and bench-arg surface that neighboring aux queries already use — discover paths by searching a peer query id; do not invent a partial wiring or a second adapter tree
+- **Registration from the query's own directory:** catalog entry, host SQL entry point and bindings for the workload `engine_name` through the backend's static registrars (mirror a peer query's registrar files); **append-only** entries in the shared eval helpers (cross-accel / multi-conn helper, bench-arg surface) that neighboring aux queries already use — discover paths by searching a peer query id; do not invent a partial wiring or a second adapter tree
 
 ## Fixed substrate (do not regenerate from query pipelines)
 
@@ -37,7 +37,7 @@ Owned by the **engine_backend** pipeline (`workload_kind: engine_backend`), not 
 - Existing adapters (when present) are optional few-shot only; they are regenerable from the substrate via the engine pipeline.
 - Headers marked `GENERATED BACKEND` means engine-pipeline-owned.
 
-Shared generated glue is **append-only** from query agents (register this query everywhere peers are registered; search to find current files). Prefer minimal appends over rewrites. CMake auto-discovery usually covers test/bench/calibrate; touch CMake only when targets are missing.
+Query runs **never write** `backends/{engine}/**` (it is denied): register this query from its own directory through the backend's registries. If the backend lacks a generic engine-level helper, log a request for the engine_backend run (one JSON line `{"benchmark", "query", "helper", "reason"}` in `pipeline/artifacts/backend_additions/{engine}.jsonl`, no query names in `helper`) and work with what exists. CMake auto-discovery usually covers test/bench/calibrate; touch CMake only when targets are missing.
 
 ## Store-mode notes (examples)
 

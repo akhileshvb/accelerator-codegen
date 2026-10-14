@@ -12,6 +12,7 @@ Use these conventions when `benchmark_name: sec_edgar` and `workload_kind: aux_s
 | Base kernel API | `accelerators/sec_edgar/q{N}/<engine>/base/query.hpp` |
 | Kernel / package | `accelerators/sec_edgar/q{N}/<engine>/base/single-threaded/` |
 | Cost model JSON | `accelerators/sec_edgar/q{N}/config/sec_edgar_q{N}_aux_cost_model.json` |
+| Cost-model location | `accelerators/sec_edgar/q{N}/cost_model.hpp` (`kSecEdgarQ{N}CostModel`; passed to the catalog entry / Runtime) |
 | Tests | `accelerators/sec_edgar/q{N}/tests/test_sec_edgar_q{N}_aux.cpp`, `test_sec_edgar_q{N}_*.cpp` |
 | Write-freq benchmark | `accelerators/sec_edgar/q{N}/bench/benchmark_q{N}_aux.cpp` |
 | Calibration | `accelerators/sec_edgar/q{N}/bench/calibrate_q{N}_aux_cost_model.cpp` |
@@ -52,4 +53,5 @@ Env: `ACCEL_SEC_EDGAR_DB` (not `ACCEL_TPCH_DB`).
 
 - Calibrate with `calibrate_sec_edgar_q{N}_aux_cost_model` against SF3
 - Initial JSON at `accelerators/sec_edgar/q{N}/config/sec_edgar_q{N}_aux_cost_model.json`
+- `accelerators/sec_edgar/q{N}/cost_model.hpp` names that directory; pass `kSecEdgarQ{N}CostModel` as the catalog entry's `cost_model` (DuckDB) and to the Postgres `Runtime`
 - Set `interference_us` using calibrated `CostModelParams.interference_*` fields in `StageMaintenance`

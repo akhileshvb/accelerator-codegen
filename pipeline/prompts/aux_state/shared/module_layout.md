@@ -8,6 +8,7 @@ Use `{{query_number}}` / `q{{query_number}}` placeholders. Derive exact paths in
 | Aux implementation | `accelerators/tpch/q{{query_number}}/<engine>/aux/module.cpp` |
 | Finalize payload | `accelerators/tpch/q{{query_number}}/<engine>/aux/finalize.cpp` |
 | Cost model JSON | `accelerators/tpch/q{{query_number}}/config/q{{query_number}}_aux_cost_model.json` |
+| Cost-model location | `accelerators/tpch/q{{query_number}}/cost_model.hpp` — `AuxCostModelLocation kTpchQ{{query_number}}CostModel{"accelerators/tpch/q{{query_number}}/config", "q{{query_number}}_aux_cost_model"}` (scaffold writes it); pass it as `SharedQueryCatalogEntry::cost_model` in `duckdb/aux/register.cpp` and to the Postgres / MySQL `Runtime` (peer: `accelerators/tpch/q6/`) |
 | Tests | `accelerators/tpch/q{{query_number}}/tests/test_tpch_q{{query_number}}_aux.cpp`, `test_q{{query_number}}_*.cpp` |
 
 Unit smoke fixtures must follow `unit_test_contract.md` (SQL polarity). `aux_correctness` also runs SF1 DuckDB differential via `test_tpch_shared_differential`.
@@ -30,7 +31,7 @@ int main(int argc, char **argv) {
 
 Do **not** hand-write timing loops or CSV output here; that belongs in `benchmark_q{{query_number}}_aux.cpp`. The gate runs this binary to populate `interference_*` fields in `accelerators/tpch/q{{query_number}}/config/q{{query_number}}_aux_cost_model.json`.
 
-SEC EDGAR: replace `tpch` → `sec_edgar` and cost model → `accelerators/sec_edgar/q{{query_number}}/config/sec_edgar_q{{query_number}}_aux_cost_model.json`. See `pipeline/prompts/sec_edgar/aux_state_notes.md`.
+SEC EDGAR: replace `tpch` → `sec_edgar`, cost model → `accelerators/sec_edgar/q{{query_number}}/config/sec_edgar_q{{query_number}}_aux_cost_model.json` and location → `kSecEdgarQ{{query_number}}CostModel{"accelerators/sec_edgar/q{{query_number}}/config", "sec_edgar_q{{query_number}}_aux_cost_model"}`. See `pipeline/prompts/sec_edgar/aux_state_notes.md`.
 
 CMake: test/bench/calibrate targets are **auto-discovered** from `test_tpch_q*_aux.cpp` via `accel_register_tpch_aux_pipeline_targets()` in `CMakeLists.txt`. Edit `CMakeLists.txt` only when auto-discovery is insufficient; follow patterns in `cmake/AuxState.cmake` and neighboring queries.
 

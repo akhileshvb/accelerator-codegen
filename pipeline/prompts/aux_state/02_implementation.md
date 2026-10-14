@@ -53,7 +53,7 @@ Full analysis: `{{full_analysis_path}}` · Workload SQL: `{{reference_sql_path}}
 
 You must **pre-verify `aux_correctness` and `aux_multi_connection` yourself** before ending (see exit criterion below). Other post-stage gates remain orchestrator-owned.
 
-Populate `interference_us` in `StageMaintenance` using calibrated `CostModelParams.interference_*` fields; `accelerators/tpch/q{{query_number}}/config/q{{query_number}}_aux_cost_model.json` is calibrated by the gate.
+Populate `interference_us` in `StageMaintenance` using calibrated `CostModelParams.interference_*` fields; `{{cost_model_config}}` is calibrated by the gate. `accelerators/{{benchmark_name}}/q{{query_number}}/cost_model.hpp` (scaffold writes it) names the query's config directory; pass its `AuxCostModelLocation` to the engine's registration (DuckDB: last field of the `SharedQueryCatalogEntry` in `duckdb/aux/register.cpp`; Postgres / MySQL: the `Runtime` constructor) — peer: `accelerators/tpch/q6/`.
 
 `calibrate_q{{query_number}}_aux_cost_model.cpp` must be a **5-line wrapper** calling `CalibrateAndWriteCostModel({{query_number}}, argc, argv)` from `calibrate_aux_cost_model_common.hpp` (copy `calibrate_q18_aux_cost_model.cpp`). Custom timing/benchmark code in the calibrator is rejected by the gate.
 

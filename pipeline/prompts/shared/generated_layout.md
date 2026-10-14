@@ -33,6 +33,7 @@ Everything a query run owns is under one directory, so one glob covers it:
 ```
 accelerators/{tpch|sec_edgar}/q{N}/
   layout.hpp                 # the query's state layout (slot ids), shared by its engines
+  cost_model.hpp             # AuxCostModelLocation k<Bench>Q<N>CostModel{"accelerators/{bench}/q{N}/config", "<stem>"}
   {engine}/
     base/
       query.hpp              # bind/kernel API (symbol prefix still tpch_qN / sec_edgar_qN)
@@ -46,7 +47,8 @@ accelerators/{tpch|sec_edgar}/q{N}/
       register.cpp           # duckdb: catalog entry + table function + binding (registrars)
   tests/                     # test_{bench}_q{N}.cpp, test_{bench}_q{N}_aux.cpp, q{N}_manifest.hpp, ...
   bench/                     # benchmark_q{N}.cpp, benchmark_q{N}_aux.cpp, calibrate_q{N}_aux_cost_model.cpp
-  config/                    # q{N}_aux_cost_model*.json (sec_edgar: sec_edgar_q{N}_aux_cost_model.json)
+  config/                    # q{N}_aux_cost_model[_<engine>][_sf<N>].json (sec_edgar: sec_edgar_q{N}_aux_cost_model.json)
+    verus/                   # the Verus accelerator's variants (ACCEL_AUX_COST_MODEL_DIR=verus selects them)
   verus_kit/<crate>/         # Verus accelerator: glue, C header, kernel crate
 ```
 
@@ -68,10 +70,23 @@ array, a dispatch switch, or a function list; a tree with every
 | mysql | `q{N}/mysql/aux/catalog.cpp` (`MysqlQueryCatalogRegistrar`); `q{N}/mysql/plugin/runtime.cpp` (scans + `MysqlUdfRegistrar{MysqlUdfEntry{name, arg_types, execute}}`); `q{N}/mysql/plugin/udf.cpp` (`ACCEL_MYSQL_QUERY_UDF(<name>)`: the UDF symbols); `q{N}/mysql/plugin/functions.sql` (its `CREATE FUNCTION`) | `backends/mysql/api/catalog/query_catalog.hpp`, `backends/mysql/api/runtime.hpp`, `backends/mysql/api/udf_shim.hpp`; `scripts/mysql_register_functions.sh` assembles the SQL |
 | Verus (any engine the kit supports) | `q{N}/verus_kit/<crate>/`: glue (`kit::Registrar`), C header, kernel crate in `crate/` | `substrate/verus/kit/verus_kit.hpp` |
 
+Every query ships `accelerators/{bench}/q{N}/cost_model.hpp` (scaffold generates it):
+one `AuxCostModelLocation` naming the query's `config/` directory and file stem.
+Each engine's registration passes it on: DuckDB as the catalog entry's
+`SharedQueryCatalogEntry::cost_model` (last field, `duckdb/aux/register.cpp`),
+Postgres and MySQL as the `Runtime` constructor's location argument
+(`postgres/extension/scan.cpp`, `mysql/plugin/runtime.cpp`). The substrate picks
+the engine and scale-factor variant from it; never hard-code a JSON path. Peer:
+`accelerators/tpch/q6/`.
+
 Backend files (`backends/{engine}/**`) belong to that engine's `engine_backend` run.
-A query run never writes them: when a query needs an **engine-level** helper the
-backend lacks, record it as a backend addition (generic: no query names) for the
-engine_backend run, never per-query code in the backend.
+A query run never writes them (the write is denied): when a query needs an
+**engine-level** helper the backend lacks, log a request for the engine_backend
+run (Verus pipeline: the `backend_addition_record` tool; C++ pipeline: one JSON line
+`{"benchmark", "query", "helper", "reason"}` appended to
+`pipeline/artifacts/backend_additions/{engine}.jsonl`). The helper must be generic
+(no query names); never put per-query code in the backend, and do not rely on the
+helper in the current run.
 
 Multiple engines may coexist under the same `q{N}/` directory (e.g. `q3/duckdb/` and `q3/postgres/`).
 
@@ -107,6 +122,7 @@ custom per-accelerator storage.
 | Module impl | `accelerators/{benchmark}/q{N}/{engine}/aux/module.cpp` |
 | Finalize helpers | `accelerators/{benchmark}/q{N}/{engine}/aux/finalize.{hpp,cpp}` |
 | Cost model | `accelerators/{benchmark}/q{N}/config/q{N}_aux_cost_model.json` (TPC-H) or `.../config/sec_edgar_q{N}_aux_cost_model.json` |
+| Cost-model location | `accelerators/{benchmark}/q{N}/cost_model.hpp` (passed to every engine's registration; see above) |
 | Tests / bench | `accelerators/{benchmark}/q{N}/tests/test_{benchmark}_q{N}_aux.cpp`, `accelerators/{benchmark}/q{N}/bench/benchmark_q{N}_aux.cpp` |
 
 CMake: `accel_add_aux_state_query(BENCHMARK {benchmark} QUERY_NUM N ...)` in `cmake/AuxState.cmake` (engine-aware discovery).

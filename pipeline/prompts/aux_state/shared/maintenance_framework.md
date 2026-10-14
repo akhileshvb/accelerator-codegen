@@ -51,6 +51,7 @@ Coefficients live in `accelerators/tpch/q{N}/config/q{N}_aux_cost_model.json` an
 - Feature counts passed into `MaintenanceRequest` (rows touched, partitions touched, fanout)
 - Cost estimates using `CostModelParams` loaded from per-query JSON
 - Initial JSON at `accelerators/tpch/q{{query_number}}/config/q{{query_number}}_aux_cost_model.json`
+- `accelerators/tpch/q{{query_number}}/cost_model.hpp` names that directory (`AuxCostModelLocation`); every engine's registration passes it (no hard-coded JSON path); the substrate picks the `_<engine>` / `_sf<N>` variant
 
 The framework only compares totals; cost equations are per-accelerator.
 

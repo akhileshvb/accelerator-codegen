@@ -621,7 +621,8 @@ def main(argv: list[str] | None = None) -> int:
 
     @_tool(annotations=_rw)
     def backend_addition_record(engine: str, helper: str, reason: str) -> str:
-        """Record a generic engine-level helper the accelerator needs from the runtime backend."""
+        """Request a generic engine-level helper from the engine_backend run (logs the request only;
+        query runs never write backends/, so it is not available in this run)."""
         return _verus("backend_addition_record", engine, helper, reason)
 
     mcp.run(transport="stdio")

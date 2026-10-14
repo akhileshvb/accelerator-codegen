@@ -26,7 +26,7 @@ You are bootstrapping the **query-facing host** for **`{{engine_name}}`** so lat
 | Query tree | `accelerators/{bench}/q*/{{engine_name}}/` |
 | Catalog registry | `backends/{{engine_name}}/api/catalog/query_catalog.{hpp,cpp}` (entries registered from each query's directory) |
 
-Prefer these conventions. If an engine already uses a slightly different file under `backends/{{engine_name}}/api/` or `backends/{{engine_name}}/`, extend that file instead of creating a parallel tree.
+Prefer these conventions. `backends/{{engine_name}}/**` is **read-only** to this stage (the `engine_backend` run owns it; query runs never write it). If the backend lacks a generic surface you need, append a request (`{"benchmark", "query", "helper", "reason"}`, no query names in `helper`) to `pipeline/artifacts/backend_additions/{{engine_name}}.jsonl` and report it; never create a parallel tree.
 
 ## Ordered plan (minimize time-to-gate-pass)
 
@@ -40,8 +40,8 @@ Prefer these conventions. If an engine already uses a slightly different file un
      - Nearby `add_executable(test_tpch_shared_differential …)` in root `CMakeLists.txt`
    - Reuse this engine’s `engine_backend` adapters for **mutation / txn / store / tooling** and any **engine-local** rebuild scan helper. Do **not** invent a parallel `backends/{{engine_name}}2/`. Do **not** require `ScanNativeBaseTable` → DataChunk.
 
-2. **SQL entrypoints (shared, append-only)**
-   - In the backend (`backends/{{engine_name}}/api/`, `backends/{{engine_name}}/`), add generic **registries** + dispatch so each later query registers its base + aux call paths from its own directory (`{{register_path}}`) via static registrars, through **this host’s** native APIs + `AuxQueryModule`. The backend must name no query and must still build with every `accelerators/<bench>/q<N>/` removed.
+2. **SQL entrypoints (backend registries, read-only here)**
+   - The backend (`backends/{{engine_name}}/api/`) provides generic **registries** + dispatch so each query registers its base + aux call paths from its own directory (`{{register_path}}`) via static registrars, through **this host’s** native APIs + `AuxQueryModule`. Check they exist and link; the backend names no query and builds with every `accelerators/<bench>/q<N>/` removed. A missing registry is a backend-addition request for the `engine_backend` run, not an edit here.
    - You do **not** need a full TPC-H Q{{query_number}} kernel here — registries + generic dispatch that **link and load** (with zero or one registered query) are enough for bootstrap.
    - Never wire this host through DuckDB `RegisterAcceleratorFunctions` or `*.duckdb` as the execution host when `{{engine_name}}≠duckdb`.
 
