@@ -16,7 +16,7 @@ def _default_tpch_context(repo_root: Path, query: str) -> dict:
         "query_number": q,
         "benchmark_name": "tpch",
         "artifact_namespace": "tpch",
-        "source_subdir": f"tpch/q{q}/base/single-threaded",
+        "source_subdir": f"tpch/q{q}/duckdb/base/single-threaded",
         "function_name": f"accel_tpch_q{q}",
         "create_fn": f"CreateTpchQ{q}FunctionSet",
         "test_target": f"test_tpch_q{q}",
@@ -28,7 +28,7 @@ def _default_tpch_context(repo_root: Path, query: str) -> dict:
         "fairness": {
             "cardinality_constants": ["150000", "600000", "800000"],
             "kernel_search_paths": [
-                f"src/generated/tpch/q{q}/base/single-threaded/kernel.cpp",
+                f"accelerators/tpch/q{q}/duckdb/base/single-threaded/kernel.cpp",
             ],
         },
         "aux_test_target": f"test_tpch_q{q}_aux",
@@ -40,7 +40,7 @@ def _default_tpch_context(repo_root: Path, query: str) -> dict:
         if engine != "duckdb":
             ctx["engine_host"] = {
                 "differential_binary": f"test_{engine}_tpch_differential",
-                "differential_source": f"tests/aux_state/test_{engine}_tpch_differential.cpp",
+                "differential_source": f"eval/tests/test_{engine}_tpch_differential.cpp",
                 "agent_builds_query_host": True,
             }
             ctx["bench_target"] = f"benchmark_{engine}_tpch_q{q}"

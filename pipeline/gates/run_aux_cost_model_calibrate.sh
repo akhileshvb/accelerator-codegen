@@ -64,7 +64,7 @@ if ! ensure_build_tree "${ROOT}" "${BUILD}"; then
 fi
 
 TARGET="${AUX_CALIBRATE_TARGET}"
-CALIBRATOR_SOURCE="${ROOT}/benchmarks/${BENCHMARK_NAME}/single-threaded/calibrate_q${QUERY}_aux_cost_model.cpp"
+CALIBRATOR_SOURCE="${ROOT}/accelerators/${BENCHMARK_NAME}/q${QUERY}/bench/calibrate_q${QUERY}_aux_cost_model.cpp"
 if [[ -f "${CALIBRATOR_SOURCE}" ]] && ! grep -q 'CalibrateAndWriteCostModel' "${CALIBRATOR_SOURCE}"; then
   python3 - <<PY
 import json, pathlib, sys

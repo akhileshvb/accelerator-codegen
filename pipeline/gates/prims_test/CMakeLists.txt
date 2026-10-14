@@ -15,8 +15,8 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 find_package(Threads REQUIRED)
 
-add_executable(test_prims ${PRIMS_REPO_ROOT}/tests/aux_state/test_prims.cpp)
-target_include_directories(test_prims PRIVATE ${PRIMS_REPO_ROOT}/include)
+add_executable(test_prims ${PRIMS_REPO_ROOT}/accelerators/prims/tests/test_prims.cpp)
+target_include_directories(test_prims PRIVATE ${PRIMS_REPO_ROOT} ${PRIMS_REPO_ROOT}/accelerators)
 target_link_libraries(test_prims PRIVATE Threads::Threads)
 
 enable_testing()

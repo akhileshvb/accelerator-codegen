@@ -88,7 +88,7 @@ if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${DIFF_TARGET}"; then
 fi
 
 if [[ ! -x "${BUILD}/${DIFF_TARGET}" ]]; then
-  write_result "fail" "missing ${DIFF_TARGET}: create ${DIFF_SOURCE:-tests/aux_state/${DIFF_TARGET}.cpp} + CMake and host SQL entrypoints on ${REGISTER_PATH}" "${BUILD_LOG}"
+  write_result "fail" "missing ${DIFF_TARGET}: create ${DIFF_SOURCE:-eval/tests/${DIFF_TARGET}.cpp} + CMake and host SQL entrypoints on ${REGISTER_PATH}" "${BUILD_LOG}"
 fi
 
 write_result "pass" "${DIFF_TARGET} built" "${BUILD_LOG}"

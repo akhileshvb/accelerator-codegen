@@ -33,7 +33,7 @@ else:
     notes.append("no gate context")
 
 contract_rel = targets.get("contract_test") or (
-    f"tests/engine_backend/test_{engine}_contract.cpp" if engine else ""
+    f"backends/{engine}/tests/test_{engine}_contract.cpp" if engine else ""
 )
 cmake_target = targets.get("contract_test_target") or (
     f"test_{engine}_contract" if engine else ""

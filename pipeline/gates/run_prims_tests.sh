@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate: the shared primitives library (stateful/prims/) builds, passes its unit and
+# Gate: the shared primitives library (accelerators/prims/) builds, passes its unit and
 # randomized reference tests, only grew relative to HEAD, and names no workload.
 # Standalone (header-only, no DBMS): builds test_prims from pipeline/gates/prims_test.
 # usage: run_prims_tests.sh [query_number]

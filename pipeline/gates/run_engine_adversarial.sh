@@ -45,7 +45,7 @@ else:
     notes.append("no gate context")
 
 adv_rel = targets.get("adversarial_test") or (
-    f"tests/engine_backend/test_{engine}_adversarial.cpp" if engine else ""
+    f"backends/{engine}/tests/test_{engine}_adversarial.cpp" if engine else ""
 )
 cmake_target = targets.get("adversarial_test_target") or (
     f"test_{engine}_adversarial" if engine else ""

@@ -1,7 +1,7 @@
 // Template for SEC-EDGAR base accelerator tests.
-// Copy to tests/single-threaded/test_sec_edgar_q{{query_number}}.cpp and customize.
+// Copy to accelerators/sec_edgar/q{{query_number}}/tests/test_sec_edgar_q{{query_number}}.cpp and customize.
 
-#include "accelerator_codegen/runtime/duckdb/register.hpp"
+#include "backends/duckdb/api/register.hpp"
 #include "test_support/result_compare.hpp"
 
 #include <iostream>
@@ -12,7 +12,7 @@
 namespace {
 
 constexpr const char *kDefaultDb = "/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb";
-constexpr const char *kReferenceSqlPath = "benchmarks/sec_edgar/queries/q{{query_number}}.sql";
+constexpr const char *kReferenceSqlPath = "eval/bench/sec_edgar/queries/q{{query_number}}.sql";
 
 } // namespace
 

@@ -3,8 +3,8 @@
 
 primitive_publish enforces additions-only at publish time; this gate catches an
 edit that bypassed it (e.g. a backend with native file access).  Prints JSON,
-exit 1 on any removed or changed line in include/accelerator_codegen/stateful/prims/
-or tests/aux_state/test_prims.cpp.
+exit 1 on any removed or changed line under accelerators/prims/ (headers, README,
+tests/test_prims.cpp).
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-PATHS = ["include/accelerator_codegen/stateful/prims", "tests/aux_state/test_prims.cpp"]
+PATHS = ["accelerators/prims"]
 
 
 def main() -> int:

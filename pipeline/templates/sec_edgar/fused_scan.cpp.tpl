@@ -2,7 +2,7 @@
 // When this file exists it is compiled automatically (see cmake/BaseQuery.cmake).
 // Wire it in package.cpp: package.create_fused_kernel / package.fused_scan.
 
-#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
 #include "sec_edgar/q{{query_number}}/base/query.hpp"
 
 #include "duckdb/main/client_context.hpp"

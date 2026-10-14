@@ -1,7 +1,7 @@
 // GENERATED BACKEND
 #pragma once
 
-#include "accelerator_codegen/stateful/{{engine_name}}/{{engine_name}}_aux_backend.hpp"
+#include "backends/{{engine_name}}/state/{{engine_name}}_aux_backend.hpp"
 
 namespace accelerator_codegen::aux_state::engine::{{engine_name}} {
 
