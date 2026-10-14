@@ -5,8 +5,7 @@ VALUES
   (2100000000, 1, (
     SELECT s.s_suppkey
     FROM supplier s JOIN nation n ON n.n_nationkey = s.s_nationkey
-    WHERE n.n_name = 'SAUDI ARABIA'
-    ORDER BY s.s_suppkey
+    ORDER BY n.n_name <> 'SAUDI ARABIA', s.s_suppkey -- SAUDI ARABIA's, else any (earlier txns may move them)
     LIMIT 1
   ), 1, 0.00, 0.00, 0.00, 0.00, 'A', 'F', DATE '1970-01-01', DATE '1970-01-01', DATE '1970-01-02', '', '', 'late primary'),
   (2100000000, 2, (
@@ -15,8 +14,7 @@ VALUES
     WHERE s.s_suppkey <> (
       SELECT q.s_suppkey
       FROM supplier q JOIN nation n ON n.n_nationkey = q.s_nationkey
-      WHERE n.n_name = 'SAUDI ARABIA'
-      ORDER BY q.s_suppkey
+      ORDER BY n.n_name <> 'SAUDI ARABIA', q.s_suppkey
       LIMIT 1
     )
     ORDER BY s.s_suppkey DESC

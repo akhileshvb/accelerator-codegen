@@ -46,3 +46,13 @@
 'MAIL', 'SHIP', DATE '1996-01-01', DATE '1995-01-01'
 'MAIL', 'SHIP', DATE '0001-01-01', DATE '0002-01-01'
 'MAIL', 'SHIP', DATE '9999-01-01', DATE '9999-12-31'
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 8 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+'FOB', 'AIR', DATE '1994-01-01', DATE '1995-01-01'
+'FOB', 'SHIP', DATE '1995-01-01', DATE '1996-01-01'
+'FOB', 'RAIL', DATE '1994-01-01', DATE '1995-01-01'
+'MAIL', 'RAIL', DATE '1996-01-01', DATE '1997-01-01'
+'FOB', 'MAIL', DATE '1993-01-01', DATE '1994-01-01'
+'RAIL', 'AIR', DATE '1996-01-01', DATE '1997-01-01'
+'RAIL', 'AIR', DATE '1993-01-01', DATE '1994-01-01'
+'MAIL', 'TRUCK', DATE '1997-01-01', DATE '1998-01-01'

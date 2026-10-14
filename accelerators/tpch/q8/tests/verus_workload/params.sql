@@ -75,3 +75,13 @@
 'BRAZIL', 'AMERICA', ''
 'BRAZIL', 'AMERICA', 'Q8 EDGE'
 'CANADA', 'AMERICA', 'Q8 EDGE'
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 8 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+'UNITED KINGDOM', 'EUROPE', 'STANDARD POLISHED STEEL'
+'INDIA', 'ASIA', 'MEDIUM BURNISHED BRASS'
+'BRAZIL', 'AMERICA', 'LARGE POLISHED BRASS'
+'IRAN', 'MIDDLE EAST', 'ECONOMY BURNISHED STEEL'
+'JAPAN', 'ASIA', 'LARGE PLATED STEEL'
+'KENYA', 'AFRICA', 'LARGE BRUSHED NICKEL'
+'IRAQ', 'MIDDLE EAST', 'LARGE PLATED BRASS'
+'IRAQ', 'MIDDLE EAST', 'STANDARD BURNISHED STEEL'

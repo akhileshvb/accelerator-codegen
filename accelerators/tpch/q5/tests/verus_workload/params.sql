@@ -60,3 +60,13 @@
 'ASIA', DATE '2000-02-29', DATE '2001-02-28'
 'ASIA', DATE '1900-01-01', DATE '1901-01-01'
 'ASIA', DATE '2099-01-01', DATE '2100-01-01'
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 8 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+'EUROPE', DATE '1996-01-01', DATE '1997-01-01'
+'AFRICA', DATE '1994-01-01', DATE '1995-01-01'
+'AMERICA', DATE '1995-01-01', DATE '1996-01-01'
+'ASIA', DATE '1993-01-01', DATE '1994-01-01'
+'ASIA', DATE '1994-01-01', DATE '1995-01-01'
+'AFRICA', DATE '1995-01-01', DATE '1996-01-01'
+'MIDDLE EAST', DATE '1997-01-01', DATE '1998-01-01'
+'AFRICA', DATE '1993-01-01', DATE '1994-01-01'

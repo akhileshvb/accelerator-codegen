@@ -23,3 +23,17 @@ Fixture IDs are selected through SQL, never copied from observed IDs. The
 original answer-producing seed remains available throughout the sequence.
 Temporary orphan relationships are schema-valid: this schema declares no
 foreign keys or uniqueness constraints. Duplicates are intentional.
+
+## Parameters now (supersedes the parameter description above)
+
+These tests were written when $1, the p_name LIKE pattern ('%' || color || '%') was the literal '%green%' in the
+query. The kit now takes it as a runtime parameter (every TPC-H substitution
+parameter is one), so `params.sql` comes from `scripts/gen_verus_kit_params.py`:
+
+1. the curated tuples above, with '%green%' inserted at its position: each asks
+   the question it was written for, and the setup/transactions (built around
+   '%green%') keep their meaning;
+2. edge values of the new parameter, with the other parameters of the first
+   tuple;
+3. eight random sets from the TPC-H domain (`eval/compare/gen_tpch_params.py`,
+   fixed seed), under the pipeline's random-parameter marker.

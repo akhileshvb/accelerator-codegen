@@ -22,3 +22,13 @@
 'AUTOMOBILE  ', DATE '1995-03-15'
 'NO SEGMENT', DATE '1995-03-15'
 'MACHINERY', DATE '2020-06-15'
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 8 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+'FURNITURE', DATE '1995-03-26'
+'FURNITURE', DATE '1995-03-25'
+'MACHINERY', DATE '1995-03-19'
+'BUILDING', DATE '1995-03-31'
+'AUTOMOBILE', DATE '1995-03-23'
+'FURNITURE', DATE '1995-03-07'
+'AUTOMOBILE', DATE '1995-03-13'
+'AUTOMOBILE', DATE '1995-03-01'

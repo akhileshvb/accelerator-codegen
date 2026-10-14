@@ -32,3 +32,9 @@
 1000
 10000000000000
 100000000000000
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 4 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+312
+315
+314
+313

@@ -45,3 +45,13 @@
 '', 1, '', 10, '', 20
 'Zero#19', 0, 'Missing#19', 10, 'Missing#19', 20
 'Zero#19', 9999999999990, 'Missing#19', 10, 'Missing#19', 20
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 8 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+'Brand#24', 3, 'Brand#21', 13, 'Brand#43', 23
+'Brand#24', 2, 'Brand#51', 12, 'Brand#44', 30
+'Brand#45', 8, 'Brand#55', 12, 'Brand#22', 24
+'Brand#15', 10, 'Brand#31', 14, 'Brand#45', 30
+'Brand#11', 1, 'Brand#12', 14, 'Brand#45', 24
+'Brand#31', 7, 'Brand#15', 11, 'Brand#14', 30
+'Brand#52', 4, 'Brand#54', 16, 'Brand#12', 24
+'Brand#35', 9, 'Brand#55', 14, 'Brand#34', 21

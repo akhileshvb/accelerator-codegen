@@ -28,3 +28,17 @@ per tested size; duplicate rows at 041 are identical in every output column.
 This avoids asserting a particular member of an ambiguous LIMIT boundary tie.
 The pipeline supplies commit and concurrent-snapshot checks; transaction files
 contain only statements, not explicit BEGIN/COMMIT commands.
+
+## Parameters now (supersedes the parameter description above)
+
+These tests were written when $2, the p_type LIKE pattern ('%' || TYPE3) was the literal '%BRASS' in the
+query. The kit now takes it as a runtime parameter (every TPC-H substitution
+parameter is one), so `params.sql` comes from `scripts/gen_verus_kit_params.py`:
+
+1. the curated tuples above, with '%BRASS' inserted at its position: each asks
+   the question it was written for, and the setup/transactions (built around
+   '%BRASS') keep their meaning;
+2. edge values of the new parameter, with the other parameters of the first
+   tuple;
+3. eight random sets from the TPC-H domain (`eval/compare/gen_tpch_params.py`,
+   fixed seed), under the pipeline's random-parameter marker.

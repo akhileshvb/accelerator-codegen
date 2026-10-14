@@ -95,6 +95,15 @@ cd pipeline/orchestrator && pytest tests/test_substrate_never_writable.py
 Run test and benchmark binaries from the repository root: cost-model paths
 (`accelerators/<bench>/q<N>/config/...`) are relative to the working directory.
 
+Verus kit correctness (differential + concurrent snapshots, per kit, from the
+repo's own inputs: `accelerators/tpch/q<N>/tests/verus_workload/` and
+`workloads/tpch/schema_constraints.sql`):
+
+```bash
+TEST_DB=<tpch_test.duckdb> scripts/run_verus_kit_tests.sh <build_dir> [queries]
+python3 scripts/gen_verus_kit_params.py [--check]   # params.sql of every kit + the schema constraints
+```
+
 See `pipeline/README.md` for the agent pipeline, `accelerators/prims/README.md` for
 the primitives catalogue, and `substrate/aux/core/README.md` for the maintenance
 and concurrency design.

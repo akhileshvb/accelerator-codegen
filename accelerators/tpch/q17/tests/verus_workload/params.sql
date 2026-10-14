@@ -33,3 +33,13 @@
 'Brand#23', 'wrap box'
 'Bränd#23', 'WRAP BOX'
 'EDGE', 'BOUNDARY'
+-- random parameter sets drawn from the domain when the tests were frozen
+-- 8 sets, seed 20261014 (eval/compare/gen_tpch_params.py 8 20261014; regenerate: scripts/gen_verus_kit_params.py)
+'Brand#45', 'SM PACK'
+'Brand#33', 'SM CASE'
+'Brand#42', 'MED PKG'
+'Brand#11', 'JUMBO CAN'
+'Brand#52', 'MED BAG'
+'Brand#52', 'JUMBO BAG'
+'Brand#15', 'SM PACK'
+'Brand#43', 'JUMBO BOX'
