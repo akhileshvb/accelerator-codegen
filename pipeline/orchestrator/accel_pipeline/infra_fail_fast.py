@@ -62,7 +62,8 @@ def _restore_aux_from_snapshot(repo_root: Path, query: int, workload: dict[str, 
     # The snapshot mirrors repo-relative paths; everything a query owns (aux module,
     # tests, cost model under config/) lives in its directory accelerators/<bench>/q<N>/.
     snap_root = art / "best_valid_baseline_snapshot"
-    rel_q = Path("accelerators") / "tpch" / f"q{query}"
+    bench = str((workload or {}).get("benchmark_name") or "tpch")
+    rel_q = Path("accelerators") / bench / f"q{query}"
     snap = snap_root / rel_q
     restored: list[str] = []
     if not snap.is_dir():

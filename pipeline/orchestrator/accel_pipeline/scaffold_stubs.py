@@ -45,8 +45,20 @@ def _build_stub_values(
         schema_names = '"result"'
         schema_types = "duckdb::LogicalType::BIGINT"
 
+    # cost_model.hpp: AuxCostModelLocation{<config dir>, <file stem>} for every engine.
+    bench_camel = "".join(part.title() for part in benchmark.split("_"))
+    stem_prefix = "sec_edgar_" if benchmark == "sec_edgar" else ""
+    cost_model_json = str(
+        paths.get("cost_model_config")
+        or f"accelerators/{benchmark}/q{query}/config/{stem_prefix}q{query}_aux_cost_model.json"
+    )
+    cost_model_dir, _, cost_model_file = cost_model_json.rpartition("/")
+
     return {
         "query_number": str(query),
+        "cost_model_const": f"k{bench_camel}Q{query}CostModel",
+        "cost_model_dir": cost_model_dir,
+        "cost_model_stem": cost_model_file.removesuffix(".json"),
         "function_name": paths["function_name"],
         "create_fn": paths["create_fn"],
         "header_basename": header_basename,
@@ -88,6 +100,9 @@ def materialize_workload_stubs(
     bench_tpl_root = pipe / "templates" / benchmark
 
     stub_specs: list[tuple[Path, Path]] = [
+        # Every query declares where its cost models live; each engine's
+        # registration passes it on (catalog entry / Runtime).
+        (tpl_root / "cost_model.hpp.tpl", repo / paths["cost_model_header_path"]),
         (tpl_root / "header.hpp.tpl", repo / paths["header_path"]),
         (tpl_root / "kernel.cpp.tpl", repo / paths["kernel_path"]),
         (tpl_root / "package.cpp.tpl", repo / paths["package_path"]),

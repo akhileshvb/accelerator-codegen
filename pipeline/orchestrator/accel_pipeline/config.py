@@ -231,6 +231,8 @@ def resolve_workload_paths(
         "aux_module_header_path": f"{qdir}/{eng_seg}aux/module.hpp",
         "aux_finalize_header_path": f"{qdir}/{eng_seg}aux/finalize.hpp",
         "catalog_path": f"backends/{engine}/api/catalog/query_catalog.hpp" if engine else "",
+        # Where the query's cost models live (AuxCostModelLocation), for every engine.
+        "cost_model_header_path": f"{qdir}/cost_model.hpp",
         "test_path": f"{qdir}/tests/{workload.get('test_target', f'{test_prefix}{q}')}.cpp",
         "benchmark_path": f"{qdir}/bench/benchmark_q{q}.cpp",
         "engine_name": engine,

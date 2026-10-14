@@ -12,11 +12,12 @@ from pathlib import Path
 def _default_tpch_context(repo_root: Path, query: str) -> dict:
     q = int(query)
     engine = (os.environ.get("ACCEL_WORKLOAD_ENGINE_NAME") or os.environ.get("ACCEL_ENGINE_NAME") or "").strip()
+    seg = engine or "duckdb"
     ctx = {
         "query_number": q,
         "benchmark_name": "tpch",
         "artifact_namespace": "tpch",
-        "source_subdir": f"tpch/q{q}/duckdb/base/single-threaded",
+        "source_subdir": f"tpch/q{q}/{seg}/base/single-threaded",
         "function_name": f"accel_tpch_q{q}",
         "create_fn": f"CreateTpchQ{q}FunctionSet",
         "test_target": f"test_tpch_q{q}",
@@ -28,12 +29,13 @@ def _default_tpch_context(repo_root: Path, query: str) -> dict:
         "fairness": {
             "cardinality_constants": ["150000", "600000", "800000"],
             "kernel_search_paths": [
-                f"accelerators/tpch/q{q}/duckdb/base/single-threaded/kernel.cpp",
+                f"accelerators/tpch/q{q}/{seg}/base/single-threaded/kernel.cpp",
             ],
         },
         "aux_test_target": f"test_tpch_q{q}_aux",
         "aux_bench_target": f"benchmark_tpch_q{q}_aux",
         "aux_ctest_smoke_regex": f"^tpch_q{q}_aux_smoke_test$",
+        "cost_model_config": f"accelerators/tpch/q{q}/config/q{q}_aux_cost_model.json",
     }
     if engine:
         ctx["engine_name"] = engine
