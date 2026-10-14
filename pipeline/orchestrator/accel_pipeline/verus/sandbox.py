@@ -5,6 +5,7 @@ Each codex exec step (and the MCP server, codex's child) runs in a mount
 namespace that holds only:
 
     the run's tree (repo root), read-write   -- builds, workspace, run dir
+      except substrate/ and workloads/, read-only (no agent writes them)
     the sibling DuckDB checkout, read-only   -- the engine + test databases
     the Verus binary (tools/verus/verus-x86-linux), read-only
     the rust toolchains (~/.rustup), read-only; the crate cache (~/.cargo)
@@ -35,6 +36,8 @@ from typing import Any
 from accel_pipeline.verus.context import VerusContext
 
 HOME = Path.home()
+# Repo layers mounted read-only inside the sandbox (see accel_pipeline.layout).
+READONLY_LAYERS = ("substrate", "workloads")
 
 
 def _duckdb_root(ctx: VerusContext) -> Path | None:
@@ -58,6 +61,14 @@ def mounts(ctx: VerusContext) -> list[tuple[str, Path, Path]]:
     """(mode, source, destination) for every bind beyond the system ones."""
     root = ctx.root.resolve()
     binds: list[tuple[str, Path, Path]] = [("rw", root, root)]
+    # Layers no agent may write, re-bound read-only over the tree (later binds win):
+    # substrate/** (never writable) and workloads/** (the query SQL and schemas).
+    # accelerators/prooflib/ stays writable: prooflib_publish runs in the MCP server,
+    # inside this sandbox.
+    for layer in ctx.setting("sandbox_readonly_layers", list(READONLY_LAYERS)) or []:
+        p = root / str(layer)
+        if p.is_dir():
+            binds.append(("ro", p, p))
     if (duck := _duckdb_root(ctx)) is not None:
         binds.append(("ro", duck, duck))
     # the Verus binary directory (VERUS_BIN's, else the tree's tools/verus),

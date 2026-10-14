@@ -115,12 +115,13 @@ def test_trusted_base_accepts_plain_kernel(tmp_path: Path) -> None:
 def test_leak_check_flags_copied_kernel(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     root = Path(ctx.repo_root)
-    excluded = root / "src" / "verus" / "q99" / "src"
+    ctx.settings["leak"] = {"excluded_glob": "excluded_kernels/q*/src"}
+    excluded = root / "excluded_kernels" / "q99" / "src"
     excluded.mkdir(parents=True)
     body = "\n".join(f"    let distinctive_name_{i} = compute_something_special_{i}(argument_value);" for i in range(40))
     (excluded / "maint.rs").write_text(body)
-    for d in ("common", "substrate", "prooflib"):
-        (root / "src" / "verus" / d / "src").mkdir(parents=True)
+    for d in ("substrate/verus/common", "substrate/verus/store", "accelerators/prooflib"):
+        (root / d / "src").mkdir(parents=True)
     (ctx.ws / "crate" / "src" / "kernel.rs").write_text(body)
     res = actions.leak_check(ctx)
     assert not res["ok"] and res["shared_identifiers"] > 25
@@ -199,9 +200,9 @@ def test_pack_passes_mode() -> None:
 
 
 def test_outputs_live_in_the_query_directory(tmp_path: Path) -> None:
-    """Glue, header and kernel crate go under src/generated/<bench>/q<N>/verus_kit/<crate>/."""
+    """Glue, header and kernel crate go under accelerators/<bench>/q<N>/verus_kit/<crate>/."""
     ctx = _ctx(tmp_path)
-    assert ctx.kit_dir == ctx.root / "src" / "generated" / ctx.benchmark / f"q{ctx.query}" / "verus_kit" / ctx.crate
+    assert ctx.kit_dir == ctx.root / "accelerators" / ctx.benchmark / f"q{ctx.query}" / "verus_kit" / ctx.crate
     assert ctx.crate_dir == ctx.kit_dir / "crate"
 
 

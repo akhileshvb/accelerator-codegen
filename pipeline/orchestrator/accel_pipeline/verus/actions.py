@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from accel_pipeline.layout import PROOFLIB
 from accel_pipeline.verus import params as qparams
 from accel_pipeline.verus.context import VerusContext
 
@@ -81,7 +82,7 @@ def cargo_target_dir(ctx: VerusContext) -> Path:
 
 
 def sql2verus_bin(ctx: VerusContext) -> Path:
-    t = ctx.root / "src" / "verus" / "sql2verus"
+    t = ctx.root / "substrate" / "verus" / "sql2verus"
     target = cargo_target_dir(ctx)
     target.mkdir(parents=True, exist_ok=True)
     binary = target / "release" / "sql2verus"
@@ -409,7 +410,7 @@ def build_runner(ctx: VerusContext, *, proofs: bool = True, _foreign_retry: int 
         # every error in another query's files: not this kernel's failure -- wait for that query to fix
         # (or roll back) its glue and try again, rather than spend a fix round on it
         mine = str(ctx.kit_dir.resolve())
-        paths = re.findall(r"(/\S+/src/generated/\S+?/verus_kit/[^/\s]+)/", errs)
+        paths = re.findall(r"(/\S+/accelerators/\S+?/verus_kit/[^/\s]+)/", errs)
         foreign = paths and all(not p.startswith(mine) for p in paths)
         retries = int(ctx.setting("build_foreign_retries", 15))
         if foreign and _foreign_retry < retries:
@@ -999,16 +1000,18 @@ def leak_check(ctx: VerusContext) -> dict[str, Any]:
 
     Distinctive identifiers (not in the generated files, the verified
     libraries or this run's spec) and long identical lines shared with
-    src/verus/q*/ kernels count; above the thresholds the audit flags the run.
+    the excluded kernels (setting ``leak.excluded_glob``, repo-relative crate src dirs; the legacy
+    hand-written kernels are gone, so none by default) count; above the thresholds the audit flags the run.
     """
-    excluded = [p for d in sorted((ctx.root / "src" / "verus").glob("q*/src")) for p in d.glob("*.rs")
+    pattern = str(ctx.setting("leak.excluded_glob", "") or "")
+    excluded = [p for d in (sorted(ctx.root.glob(pattern)) if pattern else []) for p in d.glob("*.rs")
                 if not p.name.startswith("gen_") and p.name not in ("lib.rs", "ffi.rs")]
     if not excluded:
         return {"ok": True, "note": "no excluded kernels to compare with"}
     allowed_text = "\n".join(
         p.read_text(encoding="utf-8")
-        for d in ("common", "substrate", "prooflib")
-        for p in (ctx.root / "src" / "verus" / d / "src").glob("*.rs"))
+        for d in ("substrate/verus/common", "substrate/verus/store", PROOFLIB)
+        for p in (ctx.root / d / "src").glob("*.rs"))
     allowed_text += "\n".join(p.read_text(encoding="utf-8") for p in (ctx.ws / "crate" / "src").glob("gen_*.rs"))
     ident = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{5,}\b")
     allowed = set(ident.findall(allowed_text))
@@ -1054,13 +1057,13 @@ def prooflib_verify(ctx: VerusContext) -> dict[str, Any]:
 
 def prooflib_publish(ctx: VerusContext, note: str) -> dict[str, Any]:
     """Publish the workspace's proof library: additions only, re-verified with every dependent."""
+    from accel_pipeline.verus import workspace as _ws
+
     ws_lib = ctx.ws / "prooflib" / "src" / "lib.rs"
-    tree_lib = ctx.root / "src" / "verus" / "prooflib" / "src" / "lib.rs"
+    tree_lib = _ws.prooflib_lib(ctx)  # accelerators/prooflib/src/lib.rs
     with file_lock(Path(ctx.pipeline_root) / "verus_runs" / ".prooflib.lock"):
         # take in what others published since this workspace's copy was made, keeping this
         # agent's additions (else a stale copy looks like it removes their lemmas)
-        from accel_pipeline.verus import workspace as _ws
-
         _ws.refresh_prooflib(ctx)
         old = tree_lib.read_text(encoding="utf-8")
         new = ws_lib.read_text(encoding="utf-8")
@@ -1085,7 +1088,7 @@ def prooflib_publish(ctx: VerusContext, note: str) -> dict[str, Any]:
         # every crate that verified fully before (unchanged since) must still verify; the others
         # (kernels mid-proof) pick the additions up at their next verify
         cache = json.loads(_verified_cache(ctx).read_text()) if _verified_cache(ctx).is_file() else {}
-        deps = [d for d in sorted(ctx.root.glob("src/generated/*/q*/verus_kit/*/crate"))
+        deps = [d for d in sorted(ctx.root.glob("accelerators/*/q*/verus_kit/*/crate"))
                 if (d / "src" / "lib.rs").is_file() and cache.get(str(d.resolve())) == _crate_hash(d)]
 
         def check(crate_dir: Path) -> dict[str, Any] | None:

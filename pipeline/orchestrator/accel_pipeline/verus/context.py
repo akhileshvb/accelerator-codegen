@@ -5,7 +5,7 @@ One query's run has three places:
 * the **build tree** (``pipeline_config.repo_root``, a pack worker's worktree
   or the primary checkout): sql2verus writes the frozen generated files there,
   everything the run produces lives in the query's own directory
-  (``src/generated/<bench>/q<N>/verus_kit/<crate>/``: host glue, C header, and
+  (``accelerators/<bench>/q<N>/verus_kit/<crate>/``: host glue, C header, and
   the kernel crate in ``crate/``), and every gate runs there;
 * the **workspace** (``pipeline/verus_runs/<workload>/workspace``): the only
   directory agents work in.  It holds the query, the frozen spec files (copies),
@@ -30,6 +30,7 @@ from typing import Any
 
 import yaml
 
+from accel_pipeline.layout import query_dir, workload_query_sql, workload_schema_sql
 from accel_pipeline.paths import query_artifacts_dir
 
 
@@ -73,7 +74,7 @@ class VerusContext:
 
     @property
     def kit_dir(self) -> Path:
-        return self.root / "src" / "generated" / self.benchmark / f"q{self.query}" / "verus_kit" / self.crate
+        return self.root / query_dir(self.benchmark, self.query) / "verus_kit" / self.crate
 
     @property
     def header_name(self) -> str:
@@ -124,8 +125,9 @@ def build_context(pipeline_config: Any, workload: dict[str, Any], workload_name:
     crate = str(settings.get("crate") or f"{bench}_q{query}_vgen")
     accel_id = str(settings.get("accelerator_id") or crate)
     prefix = str(settings.get("ffi_prefix") or crate.replace("_", ""))
-    sql_rel = settings.get("query_sql") or f"src/verus/sql2verus/queries/q{query}.sql"
-    schema_rel = settings.get("schema_sql") or f"src/verus/sql2verus/queries/{bench}_schema.sql"
+    # The query SQL and schema are workload inputs: workloads/<bench>/q<N>.sql, workloads/<bench>/schema.sql.
+    sql_rel = settings.get("query_sql") or workload_query_sql(bench, query)
+    schema_rel = settings.get("schema_sql") or workload_schema_sql(bench)
     datasets = dict(getattr(pipeline_config, "datasets", {}) or {})
     test_db = settings.get("test_db") or str(datasets.get(f"{bench}_test") or "")
     bench_db = settings.get("bench_db") or str(datasets.get(f"{bench}_sf1") or "")

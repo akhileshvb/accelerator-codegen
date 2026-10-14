@@ -4,7 +4,7 @@ Every substitution parameter of a query is a runtime parameter of its kit, so
 every benchmark, profile and correctness run draws fresh values from the
 parameter domain (TPC-H spec 2.4 / qgen ranges): a kernel specialized to fixed
 parameter values gains nothing.  The domain lives in
-``benchmarks/compare/gen_tpch_params.py`` (all 22 queries; its ``verus`` field
+``eval/compare/gen_tpch_params.py`` (all 22 queries; its ``verus`` field
 is the kit's argument list in $n order); this module only calls it with a seed.
 
 A *draw* is one seed and the parameter tuples it gives, written to the run's
@@ -27,7 +27,7 @@ from typing import Any
 
 from accel_pipeline.verus.context import VerusContext
 
-GENERATOR = "benchmarks/compare/gen_tpch_params.py"
+GENERATOR = "eval/compare/gen_tpch_params.py"
 
 
 @dataclass

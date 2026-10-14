@@ -26,6 +26,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.layout import PROOFLIB
 from accel_pipeline.verus.context import VerusContext
 
 README = """# Verus accelerator workspace: {accel_id}
@@ -67,6 +68,11 @@ def _copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
+def prooflib_lib(ctx: VerusContext) -> Path:
+    """The published proof library (accelerators/prooflib/, changed only by prooflib_publish)."""
+    return ctx.root / PROOFLIB / "src" / "lib.rs"
+
+
 def contracts_dir(ctx: VerusContext) -> Path:
     return Path(ctx.pipeline_root) / "prompts" / "verus" / "contracts"
 
@@ -89,15 +95,14 @@ def create(ctx: VerusContext, workload: dict[str, Any]) -> Path:
         "scale": "iteration at SF1; production up to SF3000 (see contracts/scale_principles.md)",
     }
     (ws / "query" / "workload.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
-    root = ctx.root / "src" / "verus"
-    _copy(root / "common" / "src", ws / "ref" / "verus_common")
-    _copy(root / "substrate" / "src", ws / "ref" / "verus_substrate")
-    inc = ctx.root / "include" / "accelerator_codegen"
-    _copy(inc / "verus" / "verus_kit.hpp", ws / "ref" / "kit" / "verus_kit.hpp")
-    _copy(inc / "stateful" / "core" / "aux_types.hpp", ws / "ref" / "kit" / "aux_types.hpp")
+    sub = ctx.root / "substrate"
+    _copy(sub / "verus" / "common" / "src", ws / "ref" / "verus_common")
+    _copy(sub / "verus" / "store" / "src", ws / "ref" / "verus_substrate")  # crate verus_substrate
+    _copy(sub / "verus" / "kit" / "verus_kit.hpp", ws / "ref" / "kit" / "verus_kit.hpp")
+    _copy(sub / "aux" / "core" / "aux_types.hpp", ws / "ref" / "kit" / "aux_types.hpp")
     # the proof library: the agents' editable copy starts as the published one
     if not (ws / "prooflib" / "src" / "lib.rs").is_file():
-        _copy(root / "prooflib" / "src" / "lib.rs", ws / "prooflib" / "src" / "lib.rs")
+        _copy(prooflib_lib(ctx), ws / "prooflib" / "src" / "lib.rs")
     pb = Path(ctx.pipeline_root) / "verus" / "playbook"
     for name in ("performance.md", "proofs.md"):
         src = pb / name
@@ -120,7 +125,7 @@ def create(ctx: VerusContext, workload: dict[str, Any]) -> Path:
 
 def refresh_prooflib(ctx: VerusContext) -> None:
     """Take in lemmas other runs published (keeps local unpublished additions)."""
-    tree = (ctx.root / "src" / "verus" / "prooflib" / "src" / "lib.rs").read_text(encoding="utf-8")
+    tree = prooflib_lib(ctx).read_text(encoding="utf-8")
     local_path = ctx.ws / "prooflib" / "src" / "lib.rs"
     local = local_path.read_text(encoding="utf-8") if local_path.is_file() else ""
     if not local or all(l in local.splitlines() for l in tree.splitlines()):
