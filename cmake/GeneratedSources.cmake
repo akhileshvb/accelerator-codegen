@@ -83,6 +83,7 @@ function(accel_collect_runtime_sources OUT_VAR)
                 backends/duckdb/api/query_runtime.cpp
                 backends/duckdb/api/register.cpp
                 backends/duckdb/api/duckdb_runtime.cpp
+                backends/duckdb/api/verus_host.cpp
                 backends/duckdb/engine/scan.cpp
                 backends/duckdb/engine/capture.cpp
                 backends/duckdb/api/shared_query_engine.cpp
