@@ -7,7 +7,7 @@ TPCH_DB="${TPCH_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf1.duckdb}"
 SEC_DB="${SEC_DB:-${ROOT}/../accelerator-codegen-duckdb/sec_edgar_sf3.duckdb}"
 CALIBRATOR="${BUILD}/calibrate_shared_aux_cost_model"
 
-# Prefer the dedicated DuckDB TPC-H calibrator (Q1..Q22 → config/qN_aux_cost_model.json).
+# Prefer the dedicated DuckDB TPC-H calibrator (Q1..Q22 → accelerators/tpch/qN/config/qN_aux_cost_model.json).
 if [[ -x "${ROOT}/scripts/calibrate_duckdb_tpch_aux_cost_models.sh" ]]; then
   BUILD="${BUILD}" TPCH_DB="${TPCH_DB}" \
     bash "${ROOT}/scripts/calibrate_duckdb_tpch_aux_cost_models.sh"

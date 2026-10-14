@@ -21,7 +21,7 @@ FORCE_ACTION="${ACCEL_FORCE_MAINTENANCE_ACTION:-ApplyDelta}"
 if [[ "$OUT" == "$ROOT"/* ]]; then
   CONTAINER_OUT="/accel-src/${OUT#"$ROOT"/}"
 else
-  CONTAINER_OUT="/accel-src/benchmarks/aux_state/results/mysql_tpch_${SCALE}_aux_sweep.csv"
+  CONTAINER_OUT="/accel-src/eval/bench/aux_state/results/mysql_tpch_${SCALE}_aux_sweep.csv"
   OUT="${ROOT}/eval/bench/aux_state/results/mysql_tpch_${SCALE}_aux_sweep.csv"
 fi
 
@@ -49,6 +49,7 @@ run_one() {
     -e MYSQL_PORT=3306 \
     -e TPCH_MYSQL_DB=accel_mysql_test \
     -e ACCEL_SRC=/accel-src \
+    -e ACCELERATOR_CODEGEN_CONFIG_DIR=/accel-src/config \
     -e ACCEL_MYSQL_SWEEP_SCALE="${SCALE}" \
     -e ACCEL_TPCH_Q11_FRACTION="${ACCEL_TPCH_Q11_FRACTION:-}" \
     -e ACCEL_SHARED_SWEEP_OUTPUT="${CONTAINER_OUT}" \

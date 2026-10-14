@@ -79,24 +79,24 @@ python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --dry-run
 
 ### Where a query lives (engine backends name no query)
 
-Everything query-specific is under `src/generated/<bench>/q<N>/`: `layout.hpp`,
+Everything query-specific is under `accelerators/<bench>/q<N>/`: `layout.hpp`,
 and per engine `<engine>/{base,aux}/…` including the query's **registrars**
 (catalog entry, SQL entry points, runtime binding), plus `verus_kit/<crate>/`
-for Verus accelerators. The engine backends (`src/runtime/<engine>`,
-`src/stateful/<engine>`, `src/generated/<engine>`, `src/generated/catalog/<engine>`)
+for Verus accelerators. The engine backends (`backends/<engine>/{state,engine,api,tests,bench}`;
+catalogs under `backends/<engine>/api/catalog`)
 hold registries and generic dispatch only, so adding a query edits no shared
 file and the backends build with every `q<N>/` removed.
 `scripts/check_backend_query_free.py` enforces it (run by the `aux_correctness`
 and `engine_build` gates); `scripts/run_duckdb_registry_checks.sh` runs the
 DuckDB accelerators end to end.
 
-## Shared primitives library (`stateful/prims/`)
+## Shared primitives library (`accelerators/prims/`)
 
 Accelerator state is versioned copy-on-write and built from the generic, workload-agnostic
-primitives in `include/accelerator_codegen/stateful/prims/` (catalogue: its `README.md`).
+primitives in `accelerators/prims` (catalogue: its `README.md`).
 The library grows through the `primitive_publish` tool (aux_state agents), the C++ analogue of
 the Verus `prooflib_publish`: the agent stages the new header, the updated README and
-`tests/aux_state/test_prims.cpp` under `pipeline/prims_staging/<repo path>`; under an exclusive
+`accelerators/prims/tests/test_prims.cpp` under `pipeline/prims_staging/<repo path>`; under an exclusive
 lock (`pipeline/.locks/prims.lock`) the tool checks additions-only, header comment / README row /
 tests, and the workload-vocabulary check (`scripts/check_backend_query_free.py`), writes into the
 primary tree with a backup, builds and runs `test_prims` (and every target that includes a
@@ -135,7 +135,7 @@ Analysis and audit stay on OpenRouter Agents when using `models.codex.yaml`.
 
 ### Concurrent pack (shared tree, no stage barriers)
 
-Run several query pipelines in parallel on one checkout. Isolation is **separate build dirs** + **per-worker `CODEX_HOME`** + a **shared-file lease** for CMake and engine-backend edits (queries register from their own `src/generated/<bench>/qN/**`, which needs no lease). Workers do not wait on each other's stages.
+Run several query pipelines in parallel on one checkout. Isolation is **separate build dirs** + **per-worker `CODEX_HOME`** + a **shared-file lease** for CMake and engine-backend edits (queries register from their own `accelerators/<bench>/qN/**`, which needs no lease). Workers do not wait on each other's stages.
 
 ```bash
 cd pipeline/orchestrator && source .venv/bin/activate
@@ -219,16 +219,16 @@ C++-store compatibility). Settings: `config/verus.yaml`, overridden by a
 workload's `verus:` section. Agents work in `pipeline/verus_runs/<workload>/workspace`
 (an allowlisted clean room) and build/test only through the `verus_*` MCP tools.
 Prompts and contracts: `prompts/verus/`. Shared, growing state: the proof
-library (`src/verus/prooflib`) and the playbook (`pipeline/verus/playbook`).
-Host side: the generic kit (`include/accelerator_codegen/verus/verus_kit.hpp`)
-and runner (`tests/verification/verus_kit/verus_kit_runner.cpp`); DuckDB only for now.
-A run's output lives in the query's directory: `src/generated/<bench>/q<N>/verus_kit/<crate>/`
+library (`accelerators/prooflib`) and the playbook (`pipeline/verus/playbook`).
+Host side: the generic kit (`substrate/verus/kit/verus_kit.hpp`)
+and runner (`eval/tests/verus_kit/verus_kit_runner.cpp`); DuckDB only for now.
+A run's output lives in the query's directory: `accelerators/<bench>/q<N>/verus_kit/<crate>/`
 (glue + C header; the kernel crate in `crate/`), registered through the kit's registry.
 
 Parameters: every TPC-H substitution parameter (spec 2.4: LIKE patterns and
 Q11's fraction included) is a runtime `$n` parameter of the kit (preflight
 rejects a query SQL with a literal LIKE pattern or fewer `$n` than the domain
-has). Their domains are `benchmarks/compare/gen_tpch_params.py` (its `verus`
+has). Their domains are `eval/compare/gen_tpch_params.py` (its `verus`
 argument lists), called by `verus/params.py`. Every benchmark, profile and
 gate run draws fresh random tuples there with a new `os.urandom` seed
 (`verus_kit_runner` reads them from `VERUS_KIT_PARAMS_FILE` for bench/profile,
@@ -287,14 +287,14 @@ python -m accel_pipeline.run_pipeline --query 24 --workload sec_edgar_q24 --dry-
 - Gates: `correctness`, `baseline`, `profile`, `fairness` (no `sf10` — single scale factor)
 - Gates run automatically after each stage. **Implementation** and **each optimization iteration** require passing: `correctness` → `baseline` → `profile`. Failures abort the pipeline.
 - After gates, `optimization_feedback.md` is written for the next optimization iteration (dominant phase, gaps vs DuckDB, suggested fixes).
-- Query SQL: `benchmarks/sec_edgar/queries/q{N}.sql`
+- Query SQL: `eval/bench/sec_edgar/queries/q{N}.sql`
 
 Tests: `pytest tests/test_benchmark_pack.py`
 
 ## Engine backend onboarding
 
 Separate pipeline (`workload_kind: engine_backend`) generates engine adapters from the
-**fixed substrate** (`stateful/core|state|maintenance`). It is **engine-agnostic
+**fixed substrate** (`substrate/aux/{core,state,maintenance}`). It is **engine-agnostic
 and from-scratch**: conventional paths come from `config/engine_backend.yaml`.
 Agents must **not** read or copy other engine trees.
 

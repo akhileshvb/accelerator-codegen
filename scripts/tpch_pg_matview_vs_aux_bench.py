@@ -338,11 +338,11 @@ WRITE_MIX_FIELDNAMES = [
 
 
 def matview_dir(query: int) -> Path:
-    return ROOT / "src" / "generated" / "tpch" / f"q{query}" / "postgres" / "matview"
+    return ROOT / "accelerators" / "tpch" / f"q{query}" / "postgres" / "matview"
 
 
 def immv_dir(query: int) -> Path:
-    return ROOT / "src" / "generated" / "tpch" / f"q{query}" / "postgres" / "immv"
+    return ROOT / "accelerators" / "tpch" / f"q{query}" / "postgres" / "immv"
 
 
 def immv_supported(query: int) -> bool:

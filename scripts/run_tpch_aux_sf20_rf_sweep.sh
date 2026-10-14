@@ -19,7 +19,7 @@ export ACCEL_AUX_WRITE_MODE="${ACCEL_AUX_WRITE_MODE:-rf}"
 export ACCEL_TPCH_RF_CHUNK_ORDERS="${ACCEL_TPCH_RF_CHUNK_ORDERS:-1}"
 # Exclude Q11 by default — RF does not touch partsupp/supplier/nation.
 export QUERIES="${QUERIES:-1,3,6,9,10,12,14,17,18,21}"
-export OUT_DIR="${OUT_DIR:-${ROOT}/benchmarks/tpch/results_rf}"
+export OUT_DIR="${OUT_DIR:-${ROOT}/eval/bench/tpch/results_rf}"
 export LOG="${LOG:-${OUT_DIR}/tpch_aux_sf20_rf_sweep.log}"
 
 echo "=== TPC-H SF20 RF mini-chunk aux sweep ==="

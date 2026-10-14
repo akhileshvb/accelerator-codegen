@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PLACEHOLDERS = Path.home() / "tpch-utils" / "tpch_placeholders"
-DEFAULT_MANIFESTS = ROOT / "tests" / "test_support"
+DEFAULT_MANIFESTS = ROOT / "accelerators" / "tpch"
 DEFAULT_OUT = Path.home() / "tpch-utils" / "generated" / "sf1_instances"
 
 
@@ -187,7 +187,7 @@ def main() -> int:
 
     written = 0
     errors: list[str] = []
-    for path in sorted(args.manifests.glob("q*_manifest.hpp")):
+    for path in sorted(args.manifests.glob("q*/tests/q*_manifest.hpp")):
         if "nonzero" in path.name:
             continue
         m = re.search(r"q(\d+)_manifest", path.name)

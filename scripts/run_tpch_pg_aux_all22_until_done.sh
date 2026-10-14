@@ -20,7 +20,7 @@ root = Path("/home/akhilvb/accelerator-codegen")
 ok = 0
 detail = {}
 for q in range(1, 23):
-    aux_dir = root / f"src/generated/tpch/q{q}/postgres/aux"
+    aux_dir = root / f"accelerators/tpch/q{q}/postgres/aux"
     has_aux = aux_dir.is_dir() and any(aux_dir.rglob("*.cpp"))
     # Prefer engine-scoped artifacts under pipeline/artifacts/tpch/qN
     corr = base = speed = None

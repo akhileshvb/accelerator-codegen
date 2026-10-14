@@ -1,6 +1,6 @@
 \ir postgres_accel_mutation_triggers.sql
 
--- TPC-H table ids (src/generated/tpch/postgres_tpch_table_ids.hpp):
+-- TPC-H table ids (accelerators/tpch/common/postgres_tpch_table_ids.hpp):
 -- lineitem=1 orders=2 customer=3 part=4 partsupp=5 supplier=6 nation=7 region=8
 -- One statement-level trigger set per table. The id is the trigger argument.
 SELECT create_accel_mutation_triggers('lineitem', '1', 'accel_codegen_tpch');

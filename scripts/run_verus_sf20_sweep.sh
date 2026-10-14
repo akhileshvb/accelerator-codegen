@@ -12,7 +12,7 @@
 #   rf | rf_dim | txns  force one mode (txns: each query's own bench transactions)
 #
 # Each query runs on a fresh copy of the database (the runner modifies it), with
-# its kit's SF20 cost model (config/verus/qN_aux_cost_model_sf20.json, from
+# its kit's SF20 cost model (accelerators/tpch/qN/config/verus/qN_aux_cost_model_sf20.json, from
 # scripts/calibrate_verus_sf20_cost_models.sh) steering maintenance.
 #
 # Usage:
@@ -25,7 +25,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}"
 WORK="${WORK:-/flash1/akhilvb/tpch/work}"
-OUT="${OUT:-${ROOT}/benchmarks/verus/results/sf20_$(date +%Y%m%d_%H%M%S)}"
+OUT="${OUT:-${ROOT}/eval/bench/verus/results/sf20_$(date +%Y%m%d_%H%M%S)}"
 QUERIES="${QUERIES:-$(seq -s ' ' 1 22)}"
 REPS="${REPS:-3}"
 MIXES="${MIXES:-0.01,0.05,0.1}"

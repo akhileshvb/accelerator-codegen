@@ -66,7 +66,7 @@ LANGUAGE C;
 
 -- Per-query functions (accel_<bench>_qN, accel_<bench>_qN_aux, row types).
 -- Their CREATE FUNCTION text lives with each query, in
--- src/generated/<bench>/q<N>/postgres/extension/functions.cpp, and is
+-- accelerators/<bench>/q<N>/postgres/extension/functions.cpp, and is
 -- registered in the module by a static registrar; this script names no query.
 DROP FUNCTION IF EXISTS accel_postgres_register_queries() CASCADE;
 CREATE FUNCTION accel_postgres_register_queries()
