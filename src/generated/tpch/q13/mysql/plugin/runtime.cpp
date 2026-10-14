@@ -8,6 +8,7 @@
 
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q13/mysql/aux/module.hpp"
+#include "tpch/q13/cost_model.hpp"
 #include "tpch/q13/layout.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
@@ -59,7 +60,7 @@ Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Scan> &
 Q13Runtime() {
   static Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q13_COST_MODEL",
-              "config/q13_aux_cost_model.json",
+              core::kTpchQ13CostModel,
               core::TpchQ13Layout::kAccelerator, query::TpchQ13Config{mysql_tbl::kCustomer, mysql_tbl::kOrders});
   return runtime;
 }

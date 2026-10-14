@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
   };
   const std::vector<double> reads_per_write = {0.1, 1.0, 10.0};
   const auto params = core::LoadAuxCostModelJson(
-      accelerator_codegen::aux_state::harness::SharedCostModelConfigPath(entry.workload, q));
+      accelerator_codegen::aux_state::harness::SharedCostModelConfigPath(entry));
   const std::vector<mnt::MaintenanceAction> actions = {
       mnt::MaintenanceAction::ApplyDelta, mnt::MaintenanceAction::RebuildPartition,
       mnt::MaintenanceAction::RebuildAll};

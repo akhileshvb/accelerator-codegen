@@ -256,6 +256,7 @@ def transform_runtime() -> None:
     prefix = re.sub(r"extern \"C\" \{\n#include \"cstdio\".*?}\n\n", "", prefix, flags=re.S)
     prefix = prefix.replace("PostgresCostModelBasename", "MysqlCostModelBasename")
     prefix = prefix.replace("_aux_cost_model_postgres.json", "_aux_cost_model_mysql.json")
+    prefix = prefix.replace('lookup.engine = "postgres"', 'lookup.engine = "mysql"')
     prefix = prefix.replace("ACCELERATOR_CODEGEN_POSTGRES_", "ACCELERATOR_CODEGEN_MYSQL_")
     prefix = prefix.replace("engine-specific calibration when present.", "MySQL-specific calibration when present.")
 

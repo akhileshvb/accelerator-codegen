@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "accelerator_codegen/stateful/core/aux_cost_model_path.hpp"
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
 #include "duckdb.hpp"
 
@@ -62,6 +63,8 @@ struct SharedQueryCatalogEntry {
   using ProbeBuilder = std::function<SharedProbe(
       ::duckdb::MaterializedQueryResult &, ::duckdb::idx_t row)>;
   ProbeBuilder build_probe;
+  // Where the query keeps its maintenance cost models (<bench>/q<N>/cost_model.hpp).
+  core::AuxCostModelLocation cost_model;
 };
 
 // ---- the registry: each query's directory registers its entries ----

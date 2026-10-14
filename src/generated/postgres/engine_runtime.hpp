@@ -188,7 +188,7 @@ public:
     const char *column;
   };
 
-  Runtime(const char *cost_model_env, const char *default_config_path,
+  Runtime(const char *cost_model_env, core::AuxCostModelLocation cost_model,
           core::AcceleratorId accelerator, Config config,
           std::vector<CollationKey> c_collation_keys_p = {},
           bool tune_build_p = false)
@@ -204,9 +204,9 @@ public:
               return accelerator_codegen::aux_state::engine::postgres::
                   PinTokenForActiveSnapshot();
             },
-            [cost_model_env, default_config_path] {
+            [cost_model_env, cost_model] {
               return core::LoadAuxCostModelJson(
-                  ResolveCostModelPath(cost_model_env, default_config_path));
+                  ResolveCostModelPath(cost_model_env, cost_model));
             }),
         scan(), module(config, &scan), accelerator(std::move(accelerator)) {
     auto module_view = std::shared_ptr<Module>(&module, [](Module *) {});

@@ -3,6 +3,7 @@
 // table function accel_tpch_q4_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
 #include "tpch/q4/duckdb/aux/module.hpp"
+#include "tpch/q4/cost_model.hpp"
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
@@ -95,7 +96,8 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{4,
                               ::duckdb::Date::FromString("1993-07-01"))})}},
      2,
      false,
-     BuildTpchQ4Probe}};
+     BuildTpchQ4Probe,
+     core::kTpchQ4CostModel}};
 
 } // namespace q4_catalog
 } // namespace

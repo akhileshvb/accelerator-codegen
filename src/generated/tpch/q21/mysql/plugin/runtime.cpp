@@ -8,6 +8,7 @@
 
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q21/mysql/aux/module.hpp"
+#include "tpch/q21/cost_model.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
 namespace {
@@ -98,7 +99,7 @@ Runtime<query::TpchQ21Module, query::TpchQ21Config, TpchQ21Scan> &
 Q21Runtime() {
   static Runtime<query::TpchQ21Module, query::TpchQ21Config, TpchQ21Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q21_COST_MODEL",
-              "config/q21_aux_cost_model.json",
+              core::kTpchQ21CostModel,
               query::TpchQ21Layout::kAccelerator,
               query::TpchQ21Config{mysql_tbl::kSupplier, mysql_tbl::kOrders, mysql_tbl::kLineitem, mysql_tbl::kNation});
   return runtime;

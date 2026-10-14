@@ -65,76 +65,21 @@ namespace detail {
 
 namespace core = accelerator_codegen::aux_state::core;
 
-bool FileReadable(const std::string &path) {
-  std::ifstream input(path);
-  return input.good();
-}
-
-std::string Basename(const char *path) {
-  if (!path || !*path) {
-    return "";
-  }
-  const std::string text(path);
-  const auto slash = text.find_last_of('/');
-  return slash == std::string::npos ? text : text.substr(slash + 1);
-}
-
-std::string MysqlCostModelBasename(const std::string &basename) {
-  // q1_aux_cost_model.json -> q1_aux_cost_model_mysql.json
-  static constexpr char kSuffix[] = "_aux_cost_model.json";
-  const auto pos = basename.rfind(kSuffix);
-  if (pos == std::string::npos || pos + sizeof(kSuffix) - 1 != basename.size()) {
-    return "";
-  }
-  return basename.substr(0, pos) + "_aux_cost_model_mysql.json";
-}
-
 std::string ResolveCostModelPath(const char *env_name,
-                                 const char *default_relative_path) {
+                                 const core::AuxCostModelLocation &location) {
   if (const char *path = std::getenv(env_name); path && *path) {
     return path;
   }
-  if (!default_relative_path || !*default_relative_path) {
-    return "";
-  }
-  std::vector<std::string> candidates;
-  const std::string basename = Basename(default_relative_path);
-  const std::string pg_basename = MysqlCostModelBasename(basename);
-  auto PushPair = [&](const std::string &dir_prefix, const std::string &rel) {
-    if (!pg_basename.empty()) {
-      // Prefer MySQL-specific calibration when present.
-      if (!dir_prefix.empty()) {
-        candidates.push_back(dir_prefix + pg_basename);
-      } else if (rel.size() >= basename.size()) {
-        candidates.push_back(rel.substr(0, rel.size() - basename.size()) +
-                             pg_basename);
-      }
-    }
-    if (!dir_prefix.empty()) {
-      candidates.push_back(dir_prefix + basename);
-    } else {
-      candidates.push_back(rel);
-    }
-  };
+  core::AuxCostModelLookup lookup;
+  lookup.engine = "mysql";
   if (const char *config_dir = std::getenv("ACCELERATOR_CODEGEN_CONFIG_DIR");
       config_dir && *config_dir) {
-    const std::string prefix = std::string(config_dir) + "/";
-    PushPair(prefix, prefix + basename);
+    lookup.dirs_before.push_back(config_dir);
   }
-  PushPair("", default_relative_path);
-  PushPair("/accel-src/", std::string("/accel-src/") + default_relative_path);
-  PushPair("/accel-src/config/",
-           std::string("/accel-src/config/") + basename);
-  PushPair("/tmp/accel-codegen-src/",
-           std::string("/tmp/accel-codegen-src/") + default_relative_path);
-  for (const auto &candidate : candidates) {
-    if (FileReadable(candidate)) {
-      return candidate;
-    }
-  }
-  return "";
+  lookup.dirs_after = {"/accel-src", std::string("/accel-src/") + location.dir,
+                       "/tmp/accel-codegen-src"};
+  return core::ResolveAuxCostModelPath(location, lookup);
 }
-
 
 // ---- Exact value parsing -------------------------------------------------
 // Scan rows arrive as text; every Typed* accessor parses it exactly

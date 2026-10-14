@@ -8,6 +8,7 @@
 
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q10/mysql/aux/module.hpp"
+#include "tpch/q10/cost_model.hpp"
 #include "tpch/q10/layout.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
@@ -100,7 +101,7 @@ Runtime<query::TpchQ10Module, query::TpchQ10Config, TpchQ10Scan> &
 Q10Runtime() {
   static Runtime<query::TpchQ10Module, query::TpchQ10Config, TpchQ10Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q10_COST_MODEL",
-              "config/q10_aux_cost_model.json",
+              core::kTpchQ10CostModel,
               core::TpchQ10Layout::kAccelerator,
               query::TpchQ10Config{mysql_tbl::kCustomer, mysql_tbl::kNation, mysql_tbl::kOrders, mysql_tbl::kLineitem});
   return runtime;

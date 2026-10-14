@@ -4,6 +4,7 @@
 // Finalize headers pull in DuckDB types; include them before PostgreSQL
 // headers to avoid timestamp.h macro collisions.
 #include "tpch/q4/postgres/aux/module.hpp"
+#include "tpch/q4/cost_model.hpp"
 
 
 #include "tpch/postgres_tpch_table_ids.hpp"
@@ -62,7 +63,7 @@ public:
 Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Scan> &Q4Runtime() {
   static Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q4_COST_MODEL",
-              "config/q4_aux_cost_model.json", query::TpchQ4Layout::kAccelerator,
+              core::kTpchQ4CostModel, query::TpchQ4Layout::kAccelerator,
               query::TpchQ4Config{pg_tbl::kOrders, pg_tbl::kLineitem});
   return runtime;
 }

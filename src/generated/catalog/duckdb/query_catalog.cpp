@@ -161,7 +161,8 @@ const SharedQueryCatalogEntry *VerusKitCatalogEntry(const std::string &accelerat
   // Derive from another accelerator's entry for the query only when its
   // arguments are the glue's: the table function types each argument by the
   // entry (a C++ accelerator that derives a parameter itself takes fewer).
-  if (const auto *base = FindEntry(workload, glue->query_id)) {
+  const auto *base = FindEntry(workload, glue->query_id);
+  if (base) {
     bool same = base->benchmark_arguments.values.size() == glue->params.size();
     for (std::size_t i = 0; same && i < glue->params.size(); ++i)
       same = base->benchmark_arguments.values[i].type == KitArgType(glue->params[i]);
@@ -193,6 +194,9 @@ const SharedQueryCatalogEntry *VerusKitCatalogEntry(const std::string &accelerat
     e.duckdb_aux_sql = slot->aux_sql.c_str();
     for (const auto kind : glue->params)
       e.benchmark_arguments.values.push_back(core::AuxValue::Null(KitArgType(kind)));
+    // The query's cost models, where its registered entry keeps them (none: defaults).
+    if (base)
+      e.cost_model = base->cost_model;
   }
   return &slot->entry;
 }

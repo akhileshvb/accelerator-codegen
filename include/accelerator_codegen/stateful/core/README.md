@@ -18,7 +18,11 @@ counts how queries were answered (`aux_execute_stats.hpp`: hit, rebuilt on
 read, fallback); the fuzz harnesses report it.
 
 **Calibration** (`aux_calibration.hpp`, engine-agnostic): the policy reads
-`config/qN_aux_cost_model[_postgres|_mysql].json`. `CalibrateFromWrites`
+the query's cost model, `<stem>[_<engine>][_<scale>].json` in the directory
+the query declares (`<bench>/q<N>/cost_model.hpp`, today
+`config/qN_aux_cost_model*.json`), found by `ResolveAuxCostModelPath`
+(`aux_cost_model_path.hpp`); each engine runtime supplies its engine name,
+scale and extra directories. `CalibrateFromWrites`
 runs the module's `CalibrationWrites()` (real writes of increasing size and
 spread over its partitions, each with a revert and a control write on a
 column it does not read) through an engine's `CalibrationEngine` hook, with

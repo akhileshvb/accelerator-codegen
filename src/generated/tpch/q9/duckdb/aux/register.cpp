@@ -3,6 +3,7 @@
 // table function accel_tpch_q9_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
 #include "tpch/q9/duckdb/aux/module.hpp"
+#include "tpch/q9/cost_model.hpp"
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
@@ -87,7 +88,8 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{9,
      {{core::AuxValue::Of(core::AuxType::String, std::string{"green"})}},
      6,
      false,
-     BuildTpchQ9Probe}};
+     BuildTpchQ9Probe,
+     core::kTpchQ9CostModel}};
 
 } // namespace q9_catalog
 } // namespace

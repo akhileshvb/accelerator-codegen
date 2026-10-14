@@ -11,6 +11,7 @@
 #include "accelerator_codegen/stateful/prims/decimal_text.hpp"
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q19/mysql/aux/module.hpp"
+#include "tpch/q19/cost_model.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
 namespace {
@@ -116,7 +117,7 @@ Runtime<query::TpchQ19Module, query::TpchQ19Config, TpchQ19Scan> &
 Q19Runtime() {
   static Runtime<query::TpchQ19Module, query::TpchQ19Config, TpchQ19Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q19_COST_MODEL",
-              "config/q19_aux_cost_model.json",
+              core::kTpchQ19CostModel,
               query::TpchQ19Layout::kAccelerator,
               query::TpchQ19Config{mysql_tbl::kLineitem, mysql_tbl::kPart});
   return runtime;

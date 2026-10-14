@@ -6,6 +6,7 @@
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 #include "sec_edgar/q2/postgres/aux/module.hpp"
+#include "sec_edgar/q2/cost_model.hpp"
 
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
@@ -244,7 +245,7 @@ Runtime<query::SecEdgarQ2Module, query::SecEdgarQ2Config, SecEdgarQ2Scan> &Q2Run
   // The verified order is byte-wise on sub.name and num.tag.
   static Runtime<query::SecEdgarQ2Module, query::SecEdgarQ2Config, SecEdgarQ2Scan> runtime(
       "ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q2_COST_MODEL",
-      "config/sec_edgar_q2_aux_cost_model.json", core::SecEdgarQ2Layout::kAccelerator,
+      core::kSecEdgarQ2CostModel, core::SecEdgarQ2Layout::kAccelerator,
       query::SecEdgarQ2Config{kSecEdgarNum, kSecEdgarSub},
       {{"sub", "name"}, {"num", "tag"}});
   return runtime;

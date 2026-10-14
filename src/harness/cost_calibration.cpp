@@ -2,13 +2,13 @@
 #include "accelerator_codegen/harness/cost_calibration.hpp"
 
 #include <cstdlib>
-#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
+#include "accelerator_codegen/stateful/core/aux_cost_model_path.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
 
 namespace accelerator_codegen::aux_state::harness {
@@ -51,38 +51,30 @@ core::MutationBatch ScaleMutation(const SharedQueryCatalogEntry &entry,
 
 } // namespace
 
-std::string SharedCostModelConfigPath(SharedWorkloadKind workload, int query_id) {
+std::string SharedCostModelConfigPath(const SharedQueryCatalogEntry &entry) {
   const char *override_path =
       std::getenv("ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL");
   if (override_path && *override_path) {
     return override_path;
   }
-  // ACCEL_AUX_BENCH_DB_LABEL=tpch_sf<X>: the models calibrated at that scale, q<N>_aux_cost_model_sf<X>.json, when
-  // they exist; otherwise the default q<N>_aux_cost_model.json
+  core::AuxCostModelLookup lookup;
+  // ACCEL_AUX_BENCH_DB_LABEL=<workload>_sf<X> (e.g. tpch_sf20): the models
+  // calibrated at that scale, <stem>_sf<X>.json, when they exist; otherwise
+  // the default <stem>.json
   const char *db_label = std::getenv("ACCEL_AUX_BENCH_DB_LABEL");
   const std::string label = db_label ? db_label : "";
-  const std::string scale = label.rfind("tpch_sf", 0) == 0 && label.size() > 7 ? label.substr(5) : "";
-  if (workload == SharedWorkloadKind::Tpch) {
-    // ACCEL_AUX_COST_MODEL_DIR: a directory of per-query models (e.g. config/verus for the Verus kits), searched
-    // first with the same names; a query it has no model for falls back to config/
-    if (const char *dir = std::getenv("ACCEL_AUX_COST_MODEL_DIR"); dir && *dir) {
-      const auto stem = std::string(dir) + "/q" + std::to_string(query_id) + "_aux_cost_model";
-      if (!scale.empty() && std::filesystem::exists(stem + "_" + scale + ".json")) {
-        return stem + "_" + scale + ".json";
-      }
-      if (std::filesystem::exists(stem + ".json")) {
-        return stem + ".json";
-      }
-    }
-    if (!scale.empty()) {
-      const auto scaled = "config/q" + std::to_string(query_id) + "_aux_cost_model_" + scale + ".json";
-      if (std::filesystem::exists(scaled)) {
-        return scaled;
-      }
-    }
-    return "config/q" + std::to_string(query_id) + "_aux_cost_model.json";
+  const std::string prefix = std::string(entry.workload_name ? entry.workload_name : "") + "_";
+  if (prefix.size() > 1 && label.rfind(prefix + "sf", 0) == 0 && label.size() > prefix.size() + 2) {
+    lookup.scale = label.substr(prefix.size());
   }
-  return "config/sec_edgar_q" + std::to_string(query_id) + "_aux_cost_model.json";
+  // ACCEL_AUX_COST_MODEL_DIR: a directory of models with the same names (e.g.
+  // config/verus for the Verus kits), searched first; a query it has no model
+  // for falls back to its own directory
+  if (const char *dir = std::getenv("ACCEL_AUX_COST_MODEL_DIR"); dir && *dir) {
+    lookup.dirs_before.push_back(dir);
+  }
+  lookup.default_when_missing = true;
+  return core::ResolveAuxCostModelPath(entry.cost_model, lookup);
 }
 
 core::AuxCalibrationResult CalibrateSharedQueryCostModel(
@@ -94,7 +86,7 @@ core::AuxCalibrationResult CalibrateSharedQueryCostModel(
     // Read side measured directly; maintenance from real captured writes
     // (core::CalibrateFromWrites).
     core::AuxCalibrationResult result;
-    result.params = core::LoadAuxCostModelJson(SharedCostModelConfigPath(entry.workload, entry.query_id));
+    result.params = core::LoadAuxCostModelJson(SharedCostModelConfigPath(entry));
     const auto warmups = config.warmup_samples, samples = config.measurement_samples;
     result.params.first_query_blocking_us = core::MedianTimeUs(
         [&] { runtime.Build(); }, warmups, samples, [&] { runtime.ResetCalibrationState(); });

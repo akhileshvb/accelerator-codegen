@@ -11,7 +11,11 @@ namespace accelerator_codegen::aux_state::harness {
 
 namespace aux_engine = ::accelerator_codegen::aux_state::engine;
 
-std::string SharedCostModelConfigPath(aux_engine::SharedWorkloadKind workload, int query_id);
+// The cost model the DuckDB runtime loads for `entry`, from the query's
+// location (entry.cost_model): ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL when
+// set; else the scale's or the default model, ACCEL_AUX_COST_MODEL_DIR first;
+// else the query's default path.
+std::string SharedCostModelConfigPath(const aux_engine::SharedQueryCatalogEntry &entry);
 
 core::AuxCalibrationResult CalibrateSharedQueryCostModel(
     duckdb::Connection &connection, const aux_engine::SharedQueryCatalogEntry &entry,

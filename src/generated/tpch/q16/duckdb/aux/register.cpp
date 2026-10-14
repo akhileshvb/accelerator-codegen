@@ -3,6 +3,7 @@
 // table function accel_tpch_q16_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
 #include "tpch/q16/duckdb/aux/module.hpp"
+#include "tpch/q16/cost_model.hpp"
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
@@ -97,7 +98,8 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{16,
        core::AuxValue::Of(core::AuxType::Int64, int64_t{33})}},
      3,
      false,
-     BuildTpchQ16Probe}};
+     BuildTpchQ16Probe,
+     core::kTpchQ16CostModel}};
 
 } // namespace q16_catalog
 } // namespace

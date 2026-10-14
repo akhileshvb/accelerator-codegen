@@ -131,7 +131,7 @@ public:
             [] { return core::VisibilityToken{}; },
             [] {
               return core::LoadAuxCostModelJson(harness::SharedCostModelConfigPath(
-                  engine::SharedWorkloadKind::SecEdgar, 6));
+                  engine::LookupSharedQuery(engine::SharedWorkloadKind::SecEdgar, 6)));
             },
             [] { return 10.0; }),
         scan_(connection), log_(std::make_shared<ActionLog>()) {

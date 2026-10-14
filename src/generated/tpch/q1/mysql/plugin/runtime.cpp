@@ -11,6 +11,7 @@
 #include "accelerator_codegen/stateful/prims/decimal_text.hpp"
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q1/mysql/aux/module.hpp"
+#include "tpch/q1/cost_model.hpp"
 #include "tpch/q1/layout.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
@@ -89,7 +90,7 @@ public:
 Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Scan> &Q1Runtime() {
   static Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q1_COST_MODEL",
-              "config/q1_aux_cost_model.json",
+              core::kTpchQ1CostModel,
               core::TpchQ1Layout::kAccelerator, query::TpchQ1Config{mysql_tbl::kLineitem});
   return runtime;
 }

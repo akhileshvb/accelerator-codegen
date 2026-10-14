@@ -11,6 +11,7 @@
 #include "accelerator_codegen/stateful/prims/decimal_text.hpp"
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q6/mysql/aux/module.hpp"
+#include "tpch/q6/cost_model.hpp"
 #include "tpch/q6/layout.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
@@ -78,7 +79,7 @@ public:
 Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan> &Q6Runtime() {
   static Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q6_COST_MODEL",
-              "config/q6_aux_cost_model.json",
+              core::kTpchQ6CostModel,
               core::TpchQ6Layout::kAccelerator, query::TpchQ6Config{mysql_tbl::kLineitem});
   return runtime;
 }
