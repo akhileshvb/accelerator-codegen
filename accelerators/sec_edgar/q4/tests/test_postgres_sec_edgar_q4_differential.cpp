@@ -115,7 +115,7 @@ void ReplaceOnce(std::string &sql, const std::string &from, const std::string &t
 
 // q4.sql with a total order (deterministic LIMIT 500) and the parameters inlined.
 std::string ReferenceSql(const q4gen::Params &params = q4gen::Params{}) {
-  std::string sql = ReadFile(std::string(ACCEL_SRC_DIR) + "/benchmarks/sec_edgar/queries/q4.sql");
+  std::string sql = ReadFile(std::string(ACCEL_SRC_DIR) + "/workloads/sec_edgar/q4.sql");
   const std::string from = "ORDER BY total_value DESC";
   const auto pos = sql.rfind(from);
   Require(pos != std::string::npos, "q4.sql: ORDER BY not found");

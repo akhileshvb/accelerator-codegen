@@ -300,7 +300,7 @@ def load_schema_and_data(admin, db, gen):
     admin.run("DROP DATABASE IF EXISTS %s" % db)
     admin.run("CREATE DATABASE %s" % db)
     s = Session(db, "setup")
-    with open(os.path.join(ROOT, "benchmarks", "sec_edgar", "schema.sql")) as f:
+    with open(os.path.join(ROOT, "workloads", "sec_edgar", "schema.sql")) as f:
         schema = f.read().replace("DOUBLE,", "DOUBLE PRECISION,")
     s.run(schema)
     s.run("INSERT INTO sub(adsh) VALUES " + ",".join("(%s)" % lit(a) for a in ADSH))

@@ -17,7 +17,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[3]
 RESULTS = Path(__file__).resolve().parent / "results"
-TPCH_RESULTS = ROOT / "benchmarks" / "tpch" / "results"
+TPCH_RESULTS = ROOT / "eval" / "bench" / "tpch" / "results"
 TPCH_AUX_QUERIES = (1, 3, 6, 9, 10, 11, 12, 14, 17, 18, 21)
 
 SF20_AUX_HEADER = (

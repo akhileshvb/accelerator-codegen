@@ -53,7 +53,7 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HERE = os.path.join(ROOT, "benchmarks", "compare")
+HERE = os.path.join(ROOT, "eval", "compare")
 # verus: the one Verus world store for every accelerator; verus_kit: the same
 # kits, each on its own Verus store (the control for the global store's cost);
 # verus_cpp: the same kits on the C++ store protocol (one lock per accelerator)
@@ -598,7 +598,7 @@ def main():
         p = sub.add_parser(mode)
         p.add_argument("--db", default=os.environ.get("DB", os.path.join(ROOT, "..", "accelerator-codegen-duckdb", "tpch_sf20.duckdb")))
         p.add_argument("--work", default=os.environ.get("WORK", "/flash1/akhilvb/tpch/work"))
-        p.add_argument("--out", default=os.path.join(ROOT, "benchmarks", "compare", "results",
+        p.add_argument("--out", default=os.path.join(ROOT, "eval", "compare", "results",
                                                      f"{mode}_{time.strftime('%Y%m%d_%H%M%S')}"))
         p.add_argument("--bin", default=os.path.join(ROOT, "build-verus-duckdb", "aux_compare"))
         p.add_argument("--queries", default=" ".join(map(str, range(1, 23))))
