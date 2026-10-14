@@ -33,7 +33,6 @@ namespace accelerator_codegen::aux_state::engine::postgres {
 // Executor variants.
 inline constexpr const char *kPostgresVariantAux = "aux";
 inline constexpr const char *kPostgresVariantBase = "base";
-inline constexpr const char *kPostgresVariantAuxVerus = "aux_verus";
 
 // An executor: decodes the SQL function arguments from fcinfo and writes its
 // result rows into the function's materialized result set.
