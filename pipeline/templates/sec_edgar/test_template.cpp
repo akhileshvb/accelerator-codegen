@@ -12,7 +12,7 @@
 namespace {
 
 constexpr const char *kDefaultDb = "/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb";
-constexpr const char *kReferenceSqlPath = "eval/bench/sec_edgar/queries/q{{query_number}}.sql";
+constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q{{query_number}}.sql";
 
 } // namespace
 

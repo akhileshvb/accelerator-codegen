@@ -15,7 +15,7 @@ reference_accelerators: []
 allow_poor_fitness: false
 allow_unsuccessful_design: false
 
-reference_sql_path: eval/bench/sec_edgar/queries/q24.sql
+reference_sql_path: workloads/sec_edgar/q24.sql
 
 parameters:   # spec: eval/bench/sec_edgar/params/q24.json (zero-arg function = defaults)
   - {name: year, type: BIGINT, default: 2023, domain: [2019, 2020, 2021, 2022, 2023, 2024]}

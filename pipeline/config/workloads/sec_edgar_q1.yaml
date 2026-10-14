@@ -2,7 +2,7 @@ benchmark_name: sec_edgar
 query_number: 1
 engine_name: duckdb
 query_id: "1"
-reference_sql_path: eval/bench/sec_edgar/queries/q1.sql
+reference_sql_path: workloads/sec_edgar/q1.sql
 parameters: []
 output_schema:
   - {name: stmt, type: VARCHAR}

@@ -17,7 +17,7 @@ reference_accelerators: []
 allow_poor_fitness: false
 allow_unsuccessful_design: false
 
-reference_sql_path: eval/bench/sec_edgar/queries/q0.sql
+reference_sql_path: workloads/sec_edgar/q0.sql
 
 parameters: []
 dependent_tables: []

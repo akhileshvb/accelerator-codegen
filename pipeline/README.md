@@ -287,7 +287,7 @@ python -m accel_pipeline.run_pipeline --query 24 --workload sec_edgar_q24 --dry-
 - Gates: `correctness`, `baseline`, `profile`, `fairness` (no `sf10` — single scale factor)
 - Gates run automatically after each stage. **Implementation** and **each optimization iteration** require passing: `correctness` → `baseline` → `profile`. Failures abort the pipeline.
 - After gates, `optimization_feedback.md` is written for the next optimization iteration (dominant phase, gaps vs DuckDB, suggested fixes).
-- Query SQL: `eval/bench/sec_edgar/queries/q{N}.sql`
+- Query SQL: `workloads/sec_edgar/q{N}.sql`
 
 Tests: `pytest tests/test_benchmark_pack.py`
 

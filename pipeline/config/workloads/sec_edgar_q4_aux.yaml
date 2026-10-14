@@ -15,7 +15,7 @@ reference_accelerators: []
 allow_poor_fitness: false
 allow_unsuccessful_design: false
 
-reference_sql_path: eval/bench/sec_edgar/queries/q4.sql
+reference_sql_path: workloads/sec_edgar/q4.sql
 
 parameters:   # spec: eval/bench/sec_edgar/params/q4.json (zero-arg function = defaults)
   - {name: sic_lo, type: INTEGER, default: 4000, domain: "see joint_domain in the json spec"}
