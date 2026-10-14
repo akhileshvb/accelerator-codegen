@@ -3,6 +3,9 @@
 #
 # This file grows with each engine_backend layer. Early layers only need
 # the shared library; later layers add plugin sources here.
+option(ACCEL_MYSQL_TEST_UDFS
+       "Build the gate-test MySQL plugin variant (adds backends/mysql/tests/mysql_bridge_test_udfs.cpp)" OFF)
+
 function(accel_build_mysql_plugin)
   set(_mysql_plugin_sources "")
 
@@ -25,6 +28,18 @@ function(accel_build_mysql_plugin)
   # Per-query plugin code (scans, runtimes, UDF shims): every query registers
   # itself through the backend registries (backends/mysql/api/runtime.hpp), so
   # the backend builds with or without any of these directories.
+  # Test plugin variant: adds the gate-test UDFs (toy txn bridge, mutation
+  # inspection, scan / runtime drivers that create and seed toy tables). The
+  # same plugin file name and audit plugin are kept so the layer harnesses
+  # load it exactly like the production plugin; only the gates build it
+  # (scripts/build_accel_mysql_plugin.sh with ACCEL_MYSQL_PLUGIN_VARIANT=test).
+  if(ACCEL_MYSQL_TEST_UDFS)
+    list(APPEND _mysql_plugin_sources backends/mysql/tests/mysql_bridge_test_udfs.cpp)
+    message(STATUS "accel: MySQL plugin variant = test (gate-test UDFs included)")
+  else()
+    message(STATUS "accel: MySQL plugin variant = production")
+  endif()
+
   file(GLOB _mysql_query_plugin_sources CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/*/q*/mysql/plugin/*.cpp")
   list(SORT _mysql_query_plugin_sources)

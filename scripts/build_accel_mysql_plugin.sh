@@ -2,6 +2,18 @@
 # Build accelerator_codegen (+ optional MySQL plugin / layer harnesses) inside accel_mysql_test.
 # From-scratch friendly: missing adapter TUs skip the plugin copy; ninja targets are optional
 # unless ACCEL_MYSQL_NINJA_TARGETS is set (layer gates set this).
+#
+# ACCEL_MYSQL_PLUGIN_VARIANT (or --variant=prod|test, --test) selects the plugin
+# that is built and installed:
+#   prod (default) — the plugin experiments use: audit hook, mutation capture,
+#                    query UDFs. No gate-test UDFs.
+#   test           — prod + the gate-test UDFs (backends/mysql/tests/
+#                    mysql_bridge_test_udfs.cpp: toy txn bridge, mutation
+#                    inspection, scan / runtime drivers that create toy tables).
+#                    The engine_backend layer gates need this variant.
+# Both install as accelerator_codegen_mysql.so (one audit plugin per server);
+# the installed variant is recorded in <plugin dir>/accelerator_codegen_mysql.variant.
+# ACCEL_MYSQL_BUILD_JOBS: ninja parallelism (default: nproc in the container).
 set -euo pipefail
 
 NAME="${ACCEL_MYSQL_CONTAINER:-accel_mysql_test}"
@@ -22,16 +34,36 @@ EXTRA_TARGETS="${EXTRA_TARGETS//,/ }"
 
 ENGINE_FLAG="${ACCEL_CODEGEN_ENGINE:-${ACCEL_WORKLOAD_ENGINE_NAME:-mysql}}"
 
+VARIANT="${ACCEL_MYSQL_PLUGIN_VARIANT:-prod}"
+for arg in "$@"; do
+  case "${arg}" in
+    --variant=*) VARIANT="${arg#--variant=}" ;;
+    --test) VARIANT=test ;;
+    --prod) VARIANT=prod ;;
+    *) echo "unknown argument: ${arg} (expected --variant=prod|test, --test, --prod)" >&2; exit 1 ;;
+  esac
+done
+case "${VARIANT}" in
+  prod) TEST_UDFS=OFF ;;
+  test) TEST_UDFS=ON ;;
+  *) echo "ACCEL_MYSQL_PLUGIN_VARIANT must be prod or test (got '${VARIANT}')" >&2; exit 1 ;;
+esac
+JOBS="${ACCEL_MYSQL_BUILD_JOBS:-}"
+
 docker exec \
   -e ACCEL_MYSQL_NINJA_TARGETS="${EXTRA_TARGETS}" \
   -e ACCEL_MYSQL_REQUIRE_NINJA_TARGETS="${REQUIRE_TARGETS}" \
   -e ACCEL_CODEGEN_ENGINE="${ENGINE_FLAG}" \
   -e ACCEL_MYSQL_DOCKER=1 \
+  -e ACCEL_MYSQL_PLUGIN_VARIANT="${VARIANT}" \
+  -e ACCEL_MYSQL_TEST_UDFS="${TEST_UDFS}" \
+  -e ACCEL_MYSQL_BUILD_JOBS="${JOBS}" \
   "$NAME" bash -lc '
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export ACCEL_MYSQL_DOCKER=1
 export ACCEL_CODEGEN_ENGINE="${ACCEL_CODEGEN_ENGINE:-mysql}"
+JOBS="${ACCEL_MYSQL_BUILD_JOBS:-$(nproc)}"
 
 # Ensure ninja is available (downloads prebuilt if package mgr lacks it)
 _ensure_ninja() {
@@ -119,7 +151,7 @@ if [[ ! -f /accel-build/duckdb/src/libduckdb.so ]]; then
   mkdir -p /accel-build/duckdb
   cd /accel-build/duckdb
   cmake /accel-duckdb -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=tpch
-  ninja -j"$(nproc)"
+  ninja -j"${JOBS}"
 fi
 rm -rf /accel-build/duckdb-sibling
 mkdir -p /accel-build/duckdb-sibling/build/release
@@ -135,16 +167,17 @@ cmake /accel-src -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DACCEL_CODEGEN_ENGINE="${ACCEL_CODEGEN_ENGINE}" \
   -DACCEL_CALIBRATE_AT_BUILD=OFF \
   -DACCEL_ENABLE_PARALLEL_TPCH=OFF \
-  -DACCEL_ENABLE_PARALLEL_AUX=OFF
+  -DACCEL_ENABLE_PARALLEL_AUX=OFF \
+  -DACCEL_MYSQL_TEST_UDFS="${ACCEL_MYSQL_TEST_UDFS}"
 
-ninja accelerator_codegen -j"$(nproc)"
+ninja accelerator_codegen -j"${JOBS}"
 if ninja -t query accelerator_codegen_mysql >/dev/null 2>&1; then
-  ninja accelerator_codegen_mysql -j"$(nproc)"
+  ninja accelerator_codegen_mysql -j"${JOBS}"
 fi
 
 for t in ${ACCEL_MYSQL_NINJA_TARGETS:-}; do
   if ninja -t query "${t}" >/dev/null 2>&1; then
-    ninja "${t}" -j"$(nproc)"
+    ninja "${t}" -j"${JOBS}"
   else
     if [[ "${ACCEL_MYSQL_REQUIRE_NINJA_TARGETS:-0}" == "1" ]]; then
       echo "required ninja target missing: ${t}" >&2
@@ -166,11 +199,12 @@ if [[ -n "${PLUGIN_DIR}" && -f accelerator_codegen_mysql.so ]]; then
   # old plugin mapped, and overwriting a mapped .so crashes mysqld on shutdown.
   install_atomic() { cp -f "$1" "${PLUGIN_DIR}/.$(basename "$1").new" && mv -f "${PLUGIN_DIR}/.$(basename "$1").new" "${PLUGIN_DIR}/$(basename "$1")"; }
   install_atomic accelerator_codegen_mysql.so
+  echo "${ACCEL_MYSQL_PLUGIN_VARIANT}" > "${PLUGIN_DIR}/accelerator_codegen_mysql.variant"
   install_atomic libaccelerator_codegen.so || true
   if [[ -f /accel-build/duckdb/src/libduckdb.so ]]; then
     install_atomic /accel-build/duckdb/src/libduckdb.so || true
   fi
-  echo "installed accelerator_codegen_mysql.so into ${PLUGIN_DIR}"
+  echo "installed accelerator_codegen_mysql.so (variant=${ACCEL_MYSQL_PLUGIN_VARIANT}) into ${PLUGIN_DIR}"
 else
   echo "plugin .so not built yet (ok for early engine_backend layers)"
 fi
@@ -190,7 +224,13 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
       # plugin is already loaded, so it is skipped. Disable: ACCEL_MYSQL_REGISTER_UDFS=0.
       if [[ "${ACCEL_MYSQL_REGISTER_UDFS:-1}" == "1" ]]; then
         DB="${TPCH_MYSQL_DB:-accel_mysql_test}"
-        "$ROOT/scripts/mysql_register_functions.sh" | grep -v '^INSTALL' | \
+        # Test variant: also the gate-test UDFs; prod: drop any left over.
+        if [[ "${VARIANT}" == "test" ]]; then
+          TEST_SQL="$ROOT/scripts/mysql_register_test_udfs.sql"
+        else
+          TEST_SQL="$ROOT/scripts/mysql_unregister_test_udfs.sql"
+        fi
+        { "$ROOT/scripts/mysql_register_functions.sh"; cat "${TEST_SQL}"; } | grep -v '^INSTALL' | \
           docker exec -i "$NAME" mysql -h 127.0.0.1 -P 3306 -uroot -p"${PASSWORD}" "${DB}" \
           || echo "warning: UDF registration reported errors (continuing)" >&2
       fi
