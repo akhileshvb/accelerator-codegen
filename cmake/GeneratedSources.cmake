@@ -83,11 +83,11 @@ function(accel_collect_runtime_sources OUT_VAR)
                 src/runtime/duckdb/query_runtime.cpp
                 src/runtime/duckdb/register.cpp
                 src/runtime/duckdb/duckdb_runtime.cpp
-                src/runtime/duckdb/tpch_rf.cpp
                 src/runtime/catalog/shared_query_engine.cpp
                 src/harness/differential.cpp
                 src/harness/cost_calibration.cpp
                 src/harness/aux_state_footprint.cpp
+                src/harness/tpch_rf.cpp
             )
             if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/catalog/duckdb/query_catalog.cpp")
                 list(APPEND _sources src/generated/catalog/duckdb/query_catalog.cpp)

@@ -39,7 +39,7 @@ using CaptureTableList = std::vector<std::pair<std::string, core::TableId>>;
 struct AuxQuery {
   // The catalog entry's accelerator id (FindSharedQueryByAccelerator).
   std::string accelerator_id;
-  // The SQL table function serving it, e.g. accel_tpch_q1_aux.
+  // The SQL table function serving it, e.g. accel_<bench>_q<N>_aux.
   std::string table_function;
   std::vector<::duckdb::LogicalType> argument_types;
   std::function<std::unique_ptr<DuckdbRuntime::Binding>(::duckdb::Connection &)> make_binding;

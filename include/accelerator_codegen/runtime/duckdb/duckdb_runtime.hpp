@@ -73,11 +73,6 @@ public:
   // every changed row as that one batch (write-frequency benches).
   void ApplyBatchWrite(const std::string &sql, const core::MutationBatch &mutation);
 
-  // Mini-chunk TPC-H RF1/RF2 (orders+lineitem insert/delete). Alternating
-  // chunks keep DBs from unbounded growth while exercising I/D maintenance.
-  // Point-update Apply(SharedProbe) remains the default sweep write path.
-  void ApplyRfChunk(int write_seq, int order_count = 1);
-
   void SetExpectedQueriesBeforeNextWrite(double expected_queries_before_write);
   double ExpectedQueriesBeforeNextWrite() const;
 
@@ -110,6 +105,10 @@ public:
   // projected as the module's dependencies declare. Use with BeginWrite /
   // CommitWrite / RollbackWrite.
   void EnableMutationCapture();
+  // Stops the capture (e.g. before hand-built writes, Apply, that deliver
+  // their own mutation and must not be captured twice).
+  void DisableMutationCapture();
+  bool MutationCaptureEnabled() const { return capture_enabled_; }
   void BeginWrite();
   // PRE_COMMIT, the engine commit, then COMMIT of the coordinator, with the
   // aux epochs of DuckDB's snapshot order: pending from the writer's start
@@ -158,7 +157,6 @@ public:
   void OnCapturedEvent(const CapturedEvent &event);
 
 private:
-  void DisableMutationCapture();
   // The store the backend uses: verus_store_ if set, else state_store_.
   core::AuxStateStore &ActiveStore();
 

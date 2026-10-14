@@ -1,8 +1,8 @@
 #include "aux_benchmark_sweep_session.hpp"
 
+#include "accelerator_codegen/harness/tpch_rf.hpp"
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
-#include "accelerator_codegen/runtime/duckdb/tpch_rf.hpp"
 #include "aux_benchmark_diagnostics.hpp"
 #include "catalog/query_catalog.hpp"
 #include "tpch_arg_variants.hpp"
@@ -216,10 +216,12 @@ int RfChunkOrderCount() {
   return std::max(1, std::stoi(value));
 }
 
-double TimeAccelRfWriteCommitUs(DuckdbRuntime &runtime, int write_seq,
-                                int order_count) {
+double TimeAccelRfWriteCommitUs(DuckdbRuntime &runtime,
+                                duckdb::Connection &accel_connection,
+                                int write_seq, int order_count) {
   const auto start = Clock::now();
-  runtime.ApplyRfChunk(write_seq, order_count);
+  accelerator_codegen::aux_state::harness::ApplyTpchRfChunk(
+      accel_connection, runtime, write_seq, order_count);
   return ElapsedUs(start, Clock::now());
 }
 
@@ -387,7 +389,7 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
                   << " elapsed_sec=" << elapsed_sec() << '\n'
                   << std::flush;
         write_samples.push_back(
-            TimeAccelRfWriteCommitUs(runtime, write_seq++, rf_chunk_orders));
+            TimeAccelRfWriteCommitUs(runtime, accel_connection, write_seq++, rf_chunk_orders));
         std::cerr << "tpch_aux_bench: RF write end seq=" << (write_seq - 1)
                   << " write_sec="
                   << std::chrono::duration<double>(Clock::now() - write_start)
@@ -446,7 +448,7 @@ WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime,
     if (ShouldWriteAtQueryIndex(query_index, write_frequency_pct)) {
       if (write_mode == WriteMode::Rf) {
         write_samples.push_back(
-            TimeAccelRfWriteCommitUs(runtime, write_seq, rf_chunk_orders));
+            TimeAccelRfWriteCommitUs(runtime, accel_connection, write_seq, rf_chunk_orders));
       } else {
         auto probe = PickWriteProbe(probes, write_seq);
         write_samples.push_back(TimeAccelWriteCommitUs(runtime, probe));

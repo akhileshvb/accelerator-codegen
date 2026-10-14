@@ -17,8 +17,8 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection);
 // factory with a static registrar, e.g. in
 // src/generated/<bench>/q<N>/duckdb/base/single-threaded/register.cpp:
 //
-//   duckdb::TableFunctionSet CreateTpchQ6FunctionSet();
-//   static const BaseFunctionSetRegistrar kRegistrar{&CreateTpchQ6FunctionSet};
+//   duckdb::TableFunctionSet CreateQueryFunctionSet();
+//   static const BaseFunctionSetRegistrar kRegistrar{&CreateQueryFunctionSet};
 using TableFunctionSetFactory = duckdb::TableFunctionSet (*)();
 void RegisterBaseFunctionSet(TableFunctionSetFactory factory);
 struct BaseFunctionSetRegistrar {

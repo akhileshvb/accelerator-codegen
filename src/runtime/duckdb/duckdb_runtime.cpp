@@ -1,6 +1,5 @@
 // GENERATED BACKEND
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
-#include "accelerator_codegen/runtime/duckdb/tpch_rf.hpp"
 #include "accelerator_codegen/verus/verus_kit.hpp"
 #include "accelerator_codegen/runtime/catalog/shared_query_engine.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -1646,52 +1645,6 @@ void DuckdbRuntime::ApplyBatchWrite(const std::string &sql,
     backend_.CaptureMutation(mutation);
     CommitWrite();
   });
-}
-
-void DuckdbRuntime::ApplyRfChunk(int write_seq, int order_count) {
-  if (entry_.workload != SharedWorkloadKind::Tpch) {
-    throw std::runtime_error("ApplyRfChunk is only supported for TPC-H");
-  }
-  // A Verus kit's capture maps the SQL's own mutations to its tables by name
-  // (the hand-built batches below carry the C++ bindings' table ids and
-  // column layouts): run the chunk as SQL through the captured write path.
-  // Likewise a C++ accelerator the hand-built batches do not cover (no case in
-  // TpchRfTableIdsForQuery): its module receives the SQL's real mutations,
-  // projected as it declares, instead of none at all.
-  const auto rf_ids = TpchRfTableIdsForQuery(entry_.query_id);
-  if (verus_kit::Find(entry_.accelerator_id) ||
-      (!rf_ids.watches_orders && !rf_ids.watches_lineitem && entry_.query_id != 11)) {
-    // capture on for this chunk only: the hand-built probe writes (Apply)
-    // deliver their own mutation and must not be captured twice
-    const bool was_capturing = capture_enabled_;
-    EnableMutationCapture();
-    try {
-      ApplyWrite(TpchRfChunkStatements(connection_, NextTpchRfChunkPlan(write_seq, order_count, connection_)));
-    } catch (...) {
-      if (!was_capturing)
-        DisableMutationCapture();
-      throw;
-    }
-    if (!was_capturing)
-      DisableMutationCapture();
-    return;
-  }
-  // Q11 does not watch orders/lineitem; RF would mutate the DB without
-  // invalidating aux. Skip capture (and SQL) so RF sweeps stay meaningful.
-  if (entry_.query_id == 11) {
-    return;
-  }
-  connection_.BeginTransaction();
-  const auto plan =
-      NextTpchRfChunkPlan(write_seq, order_count, connection_);
-  const auto applied =
-      ApplyTpchRfChunkSql(connection_, entry_.query_id, plan);
-  for (const auto &mutation : applied.mutations) {
-    if (!mutation.old_rows.empty() || !mutation.new_rows.empty()) {
-      backend_.CaptureMutation(mutation);
-    }
-  }
-  CommitWrite();
 }
 
 void DuckdbRuntime::ResetCalibrationState() {

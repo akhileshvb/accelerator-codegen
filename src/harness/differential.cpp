@@ -13,6 +13,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "accelerator_codegen/harness/tpch_rf.hpp"
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
@@ -317,7 +318,7 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
   // Apply RF chunks (escalating size) until DuckDB's answer moves when possible.
   constexpr int kMaxAttempts = 8;
   for (int attempt = 0; attempt < kMaxAttempts && !changed; ++attempt) {
-    runtime.ApplyRfChunk(seq++, orders);
+    ApplyTpchRfChunk(connection, runtime, seq++, orders);
     try {
       RequireSharedMatchesBase(connection, runtime, entry);
     } catch (const std::exception &ex) {
@@ -348,7 +349,7 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
 
   // Additional RF chunks (if requested) must stay correct after invalidation.
   while (seq < num_chunks) {
-    runtime.ApplyRfChunk(seq++, order_count);
+    ApplyTpchRfChunk(connection, runtime, seq++, order_count);
     try {
       RequireSharedMatchesBase(connection, runtime, entry);
     } catch (const std::exception &ex) {

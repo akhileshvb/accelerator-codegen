@@ -7,9 +7,9 @@
 //   ACCEL_RF_COMPARE_KINDS  rf2,rf1 or both (default rf2,rf1)
 // Official RF is ~0.1% of SF orders (SF20 ≈ 30k orders).
 
+#include "accelerator_codegen/harness/tpch_rf.hpp"
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
-#include "accelerator_codegen/runtime/duckdb/tpch_rf.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <chrono>
@@ -155,7 +155,7 @@ int main() {
         const int delta_seq = next_seq_for_kind(write_seq, kind);
         SetForceAction("ApplyDelta");
         t0 = Clock::now();
-        runtime.ApplyRfChunk(delta_seq, order_count);
+        accelerator_codegen::aux_state::harness::ApplyTpchRfChunk(conn, runtime, delta_seq, order_count);
         const double delta_ms = MsSince(t0);
         const auto delta_valid =
             runtime.StoreDiagnosticsSnapshot().valid_partitions;
@@ -169,7 +169,7 @@ int main() {
         const int rebuild_seq = next_seq_for_kind(write_seq, kind);
         SetForceAction("RebuildAll");
         t0 = Clock::now();
-        runtime.ApplyRfChunk(rebuild_seq, order_count);
+        accelerator_codegen::aux_state::harness::ApplyTpchRfChunk(conn, runtime, rebuild_seq, order_count);
         const double rf_invalidate_ms = MsSince(t0);
         const auto after_inv =
             runtime.StoreDiagnosticsSnapshot().valid_partitions;
