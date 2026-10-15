@@ -128,8 +128,9 @@ struct ThreadBudget::Impl {
   }
 
   // Takes up to `wanted` extra slots from the budget (and the token source).
+  // None once shutting down: callers then run their tasks themselves.
   std::size_t GrantExtra(std::size_t wanted) { // mutex held
-    const std::size_t free_slots = budget > in_use ? budget - in_use : 0;
+    const std::size_t free_slots = !shutdown && budget > in_use ? budget - in_use : 0;
     std::size_t granted = std::min(wanted, free_slots);
     if (granted > 0 && tokens) {
       granted = tokens->TryAcquire(granted);
@@ -270,11 +271,22 @@ ThreadBudget::~ThreadBudget() {
     impl->shutdown = true;
   }
   impl->wake.notify_all();
-  for (auto &worker : impl->workers) {
+  for (auto &worker : impl->workers) { // no worker starts after shutdown
     worker.join();
   }
-  for (auto &entry : impl->dedicated) {
-    entry.first.join();
+  // Tasks still running may start dedicated threads until they finish.
+  for (;;) {
+    decltype(impl->dedicated) finishing;
+    {
+      std::lock_guard<std::mutex> lock(impl->mutex);
+      finishing.swap(impl->dedicated);
+    }
+    if (finishing.empty()) {
+      break;
+    }
+    for (auto &entry : finishing) {
+      entry.first.join();
+    }
   }
 }
 
