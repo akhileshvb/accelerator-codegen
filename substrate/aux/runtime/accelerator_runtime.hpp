@@ -3,13 +3,10 @@
 // background builds, reads at an epoch. Engine-neutral.
 #pragma once
 
-#include <atomic>
-#include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
-#include <string>
 #include <vector>
 
 #include "substrate/aux/core/aux_types.hpp"
@@ -55,8 +52,12 @@ struct ReadOptions {
 
 class AcceleratorRuntime : public core::AuxEngineServices {
 public:
+  // Runs a build somewhere: a pool thread (in-process engines) or the host's
+  // engine thread (S6). Default: ThreadBudget::Spawn.
+  using BuildScheduler = std::function<void(std::function<void()>)>;
+
   AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> module, EngineSlots &slots,
-                     ThreadBudget &threads, std::string store_name = {});
+                     ThreadBudget &threads, BuildScheduler schedule = nullptr);
   ~AcceleratorRuntime() override;
 
   const core::AcceleratorId &Id() const { return id; }
@@ -79,8 +80,9 @@ public:
   // ---- shipped commits (Postgres worker main thread) ----
   void OfferCommit(CommittedChange change);
   void AnnounceCommit(Seq seq);
-  // Applies whatever is ready; may start a build (on a gap or when stale).
-  void Pump();
+  // Applies whatever is ready; requests a build when stale, or when a gap
+  // has persisted for `gap_timeout_us`.
+  void Pump(uint64_t gap_timeout_us = 5'000'000);
 
   // ---- builds ----
   // Ensures a build is running or scheduled (no-op if synced or building).
@@ -104,12 +106,19 @@ public:
 
 private:
   struct Impl;
-  std::unique_ptr<Impl> impl;
+
+  core::StagedMaintenanceOutcome Stage(const std::vector<ColumnarBatchRef> &batches);
+  bool Publish(const core::StagedMaintenanceOutcome &outcome, Epoch epoch);
+  void ApplyShipped(const CommittedChange &change);
+  void MarkStale(Epoch from);
+  bool Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const;
+
   std::shared_ptr<core::AuxQueryModule> module;
   core::AcceleratorId id;
   EngineSlots &slots;
   ThreadBudget &threads;
   std::unique_ptr<VersionedAuxStore> store;
+  std::unique_ptr<Impl> impl;
 };
 
 } // namespace accelerator_codegen::aux_state::runtime
