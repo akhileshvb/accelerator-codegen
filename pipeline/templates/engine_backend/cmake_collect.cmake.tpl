@@ -3,12 +3,11 @@
 #
 # function({{collect_fn}})
 #   set(srcs
-#     backends/{{engine_name}}/engine/scan_adapter.cpp
-#     backends/{{engine_name}}/state/{{engine_name}}_aux_backend.cpp
-#     backends/{{engine_name}}/state/{{engine_name}}_state_store.cpp
-#     backends/{{engine_name}}/engine/{{engine_name}}_mutation_capture.cpp
+#     backends/{{engine_name}}/api/{{engine_name}}_host.cpp          # EngineSlots (S2-S6, S8)
+#     backends/{{engine_name}}/engine/capture.cpp                    # S1
+#     backends/{{engine_name}}/engine/scan.cpp                       # S5/S8 scans
 #   )
 #   set(${ARGV0} "${srcs}" PARENT_SCOPE)
 # endfunction()
 #
-# Optional: option({{build_flag}} "Build {{engine_name}} adapter" OFF)
+# Optional: option({{build_flag}} "Build {{engine_name}} backend" OFF)

@@ -1,17 +1,16 @@
-// GENERATED BACKEND — engine ↔ substrate ADVERSARIAL harness (validation-owned).
+// GENERATED BACKEND — engine <-> runtime-skeleton ADVERSARIAL harness (validation-owned).
 // Spec: pipeline/prompts/engine_backend/adversarial_tests.md
 // Build: test_{{engine_name}}_adversarial   CTest: engine_{{engine_name}}_adversarial
 //
-// Unseen by implementation. Do not duplicate test_{{engine_name}}_contract.cpp.
-// Author ≥4 new cases that stress THIS adapter after reading its sources.
-#include <cassert>
+// Unseen by implementation. Do not duplicate the layer harnesses
+// (backends/{{engine_name}}/tests/test_{{engine_name}}_<layer>.cpp).
+// Author >=4 new cases that stress THIS backend's slots after reading its sources.
 #include <cstdint>
 #include <iostream>
 #include <string>
 
-#include "substrate/aux/core/aux_registry.hpp"
-#include "substrate/aux/core/aux_types.hpp"
-// TODO: #include this engine's adapters after inspecting implementation.
+#include "substrate/aux/runtime/runtime_host.hpp"
+// TODO: #include this backend's host/capture/scan after inspecting the implementation.
 
 namespace {
 
@@ -26,29 +25,18 @@ void Expect(bool cond, const char *msg) {
   }
 }
 
-// Replace these stubs with ≥4 real adversarial cases (see adversarial_tests.md).
-void TestAdversarialScanEdges() {
-  Fail("TestAdversarialScanEdges not implemented");
-}
-
-void TestAdversarialMutationAndTxn() {
-  Fail("TestAdversarialMutationAndTxn not implemented");
-}
-
-void TestAdversarialVisibilityOrStore() {
-  Fail("TestAdversarialVisibilityOrStore not implemented");
-}
-
-void TestAdversarialFailClosed() {
-  Fail("TestAdversarialFailClosed not implemented");
-}
+// Replace these stubs with >=4 real adversarial cases (see adversarial_tests.md).
+void TestAdversarialCapture() { Fail("TestAdversarialCapture not implemented"); }
+void TestAdversarialEpochs() { Fail("TestAdversarialEpochs not implemented"); }
+void TestAdversarialBuildUnderWrites() { Fail("TestAdversarialBuildUnderWrites not implemented"); }
+void TestAdversarialFailClosed() { Fail("TestAdversarialFailClosed not implemented"); }
 
 } // namespace
 
 int main() {
-  TestAdversarialScanEdges();
-  TestAdversarialMutationAndTxn();
-  TestAdversarialVisibilityOrStore();
+  TestAdversarialCapture();
+  TestAdversarialEpochs();
+  TestAdversarialBuildUnderWrites();
   TestAdversarialFailClosed();
   std::cout << "engine_adversarial[{{engine_name}}] PASS\n";
   return 0;

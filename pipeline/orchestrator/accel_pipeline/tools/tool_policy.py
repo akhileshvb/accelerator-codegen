@@ -208,7 +208,7 @@ Use ONLY the pipeline tools for this stage. Do not use built-in shell/edit tools
 - run_command: allowlisted cmake/ctest. After adding new CMake targets (aux test/bench), run `cmake -S . -B <worker_build_dir>` before `cmake --build ...` (compound forms are allowlisted). Under pack isolation, bare `build-release` is rewritten to this worker's build dir — never target the shared tree.
 - Benchmarks and accept/reject are orchestrator-owned — exploratory A/B tools are non-binding.
 - optimization_unified: hypothesize/implement then `HYPOTHESIS_PATCH_COMPLETE` for build → smoke → benchmark.
-- request_gate / run_correctness / run_multi_connection: under Codex MCP, implementation **must** call `run_correctness` (and for aux-state also `run_multi_connection`, or `request_gate` with those gate names) and **keep iterating until they pass** before finishing. Orchestrator still re-runs post-stage gates. For **host_bootstrap**, call `request_gate` with `host_bootstrap` until pass (postgres: Docker ninja, never host `cmake --build build-release`). If that post-stage gate still fails, the orchestrator re-invokes this stage with `notes`/`log_tail`. For **engine_backend** implementation layers, call `request_gate` with `engine_build` then that layer's gate (`engine_store`, `engine_aux_backend`, `engine_txn`, `engine_mutations`, `engine_scan`, `engine_runtime`, `engine_visibility`, `engine_host`) until pass. For **engine_backend** validation, also loop **`engine_adversarial`** after authoring unseen tests. After all layers, a separate **architecture_audit** agent judges hard constraints and may re-invoke implementation layers with feedback.
+- request_gate / run_correctness / run_multi_connection: under Codex MCP, implementation **must** call `run_correctness` (and for aux-state also `run_multi_connection`, or `request_gate` with those gate names) and **keep iterating until they pass** before finishing. Orchestrator still re-runs post-stage gates. For **host_bootstrap**, call `request_gate` with `host_bootstrap` until pass (postgres: Docker ninja, never host `cmake --build build-release`). If that post-stage gate still fails, the orchestrator re-invokes this stage with `notes`/`log_tail`. For **engine_backend** implementation layers, call `request_gate` with `engine_build` then that layer's gate (`engine_capture`, `engine_epochs`, `engine_scan`, `engine_runtime`, `engine_host`) until pass. For **engine_backend** validation, also loop **`engine_adversarial`** after authoring unseen tests, then the `slot_*` gates. After all layers, a separate **architecture_audit** agent judges hard constraints and may re-invoke implementation layers with feedback.
 """
 
 IMPLEMENTATION_TOOL_USAGE = """\
@@ -273,13 +273,14 @@ ENGINE_BACKEND_IMPL_TOOL_USAGE = """\
 
 - **First:** read `pipeline/prompts/engine_backend/layer_contracts.md` for this
   layer, then the substrate headers listed in the prompt
-  (`aux_types.hpp`, `versioned_aux_store.hpp`, `aux_registry.hpp` as needed).
-- Fill `pipeline/templates/engine_backend/` stubs. Adapter types stay in
+  (`substrate/aux/runtime/engine_slots.hpp`, `runtime_host.hpp`,
+  `accelerator_runtime.hpp`, `columnar_batch.hpp` as needed).
+- Fill `pipeline/templates/engine_backend/` stubs. Backend types stay in
   `aux_state::engine::{engine}` — never `core::`.
+- You implement slots only. The runtime flow (commit order, catch-up, builds,
+  versions, thread pool) is substrate: never re-implement or work around it.
 - If `backend_analysis.json` contradicts `layer_contracts.md` or
-  `acceptance_checklist.md`, follow the contracts (the state store derives
-  from `VersionedAuxStore` and only sets its options; `AttachServices` in the
-  aux ctor).
+  `acceptance_checklist.md`, follow the contracts.
 - Mid-loop MCP tools on server `accel_pipeline` (tools, not resources — do
   **not** `list_mcp_resources`): `run_engine_build()`, `run_layer_gate()`,
   or `request_gate` with `engine_build` then this layer's gate. A green

@@ -25,7 +25,7 @@ load_mv_gate_context() {
 
 	# Standalone defaults when orchestrator has not written matview gate context yet.
 	if [[ -z "${MATVIEW_SUBDIR}" ]]; then
-		MATVIEW_SUBDIR="accelerators/${BENCHMARK_NAME}/q${query}/postgres/matview"
+		MATVIEW_SUBDIR="eval/bench/postgres/baselines/${BENCHMARK_NAME}/q${query}/matview"
 	fi
 	if [[ -z "${MV_FUNCTION_NAME}" ]]; then
 		MV_FUNCTION_NAME="accel_${BENCHMARK_NAME}_q${query}_mv"

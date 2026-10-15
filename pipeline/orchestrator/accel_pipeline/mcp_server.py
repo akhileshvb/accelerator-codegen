@@ -418,9 +418,8 @@ def main(argv: list[str] | None = None) -> int:
 
         Run an official orchestrator gate by name. Returns JSON with status,
         notes, and on fail failure_summary. Engine backend: pass engine_build
-        then this layer's gate (engine_store, engine_aux_backend, engine_txn,
-        engine_mutations, engine_scan, engine_runtime, engine_visibility,
-        engine_host). Prefer run_engine_build / run_layer_gate when listed.
+        then this layer's gate (engine_capture, engine_epochs, engine_scan,
+        engine_runtime, engine_host). Prefer run_engine_build / run_layer_gate when listed.
         Keep calling until status=pass. Do not substitute host cmake or docker
         exec of the harness for this tool.
         """
@@ -438,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     def run_layer_gate() -> str:
         """MCP TOOL. Official harness gate for this impl_* layer.
 
-        Maps impl_store→engine_store, impl_txn→engine_txn, etc. Call after
+        Maps impl_capture→engine_capture, impl_epochs→engine_epochs, etc. Call after
         run_engine_build. On fail, read failure_summary, fix, retry until pass.
         """
         return _call("run_layer_gate")

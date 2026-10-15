@@ -1,9 +1,11 @@
 # Engine backend analysis
 
-Design a **native storage** adapter for **{{display_name}}** (`{{engine_name}}`)
-on the **fixed substrate** (aux/txn/store). From-scratch: substrate + this
-engine's SDK hints + `pipeline/templates/engine_backend/`. Do **not** read or
-copy any other `backends/{engine}/` tree. Do not implement code here.
+Design the **slot implementations** (S1-S8) of **{{display_name}}**
+(`{{engine_name}}`) for the **fixed runtime skeleton**
+(`substrate/aux/runtime/`; the runtime flow is substrate and frozen).
+From-scratch: substrate + this engine's SDK hints +
+`pipeline/templates/engine_backend/`. Do **not** read or copy any other
+`backends/{engine}/` tree. Do not implement code here.
 
 {{hard_guidelines}}
 
@@ -17,44 +19,47 @@ Your analysis is the **roadmap those agents follow** — concise, concrete, no e
 
 ## Sketch each layer (concrete, short)
 
-For **every** layer id (`store`, `aux_backend`, `txn`, `mutations`, `scan`,
-`runtime`, `visibility`, `host`) write one object. If `host` is not required,
-set `skipped: true` and leave files empty.
+For **every** layer id (`capture`, `epochs`, `scan`, `runtime`, `host`) write
+one object. If `host` is not required, set `skipped: true` and leave files empty.
 
 Each object:
 
 | Field | What to put |
 |-------|-------------|
-| `id` / `gate` / `cmake_target` | Exact ids (`engine_store`, `test_{{engine_name}}_store`, …) |
+| `id` / `gate` / `cmake_target` | Exact ids (`engine_capture`, `test_{{engine_name}}_capture`, …) |
 | `native_apis` | 2–6 **exact** SDK/substrate symbols this layer will call |
 | `files` | Exact repo-relative paths **this** layer creates (headers, .cpp, harness, CMake) |
 | `harness_plan` | **Golden asserts** (values, keys, NULL, abort vs commit). Not “test the store” |
 | `gate_loop` | `request_gate engine_build` then `request_gate <gate>` after each increment |
 | `skipped` | bool |
 
-Also fill `store_mode`, `native_scan_plan.symbol`, `mutation_capture_plan.hook`,
-`txn_lifecycle_plan.api`, `visibility_plan`, `udf_or_extension_host_plan` (or skip),
+Also fill `placement`, `slot_plan` (one entry per slot S1-S8: the engine
+mechanism and exact API), `capture_plan.hook`, `epoch_plan`,
+`scan_plan.symbol`, `udf_or_extension_host_plan` (or skip),
 `contract_tests_plan.by_layer`, `files_to_create`. Keep strings to one or two lines.
-`visibility_plan` names the engine clocks behind the store: the snapshot
-epoch (`CurrentVisibility().mutation_epoch`), the commit epoch (the store's
-`EpochProvider`, same order), the floor (oldest open snapshot, or none), and
-whether the engine keeps one store per accelerator / per session.
+`epoch_plan` names the engine clocks: the commit epoch (S2, in visibility
+order), the reader epoch (S3, exact), the floor (S4, oldest open snapshot, or
+none), the build snapshot epoch `b` (S5), and how a snapshot is mapped to an
+epoch when the engine has no single clock.
 
 ## Required reads
 
+- `substrate/aux/runtime/README.md`, `engine_slots.hpp`, `runtime_host.hpp`,
+  `accelerator_runtime.hpp`, `columnar_batch.hpp`
+- `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract")
 - `substrate/aux/core/aux_types.hpp`
-- `substrate/aux/core/aux_registry.hpp`
-- `substrate/aux/state/versioned_aux_store.hpp`
 - `pipeline/prompts/engine_backend/layers.md`
 - `pipeline/prompts/engine_backend/acceptance_checklist.md`
 - `pipeline/prompts/engine_backend/layer_contracts.md`
 - `pipeline/schemas/backend_analysis.schema.json`
 
 `harness_plan` **must** include the value asserts in `layer_contracts.md` for
-that layer (store: `VersionedAuxStore` subclass + its epoch/floor providers,
-`expected_version` race → `false`, token behind epoch → `NotVisible`;
-aux_backend: `AttachServices` + commit via coordinator, not harness
-`TryPublish`; txn: engine txn API, not C++ `OnCommit` as the proof).
+that layer (capture: two connections, old/new values, one batch per statement,
+union of watched columns, rollback; epochs: visibility order, exact reader
+epoch, pending window, floor vs readers; scan: snapshot epoch `b` vs a
+concurrent commit, barrier, typed chunks; runtime: rebuild under continuous
+writes, old readers, placement failure modes; host: SQL golden, NULL,
+`Fallback`).
 
 ## Engine SDK / host
 
@@ -76,7 +81,7 @@ CMake collect `{{engine_cmake_collect_fn}}`, flag `{{engine_cmake_build_flag}}`.
 
 {{engine_write_paths}}
 
-## Store-mode (pick one)
+## Placement (pick one)
 
 {{optional_examples_section}}
 

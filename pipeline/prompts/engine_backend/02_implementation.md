@@ -28,12 +28,16 @@ contracts**.
 
 - `pipeline/prompts/engine_backend/layer_contracts.md` (section `{{layer_id}}`)
 - `pipeline/prompts/engine_backend/acceptance_checklist.md`
-- `substrate/aux/core/aux_types.hpp`
-- `substrate/aux/state/versioned_aux_store.hpp`
-- `substrate/aux/core/README.md` ("Concurrency": versions, epochs, commits)
-- `substrate/aux/core/aux_registry.hpp` (from `aux_backend` onward)
+- `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract": slot contracts)
+- `substrate/aux/runtime/README.md`, `engine_slots.hpp`, `runtime_host.hpp`,
+  `accelerator_runtime.hpp`, `columnar_batch.hpp` (and `wire.hpp`,
+  `thread_budget.hpp` where the layer touches them)
+- `eval/tests/test_aux_runtime.cpp` — the toy `SumModule` to copy for the harness
 - Matching stub under `pipeline/templates/engine_backend/` — keep
-  `aux_state::engine::{{engine_name}}`. Do not put adapter types in `core::`.
+  `aux_state::engine::{{engine_name}}`. Do not put backend types in `core::`.
+
+You implement **slots only**. The runtime flow (commit order, gaps, catch-up,
+builds, versions, thread pool) is substrate: never re-implement or work around it.
 
 ## Prior layers (reuse; minimal fix if blocked)
 
@@ -43,9 +47,9 @@ Reuse prior-layer objects. Do **not** rewrite them, restyle them, or reopen
 their design for taste.
 
 **Exception:** if this layer cannot meet *its* contract because a prior layer
-has a real bug or design flaw (wrong substrate API, untested path that later
-code will hit, inverted partition keys, missing `AttachServices`, etc.), make
-the **smallest** patch to that prior adapter **and** keep its harness honest:
+has a real bug or design flaw (wrong epoch order, an untested path that later
+code will hit, a capture that misses a connection, etc.), make
+the **smallest** patch to that prior backend layer **and** keep its harness honest:
 
 1. Touch only the files that must change. No drive-by refactors.
 2. If the prior harness missed the hole, add the missing assert there — do not
@@ -68,7 +72,7 @@ Or `request_gate` with `gate_name` `engine_build` / `{{layer_gate}}`.
 
 | When | Gate | What it does |
 |------|------|----------------|
-| After CMake / adapter TUs that should link | `engine_build` | Host cmake **or** docker `ensure_script` (kind=`{{host_runtime_kind}}`) |
+| After CMake / backend TUs that should link | `engine_build` | Host cmake **or** docker `ensure_script` (kind=`{{host_runtime_kind}}`) |
 | After harness exists and should run | `{{layer_gate}}` | Builds **`{{layer_cmake_target}}`** and runs **`{{layer_harness}}`** |
 
 Suggested cadence:
@@ -116,24 +120,24 @@ gate calls. Official pass/fail is still `request_gate`.
 
 - Harness: `pipeline/templates/engine_backend/test_engine_layer.cpp.tpl` → `{{layer_harness}}`
 - CMake: `pipeline/templates/engine_backend/cmake_layer_test.cmake.tpl`
-- Stubs as needed: `pipeline/templates/engine_backend/` (`state_store`, `aux_backend`, `mutation_capture`)
+- Stubs as needed: `pipeline/templates/engine_backend/` (`host`, `capture`, `scan`)
 
 Wire collect `{{engine_cmake_collect_fn}}` / flag `{{engine_cmake_build_flag}}`.
 Use `cmake_layer_test.cmake.tpl` for the harness executable (gated by the
-engine build flag). Add adapter `.cpp` files through the collect function —
+engine build flag). Add backend `.cpp` files through the collect function —
 do not dump an unguarded `add_executable` at the bottom of `CMakeLists.txt`.
 
 {{layer_contracts}}
 
 ## Invariants
 
-1. Do not modify `core` / `state` / `maintenance`.
+1. Do not modify `substrate/aux/**`.
 2. Do not read or copy another engine's tree.
-3. One `AuxEngineServices` (the aux backend). Scans are a separate object.
-4. Toy module/scan only — no generated query accelerators.
+3. Slots only: no runtime flow, no edits to `substrate/aux/**`.
+4. Toy module only — no generated query accelerators.
 5. Fail closed if the SDK/host cannot start.
 
 After this layer’s gates pass, a **separate cheap critique agent** reviews the
-adapter + harness against `layer_contracts.md`. A green gate is not done if
+backend + harness against `layer_contracts.md`. A green gate is not done if
 the critic finds an untested contract path. You will be re-invoked with its
 feedback — do not greenwash the harness.

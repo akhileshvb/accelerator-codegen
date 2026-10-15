@@ -8,7 +8,7 @@ Read `substrate_contract.md` and `maintenance_framework.md` for substrate APIs. 
 
 - **Per-query module** (`{{aux_function_name}}`) registered on every shared catalog / allowlist / TF surface that peer queries use (see `registration_checklist.md`).
 - **No cross-query state sharing** — but unrelated accelerators may be active concurrently.
-- **Single-threaded per connection** (`PRAGMA threads=1` in tests/benchmarks).
+- **Threads**: maintenance and `Build` are single-threaded inside the accelerator; a read parallelizes only inside `Execute` through `services.ParallelFor`, sized by `services.WorkerCount()` (the backend's thread budget); partial results merge in task order.
 
 ## Relevance and irrelevant mutations
 
@@ -22,7 +22,7 @@ Read `substrate_contract.md` and `maintenance_framework.md` for substrate APIs. 
 1. Use **lazy rebuild** (`RebuildPartition` / `RebuildAll`) via `StageMaintenance` — do not eagerly invalidate on every write unless required.
 2. When rebuild is selected, **resync/rebuild** partition payloads for later aux hits — do not only mark stale.
 3. **No-op publish skip**: when maintenance has no publish effect, do not advance versions or publish staged updates.
-4. **Optimistic publish**: partition updates must pass `TryPublish` version checks on `AuxStateStore`.
+4. **Optimistic publish**: partition updates carry `expected_version`; the runtime publishes through the versioned store and a mismatch invalidates the partition.
 5. Prefer **per-accelerator** invalidation scope; never use a global epoch unrelated writers can advance.
 
 ## Read path under concurrent writes

@@ -29,32 +29,20 @@ def test_load_engine_mysql_workload():
     assert w["workload_kind"] == "engine_backend"
     assert w["engine_name"] == "mysql"
     assert w["prompt_subdir"] == "engine_backend"
-    assert w["target_paths"]["state_store_header"].endswith(
-        "backends/mysql/state/mysql_state_store.hpp"
-    )
-    assert w["target_paths"]["aux_backend_header"].endswith(
-        "backends/mysql/state/mysql_aux_backend.hpp"
-    )
+    assert w["target_paths"]["host_header"].endswith("backends/mysql/api/mysql_host.hpp")
+    assert w["target_paths"]["capture_source"].endswith("backends/mysql/engine/capture.cpp")
     ids = [layer["id"] for layer in w["implementation_layers"]]
-    assert ids == [
-        "store",
-        "aux_backend",
-        "txn",
-        "mutations",
-        "scan",
-        "runtime",
-        "visibility",
-        "host",
-    ]
-    store = w["implementation_layers"][0]
-    assert store["harness"] == "backends/mysql/tests/test_mysql_store.cpp"
-    assert store["cmake_target"] == "test_mysql_store"
-    assert store["gate"] == "engine_store"
-    assert store["rules"] == ["store_roundtrip"]
-    aux = next(layer for layer in w["implementation_layers"] if layer["id"] == "aux_backend")
-    assert aux["rules"] == ["aux_services"]
+    assert ids == ["capture", "epochs", "scan", "runtime", "host"]
+    capture = w["implementation_layers"][0]
+    assert capture["harness"] == "backends/mysql/tests/test_mysql_capture.cpp"
+    assert capture["cmake_target"] == "test_mysql_capture"
+    assert capture["gate"] == "engine_capture"
+    assert capture["rules"] == ["slot_capture"]
+    epochs = next(layer for layer in w["implementation_layers"] if layer["id"] == "epochs")
+    assert epochs["rules"] == ["slot_epochs"]
     runtime = next(layer for layer in w["implementation_layers"] if layer["id"] == "runtime")
-    assert runtime["rules"] == ["toy_runtime"]
+    assert runtime["rules"] == ["slot_runtime"]
+    assert w["placement_candidates"] == ["in_process"]
     assert w["target_paths"]["adversarial_test"] == (
         "backends/mysql/tests/test_mysql_adversarial.cpp"
     )
@@ -62,8 +50,10 @@ def test_load_engine_mysql_workload():
     assert w["cmake"]["build_flag"] == "ACCELERATOR_CODEGEN_BUILD_MYSQL"
     assert "backends/mysql/**" in w["write_paths"]
     assert not any(p.startswith(("substrate", "accelerators", "workloads")) for p in w["write_paths"])
-    assert "engine_store" in w["post_validation_gates"]
+    assert "engine_capture" in w["post_validation_gates"]
     assert "engine_adversarial" in w["post_validation_gates"]
+    assert "slot_epoch_stress" in w["post_validation_gates"]
+    assert "slot_differential" in w["post_validation_gates"]
     assert "engine_adversarial" not in w["post_implementation_gates"]
     assert w.get("requires_in_process_host") is True
     assert w.get("host_runtime", {}).get("kind") == "docker"
@@ -73,6 +63,22 @@ def test_load_engine_mysql_workload():
     assert w.get("host_runtime", {}).get("env", {}).get("ACCEL_MYSQL_ENSURE_BUILD") == "0"
     assert w["layer_critique_max_rounds"] == 2
     assert w["layer_gate_max_rounds"] == 3
+
+
+def test_backend_stage_gates_are_wired():
+    from accel_pipeline.gates import GATE_SCRIPTS
+
+    gates_dir = REPO_ROOT / "pipeline" / "gates"
+    for engine in ("engine_mysql", "engine_postgres"):
+        w = load_workload(engine, REPO_ROOT)
+        wired = list(w["post_validation_gates"]) + [layer["gate"] for layer in w["implementation_layers"]]
+        for gate in wired:
+            assert gate in GATE_SCRIPTS, gate
+            assert (gates_dir / GATE_SCRIPTS[gate]).is_file(), gate
+    slot_gates = [g for g in GATE_SCRIPTS if g.startswith("slot_")]
+    assert len(slot_gates) == 6
+    for adapter in ("duckdb", "postgres", "mysql"):
+        assert (gates_dir / "slot_adapters" / f"{adapter}.sh").is_file()
 
 
 def test_engine_artifacts_dir():
@@ -98,9 +104,9 @@ def test_engine_write_paths_allow_adapter_edits():
     assert ok, reason
     ok2, reason2 = write_allowed(
         REPO_ROOT,
-        "backends/mysql/state/mysql_aux_backend.cpp",
+        "backends/mysql/api/mysql_host.cpp",
         query=0,
-        stage="impl_aux_backend",
+        stage="impl_runtime",
         write_paths=merged.write_paths,
         pipeline_config=merged,
         benchmark="engine",
@@ -108,9 +114,9 @@ def test_engine_write_paths_allow_adapter_edits():
     assert ok2, reason2
     ok3, reason3 = write_allowed(
         REPO_ROOT,
-        "backends/mysql/tests/test_mysql_store.cpp",
+        "backends/mysql/tests/test_mysql_capture.cpp",
         query=0,
-        stage="impl_store",
+        stage="impl_capture",
         write_paths=merged.write_paths,
         pipeline_config=merged,
         benchmark="engine",
@@ -136,15 +142,15 @@ def test_engine_write_paths_allow_adapter_edits():
         assert not ok5, (rel, reason5)
 
 
-def test_critique_store_cannot_write_adapter():
+def test_critique_capture_cannot_write_adapter():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("engine_postgres", REPO_ROOT)
     merged = apply_workload_overrides(pc, w)
     ok, reason = write_allowed(
         REPO_ROOT,
-        "backends/postgres/state/postgres_state_store.cpp",
+        "backends/postgres/api/postgres_host.cpp",
         query=0,
-        stage="critique_store",
+        stage="critique_capture",
         write_paths=merged.write_paths,
         pipeline_config=merged,
         benchmark="engine",
@@ -153,9 +159,9 @@ def test_critique_store_cannot_write_adapter():
     assert "pipeline/artifacts" in reason
     ok2, reason2 = write_allowed(
         REPO_ROOT,
-        "pipeline/artifacts/engines/postgres/layer_critique_store.json",
+        "pipeline/artifacts/engines/postgres/layer_critique_capture.json",
         query=0,
-        stage="critique_store",
+        stage="critique_capture",
         write_paths=merged.write_paths,
         pipeline_config=merged,
         benchmark="engine",
@@ -174,17 +180,17 @@ def test_render_engine_analysis_prompt():
     text = render_prompt(pc, "01_analysis.md", w, 0, "analysis")
     assert "layers.md" in text or "sequential" in text.lower()
     assert "mysql" in text.lower()
-    assert "store" in text.lower()
+    assert "slot" in text.lower()
     assert "from-scratch" in text.lower() or "do **not** read" in text.lower() or "do not read" in text.lower()
     assert "{{layer_id}}" not in text
     assert "request_gate" in text
     assert "roadmap" in text.lower() or "concrete" in text.lower()
     assert "layer_contracts.md" in text
-    assert "VersionedAuxStore" in text
+    assert "engine_slots.hpp" in text
     assert "TryPublishPartition" not in text
 
 
-def test_render_impl_store_prompt():
+def test_render_impl_capture_prompt():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("engine_mysql", REPO_ROOT)
     layer = implementation_layers(w)[0]
@@ -193,7 +199,7 @@ def test_render_impl_store_prompt():
         "02_implementation.md",
         w,
         0,
-        "impl_store",
+        "impl_capture",
         extra_context={
             "layer_id": layer["id"],
             "layer_title": layer["title"],
@@ -203,8 +209,8 @@ def test_render_impl_store_prompt():
             "prior_layers": "- (this is the first layer)",
         },
     )
-    assert "engine_store" in text
-    assert "test_mysql_store.cpp" in text
+    assert "engine_capture" in text
+    assert "test_mysql_capture.cpp" in text
     assert "{{layer_id}}" not in text
     assert "request_gate" in text
     assert "run_engine_build" in text
@@ -212,11 +218,11 @@ def test_render_impl_store_prompt():
     assert "engine_build" in text
     assert "later layer" in text.lower()
     assert "smallest" in text.lower() or "minimal" in text.lower()
-    assert "VersionedAuxStore" in text
-    assert "expected_version" in text
+    assert "RuntimeHost" in text
+    assert "slots only" in text
     assert "TryPublishPartition" not in text
     assert "layer_contracts.md" in text
-    assert "versioned_aux_store.hpp" in text
+    assert "engine_slots.hpp" in text
     assert "Native base-table" in text or "hard_guidelines" in text.lower()
     assert "Engine backend layer workflow" in text or "layer_contracts.md" in text
 
@@ -226,10 +232,10 @@ def test_impl_user_message_names_mcp_gate_calls():
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("engine_postgres", REPO_ROOT)
-    layer = next(L for L in implementation_layers(w) if L["id"] == "txn")
-    text = _user_message(pc, w, "impl_txn", layer=layer)
+    layer = next(L for L in implementation_layers(w) if L["id"] == "epochs")
+    text = _user_message(pc, w, "impl_epochs", layer=layer)
     assert 'request_gate(gate_name="engine_build")' in text
-    assert 'request_gate(gate_name="engine_txn")' in text
+    assert 'request_gate(gate_name="engine_epochs")' in text
     assert "run_engine_build()" in text
     assert "run_layer_gate()" in text
     assert "list_mcp_resources" in text
@@ -244,7 +250,7 @@ def test_postgres_impl_prompt_uses_docker_gates():
         "02_implementation.md",
         w,
         0,
-        "impl_store",
+        "impl_capture",
         extra_context={
             "layer_id": layer["id"],
             "layer_title": layer["title"],
@@ -259,7 +265,7 @@ def test_postgres_impl_prompt_uses_docker_gates():
     )
     assert "docker" in text.lower()
     assert "request_gate" in text
-    assert "engine_store" in text
+    assert "engine_capture" in text
     assert "ensure_accel_pg_test.sh" in text
     assert "build-release" in text  # mentioned as what NOT to use as the bar
     assert "Do not" in text or "do not" in text.lower()
@@ -322,11 +328,11 @@ def test_engine_pipeline_dry_run():
     run_engine_pipeline(pc, mc, "engine_mysql", 0, {}, dry_run=True, stage="all", skip_gates=True)
 
 
-def test_engine_pipeline_dry_run_impl_store():
+def test_engine_pipeline_dry_run_impl_capture():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     mc = load_model_config(repo_root=REPO_ROOT)
     run_engine_pipeline(
-        pc, mc, "engine_mysql", 0, {}, dry_run=True, stage="impl_store", skip_gates=True
+        pc, mc, "engine_mysql", 0, {}, dry_run=True, stage="impl_capture", skip_gates=True
     )
 
 
@@ -335,7 +341,7 @@ def test_host_layer_skipped_without_in_process_host():
 
     w = load_workload("engine_mysql", REPO_ROOT)
     host = next(layer for layer in w["implementation_layers"] if layer["id"] == "host")
-    store = next(layer for layer in w["implementation_layers"] if layer["id"] == "store")
+    store = next(layer for layer in w["implementation_layers"] if layer["id"] == "capture")
     assert _layer_should_run(w, store)
     assert _layer_should_run(w, host)
     skipped = dict(w)
@@ -367,13 +373,13 @@ def test_audit_restarts_from_earliest_failing_layer():
     w = load_workload("engine_mysql", REPO_ROOT)
     audit = {
         "violations": [
-            {"rule": "visibility", "layer": "visibility"},
-            {"rule": "mutation_hooks", "layer": "mutations"},
-            {"rule": "visibility", "layer": "visibility"},
+            {"rule": "slot_runtime", "layer": "runtime"},
+            {"rule": "slot_capture", "layer": "capture"},
+            {"rule": "slot_runtime", "layer": "runtime"},
         ]
     }
-    assert failing_layer_ids(audit, w) == ["mutations", "visibility"]
-    assert earliest_failing_layer_id(audit, w) == "mutations"
+    assert failing_layer_ids(audit, w) == ["capture", "runtime"]
+    assert earliest_failing_layer_id(audit, w) == "capture"
     assert earliest_failing_layer_id({"violations": []}, w) is None
     assert earliest_failing_layer_id({"violations": [{"rule": "fail_closed"}]}, w) is None
     assert failing_layer_ids({"violations": [{"rule": "fail_closed"}]}, w) == []
@@ -425,7 +431,7 @@ def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
         out = Path(captured["env"]["ACCEL_GATE_OUT"])
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(
-            '{"gate":"engine_store","status":"pass","notes":"ok"}',
+            '{"gate":"engine_capture","status":"pass","notes":"ok"}',
             encoding="utf-8",
         )
 
@@ -444,13 +450,13 @@ def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
         "accel_pipeline.worker_isolation.ensure_worker_build_dir",
         lambda *a, **k: None,
     )
-    result = run_gate(pc, "engine_store", 0, workload=workload, raise_on_failure=False)
+    result = run_gate(pc, "engine_capture", 0, workload=workload, raise_on_failure=False)
     assert result.status == "pass"
     env = captured["env"]
     assert Path(env["ACCEL_GATE_CONTEXT"]).is_file()
     assert env["ACCEL_GATE_CONTEXT"].endswith("_gate_context.json")
-    assert env["ACCEL_GATE_OUT"].endswith("engine_store.json")
-    assert env.get("ACCEL_GATE_NAME") == "engine_store"
+    assert env["ACCEL_GATE_OUT"].endswith("engine_capture.json")
+    assert env.get("ACCEL_GATE_NAME") == "engine_capture"
     assert "engines/postgres" in env["ACCEL_GATE_OUT"].replace("\\", "/")
     assert env.get("ACCEL_PG_DOCKER") == "1" or env.get("PGHOST") or env.get("ACCEL_PG_CONTAINER")
     ctx = json.loads(Path(env["ACCEL_GATE_CONTEXT"]).read_text(encoding="utf-8"))
@@ -471,18 +477,18 @@ def test_render_layer_critique_prompt():
         "05_layer_critique.md",
         w,
         0,
-        "critique_store",
+        "critique_capture",
         extra_context=_layer_extra_context(w, layer),
     )
-    assert "engine_store" in text
-    assert "store_roundtrip" in text
-    assert "VersionedAuxStore" in text
+    assert "engine_capture" in text
+    assert "slot_capture" in text
+    assert "RuntimeHost" in text
     assert "TryPublishPartition" not in text
     assert "layer_contracts.md" in text
-    assert "layer_critique_store.json" in text
+    assert "layer_critique_capture.json" in text
     assert "{{layer_id}}" not in text
     assert "{{codex_tooling}}" not in text
-    assert "Do **not** rewrite adapter sources" in text or "Do not rewrite" in text
+    assert "Do **not** rewrite backend sources" in text or "Do not rewrite" in text
     assert "smallest" in text.lower() or "minimal" in text.lower()
     assert "last action" in text.lower() or "not done until" in text.lower()
 
@@ -490,7 +496,7 @@ def test_render_layer_critique_prompt():
 def test_run_until_artifact_retries_then_succeeds(tmp_path):
     from accel_pipeline.stages.engine_layer_critique import run_until_artifact
 
-    path = tmp_path / "layer_critique_aux_backend.json"
+    path = tmp_path / "layer_critique_epochs.json"
     calls: list[str] = []
 
     def invoke(extra: str):
@@ -530,19 +536,19 @@ def test_layer_critique_feedback_and_load(tmp_path):
     import pytest
 
     with pytest.raises(GateFailure, match="did not write"):
-        load_layer_critique(tmp_path, "store")
-    (tmp_path / "layer_critique_store.json").write_text(
+        load_layer_critique(tmp_path, "capture")
+    (tmp_path / "layer_critique_capture.json").write_text(
         json.dumps(
             {
                 "engine_name": "postgres",
-                "layer": "store",
+                "layer": "capture",
                 "status": "FAIL",
                 "summary": "Invalidate uses caller partition ids",
                 "violations": [
                     {
                         "rule": "harness_gap",
                         "evidence": "TryPublish remaps partitions; harness only tests InvalidateAll",
-                        "paths": ["backends/postgres/state/postgres_state_store.cpp"],
+                        "paths": ["backends/postgres/api/postgres_host.cpp"],
                     }
                 ],
                 "feedback_for_implementation": "Assert Invalidate(PartitionSet) after remap.",
@@ -550,7 +556,7 @@ def test_layer_critique_feedback_and_load(tmp_path):
         ),
         encoding="utf-8",
     )
-    critique = load_layer_critique(tmp_path, "store")
+    critique = load_layer_critique(tmp_path, "capture")
     assert critique["status"] == "fail"
     text = format_layer_critique_feedback(critique, round_idx=1)
     assert "Layer critique FAILED" in text
@@ -561,12 +567,12 @@ def test_layer_critique_feedback_and_load(tmp_path):
 def test_critique_tools_are_read_only_plus_artifact_write():
     from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES, stage_tool_names, tool_usage_instructions
 
-    names = stage_tool_names("critique_store")
+    names = stage_tool_names("critique_capture")
     assert names == STAGE_TOOL_NAMES["layer_critique"]
     assert "write_file" in names
     assert "apply_patch" not in names
     assert "run_command" not in names
-    usage = tool_usage_instructions("critique_store")
+    usage = tool_usage_instructions("critique_capture")
     assert "Layer critique workflow" in usage
     assert "layer_contracts.md" in usage
     assert "cat >" in usage or "LAST action" in usage or "last action" in usage.lower()
@@ -577,7 +583,7 @@ def test_layer_gate_feedback_includes_log_tail(tmp_path):
     from accel_pipeline.stages.engine_backend import format_layer_gate_feedback
 
     failed = GateResult(
-        name="engine_txn",
+        name="engine_epochs",
         status="fail",
         data={
             "notes": "incompatible library: missing magic block",
@@ -586,16 +592,16 @@ def test_layer_gate_feedback_includes_log_tail(tmp_path):
                 "HINT: Extension libraries are required to use the PG_MODULE_MAGIC macro."
             ),
         },
-        path=tmp_path / "engine_txn.json",
+        path=tmp_path / "engine_epochs.json",
     )
     text = format_layer_gate_feedback(
-        failed, layer_id="txn", round_idx=1, max_rounds=3
+        failed, layer_id="epochs", round_idx=1, max_rounds=3
     )
     assert "Layer gate FAILED" in text
-    assert "engine_txn" in text
+    assert "engine_epochs" in text
     assert "PG_MODULE_MAGIC" in text
     assert "attempt: 1/3" in text
-    assert "engine_txn.json" in text
+    assert "engine_epochs.json" in text
     assert "### returncode" in text
 
 
@@ -604,20 +610,20 @@ def test_layer_gate_feedback_empty_log_tail_still_has_signal(tmp_path):
     from accel_pipeline.stages.engine_backend import format_layer_gate_feedback
 
     failed = GateResult(
-        name="engine_txn",
+        name="engine_epochs",
         status="fail",
         data={
-            "notes": "layer harness failed via docker exec: test_mysql_txn",
+            "notes": "layer harness failed via docker exec: test_mysql_epochs",
             "log_tail": "",
             "returncode": 134,
         },
-        path=tmp_path / "engine_txn.json",
+        path=tmp_path / "engine_epochs.json",
     )
     text = format_layer_gate_feedback(
-        failed, layer_id="txn", round_idx=1, max_rounds=3
+        failed, layer_id="epochs", round_idx=1, max_rounds=3
     )
     assert "SIGABRT" in text
-    assert "test_mysql_txn" in text
+    assert "test_mysql_epochs" in text
     assert "(empty)" not in text
 
 
@@ -642,7 +648,7 @@ def test_layer_gate_fail_reinvokes_impl(tmp_path, monkeypatch):
         calls["gates"] += 1
         if calls["gates"] == 1:
             failed = GateResult(
-                name="engine_store",
+                name="engine_capture",
                 status="fail",
                 data={
                     "notes": "incompatible library: missing magic block",
@@ -652,18 +658,18 @@ def test_layer_gate_fail_reinvokes_impl(tmp_path, monkeypatch):
                         "PG_MODULE_MAGIC macro."
                     ),
                 },
-                path=tmp_path / "engine_store.json",
+                path=tmp_path / "engine_capture.json",
             )
             return [failed], failed
         return [], None
 
     def fake_critique(*args, **kwargs):
         calls["critique"] += 1
-        (tmp_path / "layer_critique_store.json").write_text(
+        (tmp_path / "layer_critique_capture.json").write_text(
             json.dumps(
                 {
                     "engine_name": "mysql",
-                    "layer": "store",
+                    "layer": "capture",
                     "status": "pass",
                     "summary": "ok",
                     "violations": [],
@@ -695,8 +701,8 @@ def test_layer_gate_fail_reinvokes_impl(tmp_path, monkeypatch):
     assert "keep AttachServices" in user_messages[0]
     assert "keep AttachServices" in user_messages[1]
     assert "PG_MODULE_MAGIC" in user_messages[1]
-    assert "engine_store" in user_messages[1]
-    assert (tmp_path / "layer_gate_store_feedback_round1.md").is_file()
+    assert "engine_capture" in user_messages[1]
+    assert (tmp_path / "layer_gate_capture_feedback_round1.md").is_file()
 
 
 def test_layer_gate_exhausted_rounds_raises(tmp_path, monkeypatch):
@@ -716,10 +722,10 @@ def test_layer_gate_exhausted_rounds_raises(tmp_path, monkeypatch):
 
     def fake_collect(*args, **kwargs):
         failed = GateResult(
-            name="engine_store",
+            name="engine_capture",
             status="fail",
             data={"notes": "missing magic block", "log_tail": "PG_MODULE_MAGIC"},
-            path=tmp_path / "engine_store.json",
+            path=tmp_path / "engine_capture.json",
         )
         return [failed], failed
 
@@ -756,11 +762,11 @@ def test_layer_critique_fail_reinvokes_impl(tmp_path, monkeypatch):
     def fake_critique(*args, **kwargs):
         calls["critique"] += 1
         status = "fail" if calls["critique"] == 1 else "pass"
-        (tmp_path / "layer_critique_store.json").write_text(
+        (tmp_path / "layer_critique_capture.json").write_text(
             json.dumps(
                 {
                     "engine_name": "mysql",
-                    "layer": "store",
+                    "layer": "capture",
                     "status": status,
                     "summary": "gap" if status == "fail" else "ok",
                     "violations": (
@@ -816,11 +822,11 @@ def test_layer_critique_exhausted_rounds_raises(tmp_path, monkeypatch):
         return object()
 
     def fake_critique(*args, **kwargs):
-        (tmp_path / "layer_critique_store.json").write_text(
+        (tmp_path / "layer_critique_capture.json").write_text(
             json.dumps(
                 {
                     "engine_name": "mysql",
-                    "layer": "store",
+                    "layer": "capture",
                     "status": "fail",
                     "summary": "still broken",
                     "violations": [{"rule": "contract", "evidence": "CAS ignored"}],
@@ -841,7 +847,7 @@ def test_layer_critique_exhausted_rounds_raises(tmp_path, monkeypatch):
         )
 
 
-def test_dry_run_impl_store_skips_critique(monkeypatch):
+def test_dry_run_impl_capture_skips_critique(monkeypatch):
     from accel_pipeline.stages import engine_backend as eb
 
     called = {"critique": 0, "gates": 0}
@@ -858,7 +864,7 @@ def test_dry_run_impl_store_skips_critique(monkeypatch):
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     mc = load_model_config(repo_root=REPO_ROOT)
     run_engine_pipeline(
-        pc, mc, "engine_mysql", 0, {}, dry_run=True, stage="impl_store", skip_gates=False
+        pc, mc, "engine_mysql", 0, {}, dry_run=True, stage="impl_capture", skip_gates=False
     )
     assert called["critique"] == 0
     assert called["gates"] == 0

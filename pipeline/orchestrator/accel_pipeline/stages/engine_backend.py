@@ -58,7 +58,7 @@ def _prepare_engine_host_sdk(
 
 def _engine_exists(pipeline_config: PipelineConfig, workload: dict) -> bool:
     targets = workload.get("target_paths") or {}
-    header = targets.get("state_store_header") or targets.get("aux_backend_header")
+    header = targets.get("host_header")
     if not header:
         return False
     return (pipeline_config.repo_root / header).is_file()
@@ -88,9 +88,10 @@ def _user_message(
     )
     base = (
         f"Engine backend stage={stage} engine={engine} mode={mode}. "
-        "Primary context is the fixed substrate (core/state/maintenance). "
+        "Primary context is the fixed substrate (aux/runtime skeleton: the flow is "
+        "frozen, you implement its slots S1-S8). "
         "Treat this as from-scratch onboarding: implement only this engine's native "
-        "APIs onto the substrate using templates + SDK hints. Do not read or copy "
+        "slot implementations using templates + SDK hints. Do not read or copy "
         "any other engine tree. Follow pipeline/prompts/engine_backend/layers.md."
     )
     if layer:
@@ -397,15 +398,18 @@ def run_validation(
         workload.get("post_validation_gates")
         or [
             "engine_build",
-            "engine_store",
-            "engine_aux_backend",
-            "engine_txn",
-            "engine_mutations",
+            "engine_capture",
+            "engine_epochs",
             "engine_scan",
             "engine_runtime",
-            "engine_visibility",
             "engine_host",
             "engine_adversarial",
+            "slot_epoch_stress",
+            "slot_hits_under_writes",
+            "slot_read_after_commit",
+            "slot_txn_edges",
+            "slot_restart",
+            "slot_differential",
         ]
     )
     run_post_stage_gates(pipeline_config, workload_name, query, gates)

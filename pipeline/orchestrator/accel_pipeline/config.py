@@ -704,8 +704,8 @@ def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) ->
         "allow_update_existing",
         bool(defaults.get("allow_update_existing", True)),
     )
-    if "store_mode_candidates" not in data and defaults.get("store_mode_candidates"):
-        data["store_mode_candidates"] = list(defaults["store_mode_candidates"])
+    if "placement_candidates" not in data and defaults.get("placement_candidates"):
+        data["placement_candidates"] = list(defaults["placement_candidates"])
 
     for key in (
         "post_implementation_gates",

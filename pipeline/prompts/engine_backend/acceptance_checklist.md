@@ -2,158 +2,118 @@
 
 **Audience:** analysis, implementation, and architecture_audit.
 **Scope:** engine-agnostic. Do **not** invent engine-specific APIs here — map
-each item using this engine’s SDK hints / analysis only.
+each item using this engine's SDK hints / analysis only.
 
 This is the **single closed set of hard rules**. Implementation must satisfy
 every item before finishing. Architecture audit may **only** fail on these
 `rule` ids (below). Do **not** fail for style, extra concurrency ideas, or
 requirements that appear only in `backend_analysis.json` but are not listed
-here — if analysis promised more, treat that as optional polish unless it
-maps to a rule below.
+here. Each rule is owned by one implementation layer (or is global).
 
-Gates (`engine_build` plus each layer gate in `layers.md`) are
-necessary but **not sufficient**: a green harness exit can still fail audit if
-any checklist item is missing in source. Architecture audit may **only** fail
-on these `rule` ids. Each rule is owned by one implementation layer.
+Gates (`engine_build` plus each layer gate in `layers.md`) are necessary but
+**not sufficient**: a green harness can still fail audit if a checklist item
+is missing in source. The slot gates (`slot_*`, validation stage) judge the
+behaviour of the finished backend under concurrency.
 
 ---
 
 ## Rules (fixed `rule` ids)
 
+### `slot_capture` (layer `capture`)
+
+- Capture delivers **one** `ColumnarBatch` per statement and table through the
+  host-bound delivery function (`RuntimeHost::OnCapture`), for **every**
+  connection, with exactly the columns of `RuntimeHost::CaptureColumns(table)`.
+- Update / delete batches carry old row values; types are typed columns, no
+  per-row heap allocation; rolled-back (sub)transactions never reach a commit;
+  a non-row change (TRUNCATE) invalidates.
+- Harness asserts values (table id, kind, rows, old/new cells incl. NULL, a wide
+  decimal) from two connections. Hand-built batches alone are not this rule.
+
+### `slot_epochs` (layer `epochs`)
+
+- Commit epochs increase per accelerator in **visibility order**; the reader
+  epoch is exact (`epoch(c) <= E` iff visible); the version floor never exceeds
+  an open reader's epoch; `PendingEpochLowerBound` covers the window between
+  pre-commit and visibility.
+- Wired to the engine's real commit / abort lifecycle (`PreCommit` / `Commit` /
+  `Abort`); a harness that calls those C++ methods directly is not this rule.
+- No wall-clock epochs; an unmappable snapshot is reported, not guessed.
+- Harness: concurrent writers, two accelerators, snapshots inside the pending
+  window (sync barrier, not `sleep`), floor vs open readers, abort after
+  pre-commit.
+
+### `slot_scan` (layer `scan`)
+
+- The build snapshot's epoch `b` is exact (commit in snapshot iff epoch <= `b`)
+  and writers are not blocked while it is open.
+- `WaitForPreRegistrationWriters` waits for earlier writers and times out
+  (false). `RunBuild` calls `builder.Finish()`.
+- Scans are partitioned, typed, chunked and parallel on the thread budget;
+  64-bit counts and offsets.
+
 ### `native_scan` (layer `scan`)
 
-- Adapter exposes an **engine-local** base-table scan helper (name from analysis /
-  SDK hints) using **in-process / storage-AM / table-AM** APIs.
-- Preferred role: seed tiny tables and feed **aux rebuild** / typed rebuild
-  callbacks — **not** `ScanNativeBaseTable` → portable `DataChunk`.
-- **Forbidden** as the scan implementation: client-protocol SQL round-trips
-  (`SELECT … FROM …` via a network/driver client) that parse rows into a
-  portable chunk IR.
-- **Forbidden:** a silent no-op / empty stub for the named helper. Host builds
-  may fail closed (throw / `ereport`); the in-process host/MODULE path must
-  contain the real table-AM (or equivalent) implementation. A UDF that
-  re-implements scan inline **without** calling the named helper is a fail —
-  contract / rebuild must invoke the helper symbol.
-- Contract harness **must call** that native helper (directly or via an
-  in-process host/extension helper that invokes it). A harness that only runs
-  client `SELECT count(*)` / status RPCs against base tables is a fail.
-- If analysis documents that base consume is entirely accelerator-owned and the
-  backend still ships a minimal typed rebuild scan for this rule, that is OK —
-  evidence must still show a real native call site.
+- The scan uses **in-process / storage-AM / table-AM** (or the engine's native
+  connection-per-partition range-scan) APIs and emits **engine-local** typed
+  chunks. **Forbidden:** a portable `DataChunk` IR; a single client SQL
+  round-trip that parses rows on the hot path; a silent no-op stub.
+- The harness value-checks it: >=3 seeded rows incl. NULL, a proper-subset
+  projection (order preserved), a filter dropping >=1 row, exact cells, >=2
+  chunk callbacks whose concatenation equals the golden set. `Build` reaches
+  the scan through `RunBuild`; a UDF that re-implements the scan inline does
+  not count.
 
-### `value_checked_scan` (layer `scan`)
+### `slot_runtime` (layer `runtime`)
 
-- Seed ≥3 known rows (≥1 NULL in a nullable column when types allow).
-- Scan helper uses a **proper-subset projection** (order preserved) and at
-  least one filter that drops ≥1 row.
-- Assert **exact** surviving row count, projected arity/types, and **cell values**
-  (including NULL) in **this** engine’s native row/slot/callback representation.
-  “Didn’t crash” / count-only is a fail. Do **not** require another engine’s
-  row type as the assert medium.
-- If the helper batches: force ≥2 consumer callbacks and assert concatenation
-  equals the golden set. Observe callback counts in the **same** in-process
-  session / connection as the scan (do not skip because a later RPC is a new
-  backend). If it never batches, document that in a harness comment and skip
-  multi-callback (do not invent fake batching).
+- The host owns one `RuntimeHost` with the engine's thread setting
+  (`ResolveThreadBudget`); `EngineWorkOnHostThread()` matches the placement.
+- Seed -> background build -> read; DML -> rematch; an invalidated state
+  rebuilds **while writes continue** and becomes synced without a quiet
+  window; an old reader gets its own epoch's answer or `Fallback`, never a
+  newer one; shipped placement: gap -> rebuild, worker restart -> reads fall
+  back exact then hit; peak threads <= the budget.
 
-### `mutation_hooks` (layer `mutations`)
+### `slot_entry` (layer `host`; skip if the workload does not require an in-process host)
 
-- Drive INSERT, UPDATE, and DELETE through the engine so the adapter’s real
-  trigger / WAL / listener / txn callback produces `MutationBatch`.
-- Assert **value-level** batch fields relevant to the design (table id, kind,
-  old/new presence and/or values) — not only “pending work” / module count.
-  DELETE must assert old-row values (or explicit old-row presence + cells),
-  not count/kind alone.
-- Hand-built `MutationBatch` + `CaptureMutation` alone is **not** enough for
-  this rule (optional unit extras allowed alongside).
+- The SQL entry decodes arguments (incl. NULL), calls
+  `AcceleratorRuntime::Read` at the S3 epoch, emits rows, answers `Fallback`
+  through `ExecuteFallback`. Read parallelism is inside `Execute`, not an
+  engine parallel source.
 
-### `txn_lifecycle` (layer `txn`)
+### `slots_only` (global)
 
-- Abort: pending cleared; no publish / no committed visibility change
-  (assert epoch / store read unchanged — observer bools alone are insufficient).
-- Commit: publish **or** invalidate exactly once as designed; visibility /
-  epoch / validity changes accordingly (assert epoch advance and/or published
-  value, not only `committed=true`).
-- The **engine txn API** (analysis `txn_lifecycle_plan.api`) must invoke
-  `OnPreCommit` / `OnCommit` / `OnAbort`. A harness that only calls those C++
-  methods is a fail for this rule.
-- After abort, a fresh txn can commit successfully (no poisoned coordinator).
+- The backend contains **no runtime flow**: no commit ordering, gap handling,
+  catch-up, build scheduling, version management, reader/build lock or thread
+  pool, and no edits to `substrate/aux/**`. The only threads are those the
+  placement requires (shipped worker: commit thread, read threads, main
+  thread) and the pool of `ThreadBudget`.
+- No `std::thread::hardware_concurrency`, fixed thread counts or caps
+  (`pipeline/gates/run_thread_budget_lint.sh`).
 
-### `visibility` (layer `visibility`)
+### `scale_safe` (global)
 
-- Uncommitted writes must not appear as committed visibility to a reader
-  snapshot taken before commit.
-- After commit, committed readers see the new epoch / published image (or
-  correct invalidation). Assert token / epoch inequality across the boundary.
-- Prefer a second concurrent reader when the engine’s process model allows it;
-  if the engine is single-connection-only, prove with snapshot/token APIs
-  in-process and document why.
-- Do **not** rely on bare `sleep` races to create the uncommitted window —
-  use a sync primitive (locks, notify, or file barriers) so the reader observes
-  the writer while it is still uncommitted.
+- No 32-bit counts or offsets on rows, batches, images, partitions; 64-bit
+  partition keys; capture without per-row heap allocation, once per statement
+  and table; scans and builds parallel; no build, rebuild or catch-up inside a
+  writer's commit.
 
-### `store_roundtrip` (layer `store`)
+### `fail_closed` (global)
 
-- Exercise the **engine's** store class (not a bare `VersionedAuxStore`):
-  TryPublish → CheckValidity → Read → Invalidate, with value asserts and
-  fail-closed Invalidate. Class lives in `aux_state::engine::{engine}`, not
-  `core::`.
-- `{Engine}StateStore` derives from `VersionedAuxStore` and only sets its
-  `Options` (`epoch`, `floor`, `fixed_accelerator`, `track_transaction_dirty`).
-  A store that re-implements `AuxStateStore` over its own maps / locks / slot
-  epochs, or whose overrides do not delegate to `VersionedAuxStore::`, is a fail.
-- Harness asserts the inherited semantics through that class:
-  mismatched `expected_version` → `false` and the partition `Invalidated`;
-  a token behind the publish epoch → image omitted / `NotVisible`; no epoch
-  provider → visible to every token; `StateImage.version` from the store.
-- `CheckValidity` is keyed by **published** `StateImage.accelerator` +
-  partition (`QueryKey.value` = decimal partition id; empty = accelerator-wide).
-  Unknown accelerator or partition → `Missing`. A registration API the harness
-  must call before validity is a fail — publish is the index.
-- Match chosen `store_mode`. For `serialized_boundary` / multi-process hosts:
-  each process's store must **refresh from durable state** (rebuild +
-  `Install` / `InstallIfUnchanged`) on read/validity, not only when empty;
-  otherwise long-lived processes keep stale state after a peer's commit.
-
-### `aux_services` (layer `aux_backend`)
-
-- `{Engine}AuxBackend` **is** the one `AuxEngineServices`. Ctor calls
-  `coordinator.AttachServices(*this)`.
-- Harness abort/commit goes through Capture + `OnAbort`/`OnCommit` (coordinator
-  publishes). Direct `store.TryPublish` from the harness is not this rule.
-- Abort: no published image / epoch unchanged. Commit: one image with asserted
-  values. `CurrentVisibility`, cost model, and `WorkerCount()` are methods on
-  **this** backend — not a second services class.
-
-### `toy_runtime` (layer `runtime`)
-
-- `Build` consumes base rows via the **named** scan-layer helper (same symbol
-  as `native_scan`), then publishes through the coordinator/store.
-- `Execute` reads the store with `backend.CurrentVisibility()`.
-- Seed → Build → Execute matches golden rows; post-DML commit rematches.
-  Reimplementing scan only inside `Build` / a UDF, or publishing through a
-  store back door, is a fail.
-
-### `fail_closed`
-
-- If SDK / server / embedded host cannot start or be reached, harness exits
-  non-zero (`Fail`). No SKIP-then-PASS / “PASS (structural)” only.
+- If the SDK / server / embedded host cannot start or be reached, the harness
+  exits non-zero (`Fail`). No SKIP-then-PASS / "PASS (structural)".
 
 ### `host_glue` (layer `host`; skip if the workload does not require an in-process host)
 
-- If workload `requires_in_process_host` is true: real in-process registration
-  exists (not a placeholder TU). Symbols come from this engine’s SDK hints.
-- Server-only symbols from this engine’s SDK (registration, txn callbacks,
-  table-AM / storage-AM, triggers, module `_init` entrypoints) belong only in
-  the in-process MODULE / extension — never in a host shared library that
-  standalone harnesses link.
+- Real in-process registration exists (not a placeholder TU). Server-only
+  symbols (registration, txn callbacks, table-AM / storage-AM, triggers, module
+  `_init` entrypoints) belong only in the MODULE / extension — never in a host
+  shared library that standalone harnesses link.
 - Do **not** recompile the same stateful TUs into both the host lib and the
-  MODULE while also linking the host lib (ODR / dual-singleton). MODULE owns
-  extension + bridge + server-only TUs; host lib owns substrate adapters
-  without server symbols.
-- If false: N/A — auditor must not invent a host requirement.
+  MODULE while also linking the host lib (ODR / dual-singleton).
+- If false: N/A — the auditor must not invent a host requirement.
 
-### `query_registries`
+### `query_registries` (global)
 
 - The backend names no query: `scripts/check_backend_query_free.py --engine {engine}`
   passes (no `TpchQ<N>` / `tpch_q<N>` / `tpch/q<N>/` outside comments).
@@ -162,9 +122,9 @@ on these `rule` ids. Each rule is owned by one implementation layer.
   functions is assembled from per-query fragments.
 - The backend builds and loads with zero registered queries.
 
-### `independence`
+### `independence` (global)
 
-- No reading/copying another engine’s `backends/{other}/` tree.
+- No reading/copying another engine's `backends/{other}/` tree.
 - No dependence on generated query accelerators (`tpch` / `sec_edgar` / etc.)
   in layer harnesses.
 - No reintroduction of a shared portable chunk IR.
@@ -173,20 +133,15 @@ on these `rule` ids. Each rule is owned by one implementation layer.
 
 ## Implementation self-check (before finishing)
 
-For each applicable rule above, record (in the agent transcript or a short
-comment block at the top of the layer harness) **path + symbol** evidence.
-If you cannot point to a call site that exercises the adapter path, the rule
-is not done — keep fixing; do not hand off to audit hoping it will pass.
-
----
+For each applicable rule record (in the agent transcript or a short comment
+block at the top of the layer harness) **path + symbol** evidence. If you
+cannot point to a call site that exercises the slot, the rule is not done.
 
 ## Architecture audit discipline
 
 - Use **only** the `rule` ids listed above in `violations[].rule`.
 - On fail: actionable `feedback_for_implementation` that maps 1:1 to those rules.
-- On pass: empty feedback; do not add “nice to have” follow-ups as failures.
-- Do **not** raise a new bar that was not in this checklist between rounds.
-- Prefer “adapter + harness call the real paths with value asserts” over
-  demanding a redesign of already-correct internals.
-  Do **not** fail solely because the scan helper is not named
-  `ScanNativeBaseTable` or does not emit `DataChunk`.
+- On pass: empty feedback; no "nice to have" follow-ups as failures.
+- Do **not** raise a new bar between rounds.
+- Prefer "slot + harness call the real paths with value asserts" over demanding
+  a redesign of already-correct internals.

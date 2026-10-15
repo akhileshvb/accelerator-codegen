@@ -184,9 +184,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "type": "string",
                 "description": (
                     "Official gate name. Engine backend layers: engine_build, then "
-                    "engine_store / engine_aux_backend / engine_txn / engine_mutations "
-                    "/ engine_scan / engine_runtime / engine_visibility / engine_host "
-                    "(validation also: engine_adversarial). Aux: aux_correctness, "
+                    "engine_capture / engine_epochs / engine_scan / engine_runtime / "
+                    "engine_host (validation also: engine_adversarial and the slot_* "
+                    "gates). Aux: aux_correctness, "
                     "aux_multi_connection. Query: correctness, baseline, sf10, profile, "
                     "fairness, scaffold, host_bootstrap."
                 ),
@@ -204,7 +204,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Official gate for this impl_* layer (impl_txn → engine_txn).",
+        "description": "Official gate for this impl_* layer (impl_epochs → engine_epochs).",
     },
     "primitive_publish": {
         "type": "object",

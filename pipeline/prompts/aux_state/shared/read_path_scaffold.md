@@ -51,12 +51,11 @@ In `InterpretMutation` / `AccumulateMutation` / `StageMaintenance`:
 - Relevant maintenance → `services.ChooseMaintenance` with accurate row/partition counts
 - Populate `interference_us` via calibrated `CostModelParams` fields, not ad-hoc globals
 
-## Serialized-boundary encoding
+## No state encoding
 
-Only when an engine adapter uses `serialized_boundary` store mode: implement
-`Encode*` / `Decode*` with `substrate/aux/core/byte_stream.hpp`
-at the process/SHM boundary. Typed in-process adapters keep `StateImage`
-payloads without byte round-trips on the hot path.
+State images stay typed in the process that hosts the runtime; do not write
+`Encode*` / `Decode*` for state. Only captured batches, arguments and result
+rows cross a process boundary, and the substrate (`runtime/wire.hpp`) encodes them.
 
 ## Reference files
 

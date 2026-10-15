@@ -23,7 +23,7 @@ def test_describe_abort_returncode():
 def test_log_tail_for_agent_never_empty_on_abort():
     text = log_tail_for_agent(
         {
-            "notes": "layer harness failed via docker exec: test_mysql_txn",
+            "notes": "layer harness failed via docker exec: test_mysql_epochs",
             "log_tail": "",
             "returncode": 134,
         }
@@ -31,7 +31,7 @@ def test_log_tail_for_agent_never_empty_on_abort():
     assert "no captured stdout/stderr" in text
     assert "134" in text
     assert "SIGABRT" in text
-    assert "test_mysql_txn" in text
+    assert "test_mysql_epochs" in text
 
 
 def test_enrich_failed_gate_prefers_json_returncode_and_fills_tail():
@@ -56,14 +56,14 @@ def test_enrich_failed_gate_uses_wrapper_output_when_json_tail_empty():
 
 def test_layer_gate_feedback_includes_abort_when_log_tail_empty(tmp_path):
     failed = GateResult(
-        name="engine_txn",
+        name="engine_epochs",
         status="fail",
         data={
-            "notes": "layer harness failed via docker exec: test_mysql_txn",
+            "notes": "layer harness failed via docker exec: test_mysql_epochs",
             "log_tail": "",
             "returncode": 134,
         },
-        path=tmp_path / "engine_txn.json",
+        path=tmp_path / "engine_epochs.json",
     )
     text = format_layer_gate_feedback(
         failed, layer_id="txn", round_idx=2, max_rounds=3
@@ -78,10 +78,10 @@ def test_layer_gate_feedback_includes_abort_when_log_tail_empty(tmp_path):
 
 def test_compact_gate_payload_always_has_failure_summary():
     compact = _compact_gate_payload(
-        "engine_txn",
+        "engine_epochs",
         {
             "status": "fail",
-            "notes": "layer harness failed via docker exec: test_mysql_txn",
+            "notes": "layer harness failed via docker exec: test_mysql_epochs",
             "log_tail": "",
             "returncode": 134,
         },
@@ -118,9 +118,9 @@ def test_run_gate_persists_enriched_fail_json(monkeypatch, tmp_path):
         out.write_text(
             json.dumps(
                 {
-                    "gate": "engine_txn",
+                    "gate": "engine_epochs",
                     "status": "fail",
-                    "notes": "layer harness failed via docker exec: test_mysql_txn",
+                    "notes": "layer harness failed via docker exec: test_mysql_epochs",
                     "log_tail": "",
                     "returncode": 134,
                 }
@@ -140,7 +140,7 @@ def test_run_gate_persists_enriched_fail_json(monkeypatch, tmp_path):
         "accel_pipeline.worker_isolation.ensure_worker_build_dir",
         lambda *a, **k: None,
     )
-    result = run_gate(pc, "engine_txn", 0, workload=workload, raise_on_failure=False)
+    result = run_gate(pc, "engine_epochs", 0, workload=workload, raise_on_failure=False)
     assert result.status == "fail"
     assert "SIGABRT" in result.data["log_tail"]
     persisted = json.loads(result.path.read_text(encoding="utf-8"))

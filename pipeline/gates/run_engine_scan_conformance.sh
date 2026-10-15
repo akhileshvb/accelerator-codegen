@@ -39,13 +39,13 @@ def check_path(label: str, rel: str | None, *, want_file: bool) -> None:
         missing.append(f"{label}={rel}")
 
 if status == "pass":
-    check_path("scan_adapter_header", targets.get("scan_adapter_header"), want_file=True)
-    check_path("scan_adapter_source", targets.get("scan_adapter_source"), want_file=True)
-    check_path("stateful_dir", targets.get("stateful_dir"), want_file=False)
-    check_path("stateful_src_dir", targets.get("stateful_src_dir"), want_file=False)
+    check_path("host_header", targets.get("host_header"), want_file=True)
+    check_path("capture_source", targets.get("capture_source"), want_file=True)
+    check_path("scan_header", targets.get("scan_header"), want_file=True)
+    check_path("scan_source", targets.get("scan_source"), want_file=True)
 
     search_roots: list[Path] = []
-    for key in ("scan_adapter_header", "scan_adapter_source", "stateful_dir", "stateful_src_dir"):
+    for key in ("host_header", "host_source", "capture_source", "scan_header", "scan_source"):
         rel = targets.get(key) or ""
         if not rel:
             continue
@@ -66,10 +66,10 @@ if status == "pass":
                 pass
     blob = "\n".join(texts)
     if blob:
-        if not re.search(r"\b(AuxEngineServices|AuxStateStore)\b", blob):
-            missing.append("missing symbol AuxEngineServices|AuxStateStore")
-        if not re.search(r"\bMutationBatch\b", blob):
-            missing.append("missing symbol MutationBatch")
+        if not re.search(r"\bEngineSlots\b", blob):
+            missing.append("missing symbol EngineSlots")
+        if not re.search(r"\bColumnarBatch\b", blob):
+            missing.append("missing symbol ColumnarBatch")
         # Engine-local rebuild scan helper (name may vary); reject obvious client-SQL-only adapters.
         if re.search(r"\bPQexec(Params)?\b", blob) and not re.search(
             r"\b(table_beginscan|table_open|ScanNative|NativeScan|heap_getnext)\b", blob
@@ -97,7 +97,7 @@ if status == "pass":
                     notes.append("missing: " + "; ".join(missing))
                 else:
                     notes.append(
-                        "target paths + AuxEngineServices/AuxStateStore/MutationBatch present "
+                        "target paths + EngineSlots/ColumnarBatch present "
                         "(full semantics: architecture_audit; no shared DataChunk requirement)"
                     )
             else:

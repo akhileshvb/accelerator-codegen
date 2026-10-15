@@ -83,7 +83,7 @@ def build_gate_context(
             {
                 "target_paths": dict(workload.get("target_paths") or {}),
                 "cmake": dict(workload.get("cmake") or {}),
-                "store_mode_candidates": list(workload.get("store_mode_candidates") or []),
+                "placement_candidates": list(workload.get("placement_candidates") or []),
                 "requires_in_process_host": bool(workload.get("requires_in_process_host", False)),
                 "implementation_layers": list(workload.get("implementation_layers") or []),
                 "host_runtime": dict(workload.get("host_runtime") or {}),

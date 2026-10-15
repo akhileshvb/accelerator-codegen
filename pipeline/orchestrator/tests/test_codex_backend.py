@@ -22,13 +22,13 @@ def test_resolve_stage_provider_codex_overrides():
     assert resolve_stage_provider("analysis", cfg) == "codex_exec"
     assert resolve_stage_provider("audit", cfg) == "codex_exec"
     assert resolve_stage_provider("implementation", cfg) == "codex_exec"
-    assert resolve_stage_provider("impl_store", cfg) == "codex_exec"
+    assert resolve_stage_provider("impl_capture", cfg) == "codex_exec"
     assert resolve_stage_provider("impl_host", cfg) == "codex_exec"
     assert resolve_stage_provider("validation", cfg) == "codex_exec"
     assert resolve_stage_provider("optimization_worker", cfg) == "codex_exec"
     assert resolve_stage_provider("optimization_unified_hypothesis", cfg) == "codex_exec"
     assert resolve_stage_provider("crash_debug", cfg) == "codex_exec"
-    assert resolve_preset("impl_store", cfg) == "deepseek/deepseek-v4-pro"
+    assert resolve_preset("impl_capture", cfg) == "deepseek/deepseek-v4-pro"
     assert resolve_preset("implementation", cfg) == "deepseek/deepseek-v4-pro"
     assert resolve_stage_provider("critique_store", cfg) == "codex_exec"
     assert resolve_stage_provider("layer_critique", cfg) == "codex_exec"
@@ -221,7 +221,7 @@ def test_mcp_env_sidecar_quotes_values_with_spaces(monkeypatch, tmp_path):
         pipeline_config=pipeline_config,
         model_config=model,
         query=0,
-        stage="impl_txn",
+        stage="impl_epochs",
         workload_name="engine_postgres",
     )
     path = backend._write_mcp_env_sidecar(tmp_path)
@@ -266,7 +266,7 @@ def test_codex_exec_whitelists_engine_impl_mcp_tools(monkeypatch):
         pipeline_config=pipeline_config,
         model_config=model,
         query=0,
-        stage="impl_txn",
+        stage="impl_epochs",
         workload_name="engine_postgres",
     )
     captured: dict = {}
@@ -288,7 +288,7 @@ def test_codex_exec_whitelists_engine_impl_mcp_tools(monkeypatch):
     )
     result = backend.run_stage(
         StageRunRequest(
-            stage="impl_txn",
+            stage="impl_epochs",
             instructions="sys",
             user_message="user",
             agent_name="impl",
@@ -306,17 +306,17 @@ def test_codex_exec_whitelists_engine_impl_mcp_tools(monkeypatch):
     assert "run_layer_gate" in enabled
     assert "run_quick_benchmark" not in enabled
     sidecar = REPO_ROOT / "pipeline" / ".codex" / "accel_pipeline_mcp.env"
-    assert "ACCEL_PIPELINE_STAGE=impl_txn" in sidecar.read_text(encoding="utf-8")
+    assert "ACCEL_PIPELINE_STAGE=impl_epochs" in sidecar.read_text(encoding="utf-8")
 
 
 def test_impl_stage_tools_include_layer_gates():
     from accel_pipeline.tools.gate_tools import layer_gate_from_stage
     from accel_pipeline.tools.tool_policy import stage_tool_names
 
-    assert layer_gate_from_stage("impl_txn") == "engine_txn"
-    assert layer_gate_from_stage("impl_aux_backend") == "engine_aux_backend"
+    assert layer_gate_from_stage("impl_epochs") == "engine_epochs"
+    assert layer_gate_from_stage("impl_scan") == "engine_scan"
     assert layer_gate_from_stage("implementation") is None
-    names = stage_tool_names("impl_txn")
+    names = stage_tool_names("impl_epochs")
     assert "request_gate" in names
     assert "run_engine_build" in names
     assert "run_layer_gate" in names
@@ -346,12 +346,12 @@ def test_mcp_run_layer_gate_maps_impl_stage(monkeypatch, tmp_path):
 
     monkeypatch.setattr("accel_pipeline.tools.gate_tools.run_gate", fake_run_gate)
     tools = build_mcp_tool_callables(
-        pipeline_config, workload, "engine_postgres", 0, "impl_txn", 0, art
+        pipeline_config, workload, "engine_postgres", 0, "impl_epochs", 0, art
     )
     assert "run_engine_build" in tools
     assert "run_layer_gate" in tools
     build_out = json.loads(tools["run_engine_build"]())
     layer_out = json.loads(tools["run_layer_gate"]())
-    assert called == ["engine_build", "engine_txn"]
+    assert called == ["engine_build", "engine_epochs"]
     assert build_out["gate"] == "engine_build"
-    assert layer_out["gate"] == "engine_txn"
+    assert layer_out["gate"] == "engine_epochs"

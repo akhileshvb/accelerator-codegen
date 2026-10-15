@@ -44,9 +44,8 @@ engine_sdk_hints:
   - "In-process MODULE target name: `accelerator_codegen_pg`. Installed .so path in the container: `/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so`."
   - "Gate-test UDFs and toy bridges (table setup, inspection, runtime-layer drivers) go in `backends/postgres/tests/extension_test_*.cpp` and build only into the test MODULE `accelerator_codegen_pg_test` (`/usr/lib/postgresql/17/lib/accelerator_codegen_pg_test.so`); the layer harnesses `LOAD` that module themselves. The production MODULE `accelerator_codegen_pg` holds only real entry points (no test UDFs)."
   - "Use PostgreSQL 17 server headers (SPI, table/heap AM, triggers, xact callbacks, `_PG_init`) from the in-container SDK. Server-only symbols belong only in the MODULE — never in a host shared library that standalone harnesses link."
-  - "Shared substrate (do not regenerate): substrate/aux/{core,state,maintenance}/ — MutationBatch, AuxStateStore, AuxEngineServices, coordinator."
+  - "Shared substrate (do not regenerate): substrate/aux/{core,state,maintenance}/ and the runtime skeleton substrate/aux/runtime/ (RuntimeHost, AcceleratorRuntime, ColumnarBatch, wire, ThreadBudget). You implement its slots S1-S8 (engine_slots.hpp, engine_interfaces.md)."
   - "Do not read or copy another engine's backends/<engine>/ tree. Do not depend on generated TPC-H/SEC query modules."
 
-store_mode_candidates:
-  - typed_in_process
-  - serialized_boundary
+placement_candidates:
+  - shipped_worker

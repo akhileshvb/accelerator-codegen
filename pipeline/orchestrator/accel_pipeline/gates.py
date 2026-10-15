@@ -12,9 +12,6 @@ from accel_pipeline.gate_context import write_gate_context
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 
 
-# TODO: runtime gates (thread_budget_lint, runtime_*) are specified in
-# gates/README_runtime_gates.md; register them here, disabled by default, once
-# each backend harness exists.
 GATE_SCRIPTS = {
     "scaffold": "scaffold_query.sh",
     "host_bootstrap": "run_host_bootstrap.sh",
@@ -38,14 +35,17 @@ GATE_SCRIPTS = {
     "engine_contract": "run_engine_contract.sh",
     "engine_adversarial": "run_engine_adversarial.sh",
     "engine_aux_smoke": "run_engine_aux_smoke.sh",
-    "engine_store": "run_engine_layer.sh",
-    "engine_aux_backend": "run_engine_layer.sh",
-    "engine_txn": "run_engine_layer.sh",
-    "engine_mutations": "run_engine_layer.sh",
+    "engine_capture": "run_engine_layer.sh",
+    "engine_epochs": "run_engine_layer.sh",
     "engine_scan": "run_engine_layer.sh",
     "engine_runtime": "run_engine_layer.sh",
-    "engine_visibility": "run_engine_layer.sh",
     "engine_host": "run_engine_layer.sh",
+    "slot_epoch_stress": "run_slot_gates.sh",
+    "slot_hits_under_writes": "run_slot_gates.sh",
+    "slot_read_after_commit": "run_slot_gates.sh",
+    "slot_txn_edges": "run_slot_gates.sh",
+    "slot_restart": "run_slot_gates.sh",
+    "slot_differential": "run_slot_gates.sh",
 }
 
 
@@ -71,6 +71,7 @@ GATES_ALLOW_SKIP = frozenset(
         "engine_scan_conformance",
         "engine_aux_smoke",
         "engine_host",
+        "slot_restart",
     }
 )
 

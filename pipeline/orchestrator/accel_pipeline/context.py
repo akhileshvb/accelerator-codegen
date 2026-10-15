@@ -710,9 +710,9 @@ def build_prompt_context(
         "optional_examples_section": (
             _read_text(pipe / "prompts" / "engine_backend" / "optional_examples.md")
             + (
-                "\n\nWorkload `store_mode_candidates`:\n"
-                + "\n".join(f"- `{m}`" for m in (workload.get("store_mode_candidates") or []))
-                if workload.get("store_mode_candidates")
+                "\n\nWorkload `placement_candidates` (S6):\n"
+                + "\n".join(f"- `{m}`" for m in (workload.get("placement_candidates") or []))
+                if workload.get("placement_candidates")
                 else ""
             )
             if is_engine
@@ -721,8 +721,7 @@ def build_prompt_context(
         "engine_generation_mode": (
             (
                 "update_existing"
-                if (repo / str((workload.get("target_paths") or {}).get("state_store_header")
-                               or (workload.get("target_paths") or {}).get("scan_adapter_header", ""))).is_file()
+                if (repo / str((workload.get("target_paths") or {}).get("host_header", ""))).is_file()
                 and workload.get("allow_update_existing", True)
                 else "generate_from_scratch"
             )

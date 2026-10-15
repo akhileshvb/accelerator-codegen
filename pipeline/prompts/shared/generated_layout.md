@@ -28,15 +28,15 @@ There is **no** shared portable `DataChunk` IR. Base kernels are engine-specific
 
 ## Backend tree (by runtime slot)
 
-A backend implements the slots of `substrate/aux/runtime/engine_slots.hpp` and nothing else (see `engine_interfaces.md`, "Adapter responsibilities"):
+A backend implements the slots of `substrate/aux/runtime/engine_slots.hpp` and nothing else (see `engine_interfaces.md`, "Backend contract"):
 
 ```
 backends/{engine}/
-  engine/capture*       # S1 capture: change -> ColumnarBatch -> RuntimeHost::OnCapture
-  engine/scan*          # S5 build snapshot + S8 parallel native scans (scan_helper.{hpp,cpp})
-  state/                # S2 commit epoch, S3 reader epoch, S4 version floor ({engine}_state_store, {engine}_aux_backend)
-  api/                  # S7 SQL entry points, S6 placement (Postgres shard worker/rings may live in state/), api/catalog/ registries
-  tests/                # test_{engine}_<layer>.cpp, one per implementation layer
+  engine/capture*       # S1: engine change -> ColumnarBatch -> RuntimeHost::OnCapture
+  engine/scan*          # S5 build snapshot + S8 partitioned native scans
+  state/                # S2-S4 where the engine needs shared state (Postgres: commit gates, epoch ring, version horizon)
+  api/                  # S6 placement + the host ({engine}_host.{hpp,cpp}: the EngineSlots implementation), S7 SQL entry points, api/catalog/ registries
+  tests/                # test_{engine}_<layer>.cpp, one per implementation layer (capture, epochs, scan, runtime, host)
   bench/
 ```
 
@@ -158,6 +158,6 @@ Prefer peers under the **same** `{engine}/` tree when present (read-only: other 
 | Fused scan hook (duckdb) | a peer `package.cpp` setting `create_fused_kernel` / `fused_scan` |
 | Registration | a peer's registrar file(s) (table above) |
 | Aux module | `accelerators/tpch/q*/{engine}/aux/module.cpp` |
-| Serialized boundary helpers | `substrate/aux/core/byte_stream.hpp` (only when store mode needs it) |
+| Process-boundary encoding | `substrate/aux/runtime/wire.hpp` (only for a shipped-worker placement) |
 
 See also `pipeline/prompts/shared/engine_interfaces.md`.

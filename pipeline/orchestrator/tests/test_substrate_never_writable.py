@@ -45,7 +45,7 @@ SUBSTRATE_SAMPLES = sorted(
 EXTRA_STAGES = (
     "", "implementation", "analysis", "optimization", "optimization_worker", "optimization_unified",
     "optimization_unified_patch", "optimization_fix", "crash_debug", "host_bootstrap", "audit",
-    "adversarial_tests", "engine_backend", "impl_store", "impl_runtime", "impl_scan", "verus_kernel",
+    "adversarial_tests", "engine_backend", "impl_capture", "impl_runtime", "impl_scan", "verus_kernel",
 )
 STAGES = sorted(set(STAGE_TOOL_NAMES) | set(EXTRA_STAGES))
 

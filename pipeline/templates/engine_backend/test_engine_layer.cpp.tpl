@@ -2,7 +2,8 @@
 // Spec: pipeline/prompts/engine_backend/layers.md
 // Build: test_{{engine_name}}_{{layer_id}}   CTest: engine_{{engine_name}}_{{layer_id}}
 //
-// Value asserts. No TPC-H / SEC modules. NEVER SKIP-then-PASS.
+// Toy module on a real RuntimeHost with this backend's slots (reference: SumModule in
+// eval/tests/test_aux_runtime.cpp). Value asserts. No TPC-H / SEC modules. NEVER SKIP-then-PASS.
 #include <cstdint>
 #include <iostream>
 #include <string>

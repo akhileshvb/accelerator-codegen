@@ -20,88 +20,77 @@ allowed_commands:
   - "^bash pipeline/gates/run_engine_contract\\.sh$"
   - "^bash pipeline/gates/run_engine_adversarial\\.sh$"
   - "^bash pipeline/gates/run_engine_aux_smoke\\.sh$"
+  - "^bash pipeline/gates/run_slot_gates\\.sh$"
+  - "^bash pipeline/gates/run_thread_budget_lint\\.sh( .*)?$"
 
-# Sequential implementation layers. Orchestrator runs one agent stage per layer
-# and iterates until that layer's gate passes. Analysis sketches every layer.
+# A backend run generates slot implementations (S1-S8, substrate/aux/runtime/
+# engine_slots.hpp); the runtime flow is substrate and frozen. Sequential
+# layers, one agent stage each; the orchestrator iterates until the layer's
+# gate passes. Analysis sketches every layer.
 implementation_layers:
-  - id: store
-    title: State store
-    gate: engine_store
-    harness: backends/{engine}/tests/test_{engine}_store.cpp
-    cmake_target: test_{engine}_store
-    rules: [store_roundtrip]
-  - id: aux_backend
-    title: Aux backend
-    gate: engine_aux_backend
-    harness: backends/{engine}/tests/test_{engine}_aux_backend.cpp
-    cmake_target: test_{engine}_aux_backend
-    rules: [aux_services]
-  - id: txn
-    title: Txn bridge
-    gate: engine_txn
-    harness: backends/{engine}/tests/test_{engine}_txn.cpp
-    cmake_target: test_{engine}_txn
-    rules: [txn_lifecycle]
-  - id: mutations
-    title: Mutation capture
-    gate: engine_mutations
-    harness: backends/{engine}/tests/test_{engine}_mutations.cpp
-    cmake_target: test_{engine}_mutations
-    rules: [mutation_hooks]
+  - id: capture
+    title: Capture (S1)
+    gate: engine_capture
+    harness: backends/{engine}/tests/test_{engine}_capture.cpp
+    cmake_target: test_{engine}_capture
+    rules: [slot_capture]
+  - id: epochs
+    title: Commit epoch, reader epoch, version floor (S2-S4)
+    gate: engine_epochs
+    harness: backends/{engine}/tests/test_{engine}_epochs.cpp
+    cmake_target: test_{engine}_epochs
+    rules: [slot_epochs]
   - id: scan
-    title: Engine-local scan helper
+    title: Build snapshot and chunked scans (S5, S8)
     gate: engine_scan
     harness: backends/{engine}/tests/test_{engine}_scan.cpp
     cmake_target: test_{engine}_scan
-    rules: [native_scan, value_checked_scan]
+    rules: [slot_scan, native_scan]
   - id: runtime
-    title: Toy Runtime
+    title: Placement and toy runtime (S6)
     gate: engine_runtime
     harness: backends/{engine}/tests/test_{engine}_runtime.cpp
     cmake_target: test_{engine}_runtime
-    rules: [toy_runtime]
-  - id: visibility
-    title: Visibility
-    gate: engine_visibility
-    harness: backends/{engine}/tests/test_{engine}_visibility.cpp
-    cmake_target: test_{engine}_visibility
-    rules: [visibility]
+    rules: [slot_runtime]
   - id: host
-    title: Host packaging
+    title: Entry points and packaging (S7)
     gate: engine_host
     harness: backends/{engine}/tests/test_{engine}_host.cpp
     cmake_target: test_{engine}_host
-    rules: [host_glue]
+    rules: [slot_entry, host_glue]
     skip_unless: requires_in_process_host
 
 # Default post-layer gates (engine_build + this layer). Overridden per stage.
 post_implementation_gates:
   - engine_build
 
+# Validation: every layer again, the unseen adversarial tests, then the
+# backend-generic slot gates (run_slot_gates.sh, per-engine adapters).
 post_validation_gates:
   - engine_build
-  - engine_store
-  - engine_aux_backend
-  - engine_txn
-  - engine_mutations
+  - engine_capture
+  - engine_epochs
   - engine_scan
   - engine_runtime
-  - engine_visibility
   - engine_host
   - engine_adversarial
+  - slot_epoch_stress
+  - slot_hits_under_writes
+  - slot_read_after_commit
+  - slot_txn_edges
+  - slot_restart
+  - slot_differential
 
 prompt_subdir: engine_backend
 
 # Conventional layout used when workload omits target_paths / cmake.
 default_target_paths:
-  state_store_header: backends/{engine}/state/{engine}_state_store.hpp
-  state_store_source: backends/{engine}/state/{engine}_state_store.cpp
-  aux_backend_header: backends/{engine}/state/{engine}_aux_backend.hpp
-  aux_backend_source: backends/{engine}/state/{engine}_aux_backend.cpp
-  scan_helper_header: backends/{engine}/engine/scan_helper.hpp
-  scan_helper_source: backends/{engine}/engine/scan_helper.cpp
-  scan_adapter_header: backends/{engine}/engine/scan_helper.hpp
-  scan_adapter_source: backends/{engine}/engine/scan_helper.cpp
+  host_header: backends/{engine}/api/{engine}_host.hpp
+  host_source: backends/{engine}/api/{engine}_host.cpp
+  capture_header: backends/{engine}/engine/capture.hpp
+  capture_source: backends/{engine}/engine/capture.cpp
+  scan_header: backends/{engine}/engine/scan.hpp
+  scan_source: backends/{engine}/engine/scan.cpp
   stateful_dir: backends/{engine}/state
   stateful_src_dir: backends/{engine}/state
   contract_test: backends/{engine}/tests/test_{engine}_runtime.cpp
@@ -113,9 +102,10 @@ default_cmake:
   collect_fn: accel_collect_{engine}_sources
   build_flag: ACCELERATOR_CODEGEN_BUILD_{ENGINE}
 
-store_mode_candidates:
-  - typed_in_process
-  - serialized_boundary
+# S6 placement choices: where the runtime runs and how commits and reads reach it.
+placement_candidates:
+  - in_process
+  - shipped_worker
 
 stage_max_turns:
   analysis: 20

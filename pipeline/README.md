@@ -76,7 +76,7 @@ substrate is read-only to it.
 
 - `config/` — orchestrator and model settings, workload YAML
 - `prompts/` — stage prompts and shared constraints
-- `gates/` — deterministic gate scripts (ctest, benchmarks, fairness); runtime-skeleton gate specs in `gates/README_runtime_gates.md`
+- `gates/` — deterministic gate scripts (ctest, benchmarks, fairness); the backend slot gates (`run_slot_gates.sh`, per-engine adapters) in `gates/README_runtime_gates.md`
 - `templates/scaffold/` — per-query stubs (kernel, package, the query's `register.cpp`) and CMake snippet
 - `artifacts/` — per-query pipeline state and reports
 - `orchestrator/` — Python package (`accel_pipeline`)
@@ -87,8 +87,8 @@ substrate is read-only to it.
 
 | Layer | Directory | Writer |
 |-------|-----------|--------|
-| Substrate | `substrate/aux/{core,state,maintenance}`, `substrate/verus/{common,store,kit,sql2verus}` | nobody in a run (write-denied, `test_substrate_never_writable.py`) |
-| Engine backends | `backends/<engine>/{state,engine,api,tests}` | the `engine_backend` run only |
+| Substrate | `substrate/aux/{core,state,maintenance,runtime}`, `substrate/verus/{common,store,kit,sql2verus}` | nobody in a run (write-denied, `test_substrate_never_writable.py`) |
+| Engine backends (slot implementations) | `backends/<engine>/{state,engine,api,tests}` | the `engine_backend` run only |
 | Shared primitives / proof library | `accelerators/prims`, `accelerators/prooflib` | `primitive_publish` / `prooflib_publish`, additions only |
 | Per-query accelerators | `accelerators/<bench>/q<N>/` | the query's run |
 | Workload SQL | `workloads/<bench>/` | people |
@@ -315,9 +315,12 @@ Tests: `pytest tests/test_benchmark_pack.py`
 
 ## Engine backend onboarding
 
-Separate pipeline (`workload_kind: engine_backend`) generates engine adapters from the
-**fixed substrate** (`substrate/aux/{core,state,maintenance}`). It is **engine-agnostic
-and from-scratch**: conventional paths come from `config/engine_backend.yaml`.
+Separate pipeline (`workload_kind: engine_backend`) generates an engine's **slot
+implementations** (S1-S8, `substrate/aux/runtime/engine_slots.hpp`); the runtime
+flow (commit order, versioned store, background builds with catch-up, reads at
+the reader's epoch, thread budget) is the **fixed substrate**
+(`substrate/aux/runtime/`) and never generated. It is **engine-agnostic and
+from-scratch**: conventional paths come from `config/engine_backend.yaml`.
 Agents must **not** read or copy other engine trees.
 
 ```bash
@@ -329,20 +332,22 @@ python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
 
 # Single layer (dry-run)
 python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
-  --stage impl_store --dry-run
+  --stage impl_capture --dry-run
 ```
 
-- Stages: analysis (sketches every layer) → `impl_store` → `impl_aux_backend` →
-  `impl_txn` → `impl_mutations` → `impl_scan` → `impl_runtime` → `impl_visibility` →
-  `impl_host` (skipped unless `requires_in_process_host`) → architecture_audit →
-  validation (adversarial)
+- Stages: analysis (sketches every layer) → `impl_capture` (S1) → `impl_epochs`
+  (S2-S4) → `impl_scan` (S5, S8) → `impl_runtime` (S6) → `impl_host` (S7; skipped
+  unless `requires_in_process_host`) → architecture_audit → validation
+  (adversarial tests, then the slot gates)
 - Layer spec: `prompts/engine_backend/layers.md`
 - Each impl layer loops `engine_build` + that layer’s gate until pass
 - Architecture audit is read-only; on fail it re-runs **only the named failing
   layers** (small impl fix-up) then re-audits (up to `architecture_audit_max_rounds`)
-- Gates: `engine_store`, `engine_aux_backend`, `engine_txn`, `engine_mutations`,
-  `engine_scan`, `engine_runtime`, `engine_visibility`, `engine_host`,
-  `engine_adversarial`
+- Gates: `engine_capture`, `engine_epochs`, `engine_scan`, `engine_runtime`,
+  `engine_host`, `engine_adversarial`, then the backend-generic `slot_*` gates
+  (`slot_epoch_stress`, `slot_hits_under_writes`, `slot_read_after_commit`,
+  `slot_txn_edges`, `slot_restart`, `slot_differential`;
+  `gates/README_runtime_gates.md`)
 - Host connection is workload `host_runtime` (not hardcoded in shared gates)
 - Workloads: `config/workloads/engine_*.yaml`
 

@@ -9,20 +9,17 @@ from accel_pipeline.gates import run_gate
 
 ENGINE_LAYER_GATES = (
     "engine_build",
-    "engine_store",
-    "engine_aux_backend",
-    "engine_txn",
-    "engine_mutations",
+    "engine_capture",
+    "engine_epochs",
     "engine_scan",
     "engine_runtime",
-    "engine_visibility",
     "engine_host",
     "engine_adversarial",
 )
 
 
 def layer_gate_from_stage(stage: str) -> str | None:
-    """Map ``impl_txn`` → ``engine_txn``. None when this is not a layer impl stage."""
+    """Map ``impl_epochs`` → ``engine_epochs``. None when this is not a layer impl stage."""
     if not str(stage or "").startswith("impl_"):
         return None
     lid = str(stage)[len("impl_") :].strip()
@@ -71,7 +68,7 @@ def make_gate_tools(ctx: ToolContext):
         """MCP TOOL (not a resource). Run an official orchestrator gate by name.
 
         Engine-backend layers: ``engine_build`` then this layer's gate
-        (``engine_store``, ``engine_aux_backend``, ``engine_txn``, …) after each
+        (``engine_capture``, ``engine_epochs``, …) after each
         increment until ``status`` is ``pass``. Prefer ``run_engine_build`` /
         ``run_layer_gate`` when listed. Docker hosts: this is the in-container
         build+run — do not cmake on the developer machine.
@@ -92,7 +89,7 @@ def make_gate_tools(ctx: ToolContext):
         return request_gate("engine_build")
 
     def run_layer_gate() -> str:
-        """MCP TOOL. Official gate for this impl_* layer (e.g. impl_txn → engine_txn)."""
+        """MCP TOOL. Official gate for this impl_* layer (e.g. impl_epochs → engine_epochs)."""
         gate = layer_gate_from_stage(ctx.stage)
         if not gate:
             return json.dumps(
@@ -100,7 +97,7 @@ def make_gate_tools(ctx: ToolContext):
                     "error": "run_layer_gate is for engine_backend impl_* stages",
                     "stage": ctx.stage,
                     "hint": (
-                        "Call request_gate with engine_store / engine_txn / … "
+                        "Call request_gate with engine_capture / engine_epochs / … "
                         "or run_engine_build()."
                     ),
                 },

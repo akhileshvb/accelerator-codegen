@@ -1,162 +1,180 @@
 # Engine backend layer contracts (substrate)
 
-Engine-agnostic. Adapter types live in
-`accelerator_codegen::aux_state::engine::{engine}` — **never** in `core::`.
-Fill `pipeline/templates/engine_backend/` (keep that namespace). Do **not**
-read another engine’s `backends/<engine>/` tree.
+Engine-agnostic. Backend types live in
+`accelerator_codegen::aux_state::engine::{engine}` — **never** in `core::` or
+`runtime::`. Fill `pipeline/templates/engine_backend/` (keep that namespace).
+Do **not** read another engine's `backends/<engine>/` tree.
 
 If `backend_analysis.json` `harness_plan` contradicts this file or
 `acceptance_checklist.md`, **follow this file**.
 
----
+**Read first (every layer):** `substrate/aux/runtime/README.md`,
+`engine_slots.hpp`, `runtime_host.hpp`, `accelerator_runtime.hpp`, and
+`shared/engine_interfaces.md` ("Backend contract": the slot contracts and what
+each must guarantee). The flow they implement is frozen: if a slot cannot
+express what the engine needs, log a backend-addition request; never work
+around the substrate.
 
-## `store`
-
-**Read first:** `substrate/aux/core/aux_types.hpp` (`AuxStateStore`,
-`StateImage`, `StateSnapshot`, `VisibilityToken`, `QueryKey`, `ValidityCode`,
-`StagedMaintenanceOutcome`), `substrate/aux/state/versioned_aux_store.hpp`
-(`VersionedAuxStore`, `Options`, `AuxReadScope`),
-`substrate/aux/state/invalidation_plan.hpp`, and the "Concurrency" section of
-`substrate/aux/core/README.md`.
-
-`VersionedAuxStore` **is** the `AuxStateStore` implementation (versions,
-pending commits, `expected_version` check, invalidation, locking). The engine
-store **configures** it, it does not re-implement it:
-
-```cpp
-class {Engine}StateStore final : public VersionedAuxStore {
-  explicit {Engine}StateStore(EpochProvider epoch = {}, FloorProvider floor = {});
-};
-```
-
-| `VersionedAuxStore::Options` | Engine choice |
-|-----|------|
-| `epoch` | Epoch a publish / commit becomes current from. Same order as `CurrentVisibility().mutation_epoch`: a snapshot at epoch `E` must include exactly the commits whose epoch is `<= E`. None: every version is `kAllSnapshots`. |
-| `floor` | Oldest snapshot epoch still open (prunes versions). None: keep only the newest version. |
-| `fixed_accelerator` | Set when the engine keeps one store per accelerator (images of any other accelerator are rejected). |
-| `track_transaction_dirty` | Only if one store serves one session (the flag is store-wide). |
-
-Overriding `Read` / `ReadPartitions` / `CheckValidity` is allowed only to wrap
-the `VersionedAuxStore::` call (diagnostics). No own maps, locks, slot epochs,
-or key-registration API: publish is the index.
-
-Semantics the harness asserts **through the engine class** (inherited):
-
-| API | Behavior |
-|-----|----------|
-| `TryPublish(staged, expected)` | Appends a version at the epoch provider's epoch (called once). Each published partition's version becomes previous + 1 (the image's own `version` is ignored). `expected != 0` and a partition's version differs → that partition is invalidated for every snapshot and the result is `false`. |
-| `Read` / `ReadPartitions` | Newest version with epoch `<= token.mutation_epoch` (`0` = newest). Omits invalid / payload-less partitions; `image.version` = partition version; `available` iff any image. |
-| `CheckValidity(key, token)` | Empty `key.value` = accelerator-wide (`Valid` iff known and no invalid partition); else decimal partition id. Unknown accelerator / partition → `Missing`; invalid → `Invalidated`; no version at the token's epoch → `NotVisible`. |
-| `Invalidate(plan)` | `PartitionSet` / `AllPartitions` invalid in every kept version (fail-closed). |
-| `BeginCommit` / `FinishCommit` / `AbortCommit` | Driven by `AuxTransactionCoordinator` only (PRE_COMMIT / COMMIT / ABORT). Readers whose snapshot may include a pending commit wait for it. |
-| `Install` / `InstallIfUnchanged` | Fresh builds (runtime layer). |
-
-The store is thread-safe (writer-preferring rwlock); callers add no lock.
-Payloads are `shared_ptr<const void>` (`StateImage::Make` / `As<T>`); a reader
-holds the `shared_ptr` while using it. The runtime opens one `AuxReadScope`
-per query.
-
-**Harness (no SQL, no DML):** typed payload round-trip (`As<T>`, version 1
-after first publish); unknown accelerator, unknown partition, unpublished
-`"0"` → `Missing`; empty key accelerator-wide; `Invalidate` (`PartitionSet`
-and `AllPartitions`) → `Invalidated` and omitted from `Read`; **expected
-version:** mismatched `expected_version` returns `false` and the partition
-reads `Invalidated`, a republish with `0` succeeds; **epoch:** a provider
-returning `N` is called once per publish, a token at `N-1` omits the image /
-`NotVisible`, at `N` is `Valid`; no provider → visible to every token;
-`ReadPartitions` subset / unknown id.
+**Toy module.** `backends/{engine}/tests/` owns a small `AuxQueryModule`
+(per-key sum of one table; copy `SumModule` + its sink from
+`eval/tests/test_aux_runtime.cpp`, drop its fake slots) used by every layer
+harness.
 
 ---
 
-## `aux_backend`
+## `capture` (S1)
 
-**Read first:** `substrate/aux/core/aux_registry.hpp`
-(`AuxTransactionCoordinator`: `AttachServices`, `OnMutation[AtDepth]`,
-`PreCommit`, `Commit`, `Abort`, subtransaction calls),
-`substrate/aux/core/aux_types.hpp` (`AuxEngineServices`, `AuxQueryModule`,
-`MutationBatch`).
+Implements the engine's capture of writes (`engine/capture.*`).
 
-- Ctor arguments: coordinator, store, visibility callback, cost model.
-  **Ctor body must call `coordinator.AttachServices(*this)`.** The aux_backend
-  template is wrong if it omits this — add it.
-- This class **is** the one `AuxEngineServices`. Do not introduce a second
-  services object for visibility / cost / `WorkerCount`. `StateStore()`
-  returns the engine store; `CurrentVisibility().mutation_epoch` is in the
-  store epoch provider's order.
-- Override `AllowsSynchronousRebuildOnCommit` / `ReadersCanBuildState` /
-  `WorkerCount` when the engine differs from the defaults (from analysis).
-- Harness drives a toy `AuxQueryModule` + **hand-built** `MutationBatch` through
-  `CaptureMutation` / `OnAbort` / `OnCommit` — **not** `store.TryPublish` from
-  the test. Forward those to `coordinator.OnMutation` / `Abort()` / `PreCommit()` /
-  `Commit()` (those are the coordinator names). Abort: no image / epoch unchanged.
-  Commit: exactly one published image with asserted values.
-- Assert `CurrentVisibility`, `MaintenanceCostModel`, and `WorkerCount()` on
-  **that** backend instance.
+- Deliver each statement's change on a tracked table as **one**
+  `ColumnarBatch` through a delivery function the host binds to
+  `RuntimeHost::OnCapture(txn, depth, batch)` (the harness binds a recorder),
+  from **every**
+  connection (a hook registered per connection that misses connections fails).
+  Columns: exactly `RuntimeHost::CaptureColumns(table)` (the union over
+  registered accelerators; empty vector = every column; none = not tracked);
+  re-read when `CaptureVersion()` changes. Types per `ColumnData` (Int64,
+  UInt64, ScaledDecimal, ScaledDecimal128, Double, Date, Boolean, String);
+  `updated_attnums` for updates (`kOutsideProjection` for an assigned column
+  that was not captured).
+- Old row values on update and delete. Typed columns, **no per-row heap
+  allocation** (no `std::string` / `shared_ptr` per row).
+- Subtransaction depth: `CommitSubtransaction` / `AbortSubtransaction`; a
+  rolled-back (sub)transaction never reaches a commit.
+- A change not expressible as rows (Postgres TRUNCATE) invalidates the
+  accelerators of its tables at commit (`AcceleratorRuntime::Invalidate()`;
+  shipped placement: an invalidating `CommittedChange`). An engine that
+  reports TRUNCATE as deletes needs nothing special.
 
----
-
-## `txn`
-
-Same abort/commit value asserts as `aux_backend`, but the **engine txn API**
-from analysis (`RegisterXactCallback`, session hooks, …) must fire
-`OnPreCommit` / `OnCommit` / `OnAbort`. A harness that only calls those C++
-methods is **not** this layer. `OnPreCommit` runs before the commit is
-visible to other snapshots (it marks the store pending), `OnCommit` after it
-(it publishes the version at the commit's epoch); the bridge never calls the
-store's `BeginCommit` / `FinishCommit` itself. Server-only symbols stay in the MODULE (see
-`host_glue`). After abort, a fresh txn can commit.
+**Harness:** the toy module registered on a `RuntimeHost` (for
+`CaptureColumns`); INSERT, UPDATE, DELETE issued from two different
+connections; record the batches at the delivery function and assert table id,
+kind, `row_count`, `old_rows` / `new_rows` cell values (NULL, a >64-bit
+decimal, a string) and `updated_attnums`; a 3-row INSERT is one batch;
+register a second accelerator watching more columns -> `CaptureVersion()`
+changes and later batches carry the union; ROLLBACK and ROLLBACK TO SAVEPOINT
+-> no change reaches the toy state after the commit; TRUNCATE (or the
+engine's non-row change) -> the state ends invalid / rebuilt.
 
 ---
 
-## `mutations`
+## `epochs` (S2, S3, S4)
 
-INSERT / UPDATE / DELETE through the real engine hook. Assert `MutationBatch`
-table id, kind, old/new cells; DELETE asserts old-row values.
-`CaptureMutation(hand_built)` alone is not this gate.
+Implements `PendingEpochLowerBound`, `OldestReaderEpoch`, the commit epoch the
+host passes to `RuntimeHost::Commit(txn, epoch)`, and the reader epoch the
+entry point passes as `ReadOptions::epoch`, wired to the engine's real
+commit / abort lifecycle: `PreCommit(txn)` before the commit is visible,
+`Commit(txn, epoch)` after, `Abort(txn)` on rollback.
+
+- **Epoch order.** Per accelerator, strictly increasing and in visibility
+  order: if a snapshot sees commit `n` it sees every earlier commit. Take it
+  from the engine's own visibility clock (commit id, counter under the commit
+  mutex, per-accelerator gate + ring); never from wall-clock time.
+- **Reader epoch.** Exact: commit `c` is visible to the reader iff
+  `epoch(c) <= E`. Never newer than the snapshot (torn read); never missing a
+  commit visible when the read began (stale read). A reader that cannot be
+  mapped (snapshot older than what the engine remembers) is reported as
+  "answer from SQL", never guessed.
+- **Pending window.** `PendingEpochLowerBound(txn)`: no reader below it can see
+  the commit; readers from there wait for it. A snapshot taken between
+  pre-commit and visibility must get an epoch below the pending commit's.
+- **Floor.** `OldestReaderEpoch()` <= every open reader's epoch (may lag,
+  never exceed); `kNoFloor` only when readers always read the newest.
+- Two accelerators on one transaction take their places in accelerator-id
+  order (the runtime does this; the slot must not add a lock order of its own).
+
+**Harness:** concurrent writers on two toy accelerators over the real engine
+commit path; record `(epoch, visible-at-snapshot)` pairs and assert epochs
+increase in visibility order and `epoch(c) <= E` iff the snapshot saw `c` (the
+SQL reference decides), including snapshots opened while a commit is held
+between pre-commit and visibility (use a sync barrier); two open readers at
+different points -> `OldestReaderEpoch()` <= the older's epoch, and it
+advances after they close; `Abort` after `PreCommit` releases the place (the
+next commit proceeds); no deadlock with two writers on two accelerators.
 
 ---
 
-## `scan`
+## `scan` (S5, S8)
 
-Named engine-local table-AM / storage-AM helper (symbol from analysis). Seed
-≥3 rows (include NULL), subset projection, one filter, exact cells. Runtime
-must **call this helper** — do not reimplement scan only inside a UDF.
+Implements `OpenBuildSnapshot` / `BuildSnapshot::SnapshotEpoch`,
+`WaitForPreRegistrationWriters`, `MaintenanceLookupEpoch` (only if maintenance
+applies after visibility), and the engine-local typed chunked scans behind
+`RunBuild` (`engine/scan.*`, native storage APIs; see `native_scan_contract.md`).
+
+- **Snapshot.** A consistent read with epoch `b`: a commit is in it **iff** its
+  epoch <= `b`. Writes continue while it is open: no lock that stops writers,
+  no quiet window. It is valid until destroyed and usable from the pool thread
+  that opened it.
+- **Barrier.** First build only: waits until every writer that began before the
+  accelerator's capture was registered has finished; false on timeout.
+- **Scans.** Typed, chunked, **partitioned** (each partition a disjoint part of
+  the table), run in parallel through the thread budget; 64-bit row counts and
+  offsets; native engine types, no shared chunk IR, no client SQL round-trip.
+  `RunBuild` calls the module's `Build` through them inside `snapshot` and
+  **must call `builder.Finish()`**.
+
+**Harness:** seed >=3 rows (one NULL); commit A; open the snapshot; commit B
+**while it is open** (the commit must complete); scan: A visible, B not,
+`SnapshotEpoch()` >= epoch(A) and < epoch(B); a subset projection and a filter
+dropping >=1 row; exact cell values incl. NULL; force >=2 chunk callbacks and
+assert their concatenation equals the golden set; `partitions = 1` and
+`partitions = N` return the same multiset; barrier: a writer that began
+earlier blocks `WaitForPreRegistrationWriters` until it commits, and a timeout
+returns false.
 
 ---
 
-## `runtime`
+## `runtime` (S6)
 
-Toy Runtime = store + coordinator + **this** aux backend + named scan helper +
-toy module. `Build` scans via the **named** helper then publishes through the
-coordinator (not a store back door). `Execute` reads the store with
-`CurrentVisibility()`. Seed → Build → Execute matches golden rows; then
-mutations-layer DML + commit rematches.
+Implements the host (`api/{engine}_host.*`): the `EngineSlots` object owning a
+`RuntimeHost` sized from the engine's thread setting
+(`runtime::ResolveThreadBudget`), `EngineWorkOnHostThread()`, and the placement.
+
+- **In-process.** Builds and applies run on pool threads / the writer's
+  thread (`EngineWorkOnHostThread() == false`); the read path never enters an
+  engine-facing thread.
+- **Shipped worker.** One worker per accelerator hosting a `RuntimeHost`;
+  commits cross as `wire.hpp`-encoded changes (`OfferCommit` /
+  `AnnounceCommit`, `Pump` on the worker's engine thread,
+  `EngineWorkOnHostThread() == true`); the writer waits bounded; a commit that
+  cannot be delivered becomes a gap (the runtime rebuilds). Read threads call
+  no engine API: no engine headers in their files, signals blocked. A worker
+  restart is safe: the next build includes everything.
+- No commit is dropped or skipped by the host; no thread pool, build
+  scheduler, lock or version logic of its own.
+
+**Harness:** toy module on the host over real writes: seed -> `BuildAll` ->
+read equals golden; DML + commit -> read equals the new golden; `Invalidate()`
+under a continuous writer loop -> synced within a bound while the writer keeps
+committing, final answer exact; a reader transaction older than the build
+reads its own snapshot's answer or gets `Fallback`, never a newer one; shipped
+placement: drop one commit message -> gap -> rebuild -> exact, kill the worker
+-> reads fall back exact, then hit again; `ThreadBudget::PeakThreads()` <= the
+configured budget.
 
 ---
 
-## `visibility`
+## `host` (S7)
 
-Uncommitted work must not be `Read` as committed. Relies on the store's
-version selection by `VisibilityToken.mutation_epoch` **plus** the
-coordinator publishing only at commit. Snapshot before commit ≠ after.
-Sync barrier (locks / notify), not `sleep`.
+Implements the SQL-visible entry point(s) and packaging. Loadable in-process
+MODULE/extension. Server-only symbols only in the MODULE. One entry calls the
+toy module: decode arguments (incl. NULL) into `QueryArguments`, call
+`AcceleratorRuntime::Read(ReadOptions{epoch = S3, max_wait_us}, args, sink)`,
+emit rows; on `Fallback` run `ExecuteFallback` at the reader's snapshot. Read
+parallelism lives inside `Execute`: do not use the engine's own parallel
+sources.
 
----
-
-## `host`
-
-Loadable MODULE/extension. Server-only symbols only in the MODULE. One SQL/UDF
-calls the toy Runtime; same golden as `runtime`.
+**Harness:** load the host -> call the entry -> the `runtime` golden through
+SQL; NULL argument; a `Fallback` (invalid state) answered correctly through
+SQL; the entry named by the registry, not by a backend list.
 
 **Test code stays out of the production MODULE.** Gate-test UDFs and toy
 bridges (test-table setup, state inspection, runtime-layer drivers, the toy
-Runtime's SQL entry) live in `backends/<engine>/tests/` and build into a
+module's SQL entry) live in `backends/<engine>/tests/` and build into a
 separate test-only MODULE/plugin (`<module>_test`, e.g.
-`accelerator_codegen_pg_test`); the layer harnesses load that test module
-themselves. The production MODULE/plugin used by accelerators and experiments
-holds only real entry points (txn/trigger hooks, mutation capture, query
-registries and their SQL entry points) and no function that creates tables
-or exposes internals.
+`accelerator_codegen_pg_test`); the layer harnesses load that module
+themselves. The production MODULE/plugin holds only real entry points
+(capture hooks, query registries and their SQL entry points).
 
 ### Query registries (every engine)
 

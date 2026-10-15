@@ -1,35 +1,42 @@
 # Engine backend implementation layers
 
+A backend run generates **slot implementations** of the runtime skeleton
+(`substrate/aux/runtime/engine_slots.hpp`, S1-S8; `shared/engine_interfaces.md`,
+"Backend contract"). The runtime flow is substrate and frozen: you never
+implement commit order, gap handling, catch-up, build scheduling, versions,
+reader/build locks or a thread pool.
+
 Each layer ships **code + a value-checked harness** and is steered by MCP
 `request_gate` (`engine_build` then that layer's gate) until both pass.
 Later layers may use earlier objects; they must not skip them. A later layer
 may **minimally** patch a prior layer when a real bug or design flaw blocks
-this layer’s contract — keep that prior harness green (add the missing assert
+this layer's contract — keep that prior harness green (add the missing assert
 if it was untested). Do not rewrite prior layers for style or convenience.
 
 The only query module allowed in this pipeline is a **toy** `AuxQueryModule`
-(+ toy `InitialScan` from the scan layer onward) owned by
-`backends/{engine}/tests/` — never generated TPC-H / SEC accelerators.
+owned by `backends/{engine}/tests/` (reference: `SumModule` in
+`eval/tests/test_aux_runtime.cpp`) — never generated TPC-H / SEC accelerators.
+From the `runtime` layer on, the harness runs it on a real `RuntimeHost` with
+this backend's `EngineSlots`.
 
-Do **not** regenerate `substrate/aux/{core,state,maintenance}`.
+Do **not** regenerate `substrate/aux/**`.
 
-| Order | `id` | Gate | What to implement | Harness must prove |
-|------|------|------|-------------------|--------------------|
-| 1 | `store` | `engine_store` | `{Engine}StateStore : VersionedAuxStore` in `engine::{engine}` — configures `VersionedAuxStore::Options` (commit `epoch` provider, snapshot `floor`, optional `fixed_accelerator` / `track_transaction_dirty`); does not re-implement `AuxStateStore`. | Typed payload round-trip; unknown key `Missing`; empty key accelerator-wide; invalidate fail-closed; mismatched `expected_version` returns `false` and invalidates; token behind the publish epoch omits image / `NotVisible`. No SQL, no DML. |
-| 2 | `aux_backend` | `engine_aux_backend` | `{Engine}AuxBackend : AuxEngineServices`. Ctor takes coordinator, store, visibility, cost model. Ctor calls `AttachServices(*this)`. | Toy module + **hand-built** `MutationBatch` through Capture/Abort/Commit — **not** harness `TryPublish`. Abort does not publish; Commit publishes once. Visibility / cost / `WorkerCount` come from **this** backend — not a second services class. |
-| 3 | `txn` | `engine_txn` | Wire the engine’s real abort/commit onto `OnAbort` / `OnCommit` / `OnPreCommit`. | Same asserts as `aux_backend`, but the **engine txn API** fires the coordinator. Calling `OnCommit` from C++ is **not** this gate. |
-| 4 | `mutations` | `engine_mutations` | Engine INSERT/UPDATE/DELETE through the real hook (trigger / WAL / listener / mutation consumer). | Value-level `MutationBatch` (table id, kind, old/new cells). DELETE asserts old-row values. `CaptureMutation(hand_built)` alone is **not** this gate. |
-| 5 | `scan` | `engine_scan` | One engine-local typed callback/slot scan of a tiny **seeded** table (in-process storage / table-AM — not a client `SELECT` over the wire). Seed of `InitialScan`, **not** `AuxEngineServices`. | ≥3 rows, subset projection, one filter, exact cell values including NULL. |
-| 6 | `runtime` | `engine_runtime` | Toy Runtime: `store + coordinator + backend + named scan helper + ToyModule`. `Build` calls the **scan-layer helper** and publishes via the coordinator; `Execute` reads the store with `CurrentVisibility()`. | Seed → Build → Execute matches golden rows. Then DML from `mutations` → commit → Execute rematch. |
-| 7 | `visibility` | `engine_visibility` | Uncommitted writes must not appear as committed. | Snapshot taken before commit does not see the write; after commit, epoch/image changes. Sync barrier — not bare `sleep`. |
-| 8 | `host` | `engine_host` | If `requires_in_process_host`: loadable in-process MODULE/extension. Server-only symbols stay in the MODULE. One SQL/UDF entry that calls the **toy** Runtime; that entry and every other gate-test UDF / toy bridge live in `backends/<engine>/tests/` and build into a test-only `<module>_test` MODULE the harnesses load (the production MODULE has no test UDFs). Skip this layer when the workload does not require a host. | Load the host → call the UDF → same golden asserts as `runtime`, through SQL. |
+| Order | `id` | Gate | Slots | What to implement | Harness must prove |
+|------|------|------|-------|-------------------|--------------------|
+| 1 | `capture` | `engine_capture` | S1 | The engine's real capture hook delivering one `ColumnarBatch` per statement and table to `RuntimeHost::OnCapture`, for any connection. | INSERT / UPDATE / DELETE from **two connections**: table id, kind, row count, old/new column values (NULLs, wide decimals); one batch per multi-row statement; the batch carries exactly `CaptureColumns(table)` and widens when a second accelerator registers; rolled-back transactions and subtransactions never reach a commit; a non-row change (TRUNCATE) invalidates. |
+| 2 | `epochs` | `engine_epochs` | S2, S3, S4 | Commit epoch (`PendingEpochLowerBound` + the epoch passed to `RuntimeHost::Commit`), reader epoch, version floor (`OldestReaderEpoch`), wired to the engine's real commit / abort lifecycle (`PreCommit` / `Commit` / `Abort`). | Epochs strictly increase per accelerator and in visibility order under concurrent writers (a snapshot that sees commit `n` sees all earlier ones; two accelerators, no deadlock); reader epoch exact: `epoch(c) <= E` iff the snapshot sees `c`, including a snapshot taken between pre-commit and visibility; floor <= every open reader's epoch and advances when they close; an abort after pre-commit releases its place. |
+| 3 | `scan` | `engine_scan` | S5, S8 | Build snapshot with epoch `b`, the registration barrier, and engine-local typed chunked scans inside the snapshot (`RunBuild`). | A commit is in the snapshot iff its epoch <= `b`; a writer commits **while** the snapshot is open and the scan does not see it; the barrier waits for a writer that began before registration and returns false on timeout; seeded rows (>=3, one NULL): subset projection, a filter, exact cells, >=2 chunks; a partitioned parallel scan returns the same rows as a serial one. |
+| 4 | `runtime` | `engine_runtime` | S6 | The host (`EngineSlots` + the placement): the toy module on a real `RuntimeHost` over real writes and reads. | Seed -> background build -> read matches golden; DML + commit -> rematch; an invalidated state rebuilds **while writes continue** and becomes synced without a quiet window; a reader older than the build or a collapsed range answers `Fallback` / its own epoch, never newer; shipped placement: a dropped commit becomes a gap and a rebuild, a killed worker restarts and hits again; peak pool threads <= the budget. |
+| 5 | `host` | `engine_host` | S7 | SQL-visible entry point(s) calling `AcceleratorRuntime::Read` and the registries; packaging (extension / plugin). Skip when the workload does not require an in-process host (embedded engines register entry points in the `runtime` layer). | Load the host, call the entry through SQL: same golden as `runtime`, argument decoding incl. NULL, the `Fallback` path through SQL, no query named in the backend. |
 
 Validation (after all layers + architecture audit) authors unseen
-`backends/{engine}/tests/test_{engine}_adversarial.cpp` and runs `engine_adversarial`.
+`backends/{engine}/tests/test_{engine}_adversarial.cpp`, then runs
+`engine_adversarial` and the backend-generic `slot_*` gates
+(`pipeline/gates/README_runtime_gates.md`).
 
 ## Invariants
 
-- One `AuxEngineServices` (the aux backend). Scans are a separate object.
+- Slots only: no runtime flow in the backend (`acceptance_checklist.md`, `slots_only`).
 - No portable cross-engine chunk IR.
-- No reading/copying another engine’s `backends/{other}/` tree.
+- No reading/copying another engine's `backends/{other}/` tree.
 - Fail closed: if the engine SDK / host cannot start, the harness exits non-zero.

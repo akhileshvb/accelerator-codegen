@@ -2,7 +2,7 @@
 
 You are a **separate architecture auditor** for **{{display_name}}** (`{{engine_name}}`).
 Implementation has shipped sequential layers + harnesses. Judge whether they
-violate the hard constraints — do not rewrite the adapter yourself.
+violate the hard constraints — do not rewrite the backend yourself.
 
 {{hard_guidelines}}
 
@@ -18,8 +18,9 @@ violate the hard constraints — do not rewrite the adapter yourself.
 - Hard constraints: `pipeline/prompts/engine_backend/contract_tests.md`
 - Boundary: `pipeline/prompts/engine_backend/agent_boundary.md`
 - Native scan (scan layer only): `pipeline/prompts/engine_backend/native_scan_contract.md`
+- Slot contracts: `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract")
 - Analysis: `{{artifacts_path}}/backend_analysis.json`
-- Adapter trees:
+- Backend trees:
 {{engine_target_paths}}
 - Layer harnesses under `backends/{{engine_name}}/tests/test_{{engine_name}}_*.cpp`
 
@@ -28,9 +29,14 @@ violate the hard constraints — do not rewrite the adapter yourself.
 Use **only** the fixed `rule` ids from `acceptance_checklist.md` (each is owned
 by a layer). Analysis extras beyond the checklist are **not** fail reasons.
 
-On each violation, set `layer` to the owning layer id (`store`, `aux_backend`,
-`txn`, `mutations`, `scan`, `runtime`, `visibility`, `host`) so implementation
-retry can re-run from that layer.
+On each violation, set `layer` to the owning layer id (`capture`, `epochs`,
+`scan`, `runtime`, `host`) so implementation retry can re-run from that layer.
+Global rules (`slots_only`, `scale_safe`, `query_registries`, `independence`,
+`fail_closed`) name the layer whose files hold the evidence.
+
+Check especially `slots_only`: grep the backend for commit ordering, gap or
+catch-up handling, build scheduling, version management, reader/build locks,
+and thread pools; any is a violation.
 
 Do **not** fail solely because a scan helper is not named `ScanNativeBaseTable`
 or does not emit a portable chunk type. Do fail if a harness only uses client
@@ -38,7 +44,7 @@ SQL shims or never calls a native storage path.
 
 ## Process
 
-1. Read `layers.md` + `acceptance_checklist.md`, then adapter + layer harnesses.
+1. Read `layers.md` + `acceptance_checklist.md`, then backend + layer harnesses.
 2. For each checklist rule, confirm evidence or record a violation.
 3. **Last action:** write **`{{artifacts_path}}/architecture_audit.json`**
    conforming to `pipeline/schemas/architecture_audit.schema.json`, then the

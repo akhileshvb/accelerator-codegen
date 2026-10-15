@@ -24,7 +24,7 @@ NUM = ["query_number", "N", "n", "q", "query", "query_id"]          # -> 6
 BENCH = ["bench", "benchmark", "benchmark_name"]                    # -> tpch
 ENGINE = ["engine", "backend", "engine_name"]                       # -> duckdb
 ENGINE_CAP = ["EngineName", "Engine"]                               # -> DuckDB
-OTHER = {"layer": "store", "layer_id": "store", "other": "mysql", "worker_id": "0",
+OTHER = {"layer": "capture", "layer_id": "capture", "other": "mysql", "worker_id": "0",
          "workload": "tpch_q6", "test_target": "test_tpch_q6"}
 CAP = {"duckdb": "DuckDB", "postgres": "Postgres", "mysql": "MySQL"}
 # A template is fine if ANY real query / bench / engine satisfies it (e.g.
@@ -49,6 +49,7 @@ ALLOW = [
     "backends/*2",                   # host_bootstrap: "do not invent backends/<engine>2/"
     "scripts/ensure_*_host.sh", "scripts/build_*_extension.sh",       # engine_.template.yaml: new-engine scripts
     "backends/*/engine/scan_adapter.*", "backends/*/tests/test_*_contract.cpp",  # engine_backend templates' generated outputs
+    "backends/*/tests/test_*_capture.cpp", "backends/*/tests/test_*_epochs.cpp",  # slot layer harnesses, generated
     "accelerators/*/q*/postgres/base", "accelerators/*/q*/postgres/base/*",     # pipeline-generated for postgres
     "scripts/run_aux_bench_sweep", "scripts/ensure_accel_*_test", "scripts/start_accel_*_test",
     "scripts/build_accel_*_plugin", "scripts/postgres_matview_*",     # gate command ids

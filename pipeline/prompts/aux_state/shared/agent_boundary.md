@@ -15,7 +15,8 @@
 
 Under `substrate/aux/`:
 
-- **`core/`** — `AuxQueryModule`, `AuxEngineServices`, `AuxStateStore`, `AuxRegistry`, `aux_calibration.hpp`, `byte_stream.hpp`
+- **`core/`** — `AuxQueryModule`, `AuxEngineServices`, `AuxStateStore`, `aux_calibration.hpp`, `byte_stream.hpp`
+- **`runtime/`** — the runtime skeleton (`RuntimeHost`, `AcceleratorRuntime`, `ColumnarBatch`, `wire`, `ThreadBudget`, `engine_slots.hpp`)
 - **`state/`** — `VersionedAuxStore`, invalidation plans, partition keys
 - **`maintenance/`** — `MaintenanceAction`, `ActionCostEstimate`, `CostModelParams`, `SelectMinCostAction`
 
@@ -34,15 +35,14 @@ Under `substrate/aux/`:
 Owned by the **engine_backend** pipeline (`workload_kind: engine_backend`), not per-query agents.
 
 - Query agents must **not** invent new engine adapters mid-query.
-- Existing adapters (when present) are optional few-shot only; they are regenerable from the substrate via the engine pipeline.
+- Existing backends (when present) are optional few-shot only; they are regenerable from the substrate via the engine pipeline.
 - Headers marked `GENERATED BACKEND` means engine-pipeline-owned.
 
 Query runs **never write** `backends/{engine}/**` (it is denied): register this query from its own directory through the backend's registries. If the backend lacks a generic engine-level helper, log a request for the engine_backend run (one JSON line `{"benchmark", "query", "helper", "reason"}` in `pipeline/artifacts/backend_additions/{engine}.jsonl`, no query names in `helper`) and work with what exists. CMake auto-discovery usually covers test/bench/calibrate; touch CMake only when targets are missing.
 
-## Store-mode notes (examples)
+## Placement notes
 
-- **typed_in_process**: typed `StateImage` payloads; no serialize on hot path
-- **serialized_boundary**: encode/decode only at a process/SHM boundary (`byte_stream.hpp`); same `AuxQueryModule` logic
+The runtime hosting your module is in-process or in a shipped worker (Postgres shard worker); the module is the same either way: typed `StateImage` payloads, no encoding of state. Only batches, arguments and result rows cross a process boundary, in substrate `wire.hpp`.
 
 See `pipeline/prompts/shared/engine_interfaces.md`, `generated_layout.md`, and `hard_guidelines.md`.
 

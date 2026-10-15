@@ -5,9 +5,13 @@
 # From-scratch: do not assume any other engine adapter exists. Substrate +
 # templates + these SDK hints only.
 #
-# Outcome: sequential layers in prompts/engine_backend/layers.md, each with
+# Outcome: the engine's slot implementations (S1-S8), built in the sequential
+# layers of prompts/engine_backend/layers.md, each with
 # backends/<engine>/tests/test_<engine>_<layer>.cpp. Validation adds unseen
-# adversarial tests.
+# adversarial tests and the backend-generic slot gates (gates/run_slot_gates.sh;
+# add gates/slot_adapters/<engine>.sh for a new engine).
+#
+# placement_candidates (S6): in_process | shipped_worker
 
 workload_kind: engine_backend
 engine_name: REPLACE_ME

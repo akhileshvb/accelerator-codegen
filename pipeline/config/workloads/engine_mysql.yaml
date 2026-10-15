@@ -45,13 +45,12 @@ engine_sdk_hints:
   - "Connect from host: MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3307 (user root, password mysql). Inside the container / docker exec: MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3306. Env: ACCEL_MYSQL_DOCKER=1."
   - "In-process plugin target name: `accelerator_codegen_mysql`. Installed .so path in the container: `/usr/lib/mysql/plugin/accelerator_codegen_mysql.so` (Oracle images may use `/usr/lib64/mysql/plugin`)."
   - "Use MySQL 8.4 server plugin / UDF / component headers (`mysql/plugin.h`, `mysql/udf_registration.h`, component services). Server-only symbols belong only in the plugin — never in a host shared library that standalone harnesses link. Client libmysql (`mysql_real_query` over the protocol) is not a native scan."
-  - "Native scan must use in-process table/handler/plugin services (not a client SQL round-trip). Mutation capture should hook the engine (triggers that call a plugin UDF, audit/table APIs) so INSERT/UPDATE/DELETE produce MutationBatch."
-  - "Shared substrate (do not regenerate): substrate/aux/{core,state,maintenance}/ — MutationBatch, AuxStateStore, AuxEngineServices, coordinator."
+  - "Native scan must use in-process table/handler/plugin services (not a client SQL round-trip). Mutation capture should hook the engine (triggers that call a plugin UDF, audit/table APIs) so INSERT/UPDATE/DELETE reach RuntimeHost as one ColumnarBatch per statement (S1)."
+  - "Shared substrate (do not regenerate): substrate/aux/{core,state,maintenance}/ and the runtime skeleton substrate/aux/runtime/ (RuntimeHost, AcceleratorRuntime, ColumnarBatch, wire, ThreadBudget). You implement its slots S1-S8 (engine_slots.hpp, engine_interfaces.md)."
   - "Do not read or copy another engine's backends/<engine>/ tree. Do not depend on generated TPC-H/SEC query modules."
 
-store_mode_candidates:
-  - typed_in_process
-  - serialized_boundary
+placement_candidates:
+  - in_process
 
 allowed_commands:
   - "^bash scripts/ensure_accel_mysql_test\\.sh( .*)?$"
