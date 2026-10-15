@@ -1,6 +1,6 @@
 // GENERATED BACKEND — Postgres MODULE entry point (production).
 // PG_MODULE_MAGIC and _PG_init for accelerator_codegen_pg: initializes the
-// backend bridge (postgres_bridge.cpp) and defines the aux-server GUCs.
+// backend bridge (postgres_bridge.cpp) and defines the shard-worker GUCs.
 // Mutation capture is the statement-level transition trigger
 // (transition_capture.cpp); transaction callbacks are in
 // postgres_xact_callbacks.cpp; query-facing SQL entry points are in
@@ -17,7 +17,7 @@ extern "C" {
 PG_MODULE_MAGIC;
 }
 
-#include "backends/postgres/state/aux_server.hpp"
+#include "backends/postgres/state/shard_worker.hpp"
 
 extern "C" {
 
@@ -25,7 +25,7 @@ void accel_pg_init_backend(const char *backing_dir);
 
 void _PG_init(void) {
   accel_pg_init_backend(nullptr);
-  accelerator_codegen::aux_state::engine::postgres::aux_server::DefineGucs();
+  accelerator_codegen::aux_state::engine::postgres::shard::DefineGucs();
 }
 
 } // extern "C"

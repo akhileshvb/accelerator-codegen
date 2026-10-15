@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "substrate/aux/core/aux_types.hpp"
+#include "substrate/aux/maintenance/cost_model.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 
@@ -23,6 +24,10 @@ public:
   // Worker side: the module the shard worker registers with its runtime host
   // (its scans bind to the worker's SPI connection).
   virtual std::shared_ptr<core::AuxQueryModule> Module() = 0;
+  // Worker side: plans the state build with in-memory hash joins instead of
+  // the session's planner settings (builds that join whole tables).
+  virtual bool TuneBuild() const = 0;
+  virtual const maintenance::CostModelParams &CostModel() = 0;
 };
 
 using PostgresAcceleratorGetter = PostgresAccelerator &(*)();

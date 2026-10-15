@@ -1,5 +1,5 @@
 // Standalone test for ShmRing: needs neither a Postgres server nor its headers.
-#include "state/shm_ring.hpp"
+#include "backends/postgres/state/shm_ring.hpp"
 
 #include <sys/mman.h>
 #include <sys/wait.h>

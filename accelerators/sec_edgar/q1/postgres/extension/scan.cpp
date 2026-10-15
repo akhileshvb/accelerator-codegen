@@ -215,6 +215,21 @@ void ExecutePostgresSecEdgarQ1(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(
     PostgresQueryExecutor{"sec_edgar", 1, kPostgresVariantAux, &ExecutePostgresSecEdgarQ1});
+// The accelerator by id (accelerators.hpp). Its capture attnums are resolved
+// by column name, so it exists from the first use that can read the catalog.
+PostgresAccelerator &SecEdgarQ1Accelerator() {
+  if (detail::g_attno[0] == 0) {
+    Oid relid = InvalidOid;
+    std::string error;
+    if (!detail::ResolvePreColumns(relid, detail::g_attno, error)) {
+      ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("accel_sec_edgar_q1_aux: %s", error.c_str())));
+    }
+  }
+  return detail::SecEdgarQ1RuntimeInstance(detail::g_attno);
+}
+
+const detail::RuntimeRegistrar<&SecEdgarQ1Accelerator> kAcceleratorRegistrar(
+    core::SecEdgarQ1Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

@@ -61,20 +61,22 @@ function(accel_build_postgres_extension)
     list(APPEND _pg_ext_sources backends/postgres/engine/postgres_xact_callbacks.cpp)
   endif()
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/snapshot_token.cpp")
-    list(APPEND _pg_ext_sources backends/postgres/engine/snapshot_token.cpp)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/aux_server.cpp")
-    list(APPEND _pg_ext_sources backends/postgres/state/aux_server.cpp)
-  endif()
+  # Shard workers (state/shard_*.cpp: the transport and server threads are
+  # Postgres-free, the rest is the worker, its slots and the reader side) and
+  # the accelerator registry the per-query code registers in.
+  list(APPEND _pg_ext_sources
+    backends/postgres/api/accelerators.cpp
+    backends/postgres/state/messages.cpp
+    backends/postgres/state/shm_ring.cpp
+    backends/postgres/state/shard_segment.cpp
+    backends/postgres/state/shard_server.cpp
+    backends/postgres/state/shard_slots.cpp
+    backends/postgres/state/shard_worker.cpp
+    backends/postgres/state/shard_gucs.cpp
+    backends/postgres/state/remote_read.cpp)
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/aux_sync.cpp")
     list(APPEND _pg_ext_sources backends/postgres/state/aux_sync.cpp)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/aux_mutation_epoch.cpp")
-    list(APPEND _pg_ext_sources backends/postgres/state/aux_mutation_epoch.cpp)
   endif()
 
   # Per-query module code (SPI scans, PG_FUNCTION shims, base kernels). Each

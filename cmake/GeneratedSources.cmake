@@ -140,38 +140,6 @@ function(accel_collect_stateful_sources OUT_VAR)
             backends/duckdb/state/duckdb_state_store.cpp
         )
     endif()
-    if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/postgres_aux_backend.cpp")
-            list(APPEND _sources
-                backends/postgres/state/postgres_aux_backend.cpp
-            )
-        endif()
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/postgres_state_store.cpp")
-            list(APPEND _sources
-                backends/postgres/state/postgres_state_store.cpp
-            )
-        endif()
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/postgres_mutation_capture.cpp")
-            list(APPEND _sources
-                backends/postgres/engine/postgres_mutation_capture.cpp
-            )
-        endif()
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/snapshot_token.cpp")
-            list(APPEND _sources
-                backends/postgres/engine/snapshot_token.cpp
-            )
-        endif()
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/aux_mutation_epoch.cpp")
-            list(APPEND _sources
-                backends/postgres/state/aux_mutation_epoch.cpp
-            )
-        endif()
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/aux_mutation_epoch.cpp")
-            list(APPEND _sources
-                backends/postgres/state/aux_mutation_epoch.cpp
-            )
-        endif()
-    endif()
     if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/mysql/state/mysql_aux_backend.cpp")
             list(APPEND _sources backends/mysql/state/mysql_aux_backend.cpp)

@@ -145,6 +145,8 @@ void ExecutePostgresTpchQ2(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 2, kPostgresVariantAux, &ExecutePostgresTpchQ2});
+const detail::RuntimeRegistrar<&detail::Q2Runtime> kAcceleratorRegistrar(
+    core::TpchQ2Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

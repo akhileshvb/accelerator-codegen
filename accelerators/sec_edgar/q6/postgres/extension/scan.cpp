@@ -318,6 +318,8 @@ void ExecutePostgresSecEdgarQ6(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "sec_edgar", 6, kPostgresVariantAux, &ExecutePostgresSecEdgarQ6});
+const detail::RuntimeRegistrar<&detail::Q6Runtime> kAcceleratorRegistrar(
+    core::SecEdgarQ6Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

@@ -31,11 +31,7 @@
 #include "substrate/aux/core/aux_execute_stats.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_cost_model_path.hpp"
-#include "backends/postgres/engine/postgres_xact_callbacks.hpp"
-#include "backends/postgres/state/postgres_aux_backend.hpp"
-#include "backends/postgres/state/postgres_state_store.hpp"
-#include "backends/postgres/engine/snapshot_token.hpp"
-#include "backends/postgres/state/aux_mutation_epoch.hpp"
+#include "backends/postgres/api/pg_sink.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -56,8 +52,6 @@ extern "C" {
 // From utils/pg_locale.h, which is not included because it pulls in ICU headers.
 extern bool lc_collate_is_c(Oid collation);
 }
-
-#include "backends/postgres/state/aux_sync.hpp"
 
 
 namespace accelerator_codegen::aux_state::engine::postgres {
@@ -80,10 +74,6 @@ inline std::string ResolveCostModelPath(const char *env_name,
   lookup.dirs_after = {std::string("/accel-src/") + location.dir};
   return core::ResolveAuxCostModelPath(location, lookup);
 }
-
-// AuxDate uses Unix-epoch days, while PostgreSQL's DateADT uses days since
-// 2000-01-01.
-constexpr int32_t kPostgresDateEpochOffset = 10957;
 
 inline std::string DatumText(Datum datum, Oid type_oid) {
   Oid output_function = InvalidOid;
@@ -111,13 +101,8 @@ inline core::AuxDate PostgresDateArg(int32_t arg_index, FunctionCallInfo fcinfo)
   return core::AuxDate{PG_GETARG_DATEADT(arg_index) + kPostgresDateEpochOffset};
 }
 
-// SQL this backend ran against the tables (a query that runs any answered
-// from SQL, not from the state).
-inline thread_local uint64_t t_table_scans = 0;
-
 template <typename Callback>
 inline void ScanTypedTuples(const std::string &sql, Callback &&callback) {
-  ++t_table_scans;
   if (SPI_connect() != SPI_OK_CONNECT) {
     throw std::runtime_error("SPI_connect failed");
   }
@@ -174,25 +159,6 @@ inline std::string KeyListPredicate(const char *column, const std::vector<int64_
     sql += std::to_string(keys[i]);
   }
   return sql + "}'::bigint[])";
-}
-
-// ScanTypedTuples on the database as this transaction leaves it: its own
-// writes, including the last command's, and every committed transaction.
-// For scans during PRE_COMMIT (an aux rescan must read the database after
-// the transaction): without the command counter increment the last
-// command's writes are invisible, and the statement / transaction snapshot
-// can predate them.
-template <typename Callback>
-inline void ScanTypedTuplesAfterOwnWrites(const std::string &sql, Callback &&callback) {
-  CommandCounterIncrement();
-  PushActiveSnapshot(GetLatestSnapshot());
-  try {
-    ScanTypedTuples(sql, std::forward<Callback>(callback));
-  } catch (...) {
-    PopActiveSnapshot();
-    throw;
-  }
-  PopActiveSnapshot();
 }
 
 inline int64_t TypedInt(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {

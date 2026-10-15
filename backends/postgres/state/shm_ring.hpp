@@ -39,6 +39,12 @@ struct ShmRing {
 	// the ring, as with Send.
 	bool Receive(std::string &out, Clock::time_point deadline);
 
+	// Blocks until a message (or the first chunk of one) can be received, the
+	// ring is closed (both true), or the deadline passes (false). Lets a receiver
+	// that must stay interruptible wait in slices without risking Receive's
+	// mid-message close.
+	bool WaitForData(Clock::time_point deadline);
+
 	// Declares this side gone: wakes every waiter, and later Sends fail.
 	// Messages already queued can still be received.
 	void Close();

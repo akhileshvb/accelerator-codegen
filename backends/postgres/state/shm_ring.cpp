@@ -1,4 +1,4 @@
-#include "state/shm_ring.hpp"
+#include "backends/postgres/state/shm_ring.hpp"
 
 #include <algorithm>
 #include <climits>
@@ -186,6 +186,10 @@ bool ShmRing::Receive(std::string &out, Clock::time_point deadline) {
 		}
 		started = true;
 	}
+}
+
+bool ShmRing::WaitForData(Clock::time_point deadline) {
+	return Wait(data_signal_, &ShmRing::HasData, deadline);
 }
 
 void ShmRing::Close() {

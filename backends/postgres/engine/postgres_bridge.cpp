@@ -8,8 +8,7 @@
 
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
 #include "substrate/aux/core/aux_types.hpp"
-#include "backends/postgres/state/aux_server_text.hpp"
-#include "substrate/aux/maintenance/maintenance_action.hpp"
+#include "backends/postgres/state/shard_worker.hpp"
 
 using namespace accelerator_codegen::aux_state;
 
@@ -57,22 +56,15 @@ int accel_pg_get_observer_mutation_count() {
 void accel_pg_set_force_maintenance_action(const char *action_name) {
   core::ClearMaintenanceDecisionLog();
   core::SetForcedMaintenanceActionName(action_name ? action_name : "");
-  accelerator_codegen::aux_state::engine::postgres::aux_server::
-      SetForcedMaintenance(action_name ? action_name : "");
+  accelerator_codegen::aux_state::engine::postgres::shard::SetForcedMaintenance(
+      action_name ? action_name : "");
 }
 
 const char *accel_pg_get_last_maintenance_action(void) {
   static thread_local std::string cached;
-  cached = accelerator_codegen::aux_state::engine::postgres::aux_server::
-      LastMaintenanceActionName();
-  if (!cached.empty()) {
-    return cached.c_str(); // shared state: maintenance ran in the worker
-  }
-  const auto entry = core::LastMaintenanceDecision();
-  if (!entry || !entry->valid) {
+  cached = accelerator_codegen::aux_state::engine::postgres::shard::LastMaintenanceActionName();
+  if (cached.empty()) {
     cached = "None";
-  } else {
-    cached = maintenance::MaintenanceActionName(entry->staged_action);
   }
   return cached.c_str();
 }
