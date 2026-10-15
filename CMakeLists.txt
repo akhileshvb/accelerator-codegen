@@ -1198,7 +1198,7 @@ if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
         endif()
     endfunction()
 
-    foreach(_layer IN ITEMS store aux_backend txn mutations scan runtime visibility host adversarial)
+    foreach(_layer IN ITEMS statement_capture txn mutations scan visibility host adversarial)
         set(_src "backends/mysql/tests/test_mysql_${_layer}.cpp")
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
             accel_add_mysql_test(test_mysql_${_layer} ${_src})
@@ -1220,7 +1220,8 @@ if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
         endif()
     endif()
     foreach(_t IN ITEMS test_mysql_cross_accel test_mysql_aux_multi_connection_stress
-                        test_mysql_aux_build_race test_mysql_aux_session_isolation)
+                        test_mysql_aux_build_race test_mysql_aux_session_isolation
+                        test_mysql_aux_read_after_commit test_mysql_tpch_rf_differential)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/${_t}.cpp")
             accel_add_mysql_test(${_t} eval/tests/${_t}.cpp)
         endif()

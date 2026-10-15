@@ -3,15 +3,16 @@
 // ACCEL_MYSQL_PLUGIN_VARIANT=test), never into the plugin experiments load.
 //
 // The layer harnesses in backends/mysql/tests/ call these through SQL:
-//   txn:       mysql_accel_txn_{init,capture,read,epoch,reset} — a toy module
-//              on its own coordinator, committed / aborted by the bridge's audit
-//              hook through the bridge observer (backends/mysql/engine/mysql_bridge.hpp).
-//   mutations: mysql_accel_mutations_{last,drain,count} — inspect the batches
-//              the trigger capture UDFs decoded.
+//   txn:       mysql_accel_txn_{init,capture,read,epoch,reset} — a toy accelerator
+//              registered in MysqlHost; its captures reach the host like a trigger's
+//              and are committed / aborted by the audit hook.
+//   mutations: mysql_accel_mutations_{last,drain,count} — inspect the rows
+//              the trigger capture UDF decoded (through the bridge observer,
+//              backends/mysql/engine/mysql_bridge.hpp).
 //   scan:      mysql_accel_scan_{init,exec,proj,filter,clear} — create and seed
 //              the table toy_scan_table and scan it through ScanMysqlTableForRebuild.
 //   runtime:   mysql_accel_runtime_{init,build,execute,read,reset} — a toy
-//              Runtime (store + coordinator + backend + scan helper) through SQL.
+//              accelerator over a real table (host + scan helper) through SQL.
 
 #include "backends/mysql/engine/plugin_minimal.h"
 
@@ -26,17 +27,18 @@
 #include <vector>
 
 #include "substrate/aux/core/aux_types.hpp"
-#include "substrate/aux/core/aux_registry.hpp"
 #include "substrate/aux/core/aux_txn_buffer.hpp"
-#include "backends/mysql/state/mysql_state_store.hpp"
-#include "backends/mysql/state/mysql_aux_backend.hpp"
-#include "backends/mysql/engine/mysql_bridge.hpp"
-#include "backends/mysql/engine/scan_helper.hpp"
+#include "backends/mysql/api/mysql_host.hpp"
 #include "backends/mysql/api/runtime.hpp"
+#include "backends/mysql/engine/mysql_bridge.hpp"
+#include "backends/mysql/engine/mysql_session.hpp"
+#include "backends/mysql/engine/scan_helper.hpp"
 
 namespace accel = accelerator_codegen::aux_state;
 namespace core = accel::core;
 namespace engine = accel::engine::mysql;
+namespace runtime = accel::runtime;
+namespace maintenance = accel::maintenance;
 
 namespace {
 
@@ -59,9 +61,8 @@ public:
     return std::make_unique<core::BasicAuxTxnBuffer>();
   }
 
+  // Starts with no image: the first commit's maintenance publishes it.
   void Build(core::AuxEngineServices &, core::StateBuilder &builder) override {
-    auto payload = std::make_shared<const ToyPayload>(ToyPayload{1, "built"});
-    builder.Write(core::StateImage::Make(Id(), 1, 1, std::move(payload)));
     builder.Finish();
   }
 
@@ -108,58 +109,55 @@ public:
 std::vector<core::MutationBatch> g_captured_mutation_batches;
 std::mutex g_mutations_mutex;
 
-// ---- Toy txn bridge state (txn UDFs; committed by the audit hook) ----
+// ---- Toy accelerators, registered in MysqlHost on first init ----
 
-std::unique_ptr<engine::MysqlStateStore> g_state_store;
-std::unique_ptr<core::AuxTransactionCoordinator> g_coordinator;
-std::unique_ptr<engine::MysqlAuxBackend> g_backend;
-std::shared_ptr<core::AuxQueryModule> g_toy_module;
-core::Version g_current_epoch = 0;
+// The accelerator of `module`, registered once (the host cannot unregister).
+runtime::AcceleratorRuntime &Registered(const std::shared_ptr<core::AuxQueryModule> &module) {
+  auto &host = engine::MysqlHost::Get();
+  if (auto *existing = host.Runtime().Find(module->Id())) {
+    return *existing;
+  }
+  return host.Register(module, maintenance::CostModelParams{});
+}
+
+// Rebuilds the accelerator's state from its module.
+void Rebuild(runtime::AcceleratorRuntime &accelerator) {
+  accelerator.Invalidate();
+  if (!accelerator.BuildNow()) {
+    throw std::runtime_error("toy build did not sync");
+  }
+}
+
+std::shared_ptr<TxnToyModule> g_toy_module = std::make_shared<TxnToyModule>();
+runtime::AcceleratorRuntime *g_txn_accelerator = nullptr;
+uint64_t g_txn_baseline = 0; // commits applied before the last init
 bool g_initialized = false;
 std::mutex g_mutex;
 
-// ---- Bridge observer: the audit hook and capture UDFs report here ----
+runtime::ReadOptions WaitingRead() {
+  runtime::ReadOptions options;
+  options.max_wait_us = 10'000'000;
+  return options;
+}
+
+uint64_t TxnEpoch() { return g_txn_accelerator->Stats().commits_applied - g_txn_baseline; }
+
+// ---- Bridge observer: the capture UDF reports the rows it decoded here ----
 
 class TestBridgeObserver final : public engine::MysqlBridgeObserver {
 public:
-  void OnCapturedMutation(const core::MutationBatch &batch) override {
-    {
-      // Feed the toy coordinator if mysql_accel_txn_init ran.
-      std::lock_guard<std::mutex> lock(g_mutex);
-      if (g_backend) {
-        g_backend->CaptureMutation(batch);
-      }
-    }
+  void OnCapturedRow(const engine::CapturedRow &row) override {
+    engine::StatementCapture capture;
+    capture.Add(row, {});
     std::lock_guard<std::mutex> lock(g_mutations_mutex);
-    g_captured_mutation_batches.push_back(batch);
-  }
-
-  void OnCommit() override {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_initialized || !g_backend) return;
-    const bool had_work = g_coordinator && g_coordinator->HasPendingWork();
-    g_backend->OnPreCommit();
-    g_backend->OnCommit();
-    if (had_work) {
-      ++g_current_epoch;
+    for (const auto &batch : capture.Take()) {
+      g_captured_mutation_batches.push_back(runtime::ToMutationBatch(*batch, {}));
     }
   }
 
-  void OnRollback() override {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_initialized || !g_backend) return;
-    g_backend->OnAbort();
-  }
-
-  void OnPluginDeinit() override {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    g_toy_module.reset();
-    g_backend.reset();
-    g_coordinator.reset();
-    g_state_store.reset();
-    g_current_epoch = 0;
-    g_initialized = false;
-  }
+  void OnCommit() override {}
+  void OnRollback() override {}
+  void OnPluginDeinit() override {}
 };
 
 TestBridgeObserver g_test_observer;
@@ -184,29 +182,12 @@ static bool UdfInitTxnInit(UDF_INIT *initid, UDF_ARGS *args, char *message) {
 }
 
 static long long UdfTxnInit(UDF_INIT *, UDF_ARGS *,
-                            char *is_null, char *error) {
+                            char *, char *error) {
   try {
     std::lock_guard<std::mutex> lock(g_mutex);
-
-    g_toy_module = std::make_shared<TxnToyModule>();
-
-    g_state_store = std::make_unique<engine::MysqlStateStore>(
-        []() -> core::Version {
-          return g_current_epoch;
-        });
-
-    g_coordinator = std::make_unique<core::AuxTransactionCoordinator>();
-    g_coordinator->Register(g_toy_module);
-
-    g_backend = std::make_unique<engine::MysqlAuxBackend>(
-        *g_coordinator, *g_state_store,
-        []() -> core::VisibilityToken {
-          core::VisibilityToken tok;
-          tok.mutation_epoch = g_current_epoch;
-          return tok;
-        });
-
-    g_current_epoch = 0;
+    g_txn_accelerator = &Registered(g_toy_module);
+    Rebuild(*g_txn_accelerator);
+    g_txn_baseline = g_txn_accelerator->Stats().commits_applied;
     g_initialized = true;
     return 1;
   } catch (...) {
@@ -266,42 +247,22 @@ static char *UdfTxnCapture(UDF_INIT *, UDF_ARGS *args,
                            unsigned char *is_null, unsigned char *error) {
   try {
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_initialized || !g_backend) {
+    if (!g_initialized) {
       std::strcpy(result, "not_initialized");
       *length = 16;
       return result;
     }
 
-    core::MutationBatch batch;
-    batch.table = static_cast<core::TableId>(ReadUdfIntArg(args, 0, 0));
-    batch.kind = static_cast<core::MutationKind>(ReadUdfIntArg(args, 1, 0));
-
-    if (args->args[2]) {
-      core::AuxRow row;
-      core::AuxValue val;
-      val.type = core::AuxType::Int64;
-      val.is_null = false;
-      val.payload = static_cast<int64_t>(ReadUdfIntArg(args, 2, 0));
-      row.values.push_back(val);
-      batch.new_rows.push_back(row);
-    }
-
-    std::string label = ReadUdfStringArg(args, 3);
-    if (!label.empty()) {
-      if (batch.new_rows.empty()) {
-        core::AuxRow row;
-        batch.new_rows.push_back(row);
-      }
-      if (label == "NULL") {
-        batch.new_rows.back().values.push_back(
-            core::AuxValue::Null(core::AuxType::String));
-      } else {
-        batch.new_rows.back().values.push_back(
-            core::AuxValue::Of(core::AuxType::String, label));
-      }
-    }
-
-    g_backend->CaptureMutation(batch);
+    // One row of (int64 value, string label); NULL arguments are NULL cells.
+    const std::string value = ReadUdfStringArg(args, 2);
+    const std::string label = ReadUdfStringArg(args, 3);
+    engine::CapturedRow row;
+    row.table = static_cast<core::TableId>(ReadUdfIntArg(args, 0, 0));
+    row.kind = static_cast<core::MutationKind>(ReadUdfIntArg(args, 1, 0));
+    row.types = "is";
+    row.cells = {{args->args[2] ? value.data() : nullptr, value.size()},
+                 {args->args[3] && label != "NULL" ? label.data() : nullptr, label.size()}};
+    engine::MysqlHost::Get().OnCapturedRow(engine::CurrentMysqlSession(), row);
 
     std::strcpy(result, "ok");
     *length = 2;
@@ -330,18 +291,19 @@ static char *UdfTxnRead(UDF_INIT *, UDF_ARGS *,
                         unsigned char *is_null, unsigned char *error) {
   try {
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_initialized || !g_state_store) {
+    if (!g_initialized) {
       std::strcpy(result, "not_initialized");
       *length = 16;
       return result;
     }
 
-    core::VisibilityToken tok;
-    tok.mutation_epoch = g_current_epoch;
-
-    auto snapshot = g_state_store->Read(tok);
+    auto read = g_txn_accelerator->BeginRead(WaitingRead());
+    if (!read.Servable()) {
+      throw std::runtime_error("toy state not servable");
+    }
+    auto snapshot = g_txn_accelerator->StateStore().Read(g_txn_accelerator->CurrentVisibility());
     std::ostringstream oss;
-    oss << "epoch=" << g_current_epoch
+    oss << "epoch=" << TxnEpoch()
         << " available=" << (snapshot.available ? 1 : 0)
         << " partitions=" << snapshot.partitions.size();
     for (const auto &img : snapshot.partitions) {
@@ -379,11 +341,9 @@ static char *UdfTxnEpoch(UDF_INIT *, UDF_ARGS *,
                          char *result, unsigned long *length,
                          unsigned char *, unsigned char *) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  std::ostringstream oss;
-  oss << "epoch=" << g_current_epoch;
-  std::string s = oss.str();
-  std::memcpy(result, s.c_str(), s.size() + 1);
-  *length = s.size();
+  const std::string text = "epoch=" + std::to_string(g_initialized ? TxnEpoch() : 0);
+  std::memcpy(result, text.c_str(), text.size() + 1);
+  *length = text.size();
   return result;
 }
 
@@ -402,11 +362,6 @@ static char *UdfTxnReset(UDF_INIT *, UDF_ARGS *,
                          char *result, unsigned long *length,
                          unsigned char *, unsigned char *) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  g_toy_module.reset();
-  g_backend.reset();
-  g_coordinator.reset();
-  g_state_store.reset();
-  g_current_epoch = 0;
   g_initialized = false;
   std::strcpy(result, "ok");
   *length = 2;
@@ -820,7 +775,7 @@ public:
 
   std::vector<core::TableDependency> Dependencies() const override {
     core::TableDependency dep;
-    dep.table = 1;
+    dep.table = 2; // not the txn toy's table 1: captures reach one toy only
     dep.mutation_attnums = {};
     return {dep};
   }
@@ -930,11 +885,8 @@ public:
 
 // ---- Runtime state (separate from txn bridge state) ----
 
-std::unique_ptr<engine::MysqlStateStore> g_rt_state_store;
-std::unique_ptr<core::AuxTransactionCoordinator> g_rt_coordinator;
-std::unique_ptr<engine::MysqlAuxBackend> g_rt_backend;
-std::shared_ptr<core::AuxQueryModule> g_rt_module;
-core::Version g_rt_current_epoch = 0;
+std::shared_ptr<RuntimeToyModule> g_rt_module = std::make_shared<RuntimeToyModule>();
+runtime::AcceleratorRuntime *g_rt_accelerator = nullptr;
 bool g_rt_initialized = false;
 std::mutex g_rt_mutex;
 
@@ -960,31 +912,13 @@ static char *UdfRtInit(UDF_INIT *, UDF_ARGS *args,
   try {
     std::lock_guard<std::mutex> lock(g_rt_mutex);
 
-    std::string table_name = ReadUdfStringArg(args, 0);
-
     // Register the real MySQL CLI scanner for host-layer scans.
     engine::SetMysqlTableScanner(std::make_shared<RealMysqlCliScanner>());
 
-    auto mod = std::make_shared<RuntimeToyModule>();
-    mod->table_name = table_name;
-    mod->columns = {"id", "name", "val"};
-    g_rt_module = mod;
-
-    g_rt_state_store = std::make_unique<engine::MysqlStateStore>(
-        []() -> core::Version { return g_rt_current_epoch; });
-
-    g_rt_coordinator = std::make_unique<core::AuxTransactionCoordinator>();
-    g_rt_coordinator->Register(g_rt_module);
-
-    g_rt_backend = std::make_unique<engine::MysqlAuxBackend>(
-        *g_rt_coordinator, *g_rt_state_store,
-        []() -> core::VisibilityToken {
-          core::VisibilityToken tok;
-          tok.mutation_epoch = g_rt_current_epoch;
-          return tok;
-        });
-
-    g_rt_current_epoch = 0;
+    g_rt_module->table_name = ReadUdfStringArg(args, 0);
+    g_rt_module->columns = {"id", "name", "val"};
+    g_rt_accelerator = &Registered(g_rt_module);
+    g_rt_accelerator->Invalidate(); // empty until built
     g_rt_initialized = true;
 
     std::strcpy(result, "ok");
@@ -1014,37 +948,14 @@ static char *UdfRtBuild(UDF_INIT *, UDF_ARGS *,
                          unsigned char *, unsigned char *error) {
   try {
     std::lock_guard<std::mutex> lock(g_rt_mutex);
-    if (!g_rt_initialized || !g_rt_backend || !g_rt_module || !g_rt_coordinator) {
+    if (!g_rt_initialized) {
       std::strcpy(result, "not_initialized");
       *length = 16;
       return result;
     }
-
-    // Inject a synthetic mutation so the coordinator invokes
-    // InterpretMutation → StageMaintenance → Commit publish.
-    core::MutationBatch seed_mutation;
-    seed_mutation.table = 1;
-    seed_mutation.kind = core::MutationKind::Insert;
-    seed_mutation.new_rows.push_back(core::AuxRow{});
-    g_rt_coordinator->OnMutation(seed_mutation);
-    g_rt_coordinator->PreCommit();
-    g_rt_coordinator->Commit();
-    ++g_rt_current_epoch;
-
-    // Re-create coordinator and backend for fresh state (rebuild pattern)
-    g_rt_coordinator = std::make_unique<core::AuxTransactionCoordinator>();
-    g_rt_coordinator->Register(g_rt_module);
-
-    g_rt_backend = std::make_unique<engine::MysqlAuxBackend>(
-        *g_rt_coordinator, *g_rt_state_store,
-        []() -> core::VisibilityToken {
-          core::VisibilityToken tok;
-          tok.mutation_epoch = g_rt_current_epoch;
-          return tok;
-        });
-
+    Rebuild(*g_rt_accelerator);
     std::ostringstream oss;
-    oss << "build=ok epoch=" << g_rt_current_epoch;
+    oss << "build=ok epoch=" << g_rt_accelerator->Stats().builds;
     std::string s = oss.str();
     std::memcpy(result, s.c_str(), s.size() + 1);
     *length = s.size();
@@ -1093,14 +1004,18 @@ static char *UdfRtExecute(UDF_INIT *, UDF_ARGS *,
                            unsigned char *is_null, unsigned char *error) {
   try {
     std::lock_guard<std::mutex> lock(g_rt_mutex);
-    if (!g_rt_initialized || !g_rt_backend || !g_rt_module) {
+    if (!g_rt_initialized) {
       *is_null = 1;
       return result;
     }
 
     StringCollectorSink sink;
     core::QueryArguments args;
-    g_rt_module->Execute(*g_rt_backend, args, sink);
+    auto read = g_rt_accelerator->BeginRead(WaitingRead());
+    if (!read.Servable()) {
+      throw std::runtime_error("toy state not servable");
+    }
+    g_rt_module->Execute(*g_rt_accelerator, args, sink);
 
     std::string s = sink.result;
     std::memcpy(result, s.c_str(), std::min(s.size(), 65535UL));
@@ -1131,17 +1046,17 @@ static char *UdfRtRead(UDF_INIT *, UDF_ARGS *,
                         unsigned char *is_null, unsigned char *error) {
   try {
     std::lock_guard<std::mutex> lock(g_rt_mutex);
-    if (!g_rt_initialized || !g_rt_state_store) {
+    if (!g_rt_initialized) {
       *is_null = 1;
       return result;
     }
 
-    core::VisibilityToken tok;
-    tok.mutation_epoch = g_rt_current_epoch;
-
-    auto snapshot = g_rt_state_store->Read(tok);
+    // No read gate: before the first build the state is empty, not awaited.
+    auto snapshot = g_rt_accelerator->IsSynced()
+                        ? g_rt_accelerator->StateStore().Read(g_rt_accelerator->CurrentVisibility())
+                        : core::StateSnapshot{};
     std::ostringstream oss;
-    oss << "epoch=" << g_rt_current_epoch
+    oss << "epoch=" << g_rt_accelerator->Stats().builds
         << " available=" << (snapshot.available ? 1 : 0)
         << " partitions=" << snapshot.partitions.size();
 
@@ -1172,11 +1087,6 @@ static char *UdfRtReset(UDF_INIT *, UDF_ARGS *,
                          char *result, unsigned long *length,
                          unsigned char *, unsigned char *) {
   std::lock_guard<std::mutex> lock(g_rt_mutex);
-  g_rt_module.reset();
-  g_rt_backend.reset();
-  g_rt_coordinator.reset();
-  g_rt_state_store.reset();
-  g_rt_current_epoch = 0;
   g_rt_initialized = false;
   std::strcpy(result, "ok");
   *length = 2;

@@ -348,7 +348,6 @@ inline void EnsureUdf(const Tools &tools, const std::string &name,
 inline void EnsureExtension(const Tools &tools) {
   RunSQL(tools, "INSTALL PLUGIN accelerator_codegen_audit SONAME " +
                     SqlLiteral(tools.plugin_so));
-  EnsureUdf(tools, "mysql_accel_mutations_capture_row", "STRING");
   EnsureUdf(tools, "mysql_accel_capture_row", "STRING");
   EnsureUdf(tools, "mysql_accel_observer_mutation_count", "INTEGER");
   EnsureUdf(tools, "mysql_accel_reset_observer", "STRING");
