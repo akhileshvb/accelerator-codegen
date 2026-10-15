@@ -24,6 +24,7 @@ struct DuckdbAccelerator {
   std::unique_ptr<::duckdb::Connection> connection;
   std::unique_ptr<DuckdbRuntime::Binding> binding;
   runtime::AcceleratorRuntime *runtime = nullptr;
+  runtime::TableMap tables; // its module's table numbers -> host table ids
   std::unique_ptr<DuckDBAuxBackend> backend;
   maintenance::CostModelParams cost_model;
   std::atomic<double> expected_queries_before_write{10.0};
@@ -50,7 +51,7 @@ public:
   // A change of `context`'s open transaction on a table the engine does not
   // capture (an accelerator without capture tables): delivered with the
   // transaction, as if captured.
-  bool Captures(core::TableId table);
+  bool Captures(core::TableId table); // a host table id
   void CaptureByHand(::duckdb::ClientContext &context, runtime::ColumnarBatchRef batch);
 
   // ---- engine callbacks (engine/capture.cpp) ----

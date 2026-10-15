@@ -53,7 +53,7 @@ RuntimeHost::~RuntimeHost() = default;
 // ---- registration ----
 
 AcceleratorRuntime &RuntimeHost::Register(std::shared_ptr<core::AuxQueryModule> module,
-                                          StoreFactory make_store) {
+                                          StoreFactory make_store, const TableMap &tables) {
   AcceleratorRuntime::BuildScheduler schedule;
   if (slots.EngineWorkOnHostThread()) {
     schedule = [this](std::function<void()> work) {
@@ -63,7 +63,7 @@ AcceleratorRuntime &RuntimeHost::Register(std::shared_ptr<core::AuxQueryModule> 
   }
   auto runtime =
       std::make_unique<AcceleratorRuntime>(std::move(module), slots, impl->threads, schedule,
-                                           std::move(make_store));
+                                           std::move(make_store), tables);
   std::lock_guard<std::mutex> lock(impl->mutex);
   auto &slot = impl->runtimes[runtime->Id()];
   if (slot) {
@@ -100,16 +100,11 @@ std::optional<std::vector<int32_t>> RuntimeHost::CaptureColumns(core::TableId ta
   }
   std::vector<int32_t> columns;
   for (auto *runtime : it->second) {
-    for (const auto &dependency : runtime->Module().Dependencies()) {
-      if (dependency.table != table) {
-        continue;
-      }
-      if (dependency.mutation_attnums.empty()) {
-        return std::vector<int32_t>{}; // someone needs the full row
-      }
-      columns.insert(columns.end(), dependency.mutation_attnums.begin(),
-                     dependency.mutation_attnums.end());
+    const auto &watched = *runtime->Projection(table);
+    if (watched.empty()) {
+      return std::vector<int32_t>{}; // someone needs the full row
     }
+    columns.insert(columns.end(), watched.begin(), watched.end());
   }
   std::sort(columns.begin(), columns.end());
   columns.erase(std::unique(columns.begin(), columns.end()), columns.end());
