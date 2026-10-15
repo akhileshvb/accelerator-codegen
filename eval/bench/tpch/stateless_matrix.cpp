@@ -10,6 +10,7 @@
 //! --dump writes each accelerator result (rendered rows) to DIR/qN_<seed>_{st,par}.txt
 //! so two builds can be diffed exactly.
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "eval/tests/test_support/result_compare.hpp"
 #include "tpch/q1/tests/q1_manifest.hpp"
@@ -434,7 +435,7 @@ int main(int argc, char **argv) {
 
 	duckdb::DBConfig config;
 	config.options.access_mode = duckdb::AccessMode::READ_ONLY;
-	duckdb::DuckDB db(ts::GetBenchmarkDbPath("ACCEL_TPCH_DB", "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb")
+	duckdb::DuckDB db(accelerator_codegen::test_support::TpchDbPath()
 	                      .c_str(),
 	                  &config);
 	duckdb::Connection con(db);
@@ -523,7 +524,7 @@ namespace {
 int RunSweep(const std::vector<int> &queries, int seeds, const std::vector<int> &thread_list) {
 	duckdb::DBConfig config;
 	config.options.access_mode = duckdb::AccessMode::READ_ONLY;
-	duckdb::DuckDB db(ts::GetBenchmarkDbPath("ACCEL_TPCH_DB", "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb")
+	duckdb::DuckDB db(accelerator_codegen::test_support::TpchDbPath()
 	                      .c_str(),
 	                  &config);
 	duckdb::Connection con(db);

@@ -713,10 +713,12 @@ if(ACCEL_ENABLE_PARALLEL_AUX)
 endif()
 
 if(BUILD_TESTING)
+    # No RESOURCE_LOCKs on the shared databases: tests open them read-only or
+    # work on private copies (eval/tests/test_support/db_paths.hpp), so they
+    # run concurrently (ctest -j, several checkouts) without lock conflicts.
     add_test(NAME registration_smoke_test COMMAND test_registration)
     foreach(_q IN LISTS ACCEL_TPCH_SMOKE_QS)
         add_test(NAME tpch_q${_q}_smoke_test COMMAND test_tpch_q${_q})
-        set_tests_properties(tpch_q${_q}_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
     endforeach()
     add_test(NAME shared_aux_state_unit_test COMMAND test_shared_aux_state)
     add_test(NAME aux_calibration_unit_test COMMAND test_aux_calibration)
@@ -736,11 +738,9 @@ if(BUILD_TESTING)
     accel_register_tpch_aux_ctests()
 	if(ACCEL_ENABLE_PARALLEL_KERNELS)
 		add_test(NAME tpch_parallel_smoke_test COMMAND test_tpch_parallel)
-		set_tests_properties(tpch_parallel_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 		foreach(_q 20 21 22 10 17 18 3 2 5 7 8 11 13 1 16)
 			if(TARGET test_tpch_q${_q}_semantics)
 				add_test(NAME tpch_q${_q}_semantics_test COMMAND test_tpch_q${_q}_semantics)
-				set_tests_properties(tpch_q${_q}_semantics_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 			endif()
 		endforeach()
 	endif()
@@ -755,7 +755,6 @@ foreach(_q 1 2 3 4 6 24)
 		QUERY_NUM ${_q}
 		LIBRARY_TARGET accelerator_codegen
 		TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}
-		CTEST_RESOURCE_LOCK sec_edgar_db
 	)
 endforeach()
 

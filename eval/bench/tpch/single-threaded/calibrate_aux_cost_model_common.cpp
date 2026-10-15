@@ -1,3 +1,4 @@
+#include "eval/tests/test_support/db_paths.hpp"
 #include "calibrate_aux_cost_model_common.hpp"
 
 #include "backends/duckdb/api/register.hpp"
@@ -46,7 +47,7 @@ void WriteCostModel(const std::string &out_path,
 } // namespace
 
 int CalibrateAndWriteCostModel(int query_num, int argc, char **argv) {
-	const char *db_path = argc > 1 ? argv[1] : "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
+	const std::string db_path = argc > 1 ? std::string(argv[1]) : accelerator_codegen::test_support::TpchDbPath();
 	const std::string out_path =
 	    argc > 2 ? argv[2] : accelerator_codegen::aux_state::core::AuxCostModelDefaultPath(
 	                       accelerator_codegen::aux_state::engine::LookupSharedQuery("tpch", query_num).cost_model);

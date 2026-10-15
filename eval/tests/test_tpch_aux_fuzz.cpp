@@ -17,6 +17,7 @@
 //
 // Usage: test_tpch_aux_fuzz <tpch.duckdb> <queries|all> [txns=200] [seed=1]
 //                           [readers=0] [workdir=/tmp] [write_interval_ms=0]
+#include "eval/tests/test_support/db_paths.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -254,7 +255,8 @@ int main(int argc, char **argv) {
   const int txns = argc > 3 ? std::atoi(argv[3]) : 200;
   const uint64_t seed = argc > 4 ? std::strtoull(argv[4], nullptr, 10) : 1;
   const int readers = argc > 5 ? std::atoi(argv[5]) : 0;
-  const std::string workdir = argc > 6 ? argv[6] : "/tmp";
+  accelerator_codegen::test_support::ScratchDir scratch("tpch_aux_fuzz");
+  const std::string workdir = argc > 6 ? std::string(argv[6]) : scratch.path().string();
   const int write_interval_ms = argc > 7 ? std::atoi(argv[7]) : 0;
   int failed = 0;
   for (int q : queries) {

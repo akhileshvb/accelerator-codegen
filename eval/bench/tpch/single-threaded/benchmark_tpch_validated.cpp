@@ -4,6 +4,7 @@
 //! Correctness is checked before timing; mismatched results abort the run.
 //! Production paths are hardcoded in kernels (no ambient ACCEL_* dependence).
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "tpch/q1/duckdb/base/query.hpp"
@@ -44,11 +45,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 std::string GetTpchDbPath() {
-	const char *env_path = std::getenv("ACCEL_TPCH_DB");
-	if (env_path && *env_path) {
-		return env_path;
-	}
-	return "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
+	return accelerator_codegen::test_support::TpchDbPath();
 }
 
 int InferScaleFactor(const std::string &db_path, int64_t lineitem_count) {

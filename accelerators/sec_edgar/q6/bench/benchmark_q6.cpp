@@ -1,3 +1,4 @@
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "sec_edgar/q6/duckdb/base/query.hpp"
@@ -18,7 +19,6 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 
-constexpr const char *kDefaultDb = "/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb";
 constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q6.sql";
 
 int GetEnvInt(const char *name, int fallback) {
@@ -148,7 +148,7 @@ PhaseProfile ProfileSecEdgarQ6Execution(duckdb::Connection &connection,
 
 int main() {
 	try {
-		const auto db_path = accelerator_codegen::test_support::GetBenchmarkDbPath("ACCEL_SEC_EDGAR_DB", kDefaultDb);
+		const auto db_path = accelerator_codegen::test_support::SecEdgarDbPath();
 		const int warmup = GetEnvInt("ACCEL_BENCH_WARMUP", 3);
 		const int iters = GetEnvInt("ACCEL_BENCH_ITERS", 10);
 		const bool profile_mode = GetEnvBool("ACCEL_BENCH_PROFILE");

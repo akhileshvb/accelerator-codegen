@@ -2,6 +2,7 @@
 #error "test_sec_edgar_aux_parallel requires -DACCEL_ENABLE_PARALLEL_AUX"
 #endif
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "eval/harness/differential.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
@@ -52,10 +53,8 @@ using accelerator_codegen::aux_state::query::SecEdgarQ1Module;
 using accelerator_codegen::aux_state::query::SecEdgarQ1ParallelModule;
 using accelerator_codegen::aux_state::query::SecEdgarQ1PreInput;
 
-constexpr const char *kDefaultTestDb =
-    "/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_test.duckdb";
-constexpr const char *kDefaultSf3Db =
-    "/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb";
+const std::string kDefaultTestDb = accelerator_codegen::test_support::SecEdgarTestDbPath();
+const std::string kDefaultSf3Db = accelerator_codegen::test_support::DataDbPath("sec_edgar_sf3.duckdb");
 constexpr int kSecQueries[] = {1, 2, 3, 4, 6, 24};
 
 void Require(bool condition, const std::string &message) {
@@ -553,7 +552,10 @@ std::string FileDbPath() {
 }
 
 void RunFileReadOnlySuite(const std::string &path) {
-  duckdb::DuckDB database(path.c_str());
+  // Read-only: this check never writes, and the file may be shared.
+  duckdb::DBConfig config;
+  config.options.access_mode = duckdb::AccessMode::READ_ONLY;
+  duckdb::DuckDB database(path.c_str(), &config);
   duckdb::Connection connection(database);
   accelerator_codegen::RegisterAcceleratorFunctions(connection);
   const int n = HardwareThreads();

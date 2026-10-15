@@ -20,6 +20,7 @@
 //                                         rebuilds show a cold-query dip
 //   ACCEL_BENCH_REF_SAMPLES               DuckDB baseline samples (default 20)
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
@@ -210,9 +211,7 @@ int main() {
              "accelerators/tpch/q20/config/q20_aux_cost_model_phased.json", 0);
     }
 
-    const auto db_path = GetEnvString(
-        "ACCEL_TPCH_DB",
-        "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb");
+    const auto db_path = accelerator_codegen::test_support::TpchDbPath();
     const auto timeline_path =
         GetEnvString("ACCEL_Q20_PHASED_TIMELINE_CSV", "");
     const int bulk_rows = std::max(2, GetEnvInt("ACCEL_Q20_PHASE_B_BULK_ROWS", 128));

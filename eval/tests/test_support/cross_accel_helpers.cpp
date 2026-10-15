@@ -1,3 +1,4 @@
+#include "eval/tests/test_support/db_paths.hpp"
 #include "eval/tests/test_support/cross_accel_helpers.hpp"
 
 #include "eval/tests/test_support/result_compare.hpp"
@@ -18,8 +19,6 @@
 namespace accelerator_codegen::test_support {
 namespace {
 
-constexpr const char *kDefaultTpchDb = "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
-constexpr const char *kDefaultSecEdgarDb = "/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb";
 
 bool ApproxDoublesMatch(double expected, double actual) {
 	if (std::isnan(expected) && std::isnan(actual)) {
@@ -627,41 +626,22 @@ void EnableCrossAccelHybridMaintenance() {
 
 std::string CrossAccelDatabasePath() {
 	if (DetectCrossAccelBenchmark() == CrossAccelBenchmark::SecEdgar) {
-		return GetBenchmarkDbPath("ACCEL_SEC_EDGAR_DB", kDefaultSecEdgarDb);
+		return SecEdgarDbPath();
 	}
-	return GetBenchmarkDbPath("ACCEL_TPCH_DB", kDefaultTpchDb);
+	return TpchDbPath();
 }
 
+// The database a cross-accelerator test may write: ACCEL_CROSS_ACCEL_WORK_DB
+// (the aux gates' work copy) if set, otherwise a private copy of
+// CrossAccelDatabasePath() in a per-process scratch dir (removed at exit), so
+// the shared TPC-H / SEC-EDGAR files are never opened for writing.
 std::string CrossAccelMutableDatabasePath() {
 	const char *work_db = std::getenv("ACCEL_CROSS_ACCEL_WORK_DB");
 	if (work_db != nullptr && *work_db != '\0') {
 		return work_db;
 	}
-	if (DetectCrossAccelBenchmark() != CrossAccelBenchmark::SecEdgar) {
-		return CrossAccelDatabasePath();
-	}
-
-	const auto source = CrossAccelDatabasePath();
-	static std::string copied_db;
-	if (!copied_db.empty()) {
-		return copied_db;
-	}
-
-	if (const char *work_dir = std::getenv("ACCEL_CROSS_ACCEL_WORK_DIR")) {
-		copied_db = (std::filesystem::path(work_dir) / "cross_accel_work.duckdb").string();
-	} else if (const char *build_dir = std::getenv("ACCEL_BUILD_DIR")) {
-		copied_db = (std::filesystem::path(build_dir) / "cross_accel_work.duckdb").string();
-	} else {
-		copied_db = (std::filesystem::temp_directory_path() /
-		             ("accel_cross_accel_sec_edgar_" + std::to_string(::getpid()) + ".duckdb"))
-		                .string();
-	}
-	std::error_code error;
-	std::filesystem::remove(copied_db, error);
-	std::filesystem::copy_file(source, copied_db, std::filesystem::copy_options::overwrite_existing, error);
-	if (error) {
-		throw std::runtime_error("failed to copy SEC EDGAR database for cross-accel tests: " + error.message());
-	}
+	static ScratchDir scratch("cross_accel");
+	static const std::string copied_db = PrivateDbCopy(CrossAccelDatabasePath(), scratch);
 	return copied_db;
 }
 
