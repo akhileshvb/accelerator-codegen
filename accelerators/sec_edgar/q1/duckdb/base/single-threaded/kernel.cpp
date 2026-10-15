@@ -584,9 +584,12 @@ struct SecEdgarQ1Kernel::State {
 	std::vector<uint16_t> active_fixed_slots;
 	std::vector<GroupKey> active_overflow_keys;
 	AdshInternTable adsh_intern;
-	// The previous row's adsh (by value: a string address is recycled across
-	// chunks, so it cannot identify the string) and its intern id.
-	std::string adsh_row_cache_bytes;
+	// The previous row's adsh (data pointer + size) and its intern id, valid
+	// for the current input chunk only: within one chunk a string address
+	// holds one value, but a later chunk can reuse the address for other
+	// bytes, so ConsumePreVectors clears it before each chunk.
+	const char *adsh_row_cache_data = nullptr;
+	duckdb::idx_t adsh_row_cache_size = 0;
 	uint32_t adsh_row_cache_intern = std::numeric_limits<uint32_t>::max();
 	std::vector<OutputRow> ordered_rows;
 	duckdb::idx_t output_offset = 0;
@@ -605,14 +608,21 @@ struct SecEdgarQ1Kernel::State {
 	uint32_t InternAdsh(const duckdb::string_t &adsh) {
 		const auto size = adsh.GetSize();
 		const auto *data = adsh.GetData();
-		if (adsh_row_cache_intern != std::numeric_limits<uint32_t>::max() && size == adsh_row_cache_bytes.size() &&
-		    (size == 0 || std::memcmp(data, adsh_row_cache_bytes.data(), size) == 0)) {
+		if (data == adsh_row_cache_data && size == adsh_row_cache_size &&
+		    adsh_row_cache_intern != std::numeric_limits<uint32_t>::max()) {
 			return adsh_row_cache_intern;
 		}
 		const auto interned = adsh_intern.Intern(adsh);
-		adsh_row_cache_bytes.assign(size == 0 ? "" : data, size);
+		adsh_row_cache_data = data;
+		adsh_row_cache_size = size;
 		adsh_row_cache_intern = interned;
 		return interned;
+	}
+
+	void BeginInputChunk() {
+		adsh_row_cache_data = nullptr;
+		adsh_row_cache_size = 0;
+		adsh_row_cache_intern = std::numeric_limits<uint32_t>::max();
 	}
 
 	void TouchFixedSlot(uint16_t slot_index) {
@@ -748,6 +758,7 @@ void SecEdgarQ1Kernel::ConsumePreChunk(duckdb::DataChunk &input) {
 void SecEdgarQ1Kernel::ConsumePreVectors(duckdb::Vector &stmt_vec, duckdb::Vector &rfile_vec, duckdb::Vector &adsh_vec,
                                          duckdb::Vector &line_vec, duckdb::idx_t count,
                                          duckdb::SelectionVector *filter_sel) {
+	state->BeginInputChunk();
 	if (profile) {
 		profile->qualifying_rows += count;
 	}

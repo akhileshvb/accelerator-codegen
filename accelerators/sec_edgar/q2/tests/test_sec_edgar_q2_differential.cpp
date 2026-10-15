@@ -49,6 +49,7 @@
 #include "sec_edgar/q2/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q2/duckdb/aux/module.hpp"
 #include "sec_edgar/q2/duckdb/aux/parallel/module.hpp"
+#include "sec_edgar/q2/duckdb/base/dictionary_slot_cache.hpp"
 
 namespace core = accelerator_codegen::aux_state::core;
 namespace engine = accelerator_codegen::aux_state::engine;
@@ -1058,6 +1059,55 @@ void TestNativeScan(uint64_t seed) {
   std::cout << "native scan ok\n";
 }
 
+// Regression: the base kernel's per-dictionary-index adsh cache was kept while
+// the dictionary's address repeated, but a later chunk can carry other strings
+// behind a recycled address (one company's row then got another's name).
+// Slots may carry over only for the same reusable (id-carrying) dictionary.
+void TestDictionarySlotCache() {
+  using accelerator_codegen::DictionarySlotCache;
+  duckdb::Vector strings(duckdb::LogicalType::VARCHAR, 4);
+  auto *data = duckdb::FlatVector::GetData<duckdb::string_t>(strings);
+  duckdb::SelectionVector sel(4);
+  for (duckdb::idx_t i = 0; i < 4; ++i) sel.set_index(i, 3 - i);
+  DictionarySlotCache<int> cache;
+
+  // Two chunks slicing the same buffer, with other bytes the second time: the
+  // dictionaries share an address and carry no id.
+  data[0] = duckdb::string_t("0000000001-23-000001");
+  duckdb::Vector chunk1(strings);
+  chunk1.Slice(sel, 4);
+  if (chunk1.GetVectorType() != duckdb::VectorType::DICTIONARY_VECTOR ||
+      !duckdb::DictionaryVector::DictionaryId(chunk1).empty())
+    throw std::runtime_error("dictionary slot cache: expected an id-less dictionary");
+  cache.BeginChunk(chunk1);
+  cache.Store(0, 1);
+  data[0] = duckdb::string_t("0000000002-23-000002");
+  duckdb::Vector chunk2(strings);
+  chunk2.Slice(sel, 4);
+  if (duckdb::DictionaryVector::Child(chunk2).GetData() != duckdb::DictionaryVector::Child(chunk1).GetData())
+    throw std::runtime_error("dictionary slot cache: expected a recycled dictionary address");
+  cache.BeginChunk(chunk2);
+  if (cache.Find(0) != nullptr)
+    throw std::runtime_error("dictionary slot cache: slot kept across a recycled id-less dictionary");
+
+  // A reusable dictionary keeps its slots across chunks; another one does not.
+  auto dict_a = duckdb::DictionaryVector::CreateReusableDictionary(duckdb::LogicalType::VARCHAR, 4);
+  auto dict_b = duckdb::DictionaryVector::CreateReusableDictionary(duckdb::LogicalType::VARCHAR, 4);
+  duckdb::Vector a1(duckdb::LogicalType::VARCHAR), a2(duckdb::LogicalType::VARCHAR), b1(duckdb::LogicalType::VARCHAR);
+  a1.Dictionary(dict_a, sel);
+  a2.Dictionary(dict_a, sel);
+  b1.Dictionary(dict_b, sel);
+  cache.BeginChunk(a1);
+  cache.Store(2, 7);
+  cache.BeginChunk(a2);
+  if (cache.Find(2) == nullptr || *cache.Find(2) != 7)
+    throw std::runtime_error("dictionary slot cache: slot lost within one reusable dictionary");
+  cache.BeginChunk(b1);
+  if (cache.Find(2) != nullptr)
+    throw std::runtime_error("dictionary slot cache: slot kept across reusable dictionaries");
+  std::cout << "dictionary slot cache ok\n";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1070,6 +1120,7 @@ int main(int argc, char **argv) {
   g_replay = std::to_string(seed) + " " + std::to_string(steps);
   std::cout << "seed=" << seed << " steps=" << steps << "\n";
   std::mt19937_64 rng(seed);
+  TestDictionarySlotCache();
   TestGroupAlgebra(rng);
   std::cout << "group algebra ok\n";
   TestCodec(seed);

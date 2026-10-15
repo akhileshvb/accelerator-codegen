@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <map>
 #include <tuple>
@@ -29,6 +30,7 @@
 #include "backends/duckdb/api/register.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
+#include "sec_edgar/q1/duckdb/base/query.hpp"
 
 namespace catalog = accelerator_codegen::aux_state::engine;
 namespace core = accelerator_codegen::aux_state::core;
@@ -270,10 +272,50 @@ void RunScenario(const catalog::SharedQueryCatalogEntry &entry, const std::strin
   std::cout << "PASS " << name << " seed=" << seed << " steps=" << steps << "\n";
 }
 
+// Regression: the base kernel reused the previous row's adsh intern id when
+// the string had the same data pointer and size.  A later chunk can hold other
+// bytes at a recycled address; here two chunks carry different adsh values in
+// one buffer, so COUNT(DISTINCT adsh) must be 2 (the pointer-keyed cache gave 1).
+void CheckRecycledAdshAddress() {
+  accelerator_codegen::SecEdgarQ1Parameters params;
+  accelerator_codegen::SecEdgarQ1Kernel kernel(params);
+  const duckdb::vector<duckdb::LogicalType> types = {duckdb::LogicalType::VARCHAR, duckdb::LogicalType::VARCHAR,
+                                                  duckdb::LogicalType::VARCHAR, duckdb::LogicalType::INTEGER};
+  char adsh_buffer[20];
+  const char *adsh_values[] = {"0000000001-23-000001", "0000000002-23-000002"};
+  for (const char *adsh : adsh_values) {
+    std::memcpy(adsh_buffer, adsh, sizeof(adsh_buffer));
+    duckdb::DataChunk chunk;
+    chunk.Initialize(duckdb::Allocator::DefaultAllocator(), types);
+    constexpr duckdb::idx_t kRows = 3;
+    for (duckdb::idx_t row = 0; row < kRows; ++row) {
+      duckdb::FlatVector::GetData<duckdb::string_t>(chunk.data[0])[row] = duckdb::string_t("BS", 2);
+      duckdb::FlatVector::GetData<duckdb::string_t>(chunk.data[1])[row] = duckdb::string_t("H", 1);
+      duckdb::FlatVector::GetData<duckdb::string_t>(chunk.data[2])[row] =
+          duckdb::string_t(adsh_buffer, sizeof(adsh_buffer));
+      duckdb::FlatVector::GetData<int32_t>(chunk.data[3])[row] = 1;
+    }
+    chunk.SetCardinality(kRows);
+    kernel.ConsumeInput(0, chunk);
+  }
+  kernel.Finalize();
+  duckdb::DataChunk out;
+  out.Initialize(duckdb::Allocator::DefaultAllocator(),
+                 duckdb::vector<duckdb::LogicalType> {duckdb::LogicalType::VARCHAR, duckdb::LogicalType::VARCHAR, duckdb::LogicalType::BIGINT,
+                  duckdb::LogicalType::BIGINT, duckdb::LogicalType::DOUBLE});
+  Require(kernel.ProduceOutput(out) && out.size() == 1, "recycled adsh address: expected one group");
+  const auto cnt = out.GetValue(2, 0).GetValue<int64_t>();
+  const auto filings = out.GetValue(3, 0).GetValue<int64_t>();
+  Require(cnt == 6 && filings == 2, "recycled adsh address: cnt=" + std::to_string(cnt) +
+                                        " num_filings=" + std::to_string(filings) + " (want 6, 2)");
+  std::cout << "recycled adsh address ok\n";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   try {
+    CheckRecycledAdshAddress();
     const int steps = argc > 1 ? std::atoi(argv[1]) : 150;
     const uint64_t seed = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 1;
     const int rows = argc > 3 ? std::atoi(argv[3]) : 300000;

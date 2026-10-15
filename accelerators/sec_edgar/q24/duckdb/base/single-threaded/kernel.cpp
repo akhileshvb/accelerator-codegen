@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -65,11 +66,6 @@ struct AdshKeyHash {
 	}
 };
 
-static bool StoredStringEquals(const std::string &stored, const duckdb::string_t &value) {
-	return stored.size() == value.GetSize() &&
-	       (stored.empty() || std::memcmp(stored.data(), value.GetData(), value.GetSize()) == 0);
-}
-
 class AdshInternTable {
 public:
 	void Reserve(duckdb::idx_t estimate) {
@@ -127,95 +123,153 @@ private:
 	std::unordered_map<AdshKey, uint32_t, AdshKeyHash> lookup_;
 };
 
-struct TagVersionKey {
-	AdshKey tag;
-	AdshKey version;
-
-	bool operator==(const TagVersionKey &other) const {
-		return tag == other.tag && version == other.version;
+// 64-bit hash of a byte string, chained through `seed`, read 8 bytes at a time.
+inline uint64_t HashBytes(const char *data, size_t size, uint64_t seed) {
+	uint64_t h = seed ^ (static_cast<uint64_t>(size) * 0x9e3779b97f4a7c15ULL);
+	while (size >= 8) {
+		uint64_t word;
+		std::memcpy(&word, data, 8);
+		h = (h ^ word) * 0xbf58476d1ce4e5b9ULL;
+		h ^= h >> 29;
+		data += 8;
+		size -= 8;
 	}
-};
-
-struct TagVersionKeyHash {
-	size_t operator()(const TagVersionKey &key) const noexcept {
-		return AdshKeyHash {}(key.tag) ^ (AdshKeyHash {}(key.version) << 1);
+	if (size > 0) {
+		uint64_t word = 0;
+		std::memcpy(&word, data, size);
+		h = (h ^ word) * 0x94d049bb133111ebULL;
+		h ^= h >> 31;
 	}
-};
+	return h;
+}
 
+inline uint64_t HashTagVersion(const duckdb::string_t &tag, const duckdb::string_t &version) {
+	uint64_t h = HashBytes(tag.GetData(), tag.GetSize(), 0x2545f4914f6cdd1dULL);
+	h = HashBytes(version.GetData(), version.GetSize(), h);
+	h ^= h >> 33;
+	h *= 0xff51afd7ed558ccdULL;
+	h ^= h >> 33;
+	return h;
+}
+
+// Interns (tag, version) pairs by their full bytes.  Open addressing over a
+// 64-bit hash of both strings; a slot whose hash matches is a hit only when
+// its stored bytes (kept contiguously, tag then version, in arena_) equal the
+// probe's in full, so distinct pairs never share an id (tags run to ~100
+// bytes and distinct tags often share long prefixes).
 struct TagVersionTable {
-	struct StoredPair {
-		std::string tag;
-		std::string version;
-	};
-
 	void Reserve(duckdb::idx_t estimate) {
 		if (estimate > 0) {
-			lookup_.reserve(estimate);
-			storage_.reserve(estimate);
+			entries_.reserve(estimate);
+			Rehash(std::min<size_t>(NextPow2(estimate * 2), size_t(1) << 18));
 		}
 	}
 
 	uint32_t Intern(const duckdb::string_t &tag, const duckdb::string_t &version) {
-		return InternKeys(AdshKey::From(tag), AdshKey::From(version), tag, version);
-	}
-
-	// The keys hold only the first 24 bytes of the tag / version (tags run to
-	// ~100 bytes and distinct tags often share a 24-byte prefix), so an id is
-	// returned only when its stored strings match in full.
-	uint32_t InternKeys(const AdshKey &tag_key, const AdshKey &version_key, const duckdb::string_t &tag,
-	                    const duckdb::string_t &version) {
-		uint32_t found = 0;
-		if (LookupKeys(tag_key, version_key, tag, version, found)) {
-			return found;
+		if (slots_.empty()) {
+			Rehash(1024);
 		}
-		const TagVersionKey key {tag_key, version_key};
-		const uint32_t id = static_cast<uint32_t>(storage_.size());
-		lookup_.emplace(key, id);
-		storage_.push_back(
-		    StoredPair {std::string(tag.GetData(), tag.GetSize()), std::string(version.GetData(), version.GetSize())});
+		const uint64_t hash = HashTagVersion(tag, version);
+		const uint32_t tag_len = static_cast<uint32_t>(tag.GetSize());
+		const uint32_t version_len = static_cast<uint32_t>(version.GetSize());
+		size_t pos = hash & mask_;
+		while (true) {
+			const auto &slot = slots_[pos];
+			if (slot.id == kEmpty) {
+				break;
+			}
+			if (slot.hash == hash && slot.tag_len == tag_len && slot.version_len == version_len) {
+				const char *stored = arena_.data() + slot.offset;
+				if ((tag_len == 0 || std::memcmp(stored, tag.GetData(), tag_len) == 0) &&
+				    (version_len == 0 || std::memcmp(stored + tag_len, version.GetData(), version_len) == 0)) {
+					return slot.id;
+				}
+			}
+			pos = (pos + 1) & mask_;
+		}
+		const uint32_t id = static_cast<uint32_t>(entries_.size());
+		Slot slot;
+		slot.hash = hash;
+		slot.offset = arena_.size();
+		slot.tag_len = tag_len;
+		slot.version_len = version_len;
+		slot.id = id;
+		arena_.insert(arena_.end(), tag.GetData(), tag.GetData() + tag_len);
+		arena_.insert(arena_.end(), version.GetData(), version.GetData() + version_len);
+		entries_.push_back(slot);
+		slots_[pos] = slot;
+		if ((entries_.size() + 1) * 2 > slots_.size()) {
+			Rehash(slots_.size() * 2);
+		}
 		return id;
 	}
 
-	bool LookupKeys(const AdshKey &tag_key, const AdshKey &version_key, const duckdb::string_t &tag,
-	                const duckdb::string_t &version, uint32_t &out_id) const {
-		const TagVersionKey key {tag_key, version_key};
-		const auto range = lookup_.equal_range(key);
-		for (auto it = range.first; it != range.second; ++it) {
-			const auto &stored = storage_[it->second];
-			if (StoredStringEquals(stored.tag, tag) && StoredStringEquals(stored.version, version)) {
-				out_id = it->second;
-				return true;
-			}
-		}
-		return false;
+	std::string Tag(uint32_t id) const {
+		const auto &entry = entries_[id];
+		return std::string(arena_.data() + entry.offset, entry.tag_len);
 	}
 
-	const std::string &Tag(uint32_t id) const {
-		return storage_[id].tag;
+	std::string Version(uint32_t id) const {
+		const auto &entry = entries_[id];
+		return std::string(arena_.data() + entry.offset + entry.tag_len, entry.version_len);
 	}
 
-	const std::string &Version(uint32_t id) const {
-		return storage_[id].version;
+	size_t Size() const {
+		return entries_.size();
 	}
 
 	void PopulateAux(SecEdgarQ24TagVersionPartition &out) const {
 		out.tag_versions.clear();
-		out.tag_versions.reserve(storage_.size());
-		for (const auto &stored : storage_) {
-			out.tag_versions.emplace_back(stored.tag, stored.version);
-		}
+		out.tag_versions.reserve(entries_.size());
 		out.tag_version_lookup.clear();
-		out.tag_version_lookup.reserve(lookup_.size());
-		for (const auto &entry : lookup_) {
-			const auto &stored = storage_[entry.second];
-			out.tag_version_lookup.emplace(
-			    SecEdgarQ24TagVersionKey::FromStored(stored.tag, stored.version), entry.second);
+		out.tag_version_lookup.reserve(entries_.size());
+		for (uint32_t id = 0; id < entries_.size(); id++) {
+			auto tag = Tag(id);
+			auto version = Version(id);
+			out.tag_version_lookup.emplace(SecEdgarQ24TagVersionKey::FromStored(tag, version), id);
+			out.tag_versions.emplace_back(std::move(tag), std::move(version));
 		}
 	}
 
 private:
-	std::vector<StoredPair> storage_;
-	std::unordered_multimap<TagVersionKey, uint32_t, TagVersionKeyHash> lookup_;
+	static constexpr uint32_t kEmpty = std::numeric_limits<uint32_t>::max();
+
+	struct Slot {
+		uint64_t hash = 0;
+		uint64_t offset = 0;
+		uint32_t tag_len = 0;
+		uint32_t version_len = 0;
+		uint32_t id = kEmpty;
+	};
+
+	static size_t NextPow2(size_t value) {
+		size_t out = 1024;
+		while (out < value) {
+			out <<= 1;
+		}
+		return out;
+	}
+
+	void Rehash(size_t capacity) {
+		capacity = NextPow2(capacity);
+		if (capacity <= slots_.size()) {
+			return;
+		}
+		slots_.assign(capacity, Slot {});
+		mask_ = capacity - 1;
+		for (const auto &entry : entries_) {
+			size_t pos = entry.hash & mask_;
+			while (slots_[pos].id != kEmpty) {
+				pos = (pos + 1) & mask_;
+			}
+			slots_[pos] = entry;
+		}
+	}
+
+	std::vector<Slot> entries_; // by id
+	std::vector<Slot> slots_;
+	size_t mask_ = 0;
+	std::vector<char> arena_;
 };
 
 struct PreByAdshMembership {
@@ -598,9 +652,7 @@ struct NumBufferDictCache {
 		}
 		valid[dict_idx] = 1;
 		const bool new_adsh = adsh_intern.InternKeyNew(AdshKey::From(adsh), adsh_id_out);
-		const AdshKey tag_key = AdshKey::From(tag);
-		const AdshKey version_key = AdshKey::From(version);
-		tv_id_out = tag_version_table.InternKeys(tag_key, version_key, tag, version);
+		tv_id_out = tag_version_table.Intern(tag, version);
 		adsh_ids[dict_idx] = adsh_id_out;
 		tv_ids[dict_idx] = tv_id_out;
 		return new_adsh;
@@ -786,10 +838,7 @@ struct SecEdgarQ24Kernel::State {
 	void BufferNumRow(const duckdb::string_t &adsh, const duckdb::string_t &tag, const duckdb::string_t &version,
 	                  double value) {
 		const auto adsh_id = InternAdshTrackBloom(adsh);
-		const AdshKey tag_key = AdshKey::From(tag);
-		const AdshKey version_key = AdshKey::From(version);
-		uint32_t tv_id = 0;
-		tv_id = tag_version_table.InternKeys(tag_key, version_key, tag, version);
+		const uint32_t tv_id = tag_version_table.Intern(tag, version);
 		AppendBufferRow(adsh_id, tv_id, value);
 	}
 

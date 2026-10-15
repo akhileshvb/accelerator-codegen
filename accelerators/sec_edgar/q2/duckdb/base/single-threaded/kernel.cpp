@@ -1,5 +1,6 @@
 #include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
 #include "sec_edgar/q2/duckdb/base/query.hpp"
+#include "sec_edgar/q2/duckdb/base/dictionary_slot_cache.hpp"
 #include "sec_edgar/q2/duckdb/base/fused.hpp"
 
 #include <algorithm>
@@ -382,62 +383,6 @@ void ProcessNumConsumableChunk(duckdb::idx_t count, ConsumableStringColumn &adsh
 	}
 }
 
-enum class AdshQualifyStatus : uint8_t { Unknown = 0, Qualifies = 1, Rejects = 2 };
-
-struct AdshDictQualifyingCache {
-	const duckdb::string_t *current_dict = nullptr;
-	std::vector<AdshQualifyStatus> status;
-	std::vector<AdshKey> keys;
-	std::vector<const std::string *> names;
-
-	void Reserve(duckdb::idx_t estimate) {
-		if (estimate > 0) {
-			status.reserve(estimate);
-			keys.reserve(estimate);
-			names.reserve(estimate);
-		}
-	}
-
-	void BeginChunk(const duckdb::string_t *dict_base) {
-		if (current_dict != dict_base) {
-			current_dict = dict_base;
-			status.clear();
-			keys.clear();
-			names.clear();
-		}
-	}
-
-	// A dictionary freed by an earlier chunk can be reallocated at the same
-	// address with other strings, so a cached slot only counts when its adsh
-	// still matches (as in sec_edgar q3).
-	const std::string *Lookup(duckdb::idx_t dict_idx, const duckdb::string_t &adsh,
-	                          const std::unordered_map<AdshKey, std::string, AdshKeyHash> &map) {
-		if (dict_idx >= status.size()) {
-			status.resize(dict_idx + 1, AdshQualifyStatus::Unknown);
-			keys.resize(dict_idx + 1);
-			names.resize(dict_idx + 1, nullptr);
-		}
-		const auto adsh_key = AdshKey::From(adsh);
-		if (status[dict_idx] != AdshQualifyStatus::Unknown && !(keys[dict_idx] == adsh_key)) {
-			status[dict_idx] = AdshQualifyStatus::Unknown;
-		}
-		if (status[dict_idx] == AdshQualifyStatus::Unknown) {
-			keys[dict_idx] = adsh_key;
-			const auto it = map.find(adsh_key);
-			if (it == map.end()) {
-				status[dict_idx] = AdshQualifyStatus::Rejects;
-			} else {
-				status[dict_idx] = AdshQualifyStatus::Qualifies;
-				names[dict_idx] = &it->second;
-			}
-		}
-		if (status[dict_idx] == AdshQualifyStatus::Qualifies) {
-			return names[dict_idx];
-		}
-		return nullptr;
-	}
-};
-
 } // namespace
 
 struct SecEdgarQ2Kernel::State {
@@ -451,7 +396,8 @@ struct SecEdgarQ2Kernel::State {
 
 	std::unordered_map<AdshKey, std::string, AdshKeyHash> fy2022_adsh_to_name;
 	std::unordered_map<GroupKey, AdshTagGroup, GroupKeyHash> adsh_tag_groups;
-	AdshDictQualifyingCache adsh_dict_cache;
+	// Per adsh dictionary entry: its fy2022 name, or nullptr when it has none.
+	DictionarySlotCache<const std::string *> adsh_dict_cache;
 	std::vector<CandidateRow> candidates;
 	std::vector<CandidateRow> ordered_output;
 	std::vector<NumRowBuffer> num_buffer;
@@ -506,15 +452,20 @@ struct SecEdgarQ2Kernel::State {
 		return &name_it->second;
 	}
 
-	const std::string *LookupFy2022Dict(duckdb::idx_t dict_idx, const duckdb::string_t &adsh,
-	                                    const duckdb::string_t *dict_base) {
-		adsh_dict_cache.BeginChunk(dict_base);
-		return adsh_dict_cache.Lookup(dict_idx, adsh, fy2022_adsh_to_name);
+	const std::string *LookupFy2022Dict(duckdb::idx_t dict_idx, const duckdb::string_t &adsh) {
+		if (const auto *cached = adsh_dict_cache.Find(dict_idx)) {
+			return *cached;
+		}
+		const auto *name = LookupFy2022Flat(adsh);
+		adsh_dict_cache.Store(dict_idx, name);
+		return name;
 	}
 
-	void ProcessNumConsumableFiltered(duckdb::idx_t count, ConsumableStringColumn &adsh_col,
-	                                  ConsumableStringColumn &tag_col, ConsumableDoubleColumn &value_col,
-	                                  SecEdgarQ2ProfileCounters *profile_counters) {
+	// adsh_vec: the vector adsh_col is bound to.
+	void ProcessNumConsumableFiltered(duckdb::idx_t count, const duckdb::Vector &adsh_vec,
+	                                  ConsumableStringColumn &adsh_col, ConsumableStringColumn &tag_col,
+	                                  ConsumableDoubleColumn &value_col, SecEdgarQ2ProfileCounters *profile_counters) {
+		adsh_dict_cache.BeginChunk(adsh_vec);
 		TrackChunkPath(profile_counters, count, ConsumableChunkPath(adsh_col, tag_col, value_col));
 		if (adsh_col.kind == ConsumableKind::Flat && tag_col.kind == ConsumableKind::Flat &&
 		    value_col.kind == ConsumableKind::Flat && adsh_col.all_valid && tag_col.all_valid && value_col.all_valid) {
@@ -535,7 +486,7 @@ struct SecEdgarQ2Kernel::State {
 		if (shared_sel) {
 			for (duckdb::idx_t row = 0; row < count; row++) {
 				const auto index = adsh_col.sel->get_index(row);
-				const auto *name = LookupFy2022Dict(index, adsh_col.data[index], adsh_col.data);
+				const auto *name = LookupFy2022Dict(index, adsh_col.data[index]);
 				if (name == nullptr) {
 					continue;
 				}
@@ -549,7 +500,7 @@ struct SecEdgarQ2Kernel::State {
 		if (shared_string_dict && value_col.kind == ConsumableKind::Flat && value_col.all_valid) {
 			for (duckdb::idx_t row = 0; row < count; row++) {
 				const auto index = adsh_col.sel->get_index(row);
-				const auto *name = LookupFy2022Dict(index, adsh_col.data[index], adsh_col.data);
+				const auto *name = LookupFy2022Dict(index, adsh_col.data[index]);
 				if (name == nullptr) {
 					continue;
 				}
@@ -568,7 +519,7 @@ struct SecEdgarQ2Kernel::State {
 			}
 			const auto &adsh = adsh_col.data[adsh_index];
 			const auto *name = adsh_col.kind == ConsumableKind::Dict
-			                       ? LookupFy2022Dict(adsh_index, adsh, adsh_col.data)
+			                       ? LookupFy2022Dict(adsh_index, adsh)
 			                       : LookupFy2022Flat(adsh);
 			if (name == nullptr) {
 				continue;
@@ -839,7 +790,7 @@ void SecEdgarQ2Kernel::RunNumFusedPass(duckdb::ClientContext &context, const duc
 		ConsumableDoubleColumn value_col;
 		if (BindConsumableString(adsh_vec, adsh_col) && BindConsumableString(tag_vec, tag_col) &&
 		    BindConsumableDouble(value_vec, value_col)) {
-			state->ProcessNumConsumableFiltered(chunk.size(), adsh_col, tag_col, value_col, profile);
+			state->ProcessNumConsumableFiltered(chunk.size(), adsh_vec, adsh_col, tag_col, value_col, profile);
 			continue;
 		}
 
