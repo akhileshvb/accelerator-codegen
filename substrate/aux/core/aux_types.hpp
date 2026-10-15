@@ -37,6 +37,8 @@ enum class AuxType : uint8_t {
   Double,
   Date,
   String,
+  // Appended: existing AuxType values and AuxPayload indices are unchanged.
+  ScaledDecimal128,
 };
 
 struct ScaledDecimal {
@@ -48,6 +50,43 @@ struct ScaledDecimal {
   }
 };
 
+// DECIMAL(38, scale): the unscaled value is a signed 128-bit integer.
+struct ScaledDecimal128 {
+  __int128 value = 0;
+  int32_t scale = 0;
+
+  bool operator==(const ScaledDecimal128 &other) const {
+    return value == other.value && scale == other.scale;
+  }
+};
+
+// Exact decimal text, e.g. (-12345, scale 2) -> "-123.45"; a negative scale
+// appends zeros.
+inline std::string ScaledDecimal128ToString(__int128 value, int32_t scale) {
+  const bool negative = value < 0;
+  unsigned __int128 mag = negative ? (~static_cast<unsigned __int128>(value)) + 1
+                                   : static_cast<unsigned __int128>(value);
+  std::string digits;
+  do {
+    digits.push_back(static_cast<char>('0' + static_cast<int>(mag % 10)));
+    mag /= 10;
+  } while (mag != 0);
+  if (scale < 0) {
+    if (value != 0) {
+      digits.insert(digits.begin(), static_cast<size_t>(-scale), '0');
+    }
+  } else if (scale > 0) {
+    while (digits.size() <= static_cast<size_t>(scale)) {
+      digits.push_back('0');
+    }
+    digits.insert(static_cast<size_t>(scale), ".");
+  }
+  if (negative) {
+    digits.push_back('-');
+  }
+  return std::string(digits.rbegin(), digits.rend());
+}
+
 struct AuxDate {
   int32_t days_since_epoch = 0;
 
@@ -57,7 +96,7 @@ struct AuxDate {
 };
 
 using AuxPayload = std::variant<bool, int64_t, uint64_t, ScaledDecimal, double,
-                                AuxDate, std::string>;
+                                AuxDate, std::string, ScaledDecimal128>;
 
 struct AuxValue {
   AuxType type = AuxType::String;

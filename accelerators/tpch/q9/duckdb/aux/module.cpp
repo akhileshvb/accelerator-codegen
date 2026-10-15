@@ -995,7 +995,7 @@ std::vector<uint8_t> EncodeTpchQ9CompleteState(const TpchQ9State &state) {
   }
   std::sort(partkeys.begin(), partkeys.end());
   core::WriteImageHeader(writer, kCompleteStateMagic, kVersion,
-                         static_cast<uint32_t>(partkeys.size()));
+                         static_cast<uint64_t>(partkeys.size()));
   for (const auto partkey : partkeys) {
     const auto *record = state.FindPart(partkey);
     if (!record) continue;
@@ -1301,7 +1301,7 @@ bool ReadTpchQ9ProfitParts(ByteReader &reader,
 std::vector<uint8_t> EncodeTpchQ9Cube(const TpchQ9State &state) {
   ByteWriter writer;
   core::WriteImageHeader(writer, kCubeMagic, kVersion,
-                         static_cast<uint32_t>(state.cube.size()));
+                         static_cast<uint64_t>(state.cube.size()));
   std::vector<std::string> tokens;
   tokens.reserve(state.cube.size());
   for (const auto &entry : state.cube)
@@ -1325,7 +1325,7 @@ std::vector<uint8_t> EncodeTpchQ9Cube(const TpchQ9State &state) {
 
 bool DecodeTpchQ9Cube(const std::vector<uint8_t> &bytes, TpchQ9State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kCubeMagic, kVersion, count))
     return false;
   state.cube.clear();
@@ -1357,7 +1357,7 @@ bool DecodeTpchQ9Cube(const std::vector<uint8_t> &bytes, TpchQ9State &state) {
 std::vector<uint8_t> EncodeTpchQ9Metadata(const TpchQ9State &state) {
   ByteWriter writer;
   core::WriteImageHeader(writer, kMetadataMagic, kVersion,
-                         static_cast<uint32_t>(state.profit_slot_count));
+                         static_cast<uint64_t>(state.profit_slot_count));
   WriteTpchQ9MetadataBody(writer, state);
   return std::move(writer.bytes);
 }
@@ -1381,7 +1381,7 @@ std::vector<uint8_t> EncodeTpchQ9ProfitSlot(
 bool DecodeTpchQ9Metadata(const std::vector<uint8_t> &bytes,
                           TpchQ9State &state) {
   ByteReader reader{bytes};
-  uint32_t slot_count = 0;
+  uint64_t slot_count = 0;
   if (!core::ReadImageHeader(reader, kMetadataMagic, kVersion, slot_count))
     return false;
   state.profit_partitions.clear();
@@ -1396,7 +1396,7 @@ bool DecodeTpchQ9Metadata(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ9MaintenanceSide(const std::vector<uint8_t> &bytes,
                                  TpchQ9State &state) {
   ByteReader reader{bytes};
-  uint32_t reserved = 0;
+  uint64_t reserved = 0;
   if (!core::ReadImageHeader(reader, kMaintenanceSideMagic, kVersion, reserved))
     return false;
   if (!ReadTpchQ9MaintenanceSideBody(reader, state))
@@ -1407,7 +1407,7 @@ bool DecodeTpchQ9MaintenanceSide(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ9ProfitSlot(const std::vector<uint8_t> &bytes,
                             TpchQ9State::PartProfitPartition &partition) {
   ByteReader reader{bytes};
-  uint32_t reserved = 0;
+  uint64_t reserved = 0;
   if (!core::ReadImageHeader(reader, kProfitSlotMagic, kVersion, reserved))
     return false;
   if (!ReadTpchQ9ProfitParts(reader, partition))
@@ -1419,15 +1419,16 @@ bool DecodeTpchQ9ProfitSlot(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ9CompleteState(const std::vector<uint8_t> &bytes,
                                 TpchQ9State &state) {
   ByteReader reader{bytes};
+  uint64_t parts = 0;
   uint32_t count = 0;
 
-  if (!core::ReadImageHeader(reader, kCompleteStateMagic, kVersion, count))
+  if (!core::ReadImageHeader(reader, kCompleteStateMagic, kVersion, parts))
     return false;
 
   // ── Parts (name + profit cells) ─────────────────────────────────────────
   state.profit_partitions.clear();
-  state.InitPartitions(count);
-  for (uint32_t i = 0; i < count; ++i) {
+  state.InitPartitions(parts);
+  for (uint32_t i = 0; i < parts; ++i) {
     int64_t partkey = 0;
     Q9PartRecord record;
     if (!ReadQ9Record(reader, partkey, record))

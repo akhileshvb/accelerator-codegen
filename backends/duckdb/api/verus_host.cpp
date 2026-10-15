@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "backends/duckdb/engine/capture.hpp"
+#include "backends/duckdb/engine/decimal128.hpp"
 #include "backends/duckdb/engine/scan.hpp"
 #include "substrate/verus/kit/verus_kit.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -114,10 +115,8 @@ struct ChunkColumn {
       if (!valid)
         return null(AuxType::ScaledDecimal);
       const auto huge = ::duckdb::UnifiedVectorFormat::GetData<::duckdb::hugeint_t>(uvf)[i];
-      const bool fits = (huge.upper == 0 && static_cast<int64_t>(huge.lower) >= 0) ||
-                        (huge.upper == -1 && static_cast<int64_t>(huge.lower) < 0);
-      if (!fits) // beyond 64 bits: the boxed path's exact decimal text
-        out = CapturedValue(chunk.GetValue(col, r));
+      if (!HugeintFitsInt64(huge)) // beyond 64 bits: the exact 128-bit cell
+        out = Decimal128Cell(huge, scale);
       else
         set(AuxType::ScaledDecimal, core::ScaledDecimal{static_cast<int64_t>(huge.lower), scale});
       return;
@@ -213,6 +212,8 @@ struct DuckVerusHost final : verus_kit::Host {
               return ::duckdb::Value::BOOLEAN(payload);
             else if constexpr (std::is_same_v<T, core::ScaledDecimal>)
               return ::duckdb::Value::DECIMAL(payload.value, 18, payload.scale);
+            else if constexpr (std::is_same_v<T, core::ScaledDecimal128>)
+              return Decimal128ToValue(payload);
             else if constexpr (std::is_same_v<T, core::AuxDate>) {
               ::duckdb::date_t d{};
               d.days = payload.days_since_epoch;

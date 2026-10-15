@@ -290,7 +290,7 @@ int64_t HugeintLower(const duckdb::hugeint_t &value) {
 std::vector<uint8_t> EncodeTpchQ6Matrix(const Q6RevenueMatrix &matrix) {
   ByteWriter writer;
   core::WriteImageHeader(writer, kMatrixMagic, kVersion,
-                         static_cast<uint32_t>(matrix.cells.size()));
+                         static_cast<uint64_t>(matrix.cells.size()));
   for (const auto &cell : matrix.cells) {
     WriteQ6Acc(writer, cell);
   }
@@ -300,7 +300,7 @@ std::vector<uint8_t> EncodeTpchQ6Matrix(const Q6RevenueMatrix &matrix) {
 bool DecodeTpchQ6Matrix(const std::vector<uint8_t> &bytes,
                         Q6RevenueMatrix &matrix) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kMatrixMagic, kVersion, count) ||
       count != matrix.cells.size()) {
     return false;

@@ -372,7 +372,7 @@ std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state) {
 
   ByteWriter writer;
   core::WriteImageHeader(writer, kQuantitySumsMagic, kVersionV3,
-                         static_cast<uint32_t>(survivor_keys.size()));
+                         static_cast<uint64_t>(survivor_keys.size()));
   for (const int64_t orderkey : survivor_keys) {
     const auto &meta = *state.survivors.Find(orderkey);
     writer.I64(orderkey);
@@ -440,7 +440,7 @@ bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
     return reader.FullyConsumed();
   };
 
-  auto decode_v2 = [&](ByteReader &reader, uint32_t count) -> bool {
+  auto decode_v2 = [&](ByteReader &reader, uint64_t count) -> bool {
     state = TpchQ18State{};
 
     for (uint32_t i = 0; i < count; ++i) {
@@ -458,7 +458,7 @@ bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
     return reader.FullyConsumed();
   };
 
-  auto decode_v1 = [&](ByteReader &reader, uint32_t count) -> bool {
+  auto decode_v1 = [&](ByteReader &reader, uint64_t count) -> bool {
     state = TpchQ18State{};
 
     for (uint32_t i = 0; i < count; ++i) {
@@ -473,7 +473,7 @@ bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
   };
 
   ByteReader reader_v3{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (core::ReadImageHeader(reader_v3, kQuantitySumsMagic, kVersionV3, count))
     return decode_v3(reader_v3, count);
 

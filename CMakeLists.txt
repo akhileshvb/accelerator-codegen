@@ -335,6 +335,10 @@ foreach(_q IN LISTS ACCEL_TPCH_SMOKE_QS)
     accel_add_duckdb_exe(test_tpch_q${_q} accelerators/tpch/q${_q}/tests/test_tpch_q${_q}.cpp)
 endforeach()
 accel_add_duckdb_exe(test_shared_aux_state backends/duckdb/tests/test_shared_aux_state.cpp)
+accel_add_duckdb_exe(test_wide_types backends/duckdb/tests/test_wide_types.cpp)
+if(BUILD_TESTING)
+    add_test(NAME wide_types_unit_test COMMAND test_wide_types)
+endif()
 add_executable(test_versioned_aux_state
     backends/duckdb/tests/test_versioned_aux_state.cpp
 )

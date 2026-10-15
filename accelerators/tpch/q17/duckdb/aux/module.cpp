@@ -273,7 +273,7 @@ std::vector<uint8_t> EncodeTpchQ17PartStats(int64_t partkey,
 bool DecodeTpchQ17AttributeIndex(const std::vector<uint8_t> &bytes,
                                  TpchQ17State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kAttrMagic, kVersion, count))
     return false;
   state.attribute_index.clear();
@@ -290,7 +290,7 @@ bool DecodeTpchQ17AttributeIndex(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ17PartStats(const std::vector<uint8_t> &bytes, int64_t partkey,
                             TpchQ17State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kPartMagic, kVersion, count))
     return false;
   TpchQ17PartStats stats;

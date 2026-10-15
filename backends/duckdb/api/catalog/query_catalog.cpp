@@ -502,6 +502,14 @@ bool StepValue(const core::AuxValue &before, const core::AuxValue &now,
                               core::ScaledDecimal{2 * n->value - b->value, n->scale});
     return true;
   }
+  if (const auto *b = std::get_if<core::ScaledDecimal128>(&before.payload)) {
+    const auto *n = std::get_if<core::ScaledDecimal128>(&now.payload);
+    if (!n || n->scale != b->scale)
+      return false;
+    next = core::AuxValue::Of(core::AuxType::ScaledDecimal128,
+                              core::ScaledDecimal128{2 * n->value - b->value, n->scale});
+    return true;
+  }
   if (const auto *b = std::get_if<int64_t>(&before.payload)) {
     const auto *n = std::get_if<int64_t>(&now.payload);
     if (!n)

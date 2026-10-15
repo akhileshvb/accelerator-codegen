@@ -84,28 +84,14 @@ std::string AuxValueText(const core::AuxValue &value) {
         } else if constexpr (std::is_same_v<Payload, int64_t> ||
                              std::is_same_v<Payload, uint64_t>) {
           text << payload << ".000000";
-        } else if constexpr (std::is_same_v<Payload, core::ScaledDecimal>) {
-          const bool negative = payload.value < 0;
-          const uint64_t magnitude = negative
-                                         ? static_cast<uint64_t>(-(payload.value + 1)) + 1
-                                         : static_cast<uint64_t>(payload.value);
-          auto digits = std::to_string(magnitude);
-          if (payload.scale > 0) {
-            if (digits.size() <= static_cast<std::size_t>(payload.scale)) {
-              digits.insert(0, static_cast<std::size_t>(payload.scale) + 1 -
-                                       digits.size(),
-                            '0');
-            }
-            digits.insert(digits.size() - payload.scale, 1, '.');
-          }
-          if (negative) {
-            digits.insert(digits.begin(), '-');
-          }
-          const auto decimal = digits.find('.');
-          if (decimal == std::string::npos) {
+        } else if constexpr (std::is_same_v<Payload, core::ScaledDecimal> ||
+                             std::is_same_v<Payload, core::ScaledDecimal128>) {
+          auto digits = core::ScaledDecimal128ToString(payload.value, payload.scale);
+          const auto point = digits.find('.');
+          if (point == std::string::npos) {
             digits += ".000000";
-          } else if (digits.size() - decimal - 1 < 6) {
-            digits.append(6 - (digits.size() - decimal - 1), '0');
+          } else if (digits.size() - point - 1 < 6) {
+            digits.append(6 - (digits.size() - point - 1), '0');
           }
           text << digits;
         } else if constexpr (std::is_same_v<Payload, core::AuxDate>) {
@@ -149,6 +135,10 @@ bool ValuesApproxEqual(const std::string &expected, const std::string &actual) {
   }
   if (expected == "NULL" || actual == "NULL") {
     return expected == actual;
+  }
+  const auto beyond_double = [](const std::string &text) { return text.size() > 29; };
+  if (beyond_double(expected) || beyond_double(actual)) { // more digits than any double: exact decimals
+    return false;
   }
   try {
     const long double lhs = std::stold(expected);

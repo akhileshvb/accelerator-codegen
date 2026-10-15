@@ -381,7 +381,7 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
                             TpchQ8State &state) {
   TpchQ8Dimensions d;
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kCubeMagic, kVersionV2, count))
     return false;
 

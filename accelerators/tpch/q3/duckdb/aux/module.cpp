@@ -568,7 +568,7 @@ EncodeTpchQ3SegmentIntervalIndex(const TpchQ3Segment &segment) {
 bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &bytes,
                                   TpchQ3Side &side) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kOrderSegmentMagic, kVersion, count))
     return false;
   TpchQ3ShardIndex<TpchQ3OrderRec>::Builder orders;
@@ -604,7 +604,7 @@ bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &bytes,
                                       core::PartitionId segment_id,
                                       TpchQ3Segment &segment) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kIntervalMagic, kVersion, count))
     return false;
   segment.segment = segment_id;

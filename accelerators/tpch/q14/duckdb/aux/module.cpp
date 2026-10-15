@@ -208,7 +208,7 @@ std::vector<uint8_t> EncodeTpchQ14PartPromo(const TpchQ14State &state) {
       keys.push_back(key);
   }
   std::sort(keys.begin() + static_cast<std::ptrdiff_t>(dense), keys.end());
-  core::WriteImageHeader(writer, kPartMagic, kVersion, static_cast<uint32_t>(keys.size()));
+  core::WriteImageHeader(writer, kPartMagic, kVersion, static_cast<uint64_t>(keys.size()));
   for (const auto key : keys) {
     writer.I64(key);
     writer.U8(static_cast<uint8_t>(state.PromoOf(key)));
@@ -234,7 +234,7 @@ std::vector<uint8_t> EncodeTpchQ14Month(int32_t month,
 bool DecodeTpchQ14PartPromo(const std::vector<uint8_t> &bytes,
                             TpchQ14State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kPartMagic, kVersion, count))
     return false;
   state.classes.Clear();
@@ -252,7 +252,7 @@ bool DecodeTpchQ14PartPromo(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ14Month(const std::vector<uint8_t> &bytes, int32_t month,
                           TpchQ14State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kMonthMagic, kVersion, count) || count != 1)
     return false;
   TpchQ14MonthTotals totals;
@@ -269,7 +269,7 @@ bool DecodeTpchQ14Month(const std::vector<uint8_t> &bytes, int32_t month,
 bool FindTpchQ14PartPromo(const std::vector<uint8_t> &bytes, int64_t partkey,
                             TpchQ14PromoClass &promo) {
   ByteReader header{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(header, kPartMagic, kVersion, count))
     return false;
   constexpr std::size_t kHeaderBytes = 12;

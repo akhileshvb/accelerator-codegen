@@ -306,6 +306,10 @@ void PutValue(Out &o, const core::AuxValue &v) {
         } else if constexpr (std::is_same_v<T, core::ScaledDecimal>) {
           o.i64(x.value);
           o.u32(static_cast<uint32_t>(x.scale));
+        } else if constexpr (std::is_same_v<T, core::ScaledDecimal128>) {
+          o.u64(static_cast<uint64_t>(static_cast<unsigned __int128>(x.value) >> 64));
+          o.u64(static_cast<uint64_t>(x.value));
+          o.u32(static_cast<uint32_t>(x.scale));
         } else if constexpr (std::is_same_v<T, double>) {
           o.f64(x);
         } else if constexpr (std::is_same_v<T, core::AuxDate>) {
@@ -338,6 +342,14 @@ core::AuxValue GetValue(In &in) {
   case 5: {
     core::AuxDate d;
     d.days_since_epoch = static_cast<int32_t>(in.u32());
+    v.payload = d;
+    break;
+  }
+  case 7: {
+    core::ScaledDecimal128 d;
+    const unsigned __int128 hi = in.u64();
+    d.value = static_cast<__int128>((hi << 64) | in.u64());
+    d.scale = static_cast<int32_t>(in.u32());
     v.payload = d;
     break;
   }

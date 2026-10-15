@@ -1,5 +1,6 @@
 // GENERATED BACKEND
 #include "backends/duckdb/engine/capture.hpp"
+#include "backends/duckdb/engine/decimal128.hpp"
 
 #include "backends/duckdb/api/duckdb_host.hpp"
 #include "backends/duckdb/engine/scan.hpp"
@@ -92,10 +93,8 @@ core::AuxValue CapturedValue(const ::duckdb::Value &value) {
     }
     if (value.type().InternalType() == ::duckdb::PhysicalType::INT128) {
       const auto huge = value.GetValueUnsafe<::duckdb::hugeint_t>();
-      const bool fits = (huge.upper == 0 && static_cast<int64_t>(huge.lower) >= 0) ||
-                        (huge.upper == -1 && static_cast<int64_t>(huge.lower) < 0);
-      if (!fits) // beyond 64 bits: exact as decimal text (DuckDB parses it back exactly), never via double
-        return core::AuxValue::Of(core::AuxType::String, value.ToString());
+      if (!HugeintFitsInt64(huge)) // beyond 64 bits: the exact 128-bit cell, never via double
+        return Decimal128Cell(huge, static_cast<int32_t>(::duckdb::DecimalType::GetScale(value.type())));
     }
     core::ScaledDecimal decimal;
     decimal.value = scan::DecimalRaw(value);

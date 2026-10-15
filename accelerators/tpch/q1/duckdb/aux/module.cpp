@@ -270,7 +270,7 @@ std::vector<uint8_t> EncodeTpchQ1Day(const Q1DayPartition &partition) {
   std::sort(keys.begin(), keys.end());
 
   ByteWriter writer;
-  core::WriteImageHeader(writer, kDayMagic, kVersion, static_cast<uint32_t>(keys.size()));
+  core::WriteImageHeader(writer, kDayMagic, kVersion, static_cast<uint64_t>(keys.size()));
   for (const auto key : keys) {
     const auto &stats = partition.stats[partition.Find(key)];
     writer.U16(key);
@@ -286,7 +286,7 @@ std::vector<uint8_t> EncodeTpchQ1Day(const Q1DayPartition &partition) {
 
 bool DecodeTpchQ1Day(const std::vector<uint8_t> &bytes, Q1DayPartition &partition) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kDayMagic, kVersion, count))
     return false;
   partition = Q1DayPartition{};

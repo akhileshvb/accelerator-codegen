@@ -1354,7 +1354,7 @@ std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state) {
     if (o)
       live_orders += o->Size() - o->dead;
   core::WriteImageHeader(writer, kCustomerMagic, kVersion,
-                         static_cast<uint32_t>(live_orders));
+                         static_cast<uint64_t>(live_orders));
 
   writer.U32(static_cast<uint32_t>(state.patterns.size()));
   for (const auto &p : state.patterns)
@@ -1399,7 +1399,7 @@ std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state) {
 bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
                                  TpchQ13State &state) {
   ByteReader reader(bytes);
-  uint32_t magic = 0, version = 0, record_count = 0;
+  uint64_t magic = 0, version = 0, record_count = 0;
   if (!core::ReadImageHeader(reader, magic, version, record_count) ||
       magic != kCustomerMagic)
     return false;

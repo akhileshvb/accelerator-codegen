@@ -256,7 +256,7 @@ std::vector<uint8_t> EncodeTpchQ12OrderPriorities(const TpchQ12State &state) {
     if (v != 0)
       keys.push_back(key);
   });
-  core::WriteImageHeader(writer, kPriorityMagic, kVersion, static_cast<uint32_t>(keys.size()));
+  core::WriteImageHeader(writer, kPriorityMagic, kVersion, static_cast<uint64_t>(keys.size()));
   for (const auto key : keys) {
     writer.I64(key);
     writer.U8(static_cast<uint8_t>(state.PriorityOf(key)));
@@ -277,7 +277,7 @@ std::vector<uint8_t> EncodeTpchQ12Day(int32_t receipt_day,
     std::sort(shipmodes.begin(), shipmodes.end());
   }
   ByteWriter writer;
-  core::WriteImageHeader(writer, kDayMagic, kVersion, static_cast<uint32_t>(shipmodes.size()));
+  core::WriteImageHeader(writer, kDayMagic, kVersion, static_cast<uint64_t>(shipmodes.size()));
   for (const auto &shipmode : shipmodes) {
     const auto &stats = it->second.at(shipmode);
     writer.String(shipmode);
@@ -290,7 +290,7 @@ std::vector<uint8_t> EncodeTpchQ12Day(int32_t receipt_day,
 bool DecodeTpchQ12OrderPriorities(const std::vector<uint8_t> &bytes,
                                     TpchQ12State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kPriorityMagic, kVersion, count))
     return false;
   state.order_priorities = decltype(state.order_priorities)();
@@ -310,7 +310,7 @@ bool DecodeTpchQ12OrderPriorities(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ12Day(const std::vector<uint8_t> &bytes, int32_t receipt_day,
                       TpchQ12State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kDayMagic, kVersion, count))
     return false;
   auto &day = state.day_partitions[receipt_day];
@@ -329,7 +329,7 @@ bool DecodeTpchQ12Day(const std::vector<uint8_t> &bytes, int32_t receipt_day,
 bool FindTpchQ12OrderPriority(const std::vector<uint8_t> &bytes,
                               int64_t orderkey, TpchQ12PriorityClass &priority) {
   ByteReader header{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(header, kPriorityMagic, kVersion, count))
     return false;
   constexpr std::size_t kHeaderBytes = 12;

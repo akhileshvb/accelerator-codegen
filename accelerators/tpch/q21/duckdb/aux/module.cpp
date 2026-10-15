@@ -324,7 +324,7 @@ std::vector<uint8_t> EncodeTpchQ21SupplierMetadata(const TpchQ21State &state) {
   });
   ByteWriter writer;
   core::WriteImageHeader(writer, kSupplierMagic, kVersion,
-                         static_cast<uint32_t>(merged.size()));
+                         static_cast<uint64_t>(merged.size()));
   for (const auto &[key, supplier] : merged) {
     writer.I64(key);
     writer.String(supplier.name ? *supplier.name : std::string());
@@ -359,7 +359,7 @@ std::vector<uint8_t> EncodeTpchQ21OrderSummaries(const TpchQ21State &state) {
   });
   ByteWriter writer;
   core::WriteImageHeader(writer, kOrdersMagic, kVersionV2,
-                         static_cast<uint32_t>(merged.size()));
+                         static_cast<uint64_t>(merged.size()));
   for (const auto &[key, summary] : merged) {
     writer.I64(key);
     writer.U8(static_cast<uint8_t>(summary.orderstatus));
@@ -382,7 +382,7 @@ std::vector<uint8_t> EncodeTpchQ21NationNameIndex(const TpchQ21State &state) {
   ByteWriter writer;
   core::WriteImageHeader(
       writer, kNationNameIdxMagic, kVersion,
-      static_cast<uint32_t>(state.nation_index->nation_name_to_keys.size()));
+      static_cast<uint64_t>(state.nation_index->nation_name_to_keys.size()));
   std::vector<std::string> nation_names;
   for (const auto &entry : state.nation_index->nation_name_to_keys)
     nation_names.push_back(entry.first);
@@ -401,7 +401,7 @@ std::vector<uint8_t> EncodeTpchQ21Nation(int32_t nationkey,
                                           const TpchQ21State &state) {
   ByteWriter writer;
   const auto it = state.nations.find(nationkey);
-  const uint32_t count =
+  const uint64_t count =
       it == state.nations.end() ? 0
                                 : static_cast<uint32_t>(it->second->rows.size());
   core::WriteImageHeader(writer, kNationMagic, kVersionV2, count);
@@ -417,7 +417,7 @@ std::vector<uint8_t> EncodeTpchQ21Nation(int32_t nationkey,
 bool DecodeTpchQ21SupplierMetadata(const std::vector<uint8_t> &bytes,
                                     TpchQ21State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kSupplierMagic, kVersion, count))
     return false;
   auto base = std::make_shared<std::unordered_map<int64_t, TpchQ21Supplier>>();
@@ -458,7 +458,7 @@ bool DecodeTpchQ21OrderSummaries(const std::vector<uint8_t> &bytes,
                                   TpchQ21State &state) {
   ByteReader reader_v2{bytes};
   ByteReader reader_v1{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   bool v2 = core::ReadImageHeader(reader_v2, kOrdersMagic, kVersionV2, count);
   if (!v2 && !core::ReadImageHeader(reader_v1, kOrdersMagic, kVersion, count))
     return false;
@@ -500,7 +500,7 @@ bool DecodeTpchQ21OrderSummaries(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ21NationNameIndex(const std::vector<uint8_t> &bytes,
                                    TpchQ21State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kNationNameIdxMagic, kVersion, count))
     return false;
   state.nation_index->nation_name_to_keys.clear();
@@ -525,7 +525,7 @@ bool DecodeTpchQ21NationNameIndex(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ21Nation(const std::vector<uint8_t> &bytes, int32_t nationkey,
                           TpchQ21State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kNationMagic, kVersionV2, count))
     return false;
   auto rows = std::make_shared<TpchQ21NationRows>();

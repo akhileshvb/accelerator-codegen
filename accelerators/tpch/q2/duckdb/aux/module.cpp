@@ -565,7 +565,7 @@ std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &state) {
   ByteWriter writer;
   const auto &regions = *state.region_names;
   core::WriteImageHeader(writer, kStateMagic, kVersion,
-                         static_cast<uint32_t>(regions.size()));
+                         static_cast<uint64_t>(regions.size()));
   writer.U32(static_cast<uint32_t>(regions.size()));
   for (std::size_t key = 0; key < regions.size(); ++key) {
     if (regions[key].empty())
@@ -655,7 +655,7 @@ std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &state) {
 
 bool DecodeTpchQ2State(const std::vector<uint8_t> &bytes, TpchQ2State &state) {
   ByteReader reader(bytes);
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kStateMagic, kVersion, count))
     return false;
 

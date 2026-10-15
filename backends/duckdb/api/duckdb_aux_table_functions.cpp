@@ -15,6 +15,7 @@
 
 #include "substrate/aux/core/aux_types.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
+#include "backends/duckdb/engine/decimal128.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "backends/duckdb/api/verus_host.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -124,6 +125,19 @@ core::AuxValue ToAuxValue(const ::duckdb::Value &value, core::AuxType type) {
     return core::AuxValue::Of(
         core::AuxType::Int64,
         static_cast<int64_t>(std::llround(std::stod(value.ToString()))));
+  case core::AuxType::ScaledDecimal128: {
+    // exact DECIMAL(38, scale): a DECIMAL keeps its scale; an integer gets scale 0
+    const auto id = value.type().id();
+    int32_t scale = 0;
+    ::duckdb::Value exact = value;
+    if (id == ::duckdb::LogicalTypeId::DECIMAL) {
+      scale = ::duckdb::DecimalType::GetScale(value.type());
+    } else if (!value.type().IsIntegral()) {
+      return core::AuxValue::Of(core::AuxType::String, value.ToString());
+    }
+    exact = value.DefaultCastAs(::duckdb::LogicalType::DECIMAL(38, static_cast<uint8_t>(scale)));
+    return engine::duckdb::Decimal128Cell(exact.GetValueUnsafe<::duckdb::hugeint_t>(), scale);
+  }
   case core::AuxType::Double:
     if (value.type().id() == ::duckdb::LogicalTypeId::DOUBLE) {
       return core::AuxValue::Of(core::AuxType::Double, value.GetValue<double>());
@@ -255,6 +269,8 @@ std::string WithLiterals(const std::string &sql, const ::duckdb::vector<::duckdb
           return ::duckdb::Value::DOUBLE(payload);
         } else if constexpr (std::is_same_v<Payload, core::ScaledDecimal>) {
           return ::duckdb::Value::DECIMAL(payload.value, 18, payload.scale); // any int64 payload
+        } else if constexpr (std::is_same_v<Payload, core::ScaledDecimal128>) {
+          return engine::duckdb::Decimal128ToValue(payload);
         } else if constexpr (std::is_same_v<Payload, core::AuxDate>) {
           ::duckdb::date_t date{};
           date.days = payload.days_since_epoch;
@@ -353,6 +369,7 @@ void WriteCell(::duckdb::Vector &vec, ::duckdb::idx_t i, const ::duckdb::Logical
   const auto *s = std::get_if<std::string>(&v.payload);
   const auto *i64 = std::get_if<int64_t>(&v.payload);
   const auto *dec = std::get_if<core::ScaledDecimal>(&v.payload);
+  const auto *dec128 = std::get_if<core::ScaledDecimal128>(&v.payload);
   const auto *dbl = std::get_if<double>(&v.payload);
   const auto *day = std::get_if<core::AuxDate>(&v.payload);
   switch (type.id()) {
@@ -398,6 +415,11 @@ void WriteCell(::duckdb::Vector &vec, ::duckdb::idx_t i, const ::duckdb::Logical
       default:
         break;
       }
+    }
+    if (dec128 && dec128->scale == ::duckdb::DecimalType::GetScale(type) &&
+        type.InternalType() == ::duckdb::PhysicalType::INT128) {
+      ::duckdb::FlatVector::GetData<::duckdb::hugeint_t>(vec)[i] = engine::duckdb::Int128ToHugeint(dec128->value);
+      return;
     }
     break;
   default:

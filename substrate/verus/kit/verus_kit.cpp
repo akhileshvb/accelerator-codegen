@@ -1057,19 +1057,7 @@ core::AuxValue OutDec(int64_t hi, uint64_t lo, int scale) {
     d.scale = scale;
     return core::AuxValue::Of(core::AuxType::ScaledDecimal, d);
   }
-  const bool neg = v < 0;
-  unsigned __int128 u = neg ? static_cast<unsigned __int128>(-(v + 1)) + 1 : static_cast<unsigned __int128>(v);
-  std::string digits;
-  do {
-    digits.insert(digits.begin(), static_cast<char>('0' + static_cast<int>(u % 10)));
-    u /= 10;
-  } while (u != 0);
-  if (scale > 0) {
-    if (static_cast<int>(digits.size()) <= scale)
-      digits.insert(0, static_cast<std::size_t>(scale + 1) - digits.size(), '0');
-    digits.insert(digits.size() - static_cast<std::size_t>(scale), ".");
-  }
-  return core::AuxValue::Of(core::AuxType::String, (neg ? "-" : "") + digits);
+  return core::AuxValue::Of(core::AuxType::ScaledDecimal128, core::ScaledDecimal128{v, scale});
 }
 
 core::AuxValue OutRat(int64_t num_hi, uint64_t num_lo, int64_t den_hi, uint64_t den_lo) {

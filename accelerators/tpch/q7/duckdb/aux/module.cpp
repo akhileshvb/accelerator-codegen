@@ -176,7 +176,7 @@ bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey,
 std::vector<uint8_t> EncodeTpchQ7Side(const TpchQ7State &state) {
   ByteWriter writer;
   core::WriteImageHeader(writer, kSideMagic, kSideVersion,
-                         static_cast<uint32_t>(state.nation_names.size() +
+                         static_cast<uint64_t>(state.nation_names.size() +
                                                state.supplier_nations.size() +
                                                state.customer_nations.size() +
                                                state.order_custkeys.size()));
@@ -207,7 +207,7 @@ std::vector<uint8_t> EncodeTpchQ7Side(const TpchQ7State &state) {
 std::vector<uint8_t> EncodeTpchQ7Revenue(const TpchQ7State &state) {
   ByteWriter writer;
   core::WriteImageHeader(writer, kSideMagic, kRevenueVersion,
-                         static_cast<uint32_t>(state.revenue_1995.size() +
+                         static_cast<uint64_t>(state.revenue_1995.size() +
                                                state.revenue_1996.size()));
   writer.U32(static_cast<uint32_t>(state.num_nation_slots));
   writer.U32(static_cast<uint32_t>(state.revenue_1995.size()));
@@ -221,14 +221,10 @@ std::vector<uint8_t> EncodeTpchQ7Revenue(const TpchQ7State &state) {
 
 bool DecodeTpchQ7Side(const std::vector<uint8_t> &bytes, TpchQ7State &state) {
   ByteReader reader{bytes};
-  uint32_t actual_magic = 0;
-  uint32_t decoded_version = 0;
-  uint32_t total_count = 0;
+  uint64_t total_count = 0;
   // Older layouts (v1-v4) carried no per-key window counts / full order map and
   // cannot be maintained incrementally: reject so the engine rebuilds.
-  if (!reader.U32(actual_magic) || !reader.U32(decoded_version) ||
-      !reader.U32(total_count) || actual_magic != kSideMagic ||
-      decoded_version != 5)
+  if (!core::ReadImageHeader(reader, kSideMagic, kSideVersion, total_count))
     return false;
   state.nation_names.clear();
   state.num_nation_slots = kTpchQ7MinNationSlots;
@@ -288,13 +284,12 @@ bool DecodeTpchQ7Side(const std::vector<uint8_t> &bytes, TpchQ7State &state) {
 
 bool DecodeTpchQ7Revenue(const std::vector<uint8_t> &bytes, TpchQ7State &state) {
   ByteReader reader{bytes};
-  uint32_t actual_magic = 0;
-  uint32_t decoded_version = 0;
-  uint32_t total_count = 0;
-  if (!reader.U32(actual_magic) || !reader.U32(decoded_version) ||
-      !reader.U32(total_count) || actual_magic != kSideMagic ||
-      (decoded_version != 3 && decoded_version != 4))
-    return false;
+  uint64_t total_count = 0;
+  if (!core::ReadImageHeader(reader, kSideMagic, 3, total_count)) {
+    reader.offset = 0;
+    if (!core::ReadImageHeader(reader, kSideMagic, kRevenueVersion, total_count))
+      return false;
+  }
   state.revenue_1995.clear();
   state.revenue_1996.clear();
 

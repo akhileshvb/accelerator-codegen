@@ -345,13 +345,12 @@ std::vector<uint8_t> EncodeTpchQ19Aggregate(const TpchQ19State &state) {
 bool DecodeTpchQ19Aggregate(const std::vector<uint8_t> &bytes,
                             TpchQ19State &state) {
   ByteReader reader(bytes);
-  uint32_t magic = 0;
-  uint32_t version = 0;
-  uint32_t unused_count = 0;
-  if (!reader.U32(magic) || !reader.U32(version) || !reader.U32(unused_count))
-    return false;
-  if (magic != kAggregateMagic) return false;
-  if (version != kVersionV2 && version != kVersionV1_Deprecated) return false;
+  uint64_t unused_count = 0;
+  if (!core::ReadImageHeader(reader, kAggregateMagic, kVersionV2, unused_count)) {
+    reader.offset = 0;
+    if (!core::ReadImageHeader(reader, kAggregateMagic, kVersionV1_Deprecated, unused_count))
+      return false;
+  }
 
   state.aggregates.Clear();
 

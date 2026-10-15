@@ -208,26 +208,7 @@ public:
 
 private:
   static std::string DecimalText(const core::ScaledDecimal &decimal) {
-    const bool negative = decimal.value < 0;
-    uint64_t magnitude = negative
-                            ? static_cast<uint64_t>(-(decimal.value + 1)) + 1
-                            : static_cast<uint64_t>(decimal.value);
-    std::string digits = std::to_string(magnitude);
-    if (decimal.scale < 0) {
-      // value * 10^-scale, exactly (a negative scale is trailing zeros).
-      if (magnitude != 0) digits.append(static_cast<std::size_t>(-decimal.scale), '0');
-    } else if (decimal.scale > 0) {
-      if (digits.size() <= static_cast<std::size_t>(decimal.scale)) {
-        digits.insert(0, static_cast<std::size_t>(decimal.scale) + 1 -
-                               digits.size(),
-                     '0');
-      }
-      digits.insert(digits.size() - decimal.scale, 1, '.');
-    }
-    if (negative) {
-      digits.insert(digits.begin(), '-');
-    }
-    return digits;
+    return core::ScaledDecimal128ToString(decimal.value, decimal.scale);
   }
 
   static std::string FormatUnixDate(int32_t days) {
@@ -262,6 +243,9 @@ private:
     }
     if (std::holds_alternative<core::ScaledDecimal>(value.payload)) {
       return DecimalText(std::get<core::ScaledDecimal>(value.payload));
+    }
+    if (const auto *wide = std::get_if<core::ScaledDecimal128>(&value.payload)) {
+      return core::ScaledDecimal128ToString(wide->value, wide->scale);
     }
     if (std::holds_alternative<core::AuxDate>(value.payload)) {
       return FormatUnixDate(std::get<core::AuxDate>(value.payload).days_since_epoch);

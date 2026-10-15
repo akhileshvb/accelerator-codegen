@@ -796,7 +796,7 @@ std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state) {
 bool DecodeTpchQ20State(const std::vector<uint8_t> &bytes,
                         TpchQ20State &state) {
   ByteReader reader(bytes);
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kStateMagic, kVersion, count))
     return false;
 

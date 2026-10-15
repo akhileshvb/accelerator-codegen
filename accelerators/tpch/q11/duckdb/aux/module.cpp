@@ -485,7 +485,7 @@ std::vector<uint8_t> EncodeTpchQ11NationPartition(
 bool DecodeTpchQ11Metadata(const std::vector<uint8_t> &bytes,
                            TpchQ11State &state) {
   ByteReader reader{bytes};
-  uint32_t total = 0;
+  uint64_t total = 0;
   if (!core::ReadImageHeader(reader, kMetadataMagic, kVersion, total))
     return false;
 
@@ -538,7 +538,7 @@ bool DecodeTpchQ11NationPartition(
     int32_t &nationkey, std::string &nation_name,
     std::shared_ptr<const TpchQ11NationData> &data) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
+  uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kNationMagic, kVersion, count))
     return false;
 

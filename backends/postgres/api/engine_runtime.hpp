@@ -54,23 +54,16 @@ public:
 
 private:
   static std::string DecimalText(const core::ScaledDecimal &decimal) {
-    const bool negative = decimal.value < 0;
-    uint64_t magnitude = negative
-                            ? static_cast<uint64_t>(-(decimal.value + 1)) + 1
-                            : static_cast<uint64_t>(decimal.value);
-    std::string digits = std::to_string(magnitude);
-    if (decimal.scale > 0) {
-      if (digits.size() <= static_cast<std::size_t>(decimal.scale)) {
-        digits.insert(0, static_cast<std::size_t>(decimal.scale) + 1 -
-                               digits.size(),
-                     '0');
-      }
-      digits.insert(digits.size() - decimal.scale, 1, '.');
+    return core::ScaledDecimal128ToString(decimal.value, decimal.scale);
+  }
+
+  static Datum DecimalDatum(const std::string &text, Oid type_oid) {
+    if (type_oid == NUMERICOID) {
+      return DirectFunctionCall3(
+          numeric_in, CStringGetDatum(text.c_str()),
+          ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
     }
-    if (negative) {
-      digits.insert(digits.begin(), '-');
-    }
-    return digits;
+    return Float8GetDatum(std::stod(text));
   }
 
   static Datum ToDatum(const core::AuxValue &value, Oid type_oid) {
@@ -88,14 +81,12 @@ private:
       return as_float8;
     }
     if (std::holds_alternative<core::ScaledDecimal>(value.payload)) {
-      const auto text = DecimalText(
-          std::get<core::ScaledDecimal>(value.payload));
-      if (type_oid == NUMERICOID) {
-        return DirectFunctionCall3(
-            numeric_in, CStringGetDatum(text.c_str()),
-            ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
-      }
-      return Float8GetDatum(std::stod(text));
+      return DecimalDatum(
+          DecimalText(std::get<core::ScaledDecimal>(value.payload)), type_oid);
+    }
+    if (const auto *wide = std::get_if<core::ScaledDecimal128>(&value.payload)) {
+      return DecimalDatum(
+          core::ScaledDecimal128ToString(wide->value, wide->scale), type_oid);
     }
     if (std::holds_alternative<core::AuxDate>(value.payload)) {
       return DateADTGetDatum(std::get<core::AuxDate>(value.payload)

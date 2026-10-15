@@ -1388,7 +1388,7 @@ void PutSum(ByteWriter &w, double v) {
 // `sub`: sub index entries (group, fy); else num index entries (sum, cnt).
 void EncodeIndex(const SecEdgarQ3AdshIndex &index, ByteWriter &writer, bool sub) {
   core::WriteImageHeader(writer, kIndexMagic, kFormatVersion,
-                         static_cast<uint32_t>(index.entry_count));
+                         static_cast<uint64_t>(index.entry_count));
   std::vector<std::pair<uint64_t, SecEdgarQ3Entry>> all;
   all.reserve(index.entry_count);
   ForEachEntry(index, [&](uint64_t key, const SecEdgarQ3Entry &e) {
@@ -1449,7 +1449,7 @@ void EncodeAgg(const SecEdgarQ3AggArray &array, ByteWriter &writer) {
 
 void EncodeDir(const SecEdgarQ3GroupDir &dir, ByteWriter &writer) {
   core::WriteImageHeader(writer, kStateMagic, kFormatVersion,
-                         static_cast<uint32_t>(dir.GroupCount()));
+                         static_cast<uint64_t>(dir.GroupCount()));
   writer.U32(static_cast<uint32_t>(dir.CikCount()));
   for (uint32_t g = 0; g < dir.GroupCount(); ++g) {
     const auto meta = dir.meta.Get(g);
