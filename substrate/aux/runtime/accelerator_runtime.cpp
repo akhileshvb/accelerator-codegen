@@ -101,6 +101,8 @@ struct AcceleratorRuntime::Impl {
   Epoch in_flight_from = kNever;
   std::vector<std::pair<Epoch, Epoch>> collapsed;
   bool build_scheduled = false;
+  bool build_invalidated = false; // the state became invalid while a build ran
+  uint64_t build_failures = 0; // readers waiting for a build stop waiting when it fails
   std::optional<Clock::time_point> gap_since;
   AcceleratorStats stats;
 
@@ -187,10 +189,12 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     lock.lock();
     impl->stats.reads_waited++;
     const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
+    const uint64_t failures = impl->build_failures;
     if (!impl->state_cv.wait_until(lock, deadline, [&] {
-          return Servable(epoch, options.require_applied_through) || Collapsed(epoch);
+          return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
+                 impl->build_failures != failures;
         }) ||
-        Collapsed(epoch)) {
+        Collapsed(epoch) || !Servable(epoch, options.require_applied_through)) {
       impl->stats.reads_fallback++;
       return ReadGuard(false, nullptr);
     }
@@ -494,6 +498,8 @@ void AcceleratorRuntime::Invalidate() {
   std::lock_guard<std::mutex> lock(impl->state_mutex);
   if (impl->Synced()) {
     MarkStale(0);
+  } else {
+    impl->build_invalidated = true; // a running build may have missed what invalidated
   }
 }
 
@@ -534,6 +540,7 @@ bool AcceleratorRuntime::BuildNow() {
       return true;
     }
     impl->applier.StartBuild();
+    impl->build_invalidated = false;
   }
   std::vector<CommittedChange> catch_up;
   try {
@@ -559,6 +566,12 @@ bool AcceleratorRuntime::BuildNow() {
     }
 
     std::lock_guard<std::mutex> commit(impl->commit_mutex);
+    {
+      std::lock_guard<std::mutex> lock(impl->state_mutex);
+      if (impl->build_invalidated) {
+        throw std::runtime_error("invalidated while building: " + id);
+      }
+    }
     impl->store.install(std::move(builder.images), b);
     {
       // Synced at the build; what it lacks is applied below like any change.
@@ -576,8 +589,13 @@ bool AcceleratorRuntime::BuildNow() {
     impl->stats.builds++;
     impl->stats.build_us += MicrosSince(start);
   } catch (...) {
-    std::lock_guard<std::mutex> lock(impl->state_mutex);
-    impl->applier.AbandonBuild();
+    {
+      std::lock_guard<std::mutex> lock(impl->state_mutex);
+      impl->applier.AbandonBuild();
+      impl->build_failures++;
+      impl->build_scheduled = false; // the readers it releases may request another
+    }
+    impl->state_cv.notify_all();
     throw;
   }
   impl->state_cv.notify_all();
