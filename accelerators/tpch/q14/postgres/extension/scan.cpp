@@ -24,12 +24,12 @@ namespace scans {
 
 void ScanTpchQ14Parts(
     const std::function<void(const query::TpchQ14PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_type FROM part",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_type")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1)});
+              });
 }
 
 // lineitem JOIN part GROUP BY shipdate in the engine: one row per day with the

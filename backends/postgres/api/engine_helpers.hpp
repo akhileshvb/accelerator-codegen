@@ -36,6 +36,7 @@
 #include "backends/postgres/state/postgres_state_store.hpp"
 #include "backends/postgres/engine/snapshot_token.hpp"
 #include "backends/postgres/state/aux_mutation_epoch.hpp"
+#include "backends/postgres/api/base/pg_base.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -65,6 +66,7 @@ namespace detail {
 
 namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
+namespace pg_base = accelerator_codegen::pg_base;
 
 // The query's cost model: `env_name` when set, else the first of
 // <stem>_postgres.json and <stem>.json found in the query's directory
@@ -149,6 +151,59 @@ inline void ScanTypedTuples(const std::string &sql, Callback &&callback) {
   SPI_cursor_close(portal);
   SPI_freeplan(plan);
   SPI_finish();
+}
+
+// Participants of a build scan (S8), set through SetBuildScanParticipants.
+inline int g_build_scan_participants = 0;
+
+// Column descriptors of ScanColumns.  Integers arrive as int64, decimals as
+// value * 10^scale, text as std::string; the columns must be NOT NULL.
+inline pg_base::ColumnSpec IntColumn(const char *name) {
+  return {name, pg_base::ColType::Int64, 0};
+}
+inline pg_base::ColumnSpec DateColumn(const char *name) {
+  return {name, pg_base::ColType::Date, 0};
+}
+inline pg_base::ColumnSpec DecimalColumn(const char *name, int scale) {
+  return {name, pg_base::ColType::Decimal, scale};
+}
+inline pg_base::ColumnSpec TextColumn(const char *name) {
+  return {name, pg_base::ColType::Text, 0};
+}
+
+// One row of a ScanColumns batch; indexes are positions in the column list.
+struct BuildRow {
+  const pg_base::Batch &batch;
+  std::size_t row;
+  int64_t Int(int column) const { return batch.I64(column)[row]; }
+  int32_t Date(int column) const { return batch.I32(column)[row]; }
+  int64_t Decimal(int column) const { return batch.I64(column)[row]; }
+  std::string Text(int column) const {
+    return std::string(batch.Str(column)[row].View());
+  }
+  char Char(int column) const {
+    const auto text = batch.Str(column)[row].View();
+    return text.empty() ? '\0' : text[0];
+  }
+};
+
+// The parallel counterpart of ScanTypedTuples for builds (S8): `row_fn`
+// (BuildRow) sees every row of `table` under the active snapshot, in an
+// unspecified order, called from this backend only; workers decode.  Same
+// rows as `SELECT <columns> FROM <table>` through ScanTypedTuples.
+template <typename RowFn>
+inline void ScanColumns(const char *table, std::vector<pg_base::ColumnSpec> columns,
+                        RowFn &&row_fn) {
+  ++t_table_scans;
+  const int participants = g_build_scan_participants > 0
+                               ? g_build_scan_participants
+                               : pg_base::ParallelParticipants();
+  pg_base::ScanTableParallel(
+      pg_base::ScanSpec{table, std::move(columns), {}}, participants,
+      [&](const pg_base::Batch &batch) {
+        for (std::size_t row = 0; row < batch.count; ++row)
+          row_fn(BuildRow{batch, row});
+      });
 }
 
 inline std::string TypedText(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
@@ -266,6 +321,13 @@ inline char TypedChar(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
 }
 
 } // namespace detail
+
+// Build scans (S8, ScanColumns) use this backend plus participants - 1
+// PostgreSQL parallel workers.  The runtime sets it from its thread budget
+// before a build; 0 = max_parallel_workers_per_gather + 1.
+inline void SetBuildScanParticipants(int participants) {
+  detail::g_build_scan_participants = participants;
+}
 
 // A NULL text parameter makes the query's comparison NULL (no match): pass it
 // on as a NULL value.

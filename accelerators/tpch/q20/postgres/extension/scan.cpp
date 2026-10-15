@@ -21,40 +21,37 @@ namespace scans {
 
 void ScanTpchQ20Lineitems(
     const std::function<void(const query::TpchQ20LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_shipdate, l_partkey, l_suppkey, l_quantity FROM lineitem "
-      "WHERE l_shipdate IS NOT NULL AND l_partkey IS NOT NULL AND "
-      "l_suppkey IS NOT NULL AND l_quantity IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedDate(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2),
-                  TypedDecimalRaw(tuple, tuple_desc, 3)});
-      });
+  ScanColumns("lineitem",
+              {DateColumn("l_shipdate"), IntColumn("l_partkey"),
+               IntColumn("l_suppkey"), DecimalColumn("l_quantity", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Date(0),
+                          row.Int(1),
+                          row.Int(2),
+                          row.Decimal(3)});
+              });
 }
 
 void ScanTpchQ20Parts(
     const std::function<void(const query::TpchQ20PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_name FROM part "
-      "WHERE p_partkey IS NOT NULL AND p_name IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_name")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1)});
+              });
 }
 
 void ScanTpchQ20Partsupps(
     const std::function<void(const query::TpchQ20PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp "
-      "WHERE ps_partkey IS NOT NULL AND ps_suppkey IS NOT NULL AND "
-      "ps_availqty IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("partsupp",
+              {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+               IntColumn("ps_availqty")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Int(2)});
+              });
 }
 
 void ScanTpchQ20Suppliers(

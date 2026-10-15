@@ -24,12 +24,12 @@ namespace scans {
 
 void ScanTpchQ8Parts(
     const std::function<void(const query::TpchQ8PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_type FROM part",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_type")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1)});
+              });
 }
 
 void ScanTpchQ8Suppliers(
@@ -44,37 +44,39 @@ void ScanTpchQ8Suppliers(
 
 void ScanTpchQ8Customers(
     const std::function<void(const query::TpchQ8CustomerInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT c_custkey, c_nationkey FROM customer",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
-      });
+  ScanColumns("customer",
+              {IntColumn("c_custkey"), IntColumn("c_nationkey")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          static_cast<int32_t>(row.Int(1))});
+              });
 }
 
 void ScanTpchQ8Orders(
     const std::function<void(const query::TpchQ8OrdersInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_custkey, o_orderdate FROM orders",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDate(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+               DateColumn("o_orderdate")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Date(2)});
+              });
 }
 
 void ScanTpchQ8Lineitems(
     const std::function<void(const query::TpchQ8LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_partkey, l_orderkey, l_suppkey, l_extendedprice, l_discount "
-      "FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2),
-                  TypedDecimalRaw(tuple, tuple_desc, 3),
-                  TypedDecimalRaw(tuple, tuple_desc, 4)});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_partkey"), IntColumn("l_orderkey"),
+               IntColumn("l_suppkey"), DecimalColumn("l_extendedprice", 2),
+               DecimalColumn("l_discount", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Int(2),
+                          row.Decimal(3),
+                          row.Decimal(4)});
+              });
 }
 
 void ScanTpchQ8Nations(

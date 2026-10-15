@@ -25,18 +25,16 @@ namespace scans {
 
 void ScanTpchQ1Lineitems(
     const std::function<void(const query::TpchQ1LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_shipdate, l_quantity, l_extendedprice, l_discount, l_tax, "
-      "l_returnflag, l_linestatus FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedDate(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 2), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 3), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 4), 2,
-                  TypedChar(tuple, tuple_desc, 5),
-                  TypedChar(tuple, tuple_desc, 6)});
-      });
+  ScanColumns("lineitem",
+              {DateColumn("l_shipdate"), DecimalColumn("l_quantity", 2),
+               DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2),
+               DecimalColumn("l_tax", 2), TextColumn("l_returnflag"),
+               TextColumn("l_linestatus")},
+              [&](const BuildRow &row) {
+                consumer({row.Date(0), row.Decimal(1), 2, row.Decimal(2), 2,
+                          row.Decimal(3), 2, row.Decimal(4), 2, row.Char(5),
+                          row.Char(6)});
+              });
 }
 
 // One SQL GROUP BY: the engine aggregates, the process receives one row per

@@ -22,14 +22,11 @@ namespace scans {
 
 void ScanTpchQ12Orders(
     const std::function<void(const query::TpchQ12OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_orderpriority, (o_orderpriority IS NULL)::int "
-      "FROM orders WHERE o_orderkey IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2) != 0});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), TextColumn("o_orderpriority")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Text(1), false});
+              });
 }
 
 // Lineitems that can contribute: non-NULL key / shipmode, commit < receipt,
