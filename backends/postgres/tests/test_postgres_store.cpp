@@ -3,7 +3,7 @@
 // Build: test_postgres_store   CTest: engine_postgres_store
 //
 // Rule: store_roundtrip
-// Evidence: PostgresStateStore::TryPublish → TryPublishPartition,
+// Evidence: PostgresStateStore::TryPublish → VersionedAuxStore::TryPublish,
 //   CheckValidity from published StateImage.accelerator + partition,
 //   Read with VisibilityToken filtering, Invalidate fail-closed,
 //   CAS race detection, token epoch gating.
@@ -147,7 +147,7 @@ void TestCASRaceDetection() {
   bool ok = st.TryPublish(staged1, 0);
   Expect(ok, "First publish should succeed");
 
-  // version should be 2 now (started at 0, TryPublishPartition increments)
+  // version should be 2 now (started at 0, each TryPublish increments)
   auto vr = st.CheckValidity({"accel_cas", "3"}, VisibilityToken{});
   Expect(vr.visible_version == 1, "Version after first publish should be 1");
 

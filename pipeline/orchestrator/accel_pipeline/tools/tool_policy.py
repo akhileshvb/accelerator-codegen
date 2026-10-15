@@ -277,8 +277,9 @@ ENGINE_BACKEND_IMPL_TOOL_USAGE = """\
 - Fill `pipeline/templates/engine_backend/` stubs. Adapter types stay in
   `aux_state::engine::{engine}` — never `core::`.
 - If `backend_analysis.json` contradicts `layer_contracts.md` or
-  `acceptance_checklist.md`, follow the contracts (including CAS publish,
-  token-filtered Read, key-from-publish, `AttachServices` in the aux ctor).
+  `acceptance_checklist.md`, follow the contracts (the state store derives
+  from `VersionedAuxStore` and only sets its options; `AttachServices` in the
+  aux ctor).
 - Mid-loop MCP tools on server `accel_pipeline` (tools, not resources — do
   **not** `list_mcp_resources`): `run_engine_build()`, `run_layer_gate()`,
   or `request_gate` with `engine_build` then this layer's gate. A green

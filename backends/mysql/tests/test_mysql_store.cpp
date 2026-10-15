@@ -121,7 +121,7 @@ void TestCASRaceDetection() {
   bool ok2 = st.TryPublish(staged2, 5);
   Expect(!ok2, "Stale expected_version should return false");
 
-  // The Substrate's TryPublishPartition invalidates on CAS fail, so Read is empty now
+  // VersionedAuxStore::TryPublish invalidates the partition on an expected-version mismatch, so Read is empty now
   // Verify: the original slot is no longer Valid (CAS-fail invalidation)
   vr = st.CheckValidity({"accel_cas", "3"}, VisibilityToken{});
   Expect(vr.code == ValidityCode::Invalidated, "Slot should be Invalidated after CAS fail");
