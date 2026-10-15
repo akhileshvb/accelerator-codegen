@@ -4,9 +4,8 @@
 //
 // Usage: test_slot_gates_duckdb [scenario|all] [seconds=4] [seed=1] [readers=4]
 // Env:   ACCEL_TPCH_DB (copied into a scratch directory), ACCEL_SLOT_GATE_QUERIES
-//        (TPC-H queries under test, default 1,6: both read lineitem under
-//        one TableId; queries that number a table differently need a backend
-//        that maps captured tables per accelerator)
+//        (TPC-H queries under test, default 1,6,14: Q14 numbers lineitem
+//        differently from Q1 and Q6, so routing by host table id is checked)
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -159,7 +158,7 @@ int main(int argc, char **argv) {
     options.seed = argc > 3 ? std::strtoull(argv[3], nullptr, 10) : options.seed;
     options.readers = argc > 4 ? std::atoi(argv[4]) : options.readers;
     std::vector<int> queries;
-    std::stringstream list(ts::EnvOr("ACCEL_SLOT_GATE_QUERIES", "1,6"));
+    std::stringstream list(ts::EnvOr("ACCEL_SLOT_GATE_QUERIES", "1,6,14"));
     for (std::string item; std::getline(list, item, ',');) {
       queries.push_back(std::stoi(item));
     }
