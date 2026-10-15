@@ -47,13 +47,12 @@ void ScanTpchQ5Nations(
 
 void ScanTpchQ5Customers(
     const std::function<void(const query::TpchQ5CustomerInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT c_custkey, c_nationkey FROM customer "
-      "WHERE c_custkey IS NOT NULL AND c_nationkey IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
-      });
+  ScanColumns("customer",
+              {IntColumn("c_custkey"), IntColumn("c_nationkey")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          static_cast<int32_t>(row.Int(1))});
+              });
 }
 
 void ScanTpchQ5Suppliers(
@@ -75,12 +74,12 @@ const char kOrdersSql[] =
 
 void ScanTpchQ5Orders(
     const std::function<void(const query::TpchQ5OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      kOrdersSql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDate(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+               DateColumn("o_orderdate")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Int(1), row.Date(2)});
+              });
 }
 
 // Lineitems that reach the SUM; price and discount as exact cents.
@@ -92,13 +91,14 @@ const char kLineitemsSql[] =
 
 void ScanTpchQ5Lineitems(
     const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      kLineitemsSql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2), 2,
-                  TypedInt(tuple, tuple_desc, 3), 2});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
+               DecimalColumn("l_extendedprice", 2),
+               DecimalColumn("l_discount", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Int(1), row.Decimal(2), 2,
+                          row.Decimal(3), 2});
+              });
 }
 
 // Index lookups while maintenance is staged at pre-commit: they read the

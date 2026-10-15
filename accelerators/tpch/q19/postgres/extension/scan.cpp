@@ -23,14 +23,15 @@ namespace scans {
 
 void ScanTpchQ19Parts(
     const std::function<void(const query::TpchQ19PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_brand, p_container, p_size FROM part",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3))});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_brand"),
+               TextColumn("p_container"), IntColumn("p_size")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1),
+                          row.Text(2),
+                          static_cast<int32_t>(row.Int(3))});
+              });
 }
 
 // lineitem JOIN part with the shipping predicate and family classification
@@ -40,7 +41,7 @@ void ScanTpchQ19GroupAggregates(
     const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
   const std::string family = query::TpchQ19FamilySql();
-  ScanTypedTuples(
+  ScanTypedTuplesParallel(
       "SELECT p_brand, " + family +
           " AS fam, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
           "count(*) FROM lineitem, part WHERE l_partkey = p_partkey AND " +

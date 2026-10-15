@@ -22,14 +22,15 @@ namespace scans {
 
 void ScanTpchQ2Parts(
     const std::function<void(const query::TpchQ2PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_mfgr, p_type, p_size FROM part",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3))});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_mfgr"),
+               TextColumn("p_type"), IntColumn("p_size")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1),
+                          row.Text(2),
+                          static_cast<int32_t>(row.Int(3))});
+              });
 }
 
 void ScanTpchQ2Suppliers(
@@ -50,13 +51,14 @@ void ScanTpchQ2Suppliers(
 
 void ScanTpchQ2Partsupps(
     const std::function<void(const query::TpchQ2PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDecimalRaw(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("partsupp",
+              {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+               DecimalColumn("ps_supplycost", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Decimal(2)});
+              });
 }
 
 void ScanTpchQ2Nations(

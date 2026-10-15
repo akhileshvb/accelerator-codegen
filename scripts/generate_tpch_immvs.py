@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "accelerators" / "tpch"
+OUT = ROOT / "eval" / "bench" / "postgres" / "baselines" / "tpch"
 
 # view_definition only (no CREATE) — fed to pgivm.create_immv
 DEFINITIONS: dict[int, str] = {
@@ -204,7 +204,7 @@ UNSUPPORTED: dict[int, str] = {
 
 
 def immv_dir(q: int) -> Path:
-    return OUT / f"q{q}" / "postgres" / "immv"
+    return OUT / f"q{q}" / "immv"
 
 
 def rel(q: int) -> str:
@@ -214,7 +214,7 @@ def rel(q: int) -> str:
 def write_supported(q: int, definition: str) -> None:
     d = immv_dir(q)
     d.mkdir(parents=True, exist_ok=True)
-    mv_query = OUT / f"q{q}" / "postgres" / "matview" / "query.sql"
+    mv_query = OUT / f"q{q}" / "matview" / "query.sql"
     query_sql = mv_query.read_text(encoding="utf-8")
     query_sql = query_sql.replace(f"accel_tpch_q{q}_matview", rel(q))
 

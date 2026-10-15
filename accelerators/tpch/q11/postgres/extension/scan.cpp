@@ -30,14 +30,15 @@ namespace scans {
 
 void ScanTpchQ11Partsupp(
     const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT ps_partkey, ps_suppkey, ps_availqty, ps_supplycost FROM partsupp",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2),
-                  TypedDecimalRaw(tuple, tuple_desc, 3), 2});
-      });
+  ScanColumns("partsupp",
+              {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+               IntColumn("ps_availqty"), DecimalColumn("ps_supplycost", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Int(2),
+                          row.Decimal(3), 2});
+              });
 }
 
 void ScanTpchQ11Suppliers(

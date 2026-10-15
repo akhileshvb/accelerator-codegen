@@ -21,24 +21,26 @@ namespace scans {
 
 void ScanTpchQ17Parts(
     const std::function<void(const query::TpchQ17PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_brand, p_container FROM part",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_brand"),
+               TextColumn("p_container")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1),
+                          row.Text(2)});
+              });
 }
 
 void ScanTpchQ17Lineitems(
     const std::function<void(const query::TpchQ17LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_partkey, l_quantity, l_extendedprice FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1),
-                  TypedDecimalRaw(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_partkey"), DecimalColumn("l_quantity", 2),
+               DecimalColumn("l_extendedprice", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Decimal(1),
+                          row.Decimal(2)});
+              });
 }
 
 // GROUP BY (partkey, quantity), ordered by partkey so the module can assemble

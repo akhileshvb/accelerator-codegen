@@ -75,13 +75,22 @@ function(accel_build_postgres_extension)
     backends/postgres/state/shard_gucs.cpp
     backends/postgres/state/remote_read.cpp)
 
+  # Base runtime: parallel heap scans in Postgres worker processes, decoded
+  # into columnar batches for the per-query base kernels (also used by the
+  # build scans of the aux accelerators).
+  list(APPEND _pg_ext_sources
+    backends/postgres/api/base/runtime_common.cpp
+    backends/postgres/api/base/runtime_pg.cpp)
+
   # Per-query module code (SPI scans, PG_FUNCTION shims, base kernels). Each
   # query registers itself through static registrars (postgres/runtime.hpp);
   # no query is named here, and a tree without any q<N> directory still builds.
   file(GLOB _pg_query_sources CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/*/q*/postgres/extension/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/*/q*/postgres/base/*.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/*/q*/postgres/base/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/*/q*/postgres/base/*/*.cpp")
   list(SORT _pg_query_sources)
+  accel_apply_base_copts(${_pg_query_sources})
 
   if(_pg_ext_sources)
     add_library(accelerator_codegen_pg MODULE ${_pg_ext_sources} ${_pg_query_sources})

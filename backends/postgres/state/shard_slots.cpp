@@ -7,6 +7,7 @@
 #include <exception>
 #include <stdexcept>
 
+#include "backends/postgres/api/engine_helpers.hpp"
 #include "backends/postgres/state/shard_worker.hpp"
 #include "backends/postgres/state/shared.hpp"
 
@@ -159,6 +160,9 @@ runtime::Epoch PgSlots::MaintenanceLookupEpoch(runtime::Epoch) {
 void PgSlots::RunBuild(runtime::AcceleratorRuntime &runtime, runtime::BuildSnapshot &,
                        core::StateBuilder &builder) {
   BuildGucScope tuning(accelerator.TuneBuild());
+  // The build's scans decode in parallel: this thread plus the budget's other
+  // threads as Postgres parallel workers.
+  SetBuildScanParticipants(static_cast<int>(shared::ThreadBudget()));
   runtime.Module().Build(runtime, builder);
 }
 

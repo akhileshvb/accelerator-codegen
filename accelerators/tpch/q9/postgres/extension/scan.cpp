@@ -21,13 +21,12 @@ namespace scans {
 
 void ScanTpchQ9Parts(
     const std::function<void(const query::TpchQ9PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_name FROM part "
-      "WHERE p_partkey IS NOT NULL AND p_name IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_name")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1)});
+              });
 }
 
 void ScanTpchQ9Suppliers(
@@ -54,44 +53,41 @@ void ScanTpchQ9Nations(
 
 void ScanTpchQ9Orders(
     const std::function<void(const query::TpchQ9OrdersInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_orderdate FROM orders "
-      "WHERE o_orderkey IS NOT NULL AND o_orderdate IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDate(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), DateColumn("o_orderdate")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Date(1)});
+              });
 }
 
 void ScanTpchQ9Partsupps(
     const std::function<void(const query::TpchQ9PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp "
-      "WHERE ps_partkey IS NOT NULL AND ps_suppkey IS NOT NULL AND "
-      "ps_supplycost IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDecimalRaw(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("partsupp",
+              {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+               DecimalColumn("ps_supplycost", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Decimal(2)});
+              });
 }
 
 void ScanTpchQ9Lineitems(
     const std::function<void(const query::TpchQ9LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_partkey, l_suppkey, l_orderkey, l_quantity, l_extendedprice, "
-      "l_discount FROM lineitem "
-      "WHERE l_partkey IS NOT NULL AND l_suppkey IS NOT NULL AND "
-      "l_orderkey IS NOT NULL AND l_quantity IS NOT NULL AND "
-      "l_extendedprice IS NOT NULL AND l_discount IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2),
-                  TypedDecimalRaw(tuple, tuple_desc, 3),
-                  TypedDecimalRaw(tuple, tuple_desc, 4),
-                  TypedDecimalRaw(tuple, tuple_desc, 5)});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_partkey"), IntColumn("l_suppkey"),
+               IntColumn("l_orderkey"), DecimalColumn("l_quantity", 2),
+               DecimalColumn("l_extendedprice", 2),
+               DecimalColumn("l_discount", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Int(2),
+                          row.Decimal(3),
+                          row.Decimal(4),
+                          row.Decimal(5)});
+              });
 }
 
 

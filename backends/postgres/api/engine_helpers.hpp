@@ -31,6 +31,7 @@
 #include "substrate/aux/core/aux_execute_stats.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_cost_model_path.hpp"
+#include "backends/postgres/api/base/pg_base.hpp"
 #include "backends/postgres/api/pg_sink.hpp"
 
 extern "C" {
@@ -59,6 +60,7 @@ namespace detail {
 
 namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
+namespace pg_base = accelerator_codegen::pg_base;
 
 // The query's cost model: `env_name` when set, else the first of
 // <stem>_postgres.json and <stem>.json found in the query's directory
@@ -136,6 +138,58 @@ inline void ScanTypedTuples(const std::string &sql, Callback &&callback) {
   SPI_finish();
 }
 
+// Participants of a build scan (S8), set through SetBuildScanParticipants.
+inline int g_build_scan_participants = 0;
+
+// Column descriptors of ScanColumns.  Integers arrive as int64, decimals as
+// value * 10^scale, text as std::string; the columns must be NOT NULL.
+inline pg_base::ColumnSpec IntColumn(const char *name) {
+  return {name, pg_base::ColType::Int64, 0};
+}
+inline pg_base::ColumnSpec DateColumn(const char *name) {
+  return {name, pg_base::ColType::Date, 0};
+}
+inline pg_base::ColumnSpec DecimalColumn(const char *name, int scale) {
+  return {name, pg_base::ColType::Decimal, scale};
+}
+inline pg_base::ColumnSpec TextColumn(const char *name) {
+  return {name, pg_base::ColType::Text, 0};
+}
+
+// One row of a ScanColumns batch; indexes are positions in the column list.
+struct BuildRow {
+  const pg_base::Batch &batch;
+  std::size_t row;
+  int64_t Int(int column) const { return batch.I64(column)[row]; }
+  int32_t Date(int column) const { return batch.I32(column)[row]; }
+  int64_t Decimal(int column) const { return batch.I64(column)[row]; }
+  std::string Text(int column) const {
+    return std::string(batch.Str(column)[row].View());
+  }
+  char Char(int column) const {
+    const auto text = batch.Str(column)[row].View();
+    return text.empty() ? '\0' : text[0];
+  }
+};
+
+// The parallel counterpart of ScanTypedTuples for builds (S8): `row_fn`
+// (BuildRow) sees every row of `table` under the active snapshot, in an
+// unspecified order, called from this backend only; workers decode.  Same
+// rows as `SELECT <columns> FROM <table>` through ScanTypedTuples.
+template <typename RowFn>
+inline void ScanColumns(const char *table, std::vector<pg_base::ColumnSpec> columns,
+                        RowFn &&row_fn) {
+  const int participants = g_build_scan_participants > 0
+                               ? g_build_scan_participants
+                               : pg_base::ParallelParticipants();
+  pg_base::ScanTableParallel(
+      pg_base::ScanSpec{table, std::move(columns), {}}, participants,
+      [&](const pg_base::Batch &batch) {
+        for (std::size_t row = 0; row < batch.count; ++row)
+          row_fn(BuildRow{batch, row});
+      });
+}
+
 inline std::string TypedText(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
   bool is_null = false;
   const Datum datum = SPI_getbinval(tuple, tuple_desc, attribute + 1, &is_null);
@@ -159,6 +213,27 @@ inline std::string KeyListPredicate(const char *column, const std::vector<int64_
     sql += std::to_string(keys[i]);
   }
   return sql + "}'::bigint[])";
+}
+
+// ScanTypedTuples for an aggregate whose result is small (bounded by the
+// value domain, not the table size): runs to completion through SPI_execute,
+// which unlike a cursor may use a parallel plan (Gather over a parallel scan,
+// as many workers as max_parallel_workers_per_gather allows), and holds the
+// whole result in memory.
+template <typename Callback>
+inline void ScanTypedTuplesParallel(const std::string &sql, Callback &&callback) {
+  if (SPI_connect() != SPI_OK_CONNECT) {
+    throw std::runtime_error("SPI_connect failed");
+  }
+  if (SPI_execute(sql.c_str(), true, 0) != SPI_OK_SELECT) {
+    SPI_finish();
+    throw std::runtime_error("SPI_execute failed");
+  }
+  for (uint64 row_index = 0; row_index < SPI_processed; ++row_index) {
+    callback(SPI_tuptable->vals[row_index], SPI_tuptable->tupdesc);
+  }
+  SPI_freetuptable(SPI_tuptable);
+  SPI_finish();
 }
 
 inline int64_t TypedInt(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
@@ -232,6 +307,13 @@ inline char TypedChar(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
 }
 
 } // namespace detail
+
+// Build scans (S8, ScanColumns) use this backend plus participants - 1
+// PostgreSQL parallel workers.  The runtime sets it from its thread budget
+// before a build; 0 = max_parallel_workers_per_gather + 1.
+inline void SetBuildScanParticipants(int participants) {
+  detail::g_build_scan_participants = participants;
+}
 
 // A NULL text parameter makes the query's comparison NULL (no match): pass it
 // on as a NULL value.
