@@ -2,7 +2,7 @@
 
 ## Agent may generate (query-specific)
 
-Under `accelerators/{benchmark}/q{N}/postgres/matview/` **only**:
+Under `eval/bench/postgres/baselines/{benchmark}/q{N}/matview/` **only**:
 
 | File | Role |
 |------|------|

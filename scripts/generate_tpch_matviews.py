@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hand-authored optimized Postgres matviews for TPC-H Q1–Q22.
 
-Writes per-query SQL under accelerators/tpch/q{N}/postgres/matview/ and
+Writes per-query SQL under eval/bench/postgres/baselines/tpch/q{N}/matview/ and
 workload YAMLs under pipeline/config/workloads/tpch_q{N}_matview.yaml.
 
 Design notes: SF3000-lean answer / calendar / param-domain grains (Top-K,
@@ -17,7 +17,7 @@ from pathlib import Path
 from textwrap import dedent
 
 ROOT = Path(__file__).resolve().parents[1]
-GEN = ROOT / "accelerators" / "tpch"
+GEN = ROOT / "eval" / "bench" / "postgres" / "baselines" / "tpch"
 WL = ROOT / "pipeline" / "config" / "workloads"
 
 # seed_1 bindings (manifests)
@@ -79,7 +79,7 @@ def fn(n: int) -> str:
 
 
 def write_sql(n: int, name: str, body: str) -> None:
-    path = GEN / f"q{n}" / "postgres" / "matview" / name
+    path = GEN / f"q{n}" / "matview" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dedent(body).strip() + "\n", encoding="utf-8")
 
@@ -1923,7 +1923,7 @@ def write_workload(n: int) -> None:
     )
     deps = "\n".join(f"  - name: {t}\n    watched_columns: []" for t in DEPENDENT[n])
     # Prefer in-repo reference.sql once generated
-    ref = f"accelerators/tpch/q{n}/postgres/matview/reference.sql"
+    ref = f"eval/bench/postgres/baselines/tpch/q{n}/matview/reference.sql"
     body = f"""workload_kind: materialized_view
 benchmark_name: tpch
 query_number: {n}

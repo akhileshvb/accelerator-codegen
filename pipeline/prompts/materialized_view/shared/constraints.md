@@ -1,7 +1,7 @@
 # Constraints: materialized_view workloads
 
 - **`engine_name` must be `postgres`.** Refuse other engines.
-- Artifacts: SQL under `accelerators/{benchmark}/q{N}/postgres/matview/` only.
+- Artifacts: SQL under `eval/bench/postgres/baselines/{benchmark}/q{N}/matview/` only.
 - Maintenance: `REFRESH MATERIALIZED VIEW` (optionally `CONCURRENTLY`) only — replaces MV contents.
 - No C++ accelerators, AuxQueryModule, or extension kernels for this kind.
 - Per-query MV: do not invent a shared multi-query matview.
