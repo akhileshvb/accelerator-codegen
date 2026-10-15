@@ -474,6 +474,17 @@ if(BUILD_TESTING)
     add_test(NAME prims_unit_test COMMAND test_prims)
 endif()
 
+# Postgres backend's shared-memory message ring: pure C++/Linux, no Postgres deps.
+add_executable(test_shm_ring
+    backends/postgres/tests/test_shm_ring.cpp
+    backends/postgres/state/shm_ring.cpp
+)
+target_include_directories(test_shm_ring PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres)
+target_link_libraries(test_shm_ring PRIVATE Threads::Threads)
+if(BUILD_TESTING)
+    add_test(NAME shm_ring_test COMMAND test_shm_ring)
+endif()
+
 add_executable(test_aux_calibration
     eval/tests/test_aux_calibration.cpp
 )
