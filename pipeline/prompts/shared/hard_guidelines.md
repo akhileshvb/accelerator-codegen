@@ -80,7 +80,7 @@ Fast is worthless if the answer is wrong or the state breaks at scale. Spec-valu
 
 **Key width and capacity.** Size every key, id, offset and count for the **top** scale factor (SF1000+: 64-bit keys, billions of rows, > 4 GB string/blob heaps), not the iteration DB. Forbidden: 32-bit or bit-packed keys with a fixed field width (e.g. 20-bit id), fixed dense caps (e.g. 2^28), 32-bit blob offsets, hashing a key into a partition id that can collide (partition by an exact function, or store the full key). Keys may be negative or sparse.
 
-**Threads.** Size all parallelism from `services.WorkerCount()` (the backend's one thread budget). Never call `std::thread::hardware_concurrency`, hard-code a thread count or cap (`min(WorkerCount(), 8)`), or create a private thread pool. A read runs on the calling thread plus at most `WorkerCount()` workers; builds and maintenance run only through the substrate runtime.
+**Threads.** Size all parallelism from `services.WorkerCount()` (the backend's one thread budget). Never call `std::thread::hardware_concurrency`, hard-code a thread count or cap (`min(WorkerCount(), 8)`), or create a private thread pool. `WorkerCount()` is the cap of the current phase (read limit in `Execute`, build limit in `Build`, 1 in maintenance, which stays serial). A read or build runs on the calling thread plus at most that many workers, through `services.ParallelFor`.
 
 **Memory.** Target ~10-20 B/row of compact columnar state: no node-based maps, no `std::string`/per-row heap object per row, no per-row `shared_ptr`. Build without 2-5x transient copies (stream into chunks; no whole-table vector then re-copy).
 
