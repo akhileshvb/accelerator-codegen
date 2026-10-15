@@ -2,7 +2,9 @@
 // C12: ThreadBudget, the shared worker pool every parallel step draws from.
 #include "substrate/aux/runtime/thread_budget.hpp"
 
+#include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 
 #include <algorithm>
 #include <atomic>
@@ -16,6 +18,22 @@
 #include <vector>
 
 namespace accelerator_codegen::aux_state::runtime {
+
+namespace {
+
+// Pool threads never take signals: the host engine's handlers (Postgres)
+// expect to run on its own thread. A new thread inherits the creator's mask.
+template <typename F>
+std::thread StartThread(F &&body) {
+  sigset_t all, old;
+  sigfillset(&all);
+  pthread_sigmask(SIG_SETMASK, &all, &old);
+  std::thread thread(std::forward<F>(body));
+  pthread_sigmask(SIG_SETMASK, &old, nullptr);
+  return thread;
+}
+
+} // namespace
 
 std::size_t AffinityCpuCount() {
   cpu_set_t set;
@@ -99,7 +117,7 @@ struct ThreadBudget::Impl {
   void Enqueue(std::function<void()> job) { // mutex held
     jobs.push_back(std::move(job));
     if (jobs.size() > idle && workers.size() < budget) {
-      workers.emplace_back([this] { WorkerLoop(); });
+      workers.push_back(StartThread([this] { WorkerLoop(); }));
     }
     wake.notify_one();
   }
@@ -311,7 +329,7 @@ std::shared_ptr<ThreadBudget::Task> ThreadBudget::Spawn(std::function<void()> fn
     pool->AddInUse(1);
     auto finished = std::make_shared<std::atomic<bool>>(false);
     pool->dedicated.emplace_back(
-        std::thread([pool, body, finished] {
+        StartThread([pool, body, finished] {
           counted_pool = pool;
           body(0);
           finished->store(true);
