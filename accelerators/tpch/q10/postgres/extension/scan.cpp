@@ -25,18 +25,20 @@ namespace scans {
 
 void ScanTpchQ10Customers(
     const std::function<void(const query::TpchQ10CustomerInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, "
-      "c_phone, c_comment FROM customer",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedDecimalRaw(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3)),
-                  TypedText(tuple, tuple_desc, 4),
-                  TypedText(tuple, tuple_desc, 5),
-                  TypedText(tuple, tuple_desc, 6)});
-      });
+  ScanColumns("customer",
+              {IntColumn("c_custkey"), TextColumn("c_name"),
+               DecimalColumn("c_acctbal", 2), IntColumn("c_nationkey"),
+               TextColumn("c_address"), TextColumn("c_phone"),
+               TextColumn("c_comment")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1),
+                          row.Decimal(2),
+                          static_cast<int32_t>(row.Int(3)),
+                          row.Text(4),
+                          row.Text(5),
+                          row.Text(6)});
+              });
 }
 
 void ScanTpchQ10Nations(
@@ -51,26 +53,27 @@ void ScanTpchQ10Nations(
 
 void ScanTpchQ10Orders(
     const std::function<void(const query::TpchQ10OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_custkey, o_orderdate FROM orders",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDate(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+               DateColumn("o_orderdate")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Date(2)});
+              });
 }
 
 void ScanTpchQ10Lineitems(
     const std::function<void(const query::TpchQ10LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_orderkey, l_extendedprice, l_discount, l_returnflag "
-      "FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 2), 2,
-                  TypedText(tuple, tuple_desc, 3) == "R"});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_orderkey"), DecimalColumn("l_extendedprice", 2),
+               DecimalColumn("l_discount", 2), TextColumn("l_returnflag")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Decimal(1), 2,
+                          row.Decimal(2), 2,
+                          row.Text(3) == "R"});
+              });
 }
 
 } // namespace scans
@@ -104,7 +107,8 @@ Q10Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q10_COST_MODEL",
               core::kTpchQ10CostModel,
               core::TpchQ10Layout::kAccelerator,
-              query::TpchQ10Config{pg_tbl::kCustomer, pg_tbl::kNation, pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ10Config{pg_tbl::kCustomer, pg_tbl::kNation, pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"customer", pg_tbl::kCustomer}, {"nation", pg_tbl::kNation}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace
@@ -129,6 +133,8 @@ void ExecutePostgresTpchQ10(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 10, kPostgresVariantAux, &ExecutePostgresTpchQ10});
+const detail::RuntimeRegistrar<&detail::Q10Runtime> kAcceleratorRegistrar(
+    core::TpchQ10Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

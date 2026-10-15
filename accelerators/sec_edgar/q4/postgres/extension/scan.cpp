@@ -48,7 +48,6 @@ double Float8At(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
 // join.  The result of every query below is small (<= ~100K narrow rows).
 template <typename Callback>
 void RunQuery(const std::string &sql, Callback &&callback) {
-  ++t_table_scans;
   if (SPI_connect() != SPI_OK_CONNECT) {
     throw std::runtime_error("SPI_connect failed");
   }
@@ -254,6 +253,7 @@ Runtime<query::SecEdgarQ4Module, query::SecEdgarQ4Config, SecEdgarQ4PgScan> &Q4R
       "ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q4_COST_MODEL",
       core::kSecEdgarQ4CostModel, core::SecEdgarQ4Layout::kAccelerator,
       query::SecEdgarQ4Config{kSecEdgarNum, kSecEdgarSub, kSecEdgarTag, kSecEdgarPre},
+              {{"num", kSecEdgarNum}, {"sub", kSecEdgarSub}, {"tag", kSecEdgarTag}, {"pre", kSecEdgarPre}},
       {}, /*tune_build=*/true);
   return runtime;
 }
@@ -286,6 +286,8 @@ void ExecutePostgresSecEdgarQ4(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(
     PostgresQueryExecutor{"sec_edgar", 4, kPostgresVariantAux, &ExecutePostgresSecEdgarQ4});
+const detail::RuntimeRegistrar<&detail::Q4Runtime> kAcceleratorRegistrar(
+    core::SecEdgarQ4Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

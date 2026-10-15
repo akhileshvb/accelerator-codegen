@@ -45,36 +45,37 @@ void ScanTpchQ7Suppliers(
 
 void ScanTpchQ7Customers(
     const std::function<void(const query::TpchQ7CustomerInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT c_custkey, c_nationkey FROM customer",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
-      });
+  ScanColumns("customer",
+              {IntColumn("c_custkey"), IntColumn("c_nationkey")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          static_cast<int32_t>(row.Int(1))});
+              });
 }
 
 void ScanTpchQ7Orders(
     const std::function<void(const query::TpchQ7OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_custkey FROM orders",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), IntColumn("o_custkey")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1)});
+              });
 }
 
 void ScanTpchQ7Lineitems(
     const std::function<void(const query::TpchQ7LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount, l_shipdate "
-      "FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDecimalRaw(tuple, tuple_desc, 2), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 3), 2,
-                  TypedDate(tuple, tuple_desc, 4)});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
+               DecimalColumn("l_extendedprice", 2),
+               DecimalColumn("l_discount", 2), DateColumn("l_shipdate")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Decimal(2), 2,
+                          row.Decimal(3), 2,
+                          row.Date(4)});
+              });
 }
 
 } // namespace scans
@@ -112,6 +113,7 @@ Runtime<query::TpchQ7Module, query::TpchQ7Config, TpchQ7Scan> &Q7Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q7_COST_MODEL",
               core::kTpchQ7CostModel, core::TpchQ7Layout::kAccelerator,
               query::TpchQ7Config{pg_tbl::kNation, pg_tbl::kSupplier, pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"nation", pg_tbl::kNation}, {"supplier", pg_tbl::kSupplier}, {"customer", pg_tbl::kCustomer}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}},
               {{"nation", "n_name"}});
   return runtime;
 }
@@ -131,6 +133,8 @@ void ExecutePostgresTpchQ7(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 7, kPostgresVariantAux, &ExecutePostgresTpchQ7});
+const detail::RuntimeRegistrar<&detail::Q7Runtime> kAcceleratorRegistrar(
+    core::TpchQ7Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

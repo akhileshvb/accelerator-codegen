@@ -25,25 +25,23 @@ namespace scans {
 
 void ScanTpchQ1Lineitems(
     const std::function<void(const query::TpchQ1LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_shipdate, l_quantity, l_extendedprice, l_discount, l_tax, "
-      "l_returnflag, l_linestatus FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedDate(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 2), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 3), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 4), 2,
-                  TypedChar(tuple, tuple_desc, 5),
-                  TypedChar(tuple, tuple_desc, 6)});
-      });
+  ScanColumns("lineitem",
+              {DateColumn("l_shipdate"), DecimalColumn("l_quantity", 2),
+               DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2),
+               DecimalColumn("l_tax", 2), TextColumn("l_returnflag"),
+               TextColumn("l_linestatus")},
+              [&](const BuildRow &row) {
+                consumer({row.Date(0), row.Decimal(1), 2, row.Decimal(2), 2,
+                          row.Decimal(3), 2, row.Decimal(4), 2, row.Char(5),
+                          row.Char(6)});
+              });
 }
 
 // One SQL GROUP BY: the engine aggregates, the process receives one row per
 // (shipdate, returnflag, linestatus) cell with exact numeric sums (text).
 void ScanTpchQ1DayGroupAggregates(
     const std::function<void(const query::TpchQ1DayGroupAggregate &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesParallel(
       "SELECT l_shipdate, l_returnflag, l_linestatus, count(*), "
       "sum(l_quantity), sum(l_extendedprice), sum(l_discount), "
       "sum(l_extendedprice * (1 - l_discount)), "
@@ -90,7 +88,8 @@ Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Scan> &Q1Runtime() {
   static Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q1_COST_MODEL",
               core::kTpchQ1CostModel,
-              core::TpchQ1Layout::kAccelerator, query::TpchQ1Config{pg_tbl::kLineitem});
+              core::TpchQ1Layout::kAccelerator, query::TpchQ1Config{pg_tbl::kLineitem},
+              {{"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace
@@ -124,6 +123,8 @@ void ExecutePostgresTpchQ1(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 1, kPostgresVariantAux, &ExecutePostgresTpchQ1});
+const detail::RuntimeRegistrar<&detail::Q1Runtime> kAcceleratorRegistrar(
+    core::TpchQ1Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

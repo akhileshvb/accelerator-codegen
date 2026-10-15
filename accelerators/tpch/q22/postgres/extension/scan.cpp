@@ -21,22 +21,23 @@ namespace scans {
 
 void ScanTpchQ22Customers(
     const std::function<void(const query::TpchQ22CustomerInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT c_custkey, c_phone, c_acctbal FROM customer",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedDecimalRaw(tuple, tuple_desc, 2), 2});
-      });
+  ScanColumns("customer",
+              {IntColumn("c_custkey"), TextColumn("c_phone"),
+               DecimalColumn("c_acctbal", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1),
+                          row.Decimal(2), 2});
+              });
 }
 
 void ScanTpchQ22Orders(
     const std::function<void(const query::TpchQ22OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_custkey FROM orders",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0)});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_custkey")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0)});
+              });
 }
 
 // Orders per customer, aggregated in SQL (one row per o_custkey).
@@ -77,7 +78,8 @@ Q22Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q22_COST_MODEL",
               core::kTpchQ22CostModel,
               query::TpchQ22Layout::kAccelerator,
-              query::TpchQ22Config{pg_tbl::kOrders, pg_tbl::kCustomer});
+              query::TpchQ22Config{pg_tbl::kOrders, pg_tbl::kCustomer},
+              {{"orders", pg_tbl::kOrders}, {"customer", pg_tbl::kCustomer}});
   return runtime;
 }
 } // namespace
@@ -101,6 +103,8 @@ void ExecutePostgresTpchQ22(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 22, kPostgresVariantAux, &ExecutePostgresTpchQ22});
+const detail::RuntimeRegistrar<&detail::Q22Runtime> kAcceleratorRegistrar(
+    query::TpchQ22Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

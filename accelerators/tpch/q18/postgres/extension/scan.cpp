@@ -21,34 +21,35 @@ namespace scans {
 
 void ScanTpchQ18Lineitems(
     const std::function<void(const query::TpchQ18LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_orderkey, l_quantity FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_orderkey"), DecimalColumn("l_quantity", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Decimal(1)});
+              });
 }
 
 void ScanTpchQ18Orders(
     const std::function<void(const query::TpchQ18OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice FROM orders",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDate(tuple, tuple_desc, 2),
-                  TypedDecimalRaw(tuple, tuple_desc, 3)});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+               DateColumn("o_orderdate"), DecimalColumn("o_totalprice", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Date(2),
+                          row.Decimal(3)});
+              });
 }
 
 void ScanTpchQ18Customers(
     const std::function<void(const query::TpchQ18CustomerInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT c_custkey, c_name FROM customer",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("customer",
+              {IntColumn("c_custkey"), TextColumn("c_name")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1)});
+              });
 }
 
 // SUM(l_quantity) and COUNT(*) per order, computed by the database.
@@ -120,7 +121,8 @@ Q18Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q18_COST_MODEL",
               core::kTpchQ18CostModel,
               query::TpchQ18Layout::kAccelerator,
-              query::TpchQ18Config{pg_tbl::kLineitem, pg_tbl::kOrders, pg_tbl::kCustomer});
+              query::TpchQ18Config{pg_tbl::kLineitem, pg_tbl::kOrders, pg_tbl::kCustomer},
+              {{"lineitem", pg_tbl::kLineitem}, {"orders", pg_tbl::kOrders}, {"customer", pg_tbl::kCustomer}});
   return runtime;
 }
 } // namespace
@@ -144,6 +146,8 @@ void ExecutePostgresTpchQ18(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 18, kPostgresVariantAux, &ExecutePostgresTpchQ18});
+const detail::RuntimeRegistrar<&detail::Q18Runtime> kAcceleratorRegistrar(
+    query::TpchQ18Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

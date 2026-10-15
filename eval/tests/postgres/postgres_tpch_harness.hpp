@@ -328,18 +328,6 @@ inline void EnsureMutationTriggers(const Tools &tools) {
                      ", 'AcceleratorCodegenCaptureTransition' LANGUAGE C"),
           "install accel_aux_capture_transition failed");
   Require(RunSQL(tools,
-                 "CREATE OR REPLACE FUNCTION accel_postgres_get_observer_mutation_count() "
-                 "RETURNS bigint AS " +
-                     SqlLiteral(so) +
-                     ", 'accel_postgres_get_observer_mutation_count' LANGUAGE C STRICT"),
-          "install observer mutation_count helper failed");
-  Require(RunSQL(tools,
-                 "CREATE OR REPLACE FUNCTION accel_postgres_reset_observer() "
-                 "RETURNS void AS " +
-                     SqlLiteral(so) +
-                     ", 'accel_postgres_reset_observer' LANGUAGE C"),
-          "install observer reset helper failed");
-  Require(RunSQL(tools,
                  "CREATE OR REPLACE FUNCTION accel_postgres_set_force_maintenance_action(text) "
                  "RETURNS void AS " +
                      SqlLiteral(so) +
@@ -364,8 +352,14 @@ inline void EnsureMutationTriggers(const Tools &tools) {
                      ", 'accel_postgres_get_last_maintenance_action' LANGUAGE C STRICT"),
           "install last-maintenance helper failed");
 
-  // One statement-level trigger set per TPC-H table. Each trigger passes
-  // its table id (tpch/postgres_tpch_table_ids.hpp) as the argument.
+  // The workers scan the tables while they build: stop them (they restart on demand) so the
+  // trigger DDL below cannot deadlock with a build.
+  Require(RunSQL(tools,
+                 "DO $$ BEGIN IF to_regproc('accel_postgres_stop_shard_workers') IS NOT NULL THEN "
+                 "PERFORM accel_postgres_stop_shard_workers(); END IF; END $$"),
+          "stop shard workers failed");
+
+  // One statement-level trigger set per TPC-H table.
   Require(
       RunSQL(tools,
              "DO $$ DECLARE r record; BEGIN "
@@ -383,25 +377,27 @@ inline void EnsureMutationTriggers(const Tools &tools) {
   const char *tables[] = {"lineitem", "orders",  "customer", "part",
                           "partsupp", "supplier", "nation",   "region"};
   for (const char *t : tables) {
-    const std::string id = std::to_string(
-        accelerator_codegen::aux_state::engine::postgres::tpch_tables::
-            IdFromRelname(t));
     std::string sql = std::string(
                           "DO $$ BEGIN "
                           "EXECUTE format('CREATE TRIGGER accel_tpch_%s_i AFTER INSERT ON %I "
                           "REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT "
-                          "EXECUTE FUNCTION accel_aux_capture_transition(''" + id + "'')', '") +
+                          "EXECUTE FUNCTION accel_aux_capture_transition()', '") +
                       t + "', '" + t +
                       "'); "
                       "EXECUTE format('CREATE TRIGGER accel_tpch_%s_d AFTER DELETE ON %I "
                       "REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT "
-                      "EXECUTE FUNCTION accel_aux_capture_transition(''" + id + "'')', '" +
+                      "EXECUTE FUNCTION accel_aux_capture_transition()', '" +
                       t + "', '" + t +
                       "'); "
                       "EXECUTE format('CREATE TRIGGER accel_tpch_%s_u AFTER UPDATE ON %I "
                       "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows "
                       "FOR EACH STATEMENT "
-                      "EXECUTE FUNCTION accel_aux_capture_transition(''" + id + "'')', '" +
+                      "EXECUTE FUNCTION accel_aux_capture_transition()', '" +
+                      t + "', '" + t +
+                      "'); "
+                      "EXECUTE format('CREATE TRIGGER accel_tpch_%s_t AFTER TRUNCATE ON %I "
+                      "FOR EACH STATEMENT "
+                      "EXECUTE FUNCTION accel_aux_capture_transition()', '" +
                       t + "', '" + t + "'); END $$";
     Require(RunSQL(tools, sql), std::string("install statement trigger failed for ") + t);
   }

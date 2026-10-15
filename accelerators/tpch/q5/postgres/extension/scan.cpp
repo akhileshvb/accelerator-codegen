@@ -47,13 +47,12 @@ void ScanTpchQ5Nations(
 
 void ScanTpchQ5Customers(
     const std::function<void(const query::TpchQ5CustomerInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT c_custkey, c_nationkey FROM customer "
-      "WHERE c_custkey IS NOT NULL AND c_nationkey IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
-      });
+  ScanColumns("customer",
+              {IntColumn("c_custkey"), IntColumn("c_nationkey")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          static_cast<int32_t>(row.Int(1))});
+              });
 }
 
 void ScanTpchQ5Suppliers(
@@ -75,12 +74,12 @@ const char kOrdersSql[] =
 
 void ScanTpchQ5Orders(
     const std::function<void(const query::TpchQ5OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      kOrdersSql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDate(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+               DateColumn("o_orderdate")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Int(1), row.Date(2)});
+              });
 }
 
 // Lineitems that reach the SUM; price and discount as exact cents.
@@ -92,13 +91,14 @@ const char kLineitemsSql[] =
 
 void ScanTpchQ5Lineitems(
     const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      kLineitemsSql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2), 2,
-                  TypedInt(tuple, tuple_desc, 3), 2});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
+               DecimalColumn("l_extendedprice", 2),
+               DecimalColumn("l_discount", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Int(1), row.Decimal(2), 2,
+                          row.Decimal(3), 2});
+              });
 }
 
 // Index lookups while maintenance is staged at pre-commit: they read the
@@ -119,7 +119,7 @@ void LookupTpchQ5Lineitems(
     const char *key_column, const std::vector<int64_t> &keys,
     const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
   LookupBatches(kLineitemsSql, key_column, keys, [&](const std::string &sql) {
-    ScanTypedTuplesAfterOwnWrites(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
+    ScanTypedTuples(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
       consumer({TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1),
                 TypedInt(tuple, tuple_desc, 2), 2,
                 TypedInt(tuple, tuple_desc, 3), 2});
@@ -131,7 +131,7 @@ void LookupTpchQ5OrdersByCustomer(
     const std::vector<int64_t> &custkeys,
     const std::function<void(const query::TpchQ5OrderInput &)> &consumer) {
   LookupBatches(kOrdersSql, "o_custkey", custkeys, [&](const std::string &sql) {
-    ScanTypedTuplesAfterOwnWrites(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
+    ScanTypedTuples(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
       consumer({TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1),
                 TypedDate(tuple, tuple_desc, 2)});
     });
@@ -195,7 +195,8 @@ Runtime<query::TpchQ5Module, query::TpchQ5Config, TpchQ5Scan> &Q5Runtime() {
   static Runtime<query::TpchQ5Module, query::TpchQ5Config, TpchQ5Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q5_COST_MODEL",
               core::kTpchQ5CostModel, core::TpchQ5Layout::kAccelerator,
-              query::TpchQ5Config{pg_tbl::kRegion, pg_tbl::kNation, pg_tbl::kCustomer, pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ5Config{pg_tbl::kRegion, pg_tbl::kNation, pg_tbl::kCustomer, pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"region", pg_tbl::kRegion}, {"nation", pg_tbl::kNation}, {"customer", pg_tbl::kCustomer}, {"supplier", pg_tbl::kSupplier}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace
@@ -223,6 +224,8 @@ void ExecutePostgresTpchQ5(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 5, kPostgresVariantAux, &ExecutePostgresTpchQ5});
+const detail::RuntimeRegistrar<&detail::Q5Runtime> kAcceleratorRegistrar(
+    core::TpchQ5Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

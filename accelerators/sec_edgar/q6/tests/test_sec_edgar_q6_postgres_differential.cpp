@@ -399,7 +399,7 @@ void SetupSynthetic() {
   {
     Conn admin("postgres");
     admin.Try("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='q6_synth'");
-    admin.Exec("DROP DATABASE IF EXISTS q6_synth");
+    admin.Exec("DROP DATABASE IF EXISTS q6_synth WITH (FORCE)");
     admin.Exec("CREATE DATABASE q6_synth TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'");
   }
   Conn c("q6_synth");
@@ -417,9 +417,9 @@ void SetupSynthetic() {
          "rfile VARCHAR(1), tag VARCHAR(256), version VARCHAR(20), plabel VARCHAR(1024), negating INTEGER)");
   c.Exec("CREATE INDEX num_adsh_idx ON num (adsh)");
   c.Exec("CREATE INDEX pre_adsh_idx ON pre (adsh)");
-  c.Exec("SELECT create_accel_mutation_triggers('sub', '1', 'accel_codegen_sec_edgar')");
-  c.Exec("SELECT create_accel_mutation_triggers('num', '2', 'accel_codegen_sec_edgar')");
-  c.Exec("SELECT create_accel_mutation_triggers('pre', '3', 'accel_codegen_sec_edgar')");
+  c.Exec("SELECT create_accel_mutation_triggers('sub', 'accel_codegen_sec_edgar')");
+  c.Exec("SELECT create_accel_mutation_triggers('num', 'accel_codegen_sec_edgar')");
+  c.Exec("SELECT create_accel_mutation_triggers('pre', 'accel_codegen_sec_edgar')");
 }
 
 int RunSynthetic(uint64_t seed, int steps) {

@@ -22,14 +22,11 @@ namespace scans {
 
 void ScanTpchQ12Orders(
     const std::function<void(const query::TpchQ12OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_orderpriority, (o_orderpriority IS NULL)::int "
-      "FROM orders WHERE o_orderkey IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2) != 0});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), TextColumn("o_orderpriority")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Text(1), false});
+              });
 }
 
 // Lineitems that can contribute: non-NULL key / shipmode, commit < receipt,
@@ -72,7 +69,7 @@ void LookupTpchQ12LineitemsByOrder(
         KeyListPredicate("l_orderkey", batch) +
         " AND l_shipmode IS NOT NULL AND l_commitdate < l_receiptdate "
         "AND l_shipdate < l_commitdate";
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
           consumer({TypedInt(tuple, tuple_desc, 0),
                     TypedText(tuple, tuple_desc, 1),
@@ -109,7 +106,8 @@ Q12Runtime() {
   static Runtime<query::TpchQ12Module, query::TpchQ12Config, TpchQ12Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q12_COST_MODEL",
               core::kTpchQ12CostModel,
-              core::TpchQ12Layout::kAccelerator, query::TpchQ12Config{pg_tbl::kOrders, pg_tbl::kLineitem});
+              core::TpchQ12Layout::kAccelerator, query::TpchQ12Config{pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace
@@ -142,6 +140,8 @@ void ExecutePostgresTpchQ12(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 12, kPostgresVariantAux, &ExecutePostgresTpchQ12});
+const detail::RuntimeRegistrar<&detail::Q12Runtime> kAcceleratorRegistrar(
+    core::TpchQ12Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

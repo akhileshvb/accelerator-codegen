@@ -21,16 +21,12 @@ namespace scans {
 
 void ScanTpchQ4Orders(
     const std::function<void(const query::TpchQ4OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_orderdate, o_orderpriority, "
-      "(o_orderpriority IS NULL)::int FROM orders "
-      "WHERE o_orderkey IS NOT NULL AND o_orderdate IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDate(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  TypedInt(tuple, tuple_desc, 3) != 0});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), DateColumn("o_orderdate"),
+               TextColumn("o_orderpriority")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Date(1), row.Text(2), false});
+              });
 }
 
 void ScanTpchQ4Lineitems(
@@ -64,7 +60,8 @@ Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Scan> &Q4Runtime() {
   static Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q4_COST_MODEL",
               core::kTpchQ4CostModel, query::TpchQ4Layout::kAccelerator,
-              query::TpchQ4Config{pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ4Config{pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace
@@ -87,6 +84,8 @@ void ExecutePostgresTpchQ4(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 4, kPostgresVariantAux, &ExecutePostgresTpchQ4});
+const detail::RuntimeRegistrar<&detail::Q4Runtime> kAcceleratorRegistrar(
+    query::TpchQ4Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

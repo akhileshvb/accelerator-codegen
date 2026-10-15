@@ -17,8 +17,7 @@ namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
 
-// Table ids the SEC-EDGAR capture triggers pass (shared across the SEC-EDGAR
-// queries: sub=1, num=2, pre=3, tag=4; see create_accel_mutation_triggers()).
+// This module's numbering of its tables (the accelerator maps them to relations).
 constexpr core::TableId kSubTable = 1, kNumTable = 2, kPreTable = 3;
 
 namespace scans {
@@ -85,7 +84,6 @@ std::string AdshAnyPredicate(const char *column,
 // join; the result is the aggregated groups, far smaller than num.
 template <typename Callback>
 void RunQuery(const std::string &sql, Callback &&callback) {
-  ++t_table_scans;
   if (SPI_connect() != SPI_OK_CONNECT)
     throw std::runtime_error("SPI_connect failed");
   if (SPI_execute(sql.c_str(), true, 0) != SPI_OK_SELECT) {
@@ -219,7 +217,7 @@ public:
     std::unordered_map<std::string, std::size_t> index;
     for (std::size_t i = 0; i < adshs.size(); ++i)
       index[adshs[i]] = i;
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         "SELECT adsh, name, fy FROM sub WHERE fy IS NOT NULL AND " +
             scans::AdshAnyPredicate("adsh", adshs),
         [&](HeapTuple tuple, TupleDesc desc) {
@@ -236,7 +234,7 @@ public:
           snap.name_is_null = !name_ok;
           snap.name = std::move(name);
         });
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         "SELECT adsh, tag, version, stmt, plabel, COUNT(*) FROM pre WHERE "
         "stmt IS NOT NULL AND tag IS NOT NULL AND version IS NOT NULL AND " +
             scans::AdshAnyPredicate("adsh", adshs) +
@@ -255,7 +253,7 @@ public:
           if (it != index.end())
             out[it->second].pre.push_back(std::move(entry));
         });
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         "SELECT adsh, tag, version, uom, SUM(value)::float8, COUNT(*) FROM num "
         "WHERE uom IS NOT NULL AND value IS NOT NULL AND " +
             scans::AdshAnyPredicate("adsh", adshs) +
@@ -287,6 +285,7 @@ Q6Runtime() {
               core::kSecEdgarQ6CostModel,
               core::SecEdgarQ6Layout::kAccelerator,
               query::SecEdgarQ6Config{kNumTable, kSubTable, kPreTable},
+              {{"num", kNumTable}, {"sub", kSubTable}, {"pre", kPreTable}},
               {{"sub", "name"}, {"num", "tag"}, {"pre", "plabel"}},
               /*tune_build=*/true);
   return runtime;
@@ -318,6 +317,8 @@ void ExecutePostgresSecEdgarQ6(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "sec_edgar", 6, kPostgresVariantAux, &ExecutePostgresSecEdgarQ6});
+const detail::RuntimeRegistrar<&detail::Q6Runtime> kAcceleratorRegistrar(
+    core::SecEdgarQ6Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

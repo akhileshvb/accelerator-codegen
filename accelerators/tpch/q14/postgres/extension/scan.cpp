@@ -24,12 +24,12 @@ namespace scans {
 
 void ScanTpchQ14Parts(
     const std::function<void(const query::TpchQ14PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_type FROM part",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_type")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1)});
+              });
 }
 
 // lineitem JOIN part GROUP BY shipdate in the engine: one row per day with the
@@ -37,7 +37,7 @@ void ScanTpchQ14Parts(
 void ScanTpchQ14DayAggregates(
     const std::function<void(const query::TpchQ14DayAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuples(
+  ScanTypedTuplesParallel(
       "SELECT l_shipdate, sum(l_extendedprice * (1 - l_discount)), "
       "sum(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * "
       "(1 - l_discount) ELSE 0 END), count(*) "
@@ -60,7 +60,7 @@ void ScanTpchQ14PartDayRevenue(
     const std::vector<int64_t> &partkeys,
     const std::function<void(const query::TpchQ14PartDayRevenue &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuplesAfterOwnWrites(
+  ScanTypedTuples(
       "SELECT l_partkey, l_shipdate, sum(l_extendedprice * (1 - l_discount)), "
       "count(*) FROM lineitem WHERE " +
           KeyListPredicate("l_partkey", partkeys) +
@@ -102,7 +102,8 @@ Q14Runtime() {
   static Runtime<query::TpchQ14Module, query::TpchQ14Config, TpchQ14Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q14_COST_MODEL",
               core::kTpchQ14CostModel,
-              core::TpchQ14Layout::kAccelerator, query::TpchQ14Config{pg_tbl::kPart, pg_tbl::kLineitem});
+              core::TpchQ14Layout::kAccelerator, query::TpchQ14Config{pg_tbl::kPart, pg_tbl::kLineitem},
+              {{"part", pg_tbl::kPart}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace
@@ -125,6 +126,8 @@ void ExecutePostgresTpchQ14(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 14, kPostgresVariantAux, &ExecutePostgresTpchQ14});
+const detail::RuntimeRegistrar<&detail::Q14Runtime> kAcceleratorRegistrar(
+    core::TpchQ14Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

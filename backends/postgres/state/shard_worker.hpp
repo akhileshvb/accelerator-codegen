@@ -13,7 +13,12 @@
 //                  Execute only, no Postgres calls (all signals blocked).
 //
 // Transport is accel::ShmRing (futex wake-ups, usable off the Postgres
-// thread), in a per-shard DSM segment.
+// thread), in a per-shard DSM segment (shard_segment.hpp).
+//
+// A shard worker is a dynamic background worker (no shared_preload_libraries):
+// the first backend to use an accelerator starts it, it exits on SIGTERM or
+// (accel.shard_idle_exit_s) when idle, and the next use starts it again. A
+// Postgres error inside the worker ends it the same way.
 #pragma once
 
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
@@ -22,8 +27,9 @@
 #include <string>
 #include <string_view>
 
-#include "substrate/aux/core/aux_execute_stats.hpp"
+#include "backends/postgres/state/shard_segment.hpp"
 #include "substrate/aux/core/aux_types.hpp"
+#include "substrate/aux/runtime/engine_slots.hpp"
 
 extern "C" {
 #include <postgres.h>
@@ -32,12 +38,18 @@ extern "C" {
 
 namespace accelerator_codegen::aux_state::engine::postgres::shard {
 
-// Starts shard worker `index` if it is not running (shared::Activate).
+// Shard `index`'s shared memory in this database (attached on first use).
+ShardSegment *Segment(int index);
+
+// Starts shard worker `index` if it is not running (shared::Activate), and
+// returns once it accepts requests.
 void EnsureWorker(int index);
 
 // Writer side, COMMIT: queues one encoded CommitMessage (messages.hpp) for
 // shard `index`. Blocks while the ring is full, up to `deadline`; false if
-// it could not be queued (the worker then sees a gap and rebuilds).
+// it could not be queued (the worker then sees a gap and rebuilds). A shard
+// whose worker is not running is owed nothing (its next build includes the
+// commit): true.
 bool SendCommit(int index, std::string_view message,
                 std::chrono::steady_clock::time_point deadline);
 
@@ -49,13 +61,26 @@ enum class Remote { Served, Fallback };
 Remote RemoteRead(int index, runtime::Epoch epoch, const core::QueryArguments &arguments,
                   FunctionCallInfo fcinfo);
 
-// Defines the accel.shard_* GUCs (call from _PG_init).
+// Defines the accel.* GUCs of the readers and workers (call from _PG_init).
 void DefineGucs();
-// "requests=N served=N fallback=N builds=N applied=N ..." over the
-// database's shard workers, or "no worker".
+// accel.build_tuning: planner settings for state builds (the worker's).
+bool BuildTuning();
+
+// "requests=N served=N fallback=N errors=N commits=N applied=N builds=N gaps=N
+// synced=N workers=N generation=G pid=P" summed over the database's running
+// shard workers, or "no worker".
 std::string StatsText();
-// Stops the database's shard workers (they restart on demand).
+// Stops the database's shard workers and waits for them (they restart on
+// demand). False if none was running.
 bool StopWorkers();
+
+// Maintenance diagnostics, bridged to the workers (maintenance runs there): a
+// forced action for their next decisions ("" clears), and the last decision
+// any of them made, as core::FormatLastMaintenanceDecision / its action name
+// ("" if none).
+void SetForcedMaintenance(const std::string &action_name);
+std::string LastMaintenanceActionName();
+std::string LastMaintenanceDecisionText();
 
 } // namespace accelerator_codegen::aux_state::engine::postgres::shard
 

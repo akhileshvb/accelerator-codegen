@@ -158,7 +158,7 @@ public:
       tags.push_back(g.second);
       exact.insert(g.first + std::string(1, '\0') + g.second);
     }
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         "SELECT adsh, tag, value, count(*) FROM num WHERE uom = " + SqlQuote(uom) +
             " AND value IS NOT NULL AND adsh = ANY(" + SqlTextArray(adshs) +
             ") AND tag = ANY(" + SqlTextArray(tags) + ") GROUP BY adsh, tag, value",
@@ -234,7 +234,7 @@ private:
       consumer(in);
     };
     if (after_own_writes) {
-      ScanTypedTuplesAfterOwnWrites(sql, row);
+      ScanTypedTuples(sql, row);
     } else {
       ScanTypedTuples(sql, row);
     }
@@ -247,6 +247,7 @@ Runtime<query::SecEdgarQ2Module, query::SecEdgarQ2Config, SecEdgarQ2Scan> &Q2Run
       "ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q2_COST_MODEL",
       core::kSecEdgarQ2CostModel, core::SecEdgarQ2Layout::kAccelerator,
       query::SecEdgarQ2Config{kSecEdgarNum, kSecEdgarSub},
+              {{"num", kSecEdgarNum}, {"sub", kSecEdgarSub}},
       {{"sub", "name"}, {"num", "tag"}});
   return runtime;
 }
@@ -277,6 +278,8 @@ void ExecutePostgresSecEdgarQ2(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "sec_edgar", 2, kPostgresVariantAux, &ExecutePostgresSecEdgarQ2});
+const detail::RuntimeRegistrar<&detail::Q2Runtime> kAcceleratorRegistrar(
+    core::SecEdgarQ2Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

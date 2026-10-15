@@ -24,14 +24,16 @@ namespace scans {
 
 void ScanTpchQ6Lineitems(
     const std::function<void(const query::TpchQ6LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_shipdate, l_discount, l_quantity, l_extendedprice FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedDate(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 2), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 3), 2});
-      });
+  ScanColumns("lineitem",
+              {DateColumn("l_shipdate"), DecimalColumn("l_discount", 2),
+               DecimalColumn("l_quantity", 2),
+               DecimalColumn("l_extendedprice", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Date(0),
+                          row.Decimal(1), 2,
+                          row.Decimal(2), 2,
+                          row.Decimal(3), 2});
+              });
 }
 
 // One SQL GROUP BY: the engine aggregates, the process receives one row per
@@ -39,7 +41,7 @@ void ScanTpchQ6Lineitems(
 void ScanTpchQ6CellAggregates(
     const std::function<void(const query::TpchQ6CellAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuples(
+  ScanTypedTuplesParallel(
       "SELECT l_shipdate, l_discount, l_quantity, count(*), "
       "sum(l_extendedprice * l_discount) FROM lineitem "
       "GROUP BY l_shipdate, l_discount, l_quantity",
@@ -77,7 +79,8 @@ Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan> &Q6Runtime() {
   static Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q6_COST_MODEL",
               core::kTpchQ6CostModel,
-              core::TpchQ6Layout::kAccelerator, query::TpchQ6Config{pg_tbl::kLineitem});
+              core::TpchQ6Layout::kAccelerator, query::TpchQ6Config{pg_tbl::kLineitem},
+              {{"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace
@@ -106,6 +109,8 @@ void ExecutePostgresTpchQ6(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 6, kPostgresVariantAux, &ExecutePostgresTpchQ6});
+const detail::RuntimeRegistrar<&detail::Q6Runtime> kAcceleratorRegistrar(
+    core::TpchQ6Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

@@ -33,14 +33,15 @@ void ScanTpchQ15Suppliers(
 
 void ScanTpchQ15Lineitems(
     const std::function<void(const query::TpchQ15LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedDate(tuple, tuple_desc, 3),
-                  TypedInt(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 2), 2});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_suppkey"), DecimalColumn("l_extendedprice", 2),
+               DecimalColumn("l_discount", 2), DateColumn("l_shipdate")},
+              [&](const BuildRow &row) {
+                consumer({row.Date(3),
+                          row.Int(0),
+                          row.Decimal(1), 2,
+                          row.Decimal(2), 2});
+              });
 }
 
 void ScanTpchQ15LineitemsForShipdateRange(
@@ -89,7 +90,8 @@ Q15Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q15_COST_MODEL",
               core::kTpchQ15CostModel,
               query::TpchQ15Layout::kAccelerator,
-              query::TpchQ15Config{pg_tbl::kLineitem, pg_tbl::kSupplier});
+              query::TpchQ15Config{pg_tbl::kLineitem, pg_tbl::kSupplier},
+              {{"lineitem", pg_tbl::kLineitem}, {"supplier", pg_tbl::kSupplier}});
   return runtime;
 }
 } // namespace
@@ -112,6 +114,8 @@ void ExecutePostgresTpchQ15(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 15, kPostgresVariantAux, &ExecutePostgresTpchQ15});
+const detail::RuntimeRegistrar<&detail::Q15Runtime> kAcceleratorRegistrar(
+    query::TpchQ15Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

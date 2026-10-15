@@ -23,14 +23,15 @@ namespace scans {
 
 void ScanTpchQ19Parts(
     const std::function<void(const query::TpchQ19PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_brand, p_container, p_size FROM part",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3))});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_brand"),
+               TextColumn("p_container"), IntColumn("p_size")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1),
+                          row.Text(2),
+                          static_cast<int32_t>(row.Int(3))});
+              });
 }
 
 // lineitem JOIN part with the shipping predicate and family classification
@@ -40,7 +41,7 @@ void ScanTpchQ19GroupAggregates(
     const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
   const std::string family = query::TpchQ19FamilySql();
-  ScanTypedTuples(
+  ScanTypedTuplesParallel(
       "SELECT p_brand, " + family +
           " AS fam, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
           "count(*) FROM lineitem, part WHERE l_partkey = p_partkey AND " +
@@ -67,7 +68,7 @@ void ScanTpchQ19PartQuantityRevenue(
     const std::function<void(const query::TpchQ19PartQuantityRevenue &)>
         &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuplesAfterOwnWrites(
+  ScanTypedTuples(
       "SELECT l_partkey, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
       "count(*) FROM lineitem WHERE " +
           KeyListPredicate("l_partkey", partkeys) + " AND " +
@@ -112,7 +113,8 @@ Q19Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q19_COST_MODEL",
               core::kTpchQ19CostModel,
               query::TpchQ19Layout::kAccelerator,
-              query::TpchQ19Config{pg_tbl::kLineitem, pg_tbl::kPart});
+              query::TpchQ19Config{pg_tbl::kLineitem, pg_tbl::kPart},
+              {{"lineitem", pg_tbl::kLineitem}, {"part", pg_tbl::kPart}});
   return runtime;
 }
 } // namespace
@@ -143,6 +145,8 @@ void ExecutePostgresTpchQ19(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 19, kPostgresVariantAux, &ExecutePostgresTpchQ19});
+const detail::RuntimeRegistrar<&detail::Q19Runtime> kAcceleratorRegistrar(
+    query::TpchQ19Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

@@ -72,7 +72,6 @@ void ScanPreNative(Fn &&fn) {
   if (!ResolvePreColumns(relid, attno, error)) {
     throw std::runtime_error("sec_edgar q1: " + error);
   }
-  ++t_table_scans;
   Relation rel = table_open(relid, AccessShareLock);
   TableScanDesc scan = nullptr;
   TupleTableSlot *slot = nullptr;
@@ -175,7 +174,8 @@ Q1Runtime &SecEdgarQ1RuntimeInstance(const int (&attno)[4]) {
     }
     runtime = new Q1Runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q1_COST_MODEL",
                             core::kSecEdgarQ1CostModel,
-                            core::SecEdgarQ1Layout::kAccelerator, std::move(config));
+                            core::SecEdgarQ1Layout::kAccelerator, std::move(config),
+                            {{"pre", kPreTableId}});
   }
   return *runtime;
 }
@@ -215,6 +215,21 @@ void ExecutePostgresSecEdgarQ1(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(
     PostgresQueryExecutor{"sec_edgar", 1, kPostgresVariantAux, &ExecutePostgresSecEdgarQ1});
+// The accelerator by id (accelerators.hpp). Its capture attnums are resolved
+// by column name, so it exists from the first use that can read the catalog.
+PostgresAccelerator &SecEdgarQ1Accelerator() {
+  if (detail::g_attno[0] == 0) {
+    Oid relid = InvalidOid;
+    std::string error;
+    if (!detail::ResolvePreColumns(relid, detail::g_attno, error)) {
+      ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("accel_sec_edgar_q1_aux: %s", error.c_str())));
+    }
+  }
+  return detail::SecEdgarQ1RuntimeInstance(detail::g_attno);
+}
+
+const detail::RuntimeRegistrar<&SecEdgarQ1Accelerator> kAcceleratorRegistrar(
+    core::SecEdgarQ1Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

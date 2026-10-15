@@ -488,26 +488,25 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
                      std::to_string(query_num) +
                      " — write must impact this query's observable result");
 
+  // Commits shipped to the accelerators' shard workers, before and after the write.
+  const std::string stats = "SELECT accel_postgres_shard_stats();\n";
   std::ostringstream script;
   script << "LOAD '" << tools.extension_so << "';\n"
-         << "SELECT accel_postgres_reset_observer();\n";
-  if (!force_action.empty()) {
-    script << "SELECT accel_postgres_set_force_maintenance_action("
-           << SqlLiteral(force_action) << ");\n";
-  } else {
-    script << "SELECT accel_postgres_set_force_maintenance_action('');\n";
-  }
-  script << "SELECT '===WARM===' AS m;\n"
-         << accel_sql << ";\n"
+         << "SELECT '===WARM===' AS m;\n"
+         << accel_sql << ";\n";
+  // The accelerator's worker exists once it was read: force from here on.
+  script << "SELECT accel_postgres_set_force_maintenance_action("
+         << SqlLiteral(force_action) << ");\n"
          << "SELECT '===MUT_BEFORE===' AS m;\n"
-         << "SELECT accel_postgres_get_observer_mutation_count();\n"
-         << probe.update_sql << ";\n"
-         << "SELECT '===MUT_AFTER===' AS m;\n"
-         << "SELECT accel_postgres_get_observer_mutation_count();\n"
-         << "SELECT '===ACTION===' AS m;\n"
-         << "SELECT accel_postgres_get_last_maintenance_action();\n"
+         << stats << probe.update_sql << ";\n"
+         // The read waits for the commit to be applied; the decision is published right after.
          << "SELECT '===ACCEL===' AS m;\n"
          << accel_sql << ";\n"
+         << "SELECT pg_sleep(0.5);\n"
+         << "SELECT '===MUT_AFTER===' AS m;\n"
+         << stats
+         << "SELECT '===ACTION===' AS m;\n"
+         << "SELECT accel_postgres_get_last_maintenance_action();\n"
          << "SELECT '===REF===' AS m;\n"
          << ref_sql << ";\n"
          << "SELECT '===DONE===' AS m;\n"
@@ -521,17 +520,16 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
   const auto accel_out = SectionAfter(session, "===ACCEL===");
   const auto ref_out = SectionAfter(session, "===REF===");
 
-  int before_n = 0;
-  int after_n = 0;
-  try {
-    before_n = std::stoi(mut_before);
-    after_n = std::stoi(mut_after);
-  } catch (...) {
-    throw std::runtime_error("failed to parse mutation counts before=[" + mut_before +
-                             "] after=[" + mut_after + "]");
-  }
+  auto commits_of = [](const std::string &text) {
+    const auto pos = text.find("commits=");
+    if (pos == std::string::npos)
+      throw std::runtime_error("failed to parse shard stats [" + text + "]");
+    return std::stoi(text.substr(pos + 8));
+  };
+  const int before_n = commits_of(mut_before);
+  const int after_n = commits_of(mut_after);
   Require(after_n > before_n,
-          "mutation observer did not advance (before=" + std::to_string(before_n) +
+          "no commit reached the shard worker (before=" + std::to_string(before_n) +
               " after=" + std::to_string(after_n) +
               ") — triggers must capture the write into aux maintenance");
 
@@ -568,7 +566,7 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
                                            : ("write_maint_" + force_action));
   std::cerr << "PASS write_maint differential Q" << query_num
             << (force_action.empty() ? "" : (" force=" + force_action))
-            << " (invalidating write + mutation_count " << before_n << "->" << after_n
+            << " (invalidating write + shipped commits " << before_n << "->" << after_n
             << " + aux rematch action=[" << action << "])\n";
 }
 

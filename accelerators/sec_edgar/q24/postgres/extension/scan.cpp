@@ -33,7 +33,6 @@ constexpr core::TableId kPreTableId = 3;
 // string views taken from its tuples stay valid until the callback returns.
 template <typename OnChunk>
 void ScanChunks(const std::string &sql, OnChunk &&on_chunk) {
-  ++t_table_scans;
   if (SPI_connect() != SPI_OK_CONNECT)
     throw std::runtime_error("SPI_connect failed");
   SPIPlanPtr plan = SPI_prepare(sql.c_str(), 0, nullptr);
@@ -282,7 +281,7 @@ Q24Runtime() {
               query::SecEdgarQ24Config{kNumTableId,
                                        kPreTableId,
                                        {0, 1, 2, 3, 4, 5, 6, 7},
-                                       {0, 6, 7}},
+                                       {0, 6, 7}}, {{"num", kNumTableId}, {"pre", kPreTableId}},
               {}, /*tune_build=*/true);
   return runtime;
 }
@@ -311,6 +310,8 @@ void ExecutePostgresSecEdgarQ24(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "sec_edgar", 24, kPostgresVariantAux, &ExecutePostgresSecEdgarQ24});
+const detail::RuntimeRegistrar<&detail::Q24Runtime> kAcceleratorRegistrar(
+    core::SecEdgarQ24Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

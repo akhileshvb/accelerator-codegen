@@ -21,40 +21,37 @@ namespace scans {
 
 void ScanTpchQ20Lineitems(
     const std::function<void(const query::TpchQ20LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_shipdate, l_partkey, l_suppkey, l_quantity FROM lineitem "
-      "WHERE l_shipdate IS NOT NULL AND l_partkey IS NOT NULL AND "
-      "l_suppkey IS NOT NULL AND l_quantity IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedDate(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2),
-                  TypedDecimalRaw(tuple, tuple_desc, 3)});
-      });
+  ScanColumns("lineitem",
+              {DateColumn("l_shipdate"), IntColumn("l_partkey"),
+               IntColumn("l_suppkey"), DecimalColumn("l_quantity", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Date(0),
+                          row.Int(1),
+                          row.Int(2),
+                          row.Decimal(3)});
+              });
 }
 
 void ScanTpchQ20Parts(
     const std::function<void(const query::TpchQ20PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_name FROM part "
-      "WHERE p_partkey IS NOT NULL AND p_name IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_name")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1)});
+              });
 }
 
 void ScanTpchQ20Partsupps(
     const std::function<void(const query::TpchQ20PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp "
-      "WHERE ps_partkey IS NOT NULL AND ps_suppkey IS NOT NULL AND "
-      "ps_availqty IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("partsupp",
+              {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+               IntColumn("ps_availqty")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Int(2)});
+              });
 }
 
 void ScanTpchQ20Suppliers(
@@ -117,7 +114,8 @@ Q20Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q20_COST_MODEL",
               core::kTpchQ20CostModel,
               query::TpchQ20Layout::kAccelerator,
-              query::TpchQ20Config{pg_tbl::kLineitem, pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier, pg_tbl::kNation});
+              query::TpchQ20Config{pg_tbl::kLineitem, pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier, pg_tbl::kNation},
+              {{"lineitem", pg_tbl::kLineitem}, {"part", pg_tbl::kPart}, {"partsupp", pg_tbl::kPartsupp}, {"supplier", pg_tbl::kSupplier}, {"nation", pg_tbl::kNation}});
   return runtime;
 }
 } // namespace
@@ -144,6 +142,8 @@ void ExecutePostgresTpchQ20(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 20, kPostgresVariantAux, &ExecutePostgresTpchQ20});
+const detail::RuntimeRegistrar<&detail::Q20Runtime> kAcceleratorRegistrar(
+    query::TpchQ20Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

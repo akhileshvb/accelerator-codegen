@@ -63,14 +63,14 @@ public:
     // statement (and this transaction) left it.
     scans::RunOrderLines(
         [](const std::string &sql, auto &&row) {
-          ScanTypedTuplesAfterOwnWrites(sql, row);
+          ScanTypedTuples(sql, row);
         },
         " WHERE " + KeyListPredicate("o.o_orderkey", orderkeys), consumer);
     return true;
   }
   bool LookupOrdersOfCustomers(const std::vector<int64_t> &custkeys,
                                std::vector<int64_t> &orderkeys) override {
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         "SELECT o_orderkey FROM orders WHERE " +
             KeyListPredicate("o_custkey", custkeys),
         [&](HeapTuple tuple, TupleDesc tuple_desc) {
@@ -84,7 +84,8 @@ Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Scan> &Q3Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q3_COST_MODEL",
               core::kTpchQ3CostModel,
               query::TpchQ3Layout::kAccelerator,
-              query::TpchQ3Config{pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ3Config{pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"customer", pg_tbl::kCustomer}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace
@@ -113,6 +114,8 @@ void ExecutePostgresTpchQ3(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 3, kPostgresVariantAux, &ExecutePostgresTpchQ3});
+const detail::RuntimeRegistrar<&detail::Q3Runtime> kAcceleratorRegistrar(
+    query::TpchQ3Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

@@ -9,7 +9,7 @@ read medians + maintenance costs:
   aux     = touch UPDATE with mutation triggers (ApplyDelta on commit)
 
 Uses seed_1-compatible bindings (same as matview reference.sql / query.sql).
-IMMV is optional per query (see accelerators/tpch/q*/postgres/immv/).
+IMMV is optional per query (see eval/bench/postgres/baselines/tpch/q*/immv/).
 """
 
 from __future__ import annotations
@@ -338,11 +338,11 @@ WRITE_MIX_FIELDNAMES = [
 
 
 def matview_dir(query: int) -> Path:
-    return ROOT / "accelerators" / "tpch" / f"q{query}" / "postgres" / "matview"
+    return ROOT / "eval" / "bench" / "postgres" / "baselines" / "tpch" / f"q{query}" / "matview"
 
 
 def immv_dir(query: int) -> Path:
-    return ROOT / "accelerators" / "tpch" / f"q{query}" / "postgres" / "immv"
+    return ROOT / "eval" / "bench" / "postgres" / "baselines" / "tpch" / f"q{query}" / "immv"
 
 
 def immv_supported(query: int) -> bool:

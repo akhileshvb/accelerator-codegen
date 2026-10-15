@@ -93,7 +93,7 @@ public:
     // statement (and this transaction) left it.
     scans::RunFulfilledLineitems(
         [](const std::string &sql, auto &&row) {
-          ScanTypedTuplesAfterOwnWrites(sql, row);
+          ScanTypedTuples(sql, row);
         },
         // The key list on both join sides: PostgreSQL does not carry an
         // = ANY(...) across the join, and with it on lineitem only it hashes
@@ -111,6 +111,7 @@ Q21Runtime() {
               core::kTpchQ21CostModel,
               query::TpchQ21Layout::kAccelerator,
               query::TpchQ21Config{pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem, pg_tbl::kNation},
+              {{"supplier", pg_tbl::kSupplier}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}, {"nation", pg_tbl::kNation}},
               {{"supplier", "s_name"}});
   return runtime;
 }
@@ -134,6 +135,8 @@ void ExecutePostgresTpchQ21(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 21, kPostgresVariantAux, &ExecutePostgresTpchQ21});
+const detail::RuntimeRegistrar<&detail::Q21Runtime> kAcceleratorRegistrar(
+    query::TpchQ21Layout::kAccelerator);
 
 
 } // namespace

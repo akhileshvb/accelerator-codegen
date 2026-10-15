@@ -311,10 +311,10 @@ int RunSynthetic(int seeds, int steps) {
     for (const auto &sql : model.Init()) script += PgSql(sql) + ";\n";
     script += "ANALYZE;\n";
     // Fixed SEC-EDGAR capture ids (as in the template database): sub=1 num=2 pre=3 tag=4.
-    script += "SELECT create_accel_mutation_triggers('sub','1','accel_codegen_sec_edgar'),"
-              " create_accel_mutation_triggers('num','2','accel_codegen_sec_edgar'),"
-              " create_accel_mutation_triggers('pre','3','accel_codegen_sec_edgar'),"
-              " create_accel_mutation_triggers('tag','4','accel_codegen_sec_edgar');\n";
+    script += "SELECT create_accel_mutation_triggers('sub','accel_codegen_sec_edgar'),"
+              " create_accel_mutation_triggers('num','accel_codegen_sec_edgar'),"
+              " create_accel_mutation_triggers('pre','accel_codegen_sec_edgar'),"
+              " create_accel_mutation_triggers('tag','accel_codegen_sec_edgar');\n";
     EmitCompare(script, "initial", ref_sql);
     std::vector<std::string> labels{"initial"};
     for (int k = 0; k < 12; ++k) {

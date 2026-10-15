@@ -64,4 +64,50 @@ CommitMessage DecodeCommit(std::string_view in) {
   return message;
 }
 
+// u8 version | u32 slot | i64 deadline_ns | u64 epoch | u64 max_wait_us | arguments
+void EncodeRequest(const ReadRequest &request, std::string &out) {
+  Put<uint8_t>(out, kVersion);
+  Put<uint32_t>(out, request.slot);
+  Put<int64_t>(out, request.deadline_ns);
+  Put<uint64_t>(out, request.epoch);
+  Put<uint64_t>(out, request.max_wait_us);
+  runtime::EncodeArguments(request.arguments, out);
+}
+
+ReadRequest DecodeRequest(std::string_view in) {
+  if (Get<uint8_t>(in) != kVersion) {
+    throw std::runtime_error("read request: unknown version");
+  }
+  ReadRequest request;
+  request.slot = Get<uint32_t>(in);
+  request.deadline_ns = Get<int64_t>(in);
+  request.epoch = Get<uint64_t>(in);
+  request.max_wait_us = Get<uint64_t>(in);
+  request.arguments = runtime::DecodeArguments(in);
+  if (!in.empty()) {
+    throw std::runtime_error("read request: trailing bytes");
+  }
+  return request;
+}
+
+// u8 served | rows (only when served)
+void EncodeResponse(const ReadResponse &response, std::string &out) {
+  Put<uint8_t>(out, response.served);
+  if (response.served) {
+    runtime::EncodeRows(response.rows, out);
+  }
+}
+
+ReadResponse DecodeResponse(std::string_view in) {
+  ReadResponse response;
+  response.served = Get<uint8_t>(in) != 0;
+  if (response.served) {
+    response.rows = runtime::DecodeRows(in);
+  }
+  if (!in.empty()) {
+    throw std::runtime_error("read response: trailing bytes");
+  }
+  return response;
+}
+
 } // namespace accelerator_codegen::aux_state::engine::postgres

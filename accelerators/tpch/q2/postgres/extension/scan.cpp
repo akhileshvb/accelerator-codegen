@@ -22,14 +22,15 @@ namespace scans {
 
 void ScanTpchQ2Parts(
     const std::function<void(const query::TpchQ2PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_mfgr, p_type, p_size FROM part",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3))});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_mfgr"),
+               TextColumn("p_type"), IntColumn("p_size")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1),
+                          row.Text(2),
+                          static_cast<int32_t>(row.Int(3))});
+              });
 }
 
 void ScanTpchQ2Suppliers(
@@ -50,13 +51,14 @@ void ScanTpchQ2Suppliers(
 
 void ScanTpchQ2Partsupps(
     const std::function<void(const query::TpchQ2PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDecimalRaw(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("partsupp",
+              {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+               DecimalColumn("ps_supplycost", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1),
+                          row.Decimal(2)});
+              });
 }
 
 void ScanTpchQ2Nations(
@@ -114,7 +116,8 @@ Runtime<query::TpchQ2Module, query::TpchQ2Config, TpchQ2Scan> &Q2Runtime() {
   static Runtime<query::TpchQ2Module, query::TpchQ2Config, TpchQ2Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q2_COST_MODEL",
               core::kTpchQ2CostModel, core::TpchQ2Layout::kAccelerator,
-              query::TpchQ2Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kPartsupp, pg_tbl::kNation, pg_tbl::kRegion});
+              query::TpchQ2Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kPartsupp, pg_tbl::kNation, pg_tbl::kRegion},
+              {{"part", pg_tbl::kPart}, {"supplier", pg_tbl::kSupplier}, {"partsupp", pg_tbl::kPartsupp}, {"nation", pg_tbl::kNation}, {"region", pg_tbl::kRegion}});
   return runtime;
 }
 } // namespace
@@ -145,6 +148,8 @@ void ExecutePostgresTpchQ2(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 2, kPostgresVariantAux, &ExecutePostgresTpchQ2});
+const detail::RuntimeRegistrar<&detail::Q2Runtime> kAcceleratorRegistrar(
+    core::TpchQ2Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

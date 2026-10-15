@@ -31,12 +31,11 @@ the baseline is the same TPC-H text with the same parameters as plain SQL.
              "final check") and with those before the first write ("answer changed", i.e. which
              queries the stream actually exercised).
 
-  --shared-state (Postgres): the accelerators live once, in the extension's per-database background
-             worker (accel.shared_state), instead of once per connection.  Each writer commit ships its
-             captured rows to the worker, which applies them as a delta before answering the next read;
-             per connection, every write by another connection forces a full rebuild in each reader.
-             The worker is restarted at the start of every run: base runs write with the capture
-             triggers off, which it cannot see.
+  Postgres accelerators live once per database, in the extension's shard workers (one per
+             accelerator).  Each writer commit ships its captured rows to its workers, which apply
+             them as a delta; a read is answered at the epoch its snapshot sees.
+             The workers are restarted at the start of every run: base runs write with the capture
+             triggers off, which they cannot see.
 
   summary    median [min-max] over repetitions of a writerate output directory.
 
@@ -175,12 +174,11 @@ class Db:
                 self.cur.execute(f"SET max_parallel_workers_per_gather = {int(a.pg_workers)}")
             if accel:
                 self.cur.execute(f"LOAD '{a.pg_so}'")
-                if a.shared_state:
-                    self.cur.execute("SET accel.shared_state = on")
-                    self.cur.execute(f"SET accel.shared_apply_timeout_ms = {int(a.apply_timeout * 1000)}")
-                    # wait for the worker (e.g. while it builds another query's state) instead of answering
-                    # from SQL after the 60 s default; the statement timeout still bounds the call
-                    self.cur.execute(f"SET accel.shared_timeout_ms = {min(3600000, int(a.query_timeout * 1000))}")
+                # wait for the worker (e.g. while it builds the state) instead of answering from SQL; the
+                # statement timeout still bounds the call
+                wait_ms = min(3600000, int(a.query_timeout * 1000))
+                self.cur.execute(f"SET accel.read_timeout_ms = {wait_ms}")
+                self.cur.execute(f"SET accel.read_wait_ms = {wait_ms}")
         else:
             import pymysql
             self.mod = pymysql
@@ -331,19 +329,19 @@ def set_triggers(a, on):
 
 
 def restart_shared_worker(a):
-    """Stop the shared-state worker (if any): the next accelerator call starts a fresh one, which builds from
+    """Stop the shard workers (if any): the next accelerator call starts fresh ones, which build from
     the tables as they are now.  A worker that lived through writes with the capture triggers off would not
     know it is stale."""
-    if a.backend != "postgres" or not a.shared_state:
+    if a.backend != "postgres":
         return
-    if schema(a) != "public":  # the worker is per database and serves public: never restart it from a test copy
-        print(f"  (--schema {schema(a)}: the shared worker is not restarted)", flush=True)
+    if schema(a) != "public":  # the workers are per database and serve public: never restart them from a test copy
+        print(f"  (--schema {schema(a)}: the shard workers are not restarted)", flush=True)
         return
     db = Db(a, accel=True)
     try:
-        db.execute("SELECT accel_postgres_stop_shared_worker()")
-        for _ in range(100):  # wait until it has exited (it restarts on demand)
-            db.execute("SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'accel aux server' AND datname = current_database()")
+        db.execute("SELECT accel_postgres_stop_shard_workers()")
+        for _ in range(100):  # wait until they have exited (they restart on demand)
+            db.execute("SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'accel shard worker' AND datname = current_database()")
             if db.cur.fetchone()[0] == 0:
                 break
             time.sleep(0.1)
@@ -352,13 +350,12 @@ def restart_shared_worker(a):
 
 
 def shared_stats(a, db):
-    """The shared-state worker's counters (cumulative per database): requests, hits, rebuilds, declined,
-    errors, applies (commits shipped to it), synced (applied as a delta) / unsynced (not: the next read
-    rebuilds)."""
-    if a.backend != "postgres" or not a.shared_state:
+    """The shard workers' counters (cumulative per database): requests, served, fallback, errors, commits
+    (shipped to them), applied (as deltas), builds, gaps (lost commits: a rebuild)."""
+    if a.backend != "postgres":
         return None
     try:
-        rows, _ = db.query("SELECT accel_postgres_shared_stats()")
+        rows, _ = db.query("SELECT accel_postgres_shard_stats()")
         return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", str(rows[0][0]))}
     except Exception:  # noqa: BLE001
         return None
@@ -786,7 +783,7 @@ def cmd_read(a):
                     row["speedup"] = row["base_us"] / max(row["accel_us"], 1.0)
                 results.append(row)
             sp = [r["speedup"] for r in results if "speedup" in r]
-            out = {"mode": "read", "backend": a.backend, "query": q, "rep": k, "seed": seed, "sf": a.sf, "shared_state": a.shared_state,
+            out = {"mode": "read", "backend": a.backend, "query": q, "rep": k, "seed": seed, "sf": a.sf,
                    "speedup_geomean": math.exp(sum(map(math.log, sp)) / len(sp)) if sp else None,
                    "mismatches": sum(1 for r in results if r.get("match") is False), "cases": results}
             with open(os.path.join(a.out, f"q{q}_rep{k}.json"), "w") as f:
@@ -1036,7 +1033,7 @@ def run_one(a, system, rate, rep, seed, spec):
            "chunk": CHUNK,
            "sf": a.sf, "batch_orders": a.batch_orders,
            "rf_source": "tpch_update_sets" if a.rf_dir else "clone", "rf_dir": a.rf_dir,
-           "rf_orders_used": stream.rf_orders_used or a.batch_orders, "readers": a.readers, "shared_state": a.shared_state, "seconds": seconds, "seconds_min": a.seconds, "min_reads": a.min_reads, "warmup": a.warmup,
+           "rf_orders_used": stream.rf_orders_used or a.batch_orders, "readers": a.readers, "seconds": seconds, "seconds_min": a.seconds, "min_reads": a.min_reads, "warmup": a.warmup,
            "queries": a.queries, "sets_per_query": a.sets, "prime_s": t_prime, "triggers_on": triggers,
            "qps": len(ok) / seconds, "reads": len(reads), "timeouts": sum(1 for r in reads if r[3] == "timeout"),
            "read_errors": sum(1 for r in reads if r[3].startswith("error")),
@@ -1064,7 +1061,7 @@ def run_one(a, system, rate, rep, seed, spec):
            "commits_raw": [[k, round(s, 3), round(lag, 3), round(us, 1), rows, st] for k, s, lag, us, rows, st in ctr.commits]}
     w = res["shared_worker"] or {}
     # an accelerator run whose worker rebuilt or fell out of sync measured that, not maintenance by deltas
-    res["valid"] = system != "accel" or not (w.get("rebuilds", 0) or w.get("unsynced", 0))
+    res["valid"] = system != "accel" or not (w.get("builds", 0) or w.get("gaps", 0))
     if system == "mv":
         by_view = {}
         for _, _, _, per, st in ctr.refreshes:
@@ -1211,11 +1208,11 @@ def line(r):
               f"{r['answers_unchanged'] or 'none'}")
     if r.get("shared_worker"):
         w = r["shared_worker"]
-        s += (f"  worker: applies {w.get('applies', 0)} as delta {w.get('synced', 0)} not {w.get('unsynced', 0)} "
-              f"rebuilds {w.get('rebuilds', 0)} declined {w.get('declined', 0)} errors {w.get('errors', 0)}")
+        s += (f"  workers: commits {w.get('commits', 0)} applied {w.get('applied', 0)} "
+              f"builds {w.get('builds', 0)} gaps {w.get('gaps', 0)} fallback {w.get('fallback', 0)} errors {w.get('errors', 0)}")
     if not r.get("valid", True):
         s += ("  RUN INVALID (an error, a failed restore or a final-check mismatch)" if r["system"] == "mv"
-              else "  RUN INVALID (the worker rebuilt / fell out of sync)")
+              else "  RUN INVALID (a worker rebuilt / lost a commit)")
     if not r["restore_ok"]:
         s += "  RESTORE FAILED"
     if r["reads"] == 0:
@@ -1267,14 +1264,9 @@ def main():
         p.add_argument("--repeats", type=int, default=3, help="repetitions, each with its own parameter draw")
         p.add_argument("--sf", type=float, default=20)
         p.add_argument("--query-timeout", type=float, default=1800, help="seconds, per baseline query (timeouts are reported)")
-        p.add_argument("--shared-state", action=argparse.BooleanOptionalAction, default=False,
-                       help="postgres: one shared copy of the accelerators in a background worker, maintained by "
-                            "deltas (accel.shared_state); default: a copy per connection, rebuilt after others' writes")
         p.add_argument("--schema", default="public",
                        help="postgres: the schema of the TPC-H tables (and of system mv's views); every connection "
                             "runs with search_path = <schema>, pgivm, public")
-        p.add_argument("--apply-timeout", type=float, default=600,
-                       help="seconds a committing writer waits for the shared worker's apply (--shared-state)")
     r = sub.choices["read"]
     r.add_argument("--reps", type=int, default=5, help="timed accelerator runs per parameter set")
     r.add_argument("--base-reps", type=int, default=2, help="timed baseline runs per parameter set (after one warm run)")
@@ -1286,7 +1278,7 @@ def main():
                         "maintained in every writing statement; plain views refreshed in each commit that writes "
                         "a table they read)")
     w.add_argument("--worker-restart", choices=("each", "first", "never"), default="each",
-                   help="shared-state worker restarts: before every run (default), only before this invocation's "
+                   help="shard worker restarts: before every run (default), only before this invocation's "
                         "first run, or never (accel runs only: base runs write with the capture triggers off)")
     w.add_argument("--pg-workers", type=int, default=None,
                    help="Postgres: max_parallel_workers_per_gather (and the tables' parallel_workers) for every "

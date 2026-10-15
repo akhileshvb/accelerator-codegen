@@ -31,24 +31,25 @@ void ScanTpchQ16Suppliers(
 
 void ScanTpchQ16Parts(
     const std::function<void(const query::TpchQ16PartInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT p_partkey, p_brand, p_type, p_size FROM part",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3))});
-      });
+  ScanColumns("part",
+              {IntColumn("p_partkey"), TextColumn("p_brand"),
+               TextColumn("p_type"), IntColumn("p_size")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Text(1),
+                          row.Text(2),
+                          static_cast<int32_t>(row.Int(3))});
+              });
 }
 
 void ScanTpchQ16Partsupp(
     const std::function<void(const query::TpchQ16PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT ps_partkey, ps_suppkey FROM partsupp",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1)});
-      });
+  ScanColumns("partsupp",
+              {IntColumn("ps_partkey"), IntColumn("ps_suppkey")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0),
+                          row.Int(1)});
+              });
 }
 
 } // namespace scans
@@ -77,7 +78,8 @@ Q16Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q16_COST_MODEL",
               core::kTpchQ16CostModel,
               query::TpchQ16Layout::kAccelerator,
-              query::TpchQ16Config{pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier});
+              query::TpchQ16Config{pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier},
+              {{"part", pg_tbl::kPart}, {"partsupp", pg_tbl::kPartsupp}, {"supplier", pg_tbl::kSupplier}});
   return runtime;
 }
 } // namespace
@@ -111,6 +113,8 @@ void ExecutePostgresTpchQ16(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 16, kPostgresVariantAux, &ExecutePostgresTpchQ16});
+const detail::RuntimeRegistrar<&detail::Q16Runtime> kAcceleratorRegistrar(
+    query::TpchQ16Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres

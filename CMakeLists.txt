@@ -23,6 +23,27 @@ include(AuxState)
 include(BaseQuery)
 include(GeneratedSources)
 
+# Base kernels (duckdb|postgres/base/{single-threaded,parallel}) use SIMD
+# intrinsics guarded by __AVX512F__ / __AVX2__ with scalar fallbacks, so they need
+# the target ISA enabled to take the vector paths.  Default -march=native;
+# -DACCEL_BASE_COPTS= (empty) builds the portable scalar fallbacks.
+set(ACCEL_BASE_COPTS "-march=native" CACHE STRING "extra compile options for the base kernel sources")
+function(accel_apply_base_copts)
+    if(NOT ACCEL_BASE_COPTS)
+        return()
+    endif()
+    set(_srcs "")
+    foreach(_src IN LISTS ARGN)
+        if(_src MATCHES "/(duckdb|postgres)/base/")
+            list(APPEND _srcs "${_src}")
+        endif()
+    endforeach()
+    if(_srcs)
+        separate_arguments(_opts UNIX_COMMAND "${ACCEL_BASE_COPTS}")
+        set_property(SOURCE ${_srcs} APPEND PROPERTY COMPILE_OPTIONS ${_opts})
+    endif()
+endfunction()
+
 # Optional Postgres engine adapter. Discovery rejects client-only pg_config.
 option(ACCELERATOR_CODEGEN_BUILD_POSTGRES
        "Build the optional PostgreSQL engine adapter (requires server SDK)" OFF)
@@ -107,33 +128,13 @@ if(ACCEL_AUX_COPTS)
     set_property(SOURCE ${_accel_cpp_aux_srcs} APPEND PROPERTY COMPILE_OPTIONS ${ACCEL_AUX_COPTS})
 endif()
 
-# Stateless base kernels (duckdb/base/{single-threaded,parallel}) use SIMD
-# intrinsics guarded by __AVX512F__ / __AVX2__ with scalar fallbacks, so they need
-# the target ISA enabled to take the vector paths.  Default -march=native;
-# -DACCEL_STATELESS_COPTS= (empty) builds the portable scalar fallbacks.
-set(ACCEL_STATELESS_COPTS "-march=native" CACHE STRING "extra compile options for the stateless base kernel sources")
-function(accel_apply_stateless_copts)
-    if(NOT ACCEL_STATELESS_COPTS)
-        return()
-    endif()
-    set(_srcs "")
-    foreach(_src IN LISTS ARGN)
-        if(_src MATCHES "/duckdb/base/")
-            list(APPEND _srcs "${_src}")
-        endif()
-    endforeach()
-    if(_srcs)
-        separate_arguments(_opts UNIX_COMMAND "${ACCEL_STATELESS_COPTS}")
-        set_property(SOURCE ${_srcs} APPEND PROPERTY COMPILE_OPTIONS ${_opts})
-    endif()
-endfunction()
-accel_apply_stateless_copts(${ACCEL_GENERATED_SOURCES})
+accel_apply_base_copts(${ACCEL_GENERATED_SOURCES})
 
 # SEC-EDGAR accelerators (shared state, DuckDB aux, Postgres aux/extension) are
 # always compiled for this machine's CPU, so every loop can use AVX-512/AVX2/BMI,
 # not just the hand-written kernels behind __builtin_cpu_supports. Source
 # properties are directory-scoped, so this also reaches accelerator_codegen_pg.
-# The DuckDB base kernels already get ACCEL_STATELESS_COPTS. The library becomes
+# The DuckDB base kernels already get ACCEL_BASE_COPTS. The library becomes
 # CPU-specific; -DACCEL_SEC_EDGAR_COPTS= (empty) restores the portable build.
 set(ACCEL_SEC_EDGAR_COPTS "-march=native" CACHE STRING "extra compile options for the SEC-EDGAR accelerator sources")
 if(ACCEL_SEC_EDGAR_COPTS)
@@ -273,7 +274,7 @@ if(ACCEL_ENABLE_PARALLEL_KERNELS)
 		# Q3 shared __int128 revenue CAS uses libatomic (__atomic_*_16).
 		target_link_libraries(accelerator_codegen PRIVATE atomic)
 		accel_collect_generated_parallel_sources(ACCEL_GENERATED_PARALLEL_SOURCES)
-		accel_apply_stateless_copts(${ACCEL_GENERATED_PARALLEL_SOURCES})
+		accel_apply_base_copts(${ACCEL_GENERATED_PARALLEL_SOURCES})
 		target_sources(accelerator_codegen PRIVATE
 			backends/duckdb/api/parallel/parallel_runtime.cpp
 			${ACCEL_GENERATED_PARALLEL_SOURCES}
@@ -487,10 +488,22 @@ add_executable(test_shm_ring
     backends/postgres/tests/test_shm_ring.cpp
     backends/postgres/state/shm_ring.cpp
 )
-target_include_directories(test_shm_ring PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres)
+target_include_directories(test_shm_ring PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(test_shm_ring PRIVATE Threads::Threads)
 if(BUILD_TESTING)
     add_test(NAME shm_ring_test COMMAND test_shm_ring)
+endif()
+
+# The shard worker's transport (commit/request/response rings, client slots).
+add_executable(test_shard_segment
+    backends/postgres/tests/test_shard_segment.cpp
+    backends/postgres/state/shard_segment.cpp
+    backends/postgres/state/shm_ring.cpp
+)
+target_include_directories(test_shard_segment PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test_shard_segment PRIVATE Threads::Threads)
+if(BUILD_TESTING)
+    add_test(NAME shard_segment_test COMMAND test_shard_segment)
 endif()
 
 add_executable(test_aux_calibration
@@ -879,10 +892,8 @@ endif()
 # ---------------------------------------------------------------------------
 if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/test_postgres_tpch_differential.cpp")
-    # postgres_server_stubs.cpp: server-only symbols the library references.
     add_executable(test_postgres_tpch_fuzz
         eval/tests/test_postgres_tpch_fuzz.cpp
-        backends/postgres/tests/postgres_server_stubs.cpp
     )
     find_library(LIBPQ_FUZZ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     target_link_libraries(test_postgres_tpch_fuzz
@@ -902,7 +913,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     # Parameter-generality differential (all 22 queries, spec / off-spec / edge params).
     add_executable(test_postgres_tpch_params
         eval/tests/test_postgres_tpch_params.cpp
-        backends/postgres/tests/postgres_server_stubs.cpp
     )
     find_library(LIBPQ_PARAMS_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     target_link_libraries(test_postgres_tpch_params
@@ -919,11 +929,10 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
             ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
             ${ACCEL_PG_INCLUDEDIR}
     )
-    # Shared accelerator state (accel.shared_state): hits across connections,
-    # memory vs connections, concurrency, killed backends, worker restarts.
+    # Shard workers: hits across connections, hits under writes, read-after-commit,
+    # older snapshots, aborts, TRUNCATE, concurrency, killed backends, worker restarts.
     add_executable(test_postgres_shared_state
         eval/tests/test_postgres_shared_state.cpp
-        backends/postgres/tests/postgres_server_stubs.cpp
     )
     find_library(LIBPQ_SHARED_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     find_package(Threads REQUIRED)
@@ -944,7 +953,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     )
     add_executable(test_postgres_tpch_differential
         eval/tests/test_postgres_tpch_differential.cpp
-        backends/postgres/tests/postgres_server_stubs.cpp
     )
     find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     target_link_libraries(test_postgres_tpch_differential
@@ -1017,7 +1025,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/bench/postgres/calibrate_postgres_tpch_aux_cost_model.cpp")
         add_executable(calibrate_postgres_tpch_aux_cost_model
             eval/bench/postgres/calibrate_postgres_tpch_aux_cost_model.cpp
-            backends/postgres/tests/postgres_server_stubs.cpp
         )
         find_library(LIBPQ_CALIB_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
         target_link_libraries(calibrate_postgres_tpch_aux_cost_model
@@ -1044,7 +1051,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/test_postgres_aux_multi_connection_stress.cpp")
         add_executable(test_postgres_aux_multi_connection_stress
             eval/tests/test_postgres_aux_multi_connection_stress.cpp
-            backends/postgres/tests/postgres_server_stubs.cpp
         )
         target_link_libraries(test_postgres_aux_multi_connection_stress
             PRIVATE
@@ -1074,7 +1080,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/test_postgres_cross_accel.cpp")
         add_executable(test_postgres_cross_accel
             eval/tests/test_postgres_cross_accel.cpp
-            backends/postgres/tests/postgres_server_stubs.cpp
         )
         target_link_libraries(test_postgres_cross_accel
             PRIVATE
@@ -1097,61 +1102,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
             add_test(NAME test_postgres_cross_accel COMMAND test_postgres_cross_accel)
         endif()
     endif()
-endif()
-
-# ---------------------------------------------------------------------------
-# PostgreSQL engine backend layer harnesses. store / aux_backend link the
-# library (plus postgres_server_stubs.cpp for the server-only symbols the
-# library references); the later layers are plain libpq tests against the PG
-# server that LOAD the test-only MODULE accelerator_codegen_pg_test.
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
-    foreach(_layer IN ITEMS store aux_backend)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/tests/test_postgres_${_layer}.cpp")
-            add_executable(test_postgres_${_layer}
-                backends/postgres/tests/test_postgres_${_layer}.cpp
-                backends/postgres/tests/postgres_server_stubs.cpp
-            )
-            target_link_libraries(test_postgres_${_layer}
-                PRIVATE
-                    accelerator_codegen
-                    duckdb_sibling
-            )
-            target_include_directories(test_postgres_${_layer}
-                PRIVATE
-                    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
-            )
-            if(BUILD_TESTING)
-                add_test(NAME engine_postgres_${_layer} COMMAND test_postgres_${_layer})
-            endif()
-        endif()
-    endforeach()
-endif()
-
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
-    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
-    foreach(_layer IN ITEMS txn mutations scan runtime visibility host adversarial)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/tests/test_postgres_${_layer}.cpp")
-            add_executable(test_postgres_${_layer}
-                backends/postgres/tests/test_postgres_${_layer}.cpp
-            )
-            target_include_directories(test_postgres_${_layer}
-                PRIVATE
-                    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
-                    ${ACCEL_PG_INCLUDEDIR}
-            )
-            target_link_libraries(test_postgres_${_layer}
-                PRIVATE
-                    ${LIBPQ_LIB}
-            )
-            if(TARGET accelerator_codegen_pg_test)
-                add_dependencies(test_postgres_${_layer} accelerator_codegen_pg_test)
-            endif()
-            if(BUILD_TESTING)
-                add_test(NAME engine_postgres_${_layer} COMMAND test_postgres_${_layer})
-            endif()
-        endif()
-    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------

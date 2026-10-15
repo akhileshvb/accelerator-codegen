@@ -34,8 +34,8 @@
 #             of the one shared worker over the sweep does not line up with the rate.  An interval below the
 #             commit time saturates the writer (back to back, lag grows): the run reports the achieved rows/s.
 #             Postgres: PG_WORKERS (default floor(nproc / READERS) - 1) parallel workers per session for base and
-#             accel alike, so READERS concurrent readers together get the whole machine.  With PG_SHARED=1 all
-#             accelerator points run first on one shared-state worker (state built once), then all base points;
+#             accel alike, so READERS concurrent readers together get the whole machine.  All accelerator
+#             points run first on the shard workers (state built once), then all base points;
 #             SEED (default random) fixes the parameter draws so base and accel stay paired.
 #
 # cycle:      (DuckDB only) the overnight experiment: per query, ONE accelerator alone in its process; the TPC-H refresh
@@ -55,10 +55,6 @@
 #   postgres:  PG_PORT (5434)  PG_DB (accel_tpch_sf20)    PGUSER / PGPASSWORD  PG_WORKERS (rf-fixed)
 #              ONLY_PHASES (rf-fixed): the systems to run, of base / accel / mv; mv reads the materialized views
 #              of mv_defs.py in schema MV_SCHEMA (default public)
-#              PG_SHARED (1): one copy of the accelerators in the extension's shared-state worker, maintained
-#              by the deltas each writer commit ships to it (accel.shared_state; the analogue of DuckDB's one
-#              process).  PG_SHARED=0: a copy per connection, which every other connection's write invalidates,
-#              so each reader rebuilds its copy in full on its next query.
 #   mysql:     MYSQL_TCP_PORT (3307)  MYSQL_DB (tpch_sf20)  MYSQL_USER / MYSQL_PWD
 #   postgres/mysql: QUERY_TIMEOUT (1800 s per baseline query; timeouts are reported, not fatal)
 # Needs for postgres/mysql: pip install psycopg2-binary pymysql  (PYTHON=<venv python>).
@@ -77,7 +73,6 @@ BIN=${BIN:-$ROOT/build-verus-duckdb/aux_compare}
 CAP=${CAP:-96G}   # a commit that rebuilds state keeps old and new copies alive; 64G may be too tight
 PG_DB=${PG_DB:-accel_tpch_sf20}
 MYSQL_DB=${MYSQL_DB:-tpch_sf20}
-PG_SHARED=${PG_SHARED:-1}
 export PG_PORT=${PG_PORT:-5434} MYSQL_TCP_PORT=${MYSQL_TCP_PORT:-3307}
 QUERY_TIMEOUT=${QUERY_TIMEOUT:-1800}
 RF_DIR=${RF_DIR:-/flash1/akhilvb/tpch/refresh_sf${SF}}
@@ -99,7 +94,7 @@ meta() {  # what this ran on
   local d=$1/meta; mkdir -p "$d"
   {
     echo "date: $(date -Is)"; echo "host: $(uname -n)"; echo "cmd: $0 $*"
-    echo "sf: $SF repeats: $REPEATS readers: $READERS backends: $BACKENDS rf_dir: $RF_DIR batch_orders: ${BATCH_ORDERS:-whole sets} pg_shared: $PG_SHARED"
+    echo "sf: $SF repeats: $REPEATS readers: $READERS backends: $BACKENDS rf_dir: $RF_DIR batch_orders: ${BATCH_ORDERS:-whole sets}"
     echo "update sets: $(ls "$RF_DIR"/delete.* 2>/dev/null | wc -l), orders in set 1: $(wc -l < "$RF_DIR/delete.1" 2>/dev/null)"
     echo "interval_mult: $INTERVAL_MULT n_commits: $N_COMMITS queries: $QUERIES"
     echo "git HEAD: $(git rev-parse HEAD)"; echo "uncommitted files: $(git status --short | wc -l)"
@@ -115,7 +110,7 @@ meta() {  # what this ran on
 
 sql_args() {
   case $1 in
-    postgres) echo "--backend postgres --db $PG_DB $([ "$PG_SHARED" = 1 ] && echo --shared-state)" ;;
+    postgres) echo "--backend postgres --db $PG_DB" ;;
     mysql)    echo "--backend mysql --db $MYSQL_DB" ;;
   esac
 }
@@ -158,7 +153,7 @@ rf-fixed)
     # first run's priming; ~1 h at SF20, serial) and is maintained by the deltas of every later commit
     # (writer and restore alike, all with the capture triggers on); then every base point (triggers off, so
     # the worker is stopped before each).  Priming is outside the measured window either way.
-    PHASES="base accel"; [ "$b" = postgres ] && [ "$PG_SHARED" = 1 ] && PHASES="accel base"
+    PHASES="base accel"; [ "$b" = postgres ] && PHASES="accel base"
     # e.g. "accel": one system only (the other's runs exist elsewhere); "mv" (postgres): the materialized-view
     # baseline (mv_defs.py create --schema MV_SCHEMA first), on the tables of schema MV_SCHEMA (default public)
     [ -n "${ONLY_PHASES:-}" ] && PHASES=$ONLY_PHASES

@@ -60,8 +60,9 @@ uint64_t Generation();
 std::vector<Epoch> TakeCommitEpochs(const std::vector<int> &indices, TransactionId xid);
 // COMMIT (after the commit is visible) and ABORT: releases every gate held.
 void ReleaseGates();
-// Whether this transaction captured a write to any of `tables` (its own
-// reads of an accelerator over them answer from SQL: no state has them).
+// Whether this transaction wrote any of `tables` (its own reads of an
+// accelerator over them answer from SQL: no state has them). Defined with the
+// transaction's staged writes, postgres_xact_callbacks.cpp.
 bool TransactionWrote(const std::vector<core::TableId> &tables);
 // Highest epoch assigned so far for accelerator `index`.
 Epoch AssignedEpoch(int index);
@@ -80,7 +81,11 @@ Epoch HorizonEpoch(int index);
 std::size_t ThreadBudget();
 std::shared_ptr<runtime::TokenSource> ThreadTokens();
 
-// Defines accel.threads and the epoch GUCs (call from _PG_init).
+// accel.commit_ship_timeout_ms: how long COMMIT waits to queue its commit
+// messages for a shard worker.
+std::chrono::milliseconds CommitShipTimeout();
+
+// Defines accel.threads and accel.commit_ship_timeout_ms (call from _PG_init).
 void DefineGucs();
 
 } // namespace accelerator_codegen::aux_state::engine::postgres::shared

@@ -22,22 +22,22 @@ namespace scans {
 
 void ScanTpchQ13Customers(
     const std::function<void(const query::TpchQ13CustomerInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT c_custkey FROM customer WHERE c_custkey IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0)});
-      });
+  ScanColumns("customer",
+              {IntColumn("c_custkey")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0)});
+              });
 }
 
 void ScanTpchQ13Orders(
     const std::function<void(const query::TpchQ13OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_custkey, o_comment FROM orders "
-      "WHERE o_orderkey IS NOT NULL AND o_custkey IS NOT NULL AND o_comment IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+               TextColumn("o_comment")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Int(1),
+                          row.Text(2)});
+              });
 }
 
 } // namespace scans
@@ -60,7 +60,8 @@ Q13Runtime() {
   static Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q13_COST_MODEL",
               core::kTpchQ13CostModel,
-              core::TpchQ13Layout::kAccelerator, query::TpchQ13Config{pg_tbl::kCustomer, pg_tbl::kOrders});
+              core::TpchQ13Layout::kAccelerator, query::TpchQ13Config{pg_tbl::kCustomer, pg_tbl::kOrders},
+              {{"customer", pg_tbl::kCustomer}, {"orders", pg_tbl::kOrders}});
   return runtime;
 }
 } // namespace
@@ -82,6 +83,8 @@ void ExecutePostgresTpchQ13(FunctionCallInfo fcinfo) {
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
     "tpch", 13, kPostgresVariantAux, &ExecutePostgresTpchQ13});
+const detail::RuntimeRegistrar<&detail::Q13Runtime> kAcceleratorRegistrar(
+    core::TpchQ13Layout::kAccelerator);
 
 } // namespace
 } // namespace accelerator_codegen::aux_state::engine::postgres
