@@ -1048,7 +1048,7 @@ endif()
 
 if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
     find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
-    foreach(_layer IN ITEMS txn mutations scan runtime visibility host)
+    foreach(_layer IN ITEMS txn mutations scan runtime visibility host adversarial)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/tests/test_postgres_${_layer}.cpp")
             add_executable(test_postgres_${_layer}
                 backends/postgres/tests/test_postgres_${_layer}.cpp
@@ -1120,7 +1120,7 @@ if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
         endif()
     endfunction()
 
-    foreach(_layer IN ITEMS store aux_backend txn mutations scan runtime visibility host)
+    foreach(_layer IN ITEMS store aux_backend txn mutations scan runtime visibility host adversarial)
         set(_src "backends/mysql/tests/test_mysql_${_layer}.cpp")
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
             accel_add_mysql_test(test_mysql_${_layer} ${_src})
