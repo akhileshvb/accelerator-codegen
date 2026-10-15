@@ -153,6 +153,17 @@ int WorkerPid(Conn &admin, const std::string &db) {
                                        "'accel aux server' AND datname = '" + db + "' LIMIT 1), 0)"));
 }
 
+// Every shard worker of `db`.
+std::vector<int> WorkerPids(Conn &admin, const std::string &db) {
+  std::vector<int> pids;
+  std::istringstream in(admin.Text("SELECT pid FROM pg_stat_activity WHERE backend_type = 'accel aux server' AND "
+                                   "datname = '" + db + "'"));
+  for (std::string line; std::getline(in, line);)
+    if (!line.empty())
+      pids.push_back(std::stoi(line));
+  return pids;
+}
+
 void StopWorker(Conn &admin, const std::string &db) {
   admin.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'accel aux server' AND "
              "datname = '" + db + "'");
@@ -320,9 +331,11 @@ MemRow MeasureMemory(const Tools &tools, int n, bool shared, const std::vector<Q
   Require(bad == 0, "mismatch while measuring memory");
   MemRow row{n, shared, 0, 0, 0, 0};
   if (shared) {
-    const int wp = WorkerPid(admin, kDb);
-    Require(wp != 0, "no worker");
-    row.worker_anon_kb = ProcKb(wp, "RssAnon");
+    // One worker per shard: together they hold the one copy of every state.
+    const std::vector<int> wps = WorkerPids(admin, kDb);
+    Require(!wps.empty(), "no worker");
+    for (int wp : wps)
+      row.worker_anon_kb += ProcKb(wp, "RssAnon");
     Conn probe(tools, kDb, true);
     row.builds = ReadStats(probe)["rebuilds"] - builds_before;
   } else {
@@ -353,14 +366,14 @@ void Memory(const Tools &tools) {
     auto mb = [](long kb) { return static_cast<double>(kb) / 1024.0; };
     o << "queries=" << qs.size() << " RssAnon MB:";
     for (std::size_t i = 0; i < shared.size(); i++) {
-      o << " | N=" << shared[i].conns << " shared: worker=" << mb(shared[i].worker_anon_kb)
+      o << " | N=" << shared[i].conns << " shared: workers=" << mb(shared[i].worker_anon_kb)
         << " clients_total=" << mb(shared[i].clients_anon_kb) << " builds=" << shared[i].builds
         << "; private: clients_total=" << mb(priv[i].clients_anon_kb) << " builds=" << priv[i].builds;
     }
     info = o.str();
-    // The worker's footprint must not scale with connections.
+    // The workers' footprint must not scale with connections.
     const double w1 = mb(shared.front().worker_anon_kb), wn = mb(shared.back().worker_anon_kb);
-    Require(wn <= w1 * 1.3 + 16.0, "worker RSS grew with connections: " + std::to_string(w1) + " -> " + std::to_string(wn) + " MB");
+    Require(wn <= w1 * 1.3 + 16.0, "workers' RSS grew with connections: " + std::to_string(w1) + " -> " + std::to_string(wn) + " MB");
     // Builds happen once per accelerator, not once per connection.
     Require(shared.back().builds <= static_cast<long>(qs.size()),
             "shared mode built more than once per accelerator: " + std::to_string(shared.back().builds));

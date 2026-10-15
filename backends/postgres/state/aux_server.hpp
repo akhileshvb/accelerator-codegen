@@ -3,10 +3,10 @@
 // Background workers own the accelerators' state in their own heaps; backends
 // do not hold a copy.  Per-backend mode (the default) is unchanged; this mode
 // is selected by the GUC accel.shared_state.  Each database has one worker per
-// shard (accel.shared_sharding, on by default: one shard per TPC-H
-// accelerator accel_tpch_q<N>_aux, shard 0 for anything else; off: shard 0
-// serves everything), so reads of different accelerators and the applies for
-// them never queue behind each other.
+// shard (accel.shared_sharding, on by default: each accelerator claims its own
+// shard on first use, up to 22, the rest share shard 0; off: shard 0 serves
+// everything), so reads of different accelerators and the applies for them
+// never queue behind each other.
 //
 //   Reads   A backend's accelerator UDF sends (function oid, arguments,
 //           statement snapshot) to the worker over a per-backend shm_mq pair.
@@ -134,11 +134,13 @@ private:
 
 // ---- reader side ------------------------------------------------------------
 enum class Remote { Served, Declined, Unavailable };
-// Runs the current SQL function (fcinfo) on the worker under the active
-// snapshot.  On Served the result tuples are in fcinfo's materialized result
+// Runs the current SQL function (fcinfo) on the shard worker serving
+// `accelerator`, under the active snapshot.  On Served the result tuples are in fcinfo's materialized result
 // and `path` says how the worker answered.  Never raises for a worker
 // problem; Declined / Unavailable mean "answer from SQL yourself".
-Remote RemoteExecute(FunctionCallInfo fcinfo, core::AuxExecutePath &path);
+Remote RemoteExecute(FunctionCallInfo fcinfo,
+                     const core::AcceleratorId &accelerator,
+                     core::AuxExecutePath &path);
 
 // ---- writer side ------------------------------------------------------------
 struct CaptureTarget {

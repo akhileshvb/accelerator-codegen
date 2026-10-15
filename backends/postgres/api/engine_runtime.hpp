@@ -305,7 +305,7 @@ public:
     // A transaction's own writes to a dependency are not in anyone's state.
     if (!auxsync::OwnRegisteredAnyOf(dep_slots)) {
       core::AuxExecutePath path = core::AuxExecutePath::Fallback;
-      if (srv::RemoteExecute(fcinfo, path) == srv::Remote::Served) {
+      if (srv::RemoteExecute(fcinfo, accelerator, path) == srv::Remote::Served) {
         core::RecordAuxExecute(path);
         return;
       }

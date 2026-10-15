@@ -88,28 +88,15 @@ constexpr std::size_t kMaxShipRows = 500000;
 // worker with its own Shm (catalog, stats, client slots, apply_inflight), so a
 // cheap accelerator's read never queues behind an expensive one's read or
 // behind an apply for tables it does not read.  A read goes to the shard of
-// the function it calls (ShardOfFunction); a commit is shipped to every shard
+// the accelerator it reads (ShardOf); a commit is shipped to every shard
 // whose catalog has an accelerator depending on a written table.
 //
-// Mapping: accel_tpch_q<N>_aux (or accel_tpch_q<N>), 1 <= N <= 22  ->  shard N;
-// anything else, or accel.shared_sharding = off  ->  shard 0.
+// Mapping: each accelerator (its Runtime's AcceleratorId) claims the next free
+// shard 1 .. kMaxShards-1 on its first shared read, in a per-database
+// directory (ShardDirShm) that every backend and worker consults, so the
+// assignment is the same in all processes until the server restarts.  Once
+// the directory is full, or with accel.shared_sharding = off  ->  shard 0.
 constexpr int kMaxShards = 23;
-
-int ShardOfFunctionName(const char *name) {
-  static const char kPrefix[] = "accel_tpch_q";
-  if (name == nullptr || std::strncmp(name, kPrefix, sizeof(kPrefix) - 1) != 0)
-    return 0;
-  const char *p = name + sizeof(kPrefix) - 1;
-  int n = 0, digits = 0;
-  while (*p >= '0' && *p <= '9' && digits < 3) {
-    n = n * 10 + (*p - '0');
-    ++p;
-    ++digits;
-  }
-  if (digits == 0 || (*p != '\0' && std::strcmp(p, "_aux") != 0))
-    return 0;
-  return n >= 1 && n < kMaxShards ? n : 0;
-}
 
 enum : uint32 { kStopped = 0, kStarting = 1, kRunning = 2 };
 enum Stat : int {
@@ -206,6 +193,49 @@ Shm *ShmFor(Oid db, int shard) {
   g_shms[shard] = static_cast<Shm *>(
       GetNamedDSMSegment(name.c_str(), sizeof(Shm), InitShm, &found));
   return g_shms[shard];
+}
+
+// The per-database accelerator -> shard directory: keys[i] is served by shard
+// i + 1.  Entries are only ever appended.
+struct ShardDirShm {
+  slock_t lock;
+  int32 nkeys;
+  char keys[kMaxShards - 1][kKeyLen];
+};
+
+void InitShardDir(void *ptr) {
+  auto *dir = static_cast<ShardDirShm *>(ptr);
+  std::memset(dir, 0, sizeof(ShardDirShm));
+  SpinLockInit(&dir->lock);
+}
+
+// The shard of `accelerator` in database `db`, claiming the next free one if
+// it has none yet.
+int ClaimShard(Oid db, const std::string &accelerator) {
+  if (accelerator.empty() || accelerator.size() >= static_cast<size_t>(kKeyLen))
+    return 0;
+  const std::string name =
+      "accel_aux_srv_dir_" + std::to_string(static_cast<unsigned>(db));
+  bool found = false;
+  auto *dir = static_cast<ShardDirShm *>(GetNamedDSMSegment(
+      name.c_str(), sizeof(ShardDirShm), InitShardDir, &found));
+  if (dir == nullptr)
+    return 0;
+  int shard = 0;
+  SpinLockAcquire(&dir->lock);
+  for (int i = 0; i < dir->nkeys; ++i) {
+    if (std::strcmp(dir->keys[i], accelerator.c_str()) == 0) {
+      shard = i + 1;
+      break;
+    }
+  }
+  if (shard == 0 && dir->nkeys < kMaxShards - 1) {
+    std::memcpy(dir->keys[dir->nkeys], accelerator.c_str(),
+                accelerator.size() + 1);
+    shard = ++dir->nkeys;
+  }
+  SpinLockRelease(&dir->lock);
+  return shard;
 }
 
 int64_t NowMs() { return static_cast<int64_t>(GetCurrentTimestamp() / 1000); }
@@ -1031,8 +1061,9 @@ void DefineGucs() {
       nullptr);
   DefineCustomBoolVariable(
       "accel.shared_sharding",
-      "Serve each accelerator (accel_tpch_q<N>_aux) from its own shared state "
-      "worker; off: one worker per database serves every read.",
+      "Serve each accelerator from its own shared state worker (up to 22 per "
+      "database, then one more for the rest); off: one worker per database "
+      "serves every read.",
       nullptr, &g_sharding, true, PGC_USERSET, 0, nullptr, nullptr, nullptr);
 }
 
@@ -1100,24 +1131,24 @@ BusyScope::~BusyScope() {
 
 // ---- reader ---------------------------------------------------------------------------
 namespace {
-// The shard serving reads of function `fn_oid` (see ShardOfFunctionName).
-int ShardOf(Oid fn_oid) {
+// The shard serving reads of `accelerator` (see ClaimShard).  A backend stays
+// in one database, so the cache needs no database key.
+int ShardOf(const core::AcceleratorId &accelerator) {
   if (!g_sharding)
     return 0;
-  static std::unordered_map<Oid, int> cache;
-  const auto it = cache.find(fn_oid);
+  static std::unordered_map<std::string, int> cache;
+  const auto it = cache.find(accelerator);
   if (it != cache.end())
     return it->second;
-  char *name = get_func_name(fn_oid);
-  const int shard = ShardOfFunctionName(name);
-  if (name)
-    pfree(name);
-  cache.emplace(fn_oid, shard);
+  const int shard = ClaimShard(MyDatabaseId, accelerator);
+  cache.emplace(accelerator, shard);
   return shard;
 }
 } // namespace
 
-Remote RemoteExecute(FunctionCallInfo fcinfo, core::AuxExecutePath &path) {
+Remote RemoteExecute(FunctionCallInfo fcinfo,
+                     const core::AcceleratorId &accelerator,
+                     core::AuxExecutePath &path) {
   if (!SharedEnabled() || fcinfo == nullptr || fcinfo->flinfo == nullptr)
     return Remote::Unavailable;
   if (!ActiveSnapshotSet())
@@ -1125,7 +1156,7 @@ Remote RemoteExecute(FunctionCallInfo fcinfo, core::AuxExecutePath &path) {
   Snapshot snapshot = GetActiveSnapshot();
   if (!auxsync::UsableSnapshot(snapshot))
     return Remote::Unavailable;
-  const int shard = ShardOf(fcinfo->flinfo->fn_oid);
+  const int shard = ShardOf(accelerator);
   Chan &ch = g_chans[shard];
   if (NowMs() < ch.backoff_until_ms)
     return Remote::Unavailable;
