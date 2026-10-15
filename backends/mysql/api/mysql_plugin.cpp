@@ -1,13 +1,14 @@
 // Generic query-UDF implementation + observer/maintenance UDFs for the MySQL plugin.
 // Query UDF symbols live in each query's dir (see udf_shim.hpp).
 #include "backends/mysql/engine/plugin_minimal.h"
+#include "backends/mysql/api/mysql_host.hpp"
 #include "backends/mysql/api/runtime.hpp"
 
 #include "substrate/aux/core/aux_types.hpp"
 #include "backends/mysql/engine/mysql_exact_parse.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
-#include "backends/mysql/engine/mysql_xact_callbacks.hpp"
+#include "substrate/aux/core/aux_maintenance_policy.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -281,7 +282,7 @@ bool mysql_accel_observer_mutation_count_init(UDF_INIT *initid, UDF_ARGS *args,
 __attribute__((visibility("default")))
 long long mysql_accel_observer_mutation_count(UDF_INIT *, UDF_ARGS *, char *,
                                               char *) {
-  return mysql_rt::MysqlObserverMutationCount();
+  return static_cast<long long>(mysql_rt::MysqlHost::Get().CapturedRowCount());
 }
 
 __attribute__((visibility("default")))
@@ -301,7 +302,7 @@ __attribute__((visibility("default")))
 char *mysql_accel_reset_observer(UDF_INIT *, UDF_ARGS *, char *result,
                                  unsigned long *length, unsigned char *,
                                  unsigned char *) {
-  mysql_rt::MysqlResetObserver();
+  mysql_rt::MysqlHost::Get().ResetCapturedRowCount();
   std::strcpy(result, "ok");
   *length = 2;
   return result;
@@ -330,7 +331,7 @@ char *mysql_accel_set_force_maintenance_action(UDF_INIT *, UDF_ARGS *args,
                                                unsigned long *length,
                                                unsigned char *,
                                                unsigned char *) {
-  mysql_rt::MysqlSetForceMaintenanceAction(ArgString(args, 0).c_str());
+  mysql_rt::MysqlHost::Get().ForceMaintenanceAction(ArgString(args, 0));
   std::strcpy(result, "ok");
   *length = 2;
   return result;
@@ -355,7 +356,7 @@ __attribute__((visibility("default")))
 char *mysql_accel_invalidate_all(UDF_INIT *, UDF_ARGS *, char *result,
                                  unsigned long *length, unsigned char *,
                                  unsigned char *) {
-  mysql_rt::InvalidateAllMysqlAccelerators(/*transaction_open=*/false);
+  mysql_rt::MysqlHost::Get().InvalidateAll();
   std::strcpy(result, "ok");
   *length = 2;
   return result;
@@ -425,19 +426,20 @@ bool mysql_accel_get_build_stats_init(UDF_INIT *initid, UDF_ARGS *args, char *me
   return false;
 }
 
-// How aux-state builds went: snapshot_builds, restart_builds, replayed_batches
-// (writes that committed during a snapshot build and were replayed on it),
-// build_retries.
+// How builds went (all accelerators): builds, commits applied after a build's
+// snapshot (catch-up), and how reads were answered.
 __attribute__((visibility("default")))
 char *mysql_accel_get_build_stats(UDF_INIT *, UDF_ARGS *, char *result,
                                   unsigned long *length, unsigned char *,
                                   unsigned char *) {
-  const auto &s = mysql_rt::detail::GetBuildStats();
-  const int n = std::snprintf(result, 255, "snapshot_builds=%llu restart_builds=%llu replayed_batches=%llu build_retries=%llu",
-                              static_cast<unsigned long long>(s.snapshot_builds.load()),
-                              static_cast<unsigned long long>(s.restart_builds.load()),
-                              static_cast<unsigned long long>(s.replayed_batches.load()),
-                              static_cast<unsigned long long>(s.build_retries.load()));
+  const auto s = mysql_rt::MysqlHost::Get().TotalStats();
+  const int n = std::snprintf(result, 255, "builds=%llu catch_up_commits=%llu reads_hit=%llu reads_waited=%llu reads_fallback=%llu writers=%zu",
+                              static_cast<unsigned long long>(s.builds),
+                              static_cast<unsigned long long>(s.catch_up_commits),
+                              static_cast<unsigned long long>(s.reads_hit),
+                              static_cast<unsigned long long>(s.reads_waited),
+                              static_cast<unsigned long long>(s.reads_fallback),
+                              mysql_rt::MysqlHost::Get().WriterCount());
   *length = static_cast<unsigned long>(n);
   return result;
 }
@@ -516,7 +518,7 @@ __attribute__((visibility("default")))
 char *mysql_accel_set_expected_queries(UDF_INIT *, UDF_ARGS *args, char *result,
                                        unsigned long *length, unsigned char *,
                                        unsigned char *) {
-  mysql_rt::MysqlSetExpectedQueries(std::strtod(ArgString(args, 0).c_str(), nullptr));
+  core::SetExpectedQueriesOverride(std::strtod(ArgString(args, 0).c_str(), nullptr));
   std::strcpy(result, "ok");
   *length = 2;
   return result;
@@ -542,7 +544,8 @@ char *mysql_accel_get_last_maintenance_action(UDF_INIT *, UDF_ARGS *,
                                               unsigned long *length,
                                               unsigned char *,
                                               unsigned char *) {
-  const char *action = mysql_rt::MysqlLastMaintenanceAction();
+  const std::string last = mysql_rt::MysqlHost::Get().LastMaintenanceAction();
+  const char *action = last.empty() ? "None" : last.c_str();
   std::size_t n = std::strlen(action);
   if (n > 63) {
     n = 63;

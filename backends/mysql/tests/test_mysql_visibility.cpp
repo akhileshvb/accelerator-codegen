@@ -4,9 +4,9 @@
 //
 // Rule: visibility
 // Evidence:
-//   mysql_bridge.cpp AuditNotify — COMMIT/ROLLBACK → OnPreCommit/OnCommit/OnAbort
-//   mysql_accel_txn_capture → MysqlAuxBackend::CaptureMutation (buffered, not published)
-//   mysql_accel_txn_read → MysqlStateStore::Read(CurrentVisibility)
+//   mysql_bridge.cpp AuditNotify — COMMIT/ROLLBACK → MysqlHost::OnStatementEnd
+//   mysql_accel_txn_capture → MysqlHost::OnCapturedRow (kept per session, not published)
+//   mysql_accel_txn_read → the toy accelerator's state at the newest epoch
 //   Uncommitted window: writer session holds START TRANSACTION + capture +
 //   GET_LOCK('accel_vis_uncommitted'); a second mysql CLI session Reads the
 //   in-process store (must be empty). Writer COMMIT; reader Sees published

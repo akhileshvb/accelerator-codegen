@@ -160,6 +160,7 @@ private:
   bool ApplyChange(const CommittedChange &change);
   void ApplyReady();
   void Collapse(Epoch from, Epoch to);
+  void BuildFailed();
   void Applied(const CommittedChange &change, double us);
   void MarkStale(Epoch from);
   bool Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const;

@@ -31,7 +31,8 @@ Every commit of an accelerator carries two numbers:
   to a reader at epoch `E` iff `e <= E`. Strictly increasing per accelerator.
   - DuckDB: commit id + 1; reader epoch = transaction start time.
   - Postgres: epoch = sequence = `n_A`; reader epoch `k_A`.
-  - MySQL: epoch = sequence; readers read the newest.
+  - MySQL: epoch = the host's commit counter, taken while the commit holds its
+    accelerators' places in commit order; readers read the newest.
 
 A build snapshot has an epoch `b` with the guarantee: a commit is in the
 snapshot iff its epoch `<= b` (S5's contract).

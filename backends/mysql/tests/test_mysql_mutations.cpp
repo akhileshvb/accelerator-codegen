@@ -7,7 +7,7 @@
 //   harness asserts typed MutationBatch fields: table id as uint64,
 //   kind as MutationKind enum (0=Insert, 1=Delete, 2=Update),
 //   old/new rows with typed AuxValue cells.
-//   CaptureMutation(hand_built) is not used by the harness.
+//   The capture goes through mysql_accel_capture_row, as generated triggers do.
 //
 // Rule: fail_closed
 // Evidence: trigger without bridge init does not crash; PLUGIN INSTALL fails
@@ -137,61 +137,37 @@ void DropAndCreateTable(const std::string &table_name) {
        " (id INT AUTO_INCREMENT PRIMARY KEY, val INT, label VARCHAR(255))", "create_table");
 }
 
-static int g_table_id = 1;
+// Table ids of the capture calls; not the toy accelerators' (1, 2).
+static int g_table_id = 100;
 std::string NextTableId() { return std::to_string(g_table_id++); }
 
-// Register capture schema for table with INT + VARCHAR columns.
-// Schema: col0=Int64 (val), col1=String (label)
-void RegisterCaptureSchemaForTable(const std::string &tid) {
-  // aux_types: 1=Int64, 6=String, 1=nullable
-  // Quote all args so MySQL passes them as strings regardless of UDF type
-  Exec("SELECT mysql_accel_mutations_schema('" + tid + "', '1', '1', '6', '1');");
-}
-
-void CreateMutationTriggers(const std::string &table_name) {
-  std::string tid = NextTableId();
-
-  // Register the table schema for typed capture
-  RegisterCaptureSchemaForTable(tid);
+// The capture call of a (val INT, label VARCHAR) table: types "is", then the
+// old row's columns and/or the new row's.
+void CreateMutationTriggers(const std::string &table_name, const std::string &tid = NextTableId()) {
+  auto capture = [&](const char *kind, const std::string &columns) {
+    return "SET @a = mysql_accel_capture_row('" + tid + "', '" + kind + "', 'is', " + columns + ");";
+  };
 
   Exec("DROP TRIGGER IF EXISTS trg_" + table_name + "_ins", true);
   Exec("DROP TRIGGER IF EXISTS trg_" + table_name + "_del", true);
   Exec("DROP TRIGGER IF EXISTS trg_" + table_name + "_upd", true);
 
-  // Insert trigger: kind=0, new row columns individually
-  std::string ins = "CREATE TRIGGER trg_" + table_name + "_ins "
-    "AFTER INSERT ON " + table_name + " FOR EACH ROW "
-    "SET @a = mysql_accel_mutations_capture_row('" + tid +
-    "', '0', CAST(NEW.val AS CHAR), IFNULL(NEW.label, 'NULL'));";
-  Exec(ins);
-
-  // Delete trigger: kind=1, old row columns individually
-  std::string del = "CREATE TRIGGER trg_" + table_name + "_del "
-    "AFTER DELETE ON " + table_name + " FOR EACH ROW "
-    "SET @a = mysql_accel_mutations_capture_row('" + tid +
-    "', '1', CAST(OLD.val AS CHAR), IFNULL(OLD.label, 'NULL'));";
-  Exec(del);
-
-  // Update trigger: kind=2, old row columns then new row columns
-  std::string upd = "CREATE TRIGGER trg_" + table_name + "_upd "
-    "AFTER UPDATE ON " + table_name + " FOR EACH ROW "
-    "SET @a = mysql_accel_mutations_capture_row('" + tid +
-    "', '2', "
-    "CAST(OLD.val AS CHAR), IFNULL(OLD.label, 'NULL'), "
-    "CAST(NEW.val AS CHAR), IFNULL(NEW.label, 'NULL'));";
-  Exec(upd);
+  Exec("CREATE TRIGGER trg_" + table_name + "_ins AFTER INSERT ON " + table_name +
+       " FOR EACH ROW " + capture("0", "NEW.val, NEW.label"));
+  Exec("CREATE TRIGGER trg_" + table_name + "_del AFTER DELETE ON " + table_name +
+       " FOR EACH ROW " + capture("1", "OLD.val, OLD.label"));
+  Exec("CREATE TRIGGER trg_" + table_name + "_upd AFTER UPDATE ON " + table_name +
+       " FOR EACH ROW " + capture("2", "OLD.val, OLD.label, NEW.val, NEW.label"));
 }
 
 void EnsureMutationFunctions() {
-  Exec("CREATE FUNCTION mysql_accel_mutations_capture_row RETURNS STRING SONAME "
+  Exec("CREATE FUNCTION mysql_accel_capture_row RETURNS STRING SONAME "
        "'accelerator_codegen_mysql.so';", true);
   Exec("CREATE FUNCTION mysql_accel_mutations_last RETURNS STRING SONAME "
        "'accelerator_codegen_mysql.so';", true);
   Exec("CREATE FUNCTION mysql_accel_mutations_drain RETURNS STRING SONAME "
        "'accelerator_codegen_mysql.so';", true);
   Exec("CREATE FUNCTION mysql_accel_mutations_count RETURNS STRING SONAME "
-       "'accelerator_codegen_mysql.so';", true);
-  Exec("CREATE FUNCTION mysql_accel_mutations_schema RETURNS STRING SONAME "
        "'accelerator_codegen_mysql.so';", true);
   std::string check = QueryOne("SELECT mysql_accel_mutations_count();");
   Expect(!check.empty() && check != "", "Mutations UDF should be functional");
@@ -513,39 +489,31 @@ void TestTypedMutationBatchFields() {
   std::cout << "  [PASS] typed_mutation_batch_fields\n";
 }
 
-void TestCoordinatorPipelineIsWired() {
-  // Verify that mutations flow through g_backend->CaptureMutation() →
-  // coordinator.OnMutation() by checking that txn_init + capture + commit
-  // runs the full pipeline (InterpretMutation/AccumulateMutation/StageMaintenance).
+void TestHostPipelineIsWired() {
+  // A trigger capture of the txn toy accelerator's table (1) reaches the host
+  // like any capture: the autocommit INSERT commits it and the toy's
+  // maintenance runs (its epoch advances).
   EnsureMutationFunctions();
-
-  // Also register the txn functions
-  Exec("CREATE FUNCTION mysql_accel_txn_init RETURNS INTEGER SONAME "
-       "'accelerator_codegen_mysql.so';", true);
-
-  // Initialize coordinator
+  for (const char *name : {"init", "read", "epoch", "reset"}) {
+    Exec(std::string("CREATE FUNCTION mysql_accel_txn_") + name + " RETURNS " +
+             (std::string(name) == "init" ? "INTEGER" : "STRING") + " SONAME 'accelerator_codegen_mysql.so';",
+         true);
+  }
   Exec("SELECT mysql_accel_txn_init();");
+  const std::string epoch_before = QueryOne("SELECT mysql_accel_txn_epoch();");
 
   std::string table = "mut_test_pipe";
   DropAndCreateTable(table);
-  CreateMutationTriggers(table);
-
-  // The coordinator has a module registered for table=1 but we're using
-  // dynamically allocated table ids. The coordinators pipeline still needs
-  // to not crash. The key contract: UDF → BuildMutationBatchFromTriggerArgs →
-  // g_backend->CaptureMutation(batch) → coordinator.OnMutation(batch).
-  //
-  // Within the coordinator, modules that don't depend on the table id will
-  // skip it without error. This test just verifies the wiring doesn't crash.
+  CreateMutationTriggers(table, "1");
   Exec("INSERT INTO " + table + " (val, label) VALUES (77, 'pipe')");
 
-  // Drain and verify capture went through
-  std::string last = QueryOne("SELECT mysql_accel_mutations_last();");
-  Expect(last.find("77") != std::string::npos, "Coordinator pipeline must not drop mutations");
-  Expect(last.find("pipe") != std::string::npos, "Coordinator pipeline must capture values");
+  Expect(QueryOne("SELECT mysql_accel_txn_epoch();") != epoch_before,
+         "A trigger capture must be maintained by its accelerator at commit");
+  Expect(QueryOne("SELECT mysql_accel_txn_read();").find("label=staged") != std::string::npos,
+         "The accelerator's maintenance must publish its image");
 
   Exec("DROP TABLE IF EXISTS " + table + " CASCADE", true);
-  std::cout << "  [PASS] coordinator_pipeline_is_wired\n";
+  std::cout << "  [PASS] host_pipeline_is_wired\n";
 }
 
 } // namespace
@@ -567,7 +535,7 @@ int main() {
   TestDrainClearsMutations();
   TestMultipleTables();
   TestTypedMutationBatchFields();
-  TestCoordinatorPipelineIsWired();
+  TestHostPipelineIsWired();
   std::cout << "engine_mutations[mysql] PASS\n";
   return 0;
 }

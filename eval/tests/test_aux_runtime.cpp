@@ -171,6 +171,9 @@ struct FakeSlots final : EngineSlots {
     return true;
   }
   std::unique_ptr<BuildSnapshot> OpenBuildSnapshot(AcceleratorRuntime &) override {
+    if (fail_builds) {
+      throw std::runtime_error("no build snapshot");
+    }
     return std::make_unique<FakeSnapshot>(db.Now());
   }
   bool EngineWorkOnHostThread() const override { return host_thread; }
@@ -222,6 +225,7 @@ struct FakeSlots final : EngineSlots {
   std::condition_variable gate_cv;
   bool hold_builds = false;
   bool building = false;
+  std::atomic<bool> fail_builds{false};
 };
 
 struct CollectSink final : core::AuxRowSink {
@@ -330,6 +334,41 @@ void ModuleRequestsRebuild() {
   module->request_rebuild = false;
   CHECK(ReadAt(runtime, e) == 42); // rebuilt in the background
   CHECK(runtime.Stats().builds == 2);
+}
+
+void FailedBuildReleasesReaders() {
+  FakeDb db;
+  FakeSlots slots(db);
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  slots.fail_builds = true;
+  const auto start = std::chrono::steady_clock::now();
+  CHECK(!ReadAt(runtime, db.Now(), std::nullopt, 60'000'000)); // falls back when the build fails
+  CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(10));
+  slots.fail_builds = false;
+  CHECK(ReadAt(runtime, db.Now()) == 0); // the next read builds again
+}
+
+void InvalidateDuringBuild() {
+  FakeDb db;
+  FakeSlots slots(db);
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  slots.Hold();
+  std::atomic<bool> failed{false};
+  std::thread build([&] {
+    try {
+      runtime.BuildNow();
+    } catch (const std::exception &) {
+      failed = true;
+    }
+  });
+  slots.WaitUntilBuilding();
+  runtime.Invalidate(); // what the build scans may miss what invalidated
+  slots.Release();
+  build.join();
+  CHECK(failed && !runtime.IsSynced()); // the build is not installed
+  CHECK(ReadAt(runtime, db.Now()) == 0); // the next one is
 }
 
 void ShippedCommits() {
@@ -448,6 +487,8 @@ int main() {
       {"in_process_commits", InProcessCommits},
       {"commits_during_build", CommitsDuringBuild},
       {"module_requests_rebuild", ModuleRequestsRebuild},
+      {"failed_build_releases_readers", FailedBuildReleasesReaders},
+      {"invalidate_during_build", InvalidateDuringBuild},
       {"shipped_commits", ShippedCommits},
       {"thread_limits_per_phase", ThreadLimitsPerPhase},
       {"maintenance_lookups", MaintenanceLookups},

@@ -224,9 +224,12 @@ struct RowScope {
 // Table scans this thread ran (a query that scans answered from SQL).
 thread_local uint64_t t_table_scans = 0; // declared in runtime.hpp
 
-BuildStats &GetBuildStats() {
-  static BuildStats stats;
-  return stats;
+std::chrono::microseconds ReadWait() {
+  static const auto wait = std::chrono::microseconds([] {
+    const char *value = std::getenv("ACCEL_AUX_READ_WAIT_US");
+    return value && *value ? std::strtoll(value, nullptr, 10) : 600'000'000LL;
+  }());
+  return wait;
 }
 
 #if defined(ACCEL_MYSQL_HAVE_CLIENT)

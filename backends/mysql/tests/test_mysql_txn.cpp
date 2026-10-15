@@ -324,6 +324,23 @@ void TestAbortThenFreshTxnCanCommit() {
   std::cout << "  [PASS] abort_then_fresh_txn_commits\n";
 }
 
+// Two accelerators number the same table differently (1 and 9, mapped to the
+// host's table 1): one capture is maintained by both, once per commit.
+void TestAcceleratorsWithDifferentTableNumbers() {
+  EnsurePluginAndFunctions();
+  Exec("SELECT mysql_accel_txn_init();", false);
+
+  ExecMulti(
+    "START TRANSACTION;\n"
+    "SELECT mysql_accel_txn_capture(1, 0, 1, 'a');\n"
+    "COMMIT;\n"
+    "SELECT mysql_accel_txn_capture(1, 0, 2, 'b');\n");
+  Expect(QueryOne("SELECT mysql_accel_txn_epoch();").find("epoch=2 alias_epoch=2") != std::string::npos,
+         "Each commit must reach both accelerators exactly once");
+
+  std::cout << "  [PASS] accelerators_with_different_table_numbers\n";
+}
+
 } // namespace
 
 int main() {
@@ -338,6 +355,7 @@ int main() {
   TestCaptureWithoutBridgeReturnsError();
   TestMultipleMutationsInOneTransaction();
   TestAbortThenFreshTxnCanCommit();
+  TestAcceleratorsWithDifferentTableNumbers();
 
   std::cout << "engine_txn[mysql] PASS\n";
   return 0;

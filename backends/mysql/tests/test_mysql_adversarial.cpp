@@ -3,7 +3,7 @@
 // Build: test_mysql_adversarial   CTest: engine_mysql_adversarial
 //
 // Unseen by implementation layer harnesses. Cases below are not copies of
-// test_mysql_{store,aux_backend,txn,mutations,scan,runtime,visibility,host}.cpp.
+// test_mysql_{txn,mutations,scan,visibility,host}.cpp.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,73 +16,11 @@
 #include <vector>
 
 #include "backends/mysql/engine/scan_helper.hpp"
-#include "substrate/aux/core/aux_registry.hpp"
-#include "substrate/aux/core/aux_txn_buffer.hpp"
-#include "substrate/aux/core/aux_types.hpp"
-#include "backends/mysql/state/mysql_aux_backend.hpp"
-#include "backends/mysql/state/mysql_state_store.hpp"
 
 using namespace accelerator_codegen::aux_state;
 using namespace accelerator_codegen::aux_state::engine::mysql;
-using namespace accelerator_codegen::aux_state::core;
 
 namespace {
-
-struct ToyPayload {
-  int count;
-  std::string label;
-};
-
-class AdvToyModule final : public AuxQueryModule {
-public:
-  AcceleratorId Id() const override { return "adv_toy"; }
-
-  std::vector<TableDependency> Dependencies() const override {
-    TableDependency dep;
-    dep.table = 1;
-    return {dep};
-  }
-
-  std::unique_ptr<AuxTxnBuffer> CreateTxnBuffer() const override {
-    return std::make_unique<BasicAuxTxnBuffer>();
-  }
-
-  void Build(AuxEngineServices &, StateBuilder &builder) override {
-    auto payload = std::make_shared<const ToyPayload>(ToyPayload{1, "built"});
-    builder.Write(StateImage::Make(Id(), 1, 1, payload));
-    builder.Finish();
-  }
-
-  InvalidationPlan InterpretMutation(const MutationBatch &) const override {
-    InvalidationPlan plan;
-    plan.scope = InvalidationScope::PartitionSet;
-    plan.partitions.insert(1);
-    return plan;
-  }
-
-  void AccumulateMutation(const MutationBatch &, AuxEngineServices &,
-                          AuxTxnBuffer &) override {}
-
-  StagedMaintenanceOutcome StageMaintenance(AuxEngineServices &,
-                                            const InvalidationPlan &,
-                                            AuxTxnBuffer &) override {
-    StagedMaintenanceOutcome outcome;
-    outcome.action = MaintenanceAction::ApplyDelta;
-    auto payload = std::make_shared<const ToyPayload>(ToyPayload{7, "adv"});
-    outcome.updates.push_back(StateImage::Make(Id(), 1, 1, payload));
-    return outcome;
-  }
-
-  bool CheckValidity(AuxEngineServices &, const QueryArguments &) const override {
-    return true;
-  }
-
-  void Execute(AuxEngineServices &, const QueryArguments &,
-               AuxRowSink &) override {}
-
-  void ExecuteFallback(AuxEngineServices &, const QueryArguments &,
-                       AuxRowSink &) override {}
-};
 
 [[noreturn]] void Fail(const char *msg) {
   std::cerr << "engine_adversarial[mysql] FAIL: " << msg << "\n";
@@ -255,16 +193,6 @@ void EnsureTxnAndRuntimeUdfs() {
   RegisterUdf("mysql_accel_runtime_reset", 0);
 }
 
-MutationBatch MakeInsert(TableId table) {
-  MutationBatch batch;
-  batch.table = table;
-  batch.kind = MutationKind::Insert;
-  AuxRow row;
-  row.values.push_back(AuxValue::Of(AuxType::Int64, int64_t{1}));
-  batch.new_rows.push_back(row);
-  return batch;
-}
-
 // 1. Scan: seeded empty table yields zero consumer callbacks (layer tests
 // cover unknown table / no-match filter, not an empty seeded relation).
 void TestEmptySeededTableScan() {
@@ -298,130 +226,25 @@ void TestZeroColumnProjection() {
   std::cout << "  [PASS] zero_column_projection\n";
 }
 
-// 3. Store: empty TryPublish is a successful no-op (no image).
-void TestEmptyPublishIsNoop() {
-  MysqlStateStore st;
-  StagedMaintenanceOutcome staged;
-  staged.action = MaintenanceAction::ApplyDelta;
-  Expect(st.TryPublish(staged, 0), "Empty TryPublish must return true");
-  auto snap = st.Read(VisibilityToken{});
-  Expect(!snap.available && snap.partitions.empty(),
-         "Empty publish must not create a readable image");
-  auto vr = st.CheckValidity({"nobody", "1"}, VisibilityToken{});
-  Expect(vr.code == ValidityCode::Missing,
-         "Empty store CheckValidity is Missing");
-  std::cout << "  [PASS] empty_publish_noop\n";
+// 3. SQL: an aborted transaction's capture does not leak into a later commit:
+// exactly the later transaction is maintained.
+void TestSqlAbortDoesNotLeakIntoLaterCommit() {
+  EnsureTxnAndRuntimeUdfs();
+  Exec("SELECT mysql_accel_txn_reset();", true);
+  Exec("SELECT mysql_accel_txn_init();");
+  ExecMulti(
+      "START TRANSACTION;\n"
+      "SELECT mysql_accel_txn_capture(1, 0, 1, 'aborted');\n"
+      "ROLLBACK;\n"
+      "START TRANSACTION;\n"
+      "SELECT mysql_accel_txn_capture(1, 0, 1, 'kept');\n"
+      "COMMIT;\n");
+  Expect(QueryOne("SELECT mysql_accel_txn_epoch();") == "epoch=1 alias_epoch=1",
+         "Only the committed transaction may be maintained");
+  std::cout << "  [PASS] sql_abort_does_not_leak\n";
 }
 
-// 4. Store: matching expected_version overwrite replaces payload.
-void TestMatchingVersionOverwrite() {
-  MysqlStateStore st;
-  auto p1 = std::make_shared<const ToyPayload>(ToyPayload{1, "first"});
-  StagedMaintenanceOutcome a;
-  a.updates.push_back(StateImage::Make("adv_ov", 4, 1, p1));
-  Expect(st.TryPublish(a, 0), "First publish");
-  auto v1 = st.CheckValidity({"adv_ov", "4"}, VisibilityToken{});
-  Expect(v1.code == ValidityCode::Valid, "First image Valid");
-  Version seen = v1.visible_version;
-
-  auto p2 = std::make_shared<const ToyPayload>(ToyPayload{2, "second"});
-  StagedMaintenanceOutcome b;
-  b.updates.push_back(StateImage::Make("adv_ov", 4, 2, p2));
-  Expect(st.TryPublish(b, seen), "Overwrite with matching expected_version");
-  auto snap = st.Read(VisibilityToken{});
-  Expect(snap.partitions.size() == 1, "Still one partition");
-  auto *tp = snap.partitions[0].As<ToyPayload>();
-  Expect(tp && tp->count == 2 && tp->label == "second",
-         "Overwrite must publish the new payload");
-  std::cout << "  [PASS] matching_version_overwrite\n";
-}
-
-// 5. Visibility: token behind publish is NotVisible; Invalidate then Invalidated
-// even for a current-epoch token (layer store tests do not combine both).
-void TestBehindTokenThenInvalidate() {
-  auto epoch_fn = []() -> Version { return 40; };
-  MysqlStateStore st(epoch_fn);
-  auto payload = std::make_shared<const ToyPayload>(ToyPayload{9, "vis"});
-  StagedMaintenanceOutcome staged;
-  staged.updates.push_back(StateImage::Make("adv_vis", 3, 1, payload));
-  Expect(st.TryPublish(staged, 0), "Publish epoch 40");
-
-  VisibilityToken behind;
-  behind.mutation_epoch = 39;
-  Expect(st.Read(behind).partitions.empty(),
-         "Token 39 must omit epoch-40 image");
-  auto vr_behind = st.CheckValidity({"adv_vis", "3"}, behind);
-  Expect(vr_behind.code == ValidityCode::NotVisible,
-         "Token behind publish is NotVisible");
-
-  InvalidationPlan plan;
-  plan.scope = InvalidationScope::PartitionSet;
-  plan.partitions.insert(3);
-  st.Invalidate(plan);
-
-  VisibilityToken current;
-  current.mutation_epoch = 40;
-  auto vr_now = st.CheckValidity({"adv_vis", "3"}, current);
-  Expect(vr_now.code == ValidityCode::Invalidated,
-         "After invalidate, current token is Invalidated not Valid");
-  Expect(st.Read(current).partitions.empty(),
-         "Read after invalidate omits the slot");
-  std::cout << "  [PASS] behind_token_then_invalidate\n";
-}
-
-// 6. Aux: mutation for a table the toy module does not depend on must not
-// stage/publish (layer aux tests only mutate table 1).
-void TestUnrelatedTableDoesNotPublish() {
-  MysqlStateStore store;
-  AuxTransactionCoordinator coordinator;
-  auto module = std::make_shared<AdvToyModule>();
-  coordinator.Register(module);
-  MysqlAuxBackend backend(coordinator, store, []() {
-    VisibilityToken tok;
-    tok.mutation_epoch = 0;
-    return tok;
-  });
-
-  backend.CaptureMutation(MakeInsert(99));
-  Expect(!coordinator.HasPendingWork(),
-         "Unrelated table_id must not create pending work");
-  backend.OnPreCommit();
-  backend.OnCommit();
-  auto snap = store.Read(VisibilityToken{});
-  Expect(!snap.available, "Unrelated-table commit must not publish");
-  std::cout << "  [PASS] unrelated_table_no_publish\n";
-}
-
-// 7. Aux: abort drops the buffered mutation; a later capture+commit publishes
-// only the new txn (no leaked abort image).
-void TestAbortDoesNotLeakIntoLaterCommit() {
-  MysqlStateStore store;
-  AuxTransactionCoordinator coordinator;
-  auto module = std::make_shared<AdvToyModule>();
-  coordinator.Register(module);
-  MysqlAuxBackend backend(coordinator, store, []() {
-    VisibilityToken tok;
-    tok.mutation_epoch = 0;
-    return tok;
-  });
-
-  backend.CaptureMutation(MakeInsert(1));
-  Expect(coordinator.HasPendingWork(), "First capture pending");
-  backend.OnAbort();
-  Expect(!coordinator.HasPendingWork(), "Abort clears pending work");
-  Expect(!store.Read(VisibilityToken{}).available, "Abort did not publish");
-
-  backend.CaptureMutation(MakeInsert(1));
-  backend.OnPreCommit();
-  backend.OnCommit();
-  auto snap = store.Read(VisibilityToken{});
-  Expect(snap.available, "Fresh txn after abort must publish");
-  auto *tp = snap.partitions.empty() ? nullptr : snap.partitions[0].As<ToyPayload>();
-  Expect(tp && tp->label == "adv", "Published image is the post-abort commit");
-  std::cout << "  [PASS] abort_does_not_leak\n";
-}
-
-// 8. SQL: capture of table 99 then COMMIT leaves the txn toy store empty.
+// 5. SQL: capture of table 99 then COMMIT leaves the txn toy store empty.
 void TestSqlWrongTableCaptureDoesNotPublish() {
   EnsureTxnAndRuntimeUdfs();
   Exec("SELECT mysql_accel_txn_reset();", true);
@@ -436,24 +259,20 @@ void TestSqlWrongTableCaptureDoesNotPublish() {
   std::cout << "  [PASS] sql_wrong_table_no_publish\n";
 }
 
-// 9. SQL: capture outside START TRANSACTION stays unpublished until COMMIT
-// (audit hook keys off sql_command=commit, not autocommit SELECT).
-void TestSqlCaptureNeedsExplicitCommit() {
+// 4. SQL: a capture outside START TRANSACTION is an autocommit statement's
+// write: committed when the statement ends, no explicit COMMIT needed.
+void TestSqlAutocommitCaptureCommitsAtStatementEnd() {
   EnsureTxnAndRuntimeUdfs();
   Exec("SELECT mysql_accel_txn_reset();", true);
   Exec("SELECT mysql_accel_txn_init();");
-  Exec("SELECT mysql_accel_txn_capture(1, 0, 1, 'autocommit_window');");
-  std::string before = QueryOne("SELECT mysql_accel_txn_read();");
-  Expect(before.find("available=1") == std::string::npos,
-         "Capture without COMMIT must not publish");
-  Exec("COMMIT;");
-  std::string after = QueryOne("SELECT mysql_accel_txn_read();");
-  Expect(after.find("available=1") != std::string::npos,
-         "Explicit COMMIT after autocommit capture must publish");
-  std::cout << "  [PASS] sql_capture_needs_explicit_commit\n";
+  Exec("SELECT mysql_accel_txn_capture(1, 0, 1, 'autocommit');");
+  std::string state = QueryOne("SELECT mysql_accel_txn_read();");
+  Expect(state.find("available=1") != std::string::npos,
+         "An autocommit capture must be published when its statement ends");
+  std::cout << "  [PASS] sql_autocommit_capture_commits\n";
 }
 
-// 10. Host UDFs fail closed: execute/read without init do not crash and do
+// 6. Host UDFs fail closed: execute/read without init do not crash and do
 // not pretend to return a built image.
 void TestRuntimeUdfsFailClosedWithoutInit() {
   EnsureTxnAndRuntimeUdfs();
@@ -480,13 +299,9 @@ int main() {
   std::cout << "engine_adversarial[mysql]\n";
   TestEmptySeededTableScan();
   TestZeroColumnProjection();
-  TestEmptyPublishIsNoop();
-  TestMatchingVersionOverwrite();
-  TestBehindTokenThenInvalidate();
-  TestUnrelatedTableDoesNotPublish();
-  TestAbortDoesNotLeakIntoLaterCommit();
+  TestSqlAbortDoesNotLeakIntoLaterCommit();
   TestSqlWrongTableCaptureDoesNotPublish();
-  TestSqlCaptureNeedsExplicitCommit();
+  TestSqlAutocommitCaptureCommitsAtStatementEnd();
   TestRuntimeUdfsFailClosedWithoutInit();
   std::cout << "engine_adversarial[mysql] PASS\n";
   return 0;

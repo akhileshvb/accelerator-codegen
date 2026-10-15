@@ -13,8 +13,8 @@ PASSWORD="${MYSQL_PWD:-${MYSQL_ROOT_PASSWORD:-mysql}}"
 SO_PATH="${ACCEL_MYSQL_SO:-/usr/lib/mysql/plugin/accelerator_codegen_mysql.so}"
 
 REQUIRED_SOURCES=(
-  "backends/mysql/state/mysql_state_store.cpp"
-  "backends/mysql/state/mysql_aux_backend.cpp"
+  "backends/mysql/api/mysql_host.cpp"
+  "backends/mysql/engine/mysql_statement_capture.cpp"
 )
 
 start_if_needed() {
