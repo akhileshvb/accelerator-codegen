@@ -439,6 +439,13 @@ public:
   // (or ACCEL_AUX_THREADS when set). Engine adapters may map this to host
   // thread/worker settings.
   virtual std::size_t WorkerCount() const;
+
+  // Runs fn(i) for i in [0, n) on the engine's thread pool (the calling thread
+  // participates; total threads stay within the budget WorkerCount() reports)
+  // and returns when all are done, rethrowing the first exception. Execute
+  // paths that scan much state use it with one partial result per task,
+  // merged in index order so results match a serial run. Default: serial.
+  virtual void ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const;
 };
 
 // One write shape for calibrating an accelerator's maintenance costs

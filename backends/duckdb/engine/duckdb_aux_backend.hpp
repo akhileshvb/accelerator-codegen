@@ -20,6 +20,7 @@ public:
   bool AllowsSynchronousRebuildOnCommit() const override { return false; }
   bool ReadersCanBuildState() const override { return false; }
   std::size_t WorkerCount() const override;
+  void ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const override;
 
   ::duckdb::ClientContext *ExecutionContext() const;
   runtime::AcceleratorRuntime &Runtime() { return runtime; }

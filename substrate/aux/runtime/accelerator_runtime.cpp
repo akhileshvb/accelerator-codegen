@@ -558,6 +558,10 @@ double AcceleratorRuntime::ExpectedQueriesBeforeNextWrite() const {
 
 std::size_t AcceleratorRuntime::WorkerCount() const { return threads.Budget(); }
 
+void AcceleratorRuntime::ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const {
+  threads.ParallelFor(n, fn);
+}
+
 AcceleratorStats AcceleratorRuntime::Stats() const {
   std::lock_guard<std::mutex> lock(impl->state_mutex);
   return impl->stats;

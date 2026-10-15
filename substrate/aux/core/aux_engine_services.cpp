@@ -45,4 +45,10 @@ std::size_t AuxEngineServices::WorkerCount() const {
   return 1;
 }
 
+void AuxEngineServices::ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const {
+  for (std::size_t i = 0; i < n; ++i) {
+    fn(i);
+  }
+}
+
 } // namespace accelerator_codegen::aux_state::core
