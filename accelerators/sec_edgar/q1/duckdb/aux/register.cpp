@@ -95,9 +95,9 @@ struct SecEdgarQ1Scan : SecEdgarQ1InitialScan {
   explicit SecEdgarQ1Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanPre(
       const std::function<void(const SecEdgarQ1PreInput &)> &consumer) const override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT stmt, rfile, adsh, line FROM pre",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           const auto stmt = ChunkValue(chunk, 0, row);
           const auto rfile = ChunkValue(chunk, 1, row);
           const auto adsh = ChunkValue(chunk, 2, row);
@@ -111,8 +111,9 @@ struct SecEdgarQ1Scan : SecEdgarQ1InitialScan {
           input.adsh = adsh.IsNull() ? std::string() : adsh.ToString();
           input.line_is_null = line.IsNull();
           input.line = line.IsNull() ? 0 : static_cast<int32_t>(SafeInt32(line));
-          consumer(input);
-        });
+          return input;
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool ScanPreChunks(
       const std::function<void(::duckdb::DataChunk &)> &consumer) const override {

@@ -156,27 +156,31 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
   explicit SecEdgarQ24Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanNum(
       const std::function<void(const SecEdgarQ24NumInput &)> &consumer) override {
-    ScanQuery(connection, "SELECT adsh, tag, version, uom, value, ddate FROM num",
-              [&](auto &result, ::duckdb::idx_t row) {
-                const auto value = result.GetValue(4, row);
-                const auto date = result.GetValue(5, row);
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          result.GetValue(2, row).ToString(),
-                          result.GetValue(3, row).ToString(),
-                          value.IsNull() ? 0.0 : std::stod(value.ToString()),
-                          value.IsNull(),
-                          static_cast<int32_t>(SafeInt32(date))});
-              });
+    ScanQueryDecoded(
+        connection, "SELECT adsh, tag, version, uom, value, ddate FROM num",
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          const auto value = ChunkValue(chunk, 4, row);
+          const auto date = ChunkValue(chunk, 5, row);
+          return SecEdgarQ24NumInput{ChunkValue(chunk, 0, row).ToString(),
+                                     ChunkValue(chunk, 1, row).ToString(),
+                                     ChunkValue(chunk, 2, row).ToString(),
+                                     ChunkValue(chunk, 3, row).ToString(),
+                                     value.IsNull() ? 0.0 : std::stod(value.ToString()),
+                                     value.IsNull(),
+                                     static_cast<int32_t>(SafeInt32(date))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanPre(
       const std::function<void(const SecEdgarQ24PreInput &)> &consumer) override {
-    ScanQuery(connection, "SELECT adsh, tag, version FROM pre",
-              [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          result.GetValue(2, row).ToString()});
-              });
+    ScanQueryDecoded(
+        connection, "SELECT adsh, tag, version FROM pre",
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return SecEdgarQ24PreInput{ChunkValue(chunk, 0, row).ToString(),
+                                     ChunkValue(chunk, 1, row).ToString(),
+                                     ChunkValue(chunk, 2, row).ToString()};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool ScanQualifyingNumBatches(
       const std::function<void(const SecEdgarQ24NumBatch &)> &consumer) override {

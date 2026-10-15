@@ -1,6 +1,7 @@
 #include "tpch/q9/duckdb/aux/module.hpp"
 #include "tpch/q9/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -12,8 +13,6 @@
 #include <stdexcept>
 #include <string_view>
 #include <unordered_set>
-#include <atomic>
-#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
@@ -24,6 +23,12 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
+// Profit slots per build slice: a slot holds ~1000 parts (~0.1 ms each), so 16 pay for a task.
+constexpr std::size_t kCellsGrain = 16;
+// Candidate parts per read slice: a hash lookup, substring test and cells, ~0.1 us each.
+constexpr std::size_t kCandidateGrain = 8192;
+// Profit slots per read slice: ~1000 name substring tests each, ~0.1 ms per slot.
+constexpr std::size_t kSlotGrain = 16;
 constexpr uint32_t kVersion = 6;
 constexpr uint32_t kCompleteStateMagic = 0x43395141; // Q9AC
 constexpr uint32_t kMetadataMagic = 0x4D395141;      // Q9AM
@@ -442,34 +447,6 @@ bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, int64_t &suppkey,
   return true;
 }
 
-// Runs fn(i, worker) for i in [0, n) on up to `workers` threads (the caller
-// participates as worker 0). Tasks must touch disjoint state.
-template <typename Fn>
-void ParallelFor(std::size_t workers, std::size_t n, Fn &&fn) {
-  const std::size_t threads = std::min(std::max<std::size_t>(workers, 1), n);
-  if (threads <= 1) {
-    for (std::size_t i = 0; i < n; ++i)
-      fn(i, std::size_t{0});
-    return;
-  }
-  std::atomic<std::size_t> next{0};
-  auto body = [&](std::size_t worker) {
-    for (;;) {
-      const std::size_t i = next.fetch_add(1);
-      if (i >= n)
-        return;
-      fn(i, worker);
-    }
-  };
-  std::vector<std::thread> pool;
-  pool.reserve(threads - 1);
-  for (std::size_t t = 1; t < threads; ++t)
-    pool.emplace_back(body, t);
-  body(0);
-  for (auto &th : pool)
-    th.join();
-}
-
 // Order year for a lineitem delta: this batch's new orders first, then the
 // pre-batch order map, then (last resort) a point lookup.
 bool ResolveOrderYear(const TpchQ9State &side, TpchQ9InitialScan *scan,
@@ -747,9 +724,9 @@ bool TpchQ9State::PairSnapshot(int64_t partkey, const Q9PartRecord &rec,
 }
 
 void TpchQ9State::ApplyNetCellDeltas(
-    std::vector<std::vector<CellDelta>> &chunks, std::size_t workers) {
-  // Bucket by slot: slots are independent, so each is netted and applied by one
-  // task (cells of its parts), while the cube deltas are summed per worker.
+    std::vector<std::vector<CellDelta>> &chunks) {
+  // Bucket by slot: each slot is netted and applied on its own (cells of its
+  // parts) and the cube deltas are summed per token.
   std::vector<std::vector<CellDelta>> by_slot(profit_slot_count);
   for (auto &chunk : chunks) {
     for (const auto &d : chunk)
@@ -772,12 +749,10 @@ void TpchQ9State::ApplyNetCellDeltas(
     std::vector<CellDelta> sparse; // outside the dense range (token in .partkey)
     std::vector<std::string_view> sparse_tokens;
   };
-  const std::size_t worker_count = std::max<std::size_t>(workers, 1);
-  std::vector<TokenAcc> accs(worker_count);
+  TokenAcc ta;
 
-  ParallelFor(workers, active.size(), [&](std::size_t t, std::size_t worker) {
-    auto &deltas = by_slot[active[t]];
-    auto &ta = accs[worker];
+  for (const auto slot : active) {
+    auto &deltas = by_slot[slot];
     std::sort(deltas.begin(), deltas.end(),
               [](const CellDelta &a, const CellDelta &b) {
                 if (a.partkey != b.partkey)
@@ -867,37 +842,39 @@ void TpchQ9State::ApplyNetCellDeltas(
         }
       }
     }
-  });
-
-  // Merge the per-worker sums into the cube (serial; ~tokens x cells).
-  for (auto &ta : accs) {
-    for (std::size_t t = 0; t < ta.names.size(); ++t) {
-      const std::vector<std::string> one{std::string(ta.names[t])};
-      const auto &acc = ta.acc[t];
-      for (int n = 0; n < Q9TokenCube::kNations; ++n)
-        for (int y = 0; y < Q9TokenCube::kYears; ++y)
-          if (acc[n * Q9TokenCube::kYears + y] != 0)
-            CubeAdd(one, n, Q9TokenCube::kYearBase + y,
-                    acc[n * Q9TokenCube::kYears + y]);
-    }
-    for (std::size_t k = 0; k < ta.sparse.size(); ++k)
-      CubeAdd({std::string(ta.sparse_tokens[k])}, ta.sparse[k].nation,
-              ta.sparse[k].year, ta.sparse[k].delta);
   }
+
+  for (std::size_t t = 0; t < ta.names.size(); ++t) {
+    const std::vector<std::string> one{std::string(ta.names[t])};
+    const auto &acc = ta.acc[t];
+    for (int n = 0; n < Q9TokenCube::kNations; ++n)
+      for (int y = 0; y < Q9TokenCube::kYears; ++y)
+        if (acc[n * Q9TokenCube::kYears + y] != 0)
+          CubeAdd(one, n, Q9TokenCube::kYearBase + y,
+                  acc[n * Q9TokenCube::kYears + y]);
+  }
+  for (std::size_t k = 0; k < ta.sparse.size(); ++k)
+    CubeAdd({std::string(ta.sparse_tokens[k])}, ta.sparse[k].nation,
+            ta.sparse[k].year, ta.sparse[k].delta);
 }
 
-void TpchQ9State::BuildCellsFromPairs() {
+void TpchQ9State::BuildCellsFromPairs(const core::AuxEngineServices &services) {
   static const std::vector<std::string> kNoTokens;
-  for (auto &partition : profit_partitions) {
-    for (const auto &entry : partition.parts) {
-      auto &rec = *entry.second; // build state: records are unshared
-      if (!rec.exists || rec.pairs.empty())
-        continue;
-      for (const auto &pair : rec.pairs)
-        ApplyPairContribution(entry.first, rec, kNoTokens, pair.suppkey, +1,
-                              *this);
-    }
-  }
+  // Each record's cells are written only by its own slot; the side maps are read-only.
+  core::ParallelSlices(
+      services, profit_partitions.size(), kCellsGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t p = begin; p < end; ++p) {
+          for (const auto &entry : profit_partitions[p].parts) {
+            auto &rec = *entry.second; // build state: records are unshared
+            if (!rec.exists || rec.pairs.empty())
+              continue;
+            for (const auto &pair : rec.pairs)
+              ApplyPairContribution(entry.first, rec, kNoTokens, pair.suppkey,
+                                    +1, *this);
+          }
+        }
+      });
 }
 
 void TpchQ9State::BuildSuppPairsIndex() {
@@ -1588,7 +1565,8 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ9Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ9TxnBuffer>();
 }
 
-void TpchQ9Module::BuildStateInto(TpchQ9State &state, bool full) const {
+void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
+                                  TpchQ9State &state, bool full) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q9 aux requires a typed initial scan source");
 
@@ -1667,7 +1645,7 @@ void TpchQ9Module::BuildStateInto(TpchQ9State &state, bool full) const {
   state.FinishBulkParts();
   state.FinalizePostings();
   state.RebuildNationEmitOrder();
-  state.BuildCellsFromPairs();
+  state.BuildCellsFromPairs(services);
   if (full) {
     state.BuildSuppPairsIndex();
     state.BuildCube();
@@ -1676,9 +1654,8 @@ void TpchQ9Module::BuildStateInto(TpchQ9State &state, bool full) const {
 
 void TpchQ9Module::Build(core::AuxEngineServices &services,
                          core::StateBuilder &builder) {
-  (void)services;
   auto state = std::make_shared<TpchQ9State>();
-  BuildStateInto(*state);
+  BuildStateInto(services, *state);
 
   // Metadata keeps name index + nation labels; profit cells live in slot
   // images. Everything is moved out of the build state so no published image
@@ -2051,8 +2028,6 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   new_state->profit_slot_count = metadata_image->state->profit_slot_count;
   new_state->InitSlots(new_state->profit_slot_count);
   const auto slot_count = new_state->profit_slot_count;
-  const std::size_t workers = std::max<std::size_t>(
-      1, std::min<std::size_t>(services.WorkerCount(), 8));
 
   const TpchQ9State *join_side = nullptr;
   const TpchQ9State *cube_src = nullptr;
@@ -2145,11 +2120,8 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
       if (slot < slot_count)
         copies.emplace_back(slot, typed->state.get());
     }
-    // Slot copies (pointer vectors of shared records) are independent.
-    ParallelFor(workers, copies.size(), [&](std::size_t i, std::size_t) {
-      new_state->profit_partitions[copies[i].first] =
-          copies[i].second->profit_partitions[0];
-    });
+    for (const auto &[slot, state] : copies)
+      new_state->profit_partitions[slot] = state->profit_partitions[0];
   }
 
   // Part changes affect every pair the part has aggregates for.
@@ -2186,8 +2158,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   std::vector<std::vector<TpchQ9State::CellDelta>> net_chunks(chunk_count);
   std::vector<TpchQ9State::PairSnap> snaps(affected.size());
   std::vector<uint8_t> snap_valid(affected.size(), 0);
-  // Read-only over the slots and the published side image: parallel by chunk.
-  ParallelFor(workers, chunk_count, [&](std::size_t c, std::size_t) {
+  for (std::size_t c = 0; c < chunk_count; ++c) {
     const std::size_t end = std::min(affected.size(), (c + 1) * kChunk);
     for (std::size_t idx = c * kChunk; idx < end; ++idx) {
       const auto partkey = affected[idx].first;
@@ -2200,7 +2171,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
       snap_valid[idx] = TpchQ9State::PairSnapshot(
           partkey, *rec, suppkey, -1, *join_side, snaps[idx], net_chunks[c]);
     }
-  });
+  }
   for (const auto &[partkey, suppkey] : affected) {
     if (!renamed.count(partkey))
       continue;
@@ -2246,7 +2217,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
         active.push_back(slot);
     std::vector<std::vector<std::pair<int64_t, int64_t>>> created(
         active.size());
-    ParallelFor(workers, active.size(), [&](std::size_t t, std::size_t) {
+    for (std::size_t t = 0; t < active.size(); ++t) {
       auto &order = by_slot[active[t]];
       std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
         return deltas[a].partkey < deltas[b].partkey;
@@ -2267,7 +2238,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
                                     sign * delta.quantity_raw))
           created[t].emplace_back(delta.suppkey, delta.partkey);
       }
-    });
+    }
     for (const auto &list : created)
       for (const auto &[suppkey, partkey] : list) {
         side_work->AddSuppPair(suppkey, partkey);
@@ -2315,7 +2286,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   // ── Pass B: add affected pairs' contributions under the NEW state ───────
-  ParallelFor(workers, chunk_count, [&](std::size_t c, std::size_t) {
+  for (std::size_t c = 0; c < chunk_count; ++c) {
     auto &out = net_chunks[c];
     const std::size_t end = std::min(affected.size(), (c + 1) * kChunk);
     for (std::size_t idx = c * kChunk; idx < end; ++idx) {
@@ -2350,7 +2321,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
             out.push_back(
                 {partkey, now.nation, Q9Pair::kYearBase + yi, now.v[yi]});
     }
-  });
+  }
   for (const auto &[partkey, suppkey] : affected) {
     if (!renamed.count(partkey))
       continue;
@@ -2361,7 +2332,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     new_state->ApplyPairContribution(partkey, *rec, tokens, suppkey, +1,
                                      *side_work);
   }
-  new_state->ApplyNetCellDeltas(net_chunks, workers);
+  new_state->ApplyNetCellDeltas(net_chunks);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
 
@@ -2442,6 +2413,18 @@ struct Q9Accumulator {
     } else {
       sparse[Q9CellKey{nation, year}] += profit;
     }
+  }
+
+  void Merge(const Q9Accumulator &from) {
+    for (int32_t n = 0; n < kDenseNations; ++n) {
+      nation_seen[n] = nation_seen[n] || from.nation_seen[n];
+      for (int32_t y = 0; y < kDenseYears; ++y) {
+        dense_profit[n][y] += from.dense_profit[n][y];
+        dense_valid[n][y] = dense_valid[n][y] || from.dense_valid[n][y];
+      }
+    }
+    for (const auto &[key, profit] : from.sparse)
+      sparse[key] += profit;
   }
 };
 
@@ -2638,7 +2621,8 @@ void TpchQ9Module::Execute(core::AuxEngineServices &services,
     std::vector<int32_t> candidates;
     const bool use_candidates =
         !tokens.empty() && IntersectPostings(meta, tokens, candidates);
-    EmitResult(meta, slots, color, use_candidates ? &candidates : nullptr, sink);
+    EmitResult(services, meta, slots, color,
+               use_candidates ? &candidates : nullptr, sink);
     return;
   }
 
@@ -2709,13 +2693,13 @@ void TpchQ9Module::Execute(core::AuxEngineServices &services,
         slots[slot] = &typed->state->profit_partitions[0];
     }
   }
-  EmitResult(meta, slots, color, use_candidates ? &candidates : nullptr, sink);
+  EmitResult(services, meta, slots, color,
+             use_candidates ? &candidates : nullptr, sink);
 }
 
 void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  (void)services;
   // Recompute from base tables: build state and emit
   std::string color;
   if (!arguments.values.empty() && !arguments.values[0].is_null &&
@@ -2723,7 +2707,7 @@ void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &services,
     color = std::get<std::string>(arguments.values[0].payload);
 
   TpchQ9State state;
-  BuildStateInto(state, /*full=*/false);
+  BuildStateInto(services, state, /*full=*/false);
   std::vector<const TpchQ9State::PartProfitPartition *> slots;
   slots.reserve(state.profit_partitions.size());
   for (const auto &partition : state.profit_partitions)
@@ -2733,11 +2717,12 @@ void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &services,
   std::vector<int32_t> candidates;
   const bool use_candidates =
       !tokens.empty() && IntersectPostings(state, tokens, candidates);
-  EmitResult(state, slots, color, use_candidates ? &candidates : nullptr, sink);
+  EmitResult(services, state, slots, color,
+             use_candidates ? &candidates : nullptr, sink);
 }
 
 void TpchQ9Module::EmitResult(
-    const TpchQ9State &meta,
+    const core::AuxEngineServices &services, const TpchQ9State &meta,
     const std::vector<const TpchQ9State::PartProfitPartition *> &slots,
     const std::string &color, const std::vector<int32_t> *candidates,
     core::AuxRowSink &sink) const {
@@ -2752,32 +2737,46 @@ void TpchQ9Module::EmitResult(
   const std::string_view needle_view(needle);
   const auto slot_count = static_cast<core::PartitionId>(slots.size());
 
-  auto visit = [&](const Q9PartRecord &record) {
+  auto visit = [&](Q9Accumulator &into, const Q9PartRecord &record) {
     if (!ContainsSubstring(record.normalized_name, needle_view))
       return;
     for (const auto &cell : record.cells)
-      acc.AddCell(cell.Nation(), cell.Year(), cell.profit);
+      into.AddCell(cell.Nation(), cell.Year(), cell.profit);
+  };
+  const auto merge = [](Q9Accumulator &into, Q9Accumulator &&from) {
+    into.Merge(from);
   };
 
   if (candidates) {
-    for (const auto pk : *candidates) {
-      if (slot_count == 0)
-        break;
-      const auto *partition =
-          slots[TpchQ9State::HashPartition(pk, slot_count)];
-      if (!partition)
-        continue;
-      if (const auto *record = partition->parts.Find(pk))
-        visit(*record);
-    }
+    core::ParallelReduce(
+        services, candidates->size(), kCandidateGrain, acc,
+        [&](Q9Accumulator &part, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            const auto pk = (*candidates)[i];
+            if (slot_count == 0)
+              break;
+            const auto *partition =
+                slots[TpchQ9State::HashPartition(pk, slot_count)];
+            if (!partition)
+              continue;
+            if (const auto *record = partition->parts.Find(pk))
+              visit(part, *record);
+          }
+        },
+        merge);
   } else {
     // Needle is not a whole indexed token: exact substring scan of all parts.
-    for (const auto *partition : slots) {
-      if (!partition)
-        continue;
-      for (const auto &entry : partition->parts)
-        visit(*entry.second);
-    }
+    core::ParallelReduce(
+        services, slots.size(), kSlotGrain, acc,
+        [&](Q9Accumulator &part, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            if (!slots[i])
+              continue;
+            for (const auto &entry : slots[i]->parts)
+              visit(part, *entry.second);
+          }
+        },
+        merge);
   }
 
   EmitAccumulated(meta, acc, sink);

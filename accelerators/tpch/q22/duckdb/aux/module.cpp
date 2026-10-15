@@ -583,7 +583,6 @@ void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &services,
 // ── BuildState ──────────────────────────────────────────────────────────────
 TpchQ22State
 TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error(
         "TPC-H Q22 aux requires a typed initial scan source");
@@ -646,12 +645,17 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
   }
 
   // Per-prefix count/sum structures over the zero-order balances.
-  for (auto &[prefix, counts] : distributions) {
-    auto agg = std::make_shared<core::SortedCountSum>();
-    for (const auto &[balance, count] : counts)
-      agg->Add(balance, count);
-    state.prefix_aggregates[prefix] = std::move(agg);
-  }
+  std::vector<decltype(distributions)::const_iterator> groups;
+  for (auto it = distributions.begin(); it != distributions.end(); ++it)
+    groups.push_back(it);
+  std::vector<std::shared_ptr<core::SortedCountSum>> aggs(groups.size());
+  services.ParallelFor(groups.size(), [&](std::size_t i) {
+    aggs[i] = std::make_shared<core::SortedCountSum>();
+    for (const auto &[balance, count] : groups[i]->second)
+      aggs[i]->Add(balance, count);
+  });
+  for (std::size_t i = 0; i < groups.size(); ++i)
+    state.prefix_aggregates[groups[i]->first] = std::move(aggs[i]);
   return state;
 }
 

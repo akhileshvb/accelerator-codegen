@@ -62,10 +62,9 @@ Implement in `aux/module.{hpp,cpp}` (under the per-engine query tree):
 
 Modules receive each change as a projected `core::MutationBatch` (`ToMutationBatch` of the shared `ColumnarBatch`). Maintenance selection: `services.ChooseMaintenance` (`maintenance::SelectMinCostAction`, `CostModelParams` JSON, `interference_*` fields).
 
-**Module thread rules (C12).** All parallelism comes from the backend's one thread budget through `services`:
-- Maintenance (`InterpretMutation` / `AccumulateMutation` / `StageMaintenance`) and `Build` callbacks are **single-threaded** inside one accelerator; the runtime schedules them.
-- Reads parallelize only inside `Execute`: split work proportional to the state read into fixed chunks and run them with `services.ParallelFor(n, fn)` (substrate pool, shared with builds, so the total never exceeds the budget; serial by default). Size chunks from `services.WorkerCount()`. Each task writes its own partial result and the partials are **merged in task-index order**, so rows and floating-point sums equal a serial run. Row emission through the sink stays serial; reads that finish in microseconds stay serial (pool dispatch costs tens of microseconds).
-- Never `std::thread::hardware_concurrency`, a fixed thread count or cap, a private pool, or the engine's own threads (`MaxThreads`, multi-threaded table functions). `pipeline/gates/run_thread_budget_lint.sh` flags violations.
+**Module thread rules (C12).** All parallelism comes from the backend's one thread budget through `services`. Never `std::thread::hardware_concurrency`, a fixed thread count, a private pool, or the engine's own threads (`MaxThreads`, multi-threaded table functions); `pipeline/gates/run_thread_budget_lint.sh` flags violations.
+
+**Read and build parallelism live in `Execute` and `Build`.** The budget has two caps, `ACCEL_AUX_READ_THREADS` and `ACCEL_AUX_BUILD_THREADS` (each at most the budget, default the budget; an engine may supply them from its own settings: Postgres `accel.read_threads` / `accel.build_threads`). `services.WorkerCount()` and `services.ParallelFor(n, fn)` report and use the cap of the current phase; in maintenance (`AccumulateMutation`, `StageMaintenance`, `InterpretMutation`) they are 1 and serial: maintenance stays single-threaded. A module whose `Execute` or `Build` does work proportional to the data (many partitions, groups, entries, scan rows) splits it with `core::ParallelReduce` / `ParallelSlices` (`substrate/aux/core/parallel_slices.hpp`): contiguous slices of at least a fixed `grain`, so a small read is one slice on the calling thread and `WorkerCount() == 1` is the serial code. Each slice fills its own partial; merge the partials in slice order so rows and floating-point sums equal a serial run at any thread count. Slices must not call `StateStore()` / `CurrentVisibility()` (take the snapshot first and borrow its images), the sink or the builder; emit rows and `builder.Write` serially. Choose the grain so a slice is worth at least ~200 us (pool dispatch costs tens of microseconds) and measure that reads that were serial stay as fast. Do not use the engine's own threads (`MaxThreads`, multi-threaded table functions) for this.
 
 ### Backend contract: slots of the runtime skeleton
 
@@ -106,6 +105,8 @@ Also supplied: `CostModel(accelerator)` (cost model resolved by engine and scale
 - **No 32-bit counts or offsets** on rows, batches, images or partitions; partition keys 64-bit; decimal cells 128-bit.
 - **No per-row heap allocation on capture**: typed columns, no `std::string` / `shared_ptr` / node per row.
 - **Correct under concurrency** (gates `slot_*`, `pipeline/gates/README_runtime_gates.md`): no torn or stale read, writes from a second connection captured, a rebuild under continuous writes becomes synced without a quiet window, a long apply never blocks reads, hits under continuous writes.
+
+Do **not** hard-code a second engine's file layout into query modules. When an engine adapter is absent, leave optional catalog SQL slots empty rather than inventing adapter trees mid-query.
 
 ### What query agents must not regenerate
 

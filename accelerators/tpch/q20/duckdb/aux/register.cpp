@@ -146,15 +146,16 @@ struct TpchQ20Scan : TpchQ20InitialScan {
   explicit TpchQ20Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanLineitems(
       const std::function<void(const TpchQ20LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_shipdate, l_partkey, l_suppkey, l_quantity FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({DateDays(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    DecimalRaw(ChunkValue(chunk, 3, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ20LineitemInput{DateDays(ChunkValue(chunk, 0, row)),
+                                      SafeInt64(ChunkValue(chunk, 1, row)),
+                                      SafeInt64(ChunkValue(chunk, 2, row)),
+                                      DecimalRaw(ChunkValue(chunk, 3, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool ScanLineitemsByPair(
       const std::function<void(int64_t, int64_t, int32_t, int64_t)> &consumer)
@@ -222,33 +223,36 @@ struct TpchQ20Scan : TpchQ20InitialScan {
   }
   void ScanParts(
       const std::function<void(const TpchQ20PartInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT p_partkey, p_name FROM part",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ20PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                  ChunkValue(chunk, 1, row).ToString()};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanPartsupps(
       const std::function<void(const TpchQ20PartsuppInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ20PartsuppInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      SafeInt64(ChunkValue(chunk, 1, row)),
+                                      SafeInt64(ChunkValue(chunk, 2, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanSuppliers(
       const std::function<void(const TpchQ20SupplierInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    ChunkValue(chunk, 2, row).ToString(),
-                    SafeInt32(ChunkValue(chunk, 3, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ20SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      ChunkValue(chunk, 1, row).ToString(),
+                                      ChunkValue(chunk, 2, row).ToString(),
+                                      SafeInt32(ChunkValue(chunk, 3, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanNations(
       const std::function<void(const TpchQ20NationInput &)> &consumer) override {

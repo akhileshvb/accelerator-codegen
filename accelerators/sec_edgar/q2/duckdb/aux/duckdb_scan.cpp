@@ -112,26 +112,20 @@ void SecEdgarQ2DuckdbScan::ScanNum(
 
 void SecEdgarQ2DuckdbScan::ScanSub(
     const std::function<void(const SecEdgarQ2SubInput &)> &consumer) {
-  Stream(connection, "SELECT adsh, name, fy FROM sub", [&](DataChunk &chunk) {
-    Col<string_t> adsh, name;
-    Col<int32_t> fy;
-    adsh.Init(chunk, 0);
-    name.Init(chunk, 1);
-    fy.Init(chunk, 2);
-    SecEdgarQ2SubInput in;
-    for (idx_t r = 0; r < chunk.size(); ++r) {
-      in.adsh.assign(View(adsh.Get(r)));
-      in.name_is_null = !name.Valid(r);
-      if (in.name_is_null) {
-        in.name.clear();
-      } else {
-        in.name.assign(View(name.Get(r)));
-      }
-      in.fy_is_null = !fy.Valid(r);
-      in.fy = in.fy_is_null ? 0 : fy.Get(r);
-      consumer(in);
-    }
-  });
+  scan::ScanQueryDecoded(
+      connection, "SELECT adsh, name, fy FROM sub",
+      [](const DataChunk &chunk, idx_t row) {
+        const auto name = chunk.GetValue(1, row);
+        const auto fy = chunk.GetValue(2, row);
+        SecEdgarQ2SubInput in;
+        in.adsh = chunk.GetValue(0, row).ToString();
+        in.name_is_null = name.IsNull();
+        in.name = in.name_is_null ? std::string() : name.ToString();
+        in.fy_is_null = fy.IsNull();
+        in.fy = in.fy_is_null ? 0 : fy.GetValue<int32_t>();
+        return in;
+      },
+      [&](SecEdgarQ2SubInput &&in) { consumer(in); });
 }
 
 void SecEdgarQ2DuckdbScan::ScanUomRowCounts(

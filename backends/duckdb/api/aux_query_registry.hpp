@@ -69,9 +69,13 @@ struct ModuleBinding : DuckdbRuntime::Binding {
   ModuleBinding(Args &&...args) : module(std::forward<Args>(args)...) {}
 
   core::AuxQueryModule &Module() override { return module; }
-  void Build(DuckDBAuxBackend &backend, core::StateBuilder &builder) override { module.Build(backend, builder); }
+  void Build(DuckDBAuxBackend &backend, core::StateBuilder &builder) override {
+    const scan::ScanServicesScope scans(backend);
+    module.Build(backend, builder);
+  }
   void Execute(DuckDBAuxBackend &backend, const core::QueryArguments &arguments,
                core::AuxRowSink &sink) override {
+    const scan::ScanServicesScope scans(backend);
     module.Execute(backend, arguments, sink);
   }
 };

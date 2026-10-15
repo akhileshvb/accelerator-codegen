@@ -37,6 +37,7 @@ ScanRedirect::~ScanRedirect() {
 thread_local ScanRedirect *ScanRedirect::current = nullptr;
 
 thread_local uint64_t t_table_scans = 0;
+thread_local const core::AuxEngineServices *scan::t_scan_services = nullptr;
 
 // ---- engine services for the queries' InitialScan implementations ----
 namespace scan {

@@ -838,7 +838,7 @@ void TestCodec(uint64_t seed) {
   Gen g(seed);
   Harness h(false);
   Seed(h, g, 40, 3000);
-  const auto state = h.module->BuildState();
+  const auto state = h.module->BuildState(h.runtime->Backend());
   const auto bytes = EncodeSecEdgarQ2State(*state);
   SecEdgarQ2State decoded;
   Require(DecodeSecEdgarQ2State(bytes, decoded), "decode");
@@ -1010,9 +1010,11 @@ void TestNativeScan(uint64_t seed) {
     SecEdgarQ2Config cfg{1, 2};
     SecEdgarQ2DuckdbScan native(con);
     SqlOnlyScan sql(con);
-    SecEdgarQ2Module mn(cfg, &native), ms(cfg, &sql);
-    const auto a = mn.BuildState();
-    const auto b = ms.BuildState();
+    const auto mn = std::make_shared<SecEdgarQ2Module>(cfg, &native);
+    const auto ms = std::make_shared<SecEdgarQ2Module>(cfg, &sql);
+    accelerator_codegen::aux_state::test::ModuleRuntime rn(con, mn), rs(con, ms);
+    const auto a = mn->BuildState(rn.Backend());
+    const auto b = ms->BuildState(rs.Backend());
     const GroupMap ga = Groups(*a), gb = Groups(*b);
     Require(ga.size() > 1000, "native scan built groups");
     Require(ga == gb, "native scan state == SQL path state (" + std::to_string(ga.size()) +
@@ -1033,8 +1035,9 @@ void TestNativeScan(uint64_t seed) {
     // The opt-out keeps its meaning on the native path.
     SecEdgarQ2Config small = cfg;
     small.max_uom_rows = 10000;
-    SecEdgarQ2Module mx(small, &native);
-    const auto x = mx.BuildState();
+    const auto mx = std::make_shared<SecEdgarQ2Module>(small, &native);
+    accelerator_codegen::aux_state::test::ModuleRuntime mx_runtime(con, mx);
+    const auto x = mx->BuildState(mx_runtime.Backend());
     std::vector<SecEdgarQ2OutputRow> rx;
     Require(!FinalizeSecEdgarQ2(*x, 2022, "USD", rx), "USD is excluded by max_uom_rows");
     Require(FinalizeSecEdgarQ2(*x, 2022, "pure", rx), "default unit stays covered");

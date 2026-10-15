@@ -1,6 +1,7 @@
 #include "tpch/q11/duckdb/aux/module.hpp"
 #include "tpch/q11/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -22,6 +23,8 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
+// Suppliers per build slice: sorting ~80 parts is ~10 us, so hundreds pay for a task.
+constexpr std::size_t kSupplierFoldGrain = 256;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kMetadataMagic = 0x4d313151; // Q11M
 constexpr uint32_t kNationMagic = 0x4e313151;   // Q11N
@@ -1176,7 +1179,6 @@ void TpchQ11Module::ExecuteFallback(core::AuxEngineServices &services,
 
 TpchQ11Built TpchQ11Module::BuildState(
     core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q11 requires a typed initial scan source");
 
@@ -1200,41 +1202,63 @@ TpchQ11Built TpchQ11Module::BuildState(
   });
 
   // Per-supplier: sort by partkey and fold duplicates (bag semantics).
-  for (auto &[suppkey, entry] : all) {
-    auto &parts = entry.parts;
-    std::sort(parts.begin(), parts.end(),
-              [](const Q11SupplierPart &a, const Q11SupplierPart &b) {
-                return a.partkey < b.partkey;
-              });
-    std::size_t out = 0;
-    for (std::size_t i = 0; i < parts.size(); ++i) {
-      if (out > 0 && parts[out - 1].partkey == parts[i].partkey) {
-        parts[out - 1].value += parts[i].value;
-        parts[out - 1].count += parts[i].count;
-      } else {
-        parts[out++] = parts[i];
-      }
-    }
-    parts.resize(out);
-    parts.shrink_to_fit();
-  }
+  std::vector<Q11SupplierEntry *> entries;
+  entries.reserve(all.size());
+  for (auto &[suppkey, entry] : all)
+    entries.push_back(&entry);
+  core::ParallelSlices(
+      services, entries.size(), kSupplierFoldGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t e = begin; e < end; ++e) {
+          auto &parts = entries[e]->parts;
+          std::sort(parts.begin(), parts.end(),
+                    [](const Q11SupplierPart &a, const Q11SupplierPart &b) {
+                      return a.partkey < b.partkey;
+                    });
+          std::size_t out = 0;
+          for (std::size_t i = 0; i < parts.size(); ++i) {
+            if (out > 0 && parts[out - 1].partkey == parts[i].partkey) {
+              parts[out - 1].value += parts[i].value;
+              parts[out - 1].count += parts[i].count;
+            } else {
+              parts[out++] = parts[i];
+            }
+          }
+          parts.resize(out);
+          parts.shrink_to_fit();
+        }
+      });
 
-  // Merge supplier contributions into per-nation maps.
+  // Per nation: merge its suppliers' parts and sort them into the aggregate.
+  // Sums are exact integers, so supplier order does not matter.
   std::unordered_set<int32_t> known_nations;
   for (const auto &entry : state->nation_name_to_key)
     known_nations.insert(entry.second);
-  std::unordered_map<int32_t, std::unordered_map<int64_t, Q11AccT>> merged;
-  std::unordered_map<int32_t, Q11AccT> totals;
+  std::unordered_map<int32_t, std::vector<const Q11SupplierEntry *>> by_nation;
   for (const auto &[suppkey, entry] : all) {
-    if (!entry.has_supplier || !known_nations.count(entry.nationkey))
-      continue;
-    auto &nation_map = merged[entry.nationkey];
-    Q11AccT &total = totals[entry.nationkey];
-    for (const auto &part : entry.parts) {
-      nation_map[part.partkey] += static_cast<Q11AccT>(part.value);
-      total += static_cast<Q11AccT>(part.value);
-    }
+    if (entry.has_supplier && known_nations.count(entry.nationkey))
+      by_nation[entry.nationkey].push_back(&entry);
   }
+  const std::vector<std::pair<int32_t, std::vector<const Q11SupplierEntry *>>>
+      jobs(by_nation.begin(), by_nation.end());
+  std::vector<std::shared_ptr<const TpchQ11NationData>> nation_data(jobs.size());
+  services.ParallelFor(jobs.size(), [&](std::size_t j) {
+    std::unordered_map<int64_t, Q11AccT> merged;
+    Q11AccT total = 0;
+    for (const auto *entry : jobs[j].second) {
+      for (const auto &part : entry->parts) {
+        merged[part.partkey] += static_cast<Q11AccT>(part.value);
+        total += static_cast<Q11AccT>(part.value);
+      }
+    }
+    std::vector<TpchQ11OutputRow> sorted;
+    sorted.reserve(merged.size());
+    for (const auto &[pk, value] : merged)
+      if (value > 0)
+        sorted.push_back({pk, value});
+    std::sort(sorted.begin(), sorted.end(), RowBefore);
+    nation_data[j] = MakeNationData(sorted, total);
+  });
 
   // Distribute suppliers into COW buckets (moving, no copies).
   std::vector<std::shared_ptr<Q11SupplierBucket>> tmp(kQ11SupplierBuckets);
@@ -1249,16 +1273,8 @@ TpchQ11Built TpchQ11Module::BuildState(
   tmp.clear();
 
   TpchQ11Built built;
-  for (auto it = merged.begin(); it != merged.end();) {
-    std::vector<TpchQ11OutputRow> sorted;
-    sorted.reserve(it->second.size());
-    for (const auto &[pk, value] : it->second)
-      if (value > 0)
-        sorted.push_back({pk, value});
-    std::sort(sorted.begin(), sorted.end(), RowBefore);
-    built.nations[it->first] = MakeNationData(sorted, totals[it->first]);
-    it = merged.erase(it);
-  }
+  for (std::size_t j = 0; j < jobs.size(); ++j)
+    built.nations[jobs[j].first] = std::move(nation_data[j]);
   built.state = std::move(state);
   return built;
 }

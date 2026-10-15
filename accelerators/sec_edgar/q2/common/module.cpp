@@ -16,6 +16,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "substrate/aux/core/parallel_slices.hpp"
+
 #if defined(__SSE2__)
 #include <emmintrin.h>
 #endif
@@ -1098,7 +1100,7 @@ public:
 
   // Applies the max_uom_rows opt-out (the default unit is always kept),
   // aggregates every partition and builds the sorted bases.
-  void Finish(uint64_t max_uom_rows) {
+  void Finish(const core::AuxEngineServices &services, uint64_t max_uom_rows) {
     for (uint32_t u = 0; u < uom_rows_.size(); ++u) {
       dir_.excluded[u] =
           dir_.names.Get(u) != kSecEdgarQ2DefaultUom && uom_rows_[u] > max_uom_rows ? 1 : 0;
@@ -1106,7 +1108,7 @@ public:
     const size_t nuom = uom_rows_.size();
     // A unit has at most as many groups as rows: the capacity is only
     // reserved address space (pages are populated as groups are appended).
-    std::vector<HugeVec<BuildEnt>> groups(nuom);
+    Groups groups(nuom);
     for (size_t u = 0; u < nuom; ++u) {
       if (!dir_.excluded[u]) {
         groups[u] = HugeVec<BuildEnt>(std::max<uint64_t>(16, uom_rows_[u]));
@@ -1116,28 +1118,21 @@ public:
 #if defined(__SSE2__)
     _mm_sfence(); // the streamed lines are visible to the loads below
 #endif
-    PartTable table;
-    for (size_t pi = 0; pi < kParts; ++pi) {
-      table.Reset();
-      const Part &part = parts_[pi];
-      for (size_t b = 0; b < part.blocks.size(); ++b) {
-        const size_t n = b + 1 == part.blocks.size()
-                             ? static_cast<size_t>(cur_[pi] - part.blocks[b])
-                             : kBlock;
-        const PackedRec *recs = part.blocks[b];
-        constexpr size_t kAhead = 8;
-        for (size_t i = 0; i < n; ++i) {
-          if (i + kAhead < n) {
-            table.Prefetch(recs[i + kAhead].gk);
+    // Slices of partitions aggregate independently; their groups are appended
+    // in slice order, so each unit's group order is the serial one.
+    core::ParallelReduce(
+        services, kParts, kPartGrain, groups,
+        [&](Groups &out, size_t begin, size_t end) {
+          out.resize(nuom);
+          AggregatePartitions(begin, end, out);
+        },
+        [&](Groups &into, Groups &&from) {
+          for (size_t u = 0; u < nuom; ++u) {
+            for (size_t i = 0; i < from[u].size(); ++i) {
+              into[u].push_back(from[u][i]);
+            }
           }
-          table.Add(recs[i], 1);
-        }
-      }
-      for (unsigned i = 0; i < wcn_[pi]; ++i) {
-        table.Add(wc_[pi].r[i], 1);
-      }
-      table.Emit(groups, dir_.excluded);
-    }
+        });
     parts_.clear();
     std::vector<HugeRegion>().swap(arena_);
     // Wide rows (generic path / ids beyond the packing): sort and fold.
@@ -1160,22 +1155,53 @@ public:
     }
     std::vector<WideRec>().swap(wide_);
     state_.slices.assign(nuom, nullptr);
-    for (uint32_t u = 0; u < nuom; ++u) {
+    services.ParallelFor(nuom, [&](size_t u) {
       if (!dir_.excluded[u]) {
-        state_.slices[u] = Q2Slice::Make(u, Seal(groups[u]));
+        state_.slices[u] = Q2Slice::Make(static_cast<uint32_t>(u), Seal(groups[u]));
       }
       groups[u] = HugeVec<BuildEnt>();
-    }
+    });
     state_.uoms = std::make_shared<const Q2UomDir>(std::move(dir_));
   }
 
 private:
+  using Groups = std::vector<HugeVec<BuildEnt>>;
+  // Partitions per slice: each is 1/4096 of the packed rows, so a slice is
+  // at least 1/64 of the table.
+  static constexpr size_t kPartGrain = 64;
+
   struct Part {
     std::vector<PackedRec *> blocks;
   };
   struct alignas(64) Line {
     PackedRec r[kLine];
   };
+
+  // Aggregates partitions [begin, end) and appends their groups to `groups`.
+  void AggregatePartitions(size_t begin, size_t end, Groups &groups) const {
+    PartTable table;
+    for (size_t pi = begin; pi < end; ++pi) {
+      table.Reset();
+      const Part &part = parts_[pi];
+      for (size_t b = 0; b < part.blocks.size(); ++b) {
+        const size_t n = b + 1 == part.blocks.size()
+                             ? static_cast<size_t>(cur_[pi] - part.blocks[b])
+                             : kBlock;
+        const PackedRec *recs = part.blocks[b];
+        constexpr size_t kAhead = 8;
+        for (size_t i = 0; i < n; ++i) {
+          if (i + kAhead < n) {
+            table.Prefetch(recs[i + kAhead].gk);
+          }
+          table.Add(recs[i], 1);
+        }
+      }
+      for (unsigned i = 0; i < wcn_[pi]; ++i) {
+        table.Add(wc_[pi].r[i], 1);
+      }
+      table.Emit(groups, dir_.excluded);
+    }
+  }
 
   // Rows are staged in a cache-line buffer per partition and written to the
   // partition's block a full line at a time with streaming stores, so the
@@ -1402,7 +1428,8 @@ private:
 
 } // namespace
 
-std::shared_ptr<const SecEdgarQ2State> SecEdgarQ2Module::BuildState() const {
+std::shared_ptr<const SecEdgarQ2State>
+SecEdgarQ2Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q2 requires a typed initial scan source");
   }
@@ -1446,14 +1473,14 @@ std::shared_ptr<const SecEdgarQ2State> SecEdgarQ2Module::BuildState() const {
   state->names.Shrink();
 
   // 3. Aggregation and sorted bases.
-  agg.Finish(config.max_uom_rows);
+  agg.Finish(services, config.max_uom_rows);
   return state;
 }
 
-void SecEdgarQ2Module::Build(core::AuxEngineServices &,
+void SecEdgarQ2Module::Build(core::AuxEngineServices &services,
                              core::StateBuilder &builder) {
   builder.Write(core::StateImage::Make(Id(), kStatePartition, 0,
-                                       MakeImage(BuildState())));
+                                       MakeImage(BuildState(services))));
   builder.Finish();
 }
 

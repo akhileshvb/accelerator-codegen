@@ -1,6 +1,7 @@
 #include "tpch/q6/duckdb/aux/module.hpp"
 #include "tpch/q6/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
 
@@ -24,6 +25,8 @@ using core::ByteWriter;
 using Q6AccT = ::accelerator_codegen::Q6AccT;
 using Q6RevenueMatrix = ::accelerator_codegen::Q6RevenueMatrix;
 
+// Month matrices per read slice: two loads each, so only thousands pay for a task.
+constexpr std::size_t kEvalGrain = 4096;
 constexpr uint32_t kVersion = 3; // cells are 2D prefix sums
 constexpr uint32_t kMatrixMagic = 0x51364D58; // Q6MX
 constexpr int32_t kEpoch = 719468;
@@ -768,8 +771,14 @@ void TpchQ6Module::Execute(core::AuxEngineServices &services,
   }
   Q6AccT revenue = static_cast<Q6AccT>(0);
   if (!plan.empty) {
-    for (const auto &image : snapshot.partitions)
-      revenue += plan.Eval(AsQ6Image(image)->matrix);
+    const auto &images = snapshot.partitions;
+    core::ParallelReduce(
+        services, images.size(), kEvalGrain, revenue,
+        [&](Q6AccT &sum, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i)
+            sum += plan.Eval(AsQ6Image(images[i])->matrix);
+        },
+        [](Q6AccT &into, Q6AccT &&from) { into += from; });
   }
   EmitResult(revenue, sink);
 }

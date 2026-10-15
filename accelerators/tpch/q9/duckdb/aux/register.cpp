@@ -14,6 +14,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -107,21 +108,23 @@ struct TpchQ9Scan : TpchQ9InitialScan {
   explicit TpchQ9Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
       const std::function<void(const TpchQ9PartInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT p_partkey, p_name FROM part",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ9PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                 ChunkValue(chunk, 1, row).ToString()};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanSuppliers(
       const std::function<void(const TpchQ9SupplierInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT s_suppkey, s_nationkey FROM supplier",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt32(ChunkValue(chunk, 1, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ9SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                     SafeInt32(ChunkValue(chunk, 1, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanNations(
       const std::function<void(const TpchQ9NationInput &)> &consumer) override {
@@ -133,44 +136,47 @@ struct TpchQ9Scan : TpchQ9InitialScan {
   }
   void ScanOrders(
       const std::function<void(const TpchQ9OrdersInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT o_orderkey, o_orderdate FROM orders",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    DateDays(ChunkValue(chunk, 1, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ9OrdersInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                   DateDays(ChunkValue(chunk, 1, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanPartsupps(
       const std::function<void(const TpchQ9PartsuppInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    DecimalRaw(ChunkValue(chunk, 2, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ9PartsuppInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                     SafeInt64(ChunkValue(chunk, 1, row)),
+                                     DecimalRaw(ChunkValue(chunk, 2, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanLineitems(
       const std::function<void(const TpchQ9LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_partkey, l_suppkey, l_orderkey, l_quantity, "
         "l_extendedprice, l_discount FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    DecimalRaw(ChunkValue(chunk, 3, row)),
-                    DecimalRaw(ChunkValue(chunk, 4, row)),
-                    DecimalRaw(ChunkValue(chunk, 5, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ9LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                     SafeInt64(ChunkValue(chunk, 1, row)),
+                                     SafeInt64(ChunkValue(chunk, 2, row)),
+                                     DecimalRaw(ChunkValue(chunk, 3, row)),
+                                     DecimalRaw(ChunkValue(chunk, 4, row)),
+                                     DecimalRaw(ChunkValue(chunk, 5, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool ScanProfitContributions(
       const std::function<void(const TpchQ9ProfitContribution &)> &consumer)
       override {
     // Push LI ⨝ orders ⨝ supplier ⨝ partsupp profit aggregation into DuckDB.
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l.l_partkey, s.s_nationkey, year(o.o_orderdate), "
         "SUM(CAST(round(l.l_extendedprice * (1 - l.l_discount) * 10000) AS "
@@ -182,12 +188,13 @@ struct TpchQ9Scan : TpchQ9InitialScan {
         "JOIN partsupp ps ON l.l_partkey = ps.ps_partkey AND "
         "l.l_suppkey = ps.ps_suppkey "
         "GROUP BY 1, 2, 3",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt32(ChunkValue(chunk, 1, row)),
-                    SafeInt32(ChunkValue(chunk, 2, row)),
-                    SafeInt64(ChunkValue(chunk, 3, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ9ProfitContribution{SafeInt64(ChunkValue(chunk, 0, row)),
+                                          SafeInt32(ChunkValue(chunk, 1, row)),
+                                          SafeInt32(ChunkValue(chunk, 2, row)),
+                                          SafeInt64(ChunkValue(chunk, 3, row))};
+        },
+        [&](auto &&input) { consumer(input); });
     return true;
   }
   bool ScanPairAggregates(
@@ -197,7 +204,7 @@ struct TpchQ9Scan : TpchQ9InitialScan {
     // joins (supplier/partsupp/nation) are applied in the accelerator so
     // dimension writes stay incremental. rev = SUM(ep_raw * (100 - disc_raw)),
     // qty = SUM(quantity_raw).
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l.l_partkey, l.l_suppkey, year(o.o_orderdate), "
         "SUM(CAST(round(l.l_extendedprice * (1 - l.l_discount) * 10000) AS "
@@ -205,13 +212,14 @@ struct TpchQ9Scan : TpchQ9InitialScan {
         "SUM(CAST(round(l.l_quantity * 100) AS BIGINT)) "
         "FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey "
         "GROUP BY 1, 2, 3",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer(SafeInt64(ChunkValue(chunk, 0, row)),
-                   SafeInt64(ChunkValue(chunk, 1, row)),
-                   SafeInt32(ChunkValue(chunk, 2, row)),
-                   SafeInt64(ChunkValue(chunk, 3, row)),
-                   SafeInt64(ChunkValue(chunk, 4, row)));
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return std::make_tuple(SafeInt64(ChunkValue(chunk, 0, row)),
+                                 SafeInt64(ChunkValue(chunk, 1, row)),
+                                 SafeInt32(ChunkValue(chunk, 2, row)),
+                                 SafeInt64(ChunkValue(chunk, 3, row)),
+                                 SafeInt64(ChunkValue(chunk, 4, row)));
+        },
+        [&](auto &&input) { std::apply(consumer, input); });
     return true;
   }
   bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) override {

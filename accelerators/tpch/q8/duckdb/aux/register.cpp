@@ -114,55 +114,60 @@ struct TpchQ8Scan : TpchQ8InitialScan {
   explicit TpchQ8Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
       const std::function<void(const TpchQ8PartInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT p_partkey, p_type FROM part",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ8PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                 ChunkValue(chunk, 1, row).ToString()};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanSuppliers(
       const std::function<void(const TpchQ8SupplierInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT s_suppkey, s_nationkey FROM supplier",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt32(ChunkValue(chunk, 1, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ8SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                     SafeInt32(ChunkValue(chunk, 1, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanCustomers(
       const std::function<void(const TpchQ8CustomerInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT c_custkey, c_nationkey FROM customer",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt32(ChunkValue(chunk, 1, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ8CustomerInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                     SafeInt32(ChunkValue(chunk, 1, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanOrders(
       const std::function<void(const TpchQ8OrdersInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT o_orderkey, o_custkey, o_orderdate FROM orders",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    DateDays(ChunkValue(chunk, 2, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ8OrdersInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                   SafeInt64(ChunkValue(chunk, 1, row)),
+                                   DateDays(ChunkValue(chunk, 2, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanLineitems(
       const std::function<void(const TpchQ8LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_partkey, l_orderkey, l_suppkey, l_extendedprice, l_discount "
         "FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    DecimalRaw(ChunkValue(chunk, 3, row)),
-                    DecimalRaw(ChunkValue(chunk, 4, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ8LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                     SafeInt64(ChunkValue(chunk, 1, row)),
+                                     SafeInt64(ChunkValue(chunk, 2, row)),
+                                     DecimalRaw(ChunkValue(chunk, 3, row)),
+                                     DecimalRaw(ChunkValue(chunk, 4, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanNations(
       const std::function<void(const TpchQ8NationInput &)> &consumer) override {

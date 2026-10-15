@@ -1,5 +1,7 @@
 #include "sec_edgar/q24/common/state.hpp"
 
+#include "substrate/aux/core/parallel_slices.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -12,6 +14,9 @@
 #endif
 
 namespace accelerator_codegen::aux_state::query {
+
+// Accessions sorted per build slice: a short slice sort and unique each.
+constexpr std::size_t kTierSortGrain = 16384;
 
 // ── hashing ────────────────────────────────────────────────────────────────
 
@@ -260,7 +265,8 @@ void Q24RawPre::AddBatch(const Q24Str *a, const Q24Str *t, const Q24Str *v,
 }
 
 std::shared_ptr<const Q24PreBase>
-BuildQ24PreBase(std::vector<Q24RawPre> &parts) {
+BuildQ24PreBase(std::vector<Q24RawPre> &parts,
+                const core::AuxEngineServices *services) {
   auto base = std::make_shared<Q24PreBase>();
   if (parts.empty()) {
     base->off16.assign(1, 0);
@@ -347,14 +353,29 @@ BuildQ24PreBase(std::vector<Q24RawPre> &parts) {
     for (std::size_t r = 0; r < n; ++r)
       if (pair_of[r] >= lo && pair_of[r] < hi)
         out[cursor[g.rows[r * 3]]++] = static_cast<T>(pair_of[r]);
+    // Slices sort and dedupe their own adsh ranges in place; the compaction
+    // that closes the gaps is a serial pass.
+    std::vector<uint64_t> unique_len(adsh_count);
+    const auto sort_unique = [&](std::size_t begin, std::size_t end) {
+      for (std::size_t a = begin; a < end; ++a) {
+        T *b = out.data() + offsets[a];
+        T *e = out.data() + offsets[a + 1];
+        std::sort(b, e);
+        unique_len[a] = static_cast<uint64_t>(std::unique(b, e) - b);
+      }
+    };
+    if (services)
+      core::ParallelSlices(*services, adsh_count, kTierSortGrain,
+                           [&](std::size_t, std::size_t begin, std::size_t end) {
+                             sort_unique(begin, end);
+                           });
+    else
+      sort_unique(0, adsh_count);
     std::vector<uint64_t> compact(offsets.size(), 0);
     std::size_t w = 0;
     for (uint32_t a = 0; a < adsh_count; ++a) {
       T *b = out.data() + offsets[a];
-      T *e = out.data() + offsets[a + 1];
-      std::sort(b, e);
-      e = std::unique(b, e);
-      const std::size_t len = static_cast<std::size_t>(e - b);
+      const std::size_t len = static_cast<std::size_t>(unique_len[a]);
       if (out.data() + w != b) std::memmove(out.data() + w, b, len * sizeof(T));
       w += len;
       compact[a + 1] = w;

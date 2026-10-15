@@ -518,7 +518,7 @@ void Builder::Merge(Builder &&other_builder) {
 	}
 }
 
-State Builder::Finish() {
+State Builder::Finish(const core::AuxEngineServices *services) {
 	auto &im = *impl;
 	State state;
 	const uint32_t n = static_cast<uint32_t>(im.id_keys.size());
@@ -562,12 +562,14 @@ State Builder::Finish() {
 		return l.rfile < r.rfile;
 	});
 	const uint32_t page_count = PageCountFor(n);
-	for (const auto gi : order) {
-		auto &src = im.groups[gi];
+	// Groups are independent (O(accessions) each): each task fills its own slot.
+	std::vector<GroupData> built(order.size());
+	const auto build_group = [&](std::size_t k) {
+		auto &src = im.groups[order[k]];
 		if (src.cnt == 0) {
-			continue;
+			return;
 		}
-		GroupData g;
+		GroupData &g = built[k];
 		g.stmt = src.stmt;
 		g.rfile = src.rfile;
 		g.rfile_is_null = src.rfile_null;
@@ -606,7 +608,18 @@ State Builder::Finish() {
 		}
 		g.distinct = distinct;
 		g.refs = std::move(refs);
-		state.groups.push_back(std::move(g));
+	};
+	if (services) {
+		services->ParallelFor(order.size(), build_group);
+	} else {
+		for (std::size_t k = 0; k < order.size(); ++k) {
+			build_group(k);
+		}
+	}
+	for (auto &g : built) {
+		if (g.refs) {
+			state.groups.push_back(std::move(g));
+		}
 	}
 	return state;
 }

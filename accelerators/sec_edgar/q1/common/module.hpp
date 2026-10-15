@@ -201,7 +201,8 @@ public:
                       const char *adsh, std::size_t adsh_len, bool adsh_null,
                       int32_t line, bool line_null);
   void Merge(Builder &&other);
-  State Finish();
+  // Per-group image construction runs on `services`' workers (serial if null).
+  State Finish(const core::AuxEngineServices *services = nullptr);
 
 private:
   struct Impl;

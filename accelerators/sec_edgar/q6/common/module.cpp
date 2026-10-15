@@ -263,7 +263,8 @@ void FeedSub(SecEdgarQ6InitialScan &scan, SecEdgarQ6Builder &builder) {
 
 } // namespace
 
-std::shared_ptr<const SecEdgarQ6State> SecEdgarQ6Module::BuildState() const {
+std::shared_ptr<const SecEdgarQ6State>
+SecEdgarQ6Module::BuildState(const core::AuxEngineServices &services) const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q6 requires a typed initial scan source");
   }
@@ -273,7 +274,7 @@ std::shared_ptr<const SecEdgarQ6State> SecEdgarQ6Module::BuildState() const {
     FeedSub(*initial_scan, builder);
     if (initial_scan->ScanPreBatches(
             [&](const SecEdgarQ6PreBatch &batch) { builder.AddPreBatch(batch); })) {
-      builder.FinishPre();
+      builder.FinishPre(services);
       if (!initial_scan->ScanNumBatches(
               [&](const SecEdgarQ6NumBatch &batch) { builder.AddNumBatch(batch); })) {
         FeedNumRows(*initial_scan, builder);
@@ -334,15 +335,15 @@ std::shared_ptr<const SecEdgarQ6State> SecEdgarQ6Module::BuildState() const {
   SecEdgarQ6Builder builder;
   FeedSub(*initial_scan, builder);
   FeedPreRows(*initial_scan, builder);
-  builder.FinishPre();
+  builder.FinishPre(services);
   FeedNumRows(*initial_scan, builder);
   return builder.Finish();
 }
 
-void SecEdgarQ6Module::Build(core::AuxEngineServices &,
+void SecEdgarQ6Module::Build(core::AuxEngineServices &services,
                              core::StateBuilder &builder) {
   builder.Write(core::StateImage::Make(Id(), kStatePartition, 0,
-                                       MakeImage(BuildState())));
+                                       MakeImage(BuildState(services))));
   builder.Finish();
 }
 
@@ -920,7 +921,7 @@ void SecEdgarQ6Module::Execute(core::AuxEngineServices &services,
   EmitRows(SecEdgarQ6TopRows(*state, params.fy, params.stmt, params.uom), sink);
 }
 
-void SecEdgarQ6Module::ExecuteFallback(core::AuxEngineServices &,
+void SecEdgarQ6Module::ExecuteFallback(core::AuxEngineServices &services,
                                        const core::QueryArguments &arguments,
                                        core::AuxRowSink &sink) {
   const QueryParams params = ParseArguments(arguments);
@@ -928,7 +929,8 @@ void SecEdgarQ6Module::ExecuteFallback(core::AuxEngineServices &,
     EmitRows({}, sink);
     return;
   }
-  EmitRows(SecEdgarQ6TopRows(*BuildState(), params.fy, params.stmt, params.uom),
+  EmitRows(SecEdgarQ6TopRows(*BuildState(services), params.fy, params.stmt,
+                             params.uom),
            sink);
 }
 

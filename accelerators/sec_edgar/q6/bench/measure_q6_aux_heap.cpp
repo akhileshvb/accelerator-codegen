@@ -19,6 +19,7 @@
 #include "duckdb.hpp"
 #include "sec_edgar/q6/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q6/duckdb/aux/module.hpp"
+#include "eval/tests/test_support/module_runtime.hpp"
 
 namespace catalog = accelerator_codegen::aux_state::engine;
 using catalog::duckdb::DuckdbRuntime;
@@ -49,8 +50,9 @@ int main(int argc, char **argv) {
     const auto rows = runtime.ExecuteCollect().size();
     namespace q = accelerator_codegen::aux_state::query;
     q::SecEdgarQ6DuckdbScan scan(connection);
-    q::SecEdgarQ6Module module(q::SecEdgarQ6Config{1, 2, 3}, &scan);
-    const auto state = module.BuildState();
+    const auto module = std::make_shared<q::SecEdgarQ6Module>(q::SecEdgarQ6Config{1, 2, 3}, &scan);
+    accelerator_codegen::aux_state::test::ModuleRuntime module_runtime(connection, module);
+    const auto state = module->BuildState(module_runtime.Backend());
     const double footprint = static_cast<double>(state->Bytes());
     {
       // pure state read: the 200 output rows from the top cache

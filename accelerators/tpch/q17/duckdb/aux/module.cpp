@@ -1,10 +1,9 @@
 #include "tpch/q17/duckdb/aux/module.hpp"
 #include "tpch/q17/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
-#include <atomic>
-#include <thread>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +23,10 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
+// Per build slice: sorting a part's few (quantity, price) buckets is ~1 us.
+constexpr std::size_t kPartStatsGrain = 4096;
+// Per build slice: sorting one 1024-part page is ~50 us.
+constexpr std::size_t kPageSortGrain = 16;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kAttrMagic = 0x49313751;  // Q17I
 constexpr uint32_t kPartMagic = 0x50313751;  // Q17P
@@ -394,10 +397,16 @@ void TpchQ17Module::Build(core::AuxEngineServices &services,
   const auto by_key = [](const TpchQ17PartEntry &a, const TpchQ17PartEntry &b) {
     return a.partkey < b.partkey;
   };
-  for (auto &[idx, page] : pages) {
-    (void)idx;
-    std::sort(page.parts.begin(), page.parts.end(), by_key);
-  }
+  std::vector<TpchQ17PartStatsChunk *> page_list;
+  page_list.reserve(pages.size());
+  for (auto &entry : pages)
+    page_list.push_back(&entry.second);
+  core::ParallelSlices(services, page_list.size(), kPageSortGrain,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i)
+                           std::sort(page_list[i]->parts.begin(),
+                                     page_list[i]->parts.end(), by_key);
+                       });
 
   // Pass 2: attach (brand, container); parts without lineitems get an entry.
   std::unordered_map<int64_t, std::vector<TpchQ17PartEntry>> extras;
@@ -643,7 +652,7 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
     std::string brand, container;
     bool named = false;
   };
-  using AttrMap = std::unordered_map<core::PartitionId, AttrDelta>;
+  using AttrMap = std::map<core::PartitionId, AttrDelta>;
 
   struct PageResult {
     std::shared_ptr<const TpchQ17StateImage> image;
@@ -652,157 +661,112 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
     bool missing = false; // no published page: only legal on an empty state
   };
   std::vector<PageResult> results(runs.size());
-  const std::size_t workers = std::max<std::size_t>(
-      1, std::min<std::size_t>({services.WorkerCount(), 8, runs.size()}));
-  std::vector<AttrMap> worker_attrs(workers);
-  std::atomic<std::size_t> next_run{0};
-  std::atomic<bool> need_rebuild{false};
+  AttrMap attr_deltas;
 
-  auto process = [&](std::size_t worker) {
-    auto &attr_deltas = worker_attrs[worker];
-    for (;;) {
-      const std::size_t r = next_run.fetch_add(1);
-      if (r >= runs.size() || need_rebuild.load(std::memory_order_relaxed))
-        return;
-      const auto [begin, end] = runs[r];
-      const auto page_index = PageOf(ops[begin].partkey);
-      auto &result = results[r];
-      result.page = page_index;
+  for (std::size_t r = 0; r < runs.size(); ++r) {
+    const auto [begin, end] = runs[r];
+    const auto page_index = PageOf(ops[begin].partkey);
+    auto &result = results[r];
+    result.page = page_index;
 
-      TpchQ17PartStatsChunk chunk;
-      chunk.chunk_index = page_index;
-      bool have = false;
-      const auto snapshot =
-          store.ReadPartitions(visibility, {PagePartition(page_index)});
-      for (const auto &image : snapshot.partitions) {
-        const auto *typed = AsQ17Image(image, TpchQ17ImageKind::PartStatsChunk);
-        if (!typed || !typed->chunk)
-          continue;
-        chunk.parts.reserve(typed->chunk->parts.size() + (end - begin));
-        chunk.parts = typed->chunk->parts; // copy-on-write of one small page
-        result.version = image.version;
-        have = true;
-      }
-      result.missing = !have;
-      auto &parts = chunk.parts;
-
-      for (std::size_t i = begin; i < end;) {
-        const auto partkey = ops[i].partkey;
-        std::size_t k = i;
-        while (k < end && ops[k].partkey == partkey)
-          ++k;
-        auto pos = std::lower_bound(
-            parts.begin(), parts.end(), partkey,
-            [](const TpchQ17PartEntry &e, int64_t key) { return e.partkey < key; });
-        if (pos == parts.end() || pos->partkey != partkey) {
-          TpchQ17PartEntry fresh;
-          fresh.partkey = partkey;
-          pos = parts.insert(pos, std::move(fresh));
-        }
-        TpchQ17PartEntry &entry = *pos;
-        const auto old_attr = entry.attr_partition;
-        const auto old_contribution = entry.contribution_raw;
-
-        bool has_lineitems = false;
-        for (std::size_t o = i; o < k; ++o) {
-          if (!ops[o].is_part) {
-            has_lineitems = true;
-            continue;
-          }
-          const auto &op = buffer.PartDeltas()[ops[o].index];
-          const auto op_attr = AttrPartsPartition(op.brand, op.container);
-          if (op.sign < 0) {
-            if (entry.attr_partition != op_attr) {
-              need_rebuild = true;
-              return;
-            }
-            entry.attr_partition = 0;
-          } else {
-            if (entry.attr_partition != 0) {
-              need_rebuild = true;
-              return;
-            }
-            entry.attr_partition = op_attr;
-            auto &ad = attr_deltas[op_attr];
-            ad.brand = op.brand;
-            ad.container = op.container;
-            ad.named = true;
-          }
-        }
-
-        if (has_lineitems) {
-          PairVec pairs;
-          if (entry.pairs) {
-            pairs.reserve(entry.pairs->size() + (k - i));
-            pairs = *entry.pairs;
-          }
-          for (std::size_t o = i; o < k; ++o) {
-            if (ops[o].is_part)
-              continue;
-            const auto &op = buffer.LineitemDeltas()[ops[o].index];
-            if (!ApplyPairDelta(pairs, op)) {
-              need_rebuild = true;
-              return;
-            }
-            entry.sum_qty_raw += static_cast<int64_t>(op.sign) * op.quantity_raw;
-            entry.count += op.sign;
-          }
-          if (entry.count < 0) {
-            need_rebuild = true;
-            return;
-          }
-          entry.contribution_raw = ContributionRaw(
-              entry.sum_qty_raw, entry.count, pairs.data(),
-              pairs.data() + pairs.size());
-          if (pairs.empty())
-            entry.pairs.reset();
-          else
-            entry.pairs = std::make_shared<const PairVec>(std::move(pairs));
-        }
-
-        if (old_attr != 0)
-          attr_deltas[old_attr].total_delta -= old_contribution;
-        if (entry.attr_partition != 0)
-          attr_deltas[entry.attr_partition].total_delta += entry.contribution_raw;
-        if (entry.attr_partition == 0 && entry.count == 0 && !entry.pairs)
-          parts.erase(pos);
-        i = k;
-      }
-      result.image = MakeChunkImage(
-          std::make_shared<const TpchQ17PartStatsChunk>(std::move(chunk)));
+    TpchQ17PartStatsChunk chunk;
+    chunk.chunk_index = page_index;
+    bool have = false;
+    const auto snapshot =
+        store.ReadPartitions(visibility, {PagePartition(page_index)});
+    for (const auto &image : snapshot.partitions) {
+      const auto *typed = AsQ17Image(image, TpchQ17ImageKind::PartStatsChunk);
+      if (!typed || !typed->chunk)
+        continue;
+      chunk.parts.reserve(typed->chunk->parts.size() + (end - begin));
+      chunk.parts = typed->chunk->parts; // copy-on-write of one small page
+      result.version = image.version;
+      have = true;
     }
-  };
+    result.missing = !have;
+    auto &parts = chunk.parts;
 
-  if (workers <= 1) {
-    process(0);
-  } else {
-    std::vector<std::thread> pool;
-    pool.reserve(workers - 1);
-    for (std::size_t t = 1; t < workers; ++t)
-      pool.emplace_back(process, t);
-    process(0);
-    for (auto &th : pool)
-      th.join();
+    for (std::size_t i = begin; i < end;) {
+      const auto partkey = ops[i].partkey;
+      std::size_t k = i;
+      while (k < end && ops[k].partkey == partkey)
+        ++k;
+      auto pos = std::lower_bound(
+          parts.begin(), parts.end(), partkey,
+          [](const TpchQ17PartEntry &e, int64_t key) { return e.partkey < key; });
+      if (pos == parts.end() || pos->partkey != partkey) {
+        TpchQ17PartEntry fresh;
+        fresh.partkey = partkey;
+        pos = parts.insert(pos, std::move(fresh));
+      }
+      TpchQ17PartEntry &entry = *pos;
+      const auto old_attr = entry.attr_partition;
+      const auto old_contribution = entry.contribution_raw;
+
+      bool has_lineitems = false;
+      for (std::size_t o = i; o < k; ++o) {
+        if (!ops[o].is_part) {
+          has_lineitems = true;
+          continue;
+        }
+        const auto &op = buffer.PartDeltas()[ops[o].index];
+        const auto op_attr = AttrPartsPartition(op.brand, op.container);
+        if (op.sign < 0) {
+          if (entry.attr_partition != op_attr)
+            return rebuild_all();
+          entry.attr_partition = 0;
+        } else {
+          if (entry.attr_partition != 0)
+            return rebuild_all();
+          entry.attr_partition = op_attr;
+          auto &ad = attr_deltas[op_attr];
+          ad.brand = op.brand;
+          ad.container = op.container;
+          ad.named = true;
+        }
+      }
+
+      if (has_lineitems) {
+        PairVec pairs;
+        if (entry.pairs) {
+          pairs.reserve(entry.pairs->size() + (k - i));
+          pairs = *entry.pairs;
+        }
+        for (std::size_t o = i; o < k; ++o) {
+          if (ops[o].is_part)
+            continue;
+          const auto &op = buffer.LineitemDeltas()[ops[o].index];
+          if (!ApplyPairDelta(pairs, op))
+            return rebuild_all();
+          entry.sum_qty_raw += static_cast<int64_t>(op.sign) * op.quantity_raw;
+          entry.count += op.sign;
+        }
+        if (entry.count < 0)
+          return rebuild_all();
+        entry.contribution_raw = ContributionRaw(
+            entry.sum_qty_raw, entry.count, pairs.data(),
+            pairs.data() + pairs.size());
+        if (pairs.empty())
+          entry.pairs.reset();
+        else
+          entry.pairs = std::make_shared<const PairVec>(std::move(pairs));
+      }
+
+      if (old_attr != 0)
+        attr_deltas[old_attr].total_delta -= old_contribution;
+      if (entry.attr_partition != 0)
+        attr_deltas[entry.attr_partition].total_delta += entry.contribution_raw;
+      if (entry.attr_partition == 0 && entry.count == 0 && !entry.pairs)
+        parts.erase(pos);
+      i = k;
+    }
+    result.image = MakeChunkImage(
+        std::make_shared<const TpchQ17PartStatsChunk>(std::move(chunk)));
   }
-  if (need_rebuild.load())
-    return rebuild_all();
   for (const auto &result : results) {
     if (result.missing &&
         !store.CheckValidity({Id(), {}}, visibility).IsValid())
       return rebuild_all();
-  }
-
-  std::map<core::PartitionId, AttrDelta> attr_deltas;
-  for (auto &local : worker_attrs) {
-    for (auto &[partition, ad] : local) {
-      auto &merged = attr_deltas[partition];
-      merged.total_delta += ad.total_delta;
-      if (ad.named) {
-        merged.brand = std::move(ad.brand);
-        merged.container = std::move(ad.container);
-        merged.named = true;
-      }
-    }
   }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -974,7 +938,6 @@ void TpchQ17Module::ExecuteFallback(core::AuxEngineServices &services,
 
 TpchQ17State TpchQ17Module::BuildState(
     core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ17State state;
   if (!initial_scan)
     throw std::logic_error(
@@ -1016,15 +979,23 @@ TpchQ17State TpchQ17Module::BuildState(
     }
   }
 
-  for (auto &entry : state.part_stats) {
-    auto &pairs = entry.second.qty_price_pairs;
-    std::sort(pairs.begin(), pairs.end(),
-              [](const TpchQ17QtyPricePair &lhs,
-                 const TpchQ17QtyPricePair &rhs) {
-                return lhs.quantity_raw < rhs.quantity_raw;
-              });
-    entry.second.RecomputeContribution();
-  }
+  std::vector<TpchQ17PartStats *> stats_list;
+  stats_list.reserve(state.part_stats.size());
+  for (auto &entry : state.part_stats)
+    stats_list.push_back(&entry.second);
+  core::ParallelSlices(
+      services, stats_list.size(), kPartStatsGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          auto &pairs = stats_list[i]->qty_price_pairs;
+          std::sort(pairs.begin(), pairs.end(),
+                    [](const TpchQ17QtyPricePair &lhs,
+                       const TpchQ17QtyPricePair &rhs) {
+                      return lhs.quantity_raw < rhs.quantity_raw;
+                    });
+          stats_list[i]->RecomputeContribution();
+        }
+      });
 
   return state;
 }

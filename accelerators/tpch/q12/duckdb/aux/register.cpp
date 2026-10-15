@@ -134,26 +134,28 @@ struct TpchQ12Scan : TpchQ12InitialScan {
   explicit TpchQ12Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanOrders(
       const std::function<void(const TpchQ12OrderInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT o_orderkey, o_orderpriority FROM orders",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ12OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                   ChunkValue(chunk, 1, row).ToString()};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanLineitems(
       const std::function<void(const TpchQ12LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, "
         "l_shipdate FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    DateDays(ChunkValue(chunk, 2, row)),
-                    DateDays(ChunkValue(chunk, 3, row)),
-                    DateDays(ChunkValue(chunk, 4, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ12LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      ChunkValue(chunk, 1, row).ToString(),
+                                      DateDays(ChunkValue(chunk, 2, row)),
+                                      DateDays(ChunkValue(chunk, 3, row)),
+                                      DateDays(ChunkValue(chunk, 4, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool LookupQualifyingLineitems(
       const std::vector<int64_t> &orderkeys,

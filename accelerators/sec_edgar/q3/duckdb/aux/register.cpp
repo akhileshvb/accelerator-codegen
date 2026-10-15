@@ -108,36 +108,40 @@ struct SecEdgarQ3Scan : SecEdgarQ3InitialScan {
   // through C++.
   void ScanNumAggregates(
       const std::function<void(const SecEdgarQ3NumAggInput &)> &consumer) override {
-    ScanQuery(connection,
-              "SELECT adsh, uom, SUM(value), COUNT(*) FROM num "
-              "WHERE value IS NOT NULL AND adsh IS NOT NULL AND uom IS NOT NULL "
-              "GROUP BY adsh, uom",
-              [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          result.GetValue(2, row).template GetValue<double>(),
-                          result.GetValue(3, row).template GetValue<int64_t>()});
-              });
+    ScanQueryDecoded(
+        connection,
+        "SELECT adsh, uom, SUM(value), COUNT(*) FROM num "
+        "WHERE value IS NOT NULL AND adsh IS NOT NULL AND uom IS NOT NULL "
+        "GROUP BY adsh, uom",
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return SecEdgarQ3NumAggInput{chunk.GetValue(0, row).ToString(),
+                                       chunk.GetValue(1, row).ToString(),
+                                       chunk.GetValue(2, row).GetValue<double>(),
+                                       chunk.GetValue(3, row).GetValue<int64_t>()};
+        },
+        [&](SecEdgarQ3NumAggInput &&input) { consumer(input); });
   }
   void ScanSub(
       const std::function<void(const SecEdgarQ3SubInput &)> &consumer) override {
-    ScanQuery(connection, "SELECT adsh, name, cik, fy FROM sub",
-              [&](auto &result, ::duckdb::idx_t row) {
-                SecEdgarQ3SubInput input;
-                input.adsh = result.GetValue(0, row).ToString();
-                const auto name = result.GetValue(1, row);
-                input.name_is_null = name.IsNull();
-                if (!input.name_is_null) {
-                  input.name = name.ToString();
-                }
-                const auto cik = result.GetValue(2, row);
-                input.cik_is_null = cik.IsNull();
-                input.cik = input.cik_is_null ? 0 : SafeInt32(cik);
-                const auto fy = result.GetValue(3, row);
-                input.fy_is_null = fy.IsNull();
-                input.fy = input.fy_is_null ? 0 : SafeInt32(fy);
-                consumer(input);
-              });
+    ScanQueryDecoded(
+        connection, "SELECT adsh, name, cik, fy FROM sub",
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          SecEdgarQ3SubInput input;
+          input.adsh = chunk.GetValue(0, row).ToString();
+          const auto name = chunk.GetValue(1, row);
+          input.name_is_null = name.IsNull();
+          if (!input.name_is_null) {
+            input.name = name.ToString();
+          }
+          const auto cik = chunk.GetValue(2, row);
+          input.cik_is_null = cik.IsNull();
+          input.cik = input.cik_is_null ? 0 : SafeInt32(cik);
+          const auto fy = chunk.GetValue(3, row);
+          input.fy_is_null = fy.IsNull();
+          input.fy = input.fy_is_null ? 0 : SafeInt32(fy);
+          return input;
+        },
+        [&](SecEdgarQ3SubInput &&input) { consumer(input); });
   }
   ::duckdb::Connection &connection;
 };

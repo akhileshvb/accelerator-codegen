@@ -117,19 +117,20 @@ struct TpchQ10Scan : TpchQ10InitialScan {
   explicit TpchQ10Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanCustomers(
       const std::function<void(const TpchQ10CustomerInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, "
         "c_phone, c_comment FROM customer",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    DecimalRaw(ChunkValue(chunk, 2, row)),
-                    SafeInt32(ChunkValue(chunk, 3, row)),
-                    ChunkValue(chunk, 4, row).ToString(),
-                    ChunkValue(chunk, 5, row).ToString(),
-                    ChunkValue(chunk, 6, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ10CustomerInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      ChunkValue(chunk, 1, row).ToString(),
+                                      DecimalRaw(ChunkValue(chunk, 2, row)),
+                                      SafeInt32(ChunkValue(chunk, 3, row)),
+                                      ChunkValue(chunk, 4, row).ToString(),
+                                      ChunkValue(chunk, 5, row).ToString(),
+                                      ChunkValue(chunk, 6, row).ToString()};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanNations(
       const std::function<void(const TpchQ10NationInput &)> &consumer) override {
@@ -141,26 +142,28 @@ struct TpchQ10Scan : TpchQ10InitialScan {
   }
   void ScanOrders(
       const std::function<void(const TpchQ10OrderInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT o_orderkey, o_custkey, o_orderdate FROM orders",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    DateDays(ChunkValue(chunk, 2, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ10OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                   SafeInt64(ChunkValue(chunk, 1, row)),
+                                   DateDays(ChunkValue(chunk, 2, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanLineitems(
       const std::function<void(const TpchQ10LineitemInput &)> &consumer) override {
     // Fallback path only: filter returned rows in SQL when the C++ join is used.
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_orderkey, l_extendedprice, l_discount, l_returnflag "
         "FROM lineitem WHERE l_returnflag = 'R'",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 2, row)), 2, true});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ10LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      DecimalRaw(ChunkValue(chunk, 1, row)), 2,
+                                      DecimalRaw(ChunkValue(chunk, 2, row)), 2, true};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool ScanReturnedCustomerRevenue(
       const std::function<void(const TpchQ10ReturnedRevenueInput &)> &consumer)
@@ -168,7 +171,7 @@ struct TpchQ10Scan : TpchQ10InitialScan {
     // Push returned-lineitem ⨝ orders aggregation into DuckDB. Revenue raw
     // matches TpchQ10RevenueRaw: round(extended * (1-discount) * 10000) per
     // line, then sum. Stream chunks — do not materialize the full GROUP BY.
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT CAST(year(o_orderdate) * 100 + month(o_orderdate) AS INTEGER), "
         "o_custkey, "
@@ -177,11 +180,12 @@ struct TpchQ10Scan : TpchQ10InitialScan {
         "JOIN orders ON l_orderkey = o_orderkey "
         "WHERE l_returnflag = 'R' "
         "GROUP BY 1, 2",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt32(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ10ReturnedRevenueInput{SafeInt32(ChunkValue(chunk, 0, row)),
+                                             SafeInt64(ChunkValue(chunk, 1, row)),
+                                             SafeInt64(ChunkValue(chunk, 2, row))};
+        },
+        [&](auto &&input) { consumer(input); });
     return true;
   }
   bool ScanReturnedCustomerRevenueForMonths(
@@ -190,7 +194,7 @@ struct TpchQ10Scan : TpchQ10InitialScan {
       override {
     if (months.empty())
       return true;
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT CAST(year(o_orderdate) * 100 + month(o_orderdate) AS INTEGER), "
         "o_custkey, "
@@ -201,11 +205,12 @@ struct TpchQ10Scan : TpchQ10InitialScan {
             SqlIntInPredicate(
                 "(year(o_orderdate) * 100 + month(o_orderdate))", months) +
             " GROUP BY 1, 2",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt32(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ10ReturnedRevenueInput{SafeInt32(ChunkValue(chunk, 0, row)),
+                                             SafeInt64(ChunkValue(chunk, 1, row)),
+                                             SafeInt64(ChunkValue(chunk, 2, row))};
+        },
+        [&](auto &&input) { consumer(input); });
     return true;
   }
   bool LookupOrders(

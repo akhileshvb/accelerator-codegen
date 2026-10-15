@@ -117,32 +117,35 @@ struct TpchQ16Scan : TpchQ16InitialScan {
   explicit TpchQ16Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanSuppliers(
       const std::function<void(const TpchQ16SupplierInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT s_suppkey, s_comment FROM supplier",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ16SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      ChunkValue(chunk, 1, row).ToString()};
+        },
+        [&](TpchQ16SupplierInput &&input) { consumer(input); });
   }
   void ScanParts(
       const std::function<void(const TpchQ16PartInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT p_partkey, p_brand, p_type, p_size FROM part",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    ChunkValue(chunk, 2, row).ToString(),
-                    SafeInt32(ChunkValue(chunk, 3, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ16PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                  ChunkValue(chunk, 1, row).ToString(),
+                                  ChunkValue(chunk, 2, row).ToString(),
+                                  SafeInt32(ChunkValue(chunk, 3, row))};
+        },
+        [&](TpchQ16PartInput &&input) { consumer(input); });
   }
   void ScanPartsupp(
       const std::function<void(const TpchQ16PartsuppInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT ps_partkey, ps_suppkey FROM partsupp",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ16PartsuppInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      SafeInt64(ChunkValue(chunk, 1, row))};
+        },
+        [&](TpchQ16PartsuppInput &&input) { consumer(input); });
   }
   ::duckdb::Connection &connection;
 };

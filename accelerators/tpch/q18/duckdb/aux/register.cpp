@@ -98,36 +98,38 @@ struct TpchQ18Scan : TpchQ18InitialScan {
   explicit TpchQ18Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanLineitems(
       const std::function<void(const TpchQ18LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT l_orderkey, l_quantity FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ18LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      DecimalRaw(ChunkValue(chunk, 1, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool ScanOrderQuantityAggregates(
       const std::function<void(const TpchQ18OrderQuantityAggregate &)> &consumer)
       override {
     const std::string min_qty =
         std::to_string(query::TpchQ18State::kMinPersistQuantityRaw);
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_orderkey, "
         "CAST(SUM(CAST(round(l_quantity * 100) AS BIGINT)) AS BIGINT) "
         "FROM lineitem GROUP BY 1 HAVING "
         "CAST(SUM(CAST(round(l_quantity * 100) AS BIGINT)) AS BIGINT) > " +
             min_qty,
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ18OrderQuantityAggregate{SafeInt64(ChunkValue(chunk, 0, row)),
+                                               SafeInt64(ChunkValue(chunk, 1, row))};
+        },
+        [&](auto &&input) { consumer(input); });
     return true;
   }
   bool ScanSurvivorOrders(
       int64_t min_quantity_raw,
       const std::function<void(const TpchQ18SurvivorAggregate &)> &consumer)
       override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT a.k, a.s, o.o_custkey, o.o_orderdate, o.o_totalprice FROM ("
         "SELECT l_orderkey AS k, "
@@ -136,26 +138,28 @@ struct TpchQ18Scan : TpchQ18InitialScan {
         "CAST(SUM(CAST(round(l_quantity * 100) AS BIGINT)) AS BIGINT) > " +
             std::to_string(min_quantity_raw) +
         ") a JOIN orders o ON a.k = o.o_orderkey",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    DateDays(ChunkValue(chunk, 3, row)),
-                    DecimalRaw(ChunkValue(chunk, 4, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ18SurvivorAggregate{SafeInt64(ChunkValue(chunk, 0, row)),
+                                          SafeInt64(ChunkValue(chunk, 1, row)),
+                                          SafeInt64(ChunkValue(chunk, 2, row)),
+                                          DateDays(ChunkValue(chunk, 3, row)),
+                                          DecimalRaw(ChunkValue(chunk, 4, row))};
+        },
+        [&](auto &&input) { consumer(input); });
     return true;
   }
   void ScanOrders(
       const std::function<void(const TpchQ18OrderInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice FROM orders",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    DateDays(ChunkValue(chunk, 2, row)),
-                    DecimalRaw(ChunkValue(chunk, 3, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ18OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                   SafeInt64(ChunkValue(chunk, 1, row)),
+                                   DateDays(ChunkValue(chunk, 2, row)),
+                                   DecimalRaw(ChunkValue(chunk, 3, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool LookupOrder(int64_t orderkey, TpchQ18OrderInput &out) override {
     out = {};
@@ -202,12 +206,13 @@ struct TpchQ18Scan : TpchQ18InitialScan {
   }
   void ScanCustomers(
       const std::function<void(const TpchQ18CustomerInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT c_custkey, c_name FROM customer",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ18CustomerInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      ChunkValue(chunk, 1, row).ToString()};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   ::duckdb::Connection &connection;
 };

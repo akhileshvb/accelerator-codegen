@@ -913,7 +913,7 @@ void SecEdgarQ24Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 SecEdgarQ24State
-SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
+SecEdgarQ24Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("SEC EDGAR Q24 requires a typed initial scan source");
   SecEdgarQ24State state;
@@ -932,7 +932,7 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
     });
   }
   auto pre = std::make_shared<Q24PreState>();
-  pre->base = BuildQ24PreBase(parts);
+  pre->base = BuildQ24PreBase(parts, &services);
   const Q24PreBase &base = *pre->base;
 
   // 2. qualifying num rows with no pre match are the only rows that matter.

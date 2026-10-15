@@ -266,7 +266,7 @@ public:
                        core::AuxRowSink &) override;
 
   // Exposed for tests / tools.
-  std::shared_ptr<const SecEdgarQ2State> BuildState() const;
+  std::shared_ptr<const SecEdgarQ2State> BuildState(core::AuxEngineServices &) const;
 
 protected:
   virtual const char *AcceleratorName() const { return kId; }

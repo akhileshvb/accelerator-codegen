@@ -1,5 +1,6 @@
 #include "sec_edgar/q3/duckdb/aux/module.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -940,9 +941,23 @@ private:
   std::unordered_map<uint64_t, std::unique_ptr<CohortWork>> live;
 };
 
-// Builds the cohort of (fy, uom id) from the indexes.
+// An entry of a unit's num index that belongs to the cohort.
+struct CohortHit {
+  uint32_t group;
+  uint32_t cik_id;
+  TwoD sum;
+  int64_t cnt;
+};
+
+// Leaves per slice of a cohort build: ~128 entries each, two hash lookups
+// apiece, so ~3 ms at 256.
+constexpr std::size_t kCohortLeafGrain = 256;
+
+// Builds the cohort of (fy, uom id) from the indexes. The sub lookups run in
+// slices; the hits are added in index order, so the sums are the serial ones.
 std::shared_ptr<const SecEdgarQ3Totals>
-MaterializeCohort(const SecEdgarQ3State &state, int32_t fy, uint32_t uid) {
+MaterializeCohort(const core::AuxEngineServices &services, const SecEdgarQ3State &state,
+                  int32_t fy, uint32_t uid) {
   AggWork groups(nullptr);
   AggWork ciks(nullptr);
   const auto &dir = *state.dir;
@@ -950,22 +965,43 @@ MaterializeCohort(const SecEdgarQ3State &state, int32_t fy, uint32_t uid) {
   ciks.Grow(static_cast<uint32_t>(dir.CikCount()));
   if (uid < state.uom_index.size() && state.uom_index[uid]) {
     const SecEdgarQ3AdshIndex &ui = *state.uom_index[uid];
-    ForEachEntry(ui, [&](uint64_t key, const SecEdgarQ3Entry &e) {
-      if (e.cnt <= 0) {
-        return;
+    std::vector<const SecEdgarQ3Leaf *> leaves;
+    for (const auto &mid : ui.tops) {
+      for (const auto &leaf : mid->leaves) {
+        leaves.push_back(leaf.get());
       }
-      uint64_t skey;
-      if (!TranslateKey(ui, key, *state.subs, skey)) {
-        return;
-      }
-      const auto *sub = IndexFind(*state.subs, skey);
-      if (!sub || sub->group < 0 || sub->fy != fy) {
-        return;
-      }
-      const auto group = static_cast<uint32_t>(sub->group);
-      groups.Add(group, {e.sum, e.comp}, e.cnt);
-      ciks.Add(dir.meta.Get(group).cik_id, {e.sum, e.comp}, e.cnt);
-    });
+    }
+    std::vector<CohortHit> hits;
+    core::ParallelReduce(
+        services, leaves.size(), kCohortLeafGrain, hits,
+        [&](std::vector<CohortHit> &out, std::size_t begin, std::size_t end) {
+          for (std::size_t l = begin; l < end; ++l) {
+            for (auto e : *leaves[l]) {
+              const auto key = static_cast<uint64_t>(e.first);
+              if (e.second.cnt <= 0) {
+                continue;
+              }
+              uint64_t skey;
+              if (!TranslateKey(ui, key, *state.subs, skey)) {
+                continue;
+              }
+              const auto *sub = IndexFind(*state.subs, skey);
+              if (!sub || sub->group < 0 || sub->fy != fy) {
+                continue;
+              }
+              const auto group = static_cast<uint32_t>(sub->group);
+              out.push_back({group, dir.meta.Get(group).cik_id,
+                             {e.second.sum, e.second.comp}, e.second.cnt});
+            }
+          }
+        },
+        [](std::vector<CohortHit> &into, std::vector<CohortHit> &&from) {
+          into.insert(into.end(), from.begin(), from.end());
+        });
+    for (const auto &hit : hits) {
+      groups.Add(hit.group, hit.sum, hit.cnt);
+      ciks.Add(hit.cik_id, hit.sum, hit.cnt);
+    }
   }
   auto totals = std::make_shared<SecEdgarQ3Totals>();
   totals->dir = state.dir;
@@ -1295,8 +1331,8 @@ SecEdgarQ3Totals::OutputRows() const {
 }
 
 std::shared_ptr<const SecEdgarQ3Totals>
-SecEdgarQ3CohortFor(const SecEdgarQ3State &state, int64_t fy,
-                    const std::string &uom) {
+SecEdgarQ3CohortFor(const core::AuxEngineServices &services, const SecEdgarQ3State &state,
+                    int64_t fy, const std::string &uom) {
   if (fy < std::numeric_limits<int32_t>::min() ||
       fy > std::numeric_limits<int32_t>::max() || !state.uom_dict ||
       !state.cohorts) {
@@ -1319,7 +1355,7 @@ SecEdgarQ3CohortFor(const SecEdgarQ3State &state, int64_t fy,
       }
     }
   }
-  auto built = MaterializeCohort(state, static_cast<int32_t>(fy), it->second);
+  auto built = MaterializeCohort(services, state, static_cast<int32_t>(fy), it->second);
   std::lock_guard<std::mutex> lock(cache.mutex);
   for (const auto &item : cache.items) {
     if (item.first == key) {
@@ -1334,10 +1370,10 @@ SecEdgarQ3CohortFor(const SecEdgarQ3State &state, int64_t fy,
 }
 
 std::vector<SecEdgarQ3OutputRow>
-BuildSecEdgarQ3Output(const SecEdgarQ3State &state, int64_t fy,
-                      const std::string &uom) {
+BuildSecEdgarQ3Output(const core::AuxEngineServices &services, const SecEdgarQ3State &state,
+                      int64_t fy, const std::string &uom) {
   std::vector<SecEdgarQ3OutputRow> rows;
-  const auto totals = SecEdgarQ3CohortFor(state, fy, uom);
+  const auto totals = SecEdgarQ3CohortFor(services, state, fy, uom);
   if (!totals) {
     return rows;
   }
@@ -1980,7 +2016,7 @@ void SecEdgarQ3Module::Execute(core::AuxEngineServices &services,
         continue;
       }
       if (const auto *typed = AsQ3Image(image)) {
-        EmitOutput(*typed->state, params.fy, params.uom, sink);
+        EmitOutput(services, *typed->state, params.fy, params.uom, sink);
         return;
       }
     }
@@ -1996,11 +2032,11 @@ void SecEdgarQ3Module::ExecuteFallback(core::AuxEngineServices &services,
     EmitRows(sink, nullptr);
     return;
   }
-  EmitOutput(BuildState(services), params.fy, params.uom, sink);
+  EmitOutput(services, BuildState(services), params.fy, params.uom, sink);
 }
 
 SecEdgarQ3State
-SecEdgarQ3Module::BuildState(core::AuxEngineServices &) const {
+SecEdgarQ3Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q3 requires a typed initial scan source");
   }
@@ -2053,13 +2089,14 @@ SecEdgarQ3Module::BuildState(core::AuxEngineServices &) const {
     }
   }
   std::sort(uoms.rbegin(), uoms.rend());
-  SecEdgarQ3CohortFor(*state, kSecEdgarQ3DefaultFy, kSecEdgarQ3DefaultUom);
+  SecEdgarQ3CohortFor(services, *state, kSecEdgarQ3DefaultFy, kSecEdgarQ3DefaultUom);
   if (!fys.empty()) {
     const std::size_t uom_take =
         std::min(uoms.size(), std::max<std::size_t>(1, kSecEdgarQ3PrebuiltCohorts / fys.size()));
     for (std::size_t u = 0; u < uom_take; ++u) {
       for (const auto &fy : fys) {
-        SecEdgarQ3CohortFor(*state, fy.second, state->uom_dict->names[uoms[u].second]);
+        SecEdgarQ3CohortFor(services, *state, fy.second,
+                            state->uom_dict->names[uoms[u].second]);
       }
     }
   }
@@ -2080,10 +2117,11 @@ void SecEdgarQ3Module::EmitRows(
   sink.End();
 }
 
-void SecEdgarQ3Module::EmitOutput(const SecEdgarQ3State &state, int64_t fy,
+void SecEdgarQ3Module::EmitOutput(const core::AuxEngineServices &services,
+                                  const SecEdgarQ3State &state, int64_t fy,
                                   const std::string &uom,
                                   core::AuxRowSink &sink) const {
-  const auto totals = SecEdgarQ3CohortFor(state, fy, uom);
+  const auto totals = SecEdgarQ3CohortFor(services, state, fy, uom);
   EmitRows(sink, totals ? totals->OutputRows() : nullptr);
 }
 

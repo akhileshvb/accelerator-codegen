@@ -98,7 +98,7 @@ SecEdgarQ24ParallelModule::BuildState(core::AuxEngineServices &services) const {
 
   SecEdgarQ24State state;
   auto pre = std::make_shared<Q24PreState>();
-  pre->base = BuildQ24PreBase(parts);
+  pre->base = BuildQ24PreBase(parts, &services);
   const Q24PreBase &base = *pre->base;
 
   // 2. qualifying num rows without a pre match (read-only probes per worker).

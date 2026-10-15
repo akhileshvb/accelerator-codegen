@@ -136,7 +136,7 @@ public:
               const double *x, size_t n);
   void AddBridgeRow(const SecEdgarQ4BridgeRow &row);
 
-  SecEdgarQ4State Finish();
+  SecEdgarQ4State Finish(const core::AuxEngineServices &services);
 
   struct Impl;
 
@@ -145,10 +145,12 @@ private:
 };
 
 std::shared_ptr<const SecEdgarQ4Result>
-ComputeResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params);
+ComputeResult(const core::AuxEngineServices &services, const SecEdgarQ4Groups &groups,
+              const SecEdgarQ4Params &params);
 
 // Cached ComputeResult (per published version).
 std::shared_ptr<const SecEdgarQ4Result>
-CachedResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params);
+CachedResult(const core::AuxEngineServices &services, const SecEdgarQ4Groups &groups,
+             const SecEdgarQ4Params &params);
 
 } // namespace accelerator_codegen::aux_state::query::q4

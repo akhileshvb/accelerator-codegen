@@ -52,11 +52,36 @@ double MicrosSince(Clock::time_point start) {
 thread_local const AcceleratorRuntime *t_reader = nullptr;
 thread_local Epoch t_reader_epoch = 0;
 
+// What this thread is doing for a runtime; ParallelFor is serial outside
+// reads and builds (maintenance stays single-threaded).
+enum class Phase { Maintenance, Read, Build };
+thread_local const AcceleratorRuntime *t_phase_runtime = nullptr;
+thread_local Phase t_phase = Phase::Maintenance;
+
+class PhaseScope {
+public:
+  PhaseScope(const AcceleratorRuntime *runtime, Phase phase)
+      : saved_runtime(t_phase_runtime), saved_phase(t_phase) {
+    t_phase_runtime = runtime;
+    t_phase = phase;
+  }
+  ~PhaseScope() {
+    t_phase_runtime = saved_runtime;
+    t_phase = saved_phase;
+  }
+  PhaseScope(const PhaseScope &) = delete;
+  PhaseScope &operator=(const PhaseScope &) = delete;
+
+private:
+  const AcceleratorRuntime *saved_runtime;
+  Phase saved_phase;
+};
+
 } // namespace
 
 struct AcceleratorRuntime::ReadGuard::Scope {
   Scope(const AcceleratorRuntime *runtime, Epoch epoch)
-      : saved_reader(t_reader), saved_epoch(t_reader_epoch) {
+      : saved_reader(t_reader), saved_epoch(t_reader_epoch), phase(runtime, Phase::Read) {
     t_reader = runtime;
     t_reader_epoch = epoch;
   }
@@ -66,6 +91,7 @@ struct AcceleratorRuntime::ReadGuard::Scope {
   }
   const AcceleratorRuntime *saved_reader;
   Epoch saved_epoch;
+  PhaseScope phase;
   AuxReadScope one_version;
 };
 
@@ -535,6 +561,7 @@ bool AcceleratorRuntime::BuildNow() {
   // A caller arriving during a build waits for it, and then finds the state
   // synced (or builds again if it is still stale).
   std::lock_guard<std::mutex> one_build(impl->build_mutex);
+  const PhaseScope building(this, Phase::Build);
   const auto start = Clock::now();
   {
     // No in-process commit may be in flight across the switch: every commit
@@ -614,10 +641,23 @@ double AcceleratorRuntime::ExpectedQueriesBeforeNextWrite() const {
   return slots.ExpectedQueriesBeforeNextWrite(id);
 }
 
-std::size_t AcceleratorRuntime::WorkerCount() const { return threads.Budget(); }
+std::size_t AcceleratorRuntime::WorkerCount() const {
+  if (t_phase_runtime != this) {
+    return 1;
+  }
+  switch (t_phase) {
+  case Phase::Read:
+    return threads.ReadLimit();
+  case Phase::Build:
+    return threads.BuildLimit();
+  case Phase::Maintenance:
+    break;
+  }
+  return 1;
+}
 
 void AcceleratorRuntime::ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const {
-  threads.ParallelFor(n, fn);
+  threads.ParallelFor(n, fn, WorkerCount());
 }
 
 AcceleratorStats AcceleratorRuntime::Stats() const {

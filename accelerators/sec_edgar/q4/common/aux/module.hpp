@@ -272,8 +272,8 @@ private:
                                                 const char *why) const;
   bool ReadState(core::AuxEngineServices &, SecEdgarQ4State &,
                  core::Version versions[4]) const;
-  void EmitGroups(const SecEdgarQ4Groups &, const SecEdgarQ4Params &,
-                  core::AuxRowSink &) const;
+  void EmitGroups(const core::AuxEngineServices &, const SecEdgarQ4Groups &,
+                  const SecEdgarQ4Params &, core::AuxRowSink &) const;
 };
 
 } // namespace accelerator_codegen::aux_state::query

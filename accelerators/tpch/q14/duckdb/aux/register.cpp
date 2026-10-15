@@ -104,24 +104,27 @@ struct TpchQ14Scan : TpchQ14InitialScan {
   explicit TpchQ14Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
       const std::function<void(const TpchQ14PartInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT p_partkey, p_type FROM part",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ14PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                  ChunkValue(chunk, 1, row).ToString()};
+        },
+        [&](TpchQ14PartInput &&input) { consumer(input); });
+  }
+  static TpchQ14LineitemInput DecodeLineitem(const ::duckdb::DataChunk &chunk,
+                                             ::duckdb::idx_t row) {
+    return {SafeInt64(ChunkValue(chunk, 0, row)),
+            DecimalRaw(ChunkValue(chunk, 1, row)), 2,
+            DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+            DateDays(ChunkValue(chunk, 3, row))};
   }
   void ScanLineitems(
       const std::function<void(const TpchQ14LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-                    DateDays(ChunkValue(chunk, 3, row))});
-        });
+        DecodeLineitem, [&](TpchQ14LineitemInput &&input) { consumer(input); });
   }
   // Sargable shipdate ranges (zone-map friendly), one per month.
   static std::string MonthRanges(const std::set<int32_t> &months) {
@@ -157,25 +160,20 @@ struct TpchQ14Scan : TpchQ14InitialScan {
     const std::string sql =
         "SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM "
         "lineitem WHERE " + MonthRanges(months);
-    ScanQueryStreaming(
-        connection, sql,
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-                    DateDays(ChunkValue(chunk, 3, row))});
-        });
+    ScanQueryDecoded(connection, sql, DecodeLineitem,
+                     [&](TpchQ14LineitemInput &&input) { consumer(input); });
   }
   void ScanPartPromo(
       const std::function<void(int64_t, bool)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT p_partkey, CASE WHEN p_type LIKE 'PROMO%' THEN 1 ELSE 0 END "
         "FROM part",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer(SafeInt64(ChunkValue(chunk, 0, row)),
-                   SafeInt64(ChunkValue(chunk, 1, row)) != 0);
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return std::pair<int64_t, bool>{SafeInt64(ChunkValue(chunk, 0, row)),
+                                          SafeInt64(ChunkValue(chunk, 1, row)) != 0};
+        },
+        [&](std::pair<int64_t, bool> &&part) { consumer(part.first, part.second); });
   }
   bool ScanMonthAggregates(
       const std::set<int32_t> &months,

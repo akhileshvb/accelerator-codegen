@@ -1,6 +1,7 @@
 #include "tpch/q13/duckdb/aux/module.hpp"
 #include "tpch/q13/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <array>
@@ -205,14 +206,11 @@ const char *SegFind(const char *t, std::size_t n, const TpchQ13Like::Seg &s) {
   return nullptr;
 }
 
-// f(0, begin, end) over [0, n) in `chunk`-sized pieces, on the calling thread
-// (the Q13 aux reads and maintenance are single-threaded like the other
-// accelerators; per-thread slots sized `nt` = 1 are indexed by the 0).
-template <class F>
-void ForChunks(std::size_t n, std::size_t chunk, F &&f) {
-  for (std::size_t b = 0; b < n; b += chunk)
-    f(0u, b, std::min(n, b + chunk));
-}
+// Shards per slice. A shard holds ~100 orders per SF-1 (about 1us each
+// when indexed), so only large builds and reads pay for a task.
+constexpr std::size_t kFinishGrain = 32;  // bulk token index and match counts
+constexpr std::size_t kHistGrain = 64;     // ~200 customers per shard at SF 20
+constexpr std::size_t kEvalGrain = 1024;   // untracked-pattern read
 
 void HistAdd(std::vector<int64_t> &h, int64_t eff, int64_t delta) {
   if (eff < 0)
@@ -818,20 +816,20 @@ struct LocalIntern {
   }
 };
 
-// Initial load, per shard (in parallel): match counts of every tracked pattern,
+// Initial load, per shard (in parallel slices): match counts of every tracked pattern,
 // the token index, then trim the shard's vectors to size.
-void BulkFinish(Mut &m) {
+void BulkFinish(Mut &m, const core::AuxEngineServices &services) {
   const std::size_t np = m.st.patterns.size();
-  const unsigned nt = 1;
+  const std::size_t slices = core::SliceCount(services, kTpchQ13Shards, kFinishGrain);
   SharedVocab shared;
   shared.v = *m.st.vocab;
-  std::vector<std::vector<int32_t>> dfs(nt);
-  ForChunks(kTpchQ13Shards, 32,
-           [&](unsigned tid, std::size_t b, std::size_t e) {
+  std::vector<std::vector<int32_t>> dfs(slices);
+  core::RunSlices(services, slices, kTpchQ13Shards,
+           [&](std::size_t slice, std::size_t b, std::size_t e) {
              std::vector<uint64_t> mask;
              LocalIntern intern{&shared, {}};
              auto df_add = [&](uint16_t t, int64_t d) {
-               auto &df = dfs[tid];
+               auto &df = dfs[slice];
                if (t >= df.size())
                  df.resize(std::size_t{t} + 1, 0);
                df[t] += static_cast<int32_t>(d);
@@ -881,14 +879,14 @@ void BulkFinish(Mut &m) {
 }
 
 // Histograms (tracked patterns and the no-match base) from the customer arrays.
-void RecomputeHist(Mut &m) {
+void RecomputeHist(Mut &m, const core::AuxEngineServices &services) {
   const std::size_t np = m.st.patterns.size();
-  const unsigned nt = 1;
+  const std::size_t slices = core::SliceCount(services, kTpchQ13Shards, kHistGrain);
   std::vector<std::vector<std::vector<int64_t>>> part(
-      nt, std::vector<std::vector<int64_t>>(np + 1));
-  ForChunks(kTpchQ13Shards, 64,
-           [&](unsigned tid, std::size_t b, std::size_t e) {
-             auto &h = part[tid];
+      slices, std::vector<std::vector<int64_t>>(np + 1));
+  core::RunSlices(services, slices, kTpchQ13Shards,
+           [&](std::size_t slice, std::size_t b, std::size_t e) {
+             auto &h = part[slice];
              for (std::size_t s = b; s < e; ++s) {
                const TpchQ13CustShard *c = m.ReadC(s);
                if (!c)
@@ -908,7 +906,7 @@ void RecomputeHist(Mut &m) {
            });
   m.st.hist.assign(np, {});
   m.st.base.clear();
-  for (unsigned t = 0; t < nt; ++t) {
+  for (std::size_t t = 0; t < slices; ++t) {
     for (std::size_t p = 0; p <= np; ++p) {
       auto &dst = p < np ? m.st.hist[p] : m.st.base;
       if (part[t][p].size() > dst.size())
@@ -1175,9 +1173,11 @@ void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
 }
 
 // Exact answer for a pattern that is not tracked: the base histogram adjusted
-// only for customers that own matching orders.  Read-only, single-threaded like the other reads.
+// only for customers that own matching orders.  Read-only; shards are
+// independent, so slices fill private deltas that are summed (exact integers).
 std::vector<TpchQ13OutputRow> EvalUntracked(const TpchQ13State &st,
-                                            const std::string &pattern) {
+                                            const std::string &pattern,
+                                            const core::AuxEngineServices &services) {
   TpchQ13Like like;
   like.Build(pattern);
   if (like.all_pct) {  // every order matches: all customers have c_count 0
@@ -1198,15 +1198,15 @@ std::vector<TpchQ13OutputRow> EvalUntracked(const TpchQ13State &st,
   const bool anchored_scan = !like.anchor.empty() && !like.parts.empty() &&
                              like.parts.front().text.empty() &&
                              like.parts.back().text.empty() && like.has_pct;
-  const unsigned nt = 1;
-  std::vector<std::vector<int64_t>> deltas(nt);
-  ForChunks(kTpchQ13Shards, 16,
-           [&](unsigned tid, std::size_t b, std::size_t e) {
+  const std::size_t slices = core::SliceCount(services, kTpchQ13Shards, kEvalGrain);
+  std::vector<std::vector<int64_t>> deltas(slices);
+  core::RunSlices(services, slices, kTpchQ13Shards,
+           [&](std::size_t slice, std::size_t b, std::size_t e) {
              thread_local std::vector<int32_t> m;
              thread_local std::vector<uint32_t> touched;
              for (std::size_t s = b; s < e; ++s)
                QueryShard(st, s, like, anchored_scan, use_index ? &plan : nullptr,
-                          m, touched, deltas[tid]);
+                          m, touched, deltas[slice]);
            });
   std::vector<int64_t> h = st.base;
   for (const auto &d : deltas) {
@@ -1397,7 +1397,8 @@ std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state) {
 }
 
 bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
-                                 TpchQ13State &state) {
+                                 TpchQ13State &state,
+                                 const core::AuxEngineServices &services) {
   ByteReader reader(bytes);
   uint64_t magic = 0, version = 0, record_count = 0;
   if (!core::ReadImageHeader(reader, magic, version, record_count) ||
@@ -1435,8 +1436,8 @@ bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
       return false;
     ApplyOrder(m, ck, comment, +1, Apply::Raw);
   }
-  BulkFinish(m);
-  RecomputeHist(m);
+  BulkFinish(m, services);
+  RecomputeHist(m, services);
   state = m.Finish();
   return true;
 }
@@ -1485,7 +1486,6 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
 
 TpchQ13State TpchQ13Module::BuildState(
     core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
 
@@ -1540,8 +1540,8 @@ TpchQ13State TpchQ13Module::BuildState(
     EmitCustomProfile("build_orders", t_orders.us(), norders, 0, 0, 0);
 
   CustomTimer t_fin(profiling);
-  BulkFinish(m);
-  RecomputeHist(m);
+  BulkFinish(m, services);
+  RecomputeHist(m, services);
   if (profiling)
     EmitCustomProfile("build_finish", t_fin.us(), 0, 0, 0, 0);
   auto state = m.Finish();
@@ -1821,7 +1821,6 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
                                const std::string &pattern,
                                core::AuxEngineServices &services,
                                core::AuxRowSink &sink) const {
-  (void)services;
   const bool profiling = CustomProfilingEnabled();
   CustomTimer t(profiling);
 
@@ -1838,7 +1837,7 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
 
   // Any other LIKE pattern: exact, in memory, from the base histogram plus the
   // customers that own matching orders.
-  const auto rows = EvalUntracked(state, pattern);
+  const auto rows = EvalUntracked(state, pattern, services);
   EmitSorted(rows, sink);
   if (profiling)
     EmitCustomProfile("untracked_eval", t.us(), 0, 0,

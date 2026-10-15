@@ -344,7 +344,7 @@ std::unique_ptr<core::AuxTxnBuffer> SecEdgarQ1Module::CreateTxnBuffer() const {
 }
 
 SecEdgarQ1State
-SecEdgarQ1Module::BuildState(core::AuxEngineServices &) const {
+SecEdgarQ1Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q1 requires a typed initial scan source");
   }
@@ -353,7 +353,7 @@ SecEdgarQ1Module::BuildState(core::AuxEngineServices &) const {
     initial_scan->ScanPre(
         [&](const SecEdgarQ1PreInput &input) { builder.ConsumeRow(input); });
   }
-  return builder.Finish();
+  return builder.Finish(&services);
 }
 
 void SecEdgarQ1Module::Build(core::AuxEngineServices &services,
