@@ -435,12 +435,40 @@ int RunSweep(const std::string &db_path, int threads) {
 
 } // namespace
 
+// Regression: tags of equal length sharing their first 24 bytes (common in
+// us-gaap, e.g. IncreaseDecreaseInAccounts...) are distinct groups.  The base
+// kernel keyed (tag, version) by a 24-byte prefix and merged them into one row.
+void CheckTagPrefixCollision() {
+  duckdb::DuckDB db(nullptr);
+  duckdb::Connection con(db);
+  accelerator_codegen::RegisterAcceleratorFunctions(con);
+  Exec(con, "CREATE TABLE num(adsh VARCHAR, tag VARCHAR, version VARCHAR, ddate INTEGER, "
+            "qtrs INTEGER, uom VARCHAR, coreg VARCHAR, value DOUBLE, footnote VARCHAR)");
+  Exec(con, "CREATE TABLE pre(adsh VARCHAR, report INTEGER, line INTEGER, stmt VARCHAR, "
+            "inpth INTEGER, rfile VARCHAR, tag VARCHAR, version VARCHAR, plabel VARCHAR, "
+            "negating INTEGER)");
+  const std::string tags[] = {"IncreaseDecreaseInAccountsPayableTrade",
+                              "IncreaseDecreaseInAccountsReceivableXY"};
+  std::string sql = "INSERT INTO num VALUES ";
+  for (int t = 0; t < 2; ++t)
+    for (int i = 0; i < 12 + 3 * t; ++i)
+      sql += std::string(t + i ? "," : "") + "('0000000001-23-" + std::to_string(100 + i) +
+             "'," + Lit(tags[t]) + ",'us-gaap/2023',20230601,4,'USD',NULL," +
+             std::to_string((t + 1) * 10 + i) + ",NULL)";
+  Exec(con, sql);
+  const auto &entry = catalog::LookupSharedQuery("sec_edgar", 24);
+  CompareResults(con, "tag prefix collision (base kernel)", entry.base_sql,
+                 "SELECT * FROM accel_sec_edgar_q24()");
+  std::cout << "tag prefix collision ok\n";
+}
+
 int main(int argc, char **argv) {
   try {
     if (std::getenv("Q24_SWEEP") && argc >= 2)
       return RunSweep(argv[1], argc > 2 ? std::atoi(argv[2]) : 12);
     const int seeds = std::getenv("Q24_SEEDS") ? std::atoi(std::getenv("Q24_SEEDS")) : 3;
     const int steps = std::getenv("Q24_STEPS") ? std::atoi(std::getenv("Q24_STEPS")) : 120;
+    CheckTagPrefixCollision();
     for (int s = 1; s <= seeds; ++s) {
       RunSynthetic(500 + s, /*nulls=*/false, steps);
       RunSynthetic(600 + s, /*nulls=*/true, steps);

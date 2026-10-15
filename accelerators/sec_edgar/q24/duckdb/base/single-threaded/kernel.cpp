@@ -159,13 +159,16 @@ struct TagVersionTable {
 		return InternKeys(AdshKey::From(tag), AdshKey::From(version), tag, version);
 	}
 
+	// The keys hold only the first 24 bytes of the tag / version (tags run to
+	// ~100 bytes and distinct tags often share a 24-byte prefix), so an id is
+	// returned only when its stored strings match in full.
 	uint32_t InternKeys(const AdshKey &tag_key, const AdshKey &version_key, const duckdb::string_t &tag,
 	                    const duckdb::string_t &version) {
-		const TagVersionKey key {tag_key, version_key};
-		const auto it = lookup_.find(key);
-		if (it != lookup_.end()) {
-			return it->second;
+		uint32_t found = 0;
+		if (LookupKeys(tag_key, version_key, tag, version, found)) {
+			return found;
 		}
+		const TagVersionKey key {tag_key, version_key};
 		const uint32_t id = static_cast<uint32_t>(storage_.size());
 		lookup_.emplace(key, id);
 		storage_.push_back(
@@ -173,23 +176,18 @@ struct TagVersionTable {
 		return id;
 	}
 
-	bool LookupKeysOnly(const AdshKey &tag_key, const AdshKey &version_key, uint32_t &out_id) const {
-		const TagVersionKey key {tag_key, version_key};
-		const auto it = lookup_.find(key);
-		if (it == lookup_.end()) {
-			return false;
-		}
-		out_id = it->second;
-		return true;
-	}
-
 	bool LookupKeys(const AdshKey &tag_key, const AdshKey &version_key, const duckdb::string_t &tag,
 	                const duckdb::string_t &version, uint32_t &out_id) const {
-		if (!LookupKeysOnly(tag_key, version_key, out_id)) {
-			return false;
+		const TagVersionKey key {tag_key, version_key};
+		const auto range = lookup_.equal_range(key);
+		for (auto it = range.first; it != range.second; ++it) {
+			const auto &stored = storage_[it->second];
+			if (StoredStringEquals(stored.tag, tag) && StoredStringEquals(stored.version, version)) {
+				out_id = it->second;
+				return true;
+			}
 		}
-		const auto &stored = storage_[out_id];
-		return StoredStringEquals(stored.tag, tag) && StoredStringEquals(stored.version, version);
+		return false;
 	}
 
 	const std::string &Tag(uint32_t id) const {
@@ -217,7 +215,7 @@ struct TagVersionTable {
 
 private:
 	std::vector<StoredPair> storage_;
-	std::unordered_map<TagVersionKey, uint32_t, TagVersionKeyHash> lookup_;
+	std::unordered_multimap<TagVersionKey, uint32_t, TagVersionKeyHash> lookup_;
 };
 
 struct PreByAdshMembership {
@@ -563,18 +561,18 @@ struct PreTripleDictCache {
 };
 
 struct NumBufferDictCache {
-	const duckdb::SelectionVector *current_sel = nullptr;
 	std::vector<uint8_t> valid;
 	std::vector<uint32_t> adsh_ids;
 	std::vector<uint32_t> tv_ids;
 
-	void BeginChunk(const duckdb::SelectionVector *sel) {
-		if (current_sel != sel) {
-			current_sel = sel;
-			valid.clear();
-			adsh_ids.clear();
-			tv_ids.clear();
-		}
+	// Slots are indexes into this chunk's dictionary and are valid for this
+	// chunk only.  (They used to be kept while the selection vector's address
+	// repeated, but a later chunk's dictionary buffer can be allocated at a
+	// freed one's address with other strings behind the same indexes.)
+	void BeginChunk(const duckdb::SelectionVector *) {
+		valid.clear();
+		adsh_ids.clear();
+		tv_ids.clear();
 	}
 
 	void Reserve(duckdb::idx_t estimate) {
@@ -602,9 +600,7 @@ struct NumBufferDictCache {
 		const bool new_adsh = adsh_intern.InternKeyNew(AdshKey::From(adsh), adsh_id_out);
 		const AdshKey tag_key = AdshKey::From(tag);
 		const AdshKey version_key = AdshKey::From(version);
-		if (!tag_version_table.LookupKeysOnly(tag_key, version_key, tv_id_out)) {
-			tv_id_out = tag_version_table.InternKeys(tag_key, version_key, tag, version);
-		}
+		tv_id_out = tag_version_table.InternKeys(tag_key, version_key, tag, version);
 		adsh_ids[dict_idx] = adsh_id_out;
 		tv_ids[dict_idx] = tv_id_out;
 		return new_adsh;
@@ -793,9 +789,7 @@ struct SecEdgarQ24Kernel::State {
 		const AdshKey tag_key = AdshKey::From(tag);
 		const AdshKey version_key = AdshKey::From(version);
 		uint32_t tv_id = 0;
-		if (!tag_version_table.LookupKeysOnly(tag_key, version_key, tv_id)) {
-			tv_id = tag_version_table.InternKeys(tag_key, version_key, tag, version);
-		}
+		tv_id = tag_version_table.InternKeys(tag_key, version_key, tag, version);
 		AppendBufferRow(adsh_id, tv_id, value);
 	}
 
