@@ -5,8 +5,8 @@ categories:
   - name: Fused scan (ScanFilteredConsumer)
     summary: Production path for filtered table scans; use SelectProjectedColumn per column.
     paths:
-      - accelerators/tpch/q1/duckdb/base/single-threaded/fused_scan.cpp
-      - accelerators/tpch/q1/duckdb/base/fused.hpp
+      - accelerators/sec_edgar/q2/duckdb/base/single-threaded/kernel.cpp
+      - accelerators/sec_edgar/q1/duckdb/base/fused.hpp
       - accelerators/sec_edgar/q1/duckdb/base/single-threaded/package.cpp
       - eval/bench/tpch/single-threaded/benchmark_tpch_breakdown.cpp
 

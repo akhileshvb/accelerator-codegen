@@ -1,6 +1,6 @@
 # Read-path scaffold (agent-generated `aux/module.cpp`)
 
-Port from shipped modules under `accelerators/tpch/q{1,3,10,12,14}/aux/module.cpp`. Every aux query implements the same `AuxQueryModule` surface.
+Port from shipped modules under `accelerators/tpch/q{1,3,10,12,14}/duckdb/aux/module.cpp`. Every aux query implements the same `AuxQueryModule` surface.
 
 ## Module methods (required)
 
@@ -63,6 +63,6 @@ payloads without byte round-trips on the hot path.
 | Pattern | Reference |
 |---------|-----------|
 | Single-partition | `accelerators/tpch/q14/duckdb/aux/module.cpp` |
-| Multi-partition window | `accelerators/tpch/q10/duckdb/aux/module.cpp`, `q12/aux/module.cpp` |
+| Multi-partition window | `accelerators/tpch/q10/duckdb/aux/module.cpp`, `q12/duckdb/aux/module.cpp` |
 | Prefix / cumulative | `accelerators/tpch/q1/duckdb/aux/module.cpp` |
-| SEC EDGAR append workload | `accelerators/sec_edgar/q1/<engine>/aux/module.cpp` |
+| SEC EDGAR append workload | `accelerators/sec_edgar/q1/common/module.cpp` |

@@ -14,9 +14,9 @@ If `backend_analysis.json` `harness_plan` contradicts this file or
 
 **Read first:** `substrate/aux/core/aux_types.hpp`
 (`AuxStateStore`, `QueryKey`, `VisibilityToken`, `ValidityCode::NotVisible`),
-`substrate/aux/state/partitioned_state_store.hpp`.
+`substrate/aux/state/versioned_aux_store.hpp`.
 
-`{Engine}StateStore` wraps `PartitionedStateStore`. Typed `StateImage` payloads
+`{Engine}StateStore` wraps `VersionedAuxStore`. Typed `StateImage` payloads
 for `typed_in_process`.
 
 | API | Must |

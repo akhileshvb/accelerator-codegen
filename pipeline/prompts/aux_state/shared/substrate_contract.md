@@ -2,7 +2,7 @@
 
 Hand-written APIs in `substrate/aux/`:
 
-- **PartitionedStateStore** (`state/partitioned_state_store.hpp`) — partitioned payload storage with per-slot versions; invalidation and staged reads via `AuxStateStore`.
+- **VersionedAuxStore** (`state/versioned_aux_store.hpp`) — partitioned payload storage with per-slot versions; invalidation and staged reads via `AuxStateStore`.
 - **AuxRegistry** (`core/aux_registry.hpp`) — transaction coordinator registering `AuxQueryModule` instances; routes mutations, txn buffers, and staged maintenance across modules.
 - **AuxTxnBuffer** (`core/aux_txn_buffer.hpp`) — per-connection incremental buffers and txn-local dirty tracking.
 - **AuxEngineServices** (`core/aux_engine_services.hpp`) — visibility token, state store access, cost model, `ChooseMaintenance`, `ExpectedQueriesBeforeNextWrite`.

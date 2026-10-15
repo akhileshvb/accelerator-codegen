@@ -3,7 +3,7 @@
 // Wire it in package.cpp: package.create_fused_kernel / package.fused_scan.
 
 #include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
-#include "sec_edgar/q{{query_number}}/base/query.hpp"
+#include "sec_edgar/q{{query_number}}/duckdb/base/query.hpp"
 
 #include "duckdb/main/client_context.hpp"
 
@@ -27,7 +27,7 @@ public:
 		const auto consumer = [this](duckdb::TransactionData transaction, duckdb::CollectionScanState &scan_state,
 		                             duckdb::RowGroup &row_group, duckdb::SelectionVector &sel,
 		                             duckdb::idx_t count) -> duckdb::FilteredScanConsumerResult {
-			// Decode projected columns with SelectProjectedColumn per index (see tpch q1_fused_scan.cpp).
+			// Decode projected columns with SelectProjectedColumn per index (see accelerators/sec_edgar/q2/duckdb/base/single-threaded/kernel.cpp).
 			(void)transaction;
 			(void)scan_state;
 			(void)row_group;

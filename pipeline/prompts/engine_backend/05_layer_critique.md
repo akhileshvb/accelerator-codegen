@@ -30,7 +30,7 @@ disk.** After the reads below, write the two files (heredoc `cat > …`) and
 4. Adapter + harness files for **this layer only** (paths in analysis
    `layers[id={{layer_id}}].files` and `{{layer_harness}}`)
 5. Substrate headers those files include (`aux_types.hpp`,
-   `partitioned_state_store.hpp`, `aux_registry.hpp` as relevant)
+   `versioned_aux_store.hpp`, `aux_registry.hpp` as relevant)
 6. Gate JSON if present: `{{artifacts_path}}/gates/{{layer_gate}}.json`
 
 Prior layers (reuse; do not re-litigate style). If **this** layer cannot meet

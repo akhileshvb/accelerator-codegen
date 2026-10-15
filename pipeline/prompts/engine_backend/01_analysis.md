@@ -40,7 +40,7 @@ Also fill `store_mode`, `native_scan_plan.symbol`, `mutation_capture_plan.hook`,
 
 - `substrate/aux/core/aux_types.hpp`
 - `substrate/aux/core/aux_registry.hpp`
-- `substrate/aux/state/partitioned_state_store.hpp`
+- `substrate/aux/state/versioned_aux_store.hpp`
 - `pipeline/prompts/engine_backend/layers.md`
 - `pipeline/prompts/engine_backend/acceptance_checklist.md`
 - `pipeline/prompts/engine_backend/layer_contracts.md`

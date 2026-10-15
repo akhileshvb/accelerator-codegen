@@ -9,7 +9,7 @@ The timed benchmark runs `SELECT * FROM {{function_name}}()` through `query_runt
 | `{{kernel_path}}` | `CreateQ{N}Kernel`, profiling kernel, aggregation logic |
 | `{{package_path}}` | `NativeScanSpec`, bind, table function; sets `package.create_fused_kernel` / `package.fused_scan` (the runtime calls them; no shared file to edit) |
 | `{{fused_scan_path}}` (optional) | Fused scan implementation — auto-compiled when present (see `cmake/BaseQuery.cmake`) |
-| `{{fused_header_path}}` (optional) | Fused kernel API (mirror `accelerators/tpch/q1/duckdb/base/fused.hpp`) |
+| `{{fused_header_path}}` (optional) | Fused kernel API (mirror `accelerators/sec_edgar/q1/duckdb/base/fused.hpp`) |
 
 Do **not** edit `CMakeLists.txt`. Optional `fused_scan.cpp` under `base/single-threaded/` is picked up automatically.
 
@@ -17,8 +17,8 @@ Do **not** edit `CMakeLists.txt`. Optional `fused_scan.cpp` under `base/single-t
 
 Read these before implementing:
 
-- `accelerators/tpch/q1/duckdb/base/single-threaded/fused_scan.cpp` — fused `ScanFilteredConsumer` + `SelectProjectedColumn` per column
-- `accelerators/tpch/q1/duckdb/base/fused.hpp` — fused kernel API
+- `accelerators/sec_edgar/q2/duckdb/base/single-threaded/kernel.cpp` — fused `ScanFilteredConsumer` + `SelectProjectedColumn` per column
+- `accelerators/sec_edgar/q1/duckdb/base/fused.hpp` — fused kernel API
 - `accelerators/sec_edgar/q1/duckdb/base/single-threaded/package.cpp` — fused hook pattern (`create_fused_kernel` / `fused_scan`)
 - `accelerators/tpch/q1/bench/benchmark_q1.cpp` — profile path matches production fused scan
 
