@@ -140,7 +140,7 @@ void LookupTpchQ9Lineitems(
         " AND l_partkey IS NOT NULL AND l_suppkey IS NOT NULL AND "
         "l_orderkey IS NOT NULL AND l_quantity IS NOT NULL AND "
         "l_extendedprice IS NOT NULL AND l_discount IS NOT NULL";
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
           consumer({TypedInt(tuple, tuple_desc, 0),
                     TypedInt(tuple, tuple_desc, 1),

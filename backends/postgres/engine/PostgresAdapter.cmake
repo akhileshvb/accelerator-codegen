@@ -1,9 +1,5 @@
-# Postgres engine adapter — build the MODULE (accelerator_codegen_pg), its
-# test-only variant (accelerator_codegen_pg_test) and the engine_backend layer
-# harnesses inside the accel_pg_test Docker container.
-#
-# This file grows with each engine_backend layer. The store layer only needs
-# the shared library; later layers add extension sources and harnesses.
+# Postgres engine adapter — build the MODULE (accelerator_codegen_pg) and the
+# writer-side test module inside the accel_pg_test Docker container.
 
 # Shared settings for the production and test Postgres MODULEs.
 function(_accel_pg_module_setup _target)
@@ -90,23 +86,6 @@ function(accel_build_postgres_extension)
   if(_pg_ext_sources)
     add_library(accelerator_codegen_pg MODULE ${_pg_ext_sources} ${_pg_query_sources})
     _accel_pg_module_setup(accelerator_codegen_pg)
-  endif()
-
-  # Test-only MODULE for the engine_backend layer gates: the backend sources
-  # above (no per-query code) plus the gate-test UDFs (toy txn / mutations /
-  # scan / runtime / visibility bridges) from backends/postgres/tests/.
-  # The layer harnesses LOAD accelerator_codegen_pg_test; the production
-  # accelerator_codegen_pg never contains these functions.
-  set(_pg_test_sources "")
-  foreach(_src IN ITEMS
-      backends/postgres/tests/extension_test_engine.cpp)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
-      list(APPEND _pg_test_sources ${_src})
-    endif()
-  endforeach()
-  if(_pg_ext_sources AND _pg_test_sources)
-    add_library(accelerator_codegen_pg_test MODULE ${_pg_ext_sources} ${_pg_test_sources})
-    _accel_pg_module_setup(accelerator_codegen_pg_test)
   endif()
 
   # Writer-side tests: the writer sources against a recording stub of the shard

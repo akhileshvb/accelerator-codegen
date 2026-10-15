@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Build accelerator_codegen_pg (+ harnesses) inside accel_pg_test and install into PG 17 libdir.
-# The engine_backend layer harnesses LOAD a test-only variant,
-# accelerator_codegen_pg_test (production MODULE + gate-test UDFs from
-# backends/postgres/tests/). It is built and installed next to the production
-# .so when a requested target depends on it, or when ACCEL_PG_TEST_MODULE=1.
-# Experiments only ever load accelerator_codegen_pg, which has no test UDFs.
+# Test-only modules (accelerator_codegen_pg_writer_test) are built and
+# installed next to the production .so when a requested target depends on
+# them. Experiments only ever load accelerator_codegen_pg.
 # ACCEL_PG_BUILD_JOBS: ninja -j (default: nproc in the container).
 set -euo pipefail
 
@@ -18,8 +16,8 @@ fi
 # Require adapter sources on the host mount (fail closed — no stale-.so soft pass).
 for rel in \
   backends/postgres/engine/extension_engine.cpp \
-  backends/postgres/state/postgres_aux_backend.cpp \
-  backends/postgres/state/postgres_state_store.cpp
+  backends/postgres/state/shard_worker.cpp \
+  backends/postgres/state/shared.cpp
 do
   if [[ ! -f "${ROOT}/$rel" ]]; then
     echo "missing adapter source: ${ROOT}/${rel}" >&2
@@ -110,11 +108,10 @@ for t in ${ACCEL_PG_NINJA_TARGETS:-}; do
   fi
 done
 
-# Test-only MODULE: when asked for, or when a requested target (a layer
-# harness) depends on it (add_dependencies in CMakeLists.txt).
+# Test-only MODULE: when asked for, or when a requested target depends on it.
 want_test_module="${ACCEL_PG_TEST_MODULE:-0}"
 for t in ${ACCEL_PG_NINJA_TARGETS:-}; do
-  if ninja -t query "${t}" 2>/dev/null | grep -q "accelerator_codegen_pg_test\.so"; then
+  if ninja -t query "${t}" 2>/dev/null | grep -q "accelerator_codegen_pg_writer_test\.so"; then
     want_test_module=1
   fi
 done
@@ -123,10 +120,10 @@ done
 PG_LIB=/usr/lib/postgresql/17/lib
 cp -f accelerator_codegen_pg.so "${PG_LIB}/"
 if [[ "${want_test_module}" == "1" ]]; then
-  ninja accelerator_codegen_pg_test -j"${JOBS}"
-  cp -f accelerator_codegen_pg_test.so "${PG_LIB}/"
-  patchelf --set-rpath "${PG_LIB}" "${PG_LIB}/accelerator_codegen_pg_test.so" || true
-  echo "installed accelerator_codegen_pg_test.so (gate-test variant) into ${PG_LIB}"
+  ninja accelerator_codegen_pg_writer_test -j"${JOBS}"
+  cp -f accelerator_codegen_pg_writer_test.so "${PG_LIB}/"
+  patchelf --set-rpath "${PG_LIB}" "${PG_LIB}/accelerator_codegen_pg_writer_test.so" || true
+  echo "installed accelerator_codegen_pg_writer_test.so into ${PG_LIB}"
 fi
 cp -f libaccelerator_codegen.so "${PG_LIB}/"
 cp -f /accel-build/duckdb/src/libduckdb.so "${PG_LIB}/"

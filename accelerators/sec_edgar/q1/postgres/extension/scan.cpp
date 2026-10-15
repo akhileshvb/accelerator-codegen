@@ -72,7 +72,6 @@ void ScanPreNative(Fn &&fn) {
   if (!ResolvePreColumns(relid, attno, error)) {
     throw std::runtime_error("sec_edgar q1: " + error);
   }
-  ++t_table_scans;
   Relation rel = table_open(relid, AccessShareLock);
   TableScanDesc scan = nullptr;
   TupleTableSlot *slot = nullptr;

@@ -33,7 +33,6 @@ constexpr core::TableId kPreTableId = 3;
 // string views taken from its tuples stay valid until the callback returns.
 template <typename OnChunk>
 void ScanChunks(const std::string &sql, OnChunk &&on_chunk) {
-  ++t_table_scans;
   if (SPI_connect() != SPI_OK_CONNECT)
     throw std::runtime_error("SPI_connect failed");
   SPIPlanPtr plan = SPI_prepare(sql.c_str(), 0, nullptr);

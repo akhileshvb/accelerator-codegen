@@ -67,7 +67,7 @@ void ScanTpchQ19PartQuantityRevenue(
     const std::function<void(const query::TpchQ19PartQuantityRevenue &)>
         &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuplesAfterOwnWrites(
+  ScanTypedTuples(
       "SELECT l_partkey, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
       "count(*) FROM lineitem WHERE " +
           KeyListPredicate("l_partkey", partkeys) + " AND " +

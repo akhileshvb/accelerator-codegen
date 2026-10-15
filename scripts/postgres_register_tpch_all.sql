@@ -51,17 +51,17 @@ RETURNS text
 AS 'accelerator_codegen_pg', 'accel_postgres_get_last_maintenance_action'
 LANGUAGE C STRICT;
 
--- Shared accelerator state (accel.shared_state): worker counters, and a stop switch.
-DROP FUNCTION IF EXISTS accel_postgres_shared_stats() CASCADE;
-CREATE FUNCTION accel_postgres_shared_stats()
+-- Shard workers: counters, and a stop switch.
+DROP FUNCTION IF EXISTS accel_postgres_shard_stats() CASCADE;
+CREATE FUNCTION accel_postgres_shard_stats()
 RETURNS text
-AS 'accelerator_codegen_pg', 'accel_postgres_shared_stats'
+AS 'accelerator_codegen_pg', 'accel_postgres_shard_stats'
 LANGUAGE C;
 
-DROP FUNCTION IF EXISTS accel_postgres_stop_shared_worker() CASCADE;
-CREATE FUNCTION accel_postgres_stop_shared_worker()
+DROP FUNCTION IF EXISTS accel_postgres_stop_shard_workers() CASCADE;
+CREATE FUNCTION accel_postgres_stop_shard_workers()
 RETURNS boolean
-AS 'accelerator_codegen_pg', 'accel_postgres_stop_shared_worker'
+AS 'accelerator_codegen_pg', 'accel_postgres_stop_shard_workers'
 LANGUAGE C;
 
 -- Per-query functions (accel_<bench>_qN, accel_<bench>_qN_aux, row types).

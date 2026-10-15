@@ -875,10 +875,8 @@ endif()
 # ---------------------------------------------------------------------------
 if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/test_postgres_tpch_differential.cpp")
-    # postgres_server_stubs.cpp: server-only symbols the library references.
     add_executable(test_postgres_tpch_fuzz
         eval/tests/test_postgres_tpch_fuzz.cpp
-        backends/postgres/tests/postgres_server_stubs.cpp
     )
     find_library(LIBPQ_FUZZ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     target_link_libraries(test_postgres_tpch_fuzz
@@ -898,7 +896,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     # Parameter-generality differential (all 22 queries, spec / off-spec / edge params).
     add_executable(test_postgres_tpch_params
         eval/tests/test_postgres_tpch_params.cpp
-        backends/postgres/tests/postgres_server_stubs.cpp
     )
     find_library(LIBPQ_PARAMS_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     target_link_libraries(test_postgres_tpch_params
@@ -919,7 +916,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     # memory vs connections, concurrency, killed backends, worker restarts.
     add_executable(test_postgres_shared_state
         eval/tests/test_postgres_shared_state.cpp
-        backends/postgres/tests/postgres_server_stubs.cpp
     )
     find_library(LIBPQ_SHARED_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     find_package(Threads REQUIRED)
@@ -940,7 +936,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     )
     add_executable(test_postgres_tpch_differential
         eval/tests/test_postgres_tpch_differential.cpp
-        backends/postgres/tests/postgres_server_stubs.cpp
     )
     find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     target_link_libraries(test_postgres_tpch_differential
@@ -1013,7 +1008,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/bench/postgres/calibrate_postgres_tpch_aux_cost_model.cpp")
         add_executable(calibrate_postgres_tpch_aux_cost_model
             eval/bench/postgres/calibrate_postgres_tpch_aux_cost_model.cpp
-            backends/postgres/tests/postgres_server_stubs.cpp
         )
         find_library(LIBPQ_CALIB_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
         target_link_libraries(calibrate_postgres_tpch_aux_cost_model
@@ -1040,7 +1034,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/test_postgres_aux_multi_connection_stress.cpp")
         add_executable(test_postgres_aux_multi_connection_stress
             eval/tests/test_postgres_aux_multi_connection_stress.cpp
-            backends/postgres/tests/postgres_server_stubs.cpp
         )
         target_link_libraries(test_postgres_aux_multi_connection_stress
             PRIVATE
@@ -1070,7 +1063,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/test_postgres_cross_accel.cpp")
         add_executable(test_postgres_cross_accel
             eval/tests/test_postgres_cross_accel.cpp
-            backends/postgres/tests/postgres_server_stubs.cpp
         )
         target_link_libraries(test_postgres_cross_accel
             PRIVATE
@@ -1093,61 +1085,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
             add_test(NAME test_postgres_cross_accel COMMAND test_postgres_cross_accel)
         endif()
     endif()
-endif()
-
-# ---------------------------------------------------------------------------
-# PostgreSQL engine backend layer harnesses. store / aux_backend link the
-# library (plus postgres_server_stubs.cpp for the server-only symbols the
-# library references); the later layers are plain libpq tests against the PG
-# server that LOAD the test-only MODULE accelerator_codegen_pg_test.
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
-    foreach(_layer IN ITEMS store aux_backend)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/tests/test_postgres_${_layer}.cpp")
-            add_executable(test_postgres_${_layer}
-                backends/postgres/tests/test_postgres_${_layer}.cpp
-                backends/postgres/tests/postgres_server_stubs.cpp
-            )
-            target_link_libraries(test_postgres_${_layer}
-                PRIVATE
-                    accelerator_codegen
-                    duckdb_sibling
-            )
-            target_include_directories(test_postgres_${_layer}
-                PRIVATE
-                    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
-            )
-            if(BUILD_TESTING)
-                add_test(NAME engine_postgres_${_layer} COMMAND test_postgres_${_layer})
-            endif()
-        endif()
-    endforeach()
-endif()
-
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
-    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
-    foreach(_layer IN ITEMS txn mutations scan runtime visibility host adversarial)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/tests/test_postgres_${_layer}.cpp")
-            add_executable(test_postgres_${_layer}
-                backends/postgres/tests/test_postgres_${_layer}.cpp
-            )
-            target_include_directories(test_postgres_${_layer}
-                PRIVATE
-                    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
-                    ${ACCEL_PG_INCLUDEDIR}
-            )
-            target_link_libraries(test_postgres_${_layer}
-                PRIVATE
-                    ${LIBPQ_LIB}
-            )
-            if(TARGET accelerator_codegen_pg_test)
-                add_dependencies(test_postgres_${_layer} accelerator_codegen_pg_test)
-            endif()
-            if(BUILD_TESTING)
-                add_test(NAME engine_postgres_${_layer} COMMAND test_postgres_${_layer})
-            endif()
-        endif()
-    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------

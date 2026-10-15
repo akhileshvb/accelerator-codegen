@@ -119,7 +119,7 @@ void LookupTpchQ5Lineitems(
     const char *key_column, const std::vector<int64_t> &keys,
     const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
   LookupBatches(kLineitemsSql, key_column, keys, [&](const std::string &sql) {
-    ScanTypedTuplesAfterOwnWrites(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
+    ScanTypedTuples(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
       consumer({TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1),
                 TypedInt(tuple, tuple_desc, 2), 2,
                 TypedInt(tuple, tuple_desc, 3), 2});
@@ -131,7 +131,7 @@ void LookupTpchQ5OrdersByCustomer(
     const std::vector<int64_t> &custkeys,
     const std::function<void(const query::TpchQ5OrderInput &)> &consumer) {
   LookupBatches(kOrdersSql, "o_custkey", custkeys, [&](const std::string &sql) {
-    ScanTypedTuplesAfterOwnWrites(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
+    ScanTypedTuples(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
       consumer({TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1),
                 TypedDate(tuple, tuple_desc, 2)});
     });

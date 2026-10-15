@@ -16,7 +16,7 @@ REQUIRED_SOURCES=(
   "backends/postgres/api/extension_api.cpp"
   "backends/postgres/api/runtime.cpp"
   "backends/postgres/engine/transition_capture.cpp"
-  "backends/postgres/state/postgres_aux_backend.cpp"
+  "backends/postgres/state/shard_worker.cpp"
   "backends/postgres/engine/postgres_bridge.cpp"
 )
 

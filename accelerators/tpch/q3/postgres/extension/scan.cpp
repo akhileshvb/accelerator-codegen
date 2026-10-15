@@ -63,14 +63,14 @@ public:
     // statement (and this transaction) left it.
     scans::RunOrderLines(
         [](const std::string &sql, auto &&row) {
-          ScanTypedTuplesAfterOwnWrites(sql, row);
+          ScanTypedTuples(sql, row);
         },
         " WHERE " + KeyListPredicate("o.o_orderkey", orderkeys), consumer);
     return true;
   }
   bool LookupOrdersOfCustomers(const std::vector<int64_t> &custkeys,
                                std::vector<int64_t> &orderkeys) override {
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         "SELECT o_orderkey FROM orders WHERE " +
             KeyListPredicate("o_custkey", custkeys),
         [&](HeapTuple tuple, TupleDesc tuple_desc) {

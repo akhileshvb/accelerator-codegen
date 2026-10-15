@@ -158,7 +158,7 @@ public:
       tags.push_back(g.second);
       exact.insert(g.first + std::string(1, '\0') + g.second);
     }
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         "SELECT adsh, tag, value, count(*) FROM num WHERE uom = " + SqlQuote(uom) +
             " AND value IS NOT NULL AND adsh = ANY(" + SqlTextArray(adshs) +
             ") AND tag = ANY(" + SqlTextArray(tags) + ") GROUP BY adsh, tag, value",
@@ -234,7 +234,7 @@ private:
       consumer(in);
     };
     if (after_own_writes) {
-      ScanTypedTuplesAfterOwnWrites(sql, row);
+      ScanTypedTuples(sql, row);
     } else {
       ScanTypedTuples(sql, row);
     }

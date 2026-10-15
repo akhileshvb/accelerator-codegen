@@ -48,7 +48,6 @@ double Float8At(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
 // join.  The result of every query below is small (<= ~100K narrow rows).
 template <typename Callback>
 void RunQuery(const std::string &sql, Callback &&callback) {
-  ++t_table_scans;
   if (SPI_connect() != SPI_OK_CONNECT) {
     throw std::runtime_error("SPI_connect failed");
   }

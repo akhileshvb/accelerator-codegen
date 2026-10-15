@@ -72,7 +72,7 @@ void LookupTpchQ12LineitemsByOrder(
         KeyListPredicate("l_orderkey", batch) +
         " AND l_shipmode IS NOT NULL AND l_commitdate < l_receiptdate "
         "AND l_shipdate < l_commitdate";
-    ScanTypedTuplesAfterOwnWrites(
+    ScanTypedTuples(
         sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
           consumer({TypedInt(tuple, tuple_desc, 0),
                     TypedText(tuple, tuple_desc, 1),

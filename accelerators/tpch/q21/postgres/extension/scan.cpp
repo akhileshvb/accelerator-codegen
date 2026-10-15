@@ -93,7 +93,7 @@ public:
     // statement (and this transaction) left it.
     scans::RunFulfilledLineitems(
         [](const std::string &sql, auto &&row) {
-          ScanTypedTuplesAfterOwnWrites(sql, row);
+          ScanTypedTuples(sql, row);
         },
         // The key list on both join sides: PostgreSQL does not carry an
         // = ANY(...) across the join, and with it on lineitem only it hashes
