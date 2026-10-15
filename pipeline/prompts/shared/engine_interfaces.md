@@ -99,6 +99,8 @@ Runtime flow, commit ordering, gap handling, catch-up, build scheduling, version
 
 One thread budget per backend: DuckDB `threads`, Postgres GUC `accel.threads`, MySQL `accel_threads`; `ACCEL_AUX_THREADS` overrides; default is the CPU count of the `sched_getaffinity` mask. Backends and modules size all parallelism with `services.WorkerCount()` / `ThreadBudget`. Never use `std::thread::hardware_concurrency`, a fixed thread count, or a private thread pool. `pipeline/gates/run_thread_budget_lint.sh` flags violations.
 
+**Read parallelism lives in `Execute`.** A module whose `Execute` does work proportional to the state it reads (many partitions, groups or entries) splits that work into fixed chunks and runs them with `services.ParallelFor(n, fn)` (the substrate pool, shared with builds and maintenance, so the total never exceeds the budget; serial by default). Each task writes its own partial result; merge the partials in task-index order so rows and floating-point sums equal a serial run. Do not use the engine's own threads (`MaxThreads`, multi-threaded table functions) for this. Row emission through the sink stays serial, and reads that finish in microseconds stay serial: measure first, since pool dispatch costs tens of microseconds.
+
 Do **not** hard-code a second engine's file layout into query modules. When an engine adapter is absent, leave optional catalog SQL slots empty rather than inventing adapter trees mid-query.
 
 ### What query agents must not regenerate

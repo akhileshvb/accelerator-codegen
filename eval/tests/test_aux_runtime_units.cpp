@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 
+#include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/runtime/columnar_batch.hpp"
 #include "substrate/aux/runtime/sequenced_applier.hpp"
 #include "substrate/aux/runtime/thread_budget.hpp"
@@ -480,6 +481,21 @@ void TestConcurrentCallersStayInBudget() {
   CHECK(nc.max <= 3 && nested.PeakThreads() <= 3);
 }
 
+// The services default runs tasks in index order on the calling thread.
+void TestServicesParallelForDefaultSerial() {
+  struct Services : accelerator_codegen::aux_state::core::AuxEngineServices {
+    accelerator_codegen::aux_state::core::VisibilityToken CurrentVisibility() const override { return {}; }
+    accelerator_codegen::aux_state::core::AuxStateStore &StateStore() override { throw std::logic_error("unused"); }
+  } services;
+  const auto self = std::this_thread::get_id();
+  std::vector<std::size_t> order;
+  services.ParallelFor(5, [&](std::size_t i) {
+    CHECK(std::this_thread::get_id() == self);
+    order.push_back(i);
+  });
+  CHECK((order == std::vector<std::size_t>{0, 1, 2, 3, 4}));
+}
+
 void TestParallelForException() {
   ThreadBudget pool(4);
   std::atomic<int> ran{0};
@@ -589,6 +605,7 @@ int main() {
       {"applier modes", TestApplierModes},
       {"parallel_for coverage", TestParallelForCoverage},
       {"concurrent callers", TestConcurrentCallersStayInBudget},
+      {"services parallel_for default", TestServicesParallelForDefaultSerial},
       {"parallel_for exception", TestParallelForException},
       {"spawn", TestSpawn},
       {"token source", TestTokenSource},
