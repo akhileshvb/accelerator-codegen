@@ -241,6 +241,7 @@ void MakeDb(const Tools &tools) {
   }
   const std::string templ = tools.database;
   Conn admin(tools, "postgres");
+  StopWorker(admin, kDb);
   admin.Exec("DROP DATABASE IF EXISTS " + kDb + " WITH (FORCE)");
   StopWorker(admin, templ);
   admin.Exec("CREATE DATABASE " + kDb + " TEMPLATE " + templ);
@@ -932,6 +933,7 @@ int main(int argc, char **argv) {
       RestartWorker(tools, seconds, seed);
     if (g_failures == 0 || !std::getenv("ACCEL_SHARED_TEST_KEEP")) {
       Conn admin(tools, "postgres");
+      StopWorker(admin, kDb); // workers hold a connection to the database
       admin.Exec("DROP DATABASE IF EXISTS " + kDb + " WITH (FORCE)");
     }
     std::cout << (g_failures == 0 ? "ALL PASS" : std::to_string(g_failures) + " scenarios FAILED") << std::endl;
