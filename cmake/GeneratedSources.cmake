@@ -125,6 +125,7 @@ function(accel_collect_stateful_sources OUT_VAR)
         substrate/aux/core/aux_execute_stats.cpp
         substrate/aux/runtime/accelerator_runtime.cpp
         substrate/aux/runtime/columnar_batch.cpp
+        substrate/aux/runtime/wire.cpp
         substrate/aux/runtime/runtime_host.cpp
         substrate/aux/runtime/sequenced_applier.cpp
         substrate/aux/runtime/thread_budget.cpp
