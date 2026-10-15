@@ -33,9 +33,12 @@ public:
   MysqlHost(const MysqlHost &) = delete;
   MysqlHost &operator=(const MysqlHost &) = delete;
 
-  // Registers the module's accelerator (once; not built yet).
+  // Registers the module's accelerator (once; not built yet). Captured rows
+  // carry one table id per MySQL table (the host's); `tables` maps a module
+  // that numbers its tables differently to them.
   runtime::AcceleratorRuntime &Register(std::shared_ptr<core::AuxQueryModule> module,
-                                        maintenance::CostModelParams cost_model);
+                                        maintenance::CostModelParams cost_model,
+                                        const runtime::TableMap &tables = {});
   runtime::RuntimeHost &Runtime();
 
   // ---- engine callbacks (the capture UDF and the audit plugin) ----

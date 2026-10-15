@@ -239,7 +239,7 @@ void TestSqlAbortDoesNotLeakIntoLaterCommit() {
       "START TRANSACTION;\n"
       "SELECT mysql_accel_txn_capture(1, 0, 1, 'kept');\n"
       "COMMIT;\n");
-  Expect(QueryOne("SELECT mysql_accel_txn_epoch();") == "epoch=1",
+  Expect(QueryOne("SELECT mysql_accel_txn_epoch();") == "epoch=1 alias_epoch=1",
          "Only the committed transaction may be maintained");
   std::cout << "  [PASS] sql_abort_does_not_leak\n";
 }

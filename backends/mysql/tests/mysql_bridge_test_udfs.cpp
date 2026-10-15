@@ -47,13 +47,16 @@ struct ToyPayload {
   std::string label;
 };
 
+// Depends on one table, under the module's own number for it.
 class TxnToyModule final : public core::AuxQueryModule {
 public:
-  core::AcceleratorId Id() const override { return "txn_toy"; }
+  TxnToyModule(core::AcceleratorId id, core::TableId table) : id(std::move(id)), table(table) {}
+
+  core::AcceleratorId Id() const override { return id; }
 
   std::vector<core::TableDependency> Dependencies() const override {
     core::TableDependency dep;
-    dep.table = 1;
+    dep.table = table;
     return {dep};
   }
 
@@ -102,6 +105,10 @@ public:
                        core::AuxRowSink &sink) override {
     (void)sink;
   }
+
+private:
+  core::AcceleratorId id;
+  core::TableId table;
 };
 
 // ---- Captured batches (mutations inspection UDFs) ----
@@ -112,12 +119,13 @@ std::mutex g_mutations_mutex;
 // ---- Toy accelerators, registered in MysqlHost on first init ----
 
 // The accelerator of `module`, registered once (the host cannot unregister).
-runtime::AcceleratorRuntime &Registered(const std::shared_ptr<core::AuxQueryModule> &module) {
+runtime::AcceleratorRuntime &Registered(const std::shared_ptr<core::AuxQueryModule> &module,
+                                        const runtime::TableMap &tables = {}) {
   auto &host = engine::MysqlHost::Get();
   if (auto *existing = host.Runtime().Find(module->Id())) {
     return *existing;
   }
-  return host.Register(module, maintenance::CostModelParams{});
+  return host.Register(module, maintenance::CostModelParams{}, tables);
 }
 
 // Rebuilds the accelerator's state from its module.
@@ -128,9 +136,15 @@ void Rebuild(runtime::AcceleratorRuntime &accelerator) {
   }
 }
 
-std::shared_ptr<TxnToyModule> g_toy_module = std::make_shared<TxnToyModule>();
+std::shared_ptr<TxnToyModule> g_toy_module = std::make_shared<TxnToyModule>("txn_toy", 1);
+// The same table under another module number (9): TableMap maps it to the host's 1.
+constexpr core::TableId kAliasModuleTable = 9;
+std::shared_ptr<TxnToyModule> g_alias_module =
+    std::make_shared<TxnToyModule>("txn_toy_alias", kAliasModuleTable);
 runtime::AcceleratorRuntime *g_txn_accelerator = nullptr;
+runtime::AcceleratorRuntime *g_alias_accelerator = nullptr;
 uint64_t g_txn_baseline = 0; // commits applied before the last init
+uint64_t g_alias_baseline = 0;
 bool g_initialized = false;
 std::mutex g_mutex;
 
@@ -186,8 +200,11 @@ static long long UdfTxnInit(UDF_INIT *, UDF_ARGS *,
   try {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_txn_accelerator = &Registered(g_toy_module);
+    g_alias_accelerator = &Registered(g_alias_module, {{kAliasModuleTable, 1}});
     Rebuild(*g_txn_accelerator);
+    Rebuild(*g_alias_accelerator);
     g_txn_baseline = g_txn_accelerator->Stats().commits_applied;
+    g_alias_baseline = g_alias_accelerator->Stats().commits_applied;
     g_initialized = true;
     return 1;
   } catch (...) {
@@ -341,7 +358,9 @@ static char *UdfTxnEpoch(UDF_INIT *, UDF_ARGS *,
                          char *result, unsigned long *length,
                          unsigned char *, unsigned char *) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  const std::string text = "epoch=" + std::to_string(g_initialized ? TxnEpoch() : 0);
+  const uint64_t alias = g_initialized ? g_alias_accelerator->Stats().commits_applied - g_alias_baseline : 0;
+  const std::string text = "epoch=" + std::to_string(g_initialized ? TxnEpoch() : 0) +
+                           " alias_epoch=" + std::to_string(alias);
   std::memcpy(result, text.c_str(), text.size() + 1);
   *length = text.size();
   return result;

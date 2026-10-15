@@ -216,12 +216,13 @@ MysqlHost::MysqlHost() : impl(std::make_unique<Impl>()) {}
 MysqlHost::~MysqlHost() = default;
 
 runtime::AcceleratorRuntime &MysqlHost::Register(std::shared_ptr<core::AuxQueryModule> module,
-                                                 maintenance::CostModelParams cost_model) {
+                                                 maintenance::CostModelParams cost_model,
+                                                 const runtime::TableMap &tables) {
   {
     std::lock_guard<std::mutex> lock(impl->mutex);
     impl->cost_models[module->Id()] = std::move(cost_model);
   }
-  return impl->runtime.Register(std::move(module));
+  return impl->runtime.Register(std::move(module), nullptr, tables);
 }
 
 runtime::RuntimeHost &MysqlHost::Runtime() { return impl->runtime; }
