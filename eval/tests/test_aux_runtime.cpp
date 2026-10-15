@@ -11,9 +11,12 @@
 //  3. A module that asks for a rebuild gets one in the background.
 //  4. Shipped commits (Postgres placement): out of order, gaps, a reader that
 //     needs an unapplied commit waits or falls back, a gap rebuilds.
+//  5. Thread limits per phase: reads and builds each get their own cap,
+//     maintenance runs ParallelFor serially.
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <cstdint>
 #include <iostream>
 #include <mutex>
@@ -82,6 +85,7 @@ struct SumBuffer final : core::AuxTxnBuffer {
 
 struct SumModule final : core::AuxQueryModule {
   bool request_rebuild = false; // StageMaintenance asks for RebuildAll
+  std::function<void(core::AuxEngineServices &)> on_execute, on_stage; // test probes
 
   core::AcceleratorId Id() const override { return "sum"; }
   std::vector<core::TableDependency> Dependencies() const override {
@@ -112,6 +116,9 @@ struct SumModule final : core::AuxQueryModule {
                                                   const core::InvalidationPlan &,
                                                   core::AuxTxnBuffer &buffer) override {
     core::StagedMaintenanceOutcome outcome;
+    if (on_stage) {
+      on_stage(services);
+    }
     if (request_rebuild) {
       core::FinishRebuildAll(outcome);
       return outcome;
@@ -132,6 +139,9 @@ struct SumModule final : core::AuxQueryModule {
   }
   void Execute(core::AuxEngineServices &services, const core::QueryArguments &,
                core::AuxRowSink &sink) override {
+    if (on_execute) {
+      on_execute(services);
+    }
     const auto state = services.StateStore().Read(services.CurrentVisibility());
     core::AuxRow row;
     row.values.push_back(core::AuxValue::Of(core::AuxType::Int64, *state.partitions[0].As<int64_t>()));
@@ -170,6 +180,9 @@ struct FakeSlots final : EngineSlots {
       gate_cv.wait(lock, [&] { return !hold_builds; });
       building = false;
     }
+    if (on_build) {
+      on_build(runtime);
+    }
     const int64_t sum = db.SumAt(snapshot.SnapshotEpoch());
     builder.Write(core::StateImage::Make<int64_t>(runtime.Id(), 0, 0,
                                                   std::make_shared<const int64_t>(sum)));
@@ -196,6 +209,7 @@ struct FakeSlots final : EngineSlots {
 
   FakeDb &db;
   bool host_thread;
+  std::function<void(AcceleratorRuntime &)> on_build; // test probe
   maintenance::CostModelParams params;
   std::mutex gate_mutex;
   std::condition_variable gate_cv;
@@ -334,6 +348,48 @@ void ShippedCommits() {
   CHECK(ReadAt(runtime, 4, Epoch{4}) == 100);
 }
 
+// Records the worker count a phase reports and how many threads its
+// ParallelFor actually ran at once.
+struct PhaseProbe {
+  std::atomic<std::size_t> workers{0}, running{0}, peak{0};
+  void Run(core::AuxEngineServices &services) {
+    workers = services.WorkerCount();
+    services.ParallelFor(32, [&](std::size_t) {
+      const std::size_t now = ++running;
+      std::size_t seen = peak;
+      while (now > seen && !peak.compare_exchange_weak(seen, now)) {
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      --running;
+    });
+  }
+};
+
+void ThreadLimitsPerPhase() {
+  FakeDb db;
+  FakeSlots slots(db);
+  RuntimeHost host(slots, 8);
+  host.Threads().SetPhaseLimits(3, 2);
+  auto module = std::make_shared<SumModule>();
+  PhaseProbe read, build, stage;
+  module->on_execute = [&](core::AuxEngineServices &s) { read.Run(s); };
+  module->on_stage = [&](core::AuxEngineServices &s) { stage.Run(s); };
+  slots.on_build = [&](AcceleratorRuntime &r) { build.Run(r); };
+  auto &runtime = host.Register(module);
+  host.BuildAll();
+  const Epoch e = WriteTxn(host, db, 1, 5);
+  CHECK(ReadAt(runtime, e) == 5);
+
+  CHECK(build.workers == 2 && build.peak == 2);
+  CHECK(read.workers == 3 && read.peak == 3);
+  CHECK(stage.workers == 1 && stage.peak == 1);
+  CHECK(runtime.WorkerCount() == 1); // outside any phase
+
+  host.Threads().SetPhaseLimits(100, 0); // capped by, and defaulting to, the budget
+  ReadAt(runtime, e);
+  CHECK(read.workers == 8);
+}
+
 } // namespace
 
 int main() {
@@ -342,6 +398,7 @@ int main() {
       {"commits_during_build", CommitsDuringBuild},
       {"module_requests_rebuild", ModuleRequestsRebuild},
       {"shipped_commits", ShippedCommits},
+      {"thread_limits_per_phase", ThreadLimitsPerPhase},
   };
   int failed = 0;
   for (const auto &[name, test] : tests) {

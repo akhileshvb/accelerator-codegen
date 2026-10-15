@@ -90,7 +90,11 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
       : db(db_p), capture(::duckdb::make_shared_ptr<DatabaseCapture>(host_p)),
         commit_ids(::duckdb::make_shared_ptr<CommitIds>(host_p)),
         runtime(*this, runtime::ResolveThreadBudget(
-                           ::duckdb::DBConfig::GetConfig(db_p).options.maximum_threads)) {}
+                           ::duckdb::DBConfig::GetConfig(db_p).options.maximum_threads)) {
+    auto &threads = runtime.Threads();
+    threads.SetPhaseLimits(runtime::ResolveReadThreads(0, threads.Budget()),
+                           runtime::ResolveBuildThreads(0, threads.Budget()));
+  }
 
   ::duckdb::DatabaseInstance &db;
   ::duckdb::shared_ptr<DatabaseCapture> capture;

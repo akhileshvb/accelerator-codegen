@@ -56,6 +56,28 @@ std::size_t ResolveThreadBudget(std::size_t engine_setting) {
 
 namespace {
 
+std::size_t ResolvePhaseThreads(const char *env_name, std::size_t engine_setting,
+                                std::size_t budget) {
+  std::size_t wanted = engine_setting;
+  if (const char *env = std::getenv(env_name)) {
+    const long long value = std::atoll(env);
+    wanted = value > 0 ? static_cast<std::size_t>(value) : wanted;
+  }
+  return wanted > 0 ? std::min(wanted, budget) : budget;
+}
+
+} // namespace
+
+std::size_t ResolveReadThreads(std::size_t engine_setting, std::size_t budget) {
+  return ResolvePhaseThreads("ACCEL_AUX_READ_THREADS", engine_setting, budget);
+}
+
+std::size_t ResolveBuildThreads(std::size_t engine_setting, std::size_t budget) {
+  return ResolvePhaseThreads("ACCEL_AUX_BUILD_THREADS", engine_setting, budget);
+}
+
+namespace {
+
 // The pool whose work the current thread is running; nested ParallelFor
 // calls on it are already counted.
 thread_local const void *counted_pool = nullptr;
@@ -74,6 +96,8 @@ struct ThreadBudget::Impl {
   std::mutex mutex;
   std::condition_variable wake;
   std::size_t budget;
+  std::size_t read_limit = 0;  // 0: the whole budget
+  std::size_t build_limit = 0;
   std::size_t in_use = 0;
   std::size_t peak = 0;
   std::size_t idle = 0;
@@ -262,6 +286,22 @@ std::size_t ThreadBudget::Budget() const {
 void ThreadBudget::SetBudget(std::size_t budget) {
   std::lock_guard<std::mutex> lock(impl->mutex);
   impl->budget = std::max<std::size_t>(1, budget);
+}
+
+std::size_t ThreadBudget::ReadLimit() const {
+  std::lock_guard<std::mutex> lock(impl->mutex);
+  return impl->read_limit > 0 ? std::min(impl->read_limit, impl->budget) : impl->budget;
+}
+
+std::size_t ThreadBudget::BuildLimit() const {
+  std::lock_guard<std::mutex> lock(impl->mutex);
+  return impl->build_limit > 0 ? std::min(impl->build_limit, impl->budget) : impl->budget;
+}
+
+void ThreadBudget::SetPhaseLimits(std::size_t read, std::size_t build) {
+  std::lock_guard<std::mutex> lock(impl->mutex);
+  impl->read_limit = read;
+  impl->build_limit = build;
 }
 
 void ThreadBudget::ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn,

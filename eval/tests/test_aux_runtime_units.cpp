@@ -584,6 +584,22 @@ void TestResolveThreadBudget() {
   setenv("ACCEL_AUX_THREADS", "0", 1);
   CHECK(ResolveThreadBudget(7) == 7);
   unsetenv("ACCEL_AUX_THREADS");
+
+  unsetenv("ACCEL_AUX_READ_THREADS");
+  unsetenv("ACCEL_AUX_BUILD_THREADS");
+  CHECK(ResolveReadThreads(0, 8) == 8 && ResolveBuildThreads(0, 8) == 8);
+  CHECK(ResolveReadThreads(3, 8) == 3 && ResolveReadThreads(30, 8) == 8);
+  setenv("ACCEL_AUX_READ_THREADS", "2", 1);
+  setenv("ACCEL_AUX_BUILD_THREADS", "5", 1);
+  CHECK(ResolveReadThreads(3, 8) == 2 && ResolveBuildThreads(3, 8) == 5);
+  CHECK(ResolveBuildThreads(0, 4) == 4);
+  unsetenv("ACCEL_AUX_READ_THREADS");
+  unsetenv("ACCEL_AUX_BUILD_THREADS");
+
+  ThreadBudget pool(6);
+  CHECK(pool.ReadLimit() == 6 && pool.BuildLimit() == 6);
+  pool.SetPhaseLimits(2, 100);
+  CHECK(pool.ReadLimit() == 2 && pool.BuildLimit() == 6);
 }
 
 } // namespace

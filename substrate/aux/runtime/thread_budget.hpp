@@ -17,6 +17,13 @@ std::size_t AffinityCpuCount();
 // AffinityCpuCount().
 std::size_t ResolveThreadBudget(std::size_t engine_setting);
 
+// Per-phase caps within the budget: `ACCEL_AUX_READ_THREADS` /
+// `ACCEL_AUX_BUILD_THREADS` if set (> 0), else the engine's own setting
+// (Postgres `accel.read_threads` / `accel.build_threads`, ...) if > 0, else
+// `budget`; never more than `budget`.
+std::size_t ResolveReadThreads(std::size_t engine_setting, std::size_t budget);
+std::size_t ResolveBuildThreads(std::size_t engine_setting, std::size_t budget);
+
 // Cross-process token source (Postgres: one shared pool across a database's
 // shard workers, in shared memory). In-process engines use none.
 class TokenSource {
@@ -41,6 +48,11 @@ public:
 
   std::size_t Budget() const;
   void SetBudget(std::size_t budget); // takes effect for later ParallelFor calls
+
+  // Caps for module reads and builds; each is at most Budget() (the default).
+  std::size_t ReadLimit() const;
+  std::size_t BuildLimit() const;
+  void SetPhaseLimits(std::size_t read, std::size_t build);
 
   // Runs fn(i) for i in [0, n), on the calling thread plus up to
   // min(n, max_workers, Budget()) - 1 pool workers. Returns when all are done;
