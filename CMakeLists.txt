@@ -595,6 +595,14 @@ add_executable(test_tpch_aux_fuzz
 target_link_libraries(test_tpch_aux_fuzz PRIVATE accelerator_codegen duckdb_sibling)
 target_include_directories(test_tpch_aux_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
 
+# Tie-aware ordered comparison of floating-point ORDER BY keys
+# (eval/harness/float_order_ties.hpp; header-only).
+add_executable(test_float_order_ties eval/tests/test_float_order_ties.cpp)
+target_include_directories(test_float_order_ties PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(BUILD_TESTING)
+    add_test(NAME test_float_order_ties COMMAND test_float_order_ties)
+endif()
+
 # Snapshot consistency of the aux accelerators under concurrent commits: two
 # table-function calls in one read transaction vs the reference SQL
 # (eval/tests/test_aux_snapshot_reads.cpp; a short Q11 run is a ctest below).

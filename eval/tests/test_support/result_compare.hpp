@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <optional>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "duckdb.hpp"
+#include "eval/harness/float_order_ties.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 
 namespace accelerator_codegen::test_support {
@@ -102,6 +104,50 @@ inline bool ValuesEqualCell(const duckdb::Value &expected, const duckdb::Value &
     return expected.ToString() == actual.ToString();
 }
 
+// A positional mismatch may be a reorder inside a floating-point ORDER BY tie
+// (eval/harness/float_order_ties.hpp): empty when it is.
+inline std::string TieAwareOrderedMismatch(duckdb::MaterializedQueryResult &expected,
+                                           duckdb::MaterializedQueryResult &actual,
+                                           const std::string &reference_sql) {
+    namespace ties = accelerator_codegen::float_order_ties;
+    std::vector<bool> is_float;
+    for (const auto &type : expected.types) {
+        is_float.push_back(type.id() == duckdb::LogicalTypeId::DOUBLE || type.id() == duckdb::LogicalTypeId::FLOAT);
+    }
+    const auto key = ties::FindFloatOrderKey(reference_sql, expected.names, is_float);
+    if (!key.present) {
+        return "no floating-point leading ORDER BY key";
+    }
+    const auto column = static_cast<duckdb::idx_t>(key.column);
+    const auto key_of = [column](duckdb::MaterializedQueryResult &result) {
+        return [&result, column](std::size_t row) -> std::optional<double> {
+            const auto value = result.GetValue(column, row);
+            if (value.IsNull()) return std::nullopt;
+            return value.GetValue<double>();
+        };
+    };
+    const auto cells_of = [](duckdb::MaterializedQueryResult &result) {
+        return [&result](std::size_t row) {
+            std::vector<std::string> cells;
+            for (duckdb::idx_t c = 0; c < result.ColumnCount(); c++) {
+                cells.push_back(result.GetValue(c, row).ToString());
+            }
+            return cells;
+        };
+    };
+    const auto cells_equal = [&](std::size_t c, const std::string &e, const std::string &a) {
+        if (e == a) return true;
+        if (!is_float[c]) return false;
+        try {
+            return ties::DoublesClose(std::stod(e), std::stod(a), 1e-9);
+        } catch (...) {
+            return false;
+        }
+    };
+    return ties::TieAwareMismatch(expected.RowCount(), key, 1e-9, is_float, key_of(expected), key_of(actual),
+                                  cells_of(expected), cells_of(actual), cells_equal, &std::cerr);
+}
+
 inline void RequireResultsEqualOrdered(duckdb::Connection &connection,
                                        const std::string &label,
                                        const std::string &reference_sql,
@@ -122,8 +168,15 @@ inline void RequireResultsEqualOrdered(duckdb::Connection &connection,
         for (duckdb::idx_t col = 0; col < expected_m.ColumnCount(); col++) {
             const auto &expected_value = expected_m.GetValue(col, row);
             const auto &actual_value = actual_m.GetValue(col, row);
-            Require(ValuesEqualCell(expected_value, actual_value),
-                    label + ": row " + std::to_string(row) + " column " + std::to_string(col) + " differs");
+            if (ValuesEqualCell(expected_value, actual_value)) {
+                continue;
+            }
+            const std::string message = label + ": row " + std::to_string(row) + " column " + std::to_string(col) +
+                                        " differs, expected=" + expected_value.ToString() +
+                                        " actual=" + actual_value.ToString();
+            const auto why = TieAwareOrderedMismatch(expected_m, actual_m, reference_sql);
+            Require(why.empty(), message + " (tie-aware recheck: " + why + ")");
+            return;
         }
     }
 }

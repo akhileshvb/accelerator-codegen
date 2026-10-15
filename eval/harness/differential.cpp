@@ -7,12 +7,14 @@
 #include <cstdlib>
 #include <iostream>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
 
+#include "eval/harness/float_order_ties.hpp"
 #include "eval/harness/tpch_rf.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
@@ -181,9 +183,55 @@ std::string RowKey(const core::AuxRow &row) {
   return key.str();
 }
 
+// Positional mismatch: re-check tie-aware when the leading ORDER BY key is a
+// floating-point column (eval/harness/float_order_ties.hpp).
+std::string TieAwareMismatch(duckdb::MaterializedQueryResult &base,
+                             const std::vector<core::AuxRow> &accelerated,
+                             const std::string &sql, std::string *key_column) {
+  namespace ties = accelerator_codegen::float_order_ties;
+  std::vector<bool> is_float;
+  for (const auto &type : base.types) {
+    is_float.push_back(type.id() == duckdb::LogicalTypeId::DOUBLE ||
+                       type.id() == duckdb::LogicalTypeId::FLOAT);
+  }
+  const auto key = ties::FindFloatOrderKey(sql, base.names, is_float);
+  if (!key.present) {
+    return "no floating-point leading ORDER BY key";
+  }
+  *key_column = std::to_string(key.column);
+  const auto column = static_cast<duckdb::idx_t>(key.column);
+  return ties::TieAwareMismatch(
+      base.RowCount(), key, 1e-6, is_float,
+      [&](std::size_t row) -> std::optional<double> {
+        const auto value = base.GetValue(column, row);
+        if (value.IsNull()) return std::nullopt;
+        return value.GetValue<double>();
+      },
+      [&](std::size_t row) -> std::optional<double> {
+        const auto &value = accelerated[row].values[column];
+        if (value.is_null || !std::holds_alternative<double>(value.payload)) return std::nullopt;
+        return std::get<double>(value.payload);
+      },
+      [&](std::size_t row) {
+        std::vector<std::string> cells;
+        for (duckdb::idx_t c = 0; c < base.ColumnCount(); ++c) {
+          cells.push_back(NormalizeDatabaseValue(base.GetValue(c, row)));
+        }
+        return cells;
+      },
+      [&](std::size_t row) {
+        std::vector<std::string> cells;
+        for (const auto &value : accelerated[row].values) cells.push_back(AuxValueText(value));
+        return cells;
+      },
+      [](std::size_t, const std::string &e, const std::string &a) { return ValuesApproxEqual(e, a); },
+      &std::cerr);
+}
+
 void CompareRows(duckdb::MaterializedQueryResult &base,
                  const std::vector<core::AuxRow> &accelerated,
-                 const SharedQueryCatalogEntry &entry) {
+                 const SharedQueryCatalogEntry &entry,
+                 const std::string &sql) {
   Require(base.RowCount() == accelerated.size(),
           "DuckDB differential row-count mismatch for Q" +
               std::to_string(entry.query_id) + " expected=" +
@@ -212,14 +260,23 @@ void CompareRows(duckdb::MaterializedQueryResult &base,
   for (duckdb::idx_t row = 0; row < base.RowCount(); ++row) {
     Require(base.ColumnCount() == accelerated[row].values.size(),
             "DuckDB differential column-count mismatch");
+  }
+  for (duckdb::idx_t row = 0; row < base.RowCount(); ++row) {
     for (duckdb::idx_t column = 0; column < base.ColumnCount(); ++column) {
       const auto expected = NormalizeDatabaseValue(base.GetValue(column, row));
       const auto actual = AuxValueText(accelerated[row].values[column]);
-      Require(ValuesApproxEqual(expected, actual),
-              "DuckDB differential value mismatch for Q" +
-                  std::to_string(entry.query_id) + " at row " +
-                  std::to_string(row) + ", column " + std::to_string(column) +
-                  " expected=" + expected + " actual=" + actual);
+      if (ValuesApproxEqual(expected, actual)) {
+        continue;
+      }
+      std::string message = "DuckDB differential value mismatch for Q" +
+                             std::to_string(entry.query_id) + " at row " +
+                             std::to_string(row) + ", column " + std::to_string(column) +
+                             " expected=" + expected + " actual=" + actual;
+      std::string key_column = "-";
+      const auto why = TieAwareMismatch(base, accelerated, sql, &key_column);
+      Require(why.empty(), message + " (tie-aware recheck on order key column " + key_column +
+                               ": " + why + ")");
+      return;
     }
   }
 }
@@ -241,7 +298,7 @@ void CompareAuxRowsToSql(duckdb::Connection &connection,
           base_result ? base_result->GetError()
                       : "DuckDB differential query failed");
   auto &base = base_result->Cast<duckdb::MaterializedQueryResult>();
-  CompareRows(base, accelerated, entry);
+  CompareRows(base, accelerated, entry, base_sql);
 }
 
 void RequireSharedMatchesBase(duckdb::Connection &connection,
