@@ -447,6 +447,7 @@ if(NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQ
     target_link_libraries(verus_kit_runner PRIVATE accelerator_codegen duckdb_sibling)
 endif()
 
+accel_add_duckdb_exe(test_slot_gates_duckdb eval/tests/test_slot_gates_duckdb.cpp eval/harness/slot_gates.cpp)
 accel_add_duckdb_exe(test_tpch_shared_differential eval/tests/test_tpch_shared_differential.cpp)
 accel_add_duckdb_exe(test_shared_tpch_rf_differential eval/tests/test_shared_tpch_rf_differential.cpp)
 add_executable(test_tpch_arg_variants_differential
