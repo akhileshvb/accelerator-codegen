@@ -526,7 +526,6 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
   duckdb::Connection wc(db), qc(db);
   const auto s = Prepare(qc, id, spec);
   DuckdbRuntime rt(wc, *s.entry, 10.0);
-  rt.EnableMutationCapture();
   core::ResetAuxExecuteCounts();
   const auto build_start = Clock::now();
   rt.Build();
@@ -587,7 +586,6 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
   duckdb::Connection wc(db), setup(db);
   const auto s = Prepare(setup, id, spec);
   DuckdbRuntime rt(wc, *s.entry, 10.0);
-  rt.EnableMutationCapture();
   rt.Build();
   std::atomic<bool> done{false};
   std::atomic<int> checks{0}, mismatches{0}, failures{0}, reference_errors{0};
@@ -782,7 +780,6 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
   duckdb::Connection wc(db), qc(db), plain(db);
   const auto s = Prepare(qc, id, spec, /*with_setup=*/false);
   DuckdbRuntime rt(wc, *s.entry, 10.0);
-  rt.EnableMutationCapture();
   const auto build_start = Clock::now();
   rt.Build();
   const double build_ms = std::chrono::duration<double, std::milli>(Clock::now() - build_start).count();
@@ -930,7 +927,6 @@ int Record(const std::string &path, const std::string &id, const Spec &spec, con
     }
   };
   DuckdbRuntime rt(wc, *s.entry, 10.0);
-  rt.EnableMutationCapture();
   dump("build");
   mark("{\"marker\":\"build\"}");
   rt.Build();

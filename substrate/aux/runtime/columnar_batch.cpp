@@ -160,20 +160,27 @@ core::MutationBatch ToMutationBatch(const ColumnarBatch &batch,
   if (has_new) {
     out.new_rows = BuildRows(batch.new_rows, proj, batch.row_count);
   }
+  // A column outside the projection is reported as position proj.size()
+  // (once): the module learns that none of its columns changed.
+  bool outside = false;
   for (int32_t attnum : batch.updated_attnums) {
-    for (std::size_t i = 0; i < proj.size(); ++i) {
-      if (proj[i] == attnum) {
-        out.updated_columns.push_back(static_cast<core::ColumnId>(i));
-        break;
-      }
+    const auto it = std::find(proj.begin(), proj.end(), attnum);
+    if (it != proj.end()) {
+      out.updated_columns.push_back(static_cast<core::ColumnId>(it - proj.begin()));
+    } else {
+      outside = true;
     }
+  }
+  if (outside) {
+    out.updated_columns.push_back(static_cast<core::ColumnId>(proj.size()));
   }
   return out;
 }
 
 namespace {
 
-// A column's type and scale, from its first non-NULL value.
+// A column's type and scale, from its first non-NULL value (else the type
+// its NULLs declare).
 struct Inferred {
   AuxType type = AuxType::String;
   int32_t scale = 0;
@@ -308,6 +315,12 @@ ColumnarBatch FromMutationBatch(const core::MutationBatch &batch,
     if (!inf.found) {
       Infer(batch.new_rows, c, inf);
     }
+    if (!inf.found) { // all NULL: the type the NULLs declare
+      const auto &rows = batch.old_rows.empty() ? batch.new_rows : batch.old_rows;
+      if (!rows.empty()) {
+        inf.type = rows.front().values.at(c).type;
+      }
+    }
     if (has_old) {
       out.old_rows.columns.push_back(BuildColumn(batch.old_rows, c, inf));
     }
@@ -322,7 +335,7 @@ ColumnarBatch FromMutationBatch(const core::MutationBatch &batch,
     out.new_rows.attnums = attnums;
   }
   for (core::ColumnId col : batch.updated_columns) {
-    out.updated_attnums.push_back(attnums.at(col));
+    out.updated_attnums.push_back(col < attnums.size() ? attnums[col] : kOutsideProjection);
   }
   return out;
 }

@@ -23,6 +23,7 @@ int main(int argc, char **argv) {
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 6);
   auto probe = catalog::FindSharedProbe(con, entry);
   DuckdbRuntime rt(con, entry, 10.0);
+  rt.UseManualCapture(); // changes are hand-built below
   rt.Build();
   std::vector<double> w, r;
   auto m = catalog::BuildSharedMutation(entry, probe);

@@ -100,6 +100,7 @@ int main(int argc, char **argv) {
 
   const auto rss0 = RssKb();
   DuckdbRuntime runtime(con, entry, 10.0);
+  runtime.UseManualCapture(); // changes are hand-built below
   auto t0 = Clock::now();
   runtime.Build();
   const double build_us = Us(t0);

@@ -223,7 +223,9 @@ struct Gen {
 
 struct Fixture {
   Fixture(duckdb::Connection &connection, const catalog::SharedQueryCatalogEntry &entry)
-      : connection(connection), entry(entry), runtime(connection, entry, 10.0) {}
+      : connection(connection), entry(entry), runtime(connection, entry, 10.0) {
+    runtime.UseManualCapture(); // Send() hand-builds each change
+  }
 
   // base_sql with `s.fy = 2022` / `n.uom = 'USD'` replaced by the parameters.
   std::string ParamSql(const std::string &fy_sql, const std::string &uom_sql) const {

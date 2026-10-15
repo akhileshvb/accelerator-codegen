@@ -9,6 +9,7 @@
 #include <optional>
 #include <vector>
 
+#include "substrate/aux/core/aux_maintenance_decision_log.hpp"
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/runtime/columnar_batch.hpp"
 #include "substrate/aux/runtime/engine_slots.hpp"
@@ -32,6 +33,8 @@ struct AcceleratorStats {
   uint64_t reads_waited = 0;
   uint64_t reads_fallback = 0;
   uint64_t gaps = 0;
+  // The policy's decision for the last applied commit (what it chose and why).
+  std::optional<core::MaintenanceDecisionLogEntry> last_decision;
 };
 
 enum class ReadResult { Served, Fallback };
@@ -51,6 +54,7 @@ struct ReadOptions {
 
 // The accelerator's store: VersionedAuxStore by default; an engine may supply
 // another core::AuxStateStore (the Verus store) with its install entry point.
+// A factory returning an empty handle keeps the default.
 struct StoreHandle {
   std::unique_ptr<core::AuxStateStore> store;
   std::function<void(std::vector<core::StateImage>, Epoch)> install;
@@ -116,10 +120,15 @@ public:
   // ---- builds ----
   // Ensures a build is running or scheduled (no-op if synced or building).
   void RequestBuild();
-  // Runs one build on the calling thread. Returns true if installed and synced.
+  // Runs one build on the calling thread (waiting for one already running).
+  // Returns true if installed and synced.
   bool BuildNow();
   // Drops the state: readers wait or fall back until the next build.
   void Invalidate();
+  // The services maintenance passes to the module (default: this runtime).
+  // An engine whose modules need engine context supplies its own, delegating
+  // to this runtime.
+  void UseModuleServices(core::AuxEngineServices &services);
   bool IsSynced() const;
 
   // ---- core::AuxEngineServices (what modules see) ----
@@ -142,6 +151,7 @@ private:
   void Applied(const CommittedChange &change, double us);
   void MarkStale(Epoch from);
   bool Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const;
+  bool Collapsed(Epoch epoch) const;
 
   std::shared_ptr<core::AuxQueryModule> module;
   core::AcceleratorId id;

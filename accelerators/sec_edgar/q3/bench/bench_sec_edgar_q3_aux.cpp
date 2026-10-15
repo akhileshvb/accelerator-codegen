@@ -120,6 +120,7 @@ int main(int argc, char **argv) {
   connection.Query("PRAGMA threads=1");
   const auto &entry = catalog::LookupSharedQuery("sec_edgar", 3);
   catalog::duckdb::DuckdbRuntime runtime(connection, entry, 10.0);
+  runtime.UseManualCapture(); // changes are hand-built below
 
   malloc_trim(0);
   const size_t heap_before = mallinfo2().uordblks;

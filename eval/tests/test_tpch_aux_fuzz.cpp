@@ -1,6 +1,6 @@
 // Randomized differential fuzz of the TPC-H aux accelerators on DuckDB,
 // with writes captured by the engine (the DuckDB fork's MutationRecorder via
-// DuckdbRuntime::EnableMutationCapture), not built by the harness.
+// the database-level capture), not built by the harness.
 //
 // Per query: a copy of the TPC-H database, the shared runtime built and
 // registered, then T random write transactions on the runtime's connection:
@@ -105,7 +105,6 @@ Result FuzzQuery(const std::string &src_db, const std::string &workdir, int q, i
     accelerator_codegen::aux_state::core::ResetAuxExecuteCounts();
     DuckdbRuntime runtime(writer_conn, entry, 10.0);
     runtime.Build();
-    runtime.EnableMutationCapture();
     if (std::getenv("ACCEL_FUZZ_TRACE")) {
       writer_conn.context->registered_state->GetOrCreate<TraceConsumer>("accel_fuzz_trace");
     }

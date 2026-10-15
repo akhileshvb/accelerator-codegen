@@ -35,8 +35,7 @@
 
 #include "eval/harness/differential.hpp"
 #include "substrate/aux/core/aux_registry.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
-#include "backends/duckdb/state/duckdb_state_store.hpp"
+#include "eval/tests/test_support/module_runtime.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 #include "sec_edgar/q4/duckdb/aux/duckdb_scan.hpp"
@@ -48,6 +47,7 @@
 
 namespace core = accelerator_codegen::aux_state::core;
 namespace aas = accelerator_codegen::aux_state;
+namespace support = accelerator_codegen::aux_state::test;
 namespace engine = accelerator_codegen::aux_state::engine;
 namespace harness = accelerator_codegen::aux_state::harness;
 using accelerator_codegen::aux_state::query::SecEdgarQ4Config;
@@ -150,15 +150,8 @@ public:
 
 struct Env {
   Env(duckdb::Connection &connection, bool parallel)
-      : con(connection),
-        accelerator(parallel ? core::SecEdgarQ4Layout::kParallelAccelerator
-                             : core::SecEdgarQ4Layout::kAccelerator),
-        store(accelerator), scan(connection),
-        backend(coordinator, store, [](const duckdb::TableMutationEvent &) { return core::MutationBatch{}; },
-                [] { return core::VisibilityToken{}; },
-                [] { return aas::maintenance::CostModelParams{}; }, [] { return 10.0; }),
+      : con(connection), scan(connection),
         entry(&engine::LookupSharedQuery("sec_edgar", 4)) {
-    backend.SetExecutionContext(connection.context.get());
     const SecEdgarQ4Config cfg{1, 2, 3, 4};
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
     if (parallel) {
@@ -172,35 +165,36 @@ struct Env {
       builds = &m->builds;
       module = m;
     }
-    coordinator.Register(module);
+    runtime = std::make_unique<support::ModuleRuntime>(connection, module);
   }
 
   void Build() {
-    Builder builder;
-    module->Build(backend, builder);
-    Require(builder.finished, "build did not finish");
+    runtime->Build();
     state_bytes = 0;
-    for (const auto &image : builder.images) {
+    auto &services = runtime->Backend();
+    for (const auto &image : services.StateStore().Read(services.CurrentVisibility()).partitions) {
       if (const auto *typed = image.As<accelerator_codegen::aux_state::query::SecEdgarQ4StateImage>()) {
         state_bytes += accelerator_codegen::aux_state::query::SecEdgarQ4ResidentBytes(*typed->state, typed->kind);
       }
     }
-    store.Install(std::move(builder.images), accelerator);
   }
   uint64_t state_bytes = 0;
 
+  // The state's answer; the state must serve (incrementally maintained).
+  void ReadState(const core::QueryArguments &args, MaterializeSink &sink) {
+    Require(runtime->Read(args, sink), "state must be valid (served incrementally)");
+  }
+
   std::vector<core::AuxRow> Execute() {
-    Require(module->CheckValidity(backend, {}), "state must be valid (served incrementally)");
     MaterializeSink sink;
-    module->Execute(backend, {}, sink);
+    ReadState({}, sink);
     return std::move(sink.rows);
   }
 
   // The parameterized read against plain SQL with the same parameters.
   void ComparePerParams(const q4gen::Params &params, const std::string &what, int step) {
-    Require(module->CheckValidity(backend, {}), "state must be valid (served incrementally)");
     MaterializeSink sink;
-    module->Execute(backend, q4gen::ToQueryArgs(params), sink);
+    ReadState(q4gen::ToQueryArgs(params), sink);
     try {
       harness::CompareAuxRowsToSql(con, *entry, q4gen::BaseSql(params), sink.rows);
     } catch (const std::exception &e) {
@@ -244,13 +238,10 @@ struct Env {
   }
 
   duckdb::Connection &con;
-  std::string accelerator;
-  engine::duckdb::DuckDBStateStore store;
   SecEdgarQ4DuckDbScan scan;
-  core::AuxTransactionCoordinator coordinator;
-  engine::duckdb::DuckDBAuxBackend backend;
   const engine::SharedQueryCatalogEntry *entry;
   std::shared_ptr<core::AuxQueryModule> module;
+  std::unique_ptr<support::ModuleRuntime> runtime;
   int *builds = nullptr;
 };
 
@@ -286,19 +277,18 @@ int RunSynthetic(int seeds, int steps, bool parallel) {
       const int builds_before = *env.builds;
       auto txn = model.NextTxn();
       con.BeginTransaction();
+      std::vector<core::MutationBatch> batches;
       for (const auto &m : txn) {
         for (const auto &sql : m.sql) Exec(con, sql);
-        env.backend.CaptureMutation(m.batch);
+        batches.push_back(m.batch);
       }
-      env.coordinator.PreCommit(); // stage inside the open SQL transaction
       if (rollback) {
         con.Rollback();
-        env.coordinator.Abort();
         model.db = snapshot;
         model.next_rid = rid;
       } else {
         con.Commit();
-        env.coordinator.Commit();
+        env.runtime->Commit(batches);
       }
       (*env.builds > builds_before ? rebuilt : incremental)++;
       env.Compare(rollback ? "rollback" : model.last_what, step);
@@ -351,10 +341,8 @@ void ApplyOp(Env &env, const WriteOp &op, int step) {
   con.BeginTransaction();
   for (const auto &sql : op.sql) Exec(con, sql);
   if (!op.new_select.empty()) batch.new_rows = Fetch(con, op.new_select);
-  env.backend.CaptureMutation(batch);
-  env.coordinator.PreCommit();
   con.Commit();
-  env.coordinator.Commit();
+  env.runtime->Commit({batch});
   const auto t0 = Clock::now();
   env.Compare(op.name, step);
   env.ComparePerParams(g_round_params, op.name, step);
@@ -559,7 +547,7 @@ int RunSweep(const std::string &path, int random_ranges, bool parallel) {
   const auto check = [&](const q4gen::Params &p, bool vs_real) {
     MaterializeSink sink;
     auto a0 = Clock::now();
-    env.module->Execute(env.backend, q4gen::ToQueryArgs(p), sink);
+    env.ReadState(q4gen::ToQueryArgs(p), sink);
     const double am = Ms(a0);
     aux_ms += am;
     max_aux_ms = std::max(max_aux_ms, am);

@@ -178,7 +178,6 @@ struct FakeSlots final : EngineSlots {
   const maintenance::CostModelParams &CostModel(const core::AcceleratorId &) const override {
     return params;
   }
-  bool ReadersCanFallBack() const override { return true; }
 
   // Holds builds inside RunBuild until Release().
   void Hold() {

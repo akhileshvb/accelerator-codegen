@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <memory>
 #include <string>
@@ -5,10 +8,8 @@
 #include "substrate/aux/core/aux_registry.hpp"
 #include "substrate/aux/core/aux_txn_buffer.hpp"
 #include "backends/duckdb/state/duckdb_state_store.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
-#include "duckdb/accelerator/mutation_recorder.hpp"
+#include "eval/tests/test_support/module_runtime.hpp"
 #include "duckdb/main/connection.hpp"
-#include "duckdb/transaction/meta_transaction.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 
@@ -69,7 +70,9 @@ public:
     return std::make_unique<BasicAuxTxnBuffer>();
   }
 
-  void Build(AuxEngineServices &, StateBuilder &) override {}
+  void Build(AuxEngineServices &, StateBuilder &builder) override {
+    builder.Finish();
+  }
 
   InvalidationPlan InterpretMutation(const MutationBatch &) const override {
     return {};
@@ -170,36 +173,37 @@ int main() {
   assert(*static_cast<const int *>(snapshot.partitions[0].payload.get()) == 42);
   assert(duckdb_store.CheckValidity({"test", ""}, {0, 0, {}}).IsValid());
 
-  // Exercise the shared coordinator through DuckDB's custom mutation and
-  // transaction-hook adapter, rather than calling the coordinator directly.
+  // The DuckDB runtime: the module maintains after the SQL commit (never for
+  // a rollback) and the published state reads back.
   duckdb::DuckDB db(nullptr);
   duckdb::Connection connection(db);
-  AuxTransactionCoordinator duckdb_coordinator;
-  TestStore duckdb_aux_store;
+  connection.Query("CREATE TABLE t (a BIGINT)");
   auto duckdb_module = std::make_shared<TestModule>();
-  duckdb_coordinator.Register(duckdb_module);
-  ::accelerator_codegen::aux_state::engine::duckdb::DuckDBAuxBackend
-      duckdb_backend(
-      duckdb_coordinator, duckdb_aux_store,
-          [](const duckdb::TableMutationEvent &event) {
-            MutationBatch mutation;
-            mutation.table = event.table_oid;
-            mutation.kind = event.kind == duckdb::TableMutationKind::DELETE
-                                ? MutationKind::Delete
-                                : event.kind == duckdb::TableMutationKind::UPDATE
-                                      ? MutationKind::Update
-                                      : MutationKind::Insert;
-            return mutation;
-          }, []() { return VisibilityToken{}; });
-  duckdb::TableMutationEvent duckdb_event;
-  duckdb_event.table_oid = 7;
-  duckdb_backend.OnTableMutation(*connection.context, duckdb_event);
-  duckdb::MetaTransaction duckdb_meta_txn(
-      *connection.context, duckdb::Timestamp::GetCurrentTimestamp(), 1);
-  duckdb_backend.TransactionPreCommit(duckdb_meta_txn, *connection.context);
-  assert(duckdb_aux_store.publishes == 0);
-  duckdb_backend.TransactionCommit(duckdb_meta_txn, *connection.context);
-  assert(duckdb_aux_store.publishes == 1);
+  accelerator_codegen::aux_state::test::ModuleRuntime runtime(connection, duckdb_module);
+  runtime.Build();
+  MutationBatch row_insert;
+  row_insert.table = 7;
+  row_insert.kind = MutationKind::Insert;
+  row_insert.new_rows = {AuxRow{{AuxValue::Of(AuxType::Int64, int64_t(1))}}};
+
+  connection.BeginTransaction();
+  connection.Query("INSERT INTO t VALUES (1)");
+  connection.Rollback();
+  assert(duckdb_module->stage_count == 0);
+
+  connection.BeginTransaction();
+  connection.Query("INSERT INTO t VALUES (1)");
+  assert(duckdb_module->stage_count == 0);
+  connection.Commit();
+  runtime.Commit({row_insert});
+  assert(duckdb_module->stage_count == 1);
+  auto &duckdb_services = runtime.Backend();
+  const auto published =
+      duckdb_services.StateStore().Read(duckdb_services.CurrentVisibility());
+  assert(published.partitions.size() == 1);
+  assert(*static_cast<const std::vector<uint8_t> *>(
+             published.partitions[0].payload.get()) ==
+         std::vector<uint8_t>({'o', 'k'}));
 
   return 0;
 }

@@ -331,6 +331,7 @@ void RunSynthetic(uint64_t seed, bool nulls, int steps) {
   w.InsertNum(w.num);
   w.InsertPre(w.pre);
   w.runtime = std::make_unique<DuckdbRuntime>(w.con, *w.entry, 10.0);
+  w.runtime->UseManualCapture(); // changes are hand-built below
   w.runtime->Build();
   CheckAll(w, "initial", &g);
 

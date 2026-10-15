@@ -201,6 +201,7 @@ void RunScenario(const catalog::SharedQueryCatalogEntry &entry, const std::strin
   }
 
   DuckdbRuntime runtime(c, entry, 10.0);
+  runtime.UseManualCapture(); // changes are hand-built below
   runtime.Build();
   CompareToBase(c, runtime, entry, name + " initial");
 

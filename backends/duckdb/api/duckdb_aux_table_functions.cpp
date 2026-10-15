@@ -34,29 +34,15 @@ using duckdb_backend = accelerator_codegen::aux_state::engine::duckdb::DuckdbRun
 
 constexpr ::duckdb::idx_t kOutputBatchSize = 2048;
 
-// No shared runtime registered for the accelerator: a private one, built for
-// this one query on its own connection. That connection reads at the reading
-// transaction's snapshot (its start time), not at the newest commit: two calls
-// in one transaction must answer from the same data even when other
-// connections commit in between (snapshot isolation).
+// No runtime registered as active: read through the database's host, building
+// the shared state if it is not built yet. Reads are at the reader's snapshot;
+// one older than the build answers from SQL at that snapshot.
 template <typename Run>
-void WithPrivateRuntime(::duckdb::ClientContext &reader, const SharedQueryCatalogEntry &entry, Run &&run) {
-  struct StartOverride {
-    StartOverride(::duckdb::ClientContext &context_p, ::duckdb::transaction_t start) : context(context_p) {
-      if (start) {
-        ::duckdb::SetTransactionStartOverride(context, start);
-      }
-    }
-    ~StartOverride() { ::duckdb::ClearTransactionStartOverride(context); }
-    ::duckdb::ClientContext &context;
-  };
+void WithHostRuntime(::duckdb::ClientContext &reader, const SharedQueryCatalogEntry &entry, Run &&run) {
   ::duckdb::Connection connection(*reader.db);
-  // Declared before the runtime, so cleared only after it is gone.
-  const StartOverride snapshot(*connection.context,
-                               static_cast<::duckdb::transaction_t>(
-                                   duckdb::DuckDBAuxBackend::SnapshotEpoch(reader)));
   duckdb_backend runtime(connection, entry, 10.0);
-  runtime.Build(/*register_active=*/false);
+  runtime.EnsureBuilt();
+  duckdb::DuckDBAuxBackend::ReaderScope at_reader_snapshot(reader);
   run(runtime);
 }
 
@@ -467,7 +453,7 @@ void StreamRead(::duckdb::ClientContext &context, const AuxBindData &bind_data, 
     ::accelerator_codegen::aux_state::engine::duckdb::DuckDBAuxBackend::ReaderScope reader(context);
     active->ExecuteInto(local_state.arguments, sink);
   } else {
-    WithPrivateRuntime(context, bind_data.entry,
+    WithHostRuntime(context, bind_data.entry,
                        [&](duckdb_backend &runtime) { runtime.ExecuteInto(local_state.arguments, sink); });
   }
   sink.Finish();
@@ -497,8 +483,8 @@ AuxInitLocal(::duckdb::ExecutionContext &context, ::duckdb::TableFunctionInitInp
     local_state->rows = active->ExecuteCollect(arguments);
     return local_state;
   }
-  // No shared runtime: build a private one for this query only.
-  WithPrivateRuntime(context.client, bind_data.entry,
+  // No active runtime: read through the host.
+  WithHostRuntime(context.client, bind_data.entry,
                      [&](duckdb_backend &runtime) { local_state->rows = runtime.ExecuteCollect(arguments); });
   return local_state;
 }

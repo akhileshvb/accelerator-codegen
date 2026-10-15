@@ -232,6 +232,7 @@ int main(int argc, char **argv) {
     std::cout << "q" << query << " base_read_us=" << Us(t) << "\n";
 
     DuckdbRuntime runtime(connection, entry, /*expected queries before write*/ 1.0);
+    runtime.UseManualCapture(); // changes are hand-built below
     t = Clock::now();
     runtime.Build();
     std::cout << "q" << query << " build_us=" << Us(t) << "\n";

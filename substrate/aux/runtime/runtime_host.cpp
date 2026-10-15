@@ -52,7 +52,8 @@ RuntimeHost::~RuntimeHost() = default;
 
 // ---- registration ----
 
-AcceleratorRuntime &RuntimeHost::Register(std::shared_ptr<core::AuxQueryModule> module) {
+AcceleratorRuntime &RuntimeHost::Register(std::shared_ptr<core::AuxQueryModule> module,
+                                          StoreFactory make_store) {
   AcceleratorRuntime::BuildScheduler schedule;
   if (slots.EngineWorkOnHostThread()) {
     schedule = [this](std::function<void()> work) {
@@ -61,7 +62,8 @@ AcceleratorRuntime &RuntimeHost::Register(std::shared_ptr<core::AuxQueryModule> 
     };
   }
   auto runtime =
-      std::make_unique<AcceleratorRuntime>(std::move(module), slots, impl->threads, schedule);
+      std::make_unique<AcceleratorRuntime>(std::move(module), slots, impl->threads, schedule,
+                                           std::move(make_store));
   std::lock_guard<std::mutex> lock(impl->mutex);
   auto &slot = impl->runtimes[runtime->Id()];
   if (slot) {

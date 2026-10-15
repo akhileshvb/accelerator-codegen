@@ -81,7 +81,7 @@ The substrate owns the runtime flow (`substrate/aux/runtime/`, see its `README.m
 | S7 SQL entry points | Decode arguments, emit rows (DuckDB table functions with `MaxThreads() > 1`) | `api/` |
 | S8 engine scans | Parallel, partitioned scans over the engine's own native batches. No shared scan format | `engine/scan` |
 
-Also: store mode (`typed_in_process` or `serialized_boundary`; `byte_stream.hpp` only at a process/SHM boundary), host registration for that engine, and the cost model / `ReadersCanFallBack` services.
+Also: store mode (`typed_in_process` or `serialized_boundary`; `byte_stream.hpp` only at a process/SHM boundary), host registration for that engine, and the cost model and workload-hint services.
 
 #### A backend never implements
 

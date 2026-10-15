@@ -1,6 +1,6 @@
 // Snapshot consistency of the C++ aux accelerators under concurrent commits,
 // through the real DuckDB machinery: the shared runtime built and registered,
-// writes captured by the engine (DuckdbRuntime::EnableMutationCapture) and
+// writes captured by the engine (the database-level capture) and
 // committed through the runtime (BeginWrite / CommitWrite), readers in their
 // own connections calling the table function.
 //
@@ -208,7 +208,6 @@ Outcome RunQuery(const std::string &src, int q, int seconds, int readers, bool s
   if (shared) {
     runtime = std::make_unique<DuckdbRuntime>(wc, entry, 10.0);
     runtime->Build();
-    runtime->EnableMutationCapture();
   }
   std::atomic<bool> stop{false};
   std::atomic<long> reads{0}, first{0}, second{0}, reader_errors{0};
@@ -336,8 +335,10 @@ int main(int argc, char **argv) {
     bool failed = false;
     for (int q : queries) {
       const auto o = RunQuery(argv[1], q, seconds, readers, mode == "shared", seed);
+      // A reader older than a background rebuild answers from SQL at its own
+      // snapshot (reader_fallbacks, reported): exact, so not a failure.
       const bool bad = o.first_mismatches || o.second_mismatches || o.final_mismatches || o.reader_errors ||
-                       o.reader_fallbacks || o.reads == 0 || o.commits == 0;
+                       o.reads == 0 || o.commits == 0;
       failed |= bad;
       std::cout << (bad ? "FAIL" : "PASS") << " Q" << q << " mode=" << mode << " reads=" << o.reads
                 << " commits=" << o.commits << " write_errors=" << o.write_errors

@@ -1,7 +1,7 @@
 // Randomized differential test for the SEC EDGAR Q6 aux module.
 //
-// Drives the real module through the real coordinator / backend / state store
-// against a DuckDB database, applying INSERT / DELETE / UPDATE on every base
+// Drives the real module through the real aux runtime (test_support
+// ModuleRuntime: maintenance after the SQL commit) against a DuckDB database, applying INSERT / DELETE / UPDATE on every base
 // table the query reads (num, sub, pre), including updates of join keys and
 // filter columns, multi-table transactions, aborted transactions and bulk
 // batches, and compares the aux answer with plain DuckDB SQL after each step.
@@ -41,8 +41,7 @@
 #include "eval/harness/cost_calibration.hpp"
 #include "eval/harness/differential.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
-#include "backends/duckdb/state/duckdb_state_store.hpp"
+#include "eval/tests/test_support/module_runtime.hpp"
 #include "catalog/query_catalog.hpp"
 #include "sec_edgar/q6/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q6/duckdb/aux/module.hpp"
@@ -54,6 +53,7 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace engine = accelerator_codegen::aux_state::engine;
 namespace q = accelerator_codegen::aux_state::query;
 namespace harness = accelerator_codegen::aux_state::harness;
+namespace support = accelerator_codegen::aux_state::test;
 
 using core::AuxRow;
 using core::AuxValue;
@@ -116,24 +116,13 @@ bool g_fresh_check = true;
 int g_param_checks = 3;
 
 // ---------------------------------------------------------------------------
-// Harness: DuckDB + coordinator + backend + state store + module.
+// Harness: DuckDB + aux runtime hosting the module.
 // ---------------------------------------------------------------------------
 class Harness {
 public:
   Harness(duckdb::Connection &connection, bool parallel_variant)
       : connection_(connection),
         entry_(engine::LookupSharedQuery("sec_edgar", 6)),
-        store_(parallel_variant ? q::SecEdgarQ6ParallelModule::kId
-                                : q::SecEdgarQ6Module::kId),
-        backend_(
-            coordinator_, store_,
-            [](const ::duckdb::TableMutationEvent &) { return MutationBatch{}; },
-            [] { return core::VisibilityToken{}; },
-            [] {
-              return core::LoadAuxCostModelJson(harness::SharedCostModelConfigPath(
-                  engine::LookupSharedQuery(engine::SharedWorkloadKind::SecEdgar, 6)));
-            },
-            [] { return 10.0; }),
         scan_(connection), log_(std::make_shared<ActionLog>()) {
     if (parallel_variant) {
       module_ = std::make_shared<RecordingModule<q::SecEdgarQ6ParallelModule>>(
@@ -142,20 +131,17 @@ public:
       module_ = std::make_shared<RecordingModule<q::SecEdgarQ6Module>>(
           q::SecEdgarQ6Config{1, 2, 3}, &scan_, log_);
     }
-    coordinator_.Register(module_);
-    backend_.SetExecutionContext(connection.context.get());
+    runtime_ = std::make_unique<support::ModuleRuntime>(
+        connection, module_,
+        core::LoadAuxCostModelJson(harness::SharedCostModelConfigPath(
+            engine::LookupSharedQuery(engine::SharedWorkloadKind::SecEdgar, 6))));
   }
 
-  void Build() {
-    CollectBuilder builder;
-    module_->Build(backend_, builder);
-    Require(builder.finished, "build did not finish");
-    store_.Install(std::move(builder.images), module_->Id());
-  }
+  void Build() { runtime_->Build(); }
 
   std::vector<AuxRow> Execute(const core::QueryArguments &args = {}) {
     CollectSink sink;
-    module_->Execute(backend_, args, sink);
+    runtime_->Read(args, sink);
     return std::move(sink.rows);
   }
 
@@ -210,7 +196,7 @@ public:
   }
 
   void CheckAgainstBase(const std::string &context) {
-    Require(module_->CheckValidity(backend_, {}),
+    Require(module_->CheckValidity(runtime_->Backend(), {}),
             "aux state not valid after " + context);
     std::string at = "default";
     try {
@@ -266,9 +252,9 @@ public:
     log_->staged = false;
     connection_.BeginTransaction();
   }
-  // Delivers a mutation as the engine's capture does: the rows carry only
-  // the columns the module declares (mutation_attnums), in that order, and
-  // updated_columns index the projected row.
+  // Records a mutation as the engine's capture delivers it: the rows carry
+  // only the columns the module declares (mutation_attnums), in that order,
+  // and updated_columns index the projected row. Finish() maintains them.
   void Capture(const std::vector<MutationBatch> &mutations) {
     const auto deps = module_->Dependencies();
     for (const auto &m : mutations) {
@@ -296,25 +282,25 @@ public:
       };
       for (const auto &r : m.old_rows) projected.old_rows.push_back(project(r));
       for (const auto &r : m.new_rows) projected.new_rows.push_back(project(r));
-      backend_.CaptureMutation(projected);
+      pending_.push_back(std::move(projected));
     }
   }
   void Finish(bool commit) {
     if (commit) {
-      coordinator_.PreCommit();
       connection_.Commit();
-      coordinator_.Commit();
+      runtime_->Commit(pending_);
     } else {
-      coordinator_.Abort();
       connection_.Rollback();
     }
+    pending_.clear();
   }
   MaintenanceAction LastAction() const {
     return log_->staged ? log_->last : MaintenanceAction::NoOp;
   }
   uint64_t FootprintBytes() const {
     uint64_t total = 0;
-    const auto snapshot = store_.Read({});
+    auto &services = runtime_->Backend();
+    const auto snapshot = services.StateStore().Read(services.CurrentVisibility());
     for (const auto &image : snapshot.partitions) {
       if (const auto *typed = image.As<q::SecEdgarQ6StateImage>()) {
         if (typed->state) total += typed->state->Bytes();
@@ -326,12 +312,11 @@ public:
 private:
   duckdb::Connection &connection_;
   const engine::SharedQueryCatalogEntry &entry_;
-  engine::duckdb::DuckDBStateStore store_;
-  core::AuxTransactionCoordinator coordinator_;
-  engine::duckdb::DuckDBAuxBackend backend_;
   q::SecEdgarQ6DuckdbScan scan_;
   std::shared_ptr<ActionLog> log_;
   std::shared_ptr<core::AuxQueryModule> module_;
+  std::unique_ptr<support::ModuleRuntime> runtime_;
+  std::vector<MutationBatch> pending_;
 };
 
 // ---------------------------------------------------------------------------

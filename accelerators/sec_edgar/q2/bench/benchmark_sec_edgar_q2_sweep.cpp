@@ -288,6 +288,7 @@ int main(int argc, char **argv) {
 
     // -------- aux build + read-only.
     DuckdbRuntime runtime(con, entry, 10.0);
+    runtime.UseManualCapture(); // writers hand-build each change
     const auto build_start = Clock::now();
     runtime.Build();
     const double build_us = ElapsedUs(build_start);

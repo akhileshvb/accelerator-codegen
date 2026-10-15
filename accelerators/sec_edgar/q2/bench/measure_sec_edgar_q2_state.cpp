@@ -9,8 +9,7 @@
 
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_registry.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
-#include "backends/duckdb/state/duckdb_state_store.hpp"
+#include "eval/tests/test_support/module_runtime.hpp"
 #include "duckdb.hpp"
 #include "sec_edgar/q2/cost_model.hpp"
 #include "sec_edgar/q2/duckdb/aux/duckdb_scan.hpp"
@@ -105,22 +104,10 @@ int main(int argc, char **argv) {
   }
   // ---- maintenance micro benchmark: bump the top 'pure' group of fy 2022.
   namespace core = accelerator_codegen::aux_state::core;
-  namespace eng = accelerator_codegen::aux_state::engine::duckdb;
-  eng::DuckDBStateStore store(SecEdgarQ2Module::kId);
-  core::AuxTransactionCoordinator coordinator;
   const auto cost = core::LoadAuxCostModelJson(core::AuxCostModelDefaultPath(core::kSecEdgarQ2CostModel));
-  eng::DuckDBAuxBackend backend(
-      coordinator, store, [](const duckdb::TableMutationEvent &) { return core::MutationBatch{}; },
-      [] { return core::VisibilityToken{}; }, [cost] { return cost; }, [] { return 10.0; });
-  auto shared_module = std::make_shared<SecEdgarQ2Module>(cfg, &scan);
-  coordinator.Register(shared_module);
-  {
-    std::vector<core::StateImage> images;
-    images.push_back(core::StateImage::Make(
-        SecEdgarQ2Module::kId, SecEdgarQ2Module::kStatePartition, 0,
-        std::shared_ptr<const SecEdgarQ2StateImage>(new SecEdgarQ2StateImage{state})));
-    store.Install(std::move(images), SecEdgarQ2Module::kId);
-  }
+  accelerator_codegen::aux_state::test::ModuleRuntime runtime(
+      con, std::make_shared<SecEdgarQ2Module>(cfg, &scan), cost);
+  runtime.Build();
   std::vector<SecEdgarQ2OutputRow> top;
   FinalizeSecEdgarQ2(*state, 2022, "pure", top);
   if (top.empty()) {
@@ -161,15 +148,15 @@ int main(int argc, char **argv) {
     m.old_rows = {row(v)};
     v += 1.0;
     m.new_rows = {row(v)};
-    coordinator.OnMutation(m);
-    coordinator.PreCommit();
-    coordinator.Commit();
+    runtime.Commit({m}); // maintenance only: the SQL table is not written
     maint_total += std::chrono::duration<double, std::micro>(Clock::now() - w0).count();
   }
   (void)m0;
   const double maint_us = maint_total / writes;
   std::cout << "maintenance (bump of the top group) us/write=" << maint_us << "\n";
-  auto snap = store.ReadPartitions({}, {SecEdgarQ2Module::kStatePartition});
+  auto &services = runtime.Backend();
+  auto snap = services.StateStore().ReadPartitions(services.CurrentVisibility(),
+                                                   {SecEdgarQ2Module::kStatePartition});
   const auto *img = snap.partitions.front().As<SecEdgarQ2StateImage>();
   std::vector<SecEdgarQ2OutputRow> after;
   FinalizeSecEdgarQ2(*img->state, 2022, "pure", after);

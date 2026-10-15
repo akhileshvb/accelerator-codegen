@@ -147,8 +147,8 @@ void TestBatchProjection() {
     CHECK(Same(projected.new_rows[r].values[0], legacy.new_rows[r].values[4]));
     CHECK(Same(projected.old_rows[r].values[2], legacy.old_rows[r].values[6]));
   }
-  // Updated attnums outside the projection are dropped.
-  CHECK(ToMutationBatch(columnar, {0, 1}).updated_columns == (std::vector<core::ColumnId>{1}));
+  // Updated attnums outside the projection report position projection.size().
+  CHECK(ToMutationBatch(columnar, {0, 1}).updated_columns == (std::vector<core::ColumnId>{1, 2}));
   CHECK(Throws([&] { ToMutationBatch(columnar, {1, 99}); }));
 
   legacy.updated_columns.clear();
@@ -173,7 +173,7 @@ void TestBatchFromMutationErrors() {
                           AuxValue::Of<ScaledDecimal>(AuxType::ScaledDecimal, {1, 3})}), {0});
   }));
   auto all_null = FromMutationBatch(mk({AuxValue::Null(AuxType::Int64), AuxValue::Null(AuxType::Int64)}), {0});
-  CHECK(all_null.new_rows.columns[0].type == AuxType::String);
+  CHECK(all_null.new_rows.columns[0].type == AuxType::Int64); // the NULLs' declared type
   CHECK(ToMutationBatch(all_null, {}).new_rows[1].values[0].is_null);
   // Scale comes from the first non-NULL value, past leading NULLs.
   auto lead = FromMutationBatch(

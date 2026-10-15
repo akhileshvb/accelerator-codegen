@@ -594,7 +594,6 @@ int Read(const std::string &path, const std::string &id, const std::string &base
   Require(glue != nullptr, "no baseline kit " + base_kit);
   const auto fn = FunctionFor(id);
   DuckdbRuntime rt(wc, EntryFor(id), 10.0);
-  rt.EnableMutationCapture();
   const double rss_before = SettledRssMb(qc);
   const auto b0 = Clock::now();
   rt.Build();
@@ -674,7 +673,6 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
   double build_ms = 0;
   if (accel) {
     rt = std::make_unique<DuckdbRuntime>(wc, EntryFor(id), 10.0);
-    rt->EnableMutationCapture();
     const auto b0 = Clock::now();
     rt->Build();
     build_ms = Us(b0, Clock::now()) / 1000;
@@ -965,7 +963,6 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
     for (auto &m : specs) {
       m.fn = FunctionFor(m.id);
       runtimes.push_back(std::make_unique<DuckdbRuntime>(wc, EntryFor(m.id), 10.0));
-      runtimes.back()->EnableMutationCapture();
       const auto b0 = Clock::now();
       runtimes.back()->Build();
       const double ms = Us(b0, Clock::now()) / 1000;
@@ -1380,7 +1377,6 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
     ApplyDuckdbBuildThreads(qc);
     for (auto &m : specs) {
       runtimes.push_back(std::make_unique<DuckdbRuntime>(wc, EntryFor(m.id), 10.0));
-      runtimes.back()->EnableMutationCapture();
       const auto b0 = Clock::now();
       runtimes.back()->Build();
       const double ms = Us(b0, Clock::now()) / 1000;
@@ -1575,7 +1571,6 @@ int Cycle(const std::string &path, const std::string &id, const std::string &bas
   double build_ms = 0, rss_after = 0;
   if (accel) {
     rt = std::make_unique<DuckdbRuntime>(wc, EntryFor(id), 10.0);
-    rt->EnableMutationCapture();
     const auto b0 = Clock::now();
     rt->Build();
     build_ms = Us(b0, Clock::now()) / 1000;

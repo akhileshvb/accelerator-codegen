@@ -112,19 +112,7 @@ std::string TpchRfChunkStatements(::duckdb::Connection &connection, const TpchRf
 void ApplyTpchRfChunk(::duckdb::Connection &connection,
                       engine::duckdb::DuckdbRuntime &runtime, int write_seq,
                       int order_count) {
-  const bool was_capturing = runtime.MutationCaptureEnabled();
-  runtime.EnableMutationCapture();
-  try {
-    runtime.ApplyWrite(TpchRfChunkStatements(connection, NextTpchRfChunkPlan(write_seq, order_count, connection)));
-  } catch (...) {
-    if (!was_capturing) {
-      runtime.DisableMutationCapture();
-    }
-    throw;
-  }
-  if (!was_capturing) {
-    runtime.DisableMutationCapture();
-  }
+  runtime.ApplyWrite(TpchRfChunkStatements(connection, NextTpchRfChunkPlan(write_seq, order_count, connection)));
 }
 
 } // namespace accelerator_codegen::aux_state::harness

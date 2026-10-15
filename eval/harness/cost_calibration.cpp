@@ -69,7 +69,6 @@ core::AuxCalibrationResult CalibrateSharedQueryCostModel(
     result.params.invalidation_overhead_us = core::MedianTimeUs(
         [&] { runtime.InvalidateAll(); }, warmups, samples, [&] { runtime.Build(); });
     runtime.Build();
-    runtime.EnableMutationCapture();
     aux_engine::duckdb::DuckdbCalibrationEngine engine(runtime);
     const auto fitted = core::CalibrateFromWrites(writes, engine, result.params);
     result.params = fitted.params;

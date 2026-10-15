@@ -71,10 +71,7 @@ public:
   // Cost model for `accelerator` (resolved by engine + scale), and the
   // workload hint.
   virtual const maintenance::CostModelParams &CostModel(const core::AcceleratorId &accelerator) const = 0;
-  virtual double ExpectedQueriesBeforeNextWrite() const { return 10.0; }
-  // Whether a reader can run SQL itself (ExecuteFallback). DuckDB aux table
-  // functions cannot run SQL on their own context.
-  virtual bool ReadersCanFallBack() const = 0;
+  virtual double ExpectedQueriesBeforeNextWrite(const core::AcceleratorId &) const { return 10.0; }
 };
 
 } // namespace accelerator_codegen::aux_state::runtime

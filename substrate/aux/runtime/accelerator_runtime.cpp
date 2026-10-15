@@ -76,12 +76,14 @@ AcceleratorRuntime::ReadGuard::~ReadGuard() = default;
 
 struct AcceleratorRuntime::Impl {
   BuildScheduler schedule;
+  core::AuxEngineServices *module_services = nullptr;
   std::unordered_map<core::TableId, std::vector<int32_t>> projections;
   StoreHandle store;
 
   // Writer side. Held from BeginCommit to PublishCommit/AbortCommit, and
   // around every store mutation (applies, installs).
   std::mutex commit_mutex;
+  std::mutex build_mutex; // one build at a time
   CommittedChange in_flight; // between BeginCommit and Publish/Abort
   Seq next_seq = 0;
   Epoch store_epoch = 0; // what the store's epoch provider returns
@@ -110,6 +112,7 @@ AcceleratorRuntime::AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> mod
                                        BuildScheduler schedule, StoreFactory make_store)
     : module(std::move(module_p)), id(module->Id()), slots(slots_p), threads(threads_p),
       impl(std::make_unique<Impl>()) {
+  impl->module_services = this;
   impl->schedule = schedule ? std::move(schedule)
                             : BuildScheduler([this](std::function<void()> work) {
                                 threads.Spawn(std::move(work));
@@ -123,8 +126,9 @@ AcceleratorRuntime::AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> mod
     return oldest == EngineSlots::kNoFloor ? kNever : oldest;
   };
   if (make_store) {
-    impl->store = make_store(id, std::move(epoch), std::move(floor));
-  } else {
+    impl->store = make_store(id, epoch, floor);
+  }
+  if (!impl->store.store) {
     VersionedAuxStore::Options options;
     options.epoch = std::move(epoch);
     options.floor = std::move(floor);
@@ -150,22 +154,33 @@ std::vector<core::TableId> AcceleratorRuntime::DependencyTables() const {
 
 // ---- reads ----
 
+// Transient: an in-flight commit, a stale state being rebuilt, or a shipped
+// commit not applied yet. Waiting can help.
 bool AcceleratorRuntime::Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const {
   if (epoch >= impl->unserved_from || epoch >= impl->in_flight_from) {
     return false;
   }
+  return !applied_through || impl->applier.AppliedEpoch() >= *applied_through;
+}
+
+// Permanent: the epoch's versions were collapsed by a combined catch-up.
+bool AcceleratorRuntime::Collapsed(Epoch epoch) const {
   for (const auto &[from, to] : impl->collapsed) {
     if (epoch >= from && epoch < to) {
-      return false;
+      return true;
     }
   }
-  return !applied_through || impl->applier.AppliedEpoch() >= *applied_through;
+  return false;
 }
 
 AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &options) {
   const Epoch epoch =
       options.epoch == VersionedAuxStore::kNewestSnapshot ? kNever - 1 : options.epoch;
   std::unique_lock<std::mutex> lock(impl->state_mutex);
+  if (Collapsed(epoch)) {
+    impl->stats.reads_fallback++;
+    return ReadGuard(false, nullptr);
+  }
   if (!Servable(epoch, options.require_applied_through)) {
     lock.unlock();
     RequestBuild();
@@ -173,8 +188,9 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     impl->stats.reads_waited++;
     const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
     if (!impl->state_cv.wait_until(lock, deadline, [&] {
-          return Servable(epoch, options.require_applied_through);
-        })) {
+          return Servable(epoch, options.require_applied_through) || Collapsed(epoch);
+        }) ||
+        Collapsed(epoch)) {
       impl->stats.reads_fallback++;
       return ReadGuard(false, nullptr);
     }
@@ -207,14 +223,14 @@ AcceleratorRuntime::Stage(const std::vector<ColumnarBatchRef> &batches) {
     }
     const auto rows = ToMutationBatch(*batch, projection->second);
     MergeInvalidationPlan(plan, module->InterpretMutation(rows));
-    module->AccumulateMutation(rows, *this, *buffer);
+    module->AccumulateMutation(rows, *impl->module_services, *buffer);
   }
   // A module that neither buffered nor invalidated could not interpret the
   // change: never publish a stale state as valid.
   if (plan.IsEmpty() && !buffer->HasPendingChanges()) {
     plan = core::AllPartitionsPlan();
   }
-  return module->StageMaintenance(*this, plan, *buffer);
+  return module->StageMaintenance(*impl->module_services, plan, *buffer);
 }
 
 // Publishes `outcome` at `epoch`. Returns false if the state is left invalid
@@ -243,8 +259,12 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
   if (change.empty_commit) {
     return true;
   }
+  core::ClearMaintenanceDecisionLog();
   try {
-    return Publish(Stage(change.batches), change.epoch);
+    const bool valid = Publish(Stage(change.batches), change.epoch);
+    std::lock_guard<std::mutex> lock(impl->state_mutex);
+    impl->stats.last_decision = core::LastMaintenanceDecision();
+    return valid;
   } catch (...) {
     return false;
   }
@@ -407,6 +427,10 @@ void AcceleratorRuntime::Invalidate() {
   }
 }
 
+void AcceleratorRuntime::UseModuleServices(core::AuxEngineServices &services) {
+  impl->module_services = &services;
+}
+
 void AcceleratorRuntime::RequestBuild() {
   {
     std::lock_guard<std::mutex> lock(impl->state_mutex);
@@ -427,6 +451,9 @@ void AcceleratorRuntime::RequestBuild() {
 }
 
 bool AcceleratorRuntime::BuildNow() {
+  // A caller arriving during a build waits for it, and then finds the state
+  // synced (or builds again if it is still stale).
+  std::lock_guard<std::mutex> one_build(impl->build_mutex);
   const auto start = Clock::now();
   {
     // No in-process commit may be in flight across the switch: every commit
@@ -526,7 +553,7 @@ const maintenance::CostModelParams &AcceleratorRuntime::MaintenanceCostModel() c
 }
 
 double AcceleratorRuntime::ExpectedQueriesBeforeNextWrite() const {
-  return slots.ExpectedQueriesBeforeNextWrite();
+  return slots.ExpectedQueriesBeforeNextWrite(id);
 }
 
 std::size_t AcceleratorRuntime::WorkerCount() const { return threads.Budget(); }

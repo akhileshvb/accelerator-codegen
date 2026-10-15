@@ -13,8 +13,9 @@
 //     partition updates, invalidations, rebuilds, aborts), many readers with
 //     short and long snapshots, several reads per query; every value checked
 //     against a model of every version.
-//  5. DuckDB, end to end, on real transactions at a high commit rate: every
-//     aux read equals count(*) in the same transaction.
+//  5. DuckDB, end to end, through the aux runtime on real transactions at a
+//     high commit rate: every aux read, at the reading transaction's own
+//     snapshot, equals count(*) in the same transaction.
 //
 // Usage: test_versioned_aux_state [stress_commits=200000] [readers=8]
 //                                 [duckdb_commits=3000]
@@ -38,10 +39,13 @@
 #include "substrate/aux/core/aux_registry.hpp"
 #include "substrate/aux/core/aux_txn_buffer.hpp"
 #include "backends/duckdb/engine/duckdb_aux_backend.hpp"
-#include "backends/duckdb/state/duckdb_state_store.hpp"
+#include "substrate/aux/runtime/runtime_host.hpp"
 #include "substrate/aux/state/versioned_aux_store.hpp"
 #include "duckdb.hpp"
+#include "duckdb/accelerator/capture_registry.hpp"
+#include "duckdb/accelerator/mutation_recorder.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
 
 using namespace accelerator_codegen::aux_state;
@@ -612,11 +616,73 @@ int64_t Count(duckdb::Connection &c) {
   return r->GetValue(0, 0).GetValue<int64_t>();
 }
 
+// The id of the newest commit of `writer`.
+struct LastCommitId final : duckdb::CommitObserver {
+  explicit LastCommitId(duckdb::ClientContext &writer_p) : writer(writer_p) {}
+  void OnCommit(duckdb::AttachedDatabase &, duckdb::transaction_t) override {}
+  void OnCommitWithContext(duckdb::ClientContext &context, duckdb::AttachedDatabase &db,
+                           duckdb::transaction_t id) override {
+    if (&context == &writer && !db.IsSystem() && !db.IsTemporary()) {
+      value = id;
+    }
+  }
+  duckdb::ClientContext &writer;
+  std::atomic<duckdb::transaction_t> value {0};
+};
+
+// DuckDB's slots for the test: the writer's start time bounds what its pending
+// commit can be visible to, reader floors come from the transaction manager,
+// and a build reads in a transaction on `connection`.
+class DuckDbSlots final : public runtime::EngineSlots {
+public:
+  DuckDbSlots(duckdb::Connection &connection_p, duckdb::AttachedDatabase &attached_p)
+      : connection(connection_p), attached(attached_p) {}
+
+  runtime::Epoch PendingEpochLowerBound(uint64_t) const override { return writer_start + 1; }
+  runtime::Epoch OldestReaderEpoch() const override {
+    return attached.GetTransactionManager().Cast<duckdb::DuckTransactionManager>().LowestActiveStart();
+  }
+  bool WaitForPreRegistrationWriters(const std::vector<TableId> &, uint64_t) override { return true; }
+  std::unique_ptr<runtime::BuildSnapshot> OpenBuildSnapshot(runtime::AcceleratorRuntime &) override {
+    return std::make_unique<Snapshot>(connection);
+  }
+  bool EngineWorkOnHostThread() const override { return false; }
+  void RunBuild(runtime::AcceleratorRuntime &accelerator, runtime::BuildSnapshot &,
+                StateBuilder &builder) override {
+    accelerator.Module().Build(accelerator, builder);
+  }
+  const maintenance::CostModelParams &CostModel(const AcceleratorId &) const override { return cost_model; }
+
+  std::atomic<runtime::Epoch> writer_start {0};
+
+private:
+  struct Snapshot final : runtime::BuildSnapshot {
+    explicit Snapshot(duckdb::Connection &c) : connection(c) {
+      connection.BeginTransaction();
+      epoch = engine::duckdb::DuckDBAuxBackend::SnapshotEpoch(*connection.context);
+    }
+    ~Snapshot() override { connection.Rollback(); }
+    runtime::Epoch SnapshotEpoch() const override { return epoch; }
+    duckdb::Connection &connection;
+    runtime::Epoch epoch = 0;
+  };
+
+  duckdb::Connection &connection;
+  duckdb::AttachedDatabase &attached;
+  maintenance::CostModelParams cost_model;
+};
+
 // The aux value the connection's current transaction sees (-1: none).
-int AuxFor(duckdb::Connection &reader, const AuxStateStore &store) {
-  engine::duckdb::DuckDBAuxBackend::ReaderScope scope(*reader.context);
-  const auto token = engine::duckdb::DuckDBAuxBackend::ReaderVisibility();
-  const auto snapshot = store.ReadPartitions(token, {1});
+int AuxFor(duckdb::Connection &reader, runtime::AcceleratorRuntime &accelerator) {
+  runtime::ReadOptions options;
+  options.epoch = engine::duckdb::DuckDBAuxBackend::SnapshotEpoch(*reader.context);
+  options.max_wait_us = 5'000'000;
+  const auto guard = accelerator.BeginRead(options);
+  if (!guard.Servable()) {
+    return -1;
+  }
+  const auto snapshot =
+      accelerator.StateStore().ReadPartitions(accelerator.CurrentVisibility(), {1});
   return snapshot.partitions.empty() ? -1 : *static_cast<const int *>(snapshot.partitions[0].payload.get());
 }
 
@@ -626,23 +692,16 @@ void TestDuckDB(int commits, int readers) {
   Exec(writer, "CREATE TABLE t(x INTEGER)");
   Exec(writer, "INSERT INTO t VALUES (0)");
 
-  auto attached = engine::duckdb::AuxCommitClock::DefaultDatabase(*writer.context);
-  auto clock = writer.context->registered_state->GetOrCreate<engine::duckdb::AuxCommitClock>(
-      "accel_aux_commit_clock", attached);
-  engine::duckdb::DuckDBStateStore store(
-      "counter", [clock] { return clock->epoch.load(); },
-      [attached]() -> Epoch {
-        return attached->GetTransactionManager().Cast<duckdb::DuckTransactionManager>().LowestActiveStart();
-      });
-  Services services(store);
-  AuxTransactionCoordinator coordinator;
+  auto commit_id = duckdb::make_shared_ptr<LastCommitId>(*writer.context);
+  db.instance->GetCaptureRegistry().Add(commit_id);
+  auto &manager = duckdb::DatabaseManager::Get(*db.instance);
+  auto attached = manager.GetDatabase(duckdb::DatabaseManager::GetDefaultDatabase(*writer.context));
+  DuckDbSlots slots(writer, *attached);
+  runtime::RuntimeHost host(slots, 2);
   auto module = std::make_shared<CounterModule>();
-  coordinator.Register(module);
-  coordinator.AttachServices(services);
-  writer.BeginTransaction(); // a build is current from a fresh snapshot's start time
-  const Epoch build_epoch = engine::duckdb::DuckDBAuxBackend::SnapshotEpoch(*writer.context);
-  writer.Rollback();
-  store.Install({Image("counter", 1, 1)}, "counter", build_epoch); // count = 1
+  auto &accelerator = host.Register(module);
+  module->next = 1;
+  CHECK(accelerator.BuildNow()); // count = 1
 
   std::atomic<bool> stop {false};
   std::atomic<long> reads {0}, mismatches {0}, misses {0}, long_txns {0};
@@ -660,7 +719,7 @@ void TestDuckDB(int commits, int readers) {
           const int n = long_txn ? 4 : 1;
           for (int k = 0; k < n; k++) {
             const auto sql = Count(conn);
-            const auto aux = AuxFor(conn, store);
+            const auto aux = AuxFor(conn, accelerator);
             reads++;
             if (aux == -1) {
               misses++;
@@ -668,11 +727,10 @@ void TestDuckDB(int commits, int readers) {
               mismatches++;
               std::lock_guard<std::mutex> l(failure_mutex);
               if (first_failure.empty()) {
-                engine::duckdb::DuckDBAuxBackend::ReaderScope scope(*conn.context);
                 first_failure = "count " + std::to_string(sql) + " but aux " + std::to_string(aux) +
                                 " (reader epoch " +
-                                std::to_string(engine::duckdb::DuckDBAuxBackend::ReaderVisibility().mutation_epoch) +
-                                ", clock " + std::to_string(clock->epoch.load()) + ")";
+                                std::to_string(engine::duckdb::DuckDBAuxBackend::SnapshotEpoch(*conn.context)) +
+                                ")";
               }
             }
             if (long_txn) {
@@ -693,22 +751,27 @@ void TestDuckDB(int commits, int readers) {
     });
   }
 
-  MutationBatch mutation;
-  mutation.table = 7;
-  module->invalidate_two = false;
+  runtime::ColumnarBatch inserted; // the writer's change, as the engine would capture it
+  inserted.table = 7;
+  inserted.kind = MutationKind::Insert;
+  inserted.row_count = 1;
+  inserted.new_rows.attnums = {0};
+  inserted.new_rows.columns.push_back({AuxType::Int64, 0, {}, std::vector<int64_t>{0}});
+  const std::vector<runtime::ColumnarBatchRef> batches{
+      std::make_shared<const runtime::ColumnarBatch>(inserted)};
+
   const auto start = Clock::now();
   int count = 1, aborts = 0;
   std::mt19937_64 rng(5);
   for (int i = 0; i < commits; i++) {
     Exec(writer, "BEGIN TRANSACTION");
     Exec(writer, "INSERT INTO t VALUES (" + std::to_string(i) + ")");
-    coordinator.OnMutation(mutation);
+    slots.writer_start = engine::duckdb::DuckDBAuxBackend::SnapshotEpoch(*writer.context);
     module->next = count + 1;
-    clock->epoch = engine::duckdb::DuckDBAuxBackend::SnapshotEpoch(*writer.context) + 1;
-    coordinator.PreCommit();
+    accelerator.BeginCommit(1, batches); // pre-commit, inside the SQL transaction
     if (rng() % 20 == 0) {
       Exec(writer, "ROLLBACK");
-      coordinator.Abort();
+      accelerator.AbortCommit();
       aborts++;
       continue;
     }
@@ -716,7 +779,7 @@ void TestDuckDB(int commits, int readers) {
     if (rng() % 50 == 0) {
       std::this_thread::sleep_for(std::chrono::microseconds(200)); // slow publish
     }
-    coordinator.Commit();
+    accelerator.PublishCommit(commit_id->value.load() + 1); // visible to snapshots after the commit id
     count++;
   }
   const double secs = MillisSince(start) / 1000.0;
@@ -728,15 +791,15 @@ void TestDuckDB(int commits, int readers) {
   std::cout << "  duckdb: " << commits - aborts << " commits (" << aborts << " aborted) in " << secs
             << " s (" << static_cast<long>((commits - aborts) / secs) << " commits/s); " << reads.load()
             << " aux reads (" << long_txns.load() << " long transactions), " << misses.load()
-            << " misses, " << mismatches.load() << " mismatches; versions kept "
-            << store.TotalVersionCount() << std::endl;
+            << " misses, " << mismatches.load() << " mismatches" << std::endl;
+  db.instance->GetCaptureRegistry().Remove(commit_id.get());
   if (mismatches > 0) {
     throw std::runtime_error("duckdb mismatches; first: " + first_failure);
   }
   CHECK(reads > 0 && misses == 0);
   duckdb::Connection after(db);
   Exec(after, "BEGIN TRANSACTION");
-  CHECK(Count(after) == count && AuxFor(after, store) == count);
+  CHECK(Count(after) == count && AuxFor(after, accelerator) == count);
   Exec(after, "COMMIT");
 }
 

@@ -75,6 +75,7 @@ int main(int argc, char **argv) {
   std::cout << std::unitbuf << "module=" << entry.accelerator_id << " threads=" << threads << "\n";
 
   DuckdbRuntime runtime(c, entry, 10.0);
+  runtime.UseManualCapture(); // changes are hand-built below
   {
     std::vector<double> s;
     for (int i = 0; i < 3; ++i) {

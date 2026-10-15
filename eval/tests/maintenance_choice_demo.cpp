@@ -103,7 +103,6 @@ int main(int argc, char **argv) {
   const auto &entry = engine::LookupSharedQuery(engine::SharedWorkloadKind::Tpch, q);
   DuckdbRuntime runtime(c, entry, 10.0);
   runtime.Build();
-  runtime.EnableMutationCapture();
 
   const std::vector<Shape> shapes = {
       {"point (1 row)", "l_orderkey = 1 AND l_linenumber = 1"},

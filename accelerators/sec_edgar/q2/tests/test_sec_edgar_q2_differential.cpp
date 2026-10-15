@@ -41,7 +41,7 @@
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_registry.hpp"
 #include "backends/duckdb/engine/duckdb_aux_backend.hpp"
-#include "backends/duckdb/state/duckdb_state_store.hpp"
+#include "eval/tests/test_support/module_runtime.hpp"
 #include "substrate/aux/maintenance/cost_model.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
@@ -280,6 +280,15 @@ std::vector<core::AuxRow> NumRowsById(duckdb::Connection &con, const std::string
                         "footnote FROM num WHERE " + where + " ORDER BY rowid");
 }
 
+// UPDATE num ... WHERE `where`, returning the new row images in the order the
+// rows were updated (a rowid may change with the update, so the new images
+// cannot be re-selected by it).
+std::vector<core::AuxRow> UpdateNum(duckdb::Connection &con, const std::string &set,
+                                    const std::string &where) {
+  return FetchRows(con, "UPDATE num SET " + set + " WHERE " + where +
+                            " RETURNING adsh, tag, version, ddate, qtrs, uom, coreg, value, footnote");
+}
+
 std::string QuerySql(const std::string &fy_sql, const std::string &uom_sql) {
   return "SELECT s.name, n.tag, n.value FROM num n JOIN sub s ON n.adsh = s.adsh "
          "JOIN (SELECT adsh, tag, MAX(value) AS max_value FROM num WHERE uom = " +
@@ -310,22 +319,13 @@ public:
   bool ended = false;
 };
 
-class Builder final : public core::StateBuilder {
-public:
-  void Write(core::StateImage image) override { images.push_back(std::move(image)); }
-  void Finish() override { finished = true; }
-  std::vector<core::StateImage> images;
-  bool finished = false;
-};
-
 struct Harness {
   duckdb::DuckDB db{nullptr};
   duckdb::Connection con{db};
-  std::unique_ptr<engine::duckdb::DuckDBStateStore> store;
-  core::AuxTransactionCoordinator coordinator;
   std::unique_ptr<SecEdgarQ2DuckdbScan> scan;
   std::shared_ptr<SecEdgarQ2Module> module;
-  std::unique_ptr<engine::duckdb::DuckDBAuxBackend> backend;
+  std::unique_ptr<accelerator_codegen::aux_state::test::ModuleRuntime> runtime;
+  std::vector<core::MutationBatch> pending; // the open transaction's changes
   bool parallel = false;
   uint64_t reads = 0;
 
@@ -335,8 +335,6 @@ struct Harness {
     const char *path = std::getenv("ACCEL_Q2_COST_MODEL");
     const auto cost = core::LoadAuxCostModelJson(
         path ? path : core::AuxCostModelDefaultPath(core::kSecEdgarQ2CostModel));
-    store = std::make_unique<engine::duckdb::DuckDBStateStore>(
-        parallel ? SecEdgarQ2ParallelModule::kId : SecEdgarQ2Module::kId);
     scan = std::make_unique<SecEdgarQ2DuckdbScan>(con);
     // Test knobs: Q2_TEST_OVERLAY_LIMIT forces compactions on small data,
     // Q2_TEST_MAX_UOM_ROWS=N is the opt-out limit (default: every unit of
@@ -358,33 +356,27 @@ struct Harness {
     } else {
       module = std::make_shared<SecEdgarQ2Module>(cfg, scan.get());
     }
-    backend = std::make_unique<engine::duckdb::DuckDBAuxBackend>(
-        coordinator, *store,
-        [](const duckdb::TableMutationEvent &) { return core::MutationBatch{}; },
-        [] { return core::VisibilityToken{}; }, [cost] { return cost; },
-        [] { return 10.0; });
-    coordinator.Register(module);
+    runtime = std::make_unique<accelerator_codegen::aux_state::test::ModuleRuntime>(con, module, cost);
   }
 
-  void Build() {
-    Builder builder;
-    module->Build(*backend, builder);
-    Require(builder.finished, "build finished");
-    store->Install(std::move(builder.images),
-                   parallel ? SecEdgarQ2ParallelModule::kId : SecEdgarQ2Module::kId);
-  }
+  void Build() { runtime->Build(); }
 
-  void Capture(const core::MutationBatch &batch) { backend->CaptureMutation(batch); }
+  void Capture(const core::MutationBatch &batch) { pending.push_back(batch); }
 
   void Commit() {
-    coordinator.PreCommit();
     con.Commit();
-    coordinator.Commit();
+    runtime->Commit(pending);
+    pending.clear();
+  }
+
+  void Rollback() {
+    con.Rollback();
+    pending.clear();
   }
 
   std::vector<core::AuxRow> Run(const core::QueryArguments &args) {
     Sink sink;
-    module->Execute(*backend, args, sink);
+    Require(runtime->Read(args, sink), "state served the read");
     Require(sink.ended, "sink ended");
     ++reads;
     return sink.rows;
@@ -573,8 +565,7 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
       const std::string set =
           g.Chance(50) ? "value = " + DoubleSql(g.Value())
                        : (g.Chance(50) ? "value = value + 1" : "value = NULL");
-      Exec(h.con, "UPDATE num SET " + set + " WHERE " + where);
-      batch.new_rows = NumRowsById(h.con, where);
+      batch.new_rows = UpdateNum(h.con, set, where);
       if (g.Chance(30)) {
         batch.updated_columns.clear(); // unknown column set
       }
@@ -587,17 +578,15 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
       batch.old_rows = NumRowsById(h.con, where);
       const int which = static_cast<int>(g.Pick(3));
       if (which == 0) {
-        Exec(h.con, "UPDATE num SET tag = " + Quote(g.Tag()) + " WHERE " + where);
+        batch.new_rows = UpdateNum(h.con, "tag = " + Quote(g.Tag()), where);
         batch.updated_columns = {1};
       } else if (which == 1) {
-        Exec(h.con, "UPDATE num SET uom = " + Quote(g.Uom()) + " WHERE " + where);
+        batch.new_rows = UpdateNum(h.con, "uom = " + Quote(g.Uom()), where);
         batch.updated_columns = {5};
       } else {
-        Exec(h.con, "UPDATE num SET adsh = " + Quote(g.adshs[g.Pick(g.adshs.size())]) +
-                        " WHERE " + where);
+        batch.new_rows = UpdateNum(h.con, "adsh = " + Quote(g.adshs[g.Pick(g.adshs.size())]), where);
         batch.updated_columns = {0};
       }
-      batch.new_rows = NumRowsById(h.con, where);
       break;
     }
     case 7: { // UPDATE irrelevant column
@@ -606,8 +595,7 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
       batch.updated_columns = {8};
       const std::string where = pick_where();
       batch.old_rows = NumRowsById(h.con, where);
-      Exec(h.con, "UPDATE num SET footnote = 'f' WHERE " + where);
-      batch.new_rows = NumRowsById(h.con, where);
+      batch.new_rows = UpdateNum(h.con, "footnote = 'f'", where);
       break;
     }
     case 8: { // INSERT sub (+ rows for it in the same transaction)
@@ -695,9 +683,8 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
       }
       const std::string by_id = ids.empty() ? std::string("rowid = -1") : "rowid IN (" + ids + ")";
       batch.old_rows = NumRowsById(h.con, by_id);
-      Exec(h.con, "UPDATE num SET value = " + std::string(g.Chance(50) ? "value - 1000" : "-5") +
-                      " WHERE " + by_id);
-      batch.new_rows = NumRowsById(h.con, by_id);
+      batch.new_rows =
+          UpdateNum(h.con, "value = " + std::string(g.Chance(50) ? "value - 1000" : "-5"), by_id);
       break;
     }
     default: { // UPDATE sub fy / name
@@ -723,9 +710,8 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
     h.Capture(batch);
   }
   if (g.Chance(8)) {
-    // Roll back: DuckDB discards the writes, the coordinator drops its buffers.
-    h.con.Rollback();
-    h.coordinator.Abort();
+    // Roll back: DuckDB discards the writes; the runtime never sees them.
+    h.Rollback();
     ++rollbacks;
     g.adshs.clear();
     for (const auto &row : FetchRows(h.con, "SELECT adsh FROM sub")) {

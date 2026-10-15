@@ -651,7 +651,6 @@ void RunSqlWritesDifferentialCheck(const std::string &db_path, const SharedQuery
   duckdb::Connection connection(database);
   DuckdbRuntime runtime(connection, entry, 10.0);
   runtime.Build();
-  runtime.EnableMutationCapture();
   RequireSharedMatchesBase(connection, runtime, entry);
   auto writes = TargetedWrites(connection, entry);
   for (auto &w : TpchDifferentialWrites(connection, rounds))

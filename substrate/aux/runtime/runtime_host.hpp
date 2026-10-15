@@ -25,7 +25,8 @@ public:
   ~RuntimeHost();
 
   // ---- registration ----
-  AcceleratorRuntime &Register(std::shared_ptr<core::AuxQueryModule> module);
+  AcceleratorRuntime &Register(std::shared_ptr<core::AuxQueryModule> module,
+                               StoreFactory make_store = nullptr);
   AcceleratorRuntime *Find(const core::AcceleratorId &id);
   std::vector<AcceleratorRuntime *> All();
 
