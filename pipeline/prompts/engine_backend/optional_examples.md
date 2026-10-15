@@ -5,7 +5,7 @@ These describe **how** an adapter can hold aux state. They are not requirements 
 ## `typed_in_process`
 
 - `*AuxBackend` implements `AuxEngineServices` and forwards engine mutation/txn hooks to the coordinator
-- `*StateStore` wraps `PartitionedStateStore` with typed `StateImage` payloads
+- `*StateStore` wraps `VersionedAuxStore` with typed `StateImage` payloads
 - `TryPublish` uses `TryPublishPartition` (CAS on `expected_version`); `Read` /
   `CheckValidity` honor `VisibilityToken` vs `valid_through_mutation_epoch`
 - Keys come from published `StateImage`s — no `RegisterQueryKey`

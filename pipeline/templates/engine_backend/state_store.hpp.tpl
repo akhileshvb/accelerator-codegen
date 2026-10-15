@@ -4,7 +4,7 @@
 #include <functional>
 
 #include "substrate/aux/core/aux_types.hpp"
-#include "substrate/aux/state/partitioned_state_store.hpp"
+#include "substrate/aux/state/versioned_aux_store.hpp"
 
 namespace accelerator_codegen::aux_state::engine::{{engine_name}} {
 
@@ -21,7 +21,7 @@ public:
                   core::Version expected_version) override;
 
 private:
-  PartitionedStateStore store;
+  VersionedAuxStore store;
   EpochProvider epoch_provider;
 };
 

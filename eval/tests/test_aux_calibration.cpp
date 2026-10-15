@@ -1,3 +1,4 @@
+#include "eval/tests/test_support/db_paths.hpp"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -128,7 +129,8 @@ int main() {
          accelerator_codegen::aux_state::maintenance::MaintenanceAction::
              RebuildAll);
 
-  const std::string path = "/tmp/accelerator_codegen_aux_calibration_test.json";
+  accelerator_codegen::test_support::ScratchDir scratch("aux_calibration_test");
+  const std::string path = scratch.File("aux_cost_model.json");
   WriteAuxCostModelJson(path, result, "test", "test_accelerator");
   const auto loaded = LoadAuxCostModelJson(path, CostModelParams{});
   assert(loaded.apply_delta_max_rows == result.params.apply_delta_max_rows);

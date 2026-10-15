@@ -16,7 +16,7 @@
 Under `substrate/aux/`:
 
 - **`core/`** — `AuxQueryModule`, `AuxEngineServices`, `AuxStateStore`, `AuxRegistry`, `aux_calibration.hpp`, `byte_stream.hpp`
-- **`state/`** — `PartitionedStateStore`, invalidation plans, partition keys
+- **`state/`** — `VersionedAuxStore`, invalidation plans, partition keys
 - **`maintenance/`** — `MaintenanceAction`, `ActionCostEstimate`, `CostModelParams`, `SelectMinCostAction`
 
 ## Shared primitives library (`accelerators/prims/`) — growable, but only through `primitive_publish`

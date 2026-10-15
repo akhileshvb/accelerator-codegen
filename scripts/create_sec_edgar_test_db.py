@@ -38,14 +38,24 @@ PROBE_CHECKS = {
         "WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL "
         "ORDER BY n.adsh LIMIT 1"
     ),
+    # Q4 keeps only (sic, tlabel) groups with >= 2 companies, so its catalog
+    # probe needs a row in such a group (the WHERE filter alone is not enough).
     "q4": (
-        "SELECT n.adsh, n.tag, n.version, n.value, n.uom FROM num n "
+        "SELECT n.adsh FROM num n "
         "JOIN sub s ON n.adsh = s.adsh "
         "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
         "JOIN tag t ON n.tag = t.tag AND n.version = t.version "
         "WHERE n.uom = 'USD' AND p.stmt = 'EQ' AND s.sic BETWEEN 4000 AND 4999 "
         "AND n.value IS NOT NULL AND t.abstract = 0 "
-        "ORDER BY n.adsh, n.tag, n.version LIMIT 1"
+        "AND (s.sic, t.tlabel) IN ("
+        "  SELECT s2.sic, t2.tlabel FROM num n2 "
+        "  JOIN sub s2 ON n2.adsh = s2.adsh "
+        "  JOIN pre p2 ON n2.adsh = p2.adsh AND n2.tag = p2.tag AND n2.version = p2.version "
+        "  JOIN tag t2 ON n2.tag = t2.tag AND n2.version = t2.version "
+        "  WHERE n2.uom = 'USD' AND p2.stmt = 'EQ' AND s2.sic BETWEEN 4000 AND 4999 "
+        "  AND n2.value IS NOT NULL AND t2.abstract = 0 "
+        "  GROUP BY s2.sic, t2.tlabel HAVING COUNT(DISTINCT s2.cik) >= 2) "
+        "LIMIT 1"
     ),
     "q6": (
         "SELECT n.adsh, n.tag, n.version, n.value, n.uom FROM num n "
@@ -103,7 +113,30 @@ def seed_sql(per_seed_limit: int) -> str:
            AND s.sic BETWEEN 4000 AND 4999
            AND n.value IS NOT NULL AND t.abstract = 0
          LIMIT {lim})
+
         UNION
+        -- Q4: every filing of a few (sic, tlabel) groups that have >= 2
+        -- companies, so the subset keeps a non-empty Q4 result to probe.
+        (SELECT DISTINCT n.adsh
+         FROM src.num n
+         JOIN src.sub s ON n.adsh = s.adsh
+         JOIN src.pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version
+         JOIN src.tag t ON n.tag = t.tag AND n.version = t.version
+         JOIN (SELECT s2.sic, t2.tlabel
+               FROM src.num n2
+               JOIN src.sub s2 ON n2.adsh = s2.adsh
+               JOIN src.pre p2 ON n2.adsh = p2.adsh AND n2.tag = p2.tag AND n2.version = p2.version
+               JOIN src.tag t2 ON n2.tag = t2.tag AND n2.version = t2.version
+               WHERE n2.uom = 'USD' AND p2.stmt = 'EQ'
+                 AND s2.sic BETWEEN 4000 AND 4999
+                 AND n2.value IS NOT NULL AND t2.abstract = 0
+               GROUP BY s2.sic, t2.tlabel
+               HAVING COUNT(DISTINCT s2.cik) >= 2
+               ORDER BY s2.sic, t2.tlabel
+               LIMIT 3) g ON s.sic = g.sic AND t.tlabel = g.tlabel
+         WHERE n.uom = 'USD' AND p.stmt = 'EQ'
+           AND s.sic BETWEEN 4000 AND 4999
+           AND n.value IS NOT NULL AND t.abstract = 0)        UNION
         (SELECT n.adsh
          FROM src.num n
          JOIN src.sub s ON n.adsh = s.adsh

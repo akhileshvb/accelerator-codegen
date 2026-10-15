@@ -1,3 +1,4 @@
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "tpch/q3/tests/q3_manifest.hpp"
 
@@ -15,8 +16,7 @@
 namespace {
 
 std::string GetTpchDbPath() {
-	const char *path = std::getenv("ACCEL_TPCH_DB");
-	return path && *path ? path : "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
+	return accelerator_codegen::test_support::TpchDbPath();
 }
 
 void Require(bool condition, const std::string &message) {
@@ -108,7 +108,10 @@ INSERT INTO lineitem VALUES
 int main() {
 	try {
 		{
-			duckdb::DuckDB database(GetTpchDbPath().c_str());
+			// Read-only: the smoke test never writes the shared database.
+			duckdb::DBConfig database_config;
+			database_config.options.access_mode = duckdb::AccessMode::READ_ONLY;
+			duckdb::DuckDB database(GetTpchDbPath(), &database_config);
 			duckdb::Connection connection(database);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			for (const auto &entry : accelerator_codegen::test_support::kQ3Manifest) {

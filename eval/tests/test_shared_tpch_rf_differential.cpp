@@ -1,3 +1,4 @@
+#include "eval/tests/test_support/db_paths.hpp"
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -68,9 +69,11 @@ int main(int argc, char **argv) {
             "usage: test_shared_tpch_rf_differential <tpch_sf1.duckdb> "
             "[work_copy.duckdb]");
     const fs::path source = argv[1];
+    // Default work copy: a private scratch dir, removed on exit, so
+    // concurrent runs never share (or lock) one work file.
+    accelerator_codegen::test_support::ScratchDir scratch("tpch_rf_diff");
     const fs::path work =
-        argc == 3 ? fs::path(argv[2])
-                  : (fs::temp_directory_path() / "tpch_rf_diff_work.duckdb");
+        argc == 3 ? fs::path(argv[2]) : fs::path(scratch.File("tpch_rf_diff_work.duckdb"));
     const int num_chunks = GetEnvInt("ACCEL_TPCH_RF_DIFF_CHUNKS", 4);
     const int order_count = GetEnvInt("ACCEL_TPCH_RF_CHUNK_ORDERS", 1);
     const auto queries = ParseQueries(std::getenv("ACCEL_TPCH_RF_DIFF_QUERIES"));

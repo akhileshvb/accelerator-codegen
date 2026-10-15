@@ -214,7 +214,7 @@ def test_render_impl_store_prompt():
     assert "TryPublishPartition" in text
     assert "RegisterQueryKey" in text
     assert "layer_contracts.md" in text
-    assert "partitioned_state_store.hpp" in text
+    assert "versioned_aux_store.hpp" in text
     assert "Native base-table" in text or "hard_guidelines" in text.lower()
     assert "Engine backend layer workflow" in text or "layer_contracts.md" in text
 

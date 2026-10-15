@@ -7,6 +7,7 @@
 //   ACCEL_RF_COMPARE_KINDS  rf2,rf1 or both (default rf2,rf1)
 // Official RF is ~0.1% of SF orders (SF20 ≈ 30k orders).
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "eval/harness/tpch_rf.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
@@ -84,9 +85,7 @@ int64_t CountOrders(duckdb::Connection &conn) {
 } // namespace
 
 int main() {
-  const std::string db_path = GetEnvString(
-      "ACCEL_TPCH_DB",
-      "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb");
+  const std::string db_path = accelerator_codegen::test_support::TpchDbPath();
   const auto queries =
       ParseIntList(GetEnvString("ACCEL_RF_COMPARE_QUERY", "6,14,1,18"));
   const auto order_sizes = ParseIntList(

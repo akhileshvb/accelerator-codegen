@@ -43,7 +43,10 @@ int main(int argc, char **argv) {
     setenv("ACCEL_BENCH_VARY_ARGS", "1", 0);
     setenv("ACCEL_BENCH_ARG_SEED", "42", 0);
 
-    duckdb::DuckDB database(db_path.c_str());
+    // Read-only: this check never writes, and the file may be shared.
+    duckdb::DBConfig config;
+    config.options.access_mode = duckdb::AccessMode::READ_ONLY;
+    duckdb::DuckDB database(db_path.c_str(), &config);
     duckdb::Connection connection(database);
     Require(connection.Query("PRAGMA threads=1") != nullptr, "pragma failed");
 

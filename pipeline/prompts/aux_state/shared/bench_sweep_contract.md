@@ -46,7 +46,7 @@ Print **one header row** and **one data row** to stdout. The row must include at
 `blended_query_speedup`, `cold_start_accel_workload_us`, `setup_full_build_ms`,
 `accel_hit_rate`, `writes_executed`, `duckdb_workload_us`, `accel_workload_us`.
 
-Copy the column layout from `accelerators/tpch/q14/bench/benchmark_q14_aux.cpp` or `benchmark_q1_aux.cpp`.
+Copy the column layout from `accelerators/tpch/q4/bench/benchmark_q4_aux.cpp` or `accelerators/tpch/q2/bench/benchmark_q2_aux.cpp`.
 
 Optional `speedup_gate ...` lines may follow the CSV row (for audit gates); the sweep parser ignores non-CSV lines.
 

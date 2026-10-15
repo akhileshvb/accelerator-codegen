@@ -16,9 +16,9 @@ formally verified kernel against a spec generated from the SQL.
 
 | Layer | Directory | Who writes it |
 |---|---|---|
-| Substrate: engine-agnostic aux-state core, state store, maintenance policy | `substrate/aux/{core,state,maintenance,tests}` | people; read-only to the pipeline |
+| Substrate: engine-agnostic aux-state core, state store, maintenance policy | `substrate/aux/{core,state,maintenance}` | people; read-only to the pipeline |
 | Substrate: Verus libraries, host kit, SQL-to-Verus-spec generator | `substrate/verus/{common,store,kit,sql2verus}` | people; read-only to the pipeline |
-| Engine backends (DuckDB, PostgreSQL, MySQL): generic registry and dispatch, no query named | `backends/<engine>/{state,engine,api,tests,bench}` | the `engine_backend` pipeline run (or people) |
+| Engine backends (DuckDB, PostgreSQL, MySQL): generic registry and dispatch, no query named | `backends/<engine>/{state,engine,api,tests}` | the `engine_backend` pipeline run (or people) |
 | Shared primitives (copy-on-write containers, SQL value semantics) and the Verus proof library | `accelerators/prims`, `accelerators/prooflib` | pipeline tools `primitive_publish`, `prooflib_publish` (additions only) |
 | Per-query accelerators | `accelerators/<bench>/q<N>/` | the query pipeline runs |
 | SQL workloads | `workloads/<bench>/{schema.sql,q<N>.sql}` | people |

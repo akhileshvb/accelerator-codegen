@@ -99,7 +99,7 @@ on these `rule` ids. Each rule is owned by one implementation layer.
   with value asserts and fail-closed Invalidate. Class lives in
   `aux_state::engine::{engine}`, not `core::`.
 - Match chosen `store_mode` (`typed_in_process` vs `serialized_boundary`).
-- `TryPublish` must call `PartitionedStateStore::TryPublishPartition` and honor
+- `TryPublish` must call `VersionedAuxStore::TryPublishPartition` and honor
   `expected_version` (return `false` on a lost race; do not keep the new
   payload). Unconditional `PublishPartition` that always returns `true` is a
   fail. Stamp `valid_through_mutation_epoch` from a ctor epoch provider (or 0).

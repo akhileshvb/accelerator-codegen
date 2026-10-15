@@ -273,7 +273,7 @@ ENGINE_BACKEND_IMPL_TOOL_USAGE = """\
 
 - **First:** read `pipeline/prompts/engine_backend/layer_contracts.md` for this
   layer, then the substrate headers listed in the prompt
-  (`aux_types.hpp`, `partitioned_state_store.hpp`, `aux_registry.hpp` as needed).
+  (`aux_types.hpp`, `versioned_aux_store.hpp`, `aux_registry.hpp` as needed).
 - Fill `pipeline/templates/engine_backend/` stubs. Adapter types stay in
   `aux_state::engine::{engine}` — never `core::`.
 - If `backend_analysis.json` contradicts `layer_contracts.md` or

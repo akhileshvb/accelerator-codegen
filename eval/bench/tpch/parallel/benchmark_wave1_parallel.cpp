@@ -1,5 +1,6 @@
 //! DuckDB (matched threads) vs accel_tpch_q{15,17,19}_parallel for Wave 1 queries.
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "tpch/q15/tests/q15_manifest.hpp"
 #include "tpch/q17/tests/q17_manifest.hpp"
@@ -25,11 +26,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 std::string GetTpchDbPath() {
-	const char *env_path = std::getenv("ACCEL_TPCH_DB");
-	if (env_path && *env_path) {
-		return env_path;
-	}
-	return "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb";
+	return accelerator_codegen::test_support::EnvOr("ACCEL_TPCH_DB", accelerator_codegen::test_support::TpchSf10DbPath());
 }
 
 int GetEnvInt(const char *name, int fallback) {

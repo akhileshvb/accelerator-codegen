@@ -78,7 +78,7 @@ Do **not** hard-code a second engine's file layout into query modules. When an e
 
 Fixed substrate under `substrate/aux/`:
 
-- `PartitionedStateStore`, `AuxStateStore`, `AuxRegistry` / txn coordinator
+- `VersionedAuxStore`, `AuxStateStore`, `AuxRegistry` / txn coordinator
 - `aux_calibration.hpp` runner
 - `maintenance/action_selector.hpp`, `cost_model.hpp`
 

@@ -1,5 +1,6 @@
 //! DuckDB (matched threads) vs accel_tpch_q17_parallel across manifest seeds.
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "tpch/q17/tests/q17_manifest.hpp"
 #include "tpch/q17/tests/q17_nonzero_manifest.hpp"
@@ -28,11 +29,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 std::string GetTpchDbPath() {
-	const char *env_path = std::getenv("ACCEL_TPCH_DB");
-	if (env_path && *env_path) {
-		return env_path;
-	}
-	return "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
+	return accelerator_codegen::test_support::TpchDbPath();
 }
 
 int GetEnvInt(const char *name, int fallback) {
@@ -212,7 +209,9 @@ int main(int argc, char **argv) {
 		std::vector<double> speedups;
 
 		const auto run_entry = [&](const accelerator_codegen::test_support::Q17ManifestEntry &entry) {
-			const auto duck_sql = ReadFile(entry.sql_path);
+			const auto duck_sql = entry.sql_path != nullptr
+			                          ? ReadFile(entry.sql_path)
+			                          : accelerator_codegen::test_support::Q17ReferenceSql(entry.brand, entry.container);
 			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q17_parallel('") + EscapeLiteral(entry.brand) +
 			                       "', '" + EscapeLiteral(entry.container) + "')";
 			RequireEqualScalar(connection, entry.label, duck_sql, accel_sql);

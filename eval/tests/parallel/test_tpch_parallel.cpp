@@ -1,3 +1,4 @@
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "tpch/q1/tests/q1_manifest.hpp"
 #include "tpch/q3/tests/q3_manifest.hpp"
@@ -39,15 +40,10 @@
 
 namespace {
 
-constexpr const char *kDefaultSf1Db = "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
-constexpr const char *kDefaultSf10Db = "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb";
+const std::string kDefaultSf10Db = accelerator_codegen::test_support::TpchSf10DbPath();
 
 std::string GetTpchDbPath() {
-	const char *env_path = std::getenv("ACCEL_TPCH_DB");
-	if (env_path && *env_path) {
-		return env_path;
-	}
-	return kDefaultSf1Db;
+	return accelerator_codegen::test_support::TpchDbPath();
 }
 
 bool FileExists(const std::string &path) {
@@ -645,7 +641,10 @@ int main() {
 		std::cerr << "ACCEL_ENABLE_PARALLEL_KERNELS is required\n";
 		return 1;
 #endif
-		duckdb::DuckDB database(GetTpchDbPath().c_str());
+		// Read-only: the smoke test never writes the shared database.
+		duckdb::DBConfig database_config;
+		database_config.options.access_mode = duckdb::AccessMode::READ_ONLY;
+		duckdb::DuckDB database(GetTpchDbPath(), &database_config);
 		duckdb::Connection connection(database);
 		accelerator_codegen::RegisterAcceleratorFunctions(connection);
 

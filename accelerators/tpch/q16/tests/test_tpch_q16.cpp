@@ -1,3 +1,4 @@
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "tpch/q16/tests/q16_manifest.hpp"
 
@@ -15,11 +16,7 @@
 namespace {
 
 std::string GetTpchDbPath() {
-	const char *env_path = std::getenv("ACCEL_TPCH_DB");
-	if (env_path && *env_path) {
-		return env_path;
-	}
-	return "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
+	return accelerator_codegen::test_support::TpchDbPath();
 }
 
 void Require(bool condition, const std::string &message) {
@@ -88,7 +85,10 @@ int main() {
 			// Reclaim DuckDB's query-local allocations between the large SF1
 			// instances; keeping one connection for all 20 runs can be killed by
 			// the test worker's memory limit even though each query is bounded.
-			duckdb::DuckDB file_database(GetTpchDbPath().c_str());
+			// Read-only: the smoke test never writes the shared database.
+			duckdb::DBConfig file_database_config;
+			file_database_config.options.access_mode = duckdb::AccessMode::READ_ONLY;
+			duckdb::DuckDB file_database(GetTpchDbPath(), &file_database_config);
 			duckdb::Connection connection(file_database);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			connection.Query("PRAGMA threads=1");

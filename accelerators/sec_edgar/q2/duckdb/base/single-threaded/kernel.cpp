@@ -71,7 +71,36 @@ struct AdshKeyHash {
 	}
 };
 
-using TagKey = AdshKey;
+// Tags run to ~100 bytes: the first 24 in an AdshKey, the rest (if any) kept
+// whole so distinct tags sharing a 24-byte prefix stay distinct groups.
+struct TagKey {
+	AdshKey head;
+	std::string tail;
+
+	static TagKey From(const duckdb::string_t &tag) {
+		TagKey key;
+		key.head = AdshKey::From(tag);
+		if (tag.GetSize() > 24) {
+			key.tail.assign(tag.GetData() + 24, tag.GetSize() - 24);
+		}
+		return key;
+	}
+
+	static TagKey FromStored(const std::string &tag) {
+		return From(duckdb::string_t(tag));
+	}
+
+	bool operator==(const TagKey &other) const {
+		return head == other.head && tail == other.tail;
+	}
+};
+
+struct TagKeyHash {
+	size_t operator()(const TagKey &key) const noexcept {
+		const size_t head = AdshKeyHash {}(key.head);
+		return key.tail.empty() ? head : head ^ (std::hash<std::string> {}(key.tail) * 0x9e3779b97f4a7c15ULL);
+	}
+};
 
 struct GroupKey {
 	AdshKey adsh;
@@ -92,7 +121,7 @@ struct GroupKey {
 
 struct GroupKeyHash {
 	size_t operator()(const GroupKey &key) const noexcept {
-		return AdshKeyHash {}(key.adsh) ^ (AdshKeyHash {}(key.tag) << 1);
+		return AdshKeyHash {}(key.adsh) ^ (TagKeyHash {}(key.tag) << 1);
 	}
 };
 
@@ -358,11 +387,13 @@ enum class AdshQualifyStatus : uint8_t { Unknown = 0, Qualifies = 1, Rejects = 2
 struct AdshDictQualifyingCache {
 	const duckdb::string_t *current_dict = nullptr;
 	std::vector<AdshQualifyStatus> status;
+	std::vector<AdshKey> keys;
 	std::vector<const std::string *> names;
 
 	void Reserve(duckdb::idx_t estimate) {
 		if (estimate > 0) {
 			status.reserve(estimate);
+			keys.reserve(estimate);
 			names.reserve(estimate);
 		}
 	}
@@ -371,18 +402,27 @@ struct AdshDictQualifyingCache {
 		if (current_dict != dict_base) {
 			current_dict = dict_base;
 			status.clear();
+			keys.clear();
 			names.clear();
 		}
 	}
 
+	// A dictionary freed by an earlier chunk can be reallocated at the same
+	// address with other strings, so a cached slot only counts when its adsh
+	// still matches (as in sec_edgar q3).
 	const std::string *Lookup(duckdb::idx_t dict_idx, const duckdb::string_t &adsh,
 	                          const std::unordered_map<AdshKey, std::string, AdshKeyHash> &map) {
 		if (dict_idx >= status.size()) {
 			status.resize(dict_idx + 1, AdshQualifyStatus::Unknown);
+			keys.resize(dict_idx + 1);
 			names.resize(dict_idx + 1, nullptr);
 		}
+		const auto adsh_key = AdshKey::From(adsh);
+		if (status[dict_idx] != AdshQualifyStatus::Unknown && !(keys[dict_idx] == adsh_key)) {
+			status[dict_idx] = AdshQualifyStatus::Unknown;
+		}
 		if (status[dict_idx] == AdshQualifyStatus::Unknown) {
-			const auto adsh_key = AdshKey::From(adsh);
+			keys[dict_idx] = adsh_key;
 			const auto it = map.find(adsh_key);
 			if (it == map.end()) {
 				status[dict_idx] = AdshQualifyStatus::Rejects;

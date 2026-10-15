@@ -424,6 +424,7 @@ add_executable(benchmark_sec_edgar_q24_micro
 target_link_libraries(benchmark_sec_edgar_q24_micro PRIVATE accelerator_codegen duckdb_sibling)
 
 accel_add_duckdb_exe(test_shared_incremental_differential eval/tests/test_shared_incremental_differential.cpp)
+accel_add_duckdb_exe(make_tpch_test_db eval/tests/make_tpch_test_db.cpp)
 accel_add_duckdb_exe(test_tpch_q18_shared_differential accelerators/tpch/q18/tests/test_tpch_q18_shared_differential.cpp)
 # Generic test / bench runner for Verus accelerators of the host kit (needs no
 # particular accelerator: the Verus pipeline builds it in a tree with none).
@@ -713,34 +714,47 @@ if(ACCEL_ENABLE_PARALLEL_AUX)
 endif()
 
 if(BUILD_TESTING)
+    # No RESOURCE_LOCKs on the shared databases: tests open them read-only or
+    # work on private copies (eval/tests/test_support/db_paths.hpp), so they
+    # run concurrently (ctest -j, several checkouts) without lock conflicts.
     add_test(NAME registration_smoke_test COMMAND test_registration)
     foreach(_q IN LISTS ACCEL_TPCH_SMOKE_QS)
         add_test(NAME tpch_q${_q}_smoke_test COMMAND test_tpch_q${_q})
-        set_tests_properties(tpch_q${_q}_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
     endforeach()
     add_test(NAME shared_aux_state_unit_test COMMAND test_shared_aux_state)
     add_test(NAME aux_calibration_unit_test COMMAND test_aux_calibration)
-    set(_accel_shared_tpch_db
-        "${DUCKDB_ROOT}/tpch_test.duckdb")
-    set(_accel_shared_sec_edgar_db
-        "${DUCKDB_ROOT}/sec_edgar_test.duckdb")
-    if(EXISTS "${_accel_shared_tpch_db}" AND EXISTS "${_accel_shared_sec_edgar_db}")
-        add_test(
-            NAME test_shared_incremental_differential_unit_test
-            COMMAND test_shared_incremental_differential
-                    "${_accel_shared_tpch_db}" "${_accel_shared_sec_edgar_db}")
-        set_tests_properties(
-            test_shared_incremental_differential_unit_test
-            PROPERTIES RESOURCE_LOCK "tpch_sf1_db;sec_edgar_db")
-    endif()
+    # Fixture: a fresh small TPC-H DB in the build dir, built from the TPC-H
+    # source DB (ACCEL_TPCH_DB, default the shared SF1, read-only) with
+    # workloads/tpch/test_db_subset.sql, so tests never depend on a shared
+    # tpch_test.duckdb that may be stale or modified by other runs.
+    set(_accel_tpch_test_db "${CMAKE_CURRENT_BINARY_DIR}/test_dbs/tpch_test.duckdb")
+    add_test(NAME tpch_test_db_fixture
+             COMMAND make_tpch_test_db
+                     "${CMAKE_CURRENT_SOURCE_DIR}/workloads/tpch/test_db_subset.sql"
+                     "${_accel_tpch_test_db}")
+    set_tests_properties(tpch_test_db_fixture PROPERTIES FIXTURES_SETUP tpch_test_db)
+    # The test works on private copies of its DBs. TPC-H: the fixture's DB.
+    add_test(
+        NAME test_shared_incremental_differential_unit_test
+        COMMAND test_shared_incremental_differential "${_accel_tpch_test_db}" -)
+    set_tests_properties(
+        test_shared_incremental_differential_unit_test
+        PROPERTIES FIXTURES_REQUIRED tpch_test_db SKIP_RETURN_CODE 77)
+    # SEC-EDGAR: ACCEL_SEC_EDGAR_TEST_DB / the shared sec_edgar_test.duckdb,
+    # resolved at run time (no generator input available locally to rebuild
+    # it); skips (77) naming the queries it has no probe rows for.
+    add_test(
+        NAME test_shared_incremental_differential_sec_edgar_test
+        COMMAND test_shared_incremental_differential -)
+    set_tests_properties(
+        test_shared_incremental_differential_sec_edgar_test
+        PROPERTIES SKIP_RETURN_CODE 77)
     accel_register_tpch_aux_ctests()
 	if(ACCEL_ENABLE_PARALLEL_KERNELS)
 		add_test(NAME tpch_parallel_smoke_test COMMAND test_tpch_parallel)
-		set_tests_properties(tpch_parallel_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 		foreach(_q 20 21 22 10 17 18 3 2 5 7 8 11 13 1 16)
 			if(TARGET test_tpch_q${_q}_semantics)
 				add_test(NAME tpch_q${_q}_semantics_test COMMAND test_tpch_q${_q}_semantics)
-				set_tests_properties(tpch_q${_q}_semantics_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 			endif()
 		endforeach()
 	endif()
@@ -755,7 +769,6 @@ foreach(_q 1 2 3 4 6 24)
 		QUERY_NUM ${_q}
 		LIBRARY_TARGET accelerator_codegen
 		TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}
-		CTEST_RESOURCE_LOCK sec_edgar_db
 	)
 endforeach()
 
@@ -1035,7 +1048,7 @@ endif()
 
 if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
     find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
-    foreach(_layer IN ITEMS txn mutations scan runtime visibility host)
+    foreach(_layer IN ITEMS txn mutations scan runtime visibility host adversarial)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/tests/test_postgres_${_layer}.cpp")
             add_executable(test_postgres_${_layer}
                 backends/postgres/tests/test_postgres_${_layer}.cpp

@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fcntl.h>
 #include <iostream>
 #include <sstream>
@@ -170,6 +171,10 @@ struct WriterSession {
 };
 
 WriterSession StartWriter() {
+  // Per-run writer log (not a fixed /tmp name shared by concurrent runs).
+  const std::string log_path = (std::filesystem::temp_directory_path() /
+                                ("mysql_vis_writer_" + std::to_string(::getpid()) + ".log"))
+                                   .string();
   int pipefd[2];
   if (pipe(pipefd) != 0) {
     Fail("pipe() for writer mysql failed");
@@ -184,7 +189,7 @@ WriterSession StartWriter() {
       _exit(127);
     }
     close(pipefd[0]);
-    int log = open("/tmp/mysql_vis_writer.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int log = open(log_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (log >= 0) {
       dup2(log, STDOUT_FILENO);
       dup2(log, STDERR_FILENO);

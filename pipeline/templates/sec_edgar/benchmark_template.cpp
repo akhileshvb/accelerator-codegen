@@ -1,8 +1,9 @@
 // Template for SEC-EDGAR base accelerator benchmarks.
 // Copy to accelerators/sec_edgar/q{{query_number}}/bench/benchmark_q{{query_number}}.cpp and customize.
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
-#include "test_support/result_compare.hpp"
+#include "eval/tests/test_support/result_compare.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -14,7 +15,6 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 
-constexpr const char *kDefaultDb = "/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb";
 constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q{{query_number}}.sql";
 
 int GetEnvInt(const char *name, int fallback) {
@@ -40,7 +40,7 @@ double RunTimed(duckdb::Connection &connection, const std::string &sql) {
 
 int main() {
     try {
-        const auto db_path = accelerator_codegen::test_support::GetBenchmarkDbPath("ACCEL_SEC_EDGAR_DB", kDefaultDb);
+        const auto db_path = accelerator_codegen::test_support::SecEdgarDbPath();
         duckdb::DuckDB database(db_path);
         duckdb::Connection connection(database);
         accelerator_codegen::RegisterAcceleratorFunctions(connection);

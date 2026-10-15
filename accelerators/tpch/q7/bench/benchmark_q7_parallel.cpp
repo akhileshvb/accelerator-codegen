@@ -1,5 +1,6 @@
 //! DuckDB (matched threads) vs accel_tpch_q7_parallel across manifest seeds.
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "eval/tests/test_support/benchmark_paired_timing.hpp"
 #include "tpch/q7/tests/q7_manifest.hpp"
@@ -26,11 +27,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 std::string GetTpchDbPath() {
-	const char *env_path = std::getenv("ACCEL_TPCH_DB");
-	if (env_path && *env_path) {
-		return env_path;
-	}
-	return "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
+	return accelerator_codegen::test_support::TpchDbPath();
 }
 
 int GetEnvInt(const char *name, int fallback) {

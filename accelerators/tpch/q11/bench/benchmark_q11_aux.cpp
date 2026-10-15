@@ -1,3 +1,4 @@
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "eval/bench/tpch/single-threaded/aux_benchmark_baseline_cache.hpp"
@@ -32,9 +33,7 @@ constexpr const char *kNationName = "ROMANIA";
 constexpr double kFraction = 0.0001;
 
 std::string GetTpchDbPath() {
-  const char *env_path = std::getenv("ACCEL_TPCH_DB");
-  if (env_path && *env_path) return env_path;
-  return "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
+  return accelerator_codegen::test_support::TpchDbPath();
 }
 
 int GetEnvInt(const char *name, int fallback) {

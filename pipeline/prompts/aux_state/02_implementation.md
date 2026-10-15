@@ -46,7 +46,7 @@ Full analysis: `{{full_analysis_path}}` · Workload SQL: `{{reference_sql_path}}
 
 ## Benchmark & concurrency
 
-- `benchmark_q{{query_number}}_aux.cpp`: full write-freq sweep harness per `bench_sweep_contract.md` (port from `benchmark_q14_aux.cpp` or `benchmark_q1_aux.cpp`). Prefer `RunConfiguredMultiSweep` / `CollectInvalidatingSharedProbes` so write ticks actually invalidate this query's aux.
+- `benchmark_q{{query_number}}_aux.cpp`: full write-freq sweep harness per `bench_sweep_contract.md` (port from `accelerators/tpch/q4/bench/benchmark_q4_aux.cpp` or `accelerators/tpch/q2/bench/benchmark_q2_aux.cpp`). Prefer `RunConfiguredMultiSweep` / `CollectInvalidatingSharedProbes` so write ticks actually invalidate this query's aux.
 - Concurrency: irrelevant mutations → NoOp; bounded window reads; per-accelerator epochs; reader epoch pin + execution gate (`read_path_scaffold.md`).
 
 **Post-stage gates** (orchestrator still runs these after you finish): `aux_correctness`, `aux_unit`, `prims_tests`, `aux_cost_model_calibrate`, `aux_multi_connection`, `aux_cross_accel`, `aux_bench_sweep`.

@@ -12,8 +12,8 @@ output_schema:
   - {name: avg_line_num, type: DOUBLE}
 tables: [pre]
 reference_accelerators:
-  - accelerators/tpch/q1/duckdb/base/single-threaded/fused_scan.cpp
-  - accelerators/tpch/q1/duckdb/base/fused.hpp
+  - accelerators/sec_edgar/q2/duckdb/base/single-threaded/kernel.cpp
+  - accelerators/sec_edgar/q1/duckdb/base/fused.hpp
   - accelerators/tpch/q3/duckdb/base/single-threaded/kernel.cpp
   - accelerators/tpch/q12/duckdb/base/single-threaded/kernel.cpp
   - accelerators/tpch/q14/duckdb/base/single-threaded/kernel.cpp
