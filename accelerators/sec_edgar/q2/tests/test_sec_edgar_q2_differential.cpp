@@ -1070,6 +1070,7 @@ void TestDictionarySlotCache() {
   duckdb::SelectionVector sel(4);
   for (duckdb::idx_t i = 0; i < 4; ++i) sel.set_index(i, 3 - i);
   DictionarySlotCache<int> cache;
+  using Slot = DictionarySlotCache<int>::Slot;
 
   // Two chunks slicing the same buffer, with other bytes the second time: the
   // dictionaries share an address and carry no id.
@@ -1080,14 +1081,14 @@ void TestDictionarySlotCache() {
       !duckdb::DictionaryVector::DictionaryId(chunk1).empty())
     throw std::runtime_error("dictionary slot cache: expected an id-less dictionary");
   cache.BeginChunk(chunk1);
-  cache.Store(0, 1);
+  cache.StorePresent(0, 1);
   data[0] = duckdb::string_t("0000000002-23-000002");
   duckdb::Vector chunk2(strings);
   chunk2.Slice(sel, 4);
   if (duckdb::DictionaryVector::Child(chunk2).GetData() != duckdb::DictionaryVector::Child(chunk1).GetData())
     throw std::runtime_error("dictionary slot cache: expected a recycled dictionary address");
   cache.BeginChunk(chunk2);
-  if (cache.Find(0) != nullptr)
+  if (cache.State(0) != Slot::Unknown)
     throw std::runtime_error("dictionary slot cache: slot kept across a recycled id-less dictionary");
 
   // A reusable dictionary keeps its slots across chunks; another one does not.
@@ -1098,12 +1099,13 @@ void TestDictionarySlotCache() {
   a2.Dictionary(dict_a, sel);
   b1.Dictionary(dict_b, sel);
   cache.BeginChunk(a1);
-  cache.Store(2, 7);
+  cache.StorePresent(2, 7);
+  cache.StoreAbsent(3);
   cache.BeginChunk(a2);
-  if (cache.Find(2) == nullptr || *cache.Find(2) != 7)
+  if (cache.State(2) != Slot::Present || cache.Value(2) != 7 || cache.State(3) != Slot::Absent)
     throw std::runtime_error("dictionary slot cache: slot lost within one reusable dictionary");
   cache.BeginChunk(b1);
-  if (cache.Find(2) != nullptr)
+  if (cache.State(2) != Slot::Unknown || cache.State(3) != Slot::Unknown)
     throw std::runtime_error("dictionary slot cache: slot kept across reusable dictionaries");
   std::cout << "dictionary slot cache ok\n";
 }

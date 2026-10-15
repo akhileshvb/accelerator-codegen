@@ -396,7 +396,7 @@ struct SecEdgarQ2Kernel::State {
 
 	std::unordered_map<AdshKey, std::string, AdshKeyHash> fy2022_adsh_to_name;
 	std::unordered_map<GroupKey, AdshTagGroup, GroupKeyHash> adsh_tag_groups;
-	// Per adsh dictionary entry: its fy2022 name, or nullptr when it has none.
+	// Per adsh dictionary entry: its fy2022 name, or Absent when it has none.
 	DictionarySlotCache<const std::string *> adsh_dict_cache;
 	std::vector<CandidateRow> candidates;
 	std::vector<CandidateRow> ordered_output;
@@ -453,11 +453,20 @@ struct SecEdgarQ2Kernel::State {
 	}
 
 	const std::string *LookupFy2022Dict(duckdb::idx_t dict_idx, const duckdb::string_t &adsh) {
-		if (const auto *cached = adsh_dict_cache.Find(dict_idx)) {
-			return *cached;
+		using Slot = DictionarySlotCache<const std::string *>::Slot;
+		const auto slot = adsh_dict_cache.State(dict_idx);
+		if (slot == Slot::Absent) {
+			return nullptr;
+		}
+		if (slot == Slot::Present) {
+			return adsh_dict_cache.Value(dict_idx);
 		}
 		const auto *name = LookupFy2022Flat(adsh);
-		adsh_dict_cache.Store(dict_idx, name);
+		if (name == nullptr) {
+			adsh_dict_cache.StoreAbsent(dict_idx);
+		} else {
+			adsh_dict_cache.StorePresent(dict_idx, name);
+		}
 		return name;
 	}
 
@@ -509,22 +518,39 @@ struct SecEdgarQ2Kernel::State {
 			}
 			return;
 		}
-		for (duckdb::idx_t row = 0; row < count; row++) {
-			const auto adsh_index = ConsumableRowIndex(adsh_col, row);
+		// Most rows' adsh is not a fy2022 filing: settle that before touching
+		// the tag / value columns.
+		const auto finish_row = [&](duckdb::idx_t row, const std::string &name, const duckdb::string_t &adsh) {
 			const auto tag_index = ConsumableRowIndex(tag_col, row);
 			const auto value_index = ConsumableRowIndex(value_col, row);
-			if (!ConsumableEntryValid(adsh_col, adsh_index) || !ConsumableEntryValid(tag_col, tag_index) ||
-			    !ConsumableEntryValid(value_col, value_index)) {
+			if (!ConsumableEntryValid(tag_col, tag_index) || !ConsumableEntryValid(value_col, value_index)) {
+				return;
+			}
+			ProcessNumRowWithName(name, adsh, tag_col.data[tag_index], value_col.data[value_index], profile_counters);
+		};
+		if (adsh_col.kind == ConsumableKind::Dict) {
+			const auto &adsh_sel = *adsh_col.sel;
+			for (duckdb::idx_t row = 0; row < count; row++) {
+				const auto adsh_index = adsh_sel.get_index(row);
+				if (!adsh_col.all_valid && !adsh_col.validity.RowIsValidUnsafe(adsh_index)) {
+					continue;
+				}
+				const auto *name = LookupFy2022Dict(adsh_index, adsh_col.data[adsh_index]);
+				if (name != nullptr) {
+					finish_row(row, *name, adsh_col.data[adsh_index]);
+				}
+			}
+			return;
+		}
+		for (duckdb::idx_t row = 0; row < count; row++) {
+			const auto adsh_index = ConsumableRowIndex(adsh_col, row);
+			if (!ConsumableEntryValid(adsh_col, adsh_index)) {
 				continue;
 			}
-			const auto &adsh = adsh_col.data[adsh_index];
-			const auto *name = adsh_col.kind == ConsumableKind::Dict
-			                       ? LookupFy2022Dict(adsh_index, adsh)
-			                       : LookupFy2022Flat(adsh);
-			if (name == nullptr) {
-				continue;
+			const auto *name = LookupFy2022Flat(adsh_col.data[adsh_index]);
+			if (name != nullptr) {
+				finish_row(row, *name, adsh_col.data[adsh_index]);
 			}
-			ProcessNumRowWithName(*name, adsh, tag_col.data[tag_index], value_col.data[value_index], profile_counters);
 		}
 	}
 

@@ -22,12 +22,12 @@ class DictionarySlotCache {
 public:
 	void Reserve(duckdb::idx_t estimate) {
 		if (estimate > 0) {
-			filled_.reserve(estimate);
+			states_.reserve(estimate);
 			values_.reserve(estimate);
 		}
 	}
 
-	// Call once per chunk, before any Find / Store, with the vector whose
+	// Call once per chunk, before any State / Store, with the vector whose
 	// dictionary indexes the slots.
 	void BeginChunk(const duckdb::Vector &vector) {
 		if (vector.GetVectorType() != duckdb::VectorType::DICTIONARY_VECTOR) {
@@ -43,31 +43,47 @@ public:
 		Reset(data, id);
 	}
 
-	// The value stored for this chunk's dictionary entry `index`, or nullptr.
-	const T *Find(duckdb::idx_t index) const {
-		return index < filled_.size() && filled_[index] ? &values_[index] : nullptr;
+	enum class Slot : uint8_t { Unknown = 0, Absent = 1, Present = 2 };
+
+	// The state of this chunk's dictionary entry `index`; Value(index) is set
+	// when it is Present.
+	Slot State(duckdb::idx_t index) const {
+		return index < states_.size() ? states_[index] : Slot::Unknown;
 	}
 
-	void Store(duckdb::idx_t index, T value) {
-		if (index >= filled_.size()) {
-			filled_.resize(index + 1, 0);
-			values_.resize(index + 1);
-		}
-		filled_[index] = 1;
+	const T &Value(duckdb::idx_t index) const {
+		return values_[index];
+	}
+
+	void StoreAbsent(duckdb::idx_t index) {
+		Grow(index);
+		states_[index] = Slot::Absent;
+	}
+
+	void StorePresent(duckdb::idx_t index, T value) {
+		Grow(index);
+		states_[index] = Slot::Present;
 		values_[index] = std::move(value);
 	}
 
 private:
+	void Grow(duckdb::idx_t index) {
+		if (index >= states_.size()) {
+			states_.resize(index + 1, Slot::Unknown);
+			values_.resize(index + 1);
+		}
+	}
+
 	void Reset(const void *data, const std::string &id) {
 		current_data_ = data;
 		current_id_ = id;
-		filled_.clear();
+		states_.clear();
 		values_.clear();
 	}
 
 	const void *current_data_ = nullptr;
 	std::string current_id_;
-	std::vector<uint8_t> filled_;
+	std::vector<Slot> states_;
 	std::vector<T> values_;
 };
 
