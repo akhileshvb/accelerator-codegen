@@ -54,10 +54,6 @@ function(accel_build_postgres_extension)
     list(APPEND _pg_ext_sources backends/postgres/api/runtime.cpp)
   endif()
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/postgres_bridge.cpp")
-    list(APPEND _pg_ext_sources backends/postgres/engine/postgres_bridge.cpp)
-  endif()
-
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/postgres_xact_callbacks.cpp")
     list(APPEND _pg_ext_sources backends/postgres/engine/postgres_xact_callbacks.cpp)
   endif()

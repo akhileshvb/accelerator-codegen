@@ -195,6 +195,10 @@ public:
                       maintenance::MaintenanceActionName(stats.last_decision->staged_action));
       segment.stats.decision_ns = NowNs();
     }
+  }
+
+  // Takes the forced maintenance action diagnostics set (before the next apply).
+  void TakeForced() {
     const std::string forced = segment.GetText(ShardSegment::kForcedAction);
     if (forced != applied_forced) {
       applied_forced = forced;
@@ -275,6 +279,7 @@ private:
       runtime.AnnounceCommit(shared::AssignedEpoch(index));
       // Lookups see what the snapshot sees: apply once every commit up to its
       // epoch has arrived.
+      diagnostics.TakeForced();
       const auto epoch = slots.BeginMaintenance();
       if (epoch && runtime.IsSynced()) {
         arrivals.WaitThrough(*epoch, now + kArrivalWait);

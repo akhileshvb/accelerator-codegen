@@ -1,15 +1,10 @@
 // GENERATED BACKEND — Postgres MODULE entry point (production).
-// PG_MODULE_MAGIC and _PG_init for accelerator_codegen_pg: initializes the
-// backend bridge (postgres_bridge.cpp) and defines the GUCs.
+// PG_MODULE_MAGIC and _PG_init for accelerator_codegen_pg: defines the GUCs.
 // Mutation capture is the statement-level transition trigger
 // (transition_capture.cpp); the commit lifecycle is in
-// postgres_xact_callbacks.cpp, the registry and epochs in state/shared.cpp; query-facing SQL entry points are in
+// postgres_xact_callbacks.cpp, the registry and epochs in state/shared.cpp, the
+// shard workers in state/shard_worker.cpp; query-facing SQL entry points are in
 // backends/postgres/api/extension_api.cpp.
-//
-// The engine_backend gate-test UDFs (txn / mutations / scan / runtime /
-// visibility toy bridges) are not here: they live in
-// backends/postgres/tests/extension_test_engine.cpp and are built only into the
-// test MODULE accelerator_codegen_pg_test.
 
 extern "C" {
 #include <postgres.h>
@@ -22,10 +17,7 @@ PG_MODULE_MAGIC;
 
 extern "C" {
 
-void accel_pg_init_backend(const char *backing_dir);
-
 void _PG_init(void) {
-  accel_pg_init_backend(nullptr);
   namespace postgres = accelerator_codegen::aux_state::engine::postgres;
   postgres::shared::DefineGucs();
   postgres::shard::DefineGucs();

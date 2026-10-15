@@ -15,16 +15,6 @@ RETURNS trigger
 AS 'MODULE_PATHNAME', 'AcceleratorCodegenCaptureTransition'
 LANGUAGE C;
 
-CREATE FUNCTION accel_postgres_get_observer_mutation_count()
-RETURNS bigint
-AS 'MODULE_PATHNAME', 'accel_postgres_get_observer_mutation_count'
-LANGUAGE C STRICT;
-
-CREATE FUNCTION accel_postgres_reset_observer()
-RETURNS void
-AS 'MODULE_PATHNAME', 'accel_postgres_reset_observer'
-LANGUAGE C;
-
 CREATE FUNCTION accel_postgres_set_force_maintenance_action(text)
 RETURNS void
 AS 'MODULE_PATHNAME', 'accel_postgres_set_force_maintenance_action'

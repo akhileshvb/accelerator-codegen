@@ -163,7 +163,13 @@ void PgSlots::RunBuild(runtime::AcceleratorRuntime &runtime, runtime::BuildSnaps
   // The build's scans decode in parallel: this thread plus the budget's other
   // threads as Postgres parallel workers.
   SetBuildScanParticipants(static_cast<int>(shared::ThreadBudget()));
-  runtime.Module().Build(runtime, builder);
+  try {
+    runtime.Module().Build(runtime, builder);
+  } catch (const std::exception &e) {
+    // The runtime retries a failed build; this is the only place its reason is seen.
+    ereport(LOG, (errmsg("accelerator %s: build failed: %s", runtime.Id().c_str(), e.what())));
+    throw;
+  }
 }
 
 const maintenance::CostModelParams &PgSlots::CostModel(const core::AcceleratorId &) const {

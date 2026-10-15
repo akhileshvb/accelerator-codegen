@@ -328,18 +328,6 @@ inline void EnsureMutationTriggers(const Tools &tools) {
                      ", 'AcceleratorCodegenCaptureTransition' LANGUAGE C"),
           "install accel_aux_capture_transition failed");
   Require(RunSQL(tools,
-                 "CREATE OR REPLACE FUNCTION accel_postgres_get_observer_mutation_count() "
-                 "RETURNS bigint AS " +
-                     SqlLiteral(so) +
-                     ", 'accel_postgres_get_observer_mutation_count' LANGUAGE C STRICT"),
-          "install observer mutation_count helper failed");
-  Require(RunSQL(tools,
-                 "CREATE OR REPLACE FUNCTION accel_postgres_reset_observer() "
-                 "RETURNS void AS " +
-                     SqlLiteral(so) +
-                     ", 'accel_postgres_reset_observer' LANGUAGE C"),
-          "install observer reset helper failed");
-  Require(RunSQL(tools,
                  "CREATE OR REPLACE FUNCTION accel_postgres_set_force_maintenance_action(text) "
                  "RETURNS void AS " +
                      SqlLiteral(so) +

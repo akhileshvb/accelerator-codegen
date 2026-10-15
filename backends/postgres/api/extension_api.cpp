@@ -1,8 +1,8 @@
 // GENERATED BACKEND - query-facing SQL entry points for Postgres.
 // The accel_postgres_* functions declared in
-// backends/postgres/engine/accelerator_codegen_postgres--0.1.sql (observer,
-// forced maintenance action, execute counts, last maintenance decision, shard
-// worker stats and stop).
+// backends/postgres/engine/accelerator_codegen_postgres--0.1.sql (forced
+// maintenance action, execute counts, last maintenance decision, shard worker
+// stats and stop).
 // Per-query SQL functions register through backends/postgres/api/runtime.cpp.
 // Linked into the accelerator_codegen_pg MODULE alongside
 // backends/postgres/engine/extension_engine.cpp (which has PG_MODULE_MAGIC).
@@ -18,32 +18,13 @@ extern "C" {
 #include <fmgr.h>
 #include <utils/builtins.h>
 
-extern "C" {
-void accel_pg_init_backend(const char *backing_dir);
-int accel_pg_get_observer_mutation_count();
-void accel_pg_reset_observer();
-void accel_pg_set_force_maintenance_action(const char *action_name);
-const char *accel_pg_get_last_maintenance_action(void);
-}
-
-PG_FUNCTION_INFO_V1(accel_postgres_get_observer_mutation_count);
-Datum accel_postgres_get_observer_mutation_count(PG_FUNCTION_ARGS) {
-  PG_RETURN_INT64(accel_pg_get_observer_mutation_count());
-}
-
-PG_FUNCTION_INFO_V1(accel_postgres_reset_observer);
-Datum accel_postgres_reset_observer(PG_FUNCTION_ARGS) {
-  accel_pg_reset_observer();
-  PG_RETURN_VOID();
-}
-
 PG_FUNCTION_INFO_V1(accel_postgres_set_force_maintenance_action);
 Datum accel_postgres_set_force_maintenance_action(PG_FUNCTION_ARGS) {
   if (PG_ARGISNULL(0)) {
-    accel_pg_set_force_maintenance_action("");
+    accelerator_codegen::aux_state::engine::postgres::shard::SetForcedMaintenance("");
   } else {
     char *cstr = text_to_cstring(PG_GETARG_TEXT_PP(0));
-    accel_pg_set_force_maintenance_action(cstr);
+    accelerator_codegen::aux_state::engine::postgres::shard::SetForcedMaintenance(cstr);
     pfree(cstr);
   }
   PG_RETURN_VOID();
@@ -71,10 +52,8 @@ Datum accel_postgres_get_last_maintenance_decision(PG_FUNCTION_ARGS) {
 
 PG_FUNCTION_INFO_V1(accel_postgres_get_last_maintenance_action);
 Datum accel_postgres_get_last_maintenance_action(PG_FUNCTION_ARGS) {
-  const char *s = accel_pg_get_last_maintenance_action();
-  if (!s || !*s)
-    PG_RETURN_NULL();
-  PG_RETURN_TEXT_P(cstring_to_text(s));
+  const auto action = accelerator_codegen::aux_state::engine::postgres::shard::LastMaintenanceActionName();
+  PG_RETURN_TEXT_P(cstring_to_text(action.empty() ? "None" : action.c_str()));
 }
 
 // Counters of the database's running shard workers ("requests=N served=N ...";

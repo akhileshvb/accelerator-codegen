@@ -54,6 +54,9 @@ extern "C" {
 extern bool lc_collate_is_c(Oid collation);
 }
 
+// The per-query namespace (declared by each module.hpp); present for the
+// alias below also where no module is included (the shard worker).
+namespace accelerator_codegen::aux_state::query {}
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
