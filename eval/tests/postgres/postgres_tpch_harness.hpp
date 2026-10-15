@@ -352,6 +352,13 @@ inline void EnsureMutationTriggers(const Tools &tools) {
                      ", 'accel_postgres_get_last_maintenance_action' LANGUAGE C STRICT"),
           "install last-maintenance helper failed");
 
+  // The workers scan the tables while they build: stop them (they restart on demand) so the
+  // trigger DDL below cannot deadlock with a build.
+  Require(RunSQL(tools,
+                 "DO $$ BEGIN IF to_regproc('accel_postgres_stop_shard_workers') IS NOT NULL THEN "
+                 "PERFORM accel_postgres_stop_shard_workers(); END IF; END $$"),
+          "stop shard workers failed");
+
   // One statement-level trigger set per TPC-H table. Each trigger passes
   // its table id (tpch/postgres_tpch_table_ids.hpp) as the argument.
   Require(
