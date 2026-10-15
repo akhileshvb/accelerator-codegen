@@ -148,6 +148,8 @@ private:
   core::StagedMaintenanceOutcome Stage(const std::vector<ColumnarBatchRef> &batches);
   bool Publish(const core::StagedMaintenanceOutcome &outcome, Epoch epoch);
   bool ApplyChange(const CommittedChange &change);
+  void ApplyReady();
+  void Collapse(Epoch from, Epoch to);
   void Applied(const CommittedChange &change, double us);
   void MarkStale(Epoch from);
   bool Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const;

@@ -256,6 +256,9 @@ bool AcceleratorRuntime::Publish(const core::StagedMaintenanceOutcome &outcome, 
 // Maintains and publishes one committed change. False: the state is now
 // invalid and the change must be replayed after a rebuild.
 bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
+  if (change.invalidates) {
+    return false;
+  }
   if (change.empty_commit) {
     return true;
   }
@@ -360,34 +363,101 @@ void AcceleratorRuntime::AnnounceCommit(Seq seq) {
   impl->applier.Announce(seq);
 }
 
+// Applies the ready changes (commit_mutex held). Everything the engine's
+// maintenance lookups already see is applied as ONE combined change, so the
+// lookups match the state it produces; the versions in between are never
+// published (readers there fall back).
+void AcceleratorRuntime::ApplyReady() {
+  for (;;) {
+    std::vector<CommittedChange> ready;
+    {
+      std::lock_guard<std::mutex> lock(impl->state_mutex);
+      if (impl->Synced()) {
+        ready = impl->applier.TakeReady();
+      }
+    }
+    if (ready.empty()) {
+      return;
+    }
+    Epoch last = 0;
+    for (const auto &change : ready) {
+      last = std::max(last, change.epoch);
+    }
+    const Epoch seen = slots.MaintenanceLookupEpoch(last);
+    auto later = std::stable_partition(ready.begin(), ready.end(),
+                                       [&](const auto &change) { return change.epoch <= seen; });
+    std::vector<CommittedChange> held(std::make_move_iterator(later),
+                                      std::make_move_iterator(ready.end()));
+    ready.erase(later, ready.end());
+    auto requeue = [&](std::vector<CommittedChange> &changes) {
+      for (auto &change : changes) {
+        impl->applier.Offer(std::move(change));
+      }
+    };
+    // seen > last: the lookups see commits that have not arrived yet; wait.
+    if (ready.empty() || seen > last) {
+      std::lock_guard<std::mutex> lock(impl->state_mutex);
+      requeue(ready);
+      requeue(held);
+      return;
+    }
+    CommittedChange combined{ready.back().seq, 0, {}, true};
+    Epoch first = 0;
+    for (const auto &change : ready) {
+      combined.epoch = std::max(combined.epoch, change.epoch);
+      combined.invalidates = combined.invalidates || change.invalidates;
+      if (!change.empty_commit) {
+        combined.empty_commit = false;
+        first = first ? first : change.epoch;
+        combined.batches.insert(combined.batches.end(), change.batches.begin(),
+                                change.batches.end());
+      }
+    }
+    const auto start = Clock::now();
+    const bool applied = ApplyChange(combined);
+    std::lock_guard<std::mutex> lock(impl->state_mutex);
+    if (!applied) {
+      // Replayed after the rebuild.
+      MarkStale(first ? first : combined.epoch);
+      requeue(ready);
+      requeue(held);
+      return;
+    }
+    const double us = MicrosSince(start);
+    for (const auto &change : ready) {
+      Applied(change, us / ready.size());
+    }
+    if (first && first < combined.epoch) {
+      Collapse(first, combined.epoch);
+    }
+    if (!held.empty()) {
+      requeue(held);
+      return;
+    }
+  }
+}
+
+// [from, to) lost its intermediate versions (state_mutex held). Without a
+// floor the store keeps only the newest version, so none could resolve them
+// anyway; ranges every reader is past are dropped.
+void AcceleratorRuntime::Collapse(Epoch from, Epoch to) {
+  const Epoch floor = slots.OldestReaderEpoch();
+  auto &collapsed = impl->collapsed;
+  collapsed.erase(std::remove_if(collapsed.begin(), collapsed.end(),
+                                 [&](const auto &range) {
+                                   return floor == EngineSlots::kNoFloor ||
+                                          range.second <= floor;
+                                 }),
+                  collapsed.end());
+  if (floor != EngineSlots::kNoFloor) {
+    collapsed.emplace_back(from, to);
+  }
+}
+
 void AcceleratorRuntime::Pump(uint64_t gap_timeout_us) {
   {
     std::lock_guard<std::mutex> commit(impl->commit_mutex);
-    for (bool more = true; more;) {
-      std::vector<CommittedChange> ready;
-      {
-        std::lock_guard<std::mutex> lock(impl->state_mutex);
-        if (impl->Synced()) {
-          ready = impl->applier.TakeReady();
-        }
-      }
-      more = !ready.empty();
-      for (std::size_t i = 0; i < ready.size(); i++) {
-        const auto start = Clock::now();
-        const bool applied = ApplyChange(ready[i]);
-        std::lock_guard<std::mutex> lock(impl->state_mutex);
-        if (applied) {
-          Applied(ready[i], MicrosSince(start));
-          continue;
-        }
-        // This change and the rest are replayed after the rebuild.
-        MarkStale(ready[i].epoch);
-        for (; i < ready.size(); i++) {
-          impl->applier.Offer(std::move(ready[i]));
-        }
-        more = false;
-      }
-    }
+    ApplyReady();
   }
   impl->state_cv.notify_all();
   bool rebuild;
@@ -491,43 +561,20 @@ bool AcceleratorRuntime::BuildNow() {
     std::lock_guard<std::mutex> commit(impl->commit_mutex);
     impl->store.install(std::move(builder.images), b);
     {
+      // Synced at the build; what it lacks is applied below like any change.
       std::lock_guard<std::mutex> lock(impl->state_mutex);
       catch_up = impl->applier.TakeCatchUp(b);
+      impl->stats.catch_up_commits += catch_up.size();
+      impl->applier.ReturnCatchUp(std::move(catch_up));
+      impl->applier.FinishCatchUp();
     }
-    bool valid = true;
-    if (!catch_up.empty()) {
-      CommittedChange combined{catch_up.back().seq, catch_up.back().epoch, {}, false};
-      for (const auto &change : catch_up) {
-        combined.batches.insert(combined.batches.end(), change.batches.begin(),
-                                change.batches.end());
-      }
-      valid = ApplyChange(combined);
-    }
+    ApplyReady();
     std::lock_guard<std::mutex> lock(impl->state_mutex);
-    impl->applier.FinishCatchUp();
-    if (!valid) {
-      MarkStale(catch_up.back().epoch);
-    } else {
-      // Readers between the first and last caught-up commit would need
-      // versions the combined catch-up never produced. Without a floor the
-      // store keeps only the newest version, so none can resolve them.
-      const Epoch floor = slots.OldestReaderEpoch();
-      auto &collapsed = impl->collapsed;
-      collapsed.erase(std::remove_if(collapsed.begin(), collapsed.end(),
-                                     [&](const auto &range) {
-                                       return floor == EngineSlots::kNoFloor ||
-                                              range.second <= floor;
-                                     }),
-                      collapsed.end());
-      if (catch_up.size() > 1 && floor != EngineSlots::kNoFloor) {
-        collapsed.emplace_back(catch_up.front().epoch, catch_up.back().epoch);
-      }
-      impl->unserved_from =
-          impl->applier.HasGap() ? impl->applier.AppliedEpoch() + 1 : kNever;
+    if (impl->Synced()) {
+      impl->unserved_from = impl->applier.HasGap() ? impl->applier.AppliedEpoch() + 1 : kNever;
     }
     impl->stats.builds++;
     impl->stats.build_us += MicrosSince(start);
-    impl->stats.catch_up_commits += catch_up.size();
   } catch (...) {
     std::lock_guard<std::mutex> lock(impl->state_mutex);
     impl->applier.AbandonBuild();

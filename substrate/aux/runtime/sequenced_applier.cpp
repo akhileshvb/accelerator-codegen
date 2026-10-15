@@ -95,8 +95,10 @@ std::vector<CommittedChange> SequencedApplier::TakeCatchUp(Epoch b) {
     it = queue.erase(it);
     ++next;
   }
+  boundary_seq = s_b;
+  boundary_epoch = std::max(applied_epoch, b);
   catch_up_seq = out.empty() ? s_b : out.back().seq;
-  catch_up_epoch = std::max({applied_epoch, b, out.empty() ? Epoch{0} : out.back().epoch});
+  catch_up_epoch = std::max(boundary_epoch, out.empty() ? Epoch{0} : out.back().epoch);
   return out;
 }
 
@@ -105,6 +107,14 @@ void SequencedApplier::FinishCatchUp() {
   applied_seq = catch_up_seq;
   applied_epoch = catch_up_epoch;
   build_epoch.reset();
+}
+
+void SequencedApplier::ReturnCatchUp(std::vector<CommittedChange> changes) {
+  for (auto &change : changes) {
+    queue.emplace(change.seq, std::move(change));
+  }
+  catch_up_seq = boundary_seq;
+  catch_up_epoch = boundary_epoch;
 }
 
 void SequencedApplier::AbandonBuild() {

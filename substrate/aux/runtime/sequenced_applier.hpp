@@ -19,6 +19,9 @@ struct CommittedChange {
   Epoch epoch = 0;
   std::vector<ColumnarBatchRef> batches;
   bool empty_commit = false; // aborted / no-op: only advances the sequence
+  // The change cannot be maintained incrementally (e.g. TRUNCATE): applying
+  // it leaves the state stale, so it is rebuilt.
+  bool invalidates = false;
 };
 
 // Pure bookkeeping; no locks (the owning AcceleratorRuntime serializes calls).
@@ -80,6 +83,9 @@ public:
   // The catch-up changes were applied: Synced at the point TakeCatchUp
   // computed (its last change, or the build's boundary if it returned none).
   void FinishCatchUp();
+  // Puts the changes TakeCatchUp returned back in the queue: FinishCatchUp
+  // then syncs at the build's boundary and they are taken as ready changes.
+  void ReturnCatchUp(std::vector<CommittedChange> changes);
   // The build failed or was abandoned: back to Stale, queue kept.
   void AbandonBuild();
   // The state became invalid (maintenance failed): Synced -> Stale.
@@ -96,6 +102,8 @@ private:
   std::optional<Epoch> build_epoch;
   Seq catch_up_seq = 0;
   Epoch catch_up_epoch = 0;
+  Seq boundary_seq = 0;
+  Epoch boundary_epoch = 0;
   std::map<Seq, CommittedChange> queue;
 };
 

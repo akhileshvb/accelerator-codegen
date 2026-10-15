@@ -54,6 +54,16 @@ public:
   // Opens a build snapshot for `accelerator` on the calling thread.
   virtual std::unique_ptr<BuildSnapshot> OpenBuildSnapshot(AcceleratorRuntime &accelerator) = 0;
 
+  // ---- S5 maintenance lookups ----
+  // Module lookups during maintenance must see the database exactly as the
+  // changes being applied left it. Called on the engine-work thread before
+  // applying changes through epoch `through`; returns the epoch the engine's
+  // lookups see now. In-process engines maintain in commit order: `through`.
+  // Postgres applies after visibility, so it may return more: the runtime
+  // then applies everything through that epoch as one change (or waits for
+  // the changes that have not arrived).
+  virtual Epoch MaintenanceLookupEpoch(Epoch through) { return through; }
+
   // ---- S6 placement ----
   // Where engine-facing work runs. In-process engines run builds and
   // maintenance on pool threads / the writer's thread: return false.
