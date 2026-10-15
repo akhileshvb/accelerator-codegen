@@ -603,15 +603,27 @@ bool AcceleratorRuntime::BuildNow() {
     {
       std::lock_guard<std::mutex> lock(impl->state_mutex);
       impl->applier.AbandonBuild();
-      impl->build_failures++;
-      impl->build_scheduled = false; // the readers it releases may request another
     }
-    impl->state_cv.notify_all();
+    BuildFailed();
     throw;
   }
   impl->state_cv.notify_all();
   Pump(); // shipped changes that arrived after the catch-up was taken
-  return IsSynced();
+  if (!IsSynced()) {
+    BuildFailed(); // the catch-up could not be applied
+    return false;
+  }
+  return true;
+}
+
+// Readers waiting for the build stop waiting; the next read requests another.
+void AcceleratorRuntime::BuildFailed() {
+  {
+    std::lock_guard<std::mutex> lock(impl->state_mutex);
+    impl->build_failures++;
+    impl->build_scheduled = false;
+  }
+  impl->state_cv.notify_all();
 }
 
 // ---- services ----

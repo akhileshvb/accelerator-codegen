@@ -299,6 +299,11 @@ void MysqlHost::ForceMaintenanceAction(const std::string &action) {
   core::SetForcedMaintenanceActionName(action);
 }
 
+std::size_t MysqlHost::WriterCount() const {
+  std::lock_guard<std::mutex> lock(impl->mutex);
+  return impl->writers.size();
+}
+
 runtime::AcceleratorStats MysqlHost::TotalStats() const {
   runtime::AcceleratorStats total;
   for (auto *accelerator : impl->runtime.All()) {

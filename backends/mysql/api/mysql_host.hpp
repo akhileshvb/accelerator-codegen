@@ -66,6 +66,8 @@ public:
   std::string LastMaintenanceAction() const;
   // Forces every later maintenance decision to `action` ("": the policy chooses).
   void ForceMaintenanceAction(const std::string &action);
+  // Sessions between their first captured row and the end of their transaction.
+  std::size_t WriterCount() const;
   // Sums over every accelerator.
   runtime::AcceleratorStats TotalStats() const;
 

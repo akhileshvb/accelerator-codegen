@@ -433,12 +433,13 @@ char *mysql_accel_get_build_stats(UDF_INIT *, UDF_ARGS *, char *result,
                                   unsigned long *length, unsigned char *,
                                   unsigned char *) {
   const auto s = mysql_rt::MysqlHost::Get().TotalStats();
-  const int n = std::snprintf(result, 255, "builds=%llu catch_up_commits=%llu reads_hit=%llu reads_waited=%llu reads_fallback=%llu",
+  const int n = std::snprintf(result, 255, "builds=%llu catch_up_commits=%llu reads_hit=%llu reads_waited=%llu reads_fallback=%llu writers=%zu",
                               static_cast<unsigned long long>(s.builds),
                               static_cast<unsigned long long>(s.catch_up_commits),
                               static_cast<unsigned long long>(s.reads_hit),
                               static_cast<unsigned long long>(s.reads_waited),
-                              static_cast<unsigned long long>(s.reads_fallback));
+                              static_cast<unsigned long long>(s.reads_fallback),
+                              mysql_rt::MysqlHost::Get().WriterCount());
   *length = static_cast<unsigned long>(n);
   return result;
 }
