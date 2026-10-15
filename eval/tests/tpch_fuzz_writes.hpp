@@ -37,8 +37,12 @@ public:
     base_supp = max_supp;
   }
 
-  std::string Next() {
-    switch (Pick({30, 18, 10, 10, 8, 10, 3, 1})) {
+  std::string Next() { return Next({30, 18, 10, 10, 8, 10, 3, 1}); }
+
+  // One write on a table drawn by `weights`: lineitem, orders, customer, part,
+  // partsupp, supplier, nation, region (a test that only needs some tables).
+  std::string Next(std::initializer_list<int> weights) {
+    switch (Pick(weights)) {
     case 0:
       return Lineitem();
     case 1:
