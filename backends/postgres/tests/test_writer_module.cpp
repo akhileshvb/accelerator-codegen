@@ -62,10 +62,13 @@ public:
   const core::AcceleratorId &Id() const override { return id_; }
   std::vector<core::TableDependency> Dependencies() const override { return dependencies_; }
   std::shared_ptr<core::AuxQueryModule> Module() override { return nullptr; }
+  bool TuneBuild() const override { return false; }
+  const accelerator_codegen::aux_state::maintenance::CostModelParams &CostModel() override { return cost_model_; }
 
 private:
   std::string id_;
   std::vector<core::TableDependency> dependencies_;
+  accelerator_codegen::aux_state::maintenance::CostModelParams cost_model_;
 };
 
 core::TableDependency Dependency(core::TableId table, std::vector<int32_t> attnums) {

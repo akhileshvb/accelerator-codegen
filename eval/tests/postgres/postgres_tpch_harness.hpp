@@ -402,6 +402,11 @@ inline void EnsureMutationTriggers(const Tools &tools) {
                       "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows "
                       "FOR EACH STATEMENT "
                       "EXECUTE FUNCTION accel_aux_capture_transition(''" + id + "'')', '" +
+                      t + "', '" + t +
+                      "'); "
+                      "EXECUTE format('CREATE TRIGGER accel_tpch_%s_t AFTER TRUNCATE ON %I "
+                      "FOR EACH STATEMENT "
+                      "EXECUTE FUNCTION accel_aux_capture_transition(''" + id + "'')', '" +
                       t + "', '" + t + "'); END $$";
     Require(RunSQL(tools, sql), std::string("install statement trigger failed for ") + t);
   }

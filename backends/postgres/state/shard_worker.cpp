@@ -133,10 +133,9 @@ bool StartWorker(int index) {
       segment->state.compare_exchange_strong(state, ShardSegment::kStopped); // died without its exit hook
       continue;
     }
-    if (state == ShardSegment::kStarting) {
-      // Another backend is starting it (or did and died).
-      const bool up = WaitUntil(kStartupWait,
-                                [&] { return segment->state.load() != ShardSegment::kStarting; });
+    if (state == ShardSegment::kStarting || state == ShardSegment::kStopping) {
+      // Another backend is starting it (or did and died), or the old one is leaving.
+      const bool up = WaitUntil(kStartupWait, [&] { return segment->state.load() != state; });
       if (up) {
         continue;
       }
@@ -161,6 +160,9 @@ ShardSegment *g_segment = nullptr; // the worker's own shard
 ShardServer *g_server = nullptr;
 
 void WorkerExit(int, Datum) {
+  if (g_segment) {
+    g_segment->state = ShardSegment::kStopping;
+  }
   if (g_server) {
     g_server->Stop();
   }
@@ -183,6 +185,8 @@ public:
     segment.stats.builds = stats.builds;
     segment.stats.gaps = stats.gaps;
     segment.stats.synced = runtime.IsSynced();
+    segment.stats.waited = stats.reads_waited;
+    segment.stats.declined = stats.reads_fallback;
     if (stats.last_decision && stats.commits_applied != published_commits) {
       published_commits = stats.commits_applied;
       core::SetGlobalMaintenanceDecision(*stats.last_decision);
@@ -243,8 +247,8 @@ private:
 
   Diagnostics diagnostics(*segment, runtime);
   uint64_t commits_seen = 0;
-  auto last_pump = Clock::time_point::min();
-  auto last_horizon = Clock::time_point::min();
+  auto last_pump = Clock::time_point();
+  auto last_horizon = Clock::time_point();
   for (;;) {
     CHECK_FOR_INTERRUPTS();
     if (!PostmasterIsAlive()) {
@@ -343,7 +347,7 @@ std::string StatsText() {
     return "no worker";
   }
   uint64_t requests = 0, served = 0, fallback = 0, errors = 0, commits = 0, applied = 0, builds = 0,
-           gaps = 0, synced = 0;
+           gaps = 0, synced = 0, waited = 0, declined = 0;
   uint32_t generation = 0;
   for (const ShardSegment *segment : running) {
     requests += segment->stats.requests;
@@ -355,16 +359,18 @@ std::string StatsText() {
     builds += segment->stats.builds;
     gaps += segment->stats.gaps;
     synced += segment->stats.synced;
+    waited += segment->stats.waited;
+    declined += segment->stats.declined;
     generation = std::max(generation, segment->generation.load());
   }
   char text[400];
   snprintf(text, sizeof(text),
            "requests=%llu served=%llu fallback=%llu errors=%llu commits=%llu applied=%llu "
-           "builds=%llu gaps=%llu synced=%llu workers=%zu generation=%u pid=%u",
+           "builds=%llu gaps=%llu synced=%llu waited=%llu declined=%llu workers=%zu generation=%u pid=%u",
            (unsigned long long)requests, (unsigned long long)served, (unsigned long long)fallback,
            (unsigned long long)errors, (unsigned long long)commits, (unsigned long long)applied,
            (unsigned long long)builds, (unsigned long long)gaps, (unsigned long long)synced,
-           running.size(), generation, running.front()->pid.load());
+           (unsigned long long)waited, (unsigned long long)declined, running.size(), generation, running.front()->pid.load());
   return text;
 }
 

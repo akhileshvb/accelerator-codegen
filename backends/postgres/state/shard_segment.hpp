@@ -65,7 +65,8 @@ public:
   static ShardSegment *Create(void *memory);
 
   // ---- worker lifecycle ----
-  enum State : uint32_t { kStopped, kStarting, kRunning };
+  // kStopping: the worker is leaving; its rings are closing, nothing is owed to it.
+  enum State : uint32_t { kStopped, kStarting, kRunning, kStopping };
   std::atomic<uint32_t> state;
   std::atomic<uint32_t> pid;
   std::atomic<uint32_t> generation;
@@ -75,7 +76,7 @@ public:
   struct Stats {
     std::atomic<uint64_t> requests, served, fallback, errors, commits;
     // Published by the main thread from AcceleratorStats.
-    std::atomic<uint64_t> applied, builds, gaps, synced;
+    std::atomic<uint64_t> applied, builds, gaps, synced, waited, declined;
     std::atomic<int64_t> decision_ns; // when kLastDecision was published
   } stats;
 

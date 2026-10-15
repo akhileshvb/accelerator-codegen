@@ -11,6 +11,9 @@
 //  3. A module that asks for a rebuild gets one in the background.
 //  4. Shipped commits (Postgres placement): out of order, gaps, a reader that
 //     needs an unapplied commit waits or falls back, a gap rebuilds.
+//  5. Maintenance lookups that see more or fewer commits than were shipped
+//     (EngineSlots::MaintenanceLookupEpoch): applied as one combined change,
+//     or waited for.
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -178,6 +181,10 @@ struct FakeSlots final : EngineSlots {
   const maintenance::CostModelParams &CostModel(const core::AcceleratorId &) const override {
     return params;
   }
+  Epoch MaintenanceLookupEpoch(Epoch through) override { return lookup.value_or(through); }
+
+  // The epoch the engine's maintenance lookups see (default: the change's).
+  std::optional<Epoch> lookup;
 
   // Holds builds inside RunBuild until Release().
   void Hold() {
@@ -334,6 +341,50 @@ void ShippedCommits() {
   CHECK(ReadAt(runtime, 4, Epoch{4}) == 100);
 }
 
+void MaintenanceLookups() {
+  FakeDb db(0);
+  FakeSlots slots(db, /*host_thread=*/true);
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  host.BuildAll();
+  auto ship = [&](Seq seq, int64_t delta) {
+    runtime.OfferCommit(CommittedChange{seq, seq, {Insert(delta)}, false});
+  };
+
+  // The lookups see exactly what arrived: all three apply as one change; the
+  // epochs in between were never published, so readers there fall back.
+  slots.lookup = 3;
+  ship(1, 1);
+  ship(2, 10);
+  ship(3, 100);
+  runtime.Pump();
+  CHECK(ReadAt(runtime, 3, Epoch{3}) == 111);
+  CHECK(!ReadAt(runtime, 2, std::nullopt, 0));
+  CHECK(runtime.Stats().commits_applied == 3);
+
+  // They see a commit that has not arrived yet: nothing applies until it does.
+  slots.lookup = 5;
+  ship(4, 1000);
+  runtime.Pump();
+  CHECK(!ReadAt(runtime, 4, Epoch{4}, 1000));
+  CHECK(runtime.Stats().commits_applied == 3);
+  ship(5, 10000);
+  runtime.Pump();
+  CHECK(ReadAt(runtime, 5, Epoch{5}) == 11111);
+
+  // They see fewer than arrived: the visible ones apply, the rest waits for a
+  // snapshot that sees it.
+  slots.lookup = 6;
+  ship(6, 100000);
+  ship(7, 1000000);
+  runtime.Pump();
+  CHECK(ReadAt(runtime, 6, Epoch{6}) == 111111);
+  CHECK(!ReadAt(runtime, 7, Epoch{7}, 1000));
+  slots.lookup = 7;
+  runtime.Pump();
+  CHECK(ReadAt(runtime, 7, Epoch{7}) == 1111111);
+}
+
 } // namespace
 
 int main() {
@@ -342,6 +393,7 @@ int main() {
       {"commits_during_build", CommitsDuringBuild},
       {"module_requests_rebuild", ModuleRequestsRebuild},
       {"shipped_commits", ShippedCommits},
+      {"maintenance_lookups", MaintenanceLookups},
   };
   int failed = 0;
   for (const auto &[name, test] : tests) {

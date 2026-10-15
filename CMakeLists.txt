@@ -489,6 +489,18 @@ if(BUILD_TESTING)
     add_test(NAME shm_ring_test COMMAND test_shm_ring)
 endif()
 
+# The shard worker's transport (commit/request/response rings, client slots).
+add_executable(test_shard_segment
+    backends/postgres/tests/test_shard_segment.cpp
+    backends/postgres/state/shard_segment.cpp
+    backends/postgres/state/shm_ring.cpp
+)
+target_include_directories(test_shard_segment PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test_shard_segment PRIVATE Threads::Threads)
+if(BUILD_TESTING)
+    add_test(NAME shard_segment_test COMMAND test_shard_segment)
+endif()
+
 add_executable(test_aux_calibration
     eval/tests/test_aux_calibration.cpp
 )
@@ -912,8 +924,8 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
             ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators
             ${ACCEL_PG_INCLUDEDIR}
     )
-    # Shared accelerator state (accel.shared_state): hits across connections,
-    # memory vs connections, concurrency, killed backends, worker restarts.
+    # Shard workers: hits across connections, hits under writes, read-after-commit,
+    # older snapshots, aborts, TRUNCATE, concurrency, killed backends, worker restarts.
     add_executable(test_postgres_shared_state
         eval/tests/test_postgres_shared_state.cpp
     )
