@@ -425,6 +425,7 @@ target_link_libraries(benchmark_sec_edgar_q24_micro PRIVATE accelerator_codegen 
 
 accel_add_duckdb_exe(test_shared_incremental_differential eval/tests/test_shared_incremental_differential.cpp)
 accel_add_duckdb_exe(make_tpch_test_db eval/tests/make_tpch_test_db.cpp)
+accel_add_duckdb_exe(make_sec_edgar_test_db eval/tests/make_sec_edgar_test_db.cpp)
 accel_add_duckdb_exe(test_tpch_q18_shared_differential accelerators/tpch/q18/tests/test_tpch_q18_shared_differential.cpp)
 # Generic test / bench runner for Verus accelerators of the host kit (needs no
 # particular accelerator: the Verus pipeline builds it in a tree with none).
@@ -758,15 +759,23 @@ if(BUILD_TESTING)
             test_aux_snapshot_reads_q11_${_mode}
             PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 120)
     endforeach()
-    # SEC-EDGAR: ACCEL_SEC_EDGAR_TEST_DB / the shared sec_edgar_test.duckdb,
-    # resolved at run time (no generator input available locally to rebuild
-    # it); skips (77) naming the queries it has no probe rows for.
+    # Fixture: a fresh small SEC-EDGAR DB in the build dir, built from the SEC
+    # benchmark DB (ACCEL_SEC_EDGAR_DB, default the shared SF3, read-only) with
+    # workloads/sec_edgar/test_db_subset.sql. Exits 77 (skip) when the source is
+    # missing or empty; tests needing the DB then skip too (see below).
+    set(_accel_sec_edgar_test_db "${CMAKE_CURRENT_BINARY_DIR}/test_dbs/sec_edgar_test.duckdb")
+    add_test(NAME sec_edgar_test_db_fixture
+             COMMAND make_sec_edgar_test_db
+                     "${CMAKE_CURRENT_SOURCE_DIR}/workloads/sec_edgar/test_db_subset.sql"
+                     "${_accel_sec_edgar_test_db}")
+    set_tests_properties(sec_edgar_test_db_fixture PROPERTIES
+        FIXTURES_SETUP sec_edgar_test_db SKIP_RETURN_CODE 77)
     add_test(
         NAME test_shared_incremental_differential_sec_edgar_test
-        COMMAND test_shared_incremental_differential -)
+        COMMAND test_shared_incremental_differential - "${_accel_sec_edgar_test_db}")
     set_tests_properties(
         test_shared_incremental_differential_sec_edgar_test
-        PROPERTIES SKIP_RETURN_CODE 77)
+        PROPERTIES FIXTURES_REQUIRED sec_edgar_test_db SKIP_RETURN_CODE 77)
     accel_register_tpch_aux_ctests()
 	if(ACCEL_ENABLE_PARALLEL_KERNELS)
 		add_test(NAME tpch_parallel_smoke_test COMMAND test_tpch_parallel)
@@ -788,6 +797,16 @@ foreach(_q 1 2 3 4 6 24)
 		LIBRARY_TARGET accelerator_codegen
 		TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}
 	)
+endforeach()
+
+# The SEC smoke tests read the test DB through SecEdgarSmokeDbPath()
+# (ACCEL_SEC_EDGAR_DB wins when set): point them at the fixture's DB.
+foreach(_q 1 2 3 4 6 24)
+    if(BUILD_TESTING AND TEST sec_edgar_q${_q}_smoke_test)
+        set_tests_properties(sec_edgar_q${_q}_smoke_test PROPERTIES
+            FIXTURES_REQUIRED sec_edgar_test_db
+            ENVIRONMENT "ACCEL_SEC_EDGAR_TEST_DB=${_accel_sec_edgar_test_db}")
+    endif()
 endforeach()
 
 foreach(_q 3 4 6 24)

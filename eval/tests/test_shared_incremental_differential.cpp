@@ -75,7 +75,7 @@ std::vector<int> RunWorkload(const std::string &db_path, engine::SharedWorkloadK
 //
 // Exit 77 (skip) when a DB is missing, or when every query passed except
 // SEC-EDGAR queries the SEC test DB has no probe rows for: the DB lacks their
-// seed data (regenerate it with scripts/create_sec_edgar_test_db.py).
+// seed data (ctest rebuilds it from SF3 via the sec_edgar_test_db fixture; or run scripts/create_sec_edgar_test_db.py).
 int main(int argc, char **argv) {
   namespace ts = accelerator_codegen::test_support;
   try {
