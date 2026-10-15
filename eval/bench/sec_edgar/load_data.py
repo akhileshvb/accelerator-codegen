@@ -43,14 +43,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Load SEC EDGAR data into DuckDB")
     parser.add_argument("--years", type=int, default=3, help="Number of years (default: 3)")
     parser.add_argument("--data-dir", type=Path, default=None, help="Path to extracted data")
+    parser.add_argument("--db-path", type=Path, default=None, help="Output DuckDB path (default: <script_dir>/duckdb/sec_edgar.duckdb)")
     parser.add_argument("--force", action="store_true", help="Force reload (drop existing DB)")
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent
     data_dir = args.data_dir or (script_dir / "data")
-    db_dir = script_dir / "duckdb"
-    db_dir.mkdir(exist_ok=True)
-    db_path = db_dir / "sec_edgar.duckdb"
+    db_path = args.db_path or (script_dir / "duckdb" / "sec_edgar.duckdb")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not data_dir.exists():
         print(f"Error: data directory not found: {data_dir}")

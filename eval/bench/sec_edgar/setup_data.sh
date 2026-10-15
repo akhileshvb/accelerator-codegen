@@ -14,7 +14,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 YEARS="${1:-3}"
-DATA_DIR="${SCRIPT_DIR}/data"
+DATA_DIR="${SEC_EDGAR_DATA_DIR:-${SCRIPT_DIR}/data}"
 
 END_YEAR=2024
 START_YEAR=$((END_YEAR - YEARS + 1))
