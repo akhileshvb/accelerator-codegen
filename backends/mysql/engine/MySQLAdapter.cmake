@@ -13,8 +13,9 @@ function(accel_build_mysql_plugin)
       backends/mysql/engine/mysql_plugin.cpp
       backends/mysql/api/mysql_plugin.cpp
       backends/mysql/api/runtime.cpp
+      backends/mysql/api/mysql_host.cpp
       backends/mysql/engine/mysql_bridge.cpp
-      backends/mysql/engine/mysql_xact_callbacks.cpp
+      backends/mysql/engine/mysql_session.cpp
   )
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_rel}")
       list(APPEND _mysql_plugin_sources "${_rel}")

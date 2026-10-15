@@ -1,0 +1,328 @@
+// GENERATED BACKEND
+#if defined(ACCELERATOR_CODEGEN_MYSQL_PLUGIN)
+
+#include "backends/mysql/api/mysql_host.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdlib>
+#include <map>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <unordered_map>
+
+#include "backends/mysql/api/runtime.hpp"
+#include "substrate/aux/core/aux_maintenance_decision_log.hpp"
+#include "substrate/aux/core/aux_maintenance_policy.hpp"
+#include "substrate/aux/maintenance/maintenance_action.hpp"
+
+namespace accelerator_codegen::aux_state::engine::mysql {
+namespace {
+
+using runtime::Epoch;
+
+// How long a build waits for the writers in flight to finish before it
+// gives up (the readers then answer from SQL and a later read tries again).
+std::chrono::microseconds BuildWait() {
+  static const auto wait = std::chrono::microseconds([] {
+    const char *value = std::getenv("ACCEL_AUX_BUILD_WAIT_US");
+    return value && *value ? std::strtoll(value, nullptr, 10) : 10'000'000LL;
+  }());
+  return wait;
+}
+
+// The build's read: one consistent view of the database, routing this
+// thread's scans through it until destroyed.
+struct MysqlBuildSnapshot final : runtime::BuildSnapshot {
+  explicit MysqlBuildSnapshot(Epoch epoch_p) : epoch(epoch_p) {}
+  Epoch SnapshotEpoch() const override { return epoch; }
+  detail::SnapshotScanSession view;
+  Epoch epoch;
+};
+
+} // namespace
+
+struct MysqlHost::Impl final : runtime::EngineSlots {
+  // A session with captured work: its open statement's rows, and whether its
+  // transaction can no longer be followed write by write.
+  struct Writer {
+    StatementCapture statement;
+    bool poisoned = false; // ROLLBACK TO SAVEPOINT: undone writes are not tracked
+    std::unordered_map<core::TableId, std::optional<std::vector<int32_t>>> watched;
+    uint64_t watched_version = 0;
+  };
+
+  Impl() : runtime(*this, runtime::ResolveThreadBudget(0)) {}
+
+  mutable std::mutex mutex; // writers, opening, cost_models
+  std::condition_variable changed;
+  // Every session between its first captured row (of any table) and the end
+  // of its transaction. A build opens its view only when there is none, so
+  // every commit is either in the view or applied after it.
+  std::unordered_map<Session, std::unique_ptr<Writer>> writers;
+  int opening = 0; // views being opened: no session becomes a writer meanwhile
+  std::map<core::AcceleratorId, maintenance::CostModelParams> cost_models;
+  std::atomic<Epoch> epoch{0}; // the newest commit's
+  std::atomic<uint64_t> captured_rows{0};
+  mutable std::mutex action_mutex;
+  std::string last_action;
+
+  // Declared last: torn down first, so no build outlives the rest.
+  runtime::RuntimeHost runtime;
+
+  // ---- sessions ----
+  Writer &WriterOf(Session session) {
+    std::unique_lock<std::mutex> lock(mutex);
+    auto it = writers.find(session);
+    if (it == writers.end()) {
+      changed.wait(lock, [&] { return opening == 0; });
+      it = writers.emplace(session, std::make_unique<Writer>()).first;
+    }
+    return *it->second;
+  }
+
+  Writer *FindWriter(Session session) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = writers.find(session);
+    return it == writers.end() ? nullptr : it->second.get();
+  }
+
+  void EndTransaction(Session session) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      writers.erase(session);
+    }
+    changed.notify_all();
+  }
+
+  // The columns to capture of `table` (nullopt: no accelerator watches it).
+  const std::optional<std::vector<int32_t>> &Watched(Writer &writer, core::TableId table) {
+    if (writer.watched_version != runtime.CaptureVersion()) {
+      writer.watched.clear();
+      writer.watched_version = runtime.CaptureVersion();
+    }
+    auto it = writer.watched.find(table);
+    if (it == writer.watched.end()) {
+      it = writer.watched.emplace(table, runtime.CaptureColumns(table)).first;
+    }
+    return it->second;
+  }
+
+  // The statement's rows join the transaction (a failed statement's are dropped).
+  void EndStatement(Session session, Writer &writer, bool failed) {
+    auto batches = writer.statement.Take();
+    if (failed) {
+      return;
+    }
+    for (auto &batch : batches) {
+      runtime.OnCapture(session, 0, std::move(batch));
+    }
+  }
+
+  void Commit(Session session, Writer &writer) {
+    if (writer.poisoned) {
+      Abort(session);
+      InvalidateAll();
+      return;
+    }
+    try {
+      runtime.PreCommit(session);
+      // Taken while the commit holds its accelerators' places in commit
+      // order: epochs grow with each accelerator's commit order.
+      runtime.Commit(session, ++epoch);
+    } catch (...) {
+      runtime.Abort(session);
+      InvalidateAll();
+    }
+    NoteMaintenanceAction();
+    EndTransaction(session);
+  }
+
+  void Abort(Session session) {
+    runtime.Abort(session);
+    EndTransaction(session);
+  }
+
+  void InvalidateAll() {
+    for (auto *accelerator : runtime.All()) {
+      accelerator->Invalidate();
+    }
+  }
+
+  void NoteMaintenanceAction() {
+    const auto decision = core::LastMaintenanceDecision();
+    if (decision && decision->valid) {
+      std::lock_guard<std::mutex> lock(action_mutex);
+      last_action = maintenance::MaintenanceActionName(decision->staged_action);
+    }
+  }
+
+  // ---- slots ----
+  // Readers always read the newest commit, so every one waits for an
+  // in-flight commit.
+  Epoch PendingEpochLowerBound(uint64_t) const override { return 0; }
+  Epoch OldestReaderEpoch() const override { return kNoFloor; }
+  // Every session that wrote since before the registration is a writer, and
+  // OpenBuildSnapshot waits for all writers.
+  bool WaitForPreRegistrationWriters(const std::vector<core::TableId> &, uint64_t) override {
+    return true;
+  }
+  std::unique_ptr<runtime::BuildSnapshot> OpenBuildSnapshot(runtime::AcceleratorRuntime &) override {
+    std::unique_lock<std::mutex> lock(mutex);
+    if (!changed.wait_for(lock, BuildWait(), [&] { return writers.empty(); })) {
+      throw std::runtime_error("writers did not finish before the build");
+    }
+    // Every commit up to now is in the view and has an epoch <= `at`; no
+    // session writes until the view is open, so every later commit is after it.
+    const Epoch at = epoch;
+    opening++;
+    lock.unlock();
+    struct Reopen {
+      Impl &impl;
+      ~Reopen() {
+        {
+          std::lock_guard<std::mutex> lock(impl.mutex);
+          impl.opening--;
+        }
+        impl.changed.notify_all();
+      }
+    } reopen{*this};
+    return std::make_unique<MysqlBuildSnapshot>(at);
+  }
+  bool EngineWorkOnHostThread() const override { return false; }
+  void RunBuild(runtime::AcceleratorRuntime &accelerator, runtime::BuildSnapshot &,
+                core::StateBuilder &builder) override {
+    accelerator.Module().Build(accelerator, builder);
+  }
+  const maintenance::CostModelParams &CostModel(const core::AcceleratorId &id) const override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return cost_models.at(id);
+  }
+  double ExpectedQueriesBeforeNextWrite(const core::AcceleratorId &) const override {
+    const double override_value = core::ExpectedQueriesOverride();
+    return override_value >= 0.0 ? override_value : 10.0;
+  }
+};
+
+MysqlHost &MysqlHost::Get() {
+  static MysqlHost host;
+  return host;
+}
+
+MysqlHost::MysqlHost() : impl(std::make_unique<Impl>()) {}
+
+MysqlHost::~MysqlHost() = default;
+
+runtime::AcceleratorRuntime &MysqlHost::Register(std::shared_ptr<core::AuxQueryModule> module,
+                                                 maintenance::CostModelParams cost_model) {
+  {
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    impl->cost_models[module->Id()] = std::move(cost_model);
+  }
+  return impl->runtime.Register(std::move(module));
+}
+
+runtime::RuntimeHost &MysqlHost::Runtime() { return impl->runtime; }
+
+// ---- engine callbacks ----
+
+void MysqlHost::OnCapturedRow(Session session, const CapturedRow &row) {
+  impl->captured_rows++;
+  auto &writer = impl->WriterOf(session);
+  if (const auto &columns = impl->Watched(writer, row.table)) {
+    writer.statement.Add(row, *columns);
+  }
+}
+
+void MysqlHost::OnCaptureFailure(Session session) {
+  impl->WriterOf(session); // the transaction's end is awaited by the rebuild
+  InvalidateAll();
+}
+
+void MysqlHost::OnStatementEnd(Session session, MysqlStatementKind kind, bool failed,
+                               bool in_active_transaction) {
+  auto *writer = impl->FindWriter(session);
+  if (!writer) {
+    return; // this session captured nothing
+  }
+  switch (kind) {
+  case MysqlStatementKind::Commit:
+    if (failed) { // the commit's outcome is unknown
+      impl->Abort(session);
+      InvalidateAll();
+    } else {
+      impl->EndStatement(session, *writer, false);
+      impl->Commit(session, *writer);
+    }
+    break;
+  case MysqlStatementKind::Rollback:
+    impl->Abort(session);
+    break;
+  case MysqlStatementKind::RollbackToSavepoint:
+    impl->EndStatement(session, *writer, false);
+    writer->poisoned = writer->poisoned || !failed;
+    break;
+  case MysqlStatementKind::Begin: // commits a transaction still open
+    impl->EndStatement(session, *writer, failed);
+    impl->Commit(session, *writer);
+    break;
+  case MysqlStatementKind::Other:
+    impl->EndStatement(session, *writer, failed);
+    if (!in_active_transaction) {
+      if (failed) {
+        impl->Abort(session);
+      } else {
+        impl->Commit(session, *writer);
+      }
+    }
+    break;
+  }
+}
+
+void MysqlHost::OnSessionEnd(Session session) {
+  if (impl->FindWriter(session)) {
+    impl->Abort(session);
+  }
+}
+
+void MysqlHost::InvalidateAll() { impl->InvalidateAll(); }
+
+// ---- diagnostics ----
+
+uint64_t MysqlHost::CapturedRowCount() const { return impl->captured_rows; }
+
+void MysqlHost::ResetCapturedRowCount() { impl->captured_rows = 0; }
+
+std::string MysqlHost::LastMaintenanceAction() const {
+  std::lock_guard<std::mutex> lock(impl->action_mutex);
+  return impl->last_action;
+}
+
+void MysqlHost::ForceMaintenanceAction(const std::string &action) {
+  core::ClearMaintenanceDecisionLog();
+  core::SetForcedMaintenanceActionName(action);
+  std::lock_guard<std::mutex> lock(impl->action_mutex);
+  impl->last_action.clear();
+}
+
+runtime::AcceleratorStats MysqlHost::TotalStats() const {
+  runtime::AcceleratorStats total;
+  for (auto *accelerator : impl->runtime.All()) {
+    const auto stats = accelerator->Stats();
+    total.commits_applied += stats.commits_applied;
+    total.rows_applied += stats.rows_applied;
+    total.builds += stats.builds;
+    total.build_us += stats.build_us;
+    total.catch_up_commits += stats.catch_up_commits;
+    total.reads_hit += stats.reads_hit;
+    total.reads_waited += stats.reads_waited;
+    total.reads_fallback += stats.reads_fallback;
+  }
+  return total;
+}
+
+} // namespace accelerator_codegen::aux_state::engine::mysql
+
+#endif

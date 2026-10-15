@@ -14,7 +14,9 @@
 //     registers the query's catalog entry (MysqlQueryCatalogRegistrar).
 //
 // Registries are plain functions with function-local static storage in
-// runtime.cpp / query_catalog.cpp; there are no header-only singletons.
+// runtime.cpp / query_catalog.cpp; there are no header-only singletons. The
+// state itself (capture, commits, builds, reads' epochs) is the runtime
+// skeleton's, hosted by MysqlHost (mysql_host.hpp).
 //
 // Engine-level helpers (ScanTypedTuples, Typed*, ByteExactLiteral,
 // KeyListPredicate, ColumnsCompareBytewise, Runtime<>) stay in the backend and
@@ -33,11 +35,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <shared_mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -45,13 +45,8 @@
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_cost_model_path.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
-#include "substrate/aux/core/aux_txn_buffer.hpp"
 #include "substrate/aux/core/aux_types.hpp"
-#include "backends/mysql/state/mysql_aux_backend.hpp"
-#include "backends/mysql/state/mysql_state_store.hpp"
-#include "backends/mysql/engine/mysql_xact_callbacks.hpp"
-
-extern "C" int mysql_accel_get_observer_mutation_count();
+#include "backends/mysql/api/mysql_host.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
 
@@ -91,15 +86,6 @@ namespace core = accelerator_codegen::aux_state::core;
 
 // Table scans this thread ran (a query that scans answered from SQL).
 extern thread_local uint64_t t_table_scans;
-
-// Process-wide build counters (mysql_accel_get_build_stats).
-struct BuildStats {
-  std::atomic<uint64_t> snapshot_builds{0};  // installed from a consistent snapshot
-  std::atomic<uint64_t> restart_builds{0};   // installed by the restart-on-write scheme
-  std::atomic<uint64_t> replayed_batches{0}; // writes recorded during snapshot builds and replayed
-  std::atomic<uint64_t> build_retries{0};    // builds discarded and redone
-};
-BuildStats &GetBuildStats();
 
 // The query's cost model: `env_name` when set, else the first of
 // <stem>_mysql.json and <stem>.json found in the query's directory
@@ -177,16 +163,6 @@ std::string KeyListPredicate(const char *column, const std::vector<int64_t> &key
 // Whether every (table, column) compares text byte by byte (utf8mb4_0900_bin).
 bool ColumnsCompareBytewise(const std::vector<std::pair<std::string, std::string>> &columns);
 
-class Builder final : public core::StateBuilder {
-public:
-  void Write(core::StateImage image) override {
-    images.push_back(std::move(image));
-  }
-  void Finish() override { finished = true; }
-  std::vector<core::StateImage> images;
-  bool finished = false;
-};
-
 class TsvSink final : public core::AuxRowSink {
 public:
   explicit TsvSink(std::string &out_p) : out(out_p) {}
@@ -263,236 +239,46 @@ private:
   std::string &out;
 };
 
+// How long a reader waits for an in-flight commit or a build before it
+// answers from SQL (ACCEL_AUX_READ_WAIT_US).
+std::chrono::microseconds ReadWait();
+
+// One query's accelerator as a client of the server's MysqlHost: the host
+// builds and maintains its state; this runs the query against it.
 template <typename Module, typename Config, typename ScanT>
 class Runtime final {
 public:
   Runtime(const char *cost_model_env, core::AuxCostModelLocation cost_model,
-          core::AcceleratorId accelerator, Config config)
-      : store(), coordinator(),
-        backend(
-            coordinator, store,
-            [] { return core::VisibilityToken{}; },
-            [cost_model_env, cost_model] {
-              return core::LoadAuxCostModelJson(
-                  ResolveCostModelPath(cost_model_env, cost_model));
-            }),
-        scan(), module(config, &scan), accelerator(std::move(accelerator)) {
-    auto module_view = std::shared_ptr<Module>(&module, [](Module *) {});
-    replay_coordinator.Register(module_view);
-    coordinator.Register(module_view);
-    replay_coordinator.AttachServices(backend);
-    // Every session (connection) stages its writes in a coordinator of its own
-    // over this same module: one session's ROLLBACK or COMMIT never touches
-    // another's staged writes (see MysqlAuxBackend, "Per-session transactions").
-    backend.SetSessionCoordinatorFactory([module_view] {
-      auto session_coordinator = std::make_unique<core::AuxTransactionCoordinator>();
-      session_coordinator->Register(module_view);
-      return session_coordinator;
-    });
-    accelerator_codegen::aux_state::engine::mysql::
-        RegisterMysqlMutationBackend(&backend);
-    accelerator_codegen::aux_state::engine::mysql::
-        RegisterMysqlXactCallbacks();
-  }
-
-  void WaitForCapturedWrites() {
-    static const auto limit = std::chrono::microseconds([] {
-      const char *value = std::getenv("ACCEL_AUX_PENDING_WAIT_US");
-      return value && *value ? std::strtoll(value, nullptr, 10) : 500000LL;
-    }());
-    const auto deadline = std::chrono::steady_clock::now() + limit;
-    while (backend.HasPendingWork() && std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(std::chrono::microseconds(200));
+          core::AcceleratorId accelerator_id, Config config)
+      : scan(), module(config, &scan),
+        accelerator(MysqlHost::Get().Register(
+            std::shared_ptr<Module>(&module, [](Module *) {}),
+            core::LoadAuxCostModelJson(ResolveCostModelPath(cost_model_env, cost_model)))) {
+    if (module.Id() != accelerator_id) {
+      throw std::logic_error("accelerator id mismatch: " + accelerator_id);
     }
-  }
-
-  // Build the state from the tables when there is none or it is invalid.
-  // One Runtime serves every session, and MySQL commits the aux state after
-  // the write is visible (audit event), so a build races writes.
-  //
-  // Snapshot build (the plugin is built with the client library): the scans
-  // run in one consistent read view (SnapshotScanSession) taken while no
-  // captured write is pending; writes that commit meanwhile are recorded
-  // (MysqlAuxBackend::BeginBuildLog), and at install, under the commit mutex
-  // and the readers' gate, the build is installed and the recorded writes are
-  // replayed on it through the normal maintenance path (a private coordinator
-  // over the same module, so other sessions' open transactions are not
-  // touched). A write is therefore never lost or counted twice (it is either
-  // in the view or in the log: see BeginBuildLog), and a build is never
-  // restarted because of concurrent writes. It is retried (bounded) only if a
-  // write was captured while the view was being opened, a captured write
-  // failed to decode, or the log outgrew its limit.
-  //
-  // Without the client library the scans cannot share a view: the build is
-  // discarded and restarted whenever a write lands during it (bounded by
-  // kMaxBuildAttempts).
-  //
-  // In both cases, when the state cannot be installed (a long-open writer
-  // transaction, retries exhausted) the call returns false and the query
-  // answers from SQL (the module's fallback); a later query rebuilds.
-  // Returns whether this call built the state.
-  bool RebuildIfNeeded() {
-    if (built.load() && !store.NeedsRebuild()) {
-      return false;
-    }
-    std::lock_guard<std::mutex> lock(rebuild_mutex);
-    return SnapshotScansSupported() ? RebuildFromSnapshotLocked() : RebuildByRestartLocked();
   }
 
   void Execute(const core::QueryArguments &arguments, std::string &out) {
-    // Every read in this statement: one aux state version.
-    accelerator_codegen::aux_state::AuxReadScope one_version;
-    // Prefer this Runtime for subsequent trigger captures in this session.
-    accelerator_codegen::aux_state::engine::mysql::
-        RegisterMysqlMutationBackend(&backend);
-
-    // Captured writes are committed to the aux state by the writing
-    // session's audit event, after the write is already visible (never
-    // here: this may be another session, and the write may not be committed
-    // yet). Until then this accelerator's commit is pending: wait for it, as
-    // a reader waits for a pending commit (bounded like the store's wait).
-    WaitForCapturedWrites();
-    const bool rebuilt = RebuildIfNeeded();
-    observed_mutations = mysql_accel_get_observer_mutation_count();
     TsvSink sink(out);
+    runtime::ReadOptions options;
+    options.max_wait_us = static_cast<uint64_t>(ReadWait().count());
+    auto guard = accelerator.BeginRead(options);
     t_table_scans = 0;
-    // An install (state + replayed writes) is atomic for readers.
-    std::shared_lock<accelerator_codegen::aux_state::WriterPreferringSharedMutex> reading(read_gate);
-    module.Execute(backend, arguments, sink);
-    core::RecordAuxExecute(t_table_scans > 0 ? core::AuxExecutePath::Fallback
-                           : rebuilt         ? core::AuxExecutePath::RebuiltOnRead
-                                             : core::AuxExecutePath::Hit);
+    if (guard.Servable()) {
+      module.Execute(accelerator, arguments, sink);
+    } else {
+      module.ExecuteFallback(accelerator, arguments, sink);
+    }
+    core::RecordAuxExecute(!guard.Servable() || t_table_scans > 0 ? core::AuxExecutePath::Fallback
+                                                                  : core::AuxExecutePath::Hit);
   }
 
 private:
-  // Bounded wait for captured writes to commit (an open writer transaction
-  // may hold them pending for long): false on timeout.
-  bool WaitForNoPendingWork() {
-    static const auto limit = std::chrono::microseconds([] {
-      const char *value = std::getenv("ACCEL_AUX_BUILD_WAIT_US");
-      return value && *value ? std::strtoll(value, nullptr, 10) : 10000000LL;
-    }());
-    const auto deadline = std::chrono::steady_clock::now() + limit;
-    while (backend.HasPendingWork()) {
-      if (std::chrono::steady_clock::now() >= deadline) {
-        return false;
-      }
-      std::this_thread::sleep_for(std::chrono::microseconds(200));
-    }
-    return true;
-  }
-
-  void FinishInstall() {
-    store.ClearTransactionDirty();
-    built = true;
-    accelerator_codegen::aux_state::engine::mysql::RegisterMysqlBackendForMutations();
-  }
-
-  bool RebuildFromSnapshotLocked() {
-    namespace mysql_ns = accelerator_codegen::aux_state::engine::mysql;
-    for (int attempt = 0; attempt < kMaxBuildAttempts; ++attempt) {
-      if (built.load() && !store.NeedsRebuild()) {
-        return false; // another session rebuilt it
-      }
-      if (!WaitForNoPendingWork()) {
-        return false;
-      }
-      const uint64_t staged = backend.StagedMutationCount();
-      Builder builder;
-      {
-        SnapshotScanSession view; // the read view; closed when this block ends
-        if (!backend.BeginBuildLog(staged)) {
-          ++GetBuildStats().build_retries;
-          continue; // a write was captured around the view's start: take another
-        }
-        try {
-          module.Build(backend, builder);
-        } catch (...) {
-          backend.EndBuildLog();
-          throw;
-        }
-        if (!builder.finished) {
-          backend.EndBuildLog();
-          throw std::runtime_error("auxiliary build did not finish");
-        }
-      }
-      // Install atomically wrt commits of captured writes and readers.
-      std::lock_guard<std::mutex> commits(backend.CommitMutex());
-      std::lock_guard<std::mutex> module_calls(backend.ModuleMutex()); // replay uses the module
-      std::unique_lock<accelerator_codegen::aux_state::WriterPreferringSharedMutex> readers(read_gate);
-      auto log = backend.EndBuildLog();
-      if (!log.complete) {
-        ++GetBuildStats().build_retries;
-        continue; // lost or too many writes during the build: build again
-      }
-      ++GetBuildStats().snapshot_builds;
-      GetBuildStats().replayed_batches += log.batches.size();
-      store.Install(std::move(builder.images), accelerator);
-      if (!log.batches.empty()) {
-        try {
-          for (const auto &batch : log.batches) {
-            replay_coordinator.OnMutation(batch);
-          }
-          replay_coordinator.PreCommit();
-          replay_coordinator.Commit();
-        } catch (...) {
-          // Not replayed: the state is not trustworthy.
-          try { replay_coordinator.Abort(); } catch (...) {}
-          store.Invalidate(core::AllPartitionsPlan());
-          ++GetBuildStats().build_retries;
-          continue;
-        }
-      }
-      FinishInstall();
-      return true;
-    }
-    return false;
-  }
-
-  bool RebuildByRestartLocked() {
-    for (int attempt = 0; attempt < kMaxBuildAttempts; ++attempt) {
-      if (built.load() && !store.NeedsRebuild()) {
-        return false; // another session rebuilt it
-      }
-      if (!WaitForNoPendingWork()) {
-        return false;
-      }
-      const auto before = store.ChangeCount();
-      Builder builder;
-      module.Build(backend, builder);
-      if (!builder.finished) {
-        throw std::runtime_error("auxiliary build did not finish");
-      }
-      if (backend.HasPendingWork() ||
-          !store.InstallIfUnchanged(std::move(builder.images), accelerator, before)) {
-        ++GetBuildStats().build_retries;
-        continue; // a write landed during the build: build again
-      }
-      ++GetBuildStats().restart_builds;
-      FinishInstall();
-      return true;
-    }
-    return false;
-  }
-
-  MysqlStateStore store;
-  core::AuxTransactionCoordinator coordinator;
-  // Replays the writes a snapshot build recorded; same module, own
-  // transaction buffers.
-  core::AuxTransactionCoordinator replay_coordinator;
-  // Readers share it; the install takes it exclusively (writer-preferring, so
-  // a stream of reads cannot starve an install).
-  accelerator_codegen::aux_state::WriterPreferringSharedMutex read_gate;
-  accelerator_codegen::aux_state::engine::mysql::MysqlAuxBackend backend;
   ScanT scan;
   Module module;
-  std::string accelerator;
-  static constexpr int kMaxBuildAttempts = 64;
-  std::mutex rebuild_mutex;
-  std::atomic<bool> built{false};
-  std::atomic<int> observed_mutations{0};
+  runtime::AcceleratorRuntime &accelerator;
 };
-
 
 } // namespace detail
 } // namespace accelerator_codegen::aux_state::engine::mysql
