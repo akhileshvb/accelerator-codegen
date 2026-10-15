@@ -60,7 +60,9 @@ public:
   // ---- diagnostics ----
   uint64_t CapturedRowCount() const;
   void ResetCapturedRowCount();
-  // The maintenance action of the last commit that maintained an accelerator.
+  // The accelerator a query last read, whose last maintenance action
+  // LastMaintenanceAction reports ("": none).
+  void NoteRead(const runtime::AcceleratorRuntime &accelerator);
   std::string LastMaintenanceAction() const;
   // Forces every later maintenance decision to `action` ("": the policy chooses).
   void ForceMaintenanceAction(const std::string &action);

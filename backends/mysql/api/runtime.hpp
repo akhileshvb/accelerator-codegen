@@ -260,6 +260,7 @@ public:
   }
 
   void Execute(const core::QueryArguments &arguments, std::string &out) {
+    MysqlHost::Get().NoteRead(accelerator);
     TsvSink sink(out);
     runtime::ReadOptions options;
     options.max_wait_us = static_cast<uint64_t>(ReadWait().count());

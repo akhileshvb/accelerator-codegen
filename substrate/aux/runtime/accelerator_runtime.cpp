@@ -194,12 +194,12 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     return ReadGuard(false, nullptr);
   }
   if (!Servable(epoch, options.require_applied_through)) {
+    const uint64_t failures = impl->build_failures; // before the build it may request
     lock.unlock();
     RequestBuild();
     lock.lock();
     impl->stats.reads_waited++;
     const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
-    const uint64_t failures = impl->build_failures;
     if (!impl->state_cv.wait_until(lock, deadline, [&] {
           return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
                  impl->build_failures != failures;

@@ -66,8 +66,7 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
   std::map<core::AcceleratorId, maintenance::CostModelParams> cost_models;
   std::atomic<Epoch> epoch{0}; // the newest commit's
   std::atomic<uint64_t> captured_rows{0};
-  mutable std::mutex action_mutex;
-  std::string last_action;
+  std::atomic<const runtime::AcceleratorRuntime *> last_read{nullptr};
 
   // Declared last: torn down first, so no build outlives the rest.
   runtime::RuntimeHost runtime;
@@ -136,7 +135,6 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
       runtime.Abort(session);
       InvalidateAll();
     }
-    NoteMaintenanceAction();
     EndTransaction(session);
   }
 
@@ -148,14 +146,6 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
   void InvalidateAll() {
     for (auto *accelerator : runtime.All()) {
       accelerator->Invalidate();
-    }
-  }
-
-  void NoteMaintenanceAction() {
-    const auto decision = core::LastMaintenanceDecision();
-    if (decision && decision->valid) {
-      std::lock_guard<std::mutex> lock(action_mutex);
-      last_action = maintenance::MaintenanceActionName(decision->staged_action);
     }
   }
 
@@ -296,16 +286,17 @@ uint64_t MysqlHost::CapturedRowCount() const { return impl->captured_rows; }
 
 void MysqlHost::ResetCapturedRowCount() { impl->captured_rows = 0; }
 
+void MysqlHost::NoteRead(const runtime::AcceleratorRuntime &accelerator) { impl->last_read = &accelerator; }
+
 std::string MysqlHost::LastMaintenanceAction() const {
-  std::lock_guard<std::mutex> lock(impl->action_mutex);
-  return impl->last_action;
+  const auto *accelerator = impl->last_read.load();
+  const auto decision = accelerator ? accelerator->Stats().last_decision : std::nullopt;
+  return decision && decision->valid ? maintenance::MaintenanceActionName(decision->staged_action) : "";
 }
 
 void MysqlHost::ForceMaintenanceAction(const std::string &action) {
   core::ClearMaintenanceDecisionLog();
   core::SetForcedMaintenanceActionName(action);
-  std::lock_guard<std::mutex> lock(impl->action_mutex);
-  impl->last_action.clear();
 }
 
 runtime::AcceleratorStats MysqlHost::TotalStats() const {
