@@ -45,9 +45,11 @@ public:
   // Whether `txn` wrote any table `accelerator` depends on (its own reads
   // must fall back: its writes are in no shared state).
   bool TxnWroteDependency(uint64_t txn, const AcceleratorRuntime &accelerator) const;
-  // Pre-commit: stage every affected accelerator, in accelerator-id order.
+  // Pre-commit: every affected accelerator takes its place in commit order
+  // (accelerator-id order, so concurrent commits cannot deadlock).
   void PreCommit(uint64_t txn);
-  // The engine committed; `epoch` is the commit's epoch (S2).
+  // The engine committed at `epoch` (S2): each affected accelerator
+  // maintains and publishes.
   void Commit(uint64_t txn, Epoch epoch);
   void Abort(uint64_t txn);
 

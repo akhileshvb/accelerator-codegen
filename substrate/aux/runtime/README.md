@@ -44,19 +44,19 @@ snapshot iff its epoch `<= b` (S5's contract).
    interpreted yet.
 2. Pre-commit (`RuntimeHost::PreCommit(txn)`): for each accelerator whose
    tables the transaction wrote, in accelerator-id order, the commit takes the
-   accelerator's place in commit order (S2) and receives its sequence number.
-   - In-process placement: the accelerator's maintenance is staged here, on the
-     writer's thread, from the transaction's batches (Interpret, Accumulate,
-     StageMaintenance on a fresh txn buffer), and `BeginCommit` marks it
-     pending.
-3. Commit (`RuntimeHost::Commit(txn, epoch_of)`): the engine has committed;
-   each accelerator publishes the staged state at the commit's epoch
-   (`FinishCommit`).
+   accelerator's place in commit order (S2), receives its sequence number, and
+   marks readers that may see it (epoch >= S2's lower bound) as waiting.
+3. Commit (`RuntimeHost::Commit(txn, epoch)`): the engine has committed. Each
+   accelerator maintains its state from the transaction's batches (Interpret,
+   Accumulate, StageMaintenance on a fresh txn buffer) and publishes it at the
+   commit's epoch. Maintenance runs after the engine commit, while the
+   accelerator's commit order is still held, so its lookups see the database
+   exactly as this commit left it.
    - Shipped placement (Postgres): the writer delivers `(seq, epoch, batches)`
-     to the worker and waits for the apply, bounded. The worker's applier does
-     steps 2-3 in sequence order.
-4. Abort: staged work is dropped; the sequence number, if taken, is released
-   as a no-op so the sequence stays dense (`SequencedApplier::Skip`).
+     to the worker and waits for the apply, bounded. The worker applies in
+     sequence order (`Pump`).
+4. Abort: the sequence number is released as an empty commit so the sequence
+   stays dense.
 
 A commit is never skipped or dropped. If the accelerator's state is being
 rebuilt, or is invalid, the commit is queued in its applier for catch-up.

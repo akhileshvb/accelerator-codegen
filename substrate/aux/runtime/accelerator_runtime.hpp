@@ -23,9 +23,8 @@ class ThreadBudget;
 // feasibility metrics.
 struct AcceleratorStats {
   uint64_t commits_applied = 0;
-  uint64_t rows_applied = 0;        // changed rows maintained incrementally
-  double apply_us = 0;              // time maintaining them
-  uint64_t bytes_published = 0;     // new partition payload bytes published (estimate)
+  uint64_t rows_applied = 0; // changed rows maintained incrementally
+  double apply_us = 0;       // time maintaining them
   uint64_t builds = 0;
   double build_us = 0;
   uint64_t catch_up_commits = 0;
@@ -40,15 +39,25 @@ enum class ReadResult { Served, Fallback };
 struct ReadOptions {
   // The reader's epoch (S3). VersionedAuxStore::kNewestSnapshot: newest.
   Epoch epoch = VersionedAuxStore::kNewestSnapshot;
-  // Dense-sequence engines (Postgres, MySQL): every commit with epoch <=
+  // Dense-sequence engines (Postgres): every commit with epoch <=
   // `require_applied_through` must be applied before serving (it may be
-  // committed but not yet applied). nullopt: rely on the store's pending
-  // marks (in-process engines mark a commit pending before it is visible).
+  // committed but not yet shipped). In-process engines leave it unset: their
+  // commits are marked in flight from pre-commit until published.
   std::optional<Epoch> require_applied_through;
-  // How long the reader may wait for a pending commit, build or catch-up
-  // before falling back (C11). Backends derive it from the fallback cost.
+  // How long the reader may wait for an in-flight commit, a build or a
+  // catch-up before falling back (C11).
   uint64_t max_wait_us = 0;
 };
+
+// The accelerator's store: VersionedAuxStore by default; an engine may supply
+// another core::AuxStateStore (the Verus store) with its install entry point.
+struct StoreHandle {
+  std::unique_ptr<core::AuxStateStore> store;
+  std::function<void(std::vector<core::StateImage>, Epoch)> install;
+};
+using StoreFactory = std::function<StoreHandle(const core::AcceleratorId &,
+                                               std::function<Epoch()> epoch,
+                                               std::function<Epoch()> floor)>;
 
 class AcceleratorRuntime : public core::AuxEngineServices {
 public:
@@ -57,7 +66,8 @@ public:
   using BuildScheduler = std::function<void(std::function<void()>)>;
 
   AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> module, EngineSlots &slots,
-                     ThreadBudget &threads, BuildScheduler schedule = nullptr);
+                     ThreadBudget &threads, BuildScheduler schedule = nullptr,
+                     StoreFactory make_store = nullptr);
   ~AcceleratorRuntime() override;
 
   const core::AcceleratorId &Id() const { return id; }
@@ -65,17 +75,36 @@ public:
   std::vector<core::TableId> DependencyTables() const;
 
   // ---- reads (any thread; never take the commit or build locks) ----
+  // While a servable guard lives, reads of this accelerator's store on this
+  // thread resolve at options.epoch, in one version.
+  class ReadGuard {
+  public:
+    ~ReadGuard();
+    ReadGuard(ReadGuard &&) noexcept;
+    bool Servable() const { return servable; }
+
+  private:
+    friend class AcceleratorRuntime;
+    struct Scope;
+    ReadGuard(bool servable, std::unique_ptr<Scope> scope);
+    bool servable;
+    std::unique_ptr<Scope> scope;
+  };
+  // Waits (up to options.max_wait_us) until `options` can be served.
+  ReadGuard BeginRead(const ReadOptions &options);
+  // BeginRead, then the module's CheckValidity and Execute.
   ReadResult Read(const ReadOptions &options, const core::QueryArguments &arguments,
                   core::AuxRowSink &sink);
 
   // ---- in-process commits (writer's thread), driven by RuntimeHost ----
-  // Takes this accelerator's place in commit order (blocks while another
-  // in-process commit of it is between StageCommit and Publish/Abort),
-  // assigns its sequence number, and stages maintenance from `batches` when
-  // the state is synced; otherwise only records them.
-  Seq StageCommit(uint64_t txn, const std::vector<ColumnarBatchRef> &batches);
-  void PublishCommit(Epoch epoch);  // the engine committed at `epoch`
-  void AbortCommit();               // the engine rolled back
+  // Pre-commit: takes this accelerator's place in commit order (blocks while
+  // another of its commits is between BeginCommit and Publish/Abort) and
+  // marks readers that may see the commit as waiting.
+  Seq BeginCommit(uint64_t txn, std::vector<ColumnarBatchRef> batches);
+  // The engine committed at `epoch`: maintain (lookups see the database as
+  // the commit left it) and publish; queued for catch-up if not synced.
+  void PublishCommit(Epoch epoch);
+  void AbortCommit(); // the engine rolled back
 
   // ---- shipped commits (Postgres worker main thread) ----
   void OfferCommit(CommittedChange change);
@@ -87,9 +116,10 @@ public:
   // ---- builds ----
   // Ensures a build is running or scheduled (no-op if synced or building).
   void RequestBuild();
-  // Runs one build synchronously on the calling thread (used by the host's
-  // build scheduler and by tests). Returns true if installed and synced.
+  // Runs one build on the calling thread. Returns true if installed and synced.
   bool BuildNow();
+  // Drops the state: readers wait or fall back until the next build.
+  void Invalidate();
   bool IsSynced() const;
 
   // ---- core::AuxEngineServices (what modules see) ----
@@ -102,14 +132,14 @@ public:
   std::size_t WorkerCount() const override;
 
   AcceleratorStats Stats() const;
-  VersionedAuxStore &Store() { return *store; }
 
 private:
   struct Impl;
 
   core::StagedMaintenanceOutcome Stage(const std::vector<ColumnarBatchRef> &batches);
   bool Publish(const core::StagedMaintenanceOutcome &outcome, Epoch epoch);
-  void ApplyShipped(const CommittedChange &change);
+  bool ApplyChange(const CommittedChange &change);
+  void Applied(const CommittedChange &change, double us);
   void MarkStale(Epoch from);
   bool Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const;
 
@@ -117,7 +147,6 @@ private:
   core::AcceleratorId id;
   EngineSlots &slots;
   ThreadBudget &threads;
-  std::unique_ptr<VersionedAuxStore> store;
   std::unique_ptr<Impl> impl;
 };
 

@@ -26,13 +26,6 @@ struct CollectingBuilder final : core::StateBuilder {
   bool finished = false;
 };
 
-core::InvalidationPlan TouchedPlan(const core::StagedMaintenanceOutcome &outcome) {
-  auto plan = outcome.invalidations;
-  MergeInvalidationPlan(plan, outcome.pending_rebuild);
-  MergeInvalidationPlan(plan, core::PartitionSetPlanFromImages(outcome.updates));
-  return plan;
-}
-
 // Whether publishing `outcome` leaves partitions invalidated and not rebuilt.
 bool LeavesInvalidPartitions(const core::StagedMaintenanceOutcome &outcome) {
   auto plan = outcome.invalidations;
@@ -47,12 +40,8 @@ bool LeavesInvalidPartitions(const core::StagedMaintenanceOutcome &outcome) {
   for (const auto &image : outcome.updates) {
     updated.insert(static_cast<PartitionKey>(image.partition));
   }
-  for (const auto partition : plan.partitions) {
-    if (!updated.count(partition)) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(plan.partitions.begin(), plan.partitions.end(),
+                     [&](PartitionKey partition) { return !updated.count(partition); });
 }
 
 double MicrosSince(Clock::time_point start) {
@@ -63,36 +52,37 @@ double MicrosSince(Clock::time_point start) {
 thread_local const AcceleratorRuntime *t_reader = nullptr;
 thread_local Epoch t_reader_epoch = 0;
 
-struct ReaderEpochScope {
-  ReaderEpochScope(const AcceleratorRuntime *runtime, Epoch epoch)
+} // namespace
+
+struct AcceleratorRuntime::ReadGuard::Scope {
+  Scope(const AcceleratorRuntime *runtime, Epoch epoch)
       : saved_reader(t_reader), saved_epoch(t_reader_epoch) {
     t_reader = runtime;
     t_reader_epoch = epoch;
   }
-  ~ReaderEpochScope() {
+  ~Scope() {
     t_reader = saved_reader;
     t_reader_epoch = saved_epoch;
   }
   const AcceleratorRuntime *saved_reader;
   Epoch saved_epoch;
+  AuxReadScope one_version;
 };
 
-} // namespace
+AcceleratorRuntime::ReadGuard::ReadGuard(bool servable_p, std::unique_ptr<Scope> scope_p)
+    : servable(servable_p), scope(std::move(scope_p)) {}
+AcceleratorRuntime::ReadGuard::ReadGuard(ReadGuard &&) noexcept = default;
+AcceleratorRuntime::ReadGuard::~ReadGuard() = default;
 
 struct AcceleratorRuntime::Impl {
   BuildScheduler schedule;
   std::unordered_map<core::TableId, std::vector<int32_t>> projections;
+  StoreHandle store;
 
-  // Writer side. Held from StageCommit to PublishCommit/AbortCommit, and
+  // Writer side. Held from BeginCommit to PublishCommit/AbortCommit, and
   // around every store mutation (applies, installs).
   std::mutex commit_mutex;
-  struct Staged {
-    Seq seq = 0;
-    std::vector<ColumnarBatchRef> batches;
-    std::optional<core::StagedMaintenanceOutcome> outcome; // set when synced
-    bool began = false;
-  };
-  std::optional<Staged> staged;
+  CommittedChange in_flight; // between BeginCommit and Publish/Abort
   Seq next_seq = 0;
   Epoch store_epoch = 0; // what the store's epoch provider returns
   bool registration_checked = false;
@@ -101,19 +91,23 @@ struct AcceleratorRuntime::Impl {
   mutable std::mutex state_mutex;
   std::condition_variable state_cv;
   SequencedApplier applier;
-  // Readers at epochs >= unserved_from cannot be served until the state is
-  // synced past them. Each [from, to) in `collapsed` lost its intermediate
-  // versions to a combined catch-up.
+  // Readers at epochs >= unserved_from wait until the state is synced past
+  // them, and those >= in_flight_from until the in-flight commit is
+  // published. Each [from, to) in `collapsed` lost its intermediate versions
+  // to a combined catch-up.
   Epoch unserved_from = 0;
+  Epoch in_flight_from = kNever;
   std::vector<std::pair<Epoch, Epoch>> collapsed;
   bool build_scheduled = false;
   std::optional<Clock::time_point> gap_since;
   AcceleratorStats stats;
+
+  bool Synced() const { return applier.CurrentMode() == SequencedApplier::Mode::Synced; }
 };
 
 AcceleratorRuntime::AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> module_p,
                                        EngineSlots &slots_p, ThreadBudget &threads_p,
-                                       BuildScheduler schedule)
+                                       BuildScheduler schedule, StoreFactory make_store)
     : module(std::move(module_p)), id(module->Id()), slots(slots_p), threads(threads_p),
       impl(std::make_unique<Impl>()) {
   impl->schedule = schedule ? std::move(schedule)
@@ -123,14 +117,25 @@ AcceleratorRuntime::AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> mod
   for (const auto &dependency : module->Dependencies()) {
     impl->projections[dependency.table] = dependency.mutation_attnums;
   }
-  VersionedAuxStore::Options options;
-  options.epoch = [this] { return impl->store_epoch; };
-  options.floor = [this] {
-    const Epoch floor = slots.OldestReaderEpoch();
-    return floor == EngineSlots::kNoFloor ? kNever : floor;
+  std::function<Epoch()> epoch = [this] { return impl->store_epoch; };
+  std::function<Epoch()> floor = [this] {
+    const Epoch oldest = slots.OldestReaderEpoch();
+    return oldest == EngineSlots::kNoFloor ? kNever : oldest;
   };
-  options.fixed_accelerator = id;
-  store = std::make_unique<VersionedAuxStore>(std::move(options));
+  if (make_store) {
+    impl->store = make_store(id, std::move(epoch), std::move(floor));
+  } else {
+    VersionedAuxStore::Options options;
+    options.epoch = std::move(epoch);
+    options.floor = std::move(floor);
+    options.fixed_accelerator = id;
+    auto store = std::make_unique<VersionedAuxStore>(std::move(options));
+    auto *versioned = store.get();
+    impl->store.install = [versioned, this](std::vector<core::StateImage> images, Epoch at) {
+      versioned->Install(std::move(images), id, at);
+    };
+    impl->store.store = std::move(store);
+  }
 }
 
 AcceleratorRuntime::~AcceleratorRuntime() = default;
@@ -146,7 +151,7 @@ std::vector<core::TableId> AcceleratorRuntime::DependencyTables() const {
 // ---- reads ----
 
 bool AcceleratorRuntime::Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const {
-  if (epoch >= impl->unserved_from) {
+  if (epoch >= impl->unserved_from || epoch >= impl->in_flight_from) {
     return false;
   }
   for (const auto &[from, to] : impl->collapsed) {
@@ -157,37 +162,35 @@ bool AcceleratorRuntime::Servable(Epoch epoch, const std::optional<Epoch> &appli
   return !applied_through || impl->applier.AppliedEpoch() >= *applied_through;
 }
 
+AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &options) {
+  const Epoch epoch =
+      options.epoch == VersionedAuxStore::kNewestSnapshot ? kNever - 1 : options.epoch;
+  std::unique_lock<std::mutex> lock(impl->state_mutex);
+  if (!Servable(epoch, options.require_applied_through)) {
+    lock.unlock();
+    RequestBuild();
+    lock.lock();
+    impl->stats.reads_waited++;
+    const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
+    if (!impl->state_cv.wait_until(lock, deadline, [&] {
+          return Servable(epoch, options.require_applied_through);
+        })) {
+      impl->stats.reads_fallback++;
+      return ReadGuard(false, nullptr);
+    }
+  }
+  impl->stats.reads_hit++;
+  return ReadGuard(true, std::make_unique<ReadGuard::Scope>(this, options.epoch));
+}
+
 ReadResult AcceleratorRuntime::Read(const ReadOptions &options,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  const Epoch epoch =
-      options.epoch == VersionedAuxStore::kNewestSnapshot ? kNever - 1 : options.epoch;
-  {
-    std::unique_lock<std::mutex> lock(impl->state_mutex);
-    if (!Servable(epoch, options.require_applied_through)) {
-      lock.unlock();
-      RequestBuild();
-      lock.lock();
-      impl->stats.reads_waited++;
-      const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
-      if (!impl->state_cv.wait_until(lock, deadline, [&] {
-            return Servable(epoch, options.require_applied_through);
-          })) {
-        impl->stats.reads_fallback++;
-        return ReadResult::Fallback;
-      }
-    }
-  }
-  ReaderEpochScope reader(this, options.epoch);
-  AuxReadScope one_version;
-  if (!module->CheckValidity(*this, arguments)) {
-    std::lock_guard<std::mutex> lock(impl->state_mutex);
-    impl->stats.reads_fallback++;
+  auto guard = BeginRead(options);
+  if (!guard.Servable() || !module->CheckValidity(*this, arguments)) {
     return ReadResult::Fallback;
   }
   module->Execute(*this, arguments, sink);
-  std::lock_guard<std::mutex> lock(impl->state_mutex);
-  impl->stats.reads_hit++;
   return ReadResult::Served;
 }
 
@@ -215,8 +218,7 @@ AcceleratorRuntime::Stage(const std::vector<ColumnarBatchRef> &batches) {
 }
 
 // Publishes `outcome` at `epoch`. Returns false if the state is left invalid
-// (the module asked for a rebuild it did not perform): the caller rebuilds in
-// the background.
+// (the module asked for a rebuild it did not perform).
 bool AcceleratorRuntime::Publish(const core::StagedMaintenanceOutcome &outcome, Epoch epoch) {
   auto invalidate = outcome.invalidations;
   MergeInvalidationPlan(invalidate, outcome.pending_rebuild);
@@ -228,9 +230,37 @@ bool AcceleratorRuntime::Publish(const core::StagedMaintenanceOutcome &outcome, 
       invalidate.scope == InvalidationScope::AllPartitions) {
     invalidate = core::PartitionSetPlanFromImages(outcome.updates);
   }
+  auto &store = *impl->store.store;
   impl->store_epoch = epoch;
-  store->FinishCommit(id, invalidate, outcome.updates, outcome.expected_version);
+  store.BeginCommit(id, invalidate);
+  store.FinishCommit(id, invalidate, outcome.updates, outcome.expected_version);
   return !LeavesInvalidPartitions(outcome);
+}
+
+// Maintains and publishes one committed change. False: the state is now
+// invalid and the change must be replayed after a rebuild.
+bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
+  if (change.empty_commit) {
+    return true;
+  }
+  try {
+    return Publish(Stage(change.batches), change.epoch);
+  } catch (...) {
+    return false;
+  }
+}
+
+// Bookkeeping for an applied change (state_mutex held).
+void AcceleratorRuntime::Applied(const CommittedChange &change, double us) {
+  impl->applier.MarkApplied(change);
+  if (change.empty_commit) {
+    return;
+  }
+  impl->stats.commits_applied++;
+  for (const auto &batch : change.batches) {
+    impl->stats.rows_applied += batch->row_count;
+  }
+  impl->stats.apply_us += us;
 }
 
 void AcceleratorRuntime::MarkStale(Epoch from) {
@@ -240,71 +270,39 @@ void AcceleratorRuntime::MarkStale(Epoch from) {
 
 // ---- in-process commits ----
 
-Seq AcceleratorRuntime::StageCommit(uint64_t txn, const std::vector<ColumnarBatchRef> &batches) {
+Seq AcceleratorRuntime::BeginCommit(uint64_t txn, std::vector<ColumnarBatchRef> batches) {
   impl->commit_mutex.lock(); // released by PublishCommit / AbortCommit
-  Impl::Staged staged{++impl->next_seq, batches, std::nullopt, false};
-  const Epoch visible_from = slots.PendingEpochLowerBound(txn);
-  bool synced;
-  {
-    std::lock_guard<std::mutex> lock(impl->state_mutex);
-    impl->applier.Announce(staged.seq);
-    synced = impl->applier.CurrentMode() == SequencedApplier::Mode::Synced;
-    if (!synced) {
-      impl->unserved_from = std::min(impl->unserved_from, visible_from);
-    }
-  }
-  if (synced) {
-    try {
-      staged.outcome = Stage(batches);
-    } catch (...) {
-      std::lock_guard<std::mutex> lock(impl->state_mutex);
-      MarkStale(visible_from);
-    }
-  }
-  if (staged.outcome) {
-    const auto plan = TouchedPlan(*staged.outcome);
-    if (!plan.IsEmpty()) {
-      impl->store_epoch = visible_from;
-      store->BeginCommit(id, plan);
-      staged.began = true;
-    }
-  }
-  const Seq seq = staged.seq;
-  impl->staged = std::move(staged);
-  return seq;
+  impl->in_flight = CommittedChange{++impl->next_seq, 0, std::move(batches), false};
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  impl->applier.Announce(impl->in_flight.seq);
+  impl->in_flight_from = slots.PendingEpochLowerBound(txn);
+  return impl->in_flight.seq;
 }
 
 void AcceleratorRuntime::PublishCommit(Epoch epoch) {
   std::unique_lock<std::mutex> commit(impl->commit_mutex, std::adopt_lock);
-  auto staged = std::move(*impl->staged);
-  impl->staged.reset();
-  const auto start = Clock::now();
-  bool valid = true;
-  if (staged.outcome) {
-    try {
-      valid = Publish(*staged.outcome, epoch);
-    } catch (...) {
-      store->AbortCommit(id);
-      valid = false;
-    }
+  auto change = std::move(impl->in_flight);
+  change.epoch = epoch;
+  bool synced;
+  {
+    std::lock_guard<std::mutex> lock(impl->state_mutex);
+    synced = impl->Synced();
   }
+  const auto start = Clock::now();
+  const bool applied = synced && ApplyChange(change);
   bool stale;
   {
     std::lock_guard<std::mutex> lock(impl->state_mutex);
-    if (staged.outcome && valid) {
-      impl->applier.MarkApplied(CommittedChange{staged.seq, epoch, {}, false});
-      impl->stats.commits_applied++;
-      for (const auto &batch : staged.batches) {
-        impl->stats.rows_applied += batch->row_count;
-      }
-      impl->stats.apply_us += MicrosSince(start);
+    impl->in_flight_from = kNever;
+    if (applied) {
+      Applied(change, MicrosSince(start));
     } else {
-      if (staged.outcome) {
-        MarkStale(epoch); // published, but left invalid: rebuild from here
+      if (synced) {
+        MarkStale(epoch);
       }
-      impl->applier.Offer(CommittedChange{staged.seq, epoch, std::move(staged.batches), false});
+      impl->applier.Offer(std::move(change)); // replayed by the catch-up
     }
-    stale = impl->applier.CurrentMode() != SequencedApplier::Mode::Synced;
+    stale = !impl->Synced();
   }
   commit.unlock();
   impl->state_cv.notify_all();
@@ -315,18 +313,19 @@ void AcceleratorRuntime::PublishCommit(Epoch epoch) {
 
 void AcceleratorRuntime::AbortCommit() {
   std::unique_lock<std::mutex> commit(impl->commit_mutex, std::adopt_lock);
-  auto staged = std::move(*impl->staged);
-  impl->staged.reset();
-  if (staged.began) {
-    store->AbortCommit(id);
+  CommittedChange skipped{impl->in_flight.seq, 0, {}, true};
+  impl->in_flight = CommittedChange{};
+  {
+    std::lock_guard<std::mutex> lock(impl->state_mutex);
+    impl->in_flight_from = kNever;
+    if (impl->Synced()) {
+      Applied(skipped, 0);
+    } else {
+      impl->applier.Offer(std::move(skipped));
+    }
   }
-  CommittedChange skipped{staged.seq, 0, {}, true};
-  std::lock_guard<std::mutex> lock(impl->state_mutex);
-  if (staged.outcome) {
-    impl->applier.MarkApplied(skipped);
-  } else {
-    impl->applier.Offer(std::move(skipped));
-  }
+  commit.unlock();
+  impl->state_cv.notify_all();
 }
 
 // ---- shipped commits ----
@@ -341,48 +340,32 @@ void AcceleratorRuntime::AnnounceCommit(Seq seq) {
   impl->applier.Announce(seq);
 }
 
-void AcceleratorRuntime::ApplyShipped(const CommittedChange &change) {
-  bool valid = true;
-  const auto start = Clock::now();
-  if (!change.empty_commit) {
-    try {
-      valid = Publish(Stage(change.batches), change.epoch);
-    } catch (...) {
-      valid = false;
-    }
-  }
-  std::lock_guard<std::mutex> lock(impl->state_mutex);
-  if (!valid) {
-    MarkStale(change.epoch);
-    impl->applier.Offer(change); // replayed by the catch-up after the rebuild
-    return;
-  }
-  impl->applier.MarkApplied(change);
-  if (!change.empty_commit) {
-    impl->stats.commits_applied++;
-    for (const auto &batch : change.batches) {
-      impl->stats.rows_applied += batch->row_count;
-    }
-    impl->stats.apply_us += MicrosSince(start);
-  }
-}
-
 void AcceleratorRuntime::Pump(uint64_t gap_timeout_us) {
   {
     std::lock_guard<std::mutex> commit(impl->commit_mutex);
-    for (;;) {
+    for (bool more = true; more;) {
       std::vector<CommittedChange> ready;
       {
         std::lock_guard<std::mutex> lock(impl->state_mutex);
-        if (impl->applier.CurrentMode() == SequencedApplier::Mode::Synced) {
+        if (impl->Synced()) {
           ready = impl->applier.TakeReady();
         }
       }
-      if (ready.empty()) {
-        break;
-      }
-      for (const auto &change : ready) {
-        ApplyShipped(change);
+      more = !ready.empty();
+      for (std::size_t i = 0; i < ready.size(); i++) {
+        const auto start = Clock::now();
+        const bool applied = ApplyChange(ready[i]);
+        std::lock_guard<std::mutex> lock(impl->state_mutex);
+        if (applied) {
+          Applied(ready[i], MicrosSince(start));
+          continue;
+        }
+        // This change and the rest are replayed after the rebuild.
+        MarkStale(ready[i].epoch);
+        for (; i < ready.size(); i++) {
+          impl->applier.Offer(std::move(ready[i]));
+        }
+        more = false;
       }
     }
   }
@@ -390,8 +373,7 @@ void AcceleratorRuntime::Pump(uint64_t gap_timeout_us) {
   bool rebuild;
   {
     std::lock_guard<std::mutex> lock(impl->state_mutex);
-    const auto mode = impl->applier.CurrentMode();
-    if (mode == SequencedApplier::Mode::Synced && impl->applier.HasGap()) {
+    if (impl->Synced() && impl->applier.HasGap()) {
       if (!impl->gap_since) {
         impl->gap_since = Clock::now();
       }
@@ -402,7 +384,7 @@ void AcceleratorRuntime::Pump(uint64_t gap_timeout_us) {
       }
     } else {
       impl->gap_since.reset();
-      rebuild = mode == SequencedApplier::Mode::Stale;
+      rebuild = !impl->Synced();
     }
   }
   if (rebuild) {
@@ -414,14 +396,21 @@ void AcceleratorRuntime::Pump(uint64_t gap_timeout_us) {
 
 bool AcceleratorRuntime::IsSynced() const {
   std::lock_guard<std::mutex> lock(impl->state_mutex);
-  return impl->applier.CurrentMode() == SequencedApplier::Mode::Synced &&
-         impl->unserved_from == kNever;
+  return impl->Synced() && impl->unserved_from == kNever;
+}
+
+void AcceleratorRuntime::Invalidate() {
+  std::lock_guard<std::mutex> commit(impl->commit_mutex);
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  if (impl->Synced()) {
+    MarkStale(0);
+  }
 }
 
 void AcceleratorRuntime::RequestBuild() {
   {
     std::lock_guard<std::mutex> lock(impl->state_mutex);
-    if (impl->build_scheduled || impl->applier.CurrentMode() == SequencedApplier::Mode::Synced) {
+    if (impl->build_scheduled || impl->Synced()) {
       return;
     }
     impl->build_scheduled = true;
@@ -440,15 +429,16 @@ void AcceleratorRuntime::RequestBuild() {
 bool AcceleratorRuntime::BuildNow() {
   const auto start = Clock::now();
   {
-    // No in-process commit may be staged across the switch: every commit
+    // No in-process commit may be in flight across the switch: every commit
     // from here on is queued for the catch-up.
     std::lock_guard<std::mutex> commit(impl->commit_mutex);
     std::lock_guard<std::mutex> lock(impl->state_mutex);
-    if (impl->applier.CurrentMode() == SequencedApplier::Mode::Synced) {
+    if (impl->Synced()) {
       return true;
     }
     impl->applier.StartBuild();
   }
+  std::vector<CommittedChange> catch_up;
   try {
     if (!impl->registration_checked) {
       if (!slots.WaitForPreRegistrationWriters(DependencyTables(), kRegistrationWaitUs)) {
@@ -472,19 +462,19 @@ bool AcceleratorRuntime::BuildNow() {
     }
 
     std::lock_guard<std::mutex> commit(impl->commit_mutex);
-    store->Install(std::move(builder.images), id, b);
-    std::vector<CommittedChange> catch_up;
+    impl->store.install(std::move(builder.images), b);
     {
       std::lock_guard<std::mutex> lock(impl->state_mutex);
       catch_up = impl->applier.TakeCatchUp(b);
     }
     bool valid = true;
     if (!catch_up.empty()) {
-      std::vector<ColumnarBatchRef> batches;
+      CommittedChange combined{catch_up.back().seq, catch_up.back().epoch, {}, false};
       for (const auto &change : catch_up) {
-        batches.insert(batches.end(), change.batches.begin(), change.batches.end());
+        combined.batches.insert(combined.batches.end(), change.batches.begin(),
+                                change.batches.end());
       }
-      valid = Publish(Stage(batches), catch_up.back().epoch);
+      valid = ApplyChange(combined);
     }
     std::lock_guard<std::mutex> lock(impl->state_mutex);
     impl->applier.FinishCatchUp();
@@ -492,9 +482,8 @@ bool AcceleratorRuntime::BuildNow() {
       MarkStale(catch_up.back().epoch);
     } else {
       // Readers between the first and last caught-up commit would need
-      // versions the combined catch-up never produced.
-      // Without a floor the store keeps only the newest version, so no reader
-      // can resolve a collapsed range.
+      // versions the combined catch-up never produced. Without a floor the
+      // store keeps only the newest version, so none can resolve them.
       const Epoch floor = slots.OldestReaderEpoch();
       auto &collapsed = impl->collapsed;
       collapsed.erase(std::remove_if(collapsed.begin(), collapsed.end(),
@@ -530,7 +519,7 @@ core::VisibilityToken AcceleratorRuntime::CurrentVisibility() const {
   return token;
 }
 
-core::AuxStateStore &AcceleratorRuntime::StateStore() { return *store; }
+core::AuxStateStore &AcceleratorRuntime::StateStore() { return *impl->store.store; }
 
 const maintenance::CostModelParams &AcceleratorRuntime::MaintenanceCostModel() const {
   return slots.CostModel(id);

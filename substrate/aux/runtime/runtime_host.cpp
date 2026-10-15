@@ -199,7 +199,7 @@ void RuntimeHost::PreCommit(uint64_t txn) {
   std::vector<AcceleratorRuntime *> staged;
   try {
     for (auto *runtime : order) {
-      runtime->StageCommit(txn, per_runtime[runtime]);
+      runtime->BeginCommit(txn, std::move(per_runtime[runtime]));
       staged.push_back(runtime);
     }
   } catch (...) {
