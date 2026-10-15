@@ -61,6 +61,7 @@ private:
   void CommitLoop();
   void ReadLoop();
   void Serve(const std::string &message);
+  bool ReadWithin(const ReadRequest &request, Clock::time_point deadline, std::vector<core::AuxRow> &rows);
   void Touch();
 
   ShardSegment &segment;

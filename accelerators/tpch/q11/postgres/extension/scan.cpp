@@ -87,7 +87,8 @@ Q11Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q11_COST_MODEL",
               core::kTpchQ11CostModel,
               query::TpchQ11Layout::kAccelerator,
-              query::TpchQ11Config{pg_tbl::kPartsupp, pg_tbl::kSupplier, pg_tbl::kNation});
+              query::TpchQ11Config{pg_tbl::kPartsupp, pg_tbl::kSupplier, pg_tbl::kNation},
+              {{"partsupp", pg_tbl::kPartsupp}, {"supplier", pg_tbl::kSupplier}, {"nation", pg_tbl::kNation}});
   return runtime;
 }
 } // namespace

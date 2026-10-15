@@ -116,7 +116,8 @@ Runtime<query::TpchQ2Module, query::TpchQ2Config, TpchQ2Scan> &Q2Runtime() {
   static Runtime<query::TpchQ2Module, query::TpchQ2Config, TpchQ2Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q2_COST_MODEL",
               core::kTpchQ2CostModel, core::TpchQ2Layout::kAccelerator,
-              query::TpchQ2Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kPartsupp, pg_tbl::kNation, pg_tbl::kRegion});
+              query::TpchQ2Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kPartsupp, pg_tbl::kNation, pg_tbl::kRegion},
+              {{"part", pg_tbl::kPart}, {"supplier", pg_tbl::kSupplier}, {"partsupp", pg_tbl::kPartsupp}, {"nation", pg_tbl::kNation}, {"region", pg_tbl::kRegion}});
   return runtime;
 }
 } // namespace

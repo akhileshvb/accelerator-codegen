@@ -11,6 +11,11 @@
 #include "backends/postgres/api/accelerators.hpp"
 #include "backends/postgres/state/shared.hpp"
 
+extern "C" {
+#include <postgres.h>
+#include <catalog/namespace.h>
+}
+
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace {
 
@@ -19,6 +24,25 @@ struct Tables {
   std::unordered_map<core::TableId, WatchedTable> watched;
   std::map<int, std::unordered_set<core::TableId>> of_accelerator; // by index
 };
+
+// The oid of every table of `accelerator`, by the module's number; the tables
+// that do not exist (nothing to capture on them) are left out.
+runtime::TableMap ResolveTables(const PostgresAccelerator &accelerator, bool must_exist) {
+  runtime::TableMap map;
+  for (const auto &table : accelerator.Tables()) {
+    const Oid oid = RelnameGetRelid(table.relation);
+    if (!OidIsValid(oid)) {
+      if (must_exist) {
+        ereport(ERROR, (errmsg("accelerator %s: relation \"%s\" not found", accelerator.Id().c_str(), table.relation)));
+      }
+      ereport(WARNING, (errmsg("accelerator %s: relation \"%s\" not found; its writes are not captured",
+                               accelerator.Id().c_str(), table.relation)));
+      continue;
+    }
+    map[table.module_id] = oid;
+  }
+  return map;
+}
 
 const Tables &Current() {
   static Tables tables;
@@ -33,10 +57,21 @@ const Tables &Current() {
     if (accelerator == nullptr) {
       continue; // activated by a build that has other accelerators compiled in
     }
+    const auto host = ResolveTables(*accelerator, /*must_exist=*/false);
     auto &mine = tables.of_accelerator[index];
     for (const auto &dependency : accelerator->Dependencies()) {
-      mine.insert(dependency.table);
-      auto &watched = tables.watched[dependency.table];
+      const auto oid = host.find(dependency.table);
+      if (oid == host.end()) { // its relation was reported missing by ResolveTables, or is not named at all
+        const auto named = accelerator->Tables();
+        if (std::none_of(named.begin(), named.end(),
+                         [&](const AcceleratorTable &t) { return t.module_id == dependency.table; })) {
+          ereport(WARNING, (errmsg("accelerator %s: table %llu is not named; its writes are not captured",
+                                   accelerator->Id().c_str(), static_cast<unsigned long long>(dependency.table))));
+        }
+        continue;
+      }
+      mine.insert(oid->second);
+      auto &watched = tables.watched[oid->second];
       watched.whole_row |= dependency.mutation_attnums.empty();
       watched.attnums.insert(watched.attnums.end(), dependency.mutation_attnums.begin(),
                              dependency.mutation_attnums.end());
@@ -51,6 +86,17 @@ const Tables &Current() {
 }
 
 } // namespace
+
+runtime::TableMap HostTableMap(const PostgresAccelerator &accelerator) {
+  return ResolveTables(accelerator, /*must_exist=*/true);
+}
+
+std::vector<core::TableId> HostTables(int index) {
+  const auto &of_accelerator = Current().of_accelerator;
+  const auto it = of_accelerator.find(index);
+  return it == of_accelerator.end() ? std::vector<core::TableId>{}
+                                    : std::vector<core::TableId>(it->second.begin(), it->second.end());
+}
 
 const WatchedTable *WatchedBy(core::TableId table) {
   const auto &watched = Current().watched;

@@ -78,7 +78,8 @@ Q16Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q16_COST_MODEL",
               core::kTpchQ16CostModel,
               query::TpchQ16Layout::kAccelerator,
-              query::TpchQ16Config{pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier});
+              query::TpchQ16Config{pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier},
+              {{"part", pg_tbl::kPart}, {"partsupp", pg_tbl::kPartsupp}, {"supplier", pg_tbl::kSupplier}});
   return runtime;
 }
 } // namespace

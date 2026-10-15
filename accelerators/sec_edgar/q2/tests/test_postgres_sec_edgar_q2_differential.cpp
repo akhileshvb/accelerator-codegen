@@ -96,8 +96,8 @@ struct Test {
     std::stringstream ts;
     ts << trig.rdbuf();
     w->Exec(ts.str());
-    w->Exec("SELECT create_accel_mutation_triggers('sub', '1', 'accel_codegen_sec_edgar')");
-    w->Exec("SELECT create_accel_mutation_triggers('num', '2', 'accel_codegen_sec_edgar')");
+    w->Exec("SELECT create_accel_mutation_triggers('sub', 'accel_codegen_sec_edgar')");
+    w->Exec("SELECT create_accel_mutation_triggers('num', 'accel_codegen_sec_edgar')");
     for (int i = 0; i < 70; ++i) {
       AddSub(*w);
     }

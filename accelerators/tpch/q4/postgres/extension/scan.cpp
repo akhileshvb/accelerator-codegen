@@ -60,7 +60,8 @@ Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Scan> &Q4Runtime() {
   static Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q4_COST_MODEL",
               core::kTpchQ4CostModel, query::TpchQ4Layout::kAccelerator,
-              query::TpchQ4Config{pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ4Config{pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

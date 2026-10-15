@@ -88,7 +88,8 @@ Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Scan> &Q1Runtime() {
   static Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q1_COST_MODEL",
               core::kTpchQ1CostModel,
-              core::TpchQ1Layout::kAccelerator, query::TpchQ1Config{pg_tbl::kLineitem});
+              core::TpchQ1Layout::kAccelerator, query::TpchQ1Config{pg_tbl::kLineitem},
+              {{"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

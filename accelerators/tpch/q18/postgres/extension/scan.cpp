@@ -121,7 +121,8 @@ Q18Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q18_COST_MODEL",
               core::kTpchQ18CostModel,
               query::TpchQ18Layout::kAccelerator,
-              query::TpchQ18Config{pg_tbl::kLineitem, pg_tbl::kOrders, pg_tbl::kCustomer});
+              query::TpchQ18Config{pg_tbl::kLineitem, pg_tbl::kOrders, pg_tbl::kCustomer},
+              {{"lineitem", pg_tbl::kLineitem}, {"orders", pg_tbl::kOrders}, {"customer", pg_tbl::kCustomer}});
   return runtime;
 }
 } // namespace

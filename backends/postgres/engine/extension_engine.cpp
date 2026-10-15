@@ -12,17 +12,12 @@ extern "C" {
 PG_MODULE_MAGIC;
 }
 
-#include <execinfo.h>
-#include <csignal>
-#include <unistd.h>
 #include "backends/postgres/state/shard_worker.hpp"
 #include "backends/postgres/state/shared.hpp"
 
 extern "C" {
 
-static void DbgSegv(int) { void *b[50]; int n = backtrace(b, 50); backtrace_symbols_fd(b, n, 2); _exit(139); }
 void _PG_init(void) {
-  signal(SIGSEGV, DbgSegv);
   namespace postgres = accelerator_codegen::aux_state::engine::postgres;
   postgres::shared::DefineGucs();
   postgres::shard::DefineGucs();

@@ -195,7 +195,8 @@ Runtime<query::TpchQ5Module, query::TpchQ5Config, TpchQ5Scan> &Q5Runtime() {
   static Runtime<query::TpchQ5Module, query::TpchQ5Config, TpchQ5Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q5_COST_MODEL",
               core::kTpchQ5CostModel, core::TpchQ5Layout::kAccelerator,
-              query::TpchQ5Config{pg_tbl::kRegion, pg_tbl::kNation, pg_tbl::kCustomer, pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ5Config{pg_tbl::kRegion, pg_tbl::kNation, pg_tbl::kCustomer, pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"region", pg_tbl::kRegion}, {"nation", pg_tbl::kNation}, {"customer", pg_tbl::kCustomer}, {"supplier", pg_tbl::kSupplier}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

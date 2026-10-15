@@ -113,7 +113,8 @@ Q19Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q19_COST_MODEL",
               core::kTpchQ19CostModel,
               query::TpchQ19Layout::kAccelerator,
-              query::TpchQ19Config{pg_tbl::kLineitem, pg_tbl::kPart});
+              query::TpchQ19Config{pg_tbl::kLineitem, pg_tbl::kPart},
+              {{"lineitem", pg_tbl::kLineitem}, {"part", pg_tbl::kPart}});
   return runtime;
 }
 } // namespace

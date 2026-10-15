@@ -202,7 +202,8 @@ Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Scan> &Q9Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q9_COST_MODEL",
               core::kTpchQ9CostModel,
               query::TpchQ9Layout::kAccelerator,
-              query::TpchQ9Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kNation, pg_tbl::kOrders, pg_tbl::kPartsupp, pg_tbl::kLineitem});
+              query::TpchQ9Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kNation, pg_tbl::kOrders, pg_tbl::kPartsupp, pg_tbl::kLineitem},
+              {{"part", pg_tbl::kPart}, {"supplier", pg_tbl::kSupplier}, {"nation", pg_tbl::kNation}, {"orders", pg_tbl::kOrders}, {"partsupp", pg_tbl::kPartsupp}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

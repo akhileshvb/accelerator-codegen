@@ -90,7 +90,8 @@ Q17Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q17_COST_MODEL",
               core::kTpchQ17CostModel,
               query::TpchQ17Layout::kAccelerator,
-              query::TpchQ17Config{pg_tbl::kPart, pg_tbl::kLineitem});
+              query::TpchQ17Config{pg_tbl::kPart, pg_tbl::kLineitem},
+              {{"part", pg_tbl::kPart}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

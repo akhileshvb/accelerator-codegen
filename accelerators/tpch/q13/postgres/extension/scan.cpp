@@ -60,7 +60,8 @@ Q13Runtime() {
   static Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q13_COST_MODEL",
               core::kTpchQ13CostModel,
-              core::TpchQ13Layout::kAccelerator, query::TpchQ13Config{pg_tbl::kCustomer, pg_tbl::kOrders});
+              core::TpchQ13Layout::kAccelerator, query::TpchQ13Config{pg_tbl::kCustomer, pg_tbl::kOrders},
+              {{"customer", pg_tbl::kCustomer}, {"orders", pg_tbl::kOrders}});
   return runtime;
 }
 } // namespace

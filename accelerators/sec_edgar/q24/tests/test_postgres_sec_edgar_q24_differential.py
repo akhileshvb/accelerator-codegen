@@ -297,7 +297,7 @@ def pre_insert(rows):
 
 
 def load_schema_and_data(admin, db, gen):
-    admin.run("DROP DATABASE IF EXISTS %s" % db)
+    admin.run("DROP DATABASE IF EXISTS %s WITH (FORCE)" % db)
     admin.run("CREATE DATABASE %s" % db)
     s = Session(db, "setup")
     with open(os.path.join(ROOT, "workloads", "sec_edgar", "schema.sql")) as f:
@@ -317,8 +317,8 @@ def install_module(s):
     s.run("CREATE EXTENSION accelerator_codegen_postgres")
     # Fixed SEC-EDGAR capture ids (same as the instance template): num=2 pre=3.
     s.run("\\i %s" % os.path.join(SCRIPTS, "postgres_accel_mutation_triggers.sql"))
-    s.run("SELECT create_accel_mutation_triggers('num','2','accel_codegen_sec_edgar')")
-    s.run("SELECT create_accel_mutation_triggers('pre','3','accel_codegen_sec_edgar')")
+    s.run("SELECT create_accel_mutation_triggers('num','accel_codegen_sec_edgar')")
+    s.run("SELECT create_accel_mutation_triggers('pre','accel_codegen_sec_edgar')")
 
 
 # ── random writes ────────────────────────────────────────────────────────────

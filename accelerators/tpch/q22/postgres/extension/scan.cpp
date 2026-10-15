@@ -78,7 +78,8 @@ Q22Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q22_COST_MODEL",
               core::kTpchQ22CostModel,
               query::TpchQ22Layout::kAccelerator,
-              query::TpchQ22Config{pg_tbl::kOrders, pg_tbl::kCustomer});
+              query::TpchQ22Config{pg_tbl::kOrders, pg_tbl::kCustomer},
+              {{"orders", pg_tbl::kOrders}, {"customer", pg_tbl::kCustomer}});
   return runtime;
 }
 } // namespace

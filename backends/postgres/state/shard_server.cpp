@@ -157,6 +157,35 @@ void ShardServer::ReadLoop() {
   failed = failed || !stopping;
 }
 
+// The runtime waits for commits, builds and catch-ups up to the request's
+// budget in one call; here in slices, so that a stopping worker is not held up
+// by a reader that waits for a build that will not finish.
+bool ShardServer::ReadWithin(const ReadRequest &request, Clock::time_point deadline,
+                             std::vector<core::AuxRow> &rows) {
+  constexpr uint64_t kSliceUs = 100'000;
+  const auto budget_end = Clock::now() + std::chrono::microseconds(request.max_wait_us);
+  for (;;) {
+    const auto now = Clock::now();
+    const auto remaining_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                  std::min(budget_end, deadline) - now).count();
+    runtime::ReadOptions options;
+    options.epoch = request.epoch;
+    options.require_applied_through = request.epoch;
+    options.max_wait_us = static_cast<uint64_t>(std::clamp<int64_t>(remaining_us, 0, kSliceUs));
+    RowCollector collected;
+    if (runtime.Read(options, request.arguments, collected) == runtime::ReadResult::Served) {
+      rows = std::move(collected.rows);
+      return true;
+    }
+    // Declined at once: waiting longer does not help. Otherwise the slice was
+    // spent waiting, and the budget may allow another.
+    const auto waited_us = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - now).count();
+    if (stopping || remaining_us <= static_cast<int64_t>(kSliceUs) || waited_us < static_cast<int64_t>(kSliceUs) / 2) {
+      return false;
+    }
+  }
+}
+
 void ShardServer::Serve(const std::string &message) {
   ReadRequest request;
   try {
@@ -177,15 +206,7 @@ void ShardServer::Serve(const std::string &message) {
     }
     ReadResponse response;
     try {
-      runtime::ReadOptions options;
-      options.epoch = request.epoch;
-      options.require_applied_through = request.epoch;
-      options.max_wait_us = std::min<uint64_t>(
-          request.max_wait_us,
-          std::chrono::duration_cast<std::chrono::microseconds>(deadline - Clock::now()).count());
-      RowCollector rows;
-      response.served = runtime.Read(options, request.arguments, rows) == runtime::ReadResult::Served;
-      response.rows = std::move(rows.rows);
+      response.served = ReadWithin(request, deadline, response.rows);
     } catch (const std::exception &e) {
       segment.stats.errors++;
       segment.SetText(ShardSegment::kLastError, e.what());

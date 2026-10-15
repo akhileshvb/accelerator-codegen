@@ -114,7 +114,8 @@ Q20Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q20_COST_MODEL",
               core::kTpchQ20CostModel,
               query::TpchQ20Layout::kAccelerator,
-              query::TpchQ20Config{pg_tbl::kLineitem, pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier, pg_tbl::kNation});
+              query::TpchQ20Config{pg_tbl::kLineitem, pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier, pg_tbl::kNation},
+              {{"lineitem", pg_tbl::kLineitem}, {"part", pg_tbl::kPart}, {"partsupp", pg_tbl::kPartsupp}, {"supplier", pg_tbl::kSupplier}, {"nation", pg_tbl::kNation}});
   return runtime;
 }
 } // namespace

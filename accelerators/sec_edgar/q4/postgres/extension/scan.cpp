@@ -253,6 +253,7 @@ Runtime<query::SecEdgarQ4Module, query::SecEdgarQ4Config, SecEdgarQ4PgScan> &Q4R
       "ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q4_COST_MODEL",
       core::kSecEdgarQ4CostModel, core::SecEdgarQ4Layout::kAccelerator,
       query::SecEdgarQ4Config{kSecEdgarNum, kSecEdgarSub, kSecEdgarTag, kSecEdgarPre},
+              {{"num", kSecEdgarNum}, {"sub", kSecEdgarSub}, {"tag", kSecEdgarTag}, {"pre", kSecEdgarPre}},
       {}, /*tune_build=*/true);
   return runtime;
 }

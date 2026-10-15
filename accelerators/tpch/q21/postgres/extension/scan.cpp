@@ -111,6 +111,7 @@ Q21Runtime() {
               core::kTpchQ21CostModel,
               query::TpchQ21Layout::kAccelerator,
               query::TpchQ21Config{pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem, pg_tbl::kNation},
+              {{"supplier", pg_tbl::kSupplier}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}, {"nation", pg_tbl::kNation}},
               {{"supplier", "s_name"}});
   return runtime;
 }

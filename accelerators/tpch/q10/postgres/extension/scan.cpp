@@ -107,7 +107,8 @@ Q10Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q10_COST_MODEL",
               core::kTpchQ10CostModel,
               core::TpchQ10Layout::kAccelerator,
-              query::TpchQ10Config{pg_tbl::kCustomer, pg_tbl::kNation, pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ10Config{pg_tbl::kCustomer, pg_tbl::kNation, pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"customer", pg_tbl::kCustomer}, {"nation", pg_tbl::kNation}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

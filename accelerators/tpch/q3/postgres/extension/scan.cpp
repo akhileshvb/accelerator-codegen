@@ -84,7 +84,8 @@ Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Scan> &Q3Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q3_COST_MODEL",
               core::kTpchQ3CostModel,
               query::TpchQ3Layout::kAccelerator,
-              query::TpchQ3Config{pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ3Config{pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"customer", pg_tbl::kCustomer}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

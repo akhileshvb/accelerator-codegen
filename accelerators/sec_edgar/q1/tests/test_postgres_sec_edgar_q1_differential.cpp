@@ -140,7 +140,7 @@ std::string ReadFile(const std::string &path) {
 void SetupScratch() {
   {
     Conn admin(ConnWithDb("postgres"));
-    admin.Query(std::string("DROP DATABASE IF EXISTS ") + kScratchDb);
+    admin.Query(std::string("DROP DATABASE IF EXISTS ") + kScratchDb + " WITH (FORCE)");
     admin.Query(std::string("CREATE DATABASE ") + kScratchDb);
   }
   Conn c(ConnWithDb(kScratchDb));
@@ -151,7 +151,7 @@ void SetupScratch() {
   c.Query(
       "CREATE TABLE pre (adsh VARCHAR(20), report INTEGER, line INTEGER, stmt VARCHAR(2), inpth INTEGER, "
       "rfile VARCHAR(1), tag VARCHAR(256), version VARCHAR(20), plabel VARCHAR(1024), negating INTEGER)");
-  c.Query("SELECT create_accel_mutation_triggers('pre', '3', 'accel_codegen_sec_edgar')");
+  c.Query("SELECT create_accel_mutation_triggers('pre', 'accel_codegen_sec_edgar')");
   // 40k rows over ~4k canonical accessions, a few non-canonical ones, NULLs.
   c.Query(
       "INSERT INTO pre SELECT "

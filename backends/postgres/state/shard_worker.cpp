@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "backends/postgres/api/accelerators.hpp"
+#include "backends/postgres/engine/accelerator_tables.hpp"
 #include "backends/postgres/state/shard_gucs.hpp"
 #include "backends/postgres/state/shard_server.hpp"
 #include "backends/postgres/state/shard_slots.hpp"
@@ -233,15 +234,16 @@ private:
   const core::AcceleratorId id = shared::IdOf(index);
   StartTransactionCommand();
   PostgresAccelerator *accelerator = FindPostgresAccelerator(id);
-  CommitTransactionCommand();
   if (!accelerator) {
     elog(FATAL, "accelerator %s is not compiled into this module", id.c_str());
   }
+  const runtime::TableMap tables = HostTableMap(*accelerator);
+  CommitTransactionCommand();
 
   CommitArrivals arrivals;
   PgSlots slots(index, *accelerator, arrivals);
   runtime::RuntimeHost host(slots, shared::ThreadBudget(), shared::ThreadTokens());
-  runtime::AcceleratorRuntime &runtime = host.Register(accelerator->Module());
+  runtime::AcceleratorRuntime &runtime = host.Register(accelerator->Module(), nullptr, tables);
   slots.NotePreRegistrationWriters();
   ShardServer server(*segment, index, runtime, arrivals);
   g_server = &server;

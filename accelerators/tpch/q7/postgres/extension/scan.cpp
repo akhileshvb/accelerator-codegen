@@ -113,6 +113,7 @@ Runtime<query::TpchQ7Module, query::TpchQ7Config, TpchQ7Scan> &Q7Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q7_COST_MODEL",
               core::kTpchQ7CostModel, core::TpchQ7Layout::kAccelerator,
               query::TpchQ7Config{pg_tbl::kNation, pg_tbl::kSupplier, pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"nation", pg_tbl::kNation}, {"supplier", pg_tbl::kSupplier}, {"customer", pg_tbl::kCustomer}, {"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}},
               {{"nation", "n_name"}});
   return runtime;
 }

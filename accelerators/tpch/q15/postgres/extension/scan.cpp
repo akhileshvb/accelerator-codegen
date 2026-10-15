@@ -90,7 +90,8 @@ Q15Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q15_COST_MODEL",
               core::kTpchQ15CostModel,
               query::TpchQ15Layout::kAccelerator,
-              query::TpchQ15Config{pg_tbl::kLineitem, pg_tbl::kSupplier});
+              query::TpchQ15Config{pg_tbl::kLineitem, pg_tbl::kSupplier},
+              {{"lineitem", pg_tbl::kLineitem}, {"supplier", pg_tbl::kSupplier}});
   return runtime;
 }
 } // namespace

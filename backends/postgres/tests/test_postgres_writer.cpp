@@ -184,9 +184,9 @@ void Setup() {
   std::ifstream triggers(triggers_path);
   Check(triggers.good(), "read " + triggers_path);
   sql << triggers.rdbuf();
-  sql << "SELECT create_accel_mutation_triggers('t1', '1', 'wt');\n"
-      << "SELECT create_accel_mutation_triggers('t2', '2', 'wt');\n"
-      << "SELECT create_accel_mutation_triggers('t3', '3', 'wt');\n";
+  sql << "SELECT create_accel_mutation_triggers('t1', 'wt');\n"
+      << "SELECT create_accel_mutation_triggers('t2', 'wt');\n"
+      << "SELECT create_accel_mutation_triggers('t3', 'wt');\n";
   admin.Ok(sql.str());
 }
 
@@ -434,7 +434,7 @@ void TestSubtransactions() {
   const auto a = sent.find("new 0=[i101]"), b = sent.find("new 0=[i103]"), d = sent.find("new 0=[i104]");
   Check(a != std::string::npos && b != std::string::npos && d != std::string::npos && a < b && b < d, "batches 101, 103, 104 in statement order", sent);
   Check(!Contains(sent, "i102"), "the rolled-back batch is gone", sent);
-  Check(!Contains(sent, "table=2"), "so is the rolled-back write to t2", sent);
+  Check(!Contains(sent, "table=t2"), "so is the rolled-back write to t2", sent);
 
   // Rolling back the whole transaction after a released savepoint.
   c.Ok("SELECT wt_sent_reset()");
@@ -466,7 +466,7 @@ void TestCapture() {
       "INSERT INTO t1 VALUES (1, 10, 12.50, 'hello', '2020-01-02', 1.5, 1234567890123456789012.0123456789, 7),"
       " (2, NULL, 0.05, NULL, NULL, NULL, NULL, 8)");
   // The union of fake_a (0-3) and fake_b (2-6): column 7 is not captured.
-  Check(Contains(insert, "batch table=1 kind=insert rows=2 updated=[]"), "insert batch", insert);
+  Check(Contains(insert, "batch table=t1 kind=insert rows=2 updated=[]"), "insert batch", insert);
   Check(Contains(insert, "new 0=[i1,i2] 1=[i10,NULL] 2=[d12.50,d0.05] 3=[shello,NULL] 4=[D18263,NULL] 5=[f1.5,NULL] "
                          "6=[w1234567890123456789012.0123456789,NULL]"),
         "insert columns and types", insert);

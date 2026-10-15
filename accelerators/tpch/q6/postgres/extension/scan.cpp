@@ -79,7 +79,8 @@ Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan> &Q6Runtime() {
   static Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q6_COST_MODEL",
               core::kTpchQ6CostModel,
-              core::TpchQ6Layout::kAccelerator, query::TpchQ6Config{pg_tbl::kLineitem});
+              core::TpchQ6Layout::kAccelerator, query::TpchQ6Config{pg_tbl::kLineitem},
+              {{"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

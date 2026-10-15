@@ -25,7 +25,6 @@ extern "C" {
 }
 
 #include <algorithm>
-#include <cerrno>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -331,21 +330,6 @@ std::vector<int32_t> UpdatedAttnums(const Bitmapset *updated, const std::vector<
   return attnums;
 }
 
-// The trigger's argument is the table id the accelerators use in
-// Dependencies(); without one, the relation oid.
-TableId TableIdOf(const TriggerData *trigger_data) {
-  const Trigger *trigger = trigger_data->tg_trigger;
-  if (trigger->tgnargs > 0 && trigger->tgargs[0][0] != '\0') {
-    char *end = nullptr;
-    errno = 0;
-    const auto value = std::strtoull(trigger->tgargs[0], &end, 10);
-    if (errno == 0 && *end == '\0' && value != 0) {
-      return static_cast<TableId>(value);
-    }
-  }
-  return static_cast<TableId>(RelationGetRelid(trigger_data->tg_relation));
-}
-
 Datum CaptureTransition(FunctionCallInfo fcinfo) {
   if (!CALLED_AS_TRIGGER(fcinfo)) {
     ereport(ERROR, (errmsg("accelerator transition capture must be called as a trigger")));
@@ -356,7 +340,7 @@ Datum CaptureTransition(FunctionCallInfo fcinfo) {
     ereport(ERROR, (errmsg("accelerator transition capture requires an AFTER STATEMENT trigger")));
   }
   engine::RegisterPostgresXactCallbacks();
-  const TableId table = TableIdOf(trigger_data);
+  const TableId table = static_cast<TableId>(RelationGetRelid(trigger_data->tg_relation));
   const engine::WatchedTable *watched = engine::WatchedBy(table);
 
   if (TRIGGER_FIRED_BY_TRUNCATE(event)) {

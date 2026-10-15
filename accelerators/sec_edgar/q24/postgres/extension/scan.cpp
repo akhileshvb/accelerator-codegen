@@ -281,7 +281,7 @@ Q24Runtime() {
               query::SecEdgarQ24Config{kNumTableId,
                                        kPreTableId,
                                        {0, 1, 2, 3, 4, 5, 6, 7},
-                                       {0, 6, 7}},
+                                       {0, 6, 7}}, {{"num", kNumTableId}, {"pre", kPreTableId}},
               {}, /*tune_build=*/true);
   return runtime;
 }

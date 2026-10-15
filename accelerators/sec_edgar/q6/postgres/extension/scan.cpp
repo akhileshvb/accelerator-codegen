@@ -17,8 +17,7 @@ namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
 
-// Table ids the SEC-EDGAR capture triggers pass (shared across the SEC-EDGAR
-// queries: sub=1, num=2, pre=3, tag=4; see create_accel_mutation_triggers()).
+// This module's numbering of its tables (the accelerator maps them to relations).
 constexpr core::TableId kSubTable = 1, kNumTable = 2, kPreTable = 3;
 
 namespace scans {
@@ -286,6 +285,7 @@ Q6Runtime() {
               core::kSecEdgarQ6CostModel,
               core::SecEdgarQ6Layout::kAccelerator,
               query::SecEdgarQ6Config{kNumTable, kSubTable, kPreTable},
+              {{"num", kNumTable}, {"sub", kSubTable}, {"pre", kPreTable}},
               {{"sub", "name"}, {"num", "tag"}, {"pre", "plabel"}},
               /*tune_build=*/true);
   return runtime;

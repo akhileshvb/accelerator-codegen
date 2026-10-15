@@ -174,7 +174,8 @@ Q1Runtime &SecEdgarQ1RuntimeInstance(const int (&attno)[4]) {
     }
     runtime = new Q1Runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q1_COST_MODEL",
                             core::kSecEdgarQ1CostModel,
-                            core::SecEdgarQ1Layout::kAccelerator, std::move(config));
+                            core::SecEdgarQ1Layout::kAccelerator, std::move(config),
+                            {{"pre", kPreTableId}});
   }
   return *runtime;
 }

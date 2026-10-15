@@ -102,7 +102,8 @@ Q14Runtime() {
   static Runtime<query::TpchQ14Module, query::TpchQ14Config, TpchQ14Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q14_COST_MODEL",
               core::kTpchQ14CostModel,
-              core::TpchQ14Layout::kAccelerator, query::TpchQ14Config{pg_tbl::kPart, pg_tbl::kLineitem});
+              core::TpchQ14Layout::kAccelerator, query::TpchQ14Config{pg_tbl::kPart, pg_tbl::kLineitem},
+              {{"part", pg_tbl::kPart}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

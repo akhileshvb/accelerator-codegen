@@ -24,6 +24,7 @@
 #include "backends/postgres/api/accelerators.hpp"
 #include "backends/postgres/api/engine_helpers.hpp"
 #include "backends/postgres/api/pg_sink.hpp"
+#include "backends/postgres/engine/accelerator_tables.hpp"
 #include "backends/postgres/state/shard_worker.hpp"
 #include "backends/postgres/state/shared.hpp"
 #include "substrate/aux/state/versioned_aux_store.hpp"
@@ -52,15 +53,11 @@ public:
   };
 
   Runtime(const char *cost_model_env, core::AuxCostModelLocation cost_model_location,
-          core::AcceleratorId accelerator_p, Config config,
+          core::AcceleratorId accelerator_p, Config config, std::vector<AcceleratorTable> tables_p,
           std::vector<CollationKey> c_collation_keys_p = {}, bool tune_build = false)
       : cost_model_env(cost_model_env), cost_model_location(std::move(cost_model_location)),
         accelerator(std::move(accelerator_p)), c_collation_keys(std::move(c_collation_keys_p)),
-        tune_build(tune_build), scan(), module(config, &scan) {
-    for (const auto &dependency : module.Dependencies()) {
-      tables.push_back(dependency.table);
-    }
-  }
+        tune_build(tune_build), tables(std::move(tables_p)), scan(), module(config, &scan) {}
 
   void Execute(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
     RequireCCollation();
@@ -80,6 +77,7 @@ public:
   std::vector<core::TableDependency> Dependencies() const override {
     return module.Dependencies();
   }
+  std::vector<AcceleratorTable> Tables() const override { return tables; }
   std::shared_ptr<core::AuxQueryModule> Module() override {
     return std::shared_ptr<core::AuxQueryModule>(&module, [](core::AuxQueryModule *) {});
   }
@@ -95,12 +93,12 @@ private:
   // The worker's answer at the statement snapshot's epoch; false: answer from
   // SQL.
   bool ServeFromWorker(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
-    // A transaction's own writes to the tables are in no worker's state.
-    if (shared::TransactionWrote(tables)) {
-      return false;
-    }
     const int index = shared::Activate(accelerator);
     if (index < 0) {
+      return false;
+    }
+    // A transaction's own writes to the tables are in no worker's state.
+    if (shared::TransactionWrote(HostTables(index))) {
       return false;
     }
     const auto epoch = shared::ReaderEpoch(index, GetActiveSnapshot());
@@ -157,7 +155,7 @@ private:
   core::AcceleratorId accelerator;
   std::vector<CollationKey> c_collation_keys;
   bool tune_build;
-  std::vector<core::TableId> tables;
+  std::vector<AcceleratorTable> tables;
   SqlServices sql;
   ScanT scan;
   ModuleT module;

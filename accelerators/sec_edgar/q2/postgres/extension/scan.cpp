@@ -247,6 +247,7 @@ Runtime<query::SecEdgarQ2Module, query::SecEdgarQ2Config, SecEdgarQ2Scan> &Q2Run
       "ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q2_COST_MODEL",
       core::kSecEdgarQ2CostModel, core::SecEdgarQ2Layout::kAccelerator,
       query::SecEdgarQ2Config{kSecEdgarNum, kSecEdgarSub},
+              {{"num", kSecEdgarNum}, {"sub", kSecEdgarSub}},
       {{"sub", "name"}, {"num", "tag"}});
   return runtime;
 }

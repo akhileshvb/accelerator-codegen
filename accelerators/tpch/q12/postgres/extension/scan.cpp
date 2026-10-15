@@ -106,7 +106,8 @@ Q12Runtime() {
   static Runtime<query::TpchQ12Module, query::TpchQ12Config, TpchQ12Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q12_COST_MODEL",
               core::kTpchQ12CostModel,
-              core::TpchQ12Layout::kAccelerator, query::TpchQ12Config{pg_tbl::kOrders, pg_tbl::kLineitem});
+              core::TpchQ12Layout::kAccelerator, query::TpchQ12Config{pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"orders", pg_tbl::kOrders}, {"lineitem", pg_tbl::kLineitem}});
   return runtime;
 }
 } // namespace

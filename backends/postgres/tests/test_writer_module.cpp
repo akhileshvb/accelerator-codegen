@@ -13,7 +13,9 @@ extern "C" {
 #include <access/xact.h>
 #include <fmgr.h>
 #include <miscadmin.h>
+#include <catalog/namespace.h>
 #include <storage/lock.h>
+#include <utils/lsyscache.h>
 #include <utils/builtins.h>
 #include <utils/guc.h>
 #include <utils/snapmgr.h>
@@ -54,13 +56,16 @@ PostgresAccelerator *FindPostgresAccelerator(const core::AcceleratorId &id) {
 namespace {
 
 // fake_a: t1 columns 0-3. fake_b: t1 columns 2-6 and all of t2. (t1 has an
-// eighth column, 7, that neither watches.)
+// eighth column, 7, that neither watches.) They number t1 differently (1 and
+// 7): batches carry the relation oid, whatever a module calls its tables.
 class FakeAccelerator final : public pg::PostgresAccelerator {
 public:
-  FakeAccelerator(std::string id, std::vector<core::TableDependency> dependencies)
-      : id_(std::move(id)), dependencies_(std::move(dependencies)) {}
+  FakeAccelerator(std::string id, std::vector<core::TableDependency> dependencies,
+                  std::vector<pg::AcceleratorTable> tables)
+      : id_(std::move(id)), dependencies_(std::move(dependencies)), tables_(std::move(tables)) {}
   const core::AcceleratorId &Id() const override { return id_; }
   std::vector<core::TableDependency> Dependencies() const override { return dependencies_; }
+  std::vector<pg::AcceleratorTable> Tables() const override { return tables_; }
   std::shared_ptr<core::AuxQueryModule> Module() override { return nullptr; }
   bool TuneBuild() const override { return false; }
   const accelerator_codegen::aux_state::maintenance::CostModelParams &CostModel() override { return cost_model_; }
@@ -68,6 +73,7 @@ public:
 private:
   std::string id_;
   std::vector<core::TableDependency> dependencies_;
+  std::vector<pg::AcceleratorTable> tables_;
   accelerator_codegen::aux_state::maintenance::CostModelParams cost_model_;
 };
 
@@ -79,11 +85,12 @@ core::TableDependency Dependency(core::TableId table, std::vector<int32_t> attnu
 }
 
 pg::PostgresAccelerator &FakeA() {
-  static FakeAccelerator accelerator("fake_a", {Dependency(1, {0, 1, 2, 3})});
+  static FakeAccelerator accelerator("fake_a", {Dependency(1, {0, 1, 2, 3})}, {{"t1", 1}});
   return accelerator;
 }
 pg::PostgresAccelerator &FakeB() {
-  static FakeAccelerator accelerator("fake_b", {Dependency(1, {2, 3, 4, 5, 6}), Dependency(2, {})});
+  static FakeAccelerator accelerator("fake_b", {Dependency(7, {2, 3, 4, 5, 6}), Dependency(8, {})},
+                                {{"t1", 7}, {"t2", 8}});
   return accelerator;
 }
 const pg::PostgresAcceleratorRegistrar register_a("fake_a", FakeA);
@@ -129,7 +136,7 @@ std::string Render(const pg::CommitMessage &commit) {
   out << "commit acc=" << commit.accelerator << " epoch=" << commit.epoch << " empty=" << commit.empty
       << " invalidates=" << commit.invalidates << " batches=" << commit.batches.size() << "\n";
   for (const auto &batch : commit.batches) {
-    out << "  batch table=" << batch->table << " kind=" << kinds[static_cast<int>(batch->kind)]
+    out << "  batch table=" << get_rel_name(static_cast<Oid>(batch->table)) << " kind=" << kinds[static_cast<int>(batch->kind)]
         << " rows=" << batch->row_count << " updated=[";
     for (std::size_t i = 0; i < batch->updated_attnums.size(); i++) {
       out << (i ? "," : "") << batch->updated_attnums[i];
@@ -242,7 +249,9 @@ Datum wt_horizon(PG_FUNCTION_ARGS) {
 
 PG_FUNCTION_INFO_V1(wt_wrote);
 Datum wt_wrote(PG_FUNCTION_ARGS) {
-  PG_RETURN_BOOL(pg::shared::TransactionWrote({static_cast<core::TableId>(PG_GETARG_INT64(0))}));
+  // wt_wrote(n): the relation tN.
+  const std::string relation = "t" + std::to_string(PG_GETARG_INT64(0));
+  PG_RETURN_BOOL(pg::shared::TransactionWrote({static_cast<core::TableId>(RelnameGetRelid(relation.c_str()))}));
 }
 
 // wt_lock(0, i): hold accelerator i's gate; wt_lock(1, 0): the PRE_COMMIT stall.

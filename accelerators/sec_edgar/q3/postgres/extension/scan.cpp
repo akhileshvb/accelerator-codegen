@@ -81,7 +81,7 @@ Q3Runtime() {
                   /* num attnums: adsh, uom, value */ {0, 5, 7},
                   /* sub attnums: adsh, name, cik, fy */ {0, 2, 1, 10},
                   /* positions in the projected rows */ {0, 1, 2},
-                  {0, 1, 2, 3}});
+                  {0, 1, 2, 3}}, {{"num", kSecEdgarNum}, {"sub", kSecEdgarSub}});
   return runtime;
 }
 
