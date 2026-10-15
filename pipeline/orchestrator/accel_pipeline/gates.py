@@ -12,6 +12,9 @@ from accel_pipeline.gate_context import write_gate_context
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 
 
+# TODO: runtime gates (thread_budget_lint, runtime_*) are specified in
+# gates/README_runtime_gates.md; register them here, disabled by default, once
+# each backend harness exists.
 GATE_SCRIPTS = {
     "scaffold": "scaffold_query.sh",
     "host_bootstrap": "run_host_bootstrap.sh",

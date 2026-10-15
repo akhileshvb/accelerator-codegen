@@ -45,6 +45,8 @@ Prefer these conventions. `backends/{{engine_name}}/**` is **read-only** to this
    - You do **not** need a full TPC-H Q{{query_number}} kernel here — registries + generic dispatch that **link and load** (with zero or one registered query) are enough for bootstrap.
    - Never wire this host through DuckDB `RegisterAcceleratorFunctions` or `*.duckdb` as the execution host when `{{engine_name}}≠duckdb`.
 
+   The backend implements the slots S1-S8 (`engine_interfaces.md`, "Adapter responsibilities"); the runtime flow comes from `substrate/aux/runtime/`. Check that the slot implementations under `engine/` (S1, S5, S8), `state/` (S2-S4) and `api/` (S6, S7) link into the host. Missing slot behavior is a backend-addition request.
+
 3. **Differential harness**
    - Create `{{differential_source}}` if missing.
    - For **postgres**: TPC-H lives in **Postgres-native tables** (Docker DB
@@ -73,6 +75,7 @@ Replicate duckdb gate surfaces under engine-native names (same semantics, host `
 
 - `eval/tests/test_{{engine_name}}_aux_multi_connection_stress.cpp` → ctest `{{multi_conn_ctest_regex}}`
 - `eval/tests/test_{{engine_name}}_cross_accel.cpp` (or peer naming) → ctest `{{cross_accel_ctest_regex}}`
+- Runtime gate harnesses named in `pipeline/gates/README_runtime_gates.md` (stale reads, capture completeness, rebuild under writes) belong to the backend's tests; do not stub them here.
 - Bench / calibrate hooks driven by `ACCEL_ENGINE_NAME` + host work dir when straightforward
 
 If turns are short after Phase 1, prefer a clean gate pass over incomplete Phase 2 stubs. Per-query stages can finish missing harnesses, but shared CMake + registration helpers should already exist.
@@ -80,7 +83,7 @@ If turns are short after Phase 1, prefer a clean gate pass over incomplete Phase
 ## Do not
 
 - Implement a full per-query TPC-H kernel / optimizer work here.
-- Invent a parallel adapter tree.
+- Invent a parallel adapter tree, or reimplement runtime flow / thread pools (substrate owns them).
 - Use DuckDB registration / `*.duckdb` as the host for `{{engine_name}}` when it is not duckdb.
 - Rename targets away from `{{differential_binary}}` / `{{differential_source}}` (gates look these up).
 - Require portable `DataChunk` / `NativeScanSpec` as the registration contract.

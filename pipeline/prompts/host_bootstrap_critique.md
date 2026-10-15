@@ -47,6 +47,8 @@ this host even though the binary built. Typical holes:
   `backends/{{engine_name}}/`
 - Server-only symbols in the host shared library (postgres: `postgres.h` in
   `accelerator_codegen`, not the MODULE)
+- Host or harness reimplements runtime flow (commit ordering, catch-up, builds, thread pools) instead of using `substrate/aux/runtime/` and the slots
+- Host sizes threads with `hardware_concurrency` or a fixed count instead of the backend thread budget
 - SQL entrypoints missing / named away from the conventional register surface
 
 `violations[].rule` must be one of `sql_entrypoints`, `differential`,

@@ -76,7 +76,7 @@ substrate is read-only to it.
 
 - `config/` — orchestrator and model settings, workload YAML
 - `prompts/` — stage prompts and shared constraints
-- `gates/` — deterministic gate scripts (ctest, benchmarks, fairness)
+- `gates/` — deterministic gate scripts (ctest, benchmarks, fairness); runtime-skeleton gate specs in `gates/README_runtime_gates.md`
 - `templates/scaffold/` — per-query stubs (kernel, package, the query's `register.cpp`) and CMake snippet
 - `artifacts/` — per-query pipeline state and reports
 - `orchestrator/` — Python package (`accel_pipeline`)

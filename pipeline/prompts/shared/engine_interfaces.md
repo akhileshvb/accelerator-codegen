@@ -60,17 +60,44 @@ Implement in `aux/module.{hpp,cpp}` (still under the per-engine query tree):
 | `Execute` | Fast path from partition images |
 | `ExecuteFallback` | Correct recompute from base tables |
 
+Modules receive each change as a projected `core::MutationBatch` (`ToMutationBatch` of the shared `ColumnarBatch`) and take every worker count from `services.WorkerCount()`.
+
 Maintenance selection uses `AuxEngineServices::ChooseMaintenance` backed by `maintenance::SelectMinCostAction` and `CostModelParams` from JSON (`interference_*` fields — no separate `EstimateInterferenceCost` helper).
 
 ### Adapter responsibilities (any engine)
 
-Engine adapters (`engine_backend`) implement substrate contracts only:
+The substrate owns the runtime flow (`substrate/aux/runtime/`, see its `README.md`): per-transaction capture, per-accelerator commit ordering, state maintenance, background builds with catch-up, reads at a snapshot epoch, version management, the thread pool. A backend (`engine_backend`) implements only the **slots** in `substrate/aux/runtime/engine_slots.hpp` and calls into `RuntimeHost` / `AcceleratorRuntime`.
 
-- `AuxEngineServices` / `AuxStateStore`
-- Mutation → `MutationBatch`, txn lifecycle → coordinator
-- Store mode: `typed_in_process` **or** `serialized_boundary` (encode/decode via `byte_stream.hpp` only at a process/SHM boundary when serialized)
-- Host registration (table functions, extension entrypoints, …) for that engine
-- Optional **engine-local** typed scan helpers for aux rebuild (callbacks / slots / tuples) — **not** `ScanNativeBaseTable` → portable `DataChunk`
+#### Slots a backend implements
+
+| Slot | Backend supplies | Directory |
+|---|---|---|
+| S1 capture | Every change to a tracked table, from **any** connection, delivered once per statement as a `ColumnarBatch` via `RuntimeHost::OnCapture` (DuckDB: database-level hook in the fork) | `engine/capture` |
+| S2 commit epoch | Per accelerator, a dense sequence in visibility order plus the engine epoch (DuckDB commit id + 1; MySQL counter under `CommitMutex`; Postgres per-accelerator `gate_A` advisory lock assigning `n_A`) | `state/` |
+| S3 reader epoch | The epoch a reader reads at (DuckDB txn start time; MySQL newest; Postgres `k_A` from published `(n_A, xid)`) | `state/` |
+| S4 version floor | Oldest epoch any open reader may use | `state/` |
+| S5 build snapshot | A consistent scan snapshot with epoch `b` (a commit is in it iff its epoch `<= b`) and the registration barrier `WaitForPreRegistrationWriters` | `engine/scan` |
+| S6 placement | Where engine-facing work runs: in-process threads, or (Postgres) a per-accelerator shard worker whose read threads never call Postgres APIs, with an SPI main thread, over shared-memory rings | `api/` or `state/` |
+| S7 SQL entry points | Decode arguments, emit rows (DuckDB table functions with `MaxThreads() > 1`) | `api/` |
+| S8 engine scans | Parallel, partitioned scans over the engine's own native batches. No shared scan format | `engine/scan` |
+
+Also: store mode (`typed_in_process` or `serialized_boundary`; `byte_stream.hpp` only at a process/SHM boundary), host registration for that engine, and the cost model / `ReadersCanFallBack` services.
+
+#### A backend never implements
+
+Runtime flow, commit ordering, gap handling, catch-up, build scheduling, version management, reader/build locks, thread pools. Those are substrate (`AcceleratorRuntime`, `SequencedApplier`, `ThreadBudget`). If a slot cannot express what the engine needs, log a backend-addition request; do not work around it in the backend.
+
+#### Backend scale expectations
+
+- **Parallel native scans** (S8): partition the base scan across the thread budget; builds scan in parallel.
+- **Capture once** (S1): one `ColumnarBatch` per statement per table (union of watched columns), shared by reference across accelerators. No per-accelerator re-capture.
+- **No 32-bit counts or offsets** on rows, batches, images or partitions; partition keys are 64-bit; decimal cells are 128-bit.
+- **No per-row heap allocation on capture**: typed columns, no `std::string` / `shared_ptr` / node per row.
+- **Correct under concurrency**: a read issued after a commit returns includes it; writes from a second connection are captured; a rebuild under continuous writes becomes synced without a quiet window; a long apply never blocks reads (gates: `pipeline/gates/README_runtime_gates.md`).
+
+#### Thread rule (C12)
+
+One thread budget per backend: DuckDB `threads`, Postgres GUC `accel.threads`, MySQL `accel_threads`; `ACCEL_AUX_THREADS` overrides; default is the CPU count of the `sched_getaffinity` mask. Backends and modules size all parallelism with `services.WorkerCount()` / `ThreadBudget`. Never use `std::thread::hardware_concurrency`, a fixed thread count, or a private thread pool. `pipeline/gates/run_thread_budget_lint.sh` flags violations.
 
 Do **not** hard-code a second engine's file layout into query modules. When an engine adapter is absent, leave optional catalog SQL slots empty rather than inventing adapter trees mid-query.
 
@@ -79,6 +106,7 @@ Do **not** hard-code a second engine's file layout into query modules. When an e
 Fixed substrate under `substrate/aux/`:
 
 - `VersionedAuxStore`, `AuxStateStore`, `AuxRegistry` / txn coordinator
+- `runtime/` (runtime skeleton: `RuntimeHost`, `AcceleratorRuntime`, `SequencedApplier`, `ColumnarBatch`, `ThreadBudget`, `EngineSlots`)
 - `aux_calibration.hpp` runner
 - `maintenance/action_selector.hpp`, `cost_model.hpp`
 

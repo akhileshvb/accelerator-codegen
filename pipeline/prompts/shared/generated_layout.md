@@ -4,8 +4,8 @@ The repository has one directory per layer, and each layer has one write rule:
 
 | Layer | Path | Who writes it |
 |---|---|---|
-| Substrate | `substrate/**` (`aux/{core,state,maintenance}`, `verus/{common,store,kit,sql2verus}`) | **nobody** (read-only to every agent) |
-| Engine backend | `backends/{engine}/**` (`state/`, `engine/`, `api/` incl. `api/catalog/`, `tests/`, `bench/`) | that engine's `workload_kind: engine_backend` run only |
+| Substrate | `substrate/**` (`aux/{core,state,maintenance,runtime}`, `verus/{common,store,kit,sql2verus}`) | **nobody** (read-only to every agent) |
+| Engine backend | `backends/{engine}/**` (`api/` incl. `api/catalog/`, `engine/`, `state/`, `tests/`, `bench/`; organized by slot, see below) | that engine's `workload_kind: engine_backend` run only |
 | Query | `accelerators/{bench}/q{N}/**` | that query's run only |
 | Primitives library | `accelerators/prims/**` | only through `primitive_publish` |
 | Proof library | `accelerators/prooflib/**` | only through `prooflib_publish` |
@@ -25,6 +25,22 @@ The include roots are the repo root and `accelerators/`; use short includes:
 Headers sit next to their sources (there is no `include/` tree).
 
 There is **no** shared portable `DataChunk` IR. Base kernels are engine-specific; only aux/txn contracts are shared.
+
+## Backend tree (by runtime slot)
+
+A backend implements the slots of `substrate/aux/runtime/engine_slots.hpp` and nothing else (see `engine_interfaces.md`, "Adapter responsibilities"):
+
+```
+backends/{engine}/
+  engine/capture*       # S1 capture: change -> ColumnarBatch -> RuntimeHost::OnCapture
+  engine/scan*          # S5 build snapshot + S8 parallel native scans (scan_helper.{hpp,cpp})
+  state/                # S2 commit epoch, S3 reader epoch, S4 version floor ({engine}_state_store, {engine}_aux_backend)
+  api/                  # S7 SQL entry points, S6 placement (Postgres shard worker/rings may live in state/), api/catalog/ registries
+  tests/                # test_{engine}_<layer>.cpp, one per implementation layer
+  bench/
+```
+
+The runtime flow (ordering, catch-up, builds, version management, thread pools) is `substrate/aux/runtime/`; never put it here.
 
 ## Per-query tree
 

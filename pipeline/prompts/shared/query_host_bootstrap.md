@@ -13,6 +13,7 @@ Base consume is **engine-local**. Reuse `engine_backend` for mutation/store (+ o
 - **Do** create the eval-side gate harnesses **once** if missing (differential, multi-connection, cross-accel under `eval/`), then register this query from its own directory.
 - **Do** **replicate** duckdb aux gate surfaces for this engine (same semantics, engine-native host): differential first; then multi-connection, cross-accel, bench/calibrate as needed for post-stage gates.
 - **Do** register the query's catalog entry from its own directory through the registry in `backends/{{engine_name}}/api/catalog/query_catalog.{hpp,cpp}` (the backend file holds the registry only), passing the query's cost-model location from `accelerators/{bench}/q{N}/cost_model.hpp`.
+- **Do not** reimplement runtime flow (ordering, catch-up, builds, thread pools) in query or bootstrap code; it is substrate.
 - **Do not** invent a second adapter tree (no duplicate mutation / store; no portable-chunk `ScanNativeBaseTable`).
 - **Do not** call duckdb `RegisterAcceleratorFunctions` / `*.duckdb` datasets for this host.
 
@@ -22,7 +23,7 @@ Base consume is **engine-local**. Reuse `engine_backend` for mutation/store (+ o
 
 1. **SQL entrypoints**: check that the backend's registries cover what the conventional register surface from `engine_host` (`register_path` / `aux_register_path`) needs:
    - Base: host-native UDF / table function / SRF that can run a generated kernel via **this engine’s** native consume path.
-   - Aux: host entrypoint that drives `AuxQueryModule` Execute / fallback through the existing aux backend (`MutationBatch` / store).
+   - Aux: host entrypoint that drives `AuxQueryModule` Execute / fallback through the backend's slot implementations and the substrate runtime (`substrate/aux/runtime/`: `RuntimeHost`, `AcceleratorRuntime`); capture arrives as `ColumnarBatch`, projected to `MutationBatch` for the module.
    - These are generic registries + dispatch in `backends/{{engine_name}}/api/` (a query's entry point, SQL function and catalog entry plug in with static registrars), written by the `engine_backend` run. Anything missing is a backend-addition request (above), not an edit here. Per-query code belongs under `.../q{N}/{{engine_name}}/`. A shared list of SQL functions (extension script, plugin UDF list) is assembled from per-query fragments, not hand-maintained.
 2. **Differential harness** — if missing, add:
    - Source: `eval/tests/test_{{engine_name}}_tpch_differential.cpp` (`engine_host.differential_source`)
