@@ -15,8 +15,11 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "duckdb.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 
 namespace accelerator_codegen::aux_state::engine::duckdb {
 
@@ -107,6 +110,72 @@ void ScanQueryStreaming(::duckdb::Connection &connection_p, const std::string &s
       callback(*chunk, row_index);
     }
   }
+  Require(!result->HasError(), result->GetError());
+}
+
+// The services of the module call running on this thread (ModuleBinding sets
+// them), whose ParallelFor limit applies to the scans it issues.
+extern thread_local const core::AuxEngineServices *t_scan_services;
+
+class ScanServicesScope {
+public:
+  explicit ScanServicesScope(const core::AuxEngineServices &services) : saved(t_scan_services) {
+    t_scan_services = &services;
+  }
+  ~ScanServicesScope() { t_scan_services = saved; }
+  ScanServicesScope(const ScanServicesScope &) = delete;
+  ScanServicesScope &operator=(const ScanServicesScope &) = delete;
+
+private:
+  const core::AuxEngineServices *saved;
+};
+
+// Streaming scan that decodes rows in parallel: decode(chunk, row) -> Input
+// runs on pool threads, consume(Input &&) on this thread in row order, so the
+// module's state sees exactly what ScanQueryStreaming would give it. With one
+// worker it is ScanQueryStreaming.
+template <typename Decode, typename Consume>
+void ScanQueryDecoded(::duckdb::Connection &connection_p, const std::string &sql, Decode &&decode,
+                      Consume &&consume) {
+  using Input = decltype(decode(std::declval<const ::duckdb::DataChunk &>(), ::duckdb::idx_t{0}));
+  const auto *services = t_scan_services;
+  if (!services || services->WorkerCount() <= 1) {
+    ScanQueryStreaming(connection_p, sql,
+                       [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) { consume(decode(chunk, row)); });
+    return;
+  }
+  constexpr std::size_t kChunksPerBatch = 64;
+  std::vector<::duckdb::unique_ptr<::duckdb::DataChunk>> chunks;
+  std::vector<std::vector<Input>> decoded;
+  const auto flush = [&] {
+    decoded.assign(chunks.size(), {});
+    services->ParallelFor(chunks.size(), [&](std::size_t i) {
+      decoded[i].reserve(chunks[i]->size());
+      for (::duckdb::idx_t row = 0; row < chunks[i]->size(); ++row) {
+        decoded[i].push_back(decode(*chunks[i], row));
+      }
+    });
+    for (auto &rows : decoded) {
+      for (auto &input : rows) {
+        consume(std::move(input));
+      }
+    }
+    chunks.clear();
+  };
+  auto lock = LockScan(connection_p);
+  auto &connection = ScanConnection(connection_p);
+  auto result = connection.SendQuery(sql);
+  Require(result != nullptr && !result->HasError(), result ? result->GetError() : "DuckDB scan returned null");
+  while (auto chunk = result->Fetch()) {
+    if (chunk->size() == 0) {
+      break;
+    }
+    chunks.push_back(std::move(chunk));
+    if (chunks.size() == kChunksPerBatch) {
+      flush();
+    }
+  }
+  flush();
   Require(!result->HasError(), result->GetError());
 }
 
