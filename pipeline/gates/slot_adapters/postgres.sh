@@ -28,6 +28,11 @@ _pg_driver() { # scenario...
   for scenario in "$@"; do
     run_postgres_docker_harness test_postgres_shared_state "${scenario}" || rc=1
     echo "${PG_DOCKER_LOG}"
+    # The suite exits 0 for a scenario it does not know: require its PASS line.
+    if ! grep -q "^PASS ${scenario}\b" <<<"${PG_DOCKER_LOG}"; then
+      echo "scenario ${scenario} did not report PASS"
+      rc=1
+    fi
   done
   return "${rc}"
 }

@@ -131,10 +131,9 @@ LoadResult RunLoad(Engine &engine, const Load &load, const Options &options) {
             session->Exec(load.mode.begin_sql);
             // No commit started or finished while the whole read runs: then the
             // database did not change under a per-statement snapshot.
-            const long quiet_at = commits_started.load() == commits.load() + aborted.load() ? commits_started.load() : -1;
-            const auto st0 = engine.Stats();
+            const long quiet_at =
+                commits_started.load() == commits.load() + aborted.load() ? commits_started.load() : -1;
             const auto accel = session->Query(c.accel_sql);
-            const auto st1 = engine.Stats();
             SleepUs(load.reader_pause_us ? rng() % load.reader_pause_us : 0);
             const auto ref = session->Query(c.ref_sql);
             SleepUs(load.reader_pause_us ? rng() % load.reader_pause_us : 0);
@@ -142,13 +141,14 @@ LoadResult RunLoad(Engine &engine, const Load &load, const Options &options) {
             const auto again = second ? session->Query(c.accel_sql) : accel;
             session->Exec("COMMIT");
             ++reads;
-            const bool checkable = load.mode.per_transaction || (quiet_at >= 0 && commits_started.load() == quiet_at);
+            const bool checkable =
+                load.mode.per_transaction || (quiet_at >= 0 && commits_started.load() == quiet_at);
             if (!checkable) {
               ++unchecked;
             } else if (accel != ref || again != ref) {
               ++mismatches;
-              fail("[" + c.label + "] hits+" + std::to_string(st1.hits - st0.hits) + " fb+" + std::to_string(st1.fallbacks - st0.fallbacks) + " builds+" + std::to_string(st1.builds - st0.builds) + " " + (accel != ref ? "first read: " + Diff(accel, ref)
-                                                        : "second read: " + Diff(again, ref)));
+              fail("[" + c.label + "] " +
+                   (accel != ref ? "first read: " + Diff(accel, ref) : "second read: " + Diff(again, ref)));
             }
           } catch (const std::exception &e) {
             ++errors;

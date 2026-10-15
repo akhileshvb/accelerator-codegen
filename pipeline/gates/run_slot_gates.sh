@@ -12,15 +12,19 @@
 #
 # An adapter (slot_adapters/<engine>.sh) defines slot_adapter_run <scenario> <seconds>
 # and exits 0 (pass), 1 (fail) or 77 (the engine has no such thing: gate skipped).
-# See slot_adapters/README.md. Env: ACCEL_SLOT_GATE_SECONDS (load duration, default 6).
+# See slot_adapters/README.md. Env: ACCEL_SLOT_GATE_SECONDS (load duration, default 6),
+# ACCEL_SLOT_GATE_TIMEOUT (seconds before a hung backend fails the gate; default
+# 900, 3600 for the differential).
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export BUILD_DIR="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${ROOT}/build-release}}"
 GATE="${ACCEL_GATE_NAME:-slot_epoch_stress}"
 OUT_JSON="${ACCEL_GATE_OUT:-/tmp/${GATE}.json}"
 SCENARIO="${GATE#slot_}"
 SECONDS_PER_SCENARIO="${ACCEL_SLOT_GATE_SECONDS:-6}"
+[[ "${SCENARIO}" == "differential" ]] && DEFAULT_TIMEOUT=3600 || DEFAULT_TIMEOUT=900
+TIMEOUT_SECONDS="${ACCEL_SLOT_GATE_TIMEOUT:-${DEFAULT_TIMEOUT}}"
 
 ENGINE="${ACCEL_ENGINE_NAME:-}"
 if [[ -n "${ACCEL_GATE_CONTEXT:-}" && -f "${ACCEL_GATE_CONTEXT}" ]]; then
@@ -43,14 +47,16 @@ if [[ -z "${ENGINE}" || ! -f "${ADAPTER}" ]]; then
   exit 1
 fi
 
-# shellcheck source=/dev/null
-source "${ADAPTER}"
-LOG="$(slot_adapter_run "${SCENARIO}" "${SECONDS_PER_SCENARIO}" 2>&1)"
+# A hung backend (a reader waiting forever for a commit that never publishes)
+# must fail the gate, not the pipeline.
+LOG="$(timeout -k 10 "${TIMEOUT_SECONDS}" bash -c 'source "$1"; slot_adapter_run "$2" "$3"' _ \
+  "${ADAPTER}" "${SCENARIO}" "${SECONDS_PER_SCENARIO}" 2>&1)"
 RC=$?
 echo "${LOG}"
 case "${RC}" in
   0)  write_result pass "${SCENARIO}: ${ENGINE} passed" "${LOG}" ;;
   77) write_result skip "${SCENARIO}: not applicable to ${ENGINE}" "${LOG}"; exit 0 ;;
+  124) write_result fail "${SCENARIO}: ${ENGINE} hung (no result in ${TIMEOUT_SECONDS}s)" "${LOG}" ;;
   *)  write_result fail "${SCENARIO}: ${ENGINE} failed (exit ${RC})" "${LOG}" ;;
 esac
 [[ "${RC}" -eq 0 ]]

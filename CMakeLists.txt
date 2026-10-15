@@ -448,6 +448,9 @@ if(NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQ
 endif()
 
 accel_add_duckdb_exe(test_slot_gates_duckdb eval/tests/test_slot_gates_duckdb.cpp eval/harness/slot_gates.cpp)
+if(BUILD_TESTING)
+    add_test(NAME slot_gates_duckdb COMMAND test_slot_gates_duckdb all 4)
+endif()
 accel_add_duckdb_exe(test_tpch_shared_differential eval/tests/test_tpch_shared_differential.cpp)
 accel_add_duckdb_exe(test_shared_tpch_rf_differential eval/tests/test_shared_tpch_rf_differential.cpp)
 add_executable(test_tpch_arg_variants_differential
