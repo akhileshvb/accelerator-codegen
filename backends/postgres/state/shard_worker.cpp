@@ -186,8 +186,6 @@ public:
     segment.stats.builds = stats.builds;
     segment.stats.gaps = stats.gaps;
     segment.stats.synced = runtime.IsSynced();
-    segment.stats.waited = stats.reads_waited;
-    segment.stats.declined = stats.reads_fallback;
     if (stats.last_decision) {
       core::SetGlobalMaintenanceDecision(*stats.last_decision);
       std::string decision = core::FormatLastMaintenanceDecision();
@@ -357,7 +355,7 @@ std::string StatsText() {
     return "no worker";
   }
   uint64_t requests = 0, served = 0, fallback = 0, errors = 0, commits = 0, applied = 0, builds = 0,
-           gaps = 0, synced = 0, waited = 0, declined = 0;
+           gaps = 0, synced = 0;
   uint32_t generation = 0;
   for (const ShardSegment *segment : running) {
     requests += segment->stats.requests;
@@ -369,18 +367,16 @@ std::string StatsText() {
     builds += segment->stats.builds;
     gaps += segment->stats.gaps;
     synced += segment->stats.synced;
-    waited += segment->stats.waited;
-    declined += segment->stats.declined;
     generation = std::max(generation, segment->generation.load());
   }
   char text[400];
   snprintf(text, sizeof(text),
            "requests=%llu served=%llu fallback=%llu errors=%llu commits=%llu applied=%llu "
-           "builds=%llu gaps=%llu synced=%llu waited=%llu declined=%llu workers=%zu generation=%u pid=%u",
+           "builds=%llu gaps=%llu synced=%llu workers=%zu generation=%u pid=%u",
            (unsigned long long)requests, (unsigned long long)served, (unsigned long long)fallback,
            (unsigned long long)errors, (unsigned long long)commits, (unsigned long long)applied,
            (unsigned long long)builds, (unsigned long long)gaps, (unsigned long long)synced,
-           (unsigned long long)waited, (unsigned long long)declined, running.size(), generation, running.front()->pid.load());
+           running.size(), generation, running.front()->pid.load());
   return text;
 }
 

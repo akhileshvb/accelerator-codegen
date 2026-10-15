@@ -67,7 +67,7 @@ void DefineGucs();
 bool BuildTuning();
 
 // "requests=N served=N fallback=N errors=N commits=N applied=N builds=N gaps=N
-// synced=N waited=N declined=N workers=N generation=G pid=P" summed over the database's running
+// synced=N workers=N generation=G pid=P" summed over the database's running
 // shard workers, or "no worker".
 std::string StatsText();
 // Stops the database's shard workers and waits for them (they restart on
