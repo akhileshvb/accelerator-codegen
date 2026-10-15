@@ -142,10 +142,19 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   // Every accelerator offers the same actions. Each is priced by what it
   // costs this accelerator; a module without finer partitions rebuilds its
   // whole state for RebuildPartition.
+  // Rebuilds and the ApplyDelta cap grow with the data relative to the scale
+  // the model was calibrated at (ApplyDelta's per-row cost does not). Unknown
+  // scale: the model as calibrated.
+  const double scale =
+      request.data_rows_hint != 0 && params.calibrated_scale_rows != 0
+          ? static_cast<double>(request.data_rows_hint) /
+                static_cast<double>(params.calibrated_scale_rows)
+          : 1.0;
   std::vector<ActionCandidate> candidates;
   const bool apply_delta_eligible =
       request.incremental_supported && !request.whole_state_required &&
-      request.rows_touched <= params.apply_delta_max_rows;
+      static_cast<double>(request.rows_touched) <=
+          static_cast<double>(params.apply_delta_max_rows) * scale;
 
   ActionCostEstimate apply_delta;
   apply_delta.immediate_us = params.apply_delta_overhead_us +
@@ -156,7 +165,7 @@ MaintenanceDecision SelectAuxMaintenanceAction(
 
   ActionCostEstimate rebuild_all;
   rebuild_all.immediate_us =
-      params.invalidation_overhead_us + params.full_rebuild_us;
+      params.invalidation_overhead_us + params.full_rebuild_us * scale;
   candidates.push_back({MaintenanceAction::RebuildAll, rebuild_all,
                         request.full_rebuild_supported});
 
@@ -168,8 +177,9 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   ActionCostEstimate rebuild_partition;
   rebuild_partition.immediate_us =
       finer_partitions
-          ? params.invalidation_overhead_us + params.partition_rebuild_base_us +
-                params.partition_rebuild_us * partitions
+          ? params.invalidation_overhead_us +
+                scale * (params.partition_rebuild_base_us +
+                         params.partition_rebuild_us * partitions)
           : rebuild_all.immediate_us + params.decision_margin_us + 1.0;
   candidates.push_back({MaintenanceAction::RebuildPartition, rebuild_partition,
                         !request.whole_state_required});
@@ -182,7 +192,7 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   ActionCostEstimate deferred;
   deferred.immediate_us = params.invalidation_overhead_us;
   deferred.differential_future_query_us =
-      std::min(1.0, expected_queries) * params.full_rebuild_us;
+      std::min(1.0, expected_queries) * params.full_rebuild_us * scale;
   candidates.push_back({MaintenanceAction::InvalidateAndRebuildOnRead, deferred,
                         request.deferred_rebuild_supported &&
                             request.full_rebuild_supported});

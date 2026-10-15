@@ -35,6 +35,18 @@ engine hooks: `DuckdbCalibrationEngine` (`backends/duckdb/api/duckdb_runtime.hpp
 PostgreSQL / MySQL calibrators' clients (`eval/bench/{postgres,mysql}/
 calibrate_*_tpch_aux_cost_model.cpp`, over the extension's SQL controls).
 
+**Scale.** A model may record `calibrated_scale_rows`, the rows in the
+dependency tables when it was calibrated; the engine reports the current size
+(`AuxEngineServices::DataScaleRows`, or `MaintenanceRequest::data_rows_hint`;
+0 = unknown). When both are known, `ratio = current / calibrated` multiplies
+the `apply_delta_max_rows` cap and the rebuild costs (`full_rebuild_us`,
+partition rebuild base and per-partition, the deferred rebuild); ApplyDelta's
+per-row cost is not scaled, so a refresh that grows with the data stays on
+ApplyDelta while it is cheaper than the scaled rebuild. When either is
+unknown the model applies as calibrated (including the cap). A scale-specific
+model that does not exist falls back to the nearest smaller calibrated scale
+(`sf3000` uses `sf20`) before less specific names.
+
 # Concurrency: versioned state and pending commits
 
 All engines use one store, `VersionedAuxStore`
@@ -90,6 +102,16 @@ reads in the query reuse that version.
 **Pruning.** Old versions are pruned once no open snapshot can select them.
 The engine supplies the floor (the oldest open snapshot's epoch). Without a
 floor provider only the newest version is kept.
+
+**Memory cap and reclaim.** `Options::max_version_bytes` (0 = unlimited)
+bounds the bytes held only by old versions (partitions no newer version
+shares), sized by `Options::payload_bytes`; without that hook the cap is
+inactive. Over the cap the oldest old versions are dropped
+(`VersionsDroppedByCap`), and a reader whose epoch then selects no version
+gets `NotVisible`, so the backend falls back. Dropped versions are destroyed
+off the lock and, by default (`Options::async_reclaim`), off the commit path
+on one background thread that drains at exit (`ACCEL_RECLAIM_ASYNC=0`
+destroys inline).
 
 **Locking.** Readers take a shared (writer-preferring) lock, writers an
 exclusive one. A waiting reader sleeps on a condition variable. Readers get

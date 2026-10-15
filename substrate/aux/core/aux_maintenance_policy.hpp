@@ -23,6 +23,8 @@ struct MaintenanceRequest {
   // InvalidateAndRebuildOnRead: the next reader rebuilds (set from
   // AuxEngineServices::ReadersCanBuildState by ChooseMaintenance).
   bool deferred_rebuild_supported = true;
+  // Rows in the dependency tables now (AuxEngineServices::DataScaleRows); 0: unknown.
+  uint64_t data_rows_hint = 0;
 };
 
 struct MaintenanceDecision {

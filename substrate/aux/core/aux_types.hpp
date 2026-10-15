@@ -389,6 +389,10 @@ public:
   // (ExecuteFallback) only as a last resort, when no state can be built.
   virtual bool ReadersCanBuildState() const;
 
+  // Rows in the dependency tables now; 0 if unknown. With the cost model's
+  // calibrated_scale_rows it scales the ApplyDelta cap and the rebuild costs.
+  virtual uint64_t DataScaleRows() const;
+
   virtual MaintenanceDecision ChooseMaintenance(
       const MaintenanceRequest &request) const;
 

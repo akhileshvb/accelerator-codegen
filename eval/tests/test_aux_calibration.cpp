@@ -71,10 +71,85 @@ void TestCostModelLookup() {
   fs::remove_all(root);
 }
 
+// A missing scale falls back to the nearest smaller calibrated scale.
+void TestCostModelScaleFallback() {
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / "accelerator_codegen_cost_model_scale_test";
+  fs::remove_all(root);
+  fs::create_directories(root);
+  const std::string dir = root.string();
+  const AuxCostModelLocation location{dir.c_str(), "m"};
+  for (const char *name : {"m.json", "m_sf1.json", "m_sf20.json", "m_postgres_sf1.json"}) {
+    std::ofstream(dir + "/" + name) << "{}";
+  }
+  AuxCostModelLookup lookup;
+  lookup.scale = "sf3000";
+  Check(ResolveAuxCostModelPath(location, lookup) == dir + "/m_sf20.json", "sf3000 -> sf20");
+  lookup.scale = "sf5";
+  Check(ResolveAuxCostModelPath(location, lookup) == dir + "/m_sf1.json", "sf5 -> sf1");
+  lookup.scale = "sf1";
+  Check(ResolveAuxCostModelPath(location, lookup) == dir + "/m_sf1.json", "sf1 exact");
+  lookup.scale = "sf0.5";
+  Check(ResolveAuxCostModelPath(location, lookup) == dir + "/m.json", "below all scales: default");
+  lookup.scale = "sf3000";
+  lookup.engine = "postgres";
+  Check(ResolveAuxCostModelPath(location, lookup) == dir + "/m_postgres_sf1.json",
+        "engine's nearest smaller scale beats the engine-less scale");
+  fs::remove_all(root);
+}
+
+// The selector scales the ApplyDelta cap and rebuild costs with the data size
+// relative to the calibrated scale; without a known scale it is unchanged.
+void TestMaintenanceScaling() {
+  using accelerator_codegen::aux_state::maintenance::MaintenanceAction;
+  CostModelParams params;
+  params.full_rebuild_us = 1e6;
+  params.partition_rebuild_us = 1e5;
+  params.apply_delta_overhead_us = 100.0;
+  params.apply_delta_per_row_us = 1.0;
+  params.apply_delta_max_rows = 100000;
+  auto request = [](uint64_t rows, uint64_t data_rows) {
+    MaintenanceRequest r{rows, 4, true, true, true, false, false, MaintenanceAction::NoOp, 1.0};
+    r.data_rows_hint = data_rows;
+    return r;
+  };
+  const auto action = [&](const MaintenanceRequest &r) {
+    return SelectAuxMaintenanceAction(r, params).action;
+  };
+
+  // Calibrated scale unknown: today's decisions, whatever the hint.
+  Check(action(request(1000, 0)) == MaintenanceAction::ApplyDelta, "small: ApplyDelta");
+  Check(action(request(500000, 0)) != MaintenanceAction::ApplyDelta, "over cap: rebuild");
+  Check(action(request(500000, 150000000)) != MaintenanceAction::ApplyDelta, "hint alone: unchanged");
+
+  params.calibrated_scale_rows = 1000000;
+  Check(action(request(1000, 0)) == MaintenanceAction::ApplyDelta, "at scale, unknown data");
+  Check(action(request(1000, 1000000)) == MaintenanceAction::ApplyDelta, "at calibrated scale: small");
+  Check(action(request(500000, 1000000)) != MaintenanceAction::ApplyDelta, "at calibrated scale: cap");
+
+  // 150x data: a 150x refresh is under the scaled cap and under the scaled rebuild cost.
+  params.apply_delta_per_row_us = 0.5;
+  Check(action(request(15000000, 150000000)) == MaintenanceAction::ApplyDelta, "150x refresh: ApplyDelta");
+  // Per-row cost over the scaled rebuild cost: rebuild.
+  params.apply_delta_per_row_us = 20.0;
+  Check(action(request(15000000, 150000000)) != MaintenanceAction::ApplyDelta, "costly rows: rebuild");
+
+  // whole_state_required and low_confidence behave as before at any scale.
+  auto whole = request(1000, 150000000);
+  whole.whole_state_required = true;
+  Check(action(whole) != MaintenanceAction::ApplyDelta, "whole state: no ApplyDelta");
+  // low_confidence never picks ApplyDelta, scaled or not.
+  auto low = request(1000, 150000000);
+  low.low_confidence = true;
+  Check(action(low) != MaintenanceAction::ApplyDelta, "low confidence: conservative");
+}
+
 } // namespace
 
 int main() {
   TestCostModelLookup();
+  TestCostModelScaleFallback();
+  TestMaintenanceScaling();
   const auto fit = FitLinearCost({{1, 12.0}, {10, 30.0}, {100, 210.0}});
   assert(fit.intercept_us >= 0.0);
   assert(fit.per_row_us >= 0.0);

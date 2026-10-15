@@ -93,6 +93,21 @@ public:
     // Honor Mark/Clear/IsTransactionDirty (single-session engines only: the
     // flag is store-wide).
     bool track_transaction_dirty = false;
+    // Cap on the bytes retained by OLD versions (every version but the
+    // newest, kept only because the floor still needs them). 0: unlimited.
+    // Bytes are summed with `payload_bytes` over the partitions an old
+    // version holds that no newer version shares. Over the cap, the oldest
+    // old versions are dropped (counted in VersionsDroppedByCap); a reader
+    // whose epoch then resolves to no version gets ValidityCode::NotVisible
+    // (the backend falls back). Inactive without `payload_bytes`.
+    uint64_t max_version_bytes = 0;
+    // Estimated bytes of one partition payload (modules do not report sizes:
+    // the engine/module supplies this; see aux_state_footprint.hpp).
+    std::function<std::size_t(const std::shared_ptr<const void> &)> payload_bytes;
+    // Destroy dropped versions on the background reclaimer thread, so a
+    // commit never pays for freeing a large old state. Default on (the
+    // process-wide ACCEL_RECLAIM_ASYNC=0 still forces inline destruction).
+    bool async_reclaim = true;
   };
 
   explicit VersionedAuxStore(Options options);
@@ -158,6 +173,14 @@ public:
     return total_partitions_hint.load(std::memory_order_relaxed);
   }
   std::size_t TotalVersionCount() const;
+  // Old versions dropped because of Options::max_version_bytes.
+  uint64_t VersionsDroppedByCap() const {
+    return versions_dropped_by_cap.load(std::memory_order_relaxed);
+  }
+  // Process-wide background reclaimer: batches destroyed so far, and a
+  // barrier that returns once every queued batch is destroyed.
+  static uint64_t ReclaimedBatchCount();
+  static void DrainReclaimer();
   bool HasPendingCommit() const;
 
   // Maximum wait for a pending commit. Default kWaitForPublish (no timeout:
@@ -217,6 +240,12 @@ private:
   void AppendLocked(const core::AcceleratorId &accelerator,
                     std::shared_ptr<const PartitionSet> next, Epoch epoch, Epoch floor,
                     std::vector<StateVersion> &dropped);
+  // Drops the oldest old versions while their exclusive bytes exceed the cap.
+  void EnforceVersionCapLocked(const core::AcceleratorId &accelerator,
+                               std::vector<StateVersion> &dropped);
+  // Destroys `dropped` (inline, or on the reclaimer), after the lock is released.
+  void Reclaim(std::vector<StateVersion> &&dropped,
+               std::shared_ptr<const PartitionSet> extra = nullptr);
   const PartitionSet *NewestLocked(const core::AcceleratorId &accelerator) const;
   void RefreshHintLocked();
   void InstallLocked(std::vector<core::StateImage> images, const core::AcceleratorId &accelerator,
@@ -235,6 +264,7 @@ private:
   bool transaction_dirty = false;
   uint64_t change_count = 0;
   std::atomic<std::size_t> total_partitions_hint {0};
+  std::atomic<uint64_t> versions_dropped_by_cap {0};
 };
 
 // Pins, per store and accelerator, the version the first read in the scope

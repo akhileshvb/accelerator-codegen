@@ -496,6 +496,15 @@ target_link_libraries(test_aux_calibration
 
 target_include_directories(test_aux_calibration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
 
+add_executable(test_versioned_aux_store_caps
+    eval/tests/test_versioned_aux_store_caps.cpp
+)
+target_link_libraries(test_versioned_aux_store_caps PRIVATE accelerator_codegen)
+target_include_directories(test_versioned_aux_store_caps PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(BUILD_TESTING)
+    add_test(NAME versioned_aux_store_caps_test COMMAND test_versioned_aux_store_caps)
+endif()
+
 add_executable(benchmark_shared_duckdb_write_interval
     eval/bench/aux_state/benchmark_shared_duckdb_write_interval.cpp
 )

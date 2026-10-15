@@ -374,6 +374,8 @@ maintenance::CostModelParams LoadAuxCostModelJson(
       params.apply_delta_part_lineitem_scan_us);
   params.apply_delta_max_rows = ParseJsonUint64(
       content, "apply_delta_max_rows", params.apply_delta_max_rows);
+  params.calibrated_scale_rows = ParseJsonUint64(
+      content, "calibrated_scale_rows", params.calibrated_scale_rows);
   params.apply_delta_max_part_fanout = ParseJsonUint64(
       content, "apply_delta_max_part_fanout",
       params.apply_delta_max_part_fanout);

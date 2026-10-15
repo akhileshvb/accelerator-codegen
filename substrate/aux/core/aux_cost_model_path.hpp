@@ -19,7 +19,9 @@ struct AuxCostModelLocation {
 // first file that exists wins, most specific first:
 //   <stem>_<engine>_<scale>.json, <stem>_<engine>.json, <stem>_<scale>.json,
 //   <stem>.json
-// (an empty engine or scale drops the names that carry it).
+// A name with a scale falls back to the nearest smaller calibrated scale of
+// the same prefix (sf20 -> sf1 when no sf20 file exists), before the next,
+// less specific name. (an empty engine or scale drops the names that carry it).
 struct AuxCostModelLookup {
   std::string engine; // "postgres", "mysql"; "": no engine-specific models
   std::string scale;  // "sf20": models calibrated at that scale; "": none

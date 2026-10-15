@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_set>
 #include <stdexcept>
 #include <utility>
 
@@ -35,6 +36,12 @@ public:
       return !(env && env[0] == '0');
     }();
     return enabled;
+  }
+  uint64_t Reclaimed() const { return reclaimed.load(); }
+  // Returns once every batch deferred so far is destroyed.
+  void Drain() {
+    std::unique_lock<std::mutex> lock(mutex);
+    idle_cv.wait(lock, [this] { return queue.empty() && !running; });
   }
   void Defer(std::shared_ptr<void> batch) {
     {
@@ -64,13 +71,20 @@ private:
         return; // stop and drained
       auto batch = std::move(queue.front());
       queue.pop_front();
+      running = true;
       lock.unlock();
       batch.reset();
       lock.lock();
+      running = false;
+      reclaimed.fetch_add(1);
+      idle_cv.notify_all();
     }
   }
   std::mutex mutex;
   std::condition_variable cv;
+  std::condition_variable idle_cv;
+  std::atomic<uint64_t> reclaimed {0};
+  bool running = false;
   std::deque<std::shared_ptr<void>> queue;
   std::thread worker;
   bool stop = false;
@@ -318,8 +332,68 @@ void VersionedAuxStore::AppendLocked(const core::AcceleratorId &accelerator,
     dropped.push_back(std::move(versions[i]));
   }
   versions.erase(versions.begin(), versions.begin() + static_cast<std::ptrdiff_t>(keep_from));
+  EnforceVersionCapLocked(accelerator, dropped);
   RefreshHintLocked();
 }
+
+void VersionedAuxStore::EnforceVersionCapLocked(const core::AcceleratorId &accelerator,
+                                                std::vector<StateVersion> &dropped) {
+  if (options.max_version_bytes == 0 || !options.payload_bytes) {
+    return;
+  }
+  auto &versions = accelerators[accelerator].versions;
+  if (versions.size() < 2) {
+    return;
+  }
+  // Exclusive bytes of each old version: payloads no newer version shares
+  // (shared partitions stay alive as long as a newer version holds them).
+  std::vector<uint64_t> exclusive(versions.size() - 1, 0);
+  std::unordered_set<const void *> newer;
+  for (const auto &entry : versions.back().partitions->map) {
+    newer.insert(entry.second.payload.get());
+  }
+  uint64_t total = 0;
+  for (std::size_t i = versions.size() - 1; i-- > 0;) {
+    for (const auto &entry : versions[i].partitions->map) {
+      const auto &payload = entry.second.payload;
+      if (payload && newer.insert(payload.get()).second) {
+        exclusive[i] += options.payload_bytes(payload);
+      }
+    }
+    total += exclusive[i];
+  }
+  std::size_t drop = 0;
+  while (drop < exclusive.size() && total > options.max_version_bytes) {
+    total -= exclusive[drop++];
+  }
+  if (drop == 0) {
+    return;
+  }
+  for (std::size_t i = 0; i < drop; ++i) {
+    dropped.push_back(std::move(versions[i]));
+  }
+  versions.erase(versions.begin(), versions.begin() + static_cast<std::ptrdiff_t>(drop));
+  versions_dropped_by_cap.fetch_add(drop, std::memory_order_relaxed);
+}
+
+void VersionedAuxStore::Reclaim(std::vector<StateVersion> &&dropped,
+                                std::shared_ptr<const PartitionSet> extra) {
+  if (dropped.empty() && !extra) {
+    return;
+  }
+  if (!options.async_reclaim || !VersionReclaimer::Enabled()) {
+    return; // `dropped` (and `extra`) are destroyed here, off the lock
+  }
+  struct Garbage {
+    std::vector<StateVersion> versions;
+    std::shared_ptr<const PartitionSet> base;
+  };
+  VersionReclaimer::Instance().Defer(
+      std::make_shared<Garbage>(Garbage{std::move(dropped), std::move(extra)}));
+}
+
+uint64_t VersionedAuxStore::ReclaimedBatchCount() { return VersionReclaimer::Instance().Reclaimed(); }
+void VersionedAuxStore::DrainReclaimer() { VersionReclaimer::Instance().Drain(); }
 
 // ---- Reads ----
 
@@ -581,6 +655,8 @@ bool VersionedAuxStore::TryPublish(const core::StagedMaintenanceOutcome &staged,
     }
     AppendLocked(group.first, MakeSet(std::move(next)), epoch, floor, dropped);
   }
+  guard.unlock();
+  Reclaim(std::move(dropped));
   return true;
 }
 
@@ -681,15 +757,8 @@ void VersionedAuxStore::FinishCommit(const core::AcceleratorId &accelerator,
     accelerators[accelerator].pending = false;
   }
   pending_cv.notify_all();
-  if (VersionReclaimer::Enabled() && (!dropped.empty() || base_ref)) {
-    struct Garbage {
-      std::vector<StateVersion> versions;
-      std::shared_ptr<const PartitionSet> base;
-    };
-    built.reset();
-    VersionReclaimer::Instance().Defer(
-        std::make_shared<Garbage>(Garbage{std::move(dropped), std::move(base_ref)}));
-  }
+  built.reset();
+  Reclaim(std::move(dropped), std::move(base_ref));
 }
 
 void VersionedAuxStore::AbortCommit(const core::AcceleratorId &accelerator) {

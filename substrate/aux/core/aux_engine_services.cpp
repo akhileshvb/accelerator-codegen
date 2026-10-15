@@ -15,6 +15,8 @@ double AuxEngineServices::ExpectedQueriesBeforeNextWrite() const {
   return 10.0;
 }
 
+uint64_t AuxEngineServices::DataScaleRows() const { return 0; }
+
 bool AuxEngineServices::AllowsSynchronousRebuildOnCommit() const {
   return true;
 }
@@ -26,6 +28,9 @@ MaintenanceDecision AuxEngineServices::ChooseMaintenance(
   MaintenanceRequest with_engine = request;
   with_engine.deferred_rebuild_supported =
       request.deferred_rebuild_supported && ReadersCanBuildState();
+  if (with_engine.data_rows_hint == 0) {
+    with_engine.data_rows_hint = DataScaleRows();
+  }
   return SelectAuxMaintenanceAction(with_engine, MaintenanceCostModel());
 }
 
