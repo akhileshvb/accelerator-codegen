@@ -25,8 +25,9 @@ public:
   ~RuntimeHost();
 
   // ---- registration ----
+  // `tables`: the module's table numbers -> host table ids (TableMap).
   AcceleratorRuntime &Register(std::shared_ptr<core::AuxQueryModule> module,
-                               StoreFactory make_store = nullptr);
+                               StoreFactory make_store = nullptr, const TableMap &tables = {});
   AcceleratorRuntime *Find(const core::AcceleratorId &id);
   std::vector<AcceleratorRuntime *> All();
 
