@@ -10,7 +10,8 @@
 //    int32 extremes, NaN / +-inf / -0.0 / duplicate values, uncovered uoms)
 //  * the DuckDB table-function entry points accel_sec_edgar_q2_aux[_parallel]
 //
-// Usage: test_sec_edgar_q2_differential [seed] [steps]
+// Usage: test_sec_edgar_q2_differential [seed] [steps]   (seed also from
+//        $ACCEL_TEST_SEED; every failure prints the replay command line)
 // Env:   ACCEL_FORCE_MAINTENANCE_ACTION=ApplyDelta|RebuildAll|InvalidateAndFallback|NoOp
 //        forces the maintenance decision so every fallback path is exercised.
 #ifdef NDEBUG
@@ -57,8 +58,12 @@ namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
+// Replay context printed with every failure ("seed=N steps=M").
+std::string g_replay;
+
 [[noreturn]] void Fail(const std::string &message) {
   std::cerr << "FAIL: " << message << std::endl;
+  std::cerr << "replay: test_sec_edgar_q2_differential " << g_replay << std::endl;
   std::abort();
 }
 
@@ -237,6 +242,11 @@ struct Gen {
             "Pure", "pure "};
   }
   size_t Pick(size_t n) { return static_cast<size_t>(rng() % n); }
+  // ORDER BY expression drawing a pseudo-random, seed-determined sample (USING
+  // SAMPLE is not reproducible, so a failing seed could not be replayed).
+  std::string SampleOrder(const std::string &columns) {
+    return "hash(" + columns + ", " + std::to_string(rng() % 1000000007) + "::BIGINT)";
+  }
   bool Chance(int percent) { return static_cast<int>(rng() % 100) < percent; }
   double Value() { return kValues[Pick(kValues.size())]; }
   std::string Uom() { return uoms[Pick(uoms.size())]; }
@@ -403,22 +413,50 @@ struct Harness {
     auto expect = con.Query(QuerySql(fy_sql, uom_sql));
     Require(expect && !expect->HasError(), "reference query failed");
     const std::string ctx = label + " fy=" + fy_sql + " uom=" + uom_sql;
-    Require(got.size() == expect->RowCount(),
-            ctx + ": row count aux=" + std::to_string(got.size()) +
-                " sql=" + std::to_string(expect->RowCount()));
+    const auto dump = [&](const std::string &what) {
+      std::ostringstream os;
+      os << what << "\n  aux rows / sql rows:";
+      for (size_t i = 0; i < std::max<size_t>(got.size(), expect->RowCount()); ++i) {
+        os << "\n  " << i << ": ";
+        if (i < got.size()) {
+          const auto &r = got[i].values;
+          os << (r[0].is_null ? std::string("NULL") : std::get<std::string>(r[0].payload))
+             << " | " << std::get<std::string>(r[1].payload).substr(0, 24) << " | "
+             << std::get<double>(r[2].payload);
+        } else {
+          os << "-";
+        }
+        os << "   ||   ";
+        if (i < expect->RowCount()) {
+          os << expect->GetValue(0, i).ToString() << " | "
+             << expect->GetValue(1, i).ToString().substr(0, 24) << " | "
+             << expect->GetValue(2, i).ToString();
+        } else {
+          os << "-";
+        }
+      }
+      return os.str();
+    };
+    if (got.size() != expect->RowCount()) {
+      Fail(dump(ctx + ": row count aux=" + std::to_string(got.size()) +
+                " sql=" + std::to_string(expect->RowCount())));
+    }
     for (duckdb::idx_t i = 0; i < expect->RowCount(); ++i) {
       const auto ev = expect->GetValue(0, i);
       const auto &gv = got[i].values[0];
-      Require(ev.IsNull() == gv.is_null, ctx + ": name nullness row " + std::to_string(i));
-      if (!ev.IsNull()) {
-        Require(ev.ToString() == std::get<std::string>(gv.payload),
-                ctx + ": name row " + std::to_string(i));
+      if (ev.IsNull() != gv.is_null) {
+        Fail(dump(ctx + ": name nullness row " + std::to_string(i)));
       }
-      Require(expect->GetValue(1, i).ToString() == std::get<std::string>(got[i].values[1].payload),
-              ctx + ": tag row " + std::to_string(i));
-      Require(SameDouble(expect->GetValue(2, i).GetValue<double>(),
-                         std::get<double>(got[i].values[2].payload)),
-              ctx + ": value row " + std::to_string(i));
+      if (!ev.IsNull() && ev.ToString() != std::get<std::string>(gv.payload)) {
+        Fail(dump(ctx + ": name row " + std::to_string(i)));
+      }
+      if (expect->GetValue(1, i).ToString() != std::get<std::string>(got[i].values[1].payload)) {
+        Fail(dump(ctx + ": tag row " + std::to_string(i)));
+      }
+      if (!SameDouble(expect->GetValue(2, i).GetValue<double>(),
+                      std::get<double>(got[i].values[2].payload))) {
+        Fail(dump(ctx + ": value row " + std::to_string(i)));
+      }
     }
   }
 
@@ -486,10 +524,11 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
     const int op = static_cast<int>(g.Pick(15));
     const auto pick_where = [&]() {
       // 1..4 random existing rows by rowid
-      auto r = h.con.Query("SELECT rowid FROM num USING SAMPLE " +
-                           std::to_string(1 + g.Pick(4)) + " ROWS");
+      auto r = h.con.Query("SELECT rowid FROM num ORDER BY " + g.SampleOrder("rowid") +
+                           " LIMIT " + std::to_string(1 + g.Pick(4)));
       std::string ids;
-      for (duckdb::idx_t i = 0; r && !r->HasError() && i < r->RowCount(); ++i) {
+      Require(r && !r->HasError(), "pick query failed: " + (r ? r->GetError() : std::string("null")));
+      for (duckdb::idx_t i = 0; i < r->RowCount(); ++i) {
         ids += (ids.empty() ? "" : ",") + r->GetValue(0, i).ToString();
       }
       return ids.empty() ? std::string("rowid = -1") : "rowid IN (" + ids + ")";
@@ -593,8 +632,9 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
     }
     case 9: { // DELETE sub without children
       auto r = h.con.Query("SELECT adsh FROM sub WHERE adsh NOT IN (SELECT adsh FROM num "
-                           "WHERE adsh IS NOT NULL) LIMIT 1");
-      if (!r || r->HasError() || r->RowCount() == 0) {
+                           "WHERE adsh IS NOT NULL) ORDER BY adsh LIMIT 1");
+      Require(r && !r->HasError(), "pick query failed: " + (r ? r->GetError() : std::string("null")));
+      if (r->RowCount() == 0) {
         continue;
       }
       const std::string adsh = r->GetValue(0, 0).ToString();
@@ -608,8 +648,10 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
     case 12: { // DELETE the top-k distinct values of one group (forces list shrink / loss)
       auto r = h.con.Query(
           "SELECT adsh, tag, uom FROM num WHERE value IS NOT NULL AND adsh IS NOT NULL AND "
-          "tag IS NOT NULL AND uom IN ('pure', 'shares', 'EUR') USING SAMPLE 1 ROWS");
-      if (!r || r->HasError() || r->RowCount() == 0) {
+          "tag IS NOT NULL AND uom IN ('pure', 'shares', 'EUR') ORDER BY " +
+          g.SampleOrder("rowid") + " LIMIT 1");
+      Require(r && !r->HasError(), "pick query failed: " + (r ? r->GetError() : std::string("null")));
+      if (r->RowCount() == 0) {
         continue;
       }
       const std::string grp = "adsh = " + Quote(r->GetValue(0, 0).ToString()) +
@@ -628,9 +670,10 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
     case 13: { // lower the maximum of one group (update of the max rows)
       auto r = h.con.Query(
           "SELECT adsh, tag, uom, max(value) FROM num WHERE value IS NOT NULL AND adsh IS NOT "
-          "NULL AND tag IS NOT NULL AND uom IN ('pure', 'shares') GROUP BY ALL "
-          "USING SAMPLE 1 ROWS");
-      if (!r || r->HasError() || r->RowCount() == 0 || r->GetValue(3, 0).IsNull()) {
+          "NULL AND tag IS NOT NULL AND uom IN ('pure', 'shares') GROUP BY adsh, tag, uom ORDER BY " +
+          g.SampleOrder("adsh, tag, uom") + " LIMIT 1");
+      Require(r && !r->HasError(), "pick query failed: " + (r ? r->GetError() : std::string("null")));
+      if (r->RowCount() == 0 || r->GetValue(3, 0).IsNull()) {
         continue;
       }
       const std::string where = "adsh = " + Quote(r->GetValue(0, 0).ToString()) +
@@ -640,32 +683,20 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
       batch.table = 1;
       batch.kind = core::MutationKind::Update;
       batch.updated_columns = {7};
-      batch.old_rows = NumRowsById(h.con, where);
+      // The updated rows are identified by rowid, so the old and new images
+      // are paired row for row as an engine capture pairs them (matching the
+      // new images by value instead mis-pairs them with pre-existing rows of
+      // the group, e.g. -inf, or misses 1e18 - 1000).
+      std::string ids;
+      for (const auto &row : FetchRows(h.con, "SELECT rowid FROM num WHERE " + where +
+                                                  " ORDER BY rowid")) {
+        ids += (ids.empty() ? "" : ",") + std::to_string(std::get<int64_t>(row.values[0].payload));
+      }
+      const std::string by_id = ids.empty() ? std::string("rowid = -1") : "rowid IN (" + ids + ")";
+      batch.old_rows = NumRowsById(h.con, by_id);
       Exec(h.con, "UPDATE num SET value = " + std::string(g.Chance(50) ? "value - 1000" : "-5") +
-                      " WHERE " + where);
-      batch.new_rows = FetchRows(h.con, "SELECT adsh, tag, version, ddate, qtrs, uom, coreg, "
-                                        "value, footnote FROM num WHERE " +
-                                            std::string("adsh = ") + Quote(r->GetValue(0, 0).ToString()) +
-                                            " AND tag = " + Quote(r->GetValue(1, 0).ToString()) +
-                                            " AND uom = " + Quote(r->GetValue(2, 0).ToString()));
-      // pair the changed rows with the old rows: keep only rows that differ
-      std::vector<core::AuxRow> changed;
-      for (const auto &row : batch.new_rows) {
-        const auto &v = row.values[7];
-        if (!v.is_null && (std::get<double>(v.payload) == -5.0 ||
-                           std::get<double>(v.payload) < -900.0)) {
-          changed.push_back(row);
-        }
-      }
-      if (changed.size() != batch.old_rows.size()) {
-        // value ambiguity (pre-existing rows with the same value): fall back to
-        // an unknown-shape batch so the module must rebuild
-        batch.new_rows = changed.size() > batch.old_rows.size() ? changed : changed;
-        batch.new_rows.resize(batch.old_rows.size(), batch.old_rows.empty() ? core::AuxRow{}
-                                                                           : batch.old_rows[0]);
-      } else {
-        batch.new_rows = changed;
-      }
+                      " WHERE " + by_id);
+      batch.new_rows = NumRowsById(h.con, by_id);
       break;
     }
     default: { // UPDATE sub fy / name
@@ -743,7 +774,12 @@ void TestBogusStream(uint64_t seed) {
   h.Build();
   auto rows = FetchRows(h.con, "SELECT adsh, tag, version, ddate, qtrs, uom, coreg, value, "
                                "footnote FROM num WHERE uom = 'pure' AND adsh IS NOT NULL AND "
-                               "tag IS NOT NULL AND value IS NOT NULL LIMIT 1");
+                               "tag IS NOT NULL AND value IS NOT NULL AND NOT EXISTS (SELECT 1 FROM num m "
+                               "WHERE m.adsh = num.adsh AND m.tag = num.tag AND m.uom = 'pure' "
+                               "AND m.value >= 1e30) ORDER BY rowid LIMIT 1");
+  // (a group whose maximum is below 1e30, NaN counting as greatest: deleting
+  // 1e30 from it is detectably inconsistent; under a NaN / +inf maximum with
+  // unlisted values it would be indistinguishable from a real unlisted row)
   Require(!rows.empty(), "need a pure row");
   core::MutationBatch bogus;
   bogus.table = 1;
@@ -794,8 +830,8 @@ void TestLargeCounts(uint64_t seed, bool parallel) {
     batch.kind = (round % 2 == 0) ? core::MutationKind::Delete : core::MutationKind::Insert;
     if (batch.kind == core::MutationKind::Delete) {
       const std::string where =
-          "rowid IN (SELECT rowid FROM num WHERE value = 5.0 USING SAMPLE " +
-          std::to_string(60 + round * 40) + " ROWS)";
+          "rowid IN (SELECT rowid FROM num WHERE value = 5.0 ORDER BY " + g.SampleOrder("rowid") +
+          " LIMIT " + std::to_string(60 + round * 40) + ")";
       batch.old_rows = NumRowsById(h.con, where);
       Exec(h.con, "DELETE FROM num WHERE " + where);
     } else {
@@ -1025,8 +1061,14 @@ void TestNativeScan(uint64_t seed) {
 } // namespace
 
 int main(int argc, char **argv) {
-  const uint64_t seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1;
+  // Seed: argv[1], else $ACCEL_TEST_SEED, else 1 (ctest is deterministic).
+  const char *seed_env = std::getenv("ACCEL_TEST_SEED");
+  const uint64_t seed = argc > 1   ? std::strtoull(argv[1], nullptr, 10)
+                        : seed_env ? std::strtoull(seed_env, nullptr, 10)
+                                   : 1;
   const int steps = argc > 2 ? std::atoi(argv[2]) : 120;
+  g_replay = std::to_string(seed) + " " + std::to_string(steps);
+  std::cout << "seed=" << seed << " steps=" << steps << "\n";
   std::mt19937_64 rng(seed);
   TestGroupAlgebra(rng);
   std::cout << "group algebra ok\n";
