@@ -348,8 +348,10 @@ if(BUILD_TESTING)
 endif()
 
 accel_add_duckdb_exe(test_aux_runtime_units eval/tests/test_aux_runtime_units.cpp)
+accel_add_duckdb_exe(test_aux_runtime eval/tests/test_aux_runtime.cpp)
 if(BUILD_TESTING)
     add_test(NAME aux_runtime_units_test COMMAND test_aux_runtime_units)
+    add_test(NAME aux_runtime_test COMMAND test_aux_runtime)
 endif()
 
 function(accel_add_shared_interface_test target_name test_source)
