@@ -7,7 +7,6 @@
 #     QUERY_NUM 1
 #     LIBRARY_TARGET accelerator_codegen
 #     TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}
-#     CTEST_RESOURCE_LOCK sec_edgar_db
 #   )
 
 function(accel_add_base_query)
@@ -67,6 +66,8 @@ function(accel_add_base_query)
     if(_bench STREQUAL "sec_edgar")
         set_tests_properties(${_ctest_name} PROPERTIES TIMEOUT 900)
     endif()
+    # 77: the test's database is missing or not loaded (the test says which).
+    set_tests_properties(${_ctest_name} PROPERTIES SKIP_RETURN_CODE 77)
     if(BQ_CTEST_RESOURCE_LOCK)
         set_tests_properties(${_ctest_name} PROPERTIES RESOURCE_LOCK ${BQ_CTEST_RESOURCE_LOCK})
     endif()

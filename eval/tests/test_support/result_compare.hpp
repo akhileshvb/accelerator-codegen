@@ -2,7 +2,10 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <initializer_list>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -19,6 +22,44 @@ inline std::string GetBenchmarkDbPath(const char *env_var, const char *default_p
         return env_path;
     }
     return default_path;
+}
+
+// ctest SKIP_RETURN_CODE for tests whose database is not provisioned.
+inline constexpr int kSkipReturnCode = 77;
+
+// Read-only config: a smoke test never writes its database, and read-only
+// opens of a shared file do not lock out concurrent runs.
+inline void MakeReadOnly(duckdb::DBConfig &config) {
+    config.options.access_mode = duckdb::AccessMode::READ_ONLY;
+}
+
+// Exits with kSkipReturnCode and a clear message when `db_path` is missing or
+// lacks one of `tables` (e.g. an empty placeholder file), instead of failing
+// later with an opaque "Table ... does not exist".
+inline void SkipUnlessDbHasTables(const std::string &db_path, std::initializer_list<const char *> tables,
+                                  const char *env_hint) {
+    if (!std::filesystem::exists(db_path)) {
+        std::cerr << "SKIP: database " << db_path << " does not exist (set " << env_hint << ")\n";
+        std::exit(kSkipReturnCode);
+    }
+    std::string missing;
+    {
+        duckdb::DBConfig config;
+        MakeReadOnly(config);
+        duckdb::DuckDB database(db_path, &config);
+        duckdb::Connection connection(database);
+        for (const char *table : tables) {
+            auto result = connection.Query(std::string("SELECT 1 FROM duckdb_tables() WHERE table_name = '") + table + "'");
+            if (result->HasError() || result->RowCount() == 0) {
+                missing += missing.empty() ? table : std::string(", ") + table;
+            }
+        }
+    }
+    if (!missing.empty()) {
+        std::cerr << "SKIP: database " << db_path << " lacks table(s) " << missing
+                  << " (not loaded? set " << env_hint << " to a populated database)\n";
+        std::exit(kSkipReturnCode);
+    }
 }
 
 inline void Require(bool condition, const std::string &message) {

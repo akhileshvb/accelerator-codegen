@@ -1,6 +1,7 @@
 // Template for SEC-EDGAR base accelerator tests.
 // Copy to accelerators/sec_edgar/q3/tests/test_sec_edgar_q3.cpp and customize.
 
+#include "eval/tests/test_support/db_paths.hpp"
 #include "backends/duckdb/api/register.hpp"
 #include "eval/tests/test_support/result_compare.hpp"
 
@@ -11,15 +12,18 @@
 
 namespace {
 
-constexpr const char *kDefaultDb = "/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb";
 constexpr const char *kReferenceSqlPath = "workloads/sec_edgar/q3.sql";
 
 } // namespace
 
 int main() {
     try {
-        const auto db_path = accelerator_codegen::test_support::GetBenchmarkDbPath("ACCEL_SEC_EDGAR_DB", kDefaultDb);
-        duckdb::DuckDB database(db_path);
+        namespace ts = accelerator_codegen::test_support;
+        const auto db_path = ts::SecEdgarSmokeDbPath();
+        ts::SkipUnlessDbHasTables(db_path, {"sub", "num", "tag", "pre"}, "ACCEL_SEC_EDGAR_DB");
+        duckdb::DBConfig db_config;
+        ts::MakeReadOnly(db_config);
+        duckdb::DuckDB database(db_path, &db_config);
         duckdb::Connection connection(database);
         accelerator_codegen::RegisterAcceleratorFunctions(connection);
 
