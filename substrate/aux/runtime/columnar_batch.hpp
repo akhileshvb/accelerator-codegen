@@ -27,13 +27,14 @@ struct StringColumnData {
 // One captured column. `type` decides which storage alternative is used:
 //   Boolean -> vector<uint8_t>; Int64 -> vector<int64_t>; UInt64 -> vector<uint64_t>;
 //   ScaledDecimal -> vector<int64_t> (unscaled, `scale` applies to the column);
+//   ScaledDecimal128 -> vector<__int128> (likewise);
 //   Double -> vector<double>; Date -> vector<int32_t> (days since 1970-01-01);
 //   String -> StringColumnData.
 struct ColumnData {
   core::AuxType type = core::AuxType::Int64;
   int32_t scale = 0;               // ScaledDecimal only
   std::vector<uint8_t> null_flags; // empty: no NULLs; else 1 = NULL, one per row
-  std::variant<std::vector<uint8_t>, std::vector<int64_t>, std::vector<uint64_t>,
+  std::variant<std::vector<uint8_t>, std::vector<int64_t>, std::vector<uint64_t>, std::vector<__int128>,
                std::vector<double>, std::vector<int32_t>, StringColumnData>
       values;
 

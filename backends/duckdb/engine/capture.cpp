@@ -2,6 +2,9 @@
 #include "backends/duckdb/engine/capture.hpp"
 #include "backends/duckdb/engine/decimal128.hpp"
 
+#include <algorithm>
+#include <limits>
+
 #include "backends/duckdb/api/duckdb_host.hpp"
 #include "backends/duckdb/engine/scan.hpp"
 #include "duckdb/common/types/vector.hpp"
@@ -162,11 +165,6 @@ void FillText(::duckdb::Vector &vec, std::size_t rows, ColumnData &out) {
   out.values = std::move(text);
 }
 
-bool FitsInt64(const ::duckdb::hugeint_t &huge) {
-  return (huge.upper == 0 && static_cast<int64_t>(huge.lower) >= 0) ||
-         (huge.upper == -1 && static_cast<int64_t>(huge.lower) < 0);
-}
-
 ColumnData Column(::duckdb::Vector &vec, std::size_t rows) {
   ColumnData out;
   const auto &type = vec.GetType();
@@ -210,18 +208,17 @@ ColumnData Column(::duckdb::Vector &vec, std::size_t rows) {
       Fill<int64_t, int64_t>(vec, rows, out, core::AuxType::ScaledDecimal, as_int64);
       return out;
     case PhysicalType::INT128: {
-      bool fits = true;
-      Fill<::duckdb::hugeint_t, int64_t>(vec, rows, out, core::AuxType::ScaledDecimal,
-                                         [&](const ::duckdb::hugeint_t &h) {
-                                           fits = fits && FitsInt64(h);
-                                           return static_cast<int64_t>(h.lower);
-                                         });
+      Fill<::duckdb::hugeint_t, __int128>(vec, rows, out, core::AuxType::ScaledDecimal128,
+                                          HugeintToInt128);
+      // Values that all fit 64 bits stay ScaledDecimal, as modules expect.
+      const auto &wide = std::get<std::vector<__int128>>(out.values);
+      const bool fits = std::all_of(wide.begin(), wide.end(), [](__int128 v) {
+        return v >= std::numeric_limits<int64_t>::min() && v <= std::numeric_limits<int64_t>::max();
+      });
       if (fits) {
-        return out;
+        out.type = core::AuxType::ScaledDecimal;
+        out.values = std::vector<int64_t>(wide.begin(), wide.end());
       }
-      // Beyond 64 bits: exact as decimal text, never via double.
-      out = ColumnData();
-      FillText(vec, rows, out);
       return out;
     }
     default:

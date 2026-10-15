@@ -28,6 +28,9 @@ core::AuxValue ColumnData::Value(std::size_t row) const {
   case AuxType::ScaledDecimal:
     return AuxValue::Of<ScaledDecimal>(
         type, ScaledDecimal{std::get<std::vector<int64_t>>(values)[row], scale});
+  case AuxType::ScaledDecimal128:
+    return AuxValue::Of<core::ScaledDecimal128>(
+        type, core::ScaledDecimal128{std::get<std::vector<__int128>>(values)[row], scale});
   case AuxType::Double:
     return AuxValue::Of<double>(type, std::get<std::vector<double>>(values)[row]);
   case AuxType::Date:
@@ -86,6 +89,15 @@ void AppendColumn(const ColumnData &col, std::size_t row_count, std::vector<AuxR
     const int32_t scale = col.scale;
     fill([&](std::size_t r) {
       return AuxValue::Of<ScaledDecimal>(AuxType::ScaledDecimal, ScaledDecimal{v[r], scale});
+    });
+    break;
+  }
+  case AuxType::ScaledDecimal128: {
+    const auto &v = std::get<std::vector<__int128>>(col.values);
+    const int32_t scale = col.scale;
+    fill([&](std::size_t r) {
+      return AuxValue::Of<core::ScaledDecimal128>(AuxType::ScaledDecimal128,
+                                                  core::ScaledDecimal128{v[r], scale});
     });
     break;
   }
@@ -198,6 +210,8 @@ void Infer(const std::vector<AuxRow> &rows, std::size_t col, Inferred &inf) {
       inf.type = v.type;
       if (v.type == AuxType::ScaledDecimal) {
         inf.scale = std::get<ScaledDecimal>(v.payload).scale;
+      } else if (v.type == AuxType::ScaledDecimal128) {
+        inf.scale = std::get<core::ScaledDecimal128>(v.payload).scale;
       }
     }
     return;
@@ -208,7 +222,7 @@ ColumnData BuildColumn(const std::vector<AuxRow> &rows, std::size_t col, const I
   const std::size_t n = rows.size();
   ColumnData out;
   out.type = inf.type;
-  out.scale = inf.type == AuxType::ScaledDecimal ? inf.scale : 0;
+  out.scale = inf.type == AuxType::ScaledDecimal || inf.type == AuxType::ScaledDecimal128 ? inf.scale : 0;
   bool any_null = false;
   std::vector<uint8_t> nulls(n, 0);
   for (std::size_t r = 0; r < n; ++r) {
@@ -250,6 +264,18 @@ ColumnData BuildColumn(const std::vector<AuxRow> &rows, std::size_t col, const I
       const auto &d = std::get<ScaledDecimal>(x.payload);
       if (d.scale != inf.scale) {
         throw std::invalid_argument("FromMutationBatch: ScaledDecimal scale differs within a column");
+      }
+      return d.value;
+    });
+    out.values = std::move(v);
+    break;
+  }
+  case AuxType::ScaledDecimal128: {
+    std::vector<__int128> v;
+    numeric(v, [&](const AuxValue &x) {
+      const auto &d = std::get<core::ScaledDecimal128>(x.payload);
+      if (d.scale != inf.scale) {
+        throw std::invalid_argument("FromMutationBatch: ScaledDecimal128 scale differs within a column");
       }
       return d.value;
     });

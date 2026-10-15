@@ -22,7 +22,7 @@ static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the wire format is lit
 namespace {
 
 constexpr uint8_t kWireVersion = 1;
-constexpr uint8_t kLastAuxType = static_cast<uint8_t>(AuxType::String);
+constexpr uint8_t kLastAuxType = static_cast<uint8_t>(AuxType::ScaledDecimal128);
 constexpr uint8_t kLastMutationKind = static_cast<uint8_t>(MutationKind::Update);
 
 [[noreturn]] void Malformed(const char *what) {
@@ -126,6 +126,12 @@ void EncodeValue(const AuxValue &value, std::string &out) {
     Put(out, decimal.scale);
     return;
   }
+  case AuxType::ScaledDecimal128: {
+    const auto &decimal = std::get<core::ScaledDecimal128>(value.payload);
+    Put(out, decimal.value);
+    Put(out, decimal.scale);
+    return;
+  }
   case AuxType::Double:
     Put(out, std::get<double>(value.payload));
     return;
@@ -163,6 +169,10 @@ AuxValue DecodeValue(Reader &reader) {
   case AuxType::ScaledDecimal: {
     int64_t unscaled = reader.Get<int64_t>();
     return AuxValue::Of<ScaledDecimal>(type, ScaledDecimal{unscaled, reader.Get<int32_t>()});
+  }
+  case AuxType::ScaledDecimal128: {
+    __int128 unscaled = reader.Get<__int128>();
+    return AuxValue::Of<core::ScaledDecimal128>(type, core::ScaledDecimal128{unscaled, reader.Get<int32_t>()});
   }
   case AuxType::Double:
     return AuxValue::Of<double>(type, reader.Get<double>());
@@ -250,6 +260,9 @@ ColumnData DecodeColumn(Reader &reader, std::size_t row_count) {
     break;
   case AuxType::UInt64:
     column.values = reader.GetArray<uint64_t>(row_count);
+    break;
+  case AuxType::ScaledDecimal128:
+    column.values = reader.GetArray<__int128>(row_count);
     break;
   case AuxType::Double:
     column.values = reader.GetArray<double>(row_count);
