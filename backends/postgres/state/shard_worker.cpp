@@ -187,13 +187,16 @@ public:
     segment.stats.synced = runtime.IsSynced();
     segment.stats.waited = stats.reads_waited;
     segment.stats.declined = stats.reads_fallback;
-    if (stats.last_decision && stats.commits_applied != published_commits) {
-      published_commits = stats.commits_applied;
+    if (stats.last_decision) {
       core::SetGlobalMaintenanceDecision(*stats.last_decision);
-      segment.SetText(ShardSegment::kLastDecision, core::FormatLastMaintenanceDecision());
-      segment.SetText(ShardSegment::kLastAction,
-                      maintenance::MaintenanceActionName(stats.last_decision->staged_action));
-      segment.stats.decision_ns = NowNs();
+      std::string decision = core::FormatLastMaintenanceDecision();
+      if (decision != published_decision) {
+        segment.SetText(ShardSegment::kLastDecision, decision);
+        segment.SetText(ShardSegment::kLastAction,
+                        maintenance::MaintenanceActionName(stats.last_decision->staged_action));
+        segment.stats.decision_ns = NowNs();
+        published_decision = std::move(decision);
+      }
     }
   }
 
@@ -210,7 +213,7 @@ public:
 private:
   ShardSegment &segment;
   runtime::AcceleratorRuntime &runtime;
-  uint64_t published_commits = 0;
+  std::string published_decision;
   std::string applied_forced;
 };
 
