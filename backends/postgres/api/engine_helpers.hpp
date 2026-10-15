@@ -231,6 +231,28 @@ inline std::string KeyListPredicate(const char *column, const std::vector<int64_
   return sql + "}'::bigint[])";
 }
 
+// ScanTypedTuples for an aggregate whose result is small (bounded by the
+// value domain, not the table size): runs to completion through SPI_execute,
+// which unlike a cursor may use a parallel plan (Gather over a parallel scan,
+// as many workers as max_parallel_workers_per_gather allows), and holds the
+// whole result in memory.
+template <typename Callback>
+inline void ScanTypedTuplesParallel(const std::string &sql, Callback &&callback) {
+  ++t_table_scans;
+  if (SPI_connect() != SPI_OK_CONNECT) {
+    throw std::runtime_error("SPI_connect failed");
+  }
+  if (SPI_execute(sql.c_str(), true, 0) != SPI_OK_SELECT) {
+    SPI_finish();
+    throw std::runtime_error("SPI_execute failed");
+  }
+  for (uint64 row_index = 0; row_index < SPI_processed; ++row_index) {
+    callback(SPI_tuptable->vals[row_index], SPI_tuptable->tupdesc);
+  }
+  SPI_freetuptable(SPI_tuptable);
+  SPI_finish();
+}
+
 // ScanTypedTuples on the database as this transaction leaves it: its own
 // writes, including the last command's, and every committed transaction.
 // For scans during PRE_COMMIT (an aux rescan must read the database after

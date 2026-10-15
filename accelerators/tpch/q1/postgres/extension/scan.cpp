@@ -41,7 +41,7 @@ void ScanTpchQ1Lineitems(
 // (shipdate, returnflag, linestatus) cell with exact numeric sums (text).
 void ScanTpchQ1DayGroupAggregates(
     const std::function<void(const query::TpchQ1DayGroupAggregate &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesParallel(
       "SELECT l_shipdate, l_returnflag, l_linestatus, count(*), "
       "sum(l_quantity), sum(l_extendedprice), sum(l_discount), "
       "sum(l_extendedprice * (1 - l_discount)), "

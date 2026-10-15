@@ -41,7 +41,7 @@ void ScanTpchQ6Lineitems(
 void ScanTpchQ6CellAggregates(
     const std::function<void(const query::TpchQ6CellAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuples(
+  ScanTypedTuplesParallel(
       "SELECT l_shipdate, l_discount, l_quantity, count(*), "
       "sum(l_extendedprice * l_discount) FROM lineitem "
       "GROUP BY l_shipdate, l_discount, l_quantity",

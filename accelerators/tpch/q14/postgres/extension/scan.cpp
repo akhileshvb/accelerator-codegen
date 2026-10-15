@@ -37,7 +37,7 @@ void ScanTpchQ14Parts(
 void ScanTpchQ14DayAggregates(
     const std::function<void(const query::TpchQ14DayAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuples(
+  ScanTypedTuplesParallel(
       "SELECT l_shipdate, sum(l_extendedprice * (1 - l_discount)), "
       "sum(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * "
       "(1 - l_discount) ELSE 0 END), count(*) "

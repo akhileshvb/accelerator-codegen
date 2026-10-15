@@ -41,7 +41,7 @@ void ScanTpchQ19GroupAggregates(
     const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
   const std::string family = query::TpchQ19FamilySql();
-  ScanTypedTuples(
+  ScanTypedTuplesParallel(
       "SELECT p_brand, " + family +
           " AS fam, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
           "count(*) FROM lineitem, part WHERE l_partkey = p_partkey AND " +
