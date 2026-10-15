@@ -50,10 +50,13 @@ gate passed. Typical holes:
 
 - Harness never exercises a contract path (example: `Invalidate(PartitionSet)`
   while `TryPublish` remaps partition ids, so only `InvalidateAll` was tested)
-- Wrong substrate API (`PublishPartition` instead of `TryPublishPartition`;
-  missing `AttachServices`; harness `TryPublish` instead of coordinator commit)
-- Side-channel APIs the next layer will not call (`RegisterQueryKey`)
-- Visibility token / epoch ignored on `Read`/`CheckValidity` (store layer)
+- Wrong substrate API (a store that re-implements `AuxStateStore` instead of
+  deriving from `VersionedAuxStore`, or overrides that skip it; missing
+  `AttachServices`; harness `TryPublish` instead of coordinator commit)
+- Side-channel APIs the next layer will not call (key registration before
+  `CheckValidity`)
+- Epoch provider not in the order of `CurrentVisibility().mutation_epoch`, or
+  a harness that never asserts `NotVisible` (store layer)
 - Server-only symbols in a host shared library (host / txn)
 
 `violations[].rule` must be this layer’s checklist id, or one of

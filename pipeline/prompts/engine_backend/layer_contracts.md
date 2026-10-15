@@ -12,41 +12,79 @@ If `backend_analysis.json` `harness_plan` contradicts this file or
 
 ## `store`
 
-**Read first:** `substrate/aux/core/aux_types.hpp`
-(`AuxStateStore`, `QueryKey`, `VisibilityToken`, `ValidityCode::NotVisible`),
-`substrate/aux/state/versioned_aux_store.hpp`.
+**Read first:** `substrate/aux/core/aux_types.hpp` (`AuxStateStore`,
+`StateImage`, `StateSnapshot`, `VisibilityToken`, `QueryKey`, `ValidityCode`,
+`StagedMaintenanceOutcome`), `substrate/aux/state/versioned_aux_store.hpp`
+(`VersionedAuxStore`, `Options`, `AuxReadScope`),
+`substrate/aux/state/invalidation_plan.hpp`, and the "Concurrency" section of
+`substrate/aux/core/README.md`.
 
-`{Engine}StateStore` wraps `VersionedAuxStore`. Typed `StateImage` payloads
-for `typed_in_process`.
+`VersionedAuxStore` **is** the `AuxStateStore` implementation (versions,
+pending commits, `expected_version` check, invalidation, locking). The engine
+store **configures** it, it does not re-implement it:
 
-| API | Must |
+```cpp
+class {Engine}StateStore final : public VersionedAuxStore {
+  explicit {Engine}StateStore(EpochProvider epoch = {}, FloorProvider floor = {});
+};
+```
+
+| `VersionedAuxStore::Options` | Engine choice |
 |-----|------|
-| `TryPublish` | Call `TryPublishPartition` (not `PublishPartition`). Forward `expected_version`. Return `false` if any slot loses the race. Stamp `valid_through_mutation_epoch` from a ctor epoch provider, or `0`. |
-| `Read` | Copy `visibility` onto the snapshot. Omit slots that are not `Valid`, have no payload, or have `valid_through_mutation_epoch > visibility.mutation_epoch`. Fill `image.version` from `GetPartitionVersion`. |
-| `CheckValidity` | Keyed by **published** `StateImage.accelerator` + partition. Treat non-empty `QueryKey.value` as the decimal partition id. Unknown accelerator or unknown partition → `Missing` even if other slots are Valid. Token behind the slot epoch → `NotVisible`. Invalid slot → `Invalidated`. |
-| `Invalidate` | `InvalidatePartition` / `InvalidateAll` per plan scope. |
+| `epoch` | Epoch a publish / commit becomes current from. Same order as `CurrentVisibility().mutation_epoch`: a snapshot at epoch `E` must include exactly the commits whose epoch is `<= E`. None: every version is `kAllSnapshots`. |
+| `floor` | Oldest snapshot epoch still open (prunes versions). None: keep only the newest version. |
+| `fixed_accelerator` | Set when the engine keeps one store per accelerator (images of any other accelerator are rejected). |
+| `track_transaction_dirty` | Only if one store serves one session (the flag is store-wide). |
 
-**Forbidden:** `RegisterQueryKey` or any side-channel index the harness must
-call before `CheckValidity`. Publish itself is the index.
+Overriding `Read` / `ReadPartitions` / `CheckValidity` is allowed only to wrap
+the `VersionedAuxStore::` call (diagnostics). No own maps, locks, slot epochs,
+or key-registration API: publish is the index.
 
-**Harness (no SQL):** golden typed payload round-trip (`StateImage::As`);
-unknown key `Missing`; invalidate fail-closed; **CAS:** a second `TryPublish`
-with a non-matching `expected_version` returns `false` and does not keep the
-new payload; **token:** publish with epoch provider `> 0`, `Read`/`CheckValidity`
-with a smaller `mutation_epoch` omits the image / `NotVisible`.
+Semantics the harness asserts **through the engine class** (inherited):
+
+| API | Behavior |
+|-----|----------|
+| `TryPublish(staged, expected)` | Appends a version at the epoch provider's epoch (called once). Each published partition's version becomes previous + 1 (the image's own `version` is ignored). `expected != 0` and a partition's version differs → that partition is invalidated for every snapshot and the result is `false`. |
+| `Read` / `ReadPartitions` | Newest version with epoch `<= token.mutation_epoch` (`0` = newest). Omits invalid / payload-less partitions; `image.version` = partition version; `available` iff any image. |
+| `CheckValidity(key, token)` | Empty `key.value` = accelerator-wide (`Valid` iff known and no invalid partition); else decimal partition id. Unknown accelerator / partition → `Missing`; invalid → `Invalidated`; no version at the token's epoch → `NotVisible`. |
+| `Invalidate(plan)` | `PartitionSet` / `AllPartitions` invalid in every kept version (fail-closed). |
+| `BeginCommit` / `FinishCommit` / `AbortCommit` | Driven by `AuxTransactionCoordinator` only (PRE_COMMIT / COMMIT / ABORT). Readers whose snapshot may include a pending commit wait for it. |
+| `Install` / `InstallIfUnchanged` | Fresh builds (runtime layer). |
+
+The store is thread-safe (writer-preferring rwlock); callers add no lock.
+Payloads are `shared_ptr<const void>` (`StateImage::Make` / `As<T>`); a reader
+holds the `shared_ptr` while using it. The runtime opens one `AuxReadScope`
+per query.
+
+**Harness (no SQL, no DML):** typed payload round-trip (`As<T>`, version 1
+after first publish); unknown accelerator, unknown partition, unpublished
+`"0"` → `Missing`; empty key accelerator-wide; `Invalidate` (`PartitionSet`
+and `AllPartitions`) → `Invalidated` and omitted from `Read`; **expected
+version:** mismatched `expected_version` returns `false` and the partition
+reads `Invalidated`, a republish with `0` succeeds; **epoch:** a provider
+returning `N` is called once per publish, a token at `N-1` omits the image /
+`NotVisible`, at `N` is `Valid`; no provider → visible to every token;
+`ReadPartitions` subset / unknown id.
 
 ---
 
 ## `aux_backend`
 
-**Read first:** `aux_registry.hpp` (`AttachServices`, `OnMutation` /
-`OnCommit` / `OnAbort`), `aux_types.hpp` (`AuxEngineServices`, `WorkerCount`).
+**Read first:** `substrate/aux/core/aux_registry.hpp`
+(`AuxTransactionCoordinator`: `AttachServices`, `OnMutation[AtDepth]`,
+`PreCommit`, `Commit`, `Abort`, subtransaction calls),
+`substrate/aux/core/aux_types.hpp` (`AuxEngineServices`, `AuxQueryModule`,
+`MutationBatch`).
 
 - Ctor arguments: coordinator, store, visibility callback, cost model.
   **Ctor body must call `coordinator.AttachServices(*this)`.** The aux_backend
   template is wrong if it omits this — add it.
 - This class **is** the one `AuxEngineServices`. Do not introduce a second
-  services object for visibility / cost / `WorkerCount`.
+  services object for visibility / cost / `WorkerCount`. `StateStore()`
+  returns the engine store; `CurrentVisibility().mutation_epoch` is in the
+  store epoch provider's order.
+- Override `AllowsSynchronousRebuildOnCommit` / `ReadersCanBuildState` /
+  `WorkerCount` when the engine differs from the defaults (from analysis).
 - Harness drives a toy `AuxQueryModule` + **hand-built** `MutationBatch` through
   `CaptureMutation` / `OnAbort` / `OnCommit` — **not** `store.TryPublish` from
   the test. Forward those to `coordinator.OnMutation` / `Abort()` / `PreCommit()` /
@@ -62,7 +100,10 @@ with a smaller `mutation_epoch` omits the image / `NotVisible`.
 Same abort/commit value asserts as `aux_backend`, but the **engine txn API**
 from analysis (`RegisterXactCallback`, session hooks, …) must fire
 `OnPreCommit` / `OnCommit` / `OnAbort`. A harness that only calls those C++
-methods is **not** this layer. Server-only symbols stay in the MODULE (see
+methods is **not** this layer. `OnPreCommit` runs before the commit is
+visible to other snapshots (it marks the store pending), `OnCommit` after it
+(it publishes the version at the commit's epoch); the bridge never calls the
+store's `BeginCommit` / `FinishCommit` itself. Server-only symbols stay in the MODULE (see
 `host_glue`). After abort, a fresh txn can commit.
 
 ---
@@ -95,8 +136,9 @@ mutations-layer DML + commit rematches.
 
 ## `visibility`
 
-Uncommitted work must not be `Read` as committed. Relies on store token/epoch
-filtering **plus** not publishing until commit. Snapshot before commit ≠ after.
+Uncommitted work must not be `Read` as committed. Relies on the store's
+version selection by `VisibilityToken.mutation_epoch` **plus** the
+coordinator publishing only at commit. Snapshot before commit ≠ after.
 Sync barrier (locks / notify), not `sleep`.
 
 ---

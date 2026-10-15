@@ -28,6 +28,10 @@ public:
   core::AuxStateStore &StateStore() override;
   const maintenance::CostModelParams &MaintenanceCostModel() const override;
   double ExpectedQueriesBeforeNextWrite() const override;
+  // Override when the engine differs from the defaults (aux_types.hpp):
+  //   bool AllowsSynchronousRebuildOnCommit() const override;  // commit hook cannot scan
+  //   bool ReadersCanBuildState() const override;              // reader cannot run SQL at its snapshot
+  //   std::size_t WorkerCount() const override;                // host worker setting
 
 private:
   core::AuxTransactionCoordinator &coordinator;

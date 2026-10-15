@@ -1,28 +1,27 @@
 // GENERATED BACKEND
 #pragma once
 
-#include <functional>
-
-#include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/state/versioned_aux_store.hpp"
 
 namespace accelerator_codegen::aux_state::engine::{{engine_name}} {
 
-class {{EngineName}}StateStore final : public core::AuxStateStore {
+// The engine-neutral store (VersionedAuxStore), configured for {{EngineName}}.
+// VersionedAuxStore *is* the AuxStateStore implementation (versions, pending
+// commits, CAS on expected_version, invalidation, locking); this class only
+// chooses its Options. Document here which engine clock each provider reads:
+//   epoch: the epoch a commit/publish becomes current from (same order as
+//          AuxEngineServices::CurrentVisibility().mutation_epoch);
+//   floor: the oldest snapshot epoch still open (none: keep only the newest).
+class {{EngineName}}StateStore final : public VersionedAuxStore {
 public:
-  using EpochProvider = std::function<core::Version()>;
-  explicit {{EngineName}}StateStore(EpochProvider epoch_provider = {});
+  using EpochProvider = VersionedAuxStore::EpochProvider;
+  using FloorProvider = VersionedAuxStore::FloorProvider;
 
-  core::StateSnapshot Read(const core::VisibilityToken &) const override;
-  core::ValidityResult CheckValidity(const core::QueryKey &,
-                                     const core::VisibilityToken &) const override;
-  void Invalidate(const core::InvalidationPlan &) override;
-  bool TryPublish(const core::StagedMaintenanceOutcome &,
-                  core::Version expected_version) override;
+  explicit {{EngineName}}StateStore(EpochProvider epoch_provider = {},
+                                    FloorProvider floor_provider = {});
 
-private:
-  VersionedAuxStore store;
-  EpochProvider epoch_provider;
+  // Optional: override Read / ReadPartitions / CheckValidity only to wrap the
+  // VersionedAuxStore:: call (e.g. diagnostics); never re-implement them.
 };
 
 } // namespace accelerator_codegen::aux_state::engine::{{engine_name}}

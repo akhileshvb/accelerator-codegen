@@ -31,6 +31,8 @@ core::VisibilityToken {{EngineName}}AuxBackend::CurrentVisibility() const {
   return visibility ? visibility() : core::VisibilityToken{};
 }
 
+// The {{EngineName}}StateStore (a VersionedAuxStore). The coordinator drives its
+// BeginCommit / FinishCommit / AbortCommit; this class never publishes itself.
 core::AuxStateStore &{{EngineName}}AuxBackend::StateStore() { return state_store; }
 
 const maintenance::CostModelParams &

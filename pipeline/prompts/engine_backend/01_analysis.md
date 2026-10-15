@@ -35,6 +35,10 @@ Each object:
 Also fill `store_mode`, `native_scan_plan.symbol`, `mutation_capture_plan.hook`,
 `txn_lifecycle_plan.api`, `visibility_plan`, `udf_or_extension_host_plan` (or skip),
 `contract_tests_plan.by_layer`, `files_to_create`. Keep strings to one or two lines.
+`visibility_plan` names the engine clocks behind the store: the snapshot
+epoch (`CurrentVisibility().mutation_epoch`), the commit epoch (the store's
+`EpochProvider`, same order), the floor (oldest open snapshot, or none), and
+whether the engine keeps one store per accelerator / per session.
 
 ## Required reads
 
@@ -47,7 +51,8 @@ Also fill `store_mode`, `native_scan_plan.symbol`, `mutation_capture_plan.hook`,
 - `pipeline/schemas/backend_analysis.schema.json`
 
 `harness_plan` **must** include the value asserts in `layer_contracts.md` for
-that layer (store: CAS + token filter + key-from-publish, no `RegisterQueryKey`;
+that layer (store: `VersionedAuxStore` subclass + its epoch/floor providers,
+`expected_version` race → `false`, token behind epoch → `NotVisible`;
 aux_backend: `AttachServices` + commit via coordinator, not harness
 `TryPublish`; txn: engine txn API, not C++ `OnCommit` as the proof).
 

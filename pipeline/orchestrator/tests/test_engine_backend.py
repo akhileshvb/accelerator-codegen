@@ -180,7 +180,8 @@ def test_render_engine_analysis_prompt():
     assert "request_gate" in text
     assert "roadmap" in text.lower() or "concrete" in text.lower()
     assert "layer_contracts.md" in text
-    assert "TryPublishPartition" in text
+    assert "VersionedAuxStore" in text
+    assert "TryPublishPartition" not in text
 
 
 def test_render_impl_store_prompt():
@@ -211,8 +212,9 @@ def test_render_impl_store_prompt():
     assert "engine_build" in text
     assert "later layer" in text.lower()
     assert "smallest" in text.lower() or "minimal" in text.lower()
-    assert "TryPublishPartition" in text
-    assert "RegisterQueryKey" in text
+    assert "VersionedAuxStore" in text
+    assert "expected_version" in text
+    assert "TryPublishPartition" not in text
     assert "layer_contracts.md" in text
     assert "versioned_aux_store.hpp" in text
     assert "Native base-table" in text or "hard_guidelines" in text.lower()
@@ -474,7 +476,8 @@ def test_render_layer_critique_prompt():
     )
     assert "engine_store" in text
     assert "store_roundtrip" in text
-    assert "TryPublishPartition" in text
+    assert "VersionedAuxStore" in text
+    assert "TryPublishPartition" not in text
     assert "layer_contracts.md" in text
     assert "layer_critique_store.json" in text
     assert "{{layer_id}}" not in text
@@ -821,7 +824,7 @@ def test_layer_critique_exhausted_rounds_raises(tmp_path, monkeypatch):
                     "status": "fail",
                     "summary": "still broken",
                     "violations": [{"rule": "contract", "evidence": "CAS ignored"}],
-                    "feedback_for_implementation": "Honor TryPublishPartition CAS.",
+                    "feedback_for_implementation": "Honor expected_version on TryPublish.",
                 }
             )
             + "\n",

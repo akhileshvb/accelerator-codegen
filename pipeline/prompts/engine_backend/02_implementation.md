@@ -30,6 +30,7 @@ contracts**.
 - `pipeline/prompts/engine_backend/acceptance_checklist.md`
 - `substrate/aux/core/aux_types.hpp`
 - `substrate/aux/state/versioned_aux_store.hpp`
+- `substrate/aux/core/README.md` ("Concurrency": versions, epochs, commits)
 - `substrate/aux/core/aux_registry.hpp` (from `aux_backend` onward)
 - Matching stub under `pipeline/templates/engine_backend/` — keep
   `aux_state::engine::{{engine_name}}`. Do not put adapter types in `core::`.

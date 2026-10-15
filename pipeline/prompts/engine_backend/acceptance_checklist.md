@@ -94,26 +94,26 @@ on these `rule` ids. Each rule is owned by one implementation layer.
 
 ### `store_roundtrip` (layer `store`)
 
-- Exercise the **engine’s** `AuxStateStore` (not a pure substrate toy that never
-  touches the adapter store): TryPublish → CheckValidity → Read → Invalidate,
-  with value asserts and fail-closed Invalidate. Class lives in
-  `aux_state::engine::{engine}`, not `core::`.
-- Match chosen `store_mode` (`typed_in_process` vs `serialized_boundary`).
-- `TryPublish` must call `VersionedAuxStore::TryPublishPartition` and honor
-  `expected_version` (return `false` on a lost race; do not keep the new
-  payload). Unconditional `PublishPartition` that always returns `true` is a
-  fail. Stamp `valid_through_mutation_epoch` from a ctor epoch provider (or 0).
-- `Read` / `CheckValidity` must apply `VisibilityToken.mutation_epoch` against
-  that stamp: a token behind the slot is omitted / `NotVisible`, not served as
-  `Valid`. Fill `StateImage.version` from the slot.
-- `CheckValidity` is keyed from **published** `StateImage.accelerator` +
-  partition (`QueryKey.value` = decimal partition id when non-empty). Unknown
-  accelerator or unknown partition → `Missing` even if other slots are Valid.
-  A `RegisterQueryKey` (or similar) API the harness must call before validity
-  is a fail — publish is the index.
-- For `serialized_boundary` / multi-process hosts: loaders must **refresh from
-  durable state** on read/validity (not only when the in-process map is empty);
-  otherwise long-lived backends keep stale epochs after peer publish.
+- Exercise the **engine's** store class (not a bare `VersionedAuxStore`):
+  TryPublish → CheckValidity → Read → Invalidate, with value asserts and
+  fail-closed Invalidate. Class lives in `aux_state::engine::{engine}`, not
+  `core::`.
+- `{Engine}StateStore` derives from `VersionedAuxStore` and only sets its
+  `Options` (`epoch`, `floor`, `fixed_accelerator`, `track_transaction_dirty`).
+  A store that re-implements `AuxStateStore` over its own maps / locks / slot
+  epochs, or whose overrides do not delegate to `VersionedAuxStore::`, is a fail.
+- Harness asserts the inherited semantics through that class:
+  mismatched `expected_version` → `false` and the partition `Invalidated`;
+  a token behind the publish epoch → image omitted / `NotVisible`; no epoch
+  provider → visible to every token; `StateImage.version` from the store.
+- `CheckValidity` is keyed by **published** `StateImage.accelerator` +
+  partition (`QueryKey.value` = decimal partition id; empty = accelerator-wide).
+  Unknown accelerator or partition → `Missing`. A registration API the harness
+  must call before validity is a fail — publish is the index.
+- Match chosen `store_mode`. For `serialized_boundary` / multi-process hosts:
+  each process's store must **refresh from durable state** (rebuild +
+  `Install` / `InstallIfUnchanged`) on read/validity, not only when empty;
+  otherwise long-lived processes keep stale state after a peer's commit.
 
 ### `aux_services` (layer `aux_backend`)
 
