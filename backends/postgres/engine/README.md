@@ -25,9 +25,15 @@ SDK to build the optional `accelerator_codegen_pg` MODULE.
   registered per-query `CREATE FUNCTION` text (see
   `scripts/postgres_register_tpch_all.sql`).
 - **Mutations** go through statement-level transition triggers →
-  `AcceleratorCodegenCaptureTransition` (`engine/transition_capture.cpp`) →
-  registered `PostgresAuxBackend` coordinators.
-  Txn lifecycle is via `postgres_xact_callbacks` (`RegisterXactCallback`).
+  `AcceleratorCodegenCaptureTransition` (`engine/transition_capture.cpp`), which
+  reads the transition tables into one columnar batch per statement and table
+  (the union of the columns the active accelerators watch,
+  `engine/accelerator_tables.*`). `engine/postgres_xact_callbacks.*` stages the
+  batches per (sub)transaction and, at commit, takes a commit epoch of every
+  accelerator that depends on a written table (`state/shared.*`: registry,
+  epochs, gates) and ships one `CommitMessage` per accelerator to its shard
+  worker. The writer-side tests are `tests/test_postgres_writer.cpp` over the
+  `accelerator_codegen_pg_writer_test` MODULE.
 - **Aux state** is the per-query in-process `PostgresStateStore`
   (`backends/postgres/state/`), not a serialized file-backed adapter.
 
