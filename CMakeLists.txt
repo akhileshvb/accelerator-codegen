@@ -23,6 +23,27 @@ include(AuxState)
 include(BaseQuery)
 include(GeneratedSources)
 
+# Base kernels (duckdb|postgres/base/{single-threaded,parallel}) use SIMD
+# intrinsics guarded by __AVX512F__ / __AVX2__ with scalar fallbacks, so they need
+# the target ISA enabled to take the vector paths.  Default -march=native;
+# -DACCEL_BASE_COPTS= (empty) builds the portable scalar fallbacks.
+set(ACCEL_BASE_COPTS "-march=native" CACHE STRING "extra compile options for the base kernel sources")
+function(accel_apply_base_copts)
+    if(NOT ACCEL_BASE_COPTS)
+        return()
+    endif()
+    set(_srcs "")
+    foreach(_src IN LISTS ARGN)
+        if(_src MATCHES "/(duckdb|postgres)/base/")
+            list(APPEND _srcs "${_src}")
+        endif()
+    endforeach()
+    if(_srcs)
+        separate_arguments(_opts UNIX_COMMAND "${ACCEL_BASE_COPTS}")
+        set_property(SOURCE ${_srcs} APPEND PROPERTY COMPILE_OPTIONS ${_opts})
+    endif()
+endfunction()
+
 # Optional Postgres engine adapter. Discovery rejects client-only pg_config.
 option(ACCELERATOR_CODEGEN_BUILD_POSTGRES
        "Build the optional PostgreSQL engine adapter (requires server SDK)" OFF)
@@ -107,33 +128,13 @@ if(ACCEL_AUX_COPTS)
     set_property(SOURCE ${_accel_cpp_aux_srcs} APPEND PROPERTY COMPILE_OPTIONS ${ACCEL_AUX_COPTS})
 endif()
 
-# Stateless base kernels (duckdb/base/{single-threaded,parallel}) use SIMD
-# intrinsics guarded by __AVX512F__ / __AVX2__ with scalar fallbacks, so they need
-# the target ISA enabled to take the vector paths.  Default -march=native;
-# -DACCEL_STATELESS_COPTS= (empty) builds the portable scalar fallbacks.
-set(ACCEL_STATELESS_COPTS "-march=native" CACHE STRING "extra compile options for the stateless base kernel sources")
-function(accel_apply_stateless_copts)
-    if(NOT ACCEL_STATELESS_COPTS)
-        return()
-    endif()
-    set(_srcs "")
-    foreach(_src IN LISTS ARGN)
-        if(_src MATCHES "/duckdb/base/")
-            list(APPEND _srcs "${_src}")
-        endif()
-    endforeach()
-    if(_srcs)
-        separate_arguments(_opts UNIX_COMMAND "${ACCEL_STATELESS_COPTS}")
-        set_property(SOURCE ${_srcs} APPEND PROPERTY COMPILE_OPTIONS ${_opts})
-    endif()
-endfunction()
-accel_apply_stateless_copts(${ACCEL_GENERATED_SOURCES})
+accel_apply_base_copts(${ACCEL_GENERATED_SOURCES})
 
 # SEC-EDGAR accelerators (shared state, DuckDB aux, Postgres aux/extension) are
 # always compiled for this machine's CPU, so every loop can use AVX-512/AVX2/BMI,
 # not just the hand-written kernels behind __builtin_cpu_supports. Source
 # properties are directory-scoped, so this also reaches accelerator_codegen_pg.
-# The DuckDB base kernels already get ACCEL_STATELESS_COPTS. The library becomes
+# The DuckDB base kernels already get ACCEL_BASE_COPTS. The library becomes
 # CPU-specific; -DACCEL_SEC_EDGAR_COPTS= (empty) restores the portable build.
 set(ACCEL_SEC_EDGAR_COPTS "-march=native" CACHE STRING "extra compile options for the SEC-EDGAR accelerator sources")
 if(ACCEL_SEC_EDGAR_COPTS)
@@ -273,7 +274,7 @@ if(ACCEL_ENABLE_PARALLEL_KERNELS)
 		# Q3 shared __int128 revenue CAS uses libatomic (__atomic_*_16).
 		target_link_libraries(accelerator_codegen PRIVATE atomic)
 		accel_collect_generated_parallel_sources(ACCEL_GENERATED_PARALLEL_SOURCES)
-		accel_apply_stateless_copts(${ACCEL_GENERATED_PARALLEL_SOURCES})
+		accel_apply_base_copts(${ACCEL_GENERATED_PARALLEL_SOURCES})
 		target_sources(accelerator_codegen PRIVATE
 			backends/duckdb/api/parallel/parallel_runtime.cpp
 			${ACCEL_GENERATED_PARALLEL_SOURCES}

@@ -32,8 +32,11 @@ function(accel_collect_generated_sources OUT_VAR)
     list(APPEND _patterns
         "accelerators/*/q*/common/*.cpp")
     # Base kernels are optional; collect them when present for this engine.
-    list(APPEND _patterns
-        "accelerators/*/q*/${_engine}/base/single-threaded/*.cpp")
+    # Postgres base kernels run inside the module (PostgresAdapter.cmake).
+    if(NOT _engine STREQUAL "postgres")
+        list(APPEND _patterns
+            "accelerators/*/q*/${_engine}/base/single-threaded/*.cpp")
+    endif()
     # Catalog for this engine (duckdb catalog also linked via runtime when present).
     if(NOT _engine STREQUAL "duckdb")
         list(APPEND _patterns "backends/${_engine}/api/catalog/*.cpp")
@@ -49,7 +52,7 @@ endfunction()
 
 function(accel_collect_generated_parallel_sources OUT_VAR)
     accel_codegen_engine_name(_engine)
-    if(_engine STREQUAL "")
+    if(_engine STREQUAL "" OR _engine STREQUAL "postgres")
         set(${OUT_VAR} "" PARENT_SCOPE)
         return()
     endif()

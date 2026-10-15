@@ -2,7 +2,7 @@
 //
 // Every primitive has an AVX-512 path (__AVX512F__ + __AVX512VL__), an AVX2 path
 // and a scalar branch-free fallback, chosen at compile time; the base kernel
-// sources are built with ACCEL_STATELESS_COPTS (default -march=native).
+// sources are built with ACCEL_BASE_COPTS (default -march=native).
 // Selection vectors are uint32_t row indexes in ascending order; every
 // function that writes one requires the output buffer to hold n entries plus
 // kSelSlack slack (vector compress-stores may write past the logical end).
