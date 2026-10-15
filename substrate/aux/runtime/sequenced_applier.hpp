@@ -77,7 +77,9 @@ public:
   // sequence number <= b seen, if none). If a gap remains, later changes stay
   // queued and HasGap() reports it.
   std::vector<CommittedChange> TakeCatchUp(Epoch b);
-  void FinishCatchUp(Seq last_applied_seq, Epoch last_applied_epoch);
+  // The catch-up changes were applied: Synced at the point TakeCatchUp
+  // computed (its last change, or the build's boundary if it returned none).
+  void FinishCatchUp();
   // The build failed or was abandoned: back to Stale, queue kept.
   void AbandonBuild();
   // The state became invalid (maintenance failed): Synced -> Stale.
@@ -92,6 +94,8 @@ private:
   Epoch applied_epoch = 0;
   Seq highest_seen = 0;
   std::optional<Epoch> build_epoch;
+  Seq catch_up_seq = 0;
+  Epoch catch_up_epoch = 0;
   std::map<Seq, CommittedChange> queue;
 };
 

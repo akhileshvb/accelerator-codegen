@@ -347,6 +347,11 @@ if(BUILD_TESTING)
     add_test(NAME versioned_aux_state_unit_test COMMAND test_versioned_aux_state)
 endif()
 
+accel_add_duckdb_exe(test_aux_runtime_units eval/tests/test_aux_runtime_units.cpp)
+if(BUILD_TESTING)
+    add_test(NAME aux_runtime_units_test COMMAND test_aux_runtime_units)
+endif()
+
 function(accel_add_shared_interface_test target_name test_source)
     add_executable(${target_name} ${test_source})
     target_link_libraries(${target_name} PRIVATE accelerator_codegen duckdb_sibling)
