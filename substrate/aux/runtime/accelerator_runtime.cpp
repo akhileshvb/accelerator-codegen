@@ -77,7 +77,8 @@ AcceleratorRuntime::ReadGuard::~ReadGuard() = default;
 struct AcceleratorRuntime::Impl {
   BuildScheduler schedule;
   core::AuxEngineServices *module_services = nullptr;
-  std::unordered_map<core::TableId, std::vector<int32_t>> projections;
+  std::unordered_map<core::TableId, std::vector<int32_t>> projections; // by host table
+  std::unordered_map<core::TableId, core::TableId> module_table;        // host -> module
   StoreHandle store;
 
   // Writer side. Held from BeginCommit to PublishCommit/AbortCommit, and
@@ -109,7 +110,8 @@ struct AcceleratorRuntime::Impl {
 
 AcceleratorRuntime::AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> module_p,
                                        EngineSlots &slots_p, ThreadBudget &threads_p,
-                                       BuildScheduler schedule, StoreFactory make_store)
+                                       BuildScheduler schedule, StoreFactory make_store,
+                                       const TableMap &tables)
     : module(std::move(module_p)), id(module->Id()), slots(slots_p), threads(threads_p),
       impl(std::make_unique<Impl>()) {
   impl->module_services = this;
@@ -118,7 +120,10 @@ AcceleratorRuntime::AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> mod
                                 threads.Spawn(std::move(work));
                               });
   for (const auto &dependency : module->Dependencies()) {
-    impl->projections[dependency.table] = dependency.mutation_attnums;
+    const auto mapped = tables.find(dependency.table);
+    const auto host = mapped == tables.end() ? dependency.table : mapped->second;
+    impl->projections[host] = dependency.mutation_attnums;
+    impl->module_table[host] = dependency.table;
   }
   std::function<Epoch()> epoch = [this] { return impl->store_epoch; };
   std::function<Epoch()> floor = [this] {
@@ -150,6 +155,11 @@ std::vector<core::TableId> AcceleratorRuntime::DependencyTables() const {
     tables.push_back(entry.first);
   }
   return tables;
+}
+
+const std::vector<int32_t> *AcceleratorRuntime::Projection(core::TableId table) const {
+  const auto it = impl->projections.find(table);
+  return it == impl->projections.end() ? nullptr : &it->second;
 }
 
 // ---- reads ----
@@ -221,7 +231,8 @@ AcceleratorRuntime::Stage(const std::vector<ColumnarBatchRef> &batches) {
     if (projection == impl->projections.end()) {
       continue;
     }
-    const auto rows = ToMutationBatch(*batch, projection->second);
+    auto rows = ToMutationBatch(*batch, projection->second);
+    rows.table = impl->module_table.at(batch->table);
     MergeInvalidationPlan(plan, module->InterpretMutation(rows));
     module->AccumulateMutation(rows, *impl->module_services, *buffer);
   }
@@ -604,6 +615,10 @@ double AcceleratorRuntime::ExpectedQueriesBeforeNextWrite() const {
 }
 
 std::size_t AcceleratorRuntime::WorkerCount() const { return threads.Budget(); }
+
+void AcceleratorRuntime::ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const {
+  threads.ParallelFor(n, fn);
+}
 
 AcceleratorStats AcceleratorRuntime::Stats() const {
   std::lock_guard<std::mutex> lock(impl->state_mutex);

@@ -99,7 +99,10 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
 
   mutable std::mutex mutex; // accelerators, tables, registered_at
   std::map<std::string, std::unique_ptr<Accelerator>> accelerators;
-  std::unordered_map<std::string, core::TableId> tables; // DuckDB table name -> module TableId
+  // Host table ids: one per captured DuckDB table; tables an accelerator
+  // captures by hand get ids of their own.
+  std::unordered_map<std::string, core::TableId> tables; // by DuckDB table name
+  core::TableId next_table = 1;
   std::atomic<bool> manual_capture{false};
 
   mutable std::mutex writers_mutex;
@@ -248,9 +251,20 @@ DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry
     }
     return handle;
   };
+  const auto capture_tables = accelerator->binding->CaptureTables();
+  for (const auto &[name, table] : capture_tables) {
+    auto [it, added] = impl->tables.emplace(name, impl->next_table);
+    impl->next_table += added;
+    accelerator->tables[table] = it->second;
+  }
+  for (const auto &dependency : module.Dependencies()) {
+    if (accelerator->tables.emplace(dependency.table, impl->next_table).second) {
+      impl->next_table++;
+    }
+  }
   accelerator->runtime = &impl->runtime.Register(
       std::shared_ptr<core::AuxQueryModule>(&module, [](core::AuxQueryModule *) {}),
-      verus_if_requested);
+      verus_if_requested, accelerator->tables);
   accelerator->backend =
       std::make_unique<DuckDBAuxBackend>(*accelerator->runtime, *accelerator->connection->context);
   accelerator->runtime->UseModuleServices(*accelerator->backend);
@@ -258,8 +272,7 @@ DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry
   // Watch its columns from now on; writers that started before may have
   // written them uncaptured (S5's registration barrier waits them out).
   auto &watched = WatchedColumns(impl->db);
-  for (const auto &[name, table] : accelerator->binding->CaptureTables()) {
-    impl->tables[name] = table;
+  for (const auto &[name, table] : capture_tables) {
     for (const auto &dependency : module.Dependencies()) {
       if (dependency.table == table) {
         watched.Add(name, WatchedAttnums(*accelerator->connection, name, dependency));

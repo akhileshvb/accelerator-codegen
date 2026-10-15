@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
@@ -63,6 +64,11 @@ using StoreFactory = std::function<StoreHandle(const core::AcceleratorId &,
                                                std::function<Epoch()> epoch,
                                                std::function<Epoch()> floor)>;
 
+// Batches carry host table ids: one per engine table, shared by every
+// accelerator. A module numbers its own tables; this maps its numbers to the
+// host's (a table not listed keeps its number).
+using TableMap = std::unordered_map<core::TableId, core::TableId>; // module -> host
+
 class AcceleratorRuntime : public core::AuxEngineServices {
 public:
   // Runs a build somewhere: a pool thread (in-process engines) or the host's
@@ -71,12 +77,15 @@ public:
 
   AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> module, EngineSlots &slots,
                      ThreadBudget &threads, BuildScheduler schedule = nullptr,
-                     StoreFactory make_store = nullptr);
+                     StoreFactory make_store = nullptr, const TableMap &tables = {});
   ~AcceleratorRuntime() override;
 
   const core::AcceleratorId &Id() const { return id; }
   core::AuxQueryModule &Module() { return *module; }
+  // Host ids of the tables it depends on, and the columns it watches on one
+  // (empty: the whole row); nullptr if it does not depend on `table`.
   std::vector<core::TableId> DependencyTables() const;
+  const std::vector<int32_t> *Projection(core::TableId table) const;
 
   // ---- reads (any thread; never take the commit or build locks) ----
   // While a servable guard lives, reads of this accelerator's store on this
@@ -139,6 +148,7 @@ public:
   bool AllowsSynchronousRebuildOnCommit() const override { return false; }
   bool ReadersCanBuildState() const override { return false; }
   std::size_t WorkerCount() const override;
+  void ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const override;
 
   AcceleratorStats Stats() const;
 

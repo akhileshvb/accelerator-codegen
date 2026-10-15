@@ -31,6 +31,10 @@ double DuckDBAuxBackend::ExpectedQueriesBeforeNextWrite() const {
 
 std::size_t DuckDBAuxBackend::WorkerCount() const { return runtime.WorkerCount(); }
 
+void DuckDBAuxBackend::ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const {
+  runtime.ParallelFor(n, fn);
+}
+
 ::duckdb::ClientContext *DuckDBAuxBackend::ExecutionContext() const {
   return t_reader ? t_reader : &context;
 }

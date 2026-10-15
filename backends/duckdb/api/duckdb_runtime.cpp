@@ -372,11 +372,13 @@ runtime::ColumnarBatchRef DuckdbRuntime::ToBatch(const core::MutationBatch &muta
     attnums.resize(rows.empty() ? 0 : rows.front().values.size());
     std::iota(attnums.begin(), attnums.end(), 0);
   }
-  return std::make_shared<const runtime::ColumnarBatch>(runtime::FromMutationBatch(mutation, attnums));
+  auto batch = runtime::FromMutationBatch(mutation, attnums);
+  batch.table = accelerator_.tables.at(mutation.table);
+  return std::make_shared<const runtime::ColumnarBatch>(std::move(batch));
 }
 
 void DuckdbRuntime::CaptureByHand(const core::MutationBatch &mutation) {
-  if (!host_->Captures(mutation.table)) {
+  if (!host_->Captures(accelerator_.tables.at(mutation.table))) {
     host_->CaptureByHand(*connection_.context, ToBatch(mutation));
   }
 }
