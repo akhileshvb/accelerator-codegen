@@ -622,9 +622,8 @@ struct TpchQ9State {
                            int32_t suppkey, int sign, const TpchQ9State &side,
                            PairSnap &snap, std::vector<CellDelta> &extras_out);
   // Nets the gathered deltas per (part, nation, year) and applies them to the
-  // parts' cells (per slot, on up to `workers` threads) and to the cube.
-  void ApplyNetCellDeltas(std::vector<std::vector<CellDelta>> &chunks,
-                          std::size_t workers);
+  // parts' cells (per slot) and to the cube.
+  void ApplyNetCellDeltas(std::vector<std::vector<CellDelta>> &chunks);
   void ApplyPairContribution(int64_t partkey, Q9PartRecord &rec,
                              const std::vector<std::string> &tokens,
                              int32_t suppkey, int sign,
@@ -632,7 +631,7 @@ struct TpchQ9State {
   void AdjustCell(Q9PartRecord &rec, const std::vector<std::string> &tokens,
                   int32_t nation, int32_t year, int64_t delta);
   // Build-time: derive cells of every existing part from its pairs.
-  void BuildCellsFromPairs();
+  void BuildCellsFromPairs(const core::AuxEngineServices &services);
   void BuildSuppPairsIndex();
 
   // ── Name posting helpers ───────────────────────────────────────────────
@@ -814,14 +813,15 @@ private:
   // Read-path helpers
   // Emit from per-slot partition views (slots[i] may be null = absent).
   // `candidates` (sorted part keys) restricts the scan; null scans all slots.
-  void EmitResult(const TpchQ9State &meta,
+  void EmitResult(const core::AuxEngineServices &services, const TpchQ9State &meta,
                   const std::vector<const TpchQ9State::PartProfitPartition *> &slots,
                   const std::string &color,
                   const std::vector<int32_t> *candidates,
                   core::AuxRowSink &sink) const;
 
   // Build helper. `full` also populates the join-side maps and token cube.
-  void BuildStateInto(TpchQ9State &state, bool full = true) const;
+  void BuildStateInto(const core::AuxEngineServices &services, TpchQ9State &state,
+                      bool full = true) const;
 
 
   TpchQ9Config config;

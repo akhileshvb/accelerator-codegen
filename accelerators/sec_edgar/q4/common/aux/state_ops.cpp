@@ -13,12 +13,17 @@
 
 #include <sys/mman.h>
 
+#include "substrate/aux/core/parallel_slices.hpp"
+
 namespace accelerator_codegen::aux_state::query::q4 {
 namespace {
 
 constexpr int32_t kMinDistinctCik = 2;
 constexpr size_t kOutputLimit = 500;
 constexpr size_t kCacheEntries = 64;
+// Group shards per read slice: 64 groups of a few loads each, so only
+// thousands of shards pay for a task.
+constexpr size_t kCandidateGrain = 1024;
 
 std::string Join3(std::string_view a, std::string_view b, std::string_view c) {
   std::string out;
@@ -1229,7 +1234,7 @@ void Builder::AddBridgeRow(const SecEdgarQ4BridgeRow &row) {
             static_cast<double>(row.mult), static_cast<int64_t>(row.mult) * row.nc);
 }
 
-SecEdgarQ4State Builder::Finish() {
+SecEdgarQ4State Builder::Finish(const core::AuxEngineServices &services) {
   auto &m = *impl_;
   // 1. one pass over the keys: the pre map (partitioned by its shards) and
   //    every (key, stmt, uom) contribution (partitioned by group key)
@@ -1274,51 +1279,69 @@ SecEdgarQ4State Builder::Finish() {
   m.side.Reset();
   m.extra.Clear();
 
-  // 2. aggregate each group partition (its groups and pairs fit in cache)
-  std::vector<int64_t> gkey;
-  std::vector<double> ghi, glo;
-  std::vector<int64_t> gcnt;
-  std::vector<uint32_t> dist;
+  // 2. aggregate each group partition (its groups and pairs fit in cache);
+  //    the partitions are independent and concatenated in order afterwards
   struct PairRec {
     uint32_t g;
     uint32_t cik;
     int64_t rows;
   };
+  struct PartGroups {
+    std::vector<int64_t> gkey;
+    std::vector<double> ghi, glo;
+    std::vector<int64_t> gcnt;
+    std::vector<uint32_t> dist;
+    std::vector<PairRec> prs; // g is partition-local
+  };
+  std::vector<PartGroups> part_groups(m.gparts.size());
+  services.ParallelFor(part_groups.size(), [&](size_t p) {
+    auto &part = m.gparts[p];
+    auto &out = part_groups[p];
+    if (part.empty()) return;
+    core::FlatHashMap<uint32_t> local(part.size() / 4 + 16);
+    core::FlatHashMap<int64_t> lpairs(part.size() / 2 + 16);
+    for (const auto &r : part) {
+      const auto ins = local.Insert(r.gk, static_cast<uint32_t>(out.gkey.size()));
+      const uint32_t g = *ins.first;
+      if (ins.second) {
+        out.gkey.push_back(r.gk);
+        out.ghi.push_back(0.0);
+        out.glo.push_back(0.0);
+        out.gcnt.push_back(0);
+      }
+      Q4DDAdd(out.ghi[g], out.glo[g], r.hi);
+      if (r.lo != 0.0) Q4DDAdd(out.ghi[g], out.glo[g], r.lo);
+      const int64_t rows = static_cast<int64_t>(r.cik_rows >> 24);
+      const uint32_t cik = static_cast<uint32_t>(r.cik_rows & (kQ4MaxCik - 1));
+      out.gcnt[g] += rows;
+      if (cik != kQ4MaxCik - 1) {
+        lpairs[static_cast<int64_t>((static_cast<uint64_t>(g) << 24) | cik)] += rows;
+      }
+    }
+    out.dist.assign(out.gkey.size(), 0);
+    for (auto kv : lpairs) {
+      if (kv.second == 0) continue;
+      const uint32_t g = static_cast<uint32_t>(static_cast<uint64_t>(kv.first) >> 24);
+      ++out.dist[g];
+      out.prs.push_back({g, static_cast<uint32_t>(kv.first & (kQ4MaxCik - 1)), kv.second});
+    }
+    std::vector<GRec>().swap(part);
+  });
+  std::vector<int64_t> gkey;
+  std::vector<double> ghi, glo;
+  std::vector<int64_t> gcnt;
+  std::vector<uint32_t> dist;
   std::vector<PairRec> prs;
-  {
-    core::FlatHashMap<uint32_t> local;
-    core::FlatHashMap<int64_t> lpairs;
-    for (auto &part : m.gparts) {
-      if (part.empty()) continue;
-      local = core::FlatHashMap<uint32_t>(part.size() / 4 + 16);
-      lpairs = core::FlatHashMap<int64_t>(part.size() / 2 + 16);
-      const uint32_t base = static_cast<uint32_t>(gkey.size());
-      for (const auto &r : part) {
-        const auto ins = local.Insert(r.gk, static_cast<uint32_t>(gkey.size()));
-        const uint32_t g = *ins.first;
-        if (ins.second) {
-          gkey.push_back(r.gk);
-          ghi.push_back(0.0);
-          glo.push_back(0.0);
-          gcnt.push_back(0);
-        }
-        Q4DDAdd(ghi[g], glo[g], r.hi);
-        if (r.lo != 0.0) Q4DDAdd(ghi[g], glo[g], r.lo);
-        const int64_t rows = static_cast<int64_t>(r.cik_rows >> 24);
-        const uint32_t cik = static_cast<uint32_t>(r.cik_rows & (kQ4MaxCik - 1));
-        gcnt[g] += rows;
-        if (cik != kQ4MaxCik - 1) {
-          lpairs[static_cast<int64_t>((static_cast<uint64_t>(g - base) << 24) | cik)] += rows;
-        }
-      }
-      dist.resize(gkey.size(), 0);
-      for (auto kv : lpairs) {
-        if (kv.second == 0) continue;
-        const uint32_t g = base + static_cast<uint32_t>(static_cast<uint64_t>(kv.first) >> 24);
-        ++dist[g];
-        prs.push_back({g, static_cast<uint32_t>(kv.first & (kQ4MaxCik - 1)), kv.second});
-      }
-      std::vector<GRec>().swap(part);
+  for (auto &out : part_groups) {
+    const uint32_t base = static_cast<uint32_t>(gkey.size());
+    gkey.insert(gkey.end(), out.gkey.begin(), out.gkey.end());
+    ghi.insert(ghi.end(), out.ghi.begin(), out.ghi.end());
+    glo.insert(glo.end(), out.glo.begin(), out.glo.end());
+    gcnt.insert(gcnt.end(), out.gcnt.begin(), out.gcnt.end());
+    dist.insert(dist.end(), out.dist.begin(), out.dist.end());
+    for (auto pr : out.prs) {
+      pr.g += base;
+      prs.push_back(pr);
     }
   }
 
@@ -1424,7 +1447,8 @@ SecEdgarQ4State Builder::Finish() {
 // ---------------------------------------------------------------- Top-K
 
 std::shared_ptr<const SecEdgarQ4Result>
-ComputeResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params) {
+ComputeResult(const core::AuxEngineServices &services, const SecEdgarQ4Groups &groups,
+              const SecEdgarQ4Params &params) {
   struct Cand {
     double sum;
     int32_t sic;
@@ -1448,20 +1472,26 @@ ComputeResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params) {
   const int32_t lo = params.sic_lo, hi = params.sic_hi;
 
   std::vector<Cand> cands;
-  const uint32_t nshards = sg.Shards();
-  for (uint32_t k = 0; k < nshards; ++k) {
-    const auto &chunk = *sg.chunks[k >> kQ4ChunkBits];
-    const uint32_t ci = k & (kQ4ChunkShards - 1);
-    if (chunk.max_sic[ci] < lo || chunk.min_sic[ci] > hi) continue;
-    const auto &sh = *chunk.shard[ci];
-    const uint32_t limit = std::min<uint32_t>(kQ4GroupShardSize, sg.n - k * kQ4GroupShardSize);
-    for (uint32_t i = 0; i < limit; ++i) {
-      if (sh.distinct[i] >= static_cast<uint32_t>(kMinDistinctCik) && sh.count[i] > 0 &&
-          sh.sic[i] >= lo && sh.sic[i] <= hi) {
-        cands.push_back({sh.sum_hi[i] + sh.sum_lo[i], sh.sic[i], sh.tl[i], k, i});
-      }
-    }
-  }
+  core::ParallelReduce(
+      services, sg.Shards(), kCandidateGrain, cands,
+      [&](std::vector<Cand> &out, size_t begin, size_t end) {
+        for (uint32_t k = static_cast<uint32_t>(begin); k < end; ++k) {
+          const auto &chunk = *sg.chunks[k >> kQ4ChunkBits];
+          const uint32_t ci = k & (kQ4ChunkShards - 1);
+          if (chunk.max_sic[ci] < lo || chunk.min_sic[ci] > hi) continue;
+          const auto &sh = *chunk.shard[ci];
+          const uint32_t limit = std::min<uint32_t>(kQ4GroupShardSize, sg.n - k * kQ4GroupShardSize);
+          for (uint32_t i = 0; i < limit; ++i) {
+            if (sh.distinct[i] >= static_cast<uint32_t>(kMinDistinctCik) && sh.count[i] > 0 &&
+                sh.sic[i] >= lo && sh.sic[i] <= hi) {
+              out.push_back({sh.sum_hi[i] + sh.sum_lo[i], sh.sic[i], sh.tl[i], k, i});
+            }
+          }
+        }
+      },
+      [](std::vector<Cand> &into, std::vector<Cand> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      });
   const auto &tls = groups.labels->tlabels;
   const auto better = [&](const Cand &a, const Cand &b) {
     const bool an = std::isnan(a.sum), bn = std::isnan(b.sum);
@@ -1495,7 +1525,8 @@ ComputeResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params) {
 }
 
 std::shared_ptr<const SecEdgarQ4Result>
-CachedResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params) {
+CachedResult(const core::AuxEngineServices &services, const SecEdgarQ4Groups &groups,
+             const SecEdgarQ4Params &params) {
   if (params.empty || params.sic_lo > params.sic_hi) {
     return std::make_shared<SecEdgarQ4Result>();
   }
@@ -1506,7 +1537,7 @@ CachedResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params) {
       if (entry.first == key) return entry.second;
     }
   }
-  auto result = ComputeResult(groups, params);
+  auto result = ComputeResult(services, groups, params);
   std::lock_guard<std::mutex> lock(groups.cache_mutex);
   for (const auto &entry : groups.cache) {
     if (entry.first == key) return entry.second;

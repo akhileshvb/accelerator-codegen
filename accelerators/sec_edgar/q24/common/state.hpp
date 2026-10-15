@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "prims/sharded_cow_map.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -184,7 +185,10 @@ struct Q24PreBase {
 };
 
 // Merge worker-local raw parts into the immutable base. Consumes the parts.
-std::shared_ptr<const Q24PreBase> BuildQ24PreBase(std::vector<Q24RawPre> &parts);
+// The per-adsh sorting runs on `services`' workers (serial if null).
+std::shared_ptr<const Q24PreBase>
+BuildQ24PreBase(std::vector<Q24RawPre> &parts,
+                const core::AuxEngineServices *services = nullptr);
 
 struct Q24PreOverlay {
   std::unordered_set<std::string> keys;    // encoded triples inserted after build (not in base)

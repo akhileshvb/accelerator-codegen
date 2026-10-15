@@ -1,6 +1,7 @@
 #include "tpch/q21/duckdb/aux/module.hpp"
 #include "tpch/q21/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -23,6 +24,9 @@ constexpr uint32_t kSupplierMagic = 0x53323151; // Q21S
 constexpr uint32_t kOrdersMagic = 0x4f323151;   // Q21O
 constexpr uint32_t kNationMagic = 0x4e323151;   // Q21N
 constexpr uint32_t kNationNameIdxMagic = 0x49323151; // Q21I
+
+// Contributing orders per build slice: a small-vector scan and a hash add each.
+constexpr std::size_t kContributionGrain = 65536;
 
 // Order-summary overlay entries before the overlay is folded into a new base.
 constexpr std::size_t kOrderOverlayCompactThreshold = 200000;
@@ -1251,7 +1255,6 @@ void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &services,
 
 TpchQ21State
 TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ21State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q21 aux requires a typed initial scan source");
@@ -1300,18 +1303,35 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
   }
 
   // Contributions; keep only orders that currently contribute.
-  std::unordered_map<int64_t, int64_t> numwait;
-  for (auto it = orders->begin(); it != orders->end();) {
-    int64_t suppkey = 0, count = 0;
-    if (it->second.orderstatus == 'F' &&
-        ComputeOrderContribution(it->second, suppkey, count)) {
-      if (count != 0)
-        numwait[suppkey] += count;
-      it->second.suppliers.shrink_to_fit();
-      ++it;
-    } else {
-      it = orders->erase(it);
-    }
+  std::vector<TpchQ21Core::OrderMap::iterator> entries;
+  entries.reserve(orders->size());
+  for (auto it = orders->begin(); it != orders->end(); ++it)
+    entries.push_back(it);
+  using Numwait = std::unordered_map<int64_t, int64_t>;
+  Numwait numwait;
+  std::vector<char> contributes(entries.size());
+  core::ParallelReduce(
+      services, entries.size(), kContributionGrain, numwait,
+      [&](Numwait &sums, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          auto &order = entries[i]->second;
+          int64_t suppkey = 0, count = 0;
+          if (order.orderstatus != 'F' ||
+              !ComputeOrderContribution(order, suppkey, count))
+            continue;
+          if (count != 0)
+            sums[suppkey] += count;
+          order.suppliers.shrink_to_fit();
+          contributes[i] = 1;
+        }
+      },
+      [](Numwait &into, Numwait &&from) {
+        for (const auto &[suppkey, nw] : from)
+          into[suppkey] += nw;
+      });
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    if (!contributes[i])
+      orders->erase(entries[i]);
   }
   state.core->base = orders;
   for (const auto &[suppkey, nw] : numwait)
@@ -1332,16 +1352,22 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
       slot.first = supplier->name;
     slot.second += nw;
   }
-  for (auto &[nk, by_name] : per_nation) {
+  std::vector<decltype(per_nation)::iterator> groups;
+  for (auto it = per_nation.begin(); it != per_nation.end(); ++it)
+    groups.push_back(it);
+  std::vector<std::shared_ptr<TpchQ21NationRows>> nation_rows(groups.size());
+  services.ParallelFor(groups.size(), [&](std::size_t i) {
     auto rows = std::make_shared<TpchQ21NationRows>();
-    rows->rows.reserve(by_name.size());
-    for (auto &[name, entry] : by_name) {
+    rows->rows.reserve(groups[i]->second.size());
+    for (auto &[name, entry] : groups[i]->second) {
       (void)name;
       rows->rows.push_back({entry.first, entry.second});
     }
     std::sort(rows->rows.begin(), rows->rows.end(), ImageRowBefore);
-    state.nations[nk] = std::move(rows);
-  }
+    nation_rows[i] = std::move(rows);
+  });
+  for (std::size_t i = 0; i < groups.size(); ++i)
+    state.nations[groups[i]->first] = std::move(nation_rows[i]);
   return state;
 }
 

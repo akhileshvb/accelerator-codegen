@@ -1,5 +1,6 @@
 #include "tpch/q16/duckdb/aux/module.hpp"
 #include "tpch/q16/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -26,6 +27,9 @@ constexpr std::size_t kRebuildOpThreshold = 200000;
 constexpr std::size_t kPartPageSize = std::size_t{1} << Layout::kPartShift;
 constexpr std::size_t kPsPageSize = std::size_t{1} << Layout::kPsShift;
 constexpr std::size_t kSuppPageSize = std::size_t{1} << Layout::kSuppShift;
+// Pages per build slice: a partsupp page is ~20us of CSR work, a supplier page a few.
+constexpr std::size_t kPsPagesGrain = 16;
+constexpr std::size_t kSuppPagesGrain = 64;
 
 
 // ── Custom profiling (no-op unless ACCEL_AUX_CUSTOM_PROFILE is set) ─────────
@@ -1259,7 +1263,6 @@ void TpchQ16Module::ExecuteFallback(core::AuxEngineServices &services,
 
 // ── State build ────────────────────────────────────────────────────────────
 TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q16 requires a typed initial scan source");
 
@@ -1427,43 +1430,60 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
   }
   EmitCustomProfile("precompute", t_precompute.us(), 0, result_rows, 0);
 
-  // Partsupp pages.
-  for (std::size_t chunk = 0; chunk < ps_temp.size(); ++chunk) {
-    auto &temp = ps_temp[chunk];
-    if (temp.local.empty())
-      continue;
-    auto page = std::make_shared<TpchQ16PartsuppPage>();
-    BuildCsr(page->rows, kPsPageSize, temp.local, temp.sk);
-    temp = PsTemp{};
-    images.push_back(MakeImage<TpchQ16PartsuppPage>(
-        Layout::kPsBase + static_cast<core::PartitionId>(chunk),
-        std::shared_ptr<const TpchQ16PartsuppPage>(std::move(page))));
-  }
+  // Partsupp pages: CSR per chunk in parallel, images added in chunk order.
+  std::vector<std::shared_ptr<const TpchQ16PartsuppPage>> ps_pages(ps_temp.size());
+  core::ParallelSlices(
+      services, ps_temp.size(), kPsPagesGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t chunk = begin; chunk < end; ++chunk) {
+          auto &temp = ps_temp[chunk];
+          if (temp.local.empty())
+            continue;
+          auto page = std::make_shared<TpchQ16PartsuppPage>();
+          BuildCsr(page->rows, kPsPageSize, temp.local, temp.sk);
+          temp = PsTemp{};
+          ps_pages[chunk] = std::move(page);
+        }
+      });
+  for (std::size_t chunk = 0; chunk < ps_pages.size(); ++chunk)
+    if (ps_pages[chunk])
+      images.push_back(MakeImage<TpchQ16PartsuppPage>(
+          Layout::kPsBase + static_cast<core::PartitionId>(chunk),
+          std::move(ps_pages[chunk])));
   ps_temp = {};
 
   // Supplier pages (eligibility + groups each supplier belongs to).
   const std::size_t supp_chunks = std::max(supp_pages.size(), inv_temp.size());
-  for (std::size_t chunk = 0; chunk < supp_chunks; ++chunk) {
-    const bool has_page = chunk < supp_pages.size() && supp_pages[chunk];
-    const bool has_inv = chunk < inv_temp.size() && !inv_temp[chunk].local.empty();
-    if (!has_page && !has_inv)
-      continue;
-    std::shared_ptr<TpchQ16SupplierPage> page;
-    if (has_page) {
-      page = std::shared_ptr<TpchQ16SupplierPage>(std::move(supp_pages[chunk]));
-    } else {
-      page = std::make_shared<TpchQ16SupplierPage>();
-      page->Init();
-    }
-    if (has_inv) {
-      BuildCsr(page->groups, kSuppPageSize, inv_temp[chunk].local,
-               inv_temp[chunk].code);
-      inv_temp[chunk] = InvTemp{};
-    }
-    images.push_back(MakeImage<TpchQ16SupplierPage>(
-        Layout::kSuppBase + static_cast<core::PartitionId>(chunk),
-        std::shared_ptr<const TpchQ16SupplierPage>(std::move(page))));
-  }
+  std::vector<std::shared_ptr<const TpchQ16SupplierPage>> supp_images(supp_chunks);
+  core::ParallelSlices(
+      services, supp_chunks, kSuppPagesGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t chunk = begin; chunk < end; ++chunk) {
+          const bool has_page = chunk < supp_pages.size() && supp_pages[chunk];
+          const bool has_inv =
+              chunk < inv_temp.size() && !inv_temp[chunk].local.empty();
+          if (!has_page && !has_inv)
+            continue;
+          std::shared_ptr<TpchQ16SupplierPage> page;
+          if (has_page) {
+            page = std::shared_ptr<TpchQ16SupplierPage>(std::move(supp_pages[chunk]));
+          } else {
+            page = std::make_shared<TpchQ16SupplierPage>();
+            page->Init();
+          }
+          if (has_inv) {
+            BuildCsr(page->groups, kSuppPageSize, inv_temp[chunk].local,
+                     inv_temp[chunk].code);
+            inv_temp[chunk] = InvTemp{};
+          }
+          supp_images[chunk] = std::move(page);
+        }
+      });
+  for (std::size_t chunk = 0; chunk < supp_images.size(); ++chunk)
+    if (supp_images[chunk])
+      images.push_back(MakeImage<TpchQ16SupplierPage>(
+          Layout::kSuppBase + static_cast<core::PartitionId>(chunk),
+          std::move(supp_images[chunk])));
   inv_temp = {};
 
   // Part pages and metadata.

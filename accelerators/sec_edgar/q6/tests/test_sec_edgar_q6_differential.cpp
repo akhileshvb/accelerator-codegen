@@ -204,7 +204,7 @@ public:
       for (int i = 0; i < g_param_checks; ++i) params.push_back(RandomParams());
       std::shared_ptr<const q::SecEdgarQ6State> fresh;
       if (g_fresh_check) {
-        fresh = std::static_pointer_cast<q::SecEdgarQ6Module>(module_)->BuildState();
+        fresh = std::static_pointer_cast<q::SecEdgarQ6Module>(module_)->BuildState(runtime_->Backend());
       }
       for (const auto &p : params) {
         at = p.Text();

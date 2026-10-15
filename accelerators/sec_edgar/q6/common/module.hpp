@@ -277,7 +277,7 @@ public:
                        core::AuxRowSink &) override;
 
   // Fresh state from the initial-scan source (also used by the fallback path).
-  std::shared_ptr<const SecEdgarQ6State> BuildState() const;
+  std::shared_ptr<const SecEdgarQ6State> BuildState(const core::AuxEngineServices &) const;
 
 private:
   void EmitRows(const std::vector<SecEdgarQ6OutputRow> &, core::AuxRowSink &) const;

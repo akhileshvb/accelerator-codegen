@@ -28,7 +28,7 @@ public:
                  bool name_is_null);
   // Every pre row (rows of adsh outside the cohort / with NULL keys are skipped).
   void AddPreBatch(const SecEdgarQ6PreBatch &batch);
-  void FinishPre();
+  void FinishPre(const core::AuxEngineServices &services);
   // Every num row (rows that cannot contribute are skipped).
   void AddNumBatch(const SecEdgarQ6NumBatch &batch);
   std::shared_ptr<SecEdgarQ6State> Finish();

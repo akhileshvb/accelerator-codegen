@@ -1,6 +1,7 @@
 #include "tpch/q2/duckdb/aux/module.hpp"
 #include "tpch/q2/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -269,38 +270,58 @@ void AddOfferRaw(TpchQ2State &st, int64_t partkey, int64_t suppkey,
       .push_back(static_cast<int32_t>(partkey));
 }
 
+using GroupAcc = std::unordered_map<int64_t, std::vector<TpchQ2Entry>>;
+
 // Builds the sorted candidate lists from scratch (Build / Decode).
-void BuildGroups(TpchQ2State &st) {
-  std::unordered_map<int64_t, std::vector<TpchQ2Entry>> acc;
-  std::vector<GroupEntry> tmp;
-  const std::size_t cap = TpchQ2Capacity(*st.parts);
-  for (std::size_t k = 0; k < cap; ++k) {
-    const auto *p = st.parts->Find(static_cast<int64_t>(k));
-    if (!p || !p->valid)
-      continue;
-    tmp.clear();
-    ComputeEntries(st, static_cast<int64_t>(k), tmp);
-    for (const auto &ge : tmp)
-      acc[ge.group].push_back(ge.e);
-  }
-  auto groups = std::make_shared<TpchQ2GroupMap>();
-  groups->reserve(acc.size());
+void BuildGroups(core::AuxEngineServices &services, TpchQ2State &st) {
+  // ComputeEntries costs about a microsecond per part slot.
+  constexpr std::size_t kPartGrain = 1 << 16;
+  GroupAcc acc;
+  core::ParallelReduce(
+      services, TpchQ2Capacity(*st.parts), kPartGrain, acc,
+      [&](GroupAcc &into, std::size_t begin, std::size_t end) {
+        std::vector<GroupEntry> tmp;
+        for (std::size_t k = begin; k < end; ++k) {
+          const auto *p = st.parts->Find(static_cast<int64_t>(k));
+          if (!p || !p->valid)
+            continue;
+          tmp.clear();
+          ComputeEntries(st, static_cast<int64_t>(k), tmp);
+          for (const auto &ge : tmp)
+            into[ge.group].push_back(ge.e);
+        }
+      },
+      [](GroupAcc &into, GroupAcc &&from) {
+        for (auto &kv : from) {
+          auto &v = into[kv.first];
+          v.insert(v.end(), kv.second.begin(), kv.second.end());
+        }
+      });
+  std::vector<GroupAcc::value_type *> items;
+  items.reserve(acc.size());
+  for (auto &kv : acc)
+    items.push_back(&kv);
+  std::vector<std::shared_ptr<TpchQ2GroupList>> lists(items.size());
   const EntryLess less{&st};
-  for (auto &kv : acc) {
-    auto &v = kv.second;
+  services.ParallelFor(items.size(), [&](std::size_t i) {
+    auto &v = items[i]->second;
     std::sort(v.begin(), v.end(), less);
     auto list = std::make_shared<TpchQ2GroupList>();
     list->chunks.reserve(v.size() / kChunkTarget + 1);
-    for (std::size_t i = 0; i < v.size(); i += kChunkTarget) {
+    for (std::size_t at = 0; at < v.size(); at += kChunkTarget) {
       auto chunk = std::make_shared<TpchQ2Chunk>();
-      const std::size_t end = std::min(v.size(), i + kChunkTarget);
-      chunk->v.assign(v.begin() + static_cast<std::ptrdiff_t>(i),
+      const std::size_t end = std::min(v.size(), at + kChunkTarget);
+      chunk->v.assign(v.begin() + static_cast<std::ptrdiff_t>(at),
                       v.begin() + static_cast<std::ptrdiff_t>(end));
       list->chunks.push_back(std::move(chunk));
     }
-    (*groups)[kv.first] = std::move(list);
+    lists[i] = std::move(list);
     std::vector<TpchQ2Entry>().swap(v);
-  }
+  });
+  auto groups = std::make_shared<TpchQ2GroupMap>();
+  groups->reserve(acc.size());
+  for (std::size_t i = 0; i < items.size(); ++i)
+    (*groups)[items[i]->first] = std::move(lists[i]);
   st.groups = std::move(groups);
 }
 
@@ -653,7 +674,8 @@ std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &state) {
   return std::move(writer.bytes);
 }
 
-bool DecodeTpchQ2State(const std::vector<uint8_t> &bytes, TpchQ2State &state) {
+bool DecodeTpchQ2State(core::AuxEngineServices &services,
+                       const std::vector<uint8_t> &bytes, TpchQ2State &state) {
   ByteReader reader(bytes);
   uint64_t count = 0;
   if (!core::ReadImageHeader(reader, kStateMagic, kVersion, count))
@@ -754,7 +776,7 @@ bool DecodeTpchQ2State(const std::vector<uint8_t> &bytes, TpchQ2State &state) {
       return false;
     AddOfferRaw(state, partkey, suppkey, cost);
   }
-  BuildGroups(state);
+  BuildGroups(services, state);
   return true;
 }
 
@@ -1256,7 +1278,6 @@ void TpchQ2Module::ExecuteFallback(core::AuxEngineServices &services,
 
 TpchQ2State
 TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ2State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q2 requires a typed initial scan source");
@@ -1329,7 +1350,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
       return;
     AddOfferRaw(state, input.partkey, input.suppkey, input.supplycost_raw);
   });
-  BuildGroups(state);
+  BuildGroups(services, state);
   if (profiling) {
     EmitCustomProfile("build_partsupp_scan", partsupp_timer->us(),
                       partsupp_rows, (int64_t)state.groups->size(), 0);

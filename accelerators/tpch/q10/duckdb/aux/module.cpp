@@ -2,8 +2,6 @@
 #include "tpch/q10/calibration_writes.hpp"
 
 #include <algorithm>
-#include <atomic>
-#include <thread>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -353,28 +351,6 @@ TpchQ10RankIndex RankedFromSums(std::vector<TpchQ10KV> &&sums) {
   return TpchQ10RankIndex::FromSorted(std::move(sums));
 }
 
-// Windows start at ordinals [lo-2, hi]: every window containing a month with
-// data. `month_tables(ord)` yields the key-sorted table of a month or null.
-template <class Fn> void ForEachWindowParallel(int32_t first, int32_t last, Fn fn) {
-  const int32_t n = last - first + 1;
-  if (n <= 0)
-    return;
-  const unsigned hw = std::max(1u, std::min(4u, std::thread::hardware_concurrency()));
-  std::atomic<int32_t> next{0};
-  std::vector<std::thread> pool;
-  for (unsigned t = 0; t < hw; ++t)
-    pool.emplace_back([&]() {
-      for (;;) {
-        const int32_t i = next.fetch_add(1);
-        if (i >= n)
-          return;
-        fn(first + i);
-      }
-    });
-  for (auto &th : pool)
-    th.join();
-}
-
 } // namespace
 
 std::vector<std::pair<int64_t, int64_t>>
@@ -549,11 +525,15 @@ void TpchQ10Module::Build(core::AuxEngineServices &services,
         static_cast<std::size_t>(span), nullptr);
     for (const auto &[month, vec] : data.months)
       tables[static_cast<std::size_t>(MonthOrd(month) - lo_ord)] = &vec;
-    // Windows (parallel), then month images (flattened tables are released
-    // once the month image exists).
+    // Windows start at ordinals [lo-2, hi]: every window containing a month
+    // with data. Windows and month images are independent: built in parallel,
+    // written in ordinal order.
     std::vector<std::shared_ptr<const TpchQ10StateImage>> windows(
         static_cast<std::size_t>(span + 2));
-    ForEachWindowParallel(lo_ord - 2, hi_ord, [&](int32_t w_ord) {
+    std::vector<std::shared_ptr<const TpchQ10StateImage>> month_images(
+        static_cast<std::size_t>(span));
+    services.ParallelFor(windows.size(), [&](std::size_t i) {
+      const int32_t w_ord = lo_ord - 2 + static_cast<int32_t>(i);
       std::vector<const std::vector<TpchQ10KV> *> parts;
       for (int32_t j = 0; j < 3; ++j) {
         const int32_t o = w_ord + j;
@@ -563,19 +543,22 @@ void TpchQ10Module::Build(core::AuxEngineServices &services,
       }
       std::vector<TpchQ10KV> sums;
       SumMonths(parts, sums);
-      windows[static_cast<std::size_t>(w_ord - (lo_ord - 2))] =
+      windows[i] =
           MakeWindowImage(MonthFromOrd(w_ord), RankedFromSums(std::move(sums)));
     });
-    for (int32_t o = lo_ord; o <= hi_ord; ++o) {
-      const auto *table = tables[static_cast<std::size_t>(o - lo_ord)];
+    services.ParallelFor(month_images.size(), [&](std::size_t i) {
+      const auto *table = tables[i];
       std::vector<TpchQ10KV> copy;
       if (table)
         copy = *table;
+      month_images[i] = MakeMonthImage(
+          MonthFromOrd(lo_ord + static_cast<int32_t>(i)),
+          TpchQ10KeyIndex::FromSorted(std::move(copy)));
+    });
+    for (int32_t o = lo_ord; o <= hi_ord; ++o)
       builder.Write(core::StateImage::Make(
           core::TpchQ10Layout::kAccelerator, MonthPartition(MonthFromOrd(o)), 0,
-          MakeMonthImage(MonthFromOrd(o),
-                         TpchQ10KeyIndex::FromSorted(std::move(copy)))));
-    }
+          std::move(month_images[static_cast<std::size_t>(o - lo_ord)])));
     {
       std::size_t month_entries = 0, window_entries = 0;
       for (const auto &[m, vec] : data.months)
@@ -1290,7 +1273,6 @@ void TpchQ10Module::ExecuteFallback(core::AuxEngineServices &services,
 
 TpchQ10BuildData
 TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ10BuildData data;
   TpchQ10State &state = data.state;
   if (!initial_scan)
@@ -1364,26 +1346,27 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
     log_phase("lineitems", t);
   }
   // Key-sorted, deduplicated (summed), nonzero month tables.
-  for (auto it = data.months.begin(); it != data.months.end();) {
-    auto &vec = it->second;
+  std::vector<std::vector<TpchQ10KV> *> tables;
+  for (auto &entry : data.months)
+    tables.push_back(&entry.second);
+  services.ParallelFor(tables.size(), [&](std::size_t i) {
+    auto &vec = *tables[i];
     std::sort(vec.begin(), vec.end(), TpchQ10ByKey{});
     std::size_t w = 0;
-    for (std::size_t i = 0; i < vec.size(); ++i) {
-      if (w > 0 && vec[w - 1].key == vec[i].key)
-        vec[w - 1].val += vec[i].val;
+    for (std::size_t j = 0; j < vec.size(); ++j) {
+      if (w > 0 && vec[w - 1].key == vec[j].key)
+        vec[w - 1].val += vec[j].val;
       else
-        vec[w++] = vec[i];
+        vec[w++] = vec[j];
     }
     vec.resize(w);
     vec.erase(std::remove_if(vec.begin(), vec.end(),
                              [](const TpchQ10KV &e) { return e.val == 0; }),
               vec.end());
     vec.shrink_to_fit();
-    if (vec.empty())
-      it = data.months.erase(it);
-    else
-      ++it;
-  }
+  });
+  for (auto it = data.months.begin(); it != data.months.end();)
+    it = it->second.empty() ? data.months.erase(it) : std::next(it);
   log_phase("total_build_state", t0);
   return data;
 }

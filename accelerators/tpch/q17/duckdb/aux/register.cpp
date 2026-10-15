@@ -105,25 +105,27 @@ struct TpchQ17Scan : TpchQ17InitialScan {
   explicit TpchQ17Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
       const std::function<void(const TpchQ17PartInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT p_partkey, p_brand, p_container FROM part",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    ChunkValue(chunk, 2, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ17PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                  ChunkValue(chunk, 1, row).ToString(),
+                                  ChunkValue(chunk, 2, row).ToString()};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanLineitems(
       const std::function<void(const TpchQ17LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_partkey, l_quantity, l_extendedprice FROM lineitem" +
             OptionalBenchScanLimitSuffix("ACCEL_Q17_BENCH_SCAN_LIMIT"),
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)),
-                    DecimalRaw(ChunkValue(chunk, 2, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ17LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      DecimalRaw(ChunkValue(chunk, 1, row)),
+                                      DecimalRaw(ChunkValue(chunk, 2, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool ScanPartQuantityAggregates(
       const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer)
@@ -132,7 +134,7 @@ struct TpchQ17Scan : TpchQ17InitialScan {
     if (std::getenv("ACCEL_Q17_BENCH_SCAN_LIMIT")) {
       return false;
     }
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_partkey, "
         "CAST(round(l_quantity * 100) AS BIGINT), "
@@ -140,12 +142,13 @@ struct TpchQ17Scan : TpchQ17InitialScan {
         "COUNT(*)::BIGINT "
         "FROM lineitem "
         "GROUP BY 1, 2",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    SafeInt64(ChunkValue(chunk, 3, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ17PartQuantityAggregate{SafeInt64(ChunkValue(chunk, 0, row)),
+                                              SafeInt64(ChunkValue(chunk, 1, row)),
+                                              SafeInt64(ChunkValue(chunk, 2, row)),
+                                              SafeInt64(ChunkValue(chunk, 3, row))};
+        },
+        [&](auto &&input) { consumer(input); });
     return true;
   }
   bool ScanPartQuantityAggregatesForPart(

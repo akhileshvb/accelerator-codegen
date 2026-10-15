@@ -205,7 +205,8 @@ struct TpchQ13Delta {
 
 std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state);
 bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
-                                 TpchQ13State &state);
+                                 TpchQ13State &state,
+                                 const core::AuxEngineServices &services);
 
 class TpchQ13TxnBuffer final : public core::AuxTxnBuffer {
 public:

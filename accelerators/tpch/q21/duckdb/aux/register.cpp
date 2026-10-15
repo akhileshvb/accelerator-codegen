@@ -144,13 +144,14 @@ struct TpchQ21Scan : TpchQ21InitialScan {
   explicit TpchQ21Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanSuppliers(
       const std::function<void(const TpchQ21SupplierInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT s_suppkey, s_name, s_nationkey FROM supplier",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    SafeInt32(ChunkValue(chunk, 2, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ21SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      ChunkValue(chunk, 1, row).ToString(),
+                                      SafeInt32(ChunkValue(chunk, 2, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   bool LookupOrderSummary(int64_t orderkey, OrderLookup &out) override {
     out = OrderLookup{};
@@ -219,29 +220,31 @@ struct TpchQ21Scan : TpchQ21InitialScan {
   }
   void ScanOrders(
       const std::function<void(const TpchQ21OrderInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderstatus = 'F'",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    FirstChar(ChunkValue(chunk, 1, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ21OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                   FirstChar(ChunkValue(chunk, 1, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanLineitems(
       const std::function<void(const TpchQ21LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l.l_orderkey, l.l_suppkey, l.l_commitdate, l.l_receiptdate "
         "FROM lineitem l "
         "INNER JOIN orders o ON l.l_orderkey = o.o_orderkey AND "
         "o.o_orderstatus = 'F'" +
             OptionalBenchScanLimitSuffix("ACCEL_Q21_BENCH_SCAN_LIMIT"),
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    DateDays(ChunkValue(chunk, 2, row)),
-                    DateDays(ChunkValue(chunk, 3, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ21LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      SafeInt64(ChunkValue(chunk, 1, row)),
+                                      DateDays(ChunkValue(chunk, 2, row)),
+                                      DateDays(ChunkValue(chunk, 3, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   ::duckdb::Connection &connection;
 };

@@ -38,9 +38,10 @@ int main(int argc, char **argv) {
   if (const char *m = std::getenv("Q2_BUILD_THREADS")) {
     cfg.build_threads = static_cast<unsigned>(std::strtoul(m, nullptr, 10));
   }
-  SecEdgarQ2Module module(cfg, &scan);
+  const auto module = std::make_shared<SecEdgarQ2Module>(cfg, &scan);
+  accelerator_codegen::aux_state::test::ModuleRuntime module_runtime(con, module);
   const auto t0 = Clock::now();
-  const auto state = module.BuildState();
+  const auto state = module->BuildState(module_runtime.Backend());
   const double build_ms =
       std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
   const auto bytes = EncodeSecEdgarQ2State(*state);

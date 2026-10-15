@@ -1,6 +1,7 @@
 #include "tpch/q20/duckdb/aux/module.hpp"
 #include "tpch/q20/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -20,6 +21,11 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
+// Base pairs per read slice: ~100 ns each (cache-missing series lookup), so a
+// slice is ~3 ms (an earlier 1024-pair grain was slower than serial).
+constexpr std::size_t kPairWalkGrain = 32768;
+// Partsupp rows per build slice: a merge step is ~20 ns, so ~1 ms.
+constexpr std::size_t kSeriesIdxGrain = 65536;
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
 constexpr uint32_t kVersion = 3;
 
@@ -244,7 +250,9 @@ int64_t DenseLimit(std::size_t rows) {
 
 class BaseBuilder {
 public:
-  BaseBuilder() : base(std::make_shared<TpchQ20Base>()) {
+  // Without services (state decoding) the finishing passes run serially.
+  explicit BaseBuilder(const core::AuxEngineServices *services = nullptr)
+      : services(services), base(std::make_shared<TpchQ20Base>()) {
     base->series_off.push_back(0);
   }
 
@@ -297,23 +305,33 @@ public:
 
   std::shared_ptr<const TpchQ20Base> Finish() {
     CloseSeries();
-    // series index resolution (both sides sorted by pair key).
+    // series index resolution (both sides sorted by pair key); each slice
+    // starts its merge cursor at its first key.
     {
       const auto &keys = base->series_key;
-      std::size_t j = 0;
-      for (auto &e : ps) {
-        const uint64_t key = MakePairKey(e.partkey, e.suppkey);
-        while (j < keys.size() && keys[j] < key)
-          ++j;
-        if (j < keys.size() && keys[j] == key) {
-          e.series_idx = static_cast<uint32_t>(j);
-        } else {
-          const auto it = std::lower_bound(keys.begin(), keys.end(), key);
-          e.series_idx = (it != keys.end() && *it == key)
-                             ? static_cast<uint32_t>(it - keys.begin())
-                             : TpchQ20Base::kNoSeries;
-        }
-      }
+      Slices(ps.size(), kSeriesIdxGrain,
+             [&](std::size_t, std::size_t begin, std::size_t end) {
+               if (begin == end)
+                 return;
+               const auto &first = ps[begin];
+               std::size_t j = std::lower_bound(keys.begin(), keys.end(),
+                                                MakePairKey(first.partkey, first.suppkey)) -
+                               keys.begin();
+               for (std::size_t i = begin; i < end; ++i) {
+                 auto &e = ps[i];
+                 const uint64_t key = MakePairKey(e.partkey, e.suppkey);
+                 while (j < keys.size() && keys[j] < key)
+                   ++j;
+                 if (j < keys.size() && keys[j] == key) {
+                   e.series_idx = static_cast<uint32_t>(j);
+                 } else {
+                   const auto it = std::lower_bound(keys.begin(), keys.end(), key);
+                   e.series_idx = (it != keys.end() && *it == key)
+                                      ? static_cast<uint32_t>(it - keys.begin())
+                                      : TpchQ20Base::kNoSeries;
+                 }
+               }
+             });
     }
     FinishNames();
     FinishSuppliers();
@@ -322,6 +340,13 @@ public:
   }
 
 private:
+  template <class Fn> void Slices(std::size_t n, std::size_t grain, Fn &&fn) const {
+    if (services)
+      core::ParallelSlices(*services, n, grain, fn);
+    else
+      fn(std::size_t{0}, std::size_t{0}, n);
+  }
+
   struct NameRef {
     int64_t key;
     uint64_t off;
@@ -406,12 +431,14 @@ private:
     }
     ps.clear();
     ps.shrink_to_fit();
-    for (std::size_t s = 0; s < slots; ++s)
-      std::sort(b.pairs.begin() + static_cast<std::ptrdiff_t>(b.slot_off[s]),
-                b.pairs.begin() + static_cast<std::ptrdiff_t>(b.slot_off[s + 1]),
-                [](const TpchQ20Base::PairEntry &x, const TpchQ20Base::PairEntry &y) {
-                  return x.rank != y.rank ? x.rank < y.rank : x.suppkey < y.suppkey;
-                });
+    Slices(slots, 1, [&](std::size_t, std::size_t begin, std::size_t end) {
+      for (std::size_t s = begin; s < end; ++s)
+        std::sort(b.pairs.begin() + static_cast<std::ptrdiff_t>(b.slot_off[s]),
+                  b.pairs.begin() + static_cast<std::ptrdiff_t>(b.slot_off[s + 1]),
+                  [](const TpchQ20Base::PairEntry &x, const TpchQ20Base::PairEntry &y) {
+                    return x.rank != y.rank ? x.rank < y.rank : x.suppkey < y.suppkey;
+                  });
+    });
   }
 
   void CloseSeries() {
@@ -528,6 +555,7 @@ private:
   }
 
 
+  const core::AuxEngineServices *services;
   std::shared_ptr<TpchQ20Base> base;
   std::vector<TpchQ20DateQuantity> cur;
   uint64_t cur_key = 0;
@@ -1417,12 +1445,11 @@ void TpchQ20Module::ExecuteFallback(core::AuxEngineServices &services,
 
 TpchQ20State
 TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error(
         "TPC-H Q20 aux requires a typed initial scan source");
 
-  BaseBuilder builder;
+  BaseBuilder builder(&services);
 
   // Lineitem series, grouped per (partkey, suppkey).
   const bool ordered_series = initial_scan->ScanLineitemsByPair(
@@ -1516,7 +1543,6 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
                                const std::string &nation_name,
                                core::AuxEngineServices &services,
                                core::AuxRowSink &sink) const {
-  (void)services;
   const TpchQ20Base &base = *state.base;
 
   const auto nation_keys = state.FindNationKeysByName(nation_name);
@@ -1595,7 +1621,8 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
 
   // The pair qualifies when it has lineitems in the window and availqty
   // exceeds half their quantity.  The supplier's nation is checked by caller.
-  const auto evaluate = [&](int64_t partkey, int64_t suppkey, int64_t availqty,
+  const auto evaluate = [&](std::vector<int64_t> &out, int64_t partkey,
+                            int64_t suppkey, int64_t availqty,
                             uint32_t series_idx, bool resolve_idx) {
     const uint64_t pair_key = MakePairKey(partkey, suppkey);
     int64_t sum = 0;
@@ -1619,12 +1646,12 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
       has = base.WindowSum(series_idx, start_date_days, end_date_days, sum);
     }
     if (has && AvailQtyGreaterThanHalfSum(availqty, sum))
-      qualifying_suppkeys.push_back(suppkey);
+      out.push_back(suppkey);
   };
 
-  // Walks base pairs of `slot` in the name range; `keep` filters suppkeys.
-  const auto walk_slot = [&](uint32_t slot, auto &&keep) {
-    const auto [b, e] = base.RankRange(slot, rank_lo, rank_hi);
+  // Walks pairs [b, e) of a slot's name range; `keep` filters suppkeys.
+  const auto walk_pairs = [&](std::vector<int64_t> &out, std::size_t b,
+                              std::size_t e, auto &&keep) {
     constexpr std::size_t kAhead = 16;
     const auto *pairs = base.pairs.data();
     for (std::size_t i = b; i < e; ++i) {
@@ -1650,8 +1677,21 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
       const int64_t partkey = base.name_partkey[p.rank];
       if ((overlay_parts || overlay_ps) && part_changed(partkey))
         continue;
-      evaluate(partkey, p.suppkey, base.Avail(p), p.series_idx, false);
+      evaluate(out, partkey, p.suppkey, base.Avail(p), p.series_idx, false);
     }
+  };
+  // Qualifying suppkeys are sorted and deduplicated afterwards, so slices may
+  // append in any grouping.
+  const auto walk_slot = [&](uint32_t slot, auto &&keep) {
+    const auto [b, e] = base.RankRange(slot, rank_lo, rank_hi);
+    core::ParallelReduce(
+        services, e - b, kPairWalkGrain, qualifying_suppkeys,
+        [&](std::vector<int64_t> &out, std::size_t begin, std::size_t end) {
+          walk_pairs(out, b + begin, b + end, keep);
+        },
+        [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+          into.insert(into.end(), from.begin(), from.end());
+        });
   };
 
   // 1. Base pairs whose supplier's base nation is a target nation (minus
@@ -1701,7 +1741,8 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
       const auto consider = [&](int64_t suppkey, int64_t availqty,
                                 uint32_t series_idx, bool resolve_idx) {
         if (is_target(state.SupplierNation(suppkey)))
-          evaluate(partkey, suppkey, availqty, series_idx, resolve_idx);
+          evaluate(qualifying_suppkeys, partkey, suppkey, availqty, series_idx,
+                   resolve_idx);
       };
       if (const auto *list =
               overlay_ps ? state.partsupps.Find(partkey)

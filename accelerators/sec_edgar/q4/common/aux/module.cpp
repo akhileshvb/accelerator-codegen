@@ -454,7 +454,7 @@ void SecEdgarQ4Module::Build(core::AuxEngineServices &services,
   builder.Finish();
 }
 
-SecEdgarQ4State SecEdgarQ4Module::BuildState(core::AuxEngineServices &) const {
+SecEdgarQ4State SecEdgarQ4Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q4 requires a typed initial scan source");
   }
@@ -463,7 +463,7 @@ SecEdgarQ4State SecEdgarQ4Module::BuildState(core::AuxEngineServices &) const {
     SecEdgarQ4BridgeFilter filter;
     initial_scan->ScanBridge(filter, [&](const SecEdgarQ4BridgeRow &row) { builder.AddBridgeRow(row); });
   }
-  return builder.Finish();
+  return builder.Finish(services);
 }
 
 core::InvalidationPlan
@@ -747,10 +747,11 @@ bool SecEdgarQ4Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
-void SecEdgarQ4Module::EmitGroups(const SecEdgarQ4Groups &groups,
+void SecEdgarQ4Module::EmitGroups(const core::AuxEngineServices &services,
+                                  const SecEdgarQ4Groups &groups,
                                   const SecEdgarQ4Params &params,
                                   core::AuxRowSink &sink) const {
-  const auto result = q4::CachedResult(groups, params);
+  const auto result = q4::CachedResult(services, groups, params);
   sink.Begin({{{"sic", core::AuxType::Int64, false},
                {"tlabel", core::AuxType::String, true},
                {"stmt", core::AuxType::String, false},
@@ -793,7 +794,7 @@ void SecEdgarQ4Module::Execute(core::AuxEngineServices &services,
     if (image.partition != core::SecEdgarQ4Layout::kGroupAggregates) continue;
     const auto *typed = AsImage(image, SecEdgarQ4ImageKind::GroupAggregates);
     if (typed && typed->state->groups) {
-      EmitGroups(*typed->state->groups, params, sink);
+      EmitGroups(services, *typed->state->groups, params, sink);
       return;
     }
   }
@@ -805,7 +806,7 @@ void SecEdgarQ4Module::ExecuteFallback(core::AuxEngineServices &services,
                                        core::AuxRowSink &sink) {
   const SecEdgarQ4Params params = ParseArguments(arguments);
   const auto state = BuildState(services);
-  EmitGroups(*state.groups, params, sink);
+  EmitGroups(services, *state.groups, params, sink);
 }
 
 } // namespace accelerator_codegen::aux_state::query

@@ -103,19 +103,20 @@ struct TpchQ1Scan : TpchQ1InitialScan {
   explicit TpchQ1Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanLineitems(
       const std::function<void(const TpchQ1LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_shipdate, l_quantity, l_extendedprice, l_discount, "
         "l_tax, l_returnflag, l_linestatus FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({DateDays(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 3, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 4, row)), 2,
-                    FirstChar(ChunkValue(chunk, 5, row)),
-                    FirstChar(ChunkValue(chunk, 6, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ1LineitemInput{DateDays(ChunkValue(chunk, 0, row)),
+                                     DecimalRaw(ChunkValue(chunk, 1, row)), 2,
+                                     DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+                                     DecimalRaw(ChunkValue(chunk, 3, row)), 2,
+                                     DecimalRaw(ChunkValue(chunk, 4, row)), 2,
+                                     FirstChar(ChunkValue(chunk, 5, row)),
+                                     FirstChar(ChunkValue(chunk, 6, row))};
+        },
+        [&](const TpchQ1LineitemInput &input) { consumer(input); });
   }
   bool ScanDayGroupAggregates(
       const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer)

@@ -79,7 +79,7 @@ SecEdgarQ1ParallelModule::BuildState(core::AuxEngineServices &services) const {
   for (std::size_t i = 1; i < local.size(); ++i) {
     local[0].Merge(std::move(local[i]));
   }
-  return local[0].Finish();
+  return local[0].Finish(&services);
 }
 
 } // namespace accelerator_codegen::aux_state::query

@@ -3,8 +3,6 @@
 #include "substrate/aux/core/byte_stream.hpp"
 
 #include <algorithm>
-#include <atomic>
-#include <thread>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -340,9 +338,9 @@ public:
     return false;
   }
 
-  // `parallel_for(n, fn)` runs fn(0..n) (possibly on several threads).
-  template <class ParallelFor>
-  std::shared_ptr<const TpchQ3Segment> Finish(ParallelFor &&parallel_for) {
+  // `for_each_index(n, fn)` runs fn(0..n).
+  template <class ForEachIndex>
+  std::shared_ptr<const TpchQ3Segment> Finish(ForEachIndex &&for_each_index) {
     auto out = std::make_shared<TpchQ3Segment>();
     out->segment = segment_;
     if (base_)
@@ -352,7 +350,7 @@ public:
       if (bin.touched)
         touched.emplace_back(bin_id, &bin);
     std::vector<std::shared_ptr<TpchQ3BinList>> lists(touched.size());
-    parallel_for(touched.size(), [&](std::size_t t) {
+    for_each_index(touched.size(), [&](std::size_t t) {
       Bin &bin = *touched[t].second;
       if (bin.chunks.empty())
         return;
@@ -1100,32 +1098,10 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     lines.resize(out);
   }
 
-  const std::size_t workers = std::max<std::size_t>(
-      1, std::min<std::size_t>(services.WorkerCount(), 8));
-  // Runs fn(0..n) on up to `workers` threads.
-  auto parallel_for = [&](std::size_t n, auto &&fn) {
-    const std::size_t threads = std::min(workers, n);
-    if (threads <= 1) {
-      for (std::size_t i = 0; i < n; ++i)
-        fn(i);
-      return;
-    }
-    std::atomic<std::size_t> next{0};
-    auto body = [&]() {
-      for (;;) {
-        const std::size_t i = next.fetch_add(1);
-        if (i >= n)
-          return;
-        fn(i);
-      }
-    };
-    std::vector<std::thread> pool;
-    pool.reserve(threads - 1);
-    for (std::size_t t = 1; t < threads; ++t)
-      pool.emplace_back(body);
-    body();
-    for (auto &th : pool)
-      th.join();
+  // Maintenance is single-threaded: the per-range / per-group tasks run in order.
+  auto for_each_index = [](std::size_t n, auto &&fn) {
+    for (std::size_t i = 0; i < n; ++i)
+      fn(i);
   };
 
   struct Work {
@@ -1158,7 +1134,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
   std::sort(all_keys.begin(), all_keys.end());
   all_keys.erase(std::unique(all_keys.begin(), all_keys.end()), all_keys.end());
   std::vector<const TpchQ3OrderRec *> found_recs(all_keys.size());
-  parallel_for((all_keys.size() + 1023) / 1024, [&](std::size_t r) {
+  for_each_index((all_keys.size() + 1023) / 1024, [&](std::size_t r) {
     const std::size_t end = std::min(all_keys.size(), (r + 1) * 1024);
     for (std::size_t i = r * 1024; i < end; ++i)
       found_recs[i] = otx.Find(all_keys[i]);
@@ -1247,7 +1223,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
 
-  std::atomic<bool> inconsistent{false};
+  bool inconsistent = false;
 
   // (B1) Takes: one task per touched bin.
   {
@@ -1264,7 +1240,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
       groups.emplace_back(i, j);
       i = j;
     }
-    parallel_for(groups.size(), [&](std::size_t g) {
+    for_each_index(groups.size(), [&](std::size_t g) {
       for (std::size_t i = groups[g].first; i < groups[g].second; ++i) {
         auto &w = works[order[i].second];
         if (!Q3SegmentTxn::TakeIn(*w.take_bin, w.old_rec.orderdate,
@@ -1279,7 +1255,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
 
   // (B2) New entries; resolve the target bins (single-threaded).
   constexpr std::size_t kRange = 256;
-  parallel_for((works.size() + kRange - 1) / kRange, [&](std::size_t r) {
+  for_each_index((works.size() + kRange - 1) / kRange, [&](std::size_t r) {
     const std::size_t end = std::min(works.size(), (r + 1) * kRange);
     for (std::size_t i = r * kRange; i < end; ++i) {
       auto &w = works[i];
@@ -1327,7 +1303,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
       groups.emplace_back(i, j);
       i = j;
     }
-    parallel_for(groups.size(), [&](std::size_t g) {
+    for_each_index(groups.size(), [&](std::size_t g) {
       for (std::size_t i = groups[g].first; i < groups[g].second; ++i) {
         auto &w = works[order[i].second];
         Q3SegmentTxn::InsertIn(*w.put_bin, w.entry, w.buckets);
@@ -1458,13 +1434,13 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     const auto version = seg_version.count(segment) ? seg_version[segment] : 0;
     outcome.updates.push_back(core::StateImage::Make(
         core::TpchQ3Layout::kAccelerator, segment, version,
-        MakeSegmentIntervalImage(segment, txn.Finish(parallel_for))));
+        MakeSegmentIntervalImage(segment, txn.Finish(for_each_index))));
   }
 
   if (side_dirty) {
     auto new_side = std::make_shared<TpchQ3Side>();
-    new_side->orders = otx.Finish(parallel_for);
-    new_side->custs = ctx.Finish(parallel_for);
+    new_side->orders = otx.Finish(for_each_index);
+    new_side->custs = ctx.Finish(for_each_index);
     outcome.updates.push_back(core::StateImage::Make(
         core::TpchQ3Layout::kAccelerator, core::TpchQ3Layout::kOrderSegmentSide,
         side_version,
@@ -1691,19 +1667,31 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
     order.seg_flags = static_cast<uint8_t>(order.seg_flags | 0x80);
   });
 
-  std::map<core::PartitionId, std::shared_ptr<TpchQ3Segment>> segments;
-  for (auto &[key, stage] : staging) {
+  // Bins are independent: sort and chunk them in parallel, attach in key order.
+  std::vector<Staging *> stages;
+  stages.reserve(staging.size());
+  for (auto &entry : staging)
+    stages.push_back(&entry.second);
+  std::vector<std::shared_ptr<const TpchQ3BinList>> bin_lists(stages.size());
+  services.ParallelFor(stages.size(), [&](std::size_t i) {
+    auto &stage = *stages[i];
     std::sort(stage.entries.begin(), stage.entries.end(),
               [](const TpchQ3Entry &a, const TpchQ3Entry &b) {
                 return EntryBefore(a, b.bound, b.orderkey);
               });
+    bin_lists[i] = MakeBinList(stage.entries, stage.pool);
+    stage = Staging{}; // release the staging memory bin by bin
+  });
+  std::map<core::PartitionId, std::shared_ptr<TpchQ3Segment>> segments;
+  std::size_t next_bin = 0;
+  for (const auto &entry : staging) {
+    const auto &key = entry.first;
     auto &segment = segments[key.first];
     if (!segment) {
       segment = std::make_shared<TpchQ3Segment>();
       segment->segment = key.first;
     }
-    segment->bins[key.second] = MakeBinList(stage.entries, stage.pool);
-    stage = Staging{}; // release the staging memory bin by bin
+    segment->bins[key.second] = std::move(bin_lists[next_bin++]);
   }
   for (auto &[id, segment] : segments)
     built.segments[id] = segment;

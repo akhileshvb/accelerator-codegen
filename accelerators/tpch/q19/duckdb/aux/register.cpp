@@ -14,6 +14,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -170,28 +171,30 @@ struct TpchQ19Scan : TpchQ19InitialScan {
   explicit TpchQ19Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
       const std::function<void(const TpchQ19PartInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT p_partkey, p_brand, p_container, p_size FROM part",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    ChunkValue(chunk, 2, row).ToString(),
-                    static_cast<int32_t>(SafeInt64(ChunkValue(chunk, 3, row)))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ19PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                  ChunkValue(chunk, 1, row).ToString(),
+                                  ChunkValue(chunk, 2, row).ToString(),
+                                  static_cast<int32_t>(SafeInt64(ChunkValue(chunk, 3, row)))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   void ScanLineitems(
       const std::function<void(const TpchQ19LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_partkey, l_quantity, l_extendedprice, l_discount, l_shipmode, l_shipinstruct FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)),
-                    DecimalRaw(ChunkValue(chunk, 2, row)),
-                    DecimalRaw(ChunkValue(chunk, 3, row)),
-                    ChunkValue(chunk, 4, row).ToString(),
-                    ChunkValue(chunk, 5, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ19LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      DecimalRaw(ChunkValue(chunk, 1, row)),
+                                      DecimalRaw(ChunkValue(chunk, 2, row)),
+                                      DecimalRaw(ChunkValue(chunk, 3, row)),
+                                      ChunkValue(chunk, 4, row).ToString(),
+                                      ChunkValue(chunk, 5, row).ToString()};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   static std::string FamilyCase() {
     return "CASE WHEN p_container IN ('SM CASE','SM BOX','SM PACK','SM PKG') "
@@ -253,14 +256,15 @@ struct TpchQ19Scan : TpchQ19InitialScan {
   bool ScanPartFamilies(
       const std::function<void(int64_t, const std::string &, int)> &consumer)
       override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT p_partkey, p_brand, " + FamilyCase() + " FROM part",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer(SafeInt64(ChunkValue(chunk, 0, row)),
-                   ChunkValue(chunk, 1, row).ToString(),
-                   static_cast<int>(SafeInt64(ChunkValue(chunk, 2, row))));
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return std::make_tuple(SafeInt64(ChunkValue(chunk, 0, row)),
+                                 ChunkValue(chunk, 1, row).ToString(),
+                                 static_cast<int>(SafeInt64(ChunkValue(chunk, 2, row))));
+        },
+        [&](auto &&input) { std::apply(consumer, input); });
     return true;
   }
   bool LookupPart(int64_t partkey, TpchQ19PartInput &out) override {

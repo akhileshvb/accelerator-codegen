@@ -91,21 +91,23 @@ struct TpchQ13Scan : TpchQ13InitialScan {
   explicit TpchQ13Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanCustomers(
       const std::function<void(const TpchQ13CustomerInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT c_custkey FROM customer",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ13CustomerInput{SafeInt64(ChunkValue(chunk, 0, row))};
+        },
+        [&](TpchQ13CustomerInput &&input) { consumer(input); });
   }
   void ScanOrders(
       const std::function<void(const TpchQ13OrderInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT o_custkey, o_comment FROM orders "
         "WHERE o_custkey IS NOT NULL AND o_comment IS NOT NULL",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ13OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                   ChunkValue(chunk, 1, row).ToString()};
+        },
+        [&](TpchQ13OrderInput &&input) { consumer(input); });
   }
   bool ShardSizes(std::vector<TpchQ13ShardSize> &out) override {
     std::unordered_map<uint32_t, TpchQ13ShardSize> sizes;

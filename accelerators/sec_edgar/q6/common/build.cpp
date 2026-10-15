@@ -16,12 +16,14 @@
 #include <vector>
 
 #include "prims/flat_hash_map.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
 constexpr uint32_t kUnknown = 0xFFFFFFFFu;
 constexpr size_t kBlock = 64; // rows per prefetch block
+constexpr size_t kSortGrain = 4096; // adsh per sort slice: hundreds of entries each
 
 inline void Prefetch(const void *p) { __builtin_prefetch(p, 1, 3); }
 
@@ -428,7 +430,7 @@ void SecEdgarQ6Builder::AddPreBatch(const SecEdgarQ6PreBatch &batch) {
   }
 }
 
-void SecEdgarQ6Builder::FinishPre() {
+void SecEdgarQ6Builder::FinishPre(const core::AuxEngineServices &services) {
   Impl &m = *impl_;
   auto &s = m.s;
   const size_t n = m.entries.size();
@@ -449,16 +451,19 @@ void SecEdgarQ6Builder::FinishPre() {
         sorted[at[e.adsh]++] = e;
       }
     }
-    for (size_t a = 0; a + 1 < start.size(); ++a) {
-      if (start[a + 1] - start[a] > 1) {
-        std::sort(sorted.begin() + start[a], sorted.begin() + start[a + 1],
-                  [](const Impl::Entry &x, const Impl::Entry &y) {
-                    if (x.tv != y.tv) return x.tv < y.tv;
-                    if (x.stmt != y.stmt) return x.stmt < y.stmt;
-                    return x.plabel < y.plabel;
-                  });
+    core::ParallelSlices(services, start.size() - 1, kSortGrain,
+                         [&](size_t, size_t begin, size_t end) {
+      for (size_t a = begin; a < end; ++a) {
+        if (start[a + 1] - start[a] > 1) {
+          std::sort(sorted.begin() + start[a], sorted.begin() + start[a + 1],
+                    [](const Impl::Entry &x, const Impl::Entry &y) {
+                      if (x.tv != y.tv) return x.tv < y.tv;
+                      if (x.stmt != y.stmt) return x.stmt < y.stmt;
+                      return x.plabel < y.plabel;
+                    });
+        }
       }
-    }
+    });
     m.entries.swap(sorted);
   }
   static_assert(sizeof(Impl::Entry) == 4 * sizeof(uint32_t), "entry layout");

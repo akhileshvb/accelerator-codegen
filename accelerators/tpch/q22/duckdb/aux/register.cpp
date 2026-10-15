@@ -183,11 +183,12 @@ struct TpchQ22Scan : TpchQ22InitialScan {
   }
   void ScanOrders(
       const std::function<void(const TpchQ22OrderInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT o_custkey FROM orders",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row))});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ22OrderInput{SafeInt64(ChunkValue(chunk, 0, row))};
+        },
+        [&](auto &&input) { consumer(input); });
   }
   ::duckdb::Connection &connection;
 };

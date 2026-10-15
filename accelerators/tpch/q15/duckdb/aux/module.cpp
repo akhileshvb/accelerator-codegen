@@ -1,6 +1,7 @@
 #include "tpch/q15/duckdb/aux/module.hpp"
 #include "tpch/q15/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -20,6 +21,8 @@ constexpr uint32_t kVersion = 2;
 constexpr uint32_t kDirMagic = 0x44313551;   // Q15D
 constexpr uint32_t kWindowMagic = 0x57313551; // Q15W
 constexpr int32_t kEpoch = 719468;
+// Windows per build slice: a rescan walks every supplier slot (~tens of us at SF 1).
+constexpr std::size_t kRescanGrain = 8;
 
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -960,7 +963,6 @@ void TpchQ15Module::ExecuteFallback(core::AuxEngineServices &services,
 
 TpchQ15State TpchQ15Module::BuildState(
     core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ15State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q15 requires a typed initial scan source");
@@ -980,8 +982,14 @@ TpchQ15State TpchQ15Module::BuildState(
         for (const auto key : keys)
           state.windows[key].rev.Add(suppkey, revenue);
       });
-  for (auto &[month_key, ws] : state.windows)
-    ws.Rescan();
+  std::vector<TpchQ15WindowState *> windows;
+  for (auto &entry : state.windows)
+    windows.push_back(&entry.second);
+  core::ParallelSlices(services, windows.size(), kRescanGrain,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i)
+                           windows[i]->Rescan();
+                       });
   return state;
 }
 

@@ -8,6 +8,7 @@
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <functional>
@@ -112,45 +113,50 @@ struct TpchQ15Scan : TpchQ15InitialScan {
   explicit TpchQ15Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanSuppliers(
       const std::function<void(const TpchQ15SupplierInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection, "SELECT s_suppkey, s_name, s_address, s_phone FROM supplier",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    ChunkValue(chunk, 2, row).ToString(),
-                    ChunkValue(chunk, 3, row).ToString()});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ15SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
+                                      ChunkValue(chunk, 1, row).ToString(),
+                                      ChunkValue(chunk, 2, row).ToString(),
+                                      ChunkValue(chunk, 3, row).ToString()};
+        },
+        [&](TpchQ15SupplierInput &&input) { consumer(input); });
   }
   void ScanMonthRevenue(
       const std::function<void(int32_t, int64_t, int64_t)> &consumer) override {
     // GROUP BY (month, suppkey) in SQL: raw revenue is price_raw * (100 -
     // discount_raw), the same scale-4 integer the delta path uses.
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT CAST(year(l_shipdate) * 100 + month(l_shipdate) AS BIGINT), "
         "l_suppkey, "
         "CAST(SUM(CAST(l_extendedprice * 100 AS BIGINT) * "
         "(100 - CAST(l_discount * 100 AS BIGINT))) AS BIGINT) "
         "FROM lineitem WHERE l_shipdate IS NOT NULL GROUP BY 1, 2",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer(static_cast<int32_t>(SafeInt64(ChunkValue(chunk, 0, row))),
-                   SafeInt64(ChunkValue(chunk, 1, row)),
-                   SafeInt64(ChunkValue(chunk, 2, row)));
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return std::array<int64_t, 3>{SafeInt64(ChunkValue(chunk, 0, row)),
+                                        SafeInt64(ChunkValue(chunk, 1, row)),
+                                        SafeInt64(ChunkValue(chunk, 2, row))};
+        },
+        [&](std::array<int64_t, 3> &&group) {
+          consumer(static_cast<int32_t>(group[0]), group[1], group[2]);
         });
   }
   void ScanLineitems(
       const std::function<void(const TpchQ15LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({DateDays(ChunkValue(chunk, 3, row)),
-                    SafeInt64(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)),
-                    2,
-                    DecimalRaw(ChunkValue(chunk, 2, row)),
-                    2});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ15LineitemInput{DateDays(ChunkValue(chunk, 3, row)),
+                                      SafeInt64(ChunkValue(chunk, 0, row)),
+                                      DecimalRaw(ChunkValue(chunk, 1, row)),
+                                      2,
+                                      DecimalRaw(ChunkValue(chunk, 2, row)),
+                                      2};
+        },
+        [&](TpchQ15LineitemInput &&input) { consumer(input); });
   }
   void ScanLineitemsForShipdateRange(
       int32_t start_days, int32_t end_days,
@@ -158,20 +164,21 @@ struct TpchQ15Scan : TpchQ15InitialScan {
       override {
     if (end_days <= start_days)
       return;
-    ScanQueryStreaming(
+    ScanQueryDecoded(
         connection,
         "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem "
         "WHERE l_shipdate >= " +
             SqlDateLiteral(start_days) + " AND l_shipdate < " +
             SqlDateLiteral(end_days),
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({DateDays(ChunkValue(chunk, 3, row)),
-                    SafeInt64(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 1, row)),
-                    2,
-                    DecimalRaw(ChunkValue(chunk, 2, row)),
-                    2});
-        });
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ15LineitemInput{DateDays(ChunkValue(chunk, 3, row)),
+                                      SafeInt64(ChunkValue(chunk, 0, row)),
+                                      DecimalRaw(ChunkValue(chunk, 1, row)),
+                                      2,
+                                      DecimalRaw(ChunkValue(chunk, 2, row)),
+                                      2};
+        },
+        [&](TpchQ15LineitemInput &&input) { consumer(input); });
   }
   ::duckdb::Connection &connection;
 };

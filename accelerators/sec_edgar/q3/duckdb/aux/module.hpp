@@ -274,11 +274,13 @@ uint64_t SecEdgarQ3ResidentBytes(const SecEdgarQ3State &);
 // The cohort of (fy, uom), materialized from the indexes on first use; null
 // when no row can match (unknown uom, fy outside INTEGER).
 std::shared_ptr<const SecEdgarQ3Totals>
-SecEdgarQ3CohortFor(const SecEdgarQ3State &, int64_t fy, const std::string &uom);
+SecEdgarQ3CohortFor(const core::AuxEngineServices &, const SecEdgarQ3State &, int64_t fy,
+                    const std::string &uom);
 
 // Computes the final answer (top 100) for (fy, uom) from a state.
 std::vector<SecEdgarQ3OutputRow>
-BuildSecEdgarQ3Output(const SecEdgarQ3State &, int64_t fy = kSecEdgarQ3DefaultFy,
+BuildSecEdgarQ3Output(const core::AuxEngineServices &, const SecEdgarQ3State &,
+                      int64_t fy = kSecEdgarQ3DefaultFy,
                       const std::string &uom = kSecEdgarQ3DefaultUom);
 
 // Scalar / SIMD kernels (exposed for tests and microbenchmarks).
@@ -376,8 +378,8 @@ public:
   SecEdgarQ3State BuildState(core::AuxEngineServices &) const;
 
 protected:
-  void EmitOutput(const SecEdgarQ3State &, int64_t fy, const std::string &uom,
-                  core::AuxRowSink &) const;
+  void EmitOutput(const core::AuxEngineServices &, const SecEdgarQ3State &, int64_t fy,
+                  const std::string &uom, core::AuxRowSink &) const;
   void EmitRows(core::AuxRowSink &,
                 const std::shared_ptr<const std::vector<core::AuxRow>> &) const;
 
