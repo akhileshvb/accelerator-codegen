@@ -594,6 +594,13 @@ add_executable(test_tpch_aux_fuzz
 target_link_libraries(test_tpch_aux_fuzz PRIVATE accelerator_codegen duckdb_sibling)
 target_include_directories(test_tpch_aux_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
 
+# Snapshot consistency of the aux accelerators under concurrent commits: two
+# table-function calls in one read transaction vs the reference SQL
+# (eval/tests/test_aux_snapshot_reads.cpp; a short Q11 run is a ctest below).
+add_executable(test_aux_snapshot_reads eval/tests/test_aux_snapshot_reads.cpp)
+target_link_libraries(test_aux_snapshot_reads PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(test_aux_snapshot_reads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
+
 foreach(_q IN LISTS ACCEL_TPCH_BENCH_QS)
     accel_add_duckdb_exe(benchmark_tpch_q${_q} accelerators/tpch/q${_q}/bench/benchmark_q${_q}.cpp)
 endforeach()
@@ -740,6 +747,17 @@ if(BUILD_TESTING)
     set_tests_properties(
         test_shared_incremental_differential_unit_test
         PROPERTIES FIXTURES_REQUIRED tpch_test_db SKIP_RETURN_CODE 77)
+    # Two accelerator calls per read transaction vs the reference SQL while a
+    # writer commits: the shared runtime, and the private per-query runtime
+    # (no runtime registered), which must read at the transaction's snapshot.
+    foreach(_mode shared private)
+        add_test(
+            NAME test_aux_snapshot_reads_q11_${_mode}
+            COMMAND test_aux_snapshot_reads "${_accel_tpch_test_db}" 11 3 4 ${_mode})
+        set_tests_properties(
+            test_aux_snapshot_reads_q11_${_mode}
+            PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 120)
+    endforeach()
     # SEC-EDGAR: ACCEL_SEC_EDGAR_TEST_DB / the shared sec_edgar_test.duckdb,
     # resolved at run time (no generator input available locally to rebuild
     # it); skips (77) naming the queries it has no probe rows for.
