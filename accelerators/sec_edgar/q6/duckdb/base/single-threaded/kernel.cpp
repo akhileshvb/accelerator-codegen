@@ -546,7 +546,6 @@ struct ProfileAggregateUs {
 enum class NumPreQualifyStatus : uint8_t { Unknown = 0, Qualifies = 1, Rejects = 2 };
 
 struct NumPreDictCache {
-	const duckdb::SelectionVector *current_sel = nullptr;
 	std::vector<NumPreQualifyStatus> status;
 	std::vector<uint32_t> adsh_ids;
 	std::vector<const ResolvedNumTriple *> entries;
@@ -559,13 +558,14 @@ struct NumPreDictCache {
 		}
 	}
 
-	void BeginChunk(const duckdb::SelectionVector *sel) {
-		if (current_sel != sel) {
-			current_sel = sel;
-			status.clear();
-			adsh_ids.clear();
-			entries.clear();
-		}
+	// Slots are indexes into this chunk's dictionary and are valid for this
+	// chunk only.  (They used to be kept while the selection vector's address
+	// repeated, but a later chunk's dictionary buffer can be allocated at a
+	// freed one's address with other strings behind the same indexes.)
+	void BeginChunk(const duckdb::SelectionVector *) {
+		status.clear();
+		adsh_ids.clear();
+		entries.clear();
 	}
 
 	const ResolvedNumTriple *Lookup(duckdb::idx_t dict_idx, const duckdb::string_t &adsh,
