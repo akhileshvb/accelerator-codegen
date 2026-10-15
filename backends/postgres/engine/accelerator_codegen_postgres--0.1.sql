@@ -5,9 +5,10 @@
 --   AFTER DELETE ON t REFERENCING OLD TABLE AS old_rows
 --   AFTER UPDATE ON t REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
 --
--- The trigger decoder maps those rows to MutationBatch before calling the
--- backend-local PostgresMutationCapture. Keeping trigger creation generated
--- avoids hard-coding table OIDs or query-specific column layouts here.
+-- The capture function (transition_capture.cpp) reads those rows into one
+-- columnar batch per statement and stages it with the transaction. Keeping
+-- trigger creation generated avoids hard-coding table OIDs or query-specific
+-- column layouts here.
 
 CREATE FUNCTION accel_aux_capture_transition()
 RETURNS trigger

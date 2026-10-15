@@ -30,8 +30,17 @@ function(_accel_pg_module_setup _target)
   )
 endfunction()
 
+# The writer side (S1-S4): capture, commit lifecycle, registry and epochs.
+set(_PG_WRITER_SOURCES
+  backends/postgres/engine/accelerator_tables.cpp
+  backends/postgres/engine/postgres_xact_callbacks.cpp
+  backends/postgres/engine/transition_capture.cpp
+  backends/postgres/state/messages.cpp
+  backends/postgres/state/shared.cpp
+)
+
 function(accel_build_postgres_extension)
-  set(_pg_ext_sources "")
+  set(_pg_ext_sources ${_PG_WRITER_SOURCES})
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/extension_engine.cpp")
     list(APPEND _pg_ext_sources backends/postgres/engine/extension_engine.cpp)
@@ -49,32 +58,12 @@ function(accel_build_postgres_extension)
     list(APPEND _pg_ext_sources backends/postgres/api/runtime.cpp)
   endif()
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/transition_capture.cpp")
-    list(APPEND _pg_ext_sources backends/postgres/engine/transition_capture.cpp)
-  endif()
-
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/postgres_bridge.cpp")
     list(APPEND _pg_ext_sources backends/postgres/engine/postgres_bridge.cpp)
   endif()
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/postgres_xact_callbacks.cpp")
-    list(APPEND _pg_ext_sources backends/postgres/engine/postgres_xact_callbacks.cpp)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/engine/snapshot_token.cpp")
-    list(APPEND _pg_ext_sources backends/postgres/engine/snapshot_token.cpp)
-  endif()
-
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/aux_server.cpp")
     list(APPEND _pg_ext_sources backends/postgres/state/aux_server.cpp)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/aux_sync.cpp")
-    list(APPEND _pg_ext_sources backends/postgres/state/aux_sync.cpp)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/postgres/state/aux_mutation_epoch.cpp")
-    list(APPEND _pg_ext_sources backends/postgres/state/aux_mutation_epoch.cpp)
   endif()
 
   # Per-query module code (SPI scans, PG_FUNCTION shims, base kernels). Each
@@ -106,4 +95,16 @@ function(accel_build_postgres_extension)
     add_library(accelerator_codegen_pg_test MODULE ${_pg_ext_sources} ${_pg_test_sources})
     _accel_pg_module_setup(accelerator_codegen_pg_test)
   endif()
+
+  # Writer-side tests: the writer sources against a recording stub of the shard
+  # worker (test_writer_module.cpp) and fake accelerators, driven over libpq by
+  # test_postgres_writer (needs a server with the module installed).
+  add_library(accelerator_codegen_pg_writer_test MODULE
+    ${_PG_WRITER_SOURCES} backends/postgres/tests/test_writer_module.cpp)
+  _accel_pg_module_setup(accelerator_codegen_pg_writer_test)
+  find_library(_PG_WRITER_LIBPQ pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+  add_executable(test_postgres_writer backends/postgres/tests/test_postgres_writer.cpp)
+  find_package(Threads REQUIRED)
+  target_link_libraries(test_postgres_writer PRIVATE ${_PG_WRITER_LIBPQ} Threads::Threads)
+  target_include_directories(test_postgres_writer PRIVATE ${ACCEL_PG_INCLUDEDIR})
 endfunction()
