@@ -10,6 +10,7 @@ from typing import Any
 _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
     "analysis": [
         ("Scale factors", "../../shared/scale_factor_contract.md"),
+        ("Substrate primitives", "../../shared/substrate_primitives.md"),
         ("Fitness rubric", "aux_state_fitness.md"),
         ("Taxonomy index", "taxonomy_index.md"),
         ("Full taxonomy", "aux_state_taxonomy.md"),
@@ -17,6 +18,7 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
         ("Mutation coverage", "mutation_coverage.md"),
     ],
     "adversarial_tests": [
+        ("Scale factors", "../../shared/scale_factor_contract.md"),
         ("Unit-test contract", "unit_test_contract.md"),
         ("Mutation coverage", "mutation_coverage.md"),
         ("Bench sweep contract", "bench_sweep_contract.md"),
@@ -26,6 +28,7 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
         ("Scale factors", "../../shared/scale_factor_contract.md"),
         ("Generated layout", "../../shared/generated_layout.md"),
         ("Engine interfaces", "../../shared/engine_interfaces.md"),
+        ("Substrate primitives", "../../shared/substrate_primitives.md"),
         ("Module layout", "module_layout.md"),
         ("Unit-test contract", "unit_test_contract.md"),
         ("Read-path scaffold", "read_path_scaffold.md"),
@@ -36,12 +39,15 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
     ],
     "optimization": [
         ("Scale factors", "../../shared/scale_factor_contract.md"),
+        ("Substrate primitives", "../../shared/substrate_primitives.md"),
         ("Generated layout", "../../shared/generated_layout.md"),
         ("Bench sweep contract", "bench_sweep_contract.md"),
         ("Maintenance framework", "maintenance_framework.md"),
         ("Taxonomy index", "taxonomy_index.md"),
     ],
     "audit": [
+        ("Scale factors", "../../shared/scale_factor_contract.md"),
+        ("Engine interfaces", "../../shared/engine_interfaces.md"),
         ("Mutation coverage", "mutation_coverage.md"),
         ("Concurrency contract", "concurrency_contract.md"),
     ],

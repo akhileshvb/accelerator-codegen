@@ -267,6 +267,7 @@ _GATE_DURATION_HINTS: dict[str, str] = {
     "aux_cost_model_calibrate": "~5-10 min when calibrating (skips if config exists)",
     "aux_cross_accel": "~1-2 min",
     "aux_multi_connection": "~1 min",
+    "aux_tsan": "~5-20 min (cached TSAN build, then instrumented differential)",
     "aux_correctness": "usually seconds",
     "aux_unit": "usually seconds",
     "prims_tests": "~1 min (builds test_prims)",

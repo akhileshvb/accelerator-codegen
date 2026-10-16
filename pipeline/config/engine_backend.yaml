@@ -21,6 +21,7 @@ allowed_commands:
   - "^bash pipeline/gates/run_engine_adversarial\\.sh$"
   - "^bash pipeline/gates/run_engine_aux_smoke\\.sh$"
   - "^bash pipeline/gates/run_slot_gates\\.sh$"
+  - "^bash pipeline/gates/run_aux_tsan\\.sh slots( .*)?$"
   - "^bash pipeline/gates/run_thread_budget_lint\\.sh( .*)?$"
 
 # A backend run generates slot implementations (S1-S8, substrate/aux/runtime/
@@ -79,6 +80,7 @@ post_validation_gates:
   - slot_read_after_commit
   - slot_txn_edges
   - slot_restart
+  - slot_tsan
   - slot_differential
 
 prompt_subdir: engine_backend

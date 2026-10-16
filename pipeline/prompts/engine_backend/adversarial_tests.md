@@ -53,7 +53,8 @@ CMake hint: `pipeline/templates/engine_backend/cmake_adversarial_test.cmake.tpl`
 5. **Placement** (shipped worker) — ring full while the worker builds; worker
    killed mid-build and mid-apply; a corrupt message rejected; a stale worker
    reply after restart.
-6. **Host / registration** (if a host exists) — entry points resolve; bad
+6. **Scale and threads** — a table larger than the natural scan ranges and fewer rows than partitions; `partitions` far above the thread cap; phase caps of 1 and of the full budget through the engine setting and the env override, with the budget shared when several accelerators build or commit at once; `TableRows` after bulk insert / delete / TRUNCATE; keys beyond 2^32, DECIMAL(38) cells and string heaps beyond 4 GB through capture and scan; a writer commit landing between partition starts of a build scan.
+7. **Host / registration** (if a host exists) — entry points resolve; bad
    arguments fail closed without corrupting the runtime; unload and reload.
 
 ## Hard rules

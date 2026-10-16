@@ -1,0 +1,4 @@
+# ThreadSanitizer suppressions for the uninstrumented engine (DuckDB). Empty by
+# default: run_aux_tsan.sh already ignores reports whose stacks never enter our
+# code. Add a `race:` line here only for a DuckDB-internal race that also crosses
+# our frames; never for substrate/, backends/ or accelerators/.

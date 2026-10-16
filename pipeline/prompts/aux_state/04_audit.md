@@ -35,8 +35,14 @@ Hard gates after this stage verify **correctness** and run a **fair SF1 bench sw
      10. Numerics: no `double` for decimals/thresholds, no int128 -> int64 truncation, engine rounding rules matched.
      11. Copy-on-write hygiene: report as findings (file:line) any hand-rolled sharded/chunked COW container in the module, any whole-state copy per commit (e.g. `make_shared<State>(*old)` over O(rows) members, copying a map/vector of all rows to apply a delta), and any container duplicating what a `prims/` primitive already covers (name the primitive). Workload-specific structures built from primitives and still COW are fine. List them in `scale_review.cow_findings`.
      12. Evidence: host `test_<engine>_<bench>_params` (plain, `--data-perturb`, `--wide-keys`, `--negative-keys`) run or equivalent tests present; state results.
-4. **Harness / benchmark fairness** — confirm the timed path is the real production query (consume results; no result-cache-as-aux; no skipping work the base path does). Flag any harness gaming.
-5. Write `{{artifacts_path}}/audit_result.json` and `{{artifacts_path}}/final_audit.md` with clear verdicts:
+4. **Large-scale and parallel review** (`scale_factor_contract.md` failure-class table; `engine_interfaces.md` thread rules). Put each in `scale_review.large_scale` as `{class, pass|fail|n/a, file:line evidence}`; a fail is `correctness_ok: false` (overflow, truncation, skipped keys) or a scale risk (the rest):
+   1. Every item of `correctness_facts.scale_plan.failure_classes` is implemented as stated; classes it omitted are assessed anyway.
+   2. No max-key-sized or fixed-count containers; no size guard that rebuilds; overlays fold and deletes remove; loop indices and counters over rows are 64-bit (key, offset and sum width: generality items 6 and 10).
+   3. `Build` is `PartitionedBuild` with a cheap, associatively merged `Partial` (float partials on `kFloatBuildPartitions`); `Execute` and maintenance split data-proportional work with the substrate helpers; no `hardware_concurrency`, fixed counts, private pools or engine threads; slices call no engine API, `StateStore()` or `CurrentVisibility()`; no shared mutable process state.
+   4. `ChooseMaintenance` fed honest `rows_touched` / `affected_partition_count` / `*_supported`; cost model has `calibrated_scale_rows`; calibration writes include refresh-shaped writes.
+   5. Evidence: the magnitude-database differential (`tpch_shift`, `tpch_big`), the 1-vs-N thread differential (with `ACCEL_AUX_TEST_GRAIN=1`) and the decision-log / `ReadAuxExecuteCounts` check were run; the `aux_tsan` gate (ThreadSanitizer, forced tiny grains) passed for any parallel read/build/maintenance code; state results, or mark the class unverified.
+5. **Harness / benchmark fairness** — confirm the timed path is the real production query (consume results; no result-cache-as-aux; no skipping work the base path does). Flag any harness gaming.
+6. Write `{{artifacts_path}}/audit_result.json` and `{{artifacts_path}}/final_audit.md` with clear verdicts:
 
 ```json
 {
@@ -54,6 +60,7 @@ Hard gates after this stage verify **correctness** and run a **fair SF1 bench sw
     "bytes_per_row_estimate": 0.0,
     "generality_failures": [],
     "cow_findings": [],
+    "large_scale": [],
     "risks": [],
     "notes": ""
   },
