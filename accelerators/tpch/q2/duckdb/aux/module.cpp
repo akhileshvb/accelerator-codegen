@@ -2,6 +2,7 @@
 #include "tpch/q2/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -122,12 +123,24 @@ void EnsureFlatSize(std::vector<T> &vector, std::size_t required) {
     vector.resize(required);
 }
 
-// Q2 indexes parts/suppliers by TPC-H key in a dense vector. RF leftover rows
-// with 9e9-style keys would otherwise try to allocate billions of slots.
-constexpr std::size_t kTpchQ2MaxDenseKey = 32'000'000;
-
+// Part and supplier keys index chunked copy-on-write arrays and are stored as
+// int32 in offers and groups; nation and region keys index flat vectors. A key
+// outside its range would be silently wrong, so it stops the build or the
+// commit (the runtime then rebuilds or invalidates).
 bool AcceptDenseKey(int64_t key) {
-  return key >= 0 && static_cast<uint64_t>(key) < kTpchQ2MaxDenseKey;
+  if (key < 0 || key > std::numeric_limits<int32_t>::max())
+    throw std::out_of_range("TPC-H Q2 key outside the int32 range: " +
+                            std::to_string(key));
+  return true;
+}
+
+constexpr int64_t kMaxFlatKey = 1'000'000;
+
+bool AcceptFlatKey(int64_t key) {
+  if (key < 0 || key > kMaxFlatKey)
+    throw std::out_of_range("TPC-H Q2 nation/region key too large: " +
+                            std::to_string(key));
+  return true;
 }
 
 
@@ -268,6 +281,30 @@ void AddOfferRaw(TpchQ2State &st, int64_t partkey, int64_t suppkey,
       .push_back({cost, static_cast<int32_t>(suppkey)});
   TpchQ2MutOf(st.supp_parts).Mutable(suppkey)
       .push_back(static_cast<int32_t>(partkey));
+}
+
+// Partsupp rows of one scan partition, by part and by supplier.
+struct OffersPartial {
+  TpchQ2Paged<std::vector<TpchQ2Offer>, 9> offers;
+  TpchQ2Paged<std::vector<int32_t>, 6> supp_parts;
+  int64_t rows = 0;
+};
+
+// Appends every list of `from` to the list of the same key in `into`.
+template <class Paged> void AppendLists(Paged &into, const Paged &from) {
+  for (std::size_t ci = 0; ci < from.NumChunks(); ++ci) {
+    const auto *chunk = from.ChunkAt(ci);
+    if (!chunk)
+      continue;
+    const int64_t base = Paged::ChunkBase(ci);
+    for (std::size_t i = 0; i < chunk->size(); ++i) {
+      const auto &list = (*chunk)[i];
+      if (list.empty())
+        continue;
+      auto &target = into.Mutable(base + static_cast<int64_t>(i));
+      target.insert(target.end(), list.begin(), list.end());
+    }
+  }
 }
 
 using GroupAcc = std::unordered_map<int64_t, std::vector<TpchQ2Entry>>;
@@ -1289,13 +1326,13 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ2TypeDict types;
 
   initial_scan->ScanRegions([&](const TpchQ2RegionInput &input) {
-    if (!AcceptDenseKey(input.key))
-      return;
+    AcceptFlatKey(input.key);
     EnsureFlatSize(*regions, static_cast<std::size_t>(input.key) + 1);
     (*regions)[static_cast<std::size_t>(input.key)] = input.name;
   });
   initial_scan->ScanNations([&](const TpchQ2NationInput &input) {
-    if (!AcceptDenseKey(input.key) || input.regionkey < 0)
+    AcceptFlatKey(input.key);
+    if (input.regionkey < 0)
       return;
     EnsureFlatSize(*nations, static_cast<std::size_t>(input.key) + 1);
     EnsureFlatSize(*nation_regions, static_cast<std::size_t>(input.key) + 1);
@@ -1343,13 +1380,36 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   if (profiling) {
     partsupp_timer = std::make_unique<CustomTimer>(true);
   }
-  int64_t partsupp_rows = 0;
-  initial_scan->ScanPartsupps([&](const TpchQ2PartsuppInput &input) {
-    partsupp_rows++;
-    if (!AcceptDenseKey(input.suppkey) || !AcceptDenseKey(input.partkey))
-      return;
-    AddOfferRaw(state, input.partkey, input.suppkey, input.supplycost_raw);
-  });
+  // Partsupp rows go into per-partition offer lists, appended in partition
+  // order (the order of the serial scan).
+  using scan::DecimalColumn;
+  using scan::IntColumn;
+  auto offers = core::PartitionedBuild<OffersPartial>(
+      services, [] { return OffersPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "partsupp",
+                                {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+                                 DecimalColumn("ps_supplycost", 2)},
+                                parts, sink);
+      },
+      [](OffersPartial &p, const auto &row) {
+        const int64_t partkey = row.Int(0), suppkey = row.Int(1);
+        AcceptDenseKey(suppkey);
+        AcceptDenseKey(partkey);
+        p.offers.Mutable(partkey).push_back({row.Decimal(2), static_cast<int32_t>(suppkey)});
+        p.supp_parts.Mutable(suppkey).push_back(static_cast<int32_t>(partkey));
+        ++p.rows;
+      },
+      [](OffersPartial &into, OffersPartial &&from) {
+        AppendLists(into.offers, from.offers);
+        AppendLists(into.supp_parts, from.supp_parts);
+        into.rows += from.rows;
+      });
+  const int64_t partsupp_rows = offers.rows;
+  state.offers = std::make_shared<const TpchQ2Paged<std::vector<TpchQ2Offer>, 9>>(
+      std::move(offers.offers));
+  state.supp_parts = std::make_shared<const TpchQ2Paged<std::vector<int32_t>, 6>>(
+      std::move(offers.supp_parts));
   BuildGroups(services, state);
   if (profiling) {
     EmitCustomProfile("build_partsupp_scan", partsupp_timer->us(),

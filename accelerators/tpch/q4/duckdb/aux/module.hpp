@@ -12,6 +12,7 @@
 
 #include "substrate/aux/core/aux_query_module.hpp"
 #include "prims/sharded_sorted_map.hpp"
+#include "tpch/common/duckdb_partitioned_scan.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -39,7 +40,7 @@ struct TpchQ4LineitemInput {
   int32_t receiptdate_days = 0;
 };
 
-class TpchQ4InitialScan {
+class TpchQ4InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ4InitialScan() = default;
   virtual void ScanOrders(

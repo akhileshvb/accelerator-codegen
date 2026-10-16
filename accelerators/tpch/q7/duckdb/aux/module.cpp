@@ -2,6 +2,7 @@
 #include "tpch/q7/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <array>
@@ -23,6 +24,16 @@ namespace {
 
 using core::ByteReader;
 using core::ByteWriter;
+
+// Per-partition sums of the lineitem scan.
+struct LineitemPartial {
+  std::vector<int64_t> revenue_1995, revenue_1996; // supplier nation x customer nation
+  std::unordered_map<int64_t, int64_t> supp_orphans, cust_orphans;
+  size_t lineitem_count, lineitem_valid;
+};
+
+// Shards per slice when sorting a built index.
+constexpr std::size_t kSortShardGrain = 1024;
 
 // Touched mid arrays per slice when publishing a side index.
 constexpr std::size_t kFinishGrain = 16;
@@ -49,7 +60,7 @@ struct CustomTimer {
 };
 
 constexpr uint32_t kVersion = 1;
-constexpr uint32_t kSideVersion = 5;
+constexpr uint32_t kSideVersion = 6;
 constexpr uint32_t kRevenueVersion = 4;
 constexpr uint32_t kSideMagic = 0x53303751;
 constexpr int32_t kEpoch = 719468;
@@ -199,7 +210,7 @@ std::vector<uint8_t> EncodeTpchQ7Side(const TpchQ7State &state) {
   };
   write_nc(state.supplier_nations);
   write_nc(state.customer_nations);
-  writer.U32(static_cast<uint32_t>(state.order_custkeys.size()));
+  writer.U64(state.order_custkeys.size());
   state.order_custkeys.ForEach(
       [&](const TpchQ7Map<TpchQ7OrderCust>::Element &e) {
         writer.I64(e.key);
@@ -262,10 +273,11 @@ bool DecodeTpchQ7Side(const std::vector<uint8_t> &bytes, TpchQ7State &state) {
   };
   if (!read_nc(state.supplier_nations) || !read_nc(state.customer_nations))
     return false;
-  if (!reader.U32(count))
+  uint64_t order_count = 0;
+  if (!reader.U64(order_count))
     return false;
-  TpchQ7Map<TpchQ7OrderCust>::Builder orders(count);
-  for (uint32_t i = 0; i < count; ++i) {
+  TpchQ7Map<TpchQ7OrderCust>::Builder orders(order_count);
+  for (uint64_t i = 0; i < order_count; ++i) {
     int64_t ok = 0;
     TpchQ7OrderCust v;
     if (!reader.I64(ok) || !reader.I64(v.custkey))
@@ -1001,7 +1013,6 @@ void TpchQ7Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ7State state;
   const bool profile = CustomProfileEnabled();
 
@@ -1072,29 +1083,30 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
   std::vector<NcEntry>().swap(customer_rows);
   cust_b.Sort();
 
-  using OEntry = TpchQ7Map<TpchQ7OrderCust>::Element;
   {
     CustomTimer timer("scan_orders");
-    std::vector<OEntry> tmp;
-    int64_t expected = initial_scan->CountOrders();
-    std::unique_ptr<TpchQ7Map<TpchQ7OrderCust>::Builder> ob;
-    if (expected >= 0)
-      ob = std::make_unique<TpchQ7Map<TpchQ7OrderCust>::Builder>(
-          static_cast<std::size_t>(expected));
-    initial_scan->ScanOrders([&](const TpchQ7OrderInput &input) {
-      if (ob)
-        ob->Add({input.key, {input.custkey}});
-      else
-        tmp.push_back({input.key, {input.custkey}});
-      ++order_count;
+    using scan::IntColumn;
+    const int64_t expected = initial_scan->CountOrders();
+    auto make_orders = [&] {
+      return expected >= 0 ? TpchQ7Map<TpchQ7OrderCust>::Builder(static_cast<std::size_t>(expected))
+                           : TpchQ7Map<TpchQ7OrderCust>::Builder();
+    };
+    auto ob = core::PartitionedBuild<TpchQ7Map<TpchQ7OrderCust>::Builder>(
+        services, make_orders,
+        [&](std::size_t parts, auto &&sink) {
+          initial_scan->ScanTable(services, "orders",
+                                  {IntColumn("o_orderkey"), IntColumn("o_custkey")},
+                                  parts, sink);
+        },
+        [](auto &builder, const auto &row) {
+          builder.Add({row.Int(0), {row.Int(1)}});
+        },
+        [](auto &into, auto &&from) { into.Merge(std::move(from)); });
+    ob.Sort([&](std::size_t n, const auto &fn) {
+      core::ParallelEach(services, n, kSortShardGrain, fn);
     });
-    if (!ob) {
-      ob = std::make_unique<TpchQ7Map<TpchQ7OrderCust>::Builder>(tmp.size());
-      for (const auto &e : tmp)
-        ob->Add(e);
-    }
-    ob->Sort();
-    state.order_custkeys = ob->Finish();
+    state.order_custkeys = ob.Finish();
+    order_count = state.order_custkeys.size();
     if (profile)
       timer.Emit(order_count, 0);
   }
@@ -1117,55 +1129,99 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
     // Counts for keys with no dimension row become tombstones (nation -1) so a
     // later insert of that key can add the lineitems' revenue.
     std::unordered_map<int64_t, int64_t> supp_orphans, cust_orphans;
-    // Preferred: the engine runs join + GROUP BY (supp nation, cust nation,
-    // year) and the per-key window counts in SQL.
-    const bool pushed = initial_scan->ScanWindowAggregates(
-        [&](int32_t s, int32_t c, int32_t y, int64_t r) {
-          add_revenue(s, c, y, r);
-          ++lineitem_valid;
-        },
-        [&](int64_t key, int64_t n) {
-          if (auto *v = TpchQ7ValMut(supp_b.Find(key)))
-            v->window_count = static_cast<int32_t>(n);
-          else
-            supp_orphans[key] += n;
-        },
-        [&](int64_t key, int64_t n) {
-          if (auto *v = TpchQ7ValMut(cust_b.Find(key)))
-            v->window_count = static_cast<int32_t>(n);
-          else
-            cust_orphans[key] += n;
-        });
+    // One build thread: the engine runs join + GROUP BY (supp nation, cust
+    // nation, year) and the per-key window counts in SQL. More: the lineitem
+    // scan is split into partitions that probe the dimension indexes.
+    const bool pushed =
+        services.WorkerCount() == 1 &&
+        initial_scan->ScanWindowAggregates(
+            [&](int32_t s, int32_t c, int32_t y, int64_t r) {
+              add_revenue(s, c, y, r);
+              ++lineitem_valid;
+            },
+            [&](int64_t key, int64_t n) {
+              if (auto *v = TpchQ7ValMut(supp_b.Find(key)))
+                v->window_count = static_cast<int32_t>(n);
+              else
+                supp_orphans[key] += n;
+            },
+            [&](int64_t key, int64_t n) {
+              if (auto *v = TpchQ7ValMut(cust_b.Find(key)))
+                v->window_count = static_cast<int32_t>(n);
+              else
+                cust_orphans[key] += n;
+            });
     if (!pushed) {
+      using scan::DateColumn;
+      using scan::DecimalColumn;
+      using scan::IntColumn;
       const int32_t lo = DaysFromCivil(kTpchQ7MinYear, 1, 1);
       const int32_t hi = DaysFromCivil(kTpchQ7MaxYear, 12, 31);
-      initial_scan->ScanLineitems([&](const TpchQ7LineitemInput &input) {
-        ++lineitem_count;
-        if (input.shipdate_days < lo || input.shipdate_days > hi)
-          return;
-        auto *supp_v = TpchQ7ValMut(supp_b.Find(input.suppkey));
-        if (supp_v)
-          ++supp_v->window_count;
-        else
-          ++supp_orphans[input.suppkey];
-        const auto *order_v = TpchQ7Val(state.order_custkeys.Find(input.orderkey));
-        if (!order_v)
-          return;
-        auto *cust_v = TpchQ7ValMut(cust_b.Find(order_v->custkey));
-        if (cust_v)
-          ++cust_v->window_count;
-        else
-          ++cust_orphans[order_v->custkey];
-        if (!supp_v || !cust_v)
-          return;
-        ++lineitem_valid;
-        add_revenue(supp_v->nation, cust_v->nation,
-                    YearFromDays(input.shipdate_days),
-                    TpchQ7RevenueRaw(input.extended_price_raw,
-                                     input.extended_price_scale,
-                                     input.discount_raw,
-                                     input.discount_scale));
-      });
+      const std::size_t grid_size = state.revenue_1995.size();
+      auto lines = core::PartitionedBuild<LineitemPartial>(
+          services,
+          [&] { return LineitemPartial{std::vector<int64_t>(grid_size, 0),
+                                       std::vector<int64_t>(grid_size, 0), {}, {}, 0, 0}; },
+          [&](std::size_t parts, auto &&sink) {
+            initial_scan->ScanTable(services, "lineitem",
+                                    {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
+                                     DecimalColumn("l_extendedprice", 2),
+                                     DecimalColumn("l_discount", 2), DateColumn("l_shipdate")},
+                                    parts, sink);
+          },
+          [&](LineitemPartial &p, const auto &row) {
+            ++p.lineitem_count;
+            const int32_t shipdate = row.Date(4);
+            if (shipdate < lo || shipdate > hi)
+              return;
+            // The dimension indexes are sorted and fixed: partitions add to
+            // their window counters atomically.
+            auto *supp_v = TpchQ7ValMut(supp_b.Find(row.Int(1)));
+            if (supp_v)
+              AtomicAdd<int32_t>(supp_v->window_count, 1);
+            else
+              ++p.supp_orphans[row.Int(1)];
+            const auto *order_v = TpchQ7Val(state.order_custkeys.Find(row.Int(0)));
+            if (!order_v)
+              return;
+            auto *cust_v = TpchQ7ValMut(cust_b.Find(order_v->custkey));
+            if (cust_v)
+              AtomicAdd<int32_t>(cust_v->window_count, 1);
+            else
+              ++p.cust_orphans[order_v->custkey];
+            if (!supp_v || !cust_v)
+              return;
+            ++p.lineitem_valid;
+            const int32_t supp_nk = supp_v->nation, cust_nk = cust_v->nation;
+            if (supp_nk < 0 || cust_nk < 0 || supp_nk >= state.num_nation_slots ||
+                cust_nk >= state.num_nation_slots)
+              return;
+            const auto slot = static_cast<std::size_t>(supp_nk) * state.num_nation_slots + cust_nk;
+            const int32_t year = YearFromDays(shipdate);
+            const int64_t revenue = TpchQ7RevenueRaw(row.Decimal(2), 2, row.Decimal(3), 2);
+            if (year == kTpchQ7MinYear)
+              p.revenue_1995[slot] += revenue;
+            else if (year == kTpchQ7MaxYear)
+              p.revenue_1996[slot] += revenue;
+          },
+          [](LineitemPartial &into, LineitemPartial &&from) {
+            for (std::size_t i = 0; i < into.revenue_1995.size(); ++i) {
+              into.revenue_1995[i] += from.revenue_1995[i];
+              into.revenue_1996[i] += from.revenue_1996[i];
+            }
+            for (const auto &[k, n] : from.supp_orphans)
+              into.supp_orphans[k] += n;
+            for (const auto &[k, n] : from.cust_orphans)
+              into.cust_orphans[k] += n;
+            into.lineitem_count += from.lineitem_count;
+            into.lineitem_valid += from.lineitem_valid;
+          });
+      state.revenue_1995 = std::move(lines.revenue_1995);
+      state.revenue_1996 = std::move(lines.revenue_1996);
+      supp_orphans = std::move(lines.supp_orphans);
+      cust_orphans = std::move(lines.cust_orphans);
+      lineitem_count = lines.lineitem_count;
+      lineitem_valid = lines.lineitem_valid;
     }
     for (const auto &[k, n] : supp_orphans)
       supp_b.Add({k, {-1, static_cast<int32_t>(n)}});

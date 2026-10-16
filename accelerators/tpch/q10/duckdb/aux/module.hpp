@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "substrate/aux/core/aux_query_module.hpp"
+#include "tpch/common/duckdb_partitioned_scan.hpp"
 #include "prims/dense_id_array.hpp"
 #include "prims/flat_hash_map.hpp"
 #include "tpch/q10/layout.hpp"
@@ -85,7 +86,7 @@ struct TpchQ10CustomerRank {
   uint8_t present = 0;
 };
 
-class TpchQ10InitialScan {
+class TpchQ10InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ10InitialScan() = default;
   virtual void ScanCustomers(

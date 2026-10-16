@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "substrate/aux/core/aux_query_module.hpp"
+#include "tpch/common/duckdb_partitioned_scan.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -52,7 +53,7 @@ struct TpchQ11NationInput {
   std::string name;
 };
 
-class TpchQ11InitialScan {
+class TpchQ11InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ11InitialScan() = default;
   virtual void ScanPartsupp(

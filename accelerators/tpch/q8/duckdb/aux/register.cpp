@@ -297,6 +297,11 @@ struct TpchQ8Scan : TpchQ8InitialScan {
         "WHERE o.o_custkey = " + std::to_string(custkey),
         consumer);
   }
+  void ScanTable(const core::AuxEngineServices &services, const std::string &table,
+                 const std::vector<BuildColumn> &columns, std::size_t partitions,
+                 const Sink &sink) override {
+    ScanPartitioned(services, connection, table, columns, partitions, sink);
+  }
   ::duckdb::Connection &connection;
 };
 

@@ -13,6 +13,7 @@
 
 #include "substrate/aux/core/aux_query_module.hpp"
 #include "prims/sharded_sorted_map.hpp"
+#include "tpch/common/duckdb_partitioned_scan.hpp"
 #include "tpch/q5/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -62,7 +63,7 @@ struct TpchQ5LineitemInput {
   int32_t discount_scale = 2;
 };
 
-class TpchQ5InitialScan {
+class TpchQ5InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ5InitialScan() = default;
   virtual void ScanRegions(

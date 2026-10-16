@@ -261,8 +261,9 @@ void ApplyLineitemInput(const TpchQ1LineitemInput &input,
       ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1);
 }
 
-int64_t HugeintLower(const duckdb::hugeint_t &value) {
-  return static_cast<int64_t>(value.lower);
+core::ScaledDecimal128 WideDecimal(const duckdb::hugeint_t &value, int32_t scale) {
+  const auto wide = (static_cast<__int128>(value.upper) << 64) | value.lower;
+  return {wide, scale};
 }
 
 } // namespace
@@ -720,10 +721,10 @@ void TpchQ1Module::EmitResult(const ::accelerator_codegen::Q1OutputRow *rows,
   static const core::OutputSchema kSchema{
       {{"l_returnflag", core::AuxType::String, false},
        {"l_linestatus", core::AuxType::String, false},
-       {"sum_qty", core::AuxType::ScaledDecimal, false},
-       {"sum_base_price", core::AuxType::ScaledDecimal, false},
-       {"sum_disc_price", core::AuxType::ScaledDecimal, false},
-       {"sum_charge", core::AuxType::ScaledDecimal, false},
+       {"sum_qty", core::AuxType::ScaledDecimal128, false},
+       {"sum_base_price", core::AuxType::ScaledDecimal128, false},
+       {"sum_disc_price", core::AuxType::ScaledDecimal128, false},
+       {"sum_charge", core::AuxType::ScaledDecimal128, false},
        {"avg_qty", core::AuxType::Double, false},
        {"avg_price", core::AuxType::Double, false},
        {"avg_disc", core::AuxType::Double, false},
@@ -734,9 +735,9 @@ void TpchQ1Module::EmitResult(const ::accelerator_codegen::Q1OutputRow *rows,
   core::AuxRow row;
   row.values.resize(10);
   const core::AuxType types[10] = {
-      core::AuxType::String,        core::AuxType::String,
-      core::AuxType::ScaledDecimal, core::AuxType::ScaledDecimal,
-      core::AuxType::ScaledDecimal, core::AuxType::ScaledDecimal,
+      core::AuxType::String,           core::AuxType::String,
+      core::AuxType::ScaledDecimal128, core::AuxType::ScaledDecimal128,
+      core::AuxType::ScaledDecimal128, core::AuxType::ScaledDecimal128,
       core::AuxType::Double,        core::AuxType::Double,
       core::AuxType::Double,        core::AuxType::Int64};
   for (int i = 0; i < 10; ++i) {
@@ -751,12 +752,10 @@ void TpchQ1Module::EmitResult(const ::accelerator_codegen::Q1OutputRow *rows,
         .assign(1, static_cast<char>(r.group_key >> 8));
     std::get<std::string>(row.values[1].payload)
         .assign(1, static_cast<char>(r.group_key & 0xFF));
-    row.values[2].payload = core::ScaledDecimal{HugeintLower(r.sum_qty), 2};
-    row.values[3].payload =
-        core::ScaledDecimal{HugeintLower(r.sum_base_price), 2};
-    row.values[4].payload =
-        core::ScaledDecimal{HugeintLower(r.sum_disc_price), 4};
-    row.values[5].payload = core::ScaledDecimal{HugeintLower(r.sum_charge), 6};
+    row.values[2].payload = WideDecimal(r.sum_qty, 2);
+    row.values[3].payload = WideDecimal(r.sum_base_price, 2);
+    row.values[4].payload = WideDecimal(r.sum_disc_price, 4);
+    row.values[5].payload = WideDecimal(r.sum_charge, 6);
     row.values[6].payload = r.avg_qty;
     row.values[7].payload = r.avg_price;
     row.values[8].payload = r.avg_disc;

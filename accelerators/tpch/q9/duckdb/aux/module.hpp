@@ -306,13 +306,18 @@ private:
   std::unordered_map<int64_t, std::size_t> bulk_index;
 };
 
-// Ids beyond this are never stored in the dense COW arrays (a directory entry
-// per chunk must stay affordable).
-constexpr int64_t kQ9MaxId = int64_t{1} << 28; // 268M ids
-inline bool Q9InRange(int64_t key) { return key >= 0 && key < kQ9MaxId; }
+// Ids beyond these are never stored in the dense COW arrays (a directory entry
+// per chunk must stay affordable). Part and supplier ids stay far below
+// 2^31 (SF3000: 6e8 and 3e7); order keys reach 1.8e10 and have 64K-slot chunks.
+constexpr int64_t kQ9MaxId = int64_t{1} << 31;
+constexpr int64_t kQ9MaxOrderKey = int64_t{1} << 36;
+inline bool Q9InRange(int64_t key, int64_t limit = kQ9MaxId) {
+  return key >= 0 && key < limit;
+}
 template <typename Array, typename V>
-bool Q9BoundedSet(Array &array, int64_t key, const V &value) {
-  return Q9InRange(key) && array.Set(key, value);
+bool Q9BoundedSet(Array &array, int64_t key, const V &value,
+                  int64_t limit = kQ9MaxId) {
+  return Q9InRange(key, limit) && array.Set(key, value);
 }
 
 // Per-token aggregate of profit cells over all parts whose name has the token.
@@ -382,7 +387,7 @@ struct TpchQ9State {
                int32_t year, int64_t delta);
   // Add (sign=+1) / subtract (sign=-1) all cells of a record into the cube.
   void CubeApplyRecord(const Q9PartRecord &record, int sign);
-  void BuildCube();
+  void BuildCube(const core::AuxEngineServices &services);
 
   // Copy only the join-side maps (page directories + overflow maps).
   void CopySideFrom(const TpchQ9State &o) {
@@ -437,18 +442,18 @@ struct TpchQ9State {
     return true;
   }
   void SetOrderYear(int64_t orderkey, int32_t year) {
-    if (year > kPackedYearBias &&
-        year <= kPackedYearBias + 254) {
+    if (year > kPackedYearBias && year <= kPackedYearBias + 254 &&
+        Q9BoundedSet(order_years, orderkey,
+                     static_cast<uint8_t>(year - kPackedYearBias),
+                     kQ9MaxOrderKey)) {
       order_year_overflow.erase(orderkey);
-      Q9BoundedSet(order_years, orderkey,
-                   static_cast<uint8_t>(year - kPackedYearBias));
       return;
     }
-    Q9BoundedSet(order_years, orderkey, kAbsentYearCode);
+    Q9BoundedSet(order_years, orderkey, kAbsentYearCode, kQ9MaxOrderKey);
     order_year_overflow[orderkey] = year;
   }
   void EraseOrderYear(int64_t orderkey) {
-    Q9BoundedSet(order_years, orderkey, kAbsentYearCode);
+    Q9BoundedSet(order_years, orderkey, kAbsentYearCode, kQ9MaxOrderKey);
     order_year_overflow.erase(orderkey);
   }
 

@@ -131,6 +131,11 @@ struct TpchQ11Scan : TpchQ11InitialScan {
                           result.GetValue(1, row).ToString()});
               });
   }
+  void ScanTable(const core::AuxEngineServices &services, const std::string &table,
+                 const std::vector<BuildColumn> &columns, std::size_t partitions,
+                 const Sink &sink) override {
+    ScanPartitioned(services, connection, table, columns, partitions, sink);
+  }
   ::duckdb::Connection &connection;
 };
 
