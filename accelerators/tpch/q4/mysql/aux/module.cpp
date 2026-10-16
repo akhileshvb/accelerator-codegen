@@ -2,6 +2,8 @@
 #include "tpch/q4/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "prims/sql_date.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -579,32 +581,97 @@ void TpchQ4Module::ExecuteFallback(core::AuxEngineServices &services,
       state.side, sink);
 }
 
+namespace {
+
+constexpr uint32_t kNullPriority = std::numeric_limits<uint32_t>::max();
+
+// The orders of one partition, with its own numbering of the priorities.
+struct OrderRows {
+  struct Row {
+    int64_t key;
+    int32_t orderdate_days;
+    uint32_t priority; // index into `priorities`, or kNullPriority
+  };
+  std::vector<Row> rows;
+  std::vector<std::string> priorities;
+
+  void Add(const TpchQ4OrderInput &input) {
+    rows.push_back({input.key, input.orderdate_days,
+                    input.priority_is_null ? kNullPriority : PriorityId(input.orderpriority)});
+  }
+  uint32_t PriorityId(const std::string &priority) {
+    const auto it = std::find(priorities.begin(), priorities.end(), priority);
+    if (it != priorities.end())
+      return static_cast<uint32_t>(it - priorities.begin());
+    priorities.push_back(priority);
+    return static_cast<uint32_t>(priorities.size() - 1);
+  }
+  void Merge(OrderRows &&from) {
+    std::vector<uint32_t> renumber;
+    for (const auto &priority : from.priorities)
+      renumber.push_back(PriorityId(priority));
+    for (auto &row : from.rows) {
+      if (row.priority != kNullPriority)
+        row.priority = renumber[row.priority];
+      rows.push_back(row);
+    }
+  }
+};
+
+}  // namespace
+
 TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ4State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q4 requires a typed initial scan source");
   auto &orders = state.eligibility.orders;
+  const std::size_t partitions = BuildPartitions(services);
 
   // First scan: qualifying lineitems per order key (also for keys that have
   // no order row yet; an order inserted later picks the count up).
-  initial_scan->ScanLineitems([&](const TpchQ4LineitemInput &input) {
-    if (LineitemQualifies(input.commitdate_days, input.receiptdate_days))
-      orders.AddQualifying(input.orderkey);
-  });
+  const auto qualifying = core::PartitionedBuild<std::vector<int64_t>>(
+      services, [] { return std::vector<int64_t>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ4LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ4LineitemInput>{input});
+            });
+      },
+      [](std::vector<int64_t> &into, const TpchQ4LineitemInput &input) {
+        if (LineitemQualifies(input.commitdate_days, input.receiptdate_days))
+          into.push_back(input.orderkey);
+      },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      },
+      partitions);
+  for (const int64_t key : qualifying)
+    orders.AddQualifying(key);
 
   // Second scan: order rows; an eligible order goes straight into the tree.
-  initial_scan->ScanOrders([&](const TpchQ4OrderInput &input) {
-    TpchQ4OrderInfo info = orders.Get(input.key);
+  const auto order_rows = core::PartitionedBuild<OrderRows>(
+      services, [] { return OrderRows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ4OrderInput &input) {
+              sink(partition, OneRowBatch<TpchQ4OrderInput>{input});
+            });
+      },
+      [](OrderRows &into, const TpchQ4OrderInput &input) { into.Add(input); },
+      [](OrderRows &into, OrderRows &&from) { into.Merge(std::move(from)); }, partitions);
+  for (const auto &row : order_rows.rows) {
+    TpchQ4OrderInfo info = orders.Get(row.key);
     if (info.Eligible())  // duplicate key: replace the earlier row
       AdjustTree(state.side, state.tree, info.orderdate_days, info.priority_idx, -1);
-    info.orderdate_days = input.orderdate_days;
-    info.priority_idx = TpchQ4PriorityIndex(input.orderpriority,
-                                            input.priority_is_null, state.side);
-    orders.Set(input.key, info);
+    info.orderdate_days = row.orderdate_days;
+    info.priority_idx = row.priority == kNullPriority
+                            ? TpchQ4PriorityIndex("", true, state.side)
+                            : TpchQ4PriorityIndex(order_rows.priorities[row.priority], false,
+                                                  state.side);
+    orders.Set(row.key, info);
     if (info.Eligible())
       AdjustTree(state.side, state.tree, info.orderdate_days, info.priority_idx, +1);
-  });
+  }
   state.tree.by_priority.resize(state.side.priority_names.size());
   return state;
 }

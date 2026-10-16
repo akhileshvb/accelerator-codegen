@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q4/mysql/aux/module.hpp"
 #include "tpch/q4/cost_model.hpp"
@@ -20,32 +21,23 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ4Orders(
-    const std::function<void(const query::TpchQ4OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_orderkey, o_orderdate, o_orderpriority, "
-      "CASE WHEN o_orderpriority IS NULL THEN 1 ELSE 0 END FROM orders "
-      "WHERE o_orderkey IS NOT NULL AND o_orderdate IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ4OrderInput{TypedInt(cols, 0),
-                                       TypedDate(cols, 1),
-                                       TypedText(cols, 2),
-                TypedInt(cols, 3) != 0};
-      },
-      [&](query::TpchQ4OrderInput &&input) { consumer(input); });
+SplitTable OrdersTable() {
+  return {"o_orderkey, o_orderdate, o_orderpriority, "
+          "CASE WHEN o_orderpriority IS NULL THEN 1 ELSE 0 END",
+          "orders", "o_orderkey IS NOT NULL AND o_orderdate IS NOT NULL", "o_orderkey"};
 }
 
-void ScanTpchQ4Lineitems(
-    const std::function<void(const query::TpchQ4LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_orderkey, l_commitdate, l_receiptdate FROM lineitem "
-      "WHERE l_orderkey IS NOT NULL AND l_commitdate < l_receiptdate",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ4LineitemInput{TypedInt(cols, 0),
-                                          TypedDate(cols, 1),
-                                          TypedDate(cols, 2)};
-      },
-      [&](query::TpchQ4LineitemInput &&input) { consumer(input); });
+query::TpchQ4OrderInput DecodeOrder(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedDate(cols, 1), TypedText(cols, 2), TypedInt(cols, 3) != 0};
+}
+
+SplitTable LineitemsTable() {
+  return {"l_orderkey, l_commitdate, l_receiptdate", "lineitem",
+          "l_orderkey IS NOT NULL AND l_commitdate < l_receiptdate", "l_orderkey"};
+}
+
+query::TpchQ4LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedDate(cols, 1), TypedDate(cols, 2)};
 }
 
 } // namespace scans
@@ -55,12 +47,25 @@ public:
   void ScanOrders(
       const std::function<void(const query::TpchQ4OrderInput &)> &consumer)
       override {
-    scans::ScanTpchQ4Orders(consumer);
+    split_scan::Serial<query::TpchQ4OrderInput>(scans::OrdersTable(), scans::DecodeOrder, consumer);
   }
   void ScanLineitems(
       const std::function<void(const query::TpchQ4LineitemInput &)> &consumer)
       override {
-    scans::ScanTpchQ4Lineitems(consumer);
+    split_scan::Serial<query::TpchQ4LineitemInput>(scans::LineitemsTable(), scans::DecodeLineitem,
+                                                   consumer);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ4OrderInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ4OrderInput>(services, scans::OrdersTable(), partitions,
+                                                     scans::DecodeOrder, sink);
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ4LineitemInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ4LineitemInput>(services, scans::LineitemsTable(),
+                                                        partitions, scans::DecodeLineitem, sink);
   }
 };
 
