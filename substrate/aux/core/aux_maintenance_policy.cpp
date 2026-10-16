@@ -122,6 +122,7 @@ MaintenanceDecision SelectAuxMaintenanceAction(
     log_entry.staged_action = forced.action;
     log_entry.rows_touched = request.rows_touched;
     log_entry.affected_partition_count = request.affected_partition_count;
+    log_entry.data_rows_hint = request.data_rows_hint;
     log_entry.expected_queries_before_next_write = request.expected_queries_before_next_write;
     RecordMaintenanceSelectorDecision(log_entry);
     return forced;
@@ -211,6 +212,7 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   log_entry.selected_predicted_cost_us = selection.selected_cost_us;
   log_entry.rows_touched = request.rows_touched;
   log_entry.affected_partition_count = request.affected_partition_count;
+  log_entry.data_rows_hint = request.data_rows_hint;
   log_entry.expected_queries_before_next_write =
       request.expected_queries_before_next_write;
   for (const auto &candidate : input.candidates) {

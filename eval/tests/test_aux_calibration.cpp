@@ -10,6 +10,7 @@
 
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_cost_model_path.hpp"
+#include "substrate/aux/core/aux_maintenance_decision_log.hpp"
 #include "substrate/aux/core/aux_maintenance_policy.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
@@ -146,10 +147,46 @@ void TestMaintenanceScaling() {
 
 } // namespace
 
+void TestDecisionRecordsDataScale() {
+  const auto entry = ParseMaintenanceDecision("action=ApplyDelta rows=5 partitions=1 maintenance_us=3.5 data_rows=77");
+  Check(entry && entry->rows_touched == 5 && entry->data_rows_hint == 77, "decision text carries data_rows");
+  Check(ParseMaintenanceDecision("action=ApplyDelta rows=5 partitions=1 maintenance_us=3.5")->data_rows_hint == 0,
+        "a decision without data_rows: unknown");
+}
+
+// Every shipped Postgres and MySQL model records the scale it was calibrated
+// at; a Postgres refresh of 0.2% of the data, at SF3000 relative to the SF20
+// calibration, is still applied as a delta where the TPC-H refresh functions
+// reach (orders / lineitem).
+void TestShippedModelsScaleWithData() {
+  using accelerator_codegen::aux_state::maintenance::MaintenanceAction;
+  constexpr uint64_t kSf3000OverSf20 = 150;
+  const std::string config = std::string(ACCEL_SOURCE_DIR) + "/accelerators/tpch/q";
+  for (const char *engine : {"postgres", "mysql"}) {
+    for (int q = 1; q <= 22; ++q) {
+      const auto path = config + std::to_string(q) + "/config/q" + std::to_string(q) +
+                        "_aux_cost_model_" + engine + ".json";
+      Check(LoadAuxCostModelJson(path).calibrated_scale_rows != 0, path + " records its scale");
+    }
+  }
+  for (const int q : {1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22}) {
+    const auto params = LoadAuxCostModelJson(config + std::to_string(q) + "/config/q" +
+                                             std::to_string(q) + "_aux_cost_model_postgres.json");
+    const uint64_t data_rows = params.calibrated_scale_rows * kSf3000OverSf20;
+    MaintenanceRequest refresh{data_rows / 500, 4, true, true, true, false, false,
+                               MaintenanceAction::NoOp, 1.0};
+    refresh.data_rows_hint = data_rows;
+    Check(SelectAuxMaintenanceAction(refresh, params).action == MaintenanceAction::ApplyDelta,
+          "Q" + std::to_string(q) + " refresh at SF3000 stays incremental");
+  }
+}
+
 int main() {
   TestCostModelLookup();
   TestCostModelScaleFallback();
   TestMaintenanceScaling();
+  TestDecisionRecordsDataScale();
+  TestShippedModelsScaleWithData();
   const auto fit = FitLinearCost({{1, 12.0}, {10, 30.0}, {100, 210.0}});
   assert(fit.intercept_us >= 0.0);
   assert(fit.per_row_us >= 0.0);

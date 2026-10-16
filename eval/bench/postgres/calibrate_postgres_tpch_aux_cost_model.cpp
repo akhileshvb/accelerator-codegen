@@ -156,6 +156,7 @@ int main(int argc, char **argv) {
     core::AuxCalibrationResult result;
     {
       Conn conn(tools, db);
+      conn.Exec("ANALYZE"); // the planner's row counts are the model's calibrated scale
       // Seed: this engine's model if any, else the shared one.
       auto seed = core::LoadAuxCostModelJson(config_dir + name + ".json");
       seed = core::LoadAuxCostModelJson(config_dir + name + "_postgres.json", seed);

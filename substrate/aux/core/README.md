@@ -36,7 +36,8 @@ PostgreSQL / MySQL calibrators' clients (`eval/bench/{postgres,mysql}/
 calibrate_*_tpch_aux_cost_model.cpp`, over the extension's SQL controls).
 
 **Scale.** A model may record `calibrated_scale_rows`, the rows in the
-dependency tables when it was calibrated; the engine reports the current size
+dependency tables when it was calibrated (the calibrators record it from the
+engine's own row count); the engine reports the current size
 (`AuxEngineServices::DataScaleRows`, or `MaintenanceRequest::data_rows_hint`;
 0 = unknown). When both are known, `ratio = current / calibrated` multiplies
 the `apply_delta_max_rows` cap and the rebuild costs (`full_rebuild_us`,

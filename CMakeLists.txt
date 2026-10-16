@@ -515,6 +515,7 @@ target_link_libraries(test_aux_calibration
 )
 
 target_include_directories(test_aux_calibration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
+target_compile_definitions(test_aux_calibration PRIVATE ACCEL_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(test_versioned_aux_store_caps
     eval/tests/test_versioned_aux_store_caps.cpp
