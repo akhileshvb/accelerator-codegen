@@ -154,9 +154,12 @@ struct SplitTable {
   std::string table;
   std::string where;        // extra filter; empty for none
   std::string split_column; // integer column the partitions are ranges of
+  std::string group_by;     // GROUP BY list; empty for none. Each partition then
+                            // groups its own range: a group may come back once per
+                            // partition, and the caller sums the partial groups.
 };
-// `SELECT <select> FROM <table> [WHERE (<where>)]`: the whole table, as the
-// serial scan reads it.
+// `SELECT <select> FROM <table> [WHERE (<where>)] [GROUP BY <group_by>]`: the
+// whole table, as the serial scan reads it.
 std::string SelectSql(const SplitTable &table);
 using PartitionedRowSink = std::function<void(std::size_t, const std::vector<std::string> &)>;
 // The partitioned scan of a build: sink(partition, row) for every row of

@@ -561,11 +561,21 @@ void ScanTypedTuples(const std::string &sql,
   ScanViaCli(sql, callback);
 }
 
-std::string SelectSql(const SplitTable &table) {
+namespace {
+
+std::string SelectFromWhere(const SplitTable &table) {
   std::string sql = "SELECT " + table.select + " FROM " + table.table;
   if (!table.where.empty()) sql += " WHERE (" + table.where + ")";
   return sql;
 }
+
+std::string GroupByClause(const SplitTable &table) {
+  return table.group_by.empty() ? "" : " GROUP BY " + table.group_by;
+}
+
+}  // namespace
+
+std::string SelectSql(const SplitTable &table) { return SelectFromWhere(table) + GroupByClause(table); }
 
 namespace {
 
@@ -589,7 +599,8 @@ std::optional<std::string> PartitionCondition(const std::string &column, std::si
 }
 
 std::string SelectWhere(const SplitTable &table, const std::string &condition) {
-  return SelectSql(table) + (table.where.empty() ? " WHERE " : " AND ") + "(" + condition + ")";
+  return SelectFromWhere(table) + (table.where.empty() ? " WHERE " : " AND ") + "(" + condition + ")" +
+         GroupByClause(table);
 }
 
 // MIN and MAX of the split column; nullopt for an empty table.
