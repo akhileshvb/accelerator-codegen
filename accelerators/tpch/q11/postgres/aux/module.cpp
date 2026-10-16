@@ -1,6 +1,8 @@
 #include "tpch/q11/postgres/aux/module.hpp"
 #include "tpch/q11/calibration_writes.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -14,6 +16,10 @@ namespace {
 
 // Offer chunks (1024 parts) per slice: ~100 us each.
 constexpr std::size_t kChunkGrain = 4;
+
+// Group edits (each up to a 64 KB block copy) below which nations are not
+// edited in parallel.
+constexpr std::size_t kGroupUpdateGrain = 256;
 
 // ── Cell helpers ────────────────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -116,6 +122,12 @@ bool ReadNation(const core::AuxRow &row, TpchQ11NationInput &out, bool &skip) {
   out.nationkey = nk;
   return skip || StringCell(row, 1, out.name);
 }
+
+// A scanned partsupp row, kept until the offers are added to the state in scan order.
+struct PartsuppRow {
+  int64_t partkey = 0;
+  TpchQ11Offer offer;
+};
 
 Q11AccT Product(const TpchQ11Offer &offer) {
   return static_cast<Q11AccT>(offer.cost_raw) *
@@ -231,20 +243,9 @@ TpchQ11Group &TpchQ11State::MutableGroup(int64_t nationkey) {
   return *group;
 }
 
-void TpchQ11State::UpdateEntry(int64_t nationkey, int64_t partkey,
-                               const TpchQ11PartValue &before,
-                               const TpchQ11PartValue &after) {
-  if (before == after)
-    return;
-  auto &group = MutableGroup(nationkey);
-  if (before.present)
-    group.Erase(partkey, before.value);
-  if (after.present)
-    group.Insert(partkey, after.value);
-}
-
 bool TpchQ11State::ApplyPartsupp(int8_t sign, int64_t partkey,
-                                 const TpchQ11Offer &offer) {
+                                 const TpchQ11Offer &offer,
+                                 std::vector<TpchQ11GroupUpdate> &updates) {
   const int64_t nationkey = supplier_nation.Get(offer.suppkey);
   const auto before = PartValueIn(partkey, nationkey, supplier_nation);
   if (sign > 0) {
@@ -253,9 +254,38 @@ bool TpchQ11State::ApplyPartsupp(int8_t sign, int64_t partkey,
     return false;
   }
   if (nationkey != kTpchQ11NoNation)
-    UpdateEntry(nationkey, partkey, before,
-                PartValueIn(partkey, nationkey, supplier_nation));
+    updates.push_back(
+        {nationkey, partkey, before,
+         PartValueIn(partkey, nationkey, supplier_nation)});
   return true;
+}
+
+void TpchQ11State::ApplyGroupUpdates(
+    const core::AuxEngineServices &services,
+    const std::vector<TpchQ11GroupUpdate> &updates) {
+  // Groups are privatized serially; each is then edited by one job.
+  using Job = std::pair<TpchQ11Group *, std::vector<const TpchQ11GroupUpdate *>>;
+  std::vector<Job> jobs;
+  std::unordered_map<int64_t, std::size_t> job_of_nation;
+  for (const auto &update : updates) {
+    if (update.before == update.after)
+      continue;
+    const auto [it, fresh] = job_of_nation.try_emplace(update.nationkey, jobs.size());
+    if (fresh)
+      jobs.push_back({&MutableGroup(update.nationkey), {}});
+    jobs[it->second].second.push_back(&update);
+  }
+  // A small delta stays one inline job run.
+  const std::size_t grain = updates.size() < kGroupUpdateGrain ? jobs.size() : 1;
+  core::ParallelEach(services, jobs.size(), grain, [&](std::size_t j) {
+    TpchQ11Group &group = *jobs[j].first;
+    for (const TpchQ11GroupUpdate *update : jobs[j].second) {
+      if (update->before.present)
+        group.Erase(update->partkey, update->before.value);
+      if (update->after.present)
+        group.Insert(update->partkey, update->after.value);
+    }
+  });
 }
 
 void TpchQ11State::SetSupplierNation(int64_t suppkey, int64_t nationkey) {
@@ -264,17 +294,13 @@ void TpchQ11State::SetSupplierNation(int64_t suppkey, int64_t nationkey) {
   supplier_nation.Set(suppkey, nationkey);
 }
 
-// The scan over the facts is sliced; the groups are updated serially, in the
-// order of the scan.
+// The scan over the facts is sliced; the group edits keep the order of the scan.
 void TpchQ11State::RegroupSuppliers(
     const core::AuxEngineServices &services,
     const core::FlatHashMap<uint8_t> &changed_suppliers,
     const core::AnyKeyCowArray<int64_t> &old_map) {
   using Offers = core::AnyKeyCowArray<TpchQ11OfferSlots, 10>;
-  struct Update {
-    int64_t nationkey = 0, partkey = 0;
-    TpchQ11PartValue before, after;
-  };
+  using Update = TpchQ11GroupUpdate;
   const auto visit = [&](std::vector<Update> &out, int64_t partkey,
                          const TpchQ11OfferSlots &slots) {
     bool touched = false;
@@ -315,8 +341,7 @@ void TpchQ11State::RegroupSuppliers(
   offers.ForEachSparse([&](int64_t partkey, const TpchQ11OfferSlots &slots) {
     visit(updates, partkey, slots);
   });
-  for (const Update &u : updates)
-    UpdateEntry(u.nationkey, u.partkey, u.before, u.after);
+  ApplyGroupUpdates(services, updates);
 }
 
 void TpchQ11State::UpsertNation(const TpchQ11NationInput &nation) {
@@ -563,11 +588,15 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
       ev.sign < 0 ? new_state->EraseNation(ev.row)
                   : new_state->UpsertNation(ev.row);
     // Partsupp changes first, against the supplier map as it was ...
+    std::vector<TpchQ11GroupUpdate> group_updates;
     for (const auto &ev : buffer.partsupps)
-      if (!new_state->ApplyPartsupp(ev.sign, ev.partkey, ev.offer)) {
+      if (!new_state->ApplyPartsupp(ev.sign, ev.partkey, ev.offer,
+                                    group_updates)) {
         need_rebuild = true; // the state disagrees with the table
         break;
       }
+    if (!need_rebuild)
+      new_state->ApplyGroupUpdates(services, group_updates);
     // ... then suppliers moving between nations re-group their parts.
     if (!need_rebuild && !buffer.suppliers.empty()) {
       const core::AnyKeyCowArray<int64_t> old_map = new_state->supplier_nation;
@@ -656,11 +685,29 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
   initial_scan->ScanSuppliers([&](const TpchQ11SupplierInput &input) {
     state.SetSupplierNation(input.suppkey, input.nationkey);
   });
-  initial_scan->ScanPartsupp([&](const TpchQ11PartsuppInput &input) {
-    state.AddOffer(input.partkey,
-                   {input.suppkey, input.supplycost_raw,
-                    static_cast<int32_t>(input.availqty)});
-  });
+  // The scan decodes rows on pool threads; the COW offer array is filled here,
+  // serially, from the partitions in order.
+  using Rows = std::vector<PartsuppRow>;
+  const Rows rows = core::PartitionedBuild<Rows>(
+      services, [] { return Rows{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanPartsuppPartitioned(
+            services, partitions,
+            [&](std::size_t partition, const TpchQ11PartsuppInput &input) {
+              sink(partition, OneRowBatch<TpchQ11PartsuppInput>{input});
+            });
+      },
+      [](Rows &into, const TpchQ11PartsuppInput &input) {
+        into.push_back({input.partkey,
+                        {input.suppkey, input.supplycost_raw,
+                         static_cast<int32_t>(input.availqty)}});
+      },
+      [](Rows &into, Rows &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      },
+      BuildPartitions(services));
+  for (const PartsuppRow &row : rows)
+    state.AddOffer(row.partkey, row.offer);
   state.BuildGroups(services);
   return state;
 }
