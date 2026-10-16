@@ -23,45 +23,24 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ19Parts(
-    const std::function<void(const query::TpchQ19PartInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT p_partkey, p_brand, p_container, p_size FROM part",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ19PartInput{TypedInt(cols, 0),
-                                       TypedText(cols, 1),
-                                       TypedText(cols, 2),
-                                       static_cast<int32_t>(TypedInt(cols, 3))};
-      },
-      [&](query::TpchQ19PartInput &&input) { consumer(input); });
+SplitTable PartsTable() {
+  return {"p_partkey, p_brand, p_container, p_size", "part", "", "p_partkey"};
 }
 
-// lineitem JOIN part with the shipping predicate and family classification
-// applied and grouped in the engine: one row per (brand, family, quantity)
-// with exact decimal sums (text). Comparisons follow the columns' collation.
-void ScanTpchQ19GroupAggregates(
-    const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer) {
-  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  const std::string family = query::TpchQ19FamilySql();
-  ScanTypedTuplesDecoded(
-      "SELECT p_brand, " + family +
-          " AS fam, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
-          "count(*) FROM lineitem, part WHERE l_partkey = p_partkey AND " +
-          query::TpchQ19ShippingSql() + " AND " + family +
-          " IS NOT NULL GROUP BY p_brand, fam, l_quantity",
-      [](const std::vector<std::string> &cols) {
-        query::TpchQ19GroupAggregate agg;
-        agg.brand = TypedText(cols, 0);
-        agg.family = static_cast<int>(TypedInt(cols, 1));
-        __int128 quantity = 0;
-        if (!dec::Parse(TypedText(cols, 2), 2, quantity) ||
-            !dec::Parse(TypedText(cols, 3), 4, agg.revenue_raw))
-          throw std::runtime_error("TPC-H Q19: unparsable decimal");
-        agg.quantity_raw = static_cast<int64_t>(quantity);
-        agg.count = TypedInt(cols, 4);
-        return agg;
-      },
-      [&](query::TpchQ19GroupAggregate &&input) { consumer(input); });
+query::TpchQ19PartInput DecodePart(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1), TypedText(cols, 2),
+          static_cast<int32_t>(TypedInt(cols, 3))};
+}
+
+// The lineitems of the shipping predicate (comparisons follow the columns'
+// collation); revenue is l_extendedprice * (1 - l_discount) at scale 4.
+SplitTable ShippedLineitemsTable() {
+  return {"l_partkey, l_quantity, IFNULL(l_extendedprice * (1 - l_discount), 0)", "lineitem",
+          query::TpchQ19ShippingSql(), "l_orderkey"};
+}
+
+query::TpchQ19LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedDecimalRaw(cols, 1), TypedDecimal(cols, 2, 4)};
 }
 
 // Point re-aggregation of the given parts' qualifying lineitems (the schema
@@ -97,15 +76,25 @@ void ScanTpchQ19PartQuantityRevenue(
 
 class TpchQ19Scan final : public query::TpchQ19InitialScan {
 public:
-  void ScanParts(
-      const std::function<void(const query::TpchQ19PartInput &)> &consumer)
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ19PartInput &)> &sink)
       override {
-    scans::ScanTpchQ19Parts(consumer);
+    ScanTypedTuplesPartitioned(
+        services, scans::PartsTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodePart(cols));
+        });
   }
-  void ScanGroupAggregates(
-      const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer)
+  void ScanShippedLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ19LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ19GroupAggregates(consumer);
+    ScanTypedTuplesPartitioned(
+        services, scans::ShippedLineitemsTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeLineitem(cols));
+        });
   }
   void ScanPartQuantityRevenue(
       const std::vector<int64_t> &partkeys,
