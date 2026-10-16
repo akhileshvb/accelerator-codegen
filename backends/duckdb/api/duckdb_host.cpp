@@ -8,9 +8,11 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "backends/duckdb/api/cost_model_path.hpp"
@@ -22,6 +24,7 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 
@@ -117,6 +120,10 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
   // earlier may have written its tables uncaptured, so its first build waits
   // them out.
   std::atomic<Epoch> registered_at{0};
+  // Writing transactions that began before the latest registration, by txn: when
+  // one commits after an accelerator's build snapshot it may hold uncaptured
+  // writes the barrier did not see (a statement already running).
+  std::unordered_map<uint64_t, Epoch> straddlers;
   std::unordered_map<::duckdb::ClientContext *, ::duckdb::transaction_t> commit_id_of;
 
   // Declared last: torn down first, so no build outlives the accelerators.
@@ -317,6 +324,7 @@ DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry
   accelerator->connection->BeginTransaction();
   impl->registered_at = DuckDBAuxBackend::SnapshotEpoch(*accelerator->connection->context);
   accelerator->connection->Rollback();
+  accelerator->registered_at = impl->registered_at.load();
 
   slot = std::move(accelerator);
   return *slot;
@@ -378,13 +386,23 @@ void DuckdbHost::OnMutation(::duckdb::ClientContext &context,
 
 void DuckdbHost::OnPreCommit(::duckdb::MetaTransaction &transaction) {
   const auto txn = TxnId(transaction);
+  bool captured;
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
-    if (!impl->writers.count(txn)) {
-      return;
+    if (impl->default_db) {
+      auto db_transaction = transaction.TryGetTransaction(*impl->default_db);
+      if (db_transaction && db_transaction->IsDuckTransaction() && !db_transaction->IsReadOnly()) {
+        const auto start = db_transaction->Cast<::duckdb::DuckTransaction>().start_time;
+        if (start < impl->registered_at) {
+          impl->straddlers[txn] = start;
+        }
+      }
     }
+    captured = impl->writers.count(txn) != 0;
   }
-  impl->runtime.PreCommit(txn);
+  if (captured) {
+    impl->runtime.PreCommit(txn);
+  }
 }
 
 void DuckdbHost::OnCommitId(::duckdb::ClientContext &context, ::duckdb::AttachedDatabase &db,
@@ -398,30 +416,58 @@ void DuckdbHost::OnCommitId(::duckdb::ClientContext &context, ::duckdb::Attached
 
 void DuckdbHost::OnCommit(::duckdb::MetaTransaction &transaction, ::duckdb::ClientContext &context) {
   const auto txn = TxnId(transaction);
-  ::duckdb::transaction_t commit_id;
+  ::duckdb::transaction_t commit_id = 0;
+  bool captured, has_id;
+  std::optional<Epoch> straddled_from;
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
     auto id = impl->commit_id_of.find(&context);
-    const bool has_id = id != impl->commit_id_of.end();
-    commit_id = has_id ? id->second : 0;
+    has_id = id != impl->commit_id_of.end();
     if (has_id) {
+      commit_id = id->second;
       impl->commit_id_of.erase(id);
     }
-    if (!impl->writers.erase(txn)) {
-      return;
+    captured = impl->writers.erase(txn) != 0;
+    if (auto it = impl->straddlers.find(txn); it != impl->straddlers.end()) {
+      straddled_from = it->second;
+      impl->straddlers.erase(it);
     }
-    if (!has_id) {
+    if (captured && !has_id) {
       throw std::logic_error("a captured write committed without a commit id");
     }
   }
   // Visible to snapshots with start time > commit id.
-  impl->runtime.Commit(txn, commit_id + 1);
+  if (captured) {
+    impl->runtime.Commit(txn, commit_id + 1);
+  }
+  if (straddled_from && has_id) {
+    InvalidateStraddled(*straddled_from, commit_id + 1);
+  }
+}
+
+// A writer that began before an accelerator registered commits at `epoch`: if the
+// accelerator's build snapshot predates it, what the writer did before the
+// registration is in neither the build nor a capture.
+void DuckdbHost::InvalidateStraddled(Epoch start, Epoch epoch) {
+  std::vector<runtime::AcceleratorRuntime *> registered_after;
+  {
+    std::lock_guard<std::mutex> lock(impl->mutex); // not held across InvalidateFrom: builds take it too
+    for (auto &[id, accelerator] : impl->accelerators) {
+      if (start < accelerator->registered_at) {
+        registered_after.push_back(accelerator->runtime);
+      }
+    }
+  }
+  for (auto *accelerator : registered_after) {
+    accelerator->InvalidateFrom(epoch);
+  }
 }
 
 void DuckdbHost::OnRollback(::duckdb::MetaTransaction &transaction) {
   const auto txn = TxnId(transaction);
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
+    impl->straddlers.erase(txn);
     if (!impl->writers.erase(txn)) {
       return;
     }

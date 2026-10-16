@@ -20,6 +20,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <future>
 #include <cstdint>
 #include <iostream>
 #include <mutex>
@@ -357,6 +358,63 @@ void ReaderInStaleWindow() {
   CHECK(ReadAt(runtime, 3, Epoch{3}) == 60);
 }
 
+// A commit no capture saw (a writer from before the accelerator registered)
+// makes a state built before it stale from its epoch on, whether the state is
+// installed or its build is still running; a state built after it is unaffected.
+void UncapturedCommit() {
+  FakeDb db;
+  FakeSlots slots(db);
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  host.BuildAll();
+  const Epoch e1 = WriteTxn(host, db, 1, 5);
+  const Epoch lost = db.Commit(100); // not captured
+  runtime.InvalidateFrom(lost);
+  CHECK(ReadAt(runtime, e1) == 5); // a snapshot before it is unaffected
+  CHECK(ReadAt(runtime, lost) == 105); // rebuilt
+  CHECK(runtime.Stats().builds == 2);
+  runtime.InvalidateFrom(lost); // the state's snapshot sees it
+  CHECK(runtime.IsSynced() && runtime.Stats().builds == 2);
+
+  FakeDb db2;
+  FakeSlots slots2(db2);
+  RuntimeHost host2(slots2, 4);
+  auto &runtime2 = host2.Register(std::make_shared<SumModule>());
+  slots2.Hold();
+  std::thread build([&] { runtime2.BuildNow(); });
+  slots2.WaitUntilBuilding(); // its snapshot is taken
+  const Epoch lost2 = db2.Commit(7);
+  runtime2.InvalidateFrom(lost2);
+  slots2.Release();
+  build.join();
+  CHECK(!runtime2.IsSynced());
+  CHECK(ReadAt(runtime2, lost2) == 7);
+}
+
+// A host torn down while a commit is between PreCommit and Commit: the build
+// queued behind that commit must not keep the pool from shutting down.
+void HostDestroyedMidCommit() {
+  FakeDb db;
+  FakeSlots slots(db);
+  auto host = std::make_unique<RuntimeHost>(slots, 4);
+  auto &runtime = host->Register(std::make_shared<SumModule>());
+  host->OnCapture(1, 0, Insert(5));
+  host->PreCommit(1); // holds the accelerator's place in commit order
+  runtime.RequestBuild(); // waits behind it
+  std::promise<void> destroyed;
+  std::thread destroyer([&] {
+    host.reset();
+    destroyed.set_value();
+  });
+  const bool done = destroyed.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  if (done) {
+    destroyer.join();
+  } else {
+    destroyer.detach();
+  }
+  CHECK(done);
+}
+
 void CommitsDuringBuild() {
   FakeDb db;
   FakeSlots slots(db);
@@ -570,6 +628,8 @@ int main() {
       {"invalidate_during_build", InvalidateDuringBuild},
       {"reader_before_first_commit", ReaderBeforeFirstCommit},
       {"reader_in_stale_window", ReaderInStaleWindow},
+      {"host_destroyed_mid_commit", HostDestroyedMidCommit},
+      {"uncaptured_commit", UncapturedCommit},
       {"shipped_commits", ShippedCommits},
       {"thread_limits_per_phase", ThreadLimitsPerPhase},
       {"maintenance_lookups", MaintenanceLookups},
