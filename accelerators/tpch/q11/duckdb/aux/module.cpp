@@ -2,6 +2,7 @@
 #include "tpch/q11/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1212,12 +1213,32 @@ TpchQ11Built TpchQ11Module::BuildState(
     entry.has_supplier = true;
   });
 
-  initial_scan->ScanPartsupp([&](const TpchQ11PartsuppInput &input) {
-    Q11AccT product = 0;
-    AddAcc(product, input.supplycost_raw, input.availqty);
-    all[input.suppkey].parts.push_back(
-        {input.partkey, static_cast<int64_t>(product), 1});
-  });
+  // Partsupp rows are grouped by supplier per scan partition; the groups are
+  // joined supplier by supplier (their order within a supplier is folded away
+  // by the sort below).
+  using scan::DecimalColumn;
+  using scan::IntColumn;
+  auto by_supplier = core::PartitionedBuild<std::unordered_map<int64_t, std::vector<Q11SupplierPart>>>(
+      services, [] { return std::unordered_map<int64_t, std::vector<Q11SupplierPart>>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "partsupp",
+                                {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+                                 IntColumn("ps_availqty"), DecimalColumn("ps_supplycost", 2)},
+                                parts, sink);
+      },
+      [](auto &groups, const auto &row) {
+        Q11AccT product = 0;
+        AddAcc(product, row.Decimal(3), row.Int(2));
+        groups[row.Int(1)].push_back({row.Int(0), static_cast<int64_t>(product), 1});
+      },
+      [](auto &into, auto &&from) {
+        for (auto &[suppkey, parts] : from) {
+          auto &target = into[suppkey];
+          target.insert(target.end(), parts.begin(), parts.end());
+        }
+      });
+  for (auto &[suppkey, parts] : by_supplier)
+    all[suppkey].parts = std::move(parts);
 
   // Per-supplier: sort by partkey and fold duplicates (bag semantics).
   std::vector<Q11SupplierEntry *> entries;

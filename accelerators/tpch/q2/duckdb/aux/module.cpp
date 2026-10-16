@@ -2,6 +2,7 @@
 #include "tpch/q2/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -280,6 +281,30 @@ void AddOfferRaw(TpchQ2State &st, int64_t partkey, int64_t suppkey,
       .push_back({cost, static_cast<int32_t>(suppkey)});
   TpchQ2MutOf(st.supp_parts).Mutable(suppkey)
       .push_back(static_cast<int32_t>(partkey));
+}
+
+// Partsupp rows of one scan partition, by part and by supplier.
+struct OffersPartial {
+  TpchQ2Paged<std::vector<TpchQ2Offer>, 9> offers;
+  TpchQ2Paged<std::vector<int32_t>, 6> supp_parts;
+  int64_t rows = 0;
+};
+
+// Appends every list of `from` to the list of the same key in `into`.
+template <class Paged> void AppendLists(Paged &into, const Paged &from) {
+  for (std::size_t ci = 0; ci < from.NumChunks(); ++ci) {
+    const auto *chunk = from.ChunkAt(ci);
+    if (!chunk)
+      continue;
+    const int64_t base = Paged::ChunkBase(ci);
+    for (std::size_t i = 0; i < chunk->size(); ++i) {
+      const auto &list = (*chunk)[i];
+      if (list.empty())
+        continue;
+      auto &target = into.Mutable(base + static_cast<int64_t>(i));
+      target.insert(target.end(), list.begin(), list.end());
+    }
+  }
 }
 
 using GroupAcc = std::unordered_map<int64_t, std::vector<TpchQ2Entry>>;
@@ -1355,13 +1380,36 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   if (profiling) {
     partsupp_timer = std::make_unique<CustomTimer>(true);
   }
-  int64_t partsupp_rows = 0;
-  initial_scan->ScanPartsupps([&](const TpchQ2PartsuppInput &input) {
-    partsupp_rows++;
-    if (!AcceptDenseKey(input.suppkey) || !AcceptDenseKey(input.partkey))
-      return;
-    AddOfferRaw(state, input.partkey, input.suppkey, input.supplycost_raw);
-  });
+  // Partsupp rows go into per-partition offer lists, appended in partition
+  // order (the order of the serial scan).
+  using scan::DecimalColumn;
+  using scan::IntColumn;
+  auto offers = core::PartitionedBuild<OffersPartial>(
+      services, [] { return OffersPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "partsupp",
+                                {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+                                 DecimalColumn("ps_supplycost", 2)},
+                                parts, sink);
+      },
+      [](OffersPartial &p, const auto &row) {
+        const int64_t partkey = row.Int(0), suppkey = row.Int(1);
+        AcceptDenseKey(suppkey);
+        AcceptDenseKey(partkey);
+        p.offers.Mutable(partkey).push_back({row.Decimal(2), static_cast<int32_t>(suppkey)});
+        p.supp_parts.Mutable(suppkey).push_back(static_cast<int32_t>(partkey));
+        ++p.rows;
+      },
+      [](OffersPartial &into, OffersPartial &&from) {
+        AppendLists(into.offers, from.offers);
+        AppendLists(into.supp_parts, from.supp_parts);
+        into.rows += from.rows;
+      });
+  const int64_t partsupp_rows = offers.rows;
+  state.offers = std::make_shared<const TpchQ2Paged<std::vector<TpchQ2Offer>, 9>>(
+      std::move(offers.offers));
+  state.supp_parts = std::make_shared<const TpchQ2Paged<std::vector<int32_t>, 6>>(
+      std::move(offers.supp_parts));
   BuildGroups(services, state);
   if (profiling) {
     EmitCustomProfile("build_partsupp_scan", partsupp_timer->us(),

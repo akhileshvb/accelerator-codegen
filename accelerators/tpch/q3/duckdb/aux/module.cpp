@@ -1,6 +1,8 @@
 #include "tpch/q3/duckdb/aux/module.hpp"
 #include "tpch/q3/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1545,9 +1547,49 @@ private:
 
 } // namespace
 
+namespace {
+
+// One lineitem's revenue on one ship day of an order.
+struct DayEntry {
+  uint64_t orderkey;
+  int64_t revenue;
+  uint16_t date;
+};
+
+// Orders of one scan partition, with the orphan customers they reference.
+struct OrdersPartial {
+  TpchQ3ShardIndex<TpchQ3OrderRec>::Builder orders;
+  std::unordered_map<uint64_t, uint32_t> orphan_custs;
+};
+
+// Lineitem entries of one scan partition, by order bucket.
+struct LinePartial {
+  std::vector<std::vector<DayEntry>> buckets;
+};
+
+// Day nodes live in one pool per bucket; a handle is (pool + 1) << 40 | node.
+constexpr unsigned kPoolShift = 40;
+uint64_t Handle(std::size_t pool, uint64_t node) {
+  return ((static_cast<uint64_t>(pool) + 1) << kPoolShift) | node;
+}
+DayNode &At(std::vector<DayNodePool> &pools, uint64_t handle) {
+  return pools[(handle >> kPoolShift) - 1].At(handle & ((uint64_t{1} << kPoolShift) - 1));
+}
+
+// Orders staged for the interval index of one (segment, orderdate bin).
+struct Staging {
+  std::vector<TpchQ3Entry> entries;
+  std::vector<TpchQ3ShipdateBucket> pool;
+};
+
+// Shards per slice when sorting or scanning the built order index.
+constexpr std::size_t kSortShardGrain = 1024;
+constexpr std::size_t kStageShardGrain = 512;
+
+} // namespace
+
 TpchQ3Module::BuiltState
 TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   BuiltState built;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q3 requires a typed initial scan source");
@@ -1564,28 +1606,47 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   });
   custs.Sort();
 
+  using scan::DateColumn;
+  using scan::DecimalColumn;
+  using scan::IntColumn;
+
   // `bound` temporarily holds the head of the order's day-node chain.
-  std::unordered_map<uint64_t, uint32_t> orphan_custs;
-  TpchQ3ShardIndex<TpchQ3OrderRec>::Builder orders;
-  initial_scan->ScanOrders([&](const TpchQ3OrderInput &input) {
-    if (input.custkey < 0)
-      return;
-    const auto *cust = custs.Find(static_cast<uint64_t>(input.custkey));
-    if (!cust) {
-      ++orphan_custs[static_cast<uint64_t>(input.custkey)];
-      return;
-    }
-    TpchQ3OrderRec rec;
-    rec.key = PackTpchQ3Orderkey(input.key);
-    rec.orderdate = PackTpchQ3Date(input.orderdate_days);
-    rec.shippriority = PackTpchQ3Shippriority(input.shippriority);
-    rec.seg_flags = cust->segment;
-    rec.bound = 0;
-    orders.Add(rec);
+  auto scanned_orders = core::PartitionedBuild<OrdersPartial>(
+      services, [] { return OrdersPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "orders",
+                                {IntColumn("o_orderkey"), DateColumn("o_orderdate"),
+                                 IntColumn("o_custkey"), IntColumn("o_shippriority")},
+                                parts, sink);
+      },
+      [&](OrdersPartial &p, const auto &row) {
+        const int64_t custkey = row.Int(2);
+        if (custkey < 0)
+          return;
+        const auto *cust = custs.Find(static_cast<uint64_t>(custkey));
+        if (!cust) {
+          ++p.orphan_custs[static_cast<uint64_t>(custkey)];
+          return;
+        }
+        TpchQ3OrderRec rec;
+        rec.key = PackTpchQ3Orderkey(row.Int(0));
+        rec.orderdate = PackTpchQ3Date(row.Date(1));
+        rec.shippriority = PackTpchQ3Shippriority(static_cast<int32_t>(row.Int(3)));
+        rec.seg_flags = cust->segment;
+        rec.bound = 0;
+        p.orders.Add(rec);
+      },
+      [](OrdersPartial &into, OrdersPartial &&from) {
+        into.orders.Merge(std::move(from.orders));
+        for (const auto &[key, n] : from.orphan_custs)
+          into.orphan_custs[key] += n;
+      });
+  TpchQ3ShardIndex<TpchQ3OrderRec>::Builder orders = std::move(scanned_orders.orders);
+  orders.Sort([&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, kSortShardGrain, fn);
   });
-  orders.Sort();
-  if (!orphan_custs.empty()) {
-    for (const auto &entry : orphan_custs) {
+  if (!scanned_orders.orphan_custs.empty()) {
+    for (const auto &entry : scanned_orders.orphan_custs) {
       TpchQ3CustRec rec;
       rec.key = entry.first;
       rec.orphan_orders = entry.second;
@@ -1594,72 +1655,118 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
     custs.Sort();
   }
 
-  DayNodePool nodes;
-  initial_scan->ScanLineitems([&](const TpchQ3LineitemInput &input) {
-    if (input.orderkey < 0)
-      return;
-    auto *order = orders.Find(static_cast<uint64_t>(input.orderkey));
-    if (!order)
-      return;
-    const auto revenue =
-        TpchQ3RevenueRaw(input.extended_price_raw, input.extended_price_scale,
-                         input.discount_raw, input.discount_scale);
-    const uint16_t date = PackTpchQ3Date(input.shipdate_days);
-    for (auto h = static_cast<uint64_t>(order->bound); h != 0;) {
-      auto &node = nodes.At(h);
-      if (node.date == date) {
-        node.revenue += revenue;
-        return;
+  // Lineitems of known orders, per (order, day) and bucketed by order so that
+  // one worker owns all the entries of an order: partitions fill buckets in
+  // scan order, buckets are then chained into per-order day lists in parallel.
+  const std::size_t buckets = std::max<std::size_t>(1, services.WorkerCount());
+  const auto bucket_of = [buckets](uint64_t orderkey) {
+    return static_cast<std::size_t>((orderkey * 0x9E3779B97F4A7C15ULL) >> 40) % buckets;
+  };
+  auto scanned_lines = core::PartitionedBuild<LinePartial>(
+      services, [&] { return LinePartial{std::vector<std::vector<DayEntry>>(buckets)}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "lineitem",
+                                {IntColumn("l_orderkey"), DecimalColumn("l_extendedprice", 2),
+                                 DecimalColumn("l_discount", 2), DateColumn("l_shipdate")},
+                                parts, sink);
+      },
+      [&](LinePartial &p, const auto &row) {
+        const int64_t orderkey = row.Int(0);
+        if (orderkey < 0 || !orders.Find(static_cast<uint64_t>(orderkey)))
+          return;
+        auto &bucket = p.buckets[bucket_of(static_cast<uint64_t>(orderkey))];
+        const DayEntry entry{static_cast<uint64_t>(orderkey),
+                             TpchQ3RevenueRaw(row.Decimal(1), 2, row.Decimal(2), 2),
+                             PackTpchQ3Date(row.Date(3))};
+        // Lineitems of an order are mostly adjacent: fold a repeated day.
+        if (!bucket.empty() && bucket.back().orderkey == entry.orderkey &&
+            bucket.back().date == entry.date)
+          bucket.back().revenue += entry.revenue;
+        else
+          bucket.push_back(entry);
+      },
+      [](LinePartial &into, LinePartial &&from) {
+        for (std::size_t b = 0; b < into.buckets.size(); ++b)
+          into.buckets[b].insert(into.buckets[b].end(), from.buckets[b].begin(),
+                                 from.buckets[b].end());
+      });
+  std::vector<DayNodePool> pools(buckets);
+  core::ParallelEach(services, buckets, 1, [&](std::size_t b) {
+    auto &nodes = pools[b];
+    for (const auto &entry : scanned_lines.buckets[b]) {
+      auto *order = orders.Find(entry.orderkey);
+      bool merged = false;
+      for (auto h = static_cast<uint64_t>(order->bound); h != 0 && !merged;) {
+        auto &node = At(pools, h);
+        if (node.date == entry.date) {
+          node.revenue += entry.revenue;
+          merged = true;
+        } else {
+          h = node.next;
+        }
       }
-      h = node.next;
+      if (merged)
+        continue;
+      DayNode node;
+      node.revenue = entry.revenue;
+      node.date = entry.date;
+      node.next = static_cast<uint64_t>(order->bound);
+      order->bound = static_cast<int64_t>(Handle(b, nodes.Add(node)));
     }
-    DayNode node;
-    node.revenue = revenue;
-    node.date = date;
-    node.next = static_cast<uint64_t>(order->bound);
-    order->bound = nodes.Add(node);
+    std::vector<DayEntry>().swap(scanned_lines.buckets[b]);
   });
 
-  // Group orders with >= 1 shipdate into (segment, orderdate-bin) streams.
-  struct Staging {
-    std::vector<TpchQ3Entry> entries;
-    std::vector<TpchQ3ShipdateBucket> pool;
-  };
+  // Group orders with >= 1 shipdate into (segment, orderdate-bin) streams, one
+  // staging set per slice of order shards; the sets are merged in slice order.
   std::map<std::pair<core::PartitionId, uint16_t>, Staging> staging;
-  std::vector<std::pair<int32_t, int64_t>> days;
-  std::map<int32_t, int64_t> day_map;
-  std::vector<TpchQ3ShipdateBucket> buckets;
-  orders.ForEach([&](TpchQ3OrderRec &order) {
-    auto head = static_cast<uint64_t>(order.bound);
-    order.bound = 0;
-    if (head == 0)
-      return;
-    day_map.clear();
-    for (auto h = head; h != 0;) {
-      const auto &node = nodes.At(h);
-      if (node.revenue != 0)
-        day_map[node.date] = node.revenue;
-      h = node.next;
-    }
-    if (day_map.empty())
-      return;
-    FinalizeTpchQ3OrderSummary(buckets, day_map);
-    if (buckets.empty())
-      return;
-    TpchQ3Entry entry;
-    entry.bound = BoundOf(day_map);
-    entry.orderkey = order.key;
-    entry.orderdate = order.orderdate;
-    entry.shippriority = order.shippriority;
-    entry.maxship = buckets.back().shipdate;
-    auto &stage = staging[{order.segment(), BinOf(order.orderdate)}];
-    entry.bucket_begin = static_cast<uint32_t>(stage.pool.size());
-    entry.bucket_count = static_cast<uint16_t>(buckets.size());
-    stage.pool.insert(stage.pool.end(), buckets.begin(), buckets.end());
-    stage.entries.push_back(entry);
-    order.bound = entry.bound;
-    order.seg_flags = static_cast<uint8_t>(order.seg_flags | 0x80);
-  });
+  core::ParallelReduce(
+      services, orders.shard_count(), kStageShardGrain, staging,
+      [&](auto &stages, std::size_t begin, std::size_t end) {
+        std::map<int32_t, int64_t> day_map;
+        std::vector<TpchQ3ShipdateBucket> day_buckets;
+        orders.ForEachInShards(begin, end, [&](TpchQ3OrderRec &order) {
+          auto head = static_cast<uint64_t>(order.bound);
+          order.bound = 0;
+          if (head == 0)
+            return;
+          day_map.clear();
+          for (auto h = head; h != 0;) {
+            const auto &node = At(pools, h);
+            if (node.revenue != 0)
+              day_map[node.date] = node.revenue;
+            h = node.next;
+          }
+          if (day_map.empty())
+            return;
+          FinalizeTpchQ3OrderSummary(day_buckets, day_map);
+          if (day_buckets.empty())
+            return;
+          TpchQ3Entry entry;
+          entry.bound = BoundOf(day_map);
+          entry.orderkey = order.key;
+          entry.orderdate = order.orderdate;
+          entry.shippriority = order.shippriority;
+          entry.maxship = day_buckets.back().shipdate;
+          auto &stage = stages[{order.segment(), BinOf(order.orderdate)}];
+          entry.bucket_begin = static_cast<uint32_t>(stage.pool.size());
+          entry.bucket_count = static_cast<uint16_t>(day_buckets.size());
+          stage.pool.insert(stage.pool.end(), day_buckets.begin(), day_buckets.end());
+          stage.entries.push_back(entry);
+          order.bound = entry.bound;
+          order.seg_flags = static_cast<uint8_t>(order.seg_flags | 0x80);
+        });
+      },
+      [](auto &into, auto &&from) {
+        for (auto &[key, stage] : from) {
+          auto &target = into[key];
+          const auto base = static_cast<uint32_t>(target.pool.size());
+          for (auto entry : stage.entries) {
+            entry.bucket_begin += base;
+            target.entries.push_back(entry);
+          }
+          target.pool.insert(target.pool.end(), stage.pool.begin(), stage.pool.end());
+        }
+      });
 
   // Bins are independent: sort and chunk them in parallel, attach in key order.
   std::vector<Staging *> stages;

@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "tpch/common/duckdb_partitioned_scan.hpp"
 #include "substrate/aux/core/aux_query_module.hpp"
 #include "prims/sharded_sorted_map.hpp"
 #include "tpch/q3/layout.hpp"
@@ -47,7 +48,7 @@ struct TpchQ3LineitemInput {
   int32_t shipdate_days = 0;
 };
 
-class TpchQ3InitialScan {
+class TpchQ3InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ3InitialScan() = default;
   virtual void ScanCustomers(

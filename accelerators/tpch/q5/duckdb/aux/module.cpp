@@ -5,6 +5,7 @@
 #include "tpch/q5/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -21,6 +22,20 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
+
+// Per-partition builder state of the orders and lineitem scans.
+struct OrdersPartial {
+  TpchQ5ShardIndex<TpchQ5OrderRec>::Builder orders;
+  int32_t min_orderdate_days = std::numeric_limits<int32_t>::max();
+  int32_t max_orderdate_days = std::numeric_limits<int32_t>::min();
+};
+struct LineitemPartial {
+  std::vector<int64_t> flat; // tree leaves, then folded upward after the merge
+  std::unordered_map<int64_t, int32_t> orphan_supp;
+};
+
+// Shards per slice when sorting a built index.
+constexpr std::size_t kSortShardGrain = 1024;
 
 using core::ByteReader;
 using core::ByteWriter;
@@ -1105,7 +1120,6 @@ void TpchQ5Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ5State state;
 
   if (!initial_scan)
@@ -1155,22 +1169,39 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   });
   supps.Sort();
 
-  TpchQ5ShardIndex<TpchQ5OrderRec>::Builder orders;
-  meta.min_orderdate_days = std::numeric_limits<int32_t>::max();
-  meta.max_orderdate_days = std::numeric_limits<int32_t>::min();
-  initial_scan->ScanOrders([&](const TpchQ5OrderInput &input) {
-    if (input.orderdate_days < meta.min_orderdate_days)
-      meta.min_orderdate_days = input.orderdate_days;
-    if (input.orderdate_days > meta.max_orderdate_days)
-      meta.max_orderdate_days = input.orderdate_days;
-    auto *cust = TpchQ5ValMut(custs.Find(input.custkey));
-    if (!cust)
-      return;
-    cust->order_count += 1;
-    // `ordinal` temporarily holds the order date; rebased below.
-    orders.Add({input.orderkey, TpchQ5OrderRec{cust->nationkey, input.orderdate_days,
-                              input.custkey, 0}});
-  });
+  // Orders: one builder per scan partition; each order counts toward its
+  // customer (the customer index is sorted and fixed, so partitions add to the
+  // counters atomically).
+  using scan::DecimalColumn;
+  using scan::DateColumn;
+  using scan::IntColumn;
+  auto scanned = core::PartitionedBuild<OrdersPartial>(
+      services, [] { return OrdersPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "orders",
+                                {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+                                 DateColumn("o_orderdate")},
+                                parts, sink);
+      },
+      [&](OrdersPartial &p, const auto &row) {
+        const int32_t date = row.Date(2);
+        p.min_orderdate_days = std::min(p.min_orderdate_days, date);
+        p.max_orderdate_days = std::max(p.max_orderdate_days, date);
+        auto *cust = TpchQ5ValMut(custs.Find(row.Int(1)));
+        if (!cust)
+          return;
+        AtomicAdd<int32_t>(cust->order_count, 1);
+        // `ordinal` temporarily holds the order date; rebased below.
+        p.orders.Add({row.Int(0), TpchQ5OrderRec{cust->nationkey, date, row.Int(1), 0}});
+      },
+      [](OrdersPartial &into, OrdersPartial &&from) {
+        into.min_orderdate_days = std::min(into.min_orderdate_days, from.min_orderdate_days);
+        into.max_orderdate_days = std::max(into.max_orderdate_days, from.max_orderdate_days);
+        into.orders.Merge(std::move(from.orders));
+      });
+  TpchQ5ShardIndex<TpchQ5OrderRec>::Builder orders = std::move(scanned.orders);
+  meta.min_orderdate_days = scanned.min_orderdate_days;
+  meta.max_orderdate_days = scanned.max_orderdate_days;
 
   if (meta.min_orderdate_days > meta.max_orderdate_days) {
     meta.min_orderdate_days = 0;
@@ -1185,31 +1216,49 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   orders.ForEach([&](TpchQ5ShardIndex<TpchQ5OrderRec>::Element &e) {
     e.value.ordinal = TpchQ5DateOrdinal(e.value.ordinal, meta.min_orderdate_days);
   });
-  orders.Sort();
-
-  std::unordered_map<int64_t, int32_t> orphan_supp;
-  std::vector<int64_t> flat(static_cast<std::size_t>(tree_size) * 2 * stride, 0);
-  initial_scan->ScanLineitems([&](const TpchQ5LineitemInput &input) {
-    auto *supp = TpchQ5ValMut(supps.Find(input.suppkey));
-    if (!supp) {
-      ++orphan_supp[input.suppkey]; // lineitem of a supplier that does not exist
-      return;
-    }
-    supp->line_count += 1;
-    auto *order = TpchQ5ValMut(orders.Find(input.orderkey));
-    if (!order || supp->nationkey != order->nationkey)
-      return;
-    const int32_t col = meta.NationColumn(order->nationkey);
-    if (col < 0 || order->ordinal < 0 ||
-        order->ordinal >= static_cast<int32_t>(tree_size))
-      return;
-    const int64_t revenue =
-        ComputeRevenueRaw(input.extended_price_raw, input.discount_raw);
-    order->rev += revenue;
-    flat[static_cast<std::size_t>(TpchQ5LeafNode(tree_size, order->ordinal)) *
-             stride +
-         static_cast<uint32_t>(col)] += revenue;
+  orders.Sort([&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, kSortShardGrain, fn);
   });
+
+  // Lineitems: per-partition tree sums and orphan-supplier counts; the supplier
+  // and order counters are shared and added atomically.
+  auto lines = core::PartitionedBuild<LineitemPartial>(
+      services, [&] { return LineitemPartial{std::vector<int64_t>(static_cast<std::size_t>(tree_size) * 2 * stride, 0), {}}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "lineitem",
+                                {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
+                                 DecimalColumn("l_extendedprice", 2),
+                                 DecimalColumn("l_discount", 2)},
+                                parts, sink);
+      },
+      [&](LineitemPartial &p, const auto &row) {
+        auto *supp = TpchQ5ValMut(supps.Find(row.Int(1)));
+        if (!supp) {
+          ++p.orphan_supp[row.Int(1)]; // lineitem of a supplier that does not exist
+          return;
+        }
+        AtomicAdd<int32_t>(supp->line_count, 1);
+        auto *order = TpchQ5ValMut(orders.Find(row.Int(0)));
+        if (!order || supp->nationkey != order->nationkey)
+          return;
+        const int32_t col = meta.NationColumn(order->nationkey);
+        if (col < 0 || order->ordinal < 0 ||
+            order->ordinal >= static_cast<int32_t>(tree_size))
+          return;
+        const int64_t revenue = ComputeRevenueRaw(row.Decimal(2), row.Decimal(3));
+        AtomicAdd<int64_t>(order->rev, revenue);
+        p.flat[static_cast<std::size_t>(TpchQ5LeafNode(tree_size, order->ordinal)) *
+                   stride +
+               static_cast<uint32_t>(col)] += revenue;
+      },
+      [](LineitemPartial &into, LineitemPartial &&from) {
+        for (std::size_t i = 0; i < into.flat.size(); ++i)
+          into.flat[i] += from.flat[i];
+        for (const auto &entry : from.orphan_supp)
+          into.orphan_supp[entry.first] += entry.second;
+      });
+  std::vector<int64_t> flat = std::move(lines.flat);
+  const auto &orphan_supp = lines.orphan_supp;
 
   if (!orphan_supp.empty()) {
     for (const auto &entry : orphan_supp)

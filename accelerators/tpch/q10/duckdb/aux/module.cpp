@@ -1,6 +1,7 @@
 #include "tpch/q10/duckdb/aux/module.hpp"
 #include "tpch/q10/calibration_writes.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1361,12 +1362,27 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
 
   auto t = std::chrono::steady_clock::now();
   auto base = std::make_shared<TpchQ10SideBase>();
-  initial_scan->ScanCustomers([&](const TpchQ10CustomerInput &input) {
-    base->SetCustomerRank(input.key, input.acctbal_raw, input.nationkey);
-    base->customers[input.key] = {input.name,    input.acctbal_raw,
-                                  input.nationkey, input.address,
-                                  input.phone,   input.comment};
-  });
+  using scan::DecimalColumn;
+  using scan::IntColumn;
+  using scan::TextColumn;
+  base->customers = core::PartitionedBuild<TpchQ10CustomerMap>(
+      services, [] { return TpchQ10CustomerMap{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "customer",
+                                {IntColumn("c_custkey"), TextColumn("c_name"),
+                                 DecimalColumn("c_acctbal", 2), IntColumn("c_nationkey"),
+                                 TextColumn("c_address"), TextColumn("c_phone"),
+                                 TextColumn("c_comment")},
+                                parts, sink);
+      },
+      [](TpchQ10CustomerMap &customers, const auto &row) {
+        customers[row.Int(0)] = {row.Text(1), row.Decimal(2),
+                                 static_cast<int32_t>(row.Int(3)), row.Text(4),
+                                 row.Text(5), row.Text(6)};
+      },
+      [](TpchQ10CustomerMap &into, TpchQ10CustomerMap &&from) { into.merge(from); });
+  for (const auto &[key, customer] : base->customers)
+    base->SetCustomerRank(key, customer.acctbal_raw, customer.nationkey);
   state.side_base = std::move(base);
   log_phase("customers", t);
 

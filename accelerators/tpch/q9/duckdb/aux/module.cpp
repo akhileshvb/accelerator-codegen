@@ -29,6 +29,11 @@ constexpr std::size_t kCellsGrain = 16;
 constexpr std::size_t kCandidateGrain = 8192;
 // Profit slots per read slice: ~1000 name substring tests each, ~0.1 ms per slot.
 constexpr std::size_t kSlotGrain = 16;
+// Build: pair aggregates buffered before they are applied, and slots per slice when applying.
+constexpr std::size_t kPairBatch = std::size_t{1} << 23;
+constexpr std::size_t kPairSlotGrain = 4;
+// Build: profit slots per slice when summing the token cube.
+constexpr std::size_t kCubeSlotGrain = 8;
 // Maintenance: slots whose profit-partition pointer vector is copied per slice (~10 us each).
 constexpr std::size_t kSlotCopyGrain = 8;
 // Maintenance: slots whose lineitem deltas are applied per slice (~0.1 ms each at RF size).
@@ -546,12 +551,28 @@ void TpchQ9State::CubeApplyRecord(const Q9PartRecord &record, int sign) {
     CubeAdd(tokens, cell.Nation(), cell.Year(), sign * cell.profit);
 }
 
-void TpchQ9State::BuildCube() {
+void TpchQ9State::BuildCube(const core::AuxEngineServices &services) {
   cube.clear();
   cube_active = true;
-  for (const auto &partition : profit_partitions)
-    for (const auto &entry : partition.parts)
-      CubeApplyRecord(*entry.second, +1);
+  // Slices fill their own cube (states used as cube holders); the cubes are
+  // added into this one in slice order.
+  core::ParallelReduce(
+      services, profit_partitions.size(), kCubeSlotGrain, *this,
+      [&](TpchQ9State &into, std::size_t begin, std::size_t end) {
+        for (std::size_t p = begin; p < end; ++p)
+          for (const auto &entry : profit_partitions[p].parts)
+            into.CubeApplyRecord(*entry.second, +1);
+      },
+      [](TpchQ9State &into, TpchQ9State &&from) {
+        for (const auto &[token, part] : from.cube) {
+          const std::vector<std::string> one{token};
+          for (int32_t n = 0; n < Q9TokenCube::kNations; ++n)
+            for (int32_t y = 0; y < Q9TokenCube::kYears; ++y)
+              into.CubeAdd(one, n, Q9TokenCube::kYearBase + y, part->dense[n][y]);
+          for (const auto &cell : part->sparse)
+            into.CubeAdd(one, cell.Nation(), cell.Year(), cell.profit);
+        }
+      });
 }
 
 void TpchQ9State::FinalizePostings() {
@@ -1653,12 +1674,34 @@ void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
     state.SetPartsuppCost(input.partkey, input.suppkey, input.supplycost_raw);
   });
 
-  auto add_agg = [&](int64_t partkey, int64_t suppkey, int32_t year,
-                     int64_t rev, int64_t qty) {
+  // Pair aggregates are applied per profit slot (slots own disjoint part
+  // records), in batches: the scan fills per-slot buffers, a full batch is
+  // applied by all workers at once.
+  struct PairAgg {
+    int64_t partkey, suppkey;
+    int32_t year;
+    int64_t rev, qty;
+  };
+  std::vector<std::vector<PairAgg>> pending(state.profit_slot_count);
+  std::size_t pending_count = 0;
+  const auto apply_pending = [&] {
+    core::ParallelEach(services, pending.size(), kPairSlotGrain, [&](std::size_t slot) {
+      for (const auto &agg : pending[slot])
+        TpchQ9State::AddPairAgg(state.PartRecord(agg.partkey),
+                                static_cast<int32_t>(agg.suppkey), agg.year,
+                                agg.rev, agg.qty);
+      pending[slot].clear();
+    });
+    pending_count = 0;
+  };
+  const auto add_agg = [&](int64_t partkey, int64_t suppkey, int32_t year,
+                           int64_t rev, int64_t qty) {
     if (suppkey < 1 || suppkey > static_cast<int64_t>(INT32_MAX))
       return;
-    TpchQ9State::AddPairAgg(state.PartRecord(partkey),
-                            static_cast<int32_t>(suppkey), year, rev, qty);
+    pending[TpchQ9State::HashPartition(partkey, state.profit_slot_count)].push_back(
+        {partkey, suppkey, year, rev, qty});
+    if (++pending_count >= kPairBatch)
+      apply_pending();
   };
   const bool used_pairs_sql = initial_scan->ScanPairAggregates(
       [&](int64_t partkey, int64_t suppkey, int32_t year, int64_t rev,
@@ -1674,6 +1717,7 @@ void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
               input.quantity_raw);
     });
   }
+  apply_pending();
 
   state.FinishBulkParts();
   state.FinalizePostings();
@@ -1681,7 +1725,7 @@ void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
   state.BuildCellsFromPairs(services);
   if (full) {
     state.BuildSuppPairsIndex();
-    state.BuildCube();
+    state.BuildCube(services);
   }
 }
 

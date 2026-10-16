@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "tpch/common/duckdb_partitioned_scan.hpp"
 #include "substrate/aux/core/aux_query_module.hpp"
 #include "prims/sharded_sorted_map.hpp"
 
@@ -80,7 +81,7 @@ struct TpchQ8RegionInput {
   std::string name;
 };
 
-class TpchQ8InitialScan {
+class TpchQ8InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ8InitialScan() = default;
   virtual void ScanParts(const std::function<void(const TpchQ8PartInput &)> &) = 0;

@@ -261,6 +261,11 @@ struct TpchQ10Scan : TpchQ10InitialScan {
                        });
     return true;
   }
+  void ScanTable(const core::AuxEngineServices &services, const std::string &table,
+                 const std::vector<BuildColumn> &columns, std::size_t partitions,
+                 const Sink &sink) override {
+    ScanPartitioned(services, connection, table, columns, partitions, sink);
+  }
   ::duckdb::Connection &connection;
 };
 

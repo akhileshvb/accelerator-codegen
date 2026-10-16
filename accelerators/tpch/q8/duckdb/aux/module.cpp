@@ -2,6 +2,7 @@
 #include "tpch/q8/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -26,6 +27,8 @@ constexpr uint32_t kVersionV2 = 3;
 constexpr std::size_t kResolveGrain = 2048;
 // Touched mid arrays per slice when publishing a dimension map.
 constexpr std::size_t kFinishGrain = 16;
+// Shards per slice when sorting a built index.
+constexpr std::size_t kSortShardGrain = 1024;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -1449,8 +1452,48 @@ void TpchQ8Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 // ── BuildState ─────────────────────────────────────────────────────────────
+namespace {
+
+// Orders of one scan partition.
+struct OrdersPartial {
+  TpchQ8OrderMap::Builder orders;
+  int64_t max_key = 0;
+};
+
+// A partition's cube: the state and its editor (the editor keeps a reference,
+// so both live behind pointers and the partial can move).
+struct CubePartial {
+  explicit CubePartial(int32_t nat_dim) : state(std::make_unique<TpchQ8State>()) {
+    state->nat_dim = nat_dim;
+    editor = std::make_unique<CubeEditor>(*state);
+  }
+  std::unique_ptr<TpchQ8State> state;
+  std::unique_ptr<CubeEditor> editor;
+};
+
+// Adds the cells of `from` to `into` (same nation axis).
+void MergeCubes(TpchQ8State &into, TpchQ8State &from) {
+  if (into.pages.size() < from.pages.size())
+    into.pages.resize(from.pages.size());
+  for (std::size_t i = 0; i < from.pages.size(); ++i) {
+    if (!from.pages[i])
+      continue;
+    if (!into.pages[i]) {
+      into.pages[i] = std::move(from.pages[i]);
+      continue;
+    }
+    auto sum = std::make_shared<TpchQ8CubePage>(*into.pages[i]);
+    for (std::size_t c = 0; c < sum->cell.size(); ++c)
+      sum->cell[c] += from.pages[i]->cell[c];
+    for (std::size_t c = 0; c < sum->roll.size(); ++c)
+      sum->roll[c] += from.pages[i]->roll[c];
+    into.pages[i] = std::move(sum);
+  }
+}
+
+} // namespace
+
 TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ8State state;
   TpchQ8Dimensions dims;
   TpchQ8SmallMap::Builder part_b, supp_b, cust_b;
@@ -1490,12 +1533,30 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
     max_nation = std::max(max_nation, input.nationkey);
   });
 
-  initial_scan->ScanOrders([&](const TpchQ8OrdersInput &input) {
-    if (input.key <= 0)
-      return;
-    order_b.Add({input.key, TpchQ8OrderInfo{input.custkey, input.orderdate_days, 0}});
-    dims.order_build_max = std::max(dims.order_build_max, input.key);
-  });
+  using scan::DateColumn;
+  using scan::DecimalColumn;
+  using scan::IntColumn;
+  auto scanned = core::PartitionedBuild<OrdersPartial>(
+      services, [] { return OrdersPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "orders",
+                                {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+                                 DateColumn("o_orderdate")},
+                                parts, sink);
+      },
+      [](OrdersPartial &p, const auto &row) {
+        const int64_t key = row.Int(0);
+        if (key <= 0)
+          return;
+        p.orders.Add({key, TpchQ8OrderInfo{row.Int(1), row.Date(2), 0}});
+        p.max_key = std::max(p.max_key, key);
+      },
+      [](OrdersPartial &into, OrdersPartial &&from) {
+        into.orders.Merge(std::move(from.orders));
+        into.max_key = std::max(into.max_key, from.max_key);
+      });
+  order_b = std::move(scanned.orders);
+  dims.order_build_max = std::max(dims.order_build_max, scanned.max_key);
 
   // Nation/region dictionaries in one pass each.
   std::unordered_map<int32_t, std::string> regionkey_to_name;
@@ -1517,7 +1578,9 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   part_b.SortDedupe();
   supp_b.SortDedupe();
   cust_b.SortDedupe();
-  order_b.SortDedupe();
+  order_b.SortDedupe([&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, kSortShardGrain, fn);
+  });
 
   // Dense key->value arrays make the per-lineitem lookups O(1) array reads.
   DenseI32 part_dense, supp_dense, cust_dense;
@@ -1526,35 +1589,47 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   cust_dense.Fill(cust_b, dims.cust_build_max);
 
   {
-    CubeEditor editor(state);
-    initial_scan->ScanLineitems([&](const TpchQ8LineitemInput &input) {
-      if (input.orderkey <= 0)
-        return;
-      // Count every lineitem row of an order (exact per-order line count).
-      auto *oi = TpchQ8ValMut(order_b.Find(input.orderkey));
-      if (!oi)
-        return;
-      ++oi->lines;
-      if (input.partkey <= 0 || input.suppkey <= 0)
-        return;
-      int32_t pt_idx = 0, snk = 0, cnk = 0;
-      if (!part_dense.Get(part_b, input.partkey, pt_idx))
-        return;
-      if (!cust_dense.Get(cust_b, oi->custkey, cnk))
-        return;
-      if (!supp_dense.Get(supp_b, input.suppkey, snk))
-        return;
-      const int32_t year = OrderDateToYear(oi->orderdate_days);
-      if (year != 1995 && year != 1996)
-        return;
-      int32_t cs = 0, ss = 0;
-      if (!NationSlot(cnk, state.nat_dim, cs) ||
-          !NationSlot(snk, state.nat_dim, ss))
-        return;
-      editor.Add(year - 1995, pt_idx, cs, ss,
-                 ComputeVolumeRaw(input.extendedprice_raw,
-                                  input.discount_raw));
-    });
+    // Each partition sums into its own cube; the order index is sorted and
+    // fixed, so partitions add to the per-order line counts atomically.
+    auto cube = core::PartitionedBuild<CubePartial>(
+        services, [&] { return CubePartial(state.nat_dim); },
+        [&](std::size_t parts, auto &&sink) {
+          initial_scan->ScanTable(services, "lineitem",
+                                  {IntColumn("l_partkey"), IntColumn("l_orderkey"),
+                                   IntColumn("l_suppkey"), DecimalColumn("l_extendedprice", 2),
+                                   DecimalColumn("l_discount", 2)},
+                                  parts, sink);
+        },
+        [&](CubePartial &p, const auto &row) {
+          const int64_t orderkey = row.Int(1);
+          if (orderkey <= 0)
+            return;
+          // Count every lineitem row of an order (exact per-order line count).
+          auto *oi = TpchQ8ValMut(order_b.Find(orderkey));
+          if (!oi)
+            return;
+          AtomicAdd<int32_t>(oi->lines, 1);
+          const int64_t partkey = row.Int(0), suppkey = row.Int(2);
+          if (partkey <= 0 || suppkey <= 0)
+            return;
+          int32_t pt_idx = 0, snk = 0, cnk = 0;
+          if (!part_dense.Get(part_b, partkey, pt_idx))
+            return;
+          if (!cust_dense.Get(cust_b, oi->custkey, cnk))
+            return;
+          if (!supp_dense.Get(supp_b, suppkey, snk))
+            return;
+          const int32_t year = OrderDateToYear(oi->orderdate_days);
+          if (year != 1995 && year != 1996)
+            return;
+          int32_t cs = 0, ss = 0;
+          if (!NationSlot(cnk, state.nat_dim, cs) || !NationSlot(snk, state.nat_dim, ss))
+            return;
+          p.editor->Add(year - 1995, pt_idx, cs, ss,
+                       ComputeVolumeRaw(row.Decimal(3), row.Decimal(4)));
+        },
+        [](CubePartial &into, CubePartial &&from) { MergeCubes(*into.state, *from.state); });
+    state.pages = std::move(cube.state->pages);
   }
 
   dims.part_key_to_type = part_b.Finish();

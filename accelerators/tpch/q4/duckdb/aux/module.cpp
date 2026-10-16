@@ -5,6 +5,7 @@
 #include "tpch/q4/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -26,6 +27,8 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 constexpr int32_t kEpoch = 719468;
+// Shards per slice when sorting the built index.
+constexpr std::size_t kSortShardGrain = 1024;
 // Touched orders per slice when reading their current info.
 constexpr std::size_t kLookupGrain = 2048;
 // Touched mid arrays per slice when publishing the eligibility index.
@@ -828,46 +831,107 @@ void TpchQ4Module::ExecuteFallback(core::AuxEngineServices &services,
   EmitResult(state, counts, sink);
 }
 
+namespace {
+
+// Orders of one scan partition: eligibility entries (count 0) plus the
+// partition's own priority dictionary and order-date range.
+struct OrdersPartial {
+  TpchQ4EligIndex::Builder shards;
+  std::vector<std::string> priority_names;
+  std::unordered_map<std::string, int32_t> priority_map;
+  bool any = false;
+  int32_t min_orderdate_days = 0, max_orderdate_days = 0;
+};
+
+// Appends `from` to `into` as if its rows had been scanned after into's: its
+// priorities are interned in first-seen order and its entries renumbered.
+void MergeOrders(OrdersPartial &into, OrdersPartial &&from) {
+  std::vector<int32_t> renumber(from.priority_names.size());
+  bool identity = true;
+  for (std::size_t i = 0; i < renumber.size(); ++i) {
+    renumber[i] = TpchQ4PriorityIndex(from.priority_names[i], into.priority_names,
+                                      into.priority_map);
+    identity = identity && renumber[i] == static_cast<int32_t>(i);
+  }
+  if (!identity)
+    from.shards.ForEach([&](TpchQ4EligIndex::Element &e) {
+      e.value.priority_idx = renumber[e.value.priority_idx];
+    });
+  into.shards.Merge(std::move(from.shards));
+  if (from.any) {
+    into.min_orderdate_days = into.any ? std::min(into.min_orderdate_days, from.min_orderdate_days)
+                                       : from.min_orderdate_days;
+    into.max_orderdate_days = into.any ? std::max(into.max_orderdate_days, from.max_orderdate_days)
+                                       : from.max_orderdate_days;
+    into.any = true;
+  }
+}
+
+} // namespace
+
 TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ4State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q4 requires a typed initial scan source");
+  using scan::DateColumn;
+  using scan::IntColumn;
+  using scan::TextColumn;
 
-  // First scan: orders go straight into hash-sharded vectors (no intermediate
-  // 30M-entry map); counts are filled in by the lineitem scan.
-  TpchQ4EligIndex::Builder shards;
-  bool have_date_bounds = false;
-
-  initial_scan->ScanOrders([&](const TpchQ4OrderInput &input) {
-    int32_t pidx = TpchQ4PriorityIndex(input.orderpriority, state.priority_names,
-                                        state.priority_map);
-    shards.Add({input.key, TpchQ4OrderInfo{input.orderdate_days, pidx, 0}});
-    if (!have_date_bounds) {
-      state.min_orderdate_days = input.orderdate_days;
-      state.max_orderdate_days = input.orderdate_days;
-      have_date_bounds = true;
-    } else {
-      state.min_orderdate_days =
-          std::min(state.min_orderdate_days, input.orderdate_days);
-      state.max_orderdate_days =
-          std::max(state.max_orderdate_days, input.orderdate_days);
-    }
+  // First scan: orders go straight into hash-sharded vectors, one set per scan
+  // partition (no intermediate 30M-entry map); counts are filled in by the
+  // lineitem scan.
+  auto orders = core::PartitionedBuild<OrdersPartial>(
+      services, [] { return OrdersPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "orders",
+                                {IntColumn("o_orderkey"), DateColumn("o_orderdate"),
+                                 TextColumn("o_orderpriority")},
+                                parts, sink);
+      },
+      [](OrdersPartial &p, const auto &row) {
+        const int32_t date = row.Date(1);
+        const int32_t pidx =
+            TpchQ4PriorityIndex(row.Text(2), p.priority_names, p.priority_map);
+        p.shards.Add({row.Int(0), TpchQ4OrderInfo{date, pidx, 0}});
+        p.min_orderdate_days = p.any ? std::min(p.min_orderdate_days, date) : date;
+        p.max_orderdate_days = p.any ? std::max(p.max_orderdate_days, date) : date;
+        p.any = true;
+      },
+      MergeOrders);
+  TpchQ4EligIndex::Builder shards = std::move(orders.shards);
+  state.priority_names = std::move(orders.priority_names);
+  state.priority_map = std::move(orders.priority_map);
+  if (orders.any) {
+    state.min_orderdate_days = orders.min_orderdate_days;
+    state.max_orderdate_days = orders.max_orderdate_days;
+  }
+  shards.Sort([&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, kSortShardGrain, fn);
   });
-  shards.Sort();
 
   if (state.min_orderdate_days > state.max_orderdate_days) {
     state.min_orderdate_days = 0;
     state.max_orderdate_days = 0;
   }
 
-  // Second scan: count qualifying lineitems per order
-  initial_scan->ScanLineitems([&](const TpchQ4LineitemInput &input) {
-    if (!LineitemQualifies(input.commitdate_days, input.receiptdate_days))
-      return;
-    if (auto *entry = shards.Find(input.orderkey))
-      entry->value.qualifying_count += 1;
-  });
+  // Second scan: count qualifying lineitems per order. The index is sorted and
+  // no longer changes shape, so partitions add to the counters atomically.
+  struct NoPartial {};
+  core::PartitionedBuild<NoPartial>(
+      services, [] { return NoPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(services, "lineitem",
+                                {IntColumn("l_orderkey"), DateColumn("l_commitdate"),
+                                 DateColumn("l_receiptdate")},
+                                parts, sink);
+      },
+      [&](NoPartial &, const auto &row) {
+        if (!LineitemQualifies(row.Date(1), row.Date(2)))
+          return;
+        if (auto *entry = shards.Find(row.Int(0)))
+          AtomicAdd<int64_t>(entry->value.qualifying_count, 1);
+      },
+      [](NoPartial &, NoPartial &&) {});
 
   // Build segment tree (flat: node * stride + priority)
   int32_t num_days = state.max_orderdate_days - state.min_orderdate_days + 1;

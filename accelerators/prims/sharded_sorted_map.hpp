@@ -31,6 +31,7 @@
 //
 
 #include <algorithm>
+#include <iterator>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -310,14 +311,38 @@ public:
   void Add(const T &value) {
     shards_[Map::ShardOf(KeyOf{}(value), bits_)].push_back(value);
   }
-  // Sorts every shard by key. Keys must be unique.
+  // Appends the elements of `from` (same directory width), shard by shard:
+  // merging builders in partition order equals adding their rows in that order.
+  void Merge(Builder &&from) {
+    for (std::size_t g = 0; g < shards_.size(); ++g) {
+      auto &into = shards_[g];
+      auto &part = from.shards_[g];
+      if (into.empty()) {
+        into = std::move(part);
+      } else {
+        into.insert(into.end(), std::make_move_iterator(part.begin()),
+                    std::make_move_iterator(part.end()));
+      }
+      part = Leaf();
+    }
+  }
+  // Sorts every shard by key. Keys must be unique. `parallel_for(n, fn)` must
+  // run fn(0..n-1), possibly on several threads; each call owns one shard.
+  template <class ParallelFor> void Sort(ParallelFor &&parallel_for) {
+    parallel_for(shards_.size(), [&](std::size_t g) {
+      std::sort(shards_[g].begin(), shards_[g].end(), Cmp());
+    });
+  }
   void Sort() {
-    for (auto &shard : shards_)
-      std::sort(shard.begin(), shard.end(), Cmp());
+    Sort([](std::size_t n, const auto &fn) {
+      for (std::size_t i = 0; i < n; ++i)
+        fn(i);
+    });
   }
   // Sorts every shard by key; of duplicate keys the last added wins.
-  void SortDedupe() {
-    for (auto &shard : shards_) {
+  template <class ParallelFor> void SortDedupe(ParallelFor &&parallel_for) {
+    parallel_for(shards_.size(), [&](std::size_t g) {
+      auto &shard = shards_[g];
       std::stable_sort(shard.begin(), shard.end(), Cmp());
       std::size_t w = 0;
       for (std::size_t r = 0; r < shard.size(); ++r) {
@@ -328,7 +353,13 @@ public:
       }
       shard.resize(w);
       shard.shrink_to_fit();
-    }
+    });
+  }
+  void SortDedupe() {
+    SortDedupe([](std::size_t n, const auto &fn) {
+      for (std::size_t i = 0; i < n; ++i)
+        fn(i);
+    });
   }
   // Valid only after Sort / SortDedupe.
   T *Find(const K &key) {
@@ -339,6 +370,13 @@ public:
   template <class F> void ForEach(F &&f) {
     for (auto &shard : shards_)
       for (auto &e : shard)
+        f(e);
+  }
+  // ForEach over the shards [begin, end): disjoint ranges may run concurrently.
+  std::size_t shard_count() const { return shards_.size(); }
+  template <class F> void ForEachInShards(std::size_t begin, std::size_t end, F &&f) {
+    for (std::size_t g = begin; g < end; ++g)
+      for (auto &e : shards_[g])
         f(e);
   }
   Map Finish() {

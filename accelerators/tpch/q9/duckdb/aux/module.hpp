@@ -387,7 +387,7 @@ struct TpchQ9State {
                int32_t year, int64_t delta);
   // Add (sign=+1) / subtract (sign=-1) all cells of a record into the cube.
   void CubeApplyRecord(const Q9PartRecord &record, int sign);
-  void BuildCube();
+  void BuildCube(const core::AuxEngineServices &services);
 
   // Copy only the join-side maps (page directories + overflow maps).
   void CopySideFrom(const TpchQ9State &o) {
