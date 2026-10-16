@@ -40,6 +40,30 @@ void ScanTpchQ22Orders(
               });
 }
 
+void ScanTpchQ22CustomersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ22CustomerInput &)> &sink) {
+  ScanPartitioned(services, "customer",
+                  {IntColumn("c_custkey"), TextColumn("c_phone"),
+                   DecimalColumn("c_acctbal", 2)},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Text(1), row.Decimal(2), 2});
+                    }
+                  });
+}
+
+void ScanTpchQ22OrdersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ22OrderInput &)> &sink) {
+  ScanPartitioned(services, "orders", {IntColumn("o_custkey")}, partitions,
+                  [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i)
+                      sink(partition, {batch.Row(i).Int(0)});
+                  });
+}
+
 } // namespace scans
 
 class TpchQ22Scan final : public query::TpchQ22InitialScan {
@@ -53,6 +77,18 @@ public:
       const std::function<void(const query::TpchQ22OrderInput &)> &consumer)
       override {
     scans::ScanTpchQ22Orders(consumer);
+  }
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ22CustomerInput &)> &sink)
+      override {
+    scans::ScanTpchQ22CustomersPartitioned(services, partitions, sink);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ22OrderInput &)> &sink)
+      override {
+    scans::ScanTpchQ22OrdersPartitioned(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Scan> &
