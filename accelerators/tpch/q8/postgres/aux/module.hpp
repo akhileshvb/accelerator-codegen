@@ -84,11 +84,23 @@ struct TpchQ8RegionInput {
 class TpchQ8InitialScan {
 public:
   virtual ~TpchQ8InitialScan() = default;
-  virtual void ScanParts(const std::function<void(const TpchQ8PartInput &)> &) = 0;
-  virtual void ScanSuppliers(const std::function<void(const TpchQ8SupplierInput &)> &) = 0;
-  virtual void ScanCustomers(const std::function<void(const TpchQ8CustomerInput &)> &) = 0;
-  virtual void ScanOrders(const std::function<void(const TpchQ8OrdersInput &)> &) = 0;
-  virtual void ScanLineitems(const std::function<void(const TpchQ8LineitemInput &)> &) = 0;
+  // Partitioned scans of the big tables: sink(partition, row), one thread per
+  // partition at a time.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8PartInput &)> &) = 0;
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8SupplierInput &)> &) = 0;
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8CustomerInput &)> &) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8OrdersInput &)> &) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8LineitemInput &)> &) = 0;
   virtual void ScanNations(const std::function<void(const TpchQ8NationInput &)> &) = 0;
   virtual void ScanRegions(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
 };
