@@ -96,13 +96,20 @@ using SecEdgarQ2Scan = SecEdgarQ2DuckdbScan;
 const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
     {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR}};
 
+// The module reads positions in the full num / sub rows.
+SecEdgarQ2Config Config() { return SecEdgarQ2Config{1, 2}; }
+
+CaptureTableList CaptureTables(const SecEdgarQ2Config &c) {
+  return {{"num", c.num_table}, {"sub", c.sub_table}};
+}
+
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ2Layout::kAccelerator,
     "accel_sec_edgar_q2_aux",
     {},
     [](::duckdb::Connection &connection) {
-      const SecEdgarQ2Config c{1, 2};
-      return MakeBinding<SecEdgarQ2Scan, SecEdgarQ2Module>(connection, CaptureTableList{}, c);
+      const auto c = Config();
+      return MakeBinding<SecEdgarQ2Scan, SecEdgarQ2Module>(connection, CaptureTables(c), c);
     },
     kOverloads}};
 
@@ -112,9 +119,9 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     std::string("accel_") + core::SecEdgarQ2Layout::kAccelerator + "_aux_parallel",
     {},
     [](::duckdb::Connection &connection) {
-      SecEdgarQ2Config c{1, 2};
+      auto c = Config();
       c.build_threads = 0; // parallel variant: automatic worker count
-      return MakeBinding<SecEdgarQ2Scan, SecEdgarQ2ParallelModule>(connection, CaptureTableList{}, c);
+      return MakeBinding<SecEdgarQ2Scan, SecEdgarQ2ParallelModule>(connection, CaptureTables(c), c);
     },
     kOverloads}};
 #endif

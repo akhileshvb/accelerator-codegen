@@ -17,6 +17,7 @@ public:
   core::AuxStateStore &StateStore() override;
   const maintenance::CostModelParams &MaintenanceCostModel() const override;
   double ExpectedQueriesBeforeNextWrite() const override;
+  uint64_t DataScaleRows() const override;
   std::size_t WorkerCount() const override;
   void ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const override;
 

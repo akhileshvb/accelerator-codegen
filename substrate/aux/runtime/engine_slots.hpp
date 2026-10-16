@@ -83,6 +83,10 @@ public:
   // workload hint.
   virtual const maintenance::CostModelParams &CostModel(const core::AcceleratorId &accelerator) const = 0;
   virtual double ExpectedQueriesBeforeNextWrite(const core::AcceleratorId &) const { return 10.0; }
+  // Rows now in the engine table with host id `table` (engine statistics; an
+  // estimate is fine, it must be cheap). 0: unknown. The runtime sums them
+  // over an accelerator's tables as AuxEngineServices::DataScaleRows.
+  virtual uint64_t TableRows(core::TableId /*table*/) const { return 0; }
 };
 
 } // namespace accelerator_codegen::aux_state::runtime

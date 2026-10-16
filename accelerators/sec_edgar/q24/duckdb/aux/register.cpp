@@ -516,13 +516,24 @@ public:
 const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
     {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR}};
 
+// num's full rows; pre's adsh, tag, version.
+SecEdgarQ24Config Config() {
+  SecEdgarQ24Config c{101, 102};
+  c.pre_attnums = {0, 6, 7};
+  return c;
+}
+
+CaptureTableList CaptureTables(const SecEdgarQ24Config &c) {
+  return {{"num", c.num_table}, {"pre", c.pre_table}};
+}
+
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ24Layout::kAccelerator,
     "accel_sec_edgar_q24_aux",
     {},
     [](::duckdb::Connection &connection) {
-      const SecEdgarQ24Config c{101, 102};
-      return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24Module>(connection, CaptureTableList{}, c);
+      const auto c = Config();
+      return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24Module>(connection, CaptureTables(c), c);
     },
     kOverloads}};
 
@@ -532,8 +543,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     std::string("accel_") + core::SecEdgarQ24Layout::kAccelerator + "_aux_parallel",
     {},
     [](::duckdb::Connection &connection) {
-      const SecEdgarQ24Config c{101, 102};
-      return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24ParallelModule>(connection, CaptureTableList{}, c);
+      const auto c = Config();
+      return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24ParallelModule>(connection, CaptureTables(c), c);
     },
     kOverloads}};
 #endif

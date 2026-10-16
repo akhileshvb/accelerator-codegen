@@ -111,13 +111,20 @@ const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
     {::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER,
      ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR}};
 
+// The module reads positions in the full num / sub / tag / pre rows.
+SecEdgarQ4Config Config() { return SecEdgarQ4Config{1, 2, 3, 4}; }
+
+CaptureTableList CaptureTables(const SecEdgarQ4Config &c) {
+  return {{"num", c.num_table}, {"sub", c.sub_table}, {"tag", c.tag_table}, {"pre", c.pre_table}};
+}
+
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ4Layout::kAccelerator,
     "accel_sec_edgar_q4_aux",
     {},
     [](::duckdb::Connection &connection) {
-      const SecEdgarQ4Config c{1, 2, 3, 4};
-      return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4Module>(connection, CaptureTableList{}, c);
+      const auto c = Config();
+      return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4Module>(connection, CaptureTables(c), c);
     },
     kOverloads}};
 
@@ -127,8 +134,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     std::string("accel_") + core::SecEdgarQ4Layout::kAccelerator + "_aux_parallel",
     {},
     [](::duckdb::Connection &connection) {
-      const SecEdgarQ4Config c{1, 2, 3, 4};
-      return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4ParallelModule>(connection, CaptureTableList{}, c);
+      const auto c = Config();
+      return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4ParallelModule>(connection, CaptureTables(c), c);
     },
     kOverloads}};
 #endif

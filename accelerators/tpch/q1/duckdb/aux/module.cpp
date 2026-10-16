@@ -466,12 +466,8 @@ void TpchQ1Module::AccumulateMutation(const core::MutationBatch &mutation,
         buffer.MarkRebuild();
         return;
       }
-      if (old_delta.shipdate_days != new_delta.shipdate_days) {
-        buffer.MarkRebuild();
-        return;
-      }
-      add(mutation.old_rows[i], -1);
-      add(mutation.new_rows[i], 1);
+      buffer.AddDelta(old_delta);
+      buffer.AddDelta(new_delta);
     }
     break;
   }

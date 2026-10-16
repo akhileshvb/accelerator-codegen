@@ -36,6 +36,11 @@ inline std::string EnvOr(const char *env_var, const std::string &fallback) {
   return fallback;
 }
 
+inline int EnvOrInt(const char *env_var, int fallback) {
+  const char *value = std::getenv(env_var);
+  return value != nullptr && *value != '\0' ? std::stoi(value) : fallback;
+}
+
 inline std::string DuckDbDataDir() {
   return EnvOr("ACCEL_DUCKDB_ROOT", "/home/akhilvb/accelerator-codegen-duckdb");
 }

@@ -18,6 +18,7 @@
 #include "backends/duckdb/engine/capture.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "duckdb/accelerator/capture_registry.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database_manager.hpp"
@@ -176,6 +177,35 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
   double ExpectedQueriesBeforeNextWrite(const core::AcceleratorId &id) const override {
     return For(id).expected_queries_before_write;
   }
+  uint64_t TableRows(core::TableId table) const override {
+    std::string name;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      for (const auto &entry : tables) {
+        if (entry.second == table) {
+          name = entry.first;
+        }
+      }
+    }
+    return name.empty() ? 0 : StoredRows(name);
+  }
+
+  // The table's stored rows (counting uncommitted deletes), from its storage.
+  uint64_t StoredRows(const std::string &name) const {
+    std::lock_guard<std::mutex> lock(statistics_mutex);
+    if (!statistics_connection) {
+      statistics_connection = std::make_unique<::duckdb::Connection>(db);
+    }
+    uint64_t rows = 0;
+    statistics_connection->context->RunFunctionInTransaction([&] {
+      auto &entry = ::duckdb::Catalog::GetEntry<::duckdb::TableCatalogEntry>(
+          *statistics_connection->context, INVALID_CATALOG, DEFAULT_SCHEMA, name);
+      rows = entry.GetStorage().GetTotalRows();
+    });
+    return rows;
+  }
+  mutable std::mutex statistics_mutex;
+  mutable std::unique_ptr<::duckdb::Connection> statistics_connection;
 };
 
 namespace {

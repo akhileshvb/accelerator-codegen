@@ -87,6 +87,8 @@ public:
 
   void SetExpectedQueriesBeforeNextWrite(double expected_queries_before_write);
   double ExpectedQueriesBeforeNextWrite() const;
+  // Rows in the accelerator's dependency tables now.
+  uint64_t DataScaleRows() const;
   std::vector<core::CalibrationWrite> CalibrationWrites() const;
 
   // ---- calibration and tests (no SQL write) ----

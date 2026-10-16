@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -25,6 +26,7 @@ class ThreadBudget;
 // feasibility metrics.
 struct AcceleratorStats {
   uint64_t commits_applied = 0;
+  uint64_t commits_stale = 0; // commits it could not maintain: each costs a rebuild
   uint64_t rows_applied = 0; // changed rows maintained incrementally
   double apply_us = 0;       // time maintaining them
   uint64_t builds = 0;
@@ -34,7 +36,8 @@ struct AcceleratorStats {
   uint64_t reads_waited = 0;
   uint64_t reads_fallback = 0;
   uint64_t gaps = 0;
-  // The policy's decision for the last applied commit (what it chose and why).
+  std::string last_stale_reason;
+  // The policy's decision for the last maintained (or stale) commit: what it chose and why.
   std::optional<core::MaintenanceDecisionLogEntry> last_decision;
 };
 
@@ -145,6 +148,7 @@ public:
   core::AuxStateStore &StateStore() override;
   const maintenance::CostModelParams &MaintenanceCostModel() const override;
   double ExpectedQueriesBeforeNextWrite() const override;
+  uint64_t DataScaleRows() const override;
   std::size_t WorkerCount() const override;
   void ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const override;
 
@@ -156,6 +160,7 @@ private:
   core::StagedMaintenanceOutcome Stage(const std::vector<ColumnarBatchRef> &batches);
   bool Publish(const core::StagedMaintenanceOutcome &outcome, Epoch epoch);
   bool ApplyChange(const CommittedChange &change);
+  void RecordStale(const std::string &reason);
   void ApplyReady();
   void Collapse(Epoch from, Epoch to);
   void BuildFailed();

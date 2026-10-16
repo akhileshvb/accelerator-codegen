@@ -322,6 +322,8 @@ bool AcceleratorRuntime::Publish(const core::StagedMaintenanceOutcome &outcome, 
 // invalid and the change must be replayed after a rebuild.
 bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
   if (change.invalidates) {
+    std::lock_guard<std::mutex> lock(impl->state_mutex);
+    RecordStale("the engine invalidated the change (e.g. TRUNCATE)");
     return false;
   }
   if (change.empty_commit) {
@@ -330,14 +332,28 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
   const core::ScopedThreadMaintenanceDecisionLog decision_log; // commits of several accelerators publish concurrently
   core::ClearMaintenanceDecisionLog();
   const PhaseScope maintaining(this, Phase::Maintenance);
+  std::string reason = "the module left partitions invalid";
   try {
-    const bool valid = Publish(Stage(change.batches), change.epoch);
-    std::lock_guard<std::mutex> lock(impl->state_mutex);
-    impl->stats.last_decision = core::LastMaintenanceDecision();
-    return valid;
+    if (Publish(Stage(change.batches), change.epoch)) {
+      reason.clear();
+    }
+  } catch (const std::exception &error) {
+    reason = std::string("the module threw: ") + error.what();
   } catch (...) {
-    return false;
+    reason = "the module threw";
   }
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  impl->stats.last_decision = core::LastMaintenanceDecision();
+  if (!reason.empty()) {
+    RecordStale(reason);
+  }
+  return reason.empty();
+}
+
+// A change that could not be maintained (state_mutex held); the caller rebuilds.
+void AcceleratorRuntime::RecordStale(const std::string &reason) {
+  impl->stats.commits_stale++;
+  impl->stats.last_stale_reason = reason;
 }
 
 // Bookkeeping for an applied change (state_mutex held).
@@ -699,6 +715,14 @@ const maintenance::CostModelParams &AcceleratorRuntime::MaintenanceCostModel() c
 
 double AcceleratorRuntime::ExpectedQueriesBeforeNextWrite() const {
   return slots.ExpectedQueriesBeforeNextWrite(id);
+}
+
+uint64_t AcceleratorRuntime::DataScaleRows() const {
+  uint64_t rows = 0;
+  for (const auto &entry : impl->projections) {
+    rows += slots.TableRows(entry.first);
+  }
+  return rows;
 }
 
 std::size_t AcceleratorRuntime::WorkerCount() const {
