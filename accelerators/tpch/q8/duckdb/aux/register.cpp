@@ -34,24 +34,25 @@ SharedProbe BuildTpchQ8Probe(::duckdb::MaterializedQueryResult &result,
                              ::duckdb::idx_t row) {
   // AuxRow matches TpchQ8 ReadLineitem: partkey, orderkey, suppkey, price, discount.
   // table id matches TpchQ8Config{0,1,2,3,4}.lineitem_table = 4.
-  // Large price bump so mkt_share fingerprint changes (tiny +0.01 can round away).
-  constexpr int64_t kPriceBumpRaw = 10000; // +100.00 at scale 2
+  // The bump is the line's own price, so mkt_share moves past the fingerprint's
+  // rounding at any money scale (a fixed +100.00 rounds away on scaled prices).
   const auto orderkey = result.GetValue(1, row).ToString();
   const auto linenumber = result.GetValue(5, row).ToString();
-  const double price = std::stod(result.GetValue(3, row).ToString());
+  const auto price_text = result.GetValue(3, row).ToString();
+  const double price = std::stod(price_text);
   const int64_t price_raw = DecimalRaw(result.GetValue(3, row));
   SharedProbe probe;
   probe.table = 4;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {3};
-  probe.write_delta = 100.0;
+  probe.write_delta = price;
   probe.current_value = price;
   probe.old_row = {{Int(result.GetValue(0, row)), Int(result.GetValue(1, row)),
                     Int(result.GetValue(2, row)), Decimal(price_raw, 2),
                     Decimal(DecimalRaw(result.GetValue(4, row)), 2)}};
   probe.new_row = probe.old_row;
-  probe.new_row.values[3] = Decimal(price_raw + kPriceBumpRaw, 2);
-  probe.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + 100.00"
+  probe.new_row.values[3] = Decimal(2 * price_raw, 2);
+  probe.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + " + price_text +
                      " WHERE l_orderkey = " + orderkey +
                      " AND l_linenumber = " + linenumber;
   probe.restore_sql = "UPDATE lineitem SET l_extendedprice = " +

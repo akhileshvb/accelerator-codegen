@@ -381,14 +381,16 @@ void UncapturedCommit() {
   RuntimeHost host2(slots2, 4);
   auto &runtime2 = host2.Register(std::make_shared<SumModule>());
   slots2.Hold();
-  std::thread build([&] { runtime2.BuildNow(); });
+  bool synced = true;
+  std::thread build([&] { synced = runtime2.BuildNow(); });
   slots2.WaitUntilBuilding(); // its snapshot is taken
   const Epoch lost2 = db2.Commit(7);
   runtime2.InvalidateFrom(lost2);
   slots2.Release();
   build.join();
-  CHECK(!runtime2.IsSynced());
+  CHECK(!synced); // installed stale (the rebuild it requests may already be done)
   CHECK(ReadAt(runtime2, lost2) == 7);
+  CHECK(runtime2.Stats().builds == 2);
 }
 
 // A host torn down while a commit is between PreCommit and Commit: the build
