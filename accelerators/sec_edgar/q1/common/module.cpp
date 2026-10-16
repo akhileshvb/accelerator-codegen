@@ -1,8 +1,11 @@
 #include "sec_edgar/q1/common/module.hpp"
 
 #include "sec_edgar/q1/common/adsh_key.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <numeric>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -122,6 +125,52 @@ void AddLineOnly(SecEdgarQ1TxnBuffer &buffer, const RowView &old_row,
   buffer.AddDelta(delta);
 }
 
+// Rows per slice of a mutation's row loop (~100 ns a row).
+constexpr std::size_t kAccumulateGrain = 8192;
+
+// Buffers the deltas of rows [begin, end) of `mutation` into `buffer`.
+void AccumulateRows(const core::MutationBatch &mutation, std::size_t begin,
+                    std::size_t end, SecEdgarQ1TxnBuffer &buffer) {
+  RowView view;
+  switch (mutation.kind) {
+  case core::MutationKind::Insert:
+    for (std::size_t i = begin; i < end; ++i) {
+      if (!ReadRow(mutation.new_rows[i], view)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      AddRow(buffer, view, 1);
+    }
+    break;
+  case core::MutationKind::Delete:
+    for (std::size_t i = begin; i < end; ++i) {
+      if (!ReadRow(mutation.old_rows[i], view)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      AddRow(buffer, view, -1);
+    }
+    break;
+  case core::MutationKind::Update: {
+    RowView old_view;
+    for (std::size_t i = begin; i < end; ++i) {
+      if (!ReadRow(mutation.old_rows[i], old_view) ||
+          !ReadRow(mutation.new_rows[i], view)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (old_view.relevant && view.relevant && SameGroupAndAdsh(old_view, view)) {
+        AddLineOnly(buffer, old_view, view);
+      } else {
+        AddRow(buffer, old_view, -1);
+        AddRow(buffer, view, 1);
+      }
+    }
+    break;
+  }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Images
 // ---------------------------------------------------------------------------
@@ -218,11 +267,80 @@ void SecEdgarQ1TxnBuffer::AddDelta(const Delta &delta) {
   deltas.push_back(delta);
 }
 
+void SecEdgarQ1TxnBuffer::Absorb(SecEdgarQ1TxnBuffer &&from) {
+  if (requires_rebuild) {
+    return;
+  }
+  if (from.requires_rebuild) {
+    MarkRebuild();
+    return;
+  }
+  std::vector<uint32_t> group_of;
+  group_of.reserve(from.groups.size());
+  for (const auto &g : from.groups) {
+    group_of.push_back(InternGroup(g.stmt, g.rfile, g.rfile_is_null));
+  }
+  std::vector<uint64_t> other_of;
+  other_of.reserve(from.others.size());
+  for (const auto &adsh : from.others) {
+    other_of.push_back(InternAdsh(adsh));
+  }
+  for (auto delta : from.deltas) {
+    delta.group = group_of[delta.group];
+    if (delta.d_refc != 0 && (delta.key & kOtherKeyBit)) {
+      delta.key = other_of[delta.key & ~kOtherKeyBit];
+    }
+    AddDelta(delta);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Delta application (copy-on-write)
 // ---------------------------------------------------------------------------
 
-bool ApplySecEdgarQ1Deltas(SecEdgarQ1State &state,
+namespace {
+
+struct RefEntry {
+  Id group;
+  Id id;
+  int32_t delta;
+};
+
+// Entries per slice of the refcount application (a few hundred ns each).
+constexpr std::size_t kApplyGrain = 8192;
+
+// Applies one group's refcount deltas to a private copy of its chunk
+// directories (every untouched chunk is shared). False: underflow.
+bool ApplyGroupRefs(q1::GroupData &g, RefEntry *first, RefEntry *last) {
+  std::sort(first, last, [](const RefEntry &l, const RefEntry &r) { return l.id < r.id; });
+  auto refs = g.refs ? std::make_shared<q1::GroupRefs>(*g.refs) : std::make_shared<q1::GroupRefs>();
+  int64_t distinct = g.distinct;
+  while (first != last) {
+    const Id id = first->id;
+    int64_t delta = 0;
+    for (; first != last && first->id == id; ++first) {
+      delta += first->delta;
+    }
+    if (delta == 0) {
+      continue;
+    }
+    const uint64_t old_count = refs->Get(id);
+    if (delta < 0 && old_count < static_cast<uint64_t>(-delta)) {
+      return false;
+    }
+    const uint64_t updated = static_cast<uint64_t>(static_cast<int64_t>(old_count) + delta);
+    refs->Set(id, updated);
+    distinct += (updated > 0) - (old_count > 0);
+  }
+  g.distinct = distinct;
+  g.refs = std::move(refs);
+  return true;
+}
+
+} // namespace
+
+bool ApplySecEdgarQ1Deltas(const core::AuxEngineServices &services,
+                           SecEdgarQ1State &state,
                            const SecEdgarQ1TxnBuffer &buffer) {
   const auto &local_groups = buffer.Groups();
   std::vector<int> gmap(local_groups.size());
@@ -245,11 +363,6 @@ bool ApplySecEdgarQ1Deltas(SecEdgarQ1State &state,
   }
 
   // 2) accession refcounts
-  struct RefEntry {
-    Id group;
-    Id id;
-    int32_t delta;
-  };
   std::vector<RefEntry> entries;
   std::vector<uint64_t> other_key_cache(buffer.OtherAdsh().size(), 0);
   std::vector<uint8_t> other_key_ready(buffer.OtherAdsh().size(), 0);
@@ -289,36 +402,41 @@ bool ApplySecEdgarQ1Deltas(SecEdgarQ1State &state,
     }
     entries.push_back({static_cast<Id>(gmap[d.group]), id, d.d_refc});
   }
-  std::sort(entries.begin(), entries.end(), [](const RefEntry &l, const RefEntry &r) {
-    return l.group != r.group ? l.group < r.group : l.id < r.id;
-  });
-
-  std::size_t i = 0;
-  while (i < entries.size()) {
-    const Id group = entries[i].group;
-    auto &g = state.groups[static_cast<std::size_t>(group)];
-    // Copy the group's two chunk directories; every untouched chunk is shared.
-    auto refs = g.refs ? std::make_shared<q1::GroupRefs>(*g.refs) : std::make_shared<q1::GroupRefs>();
-    int64_t distinct = g.distinct;
-    while (i < entries.size() && entries[i].group == group) {
-      const Id id = entries[i].id;
-      int64_t delta = 0;
-      for (; i < entries.size() && entries[i].group == group && entries[i].id == id; ++i) {
-        delta += entries[i].delta;
-      }
-      if (delta == 0) {
-        continue;
-      }
-      const uint64_t old_count = refs->Get(id);
-      if (delta < 0 && old_count < static_cast<uint64_t>(-delta)) {
-        return false; // underflow: the state is not what the writes assume
-      }
-      const uint64_t updated = static_cast<uint64_t>(static_cast<int64_t>(old_count) + delta);
-      refs->Set(id, updated);
-      distinct += (updated > 0) - (old_count > 0);
+  // Bucket by group (counting sort): each group's refcounts are then applied
+  // independently, with disjoint writes to its own copy of the chunk directories.
+  std::vector<std::size_t> run_begin(state.groups.size() + 1, 0);
+  for (const auto &e : entries) {
+    ++run_begin[e.group + 1];
+  }
+  std::partial_sum(run_begin.begin(), run_begin.end(), run_begin.begin());
+  std::vector<RefEntry> by_group(entries.size());
+  {
+    auto next_slot = run_begin;
+    for (const auto &e : entries) {
+      by_group[next_slot[e.group]++] = e;
     }
-    g.distinct = distinct;
-    g.refs = std::move(refs);
+  }
+  std::vector<Id> touched;
+  for (std::size_t g = 0; g + 1 < run_begin.size(); ++g) {
+    if (run_begin[g] != run_begin[g + 1]) {
+      touched.push_back(static_cast<Id>(g));
+    }
+  }
+  std::atomic<bool> consistent{true};
+  const std::size_t slices = std::min(
+      touched.size(), core::SliceCount(services, entries.size(), kApplyGrain));
+  core::RunSlices(services, std::max<std::size_t>(1, slices), touched.size(),
+                  [&](std::size_t, std::size_t begin, std::size_t end) {
+                    for (std::size_t k = begin; k < end && consistent.load(); ++k) {
+                      const Id group = touched[k];
+                      if (!ApplyGroupRefs(state.groups[group], by_group.data() + run_begin[group],
+                                          by_group.data() + run_begin[group + 1])) {
+                        consistent = false;
+                      }
+                    }
+                  });
+  if (!consistent) {
+    return false; // underflow: the state is not what the writes assume
   }
 
   // Reclaim dictionary growth from churned accessions by rebuilding.
@@ -349,7 +467,8 @@ SecEdgarQ1Module::BuildState(core::AuxEngineServices &services) const {
     throw std::logic_error("SEC EDGAR Q1 requires a typed initial scan source");
   }
   q1::Builder builder;
-  if (!initial_scan->ScanPreInto(builder)) {
+  if (!initial_scan->ScanPrePartitioned(services, builder) &&
+      !initial_scan->ScanPreInto(builder)) {
     initial_scan->ScanPre(
         [&](const SecEdgarQ1PreInput &input) { builder.ConsumeRow(input); });
   }
@@ -373,54 +492,27 @@ SecEdgarQ1Module::InterpretMutation(const core::MutationBatch &) const {
 }
 
 void SecEdgarQ1Module::AccumulateMutation(const core::MutationBatch &mutation,
-                                          core::AuxEngineServices &,
+                                          core::AuxEngineServices &services,
                                           core::AuxTxnBuffer &base_buffer) {
   auto &buffer = static_cast<SecEdgarQ1TxnBuffer &>(base_buffer);
   if (mutation.table != config.pre_table || buffer.RequiresRebuild()) {
     return; // a pending rebuild supersedes any deltas
   }
-  RowView view;
-  switch (mutation.kind) {
-  case core::MutationKind::Insert:
-    for (const auto &row : mutation.new_rows) {
-      if (!ReadRow(row, view)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      AddRow(buffer, view, 1);
-    }
-    break;
-  case core::MutationKind::Delete:
-    for (const auto &row : mutation.old_rows) {
-      if (!ReadRow(row, view)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      AddRow(buffer, view, -1);
-    }
-    break;
-  case core::MutationKind::Update: {
-    if (mutation.old_rows.size() != mutation.new_rows.size()) {
-      buffer.MarkRebuild();
-      return;
-    }
-    RowView old_view;
-    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-      if (!ReadRow(mutation.old_rows[i], old_view) ||
-          !ReadRow(mutation.new_rows[i], view)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      if (old_view.relevant && view.relevant && SameGroupAndAdsh(old_view, view)) {
-        AddLineOnly(buffer, old_view, view);
-      } else {
-        AddRow(buffer, old_view, -1);
-        AddRow(buffer, view, 1);
-      }
-    }
-    break;
+  if (mutation.kind == core::MutationKind::Update &&
+      mutation.old_rows.size() != mutation.new_rows.size()) {
+    buffer.MarkRebuild();
+    return;
   }
-  }
+  const auto &rows =
+      mutation.kind == core::MutationKind::Insert ? mutation.new_rows : mutation.old_rows;
+  core::ParallelReduce(
+      services, rows.size(), kAccumulateGrain, buffer,
+      [&](SecEdgarQ1TxnBuffer &out, std::size_t begin, std::size_t end) {
+        AccumulateRows(mutation, begin, end, out);
+      },
+      [](SecEdgarQ1TxnBuffer &into, SecEdgarQ1TxnBuffer &&from) {
+        into.Absorb(std::move(from));
+      });
 }
 
 std::shared_ptr<const SecEdgarQ1State>
@@ -479,7 +571,7 @@ SecEdgarQ1Module::StageForAccelerator(core::AuxEngineServices &services,
     return RebuildOutcome(core::MaintenanceAction::RebuildAll);
   }
   SecEdgarQ1State next = *current; // O(groups + overlay); pages are shared
-  if (!ApplySecEdgarQ1Deltas(next, buffer)) {
+  if (!ApplySecEdgarQ1Deltas(services, next, buffer)) {
     return RebuildOutcome(core::MaintenanceAction::RebuildAll);
   }
   core::StagedMaintenanceOutcome outcome;

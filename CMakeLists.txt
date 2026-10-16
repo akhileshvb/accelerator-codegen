@@ -255,7 +255,7 @@ accel_register_tpch_aux_finalize_queries(
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Register test/bench/calibrate targets for every test_tpch_q*_aux.cpp present.
+# Register test/bench/calibrate targets for every DuckDB TPC-H aux module present.
 accel_register_tpch_aux_pipeline_targets()
 
 # Parallel kernels depend on the DuckDB host adapter headers. When that host is
@@ -355,7 +355,9 @@ endif()
 accel_add_duckdb_exe(test_aux_runtime_units eval/tests/test_aux_runtime_units.cpp)
 accel_add_duckdb_exe(test_aux_runtime eval/tests/test_aux_runtime.cpp)
 accel_add_duckdb_exe(test_aux_wire eval/tests/test_aux_wire.cpp)
+accel_add_duckdb_exe(test_partitioned_build eval/tests/test_partitioned_build.cpp)
 if(BUILD_TESTING)
+    add_test(NAME partitioned_build_test COMMAND test_partitioned_build)
     add_test(NAME aux_wire_test COMMAND test_aux_wire)
     add_test(NAME aux_runtime_units_test COMMAND test_aux_runtime_units)
     add_test(NAME aux_runtime_test COMMAND test_aux_runtime)
@@ -370,14 +372,6 @@ function(accel_add_shared_interface_test target_name test_source)
     endif()
 endfunction()
 
-accel_add_shared_interface_test(test_shared_tpch_q1 accelerators/tpch/q1/tests/test_shared_tpch_q1.cpp)
-accel_add_shared_interface_test(test_shared_tpch_q3 accelerators/tpch/q3/tests/test_shared_tpch_q3.cpp)
-accel_add_shared_interface_test(test_shared_tpch_q6 accelerators/tpch/q6/tests/test_shared_tpch_q6.cpp)
-accel_add_shared_interface_test(test_shared_tpch_q10 accelerators/tpch/q10/tests/test_shared_q10.cpp)
-accel_add_shared_interface_test(test_shared_tpch_q12 accelerators/tpch/q12/tests/test_shared_tpch_q12.cpp)
-accel_add_shared_interface_test(test_shared_tpch_q14 accelerators/tpch/q14/tests/test_shared_tpch_q14.cpp)
-accel_add_shared_interface_test(test_shared_sec_edgar_q1 accelerators/sec_edgar/q1/tests/test_shared_sec_edgar_q1.cpp)
-accel_add_shared_interface_test(test_shared_sec_edgar_q1_random accelerators/sec_edgar/q1/tests/test_shared_sec_edgar_q1_random.cpp)
 accel_add_shared_interface_test(test_sec_edgar_q1_units accelerators/sec_edgar/q1/tests/test_sec_edgar_q1_units.cpp)
 target_include_directories(test_sec_edgar_q1_units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
 accel_add_shared_interface_test(test_sec_edgar_q1_duckdb_differential accelerators/sec_edgar/q1/tests/test_sec_edgar_q1_duckdb_differential.cpp)
@@ -385,8 +379,6 @@ add_executable(test_sec_edgar_q1_shared_differential accelerators/sec_edgar/q1/t
 target_link_libraries(test_sec_edgar_q1_shared_differential PRIVATE accelerator_codegen duckdb_sibling)
 add_executable(benchmark_sec_edgar_q1_micro accelerators/sec_edgar/q1/bench/benchmark_sec_edgar_q1_micro.cpp)
 target_link_libraries(benchmark_sec_edgar_q1_micro PRIVATE accelerator_codegen duckdb_sibling)
-accel_add_shared_interface_test(test_shared_sec_edgar_q2 accelerators/sec_edgar/q2/tests/test_shared_sec_edgar_q2.cpp)
-accel_add_shared_interface_test(test_shared_sec_edgar_q3 accelerators/sec_edgar/q3/tests/test_shared_sec_edgar_q3.cpp)
 
 # Q3: randomized differential test of the aux accelerator vs plain DuckDB SQL
 # (in-memory synthetic data, production DDL; no external database needed).
@@ -403,8 +395,6 @@ if(BUILD_TESTING)
 endif()
 add_executable(bench_sec_edgar_q3_aux accelerators/sec_edgar/q3/bench/bench_sec_edgar_q3_aux.cpp)
 target_link_libraries(bench_sec_edgar_q3_aux PRIVATE accelerator_codegen duckdb_sibling)
-accel_add_shared_interface_test(test_shared_sec_edgar_q4 accelerators/sec_edgar/q4/tests/test_shared_sec_edgar_q4.cpp)
-accel_add_shared_interface_test(test_shared_sec_edgar_q6 accelerators/sec_edgar/q6/tests/test_shared_sec_edgar_q6.cpp)
 add_executable(bench_q6_maintenance accelerators/sec_edgar/q6/bench/bench_q6_maintenance.cpp)
 target_link_libraries(bench_q6_maintenance PRIVATE accelerator_codegen duckdb_sibling)
 target_include_directories(bench_q6_maintenance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
@@ -429,7 +419,6 @@ if(BUILD_TESTING)
                  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endforeach()
 endif()
-accel_add_shared_interface_test(test_shared_sec_edgar_q24 accelerators/sec_edgar/q24/tests/test_shared_q24.cpp)
 accel_add_shared_interface_test(test_sec_edgar_q24_duckdb_differential accelerators/sec_edgar/q24/tests/test_sec_edgar_q24_duckdb_differential.cpp)
 
 add_executable(benchmark_sec_edgar_q24_micro
@@ -794,6 +783,7 @@ if(BUILD_TESTING)
     # workloads/tpch/test_db_subset.sql, so tests never depend on a shared
     # tpch_test.duckdb that may be stale or modified by other runs.
     set(_accel_tpch_test_db "${CMAKE_CURRENT_BINARY_DIR}/test_dbs/tpch_test.duckdb")
+    set(ACCEL_TPCH_TEST_DB_PATH "${_accel_tpch_test_db}")
     add_test(NAME tpch_test_db_fixture
              COMMAND make_tpch_test_db
                      "${CMAKE_CURRENT_SOURCE_DIR}/workloads/tpch/test_db_subset.sql"

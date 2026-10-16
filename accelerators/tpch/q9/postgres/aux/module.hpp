@@ -75,17 +75,6 @@ struct TpchQ9LineitemInput {
   int64_t discount_raw = 0;
 };
 
-// One pre-aggregated (part, supplier nation, order year) group of the join
-// lineitem x partsupp x supplier x orders (no part / nation join: those are
-// resolved at Execute time).
-struct TpchQ9ProfitContribution {
-  int64_t partkey = 0;
-  int32_t nationkey = 0;
-  int32_t year = 0;
-  int64_t rows = 0;       // number of joined lineitems
-  int64_t profit_raw = 0; // SUM(amount) in 1e-4 units
-};
-
 class TpchQ9InitialScan {
 public:
   virtual ~TpchQ9InitialScan() = default;
@@ -101,15 +90,6 @@ public:
       const std::function<void(const TpchQ9PartsuppInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ9LineitemInput &)> &) = 0;
-
-  // Optional: the DBMS evaluates the join + GROUP BY (pre-aggregation) and
-  // streams the groups; returns false when not supported (the module then
-  // joins ScanLineitems itself).
-  virtual bool ScanProfitContributions(
-      const std::function<void(const TpchQ9ProfitContribution &)> &consumer) {
-    (void)consumer;
-    return false;
-  }
 
   // Optional: the lineitems whose `column` (l_partkey, l_suppkey or
   // l_orderkey, all indexed) is one of `keys`, as the transaction leaves the
@@ -218,6 +198,7 @@ struct TpchQ9State {
   const TpchQ9PartBlock *FindBlock(int64_t partkey) const {
     return blocks.Get(partkey >> 4).get(); // floor: exact for negative keys
   }
+  const uint32_t *FindGroup(int32_t nationkey, int32_t year) const;
   uint32_t GroupFor(int32_t nationkey, int32_t year);
   bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) const;
   bool LookupOrderYear(int64_t orderkey, int32_t &year) const;
@@ -348,11 +329,12 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ9State> BuildState(bool color_index) const;
+  std::shared_ptr<TpchQ9State> BuildState(core::AuxEngineServices &services,
+                                          bool color_index) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ9State> &state) const;
-  void EmitResult(const TpchQ9State &state, const core::QueryArguments &arguments,
-                  core::AuxRowSink &sink) const;
+  void EmitResult(const core::AuxEngineServices &services, const TpchQ9State &state,
+                  const core::QueryArguments &arguments, core::AuxRowSink &sink) const;
 
   TpchQ9Config config;
   TpchQ9InitialScan *initial_scan = nullptr;

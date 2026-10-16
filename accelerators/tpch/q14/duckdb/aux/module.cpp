@@ -1,6 +1,7 @@
 #include "tpch/q14/duckdb/aux/module.hpp"
 #include "tpch/q14/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,14 @@ constexpr uint32_t kVersion = 1;
 constexpr uint32_t kPartMagic = 0x50313451;  // Q14P
 constexpr uint32_t kMonthMagic = 0x4d313451; // Q14M
 constexpr int32_t kEpoch = 719468;
+// Per maintenance slice: classifying and summing one lineitem delta is ~30 ns.
+constexpr std::size_t kDeltaGrain = 16384;
+
+void AddTotals(TpchQ14MonthTotals &into, const TpchQ14MonthTotals &from) {
+  into.total_revenue_raw += from.total_revenue_raw;
+  into.promo_revenue_raw += from.promo_revenue_raw;
+  into.row_count += from.row_count;
+}
 
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -632,12 +641,13 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
     TpchQ14MonthTotals totals;
   };
   std::vector<Adjust> adj;
-  auto adjust_of = [&](int32_t month) -> TpchQ14MonthTotals & {
+  auto adjust_of = [](std::vector<Adjust> &sorted,
+                      int32_t month) -> TpchQ14MonthTotals & {
     auto it = std::lower_bound(
-        adj.begin(), adj.end(), month,
+        sorted.begin(), sorted.end(), month,
         [](const Adjust &a, int32_t m) { return a.month < m; });
-    if (it == adj.end() || it->month != month)
-      it = adj.insert(it, Adjust{month, {}});
+    if (it == sorted.end() || it->month != month)
+      it = sorted.insert(it, Adjust{month, {}});
     return it->totals;
   };
 
@@ -735,7 +745,7 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
           if (it == transitions.end())
             return;
           const auto from = it->second.from, to = it->second.to;
-          auto &a = adjust_of(month);
+          auto &a = adjust_of(adj, month);
           if (to == TpchQ14PromoClass::Absent) {
             a.total_revenue_raw -= total;
             a.row_count -= count;
@@ -750,29 +760,58 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
         });
   }
 
-  for (const auto &delta : buffer.Deltas()) {
-    const auto raw = work.RawOf(delta.partkey);
-    const auto promo = static_cast<TpchQ14PromoClass>(raw & TpchQ14State::kClassMask);
-    if (promo == TpchQ14PromoClass::Absent) {
-      // No part row: the lineitem joins nothing. Remember that lineitems of
-      // this key exist, so a later insert of the key adds them.
+  // A delta's class never changes here, so the totals are summed per slice
+  // against the unchanged part state; the key-state writes (a lineitem now
+  // references the key, or exists for a part not yet inserted) follow serially.
+  struct DeltaPass {
+    std::vector<Adjust> adj;
+    std::vector<uint32_t> writes;
+  };
+  DeltaPass pass;
+  const auto &deltas = buffer.Deltas();
+  core::ParallelReduce(
+      services, deltas.size(), kDeltaGrain, pass,
+      [&](DeltaPass &acc, std::size_t first, std::size_t last) {
+        for (std::size_t i = first; i < last; ++i) {
+          const auto &delta = deltas[i];
+          const auto raw = work.RawOf(delta.partkey);
+          const auto promo =
+              static_cast<TpchQ14PromoClass>(raw & TpchQ14State::kClassMask);
+          if ((promo == TpchQ14PromoClass::Absent && !(raw & kGone)) ||
+              (promo != TpchQ14PromoClass::Absent && (raw & kFresh)))
+            acc.writes.push_back(static_cast<uint32_t>(i));
+          if (promo == TpchQ14PromoClass::Absent)
+            continue;
+          auto &a = adjust_of(acc.adj, delta.month);
+          const auto signed_revenue =
+              static_cast<int64_t>(delta.sign) * delta.revenue_raw;
+          a.total_revenue_raw += signed_revenue;
+          a.row_count += delta.sign;
+          if (promo == TpchQ14PromoClass::Promo)
+            a.promo_revenue_raw += signed_revenue;
+        }
+      },
+      [&](DeltaPass &into, DeltaPass &&from) {
+        into.writes.insert(into.writes.end(), from.writes.begin(),
+                           from.writes.end());
+        for (const auto &entry : from.adj)
+          AddTotals(adjust_of(into.adj, entry.month), entry.totals);
+      });
+  for (const auto &entry : pass.adj)
+    AddTotals(adjust_of(adj, entry.month), entry.totals);
+  for (const auto i : pass.writes) {
+    const auto partkey = deltas[i].partkey;
+    const auto raw = work.RawOf(partkey);
+    if ((raw & TpchQ14State::kClassMask) ==
+        static_cast<uint8_t>(TpchQ14PromoClass::Absent)) {
       if (!(raw & kGone)) {
-        work.SetRaw(delta.partkey, kGone);
+        work.SetRaw(partkey, kGone);
         part_changed = true;
       }
-      continue;
-    }
-    if (raw & kFresh) { // now referenced by lineitems
-      work.SetRaw(delta.partkey, static_cast<uint8_t>(raw & ~kFresh));
+    } else if (raw & kFresh) { // now referenced by lineitems
+      work.SetRaw(partkey, static_cast<uint8_t>(raw & ~kFresh));
       part_changed = true;
     }
-    auto &a = adjust_of(delta.month);
-    const auto signed_revenue =
-        static_cast<int64_t>(delta.sign) * delta.revenue_raw;
-    a.total_revenue_raw += signed_revenue;
-    a.row_count += delta.sign;
-    if (promo == TpchQ14PromoClass::Promo)
-      a.promo_revenue_raw += signed_revenue;
   }
 
   // Current month totals + versions: from the combined read; months only

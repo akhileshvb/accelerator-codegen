@@ -20,8 +20,8 @@ struct MaintenanceRequest {
   maintenance::MaintenanceAction last_action = maintenance::MaintenanceAction::NoOp;
   double expected_queries_before_next_write = 10.0;
   // (Last: modules initialize the fields above positionally.)
-  // InvalidateAndRebuildOnRead: the next reader rebuilds (set from
-  // AuxEngineServices::ReadersCanBuildState by ChooseMaintenance).
+  // InvalidateAndRebuildOnRead: the next reader rebuilds (ChooseMaintenance
+  // clears it: readers never build state).
   bool deferred_rebuild_supported = true;
   // Rows in the dependency tables now (AuxEngineServices::DataScaleRows); 0: unknown.
   uint64_t data_rows_hint = 0;

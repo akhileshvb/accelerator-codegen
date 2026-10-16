@@ -136,7 +136,7 @@ PgSlots::OpenBuildSnapshot(runtime::AcceleratorRuntime &runtime) {
   const auto epoch = shared::ReaderEpoch(index, GetActiveSnapshot());
   if (!epoch) {
     End(true);
-    throw std::runtime_error("the build snapshot is older than the epoch ring");
+    throw std::runtime_error("the build snapshot is older than the epoch ring or the accelerator's activation");
   }
   // The build contains every commit through `epoch`, including those no one
   // shipped (before this worker started): they have arrived, and a commit
@@ -160,9 +160,6 @@ runtime::Epoch PgSlots::MaintenanceLookupEpoch(runtime::Epoch) {
 void PgSlots::RunBuild(runtime::AcceleratorRuntime &runtime, runtime::BuildSnapshot &,
                        core::StateBuilder &builder) {
   BuildGucScope tuning(accelerator.TuneBuild());
-  // The build's scans decode in parallel: this thread plus the budget's other
-  // threads as Postgres parallel workers.
-  SetBuildScanParticipants(static_cast<int>(shared::ThreadBudget()));
   try {
     runtime.Module().Build(runtime, builder);
   } catch (const std::exception &e) {

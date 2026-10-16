@@ -4,6 +4,7 @@
 #endif
 #include "tpch/q4/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -14,6 +15,7 @@
 #include <variant>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <stdexcept>
@@ -24,6 +26,10 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 constexpr int32_t kEpoch = 719468;
+// Touched orders per slice when reading their current info.
+constexpr std::size_t kLookupGrain = 2048;
+// Touched mid arrays per slice when publishing the eligibility index.
+constexpr std::size_t kFinishGrain = 16;
 
 struct CustomTimer {
   using Clock = std::chrono::high_resolution_clock;
@@ -543,14 +549,21 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
       adj[info.priority_idx] += by;
   };
 
+  // The current info of every touched order, read before the loop writes.
   TpchQ4EligIndex::Txn elig(elig_payload->order_eligibility);
-  for (const auto orderkey : touched_orders) {
-    const auto *found = elig.Find(orderkey);
-    const bool existed = found != nullptr;
+  const std::vector<int64_t> touched(touched_orders.begin(), touched_orders.end());
+  std::vector<std::optional<TpchQ4OrderInfo>> current(touched.size());
+  core::ParallelEach(services, touched.size(), kLookupGrain, [&](std::size_t i) {
+    if (const auto *found = elig.Find(touched[i]))
+      current[i] = found->value;
+  });
+  for (std::size_t t = 0; t < touched.size(); ++t) {
+    const auto orderkey = touched[t];
+    const bool existed = current[t].has_value();
     bool exists = existed;
     TpchQ4OrderInfo info;
-    if (found) {
-      info = found->value;
+    if (current[t]) {
+      info = *current[t];
       if (info.qualifying_count > 0)
         adjust(info, -1);
     }
@@ -635,7 +648,9 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
   }
   {
     auto ep = std::make_shared<TpchQ4EligibilityPayload>();
-    ep->order_eligibility = elig.Finish();
+    ep->order_eligibility = elig.Finish([&](std::size_t n, const auto &fn) {
+      core::ParallelEach(services, n, kFinishGrain, fn);
+    });
     outcome.updates.push_back(core::StateImage::Make(
         TpchQ4Layout::kAccelerator, TpchQ4Layout::kEligibility, 0,
         MakeEligibilityImage(ep)));

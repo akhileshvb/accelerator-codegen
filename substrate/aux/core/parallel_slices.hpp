@@ -1,13 +1,14 @@
 // SCAFFOLDING
 // Chunked fork-join on top of AuxEngineServices::ParallelFor, for the data-
-// proportional loops of module reads (Execute) and builds.
+// proportional loops of module reads (Execute), builds and maintenance.
 //
 // The range [0, n) is cut into contiguous slices of at least `grain` items, at
 // most WorkerCount() of them, so a small range is one slice run inline and a
 // serial run (WorkerCount() == 1) takes exactly the serial code path. Slices
 // run on pool threads: they must not call services.StateStore() or
 // CurrentVisibility() (reader visibility is per thread); read the snapshot
-// first and let the slices borrow its images.
+// first and let the slices borrow its images. In maintenance slices also never
+// call the engine (do the lookups first) and write only state they own.
 #pragma once
 
 #include <algorithm>
@@ -41,6 +42,18 @@ template <class Fn>
 void ParallelSlices(const AuxEngineServices &services, std::size_t n, std::size_t grain,
                     Fn &&fn) {
   RunSlices(services, SliceCount(services, n, grain), n, std::forward<Fn>(fn));
+}
+
+// Runs fn(i) for each i in [0, n), in ParallelSlices slices of at least `grain`
+// indices: for loops of independent items, or the parallel_for hooks of
+// copy-on-write transactions.
+template <class Fn>
+void ParallelEach(const AuxEngineServices &services, std::size_t n, std::size_t grain, Fn &&fn) {
+  ParallelSlices(services, n, grain, [&](std::size_t, std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      fn(i);
+    }
+  });
 }
 
 // Slice 0 accumulates straight into `acc`; the others into fresh Acc values

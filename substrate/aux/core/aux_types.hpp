@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -159,16 +160,12 @@ struct StateImage {
   }
 };
 
-struct VisibilityToken {
-  Version mutation_epoch = 0;
-  uint64_t transaction_id = 0;
-  std::string backend_token;
+// A reader's epoch meaning "no snapshot: the newest version". Epoch 0 is a
+// snapshot like any other (it sees no commit).
+inline constexpr Version kNewestVersion = std::numeric_limits<Version>::max();
 
-  bool operator==(const VisibilityToken &other) const {
-    return mutation_epoch == other.mutation_epoch &&
-           transaction_id == other.transaction_id &&
-           backend_token == other.backend_token;
-  }
+struct VisibilityToken {
+  Version mutation_epoch = kNewestVersion;
 };
 
 struct StateSnapshot {
@@ -362,7 +359,7 @@ public:
   virtual bool TryPublish(const StagedMaintenanceOutcome &,
                           Version expected_version) = 0;
 
-  // Commit protocol, driven by the coordinator, per accelerator.
+  // Commit protocol, driven by AcceleratorRuntime, per accelerator.
   // VersionedAuxStore (every engine's store) implements versions; the
   // defaults are for stores without them, which keep their current state
   // until COMMIT (they cannot hold a commit back from readers in between).
@@ -391,11 +388,6 @@ public:
   }
   // ABORT after BeginCommit: nothing changes.
   virtual void AbortCommit(const AcceleratorId &) {}
-
-  virtual void MarkTransactionDirty() {}
-  virtual void ClearTransactionDirty() {}
-  // Same-transaction relevant writes: Execute must fallback while dirty.
-  virtual bool IsTransactionDirty() const { return false; }
 };
 
 class AuxEngineServices {
@@ -411,22 +403,6 @@ public:
   // write. Engine adapters may provide a live workload hint; the default is
   // retained for callers that do not yet expose workload telemetry.
   virtual double ExpectedQueriesBeforeNextWrite() const;
-
-  // RebuildAll Commit path may call module Build() to materialize a fresh
-  // image. RebuildPartition must be filled by StageMaintenance (touched
-  // partitions only). Engines whose commit hook cannot safely run table scans
-  // should override to false and invalidate only (next query rebuilds) when
-  // updates are empty.
-  virtual bool AllowsSynchronousRebuildOnCommit() const;
-
-  // Whether a reader can build the state from the tables at its own snapshot
-  // (PostgreSQL: SPI in the reader's transaction; MySQL: the latest data,
-  // its reader contract). False for DuckDB: a table function cannot run SQL
-  // on its own context. When false, InvalidateAndRebuildOnRead is not offered
-  // and the coordinator never publishes an invalid state (any invalidation
-  // without its rebuild becomes a RebuildAll at commit). Readers use SQL
-  // (ExecuteFallback) only as a last resort, when no state can be built.
-  virtual bool ReadersCanBuildState() const;
 
   // Rows in the dependency tables now; 0 if unknown. With the cost model's
   // calibrated_scale_rows it scales the ApplyDelta cap and the rebuild costs.

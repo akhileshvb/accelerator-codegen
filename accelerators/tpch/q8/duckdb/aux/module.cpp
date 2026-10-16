@@ -1,6 +1,7 @@
 #include "tpch/q8/duckdb/aux/module.hpp"
 #include "tpch/q8/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,10 @@ using core::ByteWriter;
 
 constexpr uint32_t kCubeMagic = 0x51385143; // Q8C
 constexpr uint32_t kVersionV2 = 2;
+// Lineitem deltas per slice when resolving them against the dimensions.
+constexpr std::size_t kResolveGrain = 2048;
+// Touched mid arrays per slice when publishing a dimension map.
+constexpr std::size_t kFinishGrain = 16;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -1270,15 +1275,43 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   // ── Phase B: lineitem deltas under the old view ────────────────────────
-  for (const auto &delta : buffer.Deltas()) {
+  // Each delta is resolved against the dimensions in parallel (read-only),
+  // then the cube and the fresh-key bookkeeping are updated in delta order.
+  struct Resolved {
+    bool joined = false; // part, supplier, order and customer all resolve
+    int64_t custkey = 0;
+    int year_idx = -1; // -1: outside the cube's years
+    int32_t part_type = 0, cust_slot = 0, supp_slot = 0;
+    bool unrepresentable = false;
+  };
+  const auto &line_deltas = buffer.Deltas();
+  std::vector<Resolved> resolved(line_deltas.size());
+  core::ParallelEach(services, line_deltas.size(), kResolveGrain, [&](std::size_t i) {
+    const auto &delta = line_deltas[i];
+    auto &r = resolved[i];
     // dims are exact, so an unresolved entity means the lineitem does not join.
     const int32_t *pp = OldPart(delta.partkey);
     const int32_t *sp = OldSupp(delta.suppkey);
     const auto *oi = OldOrder(delta.orderkey);
     if (!pp || !sp || !oi)
-      continue;
+      return;
     const int32_t *cp = OldCust(oi->custkey);
     if (!cp)
+      return;
+    r.joined = true;
+    r.custkey = oi->custkey;
+    const int32_t year = OrderDateToYear(oi->orderdate_days);
+    if (year != 1995 && year != 1996)
+      return;
+    r.year_idx = year - 1995;
+    r.part_type = *pp;
+    r.unrepresentable = !NationSlot(*cp, nat_dim, r.cust_slot) ||
+                        !NationSlot(*sp, nat_dim, r.supp_slot);
+  });
+  for (std::size_t i = 0; i < line_deltas.size(); ++i) {
+    const auto &delta = line_deltas[i];
+    const auto &r = resolved[i];
+    if (!r.joined)
       continue;
 
     // Remember fresh keys that now have lineitems.
@@ -1292,19 +1325,16 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
       EnsureMutableDims();
       mutable_dims->fresh_supp_ref.insert(delta.suppkey);
     }
-    if (oi->custkey > dims->cust_build_max &&
-        !dims->fresh_cust_ref.count(oi->custkey)) {
+    if (r.custkey > dims->cust_build_max &&
+        !dims->fresh_cust_ref.count(r.custkey)) {
       EnsureMutableDims();
-      mutable_dims->fresh_cust_ref.insert(oi->custkey);
+      mutable_dims->fresh_cust_ref.insert(r.custkey);
     }
-
-    const int32_t year = OrderDateToYear(oi->orderdate_days);
-    if (year != 1995 && year != 1996)
+    if (r.year_idx < 0)
       continue;
-    int32_t cslot = 0, sslot = 0;
-    if (!NationSlot(*cp, nat_dim, cslot) || !NationSlot(*sp, nat_dim, sslot))
+    if (r.unrepresentable)
       return Rebuild();
-    editor.Add(year - 1995, *pp, cslot, sslot,
+    editor.Add(r.year_idx, r.part_type, r.cust_slot, r.supp_slot,
                static_cast<int64_t>(delta.sign) * delta.volume_raw);
   }
 
@@ -1328,10 +1358,13 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   if (mutable_dims) {
-    mutable_dims->part_key_to_type = part_tx->Finish();
-    mutable_dims->suppkey_to_nation = supp_tx->Finish();
-    mutable_dims->custkey_to_nation = cust_tx->Finish();
-    mutable_dims->order_info = order_tx->Finish();
+    const auto for_each_mid = [&](std::size_t n, const auto &fn) {
+      core::ParallelEach(services, n, kFinishGrain, fn);
+    };
+    mutable_dims->part_key_to_type = part_tx->Finish(for_each_mid);
+    mutable_dims->suppkey_to_nation = supp_tx->Finish(for_each_mid);
+    mutable_dims->custkey_to_nation = cust_tx->Finish(for_each_mid);
+    mutable_dims->order_info = order_tx->Finish(for_each_mid);
   }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;

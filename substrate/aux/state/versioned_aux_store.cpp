@@ -774,24 +774,6 @@ void VersionedAuxStore::AbortCommit(const core::AcceleratorId &accelerator) {
   pending_cv.notify_all();
 }
 
-void VersionedAuxStore::MarkTransactionDirty() {
-  if (!options.track_transaction_dirty) {
-    return;
-  }
-  std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
-  transaction_dirty = true;
-}
-
-void VersionedAuxStore::ClearTransactionDirty() {
-  std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
-  transaction_dirty = false;
-}
-
-bool VersionedAuxStore::IsTransactionDirty() const {
-  std::shared_lock<WriterPreferringSharedMutex> guard(mutex);
-  return transaction_dirty;
-}
-
 // ---- Builds and status ----
 
 

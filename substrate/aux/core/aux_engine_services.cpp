@@ -17,17 +17,11 @@ double AuxEngineServices::ExpectedQueriesBeforeNextWrite() const {
 
 uint64_t AuxEngineServices::DataScaleRows() const { return 0; }
 
-bool AuxEngineServices::AllowsSynchronousRebuildOnCommit() const {
-  return true;
-}
-
-bool AuxEngineServices::ReadersCanBuildState() const { return true; }
-
 MaintenanceDecision AuxEngineServices::ChooseMaintenance(
     const MaintenanceRequest &request) const {
   MaintenanceRequest with_engine = request;
-  with_engine.deferred_rebuild_supported =
-      request.deferred_rebuild_supported && ReadersCanBuildState();
+  // Readers never build state; the runtime rebuilds invalid state itself.
+  with_engine.deferred_rebuild_supported = false;
   if (with_engine.data_rows_hint == 0) {
     with_engine.data_rows_hint = DataScaleRows();
   }

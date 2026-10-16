@@ -246,6 +246,7 @@ private:
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ20State> &state) const;
   void EmitResult(const TpchQ20State &state, const core::QueryArguments &arguments,
+                  const core::AuxEngineServices &services,
                   core::AuxRowSink &sink) const;
 
   TpchQ20Config config;

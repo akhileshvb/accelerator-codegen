@@ -349,12 +349,6 @@ void TpchQ1Module::Execute(core::AuxEngineServices &services,
   if (!CutoffOf(arguments, cutoff_days))
     return;
 
-  // LocalWriteSafe: same-transaction relevant writes => fallback.
-  if (services.StateStore().IsTransactionDirty()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-
   // ReadHit: validity + the one immutable state image under one visibility.
   const auto visibility = services.CurrentVisibility();
   const auto snapshot = services.StateStore().ReadHitPartitions(

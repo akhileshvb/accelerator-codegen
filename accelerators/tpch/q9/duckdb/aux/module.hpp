@@ -623,7 +623,8 @@ struct TpchQ9State {
                            PairSnap &snap, std::vector<CellDelta> &extras_out);
   // Nets the gathered deltas per (part, nation, year) and applies them to the
   // parts' cells (per slot) and to the cube.
-  void ApplyNetCellDeltas(std::vector<std::vector<CellDelta>> &chunks);
+  void ApplyNetCellDeltas(const core::AuxEngineServices &services,
+                          std::vector<std::vector<CellDelta>> &chunks);
   void ApplyPairContribution(int64_t partkey, Q9PartRecord &rec,
                              const std::vector<std::string> &tokens,
                              int32_t suppkey, int sign,

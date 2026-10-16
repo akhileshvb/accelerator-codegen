@@ -55,7 +55,8 @@ private:
 // Epochs are the engine's: a snapshot epoch comes from
 // AuxEngineServices::CurrentVisibility, a commit's epoch from the store's
 // EpochProvider (see stateful/core/README.md for each engine).
-//   * kNewestSnapshot (0) as a reader's epoch: "no snapshot", read the newest.
+//   * kNewestSnapshot as a reader's epoch: "no snapshot", read the newest. Epoch 0
+//     is a snapshot that sees no commit: it selects only a kAllSnapshots version.
 //   * kAllSnapshots (0) as a version's epoch: current for every snapshot
 //     (and it replaces the history).
 //
@@ -79,7 +80,7 @@ public:
   using EpochProvider = std::function<Epoch()>;
   using FloorProvider = std::function<Epoch()>;
 
-  static constexpr Epoch kNewestSnapshot = 0;
+  static constexpr Epoch kNewestSnapshot = core::kNewestVersion;
   static constexpr Epoch kAllSnapshots = 0;
 
   struct Options {
@@ -90,9 +91,6 @@ public:
     FloorProvider floor;
     // Every image belongs to this accelerator (a store per accelerator).
     std::optional<core::AcceleratorId> fixed_accelerator;
-    // Honor Mark/Clear/IsTransactionDirty (single-session engines only: the
-    // flag is store-wide).
-    bool track_transaction_dirty = false;
     // Cap on the bytes retained by OLD versions (every version but the
     // newest, kept only because the floor still needs them). 0: unlimited.
     // Bytes are summed with `payload_bytes` over the partitions an old
@@ -141,10 +139,6 @@ public:
                     const std::vector<core::StateImage> &updates,
                     core::Version expected_version = 0) override;
   void AbortCommit(const core::AcceleratorId &) override;
-
-  void MarkTransactionDirty() override;
-  void ClearTransactionDirty() override;
-  bool IsTransactionDirty() const override;
 
   // ---- Builds and status ----
   // `accelerator`'s state becomes exactly `images` (a fresh build), current
@@ -261,7 +255,6 @@ private:
   std::unordered_map<core::AcceleratorId, Accelerator> accelerators;
   // Which accelerator published each partition key (for reads by partition).
   std::unordered_map<PartitionKey, core::AcceleratorId> owner;
-  bool transaction_dirty = false;
   uint64_t change_count = 0;
   std::atomic<std::size_t> total_partitions_hint {0};
   std::atomic<uint64_t> versions_dropped_by_cap {0};

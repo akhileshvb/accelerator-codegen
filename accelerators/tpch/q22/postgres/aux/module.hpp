@@ -64,11 +64,6 @@ struct TpchQ22OrderInput {
   int64_t custkey = 0;
 };
 
-struct TpchQ22OrderCount {
-  int64_t custkey = 0;
-  int64_t count = 0;
-};
-
 class TpchQ22InitialScan {
 public:
   virtual ~TpchQ22InitialScan() = default;
@@ -76,12 +71,6 @@ public:
       const std::function<void(const TpchQ22CustomerInput &)> &) = 0;
   virtual void ScanOrders(
       const std::function<void(const TpchQ22OrderInput &)> &) = 0;
-  // Optional SQL pre-aggregation: number of orders per o_custkey (non-NULL).
-  // Returns false when the engine does not implement it.
-  virtual bool ScanOrderCounts(
-      const std::function<void(const TpchQ22OrderCount &)> &) {
-    return false;
-  }
 };
 
 // ── State structures ────────────────────────────────────────────────────────
