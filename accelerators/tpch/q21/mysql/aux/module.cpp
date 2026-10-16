@@ -1,7 +1,9 @@
 #include "tpch/q21/mysql/aux/module.hpp"
 #include "tpch/q21/calibration_writes.hpp"
-
+#include "substrate/aux/core/parallel_slices.hpp"
 #include "prims/mysql_collation.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -198,6 +200,157 @@ void TpchQ21State::AdjustNumwait(int64_t suppkey, int64_t delta) {
   it->second.Erase(suppkey);
   if (it->second.size() == 0)
     nation_numwait.erase(it);
+}
+
+namespace {
+
+// Orders or numwait entries per task; an item is a shard-local hash write.
+constexpr std::size_t kApplyGrain = 1024;
+constexpr std::size_t kSortGrain = 65536;
+
+// (shard, item) pairs in shard order, and the [start, end) item range of each
+// shard present: the unit of ownership of an apply task.
+using ShardedItems = std::vector<std::pair<std::size_t, std::size_t>>;
+
+std::vector<std::size_t> ShardRuns(const ShardedItems &items) {
+  std::vector<std::size_t> starts;
+  for (std::size_t i = 0; i < items.size(); ++i)
+    if (i == 0 || items[i].first != items[i - 1].first)
+      starts.push_back(i);
+  starts.push_back(items.size());
+  return starts;
+}
+
+void SortByShard(const core::AuxEngineServices &services, ShardedItems &items) {
+  ParallelStableSort(
+      services, items, [](const auto &a, const auto &b) { return a.first < b.first; },
+      kSortGrain);
+}
+
+} // namespace
+
+void TpchQ21State::ApplyOrderResults(const core::AuxEngineServices &services,
+                                      const std::vector<TpchQ21OrderResult> &results) {
+  ShardedItems items(results.size());
+  for (std::size_t i = 0; i < results.size(); ++i)
+    items[i] = {contributions.ShardOf(results[i].orderkey), i};
+  SortByShard(services, items);
+  const auto runs = ShardRuns(items);
+
+  using Deltas = std::unordered_map<int64_t, int64_t>;
+  Deltas numwait_delta;
+  core::ParallelReduce(
+      services, runs.size() - 1, kApplyGrain, numwait_delta,
+      [&](Deltas &deltas, std::size_t first, std::size_t last) {
+        for (std::size_t k = runs[first]; k < runs[last]; ++k) {
+          const auto &result = results[items[k].second];
+          const TpchQ21Contribution *found = contributions.Find(result.orderkey);
+          if (found && result.has && found->suppkey == result.contribution.suppkey &&
+              found->count == result.contribution.count)
+            continue;
+          if (found) {
+            deltas[found->suppkey] -= found->count;
+            if (!result.has)
+              contributions.Erase(result.orderkey);
+          }
+          if (result.has) {
+            contributions.Upsert(result.orderkey, result.contribution);
+            deltas[result.contribution.suppkey] += result.contribution.count;
+          }
+        }
+      },
+      [](Deltas &into, Deltas &&from) {
+        for (const auto &[suppkey, delta] : from)
+          into[suppkey] += delta;
+      });
+  AdjustNumwaits(services, numwait_delta);
+}
+
+// AdjustNumwait for many suppliers: numwait is written by shard-owning tasks,
+// then each nation's index by one task per nation.
+void TpchQ21State::AdjustNumwaits(const core::AuxEngineServices &services,
+                                  const std::unordered_map<int64_t, int64_t> &deltas) {
+  struct Change {
+    int64_t suppkey = 0;
+    int64_t delta = 0;
+    int64_t value = 0;
+  };
+  std::vector<Change> changes;
+  ShardedItems items;
+  for (const auto &[suppkey, delta] : deltas) {
+    if (delta == 0)
+      continue;
+    items.push_back({numwait.ShardOf(suppkey), changes.size()});
+    changes.push_back({suppkey, delta, 0});
+  }
+  // Shard, then suppkey: the same order at any thread count.
+  ParallelStableSort(
+      services, items,
+      [&](const auto &a, const auto &b) {
+        return a.first != b.first ? a.first < b.first
+                                  : changes[a.second].suppkey < changes[b.second].suppkey;
+      },
+      kSortGrain);
+  const auto runs = ShardRuns(items);
+  core::ParallelEach(services, runs.size() - 1, kApplyGrain, [&](std::size_t run) {
+    for (std::size_t k = runs[run]; k < runs[run + 1]; ++k) {
+      auto &change = changes[items[k].second];
+      const int64_t *current = numwait.Find(change.suppkey);
+      change.value = (current ? *current : 0) + change.delta;
+      if (change.value == 0)
+        numwait.Erase(change.suppkey);
+      else
+        numwait.Upsert(change.suppkey, change.value);
+    }
+  });
+
+  struct NationChange {
+    int64_t nationkey = 0;
+    int64_t suppkey = 0;
+    int64_t value = 0;
+
+  };
+  std::vector<NationChange> nation_changes;
+  for (const auto &[shard, index] : items) {
+    (void)shard;
+    const Change &change = changes[index];
+    if (const TpchQ21Supplier *supplier = suppliers.Find(change.suppkey))
+      nation_changes.push_back({supplier->nationkey, change.suppkey, change.value});
+  }
+  std::stable_sort(nation_changes.begin(), nation_changes.end(),
+                   [](const NationChange &a, const NationChange &b) {
+                     return a.nationkey < b.nationkey;
+                   });
+  for (const auto &change : nation_changes)
+    if (change.value != 0)
+      (void)nation_numwait[change.nationkey]; // its task needs the index to exist
+  std::vector<std::size_t> nation_runs;
+  for (std::size_t i = 0; i < nation_changes.size(); ++i)
+    if (i == 0 || nation_changes[i].nationkey != nation_changes[i - 1].nationkey)
+      nation_runs.push_back(i);
+  nation_runs.push_back(nation_changes.size());
+  const auto run_nation = [&](std::size_t run) -> decltype(nation_numwait)::iterator {
+    return nation_numwait.find(nation_changes[nation_runs[run]].nationkey);
+  };
+  const std::size_t nations = nation_runs.size() - 1;
+  core::ParallelEach(services, nations, nation_changes.size() < kApplyGrain ? nations : 1,
+                     [&](std::size_t run) {
+    const auto index = run_nation(run);
+    if (index == nation_numwait.end())
+      return;
+    for (std::size_t k = nation_runs[run]; k < nation_runs[run + 1]; ++k) {
+      const NationChange &change = nation_changes[k];
+      if (change.value != 0)
+        index->second.Upsert(change.suppkey, change.value);
+      else
+        index->second.Erase(change.suppkey);
+    }
+  });
+  for (std::size_t run = 0; run + 1 < nation_runs.size(); ++run) {
+    const auto index = run_nation(run);
+    if (index != nation_numwait.end() && index->second.size() == 0)
+      nation_numwait.erase(index);
+  }
 }
 
 void TpchQ21State::PutSupplier(int64_t suppkey, const std::string &name,
@@ -485,8 +638,7 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
       new_state->PutSupplier(delta.new_row.suppkey, delta.new_row.name,
                              delta.new_row.nationkey);
   }
-  for (const auto &result : buffer.OrderResults())
-    new_state->SetContribution(result.orderkey, result.has, result.contribution);
+  new_state->ApplyOrderResults(services, buffer.OrderResults());
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   const auto typed_state =
@@ -594,14 +746,20 @@ TpchQ21State TpchQ21Module::BuildState() const {
 
   // One pass over the lineitems of fulfilled orders, an order at a time: only
   // the contributing orders are kept.
+  std::vector<TpchQ21OrderResult> contributing;
   OrderGrouper grouper([&](int64_t orderkey, bool has,
                            const TpchQ21Contribution &contribution) {
     if (has)
-      state.SetContribution(orderkey, true, contribution);
+      contributing.push_back({orderkey, true, contribution});
   });
   initial_scan->ScanFulfilledLineitems(
       [&](const TpchQ21LineInput &line) { grouper.Add(line); });
   grouper.Flush();
+  state.contributions = TpchQ21State::Contributions(
+      TpchQ21State::Contributions::ShardBitsFor(contributing.size()));
+  state.numwait = TpchQ21State::Numwait(TpchQ21State::Numwait::ShardBitsFor(state.suppliers.size()));
+  for (const auto &order : contributing)
+    state.SetContribution(order.orderkey, true, order.contribution);
   return state;
 }
 
