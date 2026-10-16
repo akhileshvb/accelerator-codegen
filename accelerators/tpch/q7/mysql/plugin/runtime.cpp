@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q7/mysql/aux/module.hpp"
 #include "tpch/q7/cost_model.hpp"
@@ -60,22 +61,6 @@ query::TpchQ7LineitemInput DecodeLineitem(const std::vector<std::string> &cols) 
           TypedDecimalRaw(cols, 3), 2,                 TypedDate(cols, 4)};
 }
 
-template <class Input, class Decode>
-void ScanSerial(const SplitTable &table, Decode decode,
-                const std::function<void(const Input &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(table), decode, [&](Input &&input) { consumer(input); });
-}
-
-template <class Input, class Decode>
-void ScanPartitioned(const core::AuxEngineServices &services, const SplitTable &table,
-                     std::size_t partitions, Decode decode,
-                     const std::function<void(std::size_t, const Input &)> &sink) {
-  ScanTypedTuplesPartitioned(services, table, partitions,
-                             [&](std::size_t partition, const std::vector<std::string> &cols) {
-                               sink(partition, decode(cols));
-                             });
-}
-
 } // namespace scans
 
 class TpchQ7Scan final : public query::TpchQ7InitialScan {
@@ -88,49 +73,49 @@ public:
   void ScanSuppliers(
       const std::function<void(const query::TpchQ7SupplierInput &)> &consumer)
       override {
-    scans::ScanSerial(scans::SuppliersTable(), scans::DecodeSupplier, consumer);
+    split_scan::Serial(scans::SuppliersTable(), scans::DecodeSupplier, consumer);
   }
   void ScanCustomers(
       const std::function<void(const query::TpchQ7CustomerInput &)> &consumer)
       override {
-    scans::ScanSerial(scans::CustomersTable(), scans::DecodeCustomer, consumer);
+    split_scan::Serial(scans::CustomersTable(), scans::DecodeCustomer, consumer);
   }
   void ScanOrders(
       const std::function<void(const query::TpchQ7OrderInput &)> &consumer)
       override {
-    scans::ScanSerial(scans::OrdersTable(), scans::DecodeOrder, consumer);
+    split_scan::Serial(scans::OrdersTable(), scans::DecodeOrder, consumer);
   }
   void ScanLineitems(
       const std::function<void(const query::TpchQ7LineitemInput &)> &consumer)
       override {
-    scans::ScanSerial(scans::LineitemsTable(), scans::DecodeLineitem, consumer);
+    split_scan::Serial(scans::LineitemsTable(), scans::DecodeLineitem, consumer);
   }
   void ScanSuppliersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ7SupplierInput &)> &sink)
       override {
-    scans::ScanPartitioned(services, scans::SuppliersTable(), partitions,
+    split_scan::Partitioned(services, scans::SuppliersTable(), partitions,
                            scans::DecodeSupplier, sink);
   }
   void ScanCustomersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ7CustomerInput &)> &sink)
       override {
-    scans::ScanPartitioned(services, scans::CustomersTable(), partitions,
+    split_scan::Partitioned(services, scans::CustomersTable(), partitions,
                            scans::DecodeCustomer, sink);
   }
   void ScanOrdersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ7OrderInput &)> &sink)
       override {
-    scans::ScanPartitioned(services, scans::OrdersTable(), partitions, scans::DecodeOrder,
+    split_scan::Partitioned(services, scans::OrdersTable(), partitions, scans::DecodeOrder,
                            sink);
   }
   void ScanLineitemsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ7LineitemInput &)> &sink)
       override {
-    scans::ScanPartitioned(services, scans::LineitemsTable(), partitions,
+    split_scan::Partitioned(services, scans::LineitemsTable(), partitions,
                            scans::DecodeLineitem, sink);
   }
 };
