@@ -1,5 +1,6 @@
 #include "tpch/q19/mysql/aux/module.hpp"
 #include "tpch/q19/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 #include "prims/pg_numeric.hpp"
 
 #include <algorithm>
@@ -16,8 +17,8 @@ using Vec = TpchQ19State::Vec;
 
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
-// More affected parts than this per commit: rebuild instead of point scans.
-constexpr std::size_t kMaxPointParts = 50000;
+// Lineitem deltas per maintenance slice (~70 ns each: >= 250 us a slice).
+constexpr std::size_t kDeltaGrain = 4096;
 
 // String comparison as the engine's column collation does it. MySQL's default
 // collation (utf8mb4_0900_ai_ci) is case-insensitive: compare ASCII-folded.
@@ -448,11 +449,10 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
   }
   const auto decision = services.ChooseMaintenance(
       {static_cast<uint64_t>(buf.Deltas().size() + affected.size()), 1,
-       next != nullptr && affected.size() <= kMaxPointParts && initial_scan,
+       next != nullptr && initial_scan,
        false, true, false, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
-  if (!next || affected.size() > kMaxPointParts ||
-      decision.action != core::MaintenanceAction::ApplyDelta) {
+  if (!next || decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action == core::MaintenanceAction::ApplyDelta ||
                              decision.action == core::MaintenanceAction::RebuildPartition
                          ? core::MaintenanceAction::RebuildAll
@@ -503,13 +503,34 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
   for (const auto key : affected)
     next->part_code.Set(key, final_part.at(key).code);
 
-  // Lineitems of unaffected parts: -old +new under the part's (unchanged) code.
-  for (const auto &delta : buf.Deltas()) {
-    if (is_affected.count(delta.partkey))
-      continue;
-    next->Add(next->part_code.Get(delta.partkey), delta.quantity_raw,
-              delta.sign * delta.revenue_raw, delta.sign);
-  }
+  // Lineitems of unaffected parts: -old +new under the part's (unchanged)
+  // code, netted per (code, quantity) cell by slices of the delta list.
+  struct Cell {
+    __int128 revenue = 0;
+    int64_t count = 0;
+  };
+  using Cells = std::map<std::pair<uint32_t, int64_t>, Cell>;
+  Cells net;
+  core::ParallelReduce(
+      services, buf.Deltas().size(), kDeltaGrain, net,
+      [&](Cells &cells, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto &delta = buf.Deltas()[i];
+          if (is_affected.count(delta.partkey))
+            continue;
+          auto &cell = cells[{next->part_code.Get(delta.partkey), delta.quantity_raw}];
+          cell.revenue += delta.sign * delta.revenue_raw;
+          cell.count += delta.sign;
+        }
+      },
+      [](Cells &into, Cells &&from) {
+        for (const auto &[key, cell] : from) {
+          into[key].revenue += cell.revenue;
+          into[key].count += cell.count;
+        }
+      });
+  for (const auto &[code_qty, cell] : net)
+    next->Add(code_qty.first, code_qty.second, cell.revenue, cell.count);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
