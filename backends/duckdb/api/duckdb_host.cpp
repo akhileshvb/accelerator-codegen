@@ -386,17 +386,25 @@ void DuckdbHost::OnMutation(::duckdb::ClientContext &context,
 
 void DuckdbHost::OnPreCommit(::duckdb::MetaTransaction &transaction) {
   const auto txn = TxnId(transaction);
+  // Read from the engine before taking writers_mutex: DuckDB's commit path calls
+  // OnCommitId with its own locks held, so ours never waits on one of its locks.
+  ::duckdb::shared_ptr<::duckdb::AttachedDatabase> default_db;
+  {
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    default_db = impl->default_db;
+  }
+  std::optional<::duckdb::transaction_t> write_start;
+  if (default_db) {
+    auto db_transaction = transaction.TryGetTransaction(*default_db);
+    if (db_transaction && db_transaction->IsDuckTransaction() && !db_transaction->IsReadOnly()) {
+      write_start = db_transaction->Cast<::duckdb::DuckTransaction>().start_time;
+    }
+  }
   bool captured;
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
-    if (impl->default_db) {
-      auto db_transaction = transaction.TryGetTransaction(*impl->default_db);
-      if (db_transaction && db_transaction->IsDuckTransaction() && !db_transaction->IsReadOnly()) {
-        const auto start = db_transaction->Cast<::duckdb::DuckTransaction>().start_time;
-        if (start < impl->registered_at) {
-          impl->straddlers[txn] = start;
-        }
-      }
+    if (write_start && *write_start < impl->registered_at) {
+      impl->straddlers[txn] = *write_start;
     }
     captured = impl->writers.count(txn) != 0;
   }
