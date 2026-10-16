@@ -29,6 +29,8 @@ double DuckDBAuxBackend::ExpectedQueriesBeforeNextWrite() const {
   return runtime.ExpectedQueriesBeforeNextWrite();
 }
 
+uint64_t DuckDBAuxBackend::DataScaleRows() const { return runtime.DataScaleRows(); }
+
 std::size_t DuckDBAuxBackend::WorkerCount() const { return runtime.WorkerCount(); }
 
 void DuckDBAuxBackend::ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const {

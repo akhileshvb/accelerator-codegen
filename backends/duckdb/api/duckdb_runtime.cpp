@@ -350,6 +350,8 @@ double DuckdbRuntime::ExpectedQueriesBeforeNextWrite() const {
   return accelerator_.expected_queries_before_write;
 }
 
+uint64_t DuckdbRuntime::DataScaleRows() const { return accelerator_.runtime->DataScaleRows(); }
+
 std::vector<core::CalibrationWrite> DuckdbRuntime::CalibrationWrites() const {
   return accelerator_.binding->Module().CalibrationWrites();
 }

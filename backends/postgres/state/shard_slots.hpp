@@ -50,6 +50,7 @@ public:
   void RunBuild(runtime::AcceleratorRuntime &accelerator, runtime::BuildSnapshot &snapshot,
                 core::StateBuilder &builder) override;
   const maintenance::CostModelParams &CostModel(const core::AcceleratorId &) const override;
+  uint64_t TableRows(core::TableId table) const override;
 
 private:
   friend class PgBuildSnapshot;

@@ -12,11 +12,14 @@
 #include "backends/postgres/state/shared.hpp"
 
 extern "C" {
+#include <access/htup_details.h>
 #include <access/xact.h>
+#include <catalog/pg_class.h>
 #include <miscadmin.h>
 #include <storage/procarray.h>
 #include <utils/guc.h>
 #include <utils/snapmgr.h>
+#include <utils/syscache.h>
 }
 
 namespace accelerator_codegen::aux_state::engine::postgres::shard {
@@ -174,6 +177,18 @@ void PgSlots::RunBuild(runtime::AcceleratorRuntime &runtime, runtime::BuildSnaps
 
 const maintenance::CostModelParams &PgSlots::CostModel(const core::AcceleratorId &) const {
   return accelerator.CostModel();
+}
+
+// The planner's row estimate for the relation (-1 before its first VACUUM or
+// ANALYZE: unknown).
+uint64_t PgSlots::TableRows(core::TableId table) const {
+  HeapTuple tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(static_cast<Oid>(table)));
+  if (!HeapTupleIsValid(tuple)) {
+    return 0;
+  }
+  const float4 rows = reinterpret_cast<Form_pg_class>(GETSTRUCT(tuple))->reltuples;
+  ReleaseSysCache(tuple);
+  return rows > 0 ? static_cast<uint64_t>(rows) : 0;
 }
 
 } // namespace accelerator_codegen::aux_state::engine::postgres::shard

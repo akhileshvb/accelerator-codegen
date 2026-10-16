@@ -703,6 +703,14 @@ double AcceleratorRuntime::ExpectedQueriesBeforeNextWrite() const {
   return slots.ExpectedQueriesBeforeNextWrite(id);
 }
 
+uint64_t AcceleratorRuntime::DataScaleRows() const {
+  uint64_t rows = 0;
+  for (const auto &entry : impl->projections) {
+    rows += slots.TableRows(entry.first);
+  }
+  return rows;
+}
+
 std::size_t AcceleratorRuntime::WorkerCount() const {
   if (t_phase_runtime != this) {
     return 1;

@@ -198,6 +198,9 @@ struct FakeSlots final : EngineSlots {
     return params;
   }
   Epoch MaintenanceLookupEpoch(Epoch through) override { return lookup.value_or(through); }
+  uint64_t TableRows(core::TableId table) const override { return table == kTable ? table_rows : 0; }
+
+  uint64_t table_rows = 0;
 
   // The epoch the engine's maintenance lookups see (default: the change's).
   std::optional<Epoch> lookup;
@@ -381,6 +384,26 @@ void UpdateOutsideProjection() {
   CHECK(stats.commits_applied == 2);
 }
 
+// The policy sees the dependency tables' size: the ApplyDelta row cap and the
+// rebuild costs scale with it, so a refresh that grows with the data is still
+// applied.
+void DataScaleScalesTheCap() {
+  FakeDb db;
+  FakeSlots slots(db);
+  slots.params.calibrated_scale_rows = 1000;
+  slots.params.apply_delta_max_rows = 1000;
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  core::MaintenanceRequest refresh;
+  refresh.rows_touched = 5000;
+  refresh.incremental_supported = true;
+  CHECK(runtime.DataScaleRows() == 0);
+  CHECK(runtime.ChooseMaintenance(refresh).action != maintenance::MaintenanceAction::ApplyDelta);
+  slots.table_rows = 20'000; // 20x the calibrated size: cap 20'000 rows
+  CHECK(runtime.DataScaleRows() == 20'000);
+  CHECK(runtime.ChooseMaintenance(refresh).action == maintenance::MaintenanceAction::ApplyDelta);
+}
+
 void FailedBuildReleasesReaders() {
   FakeDb db;
   FakeSlots slots(db);
@@ -535,6 +558,7 @@ int main() {
       {"commits_during_build", CommitsDuringBuild},
       {"module_requests_rebuild", ModuleRequestsRebuild},
       {"update_outside_projection", UpdateOutsideProjection},
+      {"data_scale_scales_the_cap", DataScaleScalesTheCap},
       {"failed_build_releases_readers", FailedBuildReleasesReaders},
       {"invalidate_during_build", InvalidateDuringBuild},
       {"shipped_commits", ShippedCommits},

@@ -7,8 +7,11 @@
 //   fuzz-all (writes on every TPC-H table), sql-mix (the differential's
 //   targeted + per-table writes), sec-probes (SEC-EDGAR catalog probes, handed
 //   to the accelerator by hand), sec-sql (the same probes as SQL writes the
-//   engine must capture, answers checked against the base query)
+//   engine must capture), scale-rows (the rows the policy sees, no writes), sec-mix (updates, inserts and deletes on every
+//   SEC-EDGAR table)
+// Every answer is checked against the base query after each commit.
 // Output: one tab-separated line per commit, then one SUMMARY line.
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -40,7 +43,6 @@ public:
   Audit(DuckdbRuntime &runtime_p, const engine::SharedQueryCatalogEntry &entry_p, std::string workload_p)
       : runtime(runtime_p), entry(entry_p), workload(std::move(workload_p)) {}
 
-  // After every step, require the answer to equal the base query's.
   void CheckAnswers(duckdb::Connection &connection_p) { connection = &connection_p; }
 
   // `write` commits one transaction.
@@ -60,11 +62,12 @@ public:
     Record(name, before, after, wrong);
   }
 
-  void Summary() const {
+  void Summary(double build_us) const {
     std::cout << "SUMMARY\t" << entry.workload_name << "\tQ" << entry.query_id << '\t' << workload << "\tcommits="
               << totals.commits << "\tincremental=" << totals.applied << "\tfull_rebuilds=" << totals.rebuilt
               << "\tignored=" << totals.ignored << "\tgaps=" << totals.gaps << "\tfallbacks=" << totals.fallbacks
-              << "\twrong_answers=" << wrong_answers << std::endl;
+              << "\twrong_answers=" << wrong_answers
+              << "\tinitial_build_us=" << static_cast<long>(build_us) << std::endl;
   }
 
 private:
@@ -82,16 +85,18 @@ private:
     std::cout << entry.workload_name << "\tQ" << entry.query_id << '\t' << workload << '\t' << name << '\t' << outcome
               << "\tapplied=" << applied << "\tbuilds=" << builds
               << "\tcatch_up=" << after.catch_up_commits - before.catch_up_commits
-              << "\tfallbacks=" << after.reads_fallback - before.reads_fallback;
+              << "\tfallbacks=" << after.reads_fallback - before.reads_fallback
+              << "\tapply_us=" << static_cast<long>(after.apply_us - before.apply_us)
+              << "\trows=" << after.rows_applied - before.rows_applied;
     if (after.commits_stale > before.commits_stale) {
       std::cout << "\tstale=\"" << after.last_stale_reason << '"';
     }
     if (const auto &d = after.last_decision; d && (applied || builds)) {
       std::cout << "\taction=" << accelerator_codegen::aux_state::maintenance::MaintenanceActionName(d->staged_action)
                 << "\tselected=" << accelerator_codegen::aux_state::maintenance::MaintenanceActionName(d->selected)
-                << "\trows=" << d->rows_touched << "\tparts=" << d->affected_partition_count
+                << "\tparts=" << d->affected_partition_count
                 << "\tpred_delta_us=" << d->predicted_apply_delta_us << "\tpred_part_us=" << d->predicted_rebuild_partition_us
-                << "\tpred_all_us=" << d->predicted_rebuild_all_us << "\tmaint_us=" << d->maintenance_us;
+                << "\tpred_all_us=" << d->predicted_rebuild_all_us;
     }
     if (!wrong.empty()) {
       wrong_answers++;
@@ -145,7 +150,6 @@ void RunSecProbes(duckdb::Connection &connection, DuckdbRuntime &runtime, Audit 
 
 void RunSecSql(duckdb::Connection &connection, DuckdbRuntime &runtime, Audit &audit,
                const engine::SharedQueryCatalogEntry &entry) {
-  audit.CheckAnswers(connection);
   const auto probes = engine::CollectInvalidatingSharedProbes(connection, entry, 256, 3);
   for (std::size_t i = 0; i < probes.size(); ++i) {
     audit.Step("probe" + std::to_string(i), [&] { runtime.ApplyWrite(probes[i].update_sql); });
@@ -153,16 +157,59 @@ void RunSecSql(duckdb::Connection &connection, DuckdbRuntime &runtime, Audit &au
   }
 }
 
+// Writes of each kind on each SEC-EDGAR table; those a query does not read
+// are ignored by it.
+void RunSecMix(DuckdbRuntime &runtime, Audit &audit) {
+  const std::vector<std::pair<std::string, std::string>> writes = {
+      {"num value update", "UPDATE num SET value = value * 1.5 WHERE rowid IN (SELECT rowid FROM num USING SAMPLE 3 ROWS)"},
+      {"num uom update", "UPDATE num SET uom = 'EUR' WHERE rowid IN (SELECT rowid FROM num USING SAMPLE 3 ROWS)"},
+      {"num insert", "INSERT INTO num SELECT * FROM num USING SAMPLE 5 ROWS"},
+      {"num delete", "DELETE FROM num WHERE rowid IN (SELECT rowid FROM num USING SAMPLE 5 ROWS)"},
+      {"sub name update", "UPDATE sub SET name = name || ' x' WHERE rowid IN (SELECT rowid FROM sub USING SAMPLE 2 ROWS)"},
+      {"sub fy update", "UPDATE sub SET fy = fy + 1 WHERE rowid IN (SELECT rowid FROM sub USING SAMPLE 2 ROWS)"},
+      {"sub sic update", "UPDATE sub SET sic = sic + 1 WHERE rowid IN (SELECT rowid FROM sub USING SAMPLE 2 ROWS)"},
+      {"sub delete", "DELETE FROM sub WHERE rowid IN (SELECT rowid FROM sub USING SAMPLE 2 ROWS)"},
+      {"pre stmt update", "UPDATE pre SET stmt = 'BS' WHERE rowid IN (SELECT rowid FROM pre USING SAMPLE 3 ROWS)"},
+      {"pre plabel update", "UPDATE pre SET plabel = plabel || ' x' WHERE rowid IN (SELECT rowid FROM pre USING SAMPLE 3 ROWS)"},
+      {"pre insert", "INSERT INTO pre SELECT * FROM pre USING SAMPLE 5 ROWS"},
+      {"pre delete", "DELETE FROM pre WHERE rowid IN (SELECT rowid FROM pre USING SAMPLE 5 ROWS)"},
+      {"tag label update", "UPDATE tag SET tlabel = tlabel || ' x' WHERE rowid IN (SELECT rowid FROM tag USING SAMPLE 3 ROWS)"},
+      {"tag delete", "DELETE FROM tag WHERE rowid IN (SELECT rowid FROM tag USING SAMPLE 2 ROWS)"},
+  };
+  for (const auto &[name, sql] : writes) {
+    audit.Step(name, [&] { runtime.ApplyWrite(sql); });
+  }
+}
+
+// Rows the policy sees, from the database file itself.
+void PrintScaleRows(const std::string &db, const engine::SharedWorkloadKind kind, int query) {
+  duckdb::DBConfig config;
+  config.options.access_mode = duckdb::AccessMode::READ_ONLY;
+  duckdb::DuckDB database(db, &config);
+  duckdb::Connection connection(database);
+  const auto &entry = engine::LookupSharedQuery(kind, query);
+  DuckdbRuntime runtime(connection, entry, 10.0);
+  std::cout << "SCALE_ROWS\t" << entry.workload_name << "\tQ" << query << '\t' << runtime.DataScaleRows()
+            << std::endl;
+}
+
 void AuditQuery(const std::string &db, const std::string &workload, const engine::SharedWorkloadKind kind,
                 int query) {
+  if (workload == "scale-rows") {
+    return PrintScaleRows(db, kind, query);
+  }
   ts::ScratchDir scratch("audit_maintenance");
   const auto copy = ts::PrivateDbCopy(db, scratch);
   duckdb::DuckDB database(copy.c_str());
   duckdb::Connection connection(database);
   const auto &entry = engine::LookupSharedQuery(kind, query);
   DuckdbRuntime runtime(connection, entry, 10.0);
+  const auto build_start = std::chrono::steady_clock::now();
   runtime.Build();
+  const double build_us =
+      std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - build_start).count();
   Audit audit(runtime, entry, workload);
+  audit.CheckAnswers(connection);
   if (workload == "rf-small") {
     RunRf(connection, runtime, audit, 10, 6);
   } else if (workload == "rf-official") {
@@ -175,6 +222,8 @@ void AuditQuery(const std::string &db, const std::string &workload, const engine
     for (const auto &write : harness::TpchSqlWrites(connection, entry, 2)) {
       audit.Step(write.name, [&] { runtime.ApplyWrite(write.sql); });
     }
+  } else if (workload == "sec-mix") {
+    RunSecMix(runtime, audit);
   } else if (workload == "sec-sql") {
     RunSecSql(connection, runtime, audit, entry);
   } else if (workload == "sec-probes") {
@@ -182,7 +231,7 @@ void AuditQuery(const std::string &db, const std::string &workload, const engine
   } else {
     throw std::invalid_argument("unknown workload " + workload);
   }
-  audit.Summary();
+  audit.Summary(build_us);
 }
 
 } // namespace
