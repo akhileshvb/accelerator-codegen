@@ -62,6 +62,15 @@ public:
   // lineitem JOIN part GROUP BY shipdate, aggregated in the engine.
   virtual void ScanDayAggregates(
       const std::function<void(const TpchQ14DayAggregate &)> &) = 0;
+  // The two build scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  // A partition aggregates its own range, so a day may come back once per partition.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ14PartInput &)> &sink) = 0;
+  virtual void ScanDayAggregatesPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ14DayAggregate &)> &sink) = 0;
   // lineitem WHERE l_partkey IN (partkeys) GROUP BY l_partkey, shipdate.
   virtual void ScanPartDayRevenue(
       const std::vector<int64_t> &partkeys,
