@@ -3,6 +3,7 @@
 #include "prims/mysql_collation.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 #include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
@@ -131,6 +132,69 @@ void AddToCell(TpchQ12State &state, int32_t day, const std::string &mode,
     state.cells.Erase(key);
   else
     state.cells.Upsert(key, now);
+}
+
+// Cell counts of one partition, with its own shipmode numbering.
+struct PartialCells {
+  std::vector<std::string> modes;
+  std::unordered_map<int64_t, TpchQ12Counts> cells; // key as CellKey, local mode ids
+
+  uint32_t ModeId(const std::string &mode) {
+    for (uint32_t id = 0; id < modes.size(); ++id)
+      if (modes[id] == mode)
+        return id;
+    modes.push_back(mode);
+    return static_cast<uint32_t>(modes.size() - 1);
+  }
+  void Merge(PartialCells &&from) {
+    std::vector<uint32_t> ids;
+    for (const auto &mode : from.modes)
+      ids.push_back(ModeId(mode));
+    for (const auto &[key, counts] : from.cells) {
+      const auto day = static_cast<int32_t>(key >> kModeBits);
+      cells[CellKey(day, ids[static_cast<std::size_t>(key & ((int64_t{1} << kModeBits) - 1))])] += counts;
+    }
+  }
+};
+
+// Modes in partition order: the printed spelling is the first partition's.
+void AddPartial(TpchQ12State &state, const PartialCells &joined) {
+  for (const auto &mode : joined.modes)
+    ShipmodeId(state, mode);
+  for (const auto &[key, counts] : joined.cells)
+    AddToCell(state, static_cast<int32_t>(key >> kModeBits),
+              joined.modes[static_cast<std::size_t>(key & ((int64_t{1} << kModeBits) - 1))],
+              counts);
+}
+
+// The class of a touched order key before and after a batch.
+struct ClassChange {
+  TpchQ12PriorityClass before, after;
+};
+using ClassChanges = std::map<int64_t, ClassChange>;
+
+constexpr std::size_t kDeltaGrain = 8192;
+
+// Each lineitem delta moves its cell by its sign x the order's class before the
+// batch.  Slices read the finished priorities and add into partials of their own.
+void ApplyLineitemDeltas(core::AuxEngineServices &services, TpchQ12State &work,
+                         const ClassChanges &changes,
+                         const std::vector<TpchQ12LineitemDelta> &deltas) {
+  PartialCells joined;
+  core::ParallelReduce(
+      services, deltas.size(), kDeltaGrain, joined,
+      [&](PartialCells &into, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto &delta = deltas[i];
+          const auto it = changes.find(delta.orderkey);
+          const auto before =
+              it != changes.end() ? it->second.before : work.PriorityOf(delta.orderkey);
+          into.cells[CellKey(delta.receipt_day, into.ModeId(delta.shipmode))] +=
+              Contribution(before, delta.sign);
+        }
+      },
+      [](PartialCells &into, PartialCells &&from) { into.Merge(std::move(from)); });
+  AddPartial(work, joined);
 }
 
 }  // namespace
@@ -382,10 +446,7 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
 
   // The class of every touched order key before and after the batch (order
   // changes replayed in sequence: delete, then insert for an update).
-  struct ClassChange {
-    TpchQ12PriorityClass before, after;
-  };
-  std::map<int64_t, ClassChange> changes;
+  ClassChanges changes;
   for (const auto &delta : buffer.OrderDeltas()) {
     auto it = changes.find(delta.orderkey);
     if (it == changes.end()) {
@@ -425,13 +486,7 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
   // deletes were (but are missing from the lookup): in both cases the
   // correction is sign x old-class contribution.  For keys whose class did
   // not change this is simply the lineitem delta itself.
-  for (const auto &delta : buffer.Deltas()) {
-    const auto it = changes.find(delta.orderkey);
-    const auto before = it != changes.end() ? it->second.before
-                                            : work->PriorityOf(delta.orderkey);
-    AddToCell(*work, delta.receipt_day, delta.shipmode,
-              Contribution(before, delta.sign));
-  }
+  ApplyLineitemDeltas(services, *work, changes, buffer.Deltas());
   for (const auto &[key, change] : changes)
     if (change.before != change.after)
       work->SetPriority(key, change.after);
@@ -562,29 +617,6 @@ struct OrderClass {
   TpchQ12PriorityClass priority;
 };
 
-// Cell counts of one partition, with its own shipmode numbering.
-struct PartialCells {
-  std::vector<std::string> modes;
-  std::unordered_map<int64_t, TpchQ12Counts> cells; // key as CellKey, local mode ids
-
-  uint32_t ModeId(const std::string &mode) {
-    for (uint32_t id = 0; id < modes.size(); ++id)
-      if (modes[id] == mode)
-        return id;
-    modes.push_back(mode);
-    return static_cast<uint32_t>(modes.size() - 1);
-  }
-  void Merge(PartialCells &&from) {
-    std::vector<uint32_t> ids;
-    for (const auto &mode : from.modes)
-      ids.push_back(ModeId(mode));
-    for (const auto &[key, counts] : from.cells) {
-      const auto day = static_cast<int32_t>(key >> kModeBits);
-      cells[CellKey(day, ids[static_cast<std::size_t>(key & ((int64_t{1} << kModeBits) - 1))])] += counts;
-    }
-  }
-};
-
 }  // namespace
 
 TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const {
@@ -630,13 +662,7 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
             Contribution(priority, +1);
       },
       [](PartialCells &into, PartialCells &&from) { into.Merge(std::move(from)); }, partitions);
-  // Modes in partition order: the printed spelling is the first partition's.
-  for (const auto &mode : joined.modes)
-    ShipmodeId(state, mode);
-  for (const auto &[key, counts] : joined.cells)
-    AddToCell(state, static_cast<int32_t>(key >> kModeBits),
-              joined.modes[static_cast<std::size_t>(key & ((int64_t{1} << kModeBits) - 1))],
-              counts);
+  AddPartial(state, joined);
   return state;
 }
 
