@@ -13,6 +13,7 @@ scenario and an engine **adapter** runs it.
 | `slot_read_after_commit` | Writer commits on one connection and another connection reads right after, while other readers keep the accelerators busy | Every such read includes the commit |
 | `slot_txn_edges` | Rollback, savepoint rollback / release (where supported), a table-wide TRUNCATE-and-restore | Exact answers throughout; no rebuild after aborts; the accelerator serves again after TRUNCATE |
 | `slot_restart` | Accelerator workers / processes restarted under load | Exact answers across the restart; hits resume. Skipped (not applicable) for in-process engines |
+| `slot_tsan` | The four scenarios above under ThreadSanitizer (`run_aux_tsan.sh slots`) | No report with a frame in `substrate/`, `backends/` or `accelerators/` |
 | `slot_differential` | The 22-query differential and the RF differential | Every query matches the base SQL |
 
 Capture completeness is part of every scenario: all writes come from plain
@@ -43,6 +44,21 @@ Known limit of the DuckDB workload: the host maps a captured table to one
 `TableId`, so only queries that number a table identically can be registered
 together (Q1 and Q6 both use lineitem = 1). `ACCEL_SLOT_GATE_QUERIES` selects
 the queries; combining queries with different ids fails the gates by design.
+
+## ThreadSanitizer (`run_aux_tsan.sh`)
+
+`run_aux_tsan.sh <query> [engine]` (gate `aux_tsan`, aux-state audit and required
+whenever a module has parallel read/build/maintenance code) and
+`run_aux_tsan.sh slots` (gate `slot_tsan`) build a cached `ACCEL_SANITIZE=thread`
+tree (`build-tsan`, or `ACCEL_TSAN_BUILD_DIR`; the engine stays uninstrumented) and
+run the query's smoke test and shared differential, or the slot scenarios, with
+`ACCEL_AUX_READ/BUILD/MAINT_THREADS=8` (`ACCEL_TSAN_THREADS`) and
+`ACCEL_AUX_TEST_GRAIN=1`, a test-only cap on every slice grain so even one-row
+commits split across threads. It fails on a mismatch or a report whose stack
+touches our code; reports confined to the engine are listed in the logs and
+ignored (`tsan.supp` is for engine races that cross our frames, never for our
+code). Logs: `<artifacts>/gates/aux_tsan_logs/`. Only the in-process DuckDB host
+is run; other engines skip.
 
 ## Not yet gates
 

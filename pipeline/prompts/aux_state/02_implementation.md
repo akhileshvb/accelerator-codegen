@@ -80,7 +80,8 @@ Required loop before you stop:
 3. **Correctness gate (required):** MCP `run_correctness` / `request_gate` `aux_correctness` until pass.
 4. If fail: fix implementation (prefer kernel/host registration over weakening fixtures); rebuild; retry.
 5. **Multi-connection (required):** MCP `run_multi_connection` until pass (engine-specific ctest when not duckdb).
-6. Broader unit coverage / bench targets when listed in post-stage gates.
+6. **ThreadSanitizer (required when the module has parallel read/build/maintenance code, i.e. any `ParallelEach` / `ParallelReduce` / `PartitionedBuild`):** `request_gate` `aux_tsan` until pass; it fails on a data race in substrate/backends/accelerators code or a forced-grain differential mismatch.
+7. Broader unit coverage / bench targets when listed in post-stage gates.
 
 Only after required mid-stage gates report **pass** may you end the stage.
 
@@ -98,6 +99,7 @@ Correctness checklist (must pass before you consider the stage done):
 8. **Generality (`hard_guidelines.md` §4):** every template parameter is answered exactly for any value incl. NULL (values not precomputed use a fast exact path, never a per-call rebuild); off-spec data handled; no key/offset/id packing narrower than 64-bit; no node-based or per-row-string maps; decimals exact; writes cost O(touched), no `RebuildAll` for routine writes. State is versioned copy-on-write and built from `prims/` primitives chosen via the "Which one to use" guide in `prims/README.md` (a missing generic primitive is published with `primitive_publish` first; no private COW container, no per-commit deep copy).
 9. Unit/differential tests include off-spec parameters (NULL, month-end / Feb 29 dates, partial/mixed-case/empty LIKE patterns, unknown enum values, equal params, out-of-range numbers), off-spec rows, and wide/negative keys. Run the host's `test_<engine>_<bench>_params` (plain, `--data-perturb`, `--wide-keys`, `--negative-keys`) when it exists.
 10. **Large scale (`scale_factor_contract.md`):** every `scale_plan.failure_classes` item is implemented as stated; the verification set was run and passed (shared differential on `tpch_shift` and `tpch_big` including writes; the differential at 1 and N read/build/maintenance threads; `ReadAuxExecuteCounts` and the decision log show no unexpected rebuild or fallback). Report the commands and results.
+11. **Races:** if the module has parallel read/build/maintenance code, `request_gate` `aux_tsan` has passed (ThreadSanitizer, `ACCEL_AUX_TEST_GRAIN=1`; fails on a race in substrate/backends/accelerators code or a forced-split mismatch).
 
 ## Structural re-analysis (rare)
 

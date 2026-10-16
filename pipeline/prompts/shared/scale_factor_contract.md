@@ -47,7 +47,7 @@ Each row is a way a design that passes at SF1-SF20 breaks or stops being increme
 Verification set for every accelerator (in addition to the SF1 gates; none of this is a gate yet, so run it and report it):
 
 1. `scripts/make_tpch_magnitude_dbs.sh <tpch_sf1.duckdb> <dir>` once, then the shared differential (`test_tpch_shared_differential`, and the engine's equivalent) with `ACCEL_TPCH_DB` or the path argument on `tpch_shift.duckdb` and `tpch_big.duckdb`: reads, RF-shaped bulk writes and point writes.
-2. The same differential at `ACCEL_AUX_READ_THREADS` / `BUILD_THREADS` / `MAINT_THREADS` = 1 and a higher value. A phase below its grain runs as one slice, so also compare maintenance on a refresh of at least 8 grains (the official RF at SF20, or a bulk write of that size); at SF1 only builds and large reads are multi-slice.
+2. The same differential at `ACCEL_AUX_READ_THREADS` / `BUILD_THREADS` / `MAINT_THREADS` = 1 and a higher value. A phase below its grain runs as one slice; set `ACCEL_AUX_TEST_GRAIN=1` (test-only cap on every slice grain) so even one-row commits and small reads split across threads, and the results must be identical.
 3. `ReadAuxExecuteCounts` and the maintenance decision log across the writes: no unexpected rebuild, no fallback.
 
 ## Optimization workflow implication

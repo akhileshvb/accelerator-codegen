@@ -13,7 +13,7 @@ Produce a small frozen contract that later correctness gates enforce via the **s
 1. **Point writes** — several distinct rows that must invalidate aux (multiple probes, not one)
 2. **Bulk writes** — RF-style multi-row / multi-chunk churn when the query depends on `orders`/`lineitem`
 3. **Sequences** — more than one invalidating write applied before restores (incremental, not only RO)
-4. **Large-scale shapes** — the failure classes of `scale_factor_contract.md` that `correctness_facts.scale_plan` says apply: writes of rows with keys beyond 2^32 and with value-inflated money columns; RF-sized bulk writes spread over the key space, repeated insert/delete cycles (state must not grow), and a bulk write of at least 8 parallel grains compared at 1 vs N maintenance threads
+4. **Large-scale shapes** — the failure classes of `scale_factor_contract.md` that `correctness_facts.scale_plan` says apply: writes of rows with keys beyond 2^32 and with value-inflated money columns; RF-sized bulk writes spread over the key space, repeated insert/delete cycles (state must not grow), and a bulk write compared at 1 vs N maintenance threads with `ACCEL_AUX_TEST_GRAIN=1` (forces the split; also raced by the `aux_tsan` gate)
 
 ## Inputs
 

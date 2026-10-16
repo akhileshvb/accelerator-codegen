@@ -12,7 +12,7 @@ here. Each rule is owned by one implementation layer (or is global).
 
 Gates (`engine_build` plus each layer gate in `layers.md`) are necessary but
 **not sufficient**: a green harness can still fail audit if a checklist item
-is missing in source. The slot gates (`slot_*`, validation stage) judge the
+is missing in source. The slot gates (`slot_*`, validation stage, including `slot_tsan`) judge the
 behaviour of the finished backend under concurrency.
 
 ---
