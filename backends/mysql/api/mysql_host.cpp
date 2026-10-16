@@ -3,6 +3,7 @@
 
 #include "backends/mysql/api/mysql_host.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -31,6 +32,17 @@ std::chrono::microseconds BuildWait() {
     return value && *value ? std::strtoll(value, nullptr, 10) : 10'000'000LL;
   }());
   return wait;
+}
+
+// Connections one build may hold (a partitioned scan runs one partition at a
+// time per connection); ACCEL_MYSQL_SCAN_LANES.
+std::size_t MaxScanLanes() {
+  static const std::size_t lanes = [] {
+    const char *value = std::getenv("ACCEL_MYSQL_SCAN_LANES");
+    const long long parsed = value && *value ? std::strtoll(value, nullptr, 10) : 8;
+    return static_cast<std::size_t>(std::max(1LL, parsed));
+  }();
+  return lanes;
 }
 
 // The build's read: one consistent view of the database, routing this
@@ -188,7 +200,7 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
         impl.changed.notify_all();
       }
     } reopen{*this};
-    return std::make_unique<MysqlBuildSnapshot>(at, accelerator.WorkerCount());
+    return std::make_unique<MysqlBuildSnapshot>(at, std::min(accelerator.WorkerCount(), MaxScanLanes()));
   }
   bool EngineWorkOnHostThread() const override { return false; }
   void RunBuild(runtime::AcceleratorRuntime &accelerator, runtime::BuildSnapshot &,
