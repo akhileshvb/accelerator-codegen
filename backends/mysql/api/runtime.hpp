@@ -157,6 +157,8 @@ struct SplitTable {
   std::string group_by;     // GROUP BY list; empty for none. Each partition then
                             // groups its own range: a group may come back once per
                             // partition, and the caller sums the partial groups.
+  std::string bounds_from;  // FROM of the MIN/MAX of split_column; empty: `table`.
+                            // For a join, name the table the column lives in.
 };
 // `SELECT <select> FROM <table> [WHERE (<where>)] [GROUP BY <group_by>]`: the
 // whole table, as the serial scan reads it.

@@ -607,7 +607,7 @@ std::string SelectWhere(const SplitTable &table, const std::string &condition) {
 std::optional<std::pair<int64_t, int64_t>> SplitBounds(const SplitTable &table) {
   std::optional<std::pair<int64_t, int64_t>> bounds;
   ScanTypedTuples("SELECT MIN(" + table.split_column + "), MAX(" + table.split_column + ") FROM " +
-                      table.table,
+                      (table.bounds_from.empty() ? table.table : table.bounds_from),
                   [&](const std::vector<std::string> &cols) {
                     if (!TypedIsNull(cols, 0)) bounds.emplace(TypedInt(cols, 0), TypedInt(cols, 1));
                   });
