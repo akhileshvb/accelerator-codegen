@@ -55,10 +55,11 @@ struct TpchQ14PartDayRevenue {
 class TpchQ14InitialScan {
 public:
   virtual ~TpchQ14InitialScan() = default;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ14PartInput &)> &) = 0;
-  // Split into `partitions` fixed row ranges: sink(partition, row) runs
-  // concurrently for different partitions, one thread per partition.
+  // Both scans are split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ14PartInput &)> &sink) = 0;
   virtual void ScanLineitemsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ14LineitemInput &)> &sink) = 0;
