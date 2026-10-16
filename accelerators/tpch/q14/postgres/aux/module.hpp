@@ -57,8 +57,11 @@ public:
   virtual ~TpchQ14InitialScan() = default;
   virtual void ScanParts(
       const std::function<void(const TpchQ14PartInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ14LineitemInput &)> &) = 0;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ14LineitemInput &)> &sink) = 0;
   // lineitem WHERE l_partkey IN (partkeys) GROUP BY l_partkey, shipdate.
   virtual void ScanPartDayRevenue(
       const std::vector<int64_t> &partkeys,

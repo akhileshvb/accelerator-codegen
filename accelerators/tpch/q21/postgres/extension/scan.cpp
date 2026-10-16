@@ -41,22 +41,31 @@ void ScanTpchQ21Nations(
       });
 }
 
-void ScanTpchQ21FulfilledOrders(const std::function<void(int64_t)> &consumer) {
-  ScanColumns("orders", {IntColumn("o_orderkey"), TextColumn("o_orderstatus")},
-              [&](const BuildRow &row) {
-                if (row.Char(1) == 'F')
-                  consumer(row.Int(0));
-              });
+void ScanTpchQ21FulfilledOrdersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, int64_t)> &sink) {
+  ScanPartitioned(services, "orders", {IntColumn("o_orderkey"), TextColumn("o_orderstatus")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      if (row.Char(1) == 'F')
+                        sink(partition, row.Int(0));
+                    }
+                  });
 }
 
-void ScanTpchQ21Lineitems(
-    const std::function<void(const query::TpchQ21LineInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
-               DateColumn("l_commitdate"), DateColumn("l_receiptdate")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0), row.Int(1), row.Date(3) > row.Date(2)});
-              });
+void ScanTpchQ21LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ21LineInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
+                   DateColumn("l_commitdate"), DateColumn("l_receiptdate")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1), row.Date(3) > row.Date(2)});
+                    }
+                  });
 }
 
 // Lineitems of the given fulfilled orders, one order's rows consecutive.
@@ -93,14 +102,16 @@ public:
       override {
     scans::ScanTpchQ21Nations(consumer);
   }
-  void ScanFulfilledOrders(
-      const std::function<void(int64_t)> &consumer) override {
-    scans::ScanTpchQ21FulfilledOrders(consumer);
+  void ScanFulfilledOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, int64_t)> &sink) override {
+    scans::ScanTpchQ21FulfilledOrdersPartitioned(services, partitions, sink);
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ21LineInput &)> &consumer)
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ21LineInput &)> &sink)
       override {
-    scans::ScanTpchQ21Lineitems(consumer);
+    scans::ScanTpchQ21LineitemsPartitioned(services, partitions, sink);
   }
   bool LookupFulfilledLineitems(
       const std::vector<int64_t> &orderkeys,

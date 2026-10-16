@@ -102,9 +102,12 @@ struct TpchQ13PatternHist {
 };
 
 struct TpchQ13State {
-  // Per-custkey columns for keys in [0, 2^36); negative / huge keys live in the
-  // sparse hash (exact, pay only for what is present).
-  static constexpr int64_t kDenseKeyLimit = int64_t{1} << 36;
+  // Per-custkey columns for keys in [0, dense_limit); other keys live in the
+  // sparse hash (exact, pay only for what is present). The limit is set once at
+  // build from the customer keys, so a sparse key space (few customers, huge
+  // keys) pays no chunk of a column per key.
+  int64_t dense_limit = 0;
+  void SizeDenseKeys(int64_t customer_count, int64_t max_custkey);
   struct SparseSlot {
     int32_t count = 0;
     uint8_t valid = 0;
@@ -112,7 +115,7 @@ struct TpchQ13State {
   core::ChunkedCowArray<int32_t> order_count{0};
   core::ChunkedCowArray<uint8_t> customer_valid{0};
   core::ShardedCowHashMap<SparseSlot, 8> sparse_customers;
-  static bool Dense(int64_t key) { return key >= 0 && key < kDenseKeyLimit; }
+  bool Dense(int64_t key) const { return key >= 0 && key < dense_limit; }
   int32_t Count(int64_t key) const;
   bool Valid(int64_t key) const;
   void AddCount(int64_t key, int32_t delta);

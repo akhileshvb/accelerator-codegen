@@ -1,6 +1,8 @@
 #include "tpch/q18/postgres/aux/module.hpp"
 #include "tpch/q18/calibration_writes.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -733,16 +735,39 @@ TpchQ18State TpchQ18Module::BuildState(core::AuxEngineServices &services) const 
 
   // The scans only deal the rows out to buckets by order; the buckets are
   // joined and summed in parallel slices and then merged into the state.
-  std::vector<BuildBucket> buckets(kBuildBuckets);
-  const auto bucket_of = [&](int64_t orderkey) -> BuildBucket & {
-    return buckets[static_cast<uint64_t>(orderkey) % kBuildBuckets];
+  const auto bucket_of = [](int64_t orderkey) {
+    return static_cast<uint64_t>(orderkey) % kBuildBuckets;
   };
-  initial_scan->ScanOrders([&](const TpchQ18OrderInput &input) {
-    bucket_of(input.key).orders.push_back(input);
-  });
-  initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
-    bucket_of(input.orderkey).lineitems.push_back({input.orderkey, input.quantity_raw});
-  });
+  const std::size_t partitions = BuildPartitions(services);
+  auto orders = core::PartitionedBuild<Buckets<TpchQ18OrderInput>>(
+      services, [] { return Buckets<TpchQ18OrderInput>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ18OrderInput &input) {
+              sink(partition, OneRowBatch<TpchQ18OrderInput>{input});
+            });
+      },
+      [&](Buckets<TpchQ18OrderInput> &into, const TpchQ18OrderInput &input) {
+        into[bucket_of(input.key)].push_back(input);
+      },
+      AppendBuckets<TpchQ18OrderInput>, partitions);
+  auto lineitems = core::PartitionedBuild<Buckets<OrderQuantity>>(
+      services, [] { return Buckets<OrderQuantity>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ18LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ18LineitemInput>{input});
+            });
+      },
+      [&](Buckets<OrderQuantity> &into, const TpchQ18LineitemInput &input) {
+        into[bucket_of(input.orderkey)].push_back({input.orderkey, input.quantity_raw});
+      },
+      AppendBuckets<OrderQuantity>, partitions);
+  std::vector<BuildBucket> buckets(kBuildBuckets);
+  for (std::size_t b = 0; b < kBuildBuckets; ++b) {
+    buckets[b].orders = std::move(orders[b]);
+    buckets[b].lineitems = std::move(lineitems[b]);
+  }
   std::vector<BucketRecords> built(kBuildBuckets);
   core::ParallelSlices(services, kBuildBuckets, 1,
                        [&](std::size_t, std::size_t begin, std::size_t end) {

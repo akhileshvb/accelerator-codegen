@@ -69,6 +69,14 @@ public:
       const std::function<void(const TpchQ12OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ12LineitemInput &)> &) = 0;
+  // The same two scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ12OrderInput &)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ12LineitemInput &)> &sink) = 0;
   // Qualifying lineitems of the given orders, as the database stands now
   // (including this transaction's writes).  Backends override this with an
   // index lookup; the default filters a full scan.

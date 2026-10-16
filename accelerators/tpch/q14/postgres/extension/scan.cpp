@@ -32,15 +32,18 @@ void ScanTpchQ14Parts(
               });
 }
 
-void ScanTpchQ14Lineitems(
-    const std::function<void(const query::TpchQ14LineitemInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {IntColumn("l_partkey"), DateColumn("l_shipdate"),
-               DecimalColumn("l_extendedprice", 2),
-               DecimalColumn("l_discount", 2)},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0), row.Date(1), row.Decimal(2), row.Decimal(3)});
-              });
+void ScanTpchQ14LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ14LineitemInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {IntColumn("l_partkey"), DateColumn("l_shipdate"),
+                   DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2)},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Date(1), row.Decimal(2), row.Decimal(3)});
+                    }
+                  });
 }
 
 // Point re-aggregation of the given parts' lineitems (l_partkey is indexed).
@@ -73,10 +76,11 @@ public:
       override {
     scans::ScanTpchQ14Parts(consumer);
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ14LineitemInput &)> &consumer)
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ14LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ14Lineitems(consumer);
+    scans::ScanTpchQ14LineitemsPartitioned(services, partitions, sink);
   }
   void ScanPartDayRevenue(
       const std::vector<int64_t> &partkeys,

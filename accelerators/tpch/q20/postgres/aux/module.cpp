@@ -3,6 +3,8 @@
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -720,13 +722,36 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
 
   // The scans only deal the rows out to buckets by block; the buckets are then
   // sorted into blocks, filled and encoded in parallel slices.
+  const std::size_t partitions = BuildPartitions(services);
+  auto partsupps = core::PartitionedBuild<Buckets<TpchQ20PartsuppInput>>(
+      services, [] { return Buckets<TpchQ20PartsuppInput>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsuppsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ20PartsuppInput &input) {
+              sink(partition, OneRowBatch<TpchQ20PartsuppInput>{input});
+            });
+      },
+      [](Buckets<TpchQ20PartsuppInput> &into, const TpchQ20PartsuppInput &input) {
+        into[BucketOf(input.partkey)].push_back(input);
+      },
+      AppendBuckets<TpchQ20PartsuppInput>, partitions);
+  auto lineitems = core::PartitionedBuild<Buckets<TpchQ20LineitemInput>>(
+      services, [] { return Buckets<TpchQ20LineitemInput>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ20LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ20LineitemInput>{input});
+            });
+      },
+      [](Buckets<TpchQ20LineitemInput> &into, const TpchQ20LineitemInput &input) {
+        into[BucketOf(input.partkey)].push_back(input);
+      },
+      AppendBuckets<TpchQ20LineitemInput>, partitions);
   std::vector<BucketRows> buckets(kBuildBuckets);
-  initial_scan->ScanPartsupps([&](const TpchQ20PartsuppInput &input) {
-    buckets[BucketOf(input.partkey)].partsupps.push_back(input);
-  });
-  initial_scan->ScanLineitems([&](const TpchQ20LineitemInput &input) {
-    buckets[BucketOf(input.partkey)].lineitems.push_back(input);
-  });
+  for (std::size_t b = 0; b < kBuildBuckets; ++b) {
+    buckets[b].partsupps = std::move(partsupps[b]);
+    buckets[b].lineitems = std::move(lineitems[b]);
+  }
   std::vector<std::vector<EncodedBlock>> encoded(kBuildBuckets);
   core::ParallelSlices(services, kBuildBuckets, 1,
                        [&](std::size_t, std::size_t begin, std::size_t end) {

@@ -47,6 +47,11 @@ struct TpchQ15SupplierInput {
 class TpchQ15InitialScan {
 public:
   virtual ~TpchQ15InitialScan() = default;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ15LineitemInput &)> &sink) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ15LineitemInput &)> &) = 0;
   virtual void ScanLineitemsForShipdateRange(

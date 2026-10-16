@@ -57,6 +57,14 @@ public:
       const std::function<void(const TpchQ18OrderInput &)> &) = 0;
   virtual void ScanCustomers(
       const std::function<void(const TpchQ18CustomerInput &)> &) = 0;
+  // The same two scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18LineitemInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18OrderInput &)> &sink) = 0;
 
   // Names of the given customers (customers that do not exist are not
   // reported). Engines override this with a keyed SQL lookup; the default

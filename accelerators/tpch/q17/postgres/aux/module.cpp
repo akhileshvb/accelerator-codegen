@@ -1,6 +1,8 @@
 #include "tpch/q17/postgres/aux/module.hpp"
 #include "tpch/q17/calibration_writes.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -405,11 +407,20 @@ void TpchQ17Module::Build(core::AuxEngineServices &services,
 
   // The scan only deals the rows out to buckets; the buckets are folded in
   // parallel slices and then merged into the state in bucket order.
-  std::vector<std::vector<PartRow>> buckets(kBuildBuckets);
-  initial_scan->ScanLineitems([&](const TpchQ17LineitemInput &input) {
-    buckets[static_cast<uint64_t>(input.partkey) % kBuildBuckets].push_back(
-        {input.partkey, input.quantity_raw, input.extendedprice_raw});
-  });
+  auto buckets = core::PartitionedBuild<Buckets<PartRow>>(
+      services, [] { return Buckets<PartRow>(kBuildBuckets); },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, partitions,
+            [&](std::size_t partition, const TpchQ17LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ17LineitemInput>{input});
+            });
+      },
+      [](Buckets<PartRow> &into, const TpchQ17LineitemInput &input) {
+        into[static_cast<uint64_t>(input.partkey) % kBuildBuckets].push_back(
+            {input.partkey, input.quantity_raw, input.extendedprice_raw});
+      },
+      AppendBuckets<PartRow>, BuildPartitions(services));
   std::vector<std::vector<BuiltPart>> folded(kBuildBuckets);
   core::ParallelSlices(services, kBuildBuckets, 1,
                        [&](std::size_t, std::size_t begin, std::size_t end) {

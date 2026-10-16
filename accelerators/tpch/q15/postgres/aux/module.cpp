@@ -2,6 +2,8 @@
 #include "tpch/q15/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <array>
@@ -496,15 +498,29 @@ void TpchQ15Module::Build(core::AuxEngineServices &services,
 
   // The scan only sorts rows into months; the months, which share nothing, are
   // then built in parallel slices.
-  std::map<int64_t, std::vector<MonthRow>> rows_by_month;
-  initial_scan->ScanLineitems([&](const TpchQ15LineitemInput &input) {
-    const int64_t revenue = TpchQ15RevenueRaw(
-        input.extended_price_raw, input.extended_price_scale,
-        input.discount_raw, input.discount_scale);
-    const auto pos = PositionOf(input.shipdate_days);
-    rows_by_month[pos.month_index].push_back(
-        {input.suppkey, revenue, pos.day_offset});
-  });
+  using MonthRows = std::map<int64_t, std::vector<MonthRow>>;
+  auto rows_by_month = core::PartitionedBuild<MonthRows>(
+      services, [] { return MonthRows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ15LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ15LineitemInput>{input});
+            });
+      },
+      [](MonthRows &into, const TpchQ15LineitemInput &input) {
+        const int64_t revenue = TpchQ15RevenueRaw(
+            input.extended_price_raw, input.extended_price_scale,
+            input.discount_raw, input.discount_scale);
+        const auto pos = PositionOf(input.shipdate_days);
+        into[pos.month_index].push_back({input.suppkey, revenue, pos.day_offset});
+      },
+      [](MonthRows &into, MonthRows &&from) {
+        for (auto &[month, rows] : from) {
+          auto &dest = into[month];
+          dest.insert(dest.end(), rows.begin(), rows.end());
+        }
+      },
+      BuildPartitions(services));
   std::vector<std::pair<int64_t, std::vector<MonthRow>>> months(
       std::make_move_iterator(rows_by_month.begin()),
       std::make_move_iterator(rows_by_month.end()));

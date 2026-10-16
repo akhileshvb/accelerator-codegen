@@ -52,6 +52,33 @@ void ScanTpchQ18Customers(
               });
 }
 
+void ScanTpchQ18LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ18LineitemInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {IntColumn("l_orderkey"), DecimalColumn("l_quantity", 2)}, partitions,
+                  [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Decimal(1)});
+                    }
+                  });
+}
+
+void ScanTpchQ18OrdersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ18OrderInput &)> &sink) {
+  ScanPartitioned(services, "orders",
+                  {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+                   DateColumn("o_orderdate"), DecimalColumn("o_totalprice", 2)},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1), row.Date(2), row.Decimal(3)});
+                    }
+                  });
+}
+
 // Keyed lookup of customer names (the index on c_custkey answers it).
 void LookupTpchQ18CustomerNames(
     const std::vector<int64_t> &custkeys,
@@ -83,6 +110,18 @@ public:
       const std::function<void(const query::TpchQ18CustomerInput &)> &consumer)
       override {
     scans::ScanTpchQ18Customers(consumer);
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ18LineitemInput &)> &sink)
+      override {
+    scans::ScanTpchQ18LineitemsPartitioned(services, partitions, sink);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ18OrderInput &)> &sink)
+      override {
+    scans::ScanTpchQ18OrdersPartitioned(services, partitions, sink);
   }
   void LookupCustomerNames(
       const std::vector<int64_t> &custkeys,
