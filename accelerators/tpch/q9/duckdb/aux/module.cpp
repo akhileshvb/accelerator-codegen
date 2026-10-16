@@ -29,6 +29,12 @@ constexpr std::size_t kCellsGrain = 16;
 constexpr std::size_t kCandidateGrain = 8192;
 // Profit slots per read slice: ~1000 name substring tests each, ~0.1 ms per slot.
 constexpr std::size_t kSlotGrain = 16;
+// Maintenance: slots whose profit-partition pointer vector is copied per slice (~10 us each).
+constexpr std::size_t kSlotCopyGrain = 8;
+// Maintenance: slots whose lineitem deltas are applied per slice (~0.1 ms each at RF size).
+constexpr std::size_t kSlotApplyGrain = 16;
+// Maintenance: slots whose net cell deltas are applied per slice.
+constexpr std::size_t kNetSlotGrain = 8;
 constexpr uint32_t kVersion = 6;
 constexpr uint32_t kCompleteStateMagic = 0x43395141; // Q9AC
 constexpr uint32_t kMetadataMagic = 0x4D395141;      // Q9AM
@@ -724,9 +730,10 @@ bool TpchQ9State::PairSnapshot(int64_t partkey, const Q9PartRecord &rec,
 }
 
 void TpchQ9State::ApplyNetCellDeltas(
+    const core::AuxEngineServices &services,
     std::vector<std::vector<CellDelta>> &chunks) {
-  // Bucket by slot: each slot is netted and applied on its own (cells of its
-  // parts) and the cube deltas are summed per token.
+  // Bucket by slot: slots are independent, so each is netted and applied by
+  // one task (cells of its parts) while the cube deltas are summed per slice.
   std::vector<std::vector<CellDelta>> by_slot(profit_slot_count);
   for (auto &chunk : chunks) {
     for (const auto &d : chunk)
@@ -749,9 +756,25 @@ void TpchQ9State::ApplyNetCellDeltas(
     std::vector<CellDelta> sparse; // outside the dense range (token in .partkey)
     std::vector<std::string_view> sparse_tokens;
   };
-  TokenAcc ta;
+  const auto merge_tokens = [](TokenAcc &into, TokenAcc &&from) {
+    for (std::size_t t = 0; t < from.names.size(); ++t) {
+      auto it = into.index.find(from.names[t]);
+      if (it == into.index.end()) {
+        it = into.index.emplace(from.names[t], into.acc.size()).first;
+        into.names.push_back(from.names[t]);
+        into.acc.emplace_back();
+        into.acc.back().fill(0);
+      }
+      for (int c = 0; c < kDense; ++c)
+        into.acc[it->second][c] += from.acc[t][c];
+    }
+    into.sparse.insert(into.sparse.end(), from.sparse.begin(), from.sparse.end());
+    into.sparse_tokens.insert(into.sparse_tokens.end(),
+                              from.sparse_tokens.begin(),
+                              from.sparse_tokens.end());
+  };
 
-  for (const auto slot : active) {
+  const auto apply_slot = [&](core::PartitionId slot, TokenAcc &ta) {
     auto &deltas = by_slot[slot];
     std::sort(deltas.begin(), deltas.end(),
               [](const CellDelta &a, const CellDelta &b) {
@@ -842,7 +865,15 @@ void TpchQ9State::ApplyNetCellDeltas(
         }
       }
     }
-  }
+  };
+  TokenAcc ta;
+  core::ParallelReduce(
+      services, active.size(), kNetSlotGrain, ta,
+      [&](TokenAcc &acc, std::size_t begin, std::size_t end) {
+        for (std::size_t t = begin; t < end; ++t)
+          apply_slot(active[t], acc);
+      },
+      merge_tokens);
 
   for (std::size_t t = 0; t < ta.names.size(); ++t) {
     const std::vector<std::string> one{std::string(ta.names[t])};
@@ -2120,8 +2151,13 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
       if (slot < slot_count)
         copies.emplace_back(slot, typed->state.get());
     }
-    for (const auto &[slot, state] : copies)
-      new_state->profit_partitions[slot] = state->profit_partitions[0];
+    // Slot copies (pointer vectors of shared records) are independent.
+    core::ParallelSlices(services, copies.size(), kSlotCopyGrain,
+                         [&](std::size_t, std::size_t begin, std::size_t end) {
+                           for (std::size_t i = begin; i < end; ++i)
+                             new_state->profit_partitions[copies[i].first] =
+                                 copies[i].second->profit_partitions[0];
+                         });
   }
 
   // Part changes affect every pair the part has aggregates for.
@@ -2158,20 +2194,26 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   std::vector<std::vector<TpchQ9State::CellDelta>> net_chunks(chunk_count);
   std::vector<TpchQ9State::PairSnap> snaps(affected.size());
   std::vector<uint8_t> snap_valid(affected.size(), 0);
-  for (std::size_t c = 0; c < chunk_count; ++c) {
-    const std::size_t end = std::min(affected.size(), (c + 1) * kChunk);
-    for (std::size_t idx = c * kChunk; idx < end; ++idx) {
-      const auto partkey = affected[idx].first;
-      const auto suppkey = affected[idx].second;
-      if (renamed.count(partkey))
-        continue;
-      const auto *rec = new_state->FindPart(partkey);
-      if (!rec)
-        continue;
-      snap_valid[idx] = TpchQ9State::PairSnapshot(
-          partkey, *rec, suppkey, -1, *join_side, snaps[idx], net_chunks[c]);
-    }
-  }
+  // Read-only over the slots and the published side image: parallel by chunk.
+  core::ParallelSlices(
+      services, chunk_count, 1,
+      [&](std::size_t, std::size_t chunk_begin, std::size_t chunk_end) {
+        for (std::size_t c = chunk_begin; c < chunk_end; ++c) {
+          const std::size_t end = std::min(affected.size(), (c + 1) * kChunk);
+          for (std::size_t idx = c * kChunk; idx < end; ++idx) {
+            const auto partkey = affected[idx].first;
+            const auto suppkey = affected[idx].second;
+            if (renamed.count(partkey))
+              continue;
+            const auto *rec = new_state->FindPart(partkey);
+            if (!rec)
+              continue;
+            snap_valid[idx] = TpchQ9State::PairSnapshot(
+                partkey, *rec, suppkey, -1, *join_side, snaps[idx],
+                net_chunks[c]);
+          }
+        }
+      });
   for (const auto &[partkey, suppkey] : affected) {
     if (!renamed.count(partkey))
       continue;
@@ -2217,28 +2259,36 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
         active.push_back(slot);
     std::vector<std::vector<std::pair<int64_t, int64_t>>> created(
         active.size());
-    for (std::size_t t = 0; t < active.size(); ++t) {
-      auto &order = by_slot[active[t]];
-      std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-        return deltas[a].partkey < deltas[b].partkey;
-      });
-      Q9PartRecord *rec = nullptr;
-      int64_t rec_partkey = 0;
-      for (const auto k : order) {
-        const auto &delta = deltas[k];
-        if (!rec || rec_partkey != delta.partkey) {
-          rec = &new_state->PartRecord(delta.partkey);
-          rec_partkey = delta.partkey;
-        }
-        const int64_t sign = delta.sign;
-        const int64_t rev = delta.extendedprice_raw *
-                            (static_cast<int64_t>(100) - delta.discount_raw);
-        if (TpchQ9State::AddPairAgg(*rec, static_cast<int32_t>(delta.suppkey),
-                                    years[k], sign * rev,
-                                    sign * delta.quantity_raw))
-          created[t].emplace_back(delta.suppkey, delta.partkey);
-      }
-    }
+    // Slots are disjoint; each task owns its slot's records and `created[t]`.
+    core::ParallelSlices(
+        services, active.size(), kSlotApplyGrain,
+        [&](std::size_t, std::size_t begin, std::size_t end) {
+          for (std::size_t t = begin; t < end; ++t) {
+            auto &order = by_slot[active[t]];
+            std::stable_sort(order.begin(), order.end(),
+                             [&](uint32_t a, uint32_t b) {
+                               return deltas[a].partkey < deltas[b].partkey;
+                             });
+            Q9PartRecord *rec = nullptr;
+            int64_t rec_partkey = 0;
+            for (const auto k : order) {
+              const auto &delta = deltas[k];
+              if (!rec || rec_partkey != delta.partkey) {
+                rec = &new_state->PartRecord(delta.partkey);
+                rec_partkey = delta.partkey;
+              }
+              const int64_t sign = delta.sign;
+              const int64_t rev =
+                  delta.extendedprice_raw *
+                  (static_cast<int64_t>(100) - delta.discount_raw);
+              if (TpchQ9State::AddPairAgg(*rec,
+                                          static_cast<int32_t>(delta.suppkey),
+                                          years[k], sign * rev,
+                                          sign * delta.quantity_raw))
+                created[t].emplace_back(delta.suppkey, delta.partkey);
+            }
+          }
+        });
     for (const auto &list : created)
       for (const auto &[suppkey, partkey] : list) {
         side_work->AddSuppPair(suppkey, partkey);
@@ -2286,42 +2336,46 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   // ── Pass B: add affected pairs' contributions under the NEW state ───────
-  for (std::size_t c = 0; c < chunk_count; ++c) {
-    auto &out = net_chunks[c];
-    const std::size_t end = std::min(affected.size(), (c + 1) * kChunk);
-    for (std::size_t idx = c * kChunk; idx < end; ++idx) {
-      const auto partkey = affected[idx].first;
-      const auto suppkey = affected[idx].second;
-      if (renamed.count(partkey))
-        continue;
-      const auto *rec = new_state->FindPart(partkey);
-      if (!rec)
-        continue;
-      TpchQ9State::PairSnap now;
-      const bool now_valid = TpchQ9State::PairSnapshot(
-          partkey, *rec, suppkey, +1, *side_work, now, out);
-      const auto &old = snaps[idx];
-      const bool old_valid = snap_valid[idx] != 0;
-      if (old_valid && now_valid && old.nation == now.nation) {
-        for (int32_t yi = 0; yi < Q9Pair::kYears; ++yi) {
-          const int64_t d = now.v[yi] - old.v[yi];
-          if (d != 0)
-            out.push_back({partkey, now.nation, Q9Pair::kYearBase + yi, d});
+  core::ParallelSlices(
+      services, chunk_count, 1,
+      [&](std::size_t, std::size_t chunk_begin, std::size_t chunk_end) {
+        for (std::size_t c = chunk_begin; c < chunk_end; ++c) {
+          auto &out = net_chunks[c];
+          const std::size_t end = std::min(affected.size(), (c + 1) * kChunk);
+          for (std::size_t idx = c * kChunk; idx < end; ++idx) {
+            const auto partkey = affected[idx].first;
+            const auto suppkey = affected[idx].second;
+            if (renamed.count(partkey))
+              continue;
+            const auto *rec = new_state->FindPart(partkey);
+            if (!rec)
+              continue;
+            TpchQ9State::PairSnap now;
+            const bool now_valid = TpchQ9State::PairSnapshot(
+                partkey, *rec, suppkey, +1, *side_work, now, out);
+            const auto &old = snaps[idx];
+            const bool old_valid = snap_valid[idx] != 0;
+            if (old_valid && now_valid && old.nation == now.nation) {
+              for (int32_t yi = 0; yi < Q9Pair::kYears; ++yi) {
+                const int64_t d = now.v[yi] - old.v[yi];
+                if (d != 0)
+                  out.push_back({partkey, now.nation, Q9Pair::kYearBase + yi, d});
+              }
+              continue;
+            }
+            if (old_valid)
+              for (int32_t yi = 0; yi < Q9Pair::kYears; ++yi)
+                if (old.v[yi] != 0)
+                  out.push_back(
+                      {partkey, old.nation, Q9Pair::kYearBase + yi, -old.v[yi]});
+            if (now_valid)
+              for (int32_t yi = 0; yi < Q9Pair::kYears; ++yi)
+                if (now.v[yi] != 0)
+                  out.push_back(
+                      {partkey, now.nation, Q9Pair::kYearBase + yi, now.v[yi]});
+          }
         }
-        continue;
-      }
-      if (old_valid)
-        for (int32_t yi = 0; yi < Q9Pair::kYears; ++yi)
-          if (old.v[yi] != 0)
-            out.push_back(
-                {partkey, old.nation, Q9Pair::kYearBase + yi, -old.v[yi]});
-      if (now_valid)
-        for (int32_t yi = 0; yi < Q9Pair::kYears; ++yi)
-          if (now.v[yi] != 0)
-            out.push_back(
-                {partkey, now.nation, Q9Pair::kYearBase + yi, now.v[yi]});
-    }
-  }
+      });
   for (const auto &[partkey, suppkey] : affected) {
     if (!renamed.count(partkey))
       continue;
@@ -2332,7 +2386,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     new_state->ApplyPairContribution(partkey, *rec, tokens, suppkey, +1,
                                      *side_work);
   }
-  new_state->ApplyNetCellDeltas(net_chunks);
+  new_state->ApplyNetCellDeltas(services, net_chunks);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
 

@@ -3,6 +3,7 @@
 #include "substrate/aux/core/byte_stream.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -1098,8 +1099,13 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     lines.resize(out);
   }
 
-  // Maintenance is single-threaded: the per-range / per-group tasks run in order.
-  auto for_each_index = [](std::size_t n, auto &&fn) {
+  // Runs fn(0..n): the per-range / per-group tasks are independent. A serial
+  // run (one worker) takes the plain loop.
+  auto for_each_index = [&](std::size_t n, auto &&fn) {
+    if (n > 1 && services.WorkerCount() > 1) {
+      services.ParallelFor(n, fn);
+      return;
+    }
     for (std::size_t i = 0; i < n; ++i)
       fn(i);
   };
@@ -1223,7 +1229,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
 
-  bool inconsistent = false;
+  std::atomic<bool> inconsistent{false};
 
   // (B1) Takes: one task per touched bin.
   {
