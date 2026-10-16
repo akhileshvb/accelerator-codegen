@@ -1,6 +1,8 @@
 // GENERATED BACKEND
 #include "backends/duckdb/engine/duckdb_aux_backend.hpp"
 
+#include <chrono>
+
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
@@ -38,7 +40,14 @@ void DuckDBAuxBackend::ParallelFor(std::size_t n, const std::function<void(std::
 }
 
 bool DuckDBAuxBackend::AnswerFromSql(const core::QueryArguments &arguments, core::AuxRowSink &sink) {
-  return sql_answer && sql_answer(arguments, sink);
+  if (!sql_answer) {
+    return false;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  const bool answered = sql_answer(arguments, sink);
+  runtime.NoteSqlFallbackUs(
+      std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count());
+  return answered;
 }
 
 ::duckdb::ClientContext *DuckDBAuxBackend::ExecutionContext() const {

@@ -162,6 +162,12 @@ struct AcceleratorRuntime::Impl {
   std::optional<Epoch> uncaptured_from; // the earliest uncaptured commit seen while no build was synced
   uint64_t build_failures = 0; // readers waiting for a build stop waiting when it fails
   std::optional<Clock::time_point> gap_since;
+  // What a reader that cannot be served weighs (C11): the running build's
+  // start, the last build's duration, and the engine-reported SQL time (a
+  // moving average).
+  std::optional<Clock::time_point> build_started;
+  double last_build_us = 0;
+  double sql_us = 0;
   AcceleratorStats stats;
 
   bool Synced() const { return applier.CurrentMode() == SequencedApplier::Mode::Synced; }
@@ -229,6 +235,42 @@ bool AcceleratorRuntime::Servable(Epoch epoch, const std::optional<Epoch> &appli
   return !applied_through || impl->applier.AppliedEpoch() >= *applied_through;
 }
 
+// Time until the state can serve a reader that finds it unservable and not
+// in-flight: a few queued commits are caught up at once; a build is as long
+// as the last one (else the cost model's estimate at `scale`) or, once
+// overrun, as long again. Holds state_mutex.
+double AcceleratorRuntime::UntilServableUs(const maintenance::CostModelParams &model,
+                                           double scale) const {
+  if (impl->Synced()) {
+    return 0;
+  }
+  const double estimate = impl->last_build_us > 0 ? impl->last_build_us : model.full_rebuild_us * scale;
+  if (!impl->build_started) {
+    return estimate;
+  }
+  const double elapsed = MicrosSince(*impl->build_started);
+  return estimate > elapsed ? estimate - elapsed : elapsed;
+}
+
+// The most a reader that cannot be served yet should wait (C11): an in-flight
+// commit is always waited out; otherwise only while the state is expected
+// sooner than the query's own SQL would finish (measured, else the cost
+// model's at `scale`), and then no longer than that. Holds state_mutex.
+uint64_t AcceleratorRuntime::WaitWorthUs(Epoch epoch, const maintenance::CostModelParams &model,
+                                         double scale) const {
+  if (impl->Synced() && epoch >= impl->in_flight_from) {
+    return kNever;
+  }
+  const double sql = impl->sql_us > 0 ? impl->sql_us : model.fallback_us * scale;
+  return UntilServableUs(model, scale) < sql ? static_cast<uint64_t>(sql) : 0;
+}
+
+void AcceleratorRuntime::NoteSqlFallbackUs(double us) {
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  constexpr double kWeight = 0.3;
+  impl->sql_us = impl->sql_us > 0 ? impl->sql_us + kWeight * (us - impl->sql_us) : us;
+}
+
 // Permanent: the epoch's versions were collapsed by a combined catch-up.
 bool AcceleratorRuntime::Collapsed(Epoch epoch) const {
   for (const auto &[from, to] : impl->collapsed) {
@@ -261,9 +303,16 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     const uint64_t failures = impl->build_failures; // before the build it may request
     lock.unlock();
     RequestBuild();
+    const auto &model = slots.CostModel(id);
+    const double scale = model.ScaleFor(DataScaleRows());
     lock.lock();
+    const uint64_t wait_us = std::min(options.max_wait_us, WaitWorthUs(epoch, model, scale));
+    if (wait_us == 0) {
+      impl->stats.reads_fallback++;
+      return ReadGuard(false, nullptr);
+    }
     impl->stats.reads_waited++;
-    const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
+    const auto deadline = Clock::now() + std::chrono::microseconds(wait_us);
     if (!impl->state_cv.wait_until(lock, deadline, [&] {
           return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
                  impl->build_failures != failures;
@@ -648,6 +697,7 @@ bool AcceleratorRuntime::BuildNow() {
       return true;
     }
     impl->applier.StartBuild();
+    impl->build_started = start;
     impl->build_invalidated = false;
     impl->build_epoch.reset();
   }
@@ -706,9 +756,12 @@ bool AcceleratorRuntime::BuildNow() {
     impl->uncaptured_from.reset();
     impl->stats.builds++;
     impl->stats.build_us += MicrosSince(start);
+    impl->last_build_us = MicrosSince(start);
+    impl->build_started.reset();
   } catch (...) {
     {
       std::lock_guard<std::mutex> lock(impl->state_mutex);
+      impl->build_started.reset();
       impl->applier.AbandonBuild();
     }
     BuildFailed();

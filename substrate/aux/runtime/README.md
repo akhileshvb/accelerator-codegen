@@ -82,9 +82,16 @@ or fall back by cost (C11).
 
 `AcceleratorRuntime::Read(epoch, args, sink)` resolves the version at `epoch`
 inside an `AuxReadScope` and runs `module.Execute` on the calling thread. It
-never takes the commit or build locks. If no version can serve `epoch`:
-wait up to the wait budget for a pending commit, build or catch-up, else
-return `ReadResult::Fallback` and the backend runs `ExecuteFallback`.
+never takes the commit or build locks. If no version can serve `epoch`
+(C11, wait or fall back by cost): a commit in flight is always waited out (up
+to the engine's wait ceiling); otherwise the reader waits only while the state
+is expected sooner than the query's SQL would finish, and no longer than that.
+The state is expected after the running build's remaining time (the last build's
+duration, else the cost model's `full_rebuild_us` at the current scale; zero
+for a catch-up); the SQL takes what the engine measured (`NoteSqlFallbackUs`),
+else the model's `fallback_us`. Otherwise `ReadResult::Fallback`: the backend
+runs `ExecuteFallback`, which answers from SQL and never builds state; the
+build a reader requests is the one every waiting or falling-back reader shares.
 
 ## Threads (C12)
 

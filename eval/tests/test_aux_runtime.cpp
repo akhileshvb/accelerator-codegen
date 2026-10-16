@@ -157,6 +157,13 @@ struct SumModule final : core::AuxQueryModule {
 
 // ---- fake slots ----
 
+// The SQL is far slower than any wait, so readers wait (until a test changes it).
+maintenance::CostModelParams SlowSqlModel() {
+  maintenance::CostModelParams params;
+  params.fallback_us = 60e6;
+  return params;
+}
+
 struct FakeSnapshot final : BuildSnapshot {
   explicit FakeSnapshot(Epoch e) : epoch(e) {}
   Epoch SnapshotEpoch() const override { return epoch; }
@@ -226,7 +233,7 @@ struct FakeSlots final : EngineSlots {
   FakeDb &db;
   bool host_thread;
   std::function<void(AcceleratorRuntime &)> on_build; // test probe
-  maintenance::CostModelParams params;
+  maintenance::CostModelParams params = SlowSqlModel();
   std::mutex gate_mutex;
   std::condition_variable gate_cv;
   bool hold_builds = false;
@@ -436,6 +443,77 @@ void CommitsDuringBuild() {
   CHECK(ReadAt(runtime, VersionedAuxStore::kNewestSnapshot) == 1111);
 }
 
+double MillisSince(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+// C11: a reader that finds the first build under way falls back at once when
+// the SQL is cheaper than the build, without starting a build of its own; when
+// the build is cheaper than the SQL (measured, else the model's) it waits
+// and is served.
+void ReaderWeighsBuildAgainstSql() {
+  FakeDb db;
+  FakeSlots slots(db);
+  slots.params.fallback_us = 1000;      // the SQL: 1 ms
+  slots.params.full_rebuild_us = 5e6;   // the build: 5 s
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  slots.Hold();
+  runtime.RequestBuild();
+  slots.WaitUntilBuilding();
+  auto start = std::chrono::steady_clock::now();
+  for (int i = 0; i < 20; ++i) {
+    CHECK(!ReadAt(runtime, db.Now(), std::nullopt, 60'000'000));
+  }
+  CHECK(MillisSince(start) < 500);
+  CHECK(runtime.Stats().reads_fallback == 20 && runtime.Stats().builds == 0);
+  slots.Release();
+  while (!runtime.IsSynced()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  CHECK(ReadAt(runtime, db.Now()) == 0);
+  CHECK(runtime.Stats().builds == 1); // the fallbacks started no build
+}
+
+void ReaderWaitsForBuildCheaperThanMeasuredSql() {
+  FakeDb db;
+  FakeSlots slots(db);
+  slots.params.fallback_us = 1000;     // the model's SQL: 1 ms
+  slots.params.full_rebuild_us = 5e6;  // the build: 5 s
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  runtime.NoteSqlFallbackUs(30e6);     // measured: 30 s, which beats the model
+  slots.Hold();
+  runtime.RequestBuild();
+  slots.WaitUntilBuilding();
+  std::optional<int64_t> served;
+  std::thread reader([&] { served = ReadAt(runtime, db.Now(), std::nullopt, 60'000'000); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  slots.Release();
+  reader.join();
+  CHECK(served == 0);
+  CHECK(runtime.Stats().reads_fallback == 0 && runtime.Stats().reads_waited == 1);
+}
+
+// A build that overruns its estimate is assumed as long again: a reader that
+// would have waited for the estimate falls back.
+void ReaderStopsWaitingForOverrunBuild() {
+  FakeDb db;
+  FakeSlots slots(db);
+  slots.params.fallback_us = 50e3;     // the SQL: 50 ms
+  slots.params.full_rebuild_us = 10e3; // the build is expected in 10 ms
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  slots.Hold();
+  runtime.RequestBuild();
+  slots.WaitUntilBuilding();
+  std::this_thread::sleep_for(std::chrono::milliseconds(120)); // twice the SQL
+  const auto start = std::chrono::steady_clock::now();
+  CHECK(!ReadAt(runtime, db.Now(), std::nullopt, 60'000'000));
+  CHECK(MillisSince(start) < 20);
+  slots.Release();
+}
+
 void ModuleRequestsRebuild() {
   FakeDb db;
   FakeSlots slots(db);
@@ -627,6 +705,9 @@ int main() {
       {"module_requests_rebuild", ModuleRequestsRebuild},
       {"data_scale_scales_the_cap", DataScaleScalesTheCap},
       {"failed_build_releases_readers", FailedBuildReleasesReaders},
+      {"reader_weighs_build_against_sql", ReaderWeighsBuildAgainstSql},
+      {"reader_waits_for_build_cheaper_than_measured_sql", ReaderWaitsForBuildCheaperThanMeasuredSql},
+      {"reader_stops_waiting_for_overrun_build", ReaderStopsWaitingForOverrunBuild},
       {"invalidate_during_build", InvalidateDuringBuild},
       {"reader_before_first_commit", ReaderBeforeFirstCommit},
       {"reader_in_stale_window", ReaderInStaleWindow},
