@@ -105,6 +105,9 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
   ::duckdb::shared_ptr<DatabaseCapture> capture;
   ::duckdb::shared_ptr<CommitIds> commit_ids;
   ::duckdb::shared_ptr<::duckdb::AttachedDatabase> default_db; // set by the first Ensure
+  // default_db for the engine's commit callbacks, which may run inside Ensure
+  // (its own queries) and so must not take `mutex`.
+  std::atomic<::duckdb::AttachedDatabase *> default_db_published{nullptr};
 
   mutable std::mutex mutex; // accelerators, tables, registered_at
   std::map<std::string, std::unique_ptr<Accelerator>> accelerators;
@@ -275,6 +278,7 @@ DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry
     auto &context = *accelerator->connection->context;
     impl->default_db = ::duckdb::DatabaseManager::Get(context).GetDatabase(
         ::duckdb::DatabaseManager::GetDefaultDatabase(context));
+    impl->default_db_published = impl->default_db.get();
   }
   accelerator->binding = CreateBinding(*accelerator->connection, entry);
   accelerator->cost_model = core::LoadAuxCostModelJson(SharedCostModelConfigPath(entry));
@@ -386,11 +390,7 @@ void DuckdbHost::OnPreCommit(::duckdb::MetaTransaction &transaction) {
   const auto txn = TxnId(transaction);
   // Read from the engine before taking writers_mutex: DuckDB's commit path calls
   // OnCommitId with its own locks held, so ours never waits on one of its locks.
-  ::duckdb::shared_ptr<::duckdb::AttachedDatabase> default_db;
-  {
-    std::lock_guard<std::mutex> lock(impl->mutex);
-    default_db = impl->default_db;
-  }
+  auto *default_db = impl->default_db_published.load();
   std::optional<::duckdb::transaction_t> write_start;
   if (default_db) {
     auto db_transaction = transaction.TryGetTransaction(*default_db);
