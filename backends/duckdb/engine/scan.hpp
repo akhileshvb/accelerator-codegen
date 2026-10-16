@@ -94,23 +94,30 @@ void ScanQuery(::duckdb::Connection &connection_p, const std::string &sql, Callb
   }
 }
 
+// Streams the result of `sql` on `connection` chunk by chunk, without
+// materializing it. The caller owns the connection's scan lock.
+template <typename ChunkFn>
+void StreamChunks(::duckdb::Connection &connection, const std::string &sql, ChunkFn &&on_chunk) {
+  auto result = connection.SendQuery(sql);
+  Require(result != nullptr && !result->HasError(), result ? result->GetError() : "DuckDB scan returned null");
+  while (auto chunk = result->Fetch()) {
+    if (chunk->size() == 0) {
+      break;
+    }
+    on_chunk(*chunk);
+  }
+  Require(!result->HasError(), result->GetError());
+}
+
 // Streaming scan for large SF builds: avoids materializing the full result.
 template <typename Callback>
 void ScanQueryStreaming(::duckdb::Connection &connection_p, const std::string &sql, Callback &&callback) {
   auto lock = LockScan(connection_p);
-  auto &connection = ScanConnection(connection_p);
-  auto result = connection.SendQuery(sql);
-  Require(result != nullptr && !result->HasError(), result ? result->GetError() : "DuckDB scan returned null");
-  while (true) {
-    auto chunk = result->Fetch();
-    if (!chunk || chunk->size() == 0) {
-      break;
+  StreamChunks(ScanConnection(connection_p), sql, [&](::duckdb::DataChunk &chunk) {
+    for (::duckdb::idx_t row_index = 0; row_index < chunk.size(); ++row_index) {
+      callback(chunk, row_index);
     }
-    for (::duckdb::idx_t row_index = 0; row_index < chunk->size(); ++row_index) {
-      callback(*chunk, row_index);
-    }
-  }
-  Require(!result->HasError(), result->GetError());
+  });
 }
 
 // The services of the module call running on this thread (ModuleBinding sets

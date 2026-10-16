@@ -129,6 +129,44 @@ std::vector<uint8_t> KeysExist(const std::string &table, const std::string &colu
 //! kernels (those use RunParallel, where every participant also aggregates).
 void ScanTableParallel(const ScanSpec &spec, int participants, const std::function<void(const Batch &)> &consume);
 
+//! Heap blocks [first, first + count) of partition `p` of `partitions` over a
+//! table of `blocks` blocks: a function of the table size alone, so a
+//! partition's rows are the same set whoever scans it.
+struct BlockRange {
+	uint32_t first;
+	uint32_t count;
+};
+inline BlockRange PartitionBlocks(uint32_t blocks, std::size_t partitions, std::size_t p) {
+	const auto bound = [&](std::size_t i) { return static_cast<uint32_t>(uint64_t{blocks} * i / partitions); };
+	return {bound(p), bound(p + 1) - bound(p)};
+}
+
+//! Decodes the wire form of a batch (ScanTablePartitioned) into reusable
+//! aligned buffers; the batch (and its strings, which point into the message)
+//! is valid until the next Decode.  Plain C++: pool threads may decode.
+class BatchDecoder {
+public:
+	explicit BatchDecoder(const ScanSpec &spec);
+	const Batch &Decode(std::string_view message);
+
+private:
+	const ScanSpec &spec;
+	std::vector<std::vector<uint64_t>> words; // numeric columns
+	std::vector<std::vector<StringRef>> refs; // text columns
+	Batch batch;
+};
+
+//! Partitioned scan for builds that consume partitions in parallel: the table
+//! is cut into `partitions` fixed block ranges (PartitionBlocks); PostgreSQL
+//! parallel workers (participants - 1 of them) each claim whole partitions and
+//! scan them in block order, with no table filters.  This backend only
+//! relays: `on_message(partition, message)` gets each batch in wire form (valid
+//! during the call), in order within a partition, partitions interleaved; give
+//! the message to a BatchDecoder on any thread.  Without a worker this backend
+//! scans the partitions itself, in order.
+void ScanTablePartitioned(const ScanSpec &spec, int participants, std::size_t partitions,
+                          const std::function<void(std::size_t partition, std::string_view message)> &on_message);
+
 //! Number of participants a parallel kernel should use:
 //! max_parallel_workers_per_gather + 1, the same knob PostgreSQL's own
 //! parallel query obeys (leader + workers).
@@ -159,6 +197,10 @@ public:
 	virtual std::string_view Input() const = 0;
 	virtual const ScanSpec &Spec(int scan_index) const = 0;
 	virtual void Scan(int scan_index, const std::function<void(const Batch &)> &consume) = 0;
+	//! Claims whole partitions (PartitionBlocks of scan `scan_index`, shared by
+	//! all participants) until none are left and scans each in block order.
+	virtual void ScanPartitions(int scan_index, std::size_t partitions,
+	                            const std::function<void(std::size_t partition, const Batch &)> &consume) = 0;
 	virtual void SetOutput(std::string output) = 0;
 	//! Send a message to the leader while the task runs (workers only; blocks
 	//! while the leader is behind).  Used by ScanTableParallel.
