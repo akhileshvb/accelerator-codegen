@@ -74,6 +74,8 @@ public:
   // LastMaintenanceAction reports ("": none).
   void NoteRead(const runtime::AcceleratorRuntime &accelerator);
   std::string LastMaintenanceAction() const;
+  // That decision as core::FormatLastMaintenanceDecision prints it ("": none).
+  std::string LastMaintenanceDecision() const;
   // Forces every later maintenance decision to `action` ("": the policy chooses).
   void ForceMaintenanceAction(const std::string &action);
   // Sessions between their first captured row and the end of their transaction.

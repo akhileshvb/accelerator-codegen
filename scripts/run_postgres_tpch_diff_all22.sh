@@ -17,6 +17,7 @@ for q in $QUERIES; do
     -e ACCEL_PG_DOCKER=1 \
     -e PGHOST=127.0.0.1 -e PGPORT=5432 \
     -e PGUSER="${PGUSER:-postgres}" -e PGPASSWORD="${PGPASSWORD:-postgres}" \
+    -e PGOPTIONS="${PGOPTIONS:-}" \
     -e TPCH_PG_DB="${TPCH_PG_DB:-accel_tpch_test}" \
     -e ACCEL_ENGINE_NAME=postgres \
     -e ACCEL_WORKLOAD_KIND=aux_state \

@@ -7,6 +7,8 @@
 
 #include <pthread.h>
 
+#include "backends/postgres/state/shared.hpp"
+
 namespace accelerator_codegen::aux_state::engine::postgres::shard {
 namespace {
 
@@ -168,6 +170,9 @@ bool ShardServer::ReadWithin(const ReadRequest &request, Clock::time_point deadl
     const auto now = Clock::now();
     const auto remaining_us = std::chrono::duration_cast<std::chrono::microseconds>(
                                   std::min(budget_end, deadline) - now).count();
+    if (const double sql_us = postgres::shared::SqlFallbackUs(static_cast<int>(index)); sql_us > 0) {
+      runtime.SetSqlFallbackUs(sql_us);
+    }
     runtime::ReadOptions options;
     options.epoch = request.epoch;
     options.require_applied_through = request.epoch;

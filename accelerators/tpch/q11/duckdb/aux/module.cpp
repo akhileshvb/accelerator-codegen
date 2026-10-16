@@ -1211,51 +1211,6 @@ void TpchQ11Module::Execute(core::AuxEngineServices &services,
   ExecuteFallback(services, arguments, sink);
 }
 
-void TpchQ11Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  if (arguments.values.size() < 2 ||
-      arguments.values[0].is_null ||
-      arguments.values[1].is_null)
-    return;
-
-  std::string nation_name;
-  double fraction = 0.0;
-  if (std::holds_alternative<std::string>(arguments.values[0].payload))
-    nation_name = std::get<std::string>(arguments.values[0].payload);
-  else
-    return;
-  if (std::holds_alternative<double>(arguments.values[1].payload))
-    fraction = std::get<double>(arguments.values[1].payload);
-  else if (std::holds_alternative<int64_t>(arguments.values[1].payload))
-    fraction = static_cast<double>(
-        std::get<int64_t>(arguments.values[1].payload));
-  else
-    return;
-  if (!std::isfinite(fraction))
-    return;
-
-  const auto built = BuildState(services);
-
-  auto name_it = built.state->nation_name_to_key.find(nation_name);
-  if (name_it == built.state->nation_name_to_key.end()) {
-    EmitResult({}, sink);
-    return;
-  }
-  const int32_t nationkey = name_it->second;
-
-  auto nk_it = built.nations.find(nationkey);
-  if (nk_it == built.nations.end()) {
-    EmitResult({}, sink);
-    return;
-  }
-
-  std::vector<TpchQ11OutputRow> rows;
-  FlattenNationRows(*nk_it->second, rows);
-  auto output = FinalizeQ11FromSorted(rows, nk_it->second->total, fraction);
-  EmitResult(output, sink);
-}
-
 TpchQ11Built TpchQ11Module::BuildState(
     core::AuxEngineServices &services) const {
   if (!initial_scan)

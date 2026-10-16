@@ -21,6 +21,11 @@ const PostgresQueryCatalogRegistrar kRegistrar(PostgresSharedQueryCatalogEntry
         "SELECT * FROM accel_tpch_q14(DATE '1995-06-01')",
         /* aux_sql */
         "SELECT * FROM accel_tpch_q14_aux(DATE '1995-06-01')",
+        /* fallback_sql */
+        "SELECT 100.00 * SUM(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * (1 - l_discount) ELSE 0 END) / "
+        "SUM(l_extendedprice * (1 - l_discount)) AS promo_revenue "
+        "FROM lineitem, part "
+        "WHERE l_partkey = p_partkey AND l_shipdate >= $1 AND l_shipdate < $1 + INTERVAL '1' month"
     }
 );
 

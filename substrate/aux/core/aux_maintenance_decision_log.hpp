@@ -26,6 +26,7 @@ struct MaintenanceDecisionLogEntry {
   double maintenance_us = 0.0;
   uint64_t rows_touched = 0;
   uint64_t affected_partition_count = 0;
+  uint64_t data_rows_hint = 0; // rows in the dependency tables at the decision; 0: unknown
   double expected_queries_before_next_write = 0.0;
   bool valid = false;
 };
@@ -55,7 +56,7 @@ void RecordCoordinatorMaintenanceUs(double us);
 std::optional<MaintenanceDecisionLogEntry> LastMaintenanceDecision();
 void ClearMaintenanceDecisionLog();
 
-// "action=A rows=N partitions=M maintenance_us=T" for the last decision (engines expose it
+// "action=A rows=N partitions=M maintenance_us=T data_rows=D" for the last decision (engines expose it
 // over SQL for calibration), and its parse ({} if malformed).
 std::string FormatLastMaintenanceDecision();
 std::optional<MaintenanceDecisionLogEntry> ParseMaintenanceDecision(const std::string &text);

@@ -1333,16 +1333,6 @@ void TpchQ10Module::Execute(core::AuxEngineServices &services,
   TpchQ10EmitRows(*side, TpchQ10WindowTop(*side, window->ranked, kTpchQ10ResultLimit),
                   sink);
 }
-void TpchQ10Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  int32_t start = 0;
-  if (!arguments.values.empty() &&
-      std::holds_alternative<core::AuxDate>(arguments.values[0].payload))
-    start =
-        std::get<core::AuxDate>(arguments.values[0].payload).days_since_epoch;
-  EmitResult(BuildState(services), start, sink);
-}
 
 TpchQ10BuildData
 TpchQ10Module::BuildState(core::AuxEngineServices &services) const {

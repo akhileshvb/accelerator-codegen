@@ -87,7 +87,11 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{14,
      2,
      false,
      BuildTpchQ14Probe,
-     core::kTpchQ14CostModel}};
+     core::kTpchQ14CostModel,
+     "SELECT 100.00 * SUM(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * (1 - l_discount) ELSE 0 END) / "
+     "SUM(l_extendedprice * (1 - l_discount)) AS promo_revenue "
+     "FROM lineitem, part "
+     "WHERE l_partkey = p_partkey AND l_shipdate >= $1 AND l_shipdate < $1 + INTERVAL '1' month"}};
 
 } // namespace q14_catalog
 } // namespace

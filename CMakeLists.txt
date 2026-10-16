@@ -365,8 +365,10 @@ accel_add_duckdb_exe(test_aux_runtime_units eval/tests/test_aux_runtime_units.cp
 accel_add_duckdb_exe(test_aux_runtime eval/tests/test_aux_runtime.cpp)
 accel_add_duckdb_exe(test_aux_wire eval/tests/test_aux_wire.cpp)
 accel_add_duckdb_exe(test_partitioned_build eval/tests/test_partitioned_build.cpp)
+accel_add_duckdb_exe(test_core_helpers eval/tests/test_core_helpers.cpp)
 if(BUILD_TESTING)
     add_test(NAME partitioned_build_test COMMAND test_partitioned_build)
+    add_test(NAME core_helpers_test COMMAND test_core_helpers)
     add_test(NAME aux_wire_test COMMAND test_aux_wire)
     add_test(NAME aux_runtime_units_test COMMAND test_aux_runtime_units)
     add_test(NAME aux_runtime_test COMMAND test_aux_runtime)
@@ -452,6 +454,8 @@ if(BUILD_TESTING)
 endif()
 accel_add_duckdb_exe(test_tpch_shared_differential eval/tests/test_tpch_shared_differential.cpp)
 accel_add_duckdb_exe(test_shared_tpch_rf_differential eval/tests/test_shared_tpch_rf_differential.cpp)
+accel_add_duckdb_exe(test_fallback_state_agree eval/tests/test_fallback_state_agree.cpp)
+accel_add_duckdb_exe(time_fallback_read eval/tools/time_fallback_read.cpp)
 accel_add_duckdb_exe(audit_incremental_maintenance eval/tools/audit_incremental_maintenance.cpp)
 add_executable(test_tpch_arg_variants_differential
     eval/tests/test_tpch_arg_variants_differential.cpp
@@ -515,6 +519,7 @@ target_link_libraries(test_aux_calibration
 )
 
 target_include_directories(test_aux_calibration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
+target_compile_definitions(test_aux_calibration PRIVATE ACCEL_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(test_versioned_aux_store_caps
     eval/tests/test_versioned_aux_store_caps.cpp

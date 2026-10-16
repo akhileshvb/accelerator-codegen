@@ -3,6 +3,7 @@
 #include "substrate/aux/core/aux_engine_services.hpp"
 
 #include <cstdlib>
+#include <stdexcept>
 
 namespace accelerator_codegen::aux_state::core {
 
@@ -43,6 +44,15 @@ std::size_t AuxEngineServices::WorkerCount() const {
 void AuxEngineServices::ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const {
   for (std::size_t i = 0; i < n; ++i) {
     fn(i);
+  }
+}
+
+bool AuxEngineServices::AnswerFromSql(const QueryArguments &, AuxRowSink &) { return false; }
+
+void AuxQueryModule::ExecuteFallback(AuxEngineServices &services, const QueryArguments &arguments,
+                                     AuxRowSink &sink) {
+  if (!services.AnswerFromSql(arguments, sink)) {
+    throw std::logic_error("accelerator " + Id() + " has no SQL fallback on this engine");
   }
 }
 

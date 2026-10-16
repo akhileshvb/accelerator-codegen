@@ -191,6 +191,7 @@ void WriteAuxCostModelJson(const std::string &path,
   WriteField(out, "apply_delta_base_us", params.apply_delta_base_us);
   WriteField(out, "apply_delta_per_row_us", params.apply_delta_per_row_us);
   WriteField(out, "apply_delta_max_rows", params.apply_delta_max_rows);
+  WriteField(out, "calibrated_scale_rows", params.calibrated_scale_rows);
   WriteField(out, "apply_delta_max_part_fanout",
             params.apply_delta_max_part_fanout);
   WriteField(out, "invalidation_overhead_us", params.invalidation_overhead_us);
@@ -246,11 +247,19 @@ WriteCalibrationResult CalibrateFromWrites(const std::vector<CalibrationWrite> &
 
   WriteCalibrationResult result;
   result.params = seed;
+  result.params.calibrated_scale_rows = 0;
   const char *once_env = std::getenv("ACCEL_AUX_CALIBRATION_REBUILD_ONCE");
   const bool rebuild_once = once_env && std::string(once_env) == "1";
   std::vector<std::pair<std::size_t, double>> delta, partition;
-  double all_sum = 0.0;
+  std::vector<double> all_runs;
+  // ACCEL_AUX_CALIBRATION_SKIP_WRITES="all rows,1 year": writes (by name) too
+  // large to apply on the calibration database; refresh-sized writes remain.
+  const char *skip_env = std::getenv("ACCEL_AUX_CALIBRATION_SKIP_WRITES");
+  const std::string skipped = skip_env ? std::string(",") + skip_env + "," : "";
   for (const auto &write : writes) {
+    if (skipped.find("," + write.name + ",") != std::string::npos) {
+      continue;
+    }
     WriteCalibrationSample sample;
     sample.name = write.name;
     // The sizes the module reports to the cost model (an UPDATE is two delta
@@ -261,6 +270,8 @@ WriteCalibrationResult CalibrateFromWrites(const std::vector<CalibrationWrite> &
       continue; // the accelerator does not depend on this write
     }
     sample.rows = unforced.decision->rows_touched;
+    result.params.calibrated_scale_rows =
+        std::max(result.params.calibrated_scale_rows, unforced.decision->data_rows_hint);
     sample.partitions = unforced.decision->affected_partition_count;
     sample.control_us = timed_pair(write.control, write.control_revert, std::nullopt,
                                    [](const CalibrationEngine::Timed &t) { return t.us; });
@@ -290,7 +301,7 @@ WriteCalibrationResult CalibrateFromWrites(const std::vector<CalibrationWrite> &
     if (sample.partitions > 0) {
       partition.emplace_back(sample.partitions, sample.rebuild_partition_us);
     }
-    all_sum += sample.rebuild_all_us;
+    all_runs.push_back(sample.rebuild_all_us);
     result.samples.push_back(sample);
   }
   if (delta.empty()) {
@@ -311,7 +322,7 @@ WriteCalibrationResult CalibrateFromWrites(const std::vector<CalibrationWrite> &
   if (result.samples.empty()) {
     result.unfitted.push_back("rebuild_all");
   } else {
-    result.params.full_rebuild_us = all_sum / static_cast<double>(result.samples.size());
+    result.params.full_rebuild_us = Median(std::move(all_runs));
   }
   return result;
 }

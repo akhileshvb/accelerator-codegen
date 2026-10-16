@@ -19,6 +19,7 @@ int g_phase_read_threads = 0;
 int g_phase_build_threads = 0;
 int g_phase_maint_threads = 0;
 bool g_build_tuning = true;
+bool g_force_fallback = false;
 
 } // namespace
 
@@ -30,6 +31,7 @@ int PhaseBuildThreads() { return g_phase_build_threads; }
 int PhaseMaintenanceThreads() { return g_phase_maint_threads; }
 int IdleExitSeconds() { return g_idle_exit_s; }
 bool BuildTuning() { return g_build_tuning; }
+bool ForceFallback() { return g_force_fallback; }
 
 void DefineGucs() {
   DefineCustomIntVariable("accel.read_timeout_ms",
@@ -56,6 +58,9 @@ void DefineGucs() {
   DefineCustomIntVariable("accel.shard_idle_exit_s",
                           "A shard worker exits after this many idle seconds (0: never).", nullptr,
                           &g_idle_exit_s, 0, 0, 86400, PGC_SIGHUP, 0, nullptr, nullptr, nullptr);
+  DefineCustomBoolVariable("accel.force_fallback",
+                           "Answer every accelerated query from SQL (differential tests).", nullptr,
+                           &g_force_fallback, false, PGC_USERSET, 0, nullptr, nullptr, nullptr);
   DefineCustomBoolVariable("accel.build_tuning",
                            "Plan the one-off state build with in-memory hash joins (work_mem, no "
                            "nested loop / merge joins, no JIT) instead of the session settings.",

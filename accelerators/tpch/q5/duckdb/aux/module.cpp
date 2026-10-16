@@ -1087,38 +1087,6 @@ void TpchQ5Module::Execute(core::AuxEngineServices &services,
   TpchQ5FinalizeColumns(meta, target_regionkey, acc, stride, sink);
 }
 
-void TpchQ5Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  std::string region_name;
-  int32_t start_days = 0;
-  ParseArgs(arguments, region_name, start_days);
-  const int32_t end_days = TpchQ5AddMonths(start_days, 12);
-
-  auto state = BuildState(services);
-  const auto &meta = *state.meta;
-
-  std::vector<int32_t> eligible_nations;
-  int32_t target_regionkey = ResolveRegion(region_name, meta, eligible_nations);
-  if (target_regionkey < 0) {
-    sink.Begin({{{"n_name", core::AuxType::String, false},
-                 {"revenue", core::AuxType::ScaledDecimal, false}}});
-    sink.End();
-    return;
-  }
-
-  int32_t start_ord = TpchQ5DateOrdinal(start_days, meta.min_orderdate_days);
-  int32_t end_ord = TpchQ5DateOrdinal(end_days, meta.min_orderdate_days);
-  if (start_ord < 0)
-    start_ord = 0;
-  if (end_ord > static_cast<int32_t>(meta.tree_size))
-    end_ord = static_cast<int32_t>(meta.tree_size);
-
-  const auto nodes = TpchQ5TreeCover(meta.tree_size, start_ord, end_ord);
-  EmitResult(services, meta, target_regionkey,
-             SumCover(meta, state.tree, nodes), sink);
-}
-
 TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ5State state;
 

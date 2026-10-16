@@ -14,6 +14,8 @@
 #include <thread>
 #include <vector>
 
+#include "backends/duckdb/api/catalog/query_catalog.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "backends/duckdb/engine/duckdb_aux_backend.hpp"
 #include "backends/duckdb/engine/scan.hpp"
 #include "substrate/aux/runtime/runtime_host.hpp"
@@ -34,6 +36,12 @@ public:
                            runtime::ResolveBuildThreads(0, threads.Budget()),
                            runtime::ResolveMaintenanceThreads(0, threads.Budget()));
     accelerator.UseModuleServices(backend);
+    // Fallbacks answer from the query's SQL on a connection of their own, as in the real host.
+    if (const auto *entry = engine::FindSharedQueryByAccelerator(module->Id())) {
+      backend.SetSqlAnswer([this, entry](const core::QueryArguments &arguments, core::AuxRowSink &sink) {
+        return engine::AnswerFromFallbackSql(fallback_connection, *entry, arguments, sink);
+      });
+    }
   }
 
   // Builds the state afresh (dropping any current one); throws if it does not
@@ -140,6 +148,7 @@ private:
   }
 
   ::duckdb::Connection &connection;
+  ::duckdb::Connection fallback_connection{*connection.context->db};
   std::shared_ptr<core::AuxQueryModule> module;
   maintenance::CostModelParams cost_model;
   uint64_t txn = 0;

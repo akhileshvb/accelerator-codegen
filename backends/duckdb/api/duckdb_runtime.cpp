@@ -59,8 +59,8 @@ double MicrosSince(Clock::time_point start) {
   return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
 }
 
-// How long a reader waits for an in-flight commit or a build before falling
-// back to SQL: falling back on a large database costs far more than waiting.
+// The ceiling on a reader's wait for an in-flight commit or a build; the
+// runtime falls back sooner when the SQL is cheaper than waiting (C11).
 uint64_t ReadWaitUs() {
   static const uint64_t wait = [] {
     const char *value = std::getenv("ACCEL_AUX_READ_WAIT_US");

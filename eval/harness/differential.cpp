@@ -477,6 +477,11 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
     }
   }
   Require(changed, "internal: RF differential exited without invalidation");
+  // Maintained incrementally, the state serves every read: none falls back.
+  const auto stats = runtime.Stats();
+  Require(stats.reads_fallback == 0,
+          "Q" + std::to_string(entry.query_id) + ": " + std::to_string(stats.reads_fallback) +
+              " reads fell back to SQL in steady state");
 }
 
 namespace {

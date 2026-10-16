@@ -65,6 +65,9 @@ struct SharedQueryCatalogEntry {
   ProbeBuilder build_probe;
   // Where the query keeps its maintenance cost models (<bench>/q<N>/cost_model.hpp).
   core::AuxCostModelLocation cost_model;
+  // The query for any arguments, answering a read the state cannot serve:
+  // $n is the n-th table-function argument (base_sql answers a call without).
+  const char *fallback_sql = nullptr;
 };
 
 // ---- the registry: each query's directory registers its entries ----

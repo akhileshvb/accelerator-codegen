@@ -773,7 +773,7 @@ std::string FormatTpchBaseSql(int query_id,
            "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND "
            "n_name = " +
            SqlString(nation) +
-           " GROUP BY s_name ORDER BY numwait DESC, s_name";
+           " GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100";
   }
   case 22: {
     std::ostringstream sql;

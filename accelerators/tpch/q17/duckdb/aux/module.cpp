@@ -956,24 +956,6 @@ void TpchQ17Module::Execute(core::AuxEngineServices &services,
   EmitQ17(sink, 0);
 }
 
-void TpchQ17Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  (void)services;
-  std::string brand;
-  std::string container;
-  if (arguments.values.size() >= 2) {
-    if (!arguments.values[0].is_null &&
-        std::holds_alternative<std::string>(arguments.values[0].payload))
-      brand = std::get<std::string>(arguments.values[0].payload);
-    if (!arguments.values[1].is_null &&
-        std::holds_alternative<std::string>(arguments.values[1].payload))
-      container = std::get<std::string>(arguments.values[1].payload);
-  }
-  EmitResult(services, brand, container, sink);
-}
-
-
 namespace {
 
 // Statistics of the lineitems seen per part key, in hash shards.

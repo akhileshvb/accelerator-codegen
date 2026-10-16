@@ -638,20 +638,6 @@ void TpchQ1Module::Execute(core::AuxEngineServices &services,
   EmitResult(rows, row_count, sink);
 }
 
-void TpchQ1Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  int32_t day_offset = 0;
-  if (arguments.values.empty() || arguments.values[0].is_null ||
-      !std::holds_alternative<int64_t>(arguments.values[0].payload))
-    return;
-  day_offset =
-      static_cast<int32_t>(std::get<int64_t>(arguments.values[0].payload));
-  const auto rows =
-      ComposeOutput(BuildState(services), TpchQ1CutoffDays(day_offset));
-  EmitResult(rows.data(), static_cast<uint32_t>(rows.size()), sink);
-}
-
 std::unordered_map<int32_t, Q1DayPartition>
 TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
   return BuildStateForDays(services, {});

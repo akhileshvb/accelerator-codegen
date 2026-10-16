@@ -17,6 +17,7 @@
 
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -24,7 +25,9 @@
 #include "backends/postgres/api/accelerators.hpp"
 #include "backends/postgres/api/engine_helpers.hpp"
 #include "backends/postgres/api/pg_sink.hpp"
+#include "backends/postgres/api/sql_fallback.hpp"
 #include "backends/postgres/engine/accelerator_tables.hpp"
+#include "backends/postgres/state/shard_gucs.hpp"
 #include "backends/postgres/state/shard_worker.hpp"
 #include "backends/postgres/state/shared.hpp"
 #include "substrate/aux/state/versioned_aux_store.hpp"
@@ -35,11 +38,29 @@ namespace detail {
 // What a module's ExecuteFallback sees: it reads SQL, not state.
 class SqlServices final : public core::AuxEngineServices {
 public:
-  SqlServices() : store(VersionedAuxStore::Options{}) {}
+  explicit SqlServices(core::AcceleratorId accelerator_p)
+      : accelerator(std::move(accelerator_p)), store(VersionedAuxStore::Options{}) {}
   core::VisibilityToken CurrentVisibility() const override { return {}; }
   core::AuxStateStore &StateStore() override { return store; }
 
+  // The query's fallback SQL (catalog) in this transaction; its duration is
+  // shared with the shard worker, whose reads weigh waiting against it (C11).
+  bool AnswerFromSql(const core::QueryArguments &arguments, core::AuxRowSink &sink) override {
+    const auto *entry = FindPostgresQueryByAccelerator(accelerator);
+    if (!entry || !entry->fallback_sql) {
+      return false;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    AnswerFromPostgresSql(entry->fallback_sql, arguments, sink);
+    if (const int index = shared::Find(accelerator); index >= 0) {
+      shared::NoteSqlFallbackUs(
+          index, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count());
+    }
+    return true;
+  }
+
 private:
+  core::AcceleratorId accelerator;
   VersionedAuxStore store;
 };
 
@@ -57,7 +78,7 @@ public:
           std::vector<CollationKey> c_collation_keys_p = {}, bool tune_build = false)
       : cost_model_env(cost_model_env), cost_model_location(std::move(cost_model_location)),
         accelerator(std::move(accelerator_p)), c_collation_keys(std::move(c_collation_keys_p)),
-        tune_build(tune_build), tables(std::move(tables_p)), scan(), module(config, &scan) {}
+        tune_build(tune_build), tables(std::move(tables_p)), sql(accelerator), scan(), module(config, &scan) {}
 
   void Execute(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
     RequireCCollation();
@@ -68,7 +89,11 @@ public:
     }
     auto *return_set_info = reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
     PgSink sink(return_set_info->setResult, return_set_info->setDesc);
-    RunOrReport([&] { module.ExecuteFallback(sql, arguments, sink); });
+    RunOrReport([&] {
+      if (!sql.AnswerFromSql(arguments, sink)) {
+        module.ExecuteFallback(sql, arguments, sink); // no SQL registered for the query
+      }
+    });
     core::RecordAuxExecute(core::AuxExecutePath::Fallback);
   }
 
@@ -94,7 +119,7 @@ private:
   // SQL.
   bool ServeFromWorker(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
     const int index = shared::Activate(accelerator);
-    if (index < 0) {
+    if (index < 0 || shard::ForceFallback()) {
       return false;
     }
     // A transaction's own writes to the tables are in no worker's state.

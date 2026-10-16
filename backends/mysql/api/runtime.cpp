@@ -7,8 +7,10 @@
 #include "backends/mysql/engine/mysql_exact_parse.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -737,6 +739,69 @@ std::string ByteExactLiteral(const std::string &text) {
     out.push_back(kHex[c & 15]);
   }
   return out + "' USING utf8mb4)";
+}
+
+namespace {
+
+std::string LiteralOf(const core::AuxValue &value) {
+  if (value.is_null) {
+    return "NULL";
+  }
+  const auto &payload = value.payload;
+  if (const auto *i = std::get_if<int64_t>(&payload)) return std::to_string(*i);
+  if (const auto *u = std::get_if<uint64_t>(&payload)) return std::to_string(*u);
+  if (const auto *d = std::get_if<double>(&payload)) {
+    char text[40];
+    for (int digits = 15; digits <= 17; ++digits) { // the shortest text that reads back as `d`
+      std::snprintf(text, sizeof(text), "%.*g", digits, *d);
+      if (std::strtod(text, nullptr) == *d) break;
+    }
+    return text;
+  }
+  if (const auto *dec = std::get_if<core::ScaledDecimal>(&payload)) {
+    return core::ScaledDecimal128ToString(dec->value, dec->scale);
+  }
+  if (const auto *wide = std::get_if<core::ScaledDecimal128>(&payload)) {
+    return core::ScaledDecimal128ToString(wide->value, wide->scale);
+  }
+  if (const auto *date = std::get_if<core::AuxDate>(&payload)) {
+    return "DATE '" + FormatUnixDate(date->days_since_epoch) + "'";
+  }
+  if (const auto *flag = std::get_if<bool>(&payload)) return *flag ? "TRUE" : "FALSE";
+  return ByteExactLiteral(std::get<std::string>(payload));
+}
+
+} // namespace
+
+std::string WithLiterals(const std::string &sql, const core::QueryArguments &arguments) {
+  std::string out = sql;
+  for (std::size_t n = arguments.values.size(); n >= 1; --n) {
+    const std::string marker = "$" + std::to_string(n);
+    const std::string literal = "(" + LiteralOf(arguments.values[n - 1]) + ")";
+    for (std::size_t at = out.find(marker); at != std::string::npos; at = out.find(marker, at + literal.size())) {
+      const std::size_t after = at + marker.size();
+      if (after < out.size() && std::isdigit(static_cast<unsigned char>(out[after]))) {
+        at += marker.size() - literal.size(); // part of a longer $nn: skip
+        continue;
+      }
+      out.replace(at, marker.size(), literal);
+    }
+  }
+  return out;
+}
+
+void AnswerFromMysqlSql(const std::string &sql, const core::QueryArguments &arguments,
+                        core::AuxRowSink &sink) {
+  ScanTypedTuples(WithLiterals(sql, arguments), [&](const std::vector<std::string> &cols) {
+    core::AuxRow row;
+    row.values.reserve(cols.size());
+    for (std::size_t i = 0; i < cols.size(); ++i) {
+      row.values.push_back(TypedIsNull(cols, static_cast<int>(i))
+                               ? core::AuxValue::Null(core::AuxType::String)
+                               : core::AuxValue::Of(core::AuxType::String, cols[i]));
+    }
+    sink.WriteRow(row);
+  });
 }
 
 // `column IN (k1, k2, ...)`, or FALSE for no keys.

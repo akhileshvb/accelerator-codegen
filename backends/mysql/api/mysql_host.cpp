@@ -8,6 +8,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <exception>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -44,6 +45,55 @@ std::size_t MaxScanLanes() {
   }();
   return lanes;
 }
+
+// Rows per captured table, from information_schema (InnoDB's estimate; the
+// statistics cache is bypassed). A table is found by its capture triggers,
+// which carry the host's id for it. Reloaded at most every kRefresh; a failed
+// load keeps the last counts.
+class TableRowCounts {
+public:
+  uint64_t Rows(core::TableId table) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (!loaded || now - loaded_at >= kRefresh) {
+      loaded = true;
+      loaded_at = now;
+      Load();
+    }
+    const auto it = rows.find(table);
+    return it == rows.end() ? 0 : it->second;
+  }
+
+private:
+  static constexpr std::chrono::seconds kRefresh{10};
+
+  void Load() {
+    static const std::string kCaptureCall = "mysql_accel_capture_row('";
+    std::unordered_map<core::TableId, uint64_t> fresh;
+    try {
+      detail::ScanTypedTuples(
+          "SELECT /*+ SET_VAR(information_schema_stats_expiry=0) */ t.table_rows, g.action_statement "
+          "FROM information_schema.triggers g JOIN information_schema.tables t "
+          "ON t.table_schema = g.event_object_schema AND t.table_name = g.event_object_table "
+          "WHERE g.trigger_schema = DATABASE() AND g.action_statement LIKE '%mysql_accel_capture_row%'",
+          [&](const std::vector<std::string> &cols) {
+            const auto call = cols[1].find(kCaptureCall);
+            if (call != std::string::npos) {
+              const auto id = std::strtoull(cols[1].c_str() + call + kCaptureCall.size(), nullptr, 10);
+              fresh[static_cast<core::TableId>(id)] = std::strtoull(cols[0].c_str(), nullptr, 10);
+            }
+          });
+    } catch (const std::exception &) {
+      return;
+    }
+    rows = std::move(fresh);
+  }
+
+  std::mutex mutex;
+  bool loaded = false;
+  std::chrono::steady_clock::time_point loaded_at;
+  std::unordered_map<core::TableId, uint64_t> rows;
+};
 
 // The build's read: one consistent view of the database, routing this
 // thread's scans through it until destroyed. Partitioned scans get a
@@ -85,6 +135,7 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
   std::unordered_map<Session, std::unique_ptr<Writer>> writers;
   int opening = 0; // views being opened: no session becomes a writer meanwhile
   std::map<core::AcceleratorId, maintenance::CostModelParams> cost_models;
+  mutable TableRowCounts table_rows;
   std::atomic<Epoch> epoch{0}; // the newest commit's
   std::atomic<uint64_t> captured_rows{0};
   std::atomic<const runtime::AcceleratorRuntime *> last_read{nullptr};
@@ -212,6 +263,7 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
     std::lock_guard<std::mutex> lock(mutex);
     return cost_models.at(id);
   }
+  uint64_t TableRows(core::TableId table) const override { return table_rows.Rows(table); }
   double ExpectedQueriesBeforeNextWrite(const core::AcceleratorId &) const override {
     const double override_value = core::ExpectedQueriesOverride();
     return override_value >= 0.0 ? override_value : 10.0;
@@ -316,6 +368,16 @@ std::string MysqlHost::LastMaintenanceAction() const {
   const auto *accelerator = impl->last_read.load();
   const auto decision = accelerator ? accelerator->Stats().last_decision : std::nullopt;
   return decision && decision->valid ? maintenance::MaintenanceActionName(decision->staged_action) : "";
+}
+
+std::string MysqlHost::LastMaintenanceDecision() const {
+  const auto *accelerator = impl->last_read.load();
+  const auto decision = accelerator ? accelerator->Stats().last_decision : std::nullopt;
+  if (!decision) {
+    return "";
+  }
+  core::SetGlobalMaintenanceDecision(*decision);
+  return core::FormatLastMaintenanceDecision();
 }
 
 void MysqlHost::ForceMaintenanceAction(const std::string &action) {

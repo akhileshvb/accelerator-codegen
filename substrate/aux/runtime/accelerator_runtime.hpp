@@ -51,8 +51,8 @@ struct ReadOptions {
   // committed but not yet shipped). In-process engines leave it unset: their
   // commits are marked in flight from pre-commit until published.
   std::optional<Epoch> require_applied_through;
-  // How long the reader may wait for an in-flight commit, a build or a
-  // catch-up before falling back (C11).
+  // The most a reader waits for an in-flight commit, a build or a catch-up
+  // (C11): a ceiling; it falls back sooner when the SQL is cheaper than waiting.
   uint64_t max_wait_us = 0;
 };
 
@@ -71,6 +71,11 @@ using StoreFactory = std::function<StoreHandle(const core::AcceleratorId &,
 // accelerator. A module numbers its own tables; this maps its numbers to the
 // host's (a table not listed keeps its number).
 using TableMap = std::unordered_map<core::TableId, core::TableId>; // module -> host
+
+// Every read is answered from SQL (differential tests): ACCEL_AUX_FORCE_FALLBACK=1,
+// or this switch for an engine whose server environment is fixed.
+void SetForcedFallback(bool forced);
+bool ForcedFallback();
 
 class AcceleratorRuntime : public core::AuxEngineServices {
 public:
@@ -106,7 +111,9 @@ public:
     bool servable;
     std::unique_ptr<Scope> scope;
   };
-  // Waits (up to options.max_wait_us) until `options` can be served.
+  // Waits until `options` can be served: for an in-flight commit up to
+  // options.max_wait_us, otherwise only while that is cheaper than the SQL
+  // fallback (C11).
   ReadGuard BeginRead(const ReadOptions &options);
   // BeginRead, then the module's CheckValidity and Execute.
   ReadResult Read(const ReadOptions &options, const core::QueryArguments &arguments,
@@ -156,6 +163,13 @@ public:
   std::size_t WorkerCount() const override;
   void ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const override;
 
+  // How long the engine's SQL took to answer a read of this accelerator; with
+  // the cost model's estimate it prices the fallback a waiting reader weighs.
+  void NoteSqlFallbackUs(double us);
+  // The same, when the measurement is kept elsewhere (Postgres: in shared
+  // memory, written by the backends that ran the SQL).
+  void SetSqlFallbackUs(double us);
+
   AcceleratorStats Stats() const;
 
 private:
@@ -171,6 +185,8 @@ private:
   void Applied(const CommittedChange &change, double us);
   void MarkStale(Epoch from);
   bool Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const;
+  double UntilServableUs() const;
+  bool WaitWorthIt(Epoch epoch) const;
   bool Collapsed(Epoch epoch) const;
 
   std::shared_ptr<core::AuxQueryModule> module;

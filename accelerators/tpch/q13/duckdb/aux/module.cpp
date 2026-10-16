@@ -2001,18 +2001,6 @@ void TpchQ13Module::Execute(core::AuxEngineServices &services,
   ExecuteFallback(services, arguments, sink);
 }
 
-void TpchQ13Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  std::string pattern;
-  if (!arguments.values.empty() && !arguments.values[0].is_null &&
-      std::holds_alternative<std::string>(arguments.values[0].payload))
-    pattern = std::get<std::string>(arguments.values[0].payload);
-
-  const auto state = BuildState(services);
-  EmitResult(state, pattern, services, sink);
-}
-
 bool TpchQ13Module::LoadState(
     core::AuxEngineServices &services,
     std::shared_ptr<const TpchQ13State> &state) const {

@@ -2,8 +2,10 @@
 #include "substrate/aux/runtime/accelerator_runtime.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -165,6 +167,18 @@ struct AcceleratorRuntime::Impl {
   std::optional<Epoch> uncaptured_from; // the earliest uncaptured commit seen while no build was synced
   uint64_t build_failures = 0; // readers waiting for a build stop waiting when it fails
   std::optional<Clock::time_point> gap_since;
+  // What a reader that cannot be served weighs (C11): the running build's
+  // start, the last build's duration, and the engine-reported SQL time (a
+  // moving average).
+  std::optional<Clock::time_point> build_started;
+  double last_build_us = 0;
+  double sql_us = 0;
+  // The cost model's rebuild and SQL times at the data's size, taken by a
+  // build inside its snapshot: an engine's table sizes may only be asked there.
+  struct ModelEstimates {
+    double rebuild_us, sql_us;
+  };
+  std::optional<ModelEstimates> model;
   AcceleratorStats stats;
 
   bool Synced() const { return applier.CurrentMode() == SequencedApplier::Mode::Synced; }
@@ -232,6 +246,49 @@ bool AcceleratorRuntime::Servable(Epoch epoch, const std::optional<Epoch> &appli
   return !applied_through || impl->applier.AppliedEpoch() >= *applied_through;
 }
 
+// Time until the state can serve a reader that finds it unservable and not
+// in-flight: a few queued commits are caught up at once; a build is as long
+// as the last one (else the cost model's estimate) or, once overrun, as long
+// again. Holds state_mutex.
+double AcceleratorRuntime::UntilServableUs() const {
+  if (impl->Synced()) {
+    return 0;
+  }
+  const double estimate = impl->last_build_us > 0 ? impl->last_build_us : impl->model->rebuild_us;
+  if (!impl->build_started) {
+    return estimate;
+  }
+  const double elapsed = MicrosSince(*impl->build_started);
+  return estimate > elapsed ? estimate - elapsed : elapsed;
+}
+
+// Whether a reader that cannot be served yet should keep waiting (C11): an
+// in-flight commit always; otherwise only while the state is expected sooner
+// than the query's own SQL would finish (measured, else the cost model's).
+// Without estimates yet (the first build has not started): yes. Holds
+// state_mutex.
+bool AcceleratorRuntime::WaitWorthIt(Epoch epoch) const {
+  if (impl->Synced() && epoch >= impl->in_flight_from) {
+    return true;
+  }
+  if (!impl->model) {
+    return true;
+  }
+  const double sql = impl->sql_us > 0 ? impl->sql_us : impl->model->sql_us;
+  return UntilServableUs() < sql;
+}
+
+void AcceleratorRuntime::NoteSqlFallbackUs(double us) {
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  constexpr double kWeight = 0.3;
+  impl->sql_us = impl->sql_us > 0 ? impl->sql_us + kWeight * (us - impl->sql_us) : us;
+}
+
+void AcceleratorRuntime::SetSqlFallbackUs(double us) {
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  impl->sql_us = us;
+}
+
 // Permanent: the epoch's versions were collapsed by a combined catch-up.
 bool AcceleratorRuntime::Collapsed(Epoch epoch) const {
   for (const auto &[from, to] : impl->collapsed) {
@@ -242,7 +299,26 @@ bool AcceleratorRuntime::Collapsed(Epoch epoch) const {
   return false;
 }
 
+namespace {
+std::atomic<int> g_forced_fallback{-1}; // -1: the environment decides
+} // namespace
+
+void SetForcedFallback(bool forced) { g_forced_fallback = forced ? 1 : 0; }
+
+bool ForcedFallback() {
+  const int set = g_forced_fallback.load(std::memory_order_relaxed);
+  if (set >= 0) {
+    return set != 0;
+  }
+  const char *value = std::getenv("ACCEL_AUX_FORCE_FALLBACK");
+  return value && *value && *value != '0';
+}
+
 AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &options) {
+  if (ForcedFallback()) {
+    impl->stats.reads_fallback++;
+    return ReadGuard(false, nullptr);
+  }
   const Epoch epoch =
       options.epoch == VersionedAuxStore::kNewestSnapshot ? kNever - 1 : options.epoch;
   std::unique_lock<std::mutex> lock(impl->state_mutex);
@@ -255,13 +331,27 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     lock.unlock();
     RequestBuild();
     lock.lock();
+    // The build that was just requested publishes its estimates as it starts.
+    constexpr auto kEstimatesWait = std::chrono::milliseconds(50);
+    impl->state_cv.wait_for(lock, kEstimatesWait, [&] { return impl->model.has_value(); });
     impl->stats.reads_waited++;
+    // Up to the ceiling, re-weighing in slices: a build that overruns its
+    // estimate stops being worth waiting for.
+    constexpr auto kReweigh = std::chrono::milliseconds(50);
     const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
-    if (!impl->state_cv.wait_until(lock, deadline, [&] {
-          return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
-                 impl->build_failures != failures;
-        }) ||
-        Collapsed(epoch) || !Servable(epoch, options.require_applied_through)) {
+    const auto done = [&] {
+      return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
+             impl->build_failures != failures;
+    };
+    while (!done()) {
+      const auto now = Clock::now();
+      if (now >= deadline || !WaitWorthIt(epoch)) {
+        impl->stats.reads_fallback++;
+        return ReadGuard(false, nullptr);
+      }
+      impl->state_cv.wait_until(lock, std::min(deadline, now + kReweigh), done);
+    }
+    if (Collapsed(epoch) || !Servable(epoch, options.require_applied_through)) {
       impl->stats.reads_fallback++;
       return ReadGuard(false, nullptr);
     }
@@ -374,6 +464,9 @@ void AcceleratorRuntime::Applied(const CommittedChange &change, double us) {
     impl->stats.rows_applied += batch->row_count;
   }
   impl->stats.apply_us += us;
+  if (impl->stats.last_decision) {
+    impl->stats.last_decision->maintenance_us = us;
+  }
 }
 
 void AcceleratorRuntime::MarkStale(Epoch from) {
@@ -641,6 +734,7 @@ bool AcceleratorRuntime::BuildNow() {
       return true;
     }
     impl->applier.StartBuild();
+    impl->build_started = start;
     impl->build_invalidated = false;
     impl->build_epoch.reset();
   }
@@ -657,6 +751,14 @@ bool AcceleratorRuntime::BuildNow() {
     {
       auto snapshot = slots.OpenBuildSnapshot(*this);
       b = snapshot->SnapshotEpoch();
+      {
+        // Inside the engine's build transaction: its table sizes may be asked.
+        const auto &cost = slots.CostModel(id);
+        const double scale = cost.ScaleFor(DataScaleRows());
+        std::lock_guard<std::mutex> lock(impl->state_mutex);
+        impl->model = Impl::ModelEstimates{cost.full_rebuild_us * scale, cost.fallback_us * scale};
+      }
+      impl->state_cv.notify_all();
       {
         std::lock_guard<std::mutex> lock(impl->state_mutex);
         impl->build_epoch = b;
@@ -698,9 +800,12 @@ bool AcceleratorRuntime::BuildNow() {
     impl->uncaptured_from.reset();
     impl->stats.builds++;
     impl->stats.build_us += MicrosSince(start);
+    impl->last_build_us = MicrosSince(start);
+    impl->build_started.reset();
   } catch (...) {
     {
       std::lock_guard<std::mutex> lock(impl->state_mutex);
+      impl->build_started.reset();
       impl->applier.AbandonBuild();
     }
     BuildFailed();
