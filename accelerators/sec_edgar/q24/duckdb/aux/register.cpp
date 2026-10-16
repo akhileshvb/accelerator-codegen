@@ -78,7 +78,13 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{24,
      101,
      true,
      BuildSecEdgarQ24Probe,
-     core::kSecEdgarQ24CostModel}};
+     core::kSecEdgarQ24CostModel,
+     "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total FROM num n "
+     "LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh "
+     "WHERE n.uom = $2 AND n.ddate BETWEEN CAST(TRY_CAST($1 AS INTEGER) AS BIGINT) * "
+     "10000 + 101 AND CAST(TRY_CAST($1 AS INTEGER) AS BIGINT) * 10000 + 1231 AND "
+     "n.value IS NOT NULL AND p.adsh IS NULL GROUP BY n.tag, n.version HAVING "
+     "COUNT(*) > 10 ORDER BY cnt DESC LIMIT 100"}};
 
 } // namespace q24_catalog
 } // namespace

@@ -1,6 +1,8 @@
 // GENERATED BACKEND
 #pragma once
 
+#include <functional>
+
 #include "substrate/aux/runtime/accelerator_runtime.hpp"
 #include "duckdb/main/client_context.hpp"
 
@@ -20,6 +22,11 @@ public:
   uint64_t DataScaleRows() const override;
   std::size_t WorkerCount() const override;
   void ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const override;
+  bool AnswerFromSql(const core::QueryArguments &arguments, core::AuxRowSink &sink) override;
+
+  // Runs the query's SQL for AnswerFromSql; false if it has none.
+  using SqlAnswer = std::function<bool(const core::QueryArguments &, core::AuxRowSink &)>;
+  void SetSqlAnswer(SqlAnswer answer) { sql_answer = std::move(answer); }
 
   ::duckdb::ClientContext *ExecutionContext() const;
   runtime::AcceleratorRuntime &Runtime() { return runtime; }
@@ -47,6 +54,7 @@ public:
 private:
   runtime::AcceleratorRuntime &runtime;
   ::duckdb::ClientContext &context;
+  SqlAnswer sql_answer;
 };
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

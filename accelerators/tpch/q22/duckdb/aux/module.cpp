@@ -566,23 +566,6 @@ void TpchQ22Module::Execute(core::AuxEngineServices &services,
   EmitResult(*state, country_codes, sink);
 }
 
-// ── ExecuteFallback ─────────────────────────────────────────────────────────
-void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  // Fallback: recompute from base tables using BuildState + EmitResult
-  const auto state = BuildState(services);
-
-  std::vector<std::string> country_codes;
-  for (const auto &val : arguments.values) {
-    if (!val.is_null && std::holds_alternative<std::string>(val.payload)) {
-      country_codes.push_back(std::get<std::string>(val.payload));
-    }
-  }
-
-  EmitResult(state, country_codes, sink);
-}
-
 namespace {
 
 // The customer records and positive-balance statistics one build partition

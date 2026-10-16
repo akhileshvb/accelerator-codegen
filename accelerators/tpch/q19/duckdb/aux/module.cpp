@@ -1189,48 +1189,6 @@ void TpchQ19Module::Execute(core::AuxEngineServices &services,
   EmitCustomProfile("execute_total", t_exec.us());
 }
 
-void TpchQ19Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  (void)services;
-  auto state = BuildState(services, false);
-
-  if (arguments.values.size() < 6) {
-    sink.Begin({{{"revenue", core::AuxType::ScaledDecimal, true}}});
-    sink.WriteRow({{core::AuxValue::Null(core::AuxType::ScaledDecimal)}});
-    sink.End();
-    return;
-  }
-
-  std::vector<int64_t> args_int;
-  std::vector<std::string> args_str;
-  for (std::size_t i = 0; i < 6; ++i) {
-    if (arguments.values[i].is_null) {
-      args_int.push_back(0);
-      args_str.push_back("");
-      continue;
-    }
-    if (i % 2 == 0) {
-      if (std::holds_alternative<std::string>(arguments.values[i].payload))
-        args_str.push_back(std::get<std::string>(arguments.values[i].payload));
-      else
-        args_str.push_back("");
-    } else {
-      if (std::holds_alternative<int64_t>(arguments.values[i].payload))
-        args_int.push_back(std::get<int64_t>(arguments.values[i].payload));
-      else
-        args_int.push_back(0);
-    }
-  }
-
-  const int64_t qty1 = args_int[0] * 100;
-  const int64_t qty2 = args_int[1] * 100;
-  const int64_t qty3 = args_int[2] * 100;
-
-  EmitResult(state, args_str[0], qty1, args_str[1], qty2, args_str[2], qty3,
-             sink);
-}
-
 std::vector<core::CalibrationWrite> TpchQ19Module::CalibrationWrites() const {
   return TpchQ19CalibrationWrites();
 }

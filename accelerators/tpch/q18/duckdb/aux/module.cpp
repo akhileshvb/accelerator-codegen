@@ -907,17 +907,6 @@ void TpchQ18Module::Execute(core::AuxEngineServices &services,
   EmitResult(*state, threshold_raw, services, sink);
 }
 
-void TpchQ18Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  int64_t threshold_raw = 0;
-  if (!arguments.values.empty() && !arguments.values[0].is_null) {
-    if (std::holds_alternative<int64_t>(arguments.values[0].payload))
-      threshold_raw = std::get<int64_t>(arguments.values[0].payload) * 100;
-  }
-  EmitResult(BuildState(services), threshold_raw, services, sink);
-}
-
 TpchQ18State
 TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ18State state;

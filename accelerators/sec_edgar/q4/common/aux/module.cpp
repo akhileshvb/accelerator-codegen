@@ -847,6 +847,9 @@ void SecEdgarQ4Module::Execute(core::AuxEngineServices &services,
 void SecEdgarQ4Module::ExecuteFallback(core::AuxEngineServices &services,
                                        const core::QueryArguments &arguments,
                                        core::AuxRowSink &sink) {
+  if (services.AnswerFromSql(arguments, sink)) {
+    return;
+  }
   const SecEdgarQ4Params params = ParseArguments(arguments);
   const auto state = BuildState(services);
   EmitGroups(services, *state.groups, params, sink);

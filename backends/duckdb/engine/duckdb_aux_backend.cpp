@@ -37,6 +37,10 @@ void DuckDBAuxBackend::ParallelFor(std::size_t n, const std::function<void(std::
   runtime.ParallelFor(n, fn);
 }
 
+bool DuckDBAuxBackend::AnswerFromSql(const core::QueryArguments &arguments, core::AuxRowSink &sink) {
+  return sql_answer && sql_answer(arguments, sink);
+}
+
 ::duckdb::ClientContext *DuckDBAuxBackend::ExecutionContext() const {
   return t_reader ? t_reader : &context;
 }

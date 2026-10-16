@@ -914,21 +914,6 @@ void TpchQ14Module::Execute(core::AuxEngineServices &services,
   EmitResult(totals, sink);
 }
 
-void TpchQ14Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  int32_t start = 0;
-  if (!arguments.values.empty() && !arguments.values[0].is_null &&
-      std::holds_alternative<core::AuxDate>(arguments.values[0].payload))
-    start =
-        std::get<core::AuxDate>(arguments.values[0].payload).days_since_epoch;
-  const auto state = BuildState(services);
-  const auto month = TpchQ14MonthKeyFromDays(start);
-  const auto it = state.month_totals.find(month);
-  EmitResult(it != state.month_totals.end() ? it->second : TpchQ14MonthTotals{},
-               sink);
-}
-
 TpchQ14State TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q14 requires a typed initial scan source");

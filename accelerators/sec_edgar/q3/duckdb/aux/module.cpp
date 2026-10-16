@@ -2053,17 +2053,6 @@ void SecEdgarQ3Module::Execute(core::AuxEngineServices &services,
   ExecuteFallback(services, arguments, sink);
 }
 
-void SecEdgarQ3Module::ExecuteFallback(core::AuxEngineServices &services,
-                                       const core::QueryArguments &arguments,
-                                       core::AuxRowSink &sink) {
-  const QueryParams params = ParseArguments(arguments);
-  if (params.is_null) {
-    EmitRows(sink, nullptr);
-    return;
-  }
-  EmitOutput(services, BuildState(services), params.fy, params.uom, sink);
-}
-
 void SecEdgarQ3NumTotals::Add(std::string_view adsh, std::string_view uom, double value) {
   std::string key(uom);
   key.push_back('\0');

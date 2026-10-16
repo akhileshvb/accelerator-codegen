@@ -1235,27 +1235,6 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
   EmitMerged(nations, sink);
 }
 
-void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &services,
-                                     const core::QueryArguments &arguments,
-                                     core::AuxRowSink &sink) {
-  std::string nation_name;
-  if (!arguments.values.empty() && !arguments.values[0].is_null &&
-      std::holds_alternative<std::string>(arguments.values[0].payload)) {
-    nation_name = std::get<std::string>(arguments.values[0].payload);
-  }
-  const auto full_state = BuildState(services);
-  std::vector<std::shared_ptr<const TpchQ21NationRows>> nations;
-  const auto name_it = full_state.nation_index->nation_name_to_keys.find(nation_name);
-  if (name_it != full_state.nation_index->nation_name_to_keys.end()) {
-    for (const auto nk : name_it->second) {
-      const auto it = full_state.nations.find(nk);
-      if (it != full_state.nations.end())
-        nations.push_back(it->second);
-    }
-  }
-  EmitMerged(nations, sink);
-}
-
 namespace {
 
 // Order keys in hash shards: the fulfilled orders, or the per-supplier

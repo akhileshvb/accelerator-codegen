@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -238,7 +239,17 @@ bool AcceleratorRuntime::Collapsed(Epoch epoch) const {
   return false;
 }
 
+// ACCEL_AUX_FORCE_FALLBACK=1: every read is answered from SQL (differential tests).
+static bool ForcedFallback() {
+  const char *value = std::getenv("ACCEL_AUX_FORCE_FALLBACK");
+  return value && *value && *value != '0';
+}
+
 AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &options) {
+  if (ForcedFallback()) {
+    impl->stats.reads_fallback++;
+    return ReadGuard(false, nullptr);
+  }
   const Epoch epoch =
       options.epoch == VersionedAuxStore::kNewestSnapshot ? kNever - 1 : options.epoch;
   std::unique_lock<std::mutex> lock(impl->state_mutex);

@@ -920,69 +920,6 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
   EmitResult(winners, win->max_revenue, sink);
 }
 
-
-void TpchQ15Module::ExecuteFallback(core::AuxEngineServices &services,
-                                     const core::QueryArguments &arguments,
-                                     core::AuxRowSink &sink) {
-  int32_t start = 0;
-  if (!arguments.values.empty() && !arguments.values[0].is_null) {
-    if (std::holds_alternative<core::AuxDate>(arguments.values[0].payload))
-      start = std::get<core::AuxDate>(arguments.values[0].payload).days_since_epoch;
-    else if (std::holds_alternative<int64_t>(arguments.values[0].payload))
-      start = static_cast<int32_t>(std::get<int64_t>(arguments.values[0].payload));
-  }
-
-  if (!initial_scan)
-    throw std::logic_error("TPC-H Q15 requires a typed initial scan source");
-
-  const int32_t end = TpchQ15AddMonths(start, 3);
-
-  std::unordered_map<int64_t, int64_t> total_rev;
-  TpchQ15SupplierDirectory dir;
-
-  initial_scan->ScanSuppliers(services, 1, [&](std::size_t, const TpchQ15SupplierInput &input) {
-    dir.Add(input.suppkey,
-            TpchQ15SupplierRecord{input.name, input.address, input.phone});
-  });
-
-  initial_scan->ScanLineitems(services, 1, [&](std::size_t, const TpchQ15LineitemInput &input) {
-    if (input.shipdate_days < start || input.shipdate_days >= end)
-      return;
-    const auto revenue = TpchQ15RevenueRaw(
-        input.extended_price_raw, input.extended_price_scale,
-        input.discount_raw, input.discount_scale);
-    total_rev[input.suppkey] += revenue;
-  });
-
-  if (total_rev.empty()) {
-    sink.Begin({{{"s_suppkey", core::AuxType::Int64, true},
-                 {"s_name", core::AuxType::String, true},
-                 {"s_address", core::AuxType::String, true},
-                 {"s_phone", core::AuxType::String, true},
-                 {"total_revenue", core::AuxType::ScaledDecimal, true}}});
-    sink.End();
-    return;
-  }
-
-  int64_t max_rev = std::numeric_limits<int64_t>::min();
-  for (const auto &[sk, rev] : total_rev)
-    if (rev > max_rev) max_rev = rev;
-
-  std::vector<std::pair<int64_t, TpchQ15SupplierRecord>> winners;
-  for (const auto &[sk, rev] : total_rev) {
-    if (rev == max_rev) {
-      std::vector<const TpchQ15SupplierRecord *> matches;
-      dir.FindAll(sk, matches);
-      for (const auto *rec : matches)
-        winners.emplace_back(sk, *rec);
-    }
-  }
-  std::sort(winners.begin(), winners.end(),
-            [](const auto &a, const auto &b) { return a.first < b.first; });
-
-  EmitResult(winners, max_rev, sink);
-}
-
 TpchQ15State TpchQ15Module::BuildState(
     core::AuxEngineServices &services) const {
   TpchQ15State state;

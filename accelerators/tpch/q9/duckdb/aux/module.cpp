@@ -2797,30 +2797,6 @@ void TpchQ9Module::Execute(core::AuxEngineServices &services,
              use_candidates ? &candidates : nullptr, sink);
 }
 
-void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  // Recompute from base tables: build state and emit
-  std::string color;
-  if (!arguments.values.empty() && !arguments.values[0].is_null &&
-      std::holds_alternative<std::string>(arguments.values[0].payload))
-    color = std::get<std::string>(arguments.values[0].payload);
-
-  TpchQ9State state;
-  BuildStateInto(services, state, /*full=*/false);
-  std::vector<const TpchQ9State::PartProfitPartition *> slots;
-  slots.reserve(state.profit_partitions.size());
-  for (const auto &partition : state.profit_partitions)
-    slots.push_back(&partition);
-  const std::string needle = NormalizeForIndex(color);
-  const auto tokens = NameTokens(needle);
-  std::vector<int32_t> candidates;
-  const bool use_candidates =
-      !tokens.empty() && IntersectPostings(state, tokens, candidates);
-  EmitResult(services, state, slots, color,
-             use_candidates ? &candidates : nullptr, sink);
-}
-
 void TpchQ9Module::EmitResult(
     const core::AuxEngineServices &services, const TpchQ9State &meta,
     const std::vector<const TpchQ9State::PartProfitPartition *> &slots,

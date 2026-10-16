@@ -1238,33 +1238,6 @@ void TpchQ16Module::Execute(core::AuxEngineServices &services,
   EmitMerged(*meta, lists, params, sink);
 }
 
-void TpchQ16Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  QueryParams params;
-  if (!ParseArguments(arguments, params)) {
-    // Fewer than 3 arguments: nothing selected.
-    params = QueryParams{};
-  }
-  // Build the state from the base tables and answer from it.
-  const auto state = BuildState(services);
-  const TpchQ16Meta *meta = nullptr;
-  std::vector<const TpchQ16SizeList *> lists;
-  for (const auto &image : state.images) {
-    if (image.partition == Layout::kMeta) {
-      meta = image.As<TpchQ16Meta>();
-    } else if (image.partition >= Layout::kSizeBase &&
-               image.partition <= Layout::SizePartition(Layout::kMaxSize)) {
-      const auto size = static_cast<int32_t>(image.partition - Layout::kSizeBase);
-      if (params.size_wanted[size])
-        lists.push_back(image.As<TpchQ16SizeList>());
-    }
-  }
-  if (!meta)
-    throw std::logic_error("TPC-H Q16 fallback build produced no metadata");
-  EmitMerged(*meta, lists, params, sink);
-}
-
 namespace {
 
 // Build partials. Partitions fold in table order, so ids and last-wins rows

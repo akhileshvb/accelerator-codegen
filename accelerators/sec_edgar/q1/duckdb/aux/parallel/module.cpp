@@ -50,12 +50,6 @@ void SecEdgarQ1ParallelModule::Execute(core::AuxEngineServices &services,
   SecEdgarQ1Module::EmitOutput(*state, sink);
 }
 
-void SecEdgarQ1ParallelModule::ExecuteFallback(
-    core::AuxEngineServices &services, const core::QueryArguments &,
-    core::AuxRowSink &sink) {
-  SecEdgarQ1Module::EmitOutput(BuildState(services), sink);
-}
-
 SecEdgarQ1State
 SecEdgarQ1ParallelModule::BuildState(core::AuxEngineServices &services) const {
   const auto workers = std::max<std::size_t>(1, services.WorkerCount());

@@ -1441,39 +1441,6 @@ void TpchQ20Module::Execute(core::AuxEngineServices &services,
              nation_name, services, sink);
 }
 
-void TpchQ20Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  int32_t start_date_days = 0;
-  std::string part_name_pattern;
-  std::string nation_name;
-
-  if (arguments.values.size() >= 3) {
-    if (std::holds_alternative<core::AuxDate>(arguments.values[0].payload)) {
-      start_date_days =
-          std::get<core::AuxDate>(arguments.values[0].payload).days_since_epoch;
-    } else if (std::holds_alternative<int64_t>(
-                   arguments.values[0].payload)) {
-      start_date_days = static_cast<int32_t>(
-          std::get<int64_t>(arguments.values[0].payload));
-    }
-    if (!arguments.values[1].is_null &&
-        std::holds_alternative<std::string>(arguments.values[1].payload)) {
-      part_name_pattern =
-          std::get<std::string>(arguments.values[1].payload);
-    }
-    if (!arguments.values[2].is_null &&
-        std::holds_alternative<std::string>(arguments.values[2].payload)) {
-      nation_name = std::get<std::string>(arguments.values[2].payload);
-    }
-  }
-
-  const int32_t end_date_days = AddOneYear(start_date_days);
-  const auto state = BuildState(services);
-  EmitResult(state, start_date_days, end_date_days, part_name_pattern,
-             nation_name, services, sink);
-}
-
 TpchQ20State
 TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)

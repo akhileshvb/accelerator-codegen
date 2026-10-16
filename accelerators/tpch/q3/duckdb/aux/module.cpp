@@ -1493,28 +1493,6 @@ void TpchQ3Module::Execute(core::AuxEngineServices &services,
   EmitResult(ComposeTpchQ3TopK(*state, cutoff), sink);
 }
 
-void TpchQ3Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  std::string segment;
-  int32_t cutoff = 0;
-  if (arguments.values.size() >= 1 && !arguments.values[0].is_null &&
-      std::holds_alternative<std::string>(arguments.values[0].payload))
-    segment = std::get<std::string>(arguments.values[0].payload);
-  if (arguments.values.size() >= 2 && !arguments.values[1].is_null &&
-      std::holds_alternative<core::AuxDate>(arguments.values[1].payload))
-    cutoff =
-        std::get<core::AuxDate>(arguments.values[1].payload).days_since_epoch;
-  const auto built = BuildState(services);
-  const auto partition = TpchQ3PartitionFromMktsegment(segment);
-  const auto it = built.segments.find(partition);
-  if (it == built.segments.end()) {
-    EmitResult({}, sink);
-    return;
-  }
-  EmitResult(ComposeTpchQ3TopK(*it->second, cutoff), sink);
-}
-
 namespace {
 
 // Initial-build temporaries: per-order shipdate revenue lists chained through
