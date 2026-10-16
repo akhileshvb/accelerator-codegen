@@ -215,7 +215,7 @@ constexpr std::size_t kFinishGrain = 32;  // bulk token index and match counts
 constexpr std::size_t kHistGrain = 64;     // ~200 customers per shard at SF 20
 constexpr std::size_t kEvalGrain = 1024;   // untracked-pattern read
 constexpr std::size_t kMergeGrain = 256;   // build merge: shards folded per slice (~1 us each)
-constexpr std::size_t kMaintGrain = 64;    // maintenance: shards touched per slice (~2 us each)
+constexpr std::size_t kMaintGrain = 4096;  // maintenance: shard runs per slice; RF-sized commits stay inline
 
 // Count changes of a batch of order/customer updates, kept apart from the
 // state so slices owning disjoint shards can run concurrently; summed in

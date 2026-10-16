@@ -29,8 +29,8 @@ using core::ByteWriter;
 constexpr std::size_t kPairWalkGrain = 32768;
 // Partsupp rows per build slice: a merge step is ~20 ns, so ~1 ms.
 constexpr std::size_t kSeriesIdxGrain = 65536;
-// Pairs per maintenance slice: rebuilding one pair's series is ~1 us.
-constexpr std::size_t kSeriesGrain = 512;
+// Pairs per maintenance slice: ~1 us each, so RF-sized commits stay inline.
+constexpr std::size_t kSeriesGrain = 16384;
 // Rows per sorted slice of the build: a stable sort of 64K small rows is ~5 ms.
 constexpr std::size_t kSortGrain = 65536;
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S

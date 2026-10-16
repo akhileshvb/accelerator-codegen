@@ -128,16 +128,30 @@ void CollectSparseQuantities(
 }
 
 // Quantity sum per order key in hash shards: partial states of a parallel
-// build fold shard by shard.
+// build fold shard by shard in parallel. A run of rows of one order (lineitem
+// is clustered by order) is summed before it touches a shard.
 struct OrderSums {
   static constexpr std::size_t kShards = 64;
   std::array<std::unordered_map<int64_t, int64_t>, kShards> shards;
+  int64_t run_key = -1;
+  int64_t run_sum = 0;
 
   static std::size_t ShardOf(int64_t orderkey) {
     return (static_cast<uint64_t>(orderkey) * 0x9E3779B97F4A7C15ULL) >> 58;
   }
   void Add(int64_t orderkey, int64_t quantity_raw) {
-    shards[ShardOf(orderkey)][orderkey] += quantity_raw;
+    if (orderkey != run_key) {
+      Flush();
+      run_key = orderkey;
+    }
+    run_sum += quantity_raw;
+  }
+  // Moves the open run into its shard; call before reading or folding.
+  void Flush() {
+    if (run_key >= 0)
+      shards[ShardOf(run_key)][run_key] += run_sum;
+    run_key = -1;
+    run_sum = 0;
   }
   void FoldShard(std::size_t shard, const OrderSums &from) {
     for (const auto &[orderkey, sum] : from.shards[shard])
@@ -912,7 +926,7 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
 
   // Quantity sum per order, hash-sharded so the partials fold shard by shard
   // in parallel.
-  const auto sums = core::PartitionedBuild<OrderSums>(
+  auto sums = core::PartitionedBuild<OrderSums>(
       services, [] { return OrderSums{}; },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitemsPartitioned(
@@ -925,12 +939,15 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
           partial.Add(input.orderkey, input.quantity_raw);
       },
       [&](OrderSums &into, OrderSums &&from) {
+        into.Flush();
+        from.Flush();
         core::ParallelSlices(services, OrderSums::kShards, 1,
                              [&](std::size_t, std::size_t first, std::size_t last) {
                                for (std::size_t s = first; s < last; ++s)
                                  into.FoldShard(s, from);
                              });
       });
+  sums.Flush();
   using Sums = std::vector<std::pair<int64_t, int64_t>>;
   Sums above_sums;
   core::ParallelReduce(
