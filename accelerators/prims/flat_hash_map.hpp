@@ -9,8 +9,8 @@
 // MEMORY     ~9 B/slot + sizeof(V), at most 7/8 full (about 10.3 B + 1.14*sizeof(V) per
 //            entry at max load, 2x right after a doubling).
 // COW/THREADS FlatHashMap: single writer, pointers invalidated by inserts.
-//            ShardedCowHashMap: mutate a private copy only; const reads of a published
-//            copy are safe.
+//            ShardedCowHashMap: mutate a private copy only (threads may write disjoint
+//            shards, see ShardOf); const reads of a published copy are safe.
 // USE WHEN   keys are arbitrary int64 with no useful locality, or you need a map of fat
 //            values. For int64-keyed columns use AnyKeyCowArray.
 //
@@ -319,11 +319,15 @@ public:
           fn(e.first, e.second);
   }
 
-private:
+  // The shard of a key: threads that write disjoint shards of one private copy
+  // do not race. The index is the top kShardBits of one hash, so a map with more
+  // shard bits refines the shards of a map with fewer.
   static std::size_t ShardOf(int64_t key) {
     uint64_t x = static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ULL;
     return static_cast<std::size_t>(x >> (64 - kShardBits));
   }
+
+private:
   Shard &MutableShard(int64_t key) {
     auto &s = shards_[ShardOf(key)];
     if (!s)
