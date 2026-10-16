@@ -1,10 +1,12 @@
 #include "tpch/q1/duckdb/aux/module.hpp"
 #include "tpch/q1/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -388,6 +390,44 @@ TpchQ1Module::InterpretMutation(const core::MutationBatch &mutation) const {
   return {};
 }
 
+namespace {
+
+// Tree nodes per slice below which a commit's node images are built inline.
+constexpr std::size_t kNodeGrain = 512;
+
+// A fresh image of `node` holding the stored one plus the deltas order[range]
+// (copy-on-write: published images are never mutated). Null if the stored
+// image is foreign or a group table overflows.
+std::shared_ptr<TpchQ1StateImage>
+ApplyToNode(core::PartitionId node, const core::StateImage *stored,
+            const std::vector<TpchQ1LineitemDelta> &deltas,
+            const std::vector<std::pair<uint32_t, uint32_t>> &order,
+            std::pair<uint32_t, uint32_t> range) {
+  auto image = std::make_shared<TpchQ1StateImage>();
+  image->shipdate_days = static_cast<int32_t>(node);
+  if (stored) {
+    const auto *typed = AsQ1Image(*stored);
+    if (!typed || typed->shipdate_days != image->shipdate_days)
+      return nullptr;
+    image->partition = typed->partition;
+  }
+  auto &part = image->partition;
+  for (uint32_t i = range.first; i < range.second; ++i) {
+    const auto &delta = deltas[order[i].second];
+    auto *group = part.FindOrAdd(delta.group_key);
+    if (!group)
+      return nullptr;
+    ::accelerator_codegen::ApplyQ1RowContribution(
+        *group, delta.quantity_raw, delta.extended_price_raw,
+        delta.discount_raw, delta.tax_raw, delta.sign);
+    if (group->count == 0)
+      part.EraseAt(static_cast<uint32_t>(group - part.stats));
+  }
+  return image;
+}
+
+} // namespace
+
 void TpchQ1Module::AccumulateMutation(const core::MutationBatch &mutation,
                                       core::AuxEngineServices &,
                                       core::AuxTxnBuffer &base_buffer) {
@@ -479,9 +519,9 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
 
   // Every delta updates its leaf and all ancestors (copy-on-write: each
   // touched node is copied into a fresh image; published images are never
-  // mutated). Deltas are visited in leaf order, so the ancestors of one level
-  // form a sorted, deduplicated run and each delta finds its node by a
-  // forward-only cursor (no maps, no searches).
+  // mutated). Deltas are visited in leaf order, so the deltas of one node are a
+  // contiguous run of `order` and the nodes of a level are found by a
+  // forward-only walk (no maps, no searches).
   const auto &deltas = buffer.Deltas();
   constexpr int kLevels = 17; // leaf level 0 .. root level 16
   std::vector<std::pair<uint32_t, uint32_t>> order; // (leaf node, delta index)
@@ -490,81 +530,57 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
     order.emplace_back(LeafNode(deltas[i].shipdate_days), i);
   std::sort(order.begin(), order.end());
 
-  std::vector<core::PartitionId> partitions; // ancestors, level by level
+  std::vector<core::PartitionId> partitions; // touched nodes, level by level
+  std::vector<std::pair<uint32_t, uint32_t>> runs; // per node: range in `order`
   partitions.reserve(order.size() * 4 + kLevels);
-  uint32_t level_begin[kLevels + 1];
+  runs.reserve(partitions.capacity());
   for (int level = 0; level < kLevels; ++level) {
-    level_begin[level] = static_cast<uint32_t>(partitions.size());
     uint32_t last = 0;
-    for (const auto &entry : order) {
-      const uint32_t node = entry.first >> level;
+    for (uint32_t i = 0; i < order.size(); ++i) {
+      const uint32_t node = order[i].first >> level;
       if (node != last) {
+        if (last != 0)
+          runs.back().second = i;
         partitions.push_back(static_cast<core::PartitionId>(node));
+        runs.emplace_back(i, 0);
         last = node;
       }
     }
+    runs.back().second = static_cast<uint32_t>(order.size());
   }
-  level_begin[kLevels] = static_cast<uint32_t>(partitions.size());
 
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), partitions);
-  std::vector<std::shared_ptr<TpchQ1StateImage>> work(partitions.size());
-  std::vector<core::Version> versions(partitions.size(), 0);
-  {
-    std::vector<const core::StateImage *> matched;
-    MatchSnapshot(partitions, snapshot.partitions, matched);
-    for (std::size_t slot = 0; slot < partitions.size(); ++slot) {
-      auto image = std::make_shared<TpchQ1StateImage>();
-      image->shipdate_days = static_cast<int32_t>(partitions[slot]);
-      if (matched[slot]) {
-        const auto *typed = AsQ1Image(*matched[slot]);
-        if (!typed || typed->shipdate_days != image->shipdate_days) {
-          outcome.action = core::MaintenanceAction::RebuildAll;
-          outcome.invalidations = All();
-          outcome.pending_rebuild = outcome.invalidations;
-          return outcome;
+  std::vector<const core::StateImage *> matched;
+  MatchSnapshot(partitions, snapshot.partitions, matched);
+
+  // Nodes are independent: each slice builds its own images.
+  outcome.updates.resize(partitions.size());
+  std::atomic<bool> unusable{false};
+  core::ParallelSlices(
+      services, partitions.size(), kNodeGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t slot = begin; slot < end; ++slot) {
+          auto image = ApplyToNode(partitions[slot], matched[slot], deltas,
+                                   order, runs[slot]);
+          if (!image) {
+            unusable = true;
+            return;
+          }
+          outcome.updates[slot] = core::StateImage::Make(
+              core::TpchQ1Layout::kAccelerator, partitions[slot],
+              matched[slot] ? matched[slot]->version : 0,
+              std::shared_ptr<const TpchQ1StateImage>(std::move(image)));
         }
-        image->partition = typed->partition;
-        versions[slot] = matched[slot]->version;
-      }
-      work[slot] = std::move(image);
-    }
+      });
+  if (unusable) {
+    outcome.updates.clear();
+    outcome.action = core::MaintenanceAction::RebuildAll;
+    outcome.invalidations = All();
+    outcome.pending_rebuild = outcome.invalidations;
+    return outcome;
   }
-
-  uint32_t cursor[kLevels];
-  for (int level = 0; level < kLevels; ++level)
-    cursor[level] = level_begin[level];
-  uint32_t previous_leaf = 0;
-  for (const auto &entry : order) {
-    const auto &delta = deltas[entry.second];
-    for (int level = 0; level < kLevels; ++level) {
-      const uint32_t node = entry.first >> level;
-      if (entry.first != previous_leaf &&
-          node != static_cast<uint32_t>(partitions[cursor[level]]))
-        ++cursor[level];
-      auto &part = work[cursor[level]]->partition;
-      auto *group = part.FindOrAdd(delta.group_key);
-      if (!group) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      ::accelerator_codegen::ApplyQ1RowContribution(
-          *group, delta.quantity_raw, delta.extended_price_raw,
-          delta.discount_raw, delta.tax_raw, delta.sign);
-      if (group->count == 0)
-        part.EraseAt(static_cast<uint32_t>(group - part.stats));
-    }
-    previous_leaf = entry.first;
-  }
-
   outcome.action = core::MaintenanceAction::ApplyDelta;
-  outcome.updates.reserve(partitions.size());
-  for (std::size_t slot = 0; slot < partitions.size(); ++slot)
-    outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ1Layout::kAccelerator, partitions[slot], versions[slot],
-        std::shared_ptr<const TpchQ1StateImage>(std::move(work[slot]))));
   return outcome;
 }
 

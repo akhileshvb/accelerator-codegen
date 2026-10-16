@@ -503,6 +503,43 @@ TpchQ6Module::InterpretMutation(const core::MutationBatch &mutation) const {
   return {};
 }
 
+namespace {
+
+// Partitions per slice below which a commit's images are built inline.
+constexpr std::size_t kPartitionGrain = 16;
+
+// Copy-on-write: a fresh image holding `base`'s matrix plus the deltas
+// order[begin, end).
+std::shared_ptr<TpchQ6StateImage>
+ApplyDeltas(const TpchQ6StateImage &base,
+            const std::vector<TpchQ6LineitemDelta> &deltas,
+            const std::vector<std::pair<core::PartitionId, uint32_t>> &order,
+            uint32_t begin, uint32_t end) {
+  auto image = NewStateImage(base.kind, base.key);
+  image->matrix = base.matrix;
+  image->declined = base.declined; // its out-of-domain row is still there
+  if (end - begin <= 3) {
+    for (uint32_t i = begin; i < end; ++i) {
+      const auto &delta = deltas[order[i].second];
+      image->matrix.AddCell(delta.discount_cent, delta.quantity_scaled,
+                            delta.contribution, delta.sign);
+    }
+    return image;
+  }
+  // Accumulate the batch raw, prefix it once, add the whole block.
+  Q6RevenueMatrix batch;
+  for (uint32_t i = begin; i < end; ++i) {
+    const auto &delta = deltas[order[i].second];
+    batch.AddRawCell(delta.discount_cent, delta.quantity_scaled,
+                     delta.contribution, delta.sign);
+  }
+  batch.PrefixInPlace();
+  image->matrix.AddMatrix(batch);
+  return image;
+}
+
+} // namespace
+
 void TpchQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
                                       core::AuxEngineServices &,
                                       core::AuxTxnBuffer &base_buffer) {
@@ -645,42 +682,31 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
     return rebuild_all();
   std::vector<const core::StateImage *> matched;
   MatchSnapshot(partitions, snapshot.partitions, matched);
-  outcome.updates.reserve(partitions.size());
+  std::vector<const TpchQ6StateImage *> base(partitions.size());
   for (std::size_t p = 0; p < partitions.size(); ++p) {
     if (!matched[p])
       return rebuild_all();
-    const auto &old = *matched[p];
-    const auto *typed = AsQ6Image(old);
-    if (old.partition != partitions[p] || !typed ||
+    const auto *typed = AsQ6Image(*matched[p]);
+    if (matched[p]->partition != partitions[p] || !typed ||
         typed->kind != KindOf(partitions[p]) ||
         typed->key != KeyOf(partitions[p]))
       return rebuild_all();
-    // Copy-on-write: a fresh image holding the old matrix plus the delta.
-    auto image = NewStateImage(typed->kind, typed->key);
-    image->matrix = typed->matrix;
-    image->declined = typed->declined; // its out-of-domain row is still there
-    const uint32_t begin = group_begin[p], end = group_begin[p + 1];
-    if (end - begin <= 3) {
-      for (uint32_t i = begin; i < end; ++i) {
-        const auto &delta = deltas[order[i].second];
-        image->matrix.AddCell(delta.discount_cent, delta.quantity_scaled,
-                              delta.contribution, delta.sign);
-      }
-    } else {
-      // Accumulate the batch raw, prefix it once, add the whole block.
-      Q6RevenueMatrix batch;
-      for (uint32_t i = begin; i < end; ++i) {
-        const auto &delta = deltas[order[i].second];
-        batch.AddRawCell(delta.discount_cent, delta.quantity_scaled,
-                         delta.contribution, delta.sign);
-      }
-      batch.PrefixInPlace();
-      image->matrix.AddMatrix(batch);
-    }
-    outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ6Layout::kAccelerator, partitions[p], old.version,
-        std::shared_ptr<const TpchQ6StateImage>(std::move(image))));
+    base[p] = typed;
   }
+  // Partitions are independent: each slice builds its own images.
+  std::vector<std::shared_ptr<TpchQ6StateImage>> images(partitions.size());
+  core::ParallelSlices(
+      services, partitions.size(), kPartitionGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t p = begin; p < end; ++p)
+          images[p] = ApplyDeltas(*base[p], deltas, order, group_begin[p],
+                                  group_begin[p + 1]);
+      });
+  outcome.updates.reserve(partitions.size());
+  for (std::size_t p = 0; p < partitions.size(); ++p)
+    outcome.updates.push_back(core::StateImage::Make(
+        core::TpchQ6Layout::kAccelerator, partitions[p], matched[p]->version,
+        std::shared_ptr<const TpchQ6StateImage>(std::move(images[p]))));
   outcome.action = core::MaintenanceAction::ApplyDelta;
   return outcome;
 }
