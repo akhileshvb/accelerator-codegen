@@ -4,6 +4,8 @@
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <array>
@@ -33,6 +35,11 @@ constexpr std::size_t kParts = kTpchQ9BlockParts;
 
 // Part blocks per color-index slice: ~16 us per block of 16 parts.
 constexpr std::size_t kColorBlockGrain = 128;
+// Blocks per slice: ~5 us to decode one, ~8 us to encode one and diff its colors.
+constexpr std::size_t kDecodeBlockGrain = 256;
+constexpr std::size_t kFlushBlockGrain = 128;
+// Lineitems resolved per slice: ~0.3 us each (three lookups).
+constexpr std::size_t kResolveGrain = 4096;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -328,48 +335,72 @@ template <typename F> void ForEachColor(const ColorMask &mask, F &&fn) {
       fn((w << 6) | static_cast<std::size_t>(__builtin_ctzll(bits)));
 }
 
-// Copy-on-write writer of a state's color aggregates: the first write of a
-// batch to a group clones its record (the published state keeps the old one).
-class ColorWriter {
+// Net change of the color aggregates of a batch, dense per (group, color), in
+// wide sums so that the partial results of slices add up exactly.
+class ColorDeltas {
 public:
-  explicit ColorWriter(TpchQ9State &state) : state_(state) {}
+  struct Acc {
+    int64_t rows = 0;
+    __int128 profit = 0;
+  };
+
+  void Reserve(std::size_t groups) {
+    if (cells_.empty())
+      cells_.resize(groups * kTpchQ9Colors);
+  }
   void Add(const ColorMask &mask, uint32_t group, int64_t drows, int64_t dprofit) {
     if (mask[0] == 0 && mask[1] == 0)
       return;
-    auto &record = Mutable(group);
+    Acc *row = cells_.data() + std::size_t{group} * kTpchQ9Colors;
     ForEachColor(mask, [&](std::size_t c) {
-      auto &acc = record.by_color[c];
-      acc.rows += drows;
-      overflow_ |= __builtin_add_overflow(acc.profit, dprofit, &acc.profit);
+      row[c].rows += drows;
+      row[c].profit += dprofit;
     });
   }
-  // Call once after all Adds: an overflowing sum drops the index.
-  void Finish() {
-    if (overflow_) {
-      state_.color_index = false;
-      state_.color_groups.clear();
+  void Merge(ColorDeltas &&from) {
+    if (from.cells_.empty())
+      return;
+    Reserve(from.cells_.size() / kTpchQ9Colors);
+    for (std::size_t i = 0; i < cells_.size(); ++i) {
+      cells_[i].rows += from.cells_[i].rows;
+      cells_[i].profit += from.cells_[i].profit;
     }
   }
+  std::size_t groups() const { return cells_.size() / kTpchQ9Colors; }
+  const Acc *Row(std::size_t group) const { return cells_.data() + group * kTpchQ9Colors; }
 
 private:
-  TpchQ9GroupColors &Mutable(uint32_t group) {
-    if (group >= owned_.size())
-      owned_.resize(std::max<std::size_t>(group + 1, state_.groups.size()));
-    if (!owned_[group]) {
-      auto &groups = state_.color_groups;
-      if (group >= groups.size())
-        groups.resize(std::max<std::size_t>(group + 1, state_.groups.size()));
-      auto fresh = groups[group] ? std::make_shared<TpchQ9GroupColors>(*groups[group])
-                                 : std::make_shared<TpchQ9GroupColors>();
-      owned_[group] = fresh.get();
-      groups[group] = std::move(fresh);
-    }
-    return *owned_[group];
-  }
-  TpchQ9State &state_;
-  std::vector<TpchQ9GroupColors *> owned_;
-  bool overflow_ = false;
+  std::vector<Acc> cells_;
 };
+
+// Applies a batch's color changes; the first write to a group clones its
+// record (the published state keeps the old one). A sum beyond int64 drops the
+// index.
+void ApplyColorDeltas(TpchQ9State &state, const ColorDeltas &deltas) {
+  auto &groups = state.color_groups;
+  for (std::size_t g = 0; g < deltas.groups(); ++g) {
+    const ColorDeltas::Acc *delta = deltas.Row(g);
+    if (std::all_of(delta, delta + kTpchQ9Colors,
+                    [](const ColorDeltas::Acc &d) { return d.rows == 0 && d.profit == 0; }))
+      continue;
+    if (g >= groups.size())
+      groups.resize(state.groups.size());
+    auto record = groups[g] ? std::make_shared<TpchQ9GroupColors>(*groups[g])
+                            : std::make_shared<TpchQ9GroupColors>();
+    for (std::size_t c = 0; c < kTpchQ9Colors; ++c) {
+      const __int128 profit = record->by_color[c].profit + delta[c].profit;
+      if (profit > std::numeric_limits<int64_t>::max() ||
+          profit < std::numeric_limits<int64_t>::min()) {
+        state.color_index = false;
+        groups.clear();
+        return;
+      }
+      record->by_color[c].rows += delta[c].rows;
+      record->by_color[c].profit = static_cast<int64_t>(profit);
+    }
+    groups[g] = std::move(record);
+  }
+}
 
 // Orders, suppliers and parts whose join changes are re-counted through index
 // lookups of their lineitems; more than this (a bulk dimension update) rebuild.
@@ -401,24 +432,60 @@ public:
     return slot ? slot->get() : nullptr;
   }
   void MarkRenamed(int64_t partkey) { For(partkey).name_dirty |= uint32_t{1} << SlotOf(partkey); }
-  void Flush() {
+  // Takes over a block edited elsewhere (by a single owner).
+  void Adopt(int64_t block_index, std::shared_ptr<EditBlock> edit) {
+    edited_[block_index] = std::move(edit);
+  }
+  // Decodes the blocks of `partkeys` in parallel, so that the edits that follow
+  // (in slices or not) only find them.
+  void Prepare(const core::AuxEngineServices &services, const std::vector<int64_t> &partkeys) {
+    std::vector<int64_t> blocks;
+    for (const int64_t partkey : partkeys)
+      if (!edited_.Contains(BlockOf(partkey)))
+        blocks.push_back(BlockOf(partkey));
+    std::sort(blocks.begin(), blocks.end());
+    blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+    std::vector<std::shared_ptr<EditBlock>> decoded(blocks.size());
+    core::ParallelEach(services, blocks.size(), kDecodeBlockGrain, [&](std::size_t i) {
+      decoded[i] = DecodeBlock(state_.blocks.Get(blocks[i]).get());
+    });
+    for (std::size_t i = 0; i < blocks.size(); ++i)
+      Adopt(blocks[i], std::move(decoded[i]));
+  }
+  // Encodes the edited blocks (and diffs their colors) in parallel slices, then
+  // writes them into the state.
+  void Flush(const core::AuxEngineServices &services) {
     const bool index = before_ && state_.color_index;
-    ColorWriter colors(state_);
-    for (auto entry : edited_) {
-      if (index) // state_.blocks still holds the published block here
-        DiffColors(entry.first, state_.blocks.Get(entry.first).get(), *entry.second, colors);
-      auto encoded = EncodeBlock(*entry.second);
-      if (encoded || state_.blocks.Get(entry.first))
-        state_.blocks.Set(entry.first, encoded);
-    }
+    std::vector<std::pair<int64_t, const EditBlock *>> entries;
+    entries.reserve(edited_.size());
+    for (auto entry : edited_)
+      entries.emplace_back(entry.first, entry.second.get());
+    std::vector<std::shared_ptr<TpchQ9PartBlock>> encoded(entries.size());
+    ColorDeltas colors;
+    core::ParallelReduce(
+        services, entries.size(), kFlushBlockGrain, colors,
+        [&](ColorDeltas &acc, std::size_t begin, std::size_t end) {
+          if (index)
+            acc.Reserve(state_.groups.size());
+          for (std::size_t i = begin; i < end; ++i) {
+            const auto [block_index, edit] = entries[i];
+            if (index) // state_.blocks still holds the published block here
+              DiffColors(block_index, state_.blocks.Get(block_index).get(), *edit, acc);
+            encoded[i] = EncodeBlock(*edit);
+          }
+        },
+        [](ColorDeltas &into, ColorDeltas &&from) { into.Merge(std::move(from)); });
+    for (std::size_t i = 0; i < entries.size(); ++i)
+      if (encoded[i] || state_.blocks.Get(entries[i].first))
+        state_.blocks.Set(entries[i].first, encoded[i]);
     if (index)
-      colors.Finish();
+      ApplyColorDeltas(state_, colors);
     edited_.Clear();
   }
 
 private:
   void DiffColors(int64_t block_index, const TpchQ9PartBlock *old_block, const EditBlock &edit,
-                  ColorWriter &colors) const {
+                  ColorDeltas &colors) const {
     for (std::size_t slot = 0; slot < kParts; ++slot) {
       const TpchQ9Cell *ob = old_block ? old_block->cells.data() + old_block->cell_begin[slot] : nullptr;
       const TpchQ9Cell *oe = old_block ? old_block->cells.data() + old_block->cell_begin[slot + 1] : nullptr;
@@ -542,6 +609,39 @@ bool ProfitRaw(int64_t extendedprice_raw, int64_t discount_raw, int64_t supplyco
     throw std::overflow_error("Q9 lineitem profit overflows int64");
   out = static_cast<int64_t>(profit);
   return true;
+}
+
+// A change of one profit cell of a part, resolved against the dimensions.
+struct CellEdit {
+  int64_t partkey = 0;
+  int32_t nationkey = 0;
+  int32_t year = 0;
+  int64_t drows = 0;
+  int64_t dprofit = 0;
+};
+using CellEdits = std::vector<CellEdit>;
+
+// Resolves the items against the dimensions in parallel slices (resolve(item,
+// edits) only reads), then applies the edits serially in item order, which
+// interns the (nation, year) groups in the order of a serial run. The blocks of
+// the edits must have been prepared.
+template <class Item, class Resolve>
+void ApplyResolved(const core::AuxEngineServices &services, TpchQ9State &state, BlockEditor &editor,
+                   const std::vector<Item> &items, Resolve &&resolve) {
+  CellEdits edits;
+  core::ParallelReduce(
+      services, items.size(), kResolveGrain, edits,
+      [&](CellEdits &out, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i)
+          resolve(items[i], out);
+      },
+      [](CellEdits &into, CellEdits &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      });
+  for (const CellEdit &edit : edits)
+    editor.For(edit.partkey)
+        .AddCell(SlotOf(edit.partkey), state.GroupFor(edit.nationkey, edit.year), edit.drows,
+                 edit.dprofit);
 }
 
 // Any argument without a color aggregate: scan the name column for matching
@@ -726,14 +826,59 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ9Module::CreateTxnBuffer() const {
 
 namespace {
 
+// The build deals the scanned rows to this many owners by part block, so that
+// owners edit disjoint blocks.
+constexpr std::size_t kBuildOwners = 256;
+
+std::size_t BuildOwnerOf(int64_t partkey) {
+  return static_cast<uint64_t>(BlockOf(partkey)) % kBuildOwners;
+}
+
+struct PartsuppRow {
+  int64_t partkey = 0;
+  int64_t suppkey = 0;
+  int64_t cost_raw = 0;
+};
+
+using KeyedInts = std::vector<std::pair<int64_t, int32_t>>;
+using KeyedNames = std::vector<std::pair<int64_t, std::string>>;
+
+// Supplier (key, nation) rows and the distinct nation keys.
+struct SupplierRows {
+  KeyedInts rows;
+  std::set<int32_t> nationkeys;
+};
+
+// Order (key, year) rows and the distinct years.
+struct OrderRows {
+  KeyedInts rows;
+  std::set<int32_t> years;
+};
+
+// The editable blocks of the partsupp rows of one owner.
+std::vector<std::pair<int64_t, std::shared_ptr<EditBlock>>>
+BuildPartsuppBlocks(const std::vector<PartsuppRow> &rows) {
+  core::FlatHashMap<std::shared_ptr<EditBlock>> blocks;
+  for (const PartsuppRow &row : rows) {
+    auto &edit = blocks[BlockOf(row.partkey)];
+    if (!edit)
+      edit = std::make_shared<EditBlock>();
+    edit->SetPs(SlotOf(row.partkey), row.suppkey, row.cost_raw);
+  }
+  std::vector<std::pair<int64_t, std::shared_ptr<EditBlock>>> built;
+  for (auto entry : blocks)
+    built.emplace_back(entry.first, entry.second);
+  return built;
+}
+
 // Lineitems join their supplier's nation, their order's year and their partsupp
-// row, and add their profit to the (part, nation, year) cell. They are dealt to
-// one list per owner by part block, so the owners edit disjoint blocks and the
-// join runs in parallel; every (nation, year) group is interned beforehand.
+// row, and add their profit to the (part, nation, year) cell. Owners edit
+// disjoint blocks, so the join runs in parallel; every (nation, year) group is
+// interned beforehand.
 void AddLineitemCells(const core::AuxEngineServices &services, const TpchQ9State &state,
                       const BlockEditor &editor,
-                      const std::vector<std::vector<TpchQ9LineitemInput>> &by_owner) {
-  services.ParallelFor(by_owner.size(), [&](std::size_t owner) {
+                      const Buckets<TpchQ9LineitemInput> &by_owner) {
+  core::ParallelEach(services, by_owner.size(), 1, [&](std::size_t owner) {
     for (const TpchQ9LineitemInput &input : by_owner[owner]) {
       int32_t nationkey = 0, year = 0;
       EditBlock *edit = editor.Find(input.partkey);
@@ -756,43 +901,116 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   if (!initial_scan)
     throw std::logic_error("TPC-H Q9 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ9State>();
+  const std::size_t partitions = BuildPartitions(services);
 
-  std::set<int32_t> nationkeys, years;
   initial_scan->ScanNations([&](const TpchQ9NationInput &input) {
     state->nation_names[input.nationkey] = input.name;
   });
-  initial_scan->ScanSuppliers([&](const TpchQ9SupplierInput &input) {
-    state->SetSupplierNation(input.suppkey, input.nationkey);
-    nationkeys.insert(input.nationkey);
-  });
-  initial_scan->ScanOrders([&](const TpchQ9OrdersInput &input) {
-    const int32_t year = TpchQ9ExtractYear(input.orderdate_days);
-    state->SetOrderYear(input.orderkey, year);
-    years.insert(year);
-  });
-  initial_scan->ScanParts([&](const TpchQ9PartInput &input) {
-      state->part_names.Set(input.partkey, input.name);
-  });
+
+  // The scans fill per-partition partials in parallel; the single-writer
+  // columns of the state are then set serially, in scan order.
+  const auto suppliers = core::PartitionedBuild<SupplierRows>(
+      services, [] { return SupplierRows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ9SupplierInput &input) {
+              sink(partition, OneRowBatch<TpchQ9SupplierInput>{input});
+            });
+      },
+      [](SupplierRows &into, const TpchQ9SupplierInput &input) {
+        into.rows.emplace_back(input.suppkey, input.nationkey);
+        into.nationkeys.insert(input.nationkey);
+      },
+      [](SupplierRows &into, SupplierRows &&from) {
+        into.rows.insert(into.rows.end(), from.rows.begin(), from.rows.end());
+        into.nationkeys.insert(from.nationkeys.begin(), from.nationkeys.end());
+      },
+      partitions);
+  for (const auto &[suppkey, nationkey] : suppliers.rows)
+    state->SetSupplierNation(suppkey, nationkey);
+
+  const auto orders = core::PartitionedBuild<OrderRows>(
+      services, [] { return OrderRows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ9OrdersInput &input) {
+              sink(partition, OneRowBatch<TpchQ9OrdersInput>{input});
+            });
+      },
+      [](OrderRows &into, const TpchQ9OrdersInput &input) {
+        const int32_t year = TpchQ9ExtractYear(input.orderdate_days);
+        into.rows.emplace_back(input.orderkey, year);
+        into.years.insert(year);
+      },
+      [](OrderRows &into, OrderRows &&from) {
+        into.rows.insert(into.rows.end(), from.rows.begin(), from.rows.end());
+        into.years.insert(from.years.begin(), from.years.end());
+      },
+      partitions);
+  for (const auto &[orderkey, year] : orders.rows)
+    state->SetOrderYear(orderkey, year);
+
+  auto part_names = core::PartitionedBuild<KeyedNames>(
+      services, [] { return KeyedNames{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ9PartInput &input) {
+              sink(partition, OneRowBatch<TpchQ9PartInput>{input});
+            });
+      },
+      [](KeyedNames &into, const TpchQ9PartInput &input) {
+        into.emplace_back(input.partkey, input.name);
+      },
+      [](KeyedNames &into, KeyedNames &&from) {
+        into.insert(into.end(), std::make_move_iterator(from.begin()),
+                    std::make_move_iterator(from.end()));
+      },
+      partitions);
+  for (const auto &[partkey, name] : part_names)
+    state->part_names.Set(partkey, name);
 
   // Partsupp rows and profit cells are gathered per block in editable form and
   // encoded at the end (transient: the editable copy of the cells, ~1.3x).
   BlockEditor editor(*state);
-  initial_scan->ScanPartsupps([&](const TpchQ9PartsuppInput &input) {
-      editor.For(input.partkey)
-          .SetPs(SlotOf(input.partkey), input.suppkey,
-                 input.supplycost_raw);
+  auto partsupps = core::PartitionedBuild<Buckets<PartsuppRow>>(
+      services, [] { return Buckets<PartsuppRow>(kBuildOwners); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsuppsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ9PartsuppInput &input) {
+              sink(partition, OneRowBatch<TpchQ9PartsuppInput>{input});
+            });
+      },
+      [](Buckets<PartsuppRow> &into, const TpchQ9PartsuppInput &input) {
+        into[BuildOwnerOf(input.partkey)].push_back(
+            {input.partkey, input.suppkey, input.supplycost_raw});
+      },
+      AppendBuckets<PartsuppRow>, partitions);
+  std::vector<std::vector<std::pair<int64_t, std::shared_ptr<EditBlock>>>> built(kBuildOwners);
+  core::ParallelEach(services, kBuildOwners, 1, [&](std::size_t owner) {
+    built[owner] = BuildPartsuppBlocks(partsupps[owner]);
+    partsupps[owner] = {};
   });
+  for (auto &owned : built)
+    for (auto &[block_index, edit] : owned)
+      editor.Adopt(block_index, std::move(edit));
 
-  for (const int32_t nationkey : nationkeys)
-    for (const int32_t year : years)
+  for (const int32_t nationkey : suppliers.nationkeys)
+    for (const int32_t year : orders.years)
       state->GroupFor(nationkey, year);
-  std::vector<std::vector<TpchQ9LineitemInput>> by_owner(
-      std::max<std::size_t>(1, services.WorkerCount()));
-  initial_scan->ScanLineitems([&](const TpchQ9LineitemInput &input) {
-    by_owner[static_cast<uint64_t>(BlockOf(input.partkey)) % by_owner.size()].push_back(input);
-  });
-  AddLineitemCells(services, *state, editor, by_owner);
-  editor.Flush();
+  auto lineitems = core::PartitionedBuild<Buckets<TpchQ9LineitemInput>>(
+      services, [] { return Buckets<TpchQ9LineitemInput>(kBuildOwners); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ9LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ9LineitemInput>{input});
+            });
+      },
+      [](Buckets<TpchQ9LineitemInput> &into, const TpchQ9LineitemInput &input) {
+        into[BuildOwnerOf(input.partkey)].push_back(input);
+      },
+      AppendBuckets<TpchQ9LineitemInput>, partitions);
+  AddLineitemCells(services, *state, editor, lineitems);
+  editor.Flush(services);
   if (color_index)
     BuildColorIndex(services, *state);
   return state;
@@ -1020,19 +1238,36 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   auto updated = std::make_shared<TpchQ9State>(old);
   BlockEditor editor(*updated, &old);
 
+  // The blocks of every part edited below, decoded in parallel up front; the
+  // lineitem steps then resolve their joins in parallel slices and apply the
+  // cell edits serially, in delta order.
+  {
+    std::vector<int64_t> partkeys;
+    for (const auto *d : deletes)
+      partkeys.push_back(d->partkey);
+    for (const auto *d : inserts)
+      partkeys.push_back(d->partkey);
+    for (const auto &d : buffer.PartsuppDeltas())
+      partkeys.push_back(d.partkey);
+    if (updated->color_index)
+      for (const auto &d : buffer.PartDeltas())
+        partkeys.push_back(d.partkey);
+    editor.Prepare(services, partkeys);
+  }
+
   // 1. Deleted lineitems leave the cells they were counted in (resolved against
   //    the dimension values of the published state).
-  for (const auto *d : deletes) {
-    int32_t nationkey = 0, year = 0;
-    int64_t cost = 0, profit = 0;
-    const auto slot = SlotOf(d->partkey);
-    if (!old.LookupSupplierNation(d->suppkey, nationkey) ||
-        !old.LookupOrderYear(d->orderkey, year) ||
-        !BlockFindPs(old.FindBlock(d->partkey), slot, d->suppkey, cost))
-      continue; // never joined: nothing to remove
-    ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
-    editor.For(d->partkey).AddCell(slot, updated->GroupFor(nationkey, year), -1, -profit);
-  }
+  ApplyResolved(services, *updated, editor, deletes,
+                [&](const TpchQ9LineitemDelta *d, CellEdits &out) {
+                  int32_t nationkey = 0, year = 0;
+                  int64_t cost = 0, profit = 0;
+                  if (!old.LookupSupplierNation(d->suppkey, nationkey) ||
+                      !old.LookupOrderYear(d->orderkey, year) ||
+                      !BlockFindPs(old.FindBlock(d->partkey), SlotOf(d->partkey), d->suppkey, cost))
+                    return; // never joined: nothing to remove
+                  ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
+                  out.push_back({d->partkey, nationkey, year, -1, -profit});
+                });
 
   // 2. Dimension changes (the lineitems they move are re-counted in step 4).
   for (const auto &d : buffer.SupplierDeltas()) {
@@ -1071,17 +1306,19 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   // 3. Inserted lineitems join against the post-batch dimensions.
-  for (const auto *d : inserts) {
-    int32_t nationkey = 0, year = 0;
-    int64_t cost = 0, profit = 0;
-    auto &edit = editor.For(d->partkey);
-    const auto slot = SlotOf(d->partkey);
-    if (!updated->LookupSupplierNation(d->suppkey, nationkey) ||
-        !updated->LookupOrderYear(d->orderkey, year) || !edit.FindPs(slot, d->suppkey, cost))
-      continue; // does not join (yet)
-    ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
-    edit.AddCell(slot, updated->GroupFor(nationkey, year), 1, profit);
-  }
+  const TpchQ9State &after = *updated;
+  ApplyResolved(services, *updated, editor, inserts,
+                [&](const TpchQ9LineitemDelta *d, CellEdits &out) {
+                  int32_t nationkey = 0, year = 0;
+                  int64_t cost = 0, profit = 0;
+                  const EditBlock *edit = editor.Find(d->partkey);
+                  if (!edit || !after.LookupSupplierNation(d->suppkey, nationkey) ||
+                      !after.LookupOrderYear(d->orderkey, year) ||
+                      !edit->FindPs(SlotOf(d->partkey), d->suppkey, cost))
+                    return; // does not join (yet)
+                  ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
+                  out.push_back({d->partkey, nationkey, year, +1, profit});
+                });
 
   // 4. Join changes: every lineitem joining a changed order, supplier or
   //    partsupp that was there before the batch and still is after it (not one
@@ -1110,6 +1347,8 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     for (const auto *d : inserts)
       ++own_inserts[{d->partkey, d->suppkey, d->orderkey, d->quantity_raw,
                      d->extendedprice_raw, d->discount_raw}];
+    std::vector<const TpchQ9LineitemInput *> recount;
+    std::vector<int64_t> recount_partkeys;
     for (const auto &entry : affected) {
       const TpchQ9LineitemInput &l = entry.second;
       const auto own = own_inserts.find({l.partkey, l.suppkey, l.orderkey, l.quantity_raw,
@@ -1118,23 +1357,31 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
         --own->second;
         continue;
       }
-      const auto slot = SlotOf(l.partkey);
-      auto &edit = editor.For(l.partkey);
-      int32_t nationkey = 0, year = 0;
-      int64_t cost = 0, profit = 0;
-      if (old.LookupSupplierNation(l.suppkey, nationkey) && old.LookupOrderYear(l.orderkey, year) &&
-          BlockFindPs(old.FindBlock(l.partkey), slot, l.suppkey, cost)) {
-        ProfitRaw(l.extendedprice_raw, l.discount_raw, cost, l.quantity_raw, profit);
-        edit.AddCell(slot, updated->GroupFor(nationkey, year), -1, -profit);
-      }
-      if (updated->LookupSupplierNation(l.suppkey, nationkey) &&
-          updated->LookupOrderYear(l.orderkey, year) && edit.FindPs(slot, l.suppkey, cost)) {
-        ProfitRaw(l.extendedprice_raw, l.discount_raw, cost, l.quantity_raw, profit);
-        edit.AddCell(slot, updated->GroupFor(nationkey, year), 1, profit);
-      }
+      recount.push_back(&l);
+      recount_partkeys.push_back(l.partkey);
     }
+    editor.Prepare(services, recount_partkeys);
+    ApplyResolved(services, *updated, editor, recount,
+                  [&](const TpchQ9LineitemInput *l, CellEdits &out) {
+                    const auto slot = SlotOf(l->partkey);
+                    const EditBlock *edit = editor.Find(l->partkey);
+                    int32_t nationkey = 0, year = 0;
+                    int64_t cost = 0, profit = 0;
+                    if (old.LookupSupplierNation(l->suppkey, nationkey) &&
+                        old.LookupOrderYear(l->orderkey, year) &&
+                        BlockFindPs(old.FindBlock(l->partkey), slot, l->suppkey, cost)) {
+                      ProfitRaw(l->extendedprice_raw, l->discount_raw, cost, l->quantity_raw, profit);
+                      out.push_back({l->partkey, nationkey, year, -1, -profit});
+                    }
+                    if (edit && after.LookupSupplierNation(l->suppkey, nationkey) &&
+                        after.LookupOrderYear(l->orderkey, year) &&
+                        edit->FindPs(slot, l->suppkey, cost)) {
+                      ProfitRaw(l->extendedprice_raw, l->discount_raw, cost, l->quantity_raw, profit);
+                      out.push_back({l->partkey, nationkey, year, +1, profit});
+                    }
+                  });
   }
-  editor.Flush();
+  editor.Flush(services);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
