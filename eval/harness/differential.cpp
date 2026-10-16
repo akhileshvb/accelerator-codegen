@@ -419,11 +419,6 @@ std::vector<int64_t> KeyList(duckdb::Connection &connection, const std::string &
   return keys;
 }
 
-struct NamedWrite {
-  std::string name;
-  std::string sql;
-};
-
 // TPC-H writes of every kind an accelerator must maintain under: RF2 / RF1
 // (orders with their lineitems, at both ends of the key range and in the
 // middle), lineitem and customer updates, and parts / suppliers deleted and
@@ -636,15 +631,21 @@ std::vector<NamedWrite> TargetedWrites(duckdb::Connection &connection, const Sha
 
 } // namespace
 
+std::vector<NamedWrite> TpchSqlWrites(duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                                      int rounds) {
+  auto writes = TargetedWrites(connection, entry);
+  for (auto &w : TpchDifferentialWrites(connection, rounds))
+    writes.push_back(std::move(w));
+  return writes;
+}
+
 void RunSqlWritesDifferentialCheck(const std::string &db_path, const SharedQueryCatalogEntry &entry, int rounds) {
   duckdb::DuckDB database(db_path.c_str());
   duckdb::Connection connection(database);
   DuckdbRuntime runtime(connection, entry, 10.0);
   runtime.Build();
   RequireSharedMatchesBase(connection, runtime, entry);
-  auto writes = TargetedWrites(connection, entry);
-  for (auto &w : TpchDifferentialWrites(connection, rounds))
-    writes.push_back(std::move(w));
+  const auto writes = TpchSqlWrites(connection, entry, rounds);
   for (const auto &write : writes) {
     runtime.ApplyWrite(write.sql);
     try {

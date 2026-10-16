@@ -34,6 +34,15 @@ void RunDifferentialCheck(const std::string &db_path,
 void RunIncrementalDifferentialCheck(const std::string &db_path,
                                      const aux_engine::SharedQueryCatalogEntry &entry);
 
+struct NamedWrite {
+  std::string name;
+  std::string sql;
+};
+
+// The writes RunSqlWritesDifferentialCheck runs for `entry`, in order.
+std::vector<NamedWrite> TpchSqlWrites(duckdb::Connection &connection,
+                                      const aux_engine::SharedQueryCatalogEntry &entry, int rounds);
+
 // Apply alternating mini-chunk RF2/RF1 as captured SQL (ApplyTpchRfChunk), then
 // require Execute matches DuckDB base_sql. Escalates chunk size until the DuckDB
 // answer changes so the write is a real invalidation for this query. db_path
