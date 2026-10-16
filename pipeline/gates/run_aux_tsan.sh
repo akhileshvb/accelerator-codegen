@@ -82,8 +82,9 @@ run() { # label cmd...
 }
 
 if [[ "${TARGET}" == "slots" ]]; then
+  export ACCEL_TPCH_DB="${ACCEL_TPCH_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf1.duckdb}"
   for s in epoch_stress hits_under_writes read_after_commit txn_edges; do
-    run "slot_${s}" env ACCEL_PIPELINE_BUILD_DIR="${BUILD}" ACCEL_GATE_NAME="slot_${s}" \
+    run "slot_${s}" env ACCEL_PIPELINE_BUILD_DIR="${BUILD}" ACCEL_ENGINE_NAME="${ENGINE_NAME}" ACCEL_GATE_NAME="slot_${s}" \
       ACCEL_GATE_OUT="${LOGDIR}/slot_${s}.json" bash "${ROOT}/pipeline/gates/run_slot_gates.sh"
   done
 else
