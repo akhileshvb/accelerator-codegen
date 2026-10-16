@@ -274,6 +274,16 @@ inline void FinishRebuildAll(StagedMaintenanceOutcome &outcome) {
   outcome.updates.clear();
 }
 
+// Rebuilds everything; a decision other than ApplyDelta/RebuildPartition (such as
+// InvalidateAndRebuildOnRead) stays the outcome's action.
+inline void FinishRebuildAll(StagedMaintenanceOutcome &outcome, const MaintenanceDecision &decision) {
+  FinishRebuildAll(outcome);
+  if (decision.action != MaintenanceAction::ApplyDelta &&
+      decision.action != MaintenanceAction::RebuildPartition) {
+    outcome.action = decision.action;
+  }
+}
+
 class AuxRowSink {
 public:
   virtual ~AuxRowSink() = default;
