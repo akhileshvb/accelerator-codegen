@@ -300,7 +300,7 @@ def cmd_tpch(a):
         system = "cpp" if name == "base" else name
         lines = []
         for q in range(1, 23):
-            accel, base_kit = ids(q, system)
+            accel, base_kit = ids(q, system, a.baseline_sql_dir or None)
             path = os.path.join(a.work, f"tpch_cases_q{q}_{name}.tsv")
             with open(path, "w") as f:
                 for spec in drawn:
@@ -386,7 +386,7 @@ def cmd_multi(a):
         system = "cpp" if name == "base" else name
         lines = []
         for q in a.queries:
-            accel, base = ids(q, system)
+            accel, base = ids(q, system, a.baseline_sql_dir or None)
             files = [cases_file(a.work, q, "verus" if name == "base" else system, spec[str(q)], k)
                      for k, _, spec in reps]
             lines.append(f"{accel}\t{base}\t{'|'.join(files)}\n")
@@ -635,8 +635,8 @@ def main():
         p.add_argument("--bin", default=os.path.join(ROOT, "build-verus-duckdb", "aux_compare"))
         p.add_argument("--queries", default=" ".join(map(str, range(1, 23))))
         p.add_argument("--systems", default="cpp verus")
-        p.add_argument("--baseline-sql-dir", default=None,
-                       help="read mode: baseline queries from <dir>/q<N>.sql (workloads/tpch) instead of the Verus kits")
+        p.add_argument("--baseline-sql-dir", default=os.path.join(ROOT, "workloads", "tpch"),
+                       help="the DuckDB baseline's queries, <dir>/q<N>.sql; '' = the Verus kits' own text (needs the kits built in)")
         p.add_argument("--sets", type=int, default=8, help="TPC-H parameter sets per query")
         p.add_argument("--seed", type=int, default=None,
                        help="base seed of the parameter draws (default: a fresh random one, recorded in seeds.json)")
