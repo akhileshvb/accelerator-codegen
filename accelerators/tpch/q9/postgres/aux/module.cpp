@@ -3,6 +3,7 @@
 #include "prims/pg_numeric.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,7 +15,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -30,6 +30,9 @@ namespace like = core::sql_like;
 constexpr bool kCaseInsensitive = false;
 
 constexpr std::size_t kParts = kTpchQ9BlockParts;
+
+// Part blocks per color-index slice: ~16 us per block of 16 parts.
+constexpr std::size_t kColorBlockGrain = 128;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -392,6 +395,11 @@ public:
       slot = DecodeBlock(state_.FindBlock(partkey));
     return *slot;
   }
+  // The block being edited, if any (does not create it).
+  EditBlock *Find(int64_t partkey) const {
+    const auto *slot = edited_.Find(BlockOf(partkey));
+    return slot ? slot->get() : nullptr;
+  }
   void MarkRenamed(int64_t partkey) { For(partkey).name_dirty |= uint32_t{1} << SlotOf(partkey); }
   void Flush() {
     const bool index = before_ && state_.color_index;
@@ -463,59 +471,54 @@ private:
   core::FlatHashMap<std::shared_ptr<EditBlock>> edited_;
 };
 
-// Bulk computation of the color aggregates from all blocks (multithreaded).
-void BuildColorIndex(TpchQ9State &state) {
+// Bulk computation of the color aggregates from all blocks.
+void BuildColorIndex(const core::AuxEngineServices &services, TpchQ9State &state) {
   std::vector<std::pair<int64_t, const TpchQ9PartBlock *>> blocks;
   state.blocks.ForEach([&](int64_t key, const std::shared_ptr<TpchQ9PartBlock> &block) {
     if (block)
       blocks.emplace_back(key, block.get());
   });
   const std::size_t ngroups = state.groups.size();
-  const unsigned nthreads = static_cast<unsigned>(std::max<std::size_t>(
-      1, std::min<std::size_t>({16u, std::max(1u, std::thread::hardware_concurrency()),
-                                blocks.size() / 1024 + 1})));
   struct Wide {
     int64_t rows = 0;
     __int128 profit = 0;
   };
-  // partial[t][group * kTpchQ9Colors + color]
-  std::vector<std::vector<Wide>> partial(nthreads, std::vector<Wide>(ngroups * kTpchQ9Colors));
-  const auto work = [&](unsigned t) {
-    auto &acc = partial[t];
-    for (std::size_t i = t; i < blocks.size(); i += nthreads) {
-      const auto [key, block] = blocks[i];
-      for (std::size_t slot = 0; slot < kParts; ++slot) {
-        if (block->cell_begin[slot] == block->cell_begin[slot + 1])
-          continue;
-        const ColorMask mask = MaskOfPart(state, key * static_cast<int64_t>(kParts) +
-                                                     static_cast<int64_t>(slot));
-        if (mask[0] == 0 && mask[1] == 0)
-          continue;
-        for (uint32_t j = block->cell_begin[slot]; j < block->cell_begin[slot + 1]; ++j) {
-          Wide *row = acc.data() + static_cast<std::size_t>(block->cells[j].group) * kTpchQ9Colors;
-          ForEachColor(mask, [&](std::size_t c) {
-            row[c].rows += block->cells[j].rows;
-            row[c].profit += block->cells[j].profit;
-          });
+  using Totals = std::vector<Wide>; // [group * kTpchQ9Colors + color]
+  Totals totals;
+  core::ParallelReduce(
+      services, blocks.size(), kColorBlockGrain, totals,
+      [&](Totals &acc, std::size_t begin, std::size_t end) {
+        acc.resize(ngroups * kTpchQ9Colors);
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto [key, block] = blocks[i];
+          for (std::size_t slot = 0; slot < kParts; ++slot) {
+            if (block->cell_begin[slot] == block->cell_begin[slot + 1])
+              continue;
+            const ColorMask mask = MaskOfPart(state, key * static_cast<int64_t>(kParts) +
+                                                         static_cast<int64_t>(slot));
+            if (mask[0] == 0 && mask[1] == 0)
+              continue;
+            for (uint32_t j = block->cell_begin[slot]; j < block->cell_begin[slot + 1]; ++j) {
+              Wide *row = acc.data() + static_cast<std::size_t>(block->cells[j].group) * kTpchQ9Colors;
+              ForEachColor(mask, [&](std::size_t c) {
+                row[c].rows += block->cells[j].rows;
+                row[c].profit += block->cells[j].profit;
+              });
+            }
+          }
         }
-      }
-    }
-  };
-  std::vector<std::thread> threads;
-  for (unsigned t = 1; t < nthreads; ++t)
-    threads.emplace_back(work, t);
-  work(0);
-  for (auto &th : threads)
-    th.join();
+      },
+      [](Totals &into, Totals &&from) {
+        for (std::size_t i = 0; i < from.size(); ++i) {
+          into[i].rows += from[i].rows;
+          into[i].profit += from[i].profit;
+        }
+      });
   state.color_groups.assign(ngroups, nullptr);
   for (std::size_t g = 0; g < ngroups; ++g) {
     auto record = std::make_shared<TpchQ9GroupColors>();
     for (std::size_t c = 0; c < kTpchQ9Colors; ++c) {
-      Wide total;
-      for (unsigned t = 0; t < nthreads; ++t) {
-        total.rows += partial[t][g * kTpchQ9Colors + c].rows;
-        total.profit += partial[t][g * kTpchQ9Colors + c].profit;
-      }
+      const Wide &total = totals[g * kTpchQ9Colors + c];
       if (total.profit > std::numeric_limits<int64_t>::max() ||
           total.profit < std::numeric_limits<int64_t>::min()) {
         state.color_groups.clear(); // beyond int64: no index, reads scan
@@ -544,7 +547,8 @@ bool ProfitRaw(int64_t extendedprice_raw, int64_t discount_raw, int64_t supplyco
 // Any argument without a color aggregate: scan the name column for matching
 // parts and add up their cells; emit(group, rows, profit) per group.
 template <typename Emit>
-void ScanMatching(const TpchQ9State &state, const std::string &argument, Emit &&emit) {
+void ScanMatching(const core::AuxEngineServices &services, const TpchQ9State &state,
+                  const std::string &argument, Emit &&emit) {
   // The template is `p_name LIKE '%<color>%'`: the argument is spliced into the
   // pattern as is, so any LIKE metacharacter in it keeps its meaning.
   const std::string pattern = "%" + argument + "%";
@@ -555,7 +559,7 @@ void ScanMatching(const TpchQ9State &state, const std::string &argument, Emit &&
     int64_t rows = 0;
   };
   const std::size_t ngroups = state.groups.size();
-  const unsigned max_threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+  const unsigned max_threads = static_cast<unsigned>(std::max<std::size_t>(1, services.WorkerCount()));
   std::vector<std::vector<Acc>> acc(max_threads, std::vector<Acc>(ngroups));
 
   // Matching parts (SIMD scan of the name column), then their profit cells.
@@ -595,15 +599,22 @@ int64_t TpchQ9ComputeProfitRaw(int64_t extendedprice_raw, int64_t discount_raw,
 }
 
 // ── TpchQ9State accessors ───────────────────────────────────────────────────
+static int64_t GroupKey(int32_t nationkey, int32_t year) {
+  return (static_cast<int64_t>(nationkey) << 32) | static_cast<uint32_t>(year);
+}
+
+const uint32_t *TpchQ9State::FindGroup(int32_t nationkey, int32_t year) const {
+  return group_index.Find(GroupKey(nationkey, year));
+}
+
 uint32_t TpchQ9State::GroupFor(int32_t nationkey, int32_t year) {
-  const int64_t key = (static_cast<int64_t>(nationkey) << 32) | static_cast<uint32_t>(year);
-  if (const uint32_t *found = group_index.Find(key))
+  if (const uint32_t *found = FindGroup(nationkey, year))
     return *found;
   if (groups.size() >= std::numeric_limits<uint32_t>::max())
     throw std::length_error("Q9 group dictionary overflow");
   const auto id = static_cast<uint32_t>(groups.size());
   groups.emplace_back(nationkey, year);
-  group_index.Upsert(key, id);
+  group_index.Upsert(GroupKey(nationkey, year), id);
   return id;
 }
 
@@ -713,19 +724,51 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ9Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ9TxnBuffer>();
 }
 
-std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(bool color_index) const {
+namespace {
+
+// Lineitems join their supplier's nation, their order's year and their partsupp
+// row, and add their profit to the (part, nation, year) cell. They are dealt to
+// one list per owner by part block, so the owners edit disjoint blocks and the
+// join runs in parallel; every (nation, year) group is interned beforehand.
+void AddLineitemCells(const core::AuxEngineServices &services, const TpchQ9State &state,
+                      const BlockEditor &editor,
+                      const std::vector<std::vector<TpchQ9LineitemInput>> &by_owner) {
+  services.ParallelFor(by_owner.size(), [&](std::size_t owner) {
+    for (const TpchQ9LineitemInput &input : by_owner[owner]) {
+      int32_t nationkey = 0, year = 0;
+      EditBlock *edit = editor.Find(input.partkey);
+      const auto slot = SlotOf(input.partkey);
+      int64_t cost = 0, profit = 0;
+      if (!edit || !state.LookupSupplierNation(input.suppkey, nationkey) ||
+          !state.LookupOrderYear(input.orderkey, year) ||
+          !edit->FindPs(slot, input.suppkey, cost))
+        continue;
+      ProfitRaw(input.extendedprice_raw, input.discount_raw, cost, input.quantity_raw, profit);
+      edit->AddCell(slot, *state.FindGroup(nationkey, year), 1, profit);
+    }
+  });
+}
+
+} // namespace
+
+std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &services,
+                                                      bool color_index) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q9 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ9State>();
 
+  std::set<int32_t> nationkeys, years;
   initial_scan->ScanNations([&](const TpchQ9NationInput &input) {
     state->nation_names[input.nationkey] = input.name;
   });
   initial_scan->ScanSuppliers([&](const TpchQ9SupplierInput &input) {
     state->SetSupplierNation(input.suppkey, input.nationkey);
+    nationkeys.insert(input.nationkey);
   });
   initial_scan->ScanOrders([&](const TpchQ9OrdersInput &input) {
-    state->SetOrderYear(input.orderkey, TpchQ9ExtractYear(input.orderdate_days));
+    const int32_t year = TpchQ9ExtractYear(input.orderdate_days);
+    state->SetOrderYear(input.orderkey, year);
+    years.insert(year);
   });
   initial_scan->ScanParts([&](const TpchQ9PartInput &input) {
       state->part_names.Set(input.partkey, input.name);
@@ -740,38 +783,23 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(bool color_index) const {
                  input.supplycost_raw);
   });
 
-  const bool pushed_down = initial_scan->ScanProfitContributions(
-      [&](const TpchQ9ProfitContribution &input) {
-        if (input.rows > 0)
-          editor.For(input.partkey)
-              .AddCell(SlotOf(input.partkey),
-                       state->GroupFor(input.nationkey, input.year), input.rows,
-                       input.profit_raw);
-      });
-  if (!pushed_down) {
-    initial_scan->ScanLineitems([&](const TpchQ9LineitemInput &input) {
-      int32_t nationkey = 0, year = 0;
-      if (!state->LookupSupplierNation(input.suppkey, nationkey) ||
-          !state->LookupOrderYear(input.orderkey, year))
-        return;
-      auto &edit = editor.For(input.partkey);
-      const auto slot = SlotOf(input.partkey);
-      int64_t cost = 0, profit = 0;
-      if (!edit.FindPs(slot, input.suppkey, cost))
-        return;
-      ProfitRaw(input.extendedprice_raw, input.discount_raw, cost, input.quantity_raw,
-                profit);
-      edit.AddCell(slot, state->GroupFor(nationkey, year), 1, profit);
-    });
-  }
+  for (const int32_t nationkey : nationkeys)
+    for (const int32_t year : years)
+      state->GroupFor(nationkey, year);
+  std::vector<std::vector<TpchQ9LineitemInput>> by_owner(
+      std::max<std::size_t>(1, services.WorkerCount()));
+  initial_scan->ScanLineitems([&](const TpchQ9LineitemInput &input) {
+    by_owner[static_cast<uint64_t>(BlockOf(input.partkey)) % by_owner.size()].push_back(input);
+  });
+  AddLineitemCells(services, *state, editor, by_owner);
   editor.Flush();
   if (color_index)
-    BuildColorIndex(*state);
+    BuildColorIndex(services, *state);
   return state;
 }
 
-void TpchQ9Module::Build(core::AuxEngineServices &, core::StateBuilder &builder) {
-  const auto state = BuildState(/*color_index=*/true);
+void TpchQ9Module::Build(core::AuxEngineServices &services, core::StateBuilder &builder) {
+  const auto state = BuildState(services, /*color_index=*/true);
   builder.Write(core::StateImage::Make(
       TpchQ9Layout::kAccelerator, TpchQ9Layout::kCompleteState, 0,
       MakeStateImage(state)));
@@ -1140,15 +1168,15 @@ void TpchQ9Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitResult(*state, arguments, sink);
+  EmitResult(services, *state, arguments, sink);
 }
 
-void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &,
+void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &services,
                                    const core::QueryArguments &arguments,
                                    core::AuxRowSink &sink) {
   // Recompute from base tables: build state and emit (one-shot: no color index)
-  const auto state = BuildState(/*color_index=*/false);
-  EmitResult(*state, arguments, sink);
+  const auto state = BuildState(services, /*color_index=*/false);
+  EmitResult(services, *state, arguments, sink);
 }
 
 bool TpchQ9Module::LoadState(core::AuxEngineServices &services,
@@ -1167,7 +1195,8 @@ bool TpchQ9Module::LoadState(core::AuxEngineServices &services,
   return false;
 }
 
-void TpchQ9Module::EmitResult(const TpchQ9State &state,
+void TpchQ9Module::EmitResult(const core::AuxEngineServices &services,
+                              const TpchQ9State &state,
                               const core::QueryArguments &arguments,
                               core::AuxRowSink &sink) const {
   auto empty = [&] {
@@ -1201,7 +1230,7 @@ void TpchQ9Module::EmitResult(const TpchQ9State &state,
         add_group(g, acc.rows, acc.profit);
       }
   } else {
-    ScanMatching(state, argument, add_group);
+    ScanMatching(services, state, argument, add_group);
   }
 
   std::vector<std::pair<std::pair<std::string, int32_t>, __int128>> rows(sums.begin(), sums.end());
