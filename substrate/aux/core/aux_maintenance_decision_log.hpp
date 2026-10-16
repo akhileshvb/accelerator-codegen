@@ -55,7 +55,7 @@ void RecordCoordinatorMaintenanceUs(double us);
 std::optional<MaintenanceDecisionLogEntry> LastMaintenanceDecision();
 void ClearMaintenanceDecisionLog();
 
-// "action=A rows=N partitions=M maintenance_us=T" for the last decision (engines expose it
+// "action=A rows=N partitions=M maintenance_us=T data_rows=D" for the last decision (engines expose it
 // over SQL for calibration), and its parse ({} if malformed).
 std::string FormatLastMaintenanceDecision();
 std::optional<MaintenanceDecisionLogEntry> ParseMaintenanceDecision(const std::string &text);
