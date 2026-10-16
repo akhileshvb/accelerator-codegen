@@ -49,6 +49,9 @@ struct Registry {
   pg_atomic_uint32 count;
   pg_atomic_uint64 generation;
   pg_atomic_uint32 tokens_in_use;
+  // The next xid when ids[i] was added (invalid until set): every transaction
+  // that wrote without an epoch for i began before it.
+  pg_atomic_uint32 activated_xid[kMaxAccelerators];
   char ids[kMaxAccelerators][kIdBytes];
   Slot slots[kMaxAccelerators];
 };
@@ -60,6 +63,9 @@ void InitRegistry(void *ptr) {
   pg_atomic_init_u32(&registry->count, 0);
   pg_atomic_init_u64(&registry->generation, 0);
   pg_atomic_init_u32(&registry->tokens_in_use, 0);
+  for (auto &xid : registry->activated_xid) {
+    pg_atomic_init_u32(&xid, InvalidTransactionId);
+  }
   for (auto &slot : registry->slots) {
     pg_atomic_init_u64(&slot.assigned, 0);
     for (auto &entry : slot.ring) {
@@ -141,6 +147,22 @@ template <typename Accept> std::optional<Epoch> NewestCommitted(int index, Accep
   return lo > 1 ? std::nullopt : std::optional<Epoch>(0);
 }
 
+// Whether `snapshot` sees every transaction that began before `index` was
+// activated. Those took no epoch, yet the build contains what they committed:
+// a snapshot that does not see them must not be served from it.
+bool SeesPreActivationWrites(int index, Snapshot snapshot) {
+  const TransactionId activated = pg_atomic_read_u32(&Reg().activated_xid[index]);
+  if (activated == InvalidTransactionId || TransactionIdPrecedes(snapshot->xmax, activated)) {
+    return false;
+  }
+  for (uint32 i = 0; i < snapshot->xcnt; i++) {
+    if (TransactionIdPrecedes(snapshot->xip[i], activated)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // ---- thread tokens --------------------------------------------------------------
 int g_threads = 1;
 int g_ship_timeout_ms = 2000;
@@ -199,6 +221,8 @@ int Activate(const core::AcceleratorId &id) {
       pg_write_barrier();
       pg_atomic_write_u32(&registry.count, count + 1);
       pg_atomic_fetch_add_u64(&registry.generation, 1);
+      pg_memory_barrier(); // writers see the accelerator before the xid is read
+      pg_atomic_write_u32(&registry.activated_xid[count], ReadNextTransactionId());
       index = static_cast<int>(count);
     }
     SpinLockRelease(&registry.activation);
@@ -258,7 +282,7 @@ Epoch AssignedEpoch(int index) { return pg_atomic_read_u64(&Reg().slots[index].a
 
 // ---- reader epoch and version floor ---------------------------------------------
 std::optional<Epoch> ReaderEpoch(int index, Snapshot snapshot) {
-  if (snapshot == nullptr || snapshot->snapshot_type != SNAPSHOT_MVCC) {
+  if (snapshot == nullptr || snapshot->snapshot_type != SNAPSHOT_MVCC || !SeesPreActivationWrites(index, snapshot)) {
     return std::nullopt;
   }
   // Epochs are published before their commit is visible, and the snapshot

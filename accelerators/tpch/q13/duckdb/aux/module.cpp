@@ -12,6 +12,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -211,6 +212,44 @@ const char *SegFind(const char *t, std::size_t n, const TpchQ13Like::Seg &s) {
 constexpr std::size_t kFinishGrain = 32;  // bulk token index and match counts
 constexpr std::size_t kHistGrain = 64;     // ~200 customers per shard at SF 20
 constexpr std::size_t kEvalGrain = 1024;   // untracked-pattern read
+constexpr std::size_t kMaintGrain = 64;    // maintenance: shards touched per slice (~2 us each)
+
+// Count changes of a batch of order/customer updates, kept apart from the
+// state so slices owning disjoint shards can run concurrently; summed in
+// slice order into the state by Mut::Absorb.
+struct Tally {
+  std::vector<int64_t> base;
+  std::vector<std::vector<int64_t>> hist;
+  std::vector<int32_t> df;
+  int64_t live_orders = 0;
+  bool ok = true; // false: an update found no row to delete
+
+  void DfAdd(uint16_t tok, int64_t d) {
+    if (tok >= df.size())
+      df.resize(std::size_t{tok} + 1, 0);
+    df[tok] += static_cast<int32_t>(d);
+  }
+  void Merge(const Tally &from) {
+    MergeCounts(base, from.base);
+    if (hist.size() < from.hist.size())
+      hist.resize(from.hist.size());
+    for (std::size_t p = 0; p < from.hist.size(); ++p)
+      MergeCounts(hist[p], from.hist[p]);
+    if (df.size() < from.df.size())
+      df.resize(from.df.size(), 0);
+    for (std::size_t t = 0; t < from.df.size(); ++t)
+      df[t] += from.df[t];
+    live_orders += from.live_orders;
+    ok = ok && from.ok;
+  }
+  template <class T>
+  static void MergeCounts(std::vector<T> &into, const std::vector<T> &from) {
+    if (into.size() < from.size())
+      into.resize(from.size(), 0);
+    for (std::size_t i = 0; i < from.size(); ++i)
+      into[i] += from[i];
+  }
+};
 
 void HistAdd(std::vector<int64_t> &h, int64_t eff, int64_t delta) {
   if (eff < 0)
@@ -534,6 +573,14 @@ struct Mut {
       st.df.resize(std::size_t{tok} + 1, 0);
     st.df[tok] += static_cast<int32_t>(d);
   }
+  // Folds a batch's count changes into the state.
+  void Absorb(const Tally &tally) {
+    Tally::MergeCounts(st.base, tally.base);
+    for (std::size_t p = 0; p < tally.hist.size(); ++p)
+      Tally::MergeCounts(st.hist[p], tally.hist[p]);
+    Tally::MergeCounts(st.df, tally.df);
+    st.live_orders += tally.live_orders;
+  }
   TpchQ13State Finish() {
     {  // index the orders appended since the shards were last indexed
       auto intern = [&](std::string_view t) { return Intern(t); };
@@ -609,12 +656,14 @@ void CompactOrders(TpchQ13OrderShard &o) {
 // c_count is (#customer rows with this key) * (#non-matching orders): the LEFT
 // JOIN multiplies rows for duplicated customer keys.  Adds `delta` customers to
 // the histograms at the customer's current counts.
-void HistAll(TpchQ13State &st, const TpchQ13CustShard &c, std::size_t lc,
-             int64_t delta) {
+void HistAll(Tally &tally, std::size_t np, const TpchQ13CustShard &c,
+             std::size_t lc, int64_t delta) {
   const int64_t mult = c.mult[lc];
-  HistAdd(st.base, mult * c.total[lc], delta);
-  for (std::size_t p = 0; p < st.patterns.size(); ++p)
-    HistAdd(st.hist[p], mult * (c.total[lc] - c.match[p][lc]), delta);
+  if (tally.hist.size() < np)
+    tally.hist.resize(np);
+  HistAdd(tally.base, mult * c.total[lc], delta);
+  for (std::size_t p = 0; p < np; ++p)
+    HistAdd(tally.hist[p], mult * (c.total[lc] - c.match[p][lc]), delta);
 }
 
 enum class Apply { Live, Raw };
@@ -622,15 +671,15 @@ enum class Apply { Live, Raw };
 // Applies one order insert (sign>0) or delete (sign<0).  Raw (initial load)
 // only stores the order and counts it; matches/histograms come from BulkFinish.
 // Returns false when a delete finds no matching order (caller rebuilds).
-bool ApplyOrder(Mut &m, int64_t ck, std::string_view comment, int sign,
-                Apply mode) {
+bool ApplyOrder(Mut &m, Tally &tally, int64_t ck, std::string_view comment,
+                int sign, Apply mode) {
   if (!KeyOk(ck))
     return true;
   const std::size_t s = static_cast<std::size_t>(ck) & kShardMask;
   const std::size_t lc = static_cast<std::size_t>(ck) >> kTpchQ13ShardBits;
   const std::size_t np = m.st.patterns.size();
   TpchQ13OrderShard &o = m.O(s);
-  m.st.live_orders += sign;
+  tally.live_orders += sign;
   if (sign > 0) {
     TpchQ13OrderSeg &t = o.tail;
     t.custkey.push_back(ck);
@@ -659,11 +708,11 @@ bool ApplyOrder(Mut &m, int64_t ck, std::string_view comment, int sign,
     found = find_in(o.tail, o.BaseSize()) ||
             (o.base && find_in(*o.base, 0));
     if (!found) {
-      m.st.live_orders -= sign;
+      tally.live_orders -= sign;
       return false;
     }
     if (o.dead > 32 && static_cast<std::size_t>(o.dead) * 2 > o.Size()) {
-      auto df_add = [&](uint16_t t, int64_t d) { m.DfAdd(t, d); };
+      auto df_add = [&](uint16_t t, int64_t d) { tally.DfAdd(t, d); };
       if (o.base)
         ForgetDf(o.base->ix, df_add);
       ForgetIndex(o.tail.ix, df_add);
@@ -678,33 +727,34 @@ bool ApplyOrder(Mut &m, int64_t ck, std::string_view comment, int sign,
   }
   const bool valid = c.mult[lc] > 0;
   if (valid)
-    HistAll(m.st, c, lc, -1);
+    HistAll(tally, np, c, lc, -1);
   c.total[lc] += sign;
   const uint64_t mask = LitMask(*m.st.lits, comment.data(), comment.size());
   for (std::size_t p = 0; p < np; ++p)
     if (PatMatch(m.st.patterns[p], mask, comment.data(), comment.size()))
       c.match[p][lc] += sign;
   if (valid)
-    HistAll(m.st, c, lc, +1);
+    HistAll(tally, np, c, lc, +1);
   return true;
 }
 
 // Customer row insert (sign>0) / delete (sign<0).  False on delete of a
 // non-existent customer.
-bool ApplyCustomer(Mut &m, int64_t ck, int sign, Apply mode) {
+bool ApplyCustomer(Mut &m, Tally &tally, int64_t ck, int sign, Apply mode) {
   if (!KeyOk(ck))
     return true;
   const std::size_t s = static_cast<std::size_t>(ck) & kShardMask;
   const std::size_t lc = static_cast<std::size_t>(ck) >> kTpchQ13ShardBits;
   TpchQ13CustShard &c = m.C(s);
-  EnsureCust(c, lc, m.st.patterns.size());
+  const std::size_t np = m.st.patterns.size();
+  EnsureCust(c, lc, np);
   if (sign < 0 && c.mult[lc] <= 0)
     return false;
   if (mode == Apply::Live && c.mult[lc] > 0)
-    HistAll(m.st, c, lc, -1);
+    HistAll(tally, np, c, lc, -1);
   c.mult[lc] += sign;
   if (mode == Apply::Live && c.mult[lc] > 0)
-    HistAll(m.st, c, lc, +1);
+    HistAll(tally, np, c, lc, +1);
   return true;
 }
 
@@ -1415,6 +1465,7 @@ bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
     m.st.patterns.push_back(MakePattern(text));
   }
   m.InitPatterns();
+  Tally loaded;
   uint64_t ncust = 0;
   if (!reader.U64(ncust))
     return false;
@@ -1424,7 +1475,7 @@ bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
     if (!reader.I64(ck) || !reader.I32(mult) || mult < 0)
       return false;
     for (int32_t k = 0; k < mult; ++k)
-      ApplyCustomer(m, ck, +1, Apply::Raw);
+      ApplyCustomer(m, loaded, ck, +1, Apply::Raw);
   }
   uint64_t norders = 0;
   if (!reader.U64(norders))
@@ -1434,8 +1485,9 @@ bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
     std::string comment;
     if (!reader.I64(ck) || !reader.String(comment))
       return false;
-    ApplyOrder(m, ck, comment, +1, Apply::Raw);
+    ApplyOrder(m, loaded, ck, comment, +1, Apply::Raw);
   }
+  m.Absorb(loaded);
   BulkFinish(m, services);
   RecomputeHist(m, services);
   state = m.Finish();
@@ -1521,9 +1573,10 @@ TpchQ13State TpchQ13Module::BuildState(
   }
 
   CustomTimer t_cust(profiling);
+  Tally loaded;
   int64_t ncust = 0;
   initial_scan->ScanCustomers([&](const TpchQ13CustomerInput &input) {
-    ApplyCustomer(m, input.key, +1, Apply::Raw);
+    ApplyCustomer(m, loaded, input.key, +1, Apply::Raw);
     ++ncust;
   });
   if (profiling)
@@ -1533,12 +1586,13 @@ TpchQ13State TpchQ13Module::BuildState(
   int64_t norders = 0;
   initial_scan->ScanOrdersView([&](int64_t custkey, const char *data,
                                    std::size_t len) {
-    ApplyOrder(m, custkey, std::string_view(data, len), +1, Apply::Raw);
+    ApplyOrder(m, loaded, custkey, std::string_view(data, len), +1, Apply::Raw);
     ++norders;
   });
   if (profiling)
     EmitCustomProfile("build_orders", t_orders.us(), norders, 0, 0, 0);
 
+  m.Absorb(loaded);
   CustomTimer t_fin(profiling);
   BulkFinish(m, services);
   RecomputeHist(m, services);
@@ -1728,16 +1782,46 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   CustomTimer t_apply(CustomProfilingEnabled());
   Mut m(*base);
 
-  for (const auto &delta : buffer.Deltas()) {
-    const bool ok =
-        delta.customer
-            ? ApplyCustomer(m, delta.custkey, delta.sign, Apply::Live)
-            : ApplyOrder(m, delta.custkey, delta.comment, delta.sign, Apply::Live);
-    if (!ok) {
-      request_rebuild();  // inconsistent delta: drop the working copy
-      return outcome;
-    }
+  // Shards are independent: slices own whole shards (updates of one shard
+  // keep their arrival order) and tally their count changes apart.
+  const auto &deltas = buffer.Deltas();
+  const auto shard_of = [&](uint32_t i) {
+    return static_cast<std::size_t>(deltas[i].custkey) & kShardMask;
+  };
+  std::vector<uint32_t> by_shard(deltas.size());
+  std::iota(by_shard.begin(), by_shard.end(), 0u);
+  std::stable_sort(by_shard.begin(), by_shard.end(),
+                   [&](uint32_t l, uint32_t r) { return shard_of(l) < shard_of(r); });
+  std::vector<std::pair<std::size_t, std::size_t>> runs; // by_shard ranges
+  for (std::size_t i = 0; i < by_shard.size();) {
+    std::size_t j = i + 1;
+    while (j < by_shard.size() && shard_of(by_shard[j]) == shard_of(by_shard[i]))
+      ++j;
+    runs.emplace_back(i, j);
+    i = j;
   }
+  Tally tally;
+  core::ParallelReduce(
+      services, runs.size(), kMaintGrain, tally,
+      [&](Tally &part, std::size_t first, std::size_t last) {
+        for (std::size_t r = first; r < last && part.ok; ++r) {
+          for (std::size_t k = runs[r].first; k < runs[r].second; ++k) {
+            const auto &delta = deltas[by_shard[k]];
+            part.ok = delta.customer
+                          ? ApplyCustomer(m, part, delta.custkey, delta.sign, Apply::Live)
+                          : ApplyOrder(m, part, delta.custkey, delta.comment,
+                                       delta.sign, Apply::Live);
+            if (!part.ok)
+              break;
+          }
+        }
+      },
+      [](Tally &into, Tally &&from) { into.Merge(from); });
+  if (!tally.ok) {
+    request_rebuild(); // inconsistent delta: drop the working copy
+    return outcome;
+  }
+  m.Absorb(tally);
 
   const double apply_us = t_apply.us();
   CustomTimer t_fin(CustomProfilingEnabled());

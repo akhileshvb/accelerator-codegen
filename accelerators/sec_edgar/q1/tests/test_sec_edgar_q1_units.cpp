@@ -22,6 +22,24 @@ using namespace accelerator_codegen::aux_state::query;
 
 namespace {
 
+using accelerator_codegen::aux_state::core::AuxStateStore;
+using accelerator_codegen::aux_state::core::VisibilityToken;
+using accelerator_codegen::aux_state::core::AuxEngineServices;
+
+// Reports a worker count; the default ParallelFor runs the slices in order.
+class StubServices final : public AuxEngineServices {
+public:
+  explicit StubServices(std::size_t workers) : workers(workers) {}
+  VisibilityToken CurrentVisibility() const override { return {}; }
+  AuxStateStore &StateStore() override { std::abort(); }
+  std::size_t WorkerCount() const override { return workers; }
+
+private:
+  std::size_t workers;
+};
+
+const StubServices kSerial(1);
+
 void TestAdshKey() {
   std::mt19937_64 rng(7);
   std::vector<std::string> inputs;
@@ -90,7 +108,7 @@ void TestCowPagesAndBigCounts() {
     for (uint64_t k = 1; k <= 5000; ++k) { // forces dictionary compaction (>2048 ids)
       buffer.AddDelta(Ref(g, k * 7919, 1));
     }
-    assert(ApplySecEdgarQ1Deltas(state, buffer));
+    assert(ApplySecEdgarQ1Deltas(kSerial, state, buffer));
   }
   assert(state.groups.size() == 1 && state.groups[0].cnt == 5000 && state.groups[0].distinct == 5000);
   assert(state.dict && state.dict->keys.size() >= 2048);
@@ -106,7 +124,7 @@ void TestCowPagesAndBigCounts() {
     const auto g = buffer.InternGroup("BS", "H", false);
     SecEdgarQ1TxnBuffer::Delta big = Ref(g, 7919, 70000); // pushes a refcount past the 8-bit escape
     buffer.AddDelta(big);
-    assert(ApplySecEdgarQ1Deltas(state, buffer));
+    assert(ApplySecEdgarQ1Deltas(kSerial, state, buffer));
   }
   assert(snapshot.groups[0].cnt == 5000);
   assert(state.groups[0].cnt == 75000);
@@ -119,7 +137,7 @@ void TestCowPagesAndBigCounts() {
     const auto g = buffer.InternGroup("BS", "H", false);
     buffer.AddDelta(Ref(g, 7919, -70000));
     buffer.AddDelta(Ref(g, 7919 * 2, -1)); // another key down to zero
-    assert(ApplySecEdgarQ1Deltas(state, buffer));
+    assert(ApplySecEdgarQ1Deltas(kSerial, state, buffer));
   }
   assert(state.groups[0].refs->Get(id) == 1);
   assert(state.groups[0].distinct == 4999);
@@ -130,14 +148,14 @@ void TestCowPagesAndBigCounts() {
     SecEdgarQ1TxnBuffer buffer;
     const auto g = buffer.InternGroup("BS", "H", false);
     buffer.AddDelta(Ref(g, 7919, -2));
-    assert(!ApplySecEdgarQ1Deltas(copy, buffer));
+    assert(!ApplySecEdgarQ1Deltas(kSerial, copy, buffer));
   }
   {
     SecEdgarQ1State copy = state;
     SecEdgarQ1TxnBuffer buffer;
     const auto g = buffer.InternGroup("BS", "H", false);
     buffer.AddDelta(Ref(g, 42, -1));
-    assert(!ApplySecEdgarQ1Deltas(copy, buffer));
+    assert(!ApplySecEdgarQ1Deltas(kSerial, copy, buffer));
   }
   // encode / decode
   const auto bytes = EncodeSecEdgarQ1State(state);
@@ -195,7 +213,7 @@ void TestOtherAccessions() {
       SecEdgarQ1TxnBuffer::Delta d = Ref(g, buffer.InternAdsh(buf), sign);
       buffer.AddDelta(d);
     }
-    return ApplySecEdgarQ1Deltas(st, buffer);
+    return ApplySecEdgarQ1Deltas(kSerial, st, buffer);
   };
   assert(add(state, 0, 3000, 1));
   assert(state.groups.size() == 1 && state.groups[0].distinct == 3000 && state.others.size() == 3000);
@@ -212,7 +230,7 @@ void TestOtherAccessions() {
     SecEdgarQ1TxnBuffer buffer;
     const auto g = buffer.InternGroup("IS", "", true);
     buffer.AddDelta(Ref(g, buffer.InternAdsh("never-seen"), -1));
-    assert(!ApplySecEdgarQ1Deltas(copy, buffer));
+    assert(!ApplySecEdgarQ1Deltas(kSerial, copy, buffer));
   }
   const auto bytes = EncodeSecEdgarQ1State(state);
   SecEdgarQ1State decoded;
@@ -235,7 +253,7 @@ void TestWideKeysAndIds() {
     buffer.AddDelta(Ref(g, key, 1));
     buffer.AddDelta(Ref(g, key, 1));
   }
-  assert(ApplySecEdgarQ1Deltas(state, buffer));
+  assert(ApplySecEdgarQ1Deltas(kSerial, state, buffer));
   assert(state.groups[0].distinct == 5 && state.groups[0].cnt == 10);
   std::vector<q1::Id> ids;
   for (const auto key : keys) {
@@ -254,7 +272,7 @@ void TestWideKeysAndIds() {
   big.AddDelta(d);
   big.AddDelta(d);
   big.AddDelta(d);
-  assert(ApplySecEdgarQ1Deltas(state, big));
+  assert(ApplySecEdgarQ1Deltas(kSerial, state, big));
   assert(state.groups[0].refs->Get(ids[1]) == 2 + 3ULL * 2147483000ULL);
   assert(state.groups[0].refs->low.Get(static_cast<int64_t>(ids[1])) == q1::kEscape);
   const auto bytes = EncodeSecEdgarQ1State(state);
@@ -279,7 +297,7 @@ void TestExactLineSum() {
     d.d_line_sum = 4000000000000000000LL; // 3 x 4e18 overflows int64
     buffer.AddDelta(d);
   }
-  assert(ApplySecEdgarQ1Deltas(state, buffer));
+  assert(ApplySecEdgarQ1Deltas(kSerial, state, buffer));
   const q1::Int128 expected = static_cast<q1::Int128>(4000000000000000000LL) * 3;
   assert(state.groups[0].line_sum == expected);
   const auto bytes = EncodeSecEdgarQ1State(state);

@@ -77,6 +77,12 @@ public:
   // (q1::Builder::ConsumeChunk / ConsumeRowView). Returns false when
   // unsupported (ScanPre is used).
   virtual bool ScanPreInto(q1::Builder &) const { return false; }
+  // Optional partitioned scan: fills `builder` from one q1::Builder per
+  // partition, merged in partition order (core::PartitionedBuild). Returns
+  // false when unsupported or when the build cap is one worker.
+  virtual bool ScanPrePartitioned(const core::AuxEngineServices &, q1::Builder &) const {
+    return false;
+  }
 };
 
 namespace q1 {
@@ -252,6 +258,8 @@ public:
                        bool rfile_is_null);
   uint64_t InternAdsh(const std::string &adsh);
   void AddDelta(const Delta &delta);
+  // Appends `from`'s deltas (buffered after this buffer's) re-interned here.
+  void Absorb(SecEdgarQ1TxnBuffer &&from);
 
 private:
   bool pending = false;
@@ -265,7 +273,7 @@ private:
 
 // Applies a staged buffer to `state` in place. Returns false when the deltas
 // are inconsistent with the state (caller must rebuild).
-bool ApplySecEdgarQ1Deltas(SecEdgarQ1State &state,
+bool ApplySecEdgarQ1Deltas(const core::AuxEngineServices &services, SecEdgarQ1State &state,
                            const SecEdgarQ1TxnBuffer &buffer);
 
 class SecEdgarQ1Module final : public core::AuxQueryModule {

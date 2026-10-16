@@ -5,6 +5,7 @@
 #endif
 
 #include "sec_edgar/q6/common/state.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <sys/resource.h>
@@ -27,6 +28,8 @@ namespace {
 
 constexpr size_t kTopTarget = 512;     // desired cache size after a rescan / trim
 constexpr size_t kTopFloorMax = 4096;  // trim when the cache grows past this
+// Combos per slice of the top-cache update (a copy of ~500 entries each).
+constexpr size_t kTopRunGrain = 16;
 
 std::atomic<bool> g_force_scalar{false};
 
@@ -1287,8 +1290,8 @@ UpdateTop(const SecEdgarQ6Structure &s, const SecEdgarQ6TopCache &old,
 
 // Applies `deltas` (any gids of next's structure) onto `next`, a copy of the
 // old state whose structure may have gained groups / combos.
-bool ApplyInto(SecEdgarQ6State &next, std::vector<SecEdgarQ6GroupDelta> &deltas,
-               bool *overflow) {
+bool ApplyInto(const core::AuxEngineServices &services, SecEdgarQ6State &next,
+               std::vector<SecEdgarQ6GroupDelta> &deltas, bool *overflow) {
   std::sort(deltas.begin(), deltas.end(),
             [](const SecEdgarQ6GroupDelta &a, const SecEdgarQ6GroupDelta &b) {
               return a.gid < b.gid;
@@ -1343,21 +1346,38 @@ bool ApplyInto(SecEdgarQ6State &next, std::vector<SecEdgarQ6GroupDelta> &deltas,
   std::sort(touched.begin(), touched.end(), [](const Touch &a, const Touch &b) {
     return a.combo != b.combo ? a.combo < b.combo : a.gid < b.gid;
   });
-  std::vector<uint32_t> rescan;
+  // The touched groups are sorted by combo: one run per combo, whose new top
+  // cache is built from the old one in parallel (reads only) and installed in
+  // combo order.
+  struct ComboRun {
+    uint32_t combo;
+    const Touch *first, *last;
+  };
+  std::vector<ComboRun> runs;
   for (size_t i = 0; i < touched.size();) {
-    const uint32_t combo = touched[i].combo;
     size_t j = i + 1;
-    while (j < touched.size() && touched[j].combo == combo) {
+    while (j < touched.size() && touched[j].combo == touched[i].combo) {
       ++j;
     }
-    auto top = UpdateTop(structure, *next.tops[combo], touched.data() + i,
-                         touched.data() + j);
-    if (top) {
-      next.tops.Set(combo, std::move(top));
-    } else {
-      rescan.push_back(combo);
-    }
+    runs.push_back({touched[i].combo, touched.data() + i, touched.data() + j});
     i = j;
+  }
+  std::vector<std::shared_ptr<SecEdgarQ6TopCache>> updated(runs.size());
+  const SecEdgarQ6Tops &old_tops = next.tops;
+  core::ParallelSlices(services, runs.size(), kTopRunGrain,
+                       [&](size_t, size_t begin, size_t end) {
+                         for (size_t r = begin; r < end; ++r) {
+                           updated[r] = UpdateTop(structure, *old_tops[runs[r].combo],
+                                                  runs[r].first, runs[r].last);
+                         }
+                       });
+  std::vector<uint32_t> rescan;
+  for (size_t r = 0; r < runs.size(); ++r) {
+    if (updated[r]) {
+      next.tops.Set(runs[r].combo, std::move(updated[r]));
+    } else {
+      rescan.push_back(runs[r].combo);
+    }
   }
   for (const uint32_t combo : rescan) {
     SecEdgarQ6RescanCombo(next, combo);
@@ -1372,17 +1392,18 @@ bool TooManyGroups(const SecEdgarQ6Structure &s) {
 } // namespace
 
 std::shared_ptr<const SecEdgarQ6State>
-SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
-                      std::vector<SecEdgarQ6GroupDelta> &deltas, bool *overflow) {
+SecEdgarQ6ApplyDeltas(const core::AuxEngineServices &services,
+                      const SecEdgarQ6State &old_state, std::vector<SecEdgarQ6GroupDelta> &deltas, bool *overflow) {
   auto next = std::make_shared<SecEdgarQ6State>(old_state); // shares chunks
-  if (!ApplyInto(*next, deltas, overflow)) {
+  if (!ApplyInto(services, *next, deltas, overflow)) {
     return nullptr;
   }
   return next;
 }
 
 std::shared_ptr<const SecEdgarQ6State>
-SecEdgarQ6ApplyNums(const SecEdgarQ6State &old_state, const SecEdgarQ6NumRef *refs,
+SecEdgarQ6ApplyNums(const core::AuxEngineServices &services,
+                    const SecEdgarQ6State &old_state, const SecEdgarQ6NumRef *refs,
                     size_t n, bool *overflow) {
   auto next = std::make_shared<SecEdgarQ6State>(old_state);
   std::vector<SecEdgarQ6GroupDelta> deltas;
@@ -1391,7 +1412,7 @@ SecEdgarQ6ApplyNums(const SecEdgarQ6State &old_state, const SecEdgarQ6NumRef *re
   if (TooManyGroups(next->structure) && overflow) {
     *overflow = true;
   }
-  if (!ApplyInto(*next, deltas, overflow)) {
+  if (!ApplyInto(services, *next, deltas, overflow)) {
     return nullptr;
   }
   return next;
@@ -1464,7 +1485,8 @@ SecEdgarQ6TopRowsOfCombo(const SecEdgarQ6State &state, uint32_t combo,
 // Structural edits
 // ---------------------------------------------------------------------------
 std::shared_ptr<const SecEdgarQ6State>
-SecEdgarQ6ApplyEdits(const SecEdgarQ6State &old_state,
+SecEdgarQ6ApplyEdits(const core::AuxEngineServices &services,
+                     const SecEdgarQ6State &old_state,
                      const std::vector<SecEdgarQ6AdshEdit> &edits,
                      const std::vector<SecEdgarQ6NumRef> &other_refs,
                      bool *overflow) {
@@ -1558,7 +1580,7 @@ SecEdgarQ6ApplyEdits(const SecEdgarQ6State &old_state,
   if (TooManyGroups(s)) {
     return nullptr; // too many unused groups accumulated: let the caller rebuild
   }
-  ApplyInto(*base, deltas, overflow); // groups / combos may have been added
+  ApplyInto(services, *base, deltas, overflow); // groups / combos may have been added
   return base;
 }
 

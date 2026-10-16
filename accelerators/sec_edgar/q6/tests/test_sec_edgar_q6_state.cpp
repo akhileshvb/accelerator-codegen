@@ -23,6 +23,20 @@ using namespace accelerator_codegen::aux_state::query;
 
 namespace {
 
+using accelerator_codegen::aux_state::core::AuxEngineServices;
+using accelerator_codegen::aux_state::core::AuxStateStore;
+using accelerator_codegen::aux_state::core::VisibilityToken;
+
+// Reports several workers; the default ParallelFor runs the slices in order.
+class StubServices final : public AuxEngineServices {
+public:
+  VisibilityToken CurrentVisibility() const override { return {}; }
+  AuxStateStore &StateStore() override { std::abort(); }
+  std::size_t WorkerCount() const override { return 4; }
+};
+
+const StubServices kServices;
+
 using Rng = std::mt19937_64;
 
 void Require(bool ok, const std::string &msg) {
@@ -261,7 +275,7 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
     std::vector<SecEdgarQ6NumRef> refs;
     for (auto &r : rows) refs.push_back({r.adsh, r.tag, r.version, r.uom, r.value, sign});
     bool overflow = false;
-    auto next = SecEdgarQ6ApplyNums(*state, refs.data(), refs.size(), &overflow);
+    auto next = SecEdgarQ6ApplyNums(kServices, *state, refs.data(), refs.size(), &overflow);
     if (next) state = std::make_shared<SecEdgarQ6State>(*next);
     if (sign > 0) {
       for (auto &r : rows) m.nums.push_back(r);
@@ -390,7 +404,7 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
       // old_nums must describe the state BEFORE the extra rows (they never touch picked adsh)
       for (auto &x : extra) m.nums.push_back(x);
       bool overflow = false;
-      auto next = SecEdgarQ6ApplyEdits(*state, edits, other, &overflow);
+      auto next = SecEdgarQ6ApplyEdits(kServices, *state, edits, other, &overflow);
       Require(next && !overflow, "edit applied");
       state = std::make_shared<SecEdgarQ6State>(*next);
       CheckState(*state, m, "round " + std::to_string(round) + " structural edit");
@@ -443,7 +457,7 @@ void TestSimdMatchesScalar(Rng &rng) {
       ref.tag = store[at + 1];
       at += 2;
     }
-    auto next = SecEdgarQ6ApplyNums(*state, refs.data(), refs.size());
+    auto next = SecEdgarQ6ApplyNums(kServices, *state, refs.data(), refs.size());
     Require(next != nullptr, "simd test applied");
     auto out = std::make_shared<SecEdgarQ6State>(*next);
     SecEdgarQ6Rescan(*out);
@@ -472,7 +486,7 @@ void TestSumExactness() {
   const auto apply = [&](const char *adsh, double v, int sign) {
     const SecEdgarQ6NumRef ref{adsh, "T", "v", "USD", v, sign};
     bool overflow = false;
-    auto next = SecEdgarQ6ApplyNums(*state, &ref, 1, &overflow);
+    auto next = SecEdgarQ6ApplyNums(kServices, *state, &ref, 1, &overflow);
     Require(!overflow, "no overflow");
     if (next) state = std::make_shared<SecEdgarQ6State>(*next);
   };

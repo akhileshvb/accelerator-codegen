@@ -845,7 +845,7 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
 
 struct MultiSpec {
   std::string id, base_kit, fn;
-  const kit::Glue *glue = nullptr;
+  std::string sql; // the baseline query text
   std::vector<Case> cases;                   // the current repetition's
   std::vector<std::vector<Case>> rep_cases;  // one parameter draw per repetition
 };
@@ -925,8 +925,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
       Require(std::getline(fields, m.id, '\t') && std::getline(fields, m.base_kit, '\t') &&
                   std::getline(fields, cases_path),
               spec_path + ": want <accel_id>\t<baseline_kit>\t<cases.tsv>");
-      m.glue = kit::Find(m.base_kit);
-      Require(m.glue != nullptr, "no baseline kit " + m.base_kit);
+      m.sql = BaselineSql(m.base_kit);
       // "a.tsv|b.tsv|...": one cases file (parameter draw) per repetition
       std::stringstream paths(cases_path);
       for (std::string one; std::getline(paths, one, '|');)
@@ -1003,14 +1002,14 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   std::vector<std::vector<std::vector<std::string>>> before(specs.size());
   for (std::size_t q = 0; q < specs.size(); ++q)
     if (!specs[q].cases.empty())
-      before[q].push_back(Canon(*RunBaseline(qc, specs[q].glue->query_sql, specs[q].cases[0].base_args)));
+      before[q].push_back(Canon(*RunBaseline(qc, specs[q].sql, specs[q].cases[0].base_args)));
   if (stateless) // every kernel must answer every case of every repetition as the baseline does before it is timed
     for (auto &m : specs) {
       m.fn = StatelessFunctionFor(m.id);
       for (const auto &rep : m.rep_cases)
         for (const auto &cs : rep) {
           auto x = Canon(*RunAccel(qc, m.fn, cs.accel_args));
-          auto y = Canon(*RunBaseline(qc, m.glue->query_sql, cs.base_args));
+          auto y = Canon(*RunBaseline(qc, m.sql, cs.base_args));
           std::sort(x.begin(), x.end());
           std::sort(y.begin(), y.end());
           Require(x == y, m.fn + "(" + cs.accel_args + "): answer differs from the baseline");
@@ -1050,7 +1049,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
           if (accel || stateless)
             RunAccel(c, m.fn, cs.accel_args);
           else
-            RunBaseline(c, m.glue->query_sql, cs.base_args);
+            RunBaseline(c, m.sql, cs.base_args);
         } catch (const std::exception &e) {
           if (++errors == 1)
             example = m.id + ": " + e.what();
@@ -1201,7 +1200,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   for (std::size_t q = 0; q < specs.size(); ++q) {
     int changed = 0;
     for (std::size_t i = 0; i < before[q].size(); ++i)
-      changed += Canon(*RunBaseline(qc, specs[q].glue->query_sql, specs[q].cases[i].base_args)) != before[q][i] ? 1 : 0;
+      changed += Canon(*RunBaseline(qc, specs[q].sql, specs[q].cases[i].base_args)) != before[q][i] ? 1 : 0;
     reads += latencies[q].size();
     uint64_t waited = 0; // reads that spent over 1 ms in the store
     for (const double w : waits[q])
@@ -1359,8 +1358,7 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
       std::string cases_path;
       Require(std::getline(fields, m.id, '\t') && std::getline(fields, m.base_kit, '\t') && std::getline(fields, cases_path),
               spec_path + ": want <accel_id>\t<baseline_kit>\t<cases.tsv>");
-      m.glue = kit::Find(m.base_kit);
-      Require(m.glue != nullptr, "no baseline kit " + m.base_kit);
+      m.sql = BaselineSql(m.base_kit);
       m.cases = ReadCases(cases_path);
       Require(m.cases.size() >= per_run * runs, cases_path + ": want a parameter set per (run, stream)");
       m.fn = accel ? FunctionFor(m.id) : stateless ? StatelessFunctionFor(m.id) : std::string();
@@ -1436,7 +1434,7 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
     if (accel || stateless)
       RunAccel(c, m.fn, cs.accel_args);
     else
-      RunBaseline(c, m.glue->query_sql, cs.base_args);
+      RunBaseline(c, m.sql, cs.base_args);
     return Us(t0, Clock::now());
   };
   const auto refresh_json = [](const std::vector<Refresh> &rs) {
@@ -1462,7 +1460,7 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
       qi[q - 1] = query(qc, m, cs);
       fallbacks_by_query[q - 1] = static_cast<double>(core::ReadAuxExecuteCounts().fallback);
       if (check && (accel || stateless)) {
-        auto a = Canon(*RunAccel(qc, m.fn, cs.accel_args)), b = Canon(*RunBaseline(qc, m.glue->query_sql, cs.base_args));
+        auto a = Canon(*RunAccel(qc, m.fn, cs.accel_args)), b = Canon(*RunBaseline(qc, m.sql, cs.base_args));
         std::sort(a.begin(), a.end());
         std::sort(b.begin(), b.end());
         if (a != b)
