@@ -55,7 +55,8 @@ private:
 // Epochs are the engine's: a snapshot epoch comes from
 // AuxEngineServices::CurrentVisibility, a commit's epoch from the store's
 // EpochProvider (see stateful/core/README.md for each engine).
-//   * kNewestSnapshot (0) as a reader's epoch: "no snapshot", read the newest.
+//   * kNewestSnapshot as a reader's epoch: "no snapshot", read the newest. Epoch 0
+//     is a snapshot that sees no commit: it selects only a kAllSnapshots version.
 //   * kAllSnapshots (0) as a version's epoch: current for every snapshot
 //     (and it replaces the history).
 //
@@ -79,7 +80,7 @@ public:
   using EpochProvider = std::function<Epoch()>;
   using FloorProvider = std::function<Epoch()>;
 
-  static constexpr Epoch kNewestSnapshot = 0;
+  static constexpr Epoch kNewestSnapshot = core::kNewestVersion;
   static constexpr Epoch kAllSnapshots = 0;
 
   struct Options {

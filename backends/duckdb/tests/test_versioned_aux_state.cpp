@@ -186,7 +186,9 @@ void TestSemantics() {
     store.FinishCommit("a", {}, {Image("a", 1, 41), Image("a", 2, 42)});
     CHECK(ValueAt(store, 0, 2) == 2); // still the version the scope pinned
   }
-  CHECK(ValueAt(store, 0, 2) == 42);
+  CHECK(ValueAt(store, VersionedAuxStore::kNewestSnapshot, 2) == 42);
+  // Epoch 0 is a snapshot that sees no commit, not "the newest".
+  CHECK(ValueAt(store, 0, 2) == 2);
 
   // Store with no epoch provider: every version is kAllSnapshots.
   VersionedAuxStore plain(VersionedAuxStore::Options {});
@@ -228,7 +230,7 @@ void TestPending() {
     const auto value = ValueAt(store, 12, 1);
     return std::make_pair(value, MillisSince(t));
   });
-  auto newest = std::async(std::launch::async, [&] { return ValueAt(store, 0, 1); });
+  auto newest = std::async(std::launch::async, [&] { return ValueAt(store, VersionedAuxStore::kNewestSnapshot, 1); });
   auto other = std::async(std::launch::async, [&] {
     const auto t = Clock::now();
     const auto value = ValueAt(store, 12, 7);

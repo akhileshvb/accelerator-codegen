@@ -97,7 +97,7 @@ public:
         std::initializer_list<uint8_t>{'o', 'k'});
     outcome.updates.push_back(std::move(image));
     ++stage_count;
-    assert(services.CurrentVisibility().mutation_epoch == 0);
+    assert(services.CurrentVisibility().mutation_epoch == kNewestVersion);
     return outcome;
   }
 

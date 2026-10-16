@@ -222,7 +222,8 @@ private:
   // status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
   std::shared_ptr<const KitImage> Resolve(core::Version at, int32_t &status) const {
     const core::StoreResolveTimer timer;
-    if (Fault() == "ignore_snapshot")
+    // The verified store's own "newest" is 0 (its engines' epochs are positive).
+    if (at == core::kNewestVersion || Fault() == "ignore_snapshot")
       at = 0;
     const void *s = nullptr;
     if (pending_wait_micros == kWaitForPublish) {
@@ -507,7 +508,8 @@ private:
   // status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
   std::shared_ptr<const KitImage> Resolve(core::Version at, int32_t &status) const {
     const core::StoreResolveTimer timer;
-    if (Fault() == "ignore_snapshot")
+    // The verified store's own "newest" is 0 (its engines' epochs are positive).
+    if (at == core::kNewestVersion || Fault() == "ignore_snapshot")
       at = 0;
     const void *s = nullptr;
     if (pending_wait_micros == kWaitForPublish) {
