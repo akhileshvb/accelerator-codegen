@@ -75,7 +75,7 @@ struct TpchQ22State {
   // write clones only the touched page(s). Keys outside the dense range go to
   // a (rarely used) copy-on-write sparse map. A null page means "no customers".
   static constexpr std::size_t kPageSize = 2048;
-  static constexpr int64_t kDenseLimit = int64_t{1} << 26;
+  static constexpr int64_t kDenseLimit = int64_t{1} << 30; // SF3000 customers reach 4.5e8
   struct Page {
     std::vector<CustomerRecord> recs = std::vector<CustomerRecord>(kPageSize);
   };

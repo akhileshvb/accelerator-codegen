@@ -717,6 +717,8 @@ bool ApplyOrder(Mut &m, Tally &tally, int64_t ck, std::string_view comment,
   tally.live_orders += sign;
   if (sign > 0) {
     TpchQ13OrderSeg &t = o.tail;
+    if (t.blob.size() + comment.size() > std::numeric_limits<uint32_t>::max())
+      throw std::runtime_error("TPC-H Q13: order comments of one shard exceed 4 GiB");
     t.custkey.push_back(ck);
     t.start.push_back(static_cast<uint32_t>(t.blob.size()));
     t.len.push_back(static_cast<uint32_t>(comment.size()));

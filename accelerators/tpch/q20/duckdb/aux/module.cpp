@@ -470,6 +470,8 @@ private:
         break;
       }
     }
+    if (base->series_key.size() >= TpchQ20Base::kNoSeries)
+      throw std::runtime_error("TPC-H Q20 aux: too many lineitem series");
     const uint32_t idx = static_cast<uint32_t>(base->series_key.size());
     base->series_key.push_back(cur_key);
     if (fits) {
