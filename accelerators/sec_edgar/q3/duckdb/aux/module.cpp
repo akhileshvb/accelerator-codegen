@@ -1617,6 +1617,31 @@ uint32_t SecEdgarQ3TxnBuffer::InternUom(const std::string &uom) {
   return idx;
 }
 
+void SecEdgarQ3TxnBuffer::Absorb(SecEdgarQ3TxnBuffer &&from) {
+  if (requires_rebuild) {
+    return;
+  }
+  if (from.requires_rebuild) {
+    MarkRebuild();
+    return;
+  }
+  const auto rekey = [&](uint64_t key) {
+    return (key & kSecEdgarQ3OverflowBit)
+               ? kSecEdgarQ3OverflowBit |
+                     InternString(from.strings[static_cast<std::size_t>(key & ~kSecEdgarQ3OverflowBit)])
+               : key;
+  };
+  for (auto op : from.ops) {
+    op.key = rekey(op.key);
+    if (op.kind == OpKind::Num) {
+      op.uom_idx = InternUom(from.strings[op.uom_idx]);
+    } else if (op.kind == OpKind::SubAdd && !(op.flags & 1)) {
+      op.name_idx = InternString(from.strings[op.name_idx]);
+    }
+    AddOp(op);
+  }
+}
+
 uint64_t SecEdgarQ3TxnBuffer::KeyFor(const std::string &adsh) {
   uint64_t key = 0;
   if (SecEdgarQ3PackAdsh(adsh.data(), adsh.size(), key)) {
@@ -1664,125 +1689,107 @@ SecEdgarQ3Module::InterpretMutation(const core::MutationBatch &mutation) const {
   return {};
 }
 
-void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
-                                          core::AuxEngineServices &,
-                                          core::AuxTxnBuffer &base_buffer) {
-  auto &buffer = dynamic_cast<SecEdgarQ3TxnBuffer &>(base_buffer);
-  using Op = SecEdgarQ3TxnBuffer::Op;
-  using OpKind = SecEdgarQ3TxnBuffer::OpKind;
+namespace {
 
-  if (mutation.table == config.num_table) {
-    if (!UpdateTouches(mutation, config.num_pos)) {
-      return;
+using TxnOp = SecEdgarQ3TxnBuffer::Op;
+using TxnOpKind = SecEdgarQ3TxnBuffer::OpKind;
+
+// Rows per slice of a mutation's row loop (parsing and key packing).
+constexpr std::size_t kAccumulateGrain = 4096;
+
+// Buffers the ops of rows [begin, end) of a num mutation into `buffer`.
+void AccumulateNumRows(const SecEdgarQ3Config &config, const core::MutationBatch &mutation,
+                       std::size_t begin, std::size_t end, SecEdgarQ3TxnBuffer &buffer) {
+  auto num_op = [&](const NumRow &row, int sign) {
+    TxnOp op;
+    op.kind = TxnOpKind::Num;
+    op.sign = static_cast<int8_t>(sign);
+    op.key = buffer.KeyFor(*row.adsh);
+    op.uom_idx = buffer.InternUom(*row.uom);
+    op.value = sign * row.value;
+    buffer.AddOp(op);
+  };
+  auto mark_if_nonfinite = [&](const NumRow &row) {
+    if (row.relevant && !std::isfinite(row.value)) {
+      buffer.MarkRebuild(); // NaN / inf cannot be subtracted back out
+      return true;
     }
-    auto num_op = [&](const NumRow &row, int sign) {
-      Op op;
-      op.kind = OpKind::Num;
-      op.sign = static_cast<int8_t>(sign);
-      op.key = buffer.KeyFor(*row.adsh);
-      op.uom_idx = buffer.InternUom(*row.uom);
-      op.value = sign * row.value;
-      buffer.AddOp(op);
-    };
-    auto mark_if_nonfinite = [&](const NumRow &row) {
-      if (row.relevant && !std::isfinite(row.value)) {
-        buffer.MarkRebuild(); // NaN / inf cannot be subtracted back out
-        return true;
-      }
-      return false;
-    };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &raw : mutation.new_rows) {
-        NumRow row;
-        if (!ReadNumRow(raw, config.num_pos, row)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (!row.relevant) {
-          continue;
-        }
-        if (mark_if_nonfinite(row)) {
-          return;
-        }
-        num_op(row, 1);
-      }
-      break;
-    case core::MutationKind::Delete:
-      for (const auto &raw : mutation.old_rows) {
-        NumRow row;
-        if (!ReadNumRow(raw, config.num_pos, row)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (!row.relevant) {
-          continue;
-        }
-        if (mark_if_nonfinite(row)) {
-          return;
-        }
-        num_op(row, -1);
-      }
-      break;
-    case core::MutationKind::Update: {
-      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+    return false;
+  };
+  // Insert / delete: every relevant row of the image is one op.
+  const auto image_rows = [&](const std::vector<core::AuxRow> &rows, int sign) {
+    for (std::size_t i = begin; i < end; ++i) {
+      NumRow row;
+      if (!ReadNumRow(rows[i], config.num_pos, row)) {
         buffer.MarkRebuild();
         return;
       }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        NumRow old_row;
-        NumRow new_row;
-        if (!ReadNumRow(mutation.old_rows[i], config.num_pos, old_row) ||
-            !ReadNumRow(mutation.new_rows[i], config.num_pos, new_row)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (mark_if_nonfinite(old_row) || mark_if_nonfinite(new_row)) {
-          return;
-        }
-        if (old_row.relevant && new_row.relevant &&
-            *old_row.adsh == *new_row.adsh && *old_row.uom == *new_row.uom) {
-          // value-only change: one lookup, no row-count change; the exact
-          // difference is carried as a double-double
-          Op op;
-          op.kind = OpKind::Num;
-          op.sign = 0;
-          op.key = buffer.KeyFor(*new_row.adsh);
-          op.uom_idx = buffer.InternUom(*new_row.uom);
-          const TwoD diff = TwoSum(new_row.value, -old_row.value);
-          op.value = diff.hi;
-          op.value_lo = diff.lo;
-          buffer.AddOp(op);
-          continue;
-        }
-        if (old_row.relevant) {
-          num_op(old_row, -1);
-        }
-        if (new_row.relevant) {
-          num_op(new_row, 1);
-        }
+      if (!row.relevant) {
+        continue;
       }
-      break;
+      if (mark_if_nonfinite(row)) {
+        return;
+      }
+      num_op(row, sign);
     }
+  };
+  switch (mutation.kind) {
+  case core::MutationKind::Insert:
+    image_rows(mutation.new_rows, 1);
+    break;
+  case core::MutationKind::Delete:
+    image_rows(mutation.old_rows, -1);
+    break;
+  case core::MutationKind::Update:
+    for (std::size_t i = begin; i < end; ++i) {
+      NumRow old_row;
+      NumRow new_row;
+      if (!ReadNumRow(mutation.old_rows[i], config.num_pos, old_row) ||
+          !ReadNumRow(mutation.new_rows[i], config.num_pos, new_row)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (mark_if_nonfinite(old_row) || mark_if_nonfinite(new_row)) {
+        return;
+      }
+      if (old_row.relevant && new_row.relevant && *old_row.adsh == *new_row.adsh &&
+          *old_row.uom == *new_row.uom) {
+        // value-only change: one lookup, no row-count change; the exact
+        // difference is carried as a double-double
+        TxnOp op;
+        op.kind = TxnOpKind::Num;
+        op.sign = 0;
+        op.key = buffer.KeyFor(*new_row.adsh);
+        op.uom_idx = buffer.InternUom(*new_row.uom);
+        const TwoD diff = TwoSum(new_row.value, -old_row.value);
+        op.value = diff.hi;
+        op.value_lo = diff.lo;
+        buffer.AddOp(op);
+        continue;
+      }
+      if (old_row.relevant) {
+        num_op(old_row, -1);
+      }
+      if (new_row.relevant) {
+        num_op(new_row, 1);
+      }
     }
-    return;
+    break;
   }
+}
 
-  if (mutation.table != config.sub_table) {
-    return;
-  }
-  if (!UpdateTouches(mutation, config.sub_pos)) {
-    return;
-  }
+// Buffers the ops of rows [begin, end) of a sub mutation into `buffer`.
+void AccumulateSubRows(const SecEdgarQ3Config &config, const core::MutationBatch &mutation,
+                       std::size_t begin, std::size_t end, SecEdgarQ3TxnBuffer &buffer) {
   auto remove_op = [&](const SubRow &row) {
-    Op op;
-    op.kind = OpKind::SubRemove;
+    TxnOp op;
+    op.kind = TxnOpKind::SubRemove;
     op.key = buffer.KeyFor(*row.adsh);
     buffer.AddOp(op);
   };
   auto add_op = [&](const SubRow &row) {
-    Op op;
-    op.kind = OpKind::SubAdd;
+    TxnOp op;
+    op.kind = TxnOpKind::SubAdd;
     op.key = buffer.KeyFor(*row.adsh);
     op.cik = row.cik;
     op.fy = row.fy;
@@ -1793,37 +1800,27 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
     buffer.AddOp(op);
   };
+  const auto image_rows = [&](const std::vector<core::AuxRow> &rows, bool added) {
+    for (std::size_t i = begin; i < end; ++i) {
+      SubRow row;
+      if (!ReadSubRow(rows[i], config.sub_pos, row)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (row.tracked) {
+        added ? add_op(row) : remove_op(row);
+      }
+    }
+  };
   switch (mutation.kind) {
   case core::MutationKind::Insert:
-    for (const auto &raw : mutation.new_rows) {
-      SubRow row;
-      if (!ReadSubRow(raw, config.sub_pos, row)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      if (row.tracked) {
-        add_op(row);
-      }
-    }
+    image_rows(mutation.new_rows, true);
     break;
   case core::MutationKind::Delete:
-    for (const auto &raw : mutation.old_rows) {
-      SubRow row;
-      if (!ReadSubRow(raw, config.sub_pos, row)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      if (row.tracked) {
-        remove_op(row);
-      }
-    }
+    image_rows(mutation.old_rows, false);
     break;
   case core::MutationKind::Update:
-    if (mutation.old_rows.size() != mutation.new_rows.size()) {
-      buffer.MarkRebuild();
-      return;
-    }
-    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+    for (std::size_t i = begin; i < end; ++i) {
       SubRow old_row;
       SubRow new_row;
       if (!ReadSubRow(mutation.old_rows[i], config.sub_pos, old_row) ||
@@ -1850,6 +1847,37 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
     break;
   }
+}
+
+} // namespace
+
+void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
+                                          core::AuxEngineServices &services,
+                                          core::AuxTxnBuffer &base_buffer) {
+  auto &buffer = dynamic_cast<SecEdgarQ3TxnBuffer &>(base_buffer);
+  const bool is_num = mutation.table == config.num_table;
+  if (!is_num && mutation.table != config.sub_table) {
+    return;
+  }
+  if (!UpdateTouches(mutation, is_num ? config.num_pos : config.sub_pos)) {
+    return;
+  }
+  if (mutation.kind == core::MutationKind::Update &&
+      mutation.old_rows.size() != mutation.new_rows.size()) {
+    buffer.MarkRebuild();
+    return;
+  }
+  const auto &rows =
+      mutation.kind == core::MutationKind::Insert ? mutation.new_rows : mutation.old_rows;
+  core::ParallelReduce(
+      services, rows.size(), kAccumulateGrain, buffer,
+      [&](SecEdgarQ3TxnBuffer &out, std::size_t begin, std::size_t end) {
+        is_num ? AccumulateNumRows(config, mutation, begin, end, out)
+               : AccumulateSubRows(config, mutation, begin, end, out);
+      },
+      [](SecEdgarQ3TxnBuffer &into, SecEdgarQ3TxnBuffer &&from) {
+        into.Absorb(std::move(from));
+      });
 }
 
 core::StagedMaintenanceOutcome

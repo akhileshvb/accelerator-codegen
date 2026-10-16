@@ -692,6 +692,27 @@ void SecEdgarQ2TxnBuffer::AddNumMove(std::string_view adsh, std::string_view tag
   nums.push_back(d);
 }
 
+void SecEdgarQ2TxnBuffer::Absorb(SecEdgarQ2TxnBuffer &&from) {
+  if (requires_rebuild) {
+    return;
+  }
+  if (from.requires_rebuild) {
+    MarkRebuild();
+    return;
+  }
+  pending = pending || from.pending;
+  const uint64_t shift = pool.size();
+  pool.append(from.pool);
+  for (auto d : from.nums) {
+    d.adsh_off += shift;
+    d.tag_off += shift;
+    d.uom_off += shift;
+    nums.push_back(d);
+  }
+  subs.insert(subs.end(), std::make_move_iterator(from.subs.begin()),
+              std::make_move_iterator(from.subs.end()));
+}
+
 void SecEdgarQ2TxnBuffer::AddSub(SubDelta delta) {
   if (requires_rebuild) {
     return;
@@ -741,134 +762,148 @@ SecEdgarQ2Module::InterpretMutation(const core::MutationBatch &mutation) const {
   return {};
 }
 
-void SecEdgarQ2Module::AccumulateMutation(const core::MutationBatch &mutation,
-                                          core::AuxEngineServices &,
-                                          core::AuxTxnBuffer &base_buffer) {
-  auto &buffer = static_cast<SecEdgarQ2TxnBuffer &>(base_buffer);
-  if (InterpretMutation(mutation).IsEmpty()) {
-    return;
-  }
-  const auto row_count = [&](const std::vector<core::AuxRow> &rows) {
-    return rows.size();
-  };
-  if (mutation.table == config.num_table) {
-    const auto add = [&](const core::AuxRow &row, int8_t sign) {
+namespace {
+
+// Rows per slice of a mutation's row loop (parsing and key extraction).
+constexpr std::size_t kAccumulateGrain = 4096;
+
+// Buffers the deltas of rows [begin, end) of a num mutation into `buffer`.
+void AccumulateNumRows(const core::MutationBatch &mutation, std::size_t begin,
+                       std::size_t end, SecEdgarQ2TxnBuffer &buffer) {
+  const auto image_rows = [&](const std::vector<core::AuxRow> &rows, int8_t sign) {
+    for (std::size_t i = begin; i < end; ++i) {
       NumRowView v;
-      if (!ParseNumRow(row, v)) {
+      if (!ParseNumRow(rows[i], v)) {
         buffer.MarkRebuild();
         return;
       }
       if (v.relevant) {
         buffer.AddNum(*v.adsh, *v.tag, *v.uom, v.key, sign);
       }
-    };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows) {
-        add(row, 1);
-      }
-      break;
-    case core::MutationKind::Delete:
-      for (const auto &row : mutation.old_rows) {
-        add(row, -1);
-      }
-      break;
-    case core::MutationKind::Update:
-      if (row_count(mutation.old_rows) != row_count(mutation.new_rows)) {
+    }
+  };
+  switch (mutation.kind) {
+  case core::MutationKind::Insert:
+    image_rows(mutation.new_rows, 1);
+    return;
+  case core::MutationKind::Delete:
+    image_rows(mutation.old_rows, -1);
+    return;
+  case core::MutationKind::Update:
+    break;
+  }
+  if (!mutation.updated_columns.empty() &&
+      std::none_of(mutation.updated_columns.begin(), mutation.updated_columns.end(),
+                   [](core::ColumnId c) {
+                     return c == kQ2NumAdsh || c == kQ2NumTag || c == kQ2NumUom;
+                   })) {
+    // Only `value` (or irrelevant columns) changed: the key strings of the
+    // new row are those of the old row, read them once.
+    for (std::size_t i = begin; i < end; ++i) {
+      NumRowView a;
+      double value = 0.0;
+      bool value_null = false;
+      if (!ParseNumRow(mutation.old_rows[i], a) ||
+          !ReadDouble(mutation.new_rows[i], kQ2NumValue, value, value_null)) {
         buffer.MarkRebuild();
         return;
       }
-      if (!mutation.updated_columns.empty() &&
-          std::none_of(mutation.updated_columns.begin(), mutation.updated_columns.end(),
-                       [](core::ColumnId c) {
-                         return c == kQ2NumAdsh || c == kQ2NumTag || c == kQ2NumUom;
-                       })) {
-        // Only `value` (or irrelevant columns) changed: the key strings of the
-        // new row are those of the old row, read them once.
-        for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-          NumRowView a;
-          double value = 0.0;
-          bool value_null = false;
-          if (!ParseNumRow(mutation.old_rows[i], a) ||
-              !ReadDouble(mutation.new_rows[i], kQ2NumValue, value, value_null)) {
-            buffer.MarkRebuild();
-            return;
-          }
-          const bool keyed = a.adsh && a.tag && a.uom;
-          const bool b_relevant = keyed && !value_null;
-          const int64_t b_key = b_relevant ? Q2ValueKey(value) : 0;
-          if (a.relevant && b_relevant) {
-            if (a.key != b_key) {
-              buffer.AddNumMove(*a.adsh, *a.tag, *a.uom, a.key, b_key);
-            }
-          } else if (a.relevant) {
-            buffer.AddNum(*a.adsh, *a.tag, *a.uom, a.key, -1);
-          } else if (b_relevant) {
-            buffer.AddNum(*a.adsh, *a.tag, *a.uom, b_key, 1);
-          }
+      const bool keyed = a.adsh && a.tag && a.uom;
+      const bool b_relevant = keyed && !value_null;
+      const int64_t b_key = b_relevant ? Q2ValueKey(value) : 0;
+      if (a.relevant && b_relevant) {
+        if (a.key != b_key) {
+          buffer.AddNumMove(*a.adsh, *a.tag, *a.uom, a.key, b_key);
         }
-        break;
+      } else if (a.relevant) {
+        buffer.AddNum(*a.adsh, *a.tag, *a.uom, a.key, -1);
+      } else if (b_relevant) {
+        buffer.AddNum(*a.adsh, *a.tag, *a.uom, b_key, 1);
       }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        NumRowView a, b;
-        if (!ParseNumRow(mutation.old_rows[i], a) ||
-            !ParseNumRow(mutation.new_rows[i], b)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (a.relevant && b.relevant && a.key == b.key && *a.adsh == *b.adsh &&
-            *a.tag == *b.tag && *a.uom == *b.uom) {
-          continue; // key columns unchanged
-        }
-        if (a.relevant && b.relevant && *a.adsh == *b.adsh && *a.tag == *b.tag &&
-            *a.uom == *b.uom) {
-          buffer.AddNumMove(*a.adsh, *a.tag, *a.uom, a.key, b.key);
-          continue;
-        }
-        if (a.relevant) {
-          buffer.AddNum(*a.adsh, *a.tag, *a.uom, a.key, -1);
-        }
-        if (b.relevant) {
-          buffer.AddNum(*b.adsh, *b.tag, *b.uom, b.key, 1);
-        }
-      }
-      break;
     }
     return;
   }
-  if (mutation.table == config.sub_table) {
-    const uint64_t batch = buffer.NextBatch();
-    const auto add = [&](const core::AuxRow &row, int8_t sign) {
-      SubRowView v;
-      if (!ParseSubRow(row, v)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      buffer.AddSub({*v.adsh, v.name, v.fy, batch, v.fy_is_null, v.name_is_null, sign});
-    };
+  for (std::size_t i = begin; i < end; ++i) {
+    NumRowView a, b;
+    if (!ParseNumRow(mutation.old_rows[i], a) || !ParseNumRow(mutation.new_rows[i], b)) {
+      buffer.MarkRebuild();
+      return;
+    }
+    if (a.relevant && b.relevant && a.key == b.key && *a.adsh == *b.adsh &&
+        *a.tag == *b.tag && *a.uom == *b.uom) {
+      continue; // key columns unchanged
+    }
+    if (a.relevant && b.relevant && *a.adsh == *b.adsh && *a.tag == *b.tag &&
+        *a.uom == *b.uom) {
+      buffer.AddNumMove(*a.adsh, *a.tag, *a.uom, a.key, b.key);
+      continue;
+    }
+    if (a.relevant) {
+      buffer.AddNum(*a.adsh, *a.tag, *a.uom, a.key, -1);
+    }
+    if (b.relevant) {
+      buffer.AddNum(*b.adsh, *b.tag, *b.uom, b.key, 1);
+    }
+  }
+}
+
+// Buffers rows [begin, end) of a sub mutation into `buffer` as batch `batch`.
+void AccumulateSubRows(const core::MutationBatch &mutation, std::size_t begin,
+                       std::size_t end, uint64_t batch, SecEdgarQ2TxnBuffer &buffer) {
+  const auto add = [&](const core::AuxRow &row, int8_t sign) {
+    SubRowView v;
+    if (!ParseSubRow(row, v)) {
+      buffer.MarkRebuild();
+      return;
+    }
+    buffer.AddSub({*v.adsh, v.name, v.fy, batch, v.fy_is_null, v.name_is_null, sign});
+  };
+  for (std::size_t i = begin; i < end; ++i) {
     switch (mutation.kind) {
     case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows) {
-        add(row, 1);
-      }
+      add(mutation.new_rows[i], 1);
       break;
     case core::MutationKind::Delete:
-      for (const auto &row : mutation.old_rows) {
-        add(row, -1);
-      }
+      add(mutation.old_rows[i], -1);
       break;
     case core::MutationKind::Update:
-      if (mutation.old_rows.size() != mutation.new_rows.size()) {
-        buffer.MarkRebuild();
-        return;
-      }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        add(mutation.old_rows[i], -1);
-        add(mutation.new_rows[i], 1);
-      }
+      add(mutation.old_rows[i], -1);
+      add(mutation.new_rows[i], 1);
       break;
     }
   }
+}
+
+} // namespace
+
+void SecEdgarQ2Module::AccumulateMutation(const core::MutationBatch &mutation,
+                                          core::AuxEngineServices &services,
+                                          core::AuxTxnBuffer &base_buffer) {
+  auto &buffer = static_cast<SecEdgarQ2TxnBuffer &>(base_buffer);
+  if (InterpretMutation(mutation).IsEmpty()) {
+    return;
+  }
+  if (mutation.kind == core::MutationKind::Update &&
+      mutation.old_rows.size() != mutation.new_rows.size()) {
+    buffer.MarkRebuild();
+    return;
+  }
+  const bool is_num = mutation.table == config.num_table;
+  if (!is_num && mutation.table != config.sub_table) {
+    return;
+  }
+  const uint64_t batch = is_num ? 0 : buffer.NextBatch();
+  const auto &rows =
+      mutation.kind == core::MutationKind::Insert ? mutation.new_rows : mutation.old_rows;
+  core::ParallelReduce(
+      services, rows.size(), kAccumulateGrain, buffer,
+      [&](SecEdgarQ2TxnBuffer &out, std::size_t begin, std::size_t end) {
+        is_num ? AccumulateNumRows(mutation, begin, end, out)
+               : AccumulateSubRows(mutation, begin, end, batch, out);
+      },
+      [](SecEdgarQ2TxnBuffer &into, SecEdgarQ2TxnBuffer &&from) {
+        into.Absorb(std::move(from));
+      });
 }
 
 // ----------------------------------------------------------------- build

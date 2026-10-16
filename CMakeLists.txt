@@ -783,6 +783,7 @@ if(BUILD_TESTING)
     # workloads/tpch/test_db_subset.sql, so tests never depend on a shared
     # tpch_test.duckdb that may be stale or modified by other runs.
     set(_accel_tpch_test_db "${CMAKE_CURRENT_BINARY_DIR}/test_dbs/tpch_test.duckdb")
+    set(ACCEL_TPCH_TEST_DB_PATH "${_accel_tpch_test_db}")
     add_test(NAME tpch_test_db_fixture
              COMMAND make_tpch_test_db
                      "${CMAKE_CURRENT_SOURCE_DIR}/workloads/tpch/test_db_subset.sql"

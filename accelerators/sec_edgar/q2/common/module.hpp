@@ -219,6 +219,8 @@ public:
                   int64_t old_key, int64_t new_key);
   void AddSub(SubDelta delta);
   uint64_t NextBatch() { return ++batch_counter; }
+  // Appends `from`'s deltas (buffered after this buffer's).
+  void Absorb(SecEdgarQ2TxnBuffer &&from);
   const std::vector<NumDelta> &Nums() const { return nums; }
   const std::vector<SubDelta> &Subs() const { return subs; }
   std::string_view Str(uint64_t off, uint32_t len) const {

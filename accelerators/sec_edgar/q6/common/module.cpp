@@ -1,6 +1,7 @@
 #include "sec_edgar/q6/common/module.hpp"
 
 #include "sec_edgar/q6/common/build.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -24,6 +25,8 @@ constexpr int64_t kDefaultFy = 2023;
 constexpr std::string_view kDefaultStmt = "IS";
 constexpr std::string_view kDefaultUom = "USD";
 constexpr core::PartitionId kStatePartition = core::SecEdgarQ6Layout::kState;
+// Rows (or update pairs) per slice of a num mutation's row loop.
+constexpr std::size_t kAccumulateGrain = 4096;
 
 using Cols = SecEdgarQ6Columns;
 
@@ -162,6 +165,9 @@ void SecEdgarQ6TxnBuffer::AddNumDelta(std::string_view adsh, std::string_view ta
                                       double value, int8_t sign) {
   pending_ = true;
   NumDelta d;
+  if (arena_.size() >= std::numeric_limits<uint32_t>::max() - 4096) {
+    throw std::length_error("sec_edgar q6: more than 4 GB of changed keys in one transaction");
+  }
   d.offset = static_cast<uint32_t>(arena_.size());
   d.adsh_len = static_cast<uint32_t>(adsh.size());
   d.tag_len = static_cast<uint32_t>(tag.size());
@@ -182,6 +188,32 @@ void SecEdgarQ6TxnBuffer::AddNumPair(std::string_view adsh, std::string_view tag
   AddNumDelta(adsh, tag, version, uom, value, 1);
   num_deltas_.back().old_value = old_value;
   num_deltas_.back().pair = true;
+}
+
+void SecEdgarQ6TxnBuffer::Absorb(SecEdgarQ6TxnBuffer &&from) {
+  if (requires_rebuild_) {
+    return;
+  }
+  if (from.requires_rebuild_) {
+    MarkRebuild();
+    return;
+  }
+  pending_ = pending_ || from.pending_;
+  if (arena_.size() + from.arena_.size() >= std::numeric_limits<uint32_t>::max()) {
+    throw std::length_error("sec_edgar q6: more than 4 GB of changed keys in one transaction");
+  }
+  const auto shift = static_cast<uint32_t>(arena_.size());
+  arena_.insert(arena_.end(), from.arena_.begin(), from.arena_.end());
+  for (auto d : from.num_deltas_) {
+    d.offset += shift;
+    num_deltas_.push_back(d);
+  }
+  const auto append = [](auto &to, auto &source) {
+    to.insert(to.end(), std::make_move_iterator(source.begin()),
+              std::make_move_iterator(source.end()));
+  };
+  append(sub_changes_, from.sub_changes_);
+  append(pre_changes_, from.pre_changes_);
 }
 
 // ---------------------------------------------------------------------------
@@ -373,7 +405,7 @@ SecEdgarQ6Module::InterpretMutation(const core::MutationBatch &mutation) const {
 }
 
 void SecEdgarQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
-                                          core::AuxEngineServices &,
+                                          core::AuxEngineServices &services,
                                           core::AuxTxnBuffer &base_buffer) {
   auto &buffer = static_cast<SecEdgarQ6TxnBuffer &>(base_buffer);
   const bool is_num = mutation.table == config.num_table;
@@ -445,7 +477,6 @@ void SecEdgarQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
       // inf / NaN cannot be removed from a sum again: rebuild.
       return !p.valid || std::isfinite(p.value);
     };
-    buffer.ReserveArena(rows.size() * 64);
     // Row images are scattered heap objects: fetch them a few rows ahead.
     const auto prefetch_row = [&](std::size_t k) {
       if (k < rows.size()) {
@@ -467,51 +498,57 @@ void SecEdgarQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
       }
     };
     constexpr std::size_t kRowsAhead = 16;
-    if (mutation.kind == core::MutationKind::Update) {
-      for (std::size_t i = 0; i + 1 < rows.size(); i += 2) {
-        prefetch_row(i + 2 * kRowsAhead);
-        prefetch_row(i + 2 * kRowsAhead + 1);
-        prefetch_strings(i + kRowsAhead);
-        prefetch_strings(i + kRowsAhead + 1);
-        NumParsed before, after;
-        if (!parse(*rows[i].first, before) || !parse(*rows[i + 1].first, after)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (before.valid && after.valid && before.adsh == after.adsh &&
-            before.tag == after.tag && before.version == after.version &&
-            before.uom == after.uom) {
-          if (before.value != after.value ||
-              std::signbit(before.value) != std::signbit(after.value)) {
-            buffer.AddNumPair(after.adsh, after.tag, after.version, after.uom,
-                              after.value, before.value);
+    const bool is_update = mutation.kind == core::MutationKind::Update;
+    // Units are rows, or old/new row pairs for an update.
+    const std::size_t units = is_update ? rows.size() / 2 : rows.size();
+    core::ParallelReduce(
+        services, units, kAccumulateGrain, buffer,
+        [&](SecEdgarQ6TxnBuffer &out, std::size_t begin, std::size_t end) {
+          out.ReserveArena((end - begin) * 64);
+          for (std::size_t u = begin; u < end; ++u) {
+            const std::size_t i = is_update ? 2 * u : u;
+            prefetch_row(i + 2 * kRowsAhead);
+            prefetch_strings(i + kRowsAhead);
+            if (!is_update) {
+              NumParsed p;
+              if (!parse(*rows[i].first, p)) {
+                out.MarkRebuild();
+                return;
+              }
+              if (p.valid) {
+                out.AddNumDelta(p.adsh, p.tag, p.version, p.uom, p.value, rows[i].second);
+              }
+              continue;
+            }
+            prefetch_row(i + 2 * kRowsAhead + 1);
+            prefetch_strings(i + kRowsAhead + 1);
+            NumParsed before, after;
+            if (!parse(*rows[i].first, before) || !parse(*rows[i + 1].first, after)) {
+              out.MarkRebuild();
+              return;
+            }
+            if (before.valid && after.valid && before.adsh == after.adsh &&
+                before.tag == after.tag && before.version == after.version &&
+                before.uom == after.uom) {
+              if (before.value != after.value ||
+                  std::signbit(before.value) != std::signbit(after.value)) {
+                out.AddNumPair(after.adsh, after.tag, after.version, after.uom, after.value,
+                               before.value);
+              }
+              continue;
+            }
+            if (before.valid) {
+              out.AddNumDelta(before.adsh, before.tag, before.version, before.uom,
+                              before.value, -1);
+            }
+            if (after.valid) {
+              out.AddNumDelta(after.adsh, after.tag, after.version, after.uom, after.value, 1);
+            }
           }
-          continue;
-        }
-        if (before.valid) {
-          buffer.AddNumDelta(before.adsh, before.tag, before.version, before.uom,
-                             before.value, -1);
-        }
-        if (after.valid) {
-          buffer.AddNumDelta(after.adsh, after.tag, after.version, after.uom,
-                             after.value, 1);
-        }
-      }
-      return;
-    }
-    for (std::size_t k = 0; k < rows.size(); ++k) {
-      prefetch_row(k + 2 * kRowsAhead);
-      prefetch_strings(k + kRowsAhead);
-      const auto &[row, sign] = rows[k];
-      NumParsed p;
-      if (!parse(*row, p)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      if (p.valid) {
-        buffer.AddNumDelta(p.adsh, p.tag, p.version, p.uom, p.value, sign);
-      }
-    }
+        },
+        [](SecEdgarQ6TxnBuffer &into, SecEdgarQ6TxnBuffer &&from) {
+          into.Absorb(std::move(from));
+        });
     return;
   }
 
@@ -782,7 +819,7 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
     bool overflow = false;
     std::shared_ptr<const SecEdgarQ6State> next;
     try {
-      next = SecEdgarQ6ApplyEdits(*state, edits, refs, &overflow);
+      next = SecEdgarQ6ApplyEdits(services, *state, edits, refs, &overflow);
     } catch (const std::length_error &) {
       return RebuildOutcome(); // id space exhausted: a fresh build compacts
     }
@@ -817,7 +854,7 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
   bool overflow = false;
   std::shared_ptr<const SecEdgarQ6State> next;
   try {
-    next = SecEdgarQ6ApplyNums(*state, refs.data(), refs.size(), &overflow);
+    next = SecEdgarQ6ApplyNums(services, *state, refs.data(), refs.size(), &overflow);
   } catch (const std::length_error &) {
     return RebuildOutcome();
   }

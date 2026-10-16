@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include "sec_edgar/q4/common/aux/state_ops.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -20,6 +21,8 @@ namespace {
 // Above these sizes a rebuild from the base tables is cheaper than patching.
 constexpr size_t kMaxStructuralKeys = 4096;
 constexpr size_t kMaxDeltas = 8u << 20;
+// Rows per slice of a mutation's row loop (cell decoding and key copying).
+constexpr size_t kAccumulateGrain = 4096;
 
 enum class Cell { Ok, Null, Bad };
 
@@ -390,6 +393,28 @@ void SecEdgarQ4TxnBuffer::AddNumUpdate(std::string_view adsh, std::string_view t
   if (!requires_rebuild) deltas.back().value_new = new_value;
 }
 
+void SecEdgarQ4TxnBuffer::Absorb(SecEdgarQ4TxnBuffer &&from) {
+  if (requires_rebuild) return;
+  if (from.requires_rebuild) {
+    MarkRebuild();
+    return;
+  }
+  pending = pending || from.pending;
+  const uint64_t shift = arena.size();
+  arena.append(from.arena);
+  for (auto d : from.deltas) {
+    d.off += shift;
+    deltas.push_back(d);
+  }
+  const auto append = [](auto &to, auto &&source) {
+    to.insert(to.end(), std::make_move_iterator(source.begin()),
+              std::make_move_iterator(source.end()));
+  };
+  append(dirty_adsh, std::move(from.dirty_adsh));
+  append(dirty_tv, std::move(from.dirty_tv));
+  append(dirty_keys, std::move(from.dirty_keys));
+}
+
 void SecEdgarQ4TxnBuffer::AddDirtyAdsh(std::string adsh) {
   if (requires_rebuild) return;
   pending = true;
@@ -474,7 +499,7 @@ SecEdgarQ4Module::InterpretMutation(const core::MutationBatch &) const {
 }
 
 void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
-                                          core::AuxEngineServices &,
+                                          core::AuxEngineServices &services,
                                           core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<SecEdgarQ4TxnBuffer &>(base_buffer);
   const bool is_update = mutation.kind == core::MutationKind::Update;
@@ -482,6 +507,15 @@ void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
     buffer.MarkRebuild();
     return;
   }
+
+  // Runs body(out, begin, end) over [0, n) in slices, each buffering into its
+  // own SecEdgarQ4TxnBuffer that is appended to `buffer` in slice order.
+  const auto reduce = [&](std::size_t n, auto &&body) {
+    core::ParallelReduce(services, n, kAccumulateGrain, buffer, body,
+                         [](SecEdgarQ4TxnBuffer &into, SecEdgarQ4TxnBuffer &&from) {
+                           into.Absorb(std::move(from));
+                         });
+  };
 
   // Row accessors per mutation kind: each (row, sign) pair is one table row
   // that disappears (-1, old image) or appears (+1, new image).
@@ -520,30 +554,35 @@ void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
     if (is_update) {
       // An UPDATE row keeps its key in the common case (value changes): one
       // paired delta, one copy of the key.
-      for (size_t i = 0; i < mutation.new_rows.size(); ++i) {
-        NumCells o, n;
-        if (!read(mutation.old_rows[i], o) || !read(mutation.new_rows[i], n)) {
-          buffer.MarkRebuild();
-          return;
+      reduce(mutation.new_rows.size(), [&](SecEdgarQ4TxnBuffer &out, size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+          NumCells o, n;
+          if (!read(mutation.old_rows[i], o) || !read(mutation.new_rows[i], n)) {
+            out.MarkRebuild();
+            return;
+          }
+          if (o.usable && n.usable && o.adsh == n.adsh && o.tag == n.tag &&
+              o.version == n.version && o.uom == n.uom) {
+            out.AddNumUpdate(o.adsh, o.tag, o.version, o.uom, o.value, n.value);
+            continue;
+          }
+          if (o.usable) out.AddNumDelta(o.adsh, o.tag, o.version, o.uom, o.value, -1);
+          if (n.usable) out.AddNumDelta(n.adsh, n.tag, n.version, n.uom, n.value, +1);
         }
-        if (o.usable && n.usable && o.adsh == n.adsh && o.tag == n.tag && o.version == n.version &&
-            o.uom == n.uom) {
-          buffer.AddNumUpdate(o.adsh, o.tag, o.version, o.uom, o.value, n.value);
-          continue;
-        }
-        if (o.usable) buffer.AddNumDelta(o.adsh, o.tag, o.version, o.uom, o.value, -1);
-        if (n.usable) buffer.AddNumDelta(n.adsh, n.tag, n.version, n.uom, n.value, +1);
-      }
+      });
       return;
     }
-    for (const auto &[row, sign] : rows) {
-      NumCells c;
-      if (!read(*row, c)) {
-        buffer.MarkRebuild();
-        return;
+    reduce(rows.size(), [&](SecEdgarQ4TxnBuffer &out, size_t begin, size_t end) {
+      for (size_t i = begin; i < end; ++i) {
+        const auto &[row, sign] = rows[i];
+        NumCells c;
+        if (!read(*row, c)) {
+          out.MarkRebuild();
+          return;
+        }
+        if (c.usable) out.AddNumDelta(c.adsh, c.tag, c.version, c.uom, c.value, sign);
       }
-      if (c.usable) buffer.AddNumDelta(c.adsh, c.tag, c.version, c.uom, c.value, sign);
-    }
+    });
     return;
   }
 
@@ -551,16 +590,17 @@ void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
     if (is_update && !Intersects(mutation.updated_columns, {kQ4SubAdsh, kQ4SubCik, kQ4SubSic})) {
       return;
     }
-    for (const auto &[row, sign] : rows) {
-      (void)sign;
-      std::string_view adsh;
-      const Cell a = GetString(*row, kQ4SubAdsh, adsh);
-      if (a == Cell::Bad) {
-        buffer.MarkRebuild();
-        return;
+    reduce(rows.size(), [&](SecEdgarQ4TxnBuffer &out, size_t begin, size_t end) {
+      for (size_t i = begin; i < end; ++i) {
+        std::string_view adsh;
+        const Cell a = GetString(*rows[i].first, kQ4SubAdsh, adsh);
+        if (a == Cell::Bad) {
+          out.MarkRebuild();
+          return;
+        }
+        if (a == Cell::Ok) out.AddDirtyAdsh(std::string(adsh));
       }
-      if (a == Cell::Ok) buffer.AddDirtyAdsh(std::string(adsh));
-    }
+    });
     return;
   }
 
@@ -569,19 +609,20 @@ void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
                                  {kQ4TagTag, kQ4TagVersion, kQ4TagAbstract, kQ4TagTlabel})) {
       return;
     }
-    for (const auto &[row, sign] : rows) {
-      (void)sign;
-      std::string_view tag, version;
-      const Cell t = GetString(*row, kQ4TagTag, tag);
-      const Cell v = GetString(*row, kQ4TagVersion, version);
-      if (t == Cell::Bad || v == Cell::Bad) {
-        buffer.MarkRebuild();
-        return;
+    reduce(rows.size(), [&](SecEdgarQ4TxnBuffer &out, size_t begin, size_t end) {
+      for (size_t i = begin; i < end; ++i) {
+        std::string_view tag, version;
+        const Cell t = GetString(*rows[i].first, kQ4TagTag, tag);
+        const Cell v = GetString(*rows[i].first, kQ4TagVersion, version);
+        if (t == Cell::Bad || v == Cell::Bad) {
+          out.MarkRebuild();
+          return;
+        }
+        if (t == Cell::Ok && v == Cell::Ok) {
+          out.AddDirtyTagVersion(std::string(tag), std::string(version));
+        }
       }
-      if (t == Cell::Ok && v == Cell::Ok) {
-        buffer.AddDirtyTagVersion(std::string(tag), std::string(version));
-      }
-    }
+    });
     return;
   }
 
@@ -590,21 +631,23 @@ void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
                                  {kQ4PreAdsh, kQ4PreStmt, kQ4PreTag, kQ4PreVersion})) {
       return;
     }
-    for (const auto &[row, sign] : rows) {
-      (void)sign;
-      std::string_view adsh, stmt, tag, version;
-      const Cell a = GetString(*row, kQ4PreAdsh, adsh);
-      const Cell s = GetString(*row, kQ4PreStmt, stmt);
-      const Cell t = GetString(*row, kQ4PreTag, tag);
-      const Cell v = GetString(*row, kQ4PreVersion, version);
-      if (a == Cell::Bad || s == Cell::Bad || t == Cell::Bad || v == Cell::Bad) {
-        buffer.MarkRebuild();
-        return;
+    reduce(rows.size(), [&](SecEdgarQ4TxnBuffer &out, size_t begin, size_t end) {
+      for (size_t i = begin; i < end; ++i) {
+        const core::AuxRow &row = *rows[i].first;
+        std::string_view adsh, stmt, tag, version;
+        const Cell a = GetString(row, kQ4PreAdsh, adsh);
+        const Cell s = GetString(row, kQ4PreStmt, stmt);
+        const Cell t = GetString(row, kQ4PreTag, tag);
+        const Cell v = GetString(row, kQ4PreVersion, version);
+        if (a == Cell::Bad || s == Cell::Bad || t == Cell::Bad || v == Cell::Bad) {
+          out.MarkRebuild();
+          return;
+        }
+        if (a != Cell::Ok || t != Cell::Ok || v != Cell::Ok) continue; // cannot join
+        if (s == Cell::Null) continue; // p.stmt = :stmt never holds for NULL
+        out.AddDirtyKey(std::string(adsh), std::string(tag), std::string(version));
       }
-      if (a != Cell::Ok || t != Cell::Ok || v != Cell::Ok) continue; // cannot join
-      if (s == Cell::Null) continue; // p.stmt = :stmt never holds for NULL
-      buffer.AddDirtyKey(std::string(adsh), std::string(tag), std::string(version));
-    }
+    });
     return;
   }
 }
@@ -720,7 +763,7 @@ SecEdgarQ4Module::StageMaintenance(core::AuxEngineServices &services,
       }
     }
     // The num deltas of the structurally re-read keys are already reflected.
-      if (!writer.ApplyNumDeltas(buffer, structural ? &structural_keys : nullptr)) {
+      if (!writer.ApplyNumDeltas(services, buffer, structural ? &structural_keys : nullptr)) {
       return RebuildOutcome(services, "delta inconsistent with state");
     }
     const bool full = writer.StructureChanged();
