@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// BasicAuxTxnBuffer: a pending-changes flag for modules that keep their own buffers.
 #pragma once
 
 #include "substrate/aux/core/aux_types.hpp"

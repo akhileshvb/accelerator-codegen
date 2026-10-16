@@ -110,21 +110,15 @@ public:
       const std::function<void(const TpchQ9OrdersInput &)> &) = 0;
   virtual void ScanPartsupps(
       const std::function<void(const TpchQ9PartsuppInput &)> &) = 0;
+  // Partitioned scan for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanLineitems(
-      const std::function<void(const TpchQ9LineitemInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9LineitemInput &)> &) = 0;
 
   // Optional: SQL pushdown of joined profit GROUP BY part/nation/year.
   virtual bool ScanProfitContributions(
       const std::function<void(const TpchQ9ProfitContribution &)> &consumer) {
-    (void)consumer;
-    return false;
-  }
-
-  // Optional: SQL pushdown of lineitem (JOIN orders) GROUP BY part/supp/year:
-  // rev = SUM(extendedprice_raw * (100 - discount_raw)), qty = SUM(quantity_raw).
-  virtual bool ScanPairAggregates(
-      const std::function<void(int64_t partkey, int64_t suppkey, int32_t year,
-                               int64_t rev, int64_t qty)> &consumer) {
     (void)consumer;
     return false;
   }

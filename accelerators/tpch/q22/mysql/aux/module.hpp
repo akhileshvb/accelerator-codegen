@@ -36,7 +36,7 @@ namespace accelerator_codegen::aux_state::query {
 // customers (bounded by the balance domain): ~19 B/customer, 0.3 GB at SF100,
 // 2.8 GB at SF1000 (the old unordered_map<custkey, record with a std::string>
 // cost ~80 B/customer: 1.2 GB at SF100). Write batch: O(touched custkeys *
-// 32-customer chunk + touched prefixes' balance blocks); no table scan.
+// 64-customer chunk + touched prefixes' balance blocks); no table scan.
 struct TpchQ22Layout {
   static constexpr const char *kAccelerator = "tpch_q22_aux";
   static constexpr core::PartitionId kFull = 0;
@@ -109,7 +109,7 @@ struct TpchQ22PrefixEntry {
 struct TpchQ22State {
   std::shared_ptr<const TpchQ22PrefixDictionary> dictionary =
       std::make_shared<const TpchQ22PrefixDictionary>();
-  core::AnyKeyCowArray<TpchQ22CustomerRecord, 5> customers;
+  core::AnyKeyCowArray<TpchQ22CustomerRecord, 6> customers;
   std::vector<std::shared_ptr<const TpchQ22PrefixEntry>> prefixes;
 };
 

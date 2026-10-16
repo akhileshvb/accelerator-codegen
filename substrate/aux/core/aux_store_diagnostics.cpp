@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Bounded per-thread sample collection for aux store diagnostics.
 #include "substrate/aux/core/aux_store_diagnostics.hpp"
 
 #include <algorithm>

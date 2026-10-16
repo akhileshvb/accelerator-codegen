@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Where a query's cost-model JSON lives, and how an engine finds it.
 #pragma once
 
 #include <string>
@@ -21,7 +22,7 @@ struct AuxCostModelLocation {
 //   <stem>.json
 // A name with a scale falls back to the nearest smaller calibrated scale of
 // the same prefix (sf20 -> sf1 when no sf20 file exists), before the next,
-// less specific name. (an empty engine or scale drops the names that carry it).
+// less specific name. An empty engine or scale drops the names that carry it.
 struct AuxCostModelLookup {
   std::string engine; // "postgres", "mysql"; "": no engine-specific models
   std::string scale;  // "sf20": models calibrated at that scale; "": none

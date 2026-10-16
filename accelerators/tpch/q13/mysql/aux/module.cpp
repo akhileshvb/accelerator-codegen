@@ -293,7 +293,12 @@ constexpr std::size_t kOwners = 64;
 using OrderIndex = decltype(TpchQ13State::order_row);
 using CountArray = decltype(TpchQ13State::order_count);
 
-std::size_t IndexOwner(int64_t orderkey) { return OrderIndex::ShardOf(orderkey) % kOwners; }
+// The state's index is default-built: kShards shards, so this is its shard.
+constexpr unsigned kIndexShardBits = static_cast<unsigned>(__builtin_ctzll(OrderIndex::kShards));
+
+std::size_t IndexOwner(int64_t orderkey) {
+  return OrderIndex::ShardOf(orderkey, kIndexShardBits) % kOwners;
+}
 std::size_t CountOwner(int64_t custkey) {
   return static_cast<std::size_t>(custkey) / CountArray::kChunkSize % kOwners;
 }

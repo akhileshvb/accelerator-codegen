@@ -55,7 +55,7 @@ run the query's smoke test and shared differential, or the slot scenarios, with
 `ACCEL_AUX_READ/BUILD/MAINT_THREADS=8` (`ACCEL_TSAN_THREADS`) and
 `ACCEL_AUX_TEST_GRAIN=1`, a test-only cap on every slice grain so even one-row
 commits split across threads. It fails on a mismatch or a report whose stack
-touches our code; reports confined to the engine are listed in the logs and
+touches our code (the first frame of a racing access); reports inside the engine are counted in the logs and
 ignored (`tsan.supp` is for engine races that cross our frames, never for our
 code). Logs: `<artifacts>/gates/aux_tsan_logs/`. Only the in-process DuckDB host
 is run; other engines skip.

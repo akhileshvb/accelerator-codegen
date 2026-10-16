@@ -2,6 +2,8 @@
 #include "tpch/q9/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -30,8 +32,15 @@ constexpr std::size_t kCandidateGrain = 8192;
 // Profit slots per read slice: ~1000 name substring tests each, ~0.1 ms per slot.
 constexpr std::size_t kSlotGrain = 16;
 // Build: pair aggregates buffered before they are applied, and slots per slice when applying.
-constexpr std::size_t kPairBatch = std::size_t{1} << 23;
 constexpr std::size_t kPairSlotGrain = 4;
+
+// One (part, supplier, order year) lineitem aggregate: rev = SUM(extendedprice_raw
+// * (100 - discount_raw)), qty = SUM(quantity_raw).
+struct PairAgg {
+  int64_t partkey, suppkey;
+  int32_t year;
+  int64_t rev, qty;
+};
 // Build: profit slots per slice when summing the token cube.
 constexpr std::size_t kCubeSlotGrain = 8;
 // Maintenance: slots whose profit-partition pointer vector is copied per slice (~10 us each).
@@ -1674,50 +1683,41 @@ void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
     state.SetPartsuppCost(input.partkey, input.suppkey, input.supplycost_raw);
   });
 
-  // Pair aggregates are applied per profit slot (slots own disjoint part
-  // records), in batches: the scan fills per-slot buffers, a full batch is
-  // applied by all workers at once.
-  struct PairAgg {
-    int64_t partkey, suppkey;
-    int32_t year;
-    int64_t rev, qty;
-  };
-  std::vector<std::vector<PairAgg>> pending(state.profit_slot_count);
-  std::size_t pending_count = 0;
-  const auto apply_pending = [&] {
-    core::ParallelEach(services, pending.size(), kPairSlotGrain, [&](std::size_t slot) {
-      for (const auto &agg : pending[slot])
-        TpchQ9State::AddPairAgg(state.PartRecord(agg.partkey),
-                                static_cast<int32_t>(agg.suppkey), agg.year,
-                                agg.rev, agg.qty);
-      pending[slot].clear();
-    });
-    pending_count = 0;
-  };
-  const auto add_agg = [&](int64_t partkey, int64_t suppkey, int32_t year,
-                           int64_t rev, int64_t qty) {
-    if (suppkey < 1 || suppkey > static_cast<int64_t>(INT32_MAX))
-      return;
-    pending[TpchQ9State::HashPartition(partkey, state.profit_slot_count)].push_back(
-        {partkey, suppkey, year, rev, qty});
-    if (++pending_count >= kPairBatch)
-      apply_pending();
-  };
-  const bool used_pairs_sql = initial_scan->ScanPairAggregates(
-      [&](int64_t partkey, int64_t suppkey, int32_t year, int64_t rev,
-          int64_t qty) { add_agg(partkey, suppkey, year, rev, qty); });
-  if (!used_pairs_sql) {
-    initial_scan->ScanLineitems([&](const TpchQ9LineitemInput &input) {
-      int32_t year = 0;
-      if (!state.LookupOrderYear(input.orderkey, year))
-        return;
-      add_agg(input.partkey, input.suppkey, year,
-              input.extendedprice_raw * (static_cast<int64_t>(100) -
-                                         input.discount_raw),
-              input.quantity_raw);
-    });
-  }
-  apply_pending();
+  // Lineitems become per-(part, supplier, order year) aggregates, bucketed by
+  // profit slot: partitions fill their own buckets, then every slot (which
+  // owns disjoint part records) is applied by one worker.
+  using SlotPairs = std::vector<std::vector<PairAgg>>;
+  const auto slots = state.profit_slot_count;
+  SlotPairs pairs = core::PartitionedBuild<SlotPairs>(
+      services, [slots] { return SlotPairs(slots); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ9LineitemInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ9LineitemInput>{input});
+                                    });
+      },
+      [&](SlotPairs &partial, const TpchQ9LineitemInput &input) {
+        int32_t year = 0;
+        if (input.suppkey < 1 || input.suppkey > static_cast<int64_t>(INT32_MAX) ||
+            !state.LookupOrderYear(input.orderkey, year))
+          return;
+        partial[TpchQ9State::HashPartition(input.partkey, slots)].push_back(
+            {input.partkey, input.suppkey, year,
+             input.extendedprice_raw * (static_cast<int64_t>(100) - input.discount_raw),
+             input.quantity_raw});
+      },
+      [](SlotPairs &into, SlotPairs &&from) {
+        for (std::size_t slot = 0; slot < into.size(); ++slot) {
+          into[slot].insert(into[slot].end(), from[slot].begin(), from[slot].end());
+          std::vector<PairAgg>().swap(from[slot]);
+        }
+      });
+  core::ParallelEach(services, pairs.size(), kPairSlotGrain, [&](std::size_t slot) {
+    for (const auto &agg : pairs[slot])
+      TpchQ9State::AddPairAgg(state.PartRecord(agg.partkey), static_cast<int32_t>(agg.suppkey),
+                              agg.year, agg.rev, agg.qty);
+    std::vector<PairAgg>().swap(pairs[slot]);
+  });
 
   state.FinishBulkParts();
   state.FinalizePostings();

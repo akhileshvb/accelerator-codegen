@@ -105,6 +105,9 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
   ::duckdb::shared_ptr<DatabaseCapture> capture;
   ::duckdb::shared_ptr<CommitIds> commit_ids;
   ::duckdb::shared_ptr<::duckdb::AttachedDatabase> default_db; // set by the first Ensure
+  // default_db for the engine's commit callbacks, which may run inside Ensure
+  // (its own queries) and so must not take `mutex`.
+  std::atomic<::duckdb::AttachedDatabase *> default_db_published{nullptr};
 
   mutable std::mutex mutex; // accelerators, tables, registered_at
   std::map<std::string, std::unique_ptr<Accelerator>> accelerators;
@@ -275,6 +278,7 @@ DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry
     auto &context = *accelerator->connection->context;
     impl->default_db = ::duckdb::DatabaseManager::Get(context).GetDatabase(
         ::duckdb::DatabaseManager::GetDefaultDatabase(context));
+    impl->default_db_published = impl->default_db.get();
   }
   accelerator->binding = CreateBinding(*accelerator->connection, entry);
   accelerator->cost_model = core::LoadAuxCostModelJson(SharedCostModelConfigPath(entry));
@@ -348,11 +352,10 @@ bool DuckdbHost::Captures(core::TableId table) {
 
 void DuckdbHost::CaptureByHand(::duckdb::ClientContext &context, runtime::ColumnarBatchRef batch) {
   const auto txn = TxnId(::duckdb::MetaTransaction::Get(context));
+  const Epoch start = DuckDBAuxBackend::SnapshotEpoch(context); // engine call: before writers_mutex
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
-    if (!impl->writers.count(txn)) {
-      impl->writers[txn] = DuckDBAuxBackend::SnapshotEpoch(context);
-    }
+    impl->writers.emplace(txn, start);
   }
   impl->runtime.OnCapture(txn, 0, std::move(batch));
 }
@@ -374,11 +377,10 @@ void DuckdbHost::OnMutation(::duckdb::ClientContext &context,
     table = it->second;
   }
   const auto txn = TxnId(::duckdb::MetaTransaction::Get(context));
+  const Epoch start = DuckDBAuxBackend::SnapshotEpoch(context); // engine call: before writers_mutex
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
-    if (!impl->writers.count(txn)) {
-      impl->writers[txn] = DuckDBAuxBackend::SnapshotEpoch(context);
-    }
+    impl->writers.emplace(txn, start);
   }
   impl->runtime.OnCapture(txn, 0,
                           std::make_shared<const runtime::ColumnarBatch>(ToColumnarBatch(event, table)));
@@ -386,17 +388,21 @@ void DuckdbHost::OnMutation(::duckdb::ClientContext &context,
 
 void DuckdbHost::OnPreCommit(::duckdb::MetaTransaction &transaction) {
   const auto txn = TxnId(transaction);
+  // Read from the engine before taking writers_mutex: DuckDB's commit path calls
+  // OnCommitId with its own locks held, so ours never waits on one of its locks.
+  auto *default_db = impl->default_db_published.load();
+  std::optional<::duckdb::transaction_t> write_start;
+  if (default_db) {
+    auto db_transaction = transaction.TryGetTransaction(*default_db);
+    if (db_transaction && db_transaction->IsDuckTransaction() && !db_transaction->IsReadOnly()) {
+      write_start = db_transaction->Cast<::duckdb::DuckTransaction>().start_time;
+    }
+  }
   bool captured;
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
-    if (impl->default_db) {
-      auto db_transaction = transaction.TryGetTransaction(*impl->default_db);
-      if (db_transaction && db_transaction->IsDuckTransaction() && !db_transaction->IsReadOnly()) {
-        const auto start = db_transaction->Cast<::duckdb::DuckTransaction>().start_time;
-        if (start < impl->registered_at) {
-          impl->straddlers[txn] = start;
-        }
-      }
+    if (write_start && *write_start < impl->registered_at) {
+      impl->straddlers[txn] = *write_start;
     }
     captured = impl->writers.count(txn) != 0;
   }

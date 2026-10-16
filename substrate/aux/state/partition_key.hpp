@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// The key of one partition of an accelerator's state.
 #pragma once
 
 #include <cstdint>

@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Per-thread read diagnostics of aux stores: validity scans and partitions read per query.
 #pragma once
 
 #include <cstddef>
@@ -17,6 +18,7 @@ struct AuxStoreDiagnosticsSnapshot {
   uint64_t execute_calls = 0;
 };
 
+// One per thread (ThreadLocal), so it takes no lock.
 class AuxStoreDiagnosticsCollector {
 public:
   static AuxStoreDiagnosticsCollector &ThreadLocal();
@@ -28,8 +30,7 @@ public:
   void BeginExecute();
   void EndExecute();
 
-  AuxStoreDiagnosticsSnapshot Snapshot(uint64_t valid_partitions,
-                                     uint64_t total_slots) const;
+  AuxStoreDiagnosticsSnapshot Snapshot(uint64_t valid_partitions, uint64_t total_slots) const;
 
 private:
   uint64_t current_execute_partitions_ = 0;
@@ -42,6 +43,7 @@ private:
   std::size_t validity_next_ = 0, validity_us_next_ = 0, partitions_next_ = 0, bytes_next_ = 0;
 };
 
+// ACCEL_AUX_PROFILE=1 also samples the bytes read per query.
 bool AuxStoreProfilingBytesEnabled();
 // Per-read diagnostics (validity-scan timing, partitions-read samples). On by
 // default; ACCEL_AUX_DIAG=0 turns them off (concurrent/latency experiments).

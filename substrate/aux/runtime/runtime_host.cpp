@@ -24,12 +24,16 @@ struct RuntimeHost::Impl {
   // is torn down first.
   std::map<core::AcceleratorId, std::unique_ptr<AcceleratorRuntime>> runtimes; // id order
   ThreadBudget threads;
-  mutable std::mutex mutex; // runtimes, by_table, txns
+
+  // mutex guards runtimes, by_table and txns. A leaf lock: no runtime call that
+  // locks (BeginCommit, PublishCommit, ...) is made while it is held.
+  mutable std::mutex mutex;
   std::unordered_map<core::TableId, std::vector<AcceleratorRuntime *>> by_table;
   std::unordered_map<uint64_t, Txn> txns;
   std::atomic<uint64_t> capture_version{0};
 
-  std::mutex work_mutex; // host-thread engine work (S6)
+  // work_mutex guards the queue of engine work for the host thread (S6); a leaf lock.
+  std::mutex work_mutex;
   std::deque<std::function<void()>> work;
 
   Txn TakeTxn(uint64_t txn) {

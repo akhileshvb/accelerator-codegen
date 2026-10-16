@@ -2,6 +2,8 @@
 #include "tpch/q6/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
 
@@ -477,16 +479,31 @@ void TpchQ6Module::ApplyLineitemInput(
                     contribution, 1);
 }
 
+TpchQ6Module::MonthMatrices
+TpchQ6Module::BuildMatrices(core::AuxEngineServices &services) const {
+  return core::PartitionedBuild<MonthMatrices>(
+      services, [] { return MonthMatrices{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ6LineitemInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ6LineitemInput>{input});
+                                    });
+      },
+      [&](MonthMatrices &partial, const TpchQ6LineitemInput &input) {
+        ApplyLineitemInput(input, partial.matrices, partial.declined);
+      },
+      [](MonthMatrices &into, MonthMatrices &&from) {
+        for (const auto &[partition, matrix] : from.matrices)
+          into.matrices[partition].AddMatrix(matrix);
+        into.declined.merge(from.declined);
+      });
+}
+
 void TpchQ6Module::Build(core::AuxEngineServices &services,
                          core::StateBuilder &builder) {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q6 requires a typed initial scan source");
-  std::unordered_map<core::PartitionId, Q6RevenueMatrix> matrices;
-  std::set<core::PartitionId> declined;
-  initial_scan->ScanLineitemGroups([&](const TpchQ6LineitemInput &input) {
-    ApplyLineitemInput(input, matrices, declined);
-  });
+  auto [matrices, declined] = BuildMatrices(services);
   for (auto &entry : matrices) {
     auto image = NewStateImage(KindOf(entry.first), KeyOf(entry.first));
     image->matrix = entry.second;
@@ -821,25 +838,31 @@ void TpchQ6Module::ExecuteFallback(core::AuxEngineServices &services,
   if (!initial_scan)
     throw std::logic_error("TPC-H Q6 requires a typed initial scan source");
 
-  Q6AccT revenue = static_cast<Q6AccT>(0);
-  initial_scan->ScanLineitems([&](const TpchQ6LineitemInput &input) {
-    if (input.shipdate_days < params.start_days ||
-        input.shipdate_days >= params.end_days)
-      return;
-    const auto discount_raw =
-        ScaleToRaw(input.discount_raw, input.discount_scale, 2);
-    const auto quantity_raw =
-        ScaleToRaw(input.quantity_raw, input.quantity_scale, 2);
-    if (discount_raw < params.discount_lower_raw ||
-        discount_raw > params.discount_upper_raw ||
-        quantity_raw >= params.quantity_upper_raw)
-      return;
-    const auto extended_raw =
-        ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2);
-    revenue += ::accelerator_codegen::Q6RowContributionRaw(extended_raw,
-                                                           discount_raw);
-  });
-  (void)services;
+  const Q6AccT revenue = core::PartitionedBuild<Q6AccT>(
+      services, [] { return static_cast<Q6AccT>(0); },
+      [&](std::size_t parts, auto &&scan_sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ6LineitemInput &input) {
+                                      scan_sink(p, TypedRowBatch<TpchQ6LineitemInput>{input});
+                                    });
+      },
+      [&](Q6AccT &sum, const TpchQ6LineitemInput &input) {
+        if (input.shipdate_days < params.start_days ||
+            input.shipdate_days >= params.end_days)
+          return;
+        const auto discount_raw =
+            ScaleToRaw(input.discount_raw, input.discount_scale, 2);
+        const auto quantity_raw =
+            ScaleToRaw(input.quantity_raw, input.quantity_scale, 2);
+        if (discount_raw < params.discount_lower_raw ||
+            discount_raw > params.discount_upper_raw ||
+            quantity_raw >= params.quantity_upper_raw)
+          return;
+        const auto extended_raw =
+            ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2);
+        sum += ::accelerator_codegen::Q6RowContributionRaw(extended_raw, discount_raw);
+      },
+      [](Q6AccT &into, Q6AccT &&from) { into += from; });
   EmitResult(revenue, sink);
 }
 

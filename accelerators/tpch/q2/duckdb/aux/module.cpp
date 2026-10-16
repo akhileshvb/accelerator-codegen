@@ -3,8 +3,10 @@
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -149,6 +151,14 @@ bool StrCell(const core::AuxRow &row, std::size_t index, std::string &out) {
     return false;
   return StringValue(row.values[index], out);
 }
+
+// Maintenance batches: ops per slice before a commit applies its ops as one
+// batch, parts per slice of the entry diff (a few us of ComputeEntries each),
+// entries per sorted slice, groups per slice of list edits.
+constexpr std::size_t kBatchOpGrain = 1024;
+constexpr std::size_t kEntryGrain = 512;
+constexpr std::size_t kSortGrain = 16384;
+constexpr std::size_t kGroupGrain = 4;
 
 constexpr std::size_t kChunkTarget = 256;
 constexpr std::size_t kChunkMax = 512;
@@ -373,6 +383,89 @@ void InitEmptyState(TpchQ2State &st) {
   st.groups = std::make_shared<const TpchQ2GroupMap>();
 }
 
+// first chunk whose last element is not less than e
+std::size_t ChunkIndex(const TpchQ2GroupList &gl, const EntryLess &less,
+                       const TpchQ2Entry &e) {
+  return static_cast<std::size_t>(
+      std::partition_point(gl.chunks.begin(), gl.chunks.end(),
+                           [&](const std::shared_ptr<const TpchQ2Chunk> &c) {
+                             return less(c->v.back(), e);
+                           }) -
+      gl.chunks.begin());
+}
+
+void InsertIntoList(TpchQ2GroupList &gl, const EntryLess &less,
+                    const TpchQ2Entry &e) {
+  if (gl.chunks.empty()) {
+    auto c = std::make_shared<TpchQ2Chunk>();
+    c->v.push_back(e);
+    gl.chunks.push_back(std::move(c));
+    return;
+  }
+  std::size_t idx = ChunkIndex(gl, less, e);
+  if (idx == gl.chunks.size())
+    idx = gl.chunks.size() - 1;
+  auto &chunk = TpchQ2MutOf(gl.chunks[idx]);
+  const auto pos = std::lower_bound(chunk.v.begin(), chunk.v.end(), e, less);
+  chunk.v.insert(pos, e);
+  if (chunk.v.size() > kChunkMax) {
+    auto upper = std::make_shared<TpchQ2Chunk>();
+    const auto mid = chunk.v.begin() +
+                     static_cast<std::ptrdiff_t>(chunk.v.size() / 2);
+    upper->v.assign(mid, chunk.v.end());
+    chunk.v.erase(mid, chunk.v.end());
+    gl.chunks.insert(gl.chunks.begin() + static_cast<std::ptrdiff_t>(idx) + 1,
+                     std::move(upper));
+  }
+}
+
+// False when the list holds no such entry.
+bool RemoveFromList(TpchQ2GroupList &gl, const EntryLess &less,
+                    const TpchQ2Entry &e) {
+  const std::size_t idx = ChunkIndex(gl, less, e);
+  if (idx >= gl.chunks.size())
+    return false;
+  const auto &found = gl.chunks[idx]->v;
+  const auto at = std::lower_bound(found.begin(), found.end(), e, less) - found.begin();
+  if (static_cast<std::size_t>(at) == found.size() || less(e, found[at]) ||
+      found[at].partkey != e.partkey || found[at].suppkey != e.suppkey)
+    return false;
+  auto &chunk = TpchQ2MutOf(gl.chunks[idx]);
+  chunk.v.erase(chunk.v.begin() + at);
+  if (chunk.v.empty())
+    gl.chunks.erase(gl.chunks.begin() + static_cast<std::ptrdiff_t>(idx));
+  return true;
+}
+
+// `before \ after` into `rem`, `after \ before` into `add` (multiset
+// difference of two GroupEntryCanon-sorted vectors; both outputs stay sorted).
+// An entry of a `moved` supplier never matches: its sort key changed, so it
+// must leave the list and come back.
+template <class Moved>
+void DiffEntries(const std::vector<GroupEntry> &before,
+                 const std::vector<GroupEntry> &after, const Moved &moved,
+                 std::vector<GroupEntry> &rem, std::vector<GroupEntry> &add) {
+  std::size_t i = 0, j = 0;
+  while (i < before.size() || j < after.size()) {
+    if (i == before.size()) {
+      add.push_back(after[j++]);
+    } else if (j == after.size()) {
+      rem.push_back(before[i++]);
+    } else if (GroupEntryEq(before[i], after[j])) {
+      if (moved(before[i].e.suppkey)) {
+        rem.push_back(before[i]);
+        add.push_back(after[j]);
+      }
+      ++i;
+      ++j;
+    } else if (GroupEntryCanon(before[i], after[j])) {
+      rem.push_back(before[i++]);
+    } else {
+      add.push_back(after[j++]);
+    }
+  }
+}
+
 // Applies captured changes to a private working copy of a published state.
 // Every shared structure is cloned on first write (page / chunk granularity),
 // so the published image is never touched.  ok == false means the working
@@ -408,73 +501,15 @@ public:
 
 private:
   // ---- sorted list primitives -------------------------------------------
-  static std::size_t ChunkIndex(const TpchQ2GroupList &gl, const EntryLess &less,
-                                const TpchQ2Entry &e) {
-    // first chunk whose last element is not less than e
-    return static_cast<std::size_t>(
-        std::partition_point(gl.chunks.begin(), gl.chunks.end(),
-                             [&](const std::shared_ptr<const TpchQ2Chunk> &c) {
-                               return less(c->v.back(), e);
-                             }) -
-        gl.chunks.begin());
-  }
-
   void InsertEntry(int64_t group, const TpchQ2Entry &e) {
-    const EntryLess less{&st};
-    auto &map = TpchQ2MutOf(st.groups);
-    auto &slot = map[group];
-    auto &gl = TpchQ2MutOf(slot);
-    if (gl.chunks.empty()) {
-      auto c = std::make_shared<TpchQ2Chunk>();
-      c->v.push_back(e);
-      gl.chunks.push_back(std::move(c));
-      return;
-    }
-    std::size_t idx = ChunkIndex(gl, less, e);
-    if (idx == gl.chunks.size())
-      idx = gl.chunks.size() - 1;
-    auto &chunk = TpchQ2MutOf(gl.chunks[idx]);
-    const auto pos = std::lower_bound(chunk.v.begin(), chunk.v.end(), e, less);
-    chunk.v.insert(pos, e);
-    if (chunk.v.size() > kChunkMax) {
-      auto upper = std::make_shared<TpchQ2Chunk>();
-      const auto mid = chunk.v.begin() +
-                       static_cast<std::ptrdiff_t>(chunk.v.size() / 2);
-      upper->v.assign(mid, chunk.v.end());
-      chunk.v.erase(mid, chunk.v.end());
-      gl.chunks.insert(gl.chunks.begin() + static_cast<std::ptrdiff_t>(idx) + 1,
-                       std::move(upper));
-    }
+    InsertIntoList(TpchQ2MutOf(TpchQ2MutOf(st.groups)[group]), EntryLess{&st}, e);
   }
 
   void RemoveEntry(int64_t group, const TpchQ2Entry &e) {
-    const EntryLess less{&st};
     const auto git = st.groups->find(group);
-    if (git == st.groups->end()) {
+    if (git == st.groups->end() ||
+        !RemoveFromList(TpchQ2MutOf(TpchQ2MutOf(st.groups)[group]), EntryLess{&st}, e))
       ok = false;
-      return;
-    }
-    const std::size_t idx = ChunkIndex(*git->second, less, e);
-    if (idx >= git->second->chunks.size()) {
-      ok = false;
-      return;
-    }
-    {
-      const auto &cv = git->second->chunks[idx]->v;
-      const auto pos = std::lower_bound(cv.begin(), cv.end(), e, less);
-      if (pos == cv.end() || less(e, *pos) || pos->partkey != e.partkey ||
-          pos->suppkey != e.suppkey) {
-        ok = false;
-        return;
-      }
-    }
-    auto &map = TpchQ2MutOf(st.groups);
-    auto &gl = TpchQ2MutOf(map[group]);
-    auto &chunk = TpchQ2MutOf(gl.chunks[idx]);
-    const auto pos = std::lower_bound(chunk.v.begin(), chunk.v.end(), e, less);
-    chunk.v.erase(pos);
-    if (chunk.v.empty())
-      gl.chunks.erase(gl.chunks.begin() + static_cast<std::ptrdiff_t>(idx));
   }
 
   // Removes `before \ after`, inserts `after \ before` (multiset difference).
@@ -483,21 +518,7 @@ private:
     std::sort(before.begin(), before.end(), GroupEntryCanon);
     std::sort(after.begin(), after.end(), GroupEntryCanon);
     std::vector<GroupEntry> rem, add;
-    std::size_t i = 0, j = 0;
-    while (i < before.size() || j < after.size()) {
-      if (i == before.size()) {
-        add.push_back(after[j++]);
-      } else if (j == after.size()) {
-        rem.push_back(before[i++]);
-      } else if (GroupEntryEq(before[i], after[j])) {
-        ++i;
-        ++j;
-      } else if (GroupEntryCanon(before[i], after[j])) {
-        rem.push_back(before[i++]);
-      } else {
-        add.push_back(after[j++]);
-      }
-    }
+    DiffEntries(before, after, [](int32_t) { return false; }, rem, add);
     for (const auto &g : rem) {
       RemoveEntry(g.group, g.e);
       if (!ok)
@@ -507,32 +528,81 @@ private:
       InsertEntry(g.group, g.e);
   }
 
+  // ---- table edits (no candidate-list work) -------------------------------
+  // False (and !ok) when a deleted offer was never seen.
+  bool EditOffers(const TpchQ2PartsuppDelta &d) {
+    if (!AcceptDenseKey(d.partkey) || !AcceptDenseKey(d.suppkey))
+      return false;
+    if (d.sign > 0) {
+      AddOfferRaw(st, d.partkey, d.suppkey, d.supplycost_raw);
+      return true;
+    }
+    auto &offs = TpchQ2MutOf(st.offers).Mutable(d.partkey);
+    auto it = std::find_if(offs.begin(), offs.end(), [&](const TpchQ2Offer &o) {
+      return o.suppkey == d.suppkey && o.cost_raw == d.supplycost_raw;
+    });
+    if (it == offs.end()) {
+      ok = false;
+      return false;
+    }
+    offs.erase(it);
+    auto &sp = TpchQ2MutOf(st.supp_parts).Mutable(d.suppkey);
+    const auto sit = std::find(sp.begin(), sp.end(), static_cast<int32_t>(d.partkey));
+    if (sit != sp.end())
+      sp.erase(sit);
+    return true;
+  }
+
+  void EditPart(int64_t key, const TpchQ2PartInput *in) {
+    auto &slot = TpchQ2MutOf(st.parts).Mutable(key);
+    if (!in) {
+      slot = TpchQ2PartInfo{};
+      return;
+    }
+    slot.mfgr = in->mfgr;
+    slot.type_id = static_cast<int32_t>(InternType(in->type));
+    slot.size = in->size;
+    slot.valid = true;
+  }
+
+  void EditSupplier(int64_t key, const TpchQ2SupplierInfo *in) {
+    auto &slot = TpchQ2MutOf(st.suppliers).Mutable(key);
+    if (in) {
+      slot = *in;
+      slot.valid = true;
+    } else {
+      slot = TpchQ2SupplierInfo{};
+    }
+  }
+
+  // Whether the candidate lists depend on the change: only the output-only
+  // fields (address/phone/comment) can change without touching them.
+  bool SupplierMovesEntries(int64_t key, const TpchQ2SupplierInfo *in) const {
+    const auto *cur = st.FindSupplier(key);
+    if (!cur || !in)
+      return cur || in;
+    return cur->name != in->name || cur->nationkey != in->nationkey ||
+           cur->acctbal_raw != in->acctbal_raw;
+  }
+
+  // Parts the supplier has offers for.
+  std::vector<int32_t> PartsOf(int64_t suppkey) const {
+    std::vector<int32_t> parts;
+    if (const auto *sp = st.supp_parts->Find(static_cast<std::size_t>(suppkey)))
+      parts = *sp;
+    std::sort(parts.begin(), parts.end());
+    parts.erase(std::unique(parts.begin(), parts.end()), parts.end());
+    return parts;
+  }
+
   // ---- operations ---------------------------------------------------------
   void ApplyPartsupp(const TpchQ2PartsuppDelta &d) {
     if (!AcceptDenseKey(d.partkey) || !AcceptDenseKey(d.suppkey))
       return;
     std::vector<GroupEntry> before, after;
     ComputeEntries(st, d.partkey, before);
-    if (d.sign > 0) {
-      AddOfferRaw(st, d.partkey, d.suppkey, d.supplycost_raw);
-    } else {
-      auto &offs =
-          TpchQ2MutOf(st.offers).Mutable(d.partkey);
-      auto it = std::find_if(offs.begin(), offs.end(), [&](const TpchQ2Offer &o) {
-        return o.suppkey == d.suppkey && o.cost_raw == d.supplycost_raw;
-      });
-      if (it == offs.end()) {
-        ok = false; // delete of an offer we never saw
-        return;
-      }
-      offs.erase(it);
-      auto &sp =
-          TpchQ2MutOf(st.supp_parts).Mutable(d.suppkey);
-      const auto sit = std::find(sp.begin(), sp.end(),
-                                 static_cast<int32_t>(d.partkey));
-      if (sit != sp.end())
-        sp.erase(sit);
-    }
+    if (!EditOffers(d))
+      return;
     ComputeEntries(st, d.partkey, after);
     ApplyDiff(before, after);
   }
@@ -540,20 +610,11 @@ private:
   void ApplyPart(int64_t key, const TpchQ2PartInput *in) {
     if (!AcceptDenseKey(key))
       return;
-    const auto *cur = st.FindPart(key);
-    if (!cur && !in)
+    if (!st.FindPart(key) && !in)
       return;
     std::vector<GroupEntry> before, after;
     ComputeEntries(st, key, before);
-    auto &slot = TpchQ2MutOf(st.parts).Mutable(key);
-    if (in) {
-      slot.mfgr = in->mfgr;
-      slot.type_id = static_cast<int32_t>(InternType(in->type));
-      slot.size = in->size;
-      slot.valid = true;
-    } else {
-      slot = TpchQ2PartInfo{};
-    }
+    EditPart(key, in);
     ComputeEntries(st, key, after);
     ApplyDiff(before, after);
   }
@@ -568,25 +629,13 @@ private:
   void ApplySupplier(int64_t key, const TpchQ2SupplierInfo *in) {
     if (!AcceptDenseKey(key))
       return;
-    const auto *cur = st.FindSupplier(key);
-    if (!cur && !in)
+    if (!st.FindSupplier(key) && !in)
       return;
-    // Fields that only matter for output (address/phone/comment) need no
-    // list work at all.
-    if (cur && in && cur->name == in->name && cur->nationkey == in->nationkey &&
-        cur->acctbal_raw == in->acctbal_raw) {
-      auto &slot = TpchQ2MutOf(st.suppliers).Mutable(key);
-      slot = *in;
-      slot.valid = true;
+    if (!SupplierMovesEntries(key, in)) {
+      EditSupplier(key, in);
       return;
     }
-    // Affected parts = parts this supplier has offers for.
-    std::vector<int32_t> parts;
-    if (const auto *sp = st.supp_parts->Find(static_cast<std::size_t>(key)))
-      parts = *sp;
-    std::sort(parts.begin(), parts.end());
-    parts.erase(std::unique(parts.begin(), parts.end()), parts.end());
-
+    const auto parts = PartsOf(key);
     std::vector<GroupEntry> before, after;
     for (const auto p : parts)
       ComputeEntries(st, p, before);
@@ -603,17 +652,145 @@ private:
       }
     }
     // 2. change the table.
-    auto &slot = TpchQ2MutOf(st.suppliers).Mutable(key);
-    if (in) {
-      slot = *in;
-      slot.valid = true;
-    } else {
-      slot = TpchQ2SupplierInfo{};
-    }
+    EditSupplier(key, in);
     // 3. recompute and diff the remaining entries against the new truth.
     for (const auto p : parts)
       ComputeEntries(st, p, after);
     ApplyDiff(rest, after);
+  }
+
+  // ---- batch ----------------------------------------------------------------
+  // What a batch of table edits touched: parts whose candidate entries may
+  // differ, and suppliers whose entries' sort key moved. Both sorted, unique.
+  struct BatchEdits {
+    std::vector<int64_t> parts;
+    std::vector<int64_t> moved_suppliers;
+  };
+
+  BatchEdits EditTables(const std::vector<TpchQ2Op> &ops) {
+    BatchEdits edits;
+    for (const auto &op : ops) {
+      switch (op.kind) {
+      case TpchQ2Op::Kind::Partsupp:
+        if (EditOffers(op.partsupp))
+          edits.parts.push_back(op.partsupp.partkey);
+        break;
+      case TpchQ2Op::Kind::SupplierSet:
+      case TpchQ2Op::Kind::SupplierErase: {
+        const auto *in =
+            op.kind == TpchQ2Op::Kind::SupplierSet ? &op.supplier : nullptr;
+        if (AcceptDenseKey(op.key) && !st.FindSupplier(op.key) && !in)
+          break;
+        if (SupplierMovesEntries(op.key, in)) {
+          const auto parts = PartsOf(op.key);
+          edits.parts.insert(edits.parts.end(), parts.begin(), parts.end());
+          edits.moved_suppliers.push_back(op.key);
+        }
+        EditSupplier(op.key, in);
+        break;
+      }
+      case TpchQ2Op::Kind::PartSet:
+      case TpchQ2Op::Kind::PartErase: {
+        const auto *in = op.kind == TpchQ2Op::Kind::PartSet ? &op.part : nullptr;
+        if (AcceptDenseKey(op.key) && !st.FindPart(op.key) && !in)
+          break;
+        edits.parts.push_back(op.key);
+        EditPart(op.key, in);
+        break;
+      }
+      }
+      if (!ok)
+        break;
+    }
+    for (auto *keys : {&edits.parts, &edits.moved_suppliers}) {
+      std::sort(keys->begin(), keys->end());
+      keys->erase(std::unique(keys->begin(), keys->end()), keys->end());
+    }
+    return edits;
+  }
+
+  // One group's share of a batch: remove rem[rem_begin, rem_end), then insert
+  // add[add_begin, add_end), on the group's own list.
+  struct GroupEdit {
+    int64_t group = 0;
+    std::size_t rem_begin = 0, rem_end = 0, add_begin = 0, add_end = 0;
+    TpchQ2GroupList *list = nullptr;
+  };
+
+  static std::vector<GroupEdit> SplitByGroup(const std::vector<GroupEntry> &rem,
+                                             const std::vector<GroupEntry> &add) {
+    std::vector<GroupEdit> edits;
+    std::size_t r = 0, a = 0;
+    while (r < rem.size() || a < add.size()) {
+      GroupEdit edit;
+      edit.group = a == add.size() || (r < rem.size() && rem[r].group <= add[a].group)
+                       ? rem[r].group
+                       : add[a].group;
+      edit.rem_begin = r;
+      edit.add_begin = a;
+      while (r < rem.size() && rem[r].group == edit.group)
+        ++r;
+      while (a < add.size() && add[a].group == edit.group)
+        ++a;
+      edit.rem_end = r;
+      edit.add_end = a;
+      edits.push_back(edit);
+    }
+    return edits;
+  }
+
+public:
+  // Applies many ops at once: the table edits in arrival order, then the
+  // candidate lists of the affected parts, one group per task (groups own
+  // disjoint lists). `published` is the state the lists were built against: it
+  // orders the removals, the edited tables order the insertions.
+  void ApplyBatch(core::AuxEngineServices &services,
+                  const std::vector<TpchQ2Op> &ops, const TpchQ2State &published) {
+    const auto edits = EditTables(ops);
+    if (!ok)
+      return;
+    struct Entries {
+      std::vector<GroupEntry> before, after;
+    } entries;
+    core::ParallelReduce(
+        services, edits.parts.size(), kEntryGrain, entries,
+        [&](Entries &into, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            ComputeEntries(published, edits.parts[i], into.before);
+            ComputeEntries(st, edits.parts[i], into.after);
+          }
+        },
+        [](Entries &into, Entries &&from) {
+          into.before.insert(into.before.end(), from.before.begin(), from.before.end());
+          into.after.insert(into.after.end(), from.after.begin(), from.after.end());
+        });
+    ParallelStableSort(services, entries.before, GroupEntryCanon, kSortGrain);
+    ParallelStableSort(services, entries.after, GroupEntryCanon, kSortGrain);
+    std::vector<GroupEntry> rem, add;
+    DiffEntries(entries.before, entries.after,
+                [&](int32_t suppkey) {
+                  return std::binary_search(edits.moved_suppliers.begin(),
+                                            edits.moved_suppliers.end(), suppkey);
+                },
+                rem, add);
+
+    auto group_edits = SplitByGroup(rem, add);
+    auto &lists = TpchQ2MutOf(st.groups);
+    for (auto &edit : group_edits)
+      edit.list = &TpchQ2MutOf(lists[edit.group]);
+    std::atomic<bool> consistent{true};
+    const EntryLess removal_order{&published}, insertion_order{&st};
+    core::ParallelEach(services, group_edits.size(), kGroupGrain, [&](std::size_t i) {
+      const auto &edit = group_edits[i];
+      for (std::size_t r = edit.rem_begin; r < edit.rem_end; ++r)
+        if (!RemoveFromList(*edit.list, removal_order, rem[r].e)) {
+          consistent = false;
+          return;
+        }
+      for (std::size_t a = edit.add_begin; a < edit.add_end; ++a)
+        InsertIntoList(*edit.list, insertion_order, add[a].e);
+    });
+    ok = consistent;
   }
 };
 
@@ -1179,10 +1356,14 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
     if (profiling)
       apply_timer = std::make_unique<CustomTimer>(true);
     auto work = std::make_unique<Maintainer>(*old_state);
-    for (const auto &op : ops) {
-      work->Apply(op);
-      if (!work->ok)
-        break;
+    if (core::SliceCount(services, ops.size(), kBatchOpGrain) > 1) {
+      work->ApplyBatch(services, ops, *old_state);
+    } else {
+      for (const auto &op : ops) {
+        work->Apply(op);
+        if (!work->ok)
+          break;
+      }
     }
     if (profiling)
       EmitCustomProfile("write_apply", apply_timer->us(),

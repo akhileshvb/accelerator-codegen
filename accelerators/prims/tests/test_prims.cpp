@@ -7,6 +7,7 @@
 #include <random>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -531,6 +532,39 @@ static void TestAnyKeyCowArray() {
   AnyKeyCowArray<std::shared_ptr<int>, 4, 3> ptrs;
   ptrs.Set(-5, std::make_shared<int>(5));
   CHECK(*ptrs.Get(-5) == 5 && !ptrs.Get(6));
+}
+
+// Threads owning disjoint OwnerOf values write one private copy concurrently.
+static void TestAnyKeyCowArrayOwners() {
+  using Arr = AnyKeyCowArray<int64_t, 4, 3>;
+  Arr base(0);
+  for (int64_t k = -5000; k < 5000; k += 3)
+    base.Set(k, k);
+  const Arr published = base; // shares every chunk with `copy`
+  Arr copy = base;
+  std::vector<int64_t> keys;
+  for (int64_t k = -20000; k < 20000; k += 7)
+    keys.push_back(k);
+  keys.push_back(INT64_C(1) << 40); // sparse
+  std::map<uint64_t, std::vector<int64_t>> by_owner;
+  for (const auto k : keys) {
+    copy.Reserve(k);
+    by_owner[Arr::OwnerOf(k)].push_back(k);
+  }
+  CHECK(by_owner.size() > 4);
+  CHECK(by_owner.count(Arr::kSparseOwner) == 1);
+  std::vector<std::thread> threads;
+  for (const auto &entry : by_owner)
+    threads.emplace_back([&copy, &entry] {
+      for (const auto k : entry.second)
+        copy.Set(k, 2 * k + 1);
+    });
+  for (auto &t : threads)
+    t.join();
+  for (const auto k : keys)
+    CHECK(copy.Get(k) == 2 * k + 1);
+  for (int64_t k = -5000; k < 5000; k += 3) // the published copy is untouched
+    CHECK(published.Get(k) == k);
 }
 
 static void TestChunkedCowArrayRandom() {
@@ -1463,6 +1497,7 @@ int main() {
   TestStrings();
   TestInt128();
   TestAnyKeyCowArray();
+  TestAnyKeyCowArrayOwners();
   TestChunkedCowArrayRandom();
   TestChunkedBlobMap();
   TestRecordStore();

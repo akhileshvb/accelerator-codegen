@@ -1,9 +1,9 @@
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -13,12 +13,29 @@
 #include <vector>
 
 #include "substrate/aux/core/aux_query_module.hpp"
-#include "prims/flat_hash_map.hpp"
 #include "prims/sorted_count_sum.hpp"
+#include "prims/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
 // ── Q22 layout ──────────────────────────────────────────────────────────────
+// One published partition holds the whole state, built from copy-on-write
+// pieces (a write batch copies pointers plus the pieces it touches):
+//   * per custkey (columnar): present flag + phone-prefix id, account balance,
+//     and the number of orders of that custkey (also for custkeys without a
+//     customer row, so orders may arrive before their customer),
+//   * per phone prefix: count and sum of the customers with c_acctbal > 0 (the
+//     AVG subquery) and an ordered multiset of the balances of those that have
+//     NO orders (the outer query), answering "count and sum of balances above
+//     x" exactly.
+// Execute: O(codes * (log blocks + blocks)) with no per-customer work; the
+// AVG comparison is the exact rational  balance * C > S.
+//
+// Memory: 16 B per custkey (customers and order-only custkeys) + ~2.5 B of
+// chunk overhead, plus 16 B per distinct (prefix, balance) of zero-order
+// customers (bounded by the balance domain): ~19 B/customer, 8.5 GB at
+// SF3000. Write batch: O(touched custkeys * 64-customer chunk + touched
+// prefixes' balance blocks); no table scan.
 struct TpchQ22Layout {
   static constexpr const char *kAccelerator = "tpch_q22_aux";
   static constexpr core::PartitionId kFull = 0;
@@ -60,55 +77,32 @@ public:
 };
 
 // ── State structures ────────────────────────────────────────────────────────
+constexpr uint32_t kTpchQ22NoCustomer = 0xffffffffu; // no customer row
+constexpr uint32_t kTpchQ22NullPhone = 0xfffffffeu;  // customer, phone NULL
+constexpr int64_t kTpchQ22NullBalance = std::numeric_limits<int64_t>::min();
+
+struct TpchQ22CustomerRecord {
+  int64_t balance_raw = 0; // kTpchQ22NullBalance when NULL
+  int32_t order_count = 0; // orders with o_custkey = this custkey
+  uint32_t prefix_id = kTpchQ22NoCustomer;
+};
+
+// Phone prefix (first two characters) -> dense id. Exact string equality.
+struct TpchQ22PrefixDictionary {
+  std::unordered_map<std::string, uint32_t> ids;
+};
+
+struct TpchQ22PrefixEntry {
+  int64_t positive_count = 0;       // customers with c_acctbal > 0
+  __int128 positive_sum_raw = 0;    // their balance sum (x100)
+  core::SortedCountSum zero_order;  // balances (>0) of those without orders
+};
+
 struct TpchQ22State {
-  // Two-character phone prefix packed as (c0 << 8) | c1; 0 = no prefix.
-  using Prefix = uint16_t;
-
-  struct CustomerRecord {
-    int64_t balance_raw = 0;
-    int64_t order_count = 0;
-    Prefix prefix = 0;
-    bool present = false;
-  };
-
-  // Customers live in fixed-size pages shared between published versions: a
-  // write clones only the touched page(s). Keys outside the dense range go to
-  // a (rarely used) copy-on-write sparse map. A null page means "no customers".
-  static constexpr std::size_t kPageSize = 2048;
-  static constexpr int64_t kDenseLimit = int64_t{1} << 30; // SF3000 customers reach 4.5e8
-  struct Page {
-    std::vector<CustomerRecord> recs = std::vector<CustomerRecord>(kPageSize);
-  };
-  std::vector<std::shared_ptr<Page>> pages;
-  core::ShardedCowHashMap<CustomerRecord, 6> sparse;
-
-  const CustomerRecord *FindCustomer(int64_t custkey) const {
-    if (custkey >= 0 && custkey < kDenseLimit) {
-      const std::size_t page = static_cast<std::size_t>(custkey) / kPageSize;
-      if (page < pages.size() && pages[page]) {
-        const auto &rec = pages[page]->recs[static_cast<std::size_t>(custkey) % kPageSize];
-        return rec.present ? &rec : nullptr;
-      }
-      return nullptr;
-    }
-    const CustomerRecord *rec = sparse.Find(custkey);
-    return rec && rec->present ? rec : nullptr;
-  }
-
-  // Per-prefix positive-balance totals (AVG numerator / denominator).
-  struct PositiveTotals {
-    int64_t sum = 0;
-    int64_t count = 0;
-  };
-  std::unordered_map<Prefix, PositiveTotals> positive;
-
-  // Zero-order positive-balance distributions (count and sum of balances
-  // above x); each shared between versions until a write touches that prefix.
-  std::unordered_map<Prefix, std::shared_ptr<const core::SortedCountSum>>
-      prefix_aggregates;
-
-  // Orphan order counts: custkeys seen in orders but not in customer.
-  core::ShardedCowHashMap<int64_t, 6> orphan_orders;
+  std::shared_ptr<const TpchQ22PrefixDictionary> dictionary =
+      std::make_shared<const TpchQ22PrefixDictionary>();
+  core::AnyKeyCowArray<TpchQ22CustomerRecord, 6> customers;
+  std::vector<std::shared_ptr<const TpchQ22PrefixEntry>> prefixes;
 };
 
 enum class TpchQ22ImageKind : uint8_t { FullState };
@@ -134,13 +128,16 @@ public:
   bool RequiresRebuild() const;
   void MarkRebuild();
 
+  // One customer row change: the old row (if any) is removed, then the new
+  // row (if any) is stored under its own key.
   struct CustomerDelta {
-    int64_t custkey = 0;
-    std::string old_prefix;
+    bool has_old = false;
+    bool has_new = false;
+    int64_t old_custkey = 0;
+    int64_t new_custkey = 0;
+    bool new_phone_null = false;
     std::string new_prefix;
-    int64_t old_balance = 0;
-    int64_t new_balance = 0;
-    int8_t sign = 0; // 1 insert, -1 delete, 0 update
+    int64_t new_balance = 0; // kTpchQ22NullBalance when NULL
   };
 
   struct OrderDelta {
@@ -186,12 +183,12 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ22State BuildState(core::AuxEngineServices &services) const;
-  bool LoadState(core::AuxEngineServices &services,
-                 std::shared_ptr<const TpchQ22State> &state) const;
-  void EmitResult(const TpchQ22State &state,
-                  const std::vector<std::string> &country_codes,
-                  core::AuxRowSink &sink) const;
+  std::shared_ptr<const TpchQ22State> BuildState(core::AuxEngineServices &) const;
+  std::shared_ptr<const TpchQ22State> LoadState(core::AuxEngineServices &) const;
+  static void Answer(const TpchQ22State &, const core::QueryArguments &,
+                     core::AuxRowSink &);
+  static void EmitRows(const std::vector<TpchQ22OutputRow> &rows,
+                       core::AuxRowSink &sink);
 
   TpchQ22Config config;
   TpchQ22InitialScan *initial_scan = nullptr;

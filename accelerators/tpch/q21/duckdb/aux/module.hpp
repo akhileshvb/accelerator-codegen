@@ -96,6 +96,15 @@ public:
     (void)out;
     return false;
   }
+  // The lookups of many orders in one pass; out[i] answers orderkeys[i].
+  virtual bool LookupOrderSummaries(const std::vector<int64_t> &orderkeys,
+                                    std::vector<OrderLookup> &out) {
+    out.assign(orderkeys.size(), OrderLookup{});
+    for (std::size_t i = 0; i < orderkeys.size(); ++i)
+      if (!LookupOrderSummary(orderkeys[i], out[i]))
+        return false;
+    return true;
+  }
 };
 
 // ── State structures ────────────────────────────────────────────────────────
@@ -143,34 +152,18 @@ struct TpchQ21Dir {
   }
 };
 
-// Order summaries (only orders that can contribute / were touched) and the
-// per-supplier numwait totals. Base + copy-on-write overlay.
+// Summaries of exactly the orders that currently contribute (an absent order
+// contributes nothing), and the per-supplier numwait totals. Both maps are
+// sized at build to ~48 entries per shard (a commit clones only the shards it
+// touches) and keep that shard count for the life of the state.
 struct TpchQ21Core {
-  using OrderMap = std::unordered_map<int64_t, OrderSummary>;
-  std::shared_ptr<const OrderMap> base;
-  core::ShardedCowHashMap<OrderSummary, 7> overlay;
+  core::ShardedCowHashMap<OrderSummary, 7> orders;
   // suppkey -> numwait (independent of whether the supplier row exists).
   core::ShardedCowHashMap<int64_t, 7> numwait;
 
-  const OrderSummary *FindOrder(int64_t orderkey) const {
-    if (const auto *ov = overlay.Find(orderkey))
-      return ov;
-    if (!base)
-      return nullptr;
-    const auto it = base->find(orderkey);
-    return it == base->end() ? nullptr : &it->second;
-  }
-  // Staging owner only: copy the base summary into the overlay on first touch.
-  OrderSummary &MutableOrder(int64_t orderkey) {
-    const bool inserted = overlay.Find(orderkey) == nullptr;
-    auto &slot = overlay[orderkey];
-    if (inserted && base) {
-      const auto it = base->find(orderkey);
-      if (it != base->end())
-        slot = it->second;
-    }
-    return slot;
-  }
+  TpchQ21Core() = default;
+  TpchQ21Core(unsigned order_bits, unsigned numwait_bits)
+      : orders(order_bits), numwait(numwait_bits) {}
 };
 
 struct TpchQ21NationIndex {

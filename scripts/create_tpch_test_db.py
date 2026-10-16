@@ -48,6 +48,8 @@ def summarize(con: duckdb.DuckDBPyConnection) -> None:
 def build(source: Path, dest: Path, force: bool) -> None:
     if not source.exists():
         raise FileNotFoundError(f"source database not found: {source}")
+    if dest.resolve() == source.resolve():
+        raise ValueError(f"--dest is the source database; refusing to overwrite {source}")
     if dest.exists():
         if not force:
             print(f"Reusing existing test database: {dest}")

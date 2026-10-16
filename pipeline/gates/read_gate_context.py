@@ -23,8 +23,10 @@ def _default_tpch_context(repo_root: Path, query: str) -> dict:
         "test_target": f"test_tpch_q{q}",
         "bench_target": f"benchmark_tpch_q{q}",
         "ctest_smoke_regex": f"^tpch_q{q}_smoke_test$",
-        "dataset_db": str(repo_root.parent / "accelerator-codegen-duckdb" / "tpch_sf1.duckdb"),
-        "scale_db": str(repo_root.parent / "accelerator-codegen-duckdb" / "tpch_sf10.duckdb"),
+        "dataset_db": os.environ.get("ACCEL_TPCH_DB")
+        or str(repo_root.parent / "accelerator-codegen-duckdb" / "tpch_sf1.duckdb"),
+        "scale_db": os.environ.get("ACCEL_TPCH_SF10_DB")
+        or str(repo_root.parent / "accelerator-codegen-duckdb" / "tpch_sf10.duckdb"),
         "db_env_var": "ACCEL_TPCH_DB",
         "fairness": {
             "cardinality_constants": ["150000", "600000", "800000"],

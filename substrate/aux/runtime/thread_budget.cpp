@@ -97,18 +97,21 @@ thread_local const void *counted_pool = nullptr;
 // A spawned task that found no budget runs on a dedicated thread, counted.
 struct ThreadBudget::Impl {
   std::shared_ptr<TokenSource> tokens;
+  // mutex guards every field below except waiting_callers, and is a leaf lock
+  // (jobs run with it released). `wake` signals workers that a job or shutdown
+  // arrived; `freed` signals ParallelFor callers that in_use dropped.
   std::mutex mutex;
   std::condition_variable wake;
+  std::condition_variable freed;
   std::size_t budget;
-  std::size_t read_limit = 0;  // 0: the whole budget
+  std::size_t read_limit = 0; // 0: the whole budget
   std::size_t build_limit = 0;
   std::size_t maintenance_limit = 1;
   std::size_t in_use = 0;
   std::size_t peak = 0;
-  std::size_t idle = 0;
+  std::size_t idle = 0;         // workers waiting for a job
   std::size_t helper_slots = 0; // granted ParallelFor helpers not yet finished
   std::atomic<std::size_t> waiting_callers{0};
-  std::condition_variable freed;
   bool shutdown = false;
   std::deque<std::function<void()>> jobs;
   std::vector<std::thread> workers;

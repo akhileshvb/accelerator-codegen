@@ -2,13 +2,13 @@
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
 
 #include <cstdio>
-#include <string>
-
 #include <mutex>
+#include <string>
 
 namespace accelerator_codegen::aux_state::core {
 namespace {
 
+// Guards the process-wide slot (a thread's private slot needs no lock, but is locked alike).
 std::mutex &LogMutex() {
   static std::mutex mutex;
   return mutex;
@@ -17,8 +17,9 @@ std::mutex &LogMutex() {
 thread_local MaintenanceDecisionLogEntry *t_thread_slot = nullptr;
 
 MaintenanceDecisionLogEntry &LogSlot() {
-  if (t_thread_slot)
+  if (t_thread_slot) {
     return *t_thread_slot;
+  }
   static MaintenanceDecisionLogEntry entry;
   return entry;
 }

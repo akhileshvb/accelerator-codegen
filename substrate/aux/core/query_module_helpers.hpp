@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Small helpers shared by query modules.
 #pragma once
 
 #include <algorithm>
