@@ -248,6 +248,26 @@ ColumnarBatchRef Insert(int64_t value) {
   return batch;
 }
 
+// An update of `value` in column 0 (watched) and column 3 (not watched);
+// `updated` lists the columns it changed.
+ColumnarBatchRef Update(int64_t value, std::vector<int32_t> updated) {
+  auto batch = std::make_shared<ColumnarBatch>();
+  batch->table = kTable;
+  batch->kind = core::MutationKind::Update;
+  batch->row_count = 1;
+  for (auto *rows : {&batch->old_rows, &batch->new_rows}) {
+    rows->attnums = {0, 3};
+    for (int i = 0; i < 2; ++i) {
+      ColumnData column;
+      column.type = core::AuxType::Int64;
+      column.values = std::vector<int64_t>{value};
+      rows->columns.push_back(std::move(column));
+    }
+  }
+  batch->updated_attnums = std::move(updated);
+  return batch;
+}
+
 // Reads at `epoch`; nullopt if the runtime fell back.
 std::optional<int64_t> ReadAt(AcceleratorRuntime &runtime, Epoch epoch,
                               std::optional<Epoch> applied_through = std::nullopt,
@@ -334,6 +354,31 @@ void ModuleRequestsRebuild() {
   module->request_rebuild = false;
   CHECK(ReadAt(runtime, e) == 42); // rebuilt in the background
   CHECK(runtime.Stats().builds == 2);
+  CHECK(runtime.Stats().commits_stale == 1);
+  CHECK(!runtime.Stats().last_stale_reason.empty());
+}
+
+// An update of columns the module does not watch is no change to it: no
+// maintenance, no rebuild. One that touches a watched column is maintained.
+void UpdateOutsideProjection() {
+  FakeDb db;
+  FakeSlots slots(db);
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  host.BuildAll();
+  auto update = [&](uint64_t txn, std::vector<int32_t> updated) {
+    host.OnCapture(txn, 0, Update(5, std::move(updated)));
+    host.PreCommit(txn);
+    const Epoch epoch = db.Commit(0);
+    host.Commit(txn, epoch);
+    return epoch;
+  };
+  CHECK(ReadAt(runtime, update(1, {3})) == 0);
+  CHECK(ReadAt(runtime, update(2, {0, 3})) == 5); // the module saw it (SumModule adds the new row)
+  const auto stats = runtime.Stats();
+  CHECK(stats.builds == 1);
+  CHECK(stats.commits_stale == 0);
+  CHECK(stats.commits_applied == 2);
 }
 
 void FailedBuildReleasesReaders() {
@@ -489,6 +534,7 @@ int main() {
       {"in_process_commits", InProcessCommits},
       {"commits_during_build", CommitsDuringBuild},
       {"module_requests_rebuild", ModuleRequestsRebuild},
+      {"update_outside_projection", UpdateOutsideProjection},
       {"failed_build_releases_readers", FailedBuildReleasesReaders},
       {"invalidate_during_build", InvalidateDuringBuild},
       {"shipped_commits", ShippedCommits},

@@ -44,6 +44,13 @@ bool LeavesInvalidPartitions(const core::StagedMaintenanceOutcome &outcome) {
                      [&](PartitionKey partition) { return !updated.count(partition); });
 }
 
+// An update that changed none of the columns the module watches (the
+// projection reports those at position `watched`, once).
+bool ChangesNoWatchedColumn(const core::MutationBatch &rows, std::size_t watched) {
+  return rows.kind == core::MutationKind::Update && watched > 0 && rows.updated_columns.size() == 1 &&
+         rows.updated_columns.front() == watched;
+}
+
 double MicrosSince(Clock::time_point start) {
   return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
 }
@@ -256,15 +263,23 @@ core::StagedMaintenanceOutcome
 AcceleratorRuntime::Stage(const std::vector<ColumnarBatchRef> &batches) {
   auto buffer = module->CreateTxnBuffer();
   core::InvalidationPlan plan;
+  bool watched_change = false;
   for (const auto &batch : batches) {
     const auto projection = impl->projections.find(batch->table);
     if (projection == impl->projections.end()) {
       continue;
     }
     auto rows = ToMutationBatch(*batch, projection->second);
+    if (ChangesNoWatchedColumn(rows, projection->second.size())) {
+      continue;
+    }
+    watched_change = true;
     rows.table = impl->module_table.at(batch->table);
     MergeInvalidationPlan(plan, module->InterpretMutation(rows));
     module->AccumulateMutation(rows, *impl->module_services, *buffer);
+  }
+  if (!watched_change) {
+    return {};
   }
   // A module that neither buffered nor invalidated could not interpret the
   // change: never publish a stale state as valid.
@@ -298,6 +313,8 @@ bool AcceleratorRuntime::Publish(const core::StagedMaintenanceOutcome &outcome, 
 // invalid and the change must be replayed after a rebuild.
 bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
   if (change.invalidates) {
+    std::lock_guard<std::mutex> lock(impl->state_mutex);
+    RecordStale("the engine invalidated the change (e.g. TRUNCATE)");
     return false;
   }
   if (change.empty_commit) {
@@ -305,14 +322,28 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
   }
   core::ClearMaintenanceDecisionLog();
   const PhaseScope maintaining(this, Phase::Maintenance);
+  std::string reason = "the module left partitions invalid";
   try {
-    const bool valid = Publish(Stage(change.batches), change.epoch);
-    std::lock_guard<std::mutex> lock(impl->state_mutex);
-    impl->stats.last_decision = core::LastMaintenanceDecision();
-    return valid;
+    if (Publish(Stage(change.batches), change.epoch)) {
+      reason.clear();
+    }
+  } catch (const std::exception &error) {
+    reason = std::string("the module threw: ") + error.what();
   } catch (...) {
-    return false;
+    reason = "the module threw";
   }
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  impl->stats.last_decision = core::LastMaintenanceDecision();
+  if (!reason.empty()) {
+    RecordStale(reason);
+  }
+  return reason.empty();
+}
+
+// A change that could not be maintained (state_mutex held); the caller rebuilds.
+void AcceleratorRuntime::RecordStale(const std::string &reason) {
+  impl->stats.commits_stale++;
+  impl->stats.last_stale_reason = reason;
 }
 
 // Bookkeeping for an applied change (state_mutex held).
