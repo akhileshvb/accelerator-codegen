@@ -3,6 +3,7 @@
 #include "substrate/aux/core/byte_stream.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
 #include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
@@ -346,6 +347,35 @@ void TpchQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
+namespace {
+
+// Deltas per slice of the grouping sort: ~100 us of work.
+constexpr std::size_t kGroupGrain = 1 << 15;
+
+// (order key, net qualifying-lineitem change) in ascending key order.
+std::vector<std::pair<int64_t, int64_t>>
+NetLineitemChanges(const core::AuxEngineServices &services,
+                   const std::vector<TpchQ4LineitemDelta> &deltas) {
+  std::vector<std::pair<int64_t, int64_t>> changes;
+  changes.reserve(deltas.size());
+  for (const auto &delta : deltas)
+    changes.emplace_back(delta.orderkey, delta.sign);
+  ParallelStableSort(
+      services, changes, [](const auto &l, const auto &r) { return l.first < r.first; },
+      kGroupGrain);
+  std::size_t out = 0;
+  for (const auto &change : changes) {
+    if (out > 0 && changes[out - 1].first == change.first)
+      changes[out - 1].second += change.second;
+    else
+      changes[out++] = change;
+  }
+  changes.resize(out);
+  return changes;
+}
+
+}  // namespace
+
 core::StagedMaintenanceOutcome
 TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
                                const core::InvalidationPlan &,
@@ -421,39 +451,44 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
   // its order-row changes in sequence (delete, then insert for an update),
   // add the net qualifying-lineitem delta, and add the new contribution (if
   // the order exists and has a qualifying lineitem).
-  std::map<int64_t, int64_t> lineitem_delta;
-  for (const auto &delta : buffer.Deltas())
-    lineitem_delta[delta.orderkey] += delta.sign;
-  std::map<int64_t, std::vector<const TpchQ4OrderDelta *>> order_changes;
+  // The deltas are grouped by order key on the pool (sorted, then summed per
+  // key); the keys are then replayed in ascending order, as a map would.
+  const auto lineitem_net = NetLineitemChanges(services, buffer.Deltas());
+  std::vector<const TpchQ4OrderDelta *> order_changes;
+  order_changes.reserve(buffer.OrderDeltas().size());
   for (const auto &delta : buffer.OrderDeltas())
-    order_changes[delta.orderkey].push_back(&delta);
-  std::set<int64_t> touched;
-  for (const auto &entry : lineitem_delta)
-    touched.insert(entry.first);
-  for (const auto &entry : order_changes)
-    touched.insert(entry.first);
+    order_changes.push_back(&delta);
+  ParallelStableSort(
+      services, order_changes,
+      [](const TpchQ4OrderDelta *l, const TpchQ4OrderDelta *r) { return l->orderkey < r->orderkey; },
+      kGroupGrain);
 
-  for (const int64_t orderkey : touched) {
+  std::size_t next_line = 0, next_change = 0;
+  while (next_line < lineitem_net.size() || next_change < order_changes.size()) {
+    int64_t orderkey = std::numeric_limits<int64_t>::max();
+    if (next_line < lineitem_net.size())
+      orderkey = lineitem_net[next_line].first;
+    if (next_change < order_changes.size())
+      orderkey = std::min(orderkey, order_changes[next_change]->orderkey);
     TpchQ4OrderInfo info = elig->orders.Get(orderkey);
     if (info.Eligible())
       AdjustTree(*side, *tree, info.orderdate_days, info.priority_idx, -1);
-    const auto changes = order_changes.find(orderkey);
-    if (changes != order_changes.end()) {
-      for (const auto *delta : changes->second) {
-        if (delta->sign < 0) {
-          info.priority_idx = kTpchQ4NoOrder;
-          info.orderdate_days = 0;
-        } else {
-          info.orderdate_days = delta->orderdate_days;
-          info.priority_idx = TpchQ4PriorityIndex(
-              delta->orderpriority, delta->priority_is_null, *side);
-        }
+    for (; next_change < order_changes.size() && order_changes[next_change]->orderkey == orderkey;
+         ++next_change) {
+      const auto *delta = order_changes[next_change];
+      if (delta->sign < 0) {
+        info.priority_idx = kTpchQ4NoOrder;
+        info.orderdate_days = 0;
+      } else {
+        info.orderdate_days = delta->orderdate_days;
+        info.priority_idx =
+            TpchQ4PriorityIndex(delta->orderpriority, delta->priority_is_null, *side);
       }
     }
-    const auto lines = lineitem_delta.find(orderkey);
-    if (lines != lineitem_delta.end()) {
-      const int64_t q = static_cast<int64_t>(info.qualifying_count) + lines->second;
+    if (next_line < lineitem_net.size() && lineitem_net[next_line].first == orderkey) {
+      const int64_t q = static_cast<int64_t>(info.qualifying_count) + lineitem_net[next_line].second;
       info.qualifying_count = q < 0 ? 0 : static_cast<uint32_t>(q);
+      ++next_line;
     }
     elig->orders.Set(orderkey, info);
     if (info.Eligible())

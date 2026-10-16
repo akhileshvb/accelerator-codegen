@@ -2,6 +2,7 @@
 #include "tpch/q5/calibration_writes.hpp"
 #include "prims/mysql_collation.hpp"
 #include "prims/sql_date.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/common/partitioned_collect.hpp"
 
@@ -18,6 +19,9 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 using core::RadixRangeTree;
+
+// Lineitem deltas per maintenance slice: ~100 us.
+constexpr std::size_t kLineitemGrain = 1 << 14;
 
 // Cell readers distinguish SQL NULL from an unreadable payload.
 enum class Cell { Null, Ok, Bad };
@@ -621,12 +625,34 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
       ApplyLineitem(*work, c.after, row.suppkey, revenue, +1);
       ApplyLineitem(*work, c.before, row.suppkey, revenue, -1);
     });
-    for (const auto &d : buffer.Lineitems()) {
-      const auto it = changes.find(d.orderkey);
-      const Tuple before =
-          it != changes.end() ? it->second.before : OrderTuple(*work, d.orderkey);
-      ApplyLineitem(*work, before, d.suppkey, d.revenue, d.sign);
-    }
+    // Slices read the state and the changes and sum into their own buckets
+    // (integers: the merge is exact); the buckets are applied afterwards.
+    using Buckets = std::map<std::pair<int32_t, int32_t>, TpchQ5Bucket>;
+    const auto &lines = buffer.Lineitems();
+    Buckets deltas;
+    core::ParallelReduce(
+        services, lines.size(), kLineitemGrain, deltas,
+        [&](Buckets &acc, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            const auto &d = lines[i];
+            const auto it = changes.find(d.orderkey);
+            const Tuple before =
+                it != changes.end() ? it->second.before : OrderTuple(*work, d.orderkey);
+            if (!before.present || work->supp_nation.Get(d.suppkey) != before.nation)
+              continue;
+            auto &bucket = acc[{before.day, before.nation}];
+            bucket.revenue += static_cast<TpchQ5Money>(d.sign) * d.revenue;
+            bucket.rows += d.sign;
+          }
+        },
+        [](Buckets &into, Buckets &&from) {
+          for (const auto &[key, bucket] : from) {
+            into[key].revenue += bucket.revenue;
+            into[key].rows += bucket.rows;
+          }
+        });
+    for (const auto &[key, bucket] : deltas)
+      AddBucket(*work, key.first, key.second, bucket.revenue, bucket.rows);
     for (const auto &[key, c] : changes)
       if (!(c.before == c.after)) {
         SetOrderTuple(*work, key, c.after);
