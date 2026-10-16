@@ -19,8 +19,9 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
+
+#include "prims/parallelism.hpp"
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -331,12 +332,12 @@ private:
 // ---------------------------------------------------------------------------
 // Bulk matching over a contiguous blob: string i is data[offsets[i], offsets[i+1])
 // (offsets has n+1 uint64 entries, so blobs > 4 GB are fine). Output bitmap has
-// ceil(n/64) words, bit i set iff string i matches. threads > 1 splits the
-// 64-string-aligned ranges across std::thread workers (link Threads::Threads).
+// ceil(n/64) words, bit i set iff string i matches. With par.workers > 1 the
+// 64-string-aligned ranges are split across par's pool.
 // ---------------------------------------------------------------------------
 inline std::vector<uint64_t> MatchBlobBitmap(const LikeMatcher &m, const uint64_t *offsets,
                                              std::size_t n, const char *data,
-                                             unsigned threads = 1) {
+                                             const Parallelism &par = {}) {
   const std::size_t words = (n + 63) / 64;
   std::vector<uint64_t> bits(words, 0);
   auto run = [&](std::size_t w0, std::size_t w1) {
@@ -349,26 +350,19 @@ inline std::vector<uint64_t> MatchBlobBitmap(const LikeMatcher &m, const uint64_
       bits[w] = acc;
     }
   };
-  if (threads <= 1 || words < 2 * threads) {
+  const std::size_t slices = par.workers;
+  if (slices <= 1 || words < 2 * slices) {
     run(0, words);
   } else {
-    std::vector<std::thread> pool;
-    const std::size_t per = (words + threads - 1) / threads;
-    for (unsigned t = 0; t < threads; ++t) {
-      const std::size_t a = t * per, b = std::min(words, a + per);
-      if (a < b)
-        pool.emplace_back(run, a, b);
-    }
-    for (auto &th : pool)
-      th.join();
+    par.For(slices, [&](std::size_t t) { run(words * t / slices, words * (t + 1) / slices); });
   }
   return bits;
 }
 
 inline std::vector<uint64_t> MatchBlobIndices(const LikeMatcher &m, const uint64_t *offsets,
                                               std::size_t n, const char *data,
-                                              unsigned threads = 1) {
-  const auto bits = MatchBlobBitmap(m, offsets, n, data, threads);
+                                              const Parallelism &par = {}) {
+  const auto bits = MatchBlobBitmap(m, offsets, n, data, par);
   std::vector<uint64_t> out;
   for (std::size_t w = 0; w < bits.size(); ++w) {
     uint64_t b = bits[w];
