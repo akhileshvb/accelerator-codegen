@@ -27,6 +27,8 @@ using core::ByteWriter;
 constexpr std::size_t kPartStatsGrain = 4096;
 // Per build slice: sorting one 1024-part page is ~50 us.
 constexpr std::size_t kPageSortGrain = 16;
+// Per maintenance slice: restaging one 1024-part page run is ~20 us.
+constexpr std::size_t kStageRunGrain = 8;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kAttrMagic = 0x49313751;  // Q17I
 constexpr uint32_t kPartMagic = 0x50313751;  // Q17P
@@ -661,9 +663,16 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
     bool missing = false; // no published page: only legal on an empty state
   };
   std::vector<PageResult> results(runs.size());
-  AttrMap attr_deltas;
+  // Engine reads stay serial; the slices only compute on the snapshots.
+  std::vector<core::StateSnapshot> snapshots;
+  snapshots.reserve(runs.size());
+  for (const auto &run : runs) {
+    snapshots.push_back(store.ReadPartitions(
+        visibility, {PagePartition(PageOf(ops[run.first].partkey))}));
+  }
 
-  for (std::size_t r = 0; r < runs.size(); ++r) {
+  // Stages page run r into results[r]; false asks for a full rebuild.
+  const auto stage_run = [&](std::size_t r, AttrMap &attr_deltas) {
     const auto [begin, end] = runs[r];
     const auto page_index = PageOf(ops[begin].partkey);
     auto &result = results[r];
@@ -672,9 +681,7 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
     TpchQ17PartStatsChunk chunk;
     chunk.chunk_index = page_index;
     bool have = false;
-    const auto snapshot =
-        store.ReadPartitions(visibility, {PagePartition(page_index)});
-    for (const auto &image : snapshot.partitions) {
+    for (const auto &image : snapshots[r].partitions) {
       const auto *typed = AsQ17Image(image, TpchQ17ImageKind::PartStatsChunk);
       if (!typed || !typed->chunk)
         continue;
@@ -713,11 +720,11 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
         const auto op_attr = AttrPartsPartition(op.brand, op.container);
         if (op.sign < 0) {
           if (entry.attr_partition != op_attr)
-            return rebuild_all();
+            return false;
           entry.attr_partition = 0;
         } else {
           if (entry.attr_partition != 0)
-            return rebuild_all();
+            return false;
           entry.attr_partition = op_attr;
           auto &ad = attr_deltas[op_attr];
           ad.brand = op.brand;
@@ -737,12 +744,12 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
             continue;
           const auto &op = buffer.LineitemDeltas()[ops[o].index];
           if (!ApplyPairDelta(pairs, op))
-            return rebuild_all();
+            return false;
           entry.sum_qty_raw += static_cast<int64_t>(op.sign) * op.quantity_raw;
           entry.count += op.sign;
         }
         if (entry.count < 0)
-          return rebuild_all();
+          return false;
         entry.contribution_raw = ContributionRaw(
             entry.sum_qty_raw, entry.count, pairs.data(),
             pairs.data() + pairs.size());
@@ -762,7 +769,35 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
     }
     result.image = MakeChunkImage(
         std::make_shared<const TpchQ17PartStatsChunk>(std::move(chunk)));
-  }
+    return true;
+  };
+
+  struct Staged {
+    AttrMap attrs;
+    bool rebuild = false;
+  };
+  Staged staged;
+  core::ParallelReduce(
+      services, runs.size(), kStageRunGrain, staged,
+      [&](Staged &acc, std::size_t first, std::size_t last) {
+        for (std::size_t r = first; r < last && !acc.rebuild; ++r)
+          acc.rebuild = !stage_run(r, acc.attrs);
+      },
+      [](Staged &into, Staged &&from) {
+        into.rebuild |= from.rebuild;
+        for (auto &[partition, delta] : from.attrs) {
+          auto &merged = into.attrs[partition];
+          merged.total_delta += delta.total_delta;
+          if (delta.named) {
+            merged.brand = std::move(delta.brand);
+            merged.container = std::move(delta.container);
+            merged.named = true;
+          }
+        }
+      });
+  if (staged.rebuild)
+    return rebuild_all();
+  const AttrMap &attr_deltas = staged.attrs;
   for (const auto &result : results) {
     if (result.missing &&
         !store.CheckValidity({Id(), {}}, visibility).IsValid())
