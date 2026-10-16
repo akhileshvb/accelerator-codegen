@@ -21,17 +21,19 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ19Parts(
-    const std::function<void(const query::TpchQ19PartInput &)> &consumer) {
-  ScanColumns("part",
-              {IntColumn("p_partkey"), TextColumn("p_brand"),
-               TextColumn("p_container"), IntColumn("p_size")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Text(1),
-                          row.Text(2),
-                          static_cast<int32_t>(row.Int(3))});
-              });
+void ScanTpchQ19PartsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ19PartInput &)> &sink) {
+  ScanPartitioned(services, "part",
+                  {IntColumn("p_partkey"), TextColumn("p_brand"),
+                   TextColumn("p_container"), IntColumn("p_size")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Text(1), row.Text(2),
+                                       static_cast<int32_t>(row.Int(3))});
+                    }
+                  });
 }
 
 // lineitem JOIN part with the shipping predicate and family classification
@@ -90,10 +92,11 @@ void ScanTpchQ19PartQuantityRevenue(
 
 class TpchQ19Scan final : public query::TpchQ19InitialScan {
 public:
-  void ScanParts(
-      const std::function<void(const query::TpchQ19PartInput &)> &consumer)
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ19PartInput &)> &sink)
       override {
-    scans::ScanTpchQ19Parts(consumer);
+    scans::ScanTpchQ19PartsPartitioned(services, partitions, sink);
   }
   void ScanGroupAggregates(
       const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer)

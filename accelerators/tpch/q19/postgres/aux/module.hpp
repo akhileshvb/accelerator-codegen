@@ -70,8 +70,11 @@ struct TpchQ19PartQuantityRevenue {
 class TpchQ19InitialScan {
 public:
   virtual ~TpchQ19InitialScan() = default;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ19PartInput &)> &) = 0;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ19PartInput &)> &sink) = 0;
   // lineitem JOIN part, shipping predicate and family classification
   // (TpchQ19FamilySql) applied and grouped in the engine.
   virtual void ScanGroupAggregates(
