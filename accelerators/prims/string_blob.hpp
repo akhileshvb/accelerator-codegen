@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <numeric>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -91,6 +92,8 @@ public:
     const uint32_t f = Find(s);
     if (f != kNone)
       return f;
+    if (blob_.size() >= kNone) // ids are 32-bit; kNone is reserved
+      throw std::length_error("StringDict: more than 2^32 - 1 distinct strings");
     if ((blob_.size() + 1) * 2 > table_.size())
       Grow();
     const uint64_t h = Hash(s);
