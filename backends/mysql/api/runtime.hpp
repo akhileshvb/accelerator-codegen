@@ -130,7 +130,10 @@ void ScanTypedTuples(const std::string &sql,
 // std::logic_error if !SnapshotScansSupported() or one is already open.
 class SnapshotScanSession {
 public:
-  SnapshotScanSession();
+  // `lanes` connections, each holding the same view, for ScanTypedTuplesPartitioned
+  // (the thread's own scans use the first). The host opens them while no
+  // writer can commit, which is what makes the views equal.
+  explicit SnapshotScanSession(std::size_t lanes = 1);
   ~SnapshotScanSession();
   SnapshotScanSession(const SnapshotScanSession &) = delete;
   SnapshotScanSession &operator=(const SnapshotScanSession &) = delete;
@@ -138,6 +141,32 @@ public:
 };
 // False when built without the client library (CLI scans cannot hold a view).
 bool SnapshotScansSupported();
+// The connections of this thread's SnapshotScanSession (none outside one), and
+// a scan on one of them (from any thread, one at a time per lane).
+struct SnapshotLane;
+std::vector<SnapshotLane *> SnapshotLanes();
+void ScanOnSnapshotLane(SnapshotLane &lane, const std::string &sql,
+                        const std::function<void(const std::vector<std::string> &)> &callback);
+
+// A table cut into partitions by the value of an integer column.
+struct SplitTable {
+  std::string select;       // column list
+  std::string table;
+  std::string where;        // extra filter; empty for none
+  std::string split_column; // integer column the partitions are ranges of
+};
+using PartitionedRowSink = std::function<void(std::size_t, const std::vector<std::string> &)>;
+// The partitioned scan of a build: sink(partition, row) for every row of
+// `table`, with the same row (and Typed* accessors) as ScanTypedTuples gives.
+//  - the rows of a partition are a fixed set (a range of the split column,
+//    from MIN/MAX in the build's view), delivered in one statement's order;
+//  - sinks of one partition never overlap; partitions run concurrently, one
+//    per snapshot lane, on pool threads, so the sink must not touch the engine;
+//  - one partition is ScanTypedTuples.
+// Without a session of this thread's own the partitions run one after the
+// other in a view of their own.
+void ScanTypedTuplesPartitioned(const core::AuxEngineServices &services, const SplitTable &table,
+                                std::size_t partitions, const PartitionedRowSink &sink);
 
 const std::string &Col(const std::vector<std::string> &cols, int attribute);
 // Whether the column of the row being delivered by ScanTypedTuples is SQL NULL.

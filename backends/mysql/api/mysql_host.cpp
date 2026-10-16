@@ -34,9 +34,10 @@ std::chrono::microseconds BuildWait() {
 }
 
 // The build's read: one consistent view of the database, routing this
-// thread's scans through it until destroyed.
+// thread's scans through it until destroyed. Partitioned scans get a
+// connection per build thread, all in the same view.
 struct MysqlBuildSnapshot final : runtime::BuildSnapshot {
-  explicit MysqlBuildSnapshot(Epoch epoch_p) : epoch(epoch_p) {}
+  MysqlBuildSnapshot(Epoch epoch_p, std::size_t lanes) : view(lanes), epoch(epoch_p) {}
   Epoch SnapshotEpoch() const override { return epoch; }
   detail::SnapshotScanSession view;
   Epoch epoch;
@@ -167,7 +168,7 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
   bool WaitForPreRegistrationWriters(const std::vector<core::TableId> &, uint64_t) override {
     return true;
   }
-  std::unique_ptr<runtime::BuildSnapshot> OpenBuildSnapshot(runtime::AcceleratorRuntime &) override {
+  std::unique_ptr<runtime::BuildSnapshot> OpenBuildSnapshot(runtime::AcceleratorRuntime &accelerator) override {
     std::unique_lock<std::mutex> lock(mutex);
     if (!changed.wait_for(lock, BuildWait(), [&] { return writers.empty(); })) {
       throw std::runtime_error("writers did not finish before the build");
@@ -187,7 +188,7 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
         impl.changed.notify_all();
       }
     } reopen{*this};
-    return std::make_unique<MysqlBuildSnapshot>(at);
+    return std::make_unique<MysqlBuildSnapshot>(at, accelerator.WorkerCount());
   }
   bool EngineWorkOnHostThread() const override { return false; }
   void RunBuild(runtime::AcceleratorRuntime &accelerator, runtime::BuildSnapshot &,
