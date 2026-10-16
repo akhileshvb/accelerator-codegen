@@ -8,6 +8,8 @@
 #error "ACCEL_TPCH_QUERY must name the query"
 #endif
 
+#include <variant>
+#include <optional>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -53,18 +55,33 @@ void Sql(duckdb::Connection &connection, const std::string &sql) {
   Require(result && !result->HasError(), sql + ": " + (result ? result->GetError() : "null"));
 }
 
-// Rows equal; doubles up to the order their sums were accumulated in. (The
-// reference SQL's comparison is too coarse to see one cent move a revenue.)
+// A numeric cell as a double (nullopt for other kinds). The SQL fallback gives a
+// DECIMAL result as an exact decimal where a module may emit a double: the
+// table function casts either to the column's type.
+std::optional<double> NumericValue(const core::AuxValue &value) {
+  if (const auto *d = std::get_if<double>(&value.payload)) return *d;
+  if (const auto *dec = std::get_if<core::ScaledDecimal>(&value.payload)) {
+    return static_cast<double>(dec->value) / std::pow(10.0, dec->scale);
+  }
+  if (const auto *wide = std::get_if<core::ScaledDecimal128>(&value.payload)) {
+    return static_cast<double>(wide->value) / std::pow(10.0, wide->scale);
+  }
+  return std::nullopt;
+}
+
+// Rows equal; doubles (and decimals standing for them) up to the order their
+// sums were accumulated in. (The reference SQL's comparison is too coarse to
+// see one cent move a revenue.)
 bool SameRows(const std::vector<core::AuxRow> &a, const std::vector<core::AuxRow> &b) {
   const auto same = [](const core::AuxValue &x, const core::AuxValue &y) {
-    if (x.type != y.type || x.is_null != y.is_null) {
-      return false;
+    if (x.is_null || y.is_null) {
+      return x.is_null == y.is_null;
     }
-    if (x.is_null || x.type != core::AuxType::Double) {
-      return x.is_null || x.payload == y.payload;
+    const auto u = NumericValue(x), v = NumericValue(y);
+    if (u && v && (x.type != y.type || x.type == core::AuxType::Double)) {
+      return std::abs(*u - *v) <= 1e-9 * std::max({1.0, std::abs(*u), std::abs(*v)});
     }
-    const double u = std::get<double>(x.payload), v = std::get<double>(y.payload);
-    return std::abs(u - v) <= 1e-9 * std::max({1.0, std::abs(u), std::abs(v)});
+    return x.type == y.type && x.payload == y.payload;
   };
   return std::equal(a.begin(), a.end(), b.begin(), b.end(), [&](const core::AuxRow &x, const core::AuxRow &y) {
     return std::equal(x.values.begin(), x.values.end(), y.values.begin(), y.values.end(), same);

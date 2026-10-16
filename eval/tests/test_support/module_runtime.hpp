@@ -36,10 +36,10 @@ public:
                            runtime::ResolveBuildThreads(0, threads.Budget()),
                            runtime::ResolveMaintenanceThreads(0, threads.Budget()));
     accelerator.UseModuleServices(backend);
-    // Fallbacks answer from the query's SQL, as in the real host.
+    // Fallbacks answer from the query's SQL on a connection of their own, as in the real host.
     if (const auto *entry = engine::FindSharedQueryByAccelerator(module->Id())) {
       backend.SetSqlAnswer([this, entry](const core::QueryArguments &arguments, core::AuxRowSink &sink) {
-        return engine::AnswerFromFallbackSql(connection, *entry, arguments, sink);
+        return engine::AnswerFromFallbackSql(fallback_connection, *entry, arguments, sink);
       });
     }
   }
@@ -148,6 +148,7 @@ private:
   }
 
   ::duckdb::Connection &connection;
+  ::duckdb::Connection fallback_connection{*connection.context->db};
   std::shared_ptr<core::AuxQueryModule> module;
   maintenance::CostModelParams cost_model;
   uint64_t txn = 0;
