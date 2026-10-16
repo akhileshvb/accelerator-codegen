@@ -561,6 +561,12 @@ void ScanTypedTuples(const std::string &sql,
   ScanViaCli(sql, callback);
 }
 
+std::string SelectSql(const SplitTable &table) {
+  std::string sql = "SELECT " + table.select + " FROM " + table.table;
+  if (!table.where.empty()) sql += " WHERE (" + table.where + ")";
+  return sql;
+}
+
 namespace {
 
 // The WHERE condition of partition `p` when the values [lo, hi] of the split
@@ -583,9 +589,7 @@ std::optional<std::string> PartitionCondition(const std::string &column, std::si
 }
 
 std::string SelectWhere(const SplitTable &table, const std::string &condition) {
-  std::string sql = "SELECT " + table.select + " FROM " + table.table + " WHERE ";
-  if (!table.where.empty()) sql += "(" + table.where + ") AND ";
-  return sql + "(" + condition + ")";
+  return SelectSql(table) + (table.where.empty() ? " WHERE " : " AND ") + "(" + condition + ")";
 }
 
 // MIN and MAX of the split column; nullopt for an empty table.

@@ -155,6 +155,9 @@ struct SplitTable {
   std::string where;        // extra filter; empty for none
   std::string split_column; // integer column the partitions are ranges of
 };
+// `SELECT <select> FROM <table> [WHERE (<where>)]`: the whole table, as the
+// serial scan reads it.
+std::string SelectSql(const SplitTable &table);
 using PartitionedRowSink = std::function<void(std::size_t, const std::vector<std::string> &)>;
 // The partitioned scan of a build: sink(partition, row) for every row of
 // `table`, with the same row (and Typed* accessors) as ScanTypedTuples gives.
