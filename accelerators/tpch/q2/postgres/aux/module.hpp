@@ -66,12 +66,17 @@ struct TpchQ2RegionInput {
 class TpchQ2InitialScan {
 public:
   virtual ~TpchQ2InitialScan() = default;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ2PartInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ2SupplierInput &)> &) = 0;
-  virtual void ScanPartsupps(
-      const std::function<void(const TpchQ2PartsuppInput &)> &) = 0;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ2PartInput &)> &sink) = 0;
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ2SupplierInput &)> &sink) = 0;
+  virtual void ScanPartsuppsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ2PartsuppInput &)> &sink) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ2NationInput &)> &) = 0;
   virtual void ScanRegions(
@@ -175,6 +180,9 @@ struct TpchQ2State {
   // --- point edits (used by Build and by incremental maintenance) ----------
   // A part with NULL p_size / p_type can never qualify, so it is simply absent.
   void SetPart(int64_t partkey, const TpchQ2PartInput &part);
+  // SetPart with the dictionary ids already known.
+  void SetPartIds(int64_t partkey, int32_t size, uint32_t type_id,
+                  uint32_t mfgr_id);
   void ErasePart(int64_t partkey);
   void SetSupplier(int64_t suppkey, const TpchQ2SupplierInput &supplier);
   void EraseSupplier(int64_t suppkey);

@@ -1,5 +1,8 @@
 #include "tpch/q2/postgres/aux/module.hpp"
 #include "tpch/q2/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -218,7 +221,12 @@ void TpchQ2State::SetPart(int64_t partkey, const TpchQ2PartInput &part) {
   uint32_t type_id = 0, mfgr_id = 0;
   InternInto(types, part.type, type_id);
   InternInto(mfgrs, part.mfgr, mfgr_id);
-  part_size.Set(partkey, part.size);
+  SetPartIds(partkey, part.size, type_id, mfgr_id);
+}
+
+void TpchQ2State::SetPartIds(int64_t partkey, int32_t size, uint32_t type_id,
+                             uint32_t mfgr_id) {
+  part_size.Set(partkey, size);
   part_type.Set(partkey, type_id);
   part_mfgr.Set(partkey, mfgr_id);
 }
@@ -589,25 +597,153 @@ void TpchQ2Module::ExecuteFallback(core::AuxEngineServices &services,
   EmitResult(services, state, arguments, sink);
 }
 
+namespace {
+
+// Build: part and partsupp rows are dealt out to buckets by part key; a bucket
+// is filled alone into a partial state, so buckets run in parallel.
+constexpr std::size_t kBuildBuckets = 64;
+
+// Bucket of `key`: the keys of one 4096-id chunk of the part columns share a
+// bucket. The offers' smaller chunks nest in them, so the partial states of
+// different buckets hold disjoint chunks.
+std::size_t KeyBucket(int64_t key) {
+  using Ids = core::AnyKeyCowArray<int32_t>;
+  const uint64_t id = Ids::Zig(key);
+  return (Ids::IsDense(key) ? id / Ids::kChunkSize : id) % kBuildBuckets;
+}
+
+template <class T> void AppendAll(std::vector<T> &into, std::vector<T> &&from) {
+  into.insert(into.end(), std::make_move_iterator(from.begin()),
+              std::make_move_iterator(from.end()));
+}
+
+// The part rows of one scan partition, with the partition's own type and
+// manufacturer dictionaries (partitions cannot share one without locking).
+struct PartRow {
+  int64_t key = 0;
+  int32_t size = 0;
+  uint32_t type = 0, mfgr = 0; // ids of the owning piece's dictionaries
+};
+
+struct PartPiece {
+  Buckets<PartRow> rows = Buckets<PartRow>(kBuildBuckets);
+  core::StringDict types, mfgrs;
+
+  void Add(const TpchQ2PartInput &input) {
+    rows[KeyBucket(input.key)].push_back(
+        {input.key, input.size, types.Intern(input.type), mfgrs.Intern(input.mfgr)});
+  }
+};
+
+// Ids in `global` of the strings of `local`, by local id.
+std::vector<uint32_t> GlobalIds(const core::StringDict &local,
+                                core::StringDict &global) {
+  std::vector<uint32_t> ids(local.size());
+  for (uint32_t id = 0; id < ids.size(); ++id)
+    ids[id] = global.Intern(local.Get(id));
+  return ids;
+}
+
+// Folds the part and offer columns of `from` into `into`; they hold disjoint
+// keys, so chunks are adopted whole.
+void MergeColumns(TpchQ2State &into, TpchQ2State &&from) {
+  const auto theirs = [](const auto &, const auto &value) { return value; };
+  into.part_size.MergeFrom(std::move(from.part_size), theirs);
+  into.part_type.MergeFrom(std::move(from.part_type), theirs);
+  into.part_mfgr.MergeFrom(std::move(from.part_mfgr), theirs);
+  into.offers.MergeFrom(std::move(from.offers), theirs);
+  from.offer_overflow.ForEach([&](int64_t key, const std::vector<TpchQ2Offer> &extra) {
+    into.offer_overflow.Upsert(key, extra);
+  });
+}
+
+// Runs fill(bucket, partial state) for every bucket in parallel, then folds the
+// partial states into `state`.
+template <class Fill>
+void FillBuckets(core::AuxEngineServices &services, TpchQ2State &state, Fill &&fill) {
+  std::vector<TpchQ2State> parts(kBuildBuckets);
+  core::ParallelSlices(services, kBuildBuckets, 1,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t b = begin; b < end; ++b)
+                           fill(b, parts[b]);
+                       });
+  for (auto &part : parts)
+    MergeColumns(state, std::move(part));
+}
+
+} // namespace
+
 TpchQ2State
 TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q2 requires a typed initial scan source");
   TpchQ2State state;
-  // The five tables are independent in the state, so scan order is free and
-  // each row is one point edit: no intermediate copies of any table.
+  const auto partitions = BuildPartitions(services);
+  // The tables are independent in the state, so scan order is free. Nation
+  // and region are a handful of rows: scanned serially.
   initial_scan->ScanRegions(
       [&](const TpchQ2RegionInput &input) { state.UpsertRegion(input); });
   initial_scan->ScanNations(
       [&](const TpchQ2NationInput &input) { state.UpsertNation(input); });
-  initial_scan->ScanParts(
-      [&](const TpchQ2PartInput &input) { state.SetPart(input.key, input); });
-  initial_scan->ScanSuppliers([&](const TpchQ2SupplierInput &input) {
-    state.SetSupplier(input.key, input);
+
+  const auto pieces = core::PartitionedBuild<std::vector<PartPiece>>(
+      services, [] { return std::vector<PartPiece>(1); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ2PartInput &input) {
+              sink(partition, OneRowBatch<TpchQ2PartInput>{input});
+            });
+      },
+      [](std::vector<PartPiece> &into, const TpchQ2PartInput &input) {
+        into.front().Add(input);
+      },
+      AppendAll<PartPiece>, partitions);
+  std::vector<std::vector<uint32_t>> type_ids, mfgr_ids;
+  for (const auto &piece : pieces) {
+    type_ids.push_back(GlobalIds(piece.types, *state.types));
+    mfgr_ids.push_back(GlobalIds(piece.mfgrs, *state.mfgrs));
+  }
+  FillBuckets(services, state, [&](std::size_t bucket, TpchQ2State &part) {
+    for (std::size_t p = 0; p < pieces.size(); ++p)
+      for (const PartRow &row : pieces[p].rows[bucket])
+        part.SetPartIds(row.key, row.size, type_ids[p][row.type],
+                        mfgr_ids[p][row.mfgr]);
   });
-  initial_scan->ScanPartsupps([&](const TpchQ2PartsuppInput &input) {
-    state.AddOffer(input.partkey, input.suppkey, input.supplycost_raw);
+
+  // The supplier text blob has no chunk-adopting merge: rows are decoded in
+  // parallel and applied serially.
+  const auto suppliers = core::PartitionedBuild<std::vector<TpchQ2SupplierInput>>(
+      services, [] { return std::vector<TpchQ2SupplierInput>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliersPartitioned(
+            services, parts,
+            [&](std::size_t partition, const TpchQ2SupplierInput &input) {
+              sink(partition, OneRowBatch<TpchQ2SupplierInput>{input});
+            });
+      },
+      [](std::vector<TpchQ2SupplierInput> &into, const TpchQ2SupplierInput &input) {
+        into.push_back(input);
+      },
+      AppendAll<TpchQ2SupplierInput>, partitions);
+  for (const auto &supplier : suppliers)
+    state.SetSupplier(supplier.key, supplier);
+
+  const auto offers = core::PartitionedBuild<Buckets<TpchQ2PartsuppInput>>(
+      services, [] { return Buckets<TpchQ2PartsuppInput>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsuppsPartitioned(
+            services, parts,
+            [&](std::size_t partition, const TpchQ2PartsuppInput &input) {
+              sink(partition, OneRowBatch<TpchQ2PartsuppInput>{input});
+            });
+      },
+      [](Buckets<TpchQ2PartsuppInput> &into, const TpchQ2PartsuppInput &input) {
+        into[KeyBucket(input.partkey)].push_back(input);
+      },
+      AppendBuckets<TpchQ2PartsuppInput>, partitions);
+  FillBuckets(services, state, [&](std::size_t bucket, TpchQ2State &part) {
+    for (const auto &input : offers[bucket])
+      part.AddOffer(input.partkey, input.suppkey, input.supplycost_raw);
   });
   return state;
 }
