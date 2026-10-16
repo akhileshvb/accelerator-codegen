@@ -467,7 +467,8 @@ SecEdgarQ1Module::BuildState(core::AuxEngineServices &services) const {
     throw std::logic_error("SEC EDGAR Q1 requires a typed initial scan source");
   }
   q1::Builder builder;
-  if (!initial_scan->ScanPreInto(builder)) {
+  if (!initial_scan->ScanPrePartitioned(services, builder) &&
+      !initial_scan->ScanPreInto(builder)) {
     initial_scan->ScanPre(
         [&](const SecEdgarQ1PreInput &input) { builder.ConsumeRow(input); });
   }

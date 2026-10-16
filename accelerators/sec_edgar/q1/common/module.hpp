@@ -77,6 +77,12 @@ public:
   // (q1::Builder::ConsumeChunk / ConsumeRowView). Returns false when
   // unsupported (ScanPre is used).
   virtual bool ScanPreInto(q1::Builder &) const { return false; }
+  // Optional partitioned scan: fills `builder` from one q1::Builder per
+  // partition, merged in partition order (core::PartitionedBuild). Returns
+  // false when unsupported or when the build cap is one worker.
+  virtual bool ScanPrePartitioned(const core::AuxEngineServices &, q1::Builder &) const {
+    return false;
+  }
 };
 
 namespace q1 {
