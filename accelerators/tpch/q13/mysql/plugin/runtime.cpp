@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q13/mysql/aux/module.hpp"
 #include "tpch/q13/cost_model.hpp"
@@ -39,18 +40,6 @@ query::TpchQ13OrderInput DecodeOrder(const std::vector<std::string> &cols) {
   return {TypedInt(cols, 0), TypedInt(cols, 1), TypedText(cols, 2)};
 }
 
-void ScanTpchQ13Customers(
-    const std::function<void(const query::TpchQ13CustomerInput &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(CustomersTable()), DecodeCustomer,
-                         [&](query::TpchQ13CustomerInput &&input) { consumer(input); });
-}
-
-void ScanTpchQ13Orders(
-    const std::function<void(const query::TpchQ13OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(OrdersTable()), DecodeOrder,
-                         [&](query::TpchQ13OrderInput &&input) { consumer(input); });
-}
-
 } // namespace scans
 
 class TpchQ13Scan final : public query::TpchQ13InitialScan {
@@ -58,32 +47,28 @@ public:
   void ScanCustomers(
       const std::function<void(const query::TpchQ13CustomerInput &)> &consumer)
       override {
-    scans::ScanTpchQ13Customers(consumer);
+    split_scan::Serial<query::TpchQ13CustomerInput>(
+        scans::CustomersTable(), scans::DecodeCustomer, consumer);
   }
   void ScanOrders(
       const std::function<void(const query::TpchQ13OrderInput &)> &consumer)
       override {
-    scans::ScanTpchQ13Orders(consumer);
+    split_scan::Serial<query::TpchQ13OrderInput>(
+        scans::OrdersTable(), scans::DecodeOrder, consumer);
   }
   void ScanCustomersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ13CustomerInput &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::CustomersTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodeCustomer(cols));
-        });
+    split_scan::Partitioned<query::TpchQ13CustomerInput>(
+        services, scans::CustomersTable(), partitions, scans::DecodeCustomer, sink);
   }
   void ScanOrdersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ13OrderInput &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::OrdersTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodeOrder(cols));
-        });
+    split_scan::Partitioned<query::TpchQ13OrderInput>(
+        services, scans::OrdersTable(), partitions, scans::DecodeOrder, sink);
   }
 };
 

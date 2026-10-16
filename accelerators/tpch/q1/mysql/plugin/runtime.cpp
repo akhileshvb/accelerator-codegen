@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "prims/decimal_text.hpp"
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q1/mysql/aux/module.hpp"
 #include "tpch/q1/cost_model.hpp"
@@ -97,11 +98,8 @@ public:
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ1DayGroupAggregate &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::DayGroupAggregatesTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodeDayGroupAggregate(cols));
-        });
+    split_scan::Partitioned<query::TpchQ1DayGroupAggregate>(
+        services, scans::DayGroupAggregatesTable(), partitions, scans::DecodeDayGroupAggregate, sink);
   }
 };
 

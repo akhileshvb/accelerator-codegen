@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q17/mysql/aux/module.hpp"
 #include "tpch/q17/cost_model.hpp"
@@ -39,18 +40,6 @@ query::TpchQ17LineitemInput DecodeLineitem(const std::vector<std::string> &cols)
   return {TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2)};
 }
 
-void ScanTpchQ17Parts(
-    const std::function<void(const query::TpchQ17PartInput &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(PartsTable()), DecodePart,
-                         [&](query::TpchQ17PartInput &&input) { consumer(input); });
-}
-
-void ScanTpchQ17Lineitems(
-    const std::function<void(const query::TpchQ17LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(LineitemsTable()), DecodeLineitem,
-                         [&](query::TpchQ17LineitemInput &&input) { consumer(input); });
-}
-
 // GROUP BY (partkey, quantity), ordered by partkey so the module can assemble
 // one part's histogram at a time. Rows with a NULL partkey or quantity never
 // take part in the query.
@@ -76,32 +65,27 @@ public:
   void ScanParts(
       const std::function<void(const query::TpchQ17PartInput &)> &consumer)
       override {
-    scans::ScanTpchQ17Parts(consumer);
+    split_scan::Serial<query::TpchQ17PartInput>(scans::PartsTable(), scans::DecodePart, consumer);
   }
   void ScanLineitems(
       const std::function<void(const query::TpchQ17LineitemInput &)> &consumer)
       override {
-    scans::ScanTpchQ17Lineitems(consumer);
+    split_scan::Serial<query::TpchQ17LineitemInput>(
+        scans::LineitemsTable(), scans::DecodeLineitem, consumer);
   }
   void ScanPartsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ17PartInput &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::PartsTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodePart(cols));
-        });
+    split_scan::Partitioned<query::TpchQ17PartInput>(
+        services, scans::PartsTable(), partitions, scans::DecodePart, sink);
   }
   void ScanLineitemsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ17LineitemInput &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::LineitemsTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodeLineitem(cols));
-        });
+    split_scan::Partitioned<query::TpchQ17LineitemInput>(
+        services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
   }
   bool ScanPartQuantityAggregates(
       const std::function<void(const query::TpchQ17PartQuantityAggregate &)>

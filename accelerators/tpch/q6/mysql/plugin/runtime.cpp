@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "prims/decimal_text.hpp"
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q6/mysql/aux/module.hpp"
 #include "tpch/q6/cost_model.hpp"
@@ -59,12 +60,6 @@ query::TpchQ6CellAggregate DecodeCellAggregate(const std::vector<std::string> &c
   return cell;
 }
 
-void ScanTpchQ6CellAggregates(
-    const std::function<void(const query::TpchQ6CellAggregate &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(CellAggregatesTable()), DecodeCellAggregate,
-                         [&](query::TpchQ6CellAggregate &&input) { consumer(input); });
-}
-
 } // namespace scans
 
 class TpchQ6Scan final : public query::TpchQ6InitialScan {
@@ -77,17 +72,15 @@ public:
   void ScanCellAggregates(
       const std::function<void(const query::TpchQ6CellAggregate &)> &consumer)
       override {
-    scans::ScanTpchQ6CellAggregates(consumer);
+    split_scan::Serial<query::TpchQ6CellAggregate>(
+        scans::CellAggregatesTable(), scans::DecodeCellAggregate, consumer);
   }
   void ScanCellAggregatesPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ6CellAggregate &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::CellAggregatesTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodeCellAggregate(cols));
-        });
+    split_scan::Partitioned<query::TpchQ6CellAggregate>(
+        services, scans::CellAggregatesTable(), partitions, scans::DecodeCellAggregate, sink);
   }
 };
 

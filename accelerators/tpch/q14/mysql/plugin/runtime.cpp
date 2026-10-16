@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "prims/decimal_text.hpp"
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q14/mysql/aux/module.hpp"
 #include "tpch/q14/cost_model.hpp"
@@ -52,18 +53,6 @@ query::TpchQ14DayAggregate DecodeDayAggregate(const std::vector<std::string> &co
   return agg;
 }
 
-void ScanTpchQ14Parts(
-    const std::function<void(const query::TpchQ14PartInput &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(PartsTable()), DecodePart,
-                         [&](query::TpchQ14PartInput &&input) { consumer(input); });
-}
-
-void ScanTpchQ14DayAggregates(
-    const std::function<void(const query::TpchQ14DayAggregate &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(DayAggregatesTable()), DecodeDayAggregate,
-                         [&](query::TpchQ14DayAggregate &&input) { consumer(input); });
-}
-
 // Point re-aggregation of the given parts' lineitems (the schema has no
 // l_partkey index: this is a table scan on MySQL).
 void ScanTpchQ14PartDayRevenue(
@@ -98,32 +87,27 @@ public:
   void ScanParts(
       const std::function<void(const query::TpchQ14PartInput &)> &consumer)
       override {
-    scans::ScanTpchQ14Parts(consumer);
+    split_scan::Serial<query::TpchQ14PartInput>(scans::PartsTable(), scans::DecodePart, consumer);
   }
   void ScanDayAggregates(
       const std::function<void(const query::TpchQ14DayAggregate &)> &consumer)
       override {
-    scans::ScanTpchQ14DayAggregates(consumer);
+    split_scan::Serial<query::TpchQ14DayAggregate>(
+        scans::DayAggregatesTable(), scans::DecodeDayAggregate, consumer);
   }
   void ScanPartsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ14PartInput &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::PartsTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodePart(cols));
-        });
+    split_scan::Partitioned<query::TpchQ14PartInput>(
+        services, scans::PartsTable(), partitions, scans::DecodePart, sink);
   }
   void ScanDayAggregatesPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ14DayAggregate &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::DayAggregatesTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodeDayAggregate(cols));
-        });
+    split_scan::Partitioned<query::TpchQ14DayAggregate>(
+        services, scans::DayAggregatesTable(), partitions, scans::DecodeDayAggregate, sink);
   }
   void ScanPartDayRevenue(
       const std::vector<int64_t> &partkeys,

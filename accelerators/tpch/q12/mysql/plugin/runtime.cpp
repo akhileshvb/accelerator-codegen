@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q12/mysql/aux/module.hpp"
 #include "tpch/q12/cost_model.hpp"
@@ -45,18 +46,6 @@ query::TpchQ12LineitemInput DecodeLineitem(const std::vector<std::string> &cols)
           TypedDate(cols, 4)};
 }
 
-void ScanTpchQ12Orders(
-    const std::function<void(const query::TpchQ12OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(OrdersTable()), DecodeOrder,
-                         [&](query::TpchQ12OrderInput &&input) { consumer(input); });
-}
-
-void ScanTpchQ12Lineitems(
-    const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(SelectSql(QualifyingLineitemsTable()), DecodeLineitem,
-                         [&](query::TpchQ12LineitemInput &&input) { consumer(input); });
-}
-
 // Index lookup of the qualifying lineitems of some orders.
 void LookupTpchQ12LineitemsByOrder(
     const std::vector<int64_t> &orderkeys,
@@ -79,32 +68,28 @@ public:
   void ScanOrders(
       const std::function<void(const query::TpchQ12OrderInput &)> &consumer)
       override {
-    scans::ScanTpchQ12Orders(consumer);
+    split_scan::Serial<query::TpchQ12OrderInput>(
+        scans::OrdersTable(), scans::DecodeOrder, consumer);
   }
   void ScanLineitems(
       const std::function<void(const query::TpchQ12LineitemInput &)> &consumer)
       override {
-    scans::ScanTpchQ12Lineitems(consumer);
+    split_scan::Serial<query::TpchQ12LineitemInput>(
+        scans::QualifyingLineitemsTable(), scans::DecodeLineitem, consumer);
   }
   void ScanOrdersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ12OrderInput &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::OrdersTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodeOrder(cols));
-        });
+    split_scan::Partitioned<query::TpchQ12OrderInput>(
+        services, scans::OrdersTable(), partitions, scans::DecodeOrder, sink);
   }
   void ScanLineitemsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ12LineitemInput &)> &sink)
       override {
-    ScanTypedTuplesPartitioned(
-        services, scans::QualifyingLineitemsTable(), partitions,
-        [&](std::size_t partition, const std::vector<std::string> &cols) {
-          sink(partition, scans::DecodeLineitem(cols));
-        });
+    split_scan::Partitioned<query::TpchQ12LineitemInput>(
+        services, scans::QualifyingLineitemsTable(), partitions, scans::DecodeLineitem, sink);
   }
   void LookupLineitemsByOrder(
       const std::vector<int64_t> &orderkeys,
