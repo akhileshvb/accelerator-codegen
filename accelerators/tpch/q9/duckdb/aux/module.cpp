@@ -35,7 +35,7 @@ constexpr std::size_t kSlotCopyGrain = 8;
 constexpr std::size_t kSlotApplyGrain = 16;
 // Maintenance: slots whose net cell deltas are applied per slice.
 constexpr std::size_t kNetSlotGrain = 8;
-constexpr uint32_t kVersion = 6;
+constexpr uint32_t kVersion = 7;
 constexpr uint32_t kCompleteStateMagic = 0x43395141; // Q9AC
 constexpr uint32_t kMetadataMagic = 0x4D395141;      // Q9AM
 constexpr uint32_t kMaintenanceSideMagic = 0x53395141; // Q9AS
@@ -1056,7 +1056,7 @@ std::vector<uint8_t> EncodeTpchQ9CompleteState(const TpchQ9State &state) {
   // ── Order years ─────────────────────────────────────────────────────────
   std::vector<int64_t> order_keys;
   CollectOrderYears(state, order_keys);
-  writer.U32(static_cast<uint32_t>(order_keys.size()));
+  writer.U64(order_keys.size());
   for (const auto key : order_keys) {
     int32_t year = 0;
     state.LookupOrderYear(key, year);
@@ -1122,7 +1122,7 @@ void WriteTpchQ9MaintenanceSideBody(ByteWriter &writer,
 
   std::vector<int64_t> order_keys;
   CollectOrderYears(state, order_keys);
-  writer.U32(static_cast<uint32_t>(order_keys.size()));
+  writer.U64(order_keys.size());
   for (const auto key : order_keys) {
     int32_t year = 0;
     state.LookupOrderYear(key, year);
@@ -1226,11 +1226,12 @@ bool ReadTpchQ9MaintenanceSideBody(ByteReader &reader, TpchQ9State &state) {
     state.SetSupplierNation(key, nationkey);
   }
 
-  if (!reader.U32(count))
+  uint64_t order_count = 0;
+  if (!reader.U64(order_count))
     return false;
   state.order_years.Clear();
   state.order_year_overflow.clear();
-  for (uint32_t i = 0; i < count; ++i) {
+  for (uint64_t i = 0; i < order_count; ++i) {
     int64_t key = 0;
     int32_t year = 0;
     if (!reader.I64(key) || !reader.I32(year))
@@ -1497,10 +1498,11 @@ bool DecodeTpchQ9CompleteState(const std::vector<uint8_t> &bytes,
   }
 
   // ── Order years ─────────────────────────────────────────────────────────
-  if (!reader.U32(count)) return false;
+  uint64_t order_count = 0;
+  if (!reader.U64(order_count)) return false;
   state.order_years.Clear();
   state.order_year_overflow.clear();
-  for (uint32_t i = 0; i < count; ++i) {
+  for (uint64_t i = 0; i < order_count; ++i) {
     int64_t key = 0;
     int32_t year = 0;
     if (!reader.I64(key) || !reader.I32(year)) return false;

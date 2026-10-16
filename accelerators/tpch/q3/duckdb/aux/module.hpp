@@ -118,11 +118,10 @@ inline uint16_t PackTpchQ3Date(int32_t days) {
   return static_cast<uint16_t>(days);
 }
 
-inline uint32_t PackTpchQ3Orderkey(int64_t orderkey) {
-  if (orderkey < 0 ||
-      orderkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
-    throw std::runtime_error("TPC-H Q3 orderkey exceeds uint32 packed range");
-  return static_cast<uint32_t>(orderkey);
+inline uint64_t PackTpchQ3Orderkey(int64_t orderkey) {
+  if (orderkey < 0)
+    throw std::runtime_error("TPC-H Q3 negative orderkey");
+  return static_cast<uint64_t>(orderkey);
 }
 
 inline uint8_t PackTpchQ3Shippriority(int32_t shippriority) {
@@ -133,28 +132,28 @@ inline uint8_t PackTpchQ3Shippriority(int32_t shippriority) {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent (copy-on-write) hash-sharded sorted maps keyed by uint32 `key`
+// Persistent (copy-on-write) hash-sharded sorted maps keyed by uint64 `key`
 // (core::ShardedSortedMap, 2^18 shards: 1024 top slots x 256 leaves per mid).
 // A published index is never mutated: a write copies the top array, the
 // touched mid arrays and the touched leaves (a few hundred entries);
 // everything else stays shared.
 // ---------------------------------------------------------------------------
 struct TpchQ3KeyOf {
-  template <typename E> const uint32_t &operator()(const E &e) const {
+  template <typename E> const uint64_t &operator()(const E &e) const {
     return e.key;
   }
 };
 template <typename E>
 using TpchQ3ShardIndex =
-    core::ShardedSortedMap<uint32_t, E, TpchQ3KeyOf,
-                           core::ShardedSortedMapHash<uint32_t>, 18, 8>;
+    core::ShardedSortedMap<uint64_t, E, TpchQ3KeyOf,
+                           core::ShardedSortedMapHash<uint64_t>, 18, 8>;
 
 // Per-order record (every order whose customer is in a tracked segment).
 // `bound` is an upper bound on the order's revenue for ANY cutoff: the sum of
 // its positive per-shipdate revenues. It is the sort key of the order's entry
 // in the segment index (valid iff indexed()).
 struct TpchQ3OrderRec {
-  uint32_t key = 0;
+  uint64_t key = 0;
   uint16_t orderdate = 0;
   uint8_t seg_flags = 0; // low 7 bits: segment partition id; 0x80: indexed
   uint8_t shippriority = 0;
@@ -163,14 +162,14 @@ struct TpchQ3OrderRec {
   core::PartitionId segment() const { return seg_flags & 0x7F; }
   bool indexed() const { return (seg_flags & 0x80) != 0; }
 };
-static_assert(sizeof(TpchQ3OrderRec) == 16, "Q3 order record must stay 16 bytes");
+static_assert(sizeof(TpchQ3OrderRec) == 24, "Q3 order record must stay 24 bytes");
 
 // Customer record. segment != 0: tracked customer. segment == 0: the key is
 // not a tracked customer (absent, deleted or unknown segment); then
 // orphan_orders counts the orders that reference it (they are untracked), so a
 // later insert / segment change knows whether it has to look them up.
 struct TpchQ3CustRec {
-  uint32_t key = 0;
+  uint64_t key = 0;
   uint32_t orphan_orders = 0;
   uint8_t segment = 0;
 };
@@ -195,7 +194,7 @@ constexpr std::size_t kTpchQ3ChunkTarget = 128;
 
 struct TpchQ3Entry {
   int64_t bound = 0;
-  uint32_t orderkey = 0;
+  uint64_t orderkey = 0;
   uint32_t bucket_begin = 0;
   uint16_t orderdate = 0;
   uint16_t bucket_count = 0;

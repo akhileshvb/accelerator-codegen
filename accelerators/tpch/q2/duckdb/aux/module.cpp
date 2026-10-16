@@ -122,12 +122,24 @@ void EnsureFlatSize(std::vector<T> &vector, std::size_t required) {
     vector.resize(required);
 }
 
-// Q2 indexes parts/suppliers by TPC-H key in a dense vector. RF leftover rows
-// with 9e9-style keys would otherwise try to allocate billions of slots.
-constexpr std::size_t kTpchQ2MaxDenseKey = 32'000'000;
-
+// Part and supplier keys index chunked copy-on-write arrays and are stored as
+// int32 in offers and groups; nation and region keys index flat vectors. A key
+// outside its range would be silently wrong, so it stops the build or the
+// commit (the runtime then rebuilds or invalidates).
 bool AcceptDenseKey(int64_t key) {
-  return key >= 0 && static_cast<uint64_t>(key) < kTpchQ2MaxDenseKey;
+  if (key < 0 || key > std::numeric_limits<int32_t>::max())
+    throw std::out_of_range("TPC-H Q2 key outside the int32 range: " +
+                            std::to_string(key));
+  return true;
+}
+
+constexpr int64_t kMaxFlatKey = 1'000'000;
+
+bool AcceptFlatKey(int64_t key) {
+  if (key < 0 || key > kMaxFlatKey)
+    throw std::out_of_range("TPC-H Q2 nation/region key too large: " +
+                            std::to_string(key));
+  return true;
 }
 
 
@@ -1289,13 +1301,13 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ2TypeDict types;
 
   initial_scan->ScanRegions([&](const TpchQ2RegionInput &input) {
-    if (!AcceptDenseKey(input.key))
-      return;
+    AcceptFlatKey(input.key);
     EnsureFlatSize(*regions, static_cast<std::size_t>(input.key) + 1);
     (*regions)[static_cast<std::size_t>(input.key)] = input.name;
   });
   initial_scan->ScanNations([&](const TpchQ2NationInput &input) {
-    if (!AcceptDenseKey(input.key) || input.regionkey < 0)
+    AcceptFlatKey(input.key);
+    if (input.regionkey < 0)
       return;
     EnsureFlatSize(*nations, static_cast<std::size_t>(input.key) + 1);
     EnsureFlatSize(*nation_regions, static_cast<std::size_t>(input.key) + 1);

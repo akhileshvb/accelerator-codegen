@@ -21,7 +21,7 @@ using core::ByteReader;
 using core::ByteWriter;
 
 constexpr uint32_t kCubeMagic = 0x51385143; // Q8C
-constexpr uint32_t kVersionV2 = 2;
+constexpr uint32_t kVersionV2 = 3;
 // Lineitem deltas per slice when resolving them against the dimensions.
 constexpr std::size_t kResolveGrain = 2048;
 // Touched mid arrays per slice when publishing a dimension map.
@@ -372,7 +372,7 @@ std::vector<uint8_t> EncodeTpchQ8AnnualCube(const TpchQ8State &state) {
     writer.I64(e.key);
     writer.I32(e.value);
   });
-  writer.U32(static_cast<uint32_t>(d.order_info.size()));
+  writer.U64(d.order_info.size());
   d.order_info.ForEach([&](const TpchQ8OrderMap::Element &e) {
     writer.I64(e.key);
     writer.I64(e.value.custkey);
@@ -510,10 +510,10 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
     cust_b.Add({ck, nk});
   }
 
-  uint32_t oi_count = 0;
-  if (!reader.U32(oi_count))
+  uint64_t oi_count = 0;
+  if (!reader.U64(oi_count))
     return false;
-  for (uint32_t i = 0; i < oi_count; ++i) {
+  for (uint64_t i = 0; i < oi_count; ++i) {
     int64_t ok = 0;
     TpchQ8Dimensions::OrderInfo oi;
     if (!reader.I64(ok) || !reader.I64(oi.custkey) || !reader.I32(oi.orderdate_days))

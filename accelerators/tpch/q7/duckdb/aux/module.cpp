@@ -49,7 +49,7 @@ struct CustomTimer {
 };
 
 constexpr uint32_t kVersion = 1;
-constexpr uint32_t kSideVersion = 5;
+constexpr uint32_t kSideVersion = 6;
 constexpr uint32_t kRevenueVersion = 4;
 constexpr uint32_t kSideMagic = 0x53303751;
 constexpr int32_t kEpoch = 719468;
@@ -199,7 +199,7 @@ std::vector<uint8_t> EncodeTpchQ7Side(const TpchQ7State &state) {
   };
   write_nc(state.supplier_nations);
   write_nc(state.customer_nations);
-  writer.U32(static_cast<uint32_t>(state.order_custkeys.size()));
+  writer.U64(state.order_custkeys.size());
   state.order_custkeys.ForEach(
       [&](const TpchQ7Map<TpchQ7OrderCust>::Element &e) {
         writer.I64(e.key);
@@ -262,10 +262,11 @@ bool DecodeTpchQ7Side(const std::vector<uint8_t> &bytes, TpchQ7State &state) {
   };
   if (!read_nc(state.supplier_nations) || !read_nc(state.customer_nations))
     return false;
-  if (!reader.U32(count))
+  uint64_t order_count = 0;
+  if (!reader.U64(order_count))
     return false;
-  TpchQ7Map<TpchQ7OrderCust>::Builder orders(count);
-  for (uint32_t i = 0; i < count; ++i) {
+  TpchQ7Map<TpchQ7OrderCust>::Builder orders(order_count);
+  for (uint64_t i = 0; i < order_count; ++i) {
     int64_t ok = 0;
     TpchQ7OrderCust v;
     if (!reader.I64(ok) || !reader.I64(v.custkey))

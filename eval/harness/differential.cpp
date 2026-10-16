@@ -218,6 +218,38 @@ std::string TieAwareMismatch(duckdb::MaterializedQueryResult &base,
       &std::cerr);
 }
 
+// End of the run starting at the first mismatching `row` in which the
+// expected rows are equal on all columns that match at `row` and the actual
+// rows are the same rows in another order; `row` itself if there is none.
+duckdb::idx_t ExactTieRunEnd(duckdb::MaterializedQueryResult &base,
+                             const std::vector<core::AuxRow> &accelerated, duckdb::idx_t row) {
+  std::vector<duckdb::idx_t> tied;
+  for (duckdb::idx_t column = 0; column < base.ColumnCount(); ++column) {
+    if (ValuesApproxEqual(NormalizeDatabaseValue(base.GetValue(column, row)),
+                          AuxValueText(accelerated[row].values[column]))) {
+      tied.push_back(column);
+    }
+  }
+  duckdb::idx_t end = row + 1;
+  while (end < base.RowCount()) {
+    bool same = true;
+    for (const auto column : tied) {
+      same = same && NormalizeDatabaseValue(base.GetValue(column, end)) ==
+                         NormalizeDatabaseValue(base.GetValue(column, row));
+    }
+    if (!same) break;
+    ++end;
+  }
+  std::vector<std::string> expected_keys, actual_keys;
+  for (duckdb::idx_t r = row; r < end; ++r) {
+    expected_keys.push_back(RowKey(base, r));
+    actual_keys.push_back(RowKey(accelerated[r]));
+  }
+  std::sort(expected_keys.begin(), expected_keys.end());
+  std::sort(actual_keys.begin(), actual_keys.end());
+  return expected_keys == actual_keys ? end : row;
+}
+
 void CompareRows(duckdb::MaterializedQueryResult &base,
                  const std::vector<core::AuxRow> &accelerated,
                  const SharedQueryCatalogEntry &entry,
@@ -264,9 +296,16 @@ void CompareRows(duckdb::MaterializedQueryResult &base,
                              " expected=" + expected + " actual=" + actual;
       std::string key_column = "-";
       const auto why = TieAwareMismatch(base, accelerated, sql, &key_column);
-      Require(why.empty(), message + " (tie-aware recheck on order key column " + key_column +
-                               ": " + why + ")");
-      return;
+      if (!why.empty()) {
+        // Rows that agree on every column the two results agree on at this row
+        // are exact ties under the ORDER BY: SQL leaves their order open, so
+        // the run only has to hold the same rows.
+        const auto tied_end = ExactTieRunEnd(base, accelerated, row);
+        Require(tied_end > row + 1, message + " (tie-aware recheck on order key column " +
+                                        key_column + ": " + why + ")");
+        row = tied_end - 1;
+      }
+      break;
     }
   }
 }
