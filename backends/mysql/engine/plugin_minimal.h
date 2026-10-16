@@ -106,6 +106,24 @@ struct st_mysql_plugin {
   unsigned long flags;
 };
 
+// System variables (matching include/mysql/plugin.h): an unsigned long one.
+#define PLUGIN_VAR_LONG 0x0003
+#define PLUGIN_VAR_UNSIGNED 0x0080
+typedef int (*mysql_var_check_func)(MYSQL_THD, SYS_VAR *, void *save, void *value);
+typedef void (*mysql_var_update_func)(MYSQL_THD, SYS_VAR *, void *var_ptr, const void *save);
+struct st_mysql_sysvar_ulong {
+  int flags;
+  const char *name;
+  const char *comment;
+  mysql_var_check_func check;
+  mysql_var_update_func update;
+  unsigned long *value;
+  unsigned long def_val;
+  unsigned long min_val;
+  unsigned long max_val;
+  unsigned long blk_sz;
+};
+
 // st_mysql_daemon
 #define MYSQL_DAEMON_INTERFACE_VERSION (0)
 struct st_mysql_daemon {

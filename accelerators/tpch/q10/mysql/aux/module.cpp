@@ -5,10 +5,10 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
-#include <thread>
 #include <utility>
 
 #include "prims/pg_numeric.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
 #include "prims/sql_date.hpp"
 #include "tpch/q10/layout.hpp"
@@ -630,7 +630,7 @@ void TpchQ10Module::Execute(core::AuxEngineServices &services,
                             : nullptr;
     if (typed && typed->state) {
       const auto hold = image.payload; // keep the state alive while emitting
-      EmitResult(*typed->state, arguments, services.WorkerCount(), sink);
+      EmitResult(*typed->state, arguments, services, sink);
       return;
     }
   }
@@ -641,7 +641,7 @@ void TpchQ10Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
   const auto state = BuildState();
-  EmitResult(*state, arguments, services.WorkerCount(), sink);
+  EmitResult(*state, arguments, services, sink);
 }
 
 namespace {
@@ -661,7 +661,7 @@ bool Better(const Candidate &a, const Candidate &b) {
 // Keeps the best `limit` candidates seen (heap top = the worst kept one).
 class TopK {
 public:
-  explicit TopK(std::size_t limit) : limit(limit) {}
+  explicit TopK(std::size_t limit = kTpchQ10ResultLimit) : limit(limit) {}
   void Offer(const Candidate &c) {
     if (heap.size() < limit) {
       heap.push_back(c);
@@ -722,7 +722,7 @@ void ScanBuckets(const TpchQ10State &s, int64_t first_day, int64_t last_day,
 
 void TpchQ10Module::EmitResult(const TpchQ10State &s,
                                const core::QueryArguments &arguments,
-                               std::size_t workers,
+                               const core::AuxEngineServices &services,
                                core::AuxRowSink &sink) const {
   sink.Begin({{{"c_custkey", core::AuxType::Int64, false},
                {"c_name", core::AuxType::String, false},
@@ -753,32 +753,20 @@ void TpchQ10Module::EmitResult(const TpchQ10State &s,
     const int64_t last_day =
         std::min<int64_t>(end_day - 1, std::numeric_limits<int32_t>::max());
     if (first_day <= last_day) {
-      const uint64_t gets =
-          static_cast<uint64_t>(last_day - first_day + 1) * s.buckets;
-      std::size_t threads = 1;
-      if (gets >= (uint64_t{1} << 18) && workers > 1)
-        threads = std::min<std::size_t>(
-            {workers, static_cast<std::size_t>(s.buckets), 64});
-      std::vector<TopK> tops(threads, TopK(kTpchQ10ResultLimit));
-      if (threads == 1) {
-        ScanBuckets(s, first_day, last_day, 0, s.buckets, tops[0]);
-      } else {
-        std::vector<std::thread> pool;
-        for (std::size_t t = 0; t < threads; ++t) {
-          const uint32_t lo = static_cast<uint32_t>(s.buckets * t / threads);
-          const uint32_t hi = static_cast<uint32_t>(s.buckets * (t + 1) / threads);
-          pool.emplace_back([&, t, lo, hi] {
-            ScanBuckets(s, first_day, last_day, lo, hi, tops[t]);
+      // About 2^18 bucket-day lookups pay for a slice.
+      const std::size_t grain =
+          std::max<std::size_t>(1, (std::size_t{1} << 18) / static_cast<std::size_t>(last_day - first_day + 1));
+      TopK top;
+      core::ParallelReduce(
+          services, s.buckets, grain, top,
+          [&](TopK &acc, std::size_t begin, std::size_t end) {
+            ScanBuckets(s, first_day, last_day, static_cast<uint32_t>(begin), static_cast<uint32_t>(end), acc);
+          },
+          [](TopK &into, TopK &&from) {
+            for (const auto &c : from.Items())
+              into.Offer(c);
           });
-        }
-        for (auto &th : pool)
-          th.join();
-      }
-      TopK merged(kTpchQ10ResultLimit);
-      for (auto &t : tops)
-        for (const auto &c : t.Items())
-          merged.Offer(c);
-      best = merged.Sorted();
+      best = top.Sorted();
     }
   }
 

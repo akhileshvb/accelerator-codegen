@@ -144,7 +144,42 @@ static struct st_mysql_audit g_audit_descriptor = {
     [MYSQL_AUDIT_CONNECTION_CLASS] = MYSQL_AUDIT_CONNECTION_DISCONNECT },
 };
 
+// ---- Thread settings (0: the default, see runtime/thread_budget.hpp) ----
+
+enum Setting { kBudget, kRead, kBuild, kMaintenance, kSettingCount };
+unsigned long g_settings[kSettingCount] = {};
+
+void ApplyThreadSettings() {
+  engine::MysqlHost::Get().SetThreads(
+      {g_settings[kBudget], g_settings[kRead], g_settings[kBuild], g_settings[kMaintenance]});
+}
+
+void UpdateThreadSetting(MYSQL_THD, SYS_VAR *, void *var_ptr, const void *save) {
+  *static_cast<unsigned long *>(var_ptr) = *static_cast<const unsigned long *>(save);
+  ApplyThreadSettings();
+}
+
+// The server names each variable <plugin name>_<name>.
+st_mysql_sysvar_ulong ThreadSysvar(const char *name, const char *comment, Setting setting) {
+  return {PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED, name, comment, nullptr, UpdateThreadSetting,
+          &g_settings[setting], /*def*/ 0, /*min*/ 0, /*max*/ 4096, /*blk*/ 0};
+}
+
+st_mysql_sysvar_ulong g_sysvars[kSettingCount] = {
+    ThreadSysvar("accel_threads", "Accelerator thread budget (0: the CPUs this server may use)", kBudget),
+    ThreadSysvar("accel_read_threads", "Threads one accelerated read may use (0: the budget)", kRead),
+    ThreadSysvar("accel_build_threads", "Threads one state build may use (0: the budget)", kBuild),
+    ThreadSysvar("accel_maint_threads", "Threads one commit's maintenance may use (0: serial)",
+                 kMaintenance),
+};
+
+SYS_VAR *g_system_vars[kSettingCount + 1] = {
+    reinterpret_cast<SYS_VAR *>(&g_sysvars[kBudget]), reinterpret_cast<SYS_VAR *>(&g_sysvars[kRead]),
+    reinterpret_cast<SYS_VAR *>(&g_sysvars[kBuild]),
+    reinterpret_cast<SYS_VAR *>(&g_sysvars[kMaintenance]), nullptr};
+
 static int mysql_plugin_init(void *) {
+  ApplyThreadSettings();
   return 0;
 }
 
@@ -180,7 +215,7 @@ mysql_declare_plugin(accelerator_codegen_txn) {
   mysql_plugin_deinit,
   0x0100,            /* version */
   nullptr,           /* status_vars */
-  nullptr,           /* system_vars */
+  g_system_vars,
   nullptr,
   0,
 }

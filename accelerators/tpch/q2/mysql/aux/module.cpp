@@ -579,14 +579,14 @@ void TpchQ2Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitResult(*state, arguments, sink);
+  EmitResult(services, *state, arguments, sink);
 }
 
 void TpchQ2Module::ExecuteFallback(core::AuxEngineServices &services,
                                    const core::QueryArguments &arguments,
                                    core::AuxRowSink &sink) {
   const TpchQ2State state = BuildState(services);
-  EmitResult(state, arguments, sink);
+  EmitResult(services, state, arguments, sink);
 }
 
 TpchQ2State
@@ -627,7 +627,7 @@ TpchQ2Module::LoadState(core::AuxEngineServices &services) const {
   return nullptr;
 }
 
-void TpchQ2Module::EmitResult(const TpchQ2State &state,
+void TpchQ2Module::EmitResult(const core::AuxEngineServices &services, const TpchQ2State &state,
                               const core::QueryArguments &arguments,
                               core::AuxRowSink &sink) const {
   // SQL NULL (or a missing / mistyped argument) makes its predicate unknown,
@@ -649,7 +649,7 @@ void TpchQ2Module::EmitResult(const TpchQ2State &state,
     if (StringValue(arguments.values[2], text))
       args.region_name = std::move(text);
   }
-  TpchQ2FinalizeAndEmit(state, args, sink);
+  TpchQ2FinalizeAndEmit(services, state, args, sink);
 }
 
 std::vector<core::CalibrationWrite> TpchQ2Module::CalibrationWrites() const {

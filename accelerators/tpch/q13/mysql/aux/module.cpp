@@ -1,6 +1,7 @@
 #include "tpch/q13/mysql/aux/module.hpp"
 #include "tpch/q13/calibration_writes.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -12,7 +13,6 @@
 #include <unordered_map>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -429,14 +429,14 @@ void TpchQ13Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitResult(*state, arguments, sink);
+  EmitResult(services, *state, arguments, sink);
 }
 
 void TpchQ13Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
   const auto state = BuildState(services);
-  EmitResult(*state, arguments, sink);
+  EmitResult(services, *state, arguments, sink);
 }
 
 bool TpchQ13Module::LoadState(
@@ -460,8 +460,7 @@ bool TpchQ13Module::LoadState(
 namespace {
 
 // excluded[custkey] = number of the customer's orders whose comment matches
-// `matcher`. Segments are handed out in blocks to worker threads; each segment
-// is matched with one SIMD pass over its comment blob.
+// `matcher`. Each segment is matched with one SIMD pass over its comment blob.
 // Matches are counted in a flat array when the custkey range is dense enough,
 // otherwise (and for negative / huge keys) in a mutex-protected hash.
 struct Excluded {
@@ -484,53 +483,40 @@ struct Excluded {
   }
 };
 
-void CountMatchingOrders(const TpchQ13State &state,
-                         const like::LikeMatcher &matcher, Excluded &excluded) {
-  const std::size_t nseg = state.segments.size();
-  constexpr std::size_t kBlock = 16;
-  unsigned threads = 1;
-  if (nseg >= 64)
-    threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+// Customer chunks per slice: ~64K customers each, a few hundred us.
+constexpr std::size_t kChunksGrain = 4;
 
-  std::atomic<std::size_t> next{0};
-  auto worker = [&] {
-    for (;;) {
-      const std::size_t lo = next.fetch_add(kBlock);
-      if (lo >= nseg)
-        return;
-      for (std::size_t s = lo; s < std::min(nseg, lo + kBlock); ++s) {
-        const auto *seg = state.segments[s].get();
-        if (!seg || seg->live == 0)
-          continue;
-        const std::size_t n = seg->orderkey.size();
-        const auto bits = like::MatchBlobBitmap(
-            matcher, seg->comment.offsets(), n, seg->comment.data(), 1);
-        for (std::size_t w = 0; w < bits.size(); ++w) {
-          uint64_t b = bits[w];
-          while (b) {
-            const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
-            b &= b - 1;
-            if (seg->alive[i])
-              excluded.Add(seg->custkey[i]);
+// Segments per slice: one holds thousands of comments (~0.1 ms to match).
+constexpr std::size_t kSegmentsGrain = 16;
+
+void CountMatchingOrders(const core::AuxEngineServices &services, const TpchQ13State &state,
+                         const like::LikeMatcher &matcher, Excluded &excluded) {
+  core::ParallelSlices(
+      services, state.segments.size(), kSegmentsGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t s = begin; s < end; ++s) {
+          const auto *seg = state.segments[s].get();
+          if (!seg || seg->live == 0)
+            continue;
+          const std::size_t n = seg->orderkey.size();
+          const auto bits = like::MatchBlobBitmap(
+              matcher, seg->comment.offsets(), n, seg->comment.data(), 1);
+          for (std::size_t w = 0; w < bits.size(); ++w) {
+            uint64_t b = bits[w];
+            while (b) {
+              const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
+              b &= b - 1;
+              if (seg->alive[i])
+                excluded.Add(seg->custkey[i]);
+            }
           }
         }
-      }
-    }
-  };
-  if (threads == 1) {
-    worker();
-    return;
-  }
-  std::vector<std::thread> pool;
-  for (unsigned t = 0; t < threads; ++t)
-    pool.emplace_back(worker);
-  for (auto &th : pool)
-    th.join();
+      });
 }
 
 } // namespace
 
-void TpchQ13Module::EmitResult(const TpchQ13State &state,
+void TpchQ13Module::EmitResult(const core::AuxEngineServices &services, const TpchQ13State &state,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) const {
   const bool pattern_null =
@@ -551,7 +537,7 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
         kLikeCaseInsensitive, /*utf8_underscore=*/true);
     if (span <= static_cast<std::size_t>(state.customers) * 4 + (std::size_t{1} << 20))
       excluded.flat.assign(span, 0);
-    CountMatchingOrders(state, matcher, excluded);
+    CountMatchingOrders(services, state, matcher, excluded);
   }
 
   // Histogram of effective counts. Counts up to kDense use a flat array; the
@@ -565,36 +551,54 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
   state.sparse_customers.ForEach([&](int64_t, const TpchQ13State::SparseSlot &slot) {
     max_count = std::max<int64_t>(max_count, slot.count);
   });
-  std::vector<int64_t> dense(static_cast<std::size_t>(std::min(max_count, kDense)) + 1, 0);
-  std::map<int64_t, int64_t> sparse;
-
-  for (std::size_t ci = 0; ci < state.customer_valid.NumChunks(); ++ci) {
-    const auto *valid = state.customer_valid.ChunkAt(ci);
-    if (!valid)
-      continue;
-    const auto *counts = state.order_count.ChunkAt(ci);
-    const std::size_t base = ci * Array::kChunkSize;
-    for (std::size_t j = 0; j < valid->size(); ++j) {
-      if (!(*valid)[j])
-        continue;
-      int64_t eff = pattern_null ? 0 : (counts ? (*counts)[j] : 0);
-      if (!pattern_null)
-        eff -= excluded.Get(static_cast<int64_t>(base + j));
-      if (eff <= kDense)
-        ++dense[static_cast<std::size_t>(eff)];
-      else
+  const std::size_t dense_size = static_cast<std::size_t>(std::min(max_count, kDense)) + 1;
+  struct Histogram {
+    std::vector<int64_t> dense; // sized on first use: a slice may see no customer
+    std::map<int64_t, int64_t> sparse;
+    void Count(int64_t eff, std::size_t size) {
+      if (eff > kDense) {
         ++sparse[eff];
+        return;
+      }
+      dense.resize(size);
+      ++dense[static_cast<std::size_t>(eff)];
     }
-  }
+  };
+  Histogram histogram;
+  core::ParallelReduce(
+      services, state.customer_valid.NumChunks(), kChunksGrain, histogram,
+      [&](Histogram &acc, std::size_t begin, std::size_t end) {
+        for (std::size_t ci = begin; ci < end; ++ci) {
+          const auto *valid = state.customer_valid.ChunkAt(ci);
+          if (!valid)
+            continue;
+          const auto *counts = state.order_count.ChunkAt(ci);
+          const std::size_t base = ci * Array::kChunkSize;
+          for (std::size_t j = 0; j < valid->size(); ++j) {
+            if (!(*valid)[j])
+              continue;
+            int64_t eff = pattern_null ? 0 : (counts ? (*counts)[j] : 0);
+            if (!pattern_null)
+              eff -= excluded.Get(static_cast<int64_t>(base + j));
+            acc.Count(eff, dense_size);
+          }
+        }
+      },
+      [](Histogram &into, Histogram &&from) {
+        if (into.dense.size() < from.dense.size())
+          into.dense.resize(from.dense.size());
+        for (std::size_t i = 0; i < from.dense.size(); ++i)
+          into.dense[i] += from.dense[i];
+        for (const auto &[eff, n] : from.sparse)
+          into.sparse[eff] += n;
+      });
   state.sparse_customers.ForEach([&](int64_t key, const TpchQ13State::SparseSlot &slot) {
     if (!slot.valid)
       return;
-    const int64_t eff = pattern_null ? 0 : slot.count - excluded.Get(key);
-    if (eff <= kDense)
-      ++dense[static_cast<std::size_t>(eff)];
-    else
-      ++sparse[eff];
+    histogram.Count(pattern_null ? 0 : slot.count - excluded.Get(key), dense_size);
   });
+  const auto &dense = histogram.dense;
+  const auto &sparse = histogram.sparse;
 
   std::vector<TpchQ13OutputRow> rows;
   for (std::size_t c = 0; c < dense.size(); ++c)

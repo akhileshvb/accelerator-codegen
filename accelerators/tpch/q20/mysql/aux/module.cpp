@@ -2,13 +2,13 @@
 #include "tpch/q20/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -374,6 +374,9 @@ static_assert((kBlockParts & (kBlockParts - 1)) == 0);
 constexpr int64_t BlockOf(int64_t key) { return key >> __builtin_ctzll(static_cast<uint64_t>(kBlockParts)); }
 constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key & (kBlockParts - 1)); }
 
+// Blocks per encode slice: each sorts a few thousand lineitem entries (~0.1 ms).
+constexpr std::size_t kBlocksGrain = 8;
+
 // Blocks being edited, keyed by block index; re-encoded into the state by Flush.
 class BlockEditor {
 public:
@@ -385,12 +388,21 @@ public:
       it = edited_.emplace(bi, DecodeBlock(state_.FindBlock(partkey))).first;
     return it->second;
   }
-  void Flush() {
-    for (auto &[bi, raw] : edited_) {
-      auto encoded = EncodeBlock(raw);
-      if (encoded || state_.blocks.Get(bi))
-        state_.blocks.Set(bi, encoded);
-    }
+  // Blocks encode independently; they enter the state in block order.
+  void Flush(const core::AuxEngineServices &services) {
+    std::vector<const std::pair<const int64_t, RawBlock> *> edits;
+    edits.reserve(edited_.size());
+    for (const auto &entry : edited_)
+      edits.push_back(&entry);
+    std::vector<std::shared_ptr<TpchQ20PartBlock>> encoded(edits.size());
+    core::ParallelSlices(services, edits.size(), kBlocksGrain,
+                         [&](std::size_t, std::size_t begin, std::size_t end) {
+                           for (std::size_t i = begin; i < end; ++i)
+                             encoded[i] = EncodeBlock(edits[i]->second);
+                         });
+    for (std::size_t i = 0; i < edits.size(); ++i)
+      if (encoded[i] || state_.blocks.Get(edits[i]->first))
+        state_.blocks.Set(edits[i]->first, encoded[i]);
     edited_.clear();
   }
 private:
@@ -590,7 +602,7 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
     else
       raw.ClearAvail(slot, d.suppkey);
   }
-  editor.Flush();
+  editor.Flush(services);
 
   for (const auto &d : buffer.PartDeltas()) {
     if (d.sign > 0)
@@ -639,19 +651,18 @@ void TpchQ20Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitResult(*state, arguments, sink);
+  EmitResult(services, *state, arguments, sink);
 }
 
 void TpchQ20Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
   const auto state = BuildState(services);
-  EmitResult(*state, arguments, sink);
+  EmitResult(services, *state, arguments, sink);
 }
 
 std::shared_ptr<TpchQ20State>
 TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error(
         "TPC-H Q20 aux requires a typed initial scan source");
@@ -680,7 +691,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
           .AddLine(SlotOf(input.partkey), input.suppkey,
                    input.shipdate_days, input.quantity_raw);
   });
-  editor.Flush();
+  editor.Flush(services);
   return state;
 }
 
@@ -700,7 +711,7 @@ bool TpchQ20Module::LoadState(core::AuxEngineServices &services,
   return false;
 }
 
-void TpchQ20Module::EmitResult(const TpchQ20State &state,
+void TpchQ20Module::EmitResult(const core::AuxEngineServices &services, const TpchQ20State &state,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) const {
   auto empty = [&] {
@@ -741,7 +752,7 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
 
   const auto matcher = like::LikeMatcher::Compile(pattern, '\\', kCaseInsensitive,
                                                   /*utf8_underscore=*/true);
-  const unsigned max_threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+  const auto max_threads = static_cast<unsigned>(services.WorkerCount());
   std::vector<std::vector<int64_t>> qualifying(max_threads);
 
   // Parts whose name matches (SIMD / prefix scan of the name column), then for

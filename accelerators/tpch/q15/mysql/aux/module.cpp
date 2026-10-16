@@ -1,6 +1,7 @@
 #include "tpch/q15/mysql/aux/module.hpp"
 #include "tpch/q15/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -24,6 +25,8 @@ constexpr int64_t kMonthPartitionBias = 1000000;
 constexpr int32_t kRevenueScale = 4;
 // Dates this close to the int32 limits are PostgreSQL +/-infinity sentinels.
 constexpr int64_t kFiniteDateLimit = std::numeric_limits<int32_t>::max() - 1;
+// Supplier chunks per sweep slice: each sums every whole month's column (~100 us).
+constexpr std::size_t kSweepChunksGrain = 16;
 
 core::PartitionId MonthPartition(int64_t month_index) {
   return static_cast<core::PartitionId>(month_index + kMonthPartitionBias);
@@ -330,6 +333,33 @@ void EmitRow(core::AuxRowSink &sink, int64_t suppkey, const std::string &name,
                   core::AuxValue::Of(core::AuxType::String, phone),
                   core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal)}});
 }
+
+// The suppliers with the largest revenue among those with a lineitem in the window.
+struct Leaders {
+  Int128 best = 0;
+  bool have_best = false;
+  std::vector<int64_t> winners;
+
+  void Consider(int64_t key, const Int128 &total, int64_t rows) {
+    if (rows <= 0)
+      return;
+    if (!have_best || total > best) {
+      best = total;
+      have_best = true;
+      winners.clear();
+    }
+    if (total == best)
+      winners.push_back(key);
+  }
+  void Merge(Leaders &&other) {
+    if (!other.have_best)
+      return;
+    if (!have_best || other.best > best)
+      *this = std::move(other);
+    else if (other.best == best)
+      winners.insert(winners.end(), other.winners.begin(), other.winners.end());
+  }
+};
 
 } // namespace
 
@@ -764,53 +794,46 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
   // Sweep: exact (int128) per-supplier sums; a supplier is a group iff it has
   // at least one lineitem in the window. Track the max and its holders.
   constexpr std::size_t kChunk = core::AnyKeyCowArray<int64_t>::kChunkSize;
-  std::vector<Int128> sum(kChunk);
-  std::vector<int64_t> rows(kChunk);
-  Int128 best = 0;
-  bool have_best = false;
-  std::vector<int64_t> winners;
-  const auto consider = [&](int64_t key, const Int128 &total, int64_t n) {
-    if (n <= 0)
-      return;
-    if (!have_best || total > best) {
-      best = total;
-      have_best = true;
-      winners.clear();
-    }
-    if (total == best)
-      winners.push_back(key);
-  };
-  for (const std::size_t cid : chunk_ids) {
-    std::fill(sum.begin(), sum.end(), Int128{0});
-    std::fill(rows.begin(), rows.end(), int64_t{0});
-    for (const auto *ms : whole) {
-      const auto *rc = ms->revenue.ChunkAt(cid);
-      const auto *cc = ms->count.ChunkAt(cid);
-      if (!rc || !cc)
-        continue;
-      for (std::size_t i = 0; i < kChunk; ++i) {
-        int64_t v = (*rc)[i];
-        if (v == kTpchQ15WideRevenue) {
-          const int64_t key = core::AnyKeyCowArray<int64_t>::KeyAt(cid, i);
-          sum[i] += ms->wide_revenue.at(key);
-        } else {
-          sum[i] += v;
+  Leaders leaders;
+  core::ParallelReduce(
+      services, chunk_ids.size(), kSweepChunksGrain, leaders,
+      [&](Leaders &acc, std::size_t begin, std::size_t end) {
+        std::vector<Int128> sum(kChunk);
+        std::vector<int64_t> rows(kChunk);
+        for (std::size_t c = begin; c < end; ++c) {
+          const std::size_t cid = chunk_ids[c];
+          std::fill(sum.begin(), sum.end(), Int128{0});
+          std::fill(rows.begin(), rows.end(), int64_t{0});
+          for (const auto *ms : whole) {
+            const auto *rc = ms->revenue.ChunkAt(cid);
+            const auto *cc = ms->count.ChunkAt(cid);
+            if (!rc || !cc)
+              continue;
+            for (std::size_t i = 0; i < kChunk; ++i) {
+              int64_t v = (*rc)[i];
+              if (v == kTpchQ15WideRevenue) {
+                const int64_t key = core::AnyKeyCowArray<int64_t>::KeyAt(cid, i);
+                sum[i] += ms->wide_revenue.at(key);
+              } else {
+                sum[i] += v;
+              }
+              rows[i] += (*cc)[i];
+            }
+          }
+          if (have_edge) {
+            if (const auto *rc = edge_revenue.ChunkAt(cid)) {
+              const auto *cc = edge_count.ChunkAt(cid);
+              for (std::size_t i = 0; i < kChunk; ++i) {
+                sum[i] += (*rc)[i];
+                rows[i] += (*cc)[i];
+              }
+            }
+          }
+          for (std::size_t i = 0; i < kChunk; ++i)
+            acc.Consider(core::AnyKeyCowArray<int64_t>::KeyAt(cid, i), sum[i], rows[i]);
         }
-        rows[i] += (*cc)[i];
-      }
-    }
-    if (have_edge) {
-      if (const auto *rc = edge_revenue.ChunkAt(cid)) {
-        const auto *cc = edge_count.ChunkAt(cid);
-        for (std::size_t i = 0; i < kChunk; ++i) {
-          sum[i] += (*rc)[i];
-          rows[i] += (*cc)[i];
-        }
-      }
-    }
-    for (std::size_t i = 0; i < kChunk; ++i)
-      consider(core::AnyKeyCowArray<int64_t>::KeyAt(cid, i), sum[i], rows[i]);
-  }
+      },
+      [](Leaders &into, Leaders &&from) { into.Merge(std::move(from)); });
   // Suppliers outside the dense key range (negative or huge keys) live in the
   // arrays' sparse parts; fold them the same way.
   std::map<int64_t, std::pair<Int128, int64_t>> far;
@@ -828,7 +851,9 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
         [&](int64_t key, const int64_t &c) { far[key].second += c; });
   }
   for (const auto &entry : far)
-    consider(entry.first, entry.second.first, entry.second.second);
+    leaders.Consider(entry.first, entry.second.first, entry.second.second);
+  const Int128 best = leaders.best;
+  auto &winners = leaders.winners;
   std::sort(winners.begin(), winners.end());
 
   sink.Begin(Schema());

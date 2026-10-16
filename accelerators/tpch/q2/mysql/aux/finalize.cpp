@@ -5,12 +5,12 @@
 #include <limits>
 #include <queue>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "prims/mysql_collation.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -23,6 +23,9 @@ struct Q2Candidate {
   int64_t suppkey = 0;
   int64_t partkey = 0;
 };
+
+// Part chunks per slice: each holds thousands of parts (~0.1 ms).
+constexpr std::size_t kChunksGrain = 256;
 
 // Everything one Execute derives from its arguments.
 struct Q2Query {
@@ -154,8 +157,8 @@ void EmitEmpty(core::AuxRowSink &sink, const core::OutputSchema &schema) {
 
 } // namespace
 
-void TpchQ2FinalizeAndEmit(const TpchQ2State &state, const TpchQ2Args &args,
-                           core::AuxRowSink &sink) {
+void TpchQ2FinalizeAndEmit(const core::AuxEngineServices &services, const TpchQ2State &state,
+                           const TpchQ2Args &args, core::AuxRowSink &sink) {
   core::OutputSchema schema;
   schema.columns = {{"s_acctbal", core::AuxType::ScaledDecimal, true},
                     {"s_name", core::AuxType::String, true},
@@ -220,34 +223,21 @@ void TpchQ2FinalizeAndEmit(const TpchQ2State &state, const TpchQ2Args &args,
   const auto &blob = state.types->blob();
   q.type_bits = core::sql_like::MatchBlobBitmap(
       matcher, blob.offsets(), state.types->size(), blob.data(),
-      state.types->size() > 1000000 ? 4 : 1);
+      state.types->size() > 1000000 ? std::min<std::size_t>(4, services.WorkerCount()) : 1);
   q.type_bits.push_back(0); // keep TypeMatches in range for an empty dictionary
 
   const auto better = [&q](const Q2Candidate &a, const Q2Candidate &b) {
     return Q2Better(q, a, b);
   };
   const std::size_t chunks = state.part_size.NumChunks();
-  // Large part tables: split the chunk range across threads, merge the heaps.
-  const std::size_t threads =
-      chunks >= 512 ? std::min<std::size_t>(
-                          8, std::max(1u, std::thread::hardware_concurrency()))
-                    : 1;
+  const std::size_t slices = core::SliceCount(services, chunks, kChunksGrain);
   std::vector<Q2Heap> heaps;
-  for (std::size_t t = 0; t < threads; ++t)
+  for (std::size_t t = 0; t < slices; ++t)
     heaps.emplace_back(better);
   ScanSparseParts(q, heaps[0]);
-  if (threads == 1) {
-    ScanPartChunks(q, 0, chunks, heaps[0]);
-  } else {
-    std::vector<std::thread> pool;
-    const std::size_t per = (chunks + threads - 1) / threads;
-    for (std::size_t t = 0; t < threads; ++t)
-      pool.emplace_back([&, t] {
-        ScanPartChunks(q, t * per, std::min(chunks, (t + 1) * per), heaps[t]);
-      });
-    for (auto &th : pool)
-      th.join();
-  }
+  core::RunSlices(services, slices, chunks, [&](std::size_t slice, std::size_t begin, std::size_t end) {
+    ScanPartChunks(q, begin, end, heaps[slice]);
+  });
 
   std::vector<Q2Candidate> rows;
   for (auto &heap : heaps)

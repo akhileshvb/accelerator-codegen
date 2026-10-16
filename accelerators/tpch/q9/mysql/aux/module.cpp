@@ -3,6 +3,7 @@
 #include "prims/pg_numeric.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,7 +12,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -248,6 +248,9 @@ static_assert((kBlockParts & (kBlockParts - 1)) == 0);
 constexpr int64_t BlockOf(int64_t key) { return key >> __builtin_ctzll(static_cast<uint64_t>(kBlockParts)); }
 constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key & (kBlockParts - 1)); }
 
+// Blocks per encode slice: each copies a few thousand cells and prices (~50 us).
+constexpr std::size_t kBlocksGrain = 16;
+
 // Blocks being edited, keyed by block index; re-encoded into the state by Flush.
 class BlockEditor {
 public:
@@ -258,12 +261,21 @@ public:
       slot = DecodeBlock(state_.FindBlock(partkey));
     return *slot;
   }
-  void Flush() {
-    for (auto entry : edited_) {
-      auto encoded = EncodeBlock(*entry.second);
-      if (encoded || state_.blocks.Get(entry.first))
-        state_.blocks.Set(entry.first, encoded);
-    }
+  // Blocks encode independently; they enter the state in iteration order.
+  void Flush(const core::AuxEngineServices &services) {
+    std::vector<std::pair<int64_t, std::shared_ptr<EditBlock>>> edits;
+    edits.reserve(edited_.size());
+    for (auto entry : edited_)
+      edits.emplace_back(entry.first, entry.second);
+    std::vector<std::shared_ptr<TpchQ9PartBlock>> encoded(edits.size());
+    core::ParallelSlices(services, edits.size(), kBlocksGrain,
+                         [&](std::size_t, std::size_t begin, std::size_t end) {
+                           for (std::size_t i = begin; i < end; ++i)
+                             encoded[i] = EncodeBlock(*edits[i].second);
+                         });
+    for (std::size_t i = 0; i < edits.size(); ++i)
+      if (encoded[i] || state_.blocks.Get(edits[i].first))
+        state_.blocks.Set(edits[i].first, encoded[i]);
     edited_.Clear();
   }
 
@@ -418,7 +430,7 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ9Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ9TxnBuffer>();
 }
 
-std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState() const {
+std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q9 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ9State>();
@@ -469,12 +481,12 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState() const {
       edit.AddCell(slot, state->GroupFor(nationkey, year), 1, profit);
     });
   }
-  editor.Flush();
+  editor.Flush(services);
   return state;
 }
 
-void TpchQ9Module::Build(core::AuxEngineServices &, core::StateBuilder &builder) {
-  const auto state = BuildState();
+void TpchQ9Module::Build(core::AuxEngineServices &services, core::StateBuilder &builder) {
+  const auto state = BuildState(services);
   builder.Write(core::StateImage::Make(
       TpchQ9Layout::kAccelerator, TpchQ9Layout::kCompleteState, 0,
       MakeStateImage(state)));
@@ -746,7 +758,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
     edit.AddCell(slot, updated->GroupFor(nationkey, year), 1, profit);
   }
-  editor.Flush();
+  editor.Flush(services);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
@@ -780,15 +792,15 @@ void TpchQ9Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitResult(*state, arguments, sink);
+  EmitResult(services, *state, arguments, sink);
 }
 
-void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &,
+void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &services,
                                    const core::QueryArguments &arguments,
                                    core::AuxRowSink &sink) {
   // Recompute from base tables: build state and emit
-  const auto state = BuildState();
-  EmitResult(*state, arguments, sink);
+  const auto state = BuildState(services);
+  EmitResult(services, *state, arguments, sink);
 }
 
 bool TpchQ9Module::LoadState(core::AuxEngineServices &services,
@@ -807,7 +819,7 @@ bool TpchQ9Module::LoadState(core::AuxEngineServices &services,
   return false;
 }
 
-void TpchQ9Module::EmitResult(const TpchQ9State &state,
+void TpchQ9Module::EmitResult(const core::AuxEngineServices &services, const TpchQ9State &state,
                               const core::QueryArguments &arguments,
                               core::AuxRowSink &sink) const {
   auto empty = [&] {
@@ -829,7 +841,7 @@ void TpchQ9Module::EmitResult(const TpchQ9State &state,
     int64_t rows = 0;
   };
   const std::size_t ngroups = state.groups.size();
-  const unsigned max_threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+  const auto max_threads = static_cast<unsigned>(services.WorkerCount());
   std::vector<std::vector<Acc>> acc(max_threads, std::vector<Acc>(ngroups));
 
   // Matching parts (SIMD scan of the name column), then their profit cells.
