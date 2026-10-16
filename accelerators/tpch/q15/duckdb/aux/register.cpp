@@ -5,6 +5,7 @@
 #include "tpch/q15/duckdb/aux/module.hpp"
 #include "tpch/q15/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -112,51 +113,32 @@ using namespace scan;
 struct TpchQ15Scan : TpchQ15InitialScan {
   explicit TpchQ15Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanSuppliers(
-      const std::function<void(const TpchQ15SupplierInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT s_suppkey, s_name, s_address, s_phone FROM supplier",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ15SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      ChunkValue(chunk, 1, row).ToString(),
-                                      ChunkValue(chunk, 2, row).ToString(),
-                                      ChunkValue(chunk, 3, row).ToString()};
-        },
-        [&](TpchQ15SupplierInput &&input) { consumer(input); });
-  }
-  void ScanMonthRevenue(
-      const std::function<void(int32_t, int64_t, int64_t)> &consumer) override {
-    // GROUP BY (month, suppkey) in SQL: raw revenue is price_raw * (100 -
-    // discount_raw), the same scale-4 integer the delta path uses.
-    ScanQueryDecoded(
-        connection,
-        "SELECT CAST(year(l_shipdate) * 100 + month(l_shipdate) AS BIGINT), "
-        "l_suppkey, "
-        "CAST(SUM(CAST(l_extendedprice * 100 AS BIGINT) * "
-        "(100 - CAST(l_discount * 100 AS BIGINT))) AS BIGINT) "
-        "FROM lineitem WHERE l_shipdate IS NOT NULL GROUP BY 1, 2",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return std::array<int64_t, 3>{SafeInt64(ChunkValue(chunk, 0, row)),
-                                        SafeInt64(ChunkValue(chunk, 1, row)),
-                                        SafeInt64(ChunkValue(chunk, 2, row))};
-        },
-        [&](std::array<int64_t, 3> &&group) {
-          consumer(static_cast<int32_t>(group[0]), group[1], group[2]);
-        });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ15SupplierInput &)> &sink) override {
+    ScanPartitioned(services, connection, "supplier",
+                    {IntColumn("s_suppkey"), TextColumn("s_name"), TextColumn("s_address"),
+                     TextColumn("s_phone")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ15SupplierInput{row.Int(0), row.Text(1), row.Text(2),
+                                                             row.Text(3)});
+                      }
+                    });
   }
   void ScanLineitems(
-      const std::function<void(const TpchQ15LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ15LineitemInput{DateDays(ChunkValue(chunk, 3, row)),
-                                      SafeInt64(ChunkValue(chunk, 0, row)),
-                                      DecimalRaw(ChunkValue(chunk, 1, row)),
-                                      2,
-                                      DecimalRaw(ChunkValue(chunk, 2, row)),
-                                      2};
-        },
-        [&](TpchQ15LineitemInput &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ15LineitemInput &)> &sink) override {
+    ScanPartitioned(services, connection, "lineitem",
+                    {DateColumn("l_shipdate"), IntColumn("l_suppkey"),
+                     DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2)},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ15LineitemInput{row.Date(0), row.Int(1), row.Decimal(2),
+                                                             2, row.Decimal(3), 2});
+                      }
+                    });
   }
   void ScanLineitemsForShipdateRange(
       int32_t start_days, int32_t end_days,

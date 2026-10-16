@@ -5,6 +5,7 @@
 #include "tpch/q18/duckdb/aux/module.hpp"
 #include "tpch/q18/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -125,28 +126,43 @@ struct TpchQ18Scan : TpchQ18InitialScan {
         [&](auto &&input) { consumer(input); });
     return true;
   }
-  bool ScanSurvivorOrders(
-      int64_t min_quantity_raw,
-      const std::function<void(const TpchQ18SurvivorAggregate &)> &consumer)
-      override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT a.k, a.s, o.o_custkey, o.o_orderdate, o.o_totalprice FROM ("
-        "SELECT l_orderkey AS k, "
-        "CAST(SUM(CAST(round(l_quantity * 100) AS BIGINT)) AS BIGINT) AS s "
-        "FROM lineitem GROUP BY l_orderkey HAVING "
-        "CAST(SUM(CAST(round(l_quantity * 100) AS BIGINT)) AS BIGINT) > " +
-            std::to_string(min_quantity_raw) +
-        ") a JOIN orders o ON a.k = o.o_orderkey",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ18SurvivorAggregate{SafeInt64(ChunkValue(chunk, 0, row)),
-                                          SafeInt64(ChunkValue(chunk, 1, row)),
-                                          SafeInt64(ChunkValue(chunk, 2, row)),
-                                          DateDays(ChunkValue(chunk, 3, row)),
-                                          DecimalRaw(ChunkValue(chunk, 4, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-    return true;
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18LineitemInput &)> &sink) override {
+    ScanPartitioned(services, connection, "lineitem",
+                    {IntColumn("l_orderkey"), DecimalColumn("l_quantity", 2)}, partitions,
+                    [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ18LineitemInput{row.Int(0), row.Decimal(1)});
+                      }
+                    });
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18OrderInput &)> &sink) override {
+    ScanPartitioned(services, connection, "orders",
+                    {IntColumn("o_orderkey"), IntColumn("o_custkey"), DateColumn("o_orderdate"),
+                     DecimalColumn("o_totalprice", 2)},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ18OrderInput{row.Int(0), row.Int(1), row.Date(2),
+                                                          row.Decimal(3)});
+                      }
+                    });
+  }
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18CustomerInput &)> &sink) override {
+    ScanPartitioned(services, connection, "customer",
+                    {IntColumn("c_custkey"), TextColumn("c_name")}, partitions,
+                    [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ18CustomerInput{row.Int(0), row.Text(1)});
+                      }
+                    });
   }
   void ScanOrders(
       const std::function<void(const TpchQ18OrderInput &)> &consumer) override {

@@ -55,14 +55,6 @@ struct TpchQ18OrderQuantityAggregate {
   int64_t quantity_sum_raw = 0;
 };
 
-struct TpchQ18SurvivorAggregate {
-  int64_t orderkey = 0;
-  int64_t quantity_sum_raw = 0;
-  int64_t custkey = 0;
-  int32_t orderdate_days = 0;
-  int64_t totalprice_raw = 0;
-};
-
 class TpchQ18InitialScan {
 public:
   virtual ~TpchQ18InitialScan() = default;
@@ -80,15 +72,17 @@ public:
     return false;
   }
 
-  // Optional: orders whose SUM(quantity) already exceeds min_quantity_raw,
-  // with order metadata joined in. Avoids an O(orders) C++ hash map at SF20.
-  virtual bool ScanSurvivorOrders(
-      int64_t min_quantity_raw,
-      const std::function<void(const TpchQ18SurvivorAggregate &)> &consumer) {
-    (void)min_quantity_raw;
-    (void)consumer;
-    return false;
-  }
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18LineitemInput &)> &) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18OrderInput &)> &) = 0;
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18CustomerInput &)> &) = 0;
 
   // Point-lookup for write maintenance when a lineitem delta crosses the
   // survivor threshold and order metadata is not yet cached.

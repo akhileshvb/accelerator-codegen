@@ -1,4 +1,7 @@
 #include "tpch/q22/duckdb/aux/module.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
+#include "prims/any_key_cow_array.hpp"
 #include "tpch/q22/calibration_writes.hpp"
 
 #include <algorithm>
@@ -580,6 +583,57 @@ void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &services,
   EmitResult(state, country_codes, sink);
 }
 
+namespace {
+
+// The customer records and positive-balance statistics one build partition
+// has seen; partitions fold in table order, so the last row of a key wins.
+struct CustomerPartial {
+  std::vector<std::shared_ptr<TpchQ22State::Page>> pages;
+  core::ShardedCowHashMap<TpchQ22State::CustomerRecord, 6> sparse;
+  std::unordered_map<TpchQ22State::Prefix, TpchQ22State::PositiveTotals> positive;
+  std::unordered_map<TpchQ22State::Prefix, std::map<int64_t, int64_t>> distributions;
+
+  TpchQ22State::CustomerRecord &RecordOf(int64_t custkey) {
+    if (custkey < TpchQ22State::kDenseLimit) {
+      const std::size_t page = static_cast<std::size_t>(custkey) / TpchQ22State::kPageSize;
+      if (pages.size() <= page)
+        pages.resize(page + 1);
+      if (!pages[page])
+        pages[page] = std::make_shared<TpchQ22State::Page>();
+      return pages[page]->recs[static_cast<std::size_t>(custkey) % TpchQ22State::kPageSize];
+    }
+    return sparse[custkey];
+  }
+  void MergeFrom(CustomerPartial &&from) {
+    if (pages.size() < from.pages.size())
+      pages.resize(from.pages.size());
+    for (std::size_t page = 0; page < from.pages.size(); ++page) {
+      if (!from.pages[page])
+        continue;
+      if (!pages[page]) {
+        pages[page] = std::move(from.pages[page]);
+        continue;
+      }
+      for (std::size_t i = 0; i < TpchQ22State::kPageSize; ++i)
+        if (from.pages[page]->recs[i].present)
+          pages[page]->recs[i] = from.pages[page]->recs[i];
+    }
+    from.sparse.ForEach([&](int64_t custkey, const TpchQ22State::CustomerRecord &rec) {
+      if (rec.present)
+        sparse[custkey] = rec;
+    });
+    for (const auto &[prefix, totals] : from.positive) {
+      positive[prefix].sum += totals.sum;
+      positive[prefix].count += totals.count;
+    }
+    for (auto &[prefix, balances] : from.distributions)
+      for (const auto &[balance, count] : balances)
+        distributions[prefix][balance] += count;
+  }
+};
+
+} // namespace
+
 // ── BuildState ──────────────────────────────────────────────────────────────
 TpchQ22State
 TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
@@ -589,60 +643,60 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
 
   TpchQ22State state;
 
-  // Orders per customer (GROUP BY o_custkey in SQL when supported).
-  std::unordered_map<int64_t, int64_t> order_counts;
-  const bool counted = initial_scan->ScanOrderCounts(
-      [&](int64_t custkey, int64_t count) {
-        if (custkey > 0)
-          order_counts[custkey] += count;
+  // Orders per customer.
+  using OrderCounts = core::AnyKeyCowArray<int64_t, 12>;
+  const OrderCounts order_counts = core::PartitionedBuild<OrderCounts>(
+      services, [] { return OrderCounts{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrders(services, parts,
+                                 [&](std::size_t p, const TpchQ22OrderInput &input) {
+                                   sink(p, TypedRowBatch<TpchQ22OrderInput>{input});
+                                 });
+      },
+      [](OrderCounts &counts, const TpchQ22OrderInput &input) {
+        if (input.custkey > 0)
+          counts.Add(input.custkey, 1);
+      },
+      [](OrderCounts &into, OrderCounts &&from) {
+        into.MergeFrom(std::move(from),
+                       [](int64_t mine, int64_t theirs) { return mine + theirs; });
       });
-  if (!counted) {
-    initial_scan->ScanOrders([&](const TpchQ22OrderInput &input) {
-      if (input.custkey > 0)
-        order_counts[input.custkey]++;
-    });
-  }
 
-  using Prefix = TpchQ22State::Prefix;
-  std::unordered_map<Prefix, std::map<int64_t, int64_t>> distributions;
-
-  const auto record_of = [&](int64_t custkey) -> TpchQ22State::CustomerRecord & {
-    if (custkey < TpchQ22State::kDenseLimit) {
-      const std::size_t page = static_cast<std::size_t>(custkey) /
-                               TpchQ22State::kPageSize;
-      if (state.pages.size() <= page)
-        state.pages.resize(page + 1);
-      if (!state.pages[page])
-        state.pages[page] = std::make_shared<TpchQ22State::Page>();
-      return state.pages[page]->recs[static_cast<std::size_t>(custkey) %
-                                     TpchQ22State::kPageSize];
-    }
-    return state.sparse[custkey];
-  };
-
-  initial_scan->ScanCustomers([&](const TpchQ22CustomerInput &input) {
-    if (input.custkey <= 0)
-      return;
-    TpchQ22State::CustomerRecord &rec = record_of(input.custkey);
-    rec.present = true;
-    rec.prefix = PackPrefix(ExtractPrefix(input.phone));
-    rec.balance_raw = input.acctbal_raw;
-    const auto order_it = order_counts.find(input.custkey);
-    rec.order_count = order_it != order_counts.end() ? order_it->second : 0;
-    if (rec.balance_raw > 0 && rec.prefix != 0) {
-      auto &p = state.positive[rec.prefix];
-      p.sum += rec.balance_raw;
-      p.count++;
-      if (rec.order_count == 0)
-        distributions[rec.prefix][rec.balance_raw]++;
-    }
-  });
+  auto customers = core::PartitionedBuild<CustomerPartial>(
+      services, [] { return CustomerPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanCustomers(services, parts,
+                                    [&](std::size_t p, const TpchQ22CustomerInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ22CustomerInput>{input});
+                                    });
+      },
+      [&](CustomerPartial &partial, const TpchQ22CustomerInput &input) {
+        if (input.custkey <= 0)
+          return;
+        TpchQ22State::CustomerRecord &rec = partial.RecordOf(input.custkey);
+        rec.present = true;
+        rec.prefix = PackPrefix(ExtractPrefix(input.phone));
+        rec.balance_raw = input.acctbal_raw;
+        rec.order_count = order_counts.Get(input.custkey);
+        if (rec.balance_raw > 0 && rec.prefix != 0) {
+          auto &p = partial.positive[rec.prefix];
+          p.sum += rec.balance_raw;
+          p.count++;
+          if (rec.order_count == 0)
+            partial.distributions[rec.prefix][rec.balance_raw]++;
+        }
+      },
+      [](CustomerPartial &into, CustomerPartial &&from) { into.MergeFrom(std::move(from)); });
+  state.pages = std::move(customers.pages);
+  state.sparse = std::move(customers.sparse);
+  state.positive = std::move(customers.positive);
+  const auto distributions = std::move(customers.distributions);
 
   // Orphan orders (custkeys in orders but not in customers).
-  for (const auto &[custkey, count] : order_counts) {
-    if (!state.FindCustomer(custkey))
+  order_counts.ForEach([&](int64_t custkey, int64_t count) {
+    if (count != 0 && !state.FindCustomer(custkey))
       state.orphan_orders.Upsert(custkey, count);
-  }
+  });
 
   // Per-prefix count/sum structures over the zero-order balances.
   std::vector<decltype(distributions)::const_iterator> groups;

@@ -2,8 +2,11 @@
 #include "tpch/q18/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -123,6 +126,24 @@ void CollectSparseQuantities(
   });
   std::sort(entries.begin(), entries.end());
 }
+
+// Quantity sum per order key in hash shards: partial states of a parallel
+// build fold shard by shard.
+struct OrderSums {
+  static constexpr std::size_t kShards = 64;
+  std::array<std::unordered_map<int64_t, int64_t>, kShards> shards;
+
+  static std::size_t ShardOf(int64_t orderkey) {
+    return (static_cast<uint64_t>(orderkey) * 0x9E3779B97F4A7C15ULL) >> 58;
+  }
+  void Add(int64_t orderkey, int64_t quantity_raw) {
+    shards[ShardOf(orderkey)][orderkey] += quantity_raw;
+  }
+  void FoldShard(std::size_t shard, const OrderSums &from) {
+    for (const auto &[orderkey, sum] : from.shards[shard])
+      shards[shard][orderkey] += sum;
+  }
+};
 
 // Per-order quantity sums from the tables. The state holds only orders above
 // kMinPersistQuantityRaw, so a lower threshold needs these.
@@ -885,73 +906,90 @@ void TpchQ18Module::ExecuteFallback(core::AuxEngineServices &services,
 
 TpchQ18State
 TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   TpchQ18State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q18 aux requires a typed initial scan source");
 
-  const bool used_survivors = initial_scan->ScanSurvivorOrders(
-      TpchQ18State::kMinPersistQuantityRaw,
-      [&](const TpchQ18SurvivorAggregate &agg) {
-        if (agg.orderkey < 0 || agg.custkey <= 0 ||
-            agg.quantity_sum_raw <= TpchQ18State::kMinPersistQuantityRaw)
-          return;
-        state.SetOrderQuantitySum(agg.orderkey, agg.quantity_sum_raw);
-        state.SetOrderMeta(agg.orderkey, agg.custkey, agg.orderdate_days,
-                           agg.totalprice_raw);
+  // Quantity sum per order, hash-sharded so the partials fold shard by shard
+  // in parallel.
+  const auto sums = core::PartitionedBuild<OrderSums>(
+      services, [] { return OrderSums{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t p, const TpchQ18LineitemInput &input) {
+              sink(p, TypedRowBatch<TpchQ18LineitemInput>{input});
+            });
+      },
+      [](OrderSums &partial, const TpchQ18LineitemInput &input) {
+        if (input.orderkey >= 0)
+          partial.Add(input.orderkey, input.quantity_raw);
+      },
+      [&](OrderSums &into, OrderSums &&from) {
+        core::ParallelSlices(services, OrderSums::kShards, 1,
+                             [&](std::size_t, std::size_t first, std::size_t last) {
+                               for (std::size_t s = first; s < last; ++s)
+                                 into.FoldShard(s, from);
+                             });
       });
-  if (!used_survivors) {
-    const bool used_sql = initial_scan->ScanOrderQuantityAggregates(
-        [&](const TpchQ18OrderQuantityAggregate &agg) {
-          if (agg.orderkey < 0 ||
-              agg.quantity_sum_raw <= TpchQ18State::kMinPersistQuantityRaw)
-            return;
-          state.SetOrderQuantitySum(agg.orderkey, agg.quantity_sum_raw);
-        });
-    if (!used_sql) {
-      initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
-        if (input.orderkey < 0)
-          return;
-        state.AddOrderQuantity(input.orderkey, input.quantity_raw);
-      });
-    }
+  using Sums = std::vector<std::pair<int64_t, int64_t>>;
+  Sums above_sums;
+  core::ParallelReduce(
+      services, OrderSums::kShards, 1, above_sums,
+      [&](Sums &found, std::size_t first, std::size_t last) {
+        for (std::size_t s = first; s < last; ++s)
+          for (const auto &entry : sums.shards[s])
+            if (entry.second > TpchQ18State::kMinPersistQuantityRaw)
+              found.push_back(entry);
+      },
+      [](Sums &into, Sums &&from) { into.insert(into.end(), from.begin(), from.end()); });
+  const std::unordered_map<int64_t, int64_t> above(above_sums.begin(), above_sums.end());
 
-    initial_scan->ScanOrders([&](const TpchQ18OrderInput &input) {
-      if (input.key < 0)
-        return;
-      const int64_t sum = state.OrderQuantitySum(input.key);
-      if (sum <= TpchQ18State::kMinPersistQuantityRaw)
-        return;
-      state.SetOrderMeta(input.key, input.custkey, input.orderdate_days,
-                         input.totalprice_raw);
-    });
+  // Survivors: orders above the threshold, with their order row joined in.
+  using Survivors = std::vector<std::pair<TpchQ18OrderInput, int64_t>>;
+  const auto survivors = core::PartitionedBuild<Survivors>(
+      services, [] { return Survivors{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(services, parts,
+                                            [&](std::size_t p, const TpchQ18OrderInput &input) {
+                                              sink(p, TypedRowBatch<TpchQ18OrderInput>{input});
+                                            });
+      },
+      [&](Survivors &partial, const TpchQ18OrderInput &input) {
+        const auto it = above.find(input.key);
+        if (it != above.end() && input.custkey > 0)
+          partial.emplace_back(input, it->second);
+      },
+      [](Survivors &into, Survivors &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      });
+  std::unordered_set<int64_t> needed_custkeys;
+  for (const auto &[order, sum] : survivors) {
+    state.SetOrderQuantitySum(order.key, sum);
+    state.SetOrderMeta(order.key, order.custkey, order.orderdate_days,
+                       order.totalprice_raw);
+    needed_custkeys.insert(order.custkey);
   }
 
-  // Published state is survivor-only. Drop every other quantity row even
-  // when the SQL aggregate path ran — otherwise SF20 keeps O(orders).
-  std::vector<int64_t> non_survivors;
-  state.quantity_overflow.ForEach([&](int64_t orderkey, int64_t) {
-    if (!state.survivors.Contains(orderkey))
-      non_survivors.push_back(orderkey);
-  });
-  for (const int64_t orderkey : non_survivors)
-    state.quantity_overflow.Erase(orderkey);
-
-  std::unordered_set<int64_t> needed_custkeys;
-  needed_custkeys.reserve(state.survivors.size());
-  state.survivors.ForEach([&](int64_t, const TpchQ18SurvivorMeta &meta) {
-    needed_custkeys.insert(meta.custkey);
-  });
-
-  initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
-    if (input.key <= 0)
-      return;
-    if (needed_custkeys.find(input.key) == needed_custkeys.end())
-      return;
-    if (!state.customer_names.Contains(input.key))
-      state.customer_names.Upsert(input.key, input.name);
-  });
-
+  using Names = std::vector<std::pair<int64_t, std::string>>;
+  const auto names = core::PartitionedBuild<Names>(
+      services, [] { return Names{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanCustomersPartitioned(
+            services, parts, [&](std::size_t p, const TpchQ18CustomerInput &input) {
+              sink(p, TypedRowBatch<TpchQ18CustomerInput>{input});
+            });
+      },
+      [&](Names &partial, const TpchQ18CustomerInput &input) {
+        if (needed_custkeys.count(input.key))
+          partial.emplace_back(input.key, input.name);
+      },
+      [](Names &into, Names &&from) {
+        into.insert(into.end(), std::make_move_iterator(from.begin()),
+                    std::make_move_iterator(from.end()));
+      });
+  for (const auto &[custkey, name] : names)
+    if (!state.customer_names.Contains(custkey))
+      state.customer_names.Upsert(custkey, name);
   return state;
 }
 

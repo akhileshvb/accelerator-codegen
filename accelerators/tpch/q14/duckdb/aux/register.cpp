@@ -6,6 +6,7 @@
 #include "tpch/q14/cost_model.hpp"
 #include "tpch/q14/layout.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -103,14 +104,16 @@ using namespace scan;
 struct TpchQ14Scan : TpchQ14InitialScan {
   explicit TpchQ14Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
-      const std::function<void(const TpchQ14PartInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT p_partkey, p_type FROM part",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ14PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                  ChunkValue(chunk, 1, row).ToString()};
-        },
-        [&](TpchQ14PartInput &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, int64_t, bool)> &sink) override {
+    ScanPartitioned(services, connection, "part",
+                    {IntColumn("p_partkey"), TextColumn("p_type")}, partitions,
+                    [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, row.Int(0), TpchQ14IsPromoType(row.TextView(1)));
+                      }
+                    });
   }
   static TpchQ14LineitemInput DecodeLineitem(const ::duckdb::DataChunk &chunk,
                                              ::duckdb::idx_t row) {
@@ -120,11 +123,18 @@ struct TpchQ14Scan : TpchQ14InitialScan {
             DateDays(ChunkValue(chunk, 3, row))};
   }
   void ScanLineitems(
-      const std::function<void(const TpchQ14LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-        DecodeLineitem, [&](TpchQ14LineitemInput &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ14LineitemInput &)> &sink) override {
+    ScanPartitioned(services, connection, "lineitem",
+                    {IntColumn("l_partkey"), DecimalColumn("l_extendedprice", 2),
+                     DecimalColumn("l_discount", 2), DateColumn("l_shipdate")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ14LineitemInput{row.Int(0), row.Decimal(1), 2,
+                                                             row.Decimal(2), 2, row.Date(3)});
+                      }
+                    });
   }
   // Sargable shipdate ranges (zone-map friendly), one per month.
   static std::string MonthRanges(const std::set<int32_t> &months) {
@@ -162,18 +172,6 @@ struct TpchQ14Scan : TpchQ14InitialScan {
         "lineitem WHERE " + MonthRanges(months);
     ScanQueryDecoded(connection, sql, DecodeLineitem,
                      [&](TpchQ14LineitemInput &&input) { consumer(input); });
-  }
-  void ScanPartPromo(
-      const std::function<void(int64_t, bool)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT p_partkey, CASE WHEN p_type LIKE 'PROMO%' THEN 1 ELSE 0 END "
-        "FROM part",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return std::pair<int64_t, bool>{SafeInt64(ChunkValue(chunk, 0, row)),
-                                          SafeInt64(ChunkValue(chunk, 1, row)) != 0};
-        },
-        [&](std::pair<int64_t, bool> &&part) { consumer(part.first, part.second); });
   }
   bool ScanMonthAggregates(
       const std::set<int32_t> &months,

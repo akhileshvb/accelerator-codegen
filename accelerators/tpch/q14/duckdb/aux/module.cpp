@@ -2,6 +2,8 @@
 #include "tpch/q14/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -24,6 +26,11 @@ constexpr uint32_t kMonthMagic = 0x4d313451; // Q14M
 constexpr int32_t kEpoch = 719468;
 // Per maintenance slice: classifying and summing one lineitem delta is ~30 ns.
 constexpr std::size_t kDeltaGrain = 16384;
+
+struct PartRow {
+  int64_t key;
+  bool promo;
+};
 
 void AddTotals(TpchQ14MonthTotals &into, const TpchQ14MonthTotals &from) {
   into.total_revenue_raw += from.total_revenue_raw;
@@ -180,7 +187,7 @@ int32_t TpchQ14MonthKeyFromDays(int32_t days_since_epoch) {
   return MonthKey(days_since_epoch);
 }
 
-bool TpchQ14IsPromoType(const std::string &type) {
+bool TpchQ14IsPromoType(std::string_view type) {
   static constexpr const char kPromo[] = "PROMO";
   return type.size() >= sizeof(kPromo) - 1 &&
          type.compare(0, sizeof(kPromo) - 1, kPromo) == 0;
@@ -923,42 +930,66 @@ void TpchQ14Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ14State TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
-  TpchQ14State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q14 requires a typed initial scan source");
-  initial_scan->ScanPartPromo([&](int64_t key, bool promo) {
-    if (state.build_max_partkey == std::numeric_limits<int64_t>::max() ||
-        key > state.build_max_partkey)
-      state.build_max_partkey = key;
-    state.SetPromo(key, promo ? TpchQ14PromoClass::Promo
-                              : TpchQ14PromoClass::NonPromo);
-  });
-  const bool aggregated = initial_scan->ScanMonthAggregates(
-      {}, [&](int32_t month, int64_t total, int64_t promo, int64_t count) {
-        auto &totals = state.month_totals[month];
-        totals.total_revenue_raw += total;
-        totals.promo_revenue_raw += promo;
-        totals.row_count += count;
-        totals.saw_contribution = totals.saw_contribution || count > 0;
+  TpchQ14State state = core::PartitionedBuild<TpchQ14State>(
+      services, [] { return TpchQ14State{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanParts(services, parts, [&](std::size_t p, int64_t key, bool promo) {
+          const PartRow part{key, promo};
+          sink(p, TypedRowBatch<PartRow>{part});
+        });
+      },
+      [](TpchQ14State &part_state, const PartRow &part) {
+        part_state.build_max_partkey =
+            part_state.build_max_partkey == std::numeric_limits<int64_t>::max()
+                ? part.key
+                : std::max(part_state.build_max_partkey, part.key);
+        part_state.SetPromo(part.key, part.promo ? TpchQ14PromoClass::Promo
+                                                 : TpchQ14PromoClass::NonPromo);
+      },
+      [](TpchQ14State &into, TpchQ14State &&from) {
+        if (from.build_max_partkey != std::numeric_limits<int64_t>::max())
+          into.build_max_partkey =
+              into.build_max_partkey == std::numeric_limits<int64_t>::max()
+                  ? from.build_max_partkey
+                  : std::max(into.build_max_partkey, from.build_max_partkey);
+        into.classes.MergeFrom(std::move(from.classes), [](uint8_t mine, uint8_t theirs) {
+          return theirs ? theirs : mine; // the last part row of a key wins
+        });
+        for (const auto &[key, raw] : from.promo_overflow)
+          into.promo_overflow[key] = raw;
       });
-  if (aggregated)
-    return state;
-  initial_scan->ScanLineitems([&](const TpchQ14LineitemInput &input) {
-    const auto promo = state.PromoOf(input.partkey);
-    if (promo == TpchQ14PromoClass::Absent)
-      return;
-    const auto revenue =
-        TpchQ14RevenueRaw(input.extended_price_raw, input.extended_price_scale,
-                          input.discount_raw, input.discount_scale);
-    const auto month = TpchQ14MonthKeyFromDays(input.shipdate_days);
-    auto &totals = state.month_totals[month];
-    totals.total_revenue_raw += revenue;
-    totals.row_count++;
-    totals.saw_contribution = true;
-    if (promo == TpchQ14PromoClass::Promo)
-      totals.promo_revenue_raw += revenue;
-  });
+
+  state.month_totals = core::PartitionedBuild<std::map<int32_t, TpchQ14MonthTotals>>(
+      services, [] { return std::map<int32_t, TpchQ14MonthTotals>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ14LineitemInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ14LineitemInput>{input});
+                                    });
+      },
+      [&](std::map<int32_t, TpchQ14MonthTotals> &months, const TpchQ14LineitemInput &input) {
+        const auto promo = state.PromoOf(input.partkey);
+        if (promo == TpchQ14PromoClass::Absent)
+          return;
+        const auto revenue =
+            TpchQ14RevenueRaw(input.extended_price_raw, input.extended_price_scale,
+                              input.discount_raw, input.discount_scale);
+        auto &totals = months[TpchQ14MonthKeyFromDays(input.shipdate_days)];
+        totals.total_revenue_raw += revenue;
+        totals.row_count++;
+        totals.saw_contribution = true;
+        if (promo == TpchQ14PromoClass::Promo)
+          totals.promo_revenue_raw += revenue;
+      },
+      [](std::map<int32_t, TpchQ14MonthTotals> &into,
+         std::map<int32_t, TpchQ14MonthTotals> &&from) {
+        for (const auto &[month, totals] : from) {
+          AddTotals(into[month], totals);
+          into[month].saw_contribution = true;
+        }
+      });
   return state;
 }
 

@@ -2,6 +2,8 @@
 #include "tpch/q15/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -319,6 +321,21 @@ void TpchQ15SupplierDirectory::Add(int64_t suppkey, TpchQ15SupplierRecord record
   items.insert(pos, {suppkey, std::move(rec)});
 }
 
+void TpchQ15SupplierDirectory::MergeFrom(TpchQ15SupplierDirectory &&other) {
+  for (auto &[chunk_id, theirs] : other.chunks) {
+    auto &mine = chunks[chunk_id];
+    if (!mine) {
+      mine = std::move(theirs);
+      continue;
+    }
+    auto &items = mine->items;
+    const auto middle = static_cast<std::ptrdiff_t>(items.size());
+    items.insert(items.end(), theirs->items.begin(), theirs->items.end());
+    std::inplace_merge(items.begin(), items.begin() + middle, items.end(),
+                       [](const auto &a, const auto &b) { return a.first < b.first; });
+  }
+}
+
 void TpchQ15SupplierDirectory::EraseOne(int64_t suppkey,
                                         const TpchQ15SupplierRecord &record) {
   const auto it = chunks.find(suppkey >> kQ15DirChunkShift);
@@ -347,18 +364,6 @@ std::size_t TpchQ15SupplierDirectory::Size() const {
   for (const auto &[cid, chunk] : chunks)
     n += chunk->items.size();
   return n;
-}
-
-void TpchQ15InitialScan::ScanMonthRevenue(
-    const std::function<void(int32_t, int64_t, int64_t)> &consumer) {
-  std::map<std::pair<int32_t, int64_t>, int64_t> groups;
-  ScanLineitems([&](const TpchQ15LineitemInput &input) {
-    groups[{MonthKey(input.shipdate_days), input.suppkey}] += TpchQ15RevenueRaw(
-        input.extended_price_raw, input.extended_price_scale,
-        input.discount_raw, input.discount_scale);
-  });
-  for (const auto &[key, rev] : groups)
-    consumer(key.first, key.second, rev);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -935,12 +940,12 @@ void TpchQ15Module::ExecuteFallback(core::AuxEngineServices &services,
   std::unordered_map<int64_t, int64_t> total_rev;
   TpchQ15SupplierDirectory dir;
 
-  initial_scan->ScanSuppliers([&](const TpchQ15SupplierInput &input) {
+  initial_scan->ScanSuppliers(services, 1, [&](std::size_t, const TpchQ15SupplierInput &input) {
     dir.Add(input.suppkey,
             TpchQ15SupplierRecord{input.name, input.address, input.phone});
   });
 
-  initial_scan->ScanLineitems([&](const TpchQ15LineitemInput &input) {
+  initial_scan->ScanLineitems(services, 1, [&](std::size_t, const TpchQ15LineitemInput &input) {
     if (input.shipdate_days < start || input.shipdate_days >= end)
       return;
     const auto revenue = TpchQ15RevenueRaw(
@@ -948,8 +953,6 @@ void TpchQ15Module::ExecuteFallback(core::AuxEngineServices &services,
         input.discount_raw, input.discount_scale);
     total_rev[input.suppkey] += revenue;
   });
-
-  (void)services;
 
   if (total_rev.empty()) {
     sink.Begin({{{"s_suppkey", core::AuxType::Int64, true},
@@ -986,21 +989,49 @@ TpchQ15State TpchQ15Module::BuildState(
   if (!initial_scan)
     throw std::logic_error("TPC-H Q15 requires a typed initial scan source");
 
-  initial_scan->ScanSuppliers([&](const TpchQ15SupplierInput &input) {
-    state.directory.Add(
-        input.suppkey,
-        TpchQ15SupplierRecord{input.name, input.address, input.phone});
-  });
-
-  // One (month, supplier) group per row; each feeds the three rolling windows
-  // that contain the month.
-  initial_scan->ScanMonthRevenue(
-      [&](int32_t month_key, int64_t suppkey, int64_t revenue) {
-        int32_t keys[3];
-        CoveringWindowKeysOfMonth(month_key, keys);
-        for (const auto key : keys)
-          state.windows[key].rev.Add(suppkey, revenue);
+  state.directory = core::PartitionedBuild<TpchQ15SupplierDirectory>(
+      services, [] { return TpchQ15SupplierDirectory{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliers(services, parts,
+                                    [&](std::size_t p, const TpchQ15SupplierInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ15SupplierInput>{input});
+                                    });
+      },
+      [](TpchQ15SupplierDirectory &dir, const TpchQ15SupplierInput &input) {
+        dir.Add(input.suppkey,
+                TpchQ15SupplierRecord{input.name, input.address, input.phone});
+      },
+      [](TpchQ15SupplierDirectory &into, TpchQ15SupplierDirectory &&from) {
+        into.MergeFrom(std::move(from));
       });
+
+  // Revenue per (month, supplier); each month feeds the three rolling windows
+  // that contain it.
+  using MonthRevenue = std::map<int32_t, TpchQ15RevArray>;
+  const auto months = core::PartitionedBuild<MonthRevenue>(
+      services, [] { return MonthRevenue{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ15LineitemInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ15LineitemInput>{input});
+                                    });
+      },
+      [](MonthRevenue &revenue, const TpchQ15LineitemInput &input) {
+        revenue[TpchQ15MonthKeyFromDays(input.shipdate_days)].Add(
+            input.suppkey,
+            TpchQ15RevenueRaw(input.extended_price_raw, input.extended_price_scale,
+                              input.discount_raw, input.discount_scale));
+      },
+      [](MonthRevenue &into, MonthRevenue &&from) {
+        for (const auto &[month, revenue] : from)
+          into[month].AddAll(revenue);
+      });
+  for (const auto &[month_key, revenue] : months) {
+    int32_t keys[3];
+    CoveringWindowKeysOfMonth(month_key, keys);
+    for (const auto key : keys)
+      state.windows[key].rev.AddAll(revenue);
+  }
   std::vector<TpchQ15WindowState *> windows;
   for (auto &entry : state.windows)
     windows.push_back(&entry.second);

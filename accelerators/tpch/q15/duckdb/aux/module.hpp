@@ -44,23 +44,17 @@ struct TpchQ15SupplierInput {
 class TpchQ15InitialScan {
 public:
   virtual ~TpchQ15InitialScan() = default;
+  // Partitioned scans: rows of one partition arrive in table order on one
+  // thread; partitions run concurrently on the pool.
   virtual void ScanLineitems(
-      const std::function<void(const TpchQ15LineitemInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ15LineitemInput &)> &) = 0;
+  virtual void ScanSuppliers(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ15SupplierInput &)> &) = 0;
   virtual void ScanLineitemsForShipdateRange(
       int32_t start_days, int32_t end_days,
-      const std::function<void(const TpchQ15LineitemInput &)> &consumer) {
-    ScanLineitems([&](const TpchQ15LineitemInput &input) {
-      if (input.shipdate_days >= start_days && input.shipdate_days < end_days)
-        consumer(input);
-    });
-  }
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ15SupplierInput &)> &) = 0;
-  // Calls consumer(month_key YYYYMM, suppkey, revenue_raw) once per
-  // (month, supplier) group of lineitem revenue. The default derives it from
-  // ScanLineitems; engines override it to push the GROUP BY down.
-  virtual void ScanMonthRevenue(
-      const std::function<void(int32_t, int64_t, int64_t)> &consumer);
+      const std::function<void(const TpchQ15LineitemInput &)> &consumer) = 0;
 };
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -80,6 +74,13 @@ struct TpchQ15RevArray {
   core::ChunkedCowArray<int64_t, 11> dense{};
   std::map<int64_t, int64_t> overflow;
 
+  // Adds every revenue of `other`.
+  void AddAll(const TpchQ15RevArray &other) {
+    auto dense_copy = other.dense;
+    dense.MergeFrom(std::move(dense_copy), [](int64_t mine, int64_t theirs) { return mine + theirs; });
+    for (const auto &[key, revenue] : other.overflow)
+      overflow[key] += revenue;
+  }
   // Adds delta to the key's revenue; returns the old value.
   int64_t Add(int64_t suppkey, int64_t delta) {
     int64_t &cell = suppkey >= 0 && suppkey < kMaxDenseKey
@@ -130,6 +131,8 @@ struct TpchQ15DirChunk {
 struct TpchQ15SupplierDirectory {
   std::map<int64_t, std::shared_ptr<TpchQ15DirChunk>> chunks;
   // Bag semantics: a key may hold several records (duplicate supplier rows).
+  // Folds in another directory (bag union; equal keys keep this side first).
+  void MergeFrom(TpchQ15SupplierDirectory &&other);
   void FindAll(int64_t suppkey,
                std::vector<const TpchQ15SupplierRecord *> &out) const;
   void Add(int64_t suppkey, TpchQ15SupplierRecord record);
