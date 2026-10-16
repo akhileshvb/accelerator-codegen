@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// VersionedAuxStore: multi-version partition store, commit protocol, async reclaim.
 #include "substrate/aux/state/versioned_aux_store.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 
@@ -90,8 +91,6 @@ private:
   bool stop = false;
 };
 
-
-
 // Readers wait for a pending publish (no timeout) unless
 // ACCEL_AUX_PENDING_WAIT_US bounds the wait.
 uint64_t DefaultPendingWaitMicros() {
@@ -104,7 +103,8 @@ uint64_t DefaultPendingWaitMicros() {
 
 thread_local AuxReadScope *t_scope = nullptr;
 
-// Mark `keys` (or every partition, if `all`) invalid in `map`.
+// Marks the partitions `plan` names (all of them, or a set) invalid in `map`;
+// `create_missing` adds the named ones that `map` lacks, as invalid.
 void InvalidateIn(VersionedAuxStore::PartitionMap &map, const InvalidationPlan &plan,
                   bool create_missing) {
   auto mark = [](VersionedAuxStore::Partition &p) {
@@ -185,7 +185,6 @@ core::AcceleratorId VersionedAuxStore::AcceleratorFor(const core::StateImage &im
   }
   return image.accelerator;
 }
-
 
 void VersionedAuxStore::PartitionSet::Finalize() {
   invalid_count = 0;
@@ -567,8 +566,7 @@ core::ValidityResult VersionedAuxStore::CheckValidity(const core::QueryKey &key,
 // ---- Writes outside a commit ----
 
 void VersionedAuxStore::Invalidate(const core::InvalidationPlan &plan) {
-  std::vector<StateVersion> dropped; // destroyed after the lock is released
-  std::vector<std::shared_ptr<const PartitionSet>> replaced;
+  std::vector<std::shared_ptr<const PartitionSet>> replaced; // freed after the lock is released
   std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
   change_count++;
   // Accelerators the plan touches: every one for AllPartitions, else the
@@ -619,7 +617,7 @@ bool VersionedAuxStore::TryPublish(const core::StagedMaintenanceOutcome &staged,
     groups[AcceleratorFor(image)].push_back(&image);
   }
   std::vector<StateVersion> dropped; // destroyed after the lock is released
-  std::vector<std::shared_ptr<const PartitionSet>> replaced;
+  std::vector<std::shared_ptr<const PartitionSet>> replaced; // likewise
   std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
   change_count++;
   for (const auto &group : groups) {
@@ -719,7 +717,6 @@ void VersionedAuxStore::FinishCommit(const core::AcceleratorId &accelerator,
   // accelerator's generation under the exclusive lock.
   std::shared_ptr<const PartitionSet> built;
   uint64_t built_generation = 0;
-  bool built_valid = false;
   std::shared_ptr<const PartitionSet> base_ref;
   if (has_change) {
     {
@@ -733,7 +730,6 @@ void VersionedAuxStore::FinishCommit(const core::AcceleratorId &accelerator,
       }
     }
     built = build(base_ref.get());
-    built_valid = true;
   }
 
   std::vector<StateVersion> dropped; // destroyed after the lock is released
@@ -742,7 +738,7 @@ void VersionedAuxStore::FinishCommit(const core::AcceleratorId &accelerator,
     change_count++;
     if (has_change) {
       auto &acc = accelerators[accelerator];
-      if (!built_valid || acc.generation != built_generation) {
+      if (acc.generation != built_generation) {
         // A concurrent change (install/invalidate) raced the build: redo it.
         const auto *newest = NewestLocked(accelerator);
         built = build(newest);
@@ -773,9 +769,6 @@ void VersionedAuxStore::AbortCommit(const core::AcceleratorId &accelerator) {
   }
   pending_cv.notify_all();
 }
-
-// ---- Builds and status ----
-
 
 // ---- Builds and status ----
 
