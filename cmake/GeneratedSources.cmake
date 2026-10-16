@@ -138,6 +138,7 @@ function(accel_collect_stateful_sources OUT_VAR)
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/backends/duckdb/api/duckdb_aux_table_functions.cpp")
         list(APPEND _sources
             backends/duckdb/api/duckdb_aux_table_functions.cpp
+            backends/duckdb/api/sql_fallback.cpp
             backends/duckdb/engine/duckdb_aux_backend.cpp
         )
     endif()

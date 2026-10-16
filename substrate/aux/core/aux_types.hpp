@@ -274,6 +274,16 @@ inline void FinishRebuildAll(StagedMaintenanceOutcome &outcome) {
   outcome.updates.clear();
 }
 
+// Rebuilds everything; a decision other than ApplyDelta/RebuildPartition (such as
+// InvalidateAndRebuildOnRead) stays the outcome's action.
+inline void FinishRebuildAll(StagedMaintenanceOutcome &outcome, const MaintenanceDecision &decision) {
+  FinishRebuildAll(outcome);
+  if (decision.action != MaintenanceAction::ApplyDelta &&
+      decision.action != MaintenanceAction::RebuildPartition) {
+    outcome.action = decision.action;
+  }
+}
+
 class AuxRowSink {
 public:
   virtual ~AuxRowSink() = default;
@@ -417,6 +427,10 @@ public:
   // paths that scan much state use it with one partial result per task,
   // merged in index order so results match a serial run. Default: serial.
   virtual void ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn) const;
+
+  // Answers the query from the engine's SQL at the reader's snapshot, at the
+  // cost of running that SQL. False: the engine has no SQL for this query.
+  virtual bool AnswerFromSql(const QueryArguments &arguments, AuxRowSink &sink);
 };
 
 // One write shape for calibrating an accelerator's maintenance costs
@@ -454,8 +468,9 @@ public:
                              const QueryArguments &) const = 0;
   virtual void Execute(AuxEngineServices &, const QueryArguments &,
                        AuxRowSink &) = 0;
+  // The answer when the state cannot serve: the engine's SQL by default.
   virtual void ExecuteFallback(AuxEngineServices &, const QueryArguments &,
-                               AuxRowSink &) = 0;
+                               AuxRowSink &);
 
   // Writes of increasing size and spread over this accelerator's partitions,
   // for core::CalibrateFromWrites (empty: none; the accelerator keeps its

@@ -82,7 +82,11 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{6,
      1,
      false,
      BuildTpchQ6Probe,
-     core::kTpchQ6CostModel}};
+     core::kTpchQ6CostModel,
+     "SELECT SUM(l_extendedprice * l_discount) AS revenue "
+     "FROM lineitem "
+     "WHERE l_shipdate >= $1 AND l_shipdate < $1 + INTERVAL '1' year "
+     "AND l_discount BETWEEN $2 - 0.01 AND $2 + 0.01 AND l_quantity < $3"}};
 
 } // namespace q6_catalog
 } // namespace

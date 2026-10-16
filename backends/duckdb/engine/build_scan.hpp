@@ -185,7 +185,9 @@ void ScanPartitioned(const core::AuxEngineServices &services, ::duckdb::Connecti
     return;
   }
   const auto bounds = RowGroupBounds(TableRowCount(connection, table), partitions);
-  const auto snapshot = static_cast<::duckdb::transaction_t>(DuckDBAuxBackend::SnapshotEpoch(*connection.context));
+  // Every partition reads where a serial scan through `connection` would: the
+  // reader's snapshot under a fallback redirect, else the build's.
+  const auto snapshot = ScanSnapshot(connection_p);
   services.ParallelFor(partitions, [&](std::size_t p) {
     std::vector<std::string> conditions;
     if (p > 0) {

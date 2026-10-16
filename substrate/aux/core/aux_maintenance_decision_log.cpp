@@ -93,15 +93,16 @@ std::string FormatLastMaintenanceDecision() {
   return std::string("action=") + maintenance::MaintenanceActionName(entry->selected) +
          " rows=" + std::to_string(entry->rows_touched) +
          " partitions=" + std::to_string(entry->affected_partition_count) +
-         " maintenance_us=" + std::to_string(entry->maintenance_us);
+         " maintenance_us=" + std::to_string(entry->maintenance_us) +
+         " data_rows=" + std::to_string(entry->data_rows_hint);
 }
 
 std::optional<MaintenanceDecisionLogEntry> ParseMaintenanceDecision(const std::string &text) {
   char action[64] = {0};
-  unsigned long long rows = 0, partitions = 0;
+  unsigned long long rows = 0, partitions = 0, data_rows = 0;
   double maintenance = 0.0;
-  if (std::sscanf(text.c_str(), "action=%63s rows=%llu partitions=%llu maintenance_us=%lf", action,
-                  &rows, &partitions, &maintenance) < 3) {
+  if (std::sscanf(text.c_str(), "action=%63s rows=%llu partitions=%llu maintenance_us=%lf data_rows=%llu",
+                  action, &rows, &partitions, &maintenance, &data_rows) < 3) {
     return std::nullopt;
   }
   MaintenanceDecisionLogEntry entry;
@@ -109,6 +110,7 @@ std::optional<MaintenanceDecisionLogEntry> ParseMaintenanceDecision(const std::s
   entry.valid = true;
   entry.rows_touched = rows;
   entry.affected_partition_count = partitions;
+  entry.data_rows_hint = data_rows;
   for (const auto a : {maintenance::MaintenanceAction::NoOp, maintenance::MaintenanceAction::ApplyDelta,
                        maintenance::MaintenanceAction::RebuildPartition,
                        maintenance::MaintenanceAction::RebuildAll,

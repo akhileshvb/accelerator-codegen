@@ -981,37 +981,6 @@ void TpchQ7Module::Execute(core::AuxEngineServices &services,
   EmitResult(side, revenue, nation1, nation2, sink);
 }
 
-void TpchQ7Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  std::string nation1, nation2;
-  if (arguments.values.size() >= 2) {
-    if (!arguments.values[0].is_null &&
-        std::holds_alternative<std::string>(arguments.values[0].payload))
-      nation1 = std::get<std::string>(arguments.values[0].payload);
-    if (!arguments.values[1].is_null &&
-        std::holds_alternative<std::string>(arguments.values[1].payload))
-      nation2 = std::get<std::string>(arguments.values[1].payload);
-  }
-
-  auto state = BuildState(services);
-  auto mutable_side = std::make_shared<TpchQ7State>();
-  mutable_side->nation_names = std::move(state.nation_names);
-  mutable_side->supplier_nations = std::move(state.supplier_nations);
-  mutable_side->customer_nations = std::move(state.customer_nations);
-  mutable_side->order_custkeys = std::move(state.order_custkeys);
-  mutable_side->num_nation_slots = state.num_nation_slots;
-  auto side = std::shared_ptr<const TpchQ7State>(std::move(mutable_side));
-
-  auto mutable_revenue = std::make_shared<TpchQ7State>();
-  mutable_revenue->revenue_1995 = std::move(state.revenue_1995);
-  mutable_revenue->revenue_1996 = std::move(state.revenue_1996);
-  mutable_revenue->num_nation_slots = state.num_nation_slots;
-  auto revenue = std::shared_ptr<const TpchQ7State>(std::move(mutable_revenue));
-
-  EmitResult(side, revenue, nation1, nation2, sink);
-}
-
 TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ7State state;
   const bool profile = CustomProfileEnabled();

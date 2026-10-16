@@ -1437,20 +1437,6 @@ void TpchQ8Module::Execute(core::AuxEngineServices &services,
   EmitResult(*state, nation_name, region_name, part_type, services, sink);
 }
 
-void TpchQ8Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  std::string nation_name, region_name, part_type;
-  if (!ResolveBindings(services, arguments, nation_name, region_name, part_type)) {
-    sink.Begin(core::OutputSchema{});
-    sink.End();
-    return;
-  }
-
-  EmitResult(BuildState(services), nation_name, region_name, part_type,
-             services, sink);
-}
-
 // ── BuildState ─────────────────────────────────────────────────────────────
 namespace {
 

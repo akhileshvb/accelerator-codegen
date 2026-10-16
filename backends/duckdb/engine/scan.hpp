@@ -35,6 +35,7 @@ struct ScanRedirect {
                ::duckdb::transaction_t snapshot_p = 0);
   ~ScanRedirect();
   ::duckdb::Connection &Connection();
+  ::duckdb::transaction_t Snapshot() const { return snapshot; }
   static thread_local ScanRedirect *current;
 
 private:
@@ -69,6 +70,9 @@ std::string OptionalBenchScanLimitSuffix(const char *env_name);
 // The connection a scan runs on: the runtime's, or a reader thread's private
 // one (counted as a table scan either way).
 ::duckdb::Connection &ScanConnection(::duckdb::Connection &connection);
+// The snapshot a scan through ScanConnection(connection) reads: the redirect's
+// (the reader's) when one is active, else the connection's open transaction.
+::duckdb::transaction_t ScanSnapshot(::duckdb::Connection &connection);
 
 // Serializes use of one connection across threads (ApplyWriteAll stages the
 // accelerators' maintenance in parallel, all on the writer's connection; a

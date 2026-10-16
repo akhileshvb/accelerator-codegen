@@ -47,6 +47,7 @@
 #include "substrate/aux/core/aux_execute_stats.hpp"
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "backends/mysql/api/catalog/query_catalog.hpp"
 #include "backends/mysql/api/mysql_host.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
@@ -242,10 +243,35 @@ int64_t TypedDecimalRaw(const std::vector<std::string> &cols, int attribute);
 char TypedChar(const std::vector<std::string> &cols, int attribute);
 // A text value as an SQL literal that reaches the server byte for byte.
 std::string ByteExactLiteral(const std::string &text);
+
+// `sql` with each $n replaced by the n-th argument as a parenthesized SQL
+// literal (highest n first, so $1 never matches inside $10).
+std::string WithLiterals(const std::string &sql, const core::QueryArguments &arguments);
+// Runs `sql` with the arguments on a side connection (autocommit: sees what is
+// committed) and writes each row's cells, as the server prints them, to `sink`.
+void AnswerFromMysqlSql(const std::string &sql, const core::QueryArguments &arguments,
+                        core::AuxRowSink &sink);
 // `column IN (k1, k2, ...)`, or FALSE for no keys.
 std::string KeyListPredicate(const char *column, const std::vector<int64_t> &keys);
 // Whether every (table, column) compares text byte by byte (utf8mb4_0900_bin).
 bool ColumnsCompareBytewise(const std::vector<std::pair<std::string, std::string>> &columns);
+
+// Unix-epoch days as 'YYYY-MM-DD'.
+inline std::string FormatUnixDate(int32_t days) {
+  int z = days + 719468;
+  const int era = (z >= 0 ? z : z - 146096) / 146097;
+  const unsigned doe = static_cast<unsigned>(z - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  int y = static_cast<int>(yoe) + era * 400;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  unsigned d = doy - (153 * mp + 2) / 5 + 1;
+  unsigned m = mp < 10 ? mp + 3 : mp - 9;
+  y += (m <= 2);
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%04d-%02u-%02u", y, m, d);
+  return buf;
+}
 
 class TsvSink final : public core::AuxRowSink {
 public:
@@ -269,22 +295,6 @@ public:
 private:
   static std::string DecimalText(const core::ScaledDecimal &decimal) {
     return core::ScaledDecimal128ToString(decimal.value, decimal.scale);
-  }
-
-  static std::string FormatUnixDate(int32_t days) {
-    int z = days + 719468;
-    const int era = (z >= 0 ? z : z - 146096) / 146097;
-    const unsigned doe = static_cast<unsigned>(z - era * 146097);
-    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    int y = static_cast<int>(yoe) + era * 400;
-    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    const unsigned mp = (5 * doy + 2) / 153;
-    unsigned d = doy - (153 * mp + 2) / 5 + 1;
-    unsigned m = mp < 10 ? mp + 3 : mp - 9;
-    y += (m <= 2);
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%04d-%02u-%02u", y, m, d);
-    return buf;
   }
 
   static std::string CellText(const core::AuxValue &value) {
@@ -353,14 +363,28 @@ public:
     t_table_scans = 0;
     if (guard.Servable()) {
       module.Execute(accelerator, arguments, sink);
-    } else {
-      module.ExecuteFallback(accelerator, arguments, sink);
+    } else if (!AnswerFromSql(arguments, sink)) {
+      module.ExecuteFallback(accelerator, arguments, sink); // no SQL registered for the query
     }
     core::RecordAuxExecute(!guard.Servable() || t_table_scans > 0 ? core::AuxExecutePath::Fallback
                                                                   : core::AuxExecutePath::Hit);
   }
 
 private:
+  // The query's fallback SQL (catalog) on a side connection; its duration
+  // prices the fallback a reader weighs against waiting (C11).
+  bool AnswerFromSql(const core::QueryArguments &arguments, core::AuxRowSink &sink) {
+    const auto *entry = FindMysqlQueryByAccelerator(module.Id());
+    if (!entry || !entry->fallback_sql) {
+      return false;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    AnswerFromMysqlSql(entry->fallback_sql, arguments, sink);
+    accelerator.NoteSqlFallbackUs(
+        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count());
+    return true;
+  }
+
   ScanT scan;
   Module module;
   runtime::AcceleratorRuntime &accelerator;

@@ -25,6 +25,16 @@ const PostgresQueryCatalogRegistrar kRegistrar(PostgresSharedQueryCatalogEntry
         "SELECT * FROM accel_tpch_q11('ROMANIA', 0.0001)",
         /* aux_sql */
         "SELECT * FROM accel_tpch_q11_aux('ROMANIA', 0.0001)",
+        /* fallback_sql */
+        "SELECT ps_partkey, SUM(ps_supplycost * ps_availqty) AS value "
+        "FROM partsupp, supplier, nation "
+        "WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = $1 "
+        "GROUP BY ps_partkey "
+        "HAVING SUM(ps_supplycost * ps_availqty) > ( "
+        "SELECT SUM(ps_supplycost * ps_availqty) * $2::numeric "
+        "FROM partsupp, supplier, nation "
+        "WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = $1) "
+        "ORDER BY value DESC"
     }
 );
 

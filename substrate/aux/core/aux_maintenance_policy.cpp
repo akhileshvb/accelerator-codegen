@@ -122,6 +122,7 @@ MaintenanceDecision SelectAuxMaintenanceAction(
     log_entry.staged_action = forced.action;
     log_entry.rows_touched = request.rows_touched;
     log_entry.affected_partition_count = request.affected_partition_count;
+    log_entry.data_rows_hint = request.data_rows_hint;
     log_entry.expected_queries_before_next_write = request.expected_queries_before_next_write;
     RecordMaintenanceSelectorDecision(log_entry);
     return forced;
@@ -141,14 +142,9 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   // Every accelerator offers the same actions. Each is priced by what it
   // costs this accelerator; a module without finer partitions rebuilds its
   // whole state for RebuildPartition.
-  // Rebuilds and the ApplyDelta cap grow with the data relative to the scale
-  // the model was calibrated at (ApplyDelta's per-row cost does not). Unknown
-  // scale: the model as calibrated.
-  const double scale =
-      request.data_rows_hint != 0 && params.calibrated_scale_rows != 0
-          ? static_cast<double>(request.data_rows_hint) /
-                static_cast<double>(params.calibrated_scale_rows)
-          : 1.0;
+  // Rebuilds and the ApplyDelta cap grow with the data (ApplyDelta's per-row
+  // cost does not).
+  const double scale = params.ScaleFor(request.data_rows_hint);
   std::vector<ActionCandidate> candidates;
   const bool apply_delta_eligible =
       request.incremental_supported && !request.whole_state_required &&
@@ -211,6 +207,7 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   log_entry.selected_predicted_cost_us = selection.selected_cost_us;
   log_entry.rows_touched = request.rows_touched;
   log_entry.affected_partition_count = request.affected_partition_count;
+  log_entry.data_rows_hint = request.data_rows_hint;
   log_entry.expected_queries_before_next_write =
       request.expected_queries_before_next_write;
   for (const auto &candidate : input.candidates) {

@@ -69,6 +69,31 @@ void ParallelEach(const AuxEngineServices &services, std::size_t n, std::size_t 
   });
 }
 
+// ParallelEach over n heavy items (one contiguous run of items per worker) when
+// `total_work` (in the caller's unit) reaches `work_threshold`, else inline on the
+// calling thread. A `grain` counts items; this threshold counts the whole work.
+template <class Fn>
+void ParallelEachWhen(const AuxEngineServices &services, std::size_t n, std::size_t total_work,
+                      std::size_t work_threshold, Fn &&fn) {
+  ParallelEach(services, n, total_work < work_threshold ? std::max<std::size_t>(1, n) : 1,
+               std::forward<Fn>(fn));
+}
+
+// Start offsets of the runs of equal key(items[i]) in `items`, then items.size()
+// as the end sentinel (so run r is [starts[r], starts[r + 1]) and an empty input
+// has no runs: starts == {0}).
+template <class Items, class KeyFn>
+std::vector<std::size_t> RunStarts(const Items &items, KeyFn &&key) {
+  std::vector<std::size_t> starts;
+  for (std::size_t i = 0; i < items.size(); ++i) {
+    if (i == 0 || !(key(items[i]) == key(items[i - 1]))) {
+      starts.push_back(i);
+    }
+  }
+  starts.push_back(items.size());
+  return starts;
+}
+
 // Slice 0 accumulates straight into `acc`; the others into fresh Acc values
 // that are then merged into `acc` in slice order, so an associative merge gives
 // the serial result at any thread count.

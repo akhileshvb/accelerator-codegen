@@ -494,15 +494,24 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
   std::ostringstream script;
   script << "LOAD '" << tools.extension_so << "';\n"
          << "SELECT '===WARM===' AS m;\n"
-         << accel_sql << ";\n";
+         << accel_sql << ";\n"
+         // A cold read answers from SQL while the build runs: wait for the state.
+         << "DO $$ BEGIN FOR i IN 1..1200 LOOP "
+            "EXIT WHEN substring(accel_postgres_shard_stats() from 'synced=([0-9]+)')::bigint >= 1; "
+            "PERFORM pg_sleep(0.05); END LOOP; END $$;\n";
   // The accelerator's worker exists once it was read: force from here on.
   script << "SELECT accel_postgres_set_force_maintenance_action("
          << SqlLiteral(force_action) << ");\n"
          << "SELECT '===MUT_BEFORE===' AS m;\n"
          << stats << probe.update_sql << ";\n"
-         // The read waits for the commit to be applied; the decision is published right after.
+         // The read answers from the state once it can serve (or from SQL when
+         // waiting costs more); the worker applies the commit and publishes its
+         // decision either way: wait for that.
          << "SELECT '===ACCEL===' AS m;\n"
          << accel_sql << ";\n"
+         << "DO $$ DECLARE s text; BEGIN FOR i IN 1..600 LOOP s := accel_postgres_shard_stats(); "
+            "EXIT WHEN substring(s from 'applied=([0-9]+)')::bigint >= substring(s from 'commits=([0-9]+)')::bigint; "
+            "PERFORM pg_sleep(0.05); END LOOP; END $$;\n"
          << "SELECT pg_sleep(0.5);\n"
          << "SELECT '===MUT_AFTER===' AS m;\n"
          << stats

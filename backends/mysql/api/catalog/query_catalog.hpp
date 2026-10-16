@@ -24,6 +24,9 @@ struct MysqlSharedQueryCatalogEntry {
   const char *base_sql = nullptr;
   const char *accelerator_sql = nullptr;
   const char *aux_sql = nullptr;
+  // The query for any arguments, answering a read the state cannot serve:
+  // $n is the n-th UDF argument (replaced by its literal).
+  const char *fallback_sql = nullptr;
 };
 
 // Registers (replacing an entry with the same workload and id).  Entries are
@@ -38,6 +41,9 @@ struct MysqlQueryCatalogRegistrar {
 
 const MysqlSharedQueryCatalogEntry &LookupMysqlQuery(const std::string &workload_name,
                                                             int query_id);
+
+// nullptr if no query registered under `accelerator_id`.
+const MysqlSharedQueryCatalogEntry *FindMysqlQueryByAccelerator(const std::string &accelerator_id);
 
 std::vector<int> MysqlQueriesForWorkload(const std::string &workload_name);
 

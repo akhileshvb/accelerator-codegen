@@ -20,12 +20,29 @@ struct MaintenanceRequest {
   bool low_confidence = false;
   maintenance::MaintenanceAction last_action = maintenance::MaintenanceAction::NoOp;
   double expected_queries_before_next_write = 10.0;
-  // (Last: modules initialize the fields above positionally.)
+  // (Last: the fields above stay in this order for positional initializers.)
   // InvalidateAndRebuildOnRead: the next reader rebuilds (ChooseMaintenance
   // clears it: readers never build state).
   bool deferred_rebuild_supported = true;
   // Rows in the dependency tables now (AuxEngineServices::DataScaleRows); 0: unknown.
   uint64_t data_rows_hint = 0;
+
+  // The state changes only by a full rebuild (no deltas to apply).
+  static MaintenanceRequest RebuildOnly(double expected_queries) {
+    return {0, 0, false, false, true, true, false, maintenance::MaintenanceAction::NoOp,
+            expected_queries};
+  }
+  // One state image: deltas apply to it, or everything rebuilds.
+  static MaintenanceRequest IncrementalSingleState(uint64_t rows, double expected_queries) {
+    return {rows, 1, true, false, true, false, false, maintenance::MaintenanceAction::NoOp,
+            expected_queries};
+  }
+  // Partitioned state: deltas apply, or the touched partitions or everything rebuild.
+  static MaintenanceRequest IncrementalPartitioned(uint64_t rows, uint64_t partitions,
+                                                   double expected_queries) {
+    return {rows, partitions, true, true, true, false, false,
+            maintenance::MaintenanceAction::NoOp, expected_queries};
+  }
 };
 
 struct MaintenanceDecision {

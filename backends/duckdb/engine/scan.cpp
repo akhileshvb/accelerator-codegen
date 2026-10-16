@@ -1,5 +1,6 @@
 // GENERATED BACKEND
 #include "backends/duckdb/engine/scan.hpp"
+#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -209,6 +210,13 @@ std::string OptionalBenchScanLimitSuffix(const char *env_name) {
 ::duckdb::Connection &ScanConnection(::duckdb::Connection &connection) {
   ++t_table_scans;
   return ScanRedirect::current ? ScanRedirect::current->Connection() : connection;
+}
+
+::duckdb::transaction_t ScanSnapshot(::duckdb::Connection &connection) {
+  if (ScanRedirect::current) {
+    return ScanRedirect::current->Snapshot();
+  }
+  return static_cast<::duckdb::transaction_t>(DuckDBAuxBackend::SnapshotEpoch(*connection.context));
 }
 
 ScanLock LockScan(::duckdb::Connection &connection) {

@@ -18,6 +18,11 @@ const PostgresQueryCatalogRegistrar kRegistrar(PostgresSharedQueryCatalogEntry
         "SELECT revenue FROM accel_tpch_q6(DATE '1995-01-01', 0.03, 25)",
         /* aux_sql */
         "SELECT revenue FROM accel_tpch_q6_aux(DATE '1995-01-01', 0.03, 25)",
+        /* fallback_sql */
+        "SELECT SUM(l_extendedprice * l_discount) AS revenue "
+        "FROM lineitem "
+        "WHERE l_shipdate >= $1 AND l_shipdate < $1 + INTERVAL '1' year "
+        "AND l_discount BETWEEN $2::numeric - 0.01 AND $2::numeric + 0.01 AND l_quantity < $3::numeric"
     }
 );
 

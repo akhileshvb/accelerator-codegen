@@ -27,6 +27,18 @@ const PostgresQueryCatalogRegistrar kRegistrar(PostgresSharedQueryCatalogEntry
         "SELECT * FROM accel_tpch_q20(DATE '1997-01-01', 'gainsboro%', 'RUSSIA')",
         /* aux_sql */
         "SELECT * FROM accel_tpch_q20_aux(DATE '1997-01-01', 'gainsboro%', 'RUSSIA')",
+        /* fallback_sql */
+        "SELECT s_name, s_address "
+        "FROM supplier, nation "
+        "WHERE s_suppkey IN ( "
+        "SELECT ps_suppkey FROM partsupp, ( "
+        "SELECT l_partkey agg_partkey, l_suppkey agg_suppkey, 0.5 * SUM(l_quantity) AS agg_quantity "
+        "FROM lineitem WHERE l_shipdate >= $1 AND l_shipdate < $1 + INTERVAL '1' year "
+        "GROUP BY l_partkey, l_suppkey) agg_lineitem "
+        "WHERE agg_partkey = ps_partkey AND agg_suppkey = ps_suppkey "
+        "AND ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE $2) "
+        "AND ps_availqty > agg_quantity) "
+        "AND s_nationkey = n_nationkey AND n_name = $3 ORDER BY s_name"
     }
 );
 

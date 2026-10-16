@@ -777,14 +777,6 @@ void TpchQ22Module::Answer(const TpchQ22State &state,
   EmitRows(rows, sink);
 }
 
-// ── ExecuteFallback ─────────────────────────────────────────────────────────
-// Exact answer from the tables (own uncommitted writes), through a fresh build.
-void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  Answer(*BuildState(services), arguments, sink);
-}
-
 std::vector<core::CalibrationWrite> TpchQ22Module::CalibrationWrites() const {
   return TpchQ22CalibrationWrites();
 }

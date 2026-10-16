@@ -12,6 +12,7 @@
   "apply_delta_per_row_us": 2.0268943662828587,
   "apply_delta_part_lineitem_scan_us": 27000,
   "apply_delta_max_rows": 1048576,
+  "calibrated_scale_rows": 149994608,
   "apply_delta_max_part_fanout": 16,
   "invalidation_overhead_us": 1000.0,
   "decision_margin_us": 1000,

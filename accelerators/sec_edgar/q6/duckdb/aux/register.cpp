@@ -93,7 +93,13 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{6,
      1,
      false,
      BuildSecEdgarQ6Probe,
-     core::kSecEdgarQ6CostModel}};
+     core::kSecEdgarQ6CostModel,
+     "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) "
+     "AS cnt FROM num n JOIN sub s ON n.adsh = s.adsh JOIN pre p ON n.adsh = p.adsh "
+     "AND n.tag = p.tag AND n.version = p.version WHERE n.uom = $3 AND p.stmt = $2 "
+     "AND s.fy = TRY_CAST($1 AS INTEGER) AND n.value IS NOT NULL GROUP BY s.name, "
+     "p.stmt, n.tag, p.plabel ORDER BY total_value DESC, s.name, n.tag, p.plabel "
+     "LIMIT 200"}};
 
 } // namespace q6_catalog
 } // namespace

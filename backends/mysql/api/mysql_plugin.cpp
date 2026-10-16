@@ -465,7 +465,7 @@ __attribute__((visibility("default")))
 char *mysql_accel_get_last_maintenance_decision(UDF_INIT *, UDF_ARGS *, char *result,
                                                 unsigned long *length, unsigned char *is_null,
                                                 unsigned char *) {
-  const auto text = accelerator_codegen::aux_state::core::FormatLastMaintenanceDecision();
+  const auto text = mysql_rt::MysqlHost::Get().LastMaintenanceDecision();
   if (text.empty()) {
     *is_null = 1;
     *length = 0;

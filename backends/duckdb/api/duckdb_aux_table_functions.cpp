@@ -17,6 +17,7 @@
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/engine/decimal128.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "backends/duckdb/api/verus_host.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/on_create_conflict.hpp"
@@ -233,53 +234,6 @@ core::QueryArguments BuildArguments(const SharedQueryCatalogEntry &entry,
     arguments.values.push_back(ToAuxValue(inputs[index], type));
   }
   return arguments;
-}
-
-// `sql` with each $n replaced by the n-th value as a typed SQL literal (highest
-// n first, so $1 never matches inside $10).
-std::string WithLiterals(const std::string &sql, const ::duckdb::vector<::duckdb::Value> &values) {
-  std::string out = sql;
-  for (std::size_t n = values.size(); n >= 1; --n) {
-    const std::string marker = "$" + std::to_string(n);
-    const std::string literal = "(" + values[n - 1].ToSQLString() + ")";
-    for (std::size_t at = out.find(marker); at != std::string::npos; at = out.find(marker, at + literal.size())) {
-      const std::size_t after = at + marker.size();
-      if (after < out.size() && std::isdigit(static_cast<unsigned char>(out[after]))) {
-        at += marker.size() - literal.size(); // part of a longer $nn: skip
-        continue;
-      }
-      out.replace(at, marker.size(), literal);
-    }
-  }
-  return out;
-}
-
-::duckdb::Value AuxValueToDuckdb(const core::AuxValue &value) {
-  if (value.is_null) {
-    return ::duckdb::Value();
-  }
-  return std::visit(
-      [](const auto &payload) -> ::duckdb::Value {
-        using Payload = std::decay_t<decltype(payload)>;
-        if constexpr (std::is_same_v<Payload, int64_t>) {
-          return ::duckdb::Value::BIGINT(payload);
-        } else if constexpr (std::is_same_v<Payload, uint64_t>) {
-          return ::duckdb::Value::UBIGINT(payload);
-        } else if constexpr (std::is_same_v<Payload, double>) {
-          return ::duckdb::Value::DOUBLE(payload);
-        } else if constexpr (std::is_same_v<Payload, core::ScaledDecimal>) {
-          return ::duckdb::Value::DECIMAL(payload.value, 18, payload.scale); // any int64 payload
-        } else if constexpr (std::is_same_v<Payload, core::ScaledDecimal128>) {
-          return engine::duckdb::Decimal128ToValue(payload);
-        } else if constexpr (std::is_same_v<Payload, core::AuxDate>) {
-          ::duckdb::date_t date{};
-          date.days = payload.days_since_epoch;
-          return ::duckdb::Value::DATE(date);
-        } else {
-          return ::duckdb::Value(payload);
-        }
-      },
-      value.payload);
 }
 
 struct SchemaCache {

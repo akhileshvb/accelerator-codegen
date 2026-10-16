@@ -403,8 +403,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
 
   // Full (re)computation of the state from the base tables.
   SecEdgarQ3State BuildState(core::AuxEngineServices &) const;

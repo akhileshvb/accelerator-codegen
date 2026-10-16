@@ -609,8 +609,11 @@ void SecEdgarQ1Module::Execute(core::AuxEngineServices &services,
 }
 
 void SecEdgarQ1Module::ExecuteFallback(core::AuxEngineServices &services,
-                                       const core::QueryArguments &,
+                                       const core::QueryArguments &arguments,
                                        core::AuxRowSink &sink) {
+  if (services.AnswerFromSql(arguments, sink)) {
+    return;
+  }
   Emit(BuildState(services), sink);
 }
 
