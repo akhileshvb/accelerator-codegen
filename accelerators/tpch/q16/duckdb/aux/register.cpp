@@ -5,6 +5,7 @@
 #include "tpch/q16/duckdb/aux/module.hpp"
 #include "tpch/q16/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -116,36 +117,45 @@ using namespace scan;
 struct TpchQ16Scan : TpchQ16InitialScan {
   explicit TpchQ16Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanSuppliers(
-      const std::function<void(const TpchQ16SupplierInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT s_suppkey, s_comment FROM supplier",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ16SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      ChunkValue(chunk, 1, row).ToString()};
-        },
-        [&](TpchQ16SupplierInput &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16SupplierInput &)> &sink) override {
+    ScanPartitioned(services, connection, "supplier",
+                    {IntColumn("s_suppkey"), TextColumn("s_comment")}, partitions,
+                    [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ16SupplierInput{row.Int(0), row.Text(1)});
+                      }
+                    });
   }
   void ScanParts(
-      const std::function<void(const TpchQ16PartInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT p_partkey, p_brand, p_type, p_size FROM part",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ16PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                  ChunkValue(chunk, 1, row).ToString(),
-                                  ChunkValue(chunk, 2, row).ToString(),
-                                  SafeInt32(ChunkValue(chunk, 3, row))};
-        },
-        [&](TpchQ16PartInput &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16PartInput &)> &sink) override {
+    ScanPartitioned(services, connection, "part",
+                    {IntColumn("p_partkey"), TextColumn("p_brand"), TextColumn("p_type"),
+                     IntColumn("p_size")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        const auto size = row.Int(3);
+                        if (size != static_cast<int32_t>(size))
+                          throw std::runtime_error("TPC-H Q16: p_size exceeds 32 bits");
+                        sink(partition, TpchQ16PartInput{row.Int(0), row.Text(1), row.Text(2),
+                                                         static_cast<int32_t>(size)});
+                      }
+                    });
   }
   void ScanPartsupp(
-      const std::function<void(const TpchQ16PartsuppInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT ps_partkey, ps_suppkey FROM partsupp",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ16PartsuppInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      SafeInt64(ChunkValue(chunk, 1, row))};
-        },
-        [&](TpchQ16PartsuppInput &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16PartsuppInput &)> &sink) override {
+    ScanPartitioned(services, connection, "partsupp",
+                    {IntColumn("ps_partkey"), IntColumn("ps_suppkey")}, partitions,
+                    [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ16PartsuppInput{row.Int(0), row.Int(1)});
+                      }
+                    });
   }
   ::duckdb::Connection &connection;
 };

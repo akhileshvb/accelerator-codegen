@@ -1,6 +1,8 @@
 #include "tpch/q16/duckdb/aux/module.hpp"
 #include "tpch/q16/calibration_writes.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -30,6 +32,8 @@ constexpr std::size_t kSuppPageSize = std::size_t{1} << Layout::kSuppShift;
 // Pages per build slice: a partsupp page is ~20us of CSR work, a supplier page a few.
 constexpr std::size_t kPsPagesGrain = 16;
 constexpr std::size_t kSuppPagesGrain = 64;
+// Groups per build slice: counting a group's eligible suppliers is ~1 us per 50 members.
+constexpr std::size_t kGroupsGrain = 4096;
 
 
 // ── Custom profiling (no-op unless ACCEL_AUX_CUSTOM_PROFILE is set) ─────────
@@ -1261,24 +1265,182 @@ void TpchQ16Module::ExecuteFallback(core::AuxEngineServices &services,
   EmitMerged(*meta, lists, params, sink);
 }
 
+namespace {
+
+// Build partials. Partitions fold in table order, so ids and last-wins rows
+// equal a serial scan's.
+struct SupplierPartial {
+  std::vector<std::unique_ptr<TpchQ16SupplierPage>> pages;
+
+  TpchQ16SupplierPage &Page(int64_t suppkey) {
+    const auto chunk = static_cast<std::size_t>(suppkey >> Layout::kSuppShift);
+    if (chunk >= pages.size())
+      pages.resize(chunk + 1);
+    if (!pages[chunk]) {
+      pages[chunk] = std::make_unique<TpchQ16SupplierPage>();
+      pages[chunk]->Init();
+    }
+    return *pages[chunk];
+  }
+  void MergeFrom(SupplierPartial &&from) {
+    if (pages.size() < from.pages.size())
+      pages.resize(from.pages.size());
+    for (std::size_t chunk = 0; chunk < from.pages.size(); ++chunk) {
+      if (!from.pages[chunk])
+        continue;
+      if (!pages[chunk]) {
+        pages[chunk] = std::move(from.pages[chunk]);
+        continue;
+      }
+      for (std::size_t i = 0; i < kSuppPageSize; ++i)
+        pages[chunk]->eligible[i] &= from.pages[chunk]->eligible[i];
+    }
+  }
+};
+
+struct PartPartial {
+  TpchQ16Meta meta; // names in order of first appearance within the partition
+  std::vector<std::unique_ptr<TpchQ16PartPage>> pages;
+
+  TpchQ16PartPage &Page(int64_t partkey) {
+    const auto chunk = static_cast<std::size_t>(partkey >> Layout::kPartShift);
+    if (chunk >= pages.size())
+      pages.resize(chunk + 1);
+    if (!pages[chunk]) {
+      pages[chunk] = std::make_unique<TpchQ16PartPage>();
+      pages[chunk]->Init();
+    }
+    return *pages[chunk];
+  }
+  void MergeFrom(PartPartial &&from) {
+    std::vector<uint16_t> brand_ids, type_ids;
+    for (const auto &name : from.meta.brands)
+      brand_ids.push_back(InternName(meta.brands, meta.brand_index, name, Layout::kBrandCap));
+    for (const auto &name : from.meta.types)
+      type_ids.push_back(InternName(meta.types, meta.type_index, name, 0xFFFF));
+    if (pages.size() < from.pages.size())
+      pages.resize(from.pages.size());
+    for (std::size_t chunk = 0; chunk < from.pages.size(); ++chunk) {
+      if (!from.pages[chunk])
+        continue;
+      for (auto &info : from.pages[chunk]->info)
+        if (info.brand_id != kNoBrand) {
+          info.brand_id = brand_ids[info.brand_id];
+          info.type_id = type_ids[info.type_id];
+        }
+      if (!pages[chunk]) {
+        pages[chunk] = std::move(from.pages[chunk]);
+        continue;
+      }
+      for (std::size_t i = 0; i < kPartPageSize; ++i)
+        if (from.pages[chunk]->info[i].brand_id != kNoBrand)
+          pages[chunk]->info[i] = from.pages[chunk]->info[i];
+    }
+  }
+};
+
+// Partsupp rows per page and the (size, brand, type) groups of their parts.
+struct PsTemp {
+  std::vector<uint16_t> local;
+  std::vector<int64_t> sk;
+};
+struct InvTemp {
+  std::vector<uint16_t> local;
+  std::vector<uint32_t> code;
+};
+
+struct PartsuppPartial {
+  std::vector<PsTemp> ps_temp;
+  std::vector<uint32_t> gindex; // group slot -> index in `groups`
+  std::vector<TpchQ16GroupMembers> groups;
+
+  explicit PartsuppPartial(std::size_t group_slots) : gindex(group_slots, kNoGroup) {}
+
+  TpchQ16GroupMembers &Group(std::size_t slot, uint16_t type_id) {
+    if (gindex[slot] == kNoGroup) {
+      gindex[slot] = static_cast<uint32_t>(groups.size());
+      groups.emplace_back();
+      groups.back().type_id = type_id;
+    }
+    return groups[gindex[slot]];
+  }
+  void AddMember(std::size_t slot, uint16_t type_id, int64_t suppkey) {
+    auto &gm = Group(slot, type_id);
+    const auto pos = std::lower_bound(gm.suppkeys.begin(), gm.suppkeys.end(), suppkey);
+    const auto idx = pos - gm.suppkeys.begin();
+    if (pos != gm.suppkeys.end() && *pos == suppkey) {
+      ++gm.ref_counts[static_cast<std::size_t>(idx)];
+      return;
+    }
+    gm.suppkeys.insert(pos, suppkey);
+    gm.ref_counts.insert(gm.ref_counts.begin() + idx, 1);
+  }
+  void MergeFrom(PartsuppPartial &&from) {
+    if (ps_temp.size() < from.ps_temp.size())
+      ps_temp.resize(from.ps_temp.size());
+    for (std::size_t chunk = 0; chunk < from.ps_temp.size(); ++chunk) {
+      auto &mine = ps_temp[chunk];
+      auto &theirs = from.ps_temp[chunk];
+      mine.local.insert(mine.local.end(), theirs.local.begin(), theirs.local.end());
+      mine.sk.insert(mine.sk.end(), theirs.sk.begin(), theirs.sk.end());
+    }
+    for (std::size_t slot = 0; slot < from.gindex.size(); ++slot) {
+      if (from.gindex[slot] == kNoGroup)
+        continue;
+      auto &theirs = from.groups[from.gindex[slot]];
+      if (gindex[slot] == kNoGroup) {
+        Group(slot, theirs.type_id) = std::move(theirs);
+        continue;
+      }
+      auto &mine = groups[gindex[slot]];
+      std::vector<int64_t> keys;
+      std::vector<int32_t> refs;
+      std::size_t i = 0, j = 0;
+      while (i < mine.suppkeys.size() || j < theirs.suppkeys.size()) {
+        const bool take_mine = j == theirs.suppkeys.size() ||
+                               (i < mine.suppkeys.size() && mine.suppkeys[i] <= theirs.suppkeys[j]);
+        const bool both = i < mine.suppkeys.size() && j < theirs.suppkeys.size() &&
+                          mine.suppkeys[i] == theirs.suppkeys[j];
+        if (both) {
+          keys.push_back(mine.suppkeys[i]);
+          refs.push_back(mine.ref_counts[i++] + theirs.ref_counts[j++]);
+        } else if (take_mine) {
+          keys.push_back(mine.suppkeys[i]);
+          refs.push_back(mine.ref_counts[i++]);
+        } else {
+          keys.push_back(theirs.suppkeys[j]);
+          refs.push_back(theirs.ref_counts[j++]);
+        }
+      }
+      mine.suppkeys = std::move(keys);
+      mine.ref_counts = std::move(refs);
+    }
+  }
+};
+
+} // namespace
+
 // ── State build ────────────────────────────────────────────────────────────
 TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q16 requires a typed initial scan source");
 
-  auto meta = std::make_shared<TpchQ16Meta>();
-
-  std::vector<std::unique_ptr<TpchQ16SupplierPage>> supp_pages;
-  const auto supp_page = [&](int64_t key) -> TpchQ16SupplierPage & {
-    const auto chunk = static_cast<std::size_t>(key >> Layout::kSuppShift);
-    if (chunk >= supp_pages.size())
-      supp_pages.resize(chunk + 1);
-    if (!supp_pages[chunk]) {
-      supp_pages[chunk] = std::make_unique<TpchQ16SupplierPage>();
-      supp_pages[chunk]->Init();
-    }
-    return *supp_pages[chunk];
-  };
+  auto supplier_pages = core::PartitionedBuild<SupplierPartial>(
+      services, [] { return SupplierPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliers(services, parts,
+                                    [&](std::size_t p, const TpchQ16SupplierInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ16SupplierInput>{input});
+                                    });
+      },
+      [](SupplierPartial &partial, const TpchQ16SupplierInput &input) {
+        CheckKey(input.suppkey, "suppkey");
+        partial.Page(input.suppkey)
+            .eligible[static_cast<std::size_t>(input.suppkey) & (kSuppPageSize - 1)] =
+            TpchQ16IsComplaintSupplier(input.comment) ? 0 : 1;
+      },
+      [](SupplierPartial &into, SupplierPartial &&from) { into.MergeFrom(std::move(from)); });
+  auto &supp_pages = supplier_pages.pages;
   const auto eligible_at = [&](int64_t key) {
     const auto chunk = static_cast<std::size_t>(key >> Layout::kSuppShift);
     if (chunk >= supp_pages.size() || !supp_pages[chunk])
@@ -1287,31 +1449,28 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
                                        (kSuppPageSize - 1)] != 0;
   };
 
-  initial_scan->ScanSuppliers([&](const TpchQ16SupplierInput &input) {
-    CheckKey(input.suppkey, "suppkey");
-    supp_page(input.suppkey)
-        .eligible[static_cast<std::size_t>(input.suppkey) & (kSuppPageSize - 1)] =
-        TpchQ16IsComplaintSupplier(input.comment) ? 0 : 1;
-  });
-
-  std::vector<std::unique_ptr<TpchQ16PartPage>> part_pages;
-  initial_scan->ScanParts([&](const TpchQ16PartInput &input) {
-    CheckKey(input.partkey, "partkey");
-    const auto chunk = static_cast<std::size_t>(input.partkey >> Layout::kPartShift);
-    if (chunk >= part_pages.size())
-      part_pages.resize(chunk + 1);
-    if (!part_pages[chunk]) {
-      part_pages[chunk] = std::make_unique<TpchQ16PartPage>();
-      part_pages[chunk]->Init();
-    }
-    TpchQ16PartInfo info;
-    info.brand_id = InternName(meta->brands, meta->brand_index, input.brand,
-                               Layout::kBrandCap);
-    info.type_id = InternName(meta->types, meta->type_index, input.type, 0xFFFF);
-    info.size = input.size;
-    part_pages[chunk]->info[static_cast<std::size_t>(input.partkey) &
-                            (kPartPageSize - 1)] = info;
-  });
+  auto part_partial = core::PartitionedBuild<PartPartial>(
+      services, [] { return PartPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanParts(services, parts,
+                                [&](std::size_t p, const TpchQ16PartInput &input) {
+                                  sink(p, TypedRowBatch<TpchQ16PartInput>{input});
+                                });
+      },
+      [](PartPartial &partial, const TpchQ16PartInput &input) {
+        CheckKey(input.partkey, "partkey");
+        TpchQ16PartInfo info;
+        info.brand_id = InternName(partial.meta.brands, partial.meta.brand_index, input.brand,
+                                   Layout::kBrandCap);
+        info.type_id =
+            InternName(partial.meta.types, partial.meta.type_index, input.type, 0xFFFF);
+        info.size = input.size;
+        partial.Page(input.partkey).info[static_cast<std::size_t>(input.partkey) &
+                                         (kPartPageSize - 1)] = info;
+      },
+      [](PartPartial &into, PartPartial &&from) { into.MergeFrom(std::move(from)); });
+  auto meta = std::make_shared<TpchQ16Meta>(std::move(part_partial.meta));
+  auto &part_pages = part_partial.pages;
   RecomputeRanks(*meta);
 
   const std::size_t nb = meta->brands.size();
@@ -1319,71 +1478,71 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
   const std::size_t sizes = static_cast<std::size_t>(Layout::kMaxSize);
   if (nb * nt * sizes > (std::size_t{1} << 26))
     throw std::runtime_error("TPC-H Q16: too many brand/type combinations");
-  std::vector<uint32_t> gindex(nb * nt * sizes, kNoGroup);
-  std::vector<TpchQ16GroupMembers> built_groups;
   const auto gslot = [&](int32_t size, uint16_t brand, uint16_t type) {
     return (static_cast<std::size_t>(size - 1) * nb + brand) * nt + type;
   };
 
-  struct PsTemp {
-    std::vector<uint16_t> local;
-    std::vector<int64_t> sk;
-  };
-  struct InvTemp {
-    std::vector<uint16_t> local;
-    std::vector<uint32_t> code;
-  };
-  std::vector<PsTemp> ps_temp;
+  auto partsupp = core::PartitionedBuild<PartsuppPartial>(
+      services, [&] { return PartsuppPartial(nb * nt * sizes); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsupp(services, parts,
+                                   [&](std::size_t p, const TpchQ16PartsuppInput &input) {
+                                     sink(p, TypedRowBatch<TpchQ16PartsuppInput>{input});
+                                   });
+      },
+      [&](PartsuppPartial &partial, const TpchQ16PartsuppInput &input) {
+        CheckKey(input.partkey, "partkey");
+        CheckKey(input.suppkey, "suppkey");
+        const auto pchunk = static_cast<std::size_t>(input.partkey >> Layout::kPsShift);
+        if (pchunk >= partial.ps_temp.size())
+          partial.ps_temp.resize(pchunk + 1);
+        partial.ps_temp[pchunk].local.push_back(static_cast<uint16_t>(
+            static_cast<std::size_t>(input.partkey) & (kPsPageSize - 1)));
+        partial.ps_temp[pchunk].sk.push_back(input.suppkey);
+
+        const auto part_chunk =
+            static_cast<std::size_t>(input.partkey >> Layout::kPartShift);
+        if (part_chunk >= part_pages.size() || !part_pages[part_chunk])
+          return;
+        const auto &info =
+            part_pages[part_chunk]->info[static_cast<std::size_t>(input.partkey) &
+                                         (kPartPageSize - 1)];
+        if (info.brand_id == kNoBrand || !SizeInRange(info.size))
+          return;
+        partial.AddMember(gslot(info.size, info.brand_id, info.type_id), info.type_id,
+                          input.suppkey);
+      },
+      [](PartsuppPartial &into, PartsuppPartial &&from) { into.MergeFrom(std::move(from)); });
+  auto &ps_temp = partsupp.ps_temp;
+  auto &gindex = partsupp.gindex;
+  auto &built_groups = partsupp.groups;
+
+  // Eligible suppliers per group, and the groups each supplier belongs to.
   std::vector<InvTemp> inv_temp;
-
-  initial_scan->ScanPartsupp([&](const TpchQ16PartsuppInput &input) {
-    CheckKey(input.partkey, "partkey");
-    CheckKey(input.suppkey, "suppkey");
-    const auto pchunk = static_cast<std::size_t>(input.partkey >> Layout::kPsShift);
-    if (pchunk >= ps_temp.size())
-      ps_temp.resize(pchunk + 1);
-    ps_temp[pchunk].local.push_back(
-        static_cast<uint16_t>(static_cast<std::size_t>(input.partkey) &
-                              (kPsPageSize - 1)));
-    ps_temp[pchunk].sk.push_back(input.suppkey);
-
-    const auto part_chunk =
-        static_cast<std::size_t>(input.partkey >> Layout::kPartShift);
-    if (part_chunk >= part_pages.size() || !part_pages[part_chunk])
-      return;
-    const auto &info =
-        part_pages[part_chunk]->info[static_cast<std::size_t>(input.partkey) &
-                                     (kPartPageSize - 1)];
-    if (info.brand_id == kNoBrand || !SizeInRange(info.size))
-      return;
-    auto &slot = gindex[gslot(info.size, info.brand_id, info.type_id)];
-    if (slot == kNoGroup) {
-      slot = static_cast<uint32_t>(built_groups.size());
-      built_groups.emplace_back();
-      built_groups.back().type_id = info.type_id;
+  core::ParallelSlices(services, built_groups.size(), kGroupsGrain,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t g = begin; g < end; ++g) {
+                           auto &gm = built_groups[g];
+                           gm.eligible_count = static_cast<int32_t>(std::count_if(
+                               gm.suppkeys.begin(), gm.suppkeys.end(), eligible_at));
+                         }
+                       });
+  for (std::size_t slot = 0; slot < gindex.size(); ++slot) {
+    if (gindex[slot] == kNoGroup)
+      continue;
+    const auto size = static_cast<int32_t>(slot / (nb * nt)) + 1;
+    const auto brand = static_cast<uint16_t>(slot / nt % nb);
+    const auto type = static_cast<uint16_t>(slot % nt);
+    const auto code = GroupCode(size, brand, type);
+    for (const auto suppkey : built_groups[gindex[slot]].suppkeys) {
+      const auto schunk = static_cast<std::size_t>(suppkey >> Layout::kSuppShift);
+      if (schunk >= inv_temp.size())
+        inv_temp.resize(schunk + 1);
+      inv_temp[schunk].local.push_back(static_cast<uint16_t>(
+          static_cast<std::size_t>(suppkey) & (kSuppPageSize - 1)));
+      inv_temp[schunk].code.push_back(code);
     }
-    auto &gm = built_groups[slot];
-    const auto pos = std::lower_bound(gm.suppkeys.begin(), gm.suppkeys.end(),
-                                      input.suppkey);
-    const auto idx = pos - gm.suppkeys.begin();
-    if (pos != gm.suppkeys.end() && *pos == input.suppkey) {
-      ++gm.ref_counts[static_cast<std::size_t>(idx)];
-      return;
-    }
-    gm.suppkeys.insert(pos, input.suppkey);
-    gm.ref_counts.insert(gm.ref_counts.begin() + idx, 1);
-    if (eligible_at(input.suppkey))
-      ++gm.eligible_count;
-    const auto schunk =
-        static_cast<std::size_t>(input.suppkey >> Layout::kSuppShift);
-    if (schunk >= inv_temp.size())
-      inv_temp.resize(schunk + 1);
-    inv_temp[schunk].local.push_back(
-        static_cast<uint16_t>(static_cast<std::size_t>(input.suppkey) &
-                              (kSuppPageSize - 1)));
-    inv_temp[schunk].code.push_back(
-        GroupCode(info.size, info.brand_id, info.type_id));
-  });
+  }
 
   TpchQ16State state;
   auto &images = state.images;

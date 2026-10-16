@@ -98,12 +98,17 @@ struct TpchQ16PartsuppInput {
 class TpchQ16InitialScan {
 public:
   virtual ~TpchQ16InitialScan() = default;
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanSuppliers(
-      const std::function<void(const TpchQ16SupplierInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16SupplierInput &)> &) = 0;
   virtual void ScanParts(
-      const std::function<void(const TpchQ16PartInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16PartInput &)> &) = 0;
   virtual void ScanPartsupp(
-      const std::function<void(const TpchQ16PartsuppInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16PartsuppInput &)> &) = 0;
 };
 
 // ── State payloads (each published image is immutable) ─────────────────────
