@@ -739,6 +739,7 @@ private:
     return edits;
   }
 
+public:
   // Applies many ops at once: the table edits in arrival order, then the
   // candidate lists of the affected parts, one group per task (groups own
   // disjoint lists). `published` is the state the lists were built against: it
