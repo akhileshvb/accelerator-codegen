@@ -33,14 +33,16 @@ void ScanTpchQ20LineitemsPartitioned(
                   });
 }
 
-void ScanTpchQ20Parts(
-    const std::function<void(const query::TpchQ20PartInput &)> &consumer) {
-  ScanColumns("part",
-              {IntColumn("p_partkey"), TextColumn("p_name")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Text(1)});
-              });
+void ScanTpchQ20PartsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ20PartInput &)> &sink) {
+  ScanPartitioned(services, "part", {IntColumn("p_partkey"), TextColumn("p_name")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Text(1)});
+                    }
+                  });
 }
 
 void ScanTpchQ20PartsuppsPartitioned(
@@ -90,10 +92,11 @@ public:
       override {
     scans::ScanTpchQ20LineitemsPartitioned(services, partitions, sink);
   }
-  void ScanParts(
-      const std::function<void(const query::TpchQ20PartInput &)> &consumer)
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ20PartInput &)> &sink)
       override {
-    scans::ScanTpchQ20Parts(consumer);
+    scans::ScanTpchQ20PartsPartitioned(services, partitions, sink);
   }
   void ScanPartsuppsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
