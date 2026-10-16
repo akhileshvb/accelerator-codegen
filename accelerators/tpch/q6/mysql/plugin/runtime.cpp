@@ -39,27 +39,30 @@ void ScanTpchQ6Lineitems(
 
 // One SQL GROUP BY: the engine aggregates, the process receives one row per
 // (shipdate, discount, quantity) cell with the exact revenue sum (text).
+SplitTable CellAggregatesTable() {
+  return {"l_shipdate, l_discount, l_quantity, count(*), sum(l_extendedprice * l_discount)",
+          "lineitem", "", "l_orderkey", "l_shipdate, l_discount, l_quantity"};
+}
+
+query::TpchQ6CellAggregate DecodeCellAggregate(const std::vector<std::string> &cols) {
+  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
+  query::TpchQ6CellAggregate cell;
+  cell.shipdate_days = TypedDate(cols, 0);
+  __int128 discount = 0, quantity = 0;
+  if (!dec::Parse(TypedText(cols, 1), 2, discount) ||
+      !dec::Parse(TypedText(cols, 2), 2, quantity) ||
+      !dec::Parse(TypedText(cols, 4), 4, cell.revenue_raw))
+    throw std::runtime_error("TPC-H Q6: unparsable decimal");
+  cell.discount_raw = static_cast<int64_t>(discount);
+  cell.quantity_raw = static_cast<int64_t>(quantity);
+  cell.count = TypedInt(cols, 3);
+  return cell;
+}
+
 void ScanTpchQ6CellAggregates(
     const std::function<void(const query::TpchQ6CellAggregate &)> &consumer) {
-  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuplesDecoded(
-      "SELECT l_shipdate, l_discount, l_quantity, count(*), "
-      "sum(l_extendedprice * l_discount) FROM lineitem "
-      "GROUP BY l_shipdate, l_discount, l_quantity",
-      [](const std::vector<std::string> &cols) {
-        query::TpchQ6CellAggregate cell;
-        cell.shipdate_days = TypedDate(cols, 0);
-        __int128 discount = 0, quantity = 0;
-        if (!dec::Parse(TypedText(cols, 1), 2, discount) ||
-            !dec::Parse(TypedText(cols, 2), 2, quantity) ||
-            !dec::Parse(TypedText(cols, 4), 4, cell.revenue_raw))
-          throw std::runtime_error("TPC-H Q6: unparsable decimal");
-        cell.discount_raw = static_cast<int64_t>(discount);
-        cell.quantity_raw = static_cast<int64_t>(quantity);
-        cell.count = TypedInt(cols, 3);
-        return cell;
-      },
-      [&](query::TpchQ6CellAggregate &&input) { consumer(input); });
+  ScanTypedTuplesDecoded(SelectSql(CellAggregatesTable()), DecodeCellAggregate,
+                         [&](query::TpchQ6CellAggregate &&input) { consumer(input); });
 }
 
 } // namespace scans
@@ -75,6 +78,16 @@ public:
       const std::function<void(const query::TpchQ6CellAggregate &)> &consumer)
       override {
     scans::ScanTpchQ6CellAggregates(consumer);
+  }
+  void ScanCellAggregatesPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ6CellAggregate &)> &sink)
+      override {
+    ScanTypedTuplesPartitioned(
+        services, scans::CellAggregatesTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeCellAggregate(cols));
+        });
   }
 };
 
