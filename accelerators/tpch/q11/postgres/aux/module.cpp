@@ -1,17 +1,19 @@
 #include "tpch/q11/postgres/aux/module.hpp"
 #include "tpch/q11/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <charconv>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
-#include <thread>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
+
+// Offer chunks (1024 parts) per slice: ~100 us each.
+constexpr std::size_t kChunkGrain = 4;
 
 // ── Cell helpers ────────────────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -262,19 +264,26 @@ void TpchQ11State::SetSupplierNation(int64_t suppkey, int64_t nationkey) {
   supplier_nation.Set(suppkey, nationkey);
 }
 
+// The scan over the facts is sliced; the groups are updated serially, in the
+// order of the scan.
 void TpchQ11State::RegroupSuppliers(
+    const core::AuxEngineServices &services,
     const core::FlatHashMap<uint8_t> &changed_suppliers,
     const core::AnyKeyCowArray<int64_t> &old_map) {
   using Offers = core::AnyKeyCowArray<TpchQ11OfferSlots, 10>;
-  std::vector<int64_t> nations_of_part;
-  const auto visit = [&](int64_t partkey, const TpchQ11OfferSlots &slots) {
+  struct Update {
+    int64_t nationkey = 0, partkey = 0;
+    TpchQ11PartValue before, after;
+  };
+  const auto visit = [&](std::vector<Update> &out, int64_t partkey,
+                         const TpchQ11OfferSlots &slots) {
     bool touched = false;
     for (uint32_t i = 0; i < slots.count && !touched; ++i)
       touched = changed_suppliers.Contains(OfferAt(slots, partkey, i).suppkey);
     if (!touched)
       return;
     // Every nation this part had or has offers in may change.
-    nations_of_part.clear();
+    std::vector<int64_t> nations_of_part;
     for (uint32_t i = 0; i < slots.count; ++i) {
       const auto offer = OfferAt(slots, partkey, i);
       for (const int64_t nk :
@@ -285,17 +294,29 @@ void TpchQ11State::RegroupSuppliers(
           nations_of_part.push_back(nk);
     }
     for (const int64_t nk : nations_of_part)
-      UpdateEntry(nk, partkey, PartValueIn(partkey, nk, old_map),
-                  PartValueIn(partkey, nk, supplier_nation));
+      out.push_back({nk, partkey, PartValueIn(partkey, nk, old_map),
+                     PartValueIn(partkey, nk, supplier_nation)});
   };
-  for (std::size_t ci = 0; ci < offers.NumChunks(); ++ci) {
-    const auto *chunk = offers.ChunkAt(ci);
-    if (!chunk)
-      continue;
-    for (std::size_t slot = 0; slot < chunk->size(); ++slot)
-      visit(Offers::KeyAt(ci, slot), (*chunk)[slot]);
-  }
-  offers.ForEachSparse(visit);
+  std::vector<Update> updates;
+  core::ParallelReduce(
+      services, offers.NumChunks(), kChunkGrain, updates,
+      [&](std::vector<Update> &out, std::size_t begin, std::size_t end) {
+        for (std::size_t ci = begin; ci < end; ++ci) {
+          const auto *chunk = offers.ChunkAt(ci);
+          if (!chunk)
+            continue;
+          for (std::size_t slot = 0; slot < chunk->size(); ++slot)
+            visit(out, Offers::KeyAt(ci, slot), (*chunk)[slot]);
+        }
+      },
+      [](std::vector<Update> &into, std::vector<Update> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      });
+  offers.ForEachSparse([&](int64_t partkey, const TpchQ11OfferSlots &slots) {
+    visit(updates, partkey, slots);
+  });
+  for (const Update &u : updates)
+    UpdateEntry(u.nationkey, u.partkey, u.before, u.after);
 }
 
 void TpchQ11State::UpsertNation(const TpchQ11NationInput &nation) {
@@ -320,15 +341,44 @@ void TpchQ11State::EraseNation(const TpchQ11NationInput &nation) {
   nations = std::move(next);
 }
 
-void TpchQ11State::BuildGroups() {
+namespace {
+
+// One nation's group while the facts are being visited: its parts' entries are
+// sorted and cut into blocks afterwards.
+struct GroupBuild {
+  Q11AccT total = 0;
+  uint64_t parts = 0;
+  std::vector<TpchQ11Key> narrow;
+  std::set<TpchQ11WideKey> wide_positive, wide_negative;
+
+  void Add(int64_t partkey, Q11AccT value) {
+    total += value;
+    ++parts;
+    if (value > kTpchQ11NarrowLimit)
+      wide_positive.insert({value, partkey});
+    else if (value < -kTpchQ11NarrowLimit)
+      wide_negative.insert({value, partkey});
+    else
+      narrow.push_back({static_cast<int64_t>(value), partkey});
+  }
+  void Merge(GroupBuild &&from) {
+    total += from.total;
+    parts += from.parts;
+    narrow.insert(narrow.end(), from.narrow.begin(), from.narrow.end());
+    wide_positive.merge(from.wide_positive);
+    wide_negative.merge(from.wide_negative);
+  }
+};
+using GroupBuilds = std::unordered_map<int64_t, GroupBuild>; // per nation
+
+} // namespace
+
+void TpchQ11State::BuildGroups(const core::AuxEngineServices &services) {
   using Offers = core::AnyKeyCowArray<TpchQ11OfferSlots, 10>;
   groups.clear();
-  std::unordered_map<int64_t, std::vector<TpchQ11Key>> pending; // per nation
-  std::vector<std::pair<int64_t, Q11AccT>> sums; // this part's per-nation values
-  const auto visit = [&](int64_t partkey, const TpchQ11OfferSlots &slots) {
-    if (slots.count == 0)
-      return;
-    sums.clear();
+  const auto visit = [&](GroupBuilds &builds, int64_t partkey,
+                         const TpchQ11OfferSlots &slots) {
+    std::vector<std::pair<int64_t, Q11AccT>> sums; // this part's per-nation values
     for (uint32_t i = 0; i < slots.count; ++i) {
       const auto offer = OfferAt(slots, partkey, i);
       const int64_t nk = supplier_nation.Get(offer.suppkey);
@@ -341,56 +391,45 @@ void TpchQ11State::BuildGroups() {
       else
         it->second += Product(offer);
     }
-    for (const auto &[nk, value] : sums) {
-      auto &group = groups[nk];
-      if (!group)
-        group = std::make_shared<TpchQ11Group>();
-      group->total += value;
-      ++group->parts;
-      if (value > kTpchQ11NarrowLimit)
-        group->wide_positive.insert({value, partkey});
-      else if (value < -kTpchQ11NarrowLimit)
-        group->wide_negative.insert({value, partkey});
-      else
-        pending[nk].push_back({static_cast<int64_t>(value), partkey});
-    }
+    for (const auto &[nk, value] : sums)
+      builds[nk].Add(partkey, value);
   };
-  for (std::size_t ci = 0; ci < offers.NumChunks(); ++ci) {
-    const auto *chunk = offers.ChunkAt(ci);
-    if (!chunk)
-      continue;
-    for (std::size_t slot = 0; slot < chunk->size(); ++slot)
-      visit(Offers::KeyAt(ci, slot), (*chunk)[slot]);
+  GroupBuilds builds;
+  core::ParallelReduce(
+      services, offers.NumChunks(), kChunkGrain, builds,
+      [&](GroupBuilds &into, std::size_t begin, std::size_t end) {
+        for (std::size_t ci = begin; ci < end; ++ci) {
+          const auto *chunk = offers.ChunkAt(ci);
+          if (!chunk)
+            continue;
+          for (std::size_t slot = 0; slot < chunk->size(); ++slot)
+            visit(into, Offers::KeyAt(ci, slot), (*chunk)[slot]);
+        }
+      },
+      [](GroupBuilds &into, GroupBuilds &&from) {
+        for (auto &[nk, build] : from)
+          into[nk].Merge(std::move(build));
+      });
+  offers.ForEachSparse([&](int64_t partkey, const TpchQ11OfferSlots &slots) {
+    visit(builds, partkey, slots);
+  });
+
+  // Sort each nation's entries and cut them into blocks, nations in parallel.
+  std::vector<std::pair<int64_t, GroupBuild *>> order;
+  for (auto &[nk, build] : builds) {
+    auto &group = groups[nk] = std::make_shared<TpchQ11Group>();
+    group->total = build.total;
+    group->parts = build.parts;
+    group->wide_positive = std::move(build.wide_positive);
+    group->wide_negative = std::move(build.wide_negative);
+    order.emplace_back(nk, &build);
   }
-  offers.ForEachSparse(visit);
-  // Sort each nation's entries (nations in parallel) and cut them into blocks;
-  // each vector is released as soon as its blocks exist.
-  std::vector<int64_t> order;
-  for (const auto &entry : pending)
-    order.push_back(entry.first);
-  std::atomic<std::size_t> next{0};
-  const auto worker = [&] {
-    for (std::size_t i = next.fetch_add(1); i < order.size();
-         i = next.fetch_add(1)) {
-      auto &keys = pending[order[i]];
-      std::sort(keys.begin(), keys.end(), TpchQ11KeyLess());
-      groups[order[i]]->narrow =
-          core::CowSortedBlocks<TpchQ11Key, TpchQ11KeyLess>::FromSorted(
-              std::move(keys));
-    }
-  };
-  const std::size_t threads = std::min<std::size_t>(
-      std::max(1u, std::thread::hardware_concurrency()),
-      std::min<std::size_t>(order.size(), 8));
-  if (threads <= 1) {
-    worker();
-  } else {
-    std::vector<std::thread> pool;
-    for (std::size_t t = 0; t < threads; ++t)
-      pool.emplace_back(worker);
-    for (auto &th : pool)
-      th.join();
-  }
+  services.ParallelFor(order.size(), [&](std::size_t i) {
+    auto &keys = order[i].second->narrow;
+    std::sort(keys.begin(), keys.end(), TpchQ11KeyLess());
+    groups[order[i].first]->narrow =
+        core::CowSortedBlocks<TpchQ11Key, TpchQ11KeyLess>::FromSorted(std::move(keys));
+  });
 }
 
 std::size_t TpchQ11State::MemoryBytes() const {
@@ -539,7 +578,7 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
         if (old_map.Get(ev.suppkey) != new_state->supplier_nation.Get(ev.suppkey))
           changed.Upsert(ev.suppkey, 1);
       if (!changed.empty())
-        new_state->RegroupSuppliers(changed, old_map);
+        new_state->RegroupSuppliers(services, changed, old_map);
     }
 
     if (!need_rebuild) {
@@ -609,7 +648,6 @@ void TpchQ11Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q11 requires a typed initial scan source");
   TpchQ11State state;
@@ -623,7 +661,7 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
                    {input.suppkey, input.supplycost_raw,
                     static_cast<int32_t>(input.availqty)});
   });
-  state.BuildGroups();
+  state.BuildGroups(services);
   return state;
 }
 
