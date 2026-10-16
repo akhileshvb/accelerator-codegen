@@ -348,11 +348,10 @@ bool DuckdbHost::Captures(core::TableId table) {
 
 void DuckdbHost::CaptureByHand(::duckdb::ClientContext &context, runtime::ColumnarBatchRef batch) {
   const auto txn = TxnId(::duckdb::MetaTransaction::Get(context));
+  const Epoch start = DuckDBAuxBackend::SnapshotEpoch(context); // engine call: before writers_mutex
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
-    if (!impl->writers.count(txn)) {
-      impl->writers[txn] = DuckDBAuxBackend::SnapshotEpoch(context);
-    }
+    impl->writers.emplace(txn, start);
   }
   impl->runtime.OnCapture(txn, 0, std::move(batch));
 }
@@ -374,11 +373,10 @@ void DuckdbHost::OnMutation(::duckdb::ClientContext &context,
     table = it->second;
   }
   const auto txn = TxnId(::duckdb::MetaTransaction::Get(context));
+  const Epoch start = DuckDBAuxBackend::SnapshotEpoch(context); // engine call: before writers_mutex
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
-    if (!impl->writers.count(txn)) {
-      impl->writers[txn] = DuckDBAuxBackend::SnapshotEpoch(context);
-    }
+    impl->writers.emplace(txn, start);
   }
   impl->runtime.OnCapture(txn, 0,
                           std::make_shared<const runtime::ColumnarBatch>(ToColumnarBatch(event, table)));
