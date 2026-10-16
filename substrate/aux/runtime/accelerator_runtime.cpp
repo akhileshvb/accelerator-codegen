@@ -44,13 +44,6 @@ bool LeavesInvalidPartitions(const core::StagedMaintenanceOutcome &outcome) {
                      [&](PartitionKey partition) { return !updated.count(partition); });
 }
 
-// An update that changed none of the columns the module watches (the
-// projection reports those at position `watched`, once).
-bool ChangesNoWatchedColumn(const core::MutationBatch &rows, std::size_t watched) {
-  return rows.kind == core::MutationKind::Update && watched > 0 && rows.updated_columns.size() == 1 &&
-         rows.updated_columns.front() == watched;
-}
-
 double MicrosSince(Clock::time_point start) {
   return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
 }
@@ -260,23 +253,15 @@ core::StagedMaintenanceOutcome
 AcceleratorRuntime::Stage(const std::vector<ColumnarBatchRef> &batches) {
   auto buffer = module->CreateTxnBuffer();
   core::InvalidationPlan plan;
-  bool watched_change = false;
   for (const auto &batch : batches) {
     const auto projection = impl->projections.find(batch->table);
     if (projection == impl->projections.end()) {
       continue;
     }
     auto rows = ToMutationBatch(*batch, projection->second);
-    if (ChangesNoWatchedColumn(rows, projection->second.size())) {
-      continue;
-    }
-    watched_change = true;
     rows.table = impl->module_table.at(batch->table);
     MergeInvalidationPlan(plan, module->InterpretMutation(rows));
     module->AccumulateMutation(rows, *impl->module_services, *buffer);
-  }
-  if (!watched_change) {
-    return {};
   }
   // A module that neither buffered nor invalidated could not interpret the
   // change: never publish a stale state as valid.
