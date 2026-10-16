@@ -381,7 +381,7 @@ constexpr int64_t BlockOf(int64_t key) { return key >> __builtin_ctzll(static_ca
 constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key & (kBlockParts - 1)); }
 
 // Buckets of the build's rows (by block index).
-constexpr std::size_t kBuildBuckets = 64;
+using core::kBuildBuckets;
 
 std::size_t BucketOf(int64_t partkey) {
   return static_cast<uint64_t>(BlockOf(partkey)) % kBuildBuckets;

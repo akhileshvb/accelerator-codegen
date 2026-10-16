@@ -601,7 +601,7 @@ namespace {
 
 // Build: part and partsupp rows are dealt out to buckets by part key; a bucket
 // is filled alone into a partial state, so buckets run in parallel.
-constexpr std::size_t kBuildBuckets = 64;
+using core::kBuildBuckets;
 
 // Bucket of `key`: the keys of one 4096-id chunk of the part columns share a
 // bucket. The offers' smaller chunks nest in them, so the partial states of

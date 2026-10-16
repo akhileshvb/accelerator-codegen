@@ -195,7 +195,7 @@ void ApplyCells(const TreeCells &cells, TpchQ4Side &side, TpchQ4TreePayload &tre
 
 // Build: lineitem and order rows are dealt out to buckets by order key; a
 // bucket is built alone, so buckets run in parallel.
-constexpr std::size_t kBuildBuckets = 64;
+using core::kBuildBuckets;
 // Maintenance: touched order keys per slice.
 constexpr std::size_t kKeyGrain = 1024;
 

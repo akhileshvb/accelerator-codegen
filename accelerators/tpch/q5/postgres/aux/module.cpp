@@ -211,7 +211,7 @@ void ApplyLineitem(const TpchQ5State &s, BucketCells &cells, const Tuple &t,
 
 // Build: key/value rows are dealt out to buckets by key; a bucket is filled
 // alone, so buckets run in parallel.
-constexpr std::size_t kBuildBuckets = 64;
+using core::kBuildBuckets;
 // Maintenance: lineitem deltas per slice.
 constexpr std::size_t kDeltaGrain = 4096;
 

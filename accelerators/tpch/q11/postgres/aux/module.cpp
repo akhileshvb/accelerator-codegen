@@ -275,9 +275,7 @@ void TpchQ11State::ApplyGroupUpdates(
       jobs.push_back({&MutableGroup(update.nationkey), {}});
     jobs[it->second].second.push_back(&update);
   }
-  // A small delta stays one inline job run.
-  const std::size_t grain = updates.size() < kGroupUpdateGrain ? jobs.size() : 1;
-  core::ParallelEach(services, jobs.size(), grain, [&](std::size_t j) {
+  core::ParallelEachWhen(services, jobs.size(), updates.size(), kGroupUpdateGrain, [&](std::size_t j) {
     TpchQ11Group &group = *jobs[j].first;
     for (const TpchQ11GroupUpdate *update : jobs[j].second) {
       if (update->before.present)

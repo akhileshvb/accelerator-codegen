@@ -21,7 +21,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 // Buckets of the build's lineitem rows (by order).
-constexpr std::size_t kBuildBuckets = 64;
+using core::kBuildBuckets;
 
 // Lineitem deltas per slice when netting a write batch by order.
 constexpr std::size_t kNetGrain = 16384;
