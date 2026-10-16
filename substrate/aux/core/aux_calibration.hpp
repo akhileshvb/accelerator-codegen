@@ -1,23 +1,22 @@
 // SCAFFOLDING
+// Fitting a maintenance cost model from timed samples or real writes, and its JSON form.
 #pragma once
-#include "substrate/aux/core/aux_types.hpp"
-#include "substrate/aux/core/aux_maintenance_decision_log.hpp"
-#include <optional>
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "substrate/aux/core/aux_maintenance_decision_log.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/maintenance/cost_model.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 
-// The callbacks deliberately operate at the shared-interface boundary. An
-// engine adapter supplies them using DuckDB or PostgreSQL primitives, while
-// the fitting and serialization code remains engine-neutral.
+// The engine adapter supplies these timed operations; fitting stays engine-neutral.
 struct AuxCalibrationHooks {
   // Before every sample, untimed.
   std::function<void()> reset;
@@ -65,8 +64,8 @@ AuxCalibrationResult CalibrateAuxCostModel(
     const AuxCalibrationHooks &, const maintenance::CostModelParams &seed = {},
     const AuxCalibrationConfig & = {});
 
-// Writes the same flat JSON shape consumed by the runtime policy loader. The
-// metadata fields are informational and may be omitted by callers.
+// Writes the flat JSON that LoadAuxCostModelJson reads; engine and accelerator
+// are informational metadata.
 void WriteAuxCostModelJson(const std::string &, const AuxCalibrationResult &,
                            const std::string &engine = {},
                            const std::string &accelerator = {});

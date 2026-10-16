@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Process-wide counters of how aux queries were answered, and per-thread store resolve time.
 #pragma once
 
 #include <cstdint>
@@ -10,9 +11,9 @@ namespace accelerator_codegen::aux_state::core {
 // runtimes record one per Execute; tests read them to check that SQL
 // fallback stays a last resort.
 enum class AuxExecutePath : uint8_t {
-  Hit,            // from the current state
-  RebuiltOnRead,  // the state was (re)built by this query, then read
-  Fallback,       // SQL from the tables (no usable state)
+  Hit,           // from the current state
+  RebuiltOnRead, // the state was (re)built by this query, then read
+  Fallback,      // SQL from the tables (no usable state)
 };
 
 void RecordAuxExecute(AuxExecutePath path);
@@ -29,7 +30,7 @@ std::string FormatAuxExecuteCounts(const AuxExecuteCounts &counts);
 
 // Time a reader spends in an aux store choosing the state its snapshot sees
 // (the store's lock, waiting for a pending commit, selecting the version):
-// cumulative per thread.  Stores add to it; a benchmark reads the difference
+// cumulative per thread. Stores add to it; a benchmark reads the difference
 // around one query.
 void AddStoreResolveMicros(double us);
 double ThreadStoreResolveMicros();

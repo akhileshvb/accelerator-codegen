@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Picking the cheapest supported maintenance action.
 #pragma once
 
 #include <cstdint>
@@ -12,22 +13,22 @@ namespace accelerator_codegen::aux_state::maintenance {
 enum class ConfidenceTier : uint8_t { Low, Trained };
 
 struct ActionCandidate {
-	MaintenanceAction action = MaintenanceAction::NoOp;
-	ActionCostEstimate estimate;
-	bool supported = false;
+  MaintenanceAction action = MaintenanceAction::NoOp;
+  ActionCostEstimate estimate;
+  bool supported = false;
 };
 
 struct SelectionInput {
-	std::vector<ActionCandidate> candidates;
-	ConfidenceTier confidence = ConfidenceTier::Low;
-	MaintenanceAction last_action = MaintenanceAction::NoOp;
-	double decision_margin_us = 1000.0;
+  std::vector<ActionCandidate> candidates;
+  ConfidenceTier confidence = ConfidenceTier::Low;
+  MaintenanceAction last_action = MaintenanceAction::NoOp;
+  double decision_margin_us = 1000.0;
 };
 
 struct SelectionResult {
-	MaintenanceAction action = MaintenanceAction::NoOp;
-	ConfidenceTier confidence = ConfidenceTier::Low;
-	double selected_cost_us = 0.0;
+  MaintenanceAction action = MaintenanceAction::NoOp;
+  ConfidenceTier confidence = ConfidenceTier::Low;
+  double selected_cost_us = 0.0;
 };
 
 SelectionResult SelectMinCostAction(const SelectionInput &input);

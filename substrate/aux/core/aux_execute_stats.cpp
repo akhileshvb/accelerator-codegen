@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Execute-path counters and per-thread store resolve time.
 #include "substrate/aux/core/aux_execute_stats.hpp"
 
 #include <atomic>
