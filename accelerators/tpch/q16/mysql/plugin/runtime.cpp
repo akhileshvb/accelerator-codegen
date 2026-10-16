@@ -22,34 +22,37 @@ namespace scans {
 
 void ScanTpchQ16Suppliers(
     const std::function<void(const query::TpchQ16SupplierInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT s_suppkey, s_comment FROM supplier",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ16SupplierInput{TypedInt(cols, 0),
+                                           TypedText(cols, 1)};
+      },
+      [&](query::TpchQ16SupplierInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ16Parts(
     const std::function<void(const query::TpchQ16PartInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT p_partkey, p_brand, p_type, p_size FROM part",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedText(cols, 2),
-                  static_cast<int32_t>(TypedInt(cols, 3))});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ16PartInput{TypedInt(cols, 0),
+                                       TypedText(cols, 1),
+                                       TypedText(cols, 2),
+                                       static_cast<int32_t>(TypedInt(cols, 3))};
+      },
+      [&](query::TpchQ16PartInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ16Partsupp(
     const std::function<void(const query::TpchQ16PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT ps_partkey, ps_suppkey FROM partsupp",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedInt(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ16PartsuppInput{TypedInt(cols, 0),
+                                           TypedInt(cols, 1)};
+      },
+      [&](query::TpchQ16PartsuppInput &&input) { consumer(input); });
 }
 
 } // namespace scans

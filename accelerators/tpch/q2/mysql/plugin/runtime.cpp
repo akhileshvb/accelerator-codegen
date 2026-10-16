@@ -23,62 +23,67 @@ namespace scans {
 
 void ScanTpchQ2Parts(
     const std::function<void(const query::TpchQ2PartInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT p_partkey, p_mfgr, p_type, p_size FROM part",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedText(cols, 2),
-                  static_cast<int32_t>(TypedInt(cols, 3))});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ2PartInput{TypedInt(cols, 0),
+                                      TypedText(cols, 1),
+                                      TypedText(cols, 2),
+                                      static_cast<int32_t>(TypedInt(cols, 3))};
+      },
+      [&](query::TpchQ2PartInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ2Suppliers(
     const std::function<void(const query::TpchQ2SupplierInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT s_suppkey, s_name, s_address, s_nationkey, s_phone, s_acctbal, "
       "s_comment FROM supplier",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedText(cols, 2),
-                  TypedInt(cols, 3),
-                  TypedText(cols, 4),
-                  TypedDecimalRaw(cols, 5),
-                  TypedText(cols, 6)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ2SupplierInput{TypedInt(cols, 0),
+                                          TypedText(cols, 1),
+                                          TypedText(cols, 2),
+                                          TypedInt(cols, 3),
+                                          TypedText(cols, 4),
+                                          TypedDecimalRaw(cols, 5),
+                                          TypedText(cols, 6)};
+      },
+      [&](query::TpchQ2SupplierInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ2Partsupps(
     const std::function<void(const query::TpchQ2PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedInt(cols, 1),
-                  TypedDecimalRaw(cols, 2)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ2PartsuppInput{TypedInt(cols, 0),
+                                          TypedInt(cols, 1),
+                                          TypedDecimalRaw(cols, 2)};
+      },
+      [&](query::TpchQ2PartsuppInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ2Nations(
     const std::function<void(const query::TpchQ2NationInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT n_nationkey, n_name, n_regionkey FROM nation",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedInt(cols, 2)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ2NationInput{TypedInt(cols, 0),
+                                        TypedText(cols, 1),
+                                        TypedInt(cols, 2)};
+      },
+      [&](query::TpchQ2NationInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ2Regions(
     const std::function<void(const query::TpchQ2RegionInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT r_regionkey, r_name FROM region",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ2RegionInput{TypedInt(cols, 0),
+                                        TypedText(cols, 1)};
+      },
+      [&](query::TpchQ2RegionInput &&input) { consumer(input); });
 }
 
 } // namespace scans

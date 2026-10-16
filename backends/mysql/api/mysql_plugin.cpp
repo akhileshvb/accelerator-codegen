@@ -422,19 +422,21 @@ bool mysql_accel_get_build_stats_init(UDF_INIT *initid, UDF_ARGS *args, char *me
     return true;
   }
   initid->maybe_null = 0;
-  initid->max_length = 160;
+  initid->max_length = 256;
   return false;
 }
 
-// How builds went (all accelerators): builds, commits applied after a build's
-// snapshot (catch-up), and how reads were answered.
+// How builds and maintenance went (all accelerators): builds and their time,
+// commits applied and their time, commits applied after a build's snapshot
+// (catch-up), and how reads were answered.
 __attribute__((visibility("default")))
 char *mysql_accel_get_build_stats(UDF_INIT *, UDF_ARGS *, char *result,
                                   unsigned long *length, unsigned char *,
                                   unsigned char *) {
   const auto s = mysql_rt::MysqlHost::Get().TotalStats();
-  const int n = std::snprintf(result, 255, "builds=%llu catch_up_commits=%llu reads_hit=%llu reads_waited=%llu reads_fallback=%llu writers=%zu",
-                              static_cast<unsigned long long>(s.builds),
+  const int n = std::snprintf(result, 255, "builds=%llu build_ms=%.1f commits_applied=%llu apply_ms=%.1f catch_up_commits=%llu reads_hit=%llu reads_waited=%llu reads_fallback=%llu writers=%zu",
+                              static_cast<unsigned long long>(s.builds), s.build_us / 1e3,
+                              static_cast<unsigned long long>(s.commits_applied), s.apply_us / 1e3,
                               static_cast<unsigned long long>(s.catch_up_commits),
                               static_cast<unsigned long long>(s.reads_hit),
                               static_cast<unsigned long long>(s.reads_waited),

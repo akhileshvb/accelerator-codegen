@@ -231,8 +231,8 @@ struct TpchQ2Args {
   std::optional<std::string> region_name;
 };
 
-void TpchQ2FinalizeAndEmit(const TpchQ2State &state, const TpchQ2Args &args,
-                           core::AuxRowSink &sink);
+void TpchQ2FinalizeAndEmit(const core::AuxEngineServices &services, const TpchQ2State &state,
+                           const TpchQ2Args &args, core::AuxRowSink &sink);
 
 constexpr std::size_t kTpchQ2ResultLimit = 100;
 
@@ -289,7 +289,8 @@ private:
   TpchQ2State BuildState(core::AuxEngineServices &) const;
   std::shared_ptr<const TpchQ2State>
   LoadState(core::AuxEngineServices &) const;
-  void EmitResult(const TpchQ2State &, const core::QueryArguments &,
+  void EmitResult(const core::AuxEngineServices &, const TpchQ2State &,
+                  const core::QueryArguments &,
                   core::AuxRowSink &) const;
 
   TpchQ2Config config;

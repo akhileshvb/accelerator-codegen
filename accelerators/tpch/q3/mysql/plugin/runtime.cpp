@@ -25,13 +25,13 @@ namespace scans {
 void ScanTpchQ3OrderLines(
     const std::string &restrict_sql,
     const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT o.o_orderkey, o.o_orderdate, o.o_shippriority, c.c_mktsegment, "
       "l.l_shipdate, l.l_extendedprice, l.l_discount "
       "FROM orders o JOIN customer c ON c.c_custkey = o.o_custkey "
       "JOIN lineitem l ON l.l_orderkey = o.o_orderkey" +
           restrict_sql + " ORDER BY o.o_orderkey",
-      [&](const std::vector<std::string> &cols) {
+      [](const std::vector<std::string> &cols) {
         query::TpchQ3OrderLineInput line;
         line.orderkey = TypedInt(cols, 0);
         line.orderdate_days = TypedDate(cols, 1);
@@ -40,8 +40,9 @@ void ScanTpchQ3OrderLines(
         line.shipdate_days = TypedDate(cols, 4);
         line.extended_price_raw = TypedDecimalRaw(cols, 5);
         line.discount_raw = TypedDecimalRaw(cols, 6);
-        consumer(line);
-      });
+        return line;
+      },
+      [&](query::TpchQ3OrderLineInput &&input) { consumer(input); });
 }
 
 std::string KeyList(const std::vector<int64_t> &keys) {

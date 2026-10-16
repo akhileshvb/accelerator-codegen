@@ -5,6 +5,7 @@
 // with MySQL's slots, the capture of every session's trigger-captured writes
 // (S1), and the accelerators the per-query code registers.
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -21,6 +22,14 @@ enum class MysqlStatementKind {
   RollbackToSavepoint, // ROLLBACK TO SAVEPOINT
   Begin,               // START TRANSACTION / BEGIN
   Other,               // anything else (DML, DDL, SELECT, SET, ...)
+};
+
+// The accel_*_threads plugin variables; 0 takes the default (thread_budget.hpp).
+struct ThreadSettings {
+  std::size_t budget = 0;
+  std::size_t read = 0;
+  std::size_t build = 0;
+  std::size_t maintenance = 0;
 };
 
 class MysqlHost {
@@ -40,6 +49,7 @@ public:
                                         maintenance::CostModelParams cost_model,
                                         const runtime::TableMap &tables = {});
   runtime::RuntimeHost &Runtime();
+  void SetThreads(const ThreadSettings &settings);
 
   // ---- engine callbacks (the capture UDF and the audit plugin) ----
   // A row the triggers captured in `session`'s open statement. Throws if it

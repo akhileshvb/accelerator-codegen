@@ -23,15 +23,16 @@ namespace scans {
 
 void ScanTpchQ12Orders(
     const std::function<void(const query::TpchQ12OrderInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT o_orderkey, o_orderpriority, "
       "CASE WHEN o_orderpriority IS NULL THEN 1 ELSE 0 END "
       "FROM orders WHERE o_orderkey IS NOT NULL",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedInt(cols, 2) != 0});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ12OrderInput{TypedInt(cols, 0),
+                                        TypedText(cols, 1),
+                                        TypedInt(cols, 2) != 0};
+      },
+      [&](query::TpchQ12OrderInput &&input) { consumer(input); });
 }
 
 // Lineitems that can contribute: non-NULL key / shipmode, commit < receipt,
@@ -39,18 +40,19 @@ void ScanTpchQ12Orders(
 void ScanTpchQ12QualifyingLineitems(
     const std::string &where,
     const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, l_shipdate "
       "FROM lineitem WHERE l_orderkey IS NOT NULL AND l_shipmode IS NOT NULL "
       "AND l_commitdate < l_receiptdate AND l_shipdate < l_commitdate" +
           where,
       [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedDate(cols, 2),
-                  TypedDate(cols, 3),
-                  TypedDate(cols, 4)});
-      });
+        return query::TpchQ12LineitemInput{TypedInt(cols, 0),
+                                           TypedText(cols, 1),
+                                           TypedDate(cols, 2),
+                                           TypedDate(cols, 3),
+                                           TypedDate(cols, 4)};
+      },
+      [&](query::TpchQ12LineitemInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ12Lineitems(

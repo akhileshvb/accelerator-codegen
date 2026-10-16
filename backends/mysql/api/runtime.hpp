@@ -46,6 +46,7 @@
 #include "substrate/aux/core/aux_cost_model_path.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 #include "substrate/aux/core/aux_types.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 #include "backends/mysql/api/mysql_host.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
@@ -141,6 +142,89 @@ bool SnapshotScansSupported();
 const std::string &Col(const std::vector<std::string> &cols, int attribute);
 // Whether the column of the row being delivered by ScanTypedTuples is SQL NULL.
 bool TypedIsNull(const std::vector<std::string> &cols, int attribute);
+
+// Makes `row` (with `nulls`: which cells are SQL NULL) the row the Typed*
+// accessors read on this thread, until destroyed.
+class RowScope {
+public:
+  RowScope(const std::vector<std::string> *row, const std::vector<char> *nulls);
+  ~RowScope();
+  RowScope(const RowScope &) = delete;
+  RowScope &operator=(const RowScope &) = delete;
+
+private:
+  const std::vector<std::string> *prev_row;
+  const std::vector<char> *prev_nulls;
+};
+
+// The services of the module call running on this thread; scans decode under
+// their thread limit.
+class ScanServicesScope {
+public:
+  explicit ScanServicesScope(const core::AuxEngineServices &services);
+  ~ScanServicesScope();
+  ScanServicesScope(const ScanServicesScope &) = delete;
+  ScanServicesScope &operator=(const ScanServicesScope &) = delete;
+
+private:
+  const core::AuxEngineServices *saved;
+};
+const core::AuxEngineServices *CurrentScanServices();
+
+// ScanTypedTuples that decodes rows in parallel: decode(cols) -> Input runs on
+// pool threads over a batch of rows, consume(Input &&) on this thread in row
+// order, so the module sees what the serial scan gives it. The slices never
+// touch the connection. With one worker it is ScanTypedTuples.
+template <typename Decode, typename Consume>
+void ScanTypedTuplesDecoded(const std::string &sql, Decode &&decode, Consume &&consume) {
+  using Input = decltype(decode(std::declval<const std::vector<std::string> &>()));
+  const auto *services = CurrentScanServices();
+  if (!services || services->WorkerCount() <= 1) {
+    ScanTypedTuples(sql, [&](const std::vector<std::string> &cols) { consume(decode(cols)); });
+    return;
+  }
+  constexpr std::size_t kBatchRows = 16384;
+  constexpr std::size_t kSliceRows = 1024;
+  struct Row {
+    std::vector<std::string> cols;
+    std::vector<char> nulls;
+  };
+  std::vector<Row> rows;
+  std::size_t filled = 0;
+  const auto flush = [&] {
+    const std::size_t slices = core::SliceCount(*services, filled, kSliceRows);
+    std::vector<std::vector<Input>> decoded(slices);
+    core::RunSlices(*services, slices, filled, [&](std::size_t slice, std::size_t begin, std::size_t end) {
+      decoded[slice].reserve(end - begin);
+      for (std::size_t i = begin; i < end; ++i) {
+        const RowScope scope(&rows[i].cols, &rows[i].nulls);
+        decoded[slice].push_back(decode(rows[i].cols));
+      }
+    });
+    for (auto &slice : decoded) {
+      for (auto &input : slice) {
+        consume(std::move(input));
+      }
+    }
+    filled = 0;
+  };
+  ScanTypedTuples(sql, [&](const std::vector<std::string> &cols) {
+    if (filled == rows.size()) {
+      rows.emplace_back();
+    }
+    Row &row = rows[filled++];
+    row.cols = cols;
+    row.nulls.resize(cols.size());
+    for (std::size_t i = 0; i < cols.size(); ++i) {
+      row.nulls[i] = TypedIsNull(cols, static_cast<int>(i));
+    }
+    if (filled == kBatchRows) {
+      flush();
+    }
+  });
+  flush();
+}
+
 // The typed accessors parse the text exactly and throw std::runtime_error on
 // text they cannot represent (malformed, out of range, needs rounding); a NULL
 // cell reads as 0 / "" (see TypedIsNull).
@@ -265,6 +349,7 @@ public:
     runtime::ReadOptions options;
     options.max_wait_us = static_cast<uint64_t>(ReadWait().count());
     auto guard = accelerator.BeginRead(options);
+    const ScanServicesScope scans(accelerator);
     t_table_scans = 0;
     if (guard.Servable()) {
       module.Execute(accelerator, arguments, sink);

@@ -23,56 +23,61 @@ namespace scans {
 
 void ScanTpchQ7Nations(
     const std::function<void(const query::TpchQ7NationInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT n_nationkey, n_name FROM nation",
-      [&](const std::vector<std::string> &cols) {
-        consumer({static_cast<int32_t>(TypedInt(cols, 0)),
-                  TypedText(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ7NationInput{static_cast<int32_t>(TypedInt(cols, 0)),
+                                        TypedText(cols, 1)};
+      },
+      [&](query::TpchQ7NationInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ7Suppliers(
     const std::function<void(const query::TpchQ7SupplierInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT s_suppkey, s_nationkey FROM supplier",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  static_cast<int32_t>(TypedInt(cols, 1))});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ7SupplierInput{TypedInt(cols, 0),
+                                          static_cast<int32_t>(TypedInt(cols, 1))};
+      },
+      [&](query::TpchQ7SupplierInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ7Customers(
     const std::function<void(const query::TpchQ7CustomerInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT c_custkey, c_nationkey FROM customer",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  static_cast<int32_t>(TypedInt(cols, 1))});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ7CustomerInput{TypedInt(cols, 0),
+                                          static_cast<int32_t>(TypedInt(cols, 1))};
+      },
+      [&](query::TpchQ7CustomerInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ7Orders(
     const std::function<void(const query::TpchQ7OrderInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT o_orderkey, o_custkey FROM orders",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedInt(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ7OrderInput{TypedInt(cols, 0),
+                                       TypedInt(cols, 1)};
+      },
+      [&](query::TpchQ7OrderInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ7Lineitems(
     const std::function<void(const query::TpchQ7LineitemInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount, l_shipdate "
       "FROM lineitem",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedInt(cols, 1),
-                  TypedDecimalRaw(cols, 2), 2,
-                  TypedDecimalRaw(cols, 3), 2,
-                  TypedDate(cols, 4)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ7LineitemInput{TypedInt(cols, 0),
+                                          TypedInt(cols, 1),
+                                          TypedDecimalRaw(cols, 2), 2,
+                                          TypedDecimalRaw(cols, 3), 2,
+                                          TypedDate(cols, 4)};
+      },
+      [&](query::TpchQ7LineitemInput &&input) { consumer(input); });
 }
 
 } // namespace scans

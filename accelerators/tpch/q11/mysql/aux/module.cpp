@@ -2,16 +2,19 @@
 #include "tpch/q11/calibration_writes.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <charconv>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
-#include <thread>
 #include <utility>
+
+#include "substrate/aux/core/parallel_slices.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
+
+// Offer chunks per slice: 1024 parts of a few offers each, ~5 us a chunk.
+constexpr std::size_t kChunksGrain = 32;
 
 // ── Cell helpers ────────────────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -263,20 +266,51 @@ void TpchQ11State::SetSupplierNation(int64_t suppkey, int64_t nationkey) {
 }
 
 void TpchQ11State::RegroupSuppliers(
+    const core::AuxEngineServices &services,
     const core::FlatHashMap<uint8_t> &changed_suppliers,
     const core::AnyKeyCowArray<int64_t> &old_map) {
   using Offers = core::AnyKeyCowArray<TpchQ11OfferSlots, 10>;
+  struct Touched {
+    int64_t partkey;
+    const TpchQ11OfferSlots *slots;
+  };
+  const auto touched_by_change = [&](const TpchQ11OfferSlots &slots, int64_t partkey) {
+    for (uint32_t i = 0; i < slots.count; ++i)
+      if (changed_suppliers.Contains(OfferAt(slots, partkey, i).suppkey))
+        return true;
+    return false;
+  };
+  // Finding the parts to regroup only reads the offers; the regrouping edits
+  // the groups, serially and in part order.
+  std::vector<Touched> touched;
+  core::ParallelReduce(
+      services, offers.NumChunks(), kChunksGrain, touched,
+      [&](std::vector<Touched> &acc, std::size_t begin, std::size_t end) {
+        for (std::size_t ci = begin; ci < end; ++ci) {
+          const auto *chunk = offers.ChunkAt(ci);
+          if (!chunk)
+            continue;
+          for (std::size_t slot = 0; slot < chunk->size(); ++slot) {
+            const int64_t partkey = Offers::KeyAt(ci, slot);
+            if (touched_by_change((*chunk)[slot], partkey))
+              acc.push_back({partkey, &(*chunk)[slot]});
+          }
+        }
+      },
+      [](std::vector<Touched> &into, std::vector<Touched> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      });
+  offers.ForEachSparse([&](int64_t partkey, const TpchQ11OfferSlots &slots) {
+    if (touched_by_change(slots, partkey))
+      touched.push_back({partkey, &slots});
+  });
+
   std::vector<int64_t> nations_of_part;
-  const auto visit = [&](int64_t partkey, const TpchQ11OfferSlots &slots) {
-    bool touched = false;
-    for (uint32_t i = 0; i < slots.count && !touched; ++i)
-      touched = changed_suppliers.Contains(OfferAt(slots, partkey, i).suppkey);
-    if (!touched)
-      return;
+  for (const auto &[partkey, slots] : touched) {
     // Every nation this part had or has offers in may change.
     nations_of_part.clear();
-    for (uint32_t i = 0; i < slots.count; ++i) {
-      const auto offer = OfferAt(slots, partkey, i);
+    for (uint32_t i = 0; i < slots->count; ++i) {
+      const auto offer = OfferAt(*slots, partkey, i);
       for (const int64_t nk :
            {old_map.Get(offer.suppkey), supplier_nation.Get(offer.suppkey)})
         if (nk != kTpchQ11NoNation &&
@@ -287,15 +321,7 @@ void TpchQ11State::RegroupSuppliers(
     for (const int64_t nk : nations_of_part)
       UpdateEntry(nk, partkey, PartValueIn(partkey, nk, old_map),
                   PartValueIn(partkey, nk, supplier_nation));
-  };
-  for (std::size_t ci = 0; ci < offers.NumChunks(); ++ci) {
-    const auto *chunk = offers.ChunkAt(ci);
-    if (!chunk)
-      continue;
-    for (std::size_t slot = 0; slot < chunk->size(); ++slot)
-      visit(Offers::KeyAt(ci, slot), (*chunk)[slot]);
   }
-  offers.ForEachSparse(visit);
 }
 
 void TpchQ11State::UpsertNation(const TpchQ11NationInput &nation) {
@@ -320,7 +346,7 @@ void TpchQ11State::EraseNation(const TpchQ11NationInput &nation) {
   nations = std::move(next);
 }
 
-void TpchQ11State::BuildGroups() {
+void TpchQ11State::BuildGroups(const core::AuxEngineServices &services) {
   using Offers = core::AnyKeyCowArray<TpchQ11OfferSlots, 10>;
   groups.clear();
   std::unordered_map<int64_t, std::vector<TpchQ11Key>> pending; // per nation
@@ -368,29 +394,12 @@ void TpchQ11State::BuildGroups() {
   std::vector<int64_t> order;
   for (const auto &entry : pending)
     order.push_back(entry.first);
-  std::atomic<std::size_t> next{0};
-  const auto worker = [&] {
-    for (std::size_t i = next.fetch_add(1); i < order.size();
-         i = next.fetch_add(1)) {
-      auto &keys = pending[order[i]];
-      std::sort(keys.begin(), keys.end(), TpchQ11KeyLess());
-      groups[order[i]]->narrow =
-          core::CowSortedBlocks<TpchQ11Key, TpchQ11KeyLess>::FromSorted(
-              std::move(keys));
-    }
-  };
-  const std::size_t threads = std::min<std::size_t>(
-      std::max(1u, std::thread::hardware_concurrency()),
-      std::min<std::size_t>(order.size(), 8));
-  if (threads <= 1) {
-    worker();
-  } else {
-    std::vector<std::thread> pool;
-    for (std::size_t t = 0; t < threads; ++t)
-      pool.emplace_back(worker);
-    for (auto &th : pool)
-      th.join();
-  }
+  services.ParallelFor(order.size(), [&](std::size_t i) {
+    auto &keys = pending[order[i]];
+    std::sort(keys.begin(), keys.end(), TpchQ11KeyLess());
+    groups[order[i]]->narrow =
+        core::CowSortedBlocks<TpchQ11Key, TpchQ11KeyLess>::FromSorted(std::move(keys));
+  });
 }
 
 std::size_t TpchQ11State::MemoryBytes() const {
@@ -539,7 +548,7 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
         if (old_map.Get(ev.suppkey) != new_state->supplier_nation.Get(ev.suppkey))
           changed.Upsert(ev.suppkey, 1);
       if (!changed.empty())
-        new_state->RegroupSuppliers(changed, old_map);
+        new_state->RegroupSuppliers(services, changed, old_map);
     }
 
     if (!need_rebuild) {
@@ -623,7 +632,7 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
                    {input.suppkey, input.supplycost_raw,
                     static_cast<int32_t>(input.availqty)});
   });
-  state.BuildGroups();
+  state.BuildGroups(services);
   return state;
 }
 

@@ -174,8 +174,8 @@ private:
   std::shared_ptr<TpchQ13State> BuildState(core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ13State> &state) const;
-  void EmitResult(const TpchQ13State &state, const core::QueryArguments &arguments,
-                  core::AuxRowSink &sink) const;
+  void EmitResult(const core::AuxEngineServices &services, const TpchQ13State &state,
+                  const core::QueryArguments &arguments, core::AuxRowSink &sink) const;
   TpchQ13Config config;
   TpchQ13InitialScan *initial_scan = nullptr;
 };

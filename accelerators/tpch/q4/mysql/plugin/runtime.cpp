@@ -22,28 +22,30 @@ namespace scans {
 
 void ScanTpchQ4Orders(
     const std::function<void(const query::TpchQ4OrderInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT o_orderkey, o_orderdate, o_orderpriority, "
       "CASE WHEN o_orderpriority IS NULL THEN 1 ELSE 0 END FROM orders "
       "WHERE o_orderkey IS NOT NULL AND o_orderdate IS NOT NULL",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedDate(cols, 1),
-                  TypedText(cols, 2),
-                TypedInt(cols, 3) != 0});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ4OrderInput{TypedInt(cols, 0),
+                                       TypedDate(cols, 1),
+                                       TypedText(cols, 2),
+                TypedInt(cols, 3) != 0};
+      },
+      [&](query::TpchQ4OrderInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ4Lineitems(
     const std::function<void(const query::TpchQ4LineitemInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT l_orderkey, l_commitdate, l_receiptdate FROM lineitem "
       "WHERE l_orderkey IS NOT NULL AND l_commitdate < l_receiptdate",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedDate(cols, 1),
-                  TypedDate(cols, 2)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ4LineitemInput{TypedInt(cols, 0),
+                                          TypedDate(cols, 1),
+                                          TypedDate(cols, 2)};
+      },
+      [&](query::TpchQ4LineitemInput &&input) { consumer(input); });
 }
 
 } // namespace scans

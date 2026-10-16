@@ -54,7 +54,15 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
     uint64_t watched_version = 0;
   };
 
-  Impl() : runtime(*this, runtime::ResolveThreadBudget(0)) {}
+  Impl() : runtime(*this, runtime::ResolveThreadBudget(0)) { SetThreads({}); }
+
+  void SetThreads(const ThreadSettings &settings) {
+    auto &threads = runtime.Threads();
+    threads.SetBudget(runtime::ResolveThreadBudget(settings.budget));
+    threads.SetPhaseLimits(runtime::ResolveReadThreads(settings.read, threads.Budget()),
+                           runtime::ResolveBuildThreads(settings.build, threads.Budget()),
+                           runtime::ResolveMaintenanceThreads(settings.maintenance, threads.Budget()));
+  }
 
   mutable std::mutex mutex; // writers, opening, cost_models
   std::condition_variable changed;
@@ -184,6 +192,7 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
   bool EngineWorkOnHostThread() const override { return false; }
   void RunBuild(runtime::AcceleratorRuntime &accelerator, runtime::BuildSnapshot &,
                 core::StateBuilder &builder) override {
+    const detail::ScanServicesScope scans(accelerator);
     accelerator.Module().Build(accelerator, builder);
   }
   const maintenance::CostModelParams &CostModel(const core::AcceleratorId &id) const override {
@@ -216,6 +225,8 @@ runtime::AcceleratorRuntime &MysqlHost::Register(std::shared_ptr<core::AuxQueryM
 }
 
 runtime::RuntimeHost &MysqlHost::Runtime() { return impl->runtime; }
+
+void MysqlHost::SetThreads(const ThreadSettings &settings) { impl->SetThreads(settings); }
 
 // ---- engine callbacks ----
 
@@ -310,6 +321,7 @@ runtime::AcceleratorStats MysqlHost::TotalStats() const {
     const auto stats = accelerator->Stats();
     total.commits_applied += stats.commits_applied;
     total.rows_applied += stats.rows_applied;
+    total.apply_us += stats.apply_us;
     total.builds += stats.builds;
     total.build_us += stats.build_us;
     total.catch_up_commits += stats.catch_up_commits;

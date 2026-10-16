@@ -309,10 +309,11 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ9State> BuildState() const;
+  std::shared_ptr<TpchQ9State> BuildState(const core::AuxEngineServices &) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ9State> &state) const;
-  void EmitResult(const TpchQ9State &state, const core::QueryArguments &arguments,
+  void EmitResult(const core::AuxEngineServices &services, const TpchQ9State &state,
+                  const core::QueryArguments &arguments,
                   core::AuxRowSink &sink) const;
 
   TpchQ9Config config;
