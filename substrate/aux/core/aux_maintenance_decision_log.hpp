@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// The last maintenance decision (what was chosen, predicted and measured), for reports and calibration.
 #pragma once
 
 #include <cstdint>
@@ -30,7 +31,7 @@ struct MaintenanceDecisionLogEntry {
 };
 
 // While alive on a thread, that thread's Record*/Last/Clear calls use a private
-// slot instead of the process-wide one (parallel PRE_COMMIT: each runtime's
+// slot instead of the process-wide one (parallel commits: each runtime's
 // decision stays its own). Not nestable across threads; same thread only.
 class ScopedThreadMaintenanceDecisionLog {
 public:

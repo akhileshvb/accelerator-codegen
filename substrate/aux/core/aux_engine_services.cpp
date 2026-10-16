@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Default implementations of AuxEngineServices.
 #include "substrate/aux/core/aux_engine_services.hpp"
 
 #include <cstdlib>

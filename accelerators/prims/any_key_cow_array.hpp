@@ -23,7 +23,8 @@
 //           columns, or smaller (5-8) when only a few slots per chunk are used.
 // COW/THREADS Copy-construct/assign shares chunks; writes clone only the touched
 //           chunk/page. Concurrent const reads of a published copy are fine;
-//           mutate a private copy only (use_count is a hint under races).
+//           mutate a private copy only (use_count is a hint under races); see
+//           OwnerOf / Reserve for writing one private copy from several threads.
 // ITERATION ForEachChunk(fn(ci, chunk)) visits allocated dense chunks (cost
 //           independent of key spread); KeyAt(ci,i) gives a slot's key.
 //           NumChunks()/ChunkAt(ci) is the indexed form (O(max chunk index)
@@ -132,6 +133,19 @@ public:
     Mutable(key) = value;
   }
   void Add(int64_t key, const T &by) { Set(key, Get(key) + by); }
+
+  // Concurrent writes: after Reserve(key) for every key to be written, threads
+  // that own disjoint OwnerOf values may Set / Mutable keys of one private copy
+  // at the same time (a directory page and its chunks belong to one owner).
+  // Keys outside the dense range all share kSparseOwner: one thread writes them.
+  static constexpr uint64_t kSparseOwner = ~uint64_t{0};
+  static uint64_t OwnerOf(int64_t key) {
+    return IsDense(key) ? Zig(key) >> (kShift + kPageShift) : kSparseOwner;
+  }
+  void Reserve(int64_t key) {
+    if (IsDense(key))
+      dir_.Reserve(static_cast<int64_t>(Zig(key) >> kShift));
+  }
 
   // Folds `other` (same fill) into this array: chunks this array lacks are
   // adopted whole, the other slots become combine(mine, theirs). Merges

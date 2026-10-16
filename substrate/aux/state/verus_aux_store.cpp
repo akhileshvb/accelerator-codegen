@@ -1,8 +1,9 @@
+// Selection and construction of Verus-backed aux stores.
 #include "substrate/aux/state/verus_aux_store.hpp"
 
 #include <cstdlib>
-#include <stdexcept>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <utility>
 

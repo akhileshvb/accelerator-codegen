@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// The maintenance request/decision types and the cost-based choice of action.
 #pragma once
 
 #include <cstdint>

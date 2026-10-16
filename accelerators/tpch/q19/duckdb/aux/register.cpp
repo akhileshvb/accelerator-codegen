@@ -6,6 +6,7 @@
 #include "tpch/q19/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "backends/duckdb/engine/build_scan.hpp"
+#include "backends/duckdb/engine/decimal128.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -135,63 +136,6 @@ using namespace scan;
 
 struct TpchQ19Scan : TpchQ19InitialScan {
   explicit TpchQ19Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanParts(
-      const std::function<void(const TpchQ19PartInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT p_partkey, p_brand, p_container, p_size FROM part",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ19PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                  ChunkValue(chunk, 1, row).ToString(),
-                                  ChunkValue(chunk, 2, row).ToString(),
-                                  static_cast<int32_t>(SafeInt64(ChunkValue(chunk, 3, row)))};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
-  void ScanLineitems(
-      const std::function<void(const TpchQ19LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_partkey, l_quantity, l_extendedprice, l_discount, l_shipmode, l_shipinstruct FROM lineitem",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ19LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      DecimalRaw(ChunkValue(chunk, 1, row)),
-                                      DecimalRaw(ChunkValue(chunk, 2, row)),
-                                      DecimalRaw(ChunkValue(chunk, 3, row)),
-                                      ChunkValue(chunk, 4, row).ToString(),
-                                      ChunkValue(chunk, 5, row).ToString()};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
-  static std::string FamilyCase() {
-    return "CASE WHEN p_container IN ('SM CASE','SM BOX','SM PACK','SM PKG') "
-           "AND p_size BETWEEN 1 AND 5 THEN 1 "
-           "WHEN p_container IN ('MED BAG','MED BOX','MED PKG','MED PACK') "
-           "AND p_size BETWEEN 1 AND 10 THEN 2 "
-           "WHEN p_container IN ('LG CASE','LG BOX','LG PACK','LG PKG') "
-           "AND p_size BETWEEN 1 AND 15 THEN 3 ELSE 0 END";
-  }
-  bool ScanQualifyingAggregates(
-      const std::function<void(const std::string &, int, int64_t, int64_t,
-                               int64_t)> &consumer) override {
-    ScanQueryStreaming(
-        connection,
-        "SELECT p.b, p.f, CAST(round(l.l_quantity * 100) AS BIGINT) AS q, "
-        "CAST(SUM(CAST(round(l.l_extendedprice * 100) AS BIGINT) * "
-        "(100 - CAST(round(l.l_discount * 100) AS BIGINT))) AS BIGINT), "
-        "COUNT(*) FROM lineitem l JOIN (SELECT * FROM (SELECT p_partkey, "
-        "p_brand AS b, " + FamilyCase() + " AS f FROM part) WHERE f > 0) p "
-        "ON l.l_partkey = p.p_partkey "
-        "WHERE l.l_shipmode IN ('AIR', 'AIR REG') "
-        "AND l.l_shipinstruct = 'DELIVER IN PERSON' GROUP BY 1, 2, 3",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer(ChunkValue(chunk, 0, row).ToString(),
-                   static_cast<int>(SafeInt64(ChunkValue(chunk, 1, row))),
-                   SafeInt64(ChunkValue(chunk, 2, row)),
-                   SafeInt64(ChunkValue(chunk, 3, row)),
-                   SafeInt64(ChunkValue(chunk, 4, row)));
-        });
-    return true;
-  }
   void ScanPartsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ19PartInput &)> &sink) override {
@@ -209,35 +153,56 @@ struct TpchQ19Scan : TpchQ19InitialScan {
                       }
                     });
   }
-  void ScanLineitemsPartitioned(
-      const core::AuxEngineServices &services, std::size_t partitions,
-      const std::function<void(std::size_t, const TpchQ19LineitemRow &)> &sink) override {
-    ScanPartitioned(services, connection, "lineitem",
-                    {IntColumn("l_partkey"), DecimalColumn("l_quantity", 2),
-                     DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2),
-                     TextColumn("l_shipmode"), TextColumn("l_shipinstruct")},
-                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
-                      for (std::size_t i = 0; i < batch.size(); ++i) {
-                        const auto row = batch.Row(i);
-                        sink(partition, TpchQ19LineitemRow{row.Int(0), row.Decimal(1), row.Decimal(2),
-                                                           row.Decimal(3), row.TextView(4),
-                                                           row.TextView(5)});
-                      }
-                    });
+  void ScanGroupAggregates(
+      const std::function<void(const TpchQ19GroupAggregate &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT p.b, p.f, " + QuantityRaw("l.l_quantity") + ", " +
+            RevenueSum("l.l_extendedprice", "l.l_discount") +
+            ", COUNT(*) FROM lineitem l JOIN (SELECT p_partkey, p_brand AS b, " +
+            TpchQ19FamilySql() +
+            " AS f FROM part) p ON l.l_partkey = p.p_partkey WHERE p.f IS NOT NULL AND " +
+            TpchQ19ShippingSql() + " GROUP BY 1, 2, 3",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(TpchQ19GroupAggregate{
+              ChunkValue(chunk, 0, row).ToString(),
+              static_cast<int>(SafeInt64(ChunkValue(chunk, 1, row))),
+              SafeInt64(ChunkValue(chunk, 2, row)),
+              HugeintToInt128(ChunkValue(chunk, 3, row).GetValue<::duckdb::hugeint_t>()),
+              SafeInt64(ChunkValue(chunk, 4, row))});
+        });
   }
-  bool LookupPart(int64_t partkey, TpchQ19PartInput &out) override {
-    auto scan_lock = LockScan(connection);
-    auto result = ScanConnection(connection).Query(
-        "SELECT p_brand, p_container, p_size FROM part WHERE p_partkey = " +
-        std::to_string(partkey));
-    if (!result || result->HasError() || result->RowCount() == 0)
-      return false;
-    out.key = partkey;
-    out.brand = result->GetValue(0, 0).ToString();
-    out.container = result->GetValue(1, 0).ToString();
-    out.size = static_cast<int32_t>(SafeInt64(result->GetValue(2, 0)));
-    return true;
+  void ScanPartQuantityRevenue(
+      const std::vector<int64_t> &partkeys,
+      const std::function<void(const TpchQ19PartQuantityRevenue &)> &consumer) override {
+    std::string keys;
+    for (const auto key : partkeys)
+      keys += (keys.empty() ? "" : ",") + std::to_string(key);
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_partkey, " + QuantityRaw("l_quantity") + ", " +
+            RevenueSum("l_extendedprice", "l_discount") +
+            ", COUNT(*) FROM lineitem WHERE l_partkey IN (" + keys + ") AND " +
+            TpchQ19ShippingSql() + " GROUP BY 1, 2",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(TpchQ19PartQuantityRevenue{
+              SafeInt64(ChunkValue(chunk, 0, row)), SafeInt64(ChunkValue(chunk, 1, row)),
+              HugeintToInt128(ChunkValue(chunk, 2, row).GetValue<::duckdb::hugeint_t>()),
+              SafeInt64(ChunkValue(chunk, 3, row))});
+        });
   }
+
+private:
+  // Scale-2 decimal column as its unscaled BIGINT.
+  static std::string QuantityRaw(const std::string &column) {
+    return "CAST(round(" + column + " * 100) AS BIGINT)";
+  }
+  // SUM(price * (1 - discount)) at scale 4 as HUGEINT.
+  static std::string RevenueSum(const std::string &price, const std::string &discount) {
+    return "CAST(SUM(CAST(round(" + price + " * 100) AS HUGEINT) * (100 - CAST(round(" +
+           discount + " * 100) AS HUGEINT))) AS HUGEINT)";
+  }
+
   ::duckdb::Connection &connection;
 };
 

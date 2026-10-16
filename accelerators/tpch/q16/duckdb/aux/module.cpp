@@ -2,9 +2,11 @@
 #include "tpch/q16/calibration_writes.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
 #include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -13,6 +15,7 @@
 #include <memory>
 #include <unordered_map>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -34,6 +37,13 @@ constexpr std::size_t kPsPagesGrain = 16;
 constexpr std::size_t kSuppPagesGrain = 64;
 // Groups per build slice: counting a group's eligible suppliers is ~1 us per 50 members.
 constexpr std::size_t kGroupsGrain = 4096;
+// Maintenance: ops per slice before a commit is applied as a batch, pages per
+// slice when copying pages for writing, events per sorted slice, size-list
+// changes below which the lists are re-sorted on one thread.
+constexpr std::size_t kBatchOpGrain = 1024;
+constexpr std::size_t kPageCopyGrain = 4;
+constexpr std::size_t kEventSortGrain = 16384;
+constexpr std::size_t kListChangeGrain = 1024;
 
 
 // ── Custom profiling (no-op unless ACCEL_AUX_CUSTOM_PROFILE is set) ─────────
@@ -566,42 +576,24 @@ public:
     }
   }
 
+  // Applies a large commit: the page edits in arrival order, logging the group
+  // membership changes they imply; then the groups and the suppliers'
+  // memberships are updated page by page on the pool (every page has one
+  // owner). False: the pages are inconsistent with the ops (rebuild).
+  bool ApplyBatch(const std::vector<TpchQ16Op> &ops) {
+    batching = true;
+    for (const auto &op : ops)
+      Apply(op);
+    batching = false;
+    AddFlipEvents();
+    std::vector<Membership> changes;
+    return ApplyGroupEvents(changes) && ApplySupplierMemberships(std::move(changes));
+  }
+
   // Re-sorts the per-size lists for every group whose count changed and
   // appends all modified pages to `out`.
   void Finish(std::vector<core::StateImage> &out) {
-    for (const auto &[code, before] : touched) {
-      const auto *gm = PeekGroup(code);
-      const int32_t after = gm ? gm->eligible_count : 0;
-      if (after == before)
-        continue;
-      const int32_t size = CodeSize(code);
-      auto &list = Mut<TpchQ16SizeList>(
-          lists, Layout::SizePartition(size),
-          [] { return std::make_shared<TpchQ16SizeList>(); });
-      const RowLess less{Meta()};
-      const auto brand = static_cast<uint16_t>(CodeBrand(code));
-      const auto type = CodeType(code);
-      if (before > 0) {
-        const Q16PrecomputedRow old_row{brand, type, size, before};
-        auto it = std::lower_bound(list.rows.begin(), list.rows.end(), old_row,
-                                   less);
-        if (it == list.rows.end() || it->brand_id != brand ||
-            it->type_id != type) {
-          it = std::find_if(list.rows.begin(), list.rows.end(),
-                            [&](const Q16PrecomputedRow &r) {
-                              return r.brand_id == brand && r.type_id == type;
-                            });
-        }
-        if (it != list.rows.end())
-          list.rows.erase(it);
-      }
-      if (after > 0) {
-        const Q16PrecomputedRow new_row{brand, type, size, after};
-        list.rows.insert(std::lower_bound(list.rows.begin(), list.rows.end(),
-                                          new_row, less),
-                         new_row);
-      }
-    }
+    ResortLists();
     if (meta_mut)
       out.push_back(MakeImage<TpchQ16Meta>(
           Layout::kMeta, std::shared_ptr<const TpchQ16Meta>(std::move(meta_mut))));
@@ -770,6 +762,10 @@ private:
 
   // One more (delta > 0) or one fewer partsupp row of `suppkey` in the group.
   void GroupAdd(uint32_t code, int64_t suppkey, int delta) {
+    if (batching) {
+      events.push_back({code, suppkey, delta});
+      return;
+    }
     auto *gm = FindGroup(code, delta > 0);
     if (!gm)
       return;
@@ -888,6 +884,10 @@ private:
     auto &page = MutSupp(suppkey);
     const auto row = static_cast<std::size_t>(suppkey) & (kSuppPageSize - 1);
     page.eligible[row] = eligible ? 1 : 0;
+    if (batching) {
+      flipped.push_back(suppkey);
+      return;
+    }
     for (const auto *p = page.groups.Begin(row); p != page.groups.End(row); ++p) {
       auto *gm = FindGroup(*p, false);
       if (!gm)
@@ -895,6 +895,285 @@ private:
       Touch(*p, *gm);
       gm->eligible_count += eligible ? 1 : -1;
     }
+  }
+
+  // ── batch: the work of a large commit, page by page ──────────────────────
+  // One more (delta > 0) or fewer partsupp row of `suppkey` in a group.
+  struct MemberEvent {
+    uint32_t code;
+    int64_t suppkey;
+    int32_t delta;
+  };
+  // A supplier that entered (+1) or left (-1) a group.
+  struct Membership {
+    int64_t suppkey;
+    uint32_t code;
+    int8_t delta;
+  };
+
+  // Opens every page of `ids` (store reads, serial) and copies the published
+  // ones for writing (parallel).
+  template <class T, class Init>
+  void MutAll(PageSet<T> &set, const std::vector<core::PartitionId> &ids, Init init) {
+    std::vector<typename PageSet<T>::Entry *> entries;
+    for (const auto id : ids)
+      entries.push_back(&EntryOf(set, id));
+    core::ParallelEach(services, entries.size(), kPageCopyGrain, [&](std::size_t i) {
+      auto &entry = *entries[i];
+      if (!entry.mutated)
+        entry.mutated = entry.published ? std::make_shared<T>(*entry.published) : init();
+    });
+  }
+
+  // Page lookups for pool tasks: the pages were opened before they started.
+  template <class T> T &OpenedPage(PageSet<T> &set, core::PartitionId id) {
+    return *set.entries.at(id).mutated;
+  }
+
+  bool EligibleIn(const std::shared_ptr<const TpchQ16SupplierPage> &page,
+                  int64_t suppkey) const {
+    return !page || page->eligible[static_cast<std::size_t>(suppkey) & (kSuppPageSize - 1)] != 0;
+  }
+  bool EligiblePublished(int64_t suppkey) const {
+    return EligibleIn(supp.entries.at(Layout::SuppPartition(suppkey)).published, suppkey);
+  }
+  bool EligibleNow(int64_t suppkey) const {
+    const auto &entry = supp.entries.at(Layout::SuppPartition(suppkey));
+    return entry.mutated ? entry.mutated->eligible[static_cast<std::size_t>(suppkey) &
+                                                   (kSuppPageSize - 1)] != 0
+                         : EligibleIn(entry.published, suppkey);
+  }
+
+  // A supplier whose eligibility changed moves the eligible count of every
+  // group it was in before the commit (the groups it gained come with events).
+  void AddFlipEvents() {
+    std::sort(flipped.begin(), flipped.end());
+    flipped.erase(std::unique(flipped.begin(), flipped.end()), flipped.end());
+    for (const auto suppkey : flipped) {
+      if (EligiblePublished(suppkey) == EligibleNow(suppkey))
+        continue;
+      const auto &published = supp.entries.at(Layout::SuppPartition(suppkey)).published;
+      if (!published)
+        continue;
+      const auto row = static_cast<std::size_t>(suppkey) & (kSuppPageSize - 1);
+      for (const auto *code = published->groups.Begin(row); code != published->groups.End(row);
+           ++code)
+        events.push_back({*code, suppkey, 0});
+    }
+  }
+
+  // Merges the net events of one group (sorted by supplier) into its members;
+  // false when a ref count would go negative.
+  bool MergeGroup(TpchQ16GroupMembers &gm, uint32_t code, const MemberEvent *first,
+                  const MemberEvent *last, std::vector<Membership> &changes) const {
+    std::vector<int64_t> keys;
+    std::vector<int32_t> refs;
+    keys.reserve(gm.suppkeys.size() + static_cast<std::size_t>(last - first));
+    refs.reserve(keys.capacity());
+    const auto keep_until = [&](std::size_t &at, int64_t bound) {
+      for (; at < gm.suppkeys.size() && gm.suppkeys[at] < bound; ++at) {
+        keys.push_back(gm.suppkeys[at]);
+        refs.push_back(gm.ref_counts[at]);
+      }
+    };
+    std::size_t at = 0;
+    int32_t eligible = gm.eligible_count;
+    for (const auto *event = first; event != last; ++event) {
+      keep_until(at, event->suppkey);
+      int32_t before = 0;
+      if (at < gm.suppkeys.size() && gm.suppkeys[at] == event->suppkey)
+        before = gm.ref_counts[at++];
+      const int32_t after = before + event->delta;
+      if (after < 0)
+        return false;
+      eligible += (after > 0 && EligibleNow(event->suppkey)) -
+                  (before > 0 && EligiblePublished(event->suppkey));
+      if (after > 0) {
+        keys.push_back(event->suppkey);
+        refs.push_back(after);
+      }
+      if ((before == 0) != (after == 0))
+        changes.push_back({event->suppkey, code, static_cast<int8_t>(after > 0 ? 1 : -1)});
+    }
+    keep_until(at, std::numeric_limits<int64_t>::max());
+    gm.suppkeys = std::move(keys);
+    gm.ref_counts = std::move(refs);
+    gm.eligible_count = eligible;
+    return true;
+  }
+
+  // Applies the logged events to the groups, one task per group page, and
+  // returns the membership changes in group order.
+  bool ApplyGroupEvents(std::vector<Membership> &changes) {
+    ParallelStableSort(
+        services, events,
+        [](const MemberEvent &a, const MemberEvent &b) {
+          return a.code != b.code ? a.code < b.code : a.suppkey < b.suppkey;
+        },
+        kEventSortGrain);
+    std::size_t net = 0; // sum equal (code, supplier) events in place
+    for (const auto &event : events) {
+      if (net && events[net - 1].code == event.code && events[net - 1].suppkey == event.suppkey)
+        events[net - 1].delta += event.delta;
+      else
+        events[net++] = event;
+    }
+    events.resize(net);
+
+    struct PageEvents {
+      core::PartitionId page;
+      std::size_t begin, end;
+      bool consistent = true;
+      std::vector<Membership> changes;
+      std::vector<std::pair<uint32_t, int32_t>> touched_before;
+    };
+    const auto page_of = [](uint32_t code) {
+      return Layout::GroupPartition(CodeSize(code), CodeBrand(code));
+    };
+    std::vector<PageEvents> pages;
+    for (std::size_t i = 0; i < events.size(); ++i)
+      if (pages.empty() || pages.back().page != page_of(events[i].code))
+        pages.push_back({page_of(events[i].code), i, i + 1});
+      else
+        pages.back().end = i + 1;
+
+    std::vector<core::PartitionId> group_ids, supplier_ids;
+    for (const auto &page : pages)
+      group_ids.push_back(page.page);
+    for (const auto &event : events)
+      supplier_ids.push_back(Layout::SuppPartition(event.suppkey));
+    supplier_ids.erase(std::unique(supplier_ids.begin(), supplier_ids.end()), supplier_ids.end());
+    for (const auto id : supplier_ids)
+      EntryOf(supp, id);
+    MutAll(groups, group_ids, [] { return std::make_shared<TpchQ16GroupPage>(); });
+
+    core::ParallelEach(services, pages.size(), 1, [&](std::size_t i) {
+      auto &work = pages[i];
+      auto &page = OpenedPage(groups, work.page);
+      for (std::size_t first = work.begin; first < work.end;) {
+        const uint32_t code = events[first].code;
+        std::size_t last = first;
+        while (last < work.end && events[last].code == code)
+          ++last;
+        auto it = std::lower_bound(
+            page.groups.begin(), page.groups.end(), CodeType(code),
+            [](const TpchQ16GroupMembers &g, uint16_t t) { return g.type_id < t; });
+        const bool exists = it != page.groups.end() && it->type_id == CodeType(code);
+        TpchQ16GroupMembers fresh;
+        fresh.type_id = CodeType(code);
+        auto &gm = exists ? *it : fresh;
+        work.touched_before.emplace_back(code, gm.eligible_count);
+        if (!MergeGroup(gm, code, &events[first], &events[last], work.changes)) {
+          work.consistent = false;
+          return;
+        }
+        if (!exists && !gm.suppkeys.empty())
+          page.groups.insert(it, std::move(fresh));
+        first = last;
+      }
+    });
+    for (auto &work : pages) {
+      if (!work.consistent)
+        return false;
+      changes.insert(changes.end(), work.changes.begin(), work.changes.end());
+      for (const auto &[code, before] : work.touched_before)
+        touched.emplace(code, before);
+    }
+    events.clear();
+    return true;
+  }
+
+  // Records the membership changes in the suppliers' group lists, one task
+  // per supplier page.
+  bool ApplySupplierMemberships(std::vector<Membership> changes) {
+    std::sort(changes.begin(), changes.end(), [](const Membership &a, const Membership &b) {
+      return a.suppkey != b.suppkey ? a.suppkey < b.suppkey : a.code < b.code;
+    });
+    struct PageChanges {
+      core::PartitionId page;
+      std::size_t begin, end;
+    };
+    std::vector<PageChanges> pages;
+    for (std::size_t i = 0; i < changes.size(); ++i) {
+      const auto page = Layout::SuppPartition(changes[i].suppkey);
+      if (pages.empty() || pages.back().page != page)
+        pages.push_back({page, i, i + 1});
+      else
+        pages.back().end = i + 1;
+    }
+    std::vector<core::PartitionId> ids;
+    for (const auto &page : pages)
+      ids.push_back(page.page);
+    MutAll(supp, ids, [] {
+      auto page = std::make_shared<TpchQ16SupplierPage>();
+      page->Init();
+      return page;
+    });
+    core::ParallelEach(services, pages.size(), 1, [&](std::size_t i) {
+      auto &page = OpenedPage(supp, pages[i].page);
+      for (std::size_t c = pages[i].begin; c < pages[i].end; ++c) {
+        const auto row = static_cast<std::size_t>(changes[c].suppkey) & (kSuppPageSize - 1);
+        if (changes[c].delta > 0)
+          page.groups.Insert(row, changes[c].code);
+        else
+          page.groups.Erase(row, changes[c].code);
+      }
+    });
+    return true;
+  }
+
+  // Re-sorts the per-size lists of the groups whose count changed; sizes are
+  // independent lists, one task each.
+  void ResortLists() {
+    struct Change {
+      uint32_t code;
+      int32_t before, after;
+    };
+    std::map<int32_t, std::vector<Change>> by_size;
+    std::size_t change_count = 0;
+    for (const auto &[code, before] : touched) {
+      const auto *gm = PeekGroup(code);
+      const int32_t after = gm ? gm->eligible_count : 0;
+      if (after == before)
+        continue;
+      by_size[CodeSize(code)].push_back({code, before, after});
+      ++change_count;
+    }
+    std::vector<core::PartitionId> ids;
+    for (const auto &entry : by_size)
+      ids.push_back(Layout::SizePartition(entry.first));
+    MutAll(lists, ids, [] { return std::make_shared<TpchQ16SizeList>(); });
+    std::vector<std::pair<int32_t, const std::vector<Change> *>> sizes;
+    for (const auto &entry : by_size)
+      sizes.emplace_back(entry.first, &entry.second);
+    const RowLess less{Meta()};
+    core::ParallelEach(
+        services, sizes.size(), change_count < kListChangeGrain ? sizes.size() : 1,
+        [&](std::size_t i) {
+          const int32_t size = sizes[i].first;
+          auto &list = OpenedPage(lists, Layout::SizePartition(size));
+          for (const auto &change : *sizes[i].second) {
+            const auto brand = static_cast<uint16_t>(CodeBrand(change.code));
+            const auto type = CodeType(change.code);
+            if (change.before > 0) {
+              const Q16PrecomputedRow old_row{brand, type, size, change.before};
+              auto it = std::lower_bound(list.rows.begin(), list.rows.end(), old_row, less);
+              if (it == list.rows.end() || it->brand_id != brand || it->type_id != type) {
+                it = std::find_if(list.rows.begin(), list.rows.end(),
+                                  [&](const Q16PrecomputedRow &r) {
+                                    return r.brand_id == brand && r.type_id == type;
+                                  });
+              }
+              if (it != list.rows.end())
+                list.rows.erase(it);
+            }
+            if (change.after > 0) {
+              const Q16PrecomputedRow new_row{brand, type, size, change.after};
+              list.rows.insert(
+                  std::lower_bound(list.rows.begin(), list.rows.end(), new_row, less), new_row);
+            }
+          }
+        });
   }
 
   core::AuxEngineServices &services;
@@ -908,6 +1187,10 @@ private:
   PageSet<TpchQ16SupplierPage> supp;
   // group code -> eligible count before this commit first changed it
   std::unordered_map<uint32_t, int32_t> touched;
+  // Batch mode: group changes are logged instead of applied.
+  bool batching = false;
+  std::vector<MemberEvent> events;
+  std::vector<int64_t> flipped; // suppliers whose eligibility a SupplierSet op changed
 };
 
 template <class T, class V>
@@ -1184,8 +1467,13 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
   Stager stager(services);
   if (!stager.Open())
     return full_rebuild();
-  for (const auto &op : buffer.Ops())
-    stager.Apply(op);
+  if (core::SliceCount(services, buffer.Ops().size(), kBatchOpGrain) > 1) {
+    if (!stager.ApplyBatch(buffer.Ops()))
+      return full_rebuild();
+  } else {
+    for (const auto &op : buffer.Ops())
+      stager.Apply(op);
+  }
   stager.Finish(outcome.updates);
   outcome.action = outcome.updates.empty() ? core::MaintenanceAction::NoOp
                                            : core::MaintenanceAction::ApplyDelta;

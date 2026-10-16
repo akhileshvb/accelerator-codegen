@@ -1,20 +1,20 @@
 // SCAFFOLDING
 #include "substrate/aux/core/aux_maintenance_policy.hpp"
 
-#include "substrate/aux/core/aux_maintenance_decision_log.hpp"
-
 #include <algorithm>
 #include <cstdlib>
-#include <cstring>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 
+#include "substrate/aux/core/aux_maintenance_decision_log.hpp"
+
 namespace accelerator_codegen::aux_state::core {
 
 namespace {
 
+// ForceMutex guards the forced-action override; ExpectedQueriesMutex the expected-queries one.
 std::mutex &ForceMutex() {
   static std::mutex mutex;
   return mutex;
@@ -51,8 +51,7 @@ ParseMaintenanceActionName(std::string_view name) {
     return MaintenanceAction::RebuildPartition;
   }
   if (name == "InvalidateAndRebuildOnRead" ||
-      name == "InvalidateAndFallback") { // the old name
-
+      name == "InvalidateAndFallback") { // accepted alias
     return MaintenanceAction::InvalidateAndRebuildOnRead;
   }
   if (name == "NoOp") {

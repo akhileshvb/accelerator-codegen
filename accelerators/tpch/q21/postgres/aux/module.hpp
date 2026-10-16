@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -89,6 +90,14 @@ struct TpchQ21Contribution {
   int64_t count = 0;
 };
 
+// The new contribution of an order, from the database as the writing
+// statement left it (the last one recorded for an order wins).
+struct TpchQ21OrderResult {
+  int64_t orderkey = 0;
+  bool has = false;
+  TpchQ21Contribution contribution;
+};
+
 // s_name is shared (immutable) between the supplier map and the per-nation
 // index, so a read ranks a nation's suppliers without a supplier lookup each.
 using TpchQ21Name = std::shared_ptr<const std::string>;
@@ -140,11 +149,15 @@ private:
 // orders contributing) that is ~0.25 GB, at SF1000 ~2.5 GB. Maintenance clones
 // touched shards only.
 struct TpchQ21State {
+  // The two maps commits touch at random are sized at build to ~48 entries
+  // per shard (ShardBitsFor), so a commit clones only the shards it touches.
+  using Contributions = core::ShardedCowHashMap<TpchQ21Contribution, 12>;
+  using Numwait = core::ShardedCowHashMap<int64_t, 10>;
   // orderkey -> contribution, for contributing orders.
-  core::ShardedCowHashMap<TpchQ21Contribution, 12> contributions;
+  Contributions contributions;
   // suppkey -> sum of its contributions (non-zero entries), whether or not a
   // supplier row exists (a supplier inserted later picks it up).
-  core::ShardedCowHashMap<int64_t, 10> numwait;
+  Numwait numwait;
   core::ShardedCowHashMap<TpchQ21Supplier, 10> suppliers;
   // nationkey -> (suppkey -> numwait, s_name) for existing suppliers with
   // numwait != 0.
@@ -165,6 +178,11 @@ struct TpchQ21State {
   void SetContribution(int64_t orderkey, bool has,
                        const TpchQ21Contribution &contribution);
   void AdjustNumwait(int64_t suppkey, int64_t delta);
+  // SetContribution for many orders at once (per order, the last result wins),
+  // then the net numwait change per supplier. Tasks on `services` own disjoint
+  // shards, so the state is the one the serial loop reaches.
+  void ApplyOrderResults(const core::AuxEngineServices &services,
+                         const std::vector<TpchQ21OrderResult> &results);
   void PutSupplier(int64_t suppkey, const std::string &name, int64_t nationkey);
   // false: no such supplier.
   bool RemoveSupplier(int64_t suppkey);
@@ -176,6 +194,8 @@ struct TpchQ21State {
   std::vector<TpchQ21OutputRow> TopRows(const std::string &nation) const;
 
 private:
+  void AdjustNumwaits(const core::AuxEngineServices &services,
+                      const std::unordered_map<int64_t, int64_t> &deltas);
   void CountNameHash(const std::string &name, int64_t delta);
 };
 
@@ -184,13 +204,6 @@ struct TpchQ21StateImage {
 };
 
 // ── Deltas ──────────────────────────────────────────────────────────────────
-// The new contribution of an order, from the database as the writing
-// statement left it (the last one recorded for an order wins).
-struct TpchQ21OrderResult {
-  int64_t orderkey = 0;
-  bool has = false;
-  TpchQ21Contribution contribution;
-};
 
 // A supplier or nation row change (insert: new only, delete: old only,
 // update: both).

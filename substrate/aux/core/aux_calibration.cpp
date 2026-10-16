@@ -1,9 +1,10 @@
 // SCAFFOLDING
+// Cost-model calibration (hook-timed and write-driven fits) and the cost-model JSON.
 #include "substrate/aux/core/aux_calibration.hpp"
 
-#include <cstdlib>
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -30,6 +31,8 @@ double Median(std::vector<double> values) {
   return values[middle];
 }
 
+// Median time of `callback` over `samples` runs after `warmups` runs. Before
+// each run, `hooks.reset` and then `prepare` run untimed.
 double Measure(const std::function<void()> &callback,
                const AuxCalibrationHooks &hooks, std::size_t warmups,
                std::size_t samples,
@@ -37,49 +40,33 @@ double Measure(const std::function<void()> &callback,
   if (!callback) {
     return 0.0;
   }
-  for (std::size_t sample = 0; sample < warmups; ++sample) {
+  auto untimed_setup = [&] {
     if (hooks.reset) {
       hooks.reset();
     }
     if (prepare) {
       prepare();
     }
+  };
+  for (std::size_t sample = 0; sample < warmups; ++sample) {
+    untimed_setup();
     callback();
   }
   std::vector<double> timings;
   timings.reserve(samples);
   for (std::size_t sample = 0; sample < samples; ++sample) {
-    if (hooks.reset) {
-      hooks.reset();
-    }
-    if (prepare) {
-      prepare(); // untimed
-    }
+    untimed_setup();
     const auto start = Clock::now();
     callback();
-    const auto finish = Clock::now();
     timings.push_back(
-        std::chrono::duration<double, std::micro>(finish - start).count());
+        std::chrono::duration<double, std::micro>(Clock::now() - start).count());
   }
   return Median(std::move(timings));
 }
 
-void WriteNumber(std::ostream &out, const char *key, double value,
-                 bool comma = true) {
-  out << "  \"" << key << "\": " << value;
-  if (comma) {
-    out << ',';
-  }
-  out << '\n';
-}
-
-void WriteUint(std::ostream &out, const char *key, uint64_t value,
-               bool comma = true) {
-  out << "  \"" << key << "\": " << value;
-  if (comma) {
-    out << ',';
-  }
-  out << '\n';
+// One `"key": value` line of the cost-model JSON.
+template <typename T> void WriteField(std::ostream &out, const char *key, T value, bool comma = true) {
+  out << "  \"" << key << "\": " << value << (comma ? "," : "") << '\n';
 }
 
 } // namespace
@@ -154,11 +141,7 @@ AuxCalibrationResult CalibrateAuxCostModel(
   std::vector<std::pair<std::size_t, double>> delta_samples;
   for (const auto row_count : config.delta_row_counts) {
     const auto timing = Measure(
-        [&, row_count] {
-          if (hooks.apply_delta) {
-            hooks.apply_delta(row_count);
-          }
-        },
+        [&, row_count] { hooks.apply_delta(row_count); },
         hooks, config.warmup_samples, config.measurement_samples,
         hooks.prepare_maintenance);
     delta_samples.emplace_back(row_count, timing);
@@ -172,11 +155,8 @@ AuxCalibrationResult CalibrateAuxCostModel(
   result.params.fallback_us = result.fallback_us;
   result.params.partition_rebuild_us = result.partition_rebuild_us;
   result.params.full_rebuild_us = result.full_rebuild_us;
-  // The measured delta hook is end-to-end: it includes state materialization,
-  // the kernel, serialization/publication preparation, and output refresh.
-  // Store its fitted intercept in the policy's fixed overhead term. Keeping
-  // apply_delta_base_us at zero avoids counting the same intercept twice now
-  // that the selector includes apply_delta_overhead_us.
+  // The delta hook is timed end to end, so its fitted intercept goes in the
+  // policy's fixed overhead term; the base term stays 0 (it would count twice).
   result.params.apply_delta_overhead_us = result.apply_delta_base_us;
   result.params.apply_delta_base_us = 0.0;
   result.params.apply_delta_per_row_us = result.apply_delta_per_row_us;
@@ -201,41 +181,39 @@ void WriteAuxCostModelJson(const std::string &path,
     out << "  \"accelerator\": \"" << accelerator << "\",\n";
   }
   const auto &params = result.params;
-  WriteNumber(out, "aux_hit_us", params.aux_hit_us);
-  WriteNumber(out, "fallback_us", params.fallback_us);
-  WriteNumber(out, "partition_rebuild_base_us", params.partition_rebuild_base_us);
-  WriteNumber(out, "partition_rebuild_us", params.partition_rebuild_us);
-  WriteNumber(out, "full_rebuild_us", params.full_rebuild_us);
-  WriteNumber(out, "first_query_blocking_us", params.first_query_blocking_us);
-  WriteNumber(out, "apply_delta_overhead_us", params.apply_delta_overhead_us);
-  WriteNumber(out, "apply_delta_base_us", params.apply_delta_base_us);
-  WriteNumber(out, "apply_delta_per_row_us", params.apply_delta_per_row_us);
-  WriteNumber(out, "apply_delta_part_lineitem_scan_us",
-              params.apply_delta_part_lineitem_scan_us);
-  WriteUint(out, "apply_delta_max_rows", params.apply_delta_max_rows);
-  WriteUint(out, "apply_delta_max_part_fanout",
+  WriteField(out, "aux_hit_us", params.aux_hit_us);
+  WriteField(out, "fallback_us", params.fallback_us);
+  WriteField(out, "partition_rebuild_base_us", params.partition_rebuild_base_us);
+  WriteField(out, "partition_rebuild_us", params.partition_rebuild_us);
+  WriteField(out, "full_rebuild_us", params.full_rebuild_us);
+  WriteField(out, "first_query_blocking_us", params.first_query_blocking_us);
+  WriteField(out, "apply_delta_overhead_us", params.apply_delta_overhead_us);
+  WriteField(out, "apply_delta_base_us", params.apply_delta_base_us);
+  WriteField(out, "apply_delta_per_row_us", params.apply_delta_per_row_us);
+  WriteField(out, "apply_delta_max_rows", params.apply_delta_max_rows);
+  WriteField(out, "apply_delta_max_part_fanout",
             params.apply_delta_max_part_fanout);
-  WriteNumber(out, "invalidation_overhead_us", params.invalidation_overhead_us);
-  WriteNumber(out, "decision_margin_us", params.decision_margin_us);
-  WriteUint(out, "min_samples", params.min_samples);
-  WriteNumber(out, "incremental_failure_prob", params.incremental_failure_prob);
-  WriteNumber(out, "interference_rebuild_per_query_us",
+  WriteField(out, "invalidation_overhead_us", params.invalidation_overhead_us);
+  WriteField(out, "decision_margin_us", params.decision_margin_us);
+  WriteField(out, "min_samples", params.min_samples);
+  WriteField(out, "incremental_failure_prob", params.incremental_failure_prob);
+  WriteField(out, "interference_rebuild_per_query_us",
               params.interference_rebuild_per_query_us);
-  WriteNumber(out, "interference_rebuild_scan_byte_us",
+  WriteField(out, "interference_rebuild_scan_byte_us",
               params.interference_rebuild_scan_byte_us);
-  WriteNumber(out, "interference_delta_per_query_us",
+  WriteField(out, "interference_delta_per_query_us",
               params.interference_delta_per_query_us);
-  WriteNumber(out, "interference_invalidate_per_query_us",
+  WriteField(out, "interference_invalidate_per_query_us",
               params.interference_invalidate_per_query_us);
-  WriteNumber(out, "interference_query_slowdown_factor",
+  WriteField(out, "interference_query_slowdown_factor",
               params.interference_query_slowdown_factor);
-  WriteNumber(out, "calibration_build_initial_state_us",
+  WriteField(out, "calibration_build_initial_state_us",
               result.build_initial_state_us);
-  WriteNumber(out, "calibration_apply_delta_base_us",
+  WriteField(out, "calibration_apply_delta_base_us",
               result.apply_delta_base_us);
-  WriteNumber(out, "calibration_apply_delta_per_row_us",
+  WriteField(out, "calibration_apply_delta_per_row_us",
               result.apply_delta_per_row_us);
-  WriteUint(out, "calibration_samples", result.samples, false);
+  WriteField(out, "calibration_samples", result.samples, false);
   out << "}\n";
 }
 
@@ -369,9 +347,6 @@ maintenance::CostModelParams LoadAuxCostModelJson(
       content, "apply_delta_base_us", params.apply_delta_base_us);
   params.apply_delta_per_row_us = ParseJsonDouble(
       content, "apply_delta_per_row_us", params.apply_delta_per_row_us);
-  params.apply_delta_part_lineitem_scan_us = ParseJsonDouble(
-      content, "apply_delta_part_lineitem_scan_us",
-      params.apply_delta_part_lineitem_scan_us);
   params.apply_delta_max_rows = ParseJsonUint64(
       content, "apply_delta_max_rows", params.apply_delta_max_rows);
   params.calibrated_scale_rows = ParseJsonUint64(

@@ -1,5 +1,7 @@
 #include "tpch/q22/mysql/aux/module.hpp"
 #include "tpch/q22/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -13,6 +15,14 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 using Int128 = __int128;
+
+// Owner runs (customer-array directory pages) per maintenance slice: a page
+// clone plus ~10 key edits is ~5 us.
+constexpr std::size_t kRunGrain = 64;
+// Key events per sorted slice of the owner sort.
+constexpr std::size_t kSortGrain = 65536;
+// Below this many balance ops a commit updates its prefixes inline.
+constexpr std::size_t kPrefixOpGrain = 4096;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -127,12 +137,17 @@ private:
   std::vector<char> owned_;
 };
 
-// Adds (sign = +1) or removes (-1) a record's contribution to its prefix:
-// the AVG aggregate for balance > 0, and the zero-order balance multiset.
+// A customer with a phone prefix and a positive balance counts in the AVG
+// aggregate of its prefix (and in the zero-order multiset when it has no order).
+bool CountsInAverage(const TpchQ22CustomerRecord &rec) {
+  return rec.prefix_id != kTpchQ22NoCustomer && rec.prefix_id != kTpchQ22NullPhone &&
+         rec.balance_raw != kTpchQ22NullBalance && rec.balance_raw > 0;
+}
+
+// Adds (sign = +1) or removes (-1) a record's contribution to its prefix.
 // False when the state does not contain what is being removed.
 bool Contribute(StateEditor &editor, const TpchQ22CustomerRecord &rec, int sign) {
-  if (rec.prefix_id == kTpchQ22NoCustomer || rec.prefix_id == kTpchQ22NullPhone ||
-      rec.balance_raw == kTpchQ22NullBalance || rec.balance_raw <= 0)
+  if (!CountsInAverage(rec))
     return true;
   auto &entry = editor.Entry(rec.prefix_id);
   entry.positive_count += sign;
@@ -143,6 +158,68 @@ bool Contribute(StateEditor &editor, const TpchQ22CustomerRecord &rec, int sign)
     return entry.zero_order.Add(rec.balance_raw, sign);
   return true;
 }
+
+// One phone prefix's share of a commit: adjustments of its AVG aggregate and
+// of the balances in its zero-order multiset as (balance, +-1).
+struct PrefixDelta {
+  int64_t positive_count = 0;
+  Int128 positive_sum = 0;
+  std::vector<std::pair<int64_t, int64_t>> zero_order;
+};
+
+// What a slice of owner runs computed: its prefixes' deltas, or `ok = false`
+// when the state does not contain what a delta removes.
+struct Staged {
+  std::unordered_map<uint32_t, PrefixDelta> prefixes;
+  bool ok = true;
+
+  // The signed effect of one customer record, as Contribute applies it.
+  void Contribute(const TpchQ22CustomerRecord &rec, int sign) {
+    if (!CountsInAverage(rec))
+      return;
+    auto &delta = prefixes[rec.prefix_id];
+    delta.positive_count += sign;
+    delta.positive_sum += static_cast<Int128>(sign) * rec.balance_raw;
+    if (rec.order_count == 0)
+      delta.zero_order.emplace_back(rec.balance_raw, sign);
+  }
+  void Merge(Staged &&from) {
+    ok = ok && from.ok;
+    for (auto &[id, delta] : from.prefixes) {
+      auto &into = prefixes[id];
+      into.positive_count += delta.positive_count;
+      into.positive_sum += delta.positive_sum;
+      into.zero_order.insert(into.zero_order.end(), delta.zero_order.begin(),
+                             delta.zero_order.end());
+    }
+  }
+};
+
+// Applies balance adjustments net per balance; false when a multiplicity would
+// go negative.
+bool ApplyBalanceOps(core::SortedCountSum &multiset,
+                     std::vector<std::pair<int64_t, int64_t>> &ops) {
+  std::sort(ops.begin(), ops.end());
+  for (std::size_t i = 0; i < ops.size();) {
+    int64_t net = 0;
+    std::size_t j = i;
+    for (; j < ops.size() && ops[j].first == ops[i].first; ++j)
+      net += ops[j].second;
+    if (!multiset.Add(ops[i].first, net))
+      return false;
+    i = j;
+  }
+  return true;
+}
+
+// A delta applied to the customer array by the slice owning its key.
+struct KeyEvent {
+  enum class Kind : uint8_t { RemoveCustomer, AddCustomer, Order };
+  Kind kind;
+  uint64_t owner; // customers.OwnerOf(key)
+  int64_t key;
+  std::size_t delta; // index into the customer or order deltas
+};
 
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
@@ -422,43 +499,107 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   };
 
-  for (const auto &delta : buffer.customer_deltas) {
-    if (delta.has_old) {
-      auto rec = state->customers.Get(delta.old_custkey);
-      if (rec.prefix_id == kTpchQ22NoCustomer || !Contribute(editor, rec, -1))
-        return inconsistent();
+  // Serial prologue: prefix ids for the new rows, then the deltas as key
+  // events (all customer deltas, then all order deltas), grouped by the owner
+  // of their key's customer-array directory page, arrival order kept per key.
+  std::vector<uint32_t> new_prefix_ids(buffer.customer_deltas.size());
+  std::vector<KeyEvent> events;
+  events.reserve(2 * buffer.customer_deltas.size() + buffer.order_deltas.size());
+  for (std::size_t i = 0; i < buffer.customer_deltas.size(); ++i) {
+    const auto &delta = buffer.customer_deltas[i];
+    if (delta.has_old)
+      events.push_back({KeyEvent::Kind::RemoveCustomer, 0, delta.old_custkey, i});
+    if (delta.has_new) {
+      if (!delta.new_phone_null)
+        new_prefix_ids[i] = editor.PrefixId(delta.new_prefix);
+      events.push_back({KeyEvent::Kind::AddCustomer, 0, delta.new_custkey, i});
+    }
+  }
+  for (std::size_t i = 0; i < buffer.order_deltas.size(); ++i)
+    events.push_back({KeyEvent::Kind::Order, 0, buffer.order_deltas[i].custkey, i});
+  for (auto &event : events) {
+    event.owner = state->customers.OwnerOf(event.key);
+    state->customers.Reserve(event.key);
+  }
+  ParallelStableSort(services, events,
+                     [](const KeyEvent &a, const KeyEvent &b) { return a.owner < b.owner; },
+                     kSortGrain);
+  std::vector<std::size_t> run_starts; // first event of each owner run
+  for (std::size_t i = 0; i < events.size(); ++i)
+    if (i == 0 || events[i].owner != events[i - 1].owner)
+      run_starts.push_back(i);
+  run_starts.push_back(events.size());
+
+  // Slices own whole runs, so each edits only its own directory pages and
+  // chunks; the sparse-key run is one run and so one slice.
+  auto apply = [&](const KeyEvent &event, Staged &staged) {
+    auto rec = state->customers.Get(event.key);
+    switch (event.kind) {
+    case KeyEvent::Kind::RemoveCustomer:
+      if (rec.prefix_id == kTpchQ22NoCustomer)
+        return false;
+      staged.Contribute(rec, -1);
       // The row is gone; orders of this custkey are kept (they may outlive it).
       rec.prefix_id = kTpchQ22NoCustomer;
       rec.balance_raw = 0;
-      state->customers.Set(delta.old_custkey, rec);
-    }
-    if (delta.has_new) {
-      auto rec = state->customers.Get(delta.new_custkey);
+      break;
+    case KeyEvent::Kind::AddCustomer: {
       if (rec.prefix_id != kTpchQ22NoCustomer)
-        return inconsistent(); // duplicate key
+        return false; // duplicate key
+      const auto &delta = buffer.customer_deltas[event.delta];
       rec.prefix_id = delta.new_phone_null ? kTpchQ22NullPhone
-                                           : editor.PrefixId(delta.new_prefix);
+                                           : new_prefix_ids[event.delta];
       rec.balance_raw = delta.new_balance;
-      if (!Contribute(editor, rec, +1))
-        return inconsistent();
-      state->customers.Set(delta.new_custkey, rec);
+      staged.Contribute(rec, +1);
+      break;
     }
-  }
+    case KeyEvent::Kind::Order: {
+      const int64_t orders =
+          static_cast<int64_t>(rec.order_count) + buffer.order_deltas[event.delta].sign;
+      if (orders < 0 || orders > std::numeric_limits<int32_t>::max())
+        return false;
+      // Only crossing zero changes the zero-order multiset.
+      if ((rec.order_count == 0) != (orders == 0) && CountsInAverage(rec))
+        staged.prefixes[rec.prefix_id].zero_order.emplace_back(rec.balance_raw,
+                                                               orders == 0 ? 1 : -1);
+      rec.order_count = static_cast<int32_t>(orders);
+      break;
+    }
+    }
+    state->customers.Set(event.key, rec);
+    return true;
+  };
+  Staged staged;
+  core::ParallelReduce(
+      services, run_starts.size() - 1, kRunGrain, staged,
+      [&](Staged &part, std::size_t first_run, std::size_t last_run) {
+        for (std::size_t i = run_starts[first_run]; i < run_starts[last_run] && part.ok; ++i)
+          part.ok = apply(events[i], part);
+      },
+      [](Staged &into, Staged &&from) { into.Merge(std::move(from)); });
+  if (!staged.ok)
+    return inconsistent();
 
-  for (const auto &delta : buffer.order_deltas) {
-    auto rec = state->customers.Get(delta.custkey);
-    const int64_t orders = static_cast<int64_t>(rec.order_count) + delta.sign;
-    if (orders < 0 || orders > std::numeric_limits<int32_t>::max())
-      return inconsistent();
-    // Only crossing zero changes the zero-order multiset.
-    const bool crossing = (rec.order_count == 0) != (orders == 0);
-    if (crossing && !Contribute(editor, rec, -1))
-      return inconsistent();
-    rec.order_count = static_cast<int32_t>(orders);
-    if (crossing && !Contribute(editor, rec, +1))
-      return inconsistent();
-    state->customers.Set(delta.custkey, rec);
+  // Prefixes are independent: each clones and updates its own entry.
+  std::vector<std::pair<uint32_t, PrefixDelta *>> touched;
+  std::size_t balance_ops = 0;
+  for (auto &[id, delta] : staged.prefixes) {
+    touched.emplace_back(id, &delta);
+    balance_ops += delta.zero_order.size();
   }
+  std::sort(touched.begin(), touched.end());
+  std::vector<char> consistent(touched.size(), 1);
+  core::ParallelEach(services, touched.size(),
+                     balance_ops < kPrefixOpGrain ? touched.size() : 1, [&](std::size_t i) {
+    auto &entry = editor.Entry(touched[i].first);
+    const auto &delta = *touched[i].second;
+    entry.positive_count += delta.positive_count;
+    entry.positive_sum_raw += delta.positive_sum;
+    consistent[i] = entry.positive_count >= 0 &&
+                    ApplyBalanceOps(entry.zero_order, touched[i].second->zero_order);
+  });
+  if (std::find(consistent.begin(), consistent.end(), 0) != consistent.end())
+    return inconsistent();
   editor.Finish();
 
   outcome.action = core::MaintenanceAction::ApplyDelta;

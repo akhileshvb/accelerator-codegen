@@ -270,15 +270,38 @@ private:
 // Copying the container copies N pointers; the first write to a shard in a
 // copy clones only that shard (O(shard size)). Choose kShardBits so a shard is
 // ~1e4-1e5 entries at your expected size (kShardBits 8-12 for 1e6-1e8 keys),
-// then a write batch of B keys costs O(min(B, N) * shard size).
+// then a write batch of B keys costs O(min(B, N) * shard size). State that
+// commits touch at random (an RF batch hits most shards of a coarse map)
+// wants ~32-64 entries per shard instead: size it at build time with the
+// shard_bits constructor (ShardBitsFor), kShardBits being the default.
 // Reads (Find) never copy. Pointers from Find are invalidated by writes to the
-// same shard. Same threading rule as ChunkedCowArray.
+// same shard. Same threading rule as ChunkedCowArray, except that writes to
+// keys of distinct shards (ShardOf) may run concurrently on a private copy.
 template <typename V, unsigned kShardBits = 8> class ShardedCowHashMap {
 public:
   static constexpr std::size_t kShards = std::size_t{1} << kShardBits;
   using Shard = FlatHashMap<V>;
 
-  ShardedCowHashMap() : shards_(kShards) {}
+  ShardedCowHashMap() : shards_(kShards), bits_(kShardBits) {}
+  explicit ShardedCowHashMap(unsigned shard_bits)
+      : shards_(std::size_t{1} << shard_bits), bits_(shard_bits) {}
+
+  // Smallest shard_bits that keeps shards at or under `per_shard` entries.
+  static unsigned ShardBitsFor(std::size_t entries, std::size_t per_shard = 48) {
+    unsigned bits = 1;
+    while (bits < 30 && (entries >> bits) > per_shard)
+      ++bits;
+    return bits;
+  }
+
+  std::size_t ShardCount() const { return shards_.size(); }
+  static std::size_t ShardOf(int64_t key, unsigned shard_bits) {
+    uint64_t x = static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ULL;
+    return static_cast<std::size_t>(x >> (64 - shard_bits));
+  }
+  // A map of more shards refines this one: every key's shard of the finer map
+  // lies within the same-numbered shard of the coarser one.
+  std::size_t ShardOf(int64_t key) const { return ShardOf(key, bits_); }
 
   const V *Find(int64_t key) const {
     const auto &s = shards_[ShardOf(key)];
@@ -320,10 +343,6 @@ public:
   }
 
 private:
-  static std::size_t ShardOf(int64_t key) {
-    uint64_t x = static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ULL;
-    return static_cast<std::size_t>(x >> (64 - kShardBits));
-  }
   Shard &MutableShard(int64_t key) {
     auto &s = shards_[ShardOf(key)];
     if (!s)
@@ -333,6 +352,7 @@ private:
     return *s;
   }
   std::vector<std::shared_ptr<Shard>> shards_;
+  unsigned bits_;
 };
 
 } // namespace accelerator_codegen::aux_state::core

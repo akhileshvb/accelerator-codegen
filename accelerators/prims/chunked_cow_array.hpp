@@ -94,6 +94,14 @@ public:
     Mutable(key) = value;
     return true;
   }
+  // Sizes the directory to cover `key` (allocates no chunk). Afterwards Mutable
+  // calls on keys of distinct chunks never resize it, so threads that own
+  // disjoint chunks may write one private copy concurrently.
+  void Reserve(int64_t key) {
+    const auto ci = static_cast<std::size_t>(key) >> kShift;
+    if (dir_.size() <= ci)
+      dir_.resize(ci + 1);
+  }
 
   void Clear() { dir_.clear(); }
 

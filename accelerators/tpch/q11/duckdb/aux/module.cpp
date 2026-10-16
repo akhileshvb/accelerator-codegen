@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -29,6 +30,8 @@ using core::ByteWriter;
 constexpr std::size_t kSupplierFoldGrain = 256;
 // Nation ops below which a commit applies its nations inline.
 constexpr std::size_t kNationOpsGrain = 2048;
+// Deltas in a commit below which the supplier bookkeeping stays on one thread.
+constexpr std::size_t kBookkeepGrain = 2048;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kMetadataMagic = 0x4d313151; // Q11M
 constexpr uint32_t kNationMagic = 0x4e313151;   // Q11N
@@ -402,6 +405,126 @@ private:
   std::vector<std::shared_ptr<const Q11SupplierBucket>> buckets;
   std::vector<char> owned;
 };
+
+
+// A change of a nation's per-part value, logged by the supplier bookkeeping.
+struct NationOp {
+  std::size_t delta; // arrival index of the delta that caused it
+  int32_t nationkey;
+  int64_t partkey;
+  Q11AccT value;
+};
+
+// A supplier insert/delete/nation move only touches that supplier's parts:
+// contributions are tracked per supplier.
+template <class Log>
+void ApplySupplierDelta(SupplierWork &suppliers, const TpchQ11SupplierDelta &delta,
+                        Log &&log) {
+  if (delta.has_old) {
+    const auto *entry = suppliers.Find(delta.suppkey);
+    if (entry && entry->has_supplier) {
+      for (const auto &part : entry->parts)
+        log(entry->nationkey, part.partkey, -static_cast<Q11AccT>(part.value));
+      auto &mutable_entry = suppliers.Mut(delta.suppkey);
+      mutable_entry.has_supplier = false;
+      if (mutable_entry.parts.empty())
+        suppliers.Erase(delta.suppkey);
+    }
+  }
+  if (delta.has_new) {
+    const auto *existing = suppliers.Find(delta.suppkey);
+    if (existing && existing->has_supplier) {
+      // Duplicate insert (should not happen): detach old contribution.
+      for (const auto &part : existing->parts)
+        log(existing->nationkey, part.partkey, -static_cast<Q11AccT>(part.value));
+    }
+    auto &entry = suppliers.Mut(delta.suppkey);
+    entry.nationkey = delta.new_nationkey;
+    entry.has_supplier = true;
+    for (const auto &part : entry.parts)
+      log(entry.nationkey, part.partkey, static_cast<Q11AccT>(part.value));
+  }
+}
+
+// False when the delta deletes a row the supplier never had.
+template <class Log>
+bool ApplyPartsuppDelta(SupplierWork &suppliers, const TpchQ11PartsuppDelta &delta,
+                        Log &&log) {
+  const int64_t signed_raw =
+      static_cast<int64_t>(delta.sign) * static_cast<int64_t>(delta.value);
+  if (!suppliers.Find(delta.suppkey) && delta.sign < 0)
+    return false;
+  auto &entry = suppliers.Mut(delta.suppkey);
+  auto pos = std::lower_bound(
+      entry.parts.begin(), entry.parts.end(), delta.partkey,
+      [](const Q11SupplierPart &part, int64_t key) { return part.partkey < key; });
+  if (pos != entry.parts.end() && pos->partkey == delta.partkey) {
+    pos->value += signed_raw;
+    pos->count += delta.sign;
+    if (pos->count < 0)
+      return false;
+    if (pos->count == 0)
+      entry.parts.erase(pos);
+  } else {
+    if (delta.sign < 0)
+      return false;
+    entry.parts.insert(pos, Q11SupplierPart{delta.partkey, signed_raw, 1});
+  }
+  if (entry.has_supplier)
+    log(entry.nationkey, delta.partkey, static_cast<Q11AccT>(delta.sign) * delta.value);
+  if (entry.parts.empty() && !entry.has_supplier)
+    suppliers.Erase(delta.suppkey);
+  return true;
+}
+
+// Applies the supplier deltas, then the partsupp deltas, to `suppliers` and
+// returns the nation ops they imply in arrival order. Supplier buckets are
+// disjoint, so each bucket's deltas run as one task. False: rebuild.
+bool BookkeepSuppliers(core::AuxEngineServices &services, const TpchQ11TxnBuffer &buffer,
+                       SupplierWork &suppliers, std::vector<NationOp> &ops) {
+  const auto &supplier_deltas = buffer.SupplierDeltas();
+  const auto &partsupp_deltas = buffer.PartsuppDeltas();
+  struct Bucket {
+    std::vector<std::size_t> deltas; // arrival indexes; partsupp ones follow the supplier ones
+    std::vector<NationOp> ops;
+  };
+  std::map<std::size_t, Bucket> buckets;
+  for (std::size_t i = 0; i < supplier_deltas.size(); ++i)
+    buckets[Q11SupplierBucketIndex(supplier_deltas[i].suppkey)].deltas.push_back(i);
+  for (std::size_t i = 0; i < partsupp_deltas.size(); ++i)
+    buckets[Q11SupplierBucketIndex(partsupp_deltas[i].suppkey)].deltas.push_back(
+        supplier_deltas.size() + i);
+  std::vector<Bucket *> touched;
+  for (auto &entry : buckets)
+    touched.push_back(&entry.second);
+
+  const std::size_t delta_count = supplier_deltas.size() + partsupp_deltas.size();
+  std::atomic<bool> consistent{true};
+  core::ParallelEach(
+      services, touched.size(), delta_count < kBookkeepGrain ? touched.size() : 1,
+      [&](std::size_t i) {
+        auto &bucket = *touched[i];
+        for (const auto delta : bucket.deltas) {
+          const auto log = [&](int32_t nationkey, int64_t partkey, Q11AccT value) {
+            bucket.ops.push_back({delta, nationkey, partkey, value});
+          };
+          if (delta < supplier_deltas.size()) {
+            ApplySupplierDelta(suppliers, supplier_deltas[delta], log);
+          } else if (!ApplyPartsuppDelta(suppliers, partsupp_deltas[delta - supplier_deltas.size()],
+                                         log)) {
+            consistent = false;
+            return;
+          }
+        }
+      });
+  if (!consistent)
+    return false;
+  for (const auto *bucket : touched)
+    ops.insert(ops.end(), bucket->ops.begin(), bucket->ops.end());
+  std::stable_sort(ops.begin(), ops.end(),
+                   [](const NationOp &a, const NationOp &b) { return a.delta < b.delta; });
+  return true;
+}
 
 } // namespace
 
@@ -897,79 +1020,16 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
       return rebuild();
   }
 
-  // Per-supplier bookkeeping is serial; the nations' own work is only logged
-  // here and applied nation by nation afterwards.
-  auto nation_apply = [&](int32_t nationkey, int64_t partkey,
-                          Q11AccT signed_value) {
-    const auto it = nations.find(nationkey);
-    if (it == nations.end())
-      return; // supplier's nation has no nation row: contributes nowhere
-    it->second.ops.emplace_back(partkey, signed_value);
-  };
-
+  // The nations' own work is only logged here and applied nation by nation
+  // afterwards.
   SupplierWork suppliers(metadata->supplier_buckets);
-
-  // Supplier deltas first: contributions are tracked per supplier, so a
-  // supplier insert/delete/nation move only touches that supplier's parts.
-  for (const auto &delta : buffer.SupplierDeltas()) {
-    if (delta.has_old) {
-      const auto *entry = suppliers.Find(delta.suppkey);
-      if (entry && entry->has_supplier) {
-        for (const auto &part : entry->parts)
-          nation_apply(entry->nationkey, part.partkey,
-                       -static_cast<Q11AccT>(part.value));
-        auto &mutable_entry = suppliers.Mut(delta.suppkey);
-        mutable_entry.has_supplier = false;
-        if (mutable_entry.parts.empty())
-          suppliers.Erase(delta.suppkey);
-      }
-    }
-    if (delta.has_new) {
-      const auto *existing = suppliers.Find(delta.suppkey);
-      if (existing && existing->has_supplier) {
-        // Duplicate insert (should not happen): detach old contribution.
-        for (const auto &part : existing->parts)
-          nation_apply(existing->nationkey, part.partkey,
-                       -static_cast<Q11AccT>(part.value));
-      }
-      auto &entry = suppliers.Mut(delta.suppkey);
-      entry.nationkey = delta.new_nationkey;
-      entry.has_supplier = true;
-      for (const auto &part : entry.parts)
-        nation_apply(entry.nationkey, part.partkey,
-                     static_cast<Q11AccT>(part.value));
-    }
-  }
-
-  for (const auto &delta : buffer.PartsuppDeltas()) {
-    const int64_t signed_raw =
-        static_cast<int64_t>(delta.sign) * static_cast<int64_t>(delta.value);
-    const auto *existing = suppliers.Find(delta.suppkey);
-    if (!existing && delta.sign < 0)
-      return rebuild();
-    auto &entry = suppliers.Mut(delta.suppkey);
-    auto pos = std::lower_bound(
-        entry.parts.begin(), entry.parts.end(), delta.partkey,
-        [](const Q11SupplierPart &part, int64_t key) {
-          return part.partkey < key;
-        });
-    if (pos != entry.parts.end() && pos->partkey == delta.partkey) {
-      pos->value += signed_raw;
-      pos->count += delta.sign;
-      if (pos->count < 0)
-        return rebuild();
-      if (pos->count == 0)
-        entry.parts.erase(pos);
-    } else {
-      if (delta.sign < 0)
-        return rebuild();
-      entry.parts.insert(pos, Q11SupplierPart{delta.partkey, signed_raw, 1});
-    }
-    if (entry.has_supplier)
-      nation_apply(entry.nationkey, delta.partkey,
-                   static_cast<Q11AccT>(delta.sign) * delta.value);
-    if (entry.parts.empty() && !entry.has_supplier)
-      suppliers.Erase(delta.suppkey);
+  std::vector<NationOp> nation_ops;
+  if (!BookkeepSuppliers(services, buffer, suppliers, nation_ops))
+    return rebuild();
+  for (const auto &op : nation_ops) {
+    const auto it = nations.find(op.nationkey);
+    if (it != nations.end()) // a nation without a nation row contributes nowhere
+      it->second.ops.emplace_back(op.partkey, op.value);
   }
 
   // Nations are independent: each applies its own ops in arrival order.

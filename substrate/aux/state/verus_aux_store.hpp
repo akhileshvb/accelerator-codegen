@@ -1,7 +1,6 @@
+// The store-protocol switch for Verus accelerators.
 #pragma once
 
-// The store-protocol switch for Verus accelerators.
-//
 // A Verus accelerator's state can live in either store:
 //   * the C++ VersionedAuxStore (the default): the module hands it opaque
 //     payloads, as every C++ accelerator does;

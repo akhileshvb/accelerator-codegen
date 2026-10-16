@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// The engine-neutral versioned aux-state store and its writer-preferring lock.
 #pragma once
 
 #include <atomic>
@@ -8,13 +9,13 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <shared_mutex>
-
-#include <pthread.h>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <pthread.h>
 
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/state/partition_key.hpp"
@@ -54,7 +55,7 @@ private:
 //
 // Epochs are the engine's: a snapshot epoch comes from
 // AuxEngineServices::CurrentVisibility, a commit's epoch from the store's
-// EpochProvider (see stateful/core/README.md for each engine).
+// EpochProvider (see substrate/aux/core/README.md for each engine).
 //   * kNewestSnapshot as a reader's epoch: "no snapshot", read the newest. Epoch 0
 //     is a snapshot that sees no commit: it selects only a kAllSnapshots version.
 //   * kAllSnapshots (0) as a version's epoch: current for every snapshot
@@ -248,10 +249,13 @@ private:
   const core::AcceleratorId *OwnerOfLocked(PartitionKey key) const;
 
   Options options;
-  uint64_t pending_wait_micros;
-  // Readers share it (a read changes nothing in the store); writers own it.
+  // `mutex` guards everything below it except the atomics: readers share it
+  // (a read changes nothing), writers own it. A leaf lock: the epoch and floor
+  // providers and payload destruction run outside it (payload_bytes inside).
+  // `pending_cv` wakes readers waiting on a pending commit.
   mutable WriterPreferringSharedMutex mutex;
   mutable std::condition_variable_any pending_cv;
+  uint64_t pending_wait_micros;
   std::unordered_map<core::AcceleratorId, Accelerator> accelerators;
   // Which accelerator published each partition key (for reads by partition).
   std::unordered_map<PartitionKey, core::AcceleratorId> owner;

@@ -120,6 +120,25 @@ uint64_t PendingWaitMicros() {
   return value && *value ? std::strtoull(value, nullptr, 10) : kWaitForPublish;
 }
 
+// Reads the Verus store's version at `at` through `read(at, tries, &status)`.
+// A reader of a pending commit waits for the publish, or, with a bounded wait,
+// polls until it. Status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
+template <class Read>
+const void *ReadAwaitingPublish(uint64_t pending_wait_micros, core::Version at, int32_t &status,
+                                const Read &read) {
+  // The verified store's own "newest" is 0 (its engines' epochs are positive).
+  if (at == core::kNewestVersion || Fault() == "ignore_snapshot")
+    at = 0;
+  if (pending_wait_micros == kWaitForPublish)
+    return read(at, std::numeric_limits<uint64_t>::max(), &status);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
+  const void *state = nullptr;
+  do {
+    state = read(at, 64, &status);
+  } while (status == 2 && std::chrono::steady_clock::now() < deadline);
+  return state;
+}
+
 // ---- the Verus store ----
 class KitStore final : public VerusAuxStore {
 public:
@@ -219,21 +238,13 @@ private:
   Epoch CurrentEpoch() const { return epoch ? epoch() : 0; }
   Epoch CurrentFloor() const { return floor ? floor() : std::numeric_limits<Epoch>::max(); }
 
-  // status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
+  // status: see ReadAwaitingPublish.
   std::shared_ptr<const KitImage> Resolve(core::Version at, int32_t &status) const {
     const core::StoreResolveTimer timer;
-    // The verified store's own "newest" is 0 (its engines' epochs are positive).
-    if (at == core::kNewestVersion || Fault() == "ignore_snapshot")
-      at = 0;
-    const void *s = nullptr;
-    if (pending_wait_micros == kWaitForPublish) {
-      s = glue.store.read(store, at, std::numeric_limits<uint64_t>::max(), &status);
-    } else {
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
-      do {
-        s = glue.store.read(store, at, 64, &status);
-      } while (status == 2 && std::chrono::steady_clock::now() < deadline);
-    }
+    const void *s = ReadAwaitingPublish(pending_wait_micros, at, status,
+                                        [&](uint64_t epoch, uint64_t tries, int32_t *st) {
+                                          return glue.store.read(store, epoch, tries, st);
+                                        });
     if (!s)
       return nullptr;
     return std::make_shared<const KitImage>(glue, const_cast<void *>(s), /*shared=*/true);
@@ -369,6 +380,8 @@ private:
     aborted = false;
   }
 
+  // mutex guards the commit assembly below (shared by every accelerator of the
+  // world): a leaf lock, taken inside the accelerators' commit locks.
   std::mutex mutex;
   int participants = 0, finished = 0;
   bool aborted = false;
@@ -505,21 +518,13 @@ private:
     return state;
   }
 
-  // status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
+  // status: see ReadAwaitingPublish.
   std::shared_ptr<const KitImage> Resolve(core::Version at, int32_t &status) const {
     const core::StoreResolveTimer timer;
-    // The verified store's own "newest" is 0 (its engines' epochs are positive).
-    if (at == core::kNewestVersion || Fault() == "ignore_snapshot")
-      at = 0;
-    const void *s = nullptr;
-    if (pending_wait_micros == kWaitForPublish) {
-      s = kit.read(world.store, at, std::numeric_limits<uint64_t>::max(), &status);
-    } else {
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
-      do {
-        s = kit.read(world.store, at, 64, &status);
-      } while (status == 2 && std::chrono::steady_clock::now() < deadline);
-    }
+    const void *s = ReadAwaitingPublish(pending_wait_micros, at, status,
+                                        [&](uint64_t epoch, uint64_t tries, int32_t *st) {
+                                          return kit.read(world.store, epoch, tries, st);
+                                        });
     if (!s)
       return nullptr;
     return std::make_shared<const KitImage>(glue, const_cast<void *>(s), /*shared=*/true, kit.release);
@@ -853,7 +858,7 @@ private:
 
   const Glue &glue;
   Host &host;
-  mutable std::mutex deps_mutex;
+  mutable std::mutex deps_mutex; // guards the lazily resolved deps
   mutable std::vector<core::TableDependency> deps;
 };
 
