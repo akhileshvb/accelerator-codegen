@@ -7,12 +7,13 @@
 //     double, a text hash, a map) built at P = 1, 4, 16 has identical state,
 //     equal to SQL's answer; an inexact double sum repeats bit for bit at a
 //     fixed P.
-//  3. Builds read the build snapshot: rows committed or deleted by another
-//     connection after it are not seen at any P.
+//  3. Builds read the build snapshot, and fallback scans the reader's: rows
+//     committed or deleted by another connection after it are not seen at any P.
 //
 // With a database path argument it also times a lineitem build (7 columns)
 // at P = 1, 8, 16 (read-only use of the database).
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -147,6 +148,27 @@ void ToyModuleIsIdenticalAtAnyPartitionCount() {
   // A fixed partition count is reproducible bit for bit, at any thread count.
   const ToyState a = BuildToy(connection, 16, 2), b = BuildToy(connection, 16, 16);
   CHECK(a == b && std::memcmp(&a.inexact_sum, &b.inexact_sum, sizeof(double)) == 0);
+}
+
+// A fallback scans under the reader's ScanRedirect: every partition reads the
+// reader's snapshot, not rows another connection committed after it.
+void FallbackScansReadTheReadersSnapshot() {
+  ::duckdb::DuckDB db(nullptr);
+  ::duckdb::Connection reader(db), writer(db);
+  MakeToyTable(writer, 1'000'000);
+  const ToyState before = BuildToy(writer, 1);
+  reader.BeginTransaction();
+  CHECK(!reader.Query("SELECT count(*) FROM toy")->HasError());
+  const auto snapshot = static_cast<::duckdb::transaction_t>(DuckDBAuxBackend::SnapshotEpoch(*reader.context));
+  CHECK(!writer.Query("DELETE FROM toy WHERE k % 7 = 0")->HasError());
+  {
+    std::atomic<uint64_t> opened{0};
+    engine::duckdb::ScanRedirect redirect(*db.instance, opened, snapshot);
+    for (const std::size_t partitions : {1, 4, 16}) {
+      CHECK(BuildToy(writer, partitions) == before);
+    }
+  }
+  reader.Rollback();
 }
 
 // A nullable double column: the NULLs are counted exactly, and the inexact
@@ -330,6 +352,7 @@ int main(int argc, char **argv) {
     ToyModuleIsIdenticalAtAnyPartitionCount();
     NullableDoubleSumIsBitIdenticalAtAnyThreadCount();
     BuildsReadTheirSnapshot();
+    FallbackScansReadTheReadersSnapshot();
     if (argc > 1) {
       MeasureLineitem(argv[1]);
     }
