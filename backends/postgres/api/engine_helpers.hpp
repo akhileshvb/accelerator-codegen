@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "substrate/aux/core/aux_txn_buffer.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_cost_model_path.hpp"
@@ -159,21 +160,31 @@ inline pg_base::ColumnSpec TextColumn(const char *name) {
   return {name, pg_base::ColType::Text, 0};
 }
 
-// One row of a ScanColumns batch; indexes are positions in the column list.
+// One row of a build scan batch; indexes are positions in the column list.
 struct BuildRow {
   const pg_base::Batch &batch;
   std::size_t row;
   int64_t Int(int column) const { return batch.I64(column)[row]; }
   int32_t Date(int column) const { return batch.I32(column)[row]; }
   int64_t Decimal(int column) const { return batch.I64(column)[row]; }
-  std::string Text(int column) const {
-    return std::string(batch.Str(column)[row].View());
-  }
+  std::string_view TextView(int column) const { return batch.Str(column)[row].View(); }
+  std::string Text(int column) const { return std::string(TextView(column)); }
   char Char(int column) const {
-    const auto text = batch.Str(column)[row].View();
+    const auto text = TextView(column);
     return text.empty() ? '\0' : text[0];
   }
 };
+
+// A decoded batch of a build scan (core::PartitionedBuild's batch).
+struct BuildBatch {
+  const pg_base::Batch &batch;
+  std::size_t size() const { return batch.count; }
+  BuildRow Row(std::size_t row) const { return BuildRow{batch, row}; }
+};
+
+inline int BuildScanParticipants() {
+  return g_build_scan_participants > 0 ? g_build_scan_participants : pg_base::ParallelParticipants();
+}
 
 // The parallel counterpart of ScanTypedTuples for builds (S8): `row_fn`
 // (BuildRow) sees every row of `table` under the active snapshot, in an
@@ -182,15 +193,53 @@ struct BuildRow {
 template <typename RowFn>
 inline void ScanColumns(const char *table, std::vector<pg_base::ColumnSpec> columns,
                         RowFn &&row_fn) {
-  const int participants = g_build_scan_participants > 0
-                               ? g_build_scan_participants
-                               : pg_base::ParallelParticipants();
   pg_base::ScanTableParallel(
-      pg_base::ScanSpec{table, std::move(columns), {}}, participants,
+      pg_base::ScanSpec{table, std::move(columns), {}}, BuildScanParticipants(),
       [&](const pg_base::Batch &batch) {
         for (std::size_t row = 0; row < batch.count; ++row)
           row_fn(BuildRow{batch, row});
       });
+}
+
+// Bytes of undelivered batches the leader buffers before the partitions
+// consume them.
+inline constexpr std::size_t kPartitionedScanRoundBytes = std::size_t{32} << 20;
+
+// The partitioned scan of a build (S8, core::PartitionedBuild): the table is
+// cut into `partitions` fixed block ranges; PostgreSQL workers scan and encode
+// them and this backend relays the batches. In rounds, pool threads decode and
+// consume the partitions: sink(partition, BuildBatch) is pure C++, one thread
+// per partition at a time, in block order. One partition is ScanColumns'
+// serial-consumer scan on this thread.
+template <typename Sink>
+inline void ScanPartitioned(const accelerator_codegen::aux_state::core::AuxEngineServices &services,
+                            const char *table, std::vector<pg_base::ColumnSpec> columns,
+                            std::size_t partitions, Sink &&sink) {
+  const pg_base::ScanSpec spec{table, std::move(columns), {}};
+  if (partitions <= 1) {
+    pg_base::ScanTableParallel(spec, BuildScanParticipants(),
+                               [&](const pg_base::Batch &batch) { sink(std::size_t{0}, BuildBatch{batch}); });
+    return;
+  }
+  std::vector<pg_base::BatchDecoder> decoders(partitions, pg_base::BatchDecoder(spec));
+  std::vector<std::vector<std::string>> pending(partitions);
+  std::size_t pending_bytes = 0;
+  const auto consume_round = [&] {
+    services.ParallelFor(partitions, [&](std::size_t p) {
+      for (const auto &message : pending[p])
+        sink(p, BuildBatch{decoders[p].Decode(message)});
+      pending[p].clear();
+    });
+    pending_bytes = 0;
+  };
+  pg_base::ScanTablePartitioned(spec, BuildScanParticipants(), partitions,
+                                [&](std::size_t partition, std::string_view message) {
+                                  pending[partition].emplace_back(message);
+                                  pending_bytes += message.size();
+                                  if (pending_bytes >= kPartitionedScanRoundBytes)
+                                    consume_round();
+                                });
+  consume_round();
 }
 
 inline std::string TypedText(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
