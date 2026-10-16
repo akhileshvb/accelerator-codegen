@@ -100,6 +100,33 @@ AcceleratorRuntime::ReadGuard::ReadGuard(bool servable_p, std::unique_ptr<Scope>
 AcceleratorRuntime::ReadGuard::ReadGuard(ReadGuard &&) noexcept = default;
 AcceleratorRuntime::ReadGuard::~ReadGuard() = default;
 
+namespace {
+
+// A mutex the thread that locked it need not unlock: BeginCommit locks on the
+// engine's thread, PublishCommit may unlock on a pool worker.
+class CommitLock {
+public:
+  void lock() {
+    std::unique_lock<std::mutex> guard(mutex_);
+    free_.wait(guard, [&] { return !held_; });
+    held_ = true;
+  }
+  void unlock() {
+    {
+      std::lock_guard<std::mutex> guard(mutex_);
+      held_ = false;
+    }
+    free_.notify_one();
+  }
+
+private:
+  std::mutex mutex_;
+  std::condition_variable free_;
+  bool held_ = false;
+};
+
+} // namespace
+
 struct AcceleratorRuntime::Impl {
   BuildScheduler schedule;
   core::AuxEngineServices *module_services = nullptr;
@@ -109,7 +136,7 @@ struct AcceleratorRuntime::Impl {
 
   // Writer side. Held from BeginCommit to PublishCommit/AbortCommit, and
   // around every store mutation (applies, installs).
-  std::mutex commit_mutex;
+  CommitLock commit_mutex;
   std::mutex build_mutex; // one build at a time
   CommittedChange in_flight; // between BeginCommit and Publish/Abort
   Seq next_seq = 0;
@@ -303,6 +330,7 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
   if (change.empty_commit) {
     return true;
   }
+  const core::ScopedThreadMaintenanceDecisionLog decision_log; // commits of several accelerators publish concurrently
   core::ClearMaintenanceDecisionLog();
   const PhaseScope maintaining(this, Phase::Maintenance);
   try {
@@ -345,7 +373,7 @@ Seq AcceleratorRuntime::BeginCommit(uint64_t txn, std::vector<ColumnarBatchRef> 
 }
 
 void AcceleratorRuntime::PublishCommit(Epoch epoch) {
-  std::unique_lock<std::mutex> commit(impl->commit_mutex, std::adopt_lock);
+  std::unique_lock<CommitLock> commit(impl->commit_mutex, std::adopt_lock);
   auto change = std::move(impl->in_flight);
   change.epoch = epoch;
   bool synced;
@@ -377,7 +405,7 @@ void AcceleratorRuntime::PublishCommit(Epoch epoch) {
 }
 
 void AcceleratorRuntime::AbortCommit() {
-  std::unique_lock<std::mutex> commit(impl->commit_mutex, std::adopt_lock);
+  std::unique_lock<CommitLock> commit(impl->commit_mutex, std::adopt_lock);
   CommittedChange skipped{impl->in_flight.seq, 0, {}, true};
   impl->in_flight = CommittedChange{};
   {
@@ -498,7 +526,7 @@ void AcceleratorRuntime::Collapse(Epoch from, Epoch to) {
 
 void AcceleratorRuntime::Pump(uint64_t gap_timeout_us) {
   {
-    std::lock_guard<std::mutex> commit(impl->commit_mutex);
+    std::lock_guard<CommitLock> commit(impl->commit_mutex);
     ApplyReady();
   }
   impl->state_cv.notify_all();
@@ -532,7 +560,7 @@ bool AcceleratorRuntime::IsSynced() const {
 }
 
 void AcceleratorRuntime::Invalidate() {
-  std::lock_guard<std::mutex> commit(impl->commit_mutex);
+  std::lock_guard<CommitLock> commit(impl->commit_mutex);
   std::lock_guard<std::mutex> lock(impl->state_mutex);
   if (impl->Synced()) {
     MarkStale(0);
@@ -573,7 +601,7 @@ bool AcceleratorRuntime::BuildNow() {
   {
     // No in-process commit may be in flight across the switch: every commit
     // from here on is queued for the catch-up.
-    std::lock_guard<std::mutex> commit(impl->commit_mutex);
+    std::lock_guard<CommitLock> commit(impl->commit_mutex);
     std::lock_guard<std::mutex> lock(impl->state_mutex);
     if (impl->Synced()) {
       return true;
@@ -604,7 +632,7 @@ bool AcceleratorRuntime::BuildNow() {
       throw std::logic_error("auxiliary build did not call Finish(): " + id);
     }
 
-    std::lock_guard<std::mutex> commit(impl->commit_mutex);
+    std::lock_guard<CommitLock> commit(impl->commit_mutex);
     {
       std::lock_guard<std::mutex> lock(impl->state_mutex);
       if (impl->build_invalidated) {

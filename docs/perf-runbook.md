@@ -63,7 +63,7 @@ before calling; `MAINT_THREADS` overrides maintenance only):
 | `ACCEL_AUX_THREADS` | accelerator thread budget (default: affinity-mask size) | N |
 | `ACCEL_AUX_READ_THREADS` | cap for intra-query parallelism in `Execute` | N |
 | `ACCEL_AUX_BUILD_THREADS` | cap for builds | N |
-| `ACCEL_AUX_MAINT_THREADS` | cap for maintenance fork-join (default 1 = serial) | N (`MAINT_THREADS`) |
+| `ACCEL_AUX_MAINT_THREADS` | cap for maintenance fork-join, within one accelerator and across the accelerators of one commit (default 1 = serial) | N (`MAINT_THREADS`) |
 
 Postgres equivalents (GUCs): `accel.threads`, `accel.read_threads`, `accel.build_threads`, `accel.maint_threads` (0 =
 the `accel.threads` budget; maintenance 0 = one); MySQL: `accel_threads`. The baseline tree ignores the `ACCEL_AUX_*`

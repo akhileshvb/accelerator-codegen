@@ -211,9 +211,11 @@ void RuntimeHost::PreCommit(uint64_t txn) {
 }
 
 void RuntimeHost::Commit(uint64_t txn, Epoch epoch) {
-  for (auto *runtime : impl->TakeTxn(txn).staged) {
-    runtime->PublishCommit(epoch);
-  }
+  const auto staged = impl->TakeTxn(txn).staged;
+  // Each accelerator maintains independently; fork-join over the maintenance cap
+  // (1: in id order on this thread).
+  impl->threads.ParallelFor(
+      staged.size(), [&](std::size_t i) { staged[i]->PublishCommit(epoch); }, impl->threads.MaintenanceLimit());
 }
 
 void RuntimeHost::Abort(uint64_t txn) {

@@ -1402,7 +1402,8 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
   // ("RebuildAll:3,ApplyDelta:17": accelerators per action, NoOp left out)
   struct Refresh {
     std::string kind, actions;
-    double us = 0;
+    double us = 0, statement_us = 0, engine_commit_us = 0;
+    std::vector<double> apply_us; // per accelerator, the maintenance of this commit
   };
   const auto refresh = [&]() {
     const auto [kind, sql] = writes.Next();
@@ -1420,6 +1421,9 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
     }
     r.us = Us(t0, Clock::now());
     if (accel) {
+      r.statement_us = timing.statement_us;
+      r.engine_commit_us = timing.engine_commit_us;
+      r.apply_us = timing.pre_commit_us;
       std::map<std::string, int> n;
       for (const auto &a : timing.action)
         if (a != "none" && a != "NoOp")
@@ -1441,7 +1445,25 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
     std::string j = "[";
     for (std::size_t i = 0; i < rs.size(); ++i)
       j += std::string(i ? "," : "") + "{\"kind\":" + Json(rs[i].kind) + ",\"us\":" + std::to_string(rs[i].us) +
-           ",\"actions\":" + Json(rs[i].actions) + "}";
+           ",\"actions\":" + Json(rs[i].actions) +
+           ",\"statement_us\":" + std::to_string(rs[i].statement_us) +
+           ",\"engine_commit_us\":" + std::to_string(rs[i].engine_commit_us) +
+           ",\"apply_us\":" + DoublesJson(rs[i].apply_us) + "}";
+    return j + "]";
+  };
+
+  // each accelerator's runtime counters so far (cumulative over the runs)
+  const auto accel_stats_json = [&]() {
+    std::string j = "[";
+    for (std::size_t i = 0; i < live.size(); ++i) {
+      const auto st = live[i]->Stats();
+      j += std::string(i ? "," : "") + "{\"id\":" + Json(specs[i].id) + ",\"reads_hit\":" + std::to_string(st.reads_hit) +
+           ",\"reads_waited\":" + std::to_string(st.reads_waited) + ",\"reads_fallback\":" + std::to_string(st.reads_fallback) +
+           ",\"builds\":" + std::to_string(st.builds) + ",\"build_us\":" + std::to_string(st.build_us) +
+           ",\"catch_up_commits\":" + std::to_string(st.catch_up_commits) + ",\"commits_applied\":" + std::to_string(st.commits_applied) +
+           ",\"apply_us\":" + std::to_string(st.apply_us) + ",\"gaps\":" + std::to_string(st.gaps) + ",\"last_action\":" +
+           Json(st.last_decision ? accelerator_codegen::aux_state::maintenance::MaintenanceActionName(st.last_decision->staged_action) : "none") + "}";
+    }
     return j + "]";
   };
 
@@ -1541,7 +1563,7 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
               << ",\"refresh_stream_s\":" << refresh_s << ",\"stream_s\":" << DoublesJson(stream_s)
               << ",\"stream_query_us\":" << sq << ",\"throughput_hits\":" << tput_counts.hit
               << ",\"throughput_fallbacks\":" << tput_counts.fallback << ",\"throughput_refresh\":" << refresh_json(tput_rf)
-              << ",\"qphh_at_size\":" << std::sqrt(power * throughput) << ",\"errors\":" << Json(errors.substr(0, 600))
+              << ",\"accel_stats\":" << accel_stats_json() << ",\"qphh_at_size\":" << std::sqrt(power * throughput) << ",\"errors\":" << Json(errors.substr(0, 600))
               << ",\"rss_mb_end\":" << RssMb().first << ",\"rss_mb_peak\":" << RssMb().second << "}" << std::endl;
   }
   return 0;
