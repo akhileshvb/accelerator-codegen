@@ -186,7 +186,7 @@ private:
   void MarkStale(Epoch from);
   bool Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const;
   double UntilServableUs() const;
-  uint64_t WaitWorthUs(Epoch epoch, uint64_t ceiling_us) const;
+  bool WaitWorthIt(Epoch epoch) const;
   bool Collapsed(Epoch epoch) const;
 
   std::shared_ptr<core::AuxQueryModule> module;

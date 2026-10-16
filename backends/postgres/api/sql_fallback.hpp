@@ -22,6 +22,7 @@
 
 extern "C" {
 #include "executor/spi.h"
+#include "nodes/parsenodes.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
 }
@@ -146,9 +147,17 @@ inline void AnswerFromPostgresSql(const char *sql, const core::QueryArguments &a
   if (SPI_connect() != SPI_OK_CONNECT) {
     throw std::runtime_error("SPI_connect failed");
   }
-  const int status = SPI_execute_with_args(sql, static_cast<int>(parameters.types.size()),
-                                           parameters.types.data(), parameters.values.data(),
-                                           parameters.nulls.data(), /*read_only=*/true, 0);
+  // Prepared with CURSOR_OPT_PARALLEL_OK (SPI_execute_with_args plans serially):
+  // the query runs with the parallelism its base SQL would get.
+  SPIPlanPtr plan = SPI_prepare_cursor(sql, static_cast<int>(parameters.types.size()),
+                                       parameters.types.data(), CURSOR_OPT_PARALLEL_OK);
+  if (!plan) {
+    SPI_finish();
+    throw std::runtime_error("fallback SQL did not prepare: " + std::string(SPI_result_code_string(SPI_result)));
+  }
+  const int status =
+      SPI_execute_plan(plan, parameters.values.data(), parameters.nulls.data(), /*read_only=*/true, 0);
+  SPI_freeplan(plan);
   if (status != SPI_OK_SELECT) {
     SPI_finish();
     throw std::runtime_error("fallback SQL failed: " + std::string(SPI_result_code_string(status)));

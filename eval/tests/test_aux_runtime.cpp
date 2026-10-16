@@ -514,6 +514,28 @@ void ReaderStopsWaitingForOverrunBuild() {
   slots.Release();
 }
 
+// A commit shipped but not applied yet is a catch-up, expected at once: the
+// reader waits for it however cheap the SQL is.
+void ReaderWaitsForShippedCommitDespiteCheapSql() {
+  FakeDb db(0);
+  FakeSlots slots(db, /*host_thread=*/true);
+  slots.params.fallback_us = 100; // the SQL: 0.1 ms
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  host.BuildAll();
+  CHECK(ReadAt(runtime, 0, Epoch{0}) == 0);
+  db.commits.emplace_back(1, 7);
+  runtime.OfferCommit(CommittedChange{1, 1, {Insert(7)}, false, false});
+  std::thread applier([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    runtime.Pump();
+    host.RunEngineWork();
+  });
+  CHECK(ReadAt(runtime, 1, Epoch{1}) == 7);
+  applier.join();
+  CHECK(runtime.Stats().reads_fallback == 0);
+}
+
 void ModuleRequestsRebuild() {
   FakeDb db;
   FakeSlots slots(db);
@@ -706,6 +728,7 @@ int main() {
       {"data_scale_scales_the_cap", DataScaleScalesTheCap},
       {"failed_build_releases_readers", FailedBuildReleasesReaders},
       {"reader_weighs_build_against_sql", ReaderWeighsBuildAgainstSql},
+      {"reader_waits_for_shipped_commit", ReaderWaitsForShippedCommitDespiteCheapSql},
       {"reader_waits_for_build_cheaper_than_measured_sql", ReaderWaitsForBuildCheaperThanMeasuredSql},
       {"reader_stops_waiting_for_overrun_build", ReaderStopsWaitingForOverrunBuild},
       {"invalidate_during_build", InvalidateDuringBuild},

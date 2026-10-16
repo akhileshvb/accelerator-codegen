@@ -258,20 +258,20 @@ double AcceleratorRuntime::UntilServableUs() const {
   return estimate > elapsed ? estimate - elapsed : elapsed;
 }
 
-// The most a reader that cannot be served yet should wait (C11): an in-flight
-// commit is always waited out; otherwise only while the state is expected
-// sooner than the query's own SQL would finish (measured, else the cost
-// model's), and then no longer than that. Without estimates yet (the first
-// build has not started): the caller's ceiling. Holds state_mutex.
-uint64_t AcceleratorRuntime::WaitWorthUs(Epoch epoch, uint64_t ceiling_us) const {
+// Whether a reader that cannot be served yet should keep waiting (C11): an
+// in-flight commit always; otherwise only while the state is expected sooner
+// than the query's own SQL would finish (measured, else the cost model's).
+// Without estimates yet (the first build has not started): yes. Holds
+// state_mutex.
+bool AcceleratorRuntime::WaitWorthIt(Epoch epoch) const {
   if (impl->Synced() && epoch >= impl->in_flight_from) {
-    return ceiling_us;
+    return true;
   }
   if (!impl->model) {
-    return ceiling_us;
+    return true;
   }
   const double sql = impl->sql_us > 0 ? impl->sql_us : impl->model->sql_us;
-  return UntilServableUs() < sql ? std::min(ceiling_us, static_cast<uint64_t>(sql)) : 0;
+  return UntilServableUs() < sql;
 }
 
 void AcceleratorRuntime::NoteSqlFallbackUs(double us) {
@@ -330,18 +330,24 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     // The build that was just requested publishes its estimates as it starts.
     constexpr auto kEstimatesWait = std::chrono::milliseconds(50);
     impl->state_cv.wait_for(lock, kEstimatesWait, [&] { return impl->model.has_value(); });
-    const uint64_t wait_us = WaitWorthUs(epoch, options.max_wait_us);
-    if (wait_us == 0) {
-      impl->stats.reads_fallback++;
-      return ReadGuard(false, nullptr);
-    }
     impl->stats.reads_waited++;
-    const auto deadline = Clock::now() + std::chrono::microseconds(wait_us);
-    if (!impl->state_cv.wait_until(lock, deadline, [&] {
-          return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
-                 impl->build_failures != failures;
-        }) ||
-        Collapsed(epoch) || !Servable(epoch, options.require_applied_through)) {
+    // Up to the ceiling, re-weighing in slices: a build that overruns its
+    // estimate stops being worth waiting for.
+    constexpr auto kReweigh = std::chrono::milliseconds(50);
+    const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
+    const auto done = [&] {
+      return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
+             impl->build_failures != failures;
+    };
+    while (!done()) {
+      const auto now = Clock::now();
+      if (now >= deadline || !WaitWorthIt(epoch)) {
+        impl->stats.reads_fallback++;
+        return ReadGuard(false, nullptr);
+      }
+      impl->state_cv.wait_until(lock, std::min(deadline, now + kReweigh), done);
+    }
+    if (Collapsed(epoch) || !Servable(epoch, options.require_applied_through)) {
       impl->stats.reads_fallback++;
       return ReadGuard(false, nullptr);
     }

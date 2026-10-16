@@ -31,7 +31,7 @@ const PostgresQueryCatalogRegistrar kRegistrar(PostgresSharedQueryCatalogEntry
         "WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = $1 "
         "GROUP BY ps_partkey "
         "HAVING SUM(ps_supplycost * ps_availqty) > ( "
-        "SELECT SUM(ps_supplycost * ps_availqty) * $2 "
+        "SELECT SUM(ps_supplycost * ps_availqty) * $2::numeric "
         "FROM partsupp, supplier, nation "
         "WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = $1) "
         "ORDER BY value DESC"

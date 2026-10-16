@@ -63,8 +63,14 @@ const MysqlSharedQueryCatalogEntry &LookupMysqlQuery(const std::string &workload
 
 const MysqlSharedQueryCatalogEntry *FindMysqlQueryByAccelerator(const std::string &accelerator_id) {
   std::lock_guard<std::mutex> lock(EntriesMutex());
+  // A module may name itself <catalog id>_aux.
+  constexpr char kAux[] = "_aux";
+  std::string base = accelerator_id;
+  if (base.size() > sizeof(kAux) - 1 && base.compare(base.size() - (sizeof(kAux) - 1), sizeof(kAux) - 1, kAux) == 0) {
+    base.resize(base.size() - (sizeof(kAux) - 1));
+  }
   for (const auto &e : Entries()) {
-    if (e.accelerator_id && accelerator_id == e.accelerator_id) return &e;
+    if (e.accelerator_id && (accelerator_id == e.accelerator_id || base == e.accelerator_id)) return &e;
   }
   return nullptr;
 }

@@ -34,8 +34,14 @@ const PostgresSharedQueryCatalogEntry &LookupPostgresQuery(const std::string &wo
 }
 
 const PostgresSharedQueryCatalogEntry *FindPostgresQueryByAccelerator(const std::string &accelerator_id) {
+  // A module may name itself <catalog id>_aux.
+  constexpr char kAux[] = "_aux";
+  std::string base = accelerator_id;
+  if (base.size() > sizeof(kAux) - 1 && base.compare(base.size() - (sizeof(kAux) - 1), sizeof(kAux) - 1, kAux) == 0) {
+    base.resize(base.size() - (sizeof(kAux) - 1));
+  }
   for (const auto &[key, entry] : Registry()) {
-    if (entry.accelerator_id && accelerator_id == entry.accelerator_id) return &entry;
+    if (entry.accelerator_id && (accelerator_id == entry.accelerator_id || base == entry.accelerator_id)) return &entry;
   }
   return nullptr;
 }
