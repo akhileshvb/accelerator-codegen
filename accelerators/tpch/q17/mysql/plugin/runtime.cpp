@@ -20,28 +20,35 @@ using namespace detail;
 
 namespace scans {
 
+SplitTable PartsTable() {
+  return {"p_partkey, p_brand, p_container", "part", "", "p_partkey"};
+}
+
+query::TpchQ17PartInput DecodePart(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1), TypedText(cols, 2)};
+}
+
+// Rows with a NULL partkey or quantity never take part in the query.
+SplitTable LineitemsTable() {
+  return {"l_partkey, CAST(ROUND(l_quantity * 100) AS SIGNED), "
+          "CAST(ROUND(IFNULL(l_extendedprice, 0) * 100) AS SIGNED)",
+          "lineitem", "l_partkey IS NOT NULL AND l_quantity IS NOT NULL", "l_orderkey"};
+}
+
+query::TpchQ17LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2)};
+}
+
 void ScanTpchQ17Parts(
     const std::function<void(const query::TpchQ17PartInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT p_partkey, p_brand, p_container FROM part",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ17PartInput{TypedInt(cols, 0),
-                                       TypedText(cols, 1),
-                                       TypedText(cols, 2)};
-      },
-      [&](query::TpchQ17PartInput &&input) { consumer(input); });
+  ScanTypedTuplesDecoded(SelectSql(PartsTable()), DecodePart,
+                         [&](query::TpchQ17PartInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ17Lineitems(
     const std::function<void(const query::TpchQ17LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_partkey, l_quantity, l_extendedprice FROM lineitem",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ17LineitemInput{TypedInt(cols, 0),
-                                           TypedDecimalRaw(cols, 1),
-                                           TypedDecimalRaw(cols, 2)};
-      },
-      [&](query::TpchQ17LineitemInput &&input) { consumer(input); });
+  ScanTypedTuplesDecoded(SelectSql(LineitemsTable()), DecodeLineitem,
+                         [&](query::TpchQ17LineitemInput &&input) { consumer(input); });
 }
 
 // GROUP BY (partkey, quantity), ordered by partkey so the module can assemble
@@ -75,6 +82,26 @@ public:
       const std::function<void(const query::TpchQ17LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ17Lineitems(consumer);
+  }
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ17PartInput &)> &sink)
+      override {
+    ScanTypedTuplesPartitioned(
+        services, scans::PartsTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodePart(cols));
+        });
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ17LineitemInput &)> &sink)
+      override {
+    ScanTypedTuplesPartitioned(
+        services, scans::LineitemsTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeLineitem(cols));
+        });
   }
   bool ScanPartQuantityAggregates(
       const std::function<void(const query::TpchQ17PartQuantityAggregate &)>
