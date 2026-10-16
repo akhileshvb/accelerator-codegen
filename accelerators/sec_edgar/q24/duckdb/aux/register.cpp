@@ -8,8 +8,6 @@
 #include "sec_edgar/q24/layout.hpp"
 #include "sec_edgar/common/duckdb_probes.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
-#include "backends/duckdb/engine/build_scan.hpp"
-#include "substrate/aux/core/partitioned_build.hpp"
 #include "catalog/query_catalog.hpp"
 #include "backends/duckdb/engine/dictionary_id_cache.hpp"
 #include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
@@ -271,22 +269,6 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
                 value.data(), u.data(), ddate.data()});
     }
     Require(!result->HasError(), result->GetError());
-    return true;
-  }
-  bool ScanNumOrphansPartitioned(const core::AuxEngineServices &services, const Q24PreBase &base,
-                                 Q24OrphanAccumulator &orphans) override {
-    orphans = core::PartitionedBuild<Q24OrphanAccumulator>(
-        services, [] { return Q24OrphanAccumulator(); },
-        [&](std::size_t partitions, auto &&sink) {
-          scan::ScanPartitioned(
-              services, connection, "num",
-              {Nullable(TextColumn("adsh")), Nullable(TextColumn("tag")), Nullable(TextColumn("version")),
-               Nullable(TextColumn("uom")), Nullable(DoubleColumn("value")), Nullable(IntColumn("ddate"))},
-              partitions, sink);
-        },
-        [&](Q24OrphanAccumulator &partial, const auto &row) { AddNumOrphan(base, partial, row); },
-        [](Q24OrphanAccumulator &into, Q24OrphanAccumulator &&from) { into.MergeFrom(from); },
-        core::kFloatBuildPartitions);
     return true;
   }
   bool ScanNumOrphans(

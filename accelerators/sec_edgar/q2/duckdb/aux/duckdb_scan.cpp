@@ -8,13 +8,11 @@
 #include <unordered_set>
 
 #include "backends/duckdb/api/aux_query_registry.hpp"
-#include "backends/duckdb/engine/build_scan.hpp"
 #include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
 #include "backends/duckdb/engine/native_scan.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
-#include "substrate/aux/core/partitioned_build.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace scan = ::accelerator_codegen::aux_state::engine::duckdb::scan;
@@ -417,21 +415,6 @@ private:
 
 } // namespace
 
-
-bool SecEdgarQ2DuckdbScan::ScanNumPartitioned(const core::AuxEngineServices &services,
-                                              SecEdgarQ2NumRows &rows) {
-  rows = core::PartitionedBuild<SecEdgarQ2NumRows>(
-      services, [] { return SecEdgarQ2NumRows(); },
-      [&](std::size_t partitions, auto &&sink) {
-        scan::ScanPartitioned(services, connection, "num",
-                              {scan::Nullable(scan::TextColumn("adsh")), scan::Nullable(scan::TextColumn("tag")),
-                               scan::Nullable(scan::TextColumn("uom")), scan::Nullable(scan::DoubleColumn("value"))},
-                              partitions, sink);
-      },
-      [](SecEdgarQ2NumRows &partial, const auto &row) { partial.AddRow(row); },
-      [](SecEdgarQ2NumRows &into, SecEdgarQ2NumRows &&from) { into.Merge(std::move(from)); });
-  return true;
-}
 
 bool SecEdgarQ2DuckdbScan::ScanNumIds(
     SecEdgarQ2KeyMap &keys, const std::function<void(const SecEdgarQ2IdBatch &)> &batch) {

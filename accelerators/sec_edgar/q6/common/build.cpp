@@ -358,11 +358,11 @@ struct SecEdgarQ6Builder::Impl {
     cnt += c;
   }
 
-  void Accumulate(uint32_t hit, uint32_t uom, double hi, double lo, int64_t cnt) {
+  void Accumulate(uint32_t hit, uint32_t uom, double value) {
     HitAgg &a = hit_aggs[hit];
     if (a.uom == uom || a.uom == 0) {
       a.uom = uom;
-      AddTo(a.hi, a.lo, a.cnt, hi, lo, cnt);
+      AddTo(a.hi, a.lo, a.cnt, value, 0.0, 1);
       return;
     }
     const int64_t key = static_cast<int64_t>((static_cast<uint64_t>(hit) << 32) | uom);
@@ -371,7 +371,7 @@ struct SecEdgarQ6Builder::Impl {
       overflow.push_back({hit, uom, 0.0, 0.0, 0});
     }
     Overflow &o = overflow[*ins.first];
-    AddTo(o.hi, o.lo, o.cnt, hi, lo, cnt);
+    AddTo(o.hi, o.lo, o.cnt, value, 0.0, 1);
   }
 };
 
@@ -566,56 +566,9 @@ void SecEdgarQ6Builder::AddNumBatch(const SecEdgarQ6NumBatch &batch) {
       const uint32_t hit = m.cand_hit[k];
       if (hit != kUnknown) {
         const uint32_t i = m.cand[k];
-        m.Accumulate(hit, m.uu[i], batch.value[i], 0.0, 1);
+        m.Accumulate(hit, m.uu[i], batch.value[i]);
       }
     }
-  }
-}
-
-void SecEdgarQ6Builder::AddNum(NumPartial &partial, std::string_view adsh, std::string_view tag,
-                               std::string_view version, std::string_view uom, double value) const {
-  const Impl &m = *impl_;
-  const uint32_t a = FindVia(m.adsh_ix, adsh), t = FindVia(m.tag_ix, tag), v = FindVia(m.ver_ix, version);
-  if (a == 0 || t == 0 || v == 0) {
-    return;
-  }
-  const uint32_t hit = m.hits.Find(m.hits.Home(HitTable::Hash(a, t, v)), a, t, v);
-  if (hit == kUnknown) {
-    return;
-  }
-  partial.Add(hit, uom, value, 0.0, 1);
-}
-
-void SecEdgarQ6Builder::NumPartial::Add(uint32_t hit, std::string_view uom, double add_hi, double add_lo,
-                                        int64_t add_cnt) {
-  auto unit = std::find(uoms.begin(), uoms.end(), uom);
-  if (unit == uoms.end()) {
-    unit = uoms.insert(uoms.end(), std::string(uom));
-  }
-  const auto local = static_cast<uint32_t>(unit - uoms.begin());
-  const auto slot = index.Insert(static_cast<int64_t>((static_cast<uint64_t>(hit) << 32) | local),
-                                 static_cast<uint32_t>(sums.size()));
-  if (slot.second) {
-    sums.push_back({hit, local});
-  }
-  auto &sum = sums[*slot.first];
-  Impl::AddTo(sum.hi, sum.lo, sum.cnt, add_hi, add_lo, add_cnt);
-}
-
-void SecEdgarQ6Builder::NumPartial::Merge(NumPartial &&from) {
-  for (const auto &sum : from.sums) {
-    Add(sum.hit, from.uoms[sum.uom], sum.hi, sum.lo, sum.cnt);
-  }
-}
-
-void SecEdgarQ6Builder::MergeNum(NumPartial &&partial) {
-  Impl &m = *impl_;
-  std::vector<uint32_t> uom_id;
-  for (const auto &name : partial.uoms) {
-    uom_id.push_back(InternVia(m.uom_ix, m.s.uoms, name));
-  }
-  for (const auto &sum : partial.sums) {
-    m.Accumulate(sum.hit, uom_id[sum.uom], sum.hi, sum.lo, sum.cnt);
   }
 }
 

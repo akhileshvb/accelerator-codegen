@@ -25,7 +25,6 @@ public:
       const std::function<void(const SecEdgarQ2ValueCountRow &)> &consumer) override;
   // Native storage scan of num (no SQL, no GROUP BY): dictionary-compressed
   // string columns are mapped to ids once per dictionary entry.
-  bool ScanNumPartitioned(const core::AuxEngineServices &services, SecEdgarQ2NumRows &rows) override;
   bool ScanNumIds(SecEdgarQ2KeyMap &keys,
                   const std::function<void(const SecEdgarQ2IdBatch &)> &batch) override;
   void LookupNumValueCounts(

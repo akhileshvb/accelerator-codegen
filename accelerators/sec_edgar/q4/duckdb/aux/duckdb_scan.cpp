@@ -8,9 +8,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "backends/duckdb/engine/build_scan.hpp"
 #include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
-#include "substrate/aux/core/partitioned_build.hpp"
 #include "backends/duckdb/engine/native_scan_compat.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -210,7 +208,7 @@ template <typename Fn> void InTransaction(::duckdb::Connection &connection, Fn &
 
 } // namespace
 
-bool SecEdgarQ4DuckDbScan::BuildFull(const core::AuxEngineServices &services, q4::Builder &b) const {
+bool SecEdgarQ4DuckDbScan::BuildFull(q4::Builder &b) const {
   if (!connection.context) return false;
   auto &context = *connection.context;
   InTransaction(connection, [&] {
@@ -283,18 +281,33 @@ bool SecEdgarQ4DuckDbScan::BuildFull(const core::AuxEngineServices &services, q4
         b.AddPre(ia.data(), it.data(), iv.data(), ix.data(), n);
       });
     }
-    using Partial = q4::Builder::NumPartial;
-    b.MergeNum(core::PartitionedBuild<Partial>(
-        services, [] { return Partial{}; },
-        [&](std::size_t partitions, auto &&sink) {
-          engine::duckdb::scan::ScanPartitioned(services, connection, "num",
-                                {engine::duckdb::scan::Nullable(engine::duckdb::scan::TextColumn("adsh")), engine::duckdb::scan::Nullable(engine::duckdb::scan::TextColumn("tag")),
-                                 engine::duckdb::scan::Nullable(engine::duckdb::scan::TextColumn("version")), engine::duckdb::scan::Nullable(engine::duckdb::scan::TextColumn("uom")),
-                                 engine::duckdb::scan::Nullable(engine::duckdb::scan::DoubleColumn("value"))},
-                                partitions, sink);
-        },
-        [&](Partial &partial, const auto &row) { q4::AddNumRow(b, partial, row); },
-        [](Partial &into, Partial &&from) { into.Merge(std::move(from)); }, core::kFloatBuildPartitions));
+    {
+      const auto spec = Spec("num", {{"adsh", Col::Str},
+                                     {"tag", Col::Str},
+                                     {"version", Col::Str},
+                                     {"uom", Col::Str},
+                                     {"value", Col::Dbl}});
+      IdColumn ca, ct, cv, cu;
+      ScanNativeBaseTable(context, spec, [&](::duckdb::DataChunk &chunk) {
+        const auto n = chunk.size();
+        ca.Map(chunk.data[0], n, adsh_id, ia.data());
+        ct.Map(chunk.data[1], n, tag_id, it.data());
+        cv.Map(chunk.data[2], n, ver_id, iv.data());
+        cu.Map(chunk.data[3], n, uom_id, ix.data());
+        ::duckdb::UnifiedVectorFormat f;
+        chunk.data[4].ToUnifiedFormat(n, f);
+        const double *x = Data<double>(f);
+        for (::duckdb::idx_t i = 0; i < n; ++i) {
+          const auto idx = f.sel->get_index(i);
+          if (f.validity.RowIsValid(idx)) {
+            xs[i] = x[idx];
+          } else {
+            ix[i] = kQ4None; // value IS NULL: no contribution
+          }
+        }
+        b.AddNum(ia.data(), it.data(), iv.data(), ix.data(), xs.data(), n);
+      });
+    }
   });
   return true;
 }

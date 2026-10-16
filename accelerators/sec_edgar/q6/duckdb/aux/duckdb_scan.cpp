@@ -1,15 +1,11 @@
 #include "sec_edgar/q6/duckdb/aux/duckdb_scan.hpp"
 
-#include "sec_edgar/q6/common/build.hpp"
-
 #include <map>
 #include <stdexcept>
 #include <string>
 
 #include "backends/duckdb/api/aux_query_registry.hpp"
-#include "backends/duckdb/engine/build_scan.hpp"
 #include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
-#include "substrate/aux/core/partitioned_build.hpp"
 #include "duckdb.hpp"
 #include "duckdb/main/client_context.hpp"
 
@@ -194,25 +190,6 @@ bool SecEdgarQ6DuckdbScan::ScanPreBatches(
                plabel.Load(chunk.data[4], n, batch.plabel);
                consumer(batch);
              });
-  return true;
-}
-
-bool SecEdgarQ6DuckdbScan::ScanNumPartitioned(const core::AuxEngineServices &services,
-                                              SecEdgarQ6Builder &builder) {
-  using namespace engine::duckdb::scan;
-  using Partial = SecEdgarQ6Builder::NumPartial;
-  builder.MergeNum(core::PartitionedBuild<Partial>(
-      services, [] { return Partial{}; },
-      [&](std::size_t partitions, auto &&sink) {
-        ScanPartitioned(services, connection, "num",
-                        {Nullable(TextColumn("adsh")), Nullable(TextColumn("tag")),
-                         Nullable(TextColumn("version")), Nullable(TextColumn("uom")),
-                         Nullable(DoubleColumn("value"))},
-                        partitions, sink);
-      },
-      [&](Partial &partial, const auto &row) { AddNumRow(builder, partial, row); },
-      [](Partial &into, Partial &&from) { into.Merge(std::move(from)); },
-      core::kFloatBuildPartitions));
   return true;
 }
 

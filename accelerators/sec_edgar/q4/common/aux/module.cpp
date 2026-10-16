@@ -484,7 +484,7 @@ SecEdgarQ4State SecEdgarQ4Module::BuildState(core::AuxEngineServices &services) 
     throw std::logic_error("SEC EDGAR Q4 requires a typed initial scan source");
   }
   q4::Builder builder;
-  if (!initial_scan->BuildFull(services, builder)) {
+  if (!initial_scan->BuildFull(builder)) {
     SecEdgarQ4BridgeFilter filter;
     initial_scan->ScanBridge(filter, [&](const SecEdgarQ4BridgeRow &row) { builder.AddBridgeRow(row); });
   }

@@ -778,9 +778,6 @@ struct Builder::Impl {
 
   size_t Home(uint64_t key1) const { return static_cast<size_t>(BHash(key1) >> shift); }
   void Accumulate(uint64_t k1, double x, uint32_t u);
-  static constexpr size_t kNoSlot = ~size_t{0};
-  size_t SlotOf(uint64_t k1) const;
-  void AccumulateAt(size_t j, uint32_t u, double hi, double lo, int64_t nc);
   bool num_started = false;
   std::unordered_map<uint64_t, SecEdgarQ4PreOverflow> over; // by pre key
   core::FlatHashMap<BAcc> extra;                             // (slot << 10 | uom) -> acc
@@ -1183,64 +1180,20 @@ void Builder::AddPre(const uint32_t *a, const uint32_t *t, const uint32_t *v, co
 }
 
 void Builder::Impl::Accumulate(uint64_t k1, double x, uint32_t u) {
-  const size_t j = SlotOf(k1);
-  if (j != kNoSlot) AccumulateAt(j, u, x, 0.0, 1);
-}
-
-size_t Builder::Impl::SlotOf(uint64_t k1) const {
   size_t j = Home(k1);
   while (table[j].key1 && table[j].key1 != k1) j = (j + 1) & mask;
-  return table[j].key1 ? j : kNoSlot; // no pre row for the key
-}
-
-void Builder::Impl::AccumulateAt(size_t j, uint32_t u, double hi, double lo, int64_t nc) {
+  if (!table[j].key1) return; // no pre row for the key
   auto &e = table[j];
   const uint32_t u1 = u + 1;
   if (e.u1 == u1 || e.u1 == 0) {
     e.u1 = u1;
-    Q4DDAdd(e.hi, e.lo, hi);
-    if (lo != 0.0) Q4DDAdd(e.hi, e.lo, lo);
-    e.nc += static_cast<uint32_t>(nc);
+    Q4DDAdd(e.hi, e.lo, x);
+    ++e.nc;
   } else {
     auto &acc = extra[static_cast<int64_t>((static_cast<uint64_t>(j) << 10) | u)];
-    Q4DDAdd(acc.hi, acc.lo, hi);
-    if (lo != 0.0) Q4DDAdd(acc.hi, acc.lo, lo);
-    acc.nc += nc;
+    Q4DDAdd(acc.hi, acc.lo, x);
+    ++acc.nc;
   }
-}
-
-void Builder::NumPartial::Add(uint64_t slot, std::string_view uom, double hi, double lo, int64_t nc) {
-  auto unit = std::find(uoms.begin(), uoms.end(), uom);
-  if (unit == uoms.end()) unit = uoms.insert(uoms.end(), std::string(uom));
-  const auto local = static_cast<uint32_t>(unit - uoms.begin());
-  const auto at = index.Insert(static_cast<int64_t>((slot << 10) | local), static_cast<uint32_t>(sums.size()));
-  if (at.second) sums.push_back({slot, local});
-  auto &sum = sums[*at.first];
-  Q4DDAdd(sum.hi, sum.lo, hi);
-  if (lo != 0.0) Q4DDAdd(sum.hi, sum.lo, lo);
-  sum.nc += nc;
-}
-
-void Builder::NumPartial::Merge(NumPartial &&from) {
-  for (const auto &sum : from.sums) Add(sum.slot, from.uoms[sum.uom], sum.hi, sum.lo, sum.nc);
-}
-
-void Builder::AddNum(NumPartial &partial, std::string_view adsh, std::string_view tag,
-                     std::string_view version, std::string_view uom, double value) const {
-  const auto &m = *impl_;
-  const uint32_t a = AdshId(adsh.data(), adsh.size()), t = TagId(tag.data(), tag.size()),
-                 v = VerId(version.data(), version.size());
-  if (m.table.empty() || a == kQ4None || t == kQ4None || v == kQ4None) return;
-  const size_t slot = m.SlotOf(static_cast<uint64_t>(Q4PreKey(a, t, v)) + 1);
-  if (slot != Impl::kNoSlot) partial.Add(slot, uom, value, 0.0, 1);
-}
-
-void Builder::MergeNum(NumPartial &&partial) {
-  auto &m = *impl_;
-  m.num_started = true;
-  std::vector<uint32_t> uom_id;
-  for (const auto &name : partial.uoms) uom_id.push_back(UomId(name.data(), name.size()));
-  for (const auto &sum : partial.sums) m.AccumulateAt(sum.slot, uom_id[sum.uom], sum.hi, sum.lo, sum.nc);
 }
 
 void Builder::AddNum(const uint32_t *a, const uint32_t *t, const uint32_t *v, const uint32_t *u,

@@ -22,7 +22,7 @@ public:
   void ScanDirty(const SecEdgarQ4BridgeFilter &, SecEdgarQ4DirtyRows &) const override;
   // sub / tag through SQL, then ONE native storage scan of pre and of num
   // (dictionary-coded strings are mapped to ids once per dictionary entry).
-  bool BuildFull(const core::AuxEngineServices &, q4::Builder &) const override;
+  bool BuildFull(q4::Builder &) const override;
 
   ::duckdb::Connection &connection;
 };

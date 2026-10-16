@@ -137,29 +137,6 @@ public:
               const double *x, size_t n);
   void AddBridgeRow(const SecEdgarQ4BridgeRow &row);
 
-  // Partitioned num phase (core::PartitionedBuild, after AddPre*): one partial
-  // per partition holds double-double sums per (pre key slot, unit of
-  // measure); the partials merge in partition order, so with a fixed
-  // partition count the sums do not depend on the thread count.
-  struct NumPartial {
-    struct Sum {
-      uint64_t slot;
-      uint32_t uom; // index into `uoms`
-      double hi = 0.0, lo = 0.0;
-      int64_t nc = 0;
-    };
-    std::vector<std::string> uoms;
-    core::FlatHashMap<uint32_t> index; // (slot << 10 | uom) -> index into sums
-    std::vector<Sum> sums;
-
-    void Add(uint64_t slot, std::string_view uom, double hi, double lo, int64_t nc);
-    void Merge(NumPartial &&from);
-  };
-  // Reads the cohort, tag and pre tables only; a row without NULL columns.
-  void AddNum(NumPartial &partial, std::string_view adsh, std::string_view tag,
-              std::string_view version, std::string_view uom, double value) const;
-  void MergeNum(NumPartial &&partial);
-
   SecEdgarQ4State Finish(const core::AuxEngineServices &services);
 
   struct Impl;
@@ -167,15 +144,6 @@ public:
 private:
   std::unique_ptr<Impl> impl_;
 };
-
-// Adds a row of a partitioned num scan (columns: adsh, tag, version, uom, value;
-// all nullable). `Row` is the engine's build scan row (IsNull, TextView, Double).
-template <class Row> void AddNumRow(const Builder &builder, Builder::NumPartial &partial, const Row &row) {
-  for (int column = 0; column < 5; ++column) {
-    if (row.IsNull(column)) return; // cannot join or contribute
-  }
-  builder.AddNum(partial, row.TextView(0), row.TextView(1), row.TextView(2), row.TextView(3), row.Double(4));
-}
 
 std::shared_ptr<const SecEdgarQ4Result>
 ComputeResult(const core::AuxEngineServices &services, const SecEdgarQ4Groups &groups,
