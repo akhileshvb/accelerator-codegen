@@ -813,21 +813,10 @@ TpchQ18State TpchQ18Module::BuildState(core::AuxEngineServices &services) const 
       state.hot.Upsert(orderkey, 1);
   }
   // Names are decoded in partitions; the COW name map is filled serially.
-  using Customers = std::vector<TpchQ18CustomerInput>;
-  const Customers customers = core::PartitionedBuild<Customers>(
-      services, [] { return Customers{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanCustomersPartitioned(
-            services, parts, [&](std::size_t partition, const TpchQ18CustomerInput &input) {
-              sink(partition, OneRowBatch<TpchQ18CustomerInput>{input});
-            });
-      },
-      [](Customers &into, const TpchQ18CustomerInput &input) { into.push_back(input); },
-      [](Customers &into, Customers &&from) {
-        into.insert(into.end(), std::make_move_iterator(from.begin()),
-                    std::make_move_iterator(from.end()));
-      },
-      partitions);
+  const auto customers = CollectRows<TpchQ18CustomerInput>(
+      services, [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanCustomersPartitioned(services, parts, sink);
+      });
   for (const auto &customer : customers)
     state.customer_names.Upsert(customer.key, customer.name);
   return state;

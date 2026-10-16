@@ -344,12 +344,6 @@ bool ApplyReturnedLineitem(TpchQ10State &s, int64_t orderkey, int64_t volume,
 // The scans only decode and encode rows on the build threads; the state's
 // blob maps are filled serially from the merged rows, in table order.
 
-template <class Row> void AppendRows(std::vector<Row> &into, std::vector<Row> &&from) {
-  into.insert(into.end(), std::make_move_iterator(from.begin()),
-              std::make_move_iterator(from.end()));
-  from = {};
-}
-
 struct EncodedCustomer {
   int64_t custkey = 0;
   int32_t nationkey = 0;

@@ -225,11 +225,6 @@ struct OrdersPiece {
 // Merging keeps the pieces apart: renumbering their rows would be a serial pass.
 using OrderPieces = std::vector<OrdersPiece>;
 
-void AppendPieces(OrderPieces &into, OrderPieces &&from) {
-  into.insert(into.end(), std::make_move_iterator(from.begin()),
-              std::make_move_iterator(from.end()));
-}
-
 struct BucketBuild {
   TpchQ4OrderTable orders;
   TreeCells cells;
@@ -759,7 +754,7 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
             });
       },
       [](OrderPieces &into, const TpchQ4OrderInput &input) { into.front().Add(input); },
-      AppendPieces, partitions);
+      AppendRows<OrdersPiece>, partitions);
 
   TpchQ4State state;
   std::vector<std::vector<uint32_t>> renumber;

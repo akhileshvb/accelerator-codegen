@@ -612,11 +612,6 @@ std::size_t KeyBucket(int64_t key) {
   return (Ids::IsDense(key) ? id / Ids::kChunkSize : id) % kBuildBuckets;
 }
 
-template <class T> void AppendAll(std::vector<T> &into, std::vector<T> &&from) {
-  into.insert(into.end(), std::make_move_iterator(from.begin()),
-              std::make_move_iterator(from.end()));
-}
-
 // The part rows of one scan partition, with the partition's own type and
 // manufacturer dictionaries (partitions cannot share one without locking).
 struct PartRow {
@@ -697,7 +692,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
       [](std::vector<PartPiece> &into, const TpchQ2PartInput &input) {
         into.front().Add(input);
       },
-      AppendAll<PartPiece>, partitions);
+      AppendRows<PartPiece>, partitions);
   std::vector<std::vector<uint32_t>> type_ids, mfgr_ids;
   for (const auto &piece : pieces) {
     type_ids.push_back(GlobalIds(piece.types, *state.types));
@@ -724,7 +719,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
       [](std::vector<TpchQ2SupplierInput> &into, const TpchQ2SupplierInput &input) {
         into.push_back(input);
       },
-      AppendAll<TpchQ2SupplierInput>, partitions);
+      AppendRows<TpchQ2SupplierInput>, partitions);
   for (const auto &supplier : suppliers)
     state.SetSupplier(supplier.key, supplier);
 

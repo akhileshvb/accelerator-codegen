@@ -92,27 +92,6 @@ bool ReadPartsupp(const core::AuxRow &row, TpchQ16PartsuppInput &out,
   return skip || (IntCell(row, 0, out.partkey) && IntCell(row, 1, out.suppkey));
 }
 
-// All rows of a partitioned scan, in partition order: the scan decodes them on
-// pool threads, the caller applies them to the state serially.
-template <class Input, class Scan>
-std::vector<Input> CollectRows(const core::AuxEngineServices &services,
-                               Scan &&scan) {
-  using Rows = std::vector<Input>;
-  return core::PartitionedBuild<Rows>(
-      services, [] { return Rows{}; },
-      [&](std::size_t partitions, auto &&sink) {
-        scan(partitions, [&](std::size_t partition, const Input &input) {
-          sink(partition, OneRowBatch<Input>{input});
-        });
-      },
-      [](Rows &into, const Input &input) { into.push_back(input); },
-      [](Rows &into, Rows &&from) {
-        into.insert(into.end(), std::make_move_iterator(from.begin()),
-                    std::make_move_iterator(from.end()));
-      },
-      BuildPartitions(services));
-}
-
 uint32_t Intern(std::shared_ptr<core::StringDict> &dict,
                 const std::string &value) {
   const uint32_t id = dict->Find(value);

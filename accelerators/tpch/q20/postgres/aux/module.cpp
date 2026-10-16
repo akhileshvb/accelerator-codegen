@@ -717,22 +717,11 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
     state->suppliers.Upsert(input.key, {input.name, input.address, input.nationkey});
   });
   // Names are decoded in partitions; the COW name column is filled serially.
-  using Parts = std::vector<TpchQ20PartInput>;
   const std::size_t partitions = BuildPartitions(services);
-  const Parts parts = core::PartitionedBuild<Parts>(
-      services, [] { return Parts{}; },
-      [&](std::size_t parts_count, auto &&sink) {
-        initial_scan->ScanPartsPartitioned(
-            services, parts_count, [&](std::size_t partition, const TpchQ20PartInput &input) {
-              sink(partition, OneRowBatch<TpchQ20PartInput>{input});
-            });
-      },
-      [](Parts &into, const TpchQ20PartInput &input) { into.push_back(input); },
-      [](Parts &into, Parts &&from) {
-        into.insert(into.end(), std::make_move_iterator(from.begin()),
-                    std::make_move_iterator(from.end()));
-      },
-      partitions);
+  const auto parts = CollectRows<TpchQ20PartInput>(
+      services, [&](std::size_t parts_count, auto &&sink) {
+        initial_scan->ScanPartsPartitioned(services, parts_count, sink);
+      });
   for (const auto &part : parts)
     state->part_names.Set(part.key, part.name);
 

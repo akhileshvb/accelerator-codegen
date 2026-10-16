@@ -961,10 +961,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
       [](KeyedNames &into, const TpchQ9PartInput &input) {
         into.emplace_back(input.partkey, input.name);
       },
-      [](KeyedNames &into, KeyedNames &&from) {
-        into.insert(into.end(), std::make_move_iterator(from.begin()),
-                    std::make_move_iterator(from.end()));
-      },
+      AppendRows<std::pair<int64_t, std::string>>,
       partitions);
   for (const auto &[partkey, name] : part_names)
     state->part_names.Set(partkey, name);

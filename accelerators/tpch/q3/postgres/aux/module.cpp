@@ -802,10 +802,7 @@ TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
                          TpchQ3State::Prepare(join.Record(rank))});
         }
       },
-      [](std::vector<Prepared> &into, std::vector<Prepared> &&from) {
-        into.insert(into.end(), std::make_move_iterator(from.begin()),
-                    std::make_move_iterator(from.end()));
-      });
+      AppendRows<Prepared>);
 
   TpchQ3State state;
   for (const Prepared &p : prepared)
