@@ -147,9 +147,9 @@ struct TpchQ16State {
   // Groups containing any part that lists one of `suppliers` become dirty.
   void MarkGroupsOfSuppliers(const core::FlatHashMap<uint8_t> &suppliers);
   // Recompute `distinct` of every dirty group.
-  void RecomputeDirty();
+  void RecomputeDirty(const core::AuxEngineServices &services);
   // Recompute every group (after a bulk load).
-  void RecomputeAll();
+  void RecomputeAll(const core::AuxEngineServices &services);
 
   std::size_t MemoryBytes() const;
 
@@ -159,6 +159,9 @@ struct TpchQ16State {
 private:
   uint32_t GroupId(const TpchQ16PartInput &part);
   int64_t CountDistinct(uint32_t gid) const;
+  std::vector<int64_t> CountDistinctOf(
+      const core::AuxEngineServices &services, std::size_t n,
+      const std::function<uint32_t(std::size_t)> &group_at) const;
   void MarkDirty(uint32_t gid) {
     if (track_dirty)
       dirty.push_back(gid);

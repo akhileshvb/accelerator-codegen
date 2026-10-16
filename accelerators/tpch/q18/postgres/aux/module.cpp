@@ -1,5 +1,6 @@
 #include "tpch/q18/postgres/aux/module.hpp"
 #include "tpch/q18/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -15,6 +16,9 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
+
+// Buckets of the build's lineitem rows (by order).
+constexpr std::size_t kBuildBuckets = 64;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -386,9 +390,10 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ18Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ18TxnBuffer>();
 }
 
-void TpchQ18Module::Build(core::AuxEngineServices &,
+void TpchQ18Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  const auto typed_state = std::make_shared<const TpchQ18State>(BuildState());
+  const auto typed_state =
+      std::make_shared<const TpchQ18State>(BuildState(services));
   builder.Write(core::StateImage::Make(
       TpchQ18Layout::kAccelerator, TpchQ18Layout::kOrderQuantitySums, 0,
       MakeStateImage(typed_state)));
@@ -637,21 +642,15 @@ void TpchQ18Module::ExecuteFallback(core::AuxEngineServices &,
                                 ? std::numeric_limits<int64_t>::min()
                                 : bound.raw;
 
+  std::unordered_map<int64_t, int64_t> sums;
+  initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
+    sums[input.orderkey] += input.quantity_raw;
+  });
   std::unordered_map<int64_t, int64_t> qualifying; // orderkey -> sum
-  const bool aggregated = initial_scan->ScanOrderQuantityAggregates(
-      [&](const TpchQ18OrderQuantityAggregate &agg) {
-        if (agg.line_count > 0 && agg.quantity_sum_raw > threshold)
-          qualifying[agg.orderkey] = agg.quantity_sum_raw;
-      });
-  if (!aggregated) {
-    std::unordered_map<int64_t, int64_t> sums;
-    initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
-      sums[input.orderkey] += input.quantity_raw;
-    });
-    for (const auto &[orderkey, sum] : sums)
-      if (sum > threshold)
-        qualifying[orderkey] = sum;
-  }
+  for (const auto &[orderkey, sum] : sums)
+    if (sum > threshold)
+      qualifying[orderkey] = sum;
+  sums = {};
 
   std::vector<TpchQ18OutputRow> rows;
   if (!qualifying.empty()) {
@@ -671,37 +670,93 @@ void TpchQ18Module::ExecuteFallback(core::AuxEngineServices &,
   EmitRows(std::move(rows), nullptr, sink);
 }
 
-TpchQ18State TpchQ18Module::BuildState() const {
+namespace {
+
+struct OrderQuantity {
+  int64_t orderkey;
+  int64_t quantity_raw;
+};
+
+// The build's rows of the orders whose key falls into one bucket.
+struct BuildBucket {
+  std::vector<OrderQuantity> lineitems;
+  std::vector<TpchQ18OrderInput> orders;
+};
+
+struct BucketRecords {
+  std::vector<std::pair<int64_t, TpchQ18OrderRec>> records;
+  std::vector<int64_t> hot;
+};
+
+// The record of every order of the bucket (its orders row, SUM(l_quantity) and
+// COUNT(*) of its lineitems) and which of them are hot.
+BucketRecords BuildRecords(BuildBucket &bucket) {
+  std::sort(bucket.lineitems.begin(), bucket.lineitems.end(),
+            [](const OrderQuantity &a, const OrderQuantity &b) {
+              return a.orderkey < b.orderkey;
+            });
+  std::stable_sort(bucket.orders.begin(), bucket.orders.end(),
+                   [](const TpchQ18OrderInput &a, const TpchQ18OrderInput &b) {
+                     return a.key < b.key;
+                   });
+  BucketRecords out;
+  auto line = bucket.lineitems.begin();
+  auto order = bucket.orders.begin();
+  while (line != bucket.lineitems.end() || order != bucket.orders.end()) {
+    constexpr int64_t kEnd = std::numeric_limits<int64_t>::max();
+    const int64_t key = std::min(line != bucket.lineitems.end() ? line->orderkey : kEnd,
+                                 order != bucket.orders.end() ? order->key : kEnd);
+    TpchQ18OrderRec rec;
+    for (; line != bucket.lineitems.end() && line->orderkey == key; ++line) {
+      rec.sum_raw += line->quantity_raw;
+      ++rec.flags_lines;
+    }
+    for (; order != bucket.orders.end() && order->key == key; ++order) {
+      rec.custkey = order->custkey; // a repeated key keeps the last row
+      rec.orderdate_days = order->orderdate_days;
+      rec.totalprice_raw = order->totalprice_raw;
+      rec.flags_lines |= TpchQ18OrderRec::kHasOrder;
+    }
+    out.records.emplace_back(key, rec);
+    if (rec.Qualifies(TpchQ18State::kHotFloorRaw))
+      out.hot.push_back(key);
+  }
+  return out;
+}
+
+} // namespace
+
+TpchQ18State TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q18 aux requires a typed initial scan source");
   TpchQ18State state;
 
-  // Streamed: every row lands directly in the (sharded) final state.
+  // The scans only deal the rows out to buckets by order; the buckets are
+  // joined and summed in parallel slices and then merged into the state.
+  std::vector<BuildBucket> buckets(kBuildBuckets);
+  const auto bucket_of = [&](int64_t orderkey) -> BuildBucket & {
+    return buckets[static_cast<uint64_t>(orderkey) % kBuildBuckets];
+  };
   initial_scan->ScanOrders([&](const TpchQ18OrderInput &input) {
-    state.SetOrder(input.key, input.custkey, input.orderdate_days,
-                   input.totalprice_raw);
+    bucket_of(input.key).orders.push_back(input);
   });
-  const bool aggregated = initial_scan->ScanOrderQuantityAggregates(
-      [&](const TpchQ18OrderQuantityAggregate &agg) {
-        TpchQ18OrderRec &rec = state.MutableRec(agg.orderkey);
-        rec.sum_raw += agg.quantity_sum_raw;
-        rec.flags_lines += static_cast<uint32_t>(agg.line_count);
-      });
-  if (!aggregated) {
-    initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
-      state.AddLineitem(input.orderkey, input.quantity_raw, 1);
-    });
+  initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
+    bucket_of(input.orderkey).lineitems.push_back({input.orderkey, input.quantity_raw});
+  });
+  std::vector<BucketRecords> built(kBuildBuckets);
+  core::ParallelSlices(services, kBuildBuckets, 1,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i) {
+                           built[i] = BuildRecords(buckets[i]);
+                           buckets[i] = {};
+                         }
+                       });
+  for (const auto &bucket : built) {
+    for (const auto &[orderkey, rec] : bucket.records)
+      state.MutableRec(orderkey) = rec;
+    for (const int64_t orderkey : bucket.hot)
+      state.hot.Upsert(orderkey, 1);
   }
-
-  // Hot set and the names of its customers.
-  std::vector<int64_t> hot_orders;
-  state.orders.ForEach([&](int64_t orderkey, const TpchQ18OrderRec &rec) {
-    if (!rec.Qualifies(TpchQ18State::kHotFloorRaw))
-      return;
-    hot_orders.push_back(orderkey);
-  });
-  for (const int64_t orderkey : hot_orders)
-    state.hot.Upsert(orderkey, 1);
   initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
     state.customer_names.Upsert(input.key, input.name);
   });

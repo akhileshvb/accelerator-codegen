@@ -132,7 +132,7 @@ struct TpchQ13State {
   core::ShardedCowHashMap<PatternCounts, 8> sparse_matched;
   std::array<TpchQ13PatternHist, kTpchQ13Patterns> hist;
   // Builds the index from the current orders/customers (O(orders), parallel).
-  void EnablePatternIndex();
+  void EnablePatternIndex(const core::AuxEngineServices &services);
   // Index of a known pattern, or -1.
   static int PatternIndex(std::string_view pattern);
   // Bit p set iff `comment` LIKE known pattern p.
@@ -219,6 +219,7 @@ private:
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ13State> &state) const;
   void EmitResult(const TpchQ13State &state, const core::QueryArguments &arguments,
+                  const core::AuxEngineServices &services,
                   core::AuxRowSink &sink) const;
   TpchQ13Config config;
   TpchQ13InitialScan *initial_scan = nullptr;

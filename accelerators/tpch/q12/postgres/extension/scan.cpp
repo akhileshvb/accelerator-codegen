@@ -29,28 +29,19 @@ void ScanTpchQ12Orders(
               });
 }
 
-// Lineitems that can contribute: non-NULL key / shipmode, commit < receipt,
-// ship < commit (NULL dates fail the comparisons).  `where` narrows further.
-void ScanTpchQ12QualifyingLineitems(
-    const std::string &where,
-    const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, l_shipdate "
-      "FROM lineitem WHERE l_orderkey IS NOT NULL AND l_shipmode IS NOT NULL "
-      "AND l_commitdate < l_receiptdate AND l_shipdate < l_commitdate" +
-          where,
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedDate(tuple, tuple_desc, 2),
-                  TypedDate(tuple, tuple_desc, 3),
-                  TypedDate(tuple, tuple_desc, 4)});
-      });
-}
-
+// Lineitems that can contribute: commit < receipt and ship < commit.
 void ScanTpchQ12Lineitems(
     const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
-  ScanTpchQ12QualifyingLineitems("", consumer);
+  ScanColumns("lineitem",
+              {IntColumn("l_orderkey"), TextColumn("l_shipmode"),
+               DateColumn("l_commitdate"), DateColumn("l_receiptdate"),
+               DateColumn("l_shipdate")},
+              [&](const BuildRow &row) {
+                const int32_t commit = row.Date(2), receipt = row.Date(3),
+                              ship = row.Date(4);
+                if (query::TpchQ12LineitemQualifies(commit, receipt, ship))
+                  consumer({row.Int(0), row.Text(1), commit, receipt, ship});
+              });
 }
 
 // Index lookup of the qualifying lineitems of some orders, as the transaction
