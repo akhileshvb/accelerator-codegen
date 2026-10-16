@@ -34,7 +34,7 @@
 #include <vector>
 
 #include "eval/harness/differential.hpp"
-#include "substrate/aux/core/aux_registry.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 #include "eval/tests/test_support/module_runtime.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"

@@ -8,7 +8,7 @@
 #include <iostream>
 
 #include "substrate/aux/core/aux_calibration.hpp"
-#include "substrate/aux/core/aux_registry.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 #include "eval/tests/test_support/module_runtime.hpp"
 #include "duckdb.hpp"
 #include "sec_edgar/q2/cost_model.hpp"

@@ -105,7 +105,7 @@ public:
   }
 
   void ScanSub(const std::function<void(const query::SecEdgarQ2SubInput &)> &consumer) override {
-    ScanSubWith("SELECT adsh, name, fy FROM sub", false, consumer);
+    ScanSubWith("SELECT adsh, name, fy FROM sub", consumer);
   }
 
   void ScanUomRowCounts(
@@ -184,7 +184,7 @@ public:
       return;
     }
     ScanSubWith("SELECT adsh, name, fy FROM sub WHERE adsh = ANY(" + SqlTextArray(adshs) + ")",
-                true, consumer);
+                consumer);
   }
 
   // The exact SQL answer (statement snapshot): used only when the aux state
@@ -215,7 +215,7 @@ public:
   }
 
 private:
-  void ScanSubWith(const std::string &sql, bool after_own_writes,
+  void ScanSubWith(const std::string &sql,
                    const std::function<void(const query::SecEdgarQ2SubInput &)> &consumer) {
     const auto row = [&](HeapTuple tuple, TupleDesc tuple_desc) {
       query::SecEdgarQ2SubInput in;
@@ -233,11 +233,7 @@ private:
       in.fy = fy_null ? 0 : static_cast<int32_t>(DatumGetInt32(d));
       consumer(in);
     };
-    if (after_own_writes) {
-      ScanTypedTuples(sql, row);
-    } else {
-      ScanTypedTuples(sql, row);
-    }
+    ScanTypedTuples(sql, row);
   }
 };
 

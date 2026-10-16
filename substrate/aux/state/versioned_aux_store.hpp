@@ -90,9 +90,6 @@ public:
     FloorProvider floor;
     // Every image belongs to this accelerator (a store per accelerator).
     std::optional<core::AcceleratorId> fixed_accelerator;
-    // Honor Mark/Clear/IsTransactionDirty (single-session engines only: the
-    // flag is store-wide).
-    bool track_transaction_dirty = false;
     // Cap on the bytes retained by OLD versions (every version but the
     // newest, kept only because the floor still needs them). 0: unlimited.
     // Bytes are summed with `payload_bytes` over the partitions an old
@@ -141,10 +138,6 @@ public:
                     const std::vector<core::StateImage> &updates,
                     core::Version expected_version = 0) override;
   void AbortCommit(const core::AcceleratorId &) override;
-
-  void MarkTransactionDirty() override;
-  void ClearTransactionDirty() override;
-  bool IsTransactionDirty() const override;
 
   // ---- Builds and status ----
   // `accelerator`'s state becomes exactly `images` (a fresh build), current
@@ -261,7 +254,6 @@ private:
   std::unordered_map<core::AcceleratorId, Accelerator> accelerators;
   // Which accelerator published each partition key (for reads by partition).
   std::unordered_map<PartitionKey, core::AcceleratorId> owner;
-  bool transaction_dirty = false;
   uint64_t change_count = 0;
   std::atomic<std::size_t> total_partitions_hint {0};
   std::atomic<uint64_t> versions_dropped_by_cap {0};

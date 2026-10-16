@@ -97,19 +97,18 @@ Register everywhere: see `pipeline/prompts/aux_state/shared/registration_checkli
 
 ### Engine backend (`workload_kind: engine_backend`)
 
-Implementation is **sequential layers** (`layers.md`): `store` → `aux_backend` →
-`txn` → `mutations` → `scan` → `runtime` → `visibility` → `host` (host skipped
-when not required).
+Implementation is **sequential layers** (`layers.md`): `capture` → `epochs` →
+`scan` → `runtime` → `host` (host skipped when not required).
 
 1. Implement **only this layer’s** objects + `backends/<engine>/tests/test_<engine>_<layer>.cpp`.
 2. Wire CMake so this layer’s target actually builds.
 3. **Steer with MCP tools on server `accel_pipeline`** (these are **tools**, not
    resources — do **not** `list_mcp_resources`):
    - `run_engine_build()` after CMake / adapter TU changes
-   - `run_layer_gate()` after the harness should run (maps `impl_txn` → `engine_txn`)
+   - `run_layer_gate()` after the harness should run (maps `impl_<layer>` → `engine_<layer>`)
    - or `request_gate` with `engine_build` then this layer’s gate
-     (`engine_store`, `engine_aux_backend`, `engine_txn`, `engine_mutations`,
-     `engine_scan`, `engine_runtime`, `engine_visibility`, `engine_host`)
+     (`engine_capture`, `engine_epochs`, `engine_scan`, `engine_runtime`,
+     `engine_host`)
 4. On fail: read `failure_summary` / `log_tail`, fix, call the MCP tool again.
    **Do not** treat host `cmake`, `ninja`, or `docker exec` of the harness as
    the pass bar — MCP is the official in-container (or host_cmake) gate.

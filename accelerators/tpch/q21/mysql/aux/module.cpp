@@ -510,11 +510,6 @@ bool TpchQ21Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ21Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  // LocalWriteSafe: same-transaction relevant writes => fallback.
-  if (services.StateStore().IsTransactionDirty()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
   std::string nation_name;
   if (!NationParameter(arguments, nation_name)) {
     EmitEmpty(sink);

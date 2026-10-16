@@ -66,7 +66,7 @@ current. A reader at snapshot epoch `E` sees the newest version with epoch
 engine's runtime), the first read of an accelerator pins its version. Later
 reads in the query reuse that version.
 
-**Commits** (the coordinator, `aux_registry.cpp`, per accelerator):
+**Commits** (`AcceleratorRuntime`, per accelerator):
 
 - **PRE_COMMIT**: `StageMaintenance` builds the next state (no store lock).
   Then `BeginCommit` marks the accelerator pending from the commit's epoch:
@@ -74,13 +74,6 @@ reads in the query reuse that version.
     newest) wait for it, without a timeout (`kWaitForPublish`; set
     `ACCEL_AUX_PENDING_WAIT_US` to bound the wait);
   - older snapshots read on.
-
-  **Readers that cannot build the state.** An engine whose reader cannot
-  build the state at its own snapshot (`AuxEngineServices::ReadersCanBuildState()
-  == false`; DuckDB, where an aux table function cannot query its own context)
-  is not offered `InvalidateAndRebuildOnRead`, and never gets an invalid state
-  published: in PRE_COMMIT any outcome that would leave a partition
-  invalidated and not rebuilt becomes a synchronous `RebuildAll`.
 
   At most one commit per accelerator is in flight; a second `BeginCommit`
   throws.

@@ -420,11 +420,6 @@ bool TpchQ14Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ14Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  // LocalWriteSafe: same-transaction relevant writes => fallback.
-  if (services.StateStore().IsTransactionDirty()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
   // ReadHit: validity + the one immutable state image under one visibility.
   const auto snapshot = services.StateStore().ReadHitPartitions(
       services.CurrentVisibility(), {Id(), {}}, {kStatePartition});

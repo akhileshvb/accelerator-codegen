@@ -6,7 +6,7 @@
 #include <string>
 
 #include "backends/duckdb/engine/native_scan_compat.hpp"
-#include "substrate/aux/core/aux_registry.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/maintenance/maintenance_action.hpp"
 #include "substrate/aux/state/invalidation_plan.hpp"
 #include "duckdb/common/types/data_chunk.hpp"

@@ -5,58 +5,14 @@
 #include <memory>
 #include <string>
 
-#include "substrate/aux/core/aux_registry.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/core/aux_txn_buffer.hpp"
-#include "backends/duckdb/state/duckdb_state_store.hpp"
 #include "eval/tests/test_support/module_runtime.hpp"
 #include "duckdb/main/connection.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 
 namespace {
-
-class TestStore final : public AuxStateStore {
-public:
-  StateSnapshot Read(const VisibilityToken &visibility) const override {
-    StateSnapshot snapshot;
-    snapshot.accelerator = "test";
-    snapshot.visibility = visibility;
-    snapshot.partitions = images;
-    snapshot.available = !images.empty();
-    return snapshot;
-  }
-
-  ValidityResult CheckValidity(const QueryKey &,
-                               const VisibilityToken &) const override {
-    return {images.empty() ? ValidityCode::Missing : ValidityCode::Valid,
-            images.empty() ? 0 : images[0].version};
-  }
-
-  void Invalidate(const InvalidationPlan &) override {
-    ++invalidations;
-    images.clear();
-  }
-
-  bool TryPublish(const StagedMaintenanceOutcome &outcome, Version) override {
-    images = outcome.updates;
-    ++publishes;
-    return true;
-  }
-
-  std::vector<StateImage> images;
-  int invalidations = 0;
-  int publishes = 0;
-};
-
-class TestServices final : public AuxEngineServices {
-public:
-  VisibilityToken CurrentVisibility() const override { return visibility; }
-
-  AuxStateStore &StateStore() override { return store; }
-
-  VisibilityToken visibility;
-  TestStore store;
-};
 
 class TestModule final : public AuxQueryModule {
 public:
@@ -118,61 +74,6 @@ public:
 } // namespace
 
 int main() {
-  TestServices services;
-  AuxTransactionCoordinator coordinator;
-  auto module = std::make_shared<TestModule>();
-  coordinator.Register(module);
-  coordinator.AttachServices(services);
-
-  MutationBatch mutation;
-  mutation.table = 7;
-  mutation.kind = MutationKind::Insert;
-  coordinator.OnMutation(mutation);
-  coordinator.PreCommit();
-  assert(module->stage_count == 1);
-  assert(services.store.publishes == 0);
-  coordinator.Abort();
-  assert(services.store.publishes == 0);
-
-  coordinator.OnMutation(mutation);
-  coordinator.PreCommit();
-  coordinator.Commit();
-  assert(services.store.publishes == 1);
-  assert(services.store.images.size() == 1);
-  assert(*static_cast<const std::vector<uint8_t> *>(
-             services.store.images[0].payload.get()) ==
-         std::vector<uint8_t>({'o', 'k'}));
-
-  // Child abort does not feed the parent transaction; child commit merges its
-  // captured batches before the outer precommit stage.
-  coordinator.BeginSubtransaction();
-  coordinator.OnMutation(mutation);
-  coordinator.AbortSubtransaction();
-  coordinator.PreCommit();
-  assert(module->stage_count == 2);
-
-  coordinator.BeginSubtransaction();
-  coordinator.OnMutation(mutation);
-  coordinator.CommitSubtransaction();
-  coordinator.PreCommit();
-  assert(module->stage_count == 3);
-  coordinator.Abort();
-
-  // The DuckDB store: one accelerator per store, an installed build reads
-  // back for every snapshot.
-  ::accelerator_codegen::aux_state::engine::duckdb::DuckDBStateStore
-      duckdb_store("test");
-  auto payload = std::make_shared<int>(42);
-  StateImage built;
-  built.partition = 3;
-  built.payload = std::shared_ptr<const void>(payload);
-  duckdb_store.Install({built}, "test");
-  const auto snapshot = duckdb_store.Read({0, 0, {}});
-  assert(snapshot.available);
-  assert(snapshot.partitions.size() == 1);
-  assert(*static_cast<const int *>(snapshot.partitions[0].payload.get()) == 42);
-  assert(duckdb_store.CheckValidity({"test", ""}, {0, 0, {}}).IsValid());
-
   // The DuckDB runtime: the module maintains after the SQL commit (never for
   // a rollback) and the published state reads back.
   duckdb::DuckDB db(nullptr);

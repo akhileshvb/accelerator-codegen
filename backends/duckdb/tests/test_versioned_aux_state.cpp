@@ -7,13 +7,11 @@
 //     version per AuxReadScope.
 //  2. Pending commits: readers whose snapshot may include the commit wait
 //     for it; older snapshots and other accelerators read on; abort; timeout.
-//  3. Coordinator: PRE_COMMIT marks pending (every partition it changes),
-//     COMMIT publishes one version, ABORT keeps the current one.
-//  4. Stress (in memory): one writer committing as fast as it can (random
+//  3. Stress (in memory): one writer committing as fast as it can (random
 //     partition updates, invalidations, rebuilds, aborts), many readers with
 //     short and long snapshots, several reads per query; every value checked
 //     against a model of every version.
-//  5. DuckDB, end to end, through the aux runtime on real transactions at a
+//  4. DuckDB, end to end, through the aux runtime on real transactions at a
 //     high commit rate: every aux read, at the reading transaction's own
 //     snapshot, equals count(*) in the same transaction.
 //
@@ -36,7 +34,7 @@
 #include <thread>
 #include <vector>
 
-#include "substrate/aux/core/aux_registry.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/core/aux_txn_buffer.hpp"
 #include "backends/duckdb/engine/duckdb_aux_backend.hpp"
 #include "substrate/aux/runtime/runtime_host.hpp"
@@ -281,7 +279,7 @@ void TestPending() {
   CHECK(pr.first == 131 && pr.second >= 650);
 }
 
-// ---- 3. coordinator ----
+// ---- module for the end-to-end test ----
 
 // A module whose state is partition 1 = next; optionally invalidates 2.
 class CounterModule final : public AuxQueryModule {
@@ -320,79 +318,7 @@ public:
   int builds = 0;
 };
 
-class Services final : public AuxEngineServices {
-public:
-  explicit Services(AuxStateStore &store_p, bool readers_fall_back_p = true)
-      : store(store_p), readers_fall_back(readers_fall_back_p) {}
-  VisibilityToken CurrentVisibility() const override { return {}; }
-  bool ReadersCanBuildState() const override { return readers_fall_back; }
-  bool readers_fall_back;
-  AuxStateStore &StateStore() override { return store; }
-  AuxStateStore &store;
-};
-
-void TestCoordinator() {
-  EpochVar epoch;
-  VersionedAuxStore store(Opts(epoch, [] { return Epoch(0); }));
-  Services services(store);
-  AuxTransactionCoordinator coordinator;
-  auto module = std::make_shared<CounterModule>();
-  coordinator.Register(module);
-  coordinator.AttachServices(services);
-  store.Install({Image("counter", 1, 100), Image("counter", 2, 200)}, "counter", 1);
-  MutationBatch mutation;
-  mutation.table = 7;
-
-  // Updates partition 1 and invalidates 2: a reader of partition 1 alone,
-  // whose snapshot includes the commit, still waits for it.
-  module->next = 111;
-  module->invalidate_two = true;
-  coordinator.OnMutation(mutation);
-  epoch = 10;
-  coordinator.PreCommit();
-  CHECK(store.HasPendingCommit());
-  CHECK(ValueAt(store, 5, 1) == 100 && ValueAt(store, 5, 2) == 200); // not invalidated
-  auto reader = std::async(std::launch::async, [&] { return ValueAt(store, 12, 1); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  epoch = 11;
-  coordinator.Commit();
-  CHECK(reader.get() == 111);
-  CHECK(ValueAt(store, 11, 2) == -1 && ValueAt(store, 5, 2) == 200);
-
-  // Abort after PRE_COMMIT.
-  module->next = 999;
-  module->invalidate_two = false;
-  coordinator.OnMutation(mutation);
-  epoch = 20;
-  coordinator.PreCommit();
-  auto aborted = std::async(std::launch::async, [&] { return ValueAt(store, 25, 1); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  coordinator.Abort();
-  CHECK(aborted.get() == 111);
-  CHECK(!store.HasPendingCommit());
-
-  // Readers that cannot fall back: an outcome leaving partition 2 invalidated
-  // and not rebuilt becomes a full rebuild; the state stays valid.
-  VersionedAuxStore strict_store(Opts(epoch, [] { return Epoch(0); }));
-  Services strict(strict_store, /*readers_fall_back=*/false);
-  AuxTransactionCoordinator strict_coordinator;
-  auto strict_module = std::make_shared<CounterModule>();
-  strict_coordinator.Register(strict_module);
-  strict_coordinator.AttachServices(strict);
-  strict_store.Install({Image("counter", 1, 100), Image("counter", 2, 200)}, "counter", 1);
-  strict_module->next = 300;
-  strict_module->invalidate_two = true;
-  strict_coordinator.OnMutation(mutation);
-  epoch = 30;
-  strict_coordinator.PreCommit();
-  epoch = 31;
-  strict_coordinator.Commit();
-  CHECK(strict_module->builds == 1);
-  CHECK(strict_store.CheckValidity({"counter", ""}, At(31)).code == ValidityCode::Valid);
-  CHECK(ValueAt(strict_store, 31, 1) == 300 && ValueAt(strict_store, 31, 2) == 301);
-}
-
-// ---- 4. in-memory stress ----
+// ---- 3. in-memory stress ----
 
 constexpr int kStressPartitions = 6;
 
@@ -599,7 +525,7 @@ void TestStress(uint64_t commits, int readers) {
   CHECK(not_visible == 0);
 }
 
-// ---- 5. DuckDB end to end ----
+// ---- 4. DuckDB end to end ----
 
 void Exec(duckdb::Connection &c, const std::string &sql) {
   auto r = c.Query(sql);
@@ -814,8 +740,6 @@ int main(int argc, char **argv) {
     std::cout << "PASS semantics" << std::endl;
     TestPending();
     std::cout << "PASS pending commits" << std::endl;
-    TestCoordinator();
-    std::cout << "PASS coordinator" << std::endl;
     TestStress(stress_commits, readers);
     std::cout << "PASS in-memory stress" << std::endl;
     if (duckdb_commits > 0) {
