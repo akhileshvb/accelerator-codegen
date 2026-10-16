@@ -1,16 +1,12 @@
 #include "tpch/q22/postgres/aux/module.hpp"
 #include "tpch/q22/calibration_writes.hpp"
-#include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
-#include <unordered_map>
 #include <unordered_set>
-#include <vector>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -232,153 +228,32 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ22Module::CreateTxnBuffer() const {
 }
 
 // ── Build ───────────────────────────────────────────────────────────────────
-namespace {
-
-using CustomerColumn = core::AnyKeyCowArray<TpchQ22CustomerRecord, 5>;
-
-// The customers of one build partition. Prefix ids are local to the partial
-// until it is merged into another one.
-struct CustomerPartial {
-  struct PrefixTotals {
-    int64_t count = 0;
-    Int128 sum = 0;
-    std::map<int64_t, int64_t> zero_order; // balance -> customers without orders
-  };
-
-  CustomerColumn customers;
-  std::vector<std::string> names; // local id -> prefix
-  std::unordered_map<std::string, uint32_t> ids;
-  std::vector<PrefixTotals> totals;
-
-  uint32_t PrefixId(const std::string &prefix) {
-    const auto [it, inserted] =
-        ids.emplace(prefix, static_cast<uint32_t>(names.size()));
-    if (inserted) {
-      names.push_back(prefix);
-      totals.emplace_back();
-    }
-    return it->second;
-  }
-
-  void MergeFrom(CustomerPartial &&from) {
-    std::vector<uint32_t> remap(from.names.size());
-    for (std::size_t id = 0; id < remap.size(); ++id) {
-      remap[id] = PrefixId(from.names[id]);
-      auto &into_totals = totals[remap[id]];
-      auto &from_totals = from.totals[id];
-      into_totals.count += from_totals.count;
-      into_totals.sum += from_totals.sum;
-      for (const auto &[balance, count] : from_totals.zero_order)
-        into_totals.zero_order[balance] += count;
-    }
-    customers.MergeFrom(std::move(from.customers),
-                        [&](const TpchQ22CustomerRecord &mine,
-                            const TpchQ22CustomerRecord &theirs) {
-                          if (theirs.prefix_id == kTpchQ22NoCustomer)
-                            return mine;
-                          auto record = theirs;
-                          record.prefix_id = remap[theirs.prefix_id];
-                          return record;
-                        });
-  }
-};
-
-// Order counts per custkey (also of custkeys without a customer row).
-CustomerColumn BuildOrderCounts(core::AuxEngineServices &services,
-                                TpchQ22InitialScan &scan) {
-  return core::PartitionedBuild<CustomerColumn>(
-      services, [] { return CustomerColumn{}; },
-      [&](std::size_t parts, auto &&sink) {
-        scan.ScanOrdersPartitioned(
-            services, parts, [&](std::size_t partition, const TpchQ22OrderInput &input) {
-              sink(partition, OneRowBatch<TpchQ22OrderInput>{input});
-            });
-      },
-      [](CustomerColumn &counts, const TpchQ22OrderInput &input) {
-        auto &rec = counts.Mutable(input.custkey);
-        if (rec.order_count == std::numeric_limits<int32_t>::max())
-          throw std::overflow_error("TPC-H Q22 order count overflow");
-        ++rec.order_count;
-      },
-      [](CustomerColumn &into, CustomerColumn &&from) {
-        into.MergeFrom(std::move(from),
-                       [](TpchQ22CustomerRecord mine, const TpchQ22CustomerRecord &theirs) {
-                         const int64_t orders =
-                             static_cast<int64_t>(mine.order_count) + theirs.order_count;
-                         if (orders > std::numeric_limits<int32_t>::max())
-                           throw std::overflow_error("TPC-H Q22 order count overflow");
-                         mine.order_count = static_cast<int32_t>(orders);
-                         return mine;
-                       });
-      },
-      BuildPartitions(services));
-}
-
-// Customer rows with their prefix aggregates, reading the final order counts.
-CustomerPartial BuildCustomers(core::AuxEngineServices &services,
-                               TpchQ22InitialScan &scan,
-                               const CustomerColumn &order_counts) {
-  return core::PartitionedBuild<CustomerPartial>(
-      services, [] { return CustomerPartial{}; },
-      [&](std::size_t parts, auto &&sink) {
-        scan.ScanCustomersPartitioned(
-            services, parts, [&](std::size_t partition, const TpchQ22CustomerInput &input) {
-              sink(partition, OneRowBatch<TpchQ22CustomerInput>{input});
-            });
-      },
-      [&](CustomerPartial &partial, const TpchQ22CustomerInput &input) {
-        int64_t balance = 0;
-        if (!ToScale2(input.acctbal_raw, input.acctbal_scale, balance))
-          throw std::logic_error("TPC-H Q22: c_acctbal not representable at scale 2");
-        TpchQ22CustomerRecord rec;
-        rec.order_count = order_counts.Get(input.custkey).order_count;
-        rec.prefix_id = partial.PrefixId(PhonePrefix(input.phone));
-        rec.balance_raw = balance;
-        partial.customers.Set(input.custkey, rec);
-        if (balance <= 0)
-          return;
-        auto &totals = partial.totals[rec.prefix_id];
-        ++totals.count;
-        totals.sum += balance;
-        if (rec.order_count == 0)
-          ++totals.zero_order[balance];
-      },
-      [](CustomerPartial &into, CustomerPartial &&from) { into.MergeFrom(std::move(from)); },
-      BuildPartitions(services));
-}
-
-} // namespace
-
-void TpchQ22Module::Build(core::AuxEngineServices &services,
+void TpchQ22Module::Build(core::AuxEngineServices &,
                           core::StateBuilder &builder) {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q22 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ22State>();
+  StateEditor editor(*state, /*fresh=*/true);
 
-  // Orders first: custkeys without a customer row keep their count, and the
-  // customer pass reads the final counts.
-  state->customers = BuildOrderCounts(services, *initial_scan);
-  auto customers = BuildCustomers(services, *initial_scan, state->customers);
-  state->customers.MergeFrom(std::move(customers.customers),
-                             [](const TpchQ22CustomerRecord &mine,
-                                const TpchQ22CustomerRecord &theirs) {
-                               return theirs.prefix_id == kTpchQ22NoCustomer ? mine
-                                                                             : theirs;
-                             });
-
-  auto dictionary = std::make_shared<TpchQ22PrefixDictionary>();
-  dictionary->ids = std::move(customers.ids);
-  state->dictionary = std::move(dictionary);
-  state->prefixes.resize(customers.names.size());
-  services.ParallelFor(state->prefixes.size(), [&](std::size_t id) {
-    auto entry = std::make_shared<TpchQ22PrefixEntry>();
-    const auto &totals = customers.totals[id];
-    entry->positive_count = totals.count;
-    entry->positive_sum_raw = totals.sum;
-    for (const auto &[balance, count] : totals.zero_order)
-      entry->zero_order.Add(balance, count);
-    state->prefixes[id] = std::move(entry);
+  // Order counts first (custkeys without a customer row keep theirs), straight
+  // into the per-custkey column.
+  initial_scan->ScanOrders([&](const TpchQ22OrderInput &input) {
+    auto &rec = state->customers.Mutable(input.custkey);
+    if (rec.order_count == std::numeric_limits<int32_t>::max())
+      throw std::overflow_error("TPC-H Q22 order count overflow");
+    ++rec.order_count;
   });
+
+  initial_scan->ScanCustomers([&](const TpchQ22CustomerInput &input) {
+    int64_t balance = 0;
+    if (!ToScale2(input.acctbal_raw, input.acctbal_scale, balance))
+      throw std::logic_error("TPC-H Q22: c_acctbal not representable at scale 2");
+    auto &rec = state->customers.Mutable(input.custkey);
+    rec.prefix_id = editor.PrefixId(PhonePrefix(input.phone));
+    rec.balance_raw = balance;
+    Contribute(editor, rec, +1);
+  });
+  editor.Finish();
 
   builder.Write(MakeImage(std::move(state)));
   builder.Finish();

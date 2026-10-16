@@ -71,14 +71,6 @@ public:
       const std::function<void(const TpchQ22CustomerInput &)> &) = 0;
   virtual void ScanOrders(
       const std::function<void(const TpchQ22OrderInput &)> &) = 0;
-  // Split into `partitions` fixed row ranges: sink(partition, row) runs
-  // concurrently for different partitions, one thread per partition.
-  virtual void ScanCustomersPartitioned(
-      const core::AuxEngineServices &services, std::size_t partitions,
-      const std::function<void(std::size_t, const TpchQ22CustomerInput &)> &sink) = 0;
-  virtual void ScanOrdersPartitioned(
-      const core::AuxEngineServices &services, std::size_t partitions,
-      const std::function<void(std::size_t, const TpchQ22OrderInput &)> &sink) = 0;
 };
 
 // ── State structures ────────────────────────────────────────────────────────
