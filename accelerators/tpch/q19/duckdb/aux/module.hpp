@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -36,6 +37,17 @@ struct TpchQ19PartInput {
   int32_t size = 0;
 };
 
+// A lineitem as a partitioned build scan delivers it: strings are views valid
+// during the callback.
+struct TpchQ19LineitemRow {
+  int64_t partkey = 0;
+  int64_t quantity_raw = 0;
+  int64_t extendedprice_raw = 0;
+  int64_t discount_raw = 0;
+  std::string_view shipmode;
+  std::string_view shipinstruct;
+};
+
 struct TpchQ19LineitemInput {
   int64_t partkey = 0;
   int64_t quantity_raw = 0;
@@ -63,23 +75,14 @@ public:
     return false;
   }
 
-  // Optional: one row per part with its qualifying family (1..3) or 0 when no
-  // branch can ever match it (size / container); brand only meaningful for
-  // family != 0.
-  virtual bool ScanPartFamilies(
-      const std::function<void(int64_t, const std::string &, int)> &consumer) {
-    (void)consumer;
-    return false;
-  }
-
-  // Optional SQL pushdown for Build: qualifying lineitems (shipmode /
-  // shipinstruct filters only) aggregated per (partkey, quantity), ordered by
-  // partkey: (partkey, qty_raw, SUM(revenue_raw), COUNT(*)).
-  virtual bool ScanQualifyingLineitemsByPart(
-      const std::function<void(int64_t, int64_t, int64_t, int64_t)> &consumer) {
-    (void)consumer;
-    return false;
-  }
+  // Partitioned scans for the full build: rows of one partition arrive in
+  // table order on one thread; partitions run concurrently on the pool.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ19PartInput &)> &) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ19LineitemRow &)> &) = 0;
 
   // Point lookup for a part image when a lineitem write needs dimension data
   // that is not cached.
@@ -126,7 +129,7 @@ struct TpchQ19State {
   };
   struct IndexBase {
     std::vector<int64_t> keys; // ascending partkeys
-    std::vector<uint32_t> off; // keys.size() + 1
+    std::vector<uint64_t> off; // keys.size() + 1
     std::vector<IndexEnt32> ents;
   };
   std::shared_ptr<const IndexBase> index_base = std::make_shared<IndexBase>();
@@ -139,7 +142,7 @@ struct TpchQ19State {
   // ((brand index + 1) << 2) | family (1..3). Paged and shared between
   // versions; a write clones only the touched page.
   static constexpr std::size_t kDimPage = 4096;
-  static constexpr int64_t kDimDenseLimit = int64_t{1} << 26;
+  static constexpr int64_t kDimDenseLimit = int64_t{1} << 30; // SF3000 parts reach 6e8
   struct DimPage {
     std::vector<uint32_t> codes = std::vector<uint32_t>(kDimPage, 0u);
   };
