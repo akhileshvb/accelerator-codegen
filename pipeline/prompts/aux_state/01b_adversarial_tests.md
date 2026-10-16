@@ -13,6 +13,7 @@ Produce a small frozen contract that later correctness gates enforce via the **s
 1. **Point writes** — several distinct rows that must invalidate aux (multiple probes, not one)
 2. **Bulk writes** — RF-style multi-row / multi-chunk churn when the query depends on `orders`/`lineitem`
 3. **Sequences** — more than one invalidating write applied before restores (incremental, not only RO)
+4. **Large-scale shapes** — the failure classes of `scale_factor_contract.md` that `correctness_facts.scale_plan` says apply: writes of rows with keys beyond 2^32 and with value-inflated money columns; RF-sized bulk writes spread over the key space, repeated insert/delete cycles (state must not grow), and a bulk write compared at 1 vs N maintenance threads with `ACCEL_AUX_TEST_GRAIN=1` (forces the split; also raced by the `aux_tsan` gate)
 
 ## Inputs
 
@@ -44,6 +45,7 @@ Schema:
     "min_chunks": 2,
     "notes": "RF1/RF2 on orders+lineitem"
   },
+  "scale_scenarios": ["short, one per applicable failure class: the write or database that exercises it"],
   "rationale": "2-5 sentences tying scenarios to analysis"
 }
 ```
@@ -53,10 +55,15 @@ Rules:
 - `point_writes.min_count` ≥ 3; `max_probes` ≥ `min_count` and ≤ 16
 - Set `bulk_writes.required=true` and `min_chunks` ≥ 1 when the query depends on `orders` and/or `lineitem`
 - Set `bulk_writes.required=false` only when RF on orders/lineitem cannot invalidate this query’s result (explain in notes)
+- `scale_scenarios` (optional for the gate, required here): one entry per `scale_plan.failure_classes` item that is not `n/a`, naming the write shape or magnitude database (`scripts/make_tpch_magnitude_dbs.sh`: `tpch_shift`, `tpch_big`) that would expose it; implementation and audit run them
 - Prefer tables that appear in analysis join/filter paths and that catalog probes can hit
 - Implementation must expand catalog `probe_select` until at least `min_count` distinct invalidating probes exist (gate enforces this)
 - Do **not** invent synthetic C++ fixtures or module-private state APIs
 - Do **not** edit accelerator sources, catalog, or smoke tests in this stage
+
+## Shared docs (read on demand)
+
+{{shared_docs_reference}}
 
 ## Done when
 

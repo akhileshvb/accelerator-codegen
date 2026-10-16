@@ -39,8 +39,11 @@ real bugs until those tests pass.
 
 `engine_build`, every layer gate in `layers.md`, **`engine_adversarial`**, then the
 backend-generic slot gates (`slot_epoch_stress`, `slot_hits_under_writes`,
-`slot_read_after_commit`, `slot_txn_edges`, `slot_restart`, `slot_differential`;
+`slot_read_after_commit`, `slot_txn_edges`, `slot_restart`, `slot_tsan`,
+`slot_differential`;
 `pipeline/gates/README_runtime_gates.md`). A slot gate failure is a backend bug:
-fix the slot, not the gate.
+fix the slot, not the gate. `slot_tsan` reruns the slot scenarios under ThreadSanitizer with
+forced tiny slice grains; any report with a frame in substrate/, backends/ or accelerators/
+fails it. Required whenever the backend or its modules have parallel code.
 
 Missing adversarial source/target or TODO stubs → **fail**.

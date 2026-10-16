@@ -118,7 +118,7 @@ applies after visibility), and the engine-local typed chunked scans behind
 `SnapshotEpoch()` >= epoch(A) and < epoch(B); a subset projection and a filter
 dropping >=1 row; exact cell values incl. NULL; force >=2 chunk callbacks and
 assert their concatenation equals the golden set; `partitions = 1` and
-`partitions = N` return the same multiset; barrier: a writer that began
+`partitions = N` return the same multiset, each partition's rows arrive in table order and the same partition holds the same rows on a repeated scan, partitions overlap in time (concurrency observed) with at most the build cap of threads, a writer commit between partition starts is invisible to every partition, a NULL in a non-`Nullable` column and an oversized decimal fail loudly; barrier: a writer that began
 earlier blocks `WaitForPreRegistrationWriters` until it commits, and a timeout
 returns false.
 
@@ -140,6 +140,8 @@ Implements the host (`api/{engine}_host.*`): the `EngineSlots` object owning a
   cannot be delivered becomes a gap (the runtime rebuilds). Read threads call
   no engine API: no engine headers in their files, signals blocked. A worker
   restart is safe: the next build includes everything.
+- **Thread budget and phase caps.** One `ThreadBudget` from `ResolveThreadBudget(engine setting)`; the read, build and maintenance caps from `ResolveReadThreads` / `ResolveBuildThreads` / `ResolveMaintenanceThreads` with the engine's own settings when it has a settings mechanism (e.g. Postgres `accel.read_threads` / `build_threads` / `maint_threads`; `ACCEL_AUX_*_THREADS` always override), applied with `SetPhaseLimits`. A multi-process placement shares the budget across processes (`TokenSource`).
+- **Table sizes and cost model.** `TableRows(table)` returns the engine's cheap row estimate (64-bit; 0 only if unknown) so `DataScaleRows` scales the maintenance policy; `CostModel(accelerator)` comes from `core::ResolveAuxCostModelPath` with the engine name, the scale tag (DuckDB: `ACCEL_AUX_BENCH_DB_LABEL`) and the per-engine override env var.
 - No commit is dropped or skipped by the host; no thread pool, build
   scheduler, lock or version logic of its own.
 
@@ -150,7 +152,7 @@ committing, final answer exact; a reader transaction older than the build
 reads its own snapshot's answer or gets `Fallback`, never a newer one; shipped
 placement: drop one commit message -> gap -> rebuild -> exact, kill the worker
 -> reads fall back exact, then hit again; `ThreadBudget::PeakThreads()` <= the
-configured budget.
+configured budget; each phase cap set through the engine setting and through the env override is observed by `WorkerCount()` inside the toy module's `Build` / `Execute` / maintenance (e.g. a cap of 1 gives 1); `DataScaleRows()` equals the table's row count after a bulk insert (and `ChooseMaintenance` with a model whose `calibrated_scale_rows` is a tenth of it raises the ApplyDelta cap tenfold).
 
 ---
 

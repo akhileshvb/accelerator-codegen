@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# ThreadSanitizer gate for parallel read/build/maintenance code.
+#   run_aux_tsan.sh <query_number> [engine]   smoke test + shared differential
+#   run_aux_tsan.sh slots [engine]            the slot gates (engine_backend)
+# Builds a cached ACCEL_SANITIZE=thread tree (ACCEL_TSAN_BUILD_DIR, default
+# <root>/build-tsan) and runs with every phase at ACCEL_TSAN_THREADS (default 8)
+# threads and ACCEL_AUX_TEST_GRAIN=1, so even one-row commits split across threads.
+# Fails on a differential mismatch or a TSAN report whose stack touches
+# substrate/, backends/ or accelerators/; reports confined to the uninstrumented
+# engine are listed but do not fail the gate.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TARGET="${1:-}"
+ENGINE_ARG="${2:-}"
+if [[ -z "${TARGET}" ]]; then
+  echo "usage: run_aux_tsan.sh <query_number|slots> [engine]" >&2
+  exit 1
+fi
+BUILD="${ACCEL_TSAN_BUILD_DIR:-${ROOT}/build-tsan}"
+THREADS="${ACCEL_TSAN_THREADS:-8}"
+TIMEOUT_SECONDS="${ACCEL_TSAN_TIMEOUT:-3600}"
+
+[[ "${ACCEL_GATE_NAME:-}" == "slot_tsan" ]] && TARGET="slots"
+
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+if [[ "${TARGET}" == "slots" ]]; then
+  ENGINE_NAME="${ENGINE_ARG:-${ACCEL_ENGINE_NAME:-duckdb}}"
+  OUT="$(dirname "${ACCEL_GATE_OUT:-${ROOT}/pipeline/artifacts/tsan/slot_tsan.json}")"
+  NAME="slot_tsan"
+else
+  load_aux_gate_context "${ROOT}" "${TARGET}"
+  [[ -n "${ENGINE_ARG}" ]] && ENGINE_NAME="${ENGINE_ARG}"
+  OUT="${GATE_OUT}"
+  NAME="aux_tsan"
+fi
+RESULT_JSON="${ACCEL_GATE_OUT:-${OUT}/${NAME}.json}"
+mkdir -p "${OUT}"
+LOGDIR="${OUT}/${NAME}_logs"
+rm -rf "${LOGDIR}"
+mkdir -p "${LOGDIR}"
+
+STATUS="pass"
+REASON=""
+finish() {
+  local rc=0
+  [[ "${STATUS}" == "pass" || "${STATUS}" == "skip" ]] || rc=1
+  python3 - "${RESULT_JSON}" "${NAME}" "${TARGET}" "${ENGINE_NAME}" "${STATUS}" "${REASON}" "${LOGDIR}" <<'PY'
+import json, sys
+out, gate, target, engine, status, reason, logdir = sys.argv[1:8]
+json.dump({"gate": gate, "target": target, "engine_name": engine, "status": status,
+           "reason": reason, "logs": logdir}, open(out, "w"), indent=2)
+PY
+  echo "${NAME} ${TARGET} [${ENGINE_NAME}]: ${STATUS^^} ${REASON}"
+  exit "${rc}"
+}
+
+if [[ "${ENGINE_NAME}" != "duckdb" ]]; then
+  STATUS="skip"
+  REASON="TSAN gate runs the in-process DuckDB host only"
+  finish
+fi
+
+if [[ ! -f "${BUILD}/CMakeCache.txt" ]]; then
+  gen=()
+  command -v ninja >/dev/null && gen=(-G Ninja)
+  cmake -S "${ROOT}" -B "${BUILD}" "${gen[@]}" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DACCEL_SANITIZE=thread >"${LOGDIR}/configure.log" 2>&1 || { STATUS="fail"; REASON="cmake configure failed"; finish; }
+fi
+build() { cmake --build "${BUILD}" --target "$@" -j"${ACCEL_TSAN_JOBS:-16}" >>"${LOGDIR}/build.log" 2>&1; }
+
+export ACCEL_AUX_READ_THREADS="${THREADS}" ACCEL_AUX_BUILD_THREADS="${THREADS}" ACCEL_AUX_MAINT_THREADS="${THREADS}"
+export ACCEL_AUX_TEST_GRAIN=1
+export TMPDIR="${TMPDIR:-/dev/shm}"
+export TSAN_OPTIONS="suppressions=$(dirname "${BASH_SOURCE[0]}")/tsan.supp exitcode=0 second_deadlock_stack=1 log_path=${LOGDIR}/tsan"
+
+RUN_FAILED=""
+run() { # label cmd...
+  local label="$1"; shift
+  timeout -k 10 "${TIMEOUT_SECONDS}" "$@" >"${LOGDIR}/${label}.log" 2>&1 || RUN_FAILED="${RUN_FAILED} ${label}"
+}
+
+if [[ "${TARGET}" == "slots" ]]; then
+  for s in epoch_stress hits_under_writes read_after_commit txn_edges; do
+    run "slot_${s}" env ACCEL_PIPELINE_BUILD_DIR="${BUILD}" ACCEL_GATE_NAME="slot_${s}" \
+      ACCEL_GATE_OUT="${LOGDIR}/slot_${s}.json" bash "${ROOT}/pipeline/gates/run_slot_gates.sh"
+  done
+else
+  DIFF_TARGET="${DIFF_BINARY:-test_tpch_shared_differential}"
+  build "${AUX_TEST_TARGET}" "${DIFF_TARGET}" || { STATUS="fail"; REASON="TSAN build failed (${LOGDIR}/build.log)"; finish; }
+  run smoke env "${DB_ENV_VAR}=${DATASET_DB}" ctest --test-dir "${BUILD}" -R "${AUX_CTEST_SMOKE_REGEX}" --output-on-failure
+  if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
+    run differential env "${DB_ENV_VAR}=${DATASET_DB}" "${BUILD}/${DIFF_TARGET}" "${DATASET_DB}" "${TARGET}"
+  fi
+fi
+
+# A report is ours when any of its frames is a source file under substrate/, backends/ or accelerators/.
+OURS=0
+ENGINE_ONLY=0
+for f in "${LOGDIR}"/tsan.*; do
+  [[ -e "$f" ]] || continue
+  read -r ours engine < <(awk -v pat="${ROOT}/(substrate|backends|accelerators)/" '
+    /^WARNING: ThreadSanitizer/ { inrep = 1; mine = 0 }
+    inrep && $0 ~ pat { mine = 1 }
+    /^SUMMARY: ThreadSanitizer/ { if (mine) o++; else e++; inrep = 0 }
+    END { print o + 0, e + 0 }' "$f")
+  OURS=$((OURS + ours))
+  ENGINE_ONLY=$((ENGINE_ONLY + engine))
+done
+
+if (( OURS > 0 )); then
+  STATUS="fail"; REASON="${OURS} TSAN report(s) in our code (${LOGDIR}/tsan.*)"
+elif [[ -n "${RUN_FAILED}" ]]; then
+  STATUS="fail"; REASON="failed:${RUN_FAILED} (${LOGDIR})"
+else
+  REASON="(${ENGINE_ONLY} engine-only report(s) ignored)"
+fi
+finish

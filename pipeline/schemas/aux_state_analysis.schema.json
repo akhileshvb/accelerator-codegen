@@ -195,6 +195,25 @@
             }
           }
         },
+        "scale_plan": {
+          "type": "object",
+          "properties": {
+            "read_parallelism": { "type": "string" },
+            "build_parallelism": { "type": "string" },
+            "maintenance_parallelism": { "type": "string" },
+            "failure_classes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["class", "handling"],
+                "properties": {
+                  "class": { "type": "string" },
+                  "handling": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
         "legal_deltas": { "type": "array" },
         "state_payload": { "type": "object" }
       }

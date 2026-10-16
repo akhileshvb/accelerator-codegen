@@ -37,7 +37,7 @@ Also fill `placement`, `slot_plan` (one entry per slot S1-S8: the engine
 mechanism and exact API), `capture_plan.hook`, `epoch_plan`,
 `scan_plan.symbol`, `udf_or_extension_host_plan` (or skip),
 `contract_tests_plan.by_layer`, `files_to_create`. Keep strings to one or two lines.
-`epoch_plan` names the engine clocks: the commit epoch (S2, in visibility
+`slot_plan` S6 names where each phase cap comes from (engine setting, env override) and how the budget is shared across processes; S8 names the partitioning unit of `ScanPartitioned` (`native_scan_contract.md`), how every partition reads the build snapshot, and where `TableRows` and the cost-model scale tag come from. `epoch_plan` names the engine clocks: the commit epoch (S2, in visibility
 order), the reader epoch (S3, exact), the floor (S4, oldest open snapshot, or
 none), the build snapshot epoch `b` (S5), and how a snapshot is mapped to an
 epoch when the engine has no single clock.
@@ -50,6 +50,8 @@ epoch when the engine has no single clock.
 - `substrate/aux/core/aux_types.hpp`
 - `pipeline/prompts/engine_backend/layers.md`
 - `pipeline/prompts/engine_backend/acceptance_checklist.md`
+- `pipeline/prompts/engine_backend/native_scan_contract.md`
+- `substrate/aux/runtime/thread_budget.hpp`, `substrate/aux/core/parallel_slices.hpp`, `partitioned_build.hpp` (what modules will do on top of the slots)
 - `pipeline/prompts/engine_backend/layer_contracts.md`
 - `pipeline/schemas/backend_analysis.schema.json`
 

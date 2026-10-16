@@ -11,6 +11,15 @@ option(ACCEL_AUX_CALIBRATION
 option(ACCEL_CALIBRATE_AT_BUILD
        "Run shared aux cost-model calibration during the default build (requires DBs)" OFF)
 
+# ACCEL_SANITIZE=thread instruments our targets; the sibling DuckDB stays uninstrumented.
+set(ACCEL_SANITIZE "" CACHE STRING "Sanitizer for our targets (thread)")
+if(ACCEL_SANITIZE STREQUAL "thread")
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=thread)
+elseif(ACCEL_SANITIZE)
+    message(FATAL_ERROR "ACCEL_SANITIZE must be empty or 'thread'")
+endif()
+
 include(CTest)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
