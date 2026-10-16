@@ -19,27 +19,6 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ22Customers(
-    const std::function<void(const query::TpchQ22CustomerInput &)> &consumer) {
-  ScanColumns("customer",
-              {IntColumn("c_custkey"), TextColumn("c_phone"),
-               DecimalColumn("c_acctbal", 2)},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Text(1),
-                          row.Decimal(2), 2});
-              });
-}
-
-void ScanTpchQ22Orders(
-    const std::function<void(const query::TpchQ22OrderInput &)> &consumer) {
-  ScanColumns("orders",
-              {IntColumn("o_custkey")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0)});
-              });
-}
-
 void ScanTpchQ22CustomersPartitioned(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ22CustomerInput &)> &sink) {
@@ -68,16 +47,6 @@ void ScanTpchQ22OrdersPartitioned(
 
 class TpchQ22Scan final : public query::TpchQ22InitialScan {
 public:
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ22CustomerInput &)> &consumer)
-      override {
-    scans::ScanTpchQ22Customers(consumer);
-  }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ22OrderInput &)> &consumer)
-      override {
-    scans::ScanTpchQ22Orders(consumer);
-  }
   void ScanCustomersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ22CustomerInput &)> &sink)
