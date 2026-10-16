@@ -43,33 +43,40 @@ void ScanTpchQ1Lineitems(
 
 // One SQL GROUP BY: the engine aggregates, the process receives one row per
 // (shipdate, returnflag, linestatus) cell with exact DECIMAL sums (text).
+SplitTable DayGroupAggregatesTable() {
+  return {"l_shipdate, l_returnflag, l_linestatus, count(*), "
+          "sum(l_quantity), sum(l_extendedprice), sum(l_discount), "
+          "sum(l_extendedprice * (1 - l_discount)), "
+          "sum(l_extendedprice * (1 - l_discount) * (1 + l_tax))",
+          "lineitem", "", "l_orderkey", "l_shipdate, l_returnflag, l_linestatus"};
+}
+
+query::TpchQ1DayGroupAggregate DecodeDayGroupAggregate(const std::vector<std::string> &cols) {
+  query::TpchQ1DayGroupAggregate agg;
+  agg.shipdate_days = TypedDate(cols, 0);
+  agg.returnflag = TypedChar(cols, 1);
+  agg.linestatus = TypedChar(cols, 2);
+  agg.count = TypedInt(cols, 3);
+  const auto sum = [&](int attribute, int scale) {
+    __int128 value = 0;
+    if (!core::decimal_text::Parse(TypedText(cols, attribute), scale, value))
+      throw std::runtime_error("TPC-H Q1: unparsable decimal aggregate");
+    return value;
+  };
+  agg.sum_qty_raw = sum(4, 2);
+  agg.sum_base_price_raw = sum(5, 2);
+  agg.sum_discount_raw = sum(6, 2);
+  agg.sum_disc_price_raw = sum(7, 4);
+  agg.sum_charge_raw = sum(8, 6);
+  return agg;
+}
+
 void ScanTpchQ1DayGroupAggregates(
     const std::function<void(const query::TpchQ1DayGroupAggregate &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_shipdate, l_returnflag, l_linestatus, count(*), "
-      "sum(l_quantity), sum(l_extendedprice), sum(l_discount), "
-      "sum(l_extendedprice * (1 - l_discount)), "
-      "sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) "
-      "FROM lineitem GROUP BY l_shipdate, l_returnflag, l_linestatus",
-      [&](const std::vector<std::string> &cols) {
-        query::TpchQ1DayGroupAggregate agg;
-        agg.shipdate_days = TypedDate(cols, 0);
-        agg.returnflag = TypedChar(cols, 1);
-        agg.linestatus = TypedChar(cols, 2);
-        agg.count = TypedInt(cols, 3);
-        const auto sum = [&](int attribute, int scale) {
-          __int128 value = 0;
-          if (!core::decimal_text::Parse(TypedText(cols, attribute), scale, value))
-            throw std::runtime_error("TPC-H Q1: unparsable decimal aggregate");
-          return value;
-        };
-        agg.sum_qty_raw = sum(4, 2);
-        agg.sum_base_price_raw = sum(5, 2);
-        agg.sum_discount_raw = sum(6, 2);
-        agg.sum_disc_price_raw = sum(7, 4);
-        agg.sum_charge_raw = sum(8, 6);
-        consumer(agg);
-      });
+  ScanTypedTuples(SelectSql(DayGroupAggregatesTable()),
+                  [&](const std::vector<std::string> &cols) {
+                    consumer(DecodeDayGroupAggregate(cols));
+                  });
 }
 
 } // namespace scans
@@ -85,6 +92,16 @@ public:
       const std::function<void(const query::TpchQ1DayGroupAggregate &)>
           &consumer) override {
     scans::ScanTpchQ1DayGroupAggregates(consumer);
+  }
+  void ScanDayGroupAggregatesPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ1DayGroupAggregate &)> &sink)
+      override {
+    ScanTypedTuplesPartitioned(
+        services, scans::DayGroupAggregatesTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeDayGroupAggregate(cols));
+        });
   }
 };
 
