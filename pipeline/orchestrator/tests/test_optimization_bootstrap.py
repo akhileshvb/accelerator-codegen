@@ -29,9 +29,6 @@ def test_bootstrap_includes_full_sources(tmp_path: Path) -> None:
     (aux / "module.hpp").write_text("#pragma once\nstruct Foo {};\n", encoding="utf-8")
     (aux / "module.cpp").write_text('#include "module.hpp"\nvoid Bar() {}\n', encoding="utf-8")
     (aux / "finalize.cpp").write_text("void Fin() {}\n", encoding="utf-8")
-    tests = tmp_path / "accelerators/tpch/q99/tests"
-    tests.mkdir(parents=True)
-    (tests / "test_tpch_q99_aux.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
 
     workload = {
         "workload_kind": "aux_state",
@@ -50,7 +47,7 @@ def test_bootstrap_includes_full_sources(tmp_path: Path) -> None:
     )
     edit = resolve_optimization_edit_paths(pc, workload, 99)
     sources = load_editable_sources(tmp_path, edit)
-    assert len(sources) >= 4
+    assert len(sources) >= 3
     assert any("module.cpp" in s["path"] for s in sources)
     assert "1: #include" in sources[1]["content"] or any(
         "#include" in s["content"] for s in sources

@@ -181,10 +181,7 @@ AcceleratorRuntime::AcceleratorRuntime(std::shared_ptr<core::AuxQueryModule> mod
     impl->module_table[host] = dependency.table;
   }
   std::function<Epoch()> epoch = [this] { return impl->store_epoch; };
-  std::function<Epoch()> floor = [this] {
-    const Epoch oldest = slots.OldestReaderEpoch();
-    return oldest == EngineSlots::kNoFloor ? kNever : oldest;
-  };
+  std::function<Epoch()> floor = [this] { return slots.OldestReaderEpoch(); };
   if (make_store) {
     impl->store = make_store(id, epoch, floor);
   }
@@ -651,6 +648,10 @@ bool AcceleratorRuntime::BuildNow() {
     ApplyReady();
     std::lock_guard<std::mutex> lock(impl->state_mutex);
     if (impl->Synced()) {
+      // No version covers [unserved_from, b): older versions miss its commits.
+      if (impl->unserved_from < b) {
+        Collapse(impl->unserved_from, b);
+      }
       impl->unserved_from = impl->applier.HasGap() ? impl->applier.AppliedEpoch() + 1 : kNever;
     }
     impl->stats.builds++;

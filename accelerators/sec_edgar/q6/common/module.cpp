@@ -165,6 +165,9 @@ void SecEdgarQ6TxnBuffer::AddNumDelta(std::string_view adsh, std::string_view ta
                                       double value, int8_t sign) {
   pending_ = true;
   NumDelta d;
+  if (arena_.size() >= std::numeric_limits<uint32_t>::max() - 4096) {
+    throw std::length_error("sec_edgar q6: more than 4 GB of changed keys in one transaction");
+  }
   d.offset = static_cast<uint32_t>(arena_.size());
   d.adsh_len = static_cast<uint32_t>(adsh.size());
   d.tag_len = static_cast<uint32_t>(tag.size());
@@ -196,6 +199,9 @@ void SecEdgarQ6TxnBuffer::Absorb(SecEdgarQ6TxnBuffer &&from) {
     return;
   }
   pending_ = pending_ || from.pending_;
+  if (arena_.size() + from.arena_.size() >= std::numeric_limits<uint32_t>::max()) {
+    throw std::length_error("sec_edgar q6: more than 4 GB of changed keys in one transaction");
+  }
   const auto shift = static_cast<uint32_t>(arena_.size());
   arena_.insert(arena_.end(), from.arena_.begin(), from.arena_.end());
   for (auto d : from.num_deltas_) {

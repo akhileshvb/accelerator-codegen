@@ -69,7 +69,9 @@ Epoch AssignedEpoch(int index);
 
 // ---- reader epoch (S3) and version floor (S4) -------------------------------
 // The newest epoch of accelerator `index` that `snapshot` sees. nullopt if
-// the snapshot is older than what the ring remembers (answer from SQL).
+// the snapshot is older than what the ring remembers, or does not see the
+// writes of transactions that began before the accelerator was activated
+// (they have no epoch, but the build contains them): answer from SQL.
 std::optional<Epoch> ReaderEpoch(int index, Snapshot snapshot);
 // An epoch every open snapshot in the database sees: no reader will ever ask
 // for an older one. Uses Postgres APIs (worker main thread).

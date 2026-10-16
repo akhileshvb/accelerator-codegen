@@ -26,6 +26,8 @@ using core::ByteWriter;
 constexpr std::size_t kPairWalkGrain = 32768;
 // Partsupp rows per build slice: a merge step is ~20 ns, so ~1 ms.
 constexpr std::size_t kSeriesIdxGrain = 65536;
+// Pairs per maintenance slice: rebuilding one pair's series is ~1 us.
+constexpr std::size_t kSeriesGrain = 512;
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
 constexpr uint32_t kVersion = 3;
 
@@ -566,6 +568,27 @@ private:
   // partsupp rows in (partkey, suppkey) order; consumed by FinishPairs.
   std::vector<PsRow> ps;
 };
+
+// Inserts or removes one lineitem's (shipdate, quantity) in a pair's series.
+void ApplySeriesDelta(std::vector<TpchQ20DateQuantity> &series,
+                      const TpchQ20LineitemDelta &delta) {
+  if (delta.sign > 0) {
+    const auto pos = std::upper_bound(
+        series.begin(), series.end(), delta.shipdate_days,
+        [](int32_t d, const TpchQ20DateQuantity &e) { return d < e.shipdate_days; });
+    series.insert(pos, {delta.shipdate_days, delta.quantity_raw});
+    return;
+  }
+  auto it = std::lower_bound(
+      series.begin(), series.end(), delta.shipdate_days,
+      [](const TpchQ20DateQuantity &e, int32_t d) { return e.shipdate_days < d; });
+  for (; it != series.end() && it->shipdate_days == delta.shipdate_days; ++it) {
+    if (it->quantity_raw == delta.quantity_raw) {
+      series.erase(it);
+      break;
+    }
+  }
+}
 
 } // namespace
 
@@ -1245,49 +1268,45 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
   // Lineitem deltas: per-pair complete series, copied from the overlay (or
   // base) on first touch, collected into one new overlay layer.
   {
-    std::unordered_map<uint64_t, std::vector<TpchQ20DateQuantity>> touched;
-    touched.reserve(buffer.LineitemDeltas().size());
-    for (const auto &delta : buffer.LineitemDeltas()) {
-      const uint64_t pair_key = MakePairKey(delta.partkey, delta.suppkey);
-      auto [it0, inserted] = touched.try_emplace(pair_key);
-      auto &series = it0->second;
+    const auto &deltas = buffer.LineitemDeltas();
+    // Deltas per (part, supplier) pair, in arrival order.
+    std::unordered_map<uint64_t, uint32_t> job_of;
+    std::vector<uint64_t> keys;
+    std::vector<std::vector<uint32_t>> job_deltas;
+    job_of.reserve(deltas.size());
+    for (uint32_t i = 0; i < deltas.size(); ++i) {
+      const uint64_t pair_key = MakePairKey(deltas[i].partkey, deltas[i].suppkey);
+      const auto [it, inserted] = job_of.try_emplace(pair_key, keys.size());
       if (inserted) {
-        const auto cur = parent->series.Find(pair_key);
-        if (cur.found) {
-          series.assign(cur.begin(), cur.end());
-        } else {
-          const uint32_t idx = base.FindSeries(pair_key);
-          if (idx != TpchQ20Base::kNoSeries)
-            series = BaseSeriesCopy(base, idx);
-        }
+        keys.push_back(pair_key);
+        job_deltas.emplace_back();
       }
-      if (delta.sign > 0) {
-        const auto pos = std::upper_bound(
-            series.begin(), series.end(), delta.shipdate_days,
-            [](int32_t d, const TpchQ20DateQuantity &e) {
-              return d < e.shipdate_days;
-            });
-        series.insert(pos, {delta.shipdate_days, delta.quantity_raw});
-      } else {
-        auto it = std::lower_bound(
-            series.begin(), series.end(), delta.shipdate_days,
-            [](const TpchQ20DateQuantity &e, int32_t d) {
-              return e.shipdate_days < d;
-            });
-        for (; it != series.end() && it->shipdate_days == delta.shipdate_days;
-             ++it) {
-          if (it->quantity_raw == delta.quantity_raw) {
-            series.erase(it);
-            break;
-          }
-        }
-      }
+      job_deltas[it->second].push_back(i);
     }
-    if (!touched.empty()) {
+    // Pairs are independent: each slice rebuilds the series of its own pairs.
+    std::vector<std::vector<TpchQ20DateQuantity>> series(keys.size());
+    core::ParallelSlices(
+        services, keys.size(), kSeriesGrain,
+        [&](std::size_t, std::size_t first, std::size_t last) {
+          for (std::size_t job = first; job < last; ++job) {
+            auto &list = series[job];
+            const auto cur = parent->series.Find(keys[job]);
+            if (cur.found) {
+              list.assign(cur.begin(), cur.end());
+            } else {
+              const uint32_t idx = base.FindSeries(keys[job]);
+              if (idx != TpchQ20Base::kNoSeries)
+                list = BaseSeriesCopy(base, idx);
+            }
+            for (const auto i : job_deltas[job])
+              ApplySeriesDelta(list, deltas[i]);
+          }
+        });
+    if (!keys.empty()) {
       TpchQ20SeriesLayer::Builder builder;
-      builder.Reserve(touched.size(), touched.size() * 4);
-      for (const auto &[key, vec] : touched)
-        builder.Add(key, vec.data(), vec.size());
+      builder.Reserve(keys.size(), keys.size() * 4);
+      for (std::size_t job = 0; job < keys.size(); ++job)
+        builder.Add(keys[job], series[job].data(), series[job].size());
       next->series.Push(builder.Finish());
     }
   }

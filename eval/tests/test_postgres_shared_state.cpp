@@ -14,6 +14,8 @@
 //   read_after_own_commit   a read right after the same connection's commit sees it, served
 //   older_snapshot          a REPEATABLE READ reader that began before a commit still gets its
 //                           own snapshot's answer afterwards
+//   snapshot_before_state   REPEATABLE READ readers whose snapshot predates the accelerator's
+//                           first use, or sees none of its commits, get their own answer
 //   abort_and_savepoint     rolled back transactions and subtransactions change nothing and cost
 //                           no rebuild
 //   truncate_rebuild        TRUNCATE (not maintainable) rebuilds the state; answers stay exact
@@ -827,6 +829,45 @@ void OlderSnapshot(const Tools &tools) {
   Report("older_snapshot", err, info);
 }
 
+// Fresh database. A reader's snapshot predates both a commit and the accelerator's first use: the
+// build contains that commit, so the reader must be answered from SQL. A second reader sees no
+// commit since the activation (epoch 0) while a later one has been applied: it must still get the
+// earlier state, never the newest.
+void SnapshotBeforeState(const Tools &tools) {
+  std::string err, info;
+  try {
+    MakeDb(tools);
+    const Q q = MakeQ(6);
+    Conn w(tools, kDb), early(tools, kDb), late(tools, kDb);
+    early.Exec("BEGIN ISOLATION LEVEL REPEATABLE READ");
+    const auto ref_early = early.Text(q.ref);
+    w.Exec("UPDATE lineitem SET l_extendedprice = l_extendedprice + 100");
+    if (auto e = Check(w, q, "first use"); !e.empty())
+      throw std::runtime_error(e);
+    const auto accel_early = early.Text(q.accel);
+    early.Exec("COMMIT");
+    if (auto e = MatchError(ref_early, accel_early, "snapshot before the first use"); !e.empty())
+      throw std::runtime_error(e);
+
+    late.Exec("BEGIN ISOLATION LEVEL REPEATABLE READ");
+    const auto ref_late = late.Text(q.ref);
+    w.Exec("UPDATE lineitem SET l_extendedprice = l_extendedprice + 100");
+    if (auto e = Check(w, q, "newer snapshot"); !e.empty())
+      throw std::runtime_error(e);
+    const auto before = late.Counts();
+    const auto accel_late = late.Text(q.accel);
+    const auto after = late.Counts();
+    late.Exec("COMMIT");
+    if (auto e = MatchError(ref_late, accel_late, "snapshot before the first commit"); !e.empty())
+      throw std::runtime_error(e);
+    info = std::string("snapshot before the first commit answered from ") +
+           (after[0] > before[0] ? "its version (hit)" : "SQL (fallback)");
+  } catch (const std::exception &e) {
+    err = e.what();
+  }
+  Report("snapshot_before_state", err, info);
+}
+
 void AbortAndSavepoint(const Tools &tools) {
   std::string err, info;
   try {
@@ -923,6 +964,8 @@ int main(int argc, char **argv) {
       ReadAfterOwnCommit(tools);
     if (run("older_snapshot"))
       OlderSnapshot(tools);
+    if (run("snapshot_before_state"))
+      SnapshotBeforeState(tools);
     if (run("abort_and_savepoint"))
       AbortAndSavepoint(tools);
     if (run("truncate_rebuild"))

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -41,8 +42,8 @@ public:
   // ---- S4 version floor ----
   // The lowest reader epoch any open reader may still use; versions below it
   // that a newer version supersedes can be dropped. kNoFloor: keep only the
-  // newest version.
-  static constexpr Epoch kNoFloor = 0;
+  // newest version. (Not 0: a reader may be at epoch 0.)
+  static constexpr Epoch kNoFloor = std::numeric_limits<Epoch>::max();
   virtual Epoch OldestReaderEpoch() const = 0;
 
   // ---- S5 build snapshot ----

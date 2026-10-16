@@ -23,6 +23,8 @@ constexpr uint32_t kWindowMagic = 0x57313551; // Q15W
 constexpr int32_t kEpoch = 719468;
 // Windows per build slice: a rescan walks every supplier slot (~tens of us at SF 1).
 constexpr std::size_t kRescanGrain = 8;
+// Commits below this many lineitem deltas apply their month windows inline.
+constexpr std::size_t kParallelDeltaMin = 4096;
 
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -222,6 +224,49 @@ bool ReadSupplier(const core::AuxRow &row, TpchQ15SupplierInput &out) {
   if (!StringCell(row, 3, out.phone))
     return false;
   return true;
+}
+
+// Applies one month's lineitem deltas, maintaining the max/winner set
+// incrementally; a full pass over the dense array is needed only when the
+// sole current winner decreases.
+void ApplyWindowDeltas(TpchQ15WindowState &ws,
+                       const std::vector<TpchQ15LineitemDelta> &deltas,
+                       const std::vector<uint32_t> &indices) {
+  bool rescan = false;
+  for (const auto index : indices) {
+    const auto &delta = deltas[index];
+    const int64_t signed_rev =
+        static_cast<int64_t>(delta.sign) * delta.revenue_raw;
+    if (signed_rev == 0)
+      continue;
+    const int64_t old_rev = ws.rev.Add(delta.suppkey, signed_rev);
+    const int64_t new_rev = old_rev + signed_rev;
+    if (old_rev == 0)
+      ++ws.nonzero;
+    if (new_rev == 0)
+      --ws.nonzero;
+    ws.empty = ws.nonzero == 0;
+    if (rescan)
+      continue;
+    const bool was_winner =
+        old_rev != 0 && !ws.winners.empty() && old_rev == ws.max_revenue;
+    const auto pos = std::lower_bound(ws.winners.begin(), ws.winners.end(),
+                                      delta.suppkey);
+    if (was_winner && new_rev < old_rev) {
+      if (ws.winners.size() > 1)
+        ws.winners.erase(pos); // max unchanged: another supplier holds it
+      else
+        rescan = true;
+    } else if (new_rev != 0 &&
+               (ws.winners.empty() || new_rev > ws.max_revenue)) {
+      ws.max_revenue = new_rev;
+      ws.winners.assign(1, delta.suppkey);
+    } else if (new_rev != 0 && new_rev == ws.max_revenue && !was_winner) {
+      ws.winners.insert(pos, delta.suppkey);
+    }
+  }
+  if (rescan || ws.nonzero == 0)
+    ws.Rescan();
 }
 
 } // namespace
@@ -726,49 +771,23 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
     windows[month] = std::move(ws);
   }
 
-  // Apply lineitem deltas to windows, maintaining the max/winner set
-  // incrementally; a full pass over the dense array is needed only when the
-  // sole current winner of a window decreases.
-  std::set<int32_t> rescan;
-  for (const auto &delta : buffer.LineitemDeltas()) {
-    auto it = windows.find(delta.month_key);
-    if (it == windows.end())
-      continue;
-    auto &ws = it->second;
-    const int64_t signed_rev =
-        static_cast<int64_t>(delta.sign) * delta.revenue_raw;
-    if (signed_rev == 0)
-      continue;
-    const int64_t old_rev = ws.rev.Add(delta.suppkey, signed_rev);
-    const int64_t new_rev = old_rev + signed_rev;
-    if (old_rev == 0)
-      ++ws.nonzero;
-    if (new_rev == 0)
-      --ws.nonzero;
-    ws.empty = ws.nonzero == 0;
-    if (rescan.count(delta.month_key))
-      continue;
-    const bool was_winner =
-        old_rev != 0 && !ws.winners.empty() && old_rev == ws.max_revenue;
-    const auto pos = std::lower_bound(ws.winners.begin(), ws.winners.end(),
-                                      delta.suppkey);
-    if (was_winner && new_rev < old_rev) {
-      if (ws.winners.size() > 1)
-        ws.winners.erase(pos); // max unchanged: another supplier holds it
-      else
-        rescan.insert(delta.month_key);
-    } else if (new_rev != 0 &&
-               (ws.winners.empty() || new_rev > ws.max_revenue)) {
-      ws.max_revenue = new_rev;
-      ws.winners.assign(1, delta.suppkey);
-    } else if (new_rev != 0 && new_rev == ws.max_revenue && !was_winner) {
-      ws.winners.insert(pos, delta.suppkey);
-    }
-  }
-  for (auto &[month, ws] : windows) {
-    if (rescan.count(month) || ws.nonzero == 0)
-      ws.Rescan();
-  }
+  // Months are independent windows: each slice applies the deltas of whole
+  // months, in arrival order.
+  std::map<int32_t, std::vector<uint32_t>> month_deltas;
+  for (uint32_t i = 0; i < buffer.LineitemDeltas().size(); ++i)
+    month_deltas[buffer.LineitemDeltas()[i].month_key].push_back(i);
+  std::vector<std::pair<TpchQ15WindowState *, const std::vector<uint32_t> *>>
+      jobs;
+  for (auto &[month, ws] : windows)
+    jobs.emplace_back(&ws, &month_deltas[month]);
+  core::ParallelSlices(
+      services, jobs.size(),
+      buffer.LineitemDeltas().size() < kParallelDeltaMin ? jobs.size() : 1,
+      [&](std::size_t, std::size_t first, std::size_t last) {
+        for (std::size_t j = first; j < last; ++j)
+          ApplyWindowDeltas(*jobs[j].first, buffer.LineitemDeltas(),
+                            *jobs[j].second);
+      });
 
   // Apply supplier deltas to a directory copy (chunk-level copy on write).
   TpchQ15SupplierDirectory dir_copy;
