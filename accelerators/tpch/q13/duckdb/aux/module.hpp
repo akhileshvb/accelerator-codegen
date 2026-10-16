@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -7,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -29,34 +31,17 @@ struct TpchQ13OrderInput {
   std::string comment;
 };
 
-// Exact per-shard sizes of the initial load (optional): lets the build reserve
-// every vector once instead of growing it.
-struct TpchQ13ShardSize {
-  uint32_t shard = 0;
-  uint64_t orders = 0;       // orders with this custkey shard
-  uint64_t comment_bytes = 0;
-  uint64_t cust_slots = 0;   // highest customer local index + 1
-};
-
 class TpchQ13InitialScan {
 public:
   virtual ~TpchQ13InitialScan() = default;
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanCustomers(
-      const std::function<void(const TpchQ13CustomerInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ13CustomerInput &)> &) = 0;
   virtual void ScanOrders(
-      const std::function<void(const TpchQ13OrderInput &)> &) = 0;
-  // Same rows as ScanOrders, without per-row string copies where the source
-  // allows (the data pointer is valid only during the call).
-  virtual void ScanOrdersView(
-      const std::function<void(int64_t, const char *, std::size_t)> &consumer) {
-    ScanOrders([&](const TpchQ13OrderInput &input) {
-      consumer(input.custkey, input.comment.data(), input.comment.size());
-    });
-  }
-  virtual bool ShardSizes(std::vector<TpchQ13ShardSize> &out) {
-    (void)out;
-    return false;
-  }
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, int64_t custkey, std::string_view comment)> &) = 0;
   virtual bool LookupOrder(int64_t custkey, TpchQ13OrderInput &out) {
     (void)custkey;
     (void)out;
@@ -144,11 +129,25 @@ struct TpchQ13OrderShard {
   std::size_t Size() const { return BaseSize() + tail.custkey.size(); }
 };
 
-// Per-customer data of one shard, indexed by custkey >> bits.
+// Per-customer data of one shard, one slot per customer key seen (local id =
+// custkey >> bits). Dense key spaces use the identity layout; a sparse one lists
+// the local ids of its slots, so memory follows the customers, not the largest key.
 struct TpchQ13CustShard {
+  static constexpr std::size_t kNone = ~std::size_t{0};
+  std::vector<uint32_t> ids;                // ascending local ids; empty: slot i = id i
   std::vector<int32_t> total;               // orders with this custkey
   std::vector<int32_t> mult;                // customer rows with this key
-  std::vector<std::vector<int32_t>> match;  // [pattern][local] matching orders
+  std::vector<std::vector<int32_t>> match;  // [pattern][slot] matching orders
+
+  uint32_t IdOf(std::size_t slot) const {
+    return ids.empty() ? static_cast<uint32_t>(slot) : ids[slot];
+  }
+  std::size_t SlotOf(uint32_t id) const {
+    if (ids.empty())
+      return id < total.size() ? id : kNone;
+    const auto it = std::lower_bound(ids.begin(), ids.end(), id);
+    return it != ids.end() && *it == id ? static_cast<std::size_t>(it - ids.begin()) : kNone;
+  }
 };
 
 struct TpchQ13Pattern {
