@@ -32,52 +32,48 @@ void ScanTpchQ7Nations(
       [&](query::TpchQ7NationInput &&input) { consumer(input); });
 }
 
-void ScanTpchQ7Suppliers(
-    const std::function<void(const query::TpchQ7SupplierInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT s_suppkey, s_nationkey FROM supplier",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ7SupplierInput{TypedInt(cols, 0),
-                                          static_cast<int32_t>(TypedInt(cols, 1))};
-      },
-      [&](query::TpchQ7SupplierInput &&input) { consumer(input); });
+SplitTable SuppliersTable() { return {"s_suppkey, s_nationkey", "supplier", "", "s_suppkey"}; }
+
+query::TpchQ7SupplierInput DecodeSupplier(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), static_cast<int32_t>(TypedInt(cols, 1))};
 }
 
-void ScanTpchQ7Customers(
-    const std::function<void(const query::TpchQ7CustomerInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT c_custkey, c_nationkey FROM customer",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ7CustomerInput{TypedInt(cols, 0),
-                                          static_cast<int32_t>(TypedInt(cols, 1))};
-      },
-      [&](query::TpchQ7CustomerInput &&input) { consumer(input); });
+SplitTable CustomersTable() { return {"c_custkey, c_nationkey", "customer", "", "c_custkey"}; }
+
+query::TpchQ7CustomerInput DecodeCustomer(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), static_cast<int32_t>(TypedInt(cols, 1))};
 }
 
-void ScanTpchQ7Orders(
-    const std::function<void(const query::TpchQ7OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_orderkey, o_custkey FROM orders",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ7OrderInput{TypedInt(cols, 0),
-                                       TypedInt(cols, 1)};
-      },
-      [&](query::TpchQ7OrderInput &&input) { consumer(input); });
+SplitTable OrdersTable() { return {"o_orderkey, o_custkey", "orders", "", "o_orderkey"}; }
+
+query::TpchQ7OrderInput DecodeOrder(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1)};
 }
 
-void ScanTpchQ7Lineitems(
-    const std::function<void(const query::TpchQ7LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount, l_shipdate "
-      "FROM lineitem",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ7LineitemInput{TypedInt(cols, 0),
-                                          TypedInt(cols, 1),
-                                          TypedDecimalRaw(cols, 2), 2,
-                                          TypedDecimalRaw(cols, 3), 2,
-                                          TypedDate(cols, 4)};
-      },
-      [&](query::TpchQ7LineitemInput &&input) { consumer(input); });
+SplitTable LineitemsTable() {
+  return {"l_orderkey, l_suppkey, l_extendedprice, l_discount, l_shipdate", "lineitem", "",
+          "l_orderkey"};
+}
+
+query::TpchQ7LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0),        TypedInt(cols, 1), TypedDecimalRaw(cols, 2), 2,
+          TypedDecimalRaw(cols, 3), 2,                 TypedDate(cols, 4)};
+}
+
+template <class Input, class Decode>
+void ScanSerial(const SplitTable &table, Decode decode,
+                const std::function<void(const Input &)> &consumer) {
+  ScanTypedTuplesDecoded(SelectSql(table), decode, [&](Input &&input) { consumer(input); });
+}
+
+template <class Input, class Decode>
+void ScanPartitioned(const core::AuxEngineServices &services, const SplitTable &table,
+                     std::size_t partitions, Decode decode,
+                     const std::function<void(std::size_t, const Input &)> &sink) {
+  ScanTypedTuplesPartitioned(services, table, partitions,
+                             [&](std::size_t partition, const std::vector<std::string> &cols) {
+                               sink(partition, decode(cols));
+                             });
 }
 
 } // namespace scans
@@ -92,22 +88,50 @@ public:
   void ScanSuppliers(
       const std::function<void(const query::TpchQ7SupplierInput &)> &consumer)
       override {
-    scans::ScanTpchQ7Suppliers(consumer);
+    scans::ScanSerial(scans::SuppliersTable(), scans::DecodeSupplier, consumer);
   }
   void ScanCustomers(
       const std::function<void(const query::TpchQ7CustomerInput &)> &consumer)
       override {
-    scans::ScanTpchQ7Customers(consumer);
+    scans::ScanSerial(scans::CustomersTable(), scans::DecodeCustomer, consumer);
   }
   void ScanOrders(
       const std::function<void(const query::TpchQ7OrderInput &)> &consumer)
       override {
-    scans::ScanTpchQ7Orders(consumer);
+    scans::ScanSerial(scans::OrdersTable(), scans::DecodeOrder, consumer);
   }
   void ScanLineitems(
       const std::function<void(const query::TpchQ7LineitemInput &)> &consumer)
       override {
-    scans::ScanTpchQ7Lineitems(consumer);
+    scans::ScanSerial(scans::LineitemsTable(), scans::DecodeLineitem, consumer);
+  }
+  void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ7SupplierInput &)> &sink)
+      override {
+    scans::ScanPartitioned(services, scans::SuppliersTable(), partitions,
+                           scans::DecodeSupplier, sink);
+  }
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ7CustomerInput &)> &sink)
+      override {
+    scans::ScanPartitioned(services, scans::CustomersTable(), partitions,
+                           scans::DecodeCustomer, sink);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ7OrderInput &)> &sink)
+      override {
+    scans::ScanPartitioned(services, scans::OrdersTable(), partitions, scans::DecodeOrder,
+                           sink);
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ7LineitemInput &)> &sink)
+      override {
+    scans::ScanPartitioned(services, scans::LineitemsTable(), partitions,
+                           scans::DecodeLineitem, sink);
   }
 };
 
