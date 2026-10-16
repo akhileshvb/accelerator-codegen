@@ -39,7 +39,7 @@ struct ColumnData {
       values;
 
   bool IsNull(std::size_t row) const { return !null_flags.empty() && null_flags[row] != 0; }
-  // The cell as a core::AuxValue (for row views and legacy modules).
+  // The cell as a core::AuxValue (for row views).
   core::AuxValue Value(std::size_t row) const;
 };
 
@@ -72,7 +72,7 @@ constexpr int32_t kOutsideProjection = -1;
 
 using ColumnarBatchRef = std::shared_ptr<const ColumnarBatch>;
 
-// The legacy row view a module expects: rows in `projection` order
+// The row view (core::MutationBatch) a module expects: rows in `projection` order
 // (TableDependency::mutation_attnums; empty: every captured column in
 // attnum order). `updated_columns` is mapped into projection positions; an
 // updated column outside the projection becomes position projection.size(),
@@ -81,8 +81,8 @@ using ColumnarBatchRef = std::shared_ptr<const ColumnarBatch>;
 core::MutationBatch ToMutationBatch(const ColumnarBatch &batch,
                                     const std::vector<int32_t> &projection);
 
-// Builds a ColumnarBatch from a legacy MutationBatch whose rows hold
-// `attnums` (for engines/tests that still produce rows). Column types come
+// Builds a ColumnarBatch from a row-form MutationBatch whose rows hold
+// `attnums` (for engines and tests that produce rows). Column types come
 // from the first non-NULL value of each column (else the type its NULLs
 // declare). An updated position outside `attnums` becomes kOutsideProjection.
 ColumnarBatch FromMutationBatch(const core::MutationBatch &batch,

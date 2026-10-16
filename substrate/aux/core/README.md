@@ -50,7 +50,9 @@ model that does not exist falls back to the nearest smaller calibrated scale
 # Concurrency: versioned state and pending commits
 
 All engines use one store, `VersionedAuxStore`
-(`substrate/aux/state/versioned_aux_store.hpp`); each engine store only configures it.
+(`substrate/aux/state/versioned_aux_store.hpp`), which an engine only configures
+through its epoch and floor providers. Epochs per engine are listed in
+`substrate/aux/runtime/README.md`.
 
 **Versions.** Each accelerator's state is a short list of versions. A version
 is the accelerator's whole state (an immutable partition map; unchanged
@@ -58,7 +60,8 @@ partitions are shared between versions) and the **epoch** from which it is
 current. A reader at snapshot epoch `E` sees the newest version with epoch
 `<= E`. Every partition it reads comes from that one version.
 
-- A reader epoch of `kNewestSnapshot` (0) means "no snapshot: the newest".
+- A reader epoch of `kNewestSnapshot` (the maximum epoch) means "no snapshot:
+  the newest". Epoch 0 is a snapshot that sees no commit.
 - A version epoch of `kAllSnapshots` (0) means "current for every snapshot";
   it replaces the history.
 
@@ -66,10 +69,9 @@ current. A reader at snapshot epoch `E` sees the newest version with epoch
 engine's runtime), the first read of an accelerator pins its version. Later
 reads in the query reuse that version.
 
-**Commits** (`AcceleratorRuntime`, per accelerator):
+**Commits** (driven per accelerator by `AcceleratorRuntime`):
 
-- **PRE_COMMIT**: `StageMaintenance` builds the next state (no store lock).
-  Then `BeginCommit` marks the accelerator pending from the commit's epoch:
+- `BeginCommit` marks the accelerator pending from the commit's epoch:
   - readers whose snapshot may include the commit (`E >=` that epoch, or
     newest) wait for it, without a timeout (`kWaitForPublish`; set
     `ACCEL_AUX_PENDING_WAIT_US` to bound the wait);
@@ -77,13 +79,13 @@ reads in the query reuse that version.
 
   At most one commit per accelerator is in flight; a second `BeginCommit`
   throws.
-- **COMMIT**: `FinishCommit` appends one new version (invalidations and
-  updates applied together) at the commit's epoch, and ends the pending mark.
-  A full rebuild (invalidate all partitions, with updates) replaces the
-  state: partitions the rebuild no longer has are dropped, not left invalid.
-- **ABORT**: `AbortCommit` ends it; nothing changes.
-- **COMMIT throws**: the touched partitions are invalidated for every
-  snapshot.
+- `FinishCommit` appends one new version (invalidations and updates applied
+  together) at the commit's epoch, and ends the pending mark. A full rebuild
+  (invalidate all partitions, with updates) replaces the state: partitions the
+  rebuild no longer has are dropped, not left invalid.
+- `AbortCommit` ends the pending mark; nothing changes.
+- If maintenance fails, the runtime marks the state stale and rebuilds it;
+  readers wait for the rebuild or fall back.
 
 **Outside commits:**
 
@@ -110,19 +112,6 @@ destroys inline).
 exclusive one. A waiting reader sleeps on a condition variable. Readers get
 `shared_ptr` payloads, and a module must hold the payload while using it.
 
-What each engine supplies:
-
-| Engine | Snapshot epoch | Commit epoch | Floor |
-|---|---|---|---|
-| DuckDB | the reading transaction's start time (`DuckDBAuxBackend::ReaderScope`) | commit id + 1 (`AuxCommitClock`, told by the fork's `CommitObserver`) | lowest active start time |
-| PostgreSQL | the statement's pinned `AuxMutationEpoch` | `AuxMutationEpoch` at COMMIT | none (per-backend store) |
-| MySQL | newest | the runtime's epoch provider, if any | none |
-
-DuckDB visibility is exact: a transaction sees commit `c` iff `c` is below
-its start time, which is the condition for the version at `c + 1` to be
-selected. A DuckDB build is current from the start time of a transaction
-begun when the build starts.
-
 **The verified Verus store.** A Verus accelerator's state can instead live
 in its Verus store (`substrate/verus/store`, `substrate/aux/state/verus_aux_store.hpp`):
 the same protocol (versions from engine epochs, a pending commit readers
@@ -130,8 +119,8 @@ wait for, pruning to the floor) behind one verified reader-writer lock, with
 a proof that every kept version's state answers for the database at that
 version. Differences from `VersionedAuxStore`:
 
-- the module prepares each next version from the store's newest version
-  (`q21vs_prepare_*`), not from a payload the host passes back;
+- the module prepares each next version from the store's newest version, not
+  from a payload the host passes back;
 - one commit at a time (`BeginCommit` while one is in flight throws, as
   here); an install whose base is no longer the newest leaves one invalid
   version (`StaleInstalls`, should stay 0);
@@ -142,47 +131,23 @@ version. Differences from `VersionedAuxStore`:
 pipeline's kits), on DuckDB; anything else keeps the C++ store. Postgres
 and MySQL use the C++ store.
 
-# Shared auxiliary-state calibration
+# Calibration
 
-The shared core carries immutable, query-owned state images as typed payloads.
-Engine adapters decide store mode:
+`aux_calibration.hpp` holds the engine-neutral calibration runners.
+`CalibrateAuxCostModel` takes timed hooks from a backend (build the initial
+image, execute the auxiliary and fallback paths, apply a delta of a requested
+size, rebuild one partition or everything, invalidate) and uses warmups and
+median wall-clock samples. It fits the complete delta path, so the fitted
+intercept goes in `apply_delta_overhead_us`, the per-row slope in
+`apply_delta_per_row_us`, and `apply_delta_base_us` stays zero (the selector
+would charge the intercept twice). The result is written as flat JSON that
+`LoadAuxCostModelJson` reads. Calibration starts from the accelerator's
+existing parameters, so thresholds survive: only the measured fields change.
 
-- **typed_in_process** — publish typed `StateImage` payloads directly (no
-  serialize/deserialize on the hot path).
-- **serialized_boundary** — store bytes at a process/SHM boundary and decode
-  before exposing the same typed `StateSnapshot` to a module (`byte_stream.hpp`).
-
-`aux_calibration.hpp` contains the engine-neutral calibration runner. A backend
-supplies callbacks that perform the real operation against its own base tables
-and state store:
-
-- build the initial image;
-- execute the auxiliary and fallback paths;
-- apply a delta batch of a requested size;
-- rebuild one partition and the complete state; and
-- invalidate the state.
-
-The runner uses warmups and median wall-clock samples. It fits the complete
-shared-interface delta path, including state materialization, the maintenance
-kernel, output refresh, and publication preparation. The fitted intercept is
-stored in `apply_delta_overhead_us`, the per-row slope in
-`apply_delta_per_row_us`, and the compatibility field
-`apply_delta_base_us` is set to zero so the intercept is not charged twice by
-the selector. The result is written as flat JSON consumed by
-`LoadAuxCostModelJson`.
-
-The engine adapter should seed calibration from its existing query-specific
-configuration so thresholds and confidence parameters survive calibration.
-Only the measured timing fields are replaced. This keeps calibration from
-silently changing the query module's correctness or safety limits.
-
-Adapters typically accept a `CostModelCallback` and/or an env var such as
-`ACCELERATOR_CODEGEN_{ENGINE}_AUX_COST_MODEL` (see the active host adapter).
-Missing files intentionally fall back to default parameters.
-
-The maintenance selector also consumes the adapter's estimate of queries
-before the next write (`WorkloadCallback` or an engine-specific expected-queries
-env/GUC).
+A missing cost-model file falls back to default parameters. The selector's
+estimate of queries before the next write comes from the engine
+(`EngineSlots::ExpectedQueriesBeforeNextWrite`), or the
+`ACCEL_EXPECTED_QUERIES_BEFORE_WRITE` override.
 
 ## Generic data-structure primitives
 

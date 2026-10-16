@@ -1,5 +1,5 @@
 // SCAFFOLDING
-// C5: ColumnarBatch value access, projection to the legacy row view, and back.
+// C5: ColumnarBatch value access, projection to the row view, and back.
 #include "substrate/aux/runtime/columnar_batch.hpp"
 
 #include <algorithm>

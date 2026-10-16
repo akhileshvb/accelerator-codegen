@@ -12,7 +12,7 @@ Design note: "Postgres Shared State Redesign" (contracts C1–C12).
 
 | Header | Contract | What it is |
 |---|---|---|
-| `columnar_batch.hpp` | C5 | `ColumnarBatch`, the captured change of one statement on one table: typed columns, the union of the columns any accelerator watches, shared by reference. `ToMutationBatch` gives a legacy module its projected `core::MutationBatch`. |
+| `columnar_batch.hpp` | C5 | `ColumnarBatch`, the captured change of one statement on one table: typed columns, the union of the columns any accelerator watches, shared by reference. `ToMutationBatch` gives a module its projected `core::MutationBatch`. |
 | `engine_slots.hpp` | C2 | The slots S1–S8 a backend implements. |
 | `thread_budget.hpp` | C12 | One thread budget per backend; the shared pool every parallel step draws from. |
 | `sequenced_applier.hpp` | C3 | Per accelerator: orders committed changes by sequence number, detects gaps, catches a fresh build up. |
@@ -93,3 +93,21 @@ accelerators, partition-parallel staging, and intra-query `Execute` take
 workers from its pool. Its size is the backend's knob (DuckDB `threads`,
 Postgres `accel.threads`, MySQL `accel_threads`), `ACCEL_AUX_THREADS`
 overriding; the default is the CPU count of the process's affinity mask.
+
+## Locks
+
+Acquisition order is left to right; a lock never waits on one to its left.
+
+| Lock | Protects | Notes |
+|---|---|---|
+| `AcceleratorRuntime::build_mutex` | one build at a time | held for the whole build |
+| `AcceleratorRuntime::commit_mutex` | store writers: held from `BeginCommit` to `PublishCommit`/`AbortCommit`, around applies and installs | not tied to a thread: unlocked by whichever thread publishes |
+| `AcceleratorRuntime::state_mutex` | applier, sync flags, reader gates, stats | short sections; readers wait on `state_cv`; never held across module or store calls (only the cheap `EngineSlots` epoch queries) |
+| `VersionedAuxStore::mutex` | versions, pending marks, owner map | writer-preferring rwlock; a leaf, always taken inside `commit_mutex` by writers |
+| `RuntimeHost::mutex` | accelerator registry, per-table index, writer transactions | leaf: never held while calling into an accelerator that locks |
+| `RuntimeHost::work_mutex` | queue of host-thread engine work | leaf |
+| `ThreadBudget::Impl::mutex` | pool accounting, job queue, phase limits | leaf: jobs run with it released |
+
+Commits of different accelerators take their `commit_mutex` in accelerator-id
+order (`RuntimeHost::PreCommit`), so concurrent writers cannot deadlock.
+Reads take only `state_mutex` (briefly) and the store's shared lock.

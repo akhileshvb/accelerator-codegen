@@ -1,9 +1,11 @@
 // SCAFFOLDING
+// The engine-neutral vocabulary of auxiliary state: values, state images, the
+// store and services interfaces, and the query-module interface.
 #pragma once
 
 #include <algorithm>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -12,9 +14,9 @@
 #include <variant>
 #include <vector>
 
-#include "substrate/aux/state/invalidation_plan.hpp"
 #include "substrate/aux/core/aux_maintenance_policy.hpp"
 #include "substrate/aux/maintenance/maintenance_action.hpp"
+#include "substrate/aux/state/invalidation_plan.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 
@@ -38,7 +40,7 @@ enum class AuxType : uint8_t {
   Double,
   Date,
   String,
-  // Appended: existing AuxType values and AuxPayload indices are unchanged.
+  // Last: AuxType values and AuxPayload indices are part of the wire format.
   ScaledDecimal128,
 };
 
@@ -137,10 +139,8 @@ struct StateImage {
   PartitionId partition = 0;
   Version version = 0;
 
-  // State is query-owned.  In-process engines keep the immutable typed
-  // object here; an engine that has to cross a process boundary can encode it
-  // at its own adapter boundary.  The common layer never has to deserialize
-  // an image merely to execute a query.
+  // The module's immutable typed state, opaque to the substrate; an engine
+  // that crosses a process boundary encodes it in its own adapter.
   std::shared_ptr<const void> payload;
 
   template <typename T>
@@ -254,9 +254,9 @@ PartitionSetPlanFromImages(const std::vector<StateImage> &images) {
   return plan;
 }
 
-// RebuildPartition publishes replacement images for only the touched slots.
-// Do not set pending_rebuild to AllPartitions — that would drop every other
-// partition when the coordinator merges invalidation plans.
+// RebuildPartition publishes replacement images for only the touched
+// partitions, so pending_rebuild stays empty: AllPartitions would drop every
+// other partition when the runtime merges invalidation plans.
 inline void FinishRebuildPartition(StagedMaintenanceOutcome &outcome) {
   outcome.action = MaintenanceAction::RebuildPartition;
   outcome.pending_rebuild = InvalidationPlan{};
@@ -305,10 +305,8 @@ public:
 
   virtual StateSnapshot Read(const VisibilityToken &) const = 0;
 
-  // Read only the requested published partitions. The default implementation
-  // preserves compatibility for stores that have no efficient partition
-  // selector; engine stores should override it to avoid serializing unrelated
-  // images. This is a read filter, not an image cache.
+  // Only the requested published partitions. The default filters Read();
+  // stores with a partition index should override it.
   virtual StateSnapshot
   ReadPartitions(const VisibilityToken &visibility,
                  const std::vector<PartitionId> &partitions) const {
@@ -324,9 +322,9 @@ public:
     return snapshot;
   }
 
-  // Linearized ReadHit: validity + immutable handles for every required
-  // partition under one observation. Default: CheckValidity then
-  // ReadPartitions with completeness check (engines should override).
+  // Validity plus immutable handles for every required partition, in one
+  // observation. Default: CheckValidity, then ReadPartitions, which must
+  // return them all; stores should override it to make it atomic.
   virtual StateSnapshot
   ReadHitPartitions(const VisibilityToken &visibility,
                     const QueryKey &accel_key,
@@ -360,15 +358,15 @@ public:
                           Version expected_version) = 0;
 
   // Commit protocol, driven by AcceleratorRuntime, per accelerator.
-  // VersionedAuxStore (every engine's store) implements versions; the
-  // defaults are for stores without them, which keep their current state
-  // until COMMIT (they cannot hold a commit back from readers in between).
+  // VersionedAuxStore implements versions; the defaults are for stores
+  // without them, which keep their current state until FinishCommit (they
+  // cannot hold a commit back from readers in between).
   //
-  // PRE_COMMIT: the accelerator's state is about to change (`plan`: the
+  // BeginCommit: the accelerator's state is about to change (`plan`: the
   // partitions the commit touches). Readers whose snapshot may include the
   // commit wait for FinishCommit; older snapshots keep reading theirs.
   virtual void BeginCommit(const AcceleratorId &, const InvalidationPlan &) {}
-  // COMMIT: one new state, current from this commit on: `invalidate`
+  // FinishCommit: one new state, current from this commit on: `invalidate`
   // applied, then `updates` published, together. `expected_version` is the
   // module's (StagedMaintenanceOutcome::expected_version; 0: none) for stores
   // that check it on publish.
@@ -386,7 +384,7 @@ public:
       TryPublish(outcome, expected_version);
     }
   }
-  // ABORT after BeginCommit: nothing changes.
+  // After BeginCommit, instead of FinishCommit: nothing changes.
   virtual void AbortCommit(const AcceleratorId &) {}
 };
 
@@ -400,8 +398,7 @@ public:
   virtual const maintenance::CostModelParams &MaintenanceCostModel() const;
 
   // Estimated number of auxiliary queries that will run before the next
-  // write. Engine adapters may provide a live workload hint; the default is
-  // retained for callers that do not yet expose workload telemetry.
+  // write: a workload hint (default 10).
   virtual double ExpectedQueriesBeforeNextWrite() const;
 
   // Rows in the dependency tables now; 0 if unknown. With the cost model's
@@ -411,9 +408,7 @@ public:
   virtual MaintenanceDecision ChooseMaintenance(
       const MaintenanceRequest &request) const;
 
-  // Intra-query worker count for parallel aux rebuild/execute. Default is 1
-  // (or ACCEL_AUX_THREADS when set). Engine adapters may map this to host
-  // thread/worker settings.
+  // Worker count for parallel build/execute. Default: ACCEL_AUX_THREADS, else 1.
   virtual std::size_t WorkerCount() const;
 
   // Runs fn(i) for i in [0, n) on the engine's thread pool (the calling thread

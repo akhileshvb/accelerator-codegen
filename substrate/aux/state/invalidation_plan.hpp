@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Which partitions of an accelerator's state a change invalidates.
 #pragma once
 
 #include <unordered_set>
@@ -10,16 +11,16 @@ namespace accelerator_codegen::aux_state {
 enum class InvalidationScope { None, PartitionSet, AllPartitions };
 
 struct InvalidationPlan {
-	InvalidationScope scope = InvalidationScope::None;
-	std::unordered_set<PartitionKey> partitions;
+  InvalidationScope scope = InvalidationScope::None;
+  std::unordered_set<PartitionKey> partitions;
 
-	bool IsEmpty() const {
-		return scope == InvalidationScope::None ||
-		       (scope == InvalidationScope::PartitionSet && partitions.empty());
-	}
+  bool IsEmpty() const {
+    return scope == InvalidationScope::None ||
+           (scope == InvalidationScope::PartitionSet && partitions.empty());
+  }
 };
 
+// Adds `delta` to `accumulator`; AllPartitions absorbs any set.
 void MergeInvalidationPlan(InvalidationPlan &accumulator, const InvalidationPlan &delta);
-void SubtractInvalidationPlan(InvalidationPlan &accumulator, const InvalidationPlan &completed);
 
 } // namespace accelerator_codegen::aux_state

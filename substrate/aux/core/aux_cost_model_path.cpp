@@ -1,4 +1,5 @@
 // SCAFFOLDING
+// Cost-model file lookup (see aux_cost_model_path.hpp).
 #include "substrate/aux/core/aux_cost_model_path.hpp"
 
 #include <cstdlib>

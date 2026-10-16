@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <map>
-#include <optional>
 #include <vector>
 
 #include "substrate/aux/runtime/columnar_batch.hpp"
@@ -33,7 +32,7 @@ struct CommittedChange {
 //   Stale           - the state is invalid and no build runs; commits are
 //                     queued until a build is started.
 //
-// Every committed change is Offer()ed in any order; Ready() returns the
+// Every committed change is Offer()ed in any order; TakeReady() returns the
 // changes that can be applied now, in sequence order.
 class SequencedApplier {
 public:
@@ -64,14 +63,11 @@ public:
   void MarkApplied(const CommittedChange &change);
 
   // A gap: the change after AppliedSeq() is announced or later ones are queued,
-  // but it has not arrived for `waited_us` (caller-measured). The caller
-  // decides to rebuild: call StartBuild.
+  // but it has not arrived. How long to wait before rebuilding is the caller's call.
   bool HasGap() const;
 
   // A build starts (any mode -> Building). Queued and future changes are kept.
   void StartBuild();
-  // The build's snapshot epoch is known.
-  void SetBuildEpoch(Epoch b);
   // The build was installed at epoch b. Returns the changes to apply as ONE
   // combined catch-up transaction: queued changes with epoch > b, in
   // sequence order, through the first gap. Changes with epoch <= b are
@@ -99,7 +95,6 @@ private:
   Seq applied_seq = 0;
   Epoch applied_epoch = 0;
   Seq highest_seen = 0;
-  std::optional<Epoch> build_epoch;
   Seq catch_up_seq = 0;
   Epoch catch_up_epoch = 0;
   Seq boundary_seq = 0;
