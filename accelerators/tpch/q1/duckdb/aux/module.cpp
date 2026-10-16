@@ -2,6 +2,8 @@
 #include "tpch/q1/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
 
@@ -259,6 +261,21 @@ void ApplyLineitemInput(const TpchQ1LineitemInput &input,
       ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
       ScaleToRaw(input.discount_raw, input.discount_scale, 2),
       ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1);
+}
+
+void MergeDayPartition(Q1DayPartition &into, const Q1DayPartition &from) {
+  for (uint32_t g = 0; g < from.n; ++g) {
+    auto *group = into.FindOrAdd(from.keys[g]);
+    if (!group)
+      throw std::logic_error("TPC-H Q1: more (returnflag, linestatus) groups than slots");
+    const auto &add = from.stats[g];
+    group->count += add.count;
+    group->sum_qty += add.sum_qty;
+    group->sum_base_price += add.sum_base_price;
+    group->sum_discount += add.sum_discount;
+    group->sum_disc_price += add.sum_disc_price;
+    group->sum_charge += add.sum_charge;
+  }
 }
 
 core::ScaledDecimal128 WideDecimal(const duckdb::hugeint_t &value, int32_t scale) {
@@ -660,7 +677,6 @@ TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
 std::unordered_map<int32_t, Q1DayPartition>
 TpchQ1Module::BuildStateForDays(core::AuxEngineServices &services,
                                 const std::set<int32_t> &days) const {
-  (void)services;
   std::unordered_map<int32_t, Q1DayPartition> state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q1 requires a typed initial scan source");
@@ -686,15 +702,25 @@ TpchQ1Module::BuildStateForDays(core::AuxEngineServices &services,
 
   if (!days.empty() && initial_scan->ScanDayGroupAggregatesForDays(days, consume))
     return state;
-  if (initial_scan->ScanDayGroupAggregates(consume))
-    return state;
 
-  initial_scan->ScanLineitems([&](const TpchQ1LineitemInput &input) {
-    if (!days.empty() && days.find(input.shipdate_days) == days.end())
-      return;
-    ApplyLineitemInput(input, state[input.shipdate_days]);
-  });
-  return state;
+  return core::PartitionedBuild<std::unordered_map<int32_t, Q1DayPartition>>(
+      services, [] { return std::unordered_map<int32_t, Q1DayPartition>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ1LineitemInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ1LineitemInput>{input});
+                                    });
+      },
+      [&](std::unordered_map<int32_t, Q1DayPartition> &partial,
+          const TpchQ1LineitemInput &input) {
+        if (days.empty() || days.count(input.shipdate_days))
+          ApplyLineitemInput(input, partial[input.shipdate_days]);
+      },
+      [](std::unordered_map<int32_t, Q1DayPartition> &into,
+         std::unordered_map<int32_t, Q1DayPartition> &&from) {
+        for (const auto &[day, partition] : from)
+          MergeDayPartition(into[day], partition);
+      });
 }
 
 std::vector<::accelerator_codegen::Q1OutputRow> TpchQ1Module::ComposeOutput(

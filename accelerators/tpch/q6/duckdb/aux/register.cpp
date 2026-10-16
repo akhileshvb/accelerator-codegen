@@ -115,23 +115,24 @@ struct TpchQ6Scan : TpchQ6InitialScan {
     consumer(input);
   }
   void ScanLineitems(
-      const std::function<void(const TpchQ6LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
-        connection,
-        "SELECT l_shipdate, l_discount, l_quantity, l_extendedprice FROM lineitem",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          ConsumeRow(chunk, row, consumer);
-        });
-  }
-  void ScanLineitemGroups(
-      const std::function<void(const TpchQ6LineitemInput &)> &consumer) override {
-    ScanQueryStreaming(
-        connection,
-        "SELECT date_trunc('month', l_shipdate)::DATE, l_discount, l_quantity, "
-        "SUM(l_extendedprice)::DECIMAL(18,2) FROM lineitem "
-        "GROUP BY date_trunc('month', l_shipdate), l_discount, l_quantity",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          ConsumeRow(chunk, row, consumer);
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ6LineitemInput &)> &sink) override {
+    ScanPartitioned(
+        services, connection, "lineitem",
+        {Nullable(DateColumn("l_shipdate")), Nullable(DecimalColumn("l_discount", 2)),
+         Nullable(DecimalColumn("l_quantity", 2)),
+         Nullable(DecimalColumn("l_extendedprice", 2))},
+        partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+          for (std::size_t i = 0; i < batch.size(); ++i) {
+            const auto row = batch.Row(i);
+            if (row.IsNull(0))
+              continue;
+            TpchQ6LineitemInput input{row.Date(0), row.IsNull(1) ? 0 : row.Decimal(1), 2,
+                                      row.IsNull(2) ? 0 : row.Decimal(2), 2,
+                                      row.IsNull(3) ? 0 : row.Decimal(3), 2};
+            input.null_cell = row.IsNull(1) || row.IsNull(2);
+            sink(partition, input);
+          }
         });
   }
   void ScanLineitemsForMonths(

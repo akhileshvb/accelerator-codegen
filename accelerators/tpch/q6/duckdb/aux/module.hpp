@@ -37,23 +37,17 @@ struct TpchQ6LineitemInput {
 class TpchQ6InitialScan {
 public:
   virtual ~TpchQ6InitialScan() = default;
+  // Partitioned scan for builds and the fallback: rows of one partition arrive
+  // in table order on one thread; partitions run concurrently on the pool.
   virtual void ScanLineitems(
-      const std::function<void(const TpchQ6LineitemInput &)> &) = 0;
-  // Pre-aggregated scan for Build: one input per (month, discount, quantity)
-  // group; shipdate_days is any day of the month, extended_price_raw is the
-  // SUM of the group (the matrix contribution is linear in the price).
-  virtual void ScanLineitemGroups(
-      const std::function<void(const TpchQ6LineitemInput &)> &consumer) {
-    ScanLineitems(consumer);
-  }
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ6LineitemInput &)> &) = 0;
+  // Pre-aggregated scan of the given months: one input per (month, discount,
+  // quantity) group; shipdate_days is any day of the month, extended_price_raw
+  // is the SUM of the group (the matrix contribution is linear in the price).
   virtual void ScanLineitemsForMonths(
       const std::set<int32_t> &month_keys,
-      const std::function<void(const TpchQ6LineitemInput &)> &consumer) {
-    ScanLineitems([&](const TpchQ6LineitemInput &input) {
-      if (month_keys.count(TpchQ6MonthKeyFromDays(input.shipdate_days)))
-        consumer(input);
-    });
-  }
+      const std::function<void(const TpchQ6LineitemInput &)> &consumer) = 0;
 };
 
 enum class TpchQ6PartitionKind : uint8_t { Day, Month };
@@ -149,6 +143,12 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
+  // The raw month matrices of a build scan and the months that must decline.
+  struct MonthMatrices {
+    std::unordered_map<core::PartitionId, ::accelerator_codegen::Q6RevenueMatrix> matrices;
+    std::set<core::PartitionId> declined;
+  };
+  MonthMatrices BuildMatrices(core::AuxEngineServices &) const;
   // Matrices are accumulated raw per partition; PrefixInPlace() before publish.
   // A row outside the matrix domain adds its partition to `declined`.
   void ApplyLineitemInput(const TpchQ6LineitemInput &input,

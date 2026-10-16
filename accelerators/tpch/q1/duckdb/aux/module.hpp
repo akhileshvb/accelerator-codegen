@@ -50,19 +50,15 @@ struct TpchQ1DayGroupAggregate {
 class TpchQ1InitialScan {
 public:
   virtual ~TpchQ1InitialScan() = default;
+  // Partitioned scan for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanLineitems(
-      const std::function<void(const TpchQ1LineitemInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ1LineitemInput &)> &) = 0;
 
-  // Optional: DuckDB GROUP BY day/flag. Return true when the consumer was
-  // invoked for the full aggregate; BuildState then skips the per-row scan.
-  virtual bool ScanDayGroupAggregates(
-      const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer) {
-    (void)consumer;
-    return false;
-  }
-
-  // Optional: same aggregates restricted to the given shipdate days. Used by
-  // RebuildPartition so a local rescan does not read the rest of lineitem.
+  // Optional: GROUP BY day/flag restricted to the given shipdate days. Used by
+  // RebuildPartition so a local rescan does not read the rest of lineitem;
+  // return true when the consumer was invoked for the full aggregate.
   virtual bool ScanDayGroupAggregatesForDays(
       const std::set<int32_t> &days,
       const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer) {
