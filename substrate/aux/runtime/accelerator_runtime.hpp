@@ -134,6 +134,10 @@ public:
   bool BuildNow();
   // Drops the state: readers wait or fall back until the next build.
   void Invalidate();
+  // A commit at `epoch` that no capture saw (a writer that began before the
+  // accelerator was registered): a state built before it lacks it, so
+  // readers from `epoch` on wait for a rebuild.
+  void InvalidateFrom(Epoch epoch);
   // The services maintenance passes to the module (default: this runtime).
   // An engine whose modules need engine context supplies its own, delegating
   // to this runtime.

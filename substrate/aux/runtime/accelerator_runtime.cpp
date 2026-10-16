@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -156,6 +157,8 @@ struct AcceleratorRuntime::Impl {
   std::vector<std::pair<Epoch, Epoch>> collapsed;
   bool build_scheduled = false;
   bool build_invalidated = false; // the state became invalid while a build ran
+  std::optional<Epoch> build_epoch;     // the snapshot of the running build or of the state
+  std::optional<Epoch> uncaptured_from; // the earliest uncaptured commit seen while no build was synced
   uint64_t build_failures = 0; // readers waiting for a build stop waiting when it fails
   std::optional<Clock::time_point> gap_since;
   AcceleratorStats stats;
@@ -566,6 +569,20 @@ void AcceleratorRuntime::Invalidate() {
   }
 }
 
+void AcceleratorRuntime::InvalidateFrom(Epoch epoch) {
+  std::lock_guard<CommitLock> commit(impl->commit_mutex);
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  if (impl->build_epoch && epoch <= *impl->build_epoch) {
+    return; // the build's snapshot sees it
+  }
+  if (impl->Synced()) {
+    MarkStale(epoch);
+  } else {
+    // A running build may predate it: checked when that build installs.
+    impl->uncaptured_from = std::min(epoch, impl->uncaptured_from.value_or(epoch));
+  }
+}
+
 void AcceleratorRuntime::UseModuleServices(core::AuxEngineServices &services) {
   impl->module_services = &services;
 }
@@ -605,6 +622,7 @@ bool AcceleratorRuntime::BuildNow() {
     }
     impl->applier.StartBuild();
     impl->build_invalidated = false;
+    impl->build_epoch.reset();
   }
   std::vector<CommittedChange> catch_up;
   try {
@@ -622,6 +640,7 @@ bool AcceleratorRuntime::BuildNow() {
       {
         std::lock_guard<std::mutex> lock(impl->state_mutex);
         impl->applier.SetBuildEpoch(b);
+        impl->build_epoch = b;
       }
       slots.RunBuild(*this, *snapshot, builder);
     }
@@ -653,7 +672,11 @@ bool AcceleratorRuntime::BuildNow() {
         Collapse(impl->unserved_from, b);
       }
       impl->unserved_from = impl->applier.HasGap() ? impl->applier.AppliedEpoch() + 1 : kNever;
+      if (impl->uncaptured_from && *impl->uncaptured_from > b) {
+        MarkStale(*impl->uncaptured_from); // the build missed it: rebuilt on the next read
+      }
     }
+    impl->uncaptured_from.reset();
     impl->stats.builds++;
     impl->stats.build_us += MicrosSince(start);
   } catch (...) {

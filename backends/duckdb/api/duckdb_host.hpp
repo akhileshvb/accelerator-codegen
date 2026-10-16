@@ -28,6 +28,9 @@ struct DuckdbAccelerator {
   std::unique_ptr<DuckDBAuxBackend> backend;
   maintenance::CostModelParams cost_model;
   std::atomic<double> expected_queries_before_write{10.0};
+  // Start time when it registered: writers that began earlier may have
+  // written its tables uncaptured.
+  std::atomic<uint64_t> registered_at{0};
 };
 
 class DuckdbHost {
@@ -63,6 +66,7 @@ public:
   void OnRollback(::duckdb::MetaTransaction &transaction);
 
 private:
+  void InvalidateStraddled(uint64_t start, uint64_t epoch);
   explicit DuckdbHost(::duckdb::DatabaseInstance &db);
   struct Impl;
   std::unique_ptr<Impl> impl;

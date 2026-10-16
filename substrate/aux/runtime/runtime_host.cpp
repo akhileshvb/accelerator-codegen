@@ -48,7 +48,15 @@ RuntimeHost::RuntimeHost(EngineSlots &slots_p, std::size_t thread_budget,
                          std::shared_ptr<TokenSource> tokens)
     : impl(std::make_unique<Impl>(thread_budget, std::move(tokens))), slots(slots_p) {}
 
-RuntimeHost::~RuntimeHost() = default;
+RuntimeHost::~RuntimeHost() {
+  // A commit between PreCommit and Commit will not be told the host is gone;
+  // releasing its place lets the builds waiting behind it end with the pool.
+  for (auto &[txn, state] : impl->txns) {
+    for (auto *runtime : state.staged) {
+      runtime->AbortCommit();
+    }
+  }
+}
 
 // ---- registration ----
 
