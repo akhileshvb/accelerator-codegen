@@ -6,7 +6,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
-#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -237,21 +237,12 @@ void TpchQ22Module::Build(core::AuxEngineServices &,
 
   // Order counts first (custkeys without a customer row keep theirs), straight
   // into the per-custkey column.
-  const bool counted = initial_scan->ScanOrderCounts([&](const TpchQ22OrderCount &c) {
-    auto &rec = state->customers.Mutable(c.custkey);
-    const int64_t total = static_cast<int64_t>(rec.order_count) + c.count;
-    if (total > std::numeric_limits<int32_t>::max())
+  initial_scan->ScanOrders([&](const TpchQ22OrderInput &input) {
+    auto &rec = state->customers.Mutable(input.custkey);
+    if (rec.order_count == std::numeric_limits<int32_t>::max())
       throw std::overflow_error("TPC-H Q22 order count overflow");
-    rec.order_count = static_cast<int32_t>(total);
+    ++rec.order_count;
   });
-  if (!counted) {
-    initial_scan->ScanOrders([&](const TpchQ22OrderInput &input) {
-      auto &rec = state->customers.Mutable(input.custkey);
-      if (rec.order_count == std::numeric_limits<int32_t>::max())
-        throw std::overflow_error("TPC-H Q22 order count overflow");
-      ++rec.order_count;
-    });
-  }
 
   initial_scan->ScanCustomers([&](const TpchQ22CustomerInput &input) {
     int64_t balance = 0;
@@ -550,12 +541,9 @@ void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &,
     throw std::logic_error("TPC-H Q22 aux requires a typed initial scan source");
   const auto codes = CountryCodes(arguments);
 
-  std::unordered_map<int64_t, bool> has_orders; // custkeys with an order
-  const bool counted = initial_scan->ScanOrderCounts(
-      [&](const TpchQ22OrderCount &c) { has_orders[c.custkey] = c.count > 0; });
-  if (!counted)
-    initial_scan->ScanOrders(
-        [&](const TpchQ22OrderInput &input) { has_orders[input.custkey] = true; });
+  std::unordered_set<int64_t> has_orders; // custkeys with an order
+  initial_scan->ScanOrders(
+      [&](const TpchQ22OrderInput &input) { has_orders.insert(input.custkey); });
 
   struct Candidate {
     std::string code;
@@ -572,8 +560,7 @@ void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &,
       return;
     ++positive_count;
     positive_sum += balance;
-    const auto it = has_orders.find(input.custkey);
-    if (it == has_orders.end() || !it->second)
+    if (!has_orders.count(input.custkey))
       zero_order.push_back({code, balance});
   });
 

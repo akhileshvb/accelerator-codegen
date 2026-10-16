@@ -445,21 +445,33 @@ void TpchQ14Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 std::shared_ptr<TpchQ14State>
-TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
+TpchQ14Module::BuildState(core::AuxEngineServices &) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q14 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ14State>();
   initial_scan->ScanParts([&](const TpchQ14PartInput &input) {
     state->SetPromo(input.key, ClassOfType(input.type));
   });
-  initial_scan->ScanDayAggregates([&](const TpchQ14DayAggregate &agg) {
-    state->days.Update(agg.shipdate_days, [&](TpchQ14DayTotals &cell) {
-      cell.total_revenue_raw += agg.total_revenue_raw;
-      cell.promo_revenue_raw += agg.promo_revenue_raw;
-      cell.count += agg.count;
-    });
+  // Revenue per ship day of the lineitems that join a part.
+  std::unordered_map<int32_t, TpchQ14DayTotals> totals;
+  initial_scan->ScanLineitems([&](const TpchQ14LineitemInput &input) {
+    const auto promo = state->PromoOf(input.partkey);
+    if (promo == TpchQ14PromoClass::Absent)
+      return;
+    const __int128 revenue =
+        RevenueRaw(input.extendedprice_raw, 2, input.discount_raw, 2);
+    auto &cell = totals[input.shipdate_days];
+    cell.total_revenue_raw += revenue;
+    if (promo == TpchQ14PromoClass::Promo)
+      cell.promo_revenue_raw += revenue;
+    ++cell.count;
   });
+  for (const auto &[day, cell] : totals)
+    state->days.Update(day, [&](TpchQ14DayTotals &into) {
+      into.total_revenue_raw += cell.total_revenue_raw;
+      into.promo_revenue_raw += cell.promo_revenue_raw;
+      into.count += cell.count;
+    });
   return state;
 }
 

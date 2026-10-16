@@ -41,25 +41,42 @@ void ScanTpchQ21Nations(
       });
 }
 
-// Lineitems of fulfilled orders, one order's rows consecutive. `restrict_sql`
-// is an extra predicate (empty: every order).
-const char *kFulfilledLineitemsSql =
-    "SELECT l_orderkey, l_suppkey, "
-    "COALESCE(l_receiptdate > l_commitdate, false)::int "
-    "FROM lineitem JOIN orders ON o_orderkey = l_orderkey "
-    "WHERE o_orderstatus = 'F'";
+void ScanTpchQ21FulfilledOrders(const std::function<void(int64_t)> &consumer) {
+  ScanColumns("orders", {IntColumn("o_orderkey"), TextColumn("o_orderstatus")},
+              [&](const BuildRow &row) {
+                if (row.Char(1) == 'F')
+                  consumer(row.Int(0));
+              });
+}
 
-template <typename Scan>
-void RunFulfilledLineitems(
-    Scan &&scan, const std::string &restrict_sql,
+void ScanTpchQ21Lineitems(
     const std::function<void(const query::TpchQ21LineInput &)> &consumer) {
-  scan(std::string(kFulfilledLineitemsSql) + restrict_sql +
-           " ORDER BY l_orderkey",
-       [&](HeapTuple tuple, TupleDesc tuple_desc) {
-         consumer({TypedInt(tuple, tuple_desc, 0),
-                   TypedInt(tuple, tuple_desc, 1),
-                   TypedInt(tuple, tuple_desc, 2) != 0});
-       });
+  ScanColumns("lineitem",
+              {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
+               DateColumn("l_commitdate"), DateColumn("l_receiptdate")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Int(1), row.Date(3) > row.Date(2)});
+              });
+}
+
+// Lineitems of the given fulfilled orders, one order's rows consecutive.
+void LookupTpchQ21FulfilledLineitems(
+    const std::vector<int64_t> &orderkeys,
+    const std::function<void(const query::TpchQ21LineInput &)> &consumer) {
+  // The key list on both join sides: PostgreSQL does not carry an = ANY(...)
+  // across the join, and with it on lineitem only it hashes every fulfilled
+  // order (seconds per lookup at SF20).
+  ScanTypedTuples(
+      "SELECT l_orderkey, l_suppkey, "
+      "COALESCE(l_receiptdate > l_commitdate, false)::int "
+      "FROM lineitem JOIN orders ON o_orderkey = l_orderkey "
+      "WHERE o_orderstatus = 'F' AND " +
+          KeyListPredicate("l_orderkey", orderkeys) + " AND " +
+          KeyListPredicate("o_orderkey", orderkeys) + " ORDER BY l_orderkey",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1),
+                  TypedInt(tuple, tuple_desc, 2) != 0});
+      });
 }
 
 } // namespace scans
@@ -76,14 +93,14 @@ public:
       override {
     scans::ScanTpchQ21Nations(consumer);
   }
-  void ScanFulfilledLineitems(
+  void ScanFulfilledOrders(
+      const std::function<void(int64_t)> &consumer) override {
+    scans::ScanTpchQ21FulfilledOrders(consumer);
+  }
+  void ScanLineitems(
       const std::function<void(const query::TpchQ21LineInput &)> &consumer)
       override {
-    scans::RunFulfilledLineitems(
-        [](const std::string &sql, auto &&row) {
-          ScanTypedTuples(sql, row);
-        },
-        "", consumer);
+    scans::ScanTpchQ21Lineitems(consumer);
   }
   bool LookupFulfilledLineitems(
       const std::vector<int64_t> &orderkeys,
@@ -91,16 +108,7 @@ public:
       override {
     // Called from the capture trigger: read the database as the writing
     // statement (and this transaction) left it.
-    scans::RunFulfilledLineitems(
-        [](const std::string &sql, auto &&row) {
-          ScanTypedTuples(sql, row);
-        },
-        // The key list on both join sides: PostgreSQL does not carry an
-        // = ANY(...) across the join, and with it on lineitem only it hashes
-        // every fulfilled order (seconds per lookup at SF20).
-        " AND " + KeyListPredicate("l_orderkey", orderkeys) + " AND " +
-            KeyListPredicate("o_orderkey", orderkeys),
-        consumer);
+    scans::LookupTpchQ21FulfilledLineitems(orderkeys, consumer);
     return true;
   }
 };

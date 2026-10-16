@@ -45,7 +45,7 @@ struct TpchQ21NationInput {
   std::string name;
 };
 
-// A lineitem of a fulfilled order ('F'): its supplier and whether it is late
+// A lineitem: its order, its supplier and whether it is late
 // (receiptdate > commitdate).
 struct TpchQ21LineInput {
   int64_t orderkey = 0;
@@ -60,11 +60,13 @@ public:
       const std::function<void(const TpchQ21SupplierInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ21NationInput &)> &) = 0;
-  // The lineitems of every fulfilled order (join with orders done by the
-  // database), grouped by orderkey: all rows of one order are consecutive.
-  virtual void ScanFulfilledLineitems(
+  // The orderkeys of the fulfilled orders ('F').
+  virtual void ScanFulfilledOrders(const std::function<void(int64_t)> &) = 0;
+  // Every lineitem, in any order (the module joins them to the orders).
+  virtual void ScanLineitems(
       const std::function<void(const TpchQ21LineInput &)> &) = 0;
-  // The same for the given orders only, as the database holds them after the
+  // The lineitems of the given fulfilled orders only, grouped by orderkey (all
+  // rows of one order are consecutive), as the database holds them after the
   // calling statement (orders that are not fulfilled or have no lineitem
   // report nothing).
   virtual bool LookupFulfilledLineitems(
@@ -257,7 +259,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ21State BuildState() const;
+  TpchQ21State BuildState(const core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ21State> &state,
                  core::Version *version = nullptr) const;

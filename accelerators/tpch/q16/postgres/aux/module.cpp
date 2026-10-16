@@ -1,12 +1,11 @@
 #include "tpch/q16/postgres/aux/module.hpp"
 #include "tpch/q16/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -14,6 +13,9 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
+
+// Groups per parallel slice (a group is a pass over its parts' supplier lists).
+constexpr std::size_t kGroupGrain = 64;
 
 // ── Cell helpers ────────────────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -257,35 +259,35 @@ int64_t TpchQ16State::CountDistinct(uint32_t gid) const {
                               seen.begin());
 }
 
-void TpchQ16State::RecomputeDirty() {
+// distinct count of groups[0..n), in parallel slices (each count is a read-only
+// pass over the group's parts).
+std::vector<int64_t> TpchQ16State::CountDistinctOf(
+    const core::AuxEngineServices &services, std::size_t n,
+    const std::function<uint32_t(std::size_t)> &group_at) const {
+  std::vector<int64_t> counts(n);
+  core::ParallelSlices(services, n, kGroupGrain,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i)
+                           counts[i] = CountDistinct(group_at(i));
+                       });
+  return counts;
+}
+
+void TpchQ16State::RecomputeDirty(const core::AuxEngineServices &services) {
   std::sort(dirty.begin(), dirty.end());
   dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
-  for (const uint32_t gid : dirty)
-    distinct.Set(gid, CountDistinct(gid));
+  const auto counts = CountDistinctOf(
+      services, dirty.size(), [&](std::size_t i) { return dirty[i]; });
+  for (std::size_t i = 0; i < dirty.size(); ++i)
+    distinct.Set(dirty[i], counts[i]);
   dirty.clear();
 }
 
-void TpchQ16State::RecomputeAll() {
-  const std::size_t groups = group_table->keys.size();
-  std::vector<int64_t> counts(groups, 0);
-  std::atomic<std::size_t> next{0};
-  const auto worker = [&] {
-    for (std::size_t g = next.fetch_add(64); g < groups; g = next.fetch_add(64))
-      for (std::size_t i = g; i < std::min(groups, g + 64); ++i)
-        counts[i] = CountDistinct(static_cast<uint32_t>(i));
-  };
-  const std::size_t threads = std::min<std::size_t>(
-      std::max(1u, std::thread::hardware_concurrency()), 8);
-  if (groups < 256 || threads <= 1) {
-    worker();
-  } else {
-    std::vector<std::thread> pool;
-    for (std::size_t t = 0; t < threads; ++t)
-      pool.emplace_back(worker);
-    for (auto &th : pool)
-      th.join();
-  }
-  for (std::size_t g = 0; g < groups; ++g)
+void TpchQ16State::RecomputeAll(const core::AuxEngineServices &services) {
+  const auto counts = CountDistinctOf(
+      services, group_table->keys.size(),
+      [](std::size_t i) { return static_cast<uint32_t>(i); });
+  for (std::size_t g = 0; g < counts.size(); ++g)
     if (counts[g] != 0)
       distinct.Set(static_cast<int64_t>(g), counts[g]);
   dirty.clear();
@@ -466,7 +468,7 @@ TpchQ16Module::StageMaintenance(core::AuxEngineServices &services,
           flipped.Upsert(suppkey, 1);
       if (!flipped.empty())
         new_state->MarkGroupsOfSuppliers(flipped);
-      new_state->RecomputeDirty();
+      new_state->RecomputeDirty(services);
 
       const auto decision = services.ChooseMaintenance(
           {buffer.EventCount(), 1, true, false, true, false, false,
@@ -531,7 +533,6 @@ void TpchQ16Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q16 requires a typed initial scan source");
   TpchQ16State state;
@@ -545,7 +546,7 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
   initial_scan->ScanPartsupp([&](const TpchQ16PartsuppInput &input) {
     state.AddSupplier(input.partkey, input.suppkey);
   });
-  state.RecomputeAll();
+  state.RecomputeAll(services);
   state.track_dirty = true;
   return state;
 }

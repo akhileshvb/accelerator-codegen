@@ -1,5 +1,6 @@
 #include "tpch/q21/postgres/aux/module.hpp"
 #include "tpch/q21/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -398,13 +399,69 @@ std::vector<core::TableDependency> TpchQ21Module::Dependencies() const {
           {config.nation_table, {0, 1}, {0, 1}}};
 }
 
+namespace {
+
+// Buckets of the build's fulfilled-order lineitems (by order).
+constexpr std::size_t kBuildBuckets = 64;
+
+struct OrderContribution {
+  int64_t orderkey;
+  TpchQ21Contribution contribution;
+};
+
+// The contributions of one bucket's lineitems, order by order.
+std::vector<OrderContribution> ContributionsOfBucket(
+    std::vector<TpchQ21LineInput> &lines) {
+  std::sort(lines.begin(), lines.end(),
+            [](const TpchQ21LineInput &a, const TpchQ21LineInput &b) {
+              return a.orderkey < b.orderkey;
+            });
+  std::vector<OrderContribution> found;
+  OrderGrouper grouper([&](int64_t orderkey, bool has,
+                           const TpchQ21Contribution &contribution) {
+    if (has)
+      found.push_back({orderkey, contribution});
+  });
+  for (const auto &line : lines)
+    grouper.Add(line);
+  grouper.Flush();
+  return found;
+}
+
+// The contribution of every fulfilled order that has one. The scans only join
+// (lineitems of fulfilled orders dealt out to buckets by order); the buckets
+// are then reduced in parallel slices.
+std::vector<std::vector<OrderContribution>>
+FulfilledContributions(TpchQ21InitialScan &scan,
+                       const core::AuxEngineServices &services) {
+  core::FlatHashMap<uint8_t> fulfilled;
+  scan.ScanFulfilledOrders([&](int64_t orderkey) { fulfilled.Upsert(orderkey, 1); });
+  std::vector<std::vector<TpchQ21LineInput>> buckets(kBuildBuckets);
+  scan.ScanLineitems([&](const TpchQ21LineInput &line) {
+    if (fulfilled.Contains(line.orderkey))
+      buckets[static_cast<uint64_t>(line.orderkey) % kBuildBuckets].push_back(line);
+  });
+  std::vector<std::vector<OrderContribution>> found(kBuildBuckets);
+  core::ParallelSlices(services, kBuildBuckets, 1,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i) {
+                           found[i] = ContributionsOfBucket(buckets[i]);
+                           buckets[i] = {};
+                         }
+                       });
+  return found;
+}
+
+} // namespace
+
 std::unique_ptr<core::AuxTxnBuffer> TpchQ21Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ21TxnBuffer>();
 }
 
-void TpchQ21Module::Build(core::AuxEngineServices &,
+void TpchQ21Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  const auto typed_state = std::make_shared<const TpchQ21State>(BuildState());
+  const auto typed_state =
+      std::make_shared<const TpchQ21State>(BuildState(services));
   builder.Write(core::StateImage::Make(
       TpchQ21Layout::kAccelerator, TpchQ21Layout::kState, 0,
       MakeStateImage(typed_state)));
@@ -646,7 +703,7 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
 
 // No usable state: stream the fulfilled lineitems once, keeping only the
 // suppliers of the requested nation(s).
-void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &,
+void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
   if (!initial_scan)
@@ -670,21 +727,18 @@ void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &,
   std::vector<std::pair<std::string_view, int64_t>> rows;
   if (!suppliers.empty()) {
     std::unordered_map<int64_t, int64_t> numwait;
-    OrderGrouper grouper([&](int64_t, bool has,
-                             const TpchQ21Contribution &contribution) {
-      if (has && suppliers.count(contribution.suppkey))
-        numwait[contribution.suppkey] += contribution.count;
-    });
-    initial_scan->ScanFulfilledLineitems(
-        [&](const TpchQ21LineInput &line) { grouper.Add(line); });
-    grouper.Flush();
+    for (const auto &bucket : FulfilledContributions(*initial_scan, services))
+      for (const auto &order : bucket)
+        if (suppliers.count(order.contribution.suppkey))
+          numwait[order.contribution.suppkey] += order.contribution.count;
     for (const auto &[suppkey, count] : numwait)
       rows.emplace_back(suppliers[suppkey], count);
   }
   EmitRows(MergeByNameAndTop(rows), sink);
 }
 
-TpchQ21State TpchQ21Module::BuildState() const {
+TpchQ21State TpchQ21Module::BuildState(
+    const core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q21 aux requires a typed initial scan source");
   TpchQ21State state;
@@ -696,16 +750,10 @@ TpchQ21State TpchQ21Module::BuildState() const {
     state.PutSupplier(input.suppkey, input.name, input.nationkey);
   });
 
-  // One pass over the lineitems of fulfilled orders, an order at a time: only
-  // the contributing orders are kept.
-  OrderGrouper grouper([&](int64_t orderkey, bool has,
-                           const TpchQ21Contribution &contribution) {
-    if (has)
-      state.SetContribution(orderkey, true, contribution);
-  });
-  initial_scan->ScanFulfilledLineitems(
-      [&](const TpchQ21LineInput &line) { grouper.Add(line); });
-  grouper.Flush();
+  // Only the contributing orders are kept.
+  for (const auto &bucket : FulfilledContributions(*initial_scan, services))
+    for (const auto &order : bucket)
+      state.SetContribution(order.orderkey, true, order.contribution);
   return state;
 }
 

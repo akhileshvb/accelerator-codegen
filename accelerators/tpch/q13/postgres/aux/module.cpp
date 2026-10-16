@@ -1,9 +1,9 @@
 #include "tpch/q13/postgres/aux/module.hpp"
 #include "tpch/q13/calibration_writes.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
 #include <cstring>
 #if defined(__SSE2__)
@@ -15,7 +15,6 @@
 #include <unordered_map>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -32,6 +31,8 @@ namespace like = core::sql_like;
 // postgres/ and mysql/ copies. '_' matches one UTF-8 character in both.
 constexpr bool kLikeCaseInsensitive = false;
 
+// Segments per parallel slice (a segment is 4096 orders, ~100 us of matching).
+constexpr std::size_t kSegmentGrain = 16;
 constexpr std::size_t kSlotBits = 12; // log2(kTpchQ13SegmentRows)
 static_assert(kTpchQ13SegmentRows == (std::size_t{1} << kSlotBits));
 
@@ -255,41 +256,24 @@ void TpchQ13State::ApplyOrderCount(int64_t custkey, int32_t sign, uint32_t mask)
   }
 }
 
-void TpchQ13State::EnablePatternIndex() {
+void TpchQ13State::EnablePatternIndex(const core::AuxEngineServices &services) {
   DisablePatternIndex();
   // 1. Match masks of every order, segments in parallel.
   const std::size_t nseg = segments.size();
   std::vector<std::vector<uint16_t>> masks(nseg);
-  {
-    constexpr std::size_t kBlock = 16;
-    unsigned threads = 1;
-    if (nseg >= 64)
-      threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
-    std::atomic<std::size_t> next{0};
-    auto worker = [&] {
-      for (;;) {
-        const std::size_t lo = next.fetch_add(kBlock);
-        if (lo >= nseg)
-          return;
-        for (std::size_t s = lo; s < std::min(nseg, lo + kBlock); ++s) {
-          const auto *seg = segments[s].get();
-          if (!seg || seg->live == 0)
-            continue;
-          auto &out = masks[s];
-          out.assign(seg->orderkey.size(), 0);
-          for (std::size_t i = 0; i < out.size(); ++i)
-            if (seg->alive[i])
-              out[i] = static_cast<uint16_t>(PatternMask(seg->comment.View(i)));
-        }
-      }
-    };
-    std::vector<std::thread> pool;
-    for (unsigned t = 1; t < threads; ++t)
-      pool.emplace_back(worker);
-    worker();
-    for (auto &th : pool)
-      th.join();
-  }
+  core::ParallelSlices(services, nseg, kSegmentGrain,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+    for (std::size_t s = begin; s < end; ++s) {
+      const auto *seg = segments[s].get();
+      if (!seg || seg->live == 0)
+        continue;
+      auto &out = masks[s];
+      out.assign(seg->orderkey.size(), 0);
+      for (std::size_t i = 0; i < out.size(); ++i)
+        if (seg->alive[i])
+          out[i] = static_cast<uint16_t>(PatternMask(seg->comment.View(i)));
+    }
+  });
   // 2. Per-customer match counts.
   for (std::size_t s = 0; s < nseg; ++s) {
     const auto &mk = masks[s];
@@ -516,7 +500,6 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
 std::shared_ptr<TpchQ13State>
 TpchQ13Module::BuildState(core::AuxEngineServices &services,
                           bool pattern_index) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ13State>();
@@ -528,7 +511,7 @@ TpchQ13Module::BuildState(core::AuxEngineServices &services,
     state->AddOrder(input.orderkey, input.custkey, input.comment);
   });
   if (pattern_index)
-    state->EnablePatternIndex();
+    state->EnablePatternIndex(services);
   return state;
 }
 
@@ -676,7 +659,7 @@ void TpchQ13Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitResult(*state, arguments, sink);
+  EmitResult(*state, arguments, services, sink);
 }
 
 void TpchQ13Module::ExecuteFallback(core::AuxEngineServices &services,
@@ -684,7 +667,7 @@ void TpchQ13Module::ExecuteFallback(core::AuxEngineServices &services,
                                     core::AuxRowSink &sink) {
   // One-shot state: the pattern index would not pay for itself.
   const auto state = BuildState(services, /*pattern_index=*/false);
-  EmitResult(*state, arguments, sink);
+  EmitResult(*state, arguments, services, sink);
 }
 
 bool TpchQ13Module::LoadState(
@@ -733,53 +716,36 @@ struct Excluded {
 };
 
 void CountMatchingOrders(const TpchQ13State &state,
-                         const like::LikeMatcher &matcher, Excluded &excluded) {
-  const std::size_t nseg = state.segments.size();
-  constexpr std::size_t kBlock = 16;
-  unsigned threads = 1;
-  if (nseg >= 64)
-    threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
-
-  std::atomic<std::size_t> next{0};
-  auto worker = [&] {
-    for (;;) {
-      const std::size_t lo = next.fetch_add(kBlock);
-      if (lo >= nseg)
-        return;
-      for (std::size_t s = lo; s < std::min(nseg, lo + kBlock); ++s) {
-        const auto *seg = state.segments[s].get();
-        if (!seg || seg->live == 0)
-          continue;
-        const std::size_t n = seg->orderkey.size();
-        const auto bits = like::MatchBlobBitmap(
-            matcher, seg->comment.offsets(), n, seg->comment.data(), 1);
-        for (std::size_t w = 0; w < bits.size(); ++w) {
-          uint64_t b = bits[w];
-          while (b) {
-            const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
-            b &= b - 1;
-            if (seg->alive[i])
-              excluded.Add(seg->custkey[i]);
+                         const like::LikeMatcher &matcher, Excluded &excluded,
+                         const core::AuxEngineServices &services) {
+  core::ParallelSlices(
+      services, state.segments.size(), kSegmentGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t s = begin; s < end; ++s) {
+          const auto *seg = state.segments[s].get();
+          if (!seg || seg->live == 0)
+            continue;
+          const std::size_t n = seg->orderkey.size();
+          const auto bits = like::MatchBlobBitmap(
+              matcher, seg->comment.offsets(), n, seg->comment.data(), 1);
+          for (std::size_t w = 0; w < bits.size(); ++w) {
+            uint64_t b = bits[w];
+            while (b) {
+              const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
+              b &= b - 1;
+              if (seg->alive[i])
+                excluded.Add(seg->custkey[i]);
+            }
           }
         }
-      }
-    }
-  };
-  if (threads == 1) {
-    worker();
-    return;
-  }
-  std::vector<std::thread> pool;
-  for (unsigned t = 0; t < threads; ++t)
-    pool.emplace_back(worker);
-  for (auto &th : pool)
-    th.join();
+      });
 }
 
 } // namespace
 
 void TpchQ13Module::EmitResult(const TpchQ13State &state,
                                const core::QueryArguments &arguments,
+                               const core::AuxEngineServices &services,
                                core::AuxRowSink &sink) const {
   const bool pattern_null =
       arguments.values.empty() || arguments.values[0].is_null ||
@@ -835,7 +801,7 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
         kLikeCaseInsensitive, /*utf8_underscore=*/true);
     if (span <= static_cast<std::size_t>(state.customers) * 4 + (std::size_t{1} << 20))
       excluded.flat.assign(span, 0);
-    CountMatchingOrders(state, matcher, excluded);
+    CountMatchingOrders(state, matcher, excluded, services);
   }
 
   // Histogram of effective counts. Counts up to kDense use a flat array; the
