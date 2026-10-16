@@ -5,9 +5,9 @@
 # Builds a cached ACCEL_SANITIZE=thread tree (ACCEL_TSAN_BUILD_DIR, default
 # <root>/build-tsan) and runs with every phase at ACCEL_TSAN_THREADS (default 8)
 # threads and ACCEL_AUX_TEST_GRAIN=1, so even one-row commits split across threads.
-# Fails on a differential mismatch or a TSAN report whose stack touches
-# substrate/, backends/ or accelerators/; reports confined to the uninstrumented
-# engine are listed but do not fail the gate.
+# Fails on a differential mismatch or a TSAN report whose racing access is in
+# substrate/, backends/ or accelerators/ (tsan_classify.awk); reports whose
+# accesses are inside the uninstrumented engine are counted but do not fail.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -66,7 +66,7 @@ if [[ ! -f "${BUILD}/CMakeCache.txt" ]]; then
   gen=()
   command -v ninja >/dev/null && gen=(-G Ninja)
   cmake -S "${ROOT}" -B "${BUILD}" "${gen[@]}" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DACCEL_SANITIZE=thread >"${LOGDIR}/configure.log" 2>&1 || { STATUS="fail"; REASON="cmake configure failed"; finish; }
+    -DACCEL_SANITIZE=thread -DACCEL_CODEGEN_ENGINE=duckdb >"${LOGDIR}/configure.log" 2>&1 || { STATUS="fail"; REASON="cmake configure failed"; finish; }
 fi
 build() { cmake --build "${BUILD}" --target "$@" -j"${ACCEL_TSAN_JOBS:-16}" >>"${LOGDIR}/build.log" 2>&1; }
 
@@ -82,29 +82,28 @@ run() { # label cmd...
 }
 
 if [[ "${TARGET}" == "slots" ]]; then
+  export ACCEL_TPCH_DB="${ACCEL_TPCH_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf1.duckdb}"
   for s in epoch_stress hits_under_writes read_after_commit txn_edges; do
-    run "slot_${s}" env ACCEL_PIPELINE_BUILD_DIR="${BUILD}" ACCEL_GATE_NAME="slot_${s}" \
+    run "slot_${s}" env ACCEL_PIPELINE_BUILD_DIR="${BUILD}" ACCEL_ENGINE_NAME="${ENGINE_NAME}" ACCEL_GATE_NAME="slot_${s}" \
       ACCEL_GATE_OUT="${LOGDIR}/slot_${s}.json" bash "${ROOT}/pipeline/gates/run_slot_gates.sh"
   done
 else
   DIFF_TARGET="${DIFF_BINARY:-test_tpch_shared_differential}"
-  build "${AUX_TEST_TARGET}" "${DIFF_TARGET}" || { STATUS="fail"; REASON="TSAN build failed (${LOGDIR}/build.log)"; finish; }
+  FIXTURE_TARGET=""
+  [[ "${BENCHMARK_NAME}" == "tpch" ]] && FIXTURE_TARGET="make_tpch_test_db" # the smoke ctest's fixture
+  build "${AUX_TEST_TARGET}" "${DIFF_TARGET}" ${FIXTURE_TARGET} || { STATUS="fail"; REASON="TSAN build failed (${LOGDIR}/build.log)"; finish; }
   run smoke env "${DB_ENV_VAR}=${DATASET_DB}" ctest --test-dir "${BUILD}" -R "${AUX_CTEST_SMOKE_REGEX}" --output-on-failure
   if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
     run differential env "${DB_ENV_VAR}=${DATASET_DB}" "${BUILD}/${DIFF_TARGET}" "${DATASET_DB}" "${TARGET}"
   fi
 fi
 
-# A report is ours when any of its frames is a source file under substrate/, backends/ or accelerators/.
 OURS=0
 ENGINE_ONLY=0
 for f in "${LOGDIR}"/tsan.*; do
   [[ -e "$f" ]] || continue
-  read -r ours engine < <(awk -v pat="${ROOT}/(substrate|backends|accelerators)/" '
-    /^WARNING: ThreadSanitizer/ { inrep = 1; mine = 0 }
-    inrep && $0 ~ pat { mine = 1 }
-    /^SUMMARY: ThreadSanitizer/ { if (mine) o++; else e++; inrep = 0 }
-    END { print o + 0, e + 0 }' "$f")
+  read -r ours engine < <(awk -v pat="${ROOT}/(substrate|backends|accelerators)/" \
+    -f "$(dirname "${BASH_SOURCE[0]}")/tsan_classify.awk" "$f")
   OURS=$((OURS + ours))
   ENGINE_ONLY=$((ENGINE_ONLY + engine))
 done
