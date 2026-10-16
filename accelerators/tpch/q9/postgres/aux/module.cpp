@@ -563,7 +563,7 @@ void ScanMatching(const core::AuxEngineServices &services, const TpchQ9State &st
   std::vector<std::vector<Acc>> acc(max_threads, std::vector<Acc>(ngroups));
 
   // Matching parts (SIMD scan of the name column), then their profit cells.
-  state.part_names.ForEachMatch(matcher, max_threads, [&](unsigned worker, int64_t partkey) {
+  state.part_names.ForEachMatch(matcher, core::Parallelism::OnPool(services), [&](unsigned worker, int64_t partkey) {
     const TpchQ9PartBlock *block = state.FindBlock(partkey);
     if (!block)
       return;
