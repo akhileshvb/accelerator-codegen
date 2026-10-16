@@ -15,6 +15,8 @@ So the test is only as strong as your **catalog entry** in `duckdb/aux/register.
 - `build_probe` must return probes that change the query result and whose `old_row`/`new_row` carry the module's `mutation_attnums` columns in order, with `update_sql` and `restore_sql` that match them. A probe that does not change the result fails `CollectInvalidatingSharedProbes` and so the test.
 - Edge cases of your module (NULLs, off-domain rows, empty inputs) belong in extra scenarios of `eval/tests/test_tpch_module.cpp`'s `ModuleCheck`, run for your query only, not in a private test file. Never weaken a check to make a kernel pass: if the module differs from a fresh build or from the SQL, the module is wrong.
 
+Large-scale checks (magnitude databases, 1-vs-N thread comparison, decision-log / fallback counts) are the verification set of `scale_factor_contract.md`; they run the same shared differential and are not per-query tests.
+
 ## What `aux_correctness` checks
 
 1. **Module test** - ctest `^tpch_q<N>_aux_smoke_test$` (above), on the `tpch_test_db` fixture.

@@ -2,7 +2,7 @@
 
 See also `pipeline/prompts/shared/hard_guidelines.md`.
 
-Multi-connection production path with **single-threaded per connection** where the harness requires it.
+Multi-connection production path; parallelism comes only from the backend's thread budget through `services` (`engine_interfaces.md`).
 
 - Base tables: engine **native** storage/scan APIs only.
 - **Persistent partitioned aux state is allowed**; custom aux storage is preferred.
@@ -17,6 +17,6 @@ Multi-connection production path with **single-threaded per connection** where t
 - **Exact for any parameter value / data / key width, compact, O(touched) writes** — see `hard_guidelines.md` §4.
 - Do not alter query semantics for implementation convenience.
 - Benchmark fairness: time the full production query path, consume all results.
-- TPC-H aux: iteration on SF1; **read + maintenance must keep strong speedups at SF10/SF20+** (no SF1-only designs).
+- TPC-H aux: iteration on SF1; **read, build and maintenance must stay correct, incremental and fast at SF20+ and sized for SF3000** (`scale_factor_contract.md` failure classes; no SF1-only designs).
 
 See `profiling_conventions.md` and `scale_factor_contract.md`.

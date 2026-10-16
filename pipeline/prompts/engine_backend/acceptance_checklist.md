@@ -50,7 +50,10 @@ behaviour of the finished backend under concurrency.
 - `WaitForPreRegistrationWriters` waits for earlier writers and times out
   (false). `RunBuild` calls `builder.Finish()`.
 - Scans are partitioned, typed, chunked and parallel on the thread budget;
-  64-bit counts and offsets.
+  64-bit counts and offsets. The module-facing `ScanPartitioned` surface and
+  its guarantees (`native_scan_contract.md`) exist with the specified names:
+  fixed partitions in table order, one thread per partition, all at epoch `b`,
+  at most the build cap of threads, `partitions == 1` serial on the caller.
 
 ### `native_scan` (layer `scan`)
 
@@ -71,7 +74,9 @@ behaviour of the finished backend under concurrency.
 - Seed -> background build -> read; DML -> rematch; an invalidated state
   rebuilds **while writes continue** and becomes synced without a quiet
   window; an old reader gets its own epoch's answer or `Fallback`, never a
-  newer one; shipped placement: gap -> rebuild, worker restart -> reads fall
+  newer one; the three phase caps come from the engine's settings or the
+  `ACCEL_AUX_*_THREADS` overrides and are observed by `WorkerCount()`;
+  `TableRows` feeds `DataScaleRows`; `CostModel` is resolved by engine and scale; shipped placement: gap -> rebuild, worker restart -> reads fall
   back exact then hit; peak threads <= the budget.
 
 ### `slot_entry` (layer `host`; skip if the workload does not require an in-process host)
@@ -94,7 +99,8 @@ behaviour of the finished backend under concurrency.
 ### `scale_safe` (global)
 
 - No 32-bit counts or offsets on rows, batches, images, partitions; 64-bit
-  partition keys; capture without per-row heap allocation, once per statement
+  partition keys; 128-bit decimal cells in captured batches and no narrowing of
+  engine numerics on the way to a module; capture without per-row heap allocation, once per statement
   and table; scans and builds parallel; no build, rebuild or catch-up inside a
   writer's commit.
 
