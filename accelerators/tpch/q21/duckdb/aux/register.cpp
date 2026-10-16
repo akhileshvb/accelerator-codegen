@@ -5,6 +5,7 @@
 #include "tpch/q21/duckdb/aux/module.hpp"
 #include "tpch/q21/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -105,53 +106,23 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
-// Typed streaming scan: reads DuckDB vectors directly (no boxed Values).
-template <typename T> struct TypedCol {
-  ::duckdb::UnifiedVectorFormat fmt;
-  const T *data = nullptr;
-  void Init(::duckdb::DataChunk &chunk, ::duckdb::idx_t col) {
-    chunk.data[col].ToUnifiedFormat(chunk.size(), fmt);
-    data = ::duckdb::UnifiedVectorFormat::GetData<T>(fmt);
-  }
-  bool Valid(::duckdb::idx_t row) const {
-    return fmt.validity.RowIsValid(fmt.sel->get_index(row));
-  }
-  const T &operator()(::duckdb::idx_t row) const {
-    return data[fmt.sel->get_index(row)];
-  }
-};
-
-template <typename Callback>
-void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
-                     Callback &&callback) {
-  auto scan_lock = LockScan(connection_p);
-  auto &connection = ScanConnection(connection_p);
-  auto result = connection.SendQuery(sql);
-  if (!result || result->HasError())
-    throw std::runtime_error(result ? result->GetError()
-                                    : "DuckDB scan returned null");
-  while (true) {
-    auto chunk = result->Fetch();
-    if (!chunk || chunk->size() == 0)
-      break;
-    callback(*chunk);
-  }
-  if (result->HasError())
-    throw std::runtime_error(result->GetError());
-}
-
 struct TpchQ21Scan : TpchQ21InitialScan {
   explicit TpchQ21Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanSuppliers(
-      const std::function<void(const TpchQ21SupplierInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT s_suppkey, s_name, s_nationkey FROM supplier",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ21SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      ChunkValue(chunk, 1, row).ToString(),
-                                      SafeInt32(ChunkValue(chunk, 2, row))};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ21SupplierInput &)> &sink) override {
+    ScanPartitioned(services, connection, "supplier",
+                    {IntColumn("s_suppkey"), TextColumn("s_name"), IntColumn("s_nationkey")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        const auto nationkey = row.Int(2);
+                        if (nationkey != static_cast<int32_t>(nationkey))
+                          throw std::runtime_error("TPC-H Q21: s_nationkey exceeds 32 bits");
+                        sink(partition, TpchQ21SupplierInput{row.Int(0), row.Text(1),
+                                                             static_cast<int32_t>(nationkey)});
+                      }
+                    });
   }
   bool LookupOrderSummary(int64_t orderkey, OrderLookup &out) override {
     out = OrderLookup{};
@@ -177,39 +148,6 @@ struct TpchQ21Scan : TpchQ21InitialScan {
         });
     return true;
   }
-  bool ScanContributingOrderSuppliers(
-      const std::function<void(int64_t, int64_t, int64_t, int64_t)> &consumer)
-      override {
-    // Fulfilled orders with >= 2 suppliers and exactly one late supplier: the
-    // only orders that can contribute. Per-(order, supplier) counts are
-    // computed in SQL; no per-lineitem C++ work.
-    ScanTypedChunks(
-        connection,
-        "SELECT CAST(l.l_orderkey AS BIGINT), CAST(l.l_suppkey AS BIGINT), "
-        "COUNT(*), CAST(SUM(CASE WHEN l.l_receiptdate > l.l_commitdate THEN 1 ELSE 0 END) AS BIGINT) "
-        "FROM lineitem l JOIN ("
-        "SELECT l2.l_orderkey AS k FROM lineitem l2 JOIN orders o2 "
-        "ON l2.l_orderkey = o2.o_orderkey AND o2.o_orderstatus = 'F' "
-        "GROUP BY l2.l_orderkey "
-        "HAVING COUNT(DISTINCT l2.l_suppkey) > 1 AND "
-        "COUNT(DISTINCT CASE WHEN l2.l_receiptdate > l2.l_commitdate "
-        "THEN l2.l_suppkey END) = 1) c ON l.l_orderkey = c.k "
-        "GROUP BY l.l_orderkey, l.l_suppkey" +
-            OptionalBenchScanLimitSuffix("ACCEL_Q21_BENCH_SCAN_LIMIT"),
-        [&](::duckdb::DataChunk &chunk) {
-          TypedCol<int64_t> ok, sk, tot, late;
-          ok.Init(chunk, 0);
-          sk.Init(chunk, 1);
-          tot.Init(chunk, 2);
-          late.Init(chunk, 3);
-          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
-            if (!ok.Valid(i) || !sk.Valid(i))
-              continue;
-            consumer(ok(i), sk(i), tot(i), late.Valid(i) ? late(i) : 0);
-          }
-        });
-    return true;
-  }
   void ScanNations(
       const std::function<void(const TpchQ21NationInput &)> &consumer) override {
     ScanQuery(connection, "SELECT n_nationkey, n_name FROM nation",
@@ -219,32 +157,30 @@ struct TpchQ21Scan : TpchQ21InitialScan {
               });
   }
   void ScanOrders(
-      const std::function<void(const TpchQ21OrderInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderstatus = 'F'",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ21OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                   FirstChar(ChunkValue(chunk, 1, row))};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ21OrderInput &)> &sink) override {
+    ScanPartitioned(services, connection, "orders",
+                    {IntColumn("o_orderkey"), TextColumn("o_orderstatus")}, partitions,
+                    [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ21OrderInput{row.Int(0), row.Char(1)});
+                      }
+                    });
   }
   void ScanLineitems(
-      const std::function<void(const TpchQ21LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l.l_orderkey, l.l_suppkey, l.l_commitdate, l.l_receiptdate "
-        "FROM lineitem l "
-        "INNER JOIN orders o ON l.l_orderkey = o.o_orderkey AND "
-        "o.o_orderstatus = 'F'" +
-            OptionalBenchScanLimitSuffix("ACCEL_Q21_BENCH_SCAN_LIMIT"),
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ21LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      SafeInt64(ChunkValue(chunk, 1, row)),
-                                      DateDays(ChunkValue(chunk, 2, row)),
-                                      DateDays(ChunkValue(chunk, 3, row))};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ21LineitemInput &)> &sink) override {
+    ScanPartitioned(services, connection, "lineitem",
+                    {IntColumn("l_orderkey"), IntColumn("l_suppkey"), DateColumn("l_commitdate"),
+                     DateColumn("l_receiptdate")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ21LineitemInput{row.Int(0), row.Int(1), row.Date(2),
+                                                             row.Date(3)});
+                      }
+                    });
   }
   ::duckdb::Connection &connection;
 };

@@ -75,17 +75,14 @@ struct TpchQ17PartQuantityAggregate {
 class TpchQ17InitialScan {
 public:
   virtual ~TpchQ17InitialScan() = default;
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanParts(
-      const std::function<void(const TpchQ17PartInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ17PartInput &)> &) = 0;
   virtual void ScanLineitems(
-      const std::function<void(const TpchQ17LineitemInput &)> &) = 0;
-
-  // Optional: SQL GROUP BY (partkey, quantity) with summed price.
-  virtual bool ScanPartQuantityAggregates(
-      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer) {
-    (void)consumer;
-    return false;
-  }
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ17LineitemInput &)> &) = 0;
 
   // Optional: same aggregate for a single partkey (incremental pair rebuild).
   virtual bool ScanPartQuantityAggregatesForPart(

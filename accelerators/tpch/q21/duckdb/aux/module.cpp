@@ -2,8 +2,11 @@
 #include "tpch/q21/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -1253,6 +1256,54 @@ void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &services,
   EmitMerged(nations, sink);
 }
 
+namespace {
+
+// Order keys in hash shards: the fulfilled orders, or the per-supplier
+// lineitem counts (an OrderSummary) of the orders seen.
+struct OrderShards {
+  static constexpr std::size_t kShards = 64;
+  std::array<std::unordered_map<int64_t, OrderSummary>, kShards> shards;
+
+  static std::size_t ShardOf(int64_t orderkey) {
+    return (static_cast<uint64_t>(orderkey) * 0x9E3779B97F4A7C15ULL) >> 58;
+  }
+  void Fulfilled(int64_t orderkey) { shards[ShardOf(orderkey)][orderkey].orderstatus = 'F'; }
+  bool IsFulfilled(int64_t orderkey) const {
+    return shards[ShardOf(orderkey)].count(orderkey) != 0;
+  }
+  void Add(const TpchQ21LineitemInput &input) {
+    auto &summary = shards[ShardOf(input.orderkey)][input.orderkey];
+    summary.orderstatus = 'F';
+    AddSupplier(summary, input.suppkey, 1, input.receiptdate > input.commitdate ? 1 : 0);
+  }
+  static void AddSupplier(OrderSummary &summary, int64_t suppkey, int64_t total, int64_t late) {
+    if (auto *info = summary.FindSupplier(suppkey)) {
+      info->total_count += total;
+      info->late_count += late;
+    } else {
+      summary.suppliers.push_back({suppkey, total, late});
+    }
+  }
+};
+
+// Folds `from` into `into`, one pool task per run of shards.
+void FoldShards(const core::AuxEngineServices &services, OrderShards &into, OrderShards &&from) {
+  core::ParallelSlices(services, OrderShards::kShards, 1,
+                       [&](std::size_t, std::size_t first, std::size_t last) {
+                         for (std::size_t s = first; s < last; ++s)
+                           for (auto &[orderkey, theirs] : from.shards[s]) {
+                             auto &mine = into.shards[s][orderkey];
+                             if (theirs.orderstatus)
+                               mine.orderstatus = theirs.orderstatus;
+                             for (const auto &info : theirs.suppliers)
+                               OrderShards::AddSupplier(mine, info.suppkey, info.total_count,
+                                                        info.late_count);
+                           }
+                       });
+}
+
+} // namespace
+
 TpchQ21State
 TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ21State state;
@@ -1260,13 +1311,23 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
     throw std::logic_error("TPC-H Q21 aux requires a typed initial scan source");
 
   // Suppliers.
-  auto supplier_base =
-      std::make_shared<std::unordered_map<int64_t, TpchQ21Supplier>>();
-  initial_scan->ScanSuppliers([&](const TpchQ21SupplierInput &input) {
-    (*supplier_base)[input.suppkey] = {
-        std::make_shared<const std::string>(input.name), input.nationkey};
-  });
-  state.dir->base = supplier_base;
+  using Suppliers = std::unordered_map<int64_t, TpchQ21Supplier>;
+  state.dir->base = std::make_shared<const Suppliers>(core::PartitionedBuild<Suppliers>(
+      services, [] { return Suppliers{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliers(services, parts,
+                                    [&](std::size_t p, const TpchQ21SupplierInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ21SupplierInput>{input});
+                                    });
+      },
+      [](Suppliers &partial, const TpchQ21SupplierInput &input) {
+        partial[input.suppkey] = {std::make_shared<const std::string>(input.name),
+                                  input.nationkey};
+      },
+      [](Suppliers &into, Suppliers &&from) {
+        for (auto &[suppkey, supplier] : from)
+          into[suppkey] = std::move(supplier);
+      }));
 
   // Nations.
   initial_scan->ScanNations([&](const TpchQ21NationInput &input) {
@@ -1274,39 +1335,40 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
         input.nationkey);
   });
 
-  // Order summaries for contributing orders only.
-  auto orders = std::make_shared<TpchQ21Core::OrderMap>();
-  const bool pushed = initial_scan->ScanContributingOrderSuppliers(
-      [&](int64_t orderkey, int64_t suppkey, int64_t total, int64_t late) {
-        auto &summary = (*orders)[orderkey];
-        summary.orderstatus = 'F';
-        summary.suppliers.push_back({suppkey, total, late});
-      });
-  if (!pushed) {
-    initial_scan->ScanOrders([&](const TpchQ21OrderInput &input) {
-      (*orders)[input.orderkey].orderstatus = input.orderstatus;
-    });
-    initial_scan->ScanLineitems([&](const TpchQ21LineitemInput &input) {
-      auto it = orders->find(input.orderkey);
-      if (it == orders->end() || it->second.orderstatus != 'F')
-        return;
-      auto &summary = it->second;
-      auto *info = summary.FindSupplier(input.suppkey);
-      if (!info) {
-        summary.suppliers.push_back({input.suppkey, 0, 0});
-        info = &summary.suppliers.back();
-      }
-      info->total_count++;
-      if (input.receiptdate > input.commitdate)
-        info->late_count++;
-    });
-  }
+  // Fulfilled orders, then their per-supplier lineitem counts; both in hash
+  // shards so partial states fold shard by shard in parallel.
+  const auto fulfilled = core::PartitionedBuild<OrderShards>(
+      services, [] { return OrderShards{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrders(services, parts,
+                                 [&](std::size_t p, const TpchQ21OrderInput &input) {
+                                   sink(p, TypedRowBatch<TpchQ21OrderInput>{input});
+                                 });
+      },
+      [](OrderShards &partial, const TpchQ21OrderInput &input) {
+        if (input.orderstatus == 'F')
+          partial.Fulfilled(input.orderkey);
+      },
+      [&](OrderShards &into, OrderShards &&from) { FoldShards(services, into, std::move(from)); });
+  auto summaries = core::PartitionedBuild<OrderShards>(
+      services, [] { return OrderShards{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ21LineitemInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ21LineitemInput>{input});
+                                    });
+      },
+      [&](OrderShards &partial, const TpchQ21LineitemInput &input) {
+        if (fulfilled.IsFulfilled(input.orderkey))
+          partial.Add(input);
+      },
+      [&](OrderShards &into, OrderShards &&from) { FoldShards(services, into, std::move(from)); });
 
   // Contributions; keep only orders that currently contribute.
-  std::vector<TpchQ21Core::OrderMap::iterator> entries;
-  entries.reserve(orders->size());
-  for (auto it = orders->begin(); it != orders->end(); ++it)
-    entries.push_back(it);
+  std::vector<std::pair<const int64_t, OrderSummary> *> entries;
+  for (auto &shard : summaries.shards)
+    for (auto &entry : shard)
+      entries.push_back(&entry);
   using Numwait = std::unordered_map<int64_t, int64_t>;
   Numwait numwait;
   std::vector<char> contributes(entries.size());
@@ -1316,8 +1378,7 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
         for (std::size_t i = begin; i < end; ++i) {
           auto &order = entries[i]->second;
           int64_t suppkey = 0, count = 0;
-          if (order.orderstatus != 'F' ||
-              !ComputeOrderContribution(order, suppkey, count))
+          if (!ComputeOrderContribution(order, suppkey, count))
             continue;
           if (count != 0)
             sums[suppkey] += count;
@@ -1329,9 +1390,10 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
         for (const auto &[suppkey, nw] : from)
           into[suppkey] += nw;
       });
+  auto orders = std::make_shared<TpchQ21Core::OrderMap>();
   for (std::size_t i = 0; i < entries.size(); ++i) {
-    if (!contributes[i])
-      orders->erase(entries[i]);
+    if (contributes[i])
+      orders->emplace(entries[i]->first, std::move(entries[i]->second));
   }
   state.core->base = orders;
   for (const auto &[suppkey, nw] : numwait)

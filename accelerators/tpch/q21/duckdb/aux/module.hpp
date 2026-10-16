@@ -69,18 +69,20 @@ struct TpchQ21LineitemInput {
 class TpchQ21InitialScan {
 public:
   virtual ~TpchQ21InitialScan() = default;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ21SupplierInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ21NationInput &)> &) = 0;
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
+  virtual void ScanSuppliers(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ21SupplierInput &)> &) = 0;
   virtual void ScanOrders(
-      const std::function<void(const TpchQ21OrderInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ21OrderInput &)> &) = 0;
   virtual void ScanLineitems(
-      const std::function<void(const TpchQ21LineitemInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ21LineitemInput &)> &) = 0;
 
-  // Optional SQL pushdown for Build: for every fulfilled ('F') order that can
-  // contribute (>= 2 suppliers, exactly one supplier with a late item), one
-  // call per (orderkey, suppkey) with COUNT(*) and the late-item count.
   // Point lookup of one order's current (including the open transaction)
   // status and per-supplier (count, late count). Returns false when
   // unsupported; `found` is false when the order row does not exist.
@@ -92,13 +94,6 @@ public:
   virtual bool LookupOrderSummary(int64_t orderkey, OrderLookup &out) {
     (void)orderkey;
     (void)out;
-    return false;
-  }
-
-  virtual bool ScanContributingOrderSuppliers(
-      const std::function<void(int64_t orderkey, int64_t suppkey,
-                               int64_t total, int64_t late)> &consumer) {
-    (void)consumer;
     return false;
   }
 };
