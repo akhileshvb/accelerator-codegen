@@ -213,6 +213,7 @@ void WriteAuxCostModelJson(const std::string &path,
   WriteNumber(out, "apply_delta_part_lineitem_scan_us",
               params.apply_delta_part_lineitem_scan_us);
   WriteUint(out, "apply_delta_max_rows", params.apply_delta_max_rows);
+  WriteUint(out, "calibrated_scale_rows", params.calibrated_scale_rows);
   WriteUint(out, "apply_delta_max_part_fanout",
             params.apply_delta_max_part_fanout);
   WriteNumber(out, "invalidation_overhead_us", params.invalidation_overhead_us);
@@ -283,6 +284,7 @@ WriteCalibrationResult CalibrateFromWrites(const std::vector<CalibrationWrite> &
       continue; // the accelerator does not depend on this write
     }
     sample.rows = unforced.decision->rows_touched;
+    result.params.calibrated_scale_rows = unforced.decision->data_rows_hint;
     sample.partitions = unforced.decision->affected_partition_count;
     sample.control_us = timed_pair(write.control, write.control_revert, std::nullopt,
                                    [](const CalibrationEngine::Timed &t) { return t.us; });

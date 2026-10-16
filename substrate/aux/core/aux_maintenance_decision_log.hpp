@@ -25,6 +25,7 @@ struct MaintenanceDecisionLogEntry {
   double maintenance_us = 0.0;
   uint64_t rows_touched = 0;
   uint64_t affected_partition_count = 0;
+  uint64_t data_rows_hint = 0; // rows in the dependency tables at the decision; 0: unknown
   double expected_queries_before_next_write = 0.0;
   bool valid = false;
 };
