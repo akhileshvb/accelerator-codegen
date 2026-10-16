@@ -21,43 +21,40 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ12Orders(
-    const std::function<void(const query::TpchQ12OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_orderkey, o_orderpriority, "
-      "CASE WHEN o_orderpriority IS NULL THEN 1 ELSE 0 END "
-      "FROM orders WHERE o_orderkey IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ12OrderInput{TypedInt(cols, 0),
-                                        TypedText(cols, 1),
-                                        TypedInt(cols, 2) != 0};
-      },
-      [&](query::TpchQ12OrderInput &&input) { consumer(input); });
+SplitTable OrdersTable() {
+  return {"o_orderkey, o_orderpriority, "
+          "CASE WHEN o_orderpriority IS NULL THEN 1 ELSE 0 END",
+          "orders", "o_orderkey IS NOT NULL", "o_orderkey"};
+}
+
+query::TpchQ12OrderInput DecodeOrder(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1), TypedInt(cols, 2) != 0};
 }
 
 // Lineitems that can contribute: non-NULL key / shipmode, commit < receipt,
-// ship < commit (NULL dates fail the comparisons).  `where` narrows further.
-void ScanTpchQ12QualifyingLineitems(
-    const std::string &where,
-    const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, l_shipdate "
-      "FROM lineitem WHERE l_orderkey IS NOT NULL AND l_shipmode IS NOT NULL "
-      "AND l_commitdate < l_receiptdate AND l_shipdate < l_commitdate" +
-          where,
-      [&](const std::vector<std::string> &cols) {
-        return query::TpchQ12LineitemInput{TypedInt(cols, 0),
-                                           TypedText(cols, 1),
-                                           TypedDate(cols, 2),
-                                           TypedDate(cols, 3),
-                                           TypedDate(cols, 4)};
-      },
-      [&](query::TpchQ12LineitemInput &&input) { consumer(input); });
+// ship < commit (NULL dates fail the comparisons).
+SplitTable QualifyingLineitemsTable() {
+  return {"l_orderkey, l_shipmode, l_commitdate, l_receiptdate, l_shipdate", "lineitem",
+          "l_orderkey IS NOT NULL AND l_shipmode IS NOT NULL "
+          "AND l_commitdate < l_receiptdate AND l_shipdate < l_commitdate",
+          "l_orderkey"};
+}
+
+query::TpchQ12LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1), TypedDate(cols, 2), TypedDate(cols, 3),
+          TypedDate(cols, 4)};
+}
+
+void ScanTpchQ12Orders(
+    const std::function<void(const query::TpchQ12OrderInput &)> &consumer) {
+  ScanTypedTuplesDecoded(SelectSql(OrdersTable()), DecodeOrder,
+                         [&](query::TpchQ12OrderInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ12Lineitems(
     const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
-  ScanTpchQ12QualifyingLineitems("", consumer);
+  ScanTypedTuplesDecoded(SelectSql(QualifyingLineitemsTable()), DecodeLineitem,
+                         [&](query::TpchQ12LineitemInput &&input) { consumer(input); });
 }
 
 // Index lookup of the qualifying lineitems of some orders.
@@ -69,8 +66,9 @@ void LookupTpchQ12LineitemsByOrder(
     const std::vector<int64_t> batch(
         orderkeys.begin() + from,
         orderkeys.begin() + std::min(orderkeys.size(), from + kBatch));
-    ScanTpchQ12QualifyingLineitems(
-        " AND " + KeyListPredicate("l_orderkey", batch), consumer);
+    ScanTypedTuplesDecoded(
+        SelectSql(QualifyingLineitemsTable()) + " AND " + KeyListPredicate("l_orderkey", batch),
+        DecodeLineitem, [&](query::TpchQ12LineitemInput &&input) { consumer(input); });
   }
 }
 
@@ -87,6 +85,26 @@ public:
       const std::function<void(const query::TpchQ12LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ12Lineitems(consumer);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ12OrderInput &)> &sink)
+      override {
+    ScanTypedTuplesPartitioned(
+        services, scans::OrdersTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeOrder(cols));
+        });
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ12LineitemInput &)> &sink)
+      override {
+    ScanTypedTuplesPartitioned(
+        services, scans::QualifyingLineitemsTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeLineitem(cols));
+        });
   }
   void LookupLineitemsByOrder(
       const std::vector<int64_t> &orderkeys,
