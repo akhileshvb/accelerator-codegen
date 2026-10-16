@@ -107,6 +107,8 @@ using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
 struct TpchQ21Scan : TpchQ21InitialScan {
+  // Order keys per point-lookup query.
+  static constexpr std::size_t kLookupBatch = 4096;
   explicit TpchQ21Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
@@ -146,6 +148,41 @@ struct TpchQ21Scan : TpchQ21InitialScan {
                                    SafeInt64(ChunkValue(chunk, 1, row)),
                                    SafeInt64(ChunkValue(chunk, 2, row))});
         });
+    return true;
+  }
+  bool LookupOrderSummaries(const std::vector<int64_t> &orderkeys,
+                            std::vector<OrderLookup> &out) override {
+    out.assign(orderkeys.size(), OrderLookup{});
+    std::unordered_map<int64_t, std::size_t> position;
+    position.reserve(orderkeys.size());
+    for (std::size_t i = 0; i < orderkeys.size(); ++i)
+      position.emplace(orderkeys[i], i);
+    for (std::size_t first = 0; first < orderkeys.size(); first += kLookupBatch) {
+      std::string keys;
+      const auto last = std::min(orderkeys.size(), first + kLookupBatch);
+      for (std::size_t i = first; i < last; ++i)
+        keys += (i == first ? "" : ",") + std::to_string(orderkeys[i]);
+      ScanQueryStreaming(
+          connection,
+          "SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey IN (" + keys + ")",
+          [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+            auto &lookup = out[position.at(SafeInt64(ChunkValue(chunk, 0, row)))];
+            lookup.found = true;
+            lookup.status = FirstChar(ChunkValue(chunk, 1, row));
+          });
+      ScanQueryStreaming(
+          connection,
+          "SELECT l_orderkey, l_suppkey, COUNT(*), "
+          "SUM(CASE WHEN l_receiptdate > l_commitdate THEN 1 ELSE 0 END) "
+          "FROM lineitem WHERE l_orderkey IN (" + keys + ") GROUP BY l_orderkey, l_suppkey",
+          [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+            auto &lookup = out[position.at(SafeInt64(ChunkValue(chunk, 0, row)))];
+            if (lookup.found)
+              lookup.suppliers.push_back({SafeInt64(ChunkValue(chunk, 1, row)),
+                                          SafeInt64(ChunkValue(chunk, 2, row)),
+                                          SafeInt64(ChunkValue(chunk, 3, row))});
+          });
+    }
     return true;
   }
   void ScanNations(
