@@ -82,7 +82,7 @@ def format_predicate_bootstrap_section(sql: str, sql_path: str = "") -> str:
     lines = [
         "### Reference SQL predicate contract (authoritative)",
         "",
-        "Synthetic unit fixtures **must** obey this SQL. See `pipeline/prompts/aux_state/shared/unit_test_contract.md`.",
+        "Catalog arguments and probes **must** obey this SQL. See `pipeline/prompts/aux_state/shared/unit_test_contract.md`.",
         "",
     ]
     if sql_path:
