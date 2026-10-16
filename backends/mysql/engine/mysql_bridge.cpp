@@ -24,6 +24,7 @@
 
 // ---- Accelerator substrate ----
 #include "substrate/aux/core/aux_types.hpp"
+#include "substrate/aux/runtime/accelerator_runtime.hpp"
 #include "backends/mysql/api/mysql_host.hpp"
 #include "backends/mysql/engine/mysql_bridge.hpp"
 #include "backends/mysql/engine/mysql_session.hpp"
@@ -165,6 +166,21 @@ st_mysql_sysvar_ulong ThreadSysvar(const char *name, const char *comment, Settin
           &g_settings[setting], /*def*/ 0, /*min*/ 0, /*max*/ 4096, /*blk*/ 0};
 }
 
+// accelerator_codegen_audit_accel_force_fallback: every accelerated read answers from SQL
+// (differential tests).
+unsigned long g_force_fallback = 0;
+
+void UpdateForceFallback(MYSQL_THD, SYS_VAR *, void *var_ptr, const void *save) {
+  g_force_fallback = *static_cast<const unsigned long *>(save);
+  *static_cast<unsigned long *>(var_ptr) = g_force_fallback;
+  accel::runtime::SetForcedFallback(g_force_fallback != 0);
+}
+
+st_mysql_sysvar_ulong g_force_fallback_sysvar = {
+    PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED, "accel_force_fallback",
+    "Answer every accelerated query from SQL (differential tests)", nullptr, UpdateForceFallback,
+    &g_force_fallback, /*def*/ 0, /*min*/ 0, /*max*/ 1, /*blk*/ 0};
+
 st_mysql_sysvar_ulong g_sysvars[kSettingCount] = {
     ThreadSysvar("accel_threads", "Accelerator thread budget (0: the CPUs this server may use)", kBudget),
     ThreadSysvar("accel_read_threads", "Threads one accelerated read may use (0: the budget)", kRead),
@@ -173,10 +189,11 @@ st_mysql_sysvar_ulong g_sysvars[kSettingCount] = {
                  kMaintenance),
 };
 
-SYS_VAR *g_system_vars[kSettingCount + 1] = {
+SYS_VAR *g_system_vars[kSettingCount + 2] = {
     reinterpret_cast<SYS_VAR *>(&g_sysvars[kBudget]), reinterpret_cast<SYS_VAR *>(&g_sysvars[kRead]),
     reinterpret_cast<SYS_VAR *>(&g_sysvars[kBuild]),
-    reinterpret_cast<SYS_VAR *>(&g_sysvars[kMaintenance]), nullptr};
+    reinterpret_cast<SYS_VAR *>(&g_sysvars[kMaintenance]),
+    reinterpret_cast<SYS_VAR *>(&g_force_fallback_sysvar), nullptr};
 
 static int mysql_plugin_init(void *) {
   ApplyThreadSettings();

@@ -61,6 +61,14 @@ const MysqlSharedQueryCatalogEntry &LookupMysqlQuery(const std::string &workload
   return *entry;
 }
 
+const MysqlSharedQueryCatalogEntry *FindMysqlQueryByAccelerator(const std::string &accelerator_id) {
+  std::lock_guard<std::mutex> lock(EntriesMutex());
+  for (const auto &e : Entries()) {
+    if (e.accelerator_id && accelerator_id == e.accelerator_id) return &e;
+  }
+  return nullptr;
+}
+
 std::vector<int> MysqlQueriesForWorkload(const std::string &workload_name) {
   std::vector<int> ids;
   {

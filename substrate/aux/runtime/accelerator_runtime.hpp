@@ -72,6 +72,11 @@ using StoreFactory = std::function<StoreHandle(const core::AcceleratorId &,
 // host's (a table not listed keeps its number).
 using TableMap = std::unordered_map<core::TableId, core::TableId>; // module -> host
 
+// Every read is answered from SQL (differential tests): ACCEL_AUX_FORCE_FALLBACK=1,
+// or this switch for an engine whose server environment is fixed.
+void SetForcedFallback(bool forced);
+bool ForcedFallback();
+
 class AcceleratorRuntime : public core::AuxEngineServices {
 public:
   // Runs a build somewhere: a pool thread (in-process engines) or the host's
@@ -161,6 +166,9 @@ public:
   // How long the engine's SQL took to answer a read of this accelerator; with
   // the cost model's estimate it prices the fallback a waiting reader weighs.
   void NoteSqlFallbackUs(double us);
+  // The same, when the measurement is kept elsewhere (Postgres: in shared
+  // memory, written by the backends that ran the SQL).
+  void SetSqlFallbackUs(double us);
 
   AcceleratorStats Stats() const;
 
@@ -177,8 +185,8 @@ private:
   void Applied(const CommittedChange &change, double us);
   void MarkStale(Epoch from);
   bool Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const;
-  double UntilServableUs(const maintenance::CostModelParams &model, double scale) const;
-  uint64_t WaitWorthUs(Epoch epoch, const maintenance::CostModelParams &model, double scale) const;
+  double UntilServableUs() const;
+  uint64_t WaitWorthUs(Epoch epoch, uint64_t ceiling_us) const;
   bool Collapsed(Epoch epoch) const;
 
   std::shared_ptr<core::AuxQueryModule> module;

@@ -33,6 +33,13 @@ const PostgresSharedQueryCatalogEntry &LookupPostgresQuery(const std::string &wo
   return it->second;
 }
 
+const PostgresSharedQueryCatalogEntry *FindPostgresQueryByAccelerator(const std::string &accelerator_id) {
+  for (const auto &[key, entry] : Registry()) {
+    if (entry.accelerator_id && accelerator_id == entry.accelerator_id) return &entry;
+  }
+  return nullptr;
+}
+
 std::vector<int> PostgresQueriesForWorkload(const std::string &workload_name) {
   std::vector<int> ids;
   for (const auto &[key, entry] : Registry()) {

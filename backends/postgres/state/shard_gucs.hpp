@@ -15,6 +15,8 @@ int ReadTimeoutMs();
 // accel.read_wait_ms: how long the worker may make a read wait for commits in
 // flight, a build or a catch-up before declining it.
 int ReadWaitMs();
+// accel.force_fallback: every read answers from SQL (differential tests).
+bool ForceFallback();
 
 // Workers (server settings).
 // accel.shard_read_threads: threads serving reads.

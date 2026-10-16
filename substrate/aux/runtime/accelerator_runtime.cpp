@@ -2,6 +2,7 @@
 #include "substrate/aux/runtime/accelerator_runtime.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -168,6 +169,12 @@ struct AcceleratorRuntime::Impl {
   std::optional<Clock::time_point> build_started;
   double last_build_us = 0;
   double sql_us = 0;
+  // The cost model's rebuild and SQL times at the data's size, taken by a
+  // build inside its snapshot: an engine's table sizes may only be asked there.
+  struct ModelEstimates {
+    double rebuild_us, sql_us;
+  };
+  std::optional<ModelEstimates> model;
   AcceleratorStats stats;
 
   bool Synced() const { return applier.CurrentMode() == SequencedApplier::Mode::Synced; }
@@ -237,14 +244,13 @@ bool AcceleratorRuntime::Servable(Epoch epoch, const std::optional<Epoch> &appli
 
 // Time until the state can serve a reader that finds it unservable and not
 // in-flight: a few queued commits are caught up at once; a build is as long
-// as the last one (else the cost model's estimate at `scale`) or, once
-// overrun, as long again. Holds state_mutex.
-double AcceleratorRuntime::UntilServableUs(const maintenance::CostModelParams &model,
-                                           double scale) const {
+// as the last one (else the cost model's estimate) or, once overrun, as long
+// again. Holds state_mutex.
+double AcceleratorRuntime::UntilServableUs() const {
   if (impl->Synced()) {
     return 0;
   }
-  const double estimate = impl->last_build_us > 0 ? impl->last_build_us : model.full_rebuild_us * scale;
+  const double estimate = impl->last_build_us > 0 ? impl->last_build_us : impl->model->rebuild_us;
   if (!impl->build_started) {
     return estimate;
   }
@@ -255,20 +261,28 @@ double AcceleratorRuntime::UntilServableUs(const maintenance::CostModelParams &m
 // The most a reader that cannot be served yet should wait (C11): an in-flight
 // commit is always waited out; otherwise only while the state is expected
 // sooner than the query's own SQL would finish (measured, else the cost
-// model's at `scale`), and then no longer than that. Holds state_mutex.
-uint64_t AcceleratorRuntime::WaitWorthUs(Epoch epoch, const maintenance::CostModelParams &model,
-                                         double scale) const {
+// model's), and then no longer than that. Without estimates yet (the first
+// build has not started): the caller's ceiling. Holds state_mutex.
+uint64_t AcceleratorRuntime::WaitWorthUs(Epoch epoch, uint64_t ceiling_us) const {
   if (impl->Synced() && epoch >= impl->in_flight_from) {
-    return kNever;
+    return ceiling_us;
   }
-  const double sql = impl->sql_us > 0 ? impl->sql_us : model.fallback_us * scale;
-  return UntilServableUs(model, scale) < sql ? static_cast<uint64_t>(sql) : 0;
+  if (!impl->model) {
+    return ceiling_us;
+  }
+  const double sql = impl->sql_us > 0 ? impl->sql_us : impl->model->sql_us;
+  return UntilServableUs() < sql ? std::min(ceiling_us, static_cast<uint64_t>(sql)) : 0;
 }
 
 void AcceleratorRuntime::NoteSqlFallbackUs(double us) {
   std::lock_guard<std::mutex> lock(impl->state_mutex);
   constexpr double kWeight = 0.3;
   impl->sql_us = impl->sql_us > 0 ? impl->sql_us + kWeight * (us - impl->sql_us) : us;
+}
+
+void AcceleratorRuntime::SetSqlFallbackUs(double us) {
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  impl->sql_us = us;
 }
 
 // Permanent: the epoch's versions were collapsed by a combined catch-up.
@@ -281,8 +295,17 @@ bool AcceleratorRuntime::Collapsed(Epoch epoch) const {
   return false;
 }
 
-// ACCEL_AUX_FORCE_FALLBACK=1: every read is answered from SQL (differential tests).
-static bool ForcedFallback() {
+namespace {
+std::atomic<int> g_forced_fallback{-1}; // -1: the environment decides
+} // namespace
+
+void SetForcedFallback(bool forced) { g_forced_fallback = forced ? 1 : 0; }
+
+bool ForcedFallback() {
+  const int set = g_forced_fallback.load(std::memory_order_relaxed);
+  if (set >= 0) {
+    return set != 0;
+  }
   const char *value = std::getenv("ACCEL_AUX_FORCE_FALLBACK");
   return value && *value && *value != '0';
 }
@@ -303,10 +326,11 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     const uint64_t failures = impl->build_failures; // before the build it may request
     lock.unlock();
     RequestBuild();
-    const auto &model = slots.CostModel(id);
-    const double scale = model.ScaleFor(DataScaleRows());
     lock.lock();
-    const uint64_t wait_us = std::min(options.max_wait_us, WaitWorthUs(epoch, model, scale));
+    // The build that was just requested publishes its estimates as it starts.
+    constexpr auto kEstimatesWait = std::chrono::milliseconds(50);
+    impl->state_cv.wait_for(lock, kEstimatesWait, [&] { return impl->model.has_value(); });
+    const uint64_t wait_us = WaitWorthUs(epoch, options.max_wait_us);
     if (wait_us == 0) {
       impl->stats.reads_fallback++;
       return ReadGuard(false, nullptr);
@@ -714,6 +738,14 @@ bool AcceleratorRuntime::BuildNow() {
     {
       auto snapshot = slots.OpenBuildSnapshot(*this);
       b = snapshot->SnapshotEpoch();
+      {
+        // Inside the engine's build transaction: its table sizes may be asked.
+        const auto &cost = slots.CostModel(id);
+        const double scale = cost.ScaleFor(DataScaleRows());
+        std::lock_guard<std::mutex> lock(impl->state_mutex);
+        impl->model = Impl::ModelEstimates{cost.full_rebuild_us * scale, cost.fallback_us * scale};
+      }
+      impl->state_cv.notify_all();
       {
         std::lock_guard<std::mutex> lock(impl->state_mutex);
         impl->applier.SetBuildEpoch(b);

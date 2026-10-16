@@ -24,6 +24,17 @@ const PostgresQueryCatalogRegistrar kRegistrar(PostgresSharedQueryCatalogEntry
         "SELECT * FROM accel_tpch_q1(90)",
         /* aux_sql */
         "SELECT * FROM accel_tpch_q1_aux(90)",
+        /* fallback_sql */
+        "SELECT l_returnflag, l_linestatus, "
+        "sum(l_quantity) AS sum_qty, sum(l_extendedprice) AS sum_base_price, "
+        "sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price, "
+        "sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge, "
+        "avg(l_quantity) AS avg_qty, avg(l_extendedprice) AS avg_price, "
+        "avg(l_discount) AS avg_disc, count(*) AS count_order "
+        "FROM lineitem "
+        "WHERE l_shipdate <= DATE '1998-12-01' - $1::float8 * INTERVAL '1 day' "
+        "GROUP BY l_returnflag, l_linestatus "
+        "ORDER BY l_returnflag, l_linestatus"
     }
 );
 
