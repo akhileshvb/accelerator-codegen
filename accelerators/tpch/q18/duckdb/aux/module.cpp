@@ -1,6 +1,7 @@
 #include "tpch/q18/duckdb/aux/module.hpp"
 #include "tpch/q18/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,8 @@ constexpr uint32_t kQuantitySumsMagic = 0x51313851; // Q18Q
 constexpr uint32_t kVersionV1 = 1;
 constexpr uint32_t kVersionV2 = 2;
 constexpr uint32_t kVersionV3 = 3;
+// Per maintenance slice: netting one lineitem delta per order is ~50 ns.
+constexpr std::size_t kNetGrain = 16384;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -721,12 +724,23 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   std::unordered_map<int64_t, int64_t> net_by_order;
-  for (const auto &delta : buffer.Deltas()) {
-    if (delta.orderkey < 0)
-      continue;
-    net_by_order[delta.orderkey] +=
-        static_cast<int64_t>(delta.sign) * delta.quantity_raw;
-  }
+  const auto &deltas = buffer.Deltas();
+  core::ParallelReduce(
+      services, deltas.size(), kNetGrain, net_by_order,
+      [&](std::unordered_map<int64_t, int64_t> &net, std::size_t first,
+          std::size_t last) {
+        for (std::size_t i = first; i < last; ++i) {
+          if (deltas[i].orderkey < 0)
+            continue;
+          net[deltas[i].orderkey] +=
+              static_cast<int64_t>(deltas[i].sign) * deltas[i].quantity_raw;
+        }
+      },
+      [](std::unordered_map<int64_t, int64_t> &into,
+         std::unordered_map<int64_t, int64_t> &&from) {
+        for (const auto &[orderkey, net] : from)
+          into[orderkey] += net;
+      });
 
   // The published image is never mutated: clone lazily, only when a survivor
   // actually changes (RF chunks on small orders leave the state untouched).

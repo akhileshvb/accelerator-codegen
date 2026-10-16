@@ -1,6 +1,7 @@
 #include "tpch/q12/duckdb/aux/module.hpp"
 #include "tpch/q12/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -128,6 +129,9 @@ const TpchQ12StateImage *AsQ12Image(const core::StateImage &image,
   const auto *payload = image.As<TpchQ12StateImage>();
   return payload && payload->kind == kind && payload->state ? payload : nullptr;
 }
+
+// Below this many tree contributions a commit applies its levels inline.
+constexpr std::size_t kLevelApplyMinContributions = 2048;
 
 // Dyadic tree over receipt days, implicit heap numbering: node 1 is the root,
 // leaves are kTreeN + (day - kTreeBase). Days outside [kTreeBase,
@@ -814,20 +818,21 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
         work[slot] = std::move(image);
       }
     }
-    uint32_t cursor[kLevels];
-    for (int level = 0; level < kLevels; ++level)
-      cursor[level] = level_begin[level];
-    int64_t previous_leaf = 0;
-    for (const auto &c : tree) {
-      for (int level = 0; level < kLevels; ++level) {
-        const int64_t node = c.leaf >> level;
-        if (c.leaf != previous_leaf &&
-            node != static_cast<int64_t>(partitions[cursor[level]]))
-          ++cursor[level];
-        work[cursor[level]]->node.modes.Add(c.slot, *c.mode, c.high, c.low);
-      }
-      previous_leaf = c.leaf;
-    }
+    // Levels own disjoint partitions, so each is applied by one slice.
+    const std::size_t level_grain =
+        tree.size() < kLevelApplyMinContributions ? kLevels : 1;
+    core::ParallelSlices(
+        services, kLevels, level_grain,
+        [&](std::size_t, std::size_t first, std::size_t last) {
+          for (std::size_t level = first; level < last; ++level) {
+            uint32_t cursor = level_begin[level];
+            for (const auto &c : tree) {
+              if (c.leaf >> level != static_cast<int64_t>(partitions[cursor]))
+                ++cursor;
+              work[cursor]->node.modes.Add(c.slot, *c.mode, c.high, c.low);
+            }
+          }
+        });
     if (!overflow.empty()) {
       auto &days = work[tree_slots]->node.overflow_days;
       for (const auto &c : overflow)
