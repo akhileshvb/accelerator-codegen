@@ -262,20 +262,24 @@ int64_t TpchQ16State::CountDistinct(uint32_t gid) const {
 // Distinct counts of groups gid(0), gid(1), ...; groups are read-only here, so
 // slices own disjoint outputs.
 template <typename GroupAt>
-std::vector<int64_t> TpchQ16State::CountDistinctMany(const core::AuxEngineServices &services,
-                                                     std::size_t n, GroupAt &&group_at) const {
+std::vector<int64_t>
+TpchQ16State::CountDistinctMany(const core::AuxEngineServices &services,
+                                std::size_t n, GroupAt &&group_at) const {
   std::vector<int64_t> counts(n, 0);
-  core::ParallelSlices(services, n, kGroupsGrain, [&](std::size_t, std::size_t begin, std::size_t end) {
-    for (std::size_t i = begin; i < end; ++i)
-      counts[i] = CountDistinct(group_at(i));
-  });
+  core::ParallelSlices(
+      services, n, kGroupsGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i)
+          counts[i] = CountDistinct(group_at(i));
+      });
   return counts;
 }
 
 void TpchQ16State::RecomputeDirty(const core::AuxEngineServices &services) {
   std::sort(dirty.begin(), dirty.end());
   dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
-  const auto counts = CountDistinctMany(services, dirty.size(), [&](std::size_t i) { return dirty[i]; });
+  const auto counts = CountDistinctMany(
+      services, dirty.size(), [&](std::size_t i) { return dirty[i]; });
   for (std::size_t i = 0; i < dirty.size(); ++i)
     distinct.Set(dirty[i], counts[i]);
   dirty.clear();
@@ -283,7 +287,8 @@ void TpchQ16State::RecomputeDirty(const core::AuxEngineServices &services) {
 
 void TpchQ16State::RecomputeAll(const core::AuxEngineServices &services) {
   const std::size_t groups = group_table->keys.size();
-  const auto counts = CountDistinctMany(services, groups, [](std::size_t g) { return static_cast<uint32_t>(g); });
+  const auto counts = CountDistinctMany(
+      services, groups, [](std::size_t g) { return static_cast<uint32_t>(g); });
   for (std::size_t g = 0; g < groups; ++g)
     if (counts[g] != 0)
       distinct.Set(static_cast<int64_t>(g), counts[g]);

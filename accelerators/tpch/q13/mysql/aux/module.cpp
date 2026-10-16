@@ -483,13 +483,14 @@ struct Excluded {
   }
 };
 
-// Customer chunks per slice: ~64K customers each, a few hundred us.
-constexpr std::size_t kChunksGrain = 4;
+// Customer chunks per slice: 4096 customers each, ~10 us a chunk.
+constexpr std::size_t kChunksGrain = 16;
 
 // Segments per slice: one holds thousands of comments (~0.1 ms to match).
 constexpr std::size_t kSegmentsGrain = 16;
 
-void CountMatchingOrders(const core::AuxEngineServices &services, const TpchQ13State &state,
+void CountMatchingOrders(const core::AuxEngineServices &services,
+                         const TpchQ13State &state,
                          const like::LikeMatcher &matcher, Excluded &excluded) {
   core::ParallelSlices(
       services, state.segments.size(), kSegmentsGrain,
@@ -516,7 +517,8 @@ void CountMatchingOrders(const core::AuxEngineServices &services, const TpchQ13S
 
 } // namespace
 
-void TpchQ13Module::EmitResult(const core::AuxEngineServices &services, const TpchQ13State &state,
+void TpchQ13Module::EmitResult(const core::AuxEngineServices &services,
+                               const TpchQ13State &state,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) const {
   const bool pattern_null =

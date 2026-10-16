@@ -235,9 +235,10 @@ void TpchQ2FinalizeAndEmit(const core::AuxEngineServices &services, const TpchQ2
   for (std::size_t t = 0; t < slices; ++t)
     heaps.emplace_back(better);
   ScanSparseParts(q, heaps[0]);
-  core::RunSlices(services, slices, chunks, [&](std::size_t slice, std::size_t begin, std::size_t end) {
-    ScanPartChunks(q, begin, end, heaps[slice]);
-  });
+  core::RunSlices(services, slices, chunks,
+                  [&](std::size_t slice, std::size_t begin, std::size_t end) {
+                    ScanPartChunks(q, begin, end, heaps[slice]);
+                  });
 
   std::vector<Q2Candidate> rows;
   for (auto &heap : heaps)

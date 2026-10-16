@@ -13,7 +13,7 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Offer chunks per slice: ~1000 parts of a few offers each (~50 us).
+// Offer chunks per slice: 1024 parts of a few offers each, ~5 us a chunk.
 constexpr std::size_t kChunksGrain = 32;
 
 // ── Cell helpers ────────────────────────────────────────────────────────────

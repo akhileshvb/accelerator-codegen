@@ -289,7 +289,8 @@ private:
   TpchQ2State BuildState(core::AuxEngineServices &) const;
   std::shared_ptr<const TpchQ2State>
   LoadState(core::AuxEngineServices &) const;
-  void EmitResult(const core::AuxEngineServices &, const TpchQ2State &, const core::QueryArguments &,
+  void EmitResult(const core::AuxEngineServices &, const TpchQ2State &,
+                  const core::QueryArguments &,
                   core::AuxRowSink &) const;
 
   TpchQ2Config config;

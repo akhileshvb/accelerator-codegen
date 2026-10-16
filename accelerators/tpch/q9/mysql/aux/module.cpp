@@ -430,7 +430,8 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ9Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ9TxnBuffer>();
 }
 
-std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
+std::shared_ptr<TpchQ9State>
+TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q9 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ9State>();

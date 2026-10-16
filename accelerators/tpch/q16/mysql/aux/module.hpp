@@ -160,7 +160,8 @@ private:
   uint32_t GroupId(const TpchQ16PartInput &part);
   int64_t CountDistinct(uint32_t gid) const;
   template <typename GroupAt>
-  std::vector<int64_t> CountDistinctMany(const core::AuxEngineServices &, std::size_t n, GroupAt &&group_at) const;
+  std::vector<int64_t> CountDistinctMany(const core::AuxEngineServices &,
+                                         std::size_t n, GroupAt &&group_at) const;
   void MarkDirty(uint32_t gid) {
     if (track_dirty)
       dirty.push_back(gid);

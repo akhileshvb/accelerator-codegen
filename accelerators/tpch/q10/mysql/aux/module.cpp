@@ -754,13 +754,14 @@ void TpchQ10Module::EmitResult(const TpchQ10State &s,
         std::min<int64_t>(end_day - 1, std::numeric_limits<int32_t>::max());
     if (first_day <= last_day) {
       // About 2^18 bucket-day lookups pay for a slice.
-      const std::size_t grain =
-          std::max<std::size_t>(1, (std::size_t{1} << 18) / static_cast<std::size_t>(last_day - first_day + 1));
+      const std::size_t grain = std::max<std::size_t>(
+          1, (std::size_t{1} << 18) / static_cast<std::size_t>(last_day - first_day + 1));
       TopK top;
       core::ParallelReduce(
           services, s.buckets, grain, top,
           [&](TopK &acc, std::size_t begin, std::size_t end) {
-            ScanBuckets(s, first_day, last_day, static_cast<uint32_t>(begin), static_cast<uint32_t>(end), acc);
+            ScanBuckets(s, first_day, last_day, static_cast<uint32_t>(begin),
+                        static_cast<uint32_t>(end), acc);
           },
           [](TopK &into, TopK &&from) {
             for (const auto &c : from.Items())
