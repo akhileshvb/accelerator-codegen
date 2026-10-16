@@ -33,7 +33,8 @@ public:
 
   // All num deltas of the buffer (except those of `skip` keys), netted per
   // (adsh, tag, version, uom).
-  bool ApplyNumDeltas(const SecEdgarQ4TxnBuffer &buffer,
+  bool ApplyNumDeltas(const core::AuxEngineServices &services,
+                      const SecEdgarQ4TxnBuffer &buffer,
                       const std::unordered_set<std::string> *skip);
 
   bool StructureChanged() const {

@@ -24,6 +24,8 @@ constexpr size_t kCacheEntries = 64;
 // Group shards per read slice: 64 groups of a few loads each, so only
 // thousands of shards pay for a task.
 constexpr size_t kCandidateGrain = 1024;
+// Rows per slice of the pipelined key lookups of a delta batch.
+constexpr size_t kLookupGrain = 8192;
 
 std::string Join3(std::string_view a, std::string_view b, std::string_view c) {
   std::string out;
@@ -477,34 +479,41 @@ bool Writer::ApplyStructural(const SecEdgarQ4DirtyRows &rows, const SecEdgarQ4Tx
   return true;
 }
 
-bool Writer::ApplyNumDeltas(const SecEdgarQ4TxnBuffer &buffer,
+bool Writer::ApplyNumDeltas(const core::AuxEngineServices &services,
+                            const SecEdgarQ4TxnBuffer &buffer,
                             const std::unordered_set<std::string> *skip) {
   const auto &deltas = buffer.Deltas();
   const size_t n = deltas.size();
   if (n == 0) return true;
 
   // 1. resolve (adsh, tag, version) -> pre key for the whole batch with
-  //    pipelined lookups (the cache misses of different rows overlap)
-  std::vector<std::string_view> va(n), vt(n), vv(n);
-  for (size_t i = 0; i < n; ++i) {
-    va[i] = buffer.Adsh(deltas[i]);
-    vt[i] = buffer.Tag(deltas[i]);
-    vv[i] = buffer.Version(deltas[i]);
-  }
+  //    pipelined lookups (the cache misses of different rows overlap); the
+  //    lookups only read, so slices fill disjoint ranges of the result arrays
   std::vector<uint32_t> ia(n), it(n), iv(n);
-  const auto &coh = Coh();
-  coh.adsh.FindBatch(va.data(), n, ia.data());
-  TD().tags.FindBatch(vt.data(), n, it.data());
-  TD().versions.FindBatch(vv.data(), n, iv.data());
   std::vector<int64_t> pks(n);
-  for (size_t i = 0; i < n; ++i) {
-    const bool ok = ia[i] != kQ4None && it[i] != kQ4None && iv[i] != kQ4None &&
-                    coh.sic_id[ia[i]] != kQ4None;
-    pks[i] = ok ? Q4PreKey(ia[i], it[i], iv[i]) : int64_t{-1};
-  }
   std::vector<const SecEdgarQ4PreVal *> pvs(n);
+  std::vector<std::string_view> va(n), vt(n), vv(n);
+  const auto &coh = Coh();
+  const auto &tags = TD().tags;
+  const auto &versions = TD().versions;
   const auto &pre = Pre();
-  pre.FindBatch(pks.data(), n, pvs.data());
+  core::ParallelSlices(services, n, kLookupGrain, [&](size_t, size_t begin, size_t end) {
+    const size_t m = end - begin;
+    for (size_t i = begin; i < end; ++i) {
+      va[i] = buffer.Adsh(deltas[i]);
+      vt[i] = buffer.Tag(deltas[i]);
+      vv[i] = buffer.Version(deltas[i]);
+    }
+    coh.adsh.FindBatch(va.data() + begin, m, ia.data() + begin);
+    tags.FindBatch(vt.data() + begin, m, it.data() + begin);
+    versions.FindBatch(vv.data() + begin, m, iv.data() + begin);
+    for (size_t i = begin; i < end; ++i) {
+      const bool ok = ia[i] != kQ4None && it[i] != kQ4None && iv[i] != kQ4None &&
+                      coh.sic_id[ia[i]] != kQ4None;
+      pks[i] = ok ? Q4PreKey(ia[i], it[i], iv[i]) : int64_t{-1};
+    }
+    pre.FindBatch(pks.data() + begin, m, pvs.data() + begin);
+  });
 
   // 2. net the deltas per (key, uom)
   struct Net {
@@ -584,7 +593,10 @@ bool Writer::ApplyNumDeltas(const SecEdgarQ4TxnBuffer &buffer,
     }
   }
   std::vector<const uint64_t *> found(gks.size());
-  GIndex().FindBatch(gks.data(), gks.size(), found.data());
+  const auto &gindex = GIndex();
+  core::ParallelSlices(services, gks.size(), kLookupGrain, [&](size_t, size_t begin, size_t end) {
+    gindex.FindBatch(gks.data() + begin, end - begin, found.data() + begin);
+  });
   std::vector<uint64_t> gids(gks.size());
   for (size_t h = 0; h < gks.size(); ++h) gids[h] = found[h] ? *found[h] : kNoGroup;
   for (size_t h = 0; h < hits.size(); ++h) {
