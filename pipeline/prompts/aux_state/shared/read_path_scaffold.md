@@ -43,6 +43,10 @@ When the query spans multiple partitions (Q1 prefix, Q10/Q12 date windows):
 3. If any required partition is invalid or absent → `ExecuteFallback` for the window.
 4. Do not reject valid partitions solely because their `valid_through` epoch lags unrelated writes.
 
+## Parallel `Execute`
+
+When the read is proportional to selected state (many partitions or groups), take the snapshot first (`ReadHitPartitions`), then split with `core::ParallelReduce` over the borrowed images (`substrate_primitives.md`; slice rules in `engine_interfaces.md`). A read bounded to one small partition stays one slice.
+
 ## Maintenance hook (write path)
 
 In `InterpretMutation` / `AccumulateMutation` / `StageMaintenance`:

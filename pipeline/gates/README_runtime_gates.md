@@ -49,7 +49,7 @@ the queries; combining queries with different ids fails the gates by design.
 Planned from the design note, covered today only inside layer harnesses or
 by observation: rebuild under continuous writes without a quiet window
 (`runtime` layer; `builds` counter in the epoch/hits reports), reads during a
-long apply (latency bound), shifted-key SF1, peak threads under `taskset`
+long apply (latency bound), shifted-key and value-inflated SF1 (run by hand today: the verification set of `pipeline/prompts/shared/scale_factor_contract.md`), 1-vs-N phase-cap comparison, peak threads under `taskset`
 (`ThreadBudget::PeakThreads`), apply time and bytes copied per changed row at
 SF1 vs SF20.
 
