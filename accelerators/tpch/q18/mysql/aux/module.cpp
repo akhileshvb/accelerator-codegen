@@ -489,6 +489,8 @@ namespace {
 // orders record map has at least as many shards, so a slice also owns every
 // record shard of its keys, and no two slices write the same shard.
 using HotIndex = decltype(TpchQ18State::hot);
+// The hot set is default-built: kShards shards.
+constexpr unsigned kHotShardBits = static_cast<unsigned>(__builtin_ctzll(HotIndex::kShards));
 static_assert(decltype(TpchQ18State::orders)::kShards >= HotIndex::kShards);
 
 // Orders rows (a delete then an insert of one key is an update), then
@@ -496,7 +498,7 @@ static_assert(decltype(TpchQ18State::orders)::kShards >= HotIndex::kShards);
 bool ApplyOwnedDeltas(TpchQ18State &state, const TpchQ18TxnBuffer &buffer,
                       std::size_t first, std::size_t last) {
   const auto owned = [&](int64_t orderkey) {
-    const std::size_t shard = HotIndex::ShardOf(orderkey);
+    const std::size_t shard = HotIndex::ShardOf(orderkey, kHotShardBits);
     return shard >= first && shard < last;
   };
   for (const auto &delta : buffer.Orders()) {
