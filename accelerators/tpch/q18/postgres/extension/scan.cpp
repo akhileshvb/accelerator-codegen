@@ -52,21 +52,6 @@ void ScanTpchQ18Customers(
               });
 }
 
-// SUM(l_quantity) and COUNT(*) per order, computed by the database.
-bool ScanTpchQ18OrderQuantityAggregates(
-    const std::function<void(const query::TpchQ18OrderQuantityAggregate &)>
-        &consumer) {
-  ScanTypedTuples(
-      "SELECT l_orderkey, SUM(l_quantity), COUNT(*) FROM lineitem "
-      "GROUP BY l_orderkey",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2)});
-      });
-  return true;
-}
-
 // Keyed lookup of customer names (the index on c_custkey answers it).
 void LookupTpchQ18CustomerNames(
     const std::vector<int64_t> &custkeys,
@@ -98,11 +83,6 @@ public:
       const std::function<void(const query::TpchQ18CustomerInput &)> &consumer)
       override {
     scans::ScanTpchQ18Customers(consumer);
-  }
-  bool ScanOrderQuantityAggregates(
-      const std::function<void(const query::TpchQ18OrderQuantityAggregate &)>
-          &consumer) override {
-    return scans::ScanTpchQ18OrderQuantityAggregates(consumer);
   }
   void LookupCustomerNames(
       const std::vector<int64_t> &custkeys,

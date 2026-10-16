@@ -1,5 +1,6 @@
 #include "tpch/q17/postgres/aux/module.hpp"
 #include "tpch/q17/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -14,6 +15,10 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 using Int128 = __int128;
+
+// Buckets of the build's lineitem rows (by part) and parts per maintenance slice.
+constexpr std::size_t kBuildBuckets = 64;
+constexpr std::size_t kPartEditGrain = 256;
 
 // ── Row decoding ──────────────────────────────────────────────────────────
 
@@ -132,9 +137,33 @@ void AddEntry(TpchQ17PartHistogram &hist, const TpchQ17QtyEntry &add) {
   }
 }
 
-void MergeInto(TpchQ17PartHistogram &into, const TpchQ17PartHistogram &from) {
-  for (const auto &e : from)
-    AddEntry(into, e);
+// The histogram of `partkey` after applying its lineitem deltas; false when a
+// delta removes a row the histogram does not hold.
+bool EditHistogram(const TpchQ17State &state, int64_t partkey,
+                   const std::vector<const TpchQ17LineitemDelta *> &deltas,
+                   TpchQ17PartHistogram &hist) {
+  if (const auto *existing = state.parts.Find(partkey); existing && *existing)
+    hist = **existing;
+  for (const auto *delta : deltas) {
+    if (delta->sign > 0) {
+      AddEntry(hist, {delta->quantity_raw, delta->extendedprice_raw, 1});
+      continue;
+    }
+    const auto pos = std::lower_bound(
+        hist.begin(), hist.end(), delta->quantity_raw,
+        [](const TpchQ17QtyEntry &e, int64_t q) { return e.quantity_raw < q; });
+    if (pos == hist.end() || pos->quantity_raw != delta->quantity_raw ||
+        pos->row_count == 0)
+      return false;
+    int64_t price = 0;
+    if (__builtin_sub_overflow(pos->price_sum_raw, delta->extendedprice_raw,
+                               &price))
+      throw std::overflow_error("TPC-H Q17 histogram overflow");
+    pos->price_sum_raw = price;
+    if (--pos->row_count == 0)
+      hist.erase(pos);
+  }
+  return true;
 }
 
 // ── State editing ─────────────────────────────────────────────────────────
@@ -322,47 +351,47 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ17Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ17TxnBuffer>();
 }
 
-void TpchQ17Module::ScanHistograms(
-    const std::function<void(int64_t, TpchQ17PartHistogram &&)> &consumer)
-    const {
-  if (!initial_scan)
-    throw std::logic_error("TPC-H Q17 requires a typed initial scan source");
+namespace {
 
-  // Preferred: SQL GROUP BY (partkey, quantity) ordered by partkey; one part's
-  // histogram is assembled at a time.
-  int64_t current = 0;
+struct PartRow {
+  int64_t partkey;
+  int64_t quantity_raw;
+  int64_t price_raw;
+};
+
+struct BuiltPart {
+  int64_t partkey;
   TpchQ17PartHistogram hist;
-  bool have = false;
-  const bool used_sql = initial_scan->ScanPartQuantityAggregates(
-      [&](const TpchQ17PartQuantityAggregate &agg) {
-        if (have && agg.partkey != current) {
-          consumer(current, std::move(hist));
-          hist = TpchQ17PartHistogram();
-        }
-        current = agg.partkey;
-        have = true;
-        if (agg.row_count < 0 || agg.row_count > UINT32_MAX)
-          throw std::overflow_error("TPC-H Q17 row count out of range");
-        AddEntry(hist, {agg.quantity_raw, agg.extendedprice_sum_raw,
-                        static_cast<uint32_t>(agg.row_count)});
-      });
-  if (used_sql) {
-    if (have)
-      consumer(current, std::move(hist));
-    return;
-  }
+};
 
-  // Generic: aggregate the lineitem scan per part.
-  std::unordered_map<int64_t, TpchQ17PartHistogram> by_part;
-  initial_scan->ScanLineitems([&](const TpchQ17LineitemInput &input) {
-    AddEntry(by_part[input.partkey],
-             {input.quantity_raw, input.extendedprice_raw, 1});
+// Folds one bucket's rows into per-part histograms (sort by part, quantity;
+// equal quantities collapse into one entry).
+std::vector<BuiltPart> FoldBucket(std::vector<PartRow> &rows) {
+  std::sort(rows.begin(), rows.end(), [](const PartRow &a, const PartRow &b) {
+    return a.partkey != b.partkey ? a.partkey < b.partkey
+                                  : a.quantity_raw < b.quantity_raw;
   });
-  for (auto &[partkey, h] : by_part)
-    consumer(partkey, std::move(h));
+  std::vector<BuiltPart> out;
+  for (const auto &row : rows) {
+    if (out.empty() || out.back().partkey != row.partkey)
+      out.push_back({row.partkey, {}});
+    auto &hist = out.back().hist;
+    if (hist.empty() || hist.back().quantity_raw != row.quantity_raw)
+      hist.push_back({row.quantity_raw, 0, 0});
+    auto &entry = hist.back();
+    int64_t price = 0;
+    if (__builtin_add_overflow(entry.price_sum_raw, row.price_raw, &price) ||
+        entry.row_count == UINT32_MAX)
+      throw std::overflow_error("TPC-H Q17 histogram overflow");
+    entry.price_sum_raw = price;
+    ++entry.row_count;
+  }
+  return out;
 }
 
-void TpchQ17Module::Build(core::AuxEngineServices &,
+} // namespace
+
+void TpchQ17Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q17 requires a typed initial scan source");
@@ -374,14 +403,26 @@ void TpchQ17Module::Build(core::AuxEngineServices &,
   });
   dictionary.Finish();
 
-  ScanHistograms([&](int64_t partkey, TpchQ17PartHistogram &&hist) {
-    // A part reported twice (non-contiguous scan) is merged.
-    if (const auto *existing = state->parts.Find(partkey); existing && *existing)
-      MergeInto(hist, **existing);
-    SetPartHistogram(*state, partkey,
-                     std::make_shared<const TpchQ17PartHistogram>(
-                         std::move(hist)));
+  // The scan only deals the rows out to buckets; the buckets are folded in
+  // parallel slices and then merged into the state in bucket order.
+  std::vector<std::vector<PartRow>> buckets(kBuildBuckets);
+  initial_scan->ScanLineitems([&](const TpchQ17LineitemInput &input) {
+    buckets[static_cast<uint64_t>(input.partkey) % kBuildBuckets].push_back(
+        {input.partkey, input.quantity_raw, input.extendedprice_raw});
   });
+  std::vector<std::vector<BuiltPart>> folded(kBuildBuckets);
+  core::ParallelSlices(services, kBuildBuckets, 1,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i) {
+                           folded[i] = FoldBucket(buckets[i]);
+                           buckets[i] = {};
+                         }
+                       });
+  for (auto &bucket : folded)
+    for (auto &part : bucket)
+      SetPartHistogram(*state, part.partkey,
+                       std::make_shared<const TpchQ17PartHistogram>(
+                           std::move(part.hist)));
 
   builder.Write(MakeImage(std::move(state)));
   builder.Finish();
@@ -538,40 +579,37 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
   }
   dictionary.Finish();
 
-  // Lineitem rows: edit each touched part's histogram once; the totals of its
-  // group change by the difference of the part's contribution.
+  // Lineitem rows: each touched part's histogram is edited once (parts are
+  // independent, so in parallel slices over the unchanged state); the totals
+  // of its group then change by the difference of the part's contribution.
   std::map<int64_t, std::vector<const TpchQ17LineitemDelta *>> by_part;
   for (const auto &delta : buffer.LineitemDeltas())
     by_part[delta.partkey].push_back(&delta);
-  for (const auto &[partkey, deltas] : by_part) {
+  const std::vector<std::pair<int64_t, std::vector<const TpchQ17LineitemDelta *>>>
+      touched(by_part.begin(), by_part.end());
+  struct Edit {
     TpchQ17PartHistogram hist;
-    if (const auto *existing = state->parts.Find(partkey); existing && *existing)
-      hist = **existing;
-    for (const auto *delta : deltas) {
-      auto pos = std::lower_bound(
-          hist.begin(), hist.end(), delta->quantity_raw,
-          [](const TpchQ17QtyEntry &e, int64_t q) { return e.quantity_raw < q; });
-      const bool found = pos != hist.end() && pos->quantity_raw == delta->quantity_raw;
-      if (delta->sign > 0) {
-        AddEntry(hist, {delta->quantity_raw, delta->extendedprice_raw, 1});
-        continue;
-      }
-      if (!found || pos->row_count == 0) {
-        // The state does not contain the removed row: it is out of sync.
-        core::FinishRebuildAll(outcome);
-        return outcome;
-      }
-      int64_t price = 0;
-      if (__builtin_sub_overflow(pos->price_sum_raw, delta->extendedprice_raw,
-                                 &price))
-        throw std::overflow_error("TPC-H Q17 histogram overflow");
-      pos->price_sum_raw = price;
-      if (--pos->row_count == 0)
-        hist.erase(pos);
+    bool in_sync = true;
+  };
+  std::vector<Edit> edits(touched.size());
+  const TpchQ17State &before = *state;
+  core::ParallelSlices(services, touched.size(), kPartEditGrain,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i) {
+                           edits[i].in_sync =
+                               EditHistogram(before, touched[i].first,
+                                             touched[i].second, edits[i].hist);
+                         }
+                       });
+  for (std::size_t i = 0; i < touched.size(); ++i) {
+    if (!edits[i].in_sync) {
+      // The state does not contain a removed row: it is out of sync.
+      core::FinishRebuildAll(outcome);
+      return outcome;
     }
-    SetPartHistogram(*state, partkey,
+    SetPartHistogram(*state, touched[i].first,
                      std::make_shared<const TpchQ17PartHistogram>(
-                         std::move(hist)));
+                         std::move(edits[i].hist)));
   }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -635,9 +673,10 @@ void TpchQ17Module::ExecuteFallback(core::AuxEngineServices &,
       parts.insert(input.key);
   });
   std::unordered_map<int64_t, TpchQ17PartHistogram> histograms;
-  ScanHistograms([&](int64_t partkey, TpchQ17PartHistogram &&hist) {
-    if (parts.count(partkey))
-      MergeInto(histograms[partkey], hist);
+  initial_scan->ScanLineitems([&](const TpchQ17LineitemInput &input) {
+    if (parts.count(input.partkey))
+      AddEntry(histograms[input.partkey],
+               {input.quantity_raw, input.extendedprice_raw, 1});
   });
   Contribution total;
   for (const auto &[partkey, hist] : histograms) {
