@@ -8,6 +8,8 @@
 #include "sec_edgar/q3/layout.hpp"
 #include "sec_edgar/common/duckdb_probes.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -103,6 +105,20 @@ using namespace scan;
 
 struct SecEdgarQ3Scan : SecEdgarQ3InitialScan {
   explicit SecEdgarQ3Scan(::duckdb::Connection &connection) : connection(connection) {}
+  bool ScanNumTotals(const core::AuxEngineServices &services, SecEdgarQ3NumTotals &out) override {
+    out = core::PartitionedBuild<SecEdgarQ3NumTotals>(
+        services, [] { return SecEdgarQ3NumTotals(); },
+        [&](std::size_t partitions, auto &&sink) {
+          scan::ScanPartitioned(services, connection, "num",
+                                {Nullable(TextColumn("adsh")), Nullable(TextColumn("uom")),
+                                 Nullable(DoubleColumn("value"))},
+                                partitions, sink);
+        },
+        [](SecEdgarQ3NumTotals &partial, const auto &row) { AddNumRow(partial, row); },
+        [](SecEdgarQ3NumTotals &into, SecEdgarQ3NumTotals &&from) { into.Merge(std::move(from)); },
+        core::kFloatBuildPartitions);
+    return true;
+  }
   // Pushes the value filter and the per-(adsh, uom) aggregation into DuckDB
   // (one parallel GROUP BY over num) instead of streaming every num row
   // through C++.

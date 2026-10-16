@@ -139,7 +139,8 @@ public:
   // Full build straight from the base tables into `builder` (one pass over
   // pre and num).  false => not supported; the module then builds from
   // ScanBridge (the join runs in the database).
-  virtual bool BuildFull(q4::Builder &builder) const {
+  virtual bool BuildFull(const core::AuxEngineServices &services, q4::Builder &builder) const {
+    (void)services;
     (void)builder;
     return false;
   }

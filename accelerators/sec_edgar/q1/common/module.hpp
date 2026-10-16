@@ -215,6 +215,19 @@ private:
   std::unique_ptr<Impl> impl;
 };
 
+// Adds a row of a partitioned build scan (columns: stmt, rfile, adsh, line; all
+// nullable). `Row` is the engine's build scan row (IsNull, TextView, Int).
+template <class Row> void AddPreRow(Builder &builder, const Row &row) {
+  if (row.IsNull(0)) return;
+  const bool rfile_null = row.IsNull(1), adsh_null = row.IsNull(2), line_null = row.IsNull(3);
+  const auto stmt = row.TextView(0);
+  const auto rfile = rfile_null ? std::string_view() : row.TextView(1);
+  const auto adsh = adsh_null ? std::string_view() : row.TextView(2);
+  builder.ConsumeRowView(stmt.data(), stmt.size(), false, rfile.data(), rfile.size(), rfile_null,
+                         adsh.data(), adsh.size(), adsh_null,
+                         line_null ? 0 : static_cast<int32_t>(row.Int(3)), line_null);
+}
+
 } // namespace q1
 
 using SecEdgarQ1State = q1::State;

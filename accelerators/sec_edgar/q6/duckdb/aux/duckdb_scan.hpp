@@ -29,6 +29,8 @@ public:
       const std::function<void(const SecEdgarQ6PreBatch &)> &consumer) override;
   bool ScanNumBatches(
       const std::function<void(const SecEdgarQ6NumBatch &)> &consumer) override;
+  bool ScanNumPartitioned(const core::AuxEngineServices &services,
+                          SecEdgarQ6Builder &builder) override;
   bool LoadAdshSnapshots(const std::vector<std::string> &adshs,
                          std::vector<SecEdgarQ6AdshSnapshot> &out) override;
 

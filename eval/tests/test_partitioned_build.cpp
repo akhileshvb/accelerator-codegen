@@ -149,6 +149,56 @@ void ToyModuleIsIdenticalAtAnyPartitionCount() {
   CHECK(a == b && std::memcmp(&a.inexact_sum, &b.inexact_sum, sizeof(double)) == 0);
 }
 
+// A nullable double column: the NULLs are counted exactly, and the inexact
+// double sum is bit-identical at any thread count with the fixed partition count.
+struct NullableDoubleState {
+  int64_t rows = 0, nulls = 0;
+  double sum = 0.0;
+  void Merge(NullableDoubleState &&from) {
+    rows += from.rows;
+    nulls += from.nulls;
+    sum += from.sum;
+  }
+};
+
+NullableDoubleState BuildNullableDoubles(::duckdb::Connection &connection, std::size_t threads) {
+  BuildServices services(threads);
+  return core::PartitionedBuild<NullableDoubleState>(
+      services, [] { return NullableDoubleState{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan::ScanPartitioned(services, connection, "doubles",
+                              {scan::Nullable(scan::DoubleColumn("x"))},
+                              parts, sink);
+      },
+      [](NullableDoubleState &state, const scan::BuildRow &row) {
+        state.rows++;
+        if (row.IsNull(0)) {
+          state.nulls++;
+        } else {
+          state.sum += row.Double(0);
+        }
+      },
+      [](NullableDoubleState &into, NullableDoubleState &&from) { into.Merge(std::move(from)); },
+      core::kFloatBuildPartitions);
+}
+
+void NullableDoubleSumIsBitIdenticalAtAnyThreadCount() {
+  ::duckdb::DuckDB db(nullptr);
+  ::duckdb::Connection connection(db);
+  CHECK(!connection
+             .Query("CREATE TABLE doubles AS SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE sin(i) * 1e6 / (1 + i % 13) END "
+                    "AS x, CASE WHEN i % 5 = 0 THEN NULL ELSE 's' || i::VARCHAR END AS s "
+                    "FROM range(3000000) t(i)")
+             ->HasError());
+  const auto nulls = connection.Query("SELECT count(*) FROM doubles WHERE x IS NULL")->GetValue(0, 0).GetValue<int64_t>();
+  const NullableDoubleState one = BuildNullableDoubles(connection, 1);
+  CHECK(one.rows == 3'000'000 && one.nulls == nulls);
+  for (const std::size_t threads : {4, 16}) {
+    const NullableDoubleState other = BuildNullableDoubles(connection, threads);
+    CHECK(other.nulls == one.nulls && std::memcmp(&other.sum, &one.sum, sizeof(double)) == 0);
+  }
+}
+
 void BuildsReadTheirSnapshot() {
   ::duckdb::DuckDB db(nullptr);
   ::duckdb::Connection build(db), writer(db);
@@ -278,6 +328,7 @@ int main(int argc, char **argv) {
     PartitionBoundsAreDeterministic();
     PostgresBlockRangesAreDeterministic();
     ToyModuleIsIdenticalAtAnyPartitionCount();
+    NullableDoubleSumIsBitIdenticalAtAnyThreadCount();
     BuildsReadTheirSnapshot();
     if (argc > 1) {
       MeasureLineitem(argv[1]);

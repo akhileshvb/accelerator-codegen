@@ -17,6 +17,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "backends/postgres/api/engine_helpers.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 #include "backends/postgres/api/engine_runtime.hpp"
 #include "backends/postgres/api/runtime.hpp"
 
@@ -132,6 +134,23 @@ const char *kBucketablePredicate =
 
 class SecEdgarQ24Scan final : public query::SecEdgarQ24InitialScan {
 public:
+  bool ScanNumOrphansPartitioned(const core::AuxEngineServices &services, const query::Q24PreBase &base,
+                                 query::Q24OrphanAccumulator &orphans) override {
+    using Accumulator = query::Q24OrphanAccumulator;
+    orphans = core::PartitionedBuild<Accumulator>(
+        services, [] { return Accumulator(); },
+        [&](std::size_t partitions, auto &&sink) {
+          ScanPartitioned(services, "num",
+                          {Nullable(TextColumn("adsh")), Nullable(TextColumn("tag")),
+                           Nullable(TextColumn("version")), Nullable(TextColumn("uom")),
+                           Nullable(DoubleColumn("value")), Nullable(IntColumn("ddate"))},
+                          partitions, sink);
+        },
+        [&](Accumulator &partial, const auto &row) { query::AddNumOrphan(base, partial, row); },
+        [](Accumulator &into, Accumulator &&from) { into.MergeFrom(from); }, core::kFloatBuildPartitions);
+    return true;
+  }
+
   void ScanNum(const std::function<void(const query::SecEdgarQ24NumInput &)>
                    &consumer) override {
     ScanTypedTuples(

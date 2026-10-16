@@ -5,6 +5,8 @@
 #include "sec_edgar/q3/cost_model.hpp"
 #include "sec_edgar/q3/layout.hpp"
 
+#include "backends/postgres/api/engine_helpers.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 #include "backends/postgres/api/engine_runtime.hpp"
 #include "backends/postgres/api/runtime.hpp"
 
@@ -25,6 +27,21 @@ bool IsNullAt(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
 
 class SecEdgarQ3PgScan final : public query::SecEdgarQ3InitialScan {
 public:
+  bool ScanNumTotals(const core::AuxEngineServices &services, query::SecEdgarQ3NumTotals &out) override {
+    using Totals = query::SecEdgarQ3NumTotals;
+    out = core::PartitionedBuild<Totals>(
+        services, [] { return Totals(); },
+        [&](std::size_t partitions, auto &&sink) {
+          ScanPartitioned(services, "num",
+                          {Nullable(TextColumn("adsh")), Nullable(TextColumn("uom")),
+                           Nullable(DoubleColumn("value"))},
+                          partitions, sink);
+        },
+        [](Totals &partial, const auto &row) { query::AddNumRow(partial, row); },
+        [](Totals &into, Totals &&from) { into.Merge(std::move(from)); }, core::kFloatBuildPartitions);
+    return true;
+  }
+
   // The value filter and the per-(adsh, uom) aggregation run in the server
   // (one GROUP BY, parallel-capable); only one row per filing and unit
   // reaches the process.

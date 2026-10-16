@@ -23,13 +23,15 @@
 namespace accelerator_codegen::aux_state::engine::duckdb::scan {
 
 // A projected column and how its values are read: Int as int64, Date as days
-// since 1970-01-01, Decimal as value * 10^scale in int64, Text as bytes.
-// The columns must be NOT NULL.
+// since 1970-01-01, Decimal as value * 10^scale in int64, Double as double,
+// Text as bytes. A column that can hold NULL must be declared Nullable and
+// tested with BuildRow::IsNull before it is read.
 struct BuildColumn {
-  enum class Kind { Int, Date, Decimal, Text };
+  enum class Kind { Int, Date, Decimal, Double, Text };
   std::string name;
   Kind kind;
   int scale = 0;
+  bool nullable = false;
 
   std::string Sql() const {
     switch (kind) {
@@ -39,6 +41,8 @@ struct BuildColumn {
       return "CAST(" + name + " AS DATE)";
     case Kind::Decimal:
       return "CAST(" + name + " AS DECIMAL(18," + std::to_string(scale) + "))";
+    case Kind::Double:
+      return "CAST(" + name + " AS DOUBLE)";
     case Kind::Text:
       return "CAST(" + name + " AS VARCHAR)";
     }
@@ -51,7 +55,12 @@ inline BuildColumn DateColumn(const char *name) { return {name, BuildColumn::Kin
 inline BuildColumn DecimalColumn(const char *name, int scale) {
   return {name, BuildColumn::Kind::Decimal, scale};
 }
+inline BuildColumn DoubleColumn(const char *name) { return {name, BuildColumn::Kind::Double}; }
 inline BuildColumn TextColumn(const char *name) { return {name, BuildColumn::Kind::Text}; }
+inline BuildColumn Nullable(BuildColumn column) {
+  column.nullable = true;
+  return column;
+}
 
 class ChunkBatch;
 
@@ -63,6 +72,8 @@ struct BuildRow {
   int64_t Int(int column) const { return At<int64_t>(column); }
   int32_t Date(int column) const { return At<::duckdb::date_t>(column).days; }
   int64_t Decimal(int column) const { return At<int64_t>(column); }
+  double Double(int column) const { return At<double>(column); }
+  bool IsNull(int column) const;
   std::string_view TextView(int column) const;
   std::string Text(int column) const { return std::string(TextView(column)); }
   char Char(int column) const {
@@ -78,10 +89,11 @@ private:
 // vectors alike); valid while the chunk is.
 class ChunkBatch {
 public:
-  explicit ChunkBatch(::duckdb::DataChunk &chunk) : count(chunk.size()), columns(chunk.ColumnCount()) {
+  ChunkBatch(::duckdb::DataChunk &chunk, const std::vector<BuildColumn> &specs)
+      : count(chunk.size()), columns(chunk.ColumnCount()) {
     for (::duckdb::idx_t c = 0; c < columns.size(); ++c) {
       chunk.data[c].ToUnifiedFormat(count, columns[c]);
-      Require(columns[c].validity.AllValid(), "unexpected NULL in a build scan column");
+      Require(specs[c].nullable || columns[c].validity.AllValid(), "unexpected NULL in a build scan column");
     }
   }
   std::size_t size() const { return count; }
@@ -96,6 +108,11 @@ private:
 template <class T> const T &BuildRow::At(int column) const {
   const auto &format = batch.columns[column];
   return reinterpret_cast<const T *>(format.data)[format.sel->get_index(row)];
+}
+
+inline bool BuildRow::IsNull(int column) const {
+  const auto &format = batch.columns[column];
+  return !format.validity.RowIsValid(format.sel->get_index(row));
 }
 
 inline std::string_view BuildRow::TextView(int column) const {
@@ -158,7 +175,7 @@ void ScanPartitioned(const core::AuxEngineServices &services, ::duckdb::Connecti
   }
   select += " FROM " + table;
   const auto stream = [&](::duckdb::Connection &connection, const std::string &sql, std::size_t partition) {
-    StreamChunks(connection, sql, [&](::duckdb::DataChunk &chunk) { sink(partition, ChunkBatch(chunk)); });
+    StreamChunks(connection, sql, [&](::duckdb::DataChunk &chunk) { sink(partition, ChunkBatch(chunk, columns)); });
   };
 
   auto lock = LockScan(connection_p);

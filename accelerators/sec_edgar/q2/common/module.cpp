@@ -1475,8 +1475,14 @@ SecEdgarQ2Module::BuildState(core::AuxEngineServices &services) const {
 
   // 1. Aggregate (group -> top-2 values) for every unit of measure: one native
   //    pass when the scan source supports it, else distinct value counts.
-  bool native = initial_scan->ScanNumIds(
-      agg, [&](const SecEdgarQ2IdBatch &batch) { agg.AddBatch(batch); });
+  SecEdgarQ2NumRows rows;
+  bool native = initial_scan->ScanNumPartitioned(services, rows);
+  if (native) {
+    rows.ForEachBatch(agg, [&](const SecEdgarQ2IdBatch &batch) { agg.AddBatch(batch); });
+  } else {
+    native = initial_scan->ScanNumIds(
+        agg, [&](const SecEdgarQ2IdBatch &batch) { agg.AddBatch(batch); });
+  }
   if (!native) {
     // Units over the max_uom_rows opt-out are not aggregated at all.
     std::vector<std::string> wanted;
@@ -1517,6 +1523,32 @@ void SecEdgarQ2Module::Build(core::AuxEngineServices &services,
   builder.Write(core::StateImage::Make(Id(), kStatePartition, 0,
                                        MakeImage(BuildState(services))));
   builder.Finish();
+}
+
+void SecEdgarQ2NumRows::ForEachBatch(SecEdgarQ2KeyMap &keys,
+                                     const std::function<void(const SecEdgarQ2IdBatch &)> &fn) {
+  constexpr size_t kBatch = 4096;
+  std::vector<uint32_t> a(kBatch), t(kBatch), u(kBatch);
+  for (auto &chunk : chunks) {
+    const auto resolve = [&](const core::StringDict &dict, auto &&intern) {
+      std::vector<uint32_t> global(dict.size());
+      for (uint32_t id = 0; id < dict.size(); ++id) global[id] = intern(dict.Get(id));
+      return global;
+    };
+    const auto adsh = resolve(chunk.adsh, [&](std::string_view s) { return keys.Adsh(s); });
+    const auto tag = resolve(chunk.tag, [&](std::string_view s) { return keys.Tag(s); });
+    const auto uom = resolve(chunk.uom, [&](std::string_view s) { return keys.Uom(s); });
+    for (size_t begin = 0; begin < chunk.key.size(); begin += kBatch) {
+      const size_t n = std::min(kBatch, chunk.key.size() - begin);
+      for (size_t i = 0; i < n; ++i) {
+        a[i] = adsh[chunk.adsh_of[begin + i]];
+        t[i] = tag[chunk.tag_of[begin + i]];
+        u[i] = uom[chunk.uom_of[begin + i]];
+      }
+      fn({n, u.data(), a.data(), t.data(), chunk.key.data() + begin});
+    }
+  }
+  chunks.clear();
 }
 
 // ----------------------------------------------------------- maintenance

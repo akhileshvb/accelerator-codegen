@@ -80,9 +80,39 @@ struct SecEdgarQ3SubInput {
   bool fy_is_null = false;
 };
 
+// Partial of a partitioned build: double-double SUM(value) and COUNT(*) per
+// (adsh, uom) over rows with value IS NOT NULL. Partials merge in partition
+// order, so with a fixed partition count the sums do not depend on the threads.
+class SecEdgarQ3NumTotals {
+public:
+  struct Total {
+    double sum = 0.0, comp = 0.0;
+    int64_t count = 0;
+  };
+  void Add(std::string_view adsh, std::string_view uom, double value);
+  void Merge(SecEdgarQ3NumTotals &&from);
+  // fn(adsh, uom, total) for every group.
+  void ForEach(const std::function<void(std::string_view, std::string_view, const Total &)> &fn) const;
+
+private:
+  std::unordered_map<std::string, Total> totals; // uom, '\0', adsh
+};
+
+// Adds a row of a partitioned num scan (columns: adsh, uom, value; all nullable).
+// `Row` is the engine's build scan row (IsNull, TextView, Double).
+template <class Row> void AddNumRow(SecEdgarQ3NumTotals &partial, const Row &row) {
+  if (row.IsNull(0) || row.IsNull(1) || row.IsNull(2)) return;
+  partial.Add(row.TextView(0), row.TextView(1), row.Double(2));
+}
+
 class SecEdgarQ3InitialScan {
 public:
   virtual ~SecEdgarQ3InitialScan() = default;
+  // Optional: the same aggregates from a partitioned scan of num. Return false
+  // when unsupported (ScanNumAggregates is used).
+  virtual bool ScanNumTotals(const core::AuxEngineServices &, SecEdgarQ3NumTotals &) {
+    return false;
+  }
   // One callback per distinct (adsh, uom): SUM(value), COUNT(*) over
   // value IS NOT NULL (GROUP BY adsh, uom); adsh and uom non-NULL.
   virtual void ScanNumAggregates(

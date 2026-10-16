@@ -337,17 +337,18 @@ public:
   }
 
   // Bulk loading on a fresh index (grows the leaf count as entries arrive).
-  void BulkAdd(uint64_t key, double sum, int64_t cnt) {
+  void BulkAdd(uint64_t key, double sum, double comp, int64_t cnt) {
     MaybeGrow(kLeafTarget);
     SecEdgarQ3Entry entry;
     entry.sum = sum;
+    entry.comp = comp;
     entry.cnt = cnt;
     auto *leaf = OwnLeaf(LeafOf(key));
     const auto inserted = leaf->Insert(static_cast<int64_t>(key), entry);
     if (inserted.second) {
       ++entry_count;
     } else {
-      DdAdd(inserted.first->sum, inserted.first->comp, sum, 0.0);
+      DdAdd(inserted.first->sum, inserted.first->comp, sum, comp);
       inserted.first->cnt += cnt;
     }
   }
@@ -2063,25 +2064,61 @@ void SecEdgarQ3Module::ExecuteFallback(core::AuxEngineServices &services,
   EmitOutput(services, BuildState(services), params.fy, params.uom, sink);
 }
 
+void SecEdgarQ3NumTotals::Add(std::string_view adsh, std::string_view uom, double value) {
+  std::string key(uom);
+  key.push_back('\0');
+  key.append(adsh);
+  Total &t = totals[key];
+  DdAdd(t.sum, t.comp, value, 0.0);
+  ++t.count;
+}
+
+void SecEdgarQ3NumTotals::Merge(SecEdgarQ3NumTotals &&from) {
+  for (auto &[key, total] : from.totals) {
+    Total &t = totals[key];
+    DdAdd(t.sum, t.comp, total.sum, total.comp);
+    t.count += total.count;
+  }
+}
+
+void SecEdgarQ3NumTotals::ForEach(
+    const std::function<void(std::string_view, std::string_view, const Total &)> &fn) const {
+  for (const auto &[key, total] : totals) {
+    const auto split = key.find('\0');
+    fn(std::string_view(key).substr(split + 1), std::string_view(key).substr(0, split), total);
+  }
+}
+
 SecEdgarQ3State
 SecEdgarQ3Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q3 requires a typed initial scan source");
   }
   Work work(nullptr, /*bulk=*/true);
-  initial_scan->ScanNumAggregates([&](const SecEdgarQ3NumAggInput &input) {
-    if (input.count <= 0) {
+  const auto add_total = [&](std::string_view adsh, std::string_view uom, double sum, double comp,
+                             int64_t count) {
+    if (count <= 0) {
       return;
     }
     uint32_t uid;
-    work.UomId(input.uom, /*create=*/true, uid);
+    work.UomId(std::string(uom), /*create=*/true, uid);
     IndexWork &ui = work.Uom(uid);
     uint64_t key = 0;
-    if (!ResolveIn(ui, MakeRef(input.adsh), /*create=*/true, key)) {
+    if (!ResolveIn(ui, MakeRef(std::string(adsh)), /*create=*/true, key)) {
       return;
     }
-    ui.BulkAdd(key, input.sum, input.count);
-  });
+    ui.BulkAdd(key, sum, comp, count);
+  };
+  SecEdgarQ3NumTotals totals;
+  if (initial_scan->ScanNumTotals(services, totals)) {
+    totals.ForEach([&](std::string_view adsh, std::string_view uom, const SecEdgarQ3NumTotals::Total &t) {
+      add_total(adsh, uom, t.sum, t.comp, t.count);
+    });
+  } else {
+    initial_scan->ScanNumAggregates([&](const SecEdgarQ3NumAggInput &input) {
+      add_total(input.adsh, input.uom, input.sum, 0.0, input.count);
+    });
+  }
   std::unordered_map<int32_t, uint64_t> fy_filings;
   initial_scan->ScanSub([&](const SecEdgarQ3SubInput &input) {
     if (input.fy_is_null) {

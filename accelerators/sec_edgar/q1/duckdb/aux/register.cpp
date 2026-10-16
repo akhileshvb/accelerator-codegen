@@ -126,26 +126,16 @@ struct SecEdgarQ1Scan : SecEdgarQ1InitialScan {
     if (services.WorkerCount() <= 1) {
       return false; // the native serial scan is faster than one partition
     }
-    // The partitioned scan takes NOT NULL columns: NULLs travel as defaults
-    // plus one bit mask (1 stmt, 2 rfile, 4 adsh, 8 line).
-    const auto nulls = IntColumn(
-        "(CASE WHEN stmt IS NULL THEN 1 ELSE 0 END + CASE WHEN rfile IS NULL THEN 2 ELSE 0 END"
-        " + CASE WHEN adsh IS NULL THEN 4 ELSE 0 END + CASE WHEN line IS NULL THEN 8 ELSE 0 END)");
     builder = core::PartitionedBuild<q1::Builder>(
         services, [] { return q1::Builder(); },
         [&](std::size_t partitions, auto &&sink) {
-          scan::ScanPartitioned(services, connection, "pre",
-                                {TextColumn("COALESCE(stmt, '')"), TextColumn("COALESCE(rfile, '')"),
-                                 TextColumn("COALESCE(adsh, '')"), IntColumn("COALESCE(line, 0)"), nulls},
-                                partitions, sink);
+          scan::ScanPartitioned(
+              services, connection, "pre",
+              {Nullable(TextColumn("stmt")), Nullable(TextColumn("rfile")),
+               Nullable(TextColumn("adsh")), Nullable(IntColumn("line"))},
+              partitions, sink);
         },
-        [](q1::Builder &partial, const auto &row) {
-          const auto stmt = row.TextView(0), rfile = row.TextView(1), adsh = row.TextView(2);
-          const int64_t null_mask = row.Int(4);
-          partial.ConsumeRowView(stmt.data(), stmt.size(), null_mask & 1, rfile.data(), rfile.size(),
-                                 null_mask & 2, adsh.data(), adsh.size(), null_mask & 4,
-                                 static_cast<int32_t>(row.Int(3)), null_mask & 8);
-        },
+        [](q1::Builder &partial, const auto &row) { q1::AddPreRow(partial, row); },
         [](q1::Builder &into, q1::Builder &&from) { into.Merge(std::move(from)); });
     return true;
   }

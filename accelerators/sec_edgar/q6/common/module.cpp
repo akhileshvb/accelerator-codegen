@@ -307,7 +307,8 @@ SecEdgarQ6Module::BuildState(const core::AuxEngineServices &services) const {
     if (initial_scan->ScanPreBatches(
             [&](const SecEdgarQ6PreBatch &batch) { builder.AddPreBatch(batch); })) {
       builder.FinishPre(services);
-      if (!initial_scan->ScanNumBatches(
+      if (!initial_scan->ScanNumPartitioned(services, builder) &&
+          !initial_scan->ScanNumBatches(
               [&](const SecEdgarQ6NumBatch &batch) { builder.AddNumBatch(batch); })) {
         FeedNumRows(*initial_scan, builder);
       }

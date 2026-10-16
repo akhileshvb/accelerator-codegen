@@ -13,6 +13,26 @@
 
 namespace accelerator_codegen::aux_state::query {
 
+// Adds a num row of the build scan (columns: adsh, tag, version, uom, value,
+// ddate; all nullable) to `orphans` unless a pre row matches it or it cannot
+// reach any bucket. `Row` is a build scan row (IsNull, TextView, Double, Int).
+template <class Row>
+void AddNumOrphan(const Q24PreBase &base, Q24OrphanAccumulator &orphans, const Row &row) {
+  int32_t year;
+  if (row.IsNull(3) || row.IsNull(4) || row.IsNull(5) || !Q24DdateYear(row.Int(5), year)) return;
+  const auto cell = [&](int column) {
+    if (row.IsNull(column)) return Q24Str::Null();
+    const auto text = row.TextView(column);
+    return Q24Str::Of(text.data(), text.size());
+  };
+  const Q24Str a = cell(0), t = cell(1), v = cell(2), uom = cell(3);
+  if (!base.Contains(a, t, v)) orphans.Add(a, t, v, year, uom, row.Double(4));
+}
+
+} // namespace accelerator_codegen::aux_state::query
+
+namespace accelerator_codegen::aux_state::query {
+
 // Table ids are engine-assigned. Mutation row layouts (the module's contract):
 //   num rows : physical column order  adsh(0) tag(1) version(2) ddate(3)
 //              qtrs(4) uom(5) coreg(6) value(7)      [footnote not carried]
@@ -120,6 +140,13 @@ public:
   virtual bool ScanNumOrphans(
       const Q24PreBase &,
       const std::function<void(const SecEdgarQ24NumBatch &)> &) {
+    return false;
+  }
+  // Optional: the anti-join's survivors accumulated per partition on the build's
+  // workers (AddNumOrphan per row, partials merged in partition order).
+  // Return false when unsupported (nothing accumulated).
+  virtual bool ScanNumOrphansPartitioned(const core::AuxEngineServices &, const Q24PreBase &,
+                                         Q24OrphanAccumulator &) {
     return false;
   }
   // Optional: targeted lookups used by incremental pre DELETE / key UPDATE

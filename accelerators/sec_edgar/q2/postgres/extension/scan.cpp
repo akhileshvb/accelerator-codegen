@@ -8,6 +8,8 @@
 #include "sec_edgar/q2/postgres/aux/module.hpp"
 #include "sec_edgar/q2/cost_model.hpp"
 
+#include "backends/postgres/api/engine_helpers.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 #include "backends/postgres/api/engine_runtime.hpp"
 #include "backends/postgres/api/runtime.hpp"
 
@@ -90,6 +92,21 @@ const char *const kNumFilter =
 
 class SecEdgarQ2Scan final : public query::SecEdgarQ2InitialScan {
 public:
+  bool ScanNumPartitioned(const core::AuxEngineServices &services, query::SecEdgarQ2NumRows &rows) override {
+    using Rows = query::SecEdgarQ2NumRows;
+    rows = core::PartitionedBuild<Rows>(
+        services, [] { return Rows(); },
+        [&](std::size_t partitions, auto &&sink) {
+          ScanPartitioned(services, "num",
+                          {Nullable(TextColumn("adsh")), Nullable(TextColumn("tag")),
+                           Nullable(TextColumn("uom")), Nullable(DoubleColumn("value"))},
+                          partitions, sink);
+        },
+        [](Rows &partial, const auto &row) { partial.AddRow(row); },
+        [](Rows &into, Rows &&from) { into.Merge(std::move(from)); });
+    return true;
+  }
+
   void ScanNum(const std::function<void(const query::SecEdgarQ2NumInput &)> &consumer) override {
     ScanTypedTuples(
         "SELECT adsh, tag, uom, value FROM num WHERE adsh IS NOT NULL AND "

@@ -980,7 +980,8 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &services) const {
   // 2. qualifying num rows with no pre match are the only rows that matter.
   Q24OrphanAccumulator orphans;
   std::vector<uint8_t> hits;
-  const bool orphan_scan = initial_scan->ScanNumOrphans(
+  const bool orphan_scan = initial_scan->ScanNumOrphansPartitioned(services, base, orphans) ||
+      initial_scan->ScanNumOrphans(
       base, [&](const SecEdgarQ24NumBatch &b) {
         for (std::size_t i = 0; i < b.count; ++i) {
           int32_t year;

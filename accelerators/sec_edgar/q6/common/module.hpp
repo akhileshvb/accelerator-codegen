@@ -132,6 +132,8 @@ struct SecEdgarQ6NumBatch {
 //   * ScanPreBatches / ScanNumBatches are the preferred fast path: every row
 //     of the table (no pre-filtering needed) as columnar batches. Return false
 //     when unsupported (before delivering any batch).
+class SecEdgarQ6Builder;
+
 class SecEdgarQ6InitialScan {
 public:
   virtual ~SecEdgarQ6InitialScan() = default;
@@ -139,6 +141,11 @@ public:
     return false;
   }
   virtual bool ScanNumBatches(const std::function<void(const SecEdgarQ6NumBatch &)> &) {
+    return false;
+  }
+  // Optional: the num phase as one partial per partition (SecEdgarQ6Builder::
+  // AddNum / MergeNum). Return false when unsupported (before adding anything).
+  virtual bool ScanNumPartitioned(const core::AuxEngineServices &, SecEdgarQ6Builder &) {
     return false;
   }
   virtual void ScanNum(

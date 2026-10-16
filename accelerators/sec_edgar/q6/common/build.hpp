@@ -10,7 +10,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <string_view>
+#include <vector>
+
+#include "prims/flat_hash_map.hpp"
 
 #include "sec_edgar/q6/common/module.hpp"
 
@@ -33,9 +37,41 @@ public:
   void AddNumBatch(const SecEdgarQ6NumBatch &batch);
   std::shared_ptr<SecEdgarQ6State> Finish();
 
+  // Partitioned num phase (core::PartitionedBuild, after FinishPre): one
+  // partial per partition holds double-double sums per (hit, unit of measure);
+  // the partials are merged in partition order, so with a fixed partition
+  // count the sums do not depend on the thread count.
+  struct NumPartial {
+    struct Sum {
+      uint32_t hit, uom; // uom: index into `uoms`
+      double hi = 0.0, lo = 0.0;
+      int64_t cnt = 0;
+    };
+    std::vector<std::string> uoms;
+    core::FlatHashMap<uint32_t> index; // (hit << 32 | uom) -> index into sums
+    std::vector<Sum> sums;
+
+    void Add(uint32_t hit, std::string_view uom, double hi, double lo, int64_t cnt);
+    void Merge(NumPartial &&from);
+  };
+  // Reads the cohort, bridge and hit tables only.
+  void AddNum(NumPartial &partial, std::string_view adsh, std::string_view tag,
+              std::string_view version, std::string_view uom, double value) const;
+  void MergeNum(NumPartial &&partial);
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+// Adds a row of a partitioned num scan (columns: adsh, tag, version, uom, value;
+// all nullable). `Row` is the engine's build scan row (IsNull, TextView, Double).
+template <class Row>
+void AddNumRow(const SecEdgarQ6Builder &builder, SecEdgarQ6Builder::NumPartial &partial, const Row &row) {
+  for (int column = 0; column < 5; ++column) {
+    if (row.IsNull(column)) return; // cannot join or contribute
+  }
+  builder.AddNum(partial, row.TextView(0), row.TextView(1), row.TextView(2), row.TextView(3), row.Double(4));
+}
 
 } // namespace accelerator_codegen::aux_state::query
