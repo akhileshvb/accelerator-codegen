@@ -174,8 +174,8 @@ public:
 
 private:
   std::shared_ptr<TpchQ10State> BuildState() const;
-  void EmitResult(const TpchQ10State &, const core::QueryArguments &,
-                  std::size_t workers, core::AuxRowSink &) const;
+  void EmitResult(const core::AuxEngineServices &, const TpchQ10State &,
+                  const core::QueryArguments &, core::AuxRowSink &) const;
 
   TpchQ10Config config;
   TpchQ10InitialScan *initial_scan = nullptr;

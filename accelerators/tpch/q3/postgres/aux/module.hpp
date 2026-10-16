@@ -45,9 +45,37 @@ struct TpchQ3OrderLineInput {
   int64_t discount_raw = 0;       // scale 2
 };
 
+// The three tables of the join, scanned separately by the build (any order).
+struct TpchQ3CustomerInput {
+  int64_t custkey = 0;
+  std::string mktsegment;
+};
+
+struct TpchQ3OrderInput {
+  int64_t orderkey = 0;
+  int64_t custkey = 0;
+  int32_t orderdate_days = 0;
+  int32_t shippriority = 0;
+};
+
+struct TpchQ3LineitemInput {
+  int64_t orderkey = 0;
+  int32_t shipdate_days = 0;
+  int64_t extended_price_raw = 0; // scale 2
+  int64_t discount_raw = 0;       // scale 2
+};
+
 class TpchQ3InitialScan {
 public:
   virtual ~TpchQ3InitialScan() = default;
+  virtual void ScanCustomers(
+      const std::function<void(const TpchQ3CustomerInput &)> &) = 0;
+  virtual void ScanOrders(
+      const std::function<void(const TpchQ3OrderInput &)> &) = 0;
+  virtual void ScanLineitems(
+      const std::function<void(const TpchQ3LineitemInput &)> &) = 0;
+  // The join of the three, one row per lineitem, in orderkey order (the
+  // fallback read streams it).
   virtual void ScanOrderLines(
       const std::function<void(const TpchQ3OrderLineInput &)> &) = 0;
   // The same rows for the given orders only, as the database holds them after
@@ -102,6 +130,15 @@ struct TpchQ3State {
     int32_t shippriority = 0;
     std::vector<Bucket> buckets; // ascending shipdate, one per distinct day
   };
+
+  // An order record ready to install: its bound bin and encoded bytes.
+  struct PreparedOrder {
+    int32_t bin = 0;
+    std::vector<uint8_t> bytes;
+  };
+  static PreparedOrder Prepare(const OrderRecord &record);
+  void Install(const std::string &mktsegment, int64_t orderkey,
+               const PreparedOrder &order);
 
   // Replace the record of an order (no buckets: remove it).
   void SetOrder(const std::string &mktsegment, const OrderRecord &record);
@@ -177,7 +214,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ3State BuildState() const;
+  TpchQ3State BuildState(core::AuxEngineServices &) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ3State> &state,
                  core::Version *version = nullptr) const;

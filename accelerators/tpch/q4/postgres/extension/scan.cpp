@@ -31,14 +31,12 @@ void ScanTpchQ4Orders(
 
 void ScanTpchQ4Lineitems(
     const std::function<void(const query::TpchQ4LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_orderkey, l_commitdate, l_receiptdate FROM lineitem "
-      "WHERE l_orderkey IS NOT NULL AND l_commitdate < l_receiptdate",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDate(tuple, tuple_desc, 1),
-                  TypedDate(tuple, tuple_desc, 2)});
-      });
+  ScanColumns("lineitem",
+              {IntColumn("l_orderkey"), DateColumn("l_commitdate"),
+               DateColumn("l_receiptdate")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Date(1), row.Date(2)});
+              });
 }
 
 } // namespace scans

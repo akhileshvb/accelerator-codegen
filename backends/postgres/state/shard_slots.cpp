@@ -160,9 +160,6 @@ runtime::Epoch PgSlots::MaintenanceLookupEpoch(runtime::Epoch) {
 void PgSlots::RunBuild(runtime::AcceleratorRuntime &runtime, runtime::BuildSnapshot &,
                        core::StateBuilder &builder) {
   BuildGucScope tuning(accelerator.TuneBuild());
-  // The build's scans decode in parallel: this thread plus the budget's other
-  // threads as Postgres parallel workers.
-  SetBuildScanParticipants(static_cast<int>(shared::ThreadBudget()));
   try {
     runtime.Module().Build(runtime, builder);
   } catch (const std::exception &e) {

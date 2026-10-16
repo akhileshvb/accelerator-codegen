@@ -78,7 +78,11 @@ idle (`accel.shard_idle_exit_s`), and the next use starts it again.
   the first one waits out writers that were running when the worker started.
   The version floor is the epoch every open snapshot sees
   (`shared::HorizonEpoch`). `accel.threads` caps the threads of all of a
-  database's workers (a shared token pool).
+  database's workers (a shared token pool); `accel.read_threads`,
+  `accel.build_threads` and `accel.maint_threads` cap what one read, build or
+  maintenance pass of a worker may use of it (0: the budget, and 1 for
+  maintenance; `ACCEL_AUX_{READ,BUILD,MAINT}_THREADS` in the server's
+  environment override them).
 - **Diagnostics.** `SELECT accel_postgres_shard_stats()` (counters summed over
   the running workers), `accel_postgres_stop_shard_workers()`,
   `accel_postgres_get_last_maintenance_decision()`,

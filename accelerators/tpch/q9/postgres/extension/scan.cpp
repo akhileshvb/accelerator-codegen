@@ -91,31 +91,6 @@ void ScanTpchQ9Lineitems(
 }
 
 
-// Pre-aggregation in SQL: the DBMS runs the join lineitem x partsupp x supplier
-// x orders and groups it by (part, supplier nation, order year); the module
-// keeps those groups as its profit cells. Amounts are in 1e-4 units.
-void ScanTpchQ9ProfitContributions(
-    const std::function<void(const query::TpchQ9ProfitContribution &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_partkey, s_nationkey, EXTRACT(year FROM o_orderdate)::int4, "
-      "COUNT(*), "
-      "(SUM(l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity) "
-      "* 10000)::int8 "
-      "FROM lineitem, partsupp, supplier, orders "
-      "WHERE ps_suppkey = l_suppkey AND ps_partkey = l_partkey "
-      "AND s_suppkey = l_suppkey AND o_orderkey = l_orderkey "
-      "AND l_extendedprice IS NOT NULL AND l_discount IS NOT NULL "
-      "AND l_quantity IS NOT NULL AND ps_supplycost IS NOT NULL "
-      "GROUP BY l_partkey, s_nationkey, 3",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1)),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2)),
-                  TypedInt(tuple, tuple_desc, 3),
-                  TypedInt(tuple, tuple_desc, 4)});
-      });
-}
-
 // Index lookup of the lineitems whose `column` (l_partkey, l_suppkey or
 // l_orderkey) is one of `keys`, as the transaction leaves the database (this
 // runs while staging maintenance at pre-commit).
@@ -182,12 +157,6 @@ public:
       const std::function<void(const query::TpchQ9LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ9Lineitems(consumer);
-  }
-  bool ScanProfitContributions(
-      const std::function<void(const query::TpchQ9ProfitContribution &)> &consumer)
-      override {
-    scans::ScanTpchQ9ProfitContributions(consumer);
-    return true;
   }
   bool LookupLineitems(
       const char *column, const std::vector<int64_t> &keys,

@@ -94,10 +94,14 @@ Q6AccT Q6RowRevenue(int64_t extendedprice_raw, int64_t discount_raw) {
 	return static_cast<Q6AccT>(extendedprice_raw) * static_cast<Q6AccT>(discount_raw);
 }
 
-void Q6AddCell(Q6State &state, int32_t day, int64_t discount_raw, int64_t quantity_raw, Q6AccT revenue,
-               int64_t count) {
-	const uint32_t d = state.discounts.Intern(discount_raw);
-	const uint32_t q = state.quantities.Intern(quantity_raw);
+void Q6AddDayCells(Q6State &state, int32_t day, const std::vector<Q6DayCell> &cells) {
+	struct Slot {
+		uint32_t discount, quantity;
+	};
+	std::vector<Slot> slots;
+	slots.reserve(cells.size());
+	for (const auto &cell : cells)
+		slots.push_back({state.discounts.Intern(cell.discount_raw), state.quantities.Intern(cell.quantity_raw)});
 	const auto nd = static_cast<uint32_t>(state.discounts.size());
 	const auto nq = static_cast<uint32_t>(state.quantities.size());
 	state.days.Update(day, [&](Q6Node &node) {
@@ -117,10 +121,17 @@ void Q6AddCell(Q6State &state, int32_t day, int64_t discount_raw, int64_t quanti
 			node.discounts = nd;
 			node.quantities = nq;
 		}
-		const auto cell = static_cast<std::size_t>(d) * node.quantities + q;
-		node.revenue[cell] += revenue;
-		node.count[cell] += count;
+		for (std::size_t i = 0; i < cells.size(); ++i) {
+			const auto at = static_cast<std::size_t>(slots[i].discount) * node.quantities + slots[i].quantity;
+			node.revenue[at] += cells[i].revenue;
+			node.count[at] += cells[i].count;
+		}
 	});
+}
+
+void Q6AddCell(Q6State &state, int32_t day, int64_t discount_raw, int64_t quantity_raw, Q6AccT revenue,
+               int64_t count) {
+	Q6AddDayCells(state, day, {{discount_raw, quantity_raw, revenue, count}});
 }
 
 bool Q6Scaled100FromDouble(double v, Q6Scaled100 &out) {
