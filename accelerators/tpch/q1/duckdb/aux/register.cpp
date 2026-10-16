@@ -6,7 +6,6 @@
 #include "tpch/q1/cost_model.hpp"
 #include "tpch/q1/layout.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
-#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -103,22 +102,48 @@ using namespace scan;
 struct TpchQ1Scan : TpchQ1InitialScan {
   explicit TpchQ1Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanLineitems(
-      const core::AuxEngineServices &services, std::size_t partitions,
-      const std::function<void(std::size_t, const TpchQ1LineitemInput &)> &sink) override {
-    ScanPartitioned(services, connection, "lineitem",
-                    {DateColumn("l_shipdate"), DecimalColumn("l_quantity", 2),
-                     DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2),
-                     DecimalColumn("l_tax", 2), TextColumn("l_returnflag"),
-                     TextColumn("l_linestatus")},
-                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
-                      for (std::size_t i = 0; i < batch.size(); ++i) {
-                        const auto row = batch.Row(i);
-                        sink(partition,
-                             TpchQ1LineitemInput{row.Date(0), row.Decimal(1), 2, row.Decimal(2),
-                                                 2, row.Decimal(3), 2, row.Decimal(4), 2,
-                                                 row.Char(5), row.Char(6)});
-                      }
-                    });
+      const std::function<void(const TpchQ1LineitemInput &)> &consumer) override {
+    ScanQueryDecoded(
+        connection,
+        "SELECT l_shipdate, l_quantity, l_extendedprice, l_discount, "
+        "l_tax, l_returnflag, l_linestatus FROM lineitem",
+        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          return TpchQ1LineitemInput{DateDays(ChunkValue(chunk, 0, row)),
+                                     DecimalRaw(ChunkValue(chunk, 1, row)), 2,
+                                     DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+                                     DecimalRaw(ChunkValue(chunk, 3, row)), 2,
+                                     DecimalRaw(ChunkValue(chunk, 4, row)), 2,
+                                     FirstChar(ChunkValue(chunk, 5, row)),
+                                     FirstChar(ChunkValue(chunk, 6, row))};
+        },
+        [&](const TpchQ1LineitemInput &input) { consumer(input); });
+  }
+  bool ScanDayGroupAggregates(
+      const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer)
+      override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_shipdate, l_returnflag, l_linestatus, "
+        "COUNT(*)::BIGINT, "
+        "CAST(SUM(l_quantity) * 100 AS BIGINT), "
+        "CAST(SUM(l_extendedprice) * 100 AS BIGINT), "
+        "CAST(SUM(l_discount) * 100 AS BIGINT), "
+        "CAST(SUM(l_extendedprice * (1 - l_discount)) * 10000 AS BIGINT), "
+        "CAST(SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)) * "
+        "1000000 AS BIGINT) "
+        "FROM lineitem GROUP BY 1, 2, 3",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({DateDays(ChunkValue(chunk, 0, row)),
+                    FirstChar(ChunkValue(chunk, 1, row)),
+                    FirstChar(ChunkValue(chunk, 2, row)),
+                    SafeInt64(ChunkValue(chunk, 3, row)),
+                    SafeInt64(ChunkValue(chunk, 4, row)),
+                    SafeInt64(ChunkValue(chunk, 5, row)),
+                    SafeInt64(ChunkValue(chunk, 6, row)),
+                    SafeInt64(ChunkValue(chunk, 7, row)),
+                    SafeInt64(ChunkValue(chunk, 8, row))});
+        });
+    return true;
   }
   bool ScanDayGroupAggregatesForDays(
       const std::set<int32_t> &days,
