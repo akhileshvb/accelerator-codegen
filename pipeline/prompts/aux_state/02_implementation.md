@@ -61,7 +61,7 @@ Populate `interference_us` in `StageMaintenance` using calibrated `CostModelPara
 
 Compiling is not enough. **Ending this stage without passing `aux_correctness` and `aux_multi_connection` is a failure** (same for every `engine_name`). Keep fixing and re-running until required gates pass.
 
-Follow `pipeline/prompts/aux_state/shared/unit_test_contract.md` and the **Reference SQL predicate contract** in the bootstrap. Synthetic fixtures must preserve SQL polarity (`NOT LIKE`, `<>`, anti-joins). Do not invent patterns that contradict `reference_sql_path`.
+Follow `pipeline/prompts/aux_state/shared/unit_test_contract.md` and the **Reference SQL predicate contract** in the bootstrap. The module unit test is shared (`eval/tests/test_tpch_module.cpp`, ModuleRuntime-based): write no per-query test, make the catalog probe/arguments follow `reference_sql_path` (SQL polarity: `NOT LIKE`, `<>`, anti-joins).
 
 When `engine_name` ≠ `duckdb`, also follow `pipeline/prompts/shared/query_host_bootstrap.md`: bootstrap SQL entrypoints + differential **and replicate** multi-conn / cross-accel / bench harnesses for this host.
 

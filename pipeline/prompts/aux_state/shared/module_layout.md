@@ -9,9 +9,9 @@ Use `{{query_number}}` / `q{{query_number}}` placeholders. Derive exact paths in
 | Finalize payload | `accelerators/tpch/q{{query_number}}/<engine>/aux/finalize.cpp` |
 | Cost model JSON | `accelerators/tpch/q{{query_number}}/config/q{{query_number}}_aux_cost_model.json` |
 | Cost-model location | `accelerators/tpch/q{{query_number}}/cost_model.hpp` — `AuxCostModelLocation kTpchQ{{query_number}}CostModel{"accelerators/tpch/q{{query_number}}/config", "q{{query_number}}_aux_cost_model"}` (scaffold writes it); pass it as `SharedQueryCatalogEntry::cost_model` in `duckdb/aux/register.cpp` and to the Postgres / MySQL `Runtime` (peer: `accelerators/tpch/q6/`) |
-| Tests | `accelerators/tpch/q{{query_number}}/tests/test_tpch_q{{query_number}}_aux.cpp`, `test_q{{query_number}}_*.cpp` |
+| Module unit test | none per query: the shared `eval/tests/test_tpch_module.cpp` (ModuleRuntime) is built as `test_tpch_q{{query_number}}_aux` / ctest `tpch_q{{query_number}}_aux_smoke_test` once `duckdb/aux/register.cpp` exists (see `unit_test_contract.md`) |
 
-Unit smoke fixtures must follow `unit_test_contract.md` (SQL polarity). `aux_correctness` also runs SF1 DuckDB differential via `test_tpch_shared_differential`.
+`aux_correctness` also runs SF1 DuckDB differential via `test_tpch_shared_differential`.
 
 | Write-freq benchmark | `accelerators/tpch/q{{query_number}}/bench/benchmark_q{{query_number}}_aux.cpp` |
 | Cost calibration | `accelerators/tpch/q{{query_number}}/bench/calibrate_q{{query_number}}_aux_cost_model.cpp` — **thin wrapper only** (see below) |
@@ -33,7 +33,7 @@ Do **not** hand-write timing loops or CSV output here; that belongs in `benchmar
 
 SEC EDGAR: replace `tpch` → `sec_edgar`, cost model → `accelerators/sec_edgar/q{{query_number}}/config/sec_edgar_q{{query_number}}_aux_cost_model.json` and location → `kSecEdgarQ{{query_number}}CostModel{"accelerators/sec_edgar/q{{query_number}}/config", "sec_edgar_q{{query_number}}_aux_cost_model"}`. See `pipeline/prompts/sec_edgar/aux_state_notes.md`.
 
-CMake: test/bench/calibrate targets are **auto-discovered** from `test_tpch_q*_aux.cpp` via `accel_register_tpch_aux_pipeline_targets()` in `CMakeLists.txt`. Edit `CMakeLists.txt` only when auto-discovery is insufficient; follow patterns in `cmake/AuxState.cmake` and neighboring queries.
+CMake: bench/calibrate targets are **auto-discovered** via `accel_register_tpch_aux_pipeline_targets()` in `CMakeLists.txt`. The module test target is created from `duckdb/aux/register.cpp` by `accel_register_tpch_aux_ctests()` in `cmake/AuxState.cmake`. Edit `CMakeLists.txt` only when auto-discovery is insufficient; follow patterns in `cmake/AuxState.cmake` and neighboring queries.
 
 The aux benchmark **must** implement the write-frequency sweep contract in `bench_sweep_contract.md` (not a read-only stub).
 

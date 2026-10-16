@@ -136,7 +136,7 @@ PgSlots::OpenBuildSnapshot(runtime::AcceleratorRuntime &runtime) {
   const auto epoch = shared::ReaderEpoch(index, GetActiveSnapshot());
   if (!epoch) {
     End(true);
-    throw std::runtime_error("the build snapshot is older than the epoch ring");
+    throw std::runtime_error("the build snapshot is older than the epoch ring or the accelerator's activation");
   }
   // The build contains every commit through `epoch`, including those no one
   // shipped (before this worker started): they have arrived, and a commit

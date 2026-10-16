@@ -61,7 +61,7 @@ accelerators/{tpch|sec_edgar}/q{N}/
       module.hpp, module.cpp
       finalize.hpp, finalize.cpp     # optional payload helpers
       register.cpp           # duckdb: catalog entry + table function + binding (registrars)
-  tests/                     # test_{bench}_q{N}.cpp, test_{bench}_q{N}_aux.cpp, q{N}_manifest.hpp, ...
+  tests/                     # test_{bench}_q{N}.cpp, q{N}_manifest.hpp, ... (the aux module test is shared: eval/tests/test_tpch_module.cpp)
   bench/                     # benchmark_q{N}.cpp, benchmark_q{N}_aux.cpp, calibrate_q{N}_aux_cost_model.cpp
   config/                    # q{N}_aux_cost_model[_<engine>][_sf<N>].json (sec_edgar: sec_edgar_q{N}_aux_cost_model.json)
     verus/                   # the Verus accelerator's variants (ACCEL_AUX_COST_MODEL_DIR=verus selects them)
@@ -139,7 +139,7 @@ custom per-accelerator storage.
 | Finalize helpers | `accelerators/{benchmark}/q{N}/{engine}/aux/finalize.{hpp,cpp}` |
 | Cost model | `accelerators/{benchmark}/q{N}/config/q{N}_aux_cost_model.json` (TPC-H) or `.../config/sec_edgar_q{N}_aux_cost_model.json` |
 | Cost-model location | `accelerators/{benchmark}/q{N}/cost_model.hpp` (passed to every engine's registration; see above) |
-| Tests / bench | `accelerators/{benchmark}/q{N}/tests/test_{benchmark}_q{N}_aux.cpp`, `accelerators/{benchmark}/q{N}/bench/benchmark_q{N}_aux.cpp` |
+| Tests / bench | TPC-H module test: shared `eval/tests/test_tpch_module.cpp` (no per-query file); `accelerators/{benchmark}/q{N}/bench/benchmark_q{N}_aux.cpp` |
 
 CMake: `accel_add_aux_state_query(BENCHMARK {benchmark} QUERY_NUM N ...)` in `cmake/AuxState.cmake` (engine-aware discovery).
 

@@ -92,7 +92,7 @@ For **implementation**, do **not** finish until these pass (keep iterating — a
 
 `aux_correctness` includes **smoke fixtures + SF1 SQL-vs-aux differential**. Compile-only or smoke-only handoff is not acceptable. Orchestrator post-stage gates still re-check.
 
-Follow `pipeline/prompts/aux_state/shared/unit_test_contract.md` when writing synthetic unit fixtures.
+Follow `pipeline/prompts/aux_state/shared/unit_test_contract.md` when writing the catalog probe and arguments.
 Register everywhere: see `pipeline/prompts/aux_state/shared/registration_checklist.md`.
 
 ### Engine backend (`workload_kind: engine_backend`)
