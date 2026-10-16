@@ -9,6 +9,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <utility>
 
@@ -88,8 +89,10 @@ std::string PhonePrefix(const std::string &phone) {
 // new prefix appears and each touched prefix entry once.
 class StateEditor {
 public:
-  explicit StateEditor(TpchQ22State &state)
-      : state_(state), owned_(state.prefixes.size(), 0) {}
+  explicit StateEditor(TpchQ22State &state, bool fresh = false)
+      : state_(state), fresh_(fresh) {
+    owned_.assign(state.prefixes.size(), fresh ? 1 : 0);
+  }
 
   uint32_t PrefixId(const std::string &prefix) {
     const auto &ids = own_dictionary_ ? own_dictionary_->ids
@@ -123,6 +126,7 @@ public:
 
 private:
   TpchQ22State &state_;
+  bool fresh_;
   std::shared_ptr<TpchQ22PrefixDictionary> own_dictionary_;
   std::vector<char> owned_;
 };
@@ -345,8 +349,8 @@ CustomerPartial BuildCustomers(core::AuxEngineServices &services,
 
 } // namespace
 
-std::shared_ptr<const TpchQ22State>
-TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
+void TpchQ22Module::Build(core::AuxEngineServices &services,
+                          core::StateBuilder &builder) {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q22 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ22State>();
@@ -376,12 +380,7 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
     state->prefixes[id] = std::move(entry);
   });
 
-  return state;
-}
-
-void TpchQ22Module::Build(core::AuxEngineServices &services,
-                          core::StateBuilder &builder) {
-  builder.Write(MakeImage(BuildState(services)));
+  builder.Write(MakeImage(std::move(state)));
   builder.Finish();
 }
 
@@ -621,19 +620,7 @@ void TpchQ22Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  Answer(*state, arguments, sink);
-}
 
-// Exact answer from a state built from the tables (own uncommitted writes).
-void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  Answer(*BuildState(services), arguments, sink);
-}
-
-void TpchQ22Module::Answer(const TpchQ22State &state,
-                           const core::QueryArguments &arguments,
-                           core::AuxRowSink &sink) {
   // AVG(c_acctbal) over customers with c_acctbal > 0 in the listed prefixes,
   // as the exact rational S / C.
   struct Selected {
@@ -645,10 +632,10 @@ void TpchQ22Module::Answer(const TpchQ22State &state,
   int64_t positive_count = 0;
   Int128 positive_sum = 0;
   for (const auto &code : codes) {
-    const auto it = state.dictionary->ids.find(code);
-    if (it == state.dictionary->ids.end())
+    const auto it = state->dictionary->ids.find(code);
+    if (it == state->dictionary->ids.end())
       continue;
-    const auto *entry = state.prefixes[it->second].get();
+    const auto *entry = state->prefixes[it->second].get();
     selected.push_back({&code, entry});
     positive_count += entry->positive_count;
     positive_sum += entry->positive_sum_raw;
@@ -666,6 +653,55 @@ void TpchQ22Module::Answer(const TpchQ22State &state,
         throw std::overflow_error("TPC-H Q22 totacctbal exceeds int64");
       rows.push_back({*sel.code, above.count, static_cast<int64_t>(above.sum)});
     }
+  }
+  EmitRows(rows, sink);
+}
+
+// ── ExecuteFallback ─────────────────────────────────────────────────────────
+// Exact answer straight from the tables (own uncommitted writes).
+void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &,
+                                    const core::QueryArguments &arguments,
+                                    core::AuxRowSink &sink) {
+  if (!initial_scan)
+    throw std::logic_error("TPC-H Q22 aux requires a typed initial scan source");
+  const auto codes = CountryCodes(arguments);
+
+  std::unordered_set<int64_t> has_orders; // custkeys with an order
+  initial_scan->ScanOrders(
+      [&](const TpchQ22OrderInput &input) { has_orders.insert(input.custkey); });
+
+  struct Candidate {
+    std::string code;
+    int64_t balance;
+  };
+  std::vector<Candidate> zero_order;
+  int64_t positive_count = 0;
+  Int128 positive_sum = 0;
+  initial_scan->ScanCustomers([&](const TpchQ22CustomerInput &input) {
+    const auto code = PhonePrefix(input.phone);
+    int64_t balance = 0;
+    if (!codes.count(code) || !ToScale2(input.acctbal_raw, input.acctbal_scale, balance) ||
+        balance <= 0)
+      return;
+    ++positive_count;
+    positive_sum += balance;
+    if (!has_orders.count(input.custkey))
+      zero_order.push_back({code, balance});
+  });
+
+  std::map<std::string, std::pair<int64_t, Int128>> groups;
+  if (positive_count > 0)
+    for (const auto &c : zero_order)
+      if (static_cast<Int128>(c.balance) * positive_count > positive_sum) {
+        auto &g = groups[c.code];
+        ++g.first;
+        g.second += c.balance;
+      }
+  std::vector<TpchQ22OutputRow> rows;
+  for (const auto &[code, g] : groups) {
+    if (g.second > std::numeric_limits<int64_t>::max())
+      throw std::overflow_error("TPC-H Q22 totacctbal exceeds int64");
+    rows.push_back({code, g.first, static_cast<int64_t>(g.second)});
   }
   EmitRows(rows, sink);
 }
