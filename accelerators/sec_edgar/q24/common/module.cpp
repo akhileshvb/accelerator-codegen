@@ -945,6 +945,9 @@ void SecEdgarQ24Module::Execute(core::AuxEngineServices &services,
 void SecEdgarQ24Module::ExecuteFallback(core::AuxEngineServices &services,
                                         const core::QueryArguments &arguments,
                                         core::AuxRowSink &sink) {
+  if (services.AnswerFromSql(arguments, sink)) {
+    return;
+  }
   std::string bucket;
   if (!ParseArguments(arguments, bucket)) {
     EmitOutput(Q24GroupState(), std::string(), sink);

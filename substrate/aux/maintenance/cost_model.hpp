@@ -44,6 +44,14 @@ struct CostModelParams {
   double interference_delta_per_query_us = 0.0;
   double interference_invalidate_per_query_us = 0.0;
   double interference_query_slowdown_factor = 0.0;
+
+  // Rebuilds and the ApplyDelta cap grow with the data relative to the scale
+  // the model was calibrated at. Unknown scale: the model as calibrated.
+  double ScaleFor(uint64_t data_rows) const {
+    return data_rows != 0 && calibrated_scale_rows != 0
+               ? static_cast<double>(data_rows) / static_cast<double>(calibrated_scale_rows)
+               : 1.0;
+  }
 };
 
 } // namespace accelerator_codegen::aux_state::maintenance

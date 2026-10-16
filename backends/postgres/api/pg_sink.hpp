@@ -9,6 +9,7 @@
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 #include <array>
+#include <cmath>
 #include <string>
 #include <variant>
 
@@ -71,12 +72,25 @@ private:
           numeric_in, CStringGetDatum(text.c_str()),
           ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
     }
+    // An integer column holding an exact value (SQL's EXTRACT is numeric).
+    if (type_oid == INT8OID || type_oid == INT4OID || type_oid == INT2OID) {
+      return Int64GetDatum(static_cast<int64_t>(std::llround(std::stod(text))));
+    }
     return Float8GetDatum(std::stod(text));
   }
 
   static Datum ToDatum(const core::AuxValue &value, Oid type_oid) {
     if (std::holds_alternative<int64_t>(value.payload)) {
-      return Int64GetDatum(std::get<int64_t>(value.payload));
+      const auto integer = std::get<int64_t>(value.payload);
+      // A count where the function declares numeric / double (a query whose SQL
+      // and declaration disagree): convert, never reinterpret.
+      if (type_oid == NUMERICOID) {
+        return DirectFunctionCall1(int8_numeric, Int64GetDatum(integer));
+      }
+      if (type_oid == FLOAT8OID) {
+        return Float8GetDatum(static_cast<double>(integer));
+      }
+      return Int64GetDatum(integer);
     }
     if (std::holds_alternative<double>(value.payload)) {
       const Datum as_float8 =

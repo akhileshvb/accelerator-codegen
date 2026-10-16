@@ -67,6 +67,12 @@ bool TransactionWrote(const std::vector<core::TableId> &tables);
 // Highest epoch assigned so far for accelerator `index`.
 Epoch AssignedEpoch(int index);
 
+// ---- SQL fallback time (C11) ----------------------------------------------------
+// What a backend's SQL fallback of accelerator `index` took (moving average,
+// microseconds; 0: never measured). The shard worker weighs it against waiting.
+void NoteSqlFallbackUs(int index, double us);
+double SqlFallbackUs(int index);
+
 // ---- reader epoch (S3) and version floor (S4) -------------------------------
 // The newest epoch of accelerator `index` that `snapshot` sees. nullopt if
 // the snapshot is older than what the ring remembers, or does not see the

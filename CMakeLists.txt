@@ -454,6 +454,8 @@ if(BUILD_TESTING)
 endif()
 accel_add_duckdb_exe(test_tpch_shared_differential eval/tests/test_tpch_shared_differential.cpp)
 accel_add_duckdb_exe(test_shared_tpch_rf_differential eval/tests/test_shared_tpch_rf_differential.cpp)
+accel_add_duckdb_exe(test_fallback_state_agree eval/tests/test_fallback_state_agree.cpp)
+accel_add_duckdb_exe(time_fallback_read eval/tools/time_fallback_read.cpp)
 accel_add_duckdb_exe(audit_incremental_maintenance eval/tools/audit_incremental_maintenance.cpp)
 add_executable(test_tpch_arg_variants_differential
     eval/tests/test_tpch_arg_variants_differential.cpp

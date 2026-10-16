@@ -958,35 +958,6 @@ void TpchQ12Module::Execute(core::AuxEngineServices &services,
   TpchQ12FinalizeAndEmit(parts, part_count, *shipmode1, *shipmode2, sink);
 }
 
-void TpchQ12Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  std::string shipmode1, shipmode2;
-  int32_t start = 0;
-  if (arguments.values.size() >= 1 && !arguments.values[0].is_null &&
-      std::holds_alternative<std::string>(arguments.values[0].payload))
-    shipmode1 = std::get<std::string>(arguments.values[0].payload);
-  if (arguments.values.size() >= 2 && !arguments.values[1].is_null &&
-      std::holds_alternative<std::string>(arguments.values[1].payload))
-    shipmode2 = std::get<std::string>(arguments.values[1].payload);
-  if (arguments.values.size() >= 3 && !arguments.values[2].is_null &&
-      std::holds_alternative<core::AuxDate>(arguments.values[2].payload))
-    start =
-        std::get<core::AuxDate>(arguments.values[2].payload).days_since_epoch;
-  const auto state = BuildState(services);
-  const auto end = TpchQ12AddMonths(start, 12);
-  TpchQ12Modes window;
-  for (const auto &day : state.day_partitions) {
-    if (day.first < start || day.first >= end)
-      continue;
-    for (const auto &entry : day.second)
-      window.Add(TpchQ12ModeSlot(entry.first), entry.first,
-                 entry.second.high_line_count, entry.second.low_line_count);
-  }
-  const TpchQ12Modes *parts[1] = {&window};
-  TpchQ12FinalizeAndEmit(parts, 1, shipmode1, shipmode2, sink);
-}
-
 TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q12 requires a typed initial scan source");

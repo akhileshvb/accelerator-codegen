@@ -777,60 +777,6 @@ void TpchQ4Module::Execute(core::AuxEngineServices &services,
   EmitResult(side, counts, sink);
 }
 
-void TpchQ4Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  int32_t start = 0;
-  if (arguments.values.size() >= 1 && !arguments.values[0].is_null) {
-    if (std::holds_alternative<core::AuxDate>(arguments.values[0].payload))
-      start = std::get<core::AuxDate>(arguments.values[0].payload).days_since_epoch;
-    else if (std::holds_alternative<int64_t>(arguments.values[0].payload))
-      start = static_cast<int32_t>(std::get<int64_t>(arguments.values[0].payload));
-  }
-
-  const auto state = BuildState(services);
-  const auto end = TpchQ4AddMonths(start, 3);
-
-  // Compute from built state directly for the requested range
-  int32_t left_ord = start - state.min_orderdate_days;
-  int32_t right_ord = end - state.min_orderdate_days;
-  if (left_ord < 0)
-    left_ord = 0;
-  if (right_ord > static_cast<int32_t>(state.tree_size))
-    right_ord = static_cast<int32_t>(state.tree_size);
-
-  std::vector<int64_t> counts(state.priority_names.size(), 0);
-
-  if (right_ord > left_ord && state.tree_size > 0) {
-    std::vector<uint32_t> node_indices;
-    uint32_t l = LeafNode(state.tree_size, left_ord);
-    uint32_t r = LeafNode(state.tree_size, right_ord);
-    while (l < r) {
-      if (l & 1) {
-        node_indices.push_back(l);
-        l++;
-      }
-      if (r & 1) {
-        r--;
-        node_indices.push_back(r);
-      }
-      l /= 2;
-      r /= 2;
-    }
-
-    const std::size_t stride = state.tree_stride;
-    for (auto idx : node_indices) {
-      if ((static_cast<std::size_t>(idx) + 1) * stride <= state.tree.size()) {
-        const int64_t *node = state.tree.data() + idx * stride;
-        for (size_t pi = 0; pi < stride && pi < counts.size(); ++pi)
-          counts[pi] += node[pi];
-      }
-    }
-  }
-
-  EmitResult(state, counts, sink);
-}
-
 namespace {
 
 // Orders of one scan partition: eligibility entries (count 0) plus the

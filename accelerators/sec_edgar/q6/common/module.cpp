@@ -961,6 +961,9 @@ void SecEdgarQ6Module::Execute(core::AuxEngineServices &services,
 void SecEdgarQ6Module::ExecuteFallback(core::AuxEngineServices &services,
                                        const core::QueryArguments &arguments,
                                        core::AuxRowSink &sink) {
+  if (services.AnswerFromSql(arguments, sink)) {
+    return;
+  }
   const QueryParams params = ParseArguments(arguments);
   if (params.is_null) {
     EmitRows({}, sink);

@@ -22,6 +22,11 @@ const MysqlQueryCatalogRegistrar kRegisterTpchQ4(MysqlSharedQueryCatalogEntry
         "SELECT mysql_accel_tpch_q4_aux(DATE '1993-07-01')",
         /* aux_sql */
         "SELECT mysql_accel_tpch_q4_aux(DATE '1993-07-01')",
+        /* fallback_sql */
+        "SELECT o_orderpriority, COUNT(o_orderkey) AS order_count "
+        "FROM orders WHERE o_orderdate >= $1 AND o_orderdate < DATE_ADD($1, INTERVAL 3 MONTH) "
+        "AND EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey AND l_commitdate < l_receiptdate) "
+        "GROUP BY o_orderpriority ORDER BY o_orderpriority"
     });
 
 } // namespace

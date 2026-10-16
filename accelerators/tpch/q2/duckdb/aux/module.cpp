@@ -1472,28 +1472,6 @@ void TpchQ2Module::Execute(core::AuxEngineServices &services,
   }
 }
 
-void TpchQ2Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  TpchQ2State state = BuildState(services);
-  int32_t part_size = 0;
-  std::string part_type_pattern;
-  std::string region_name;
-  if (arguments.values.size() == 3) {
-    if (!arguments.values[0].is_null &&
-        std::holds_alternative<int64_t>(arguments.values[0].payload)) {
-      part_size = static_cast<int32_t>(std::get<int64_t>(arguments.values[0].payload));
-    }
-    if (!arguments.values[1].is_null) {
-      StringValue(arguments.values[1], part_type_pattern);
-    }
-    if (!arguments.values[2].is_null) {
-      StringValue(arguments.values[2], region_name);
-    }
-  }
-  EmitResult(state, part_size, part_type_pattern, region_name, sink);
-}
-
 TpchQ2State
 TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ2State state;

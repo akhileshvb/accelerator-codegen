@@ -23,6 +23,9 @@ struct PostgresSharedQueryCatalogEntry {
   const char *base_sql = nullptr;
   const char *accelerator_sql = nullptr;
   const char *aux_sql = nullptr;
+  // The query for any arguments, answering a read the state cannot serve:
+  // $n is the n-th function argument (typed as the function declares it).
+  const char *fallback_sql = nullptr;
 };
 
 // Plain function (defined in query_catalog.cpp, function-local storage); safe
@@ -37,6 +40,9 @@ struct PostgresQueryCatalogRegistrar {
 
 const PostgresSharedQueryCatalogEntry &LookupPostgresQuery(const std::string &workload_name,
                                                             int query_id);
+
+// nullptr if no query registered under `accelerator_id`.
+const PostgresSharedQueryCatalogEntry *FindPostgresQueryByAccelerator(const std::string &accelerator_id);
 
 std::vector<int> PostgresQueriesForWorkload(const std::string &workload_name);
 

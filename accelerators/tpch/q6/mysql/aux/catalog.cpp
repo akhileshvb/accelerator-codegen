@@ -18,6 +18,11 @@ const MysqlQueryCatalogRegistrar kRegisterTpchQ6(MysqlSharedQueryCatalogEntry
         "SELECT mysql_accel_tpch_q6_aux(DATE '1995-01-01', 0.03, 25)",
         /* aux_sql */
         "SELECT mysql_accel_tpch_q6_aux(DATE '1995-01-01', 0.03, 25)",
+        /* fallback_sql */
+        "SELECT SUM(l_extendedprice * l_discount) AS revenue "
+        "FROM lineitem "
+        "WHERE l_shipdate >= $1 AND l_shipdate < DATE_ADD($1, INTERVAL 1 YEAR) "
+        "AND l_discount BETWEEN $2 - 0.01 AND $2 + 0.01 AND l_quantity < $3"
     });
 
 } // namespace

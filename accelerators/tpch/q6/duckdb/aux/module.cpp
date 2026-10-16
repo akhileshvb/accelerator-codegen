@@ -829,43 +829,6 @@ void TpchQ6Module::Execute(core::AuxEngineServices &services,
   EmitResult(revenue, sink);
 }
 
-void TpchQ6Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  TpchQ6QueryParams params;
-  if (!ParseTpchQ6QueryParams(arguments, params))
-    return;
-  if (!initial_scan)
-    throw std::logic_error("TPC-H Q6 requires a typed initial scan source");
-
-  const Q6AccT revenue = core::PartitionedBuild<Q6AccT>(
-      services, [] { return static_cast<Q6AccT>(0); },
-      [&](std::size_t parts, auto &&scan_sink) {
-        initial_scan->ScanLineitems(services, parts,
-                                    [&](std::size_t p, const TpchQ6LineitemInput &input) {
-                                      scan_sink(p, TypedRowBatch<TpchQ6LineitemInput>{input});
-                                    });
-      },
-      [&](Q6AccT &sum, const TpchQ6LineitemInput &input) {
-        if (input.shipdate_days < params.start_days ||
-            input.shipdate_days >= params.end_days)
-          return;
-        const auto discount_raw =
-            ScaleToRaw(input.discount_raw, input.discount_scale, 2);
-        const auto quantity_raw =
-            ScaleToRaw(input.quantity_raw, input.quantity_scale, 2);
-        if (discount_raw < params.discount_lower_raw ||
-            discount_raw > params.discount_upper_raw ||
-            quantity_raw >= params.quantity_upper_raw)
-          return;
-        const auto extended_raw =
-            ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2);
-        sum += ::accelerator_codegen::Q6RowContributionRaw(extended_raw, discount_raw);
-      },
-      [](Q6AccT &into, Q6AccT &&from) { into += from; });
-  EmitResult(revenue, sink);
-}
-
 void TpchQ6Module::EmitResult(Q6AccT revenue, core::AuxRowSink &sink) const {
   static const core::OutputSchema kSchema{
       {{"revenue", core::AuxType::ScaledDecimal, false}}};

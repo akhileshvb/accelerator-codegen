@@ -23,6 +23,14 @@ const MysqlQueryCatalogRegistrar kRegisterTpchQ5(MysqlSharedQueryCatalogEntry
         "SELECT mysql_accel_tpch_q5_aux('AMERICA', DATE '1995-01-01')",
         /* aux_sql */
         "SELECT mysql_accel_tpch_q5_aux('AMERICA', DATE '1995-01-01')",
+        /* fallback_sql */
+        "SELECT n_name, SUM(l_extendedprice * (1 - l_discount)) AS revenue "
+        "FROM customer, orders, lineitem, supplier, nation, region "
+        "WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey "
+        "AND l_suppkey = s_suppkey AND c_nationkey = s_nationkey "
+        "AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
+        "AND r_name = $1 AND o_orderdate >= $2 AND o_orderdate < DATE_ADD($2, INTERVAL 1 YEAR) "
+        "GROUP BY n_name ORDER BY revenue DESC"
     });
 
 } // namespace

@@ -575,12 +575,6 @@ void TpchQ19Module::Execute(core::AuxEngineServices &services,
   Answer(*state, arguments, sink);
 }
 
-void TpchQ19Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  Answer(*BuildState(services, /*with_parts=*/false), arguments, sink);
-}
-
 void TpchQ19Module::Answer(const TpchQ19State &state,
                            const core::QueryArguments &arguments,
                            core::AuxRowSink &sink) const {

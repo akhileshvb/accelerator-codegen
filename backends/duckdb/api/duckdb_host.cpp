@@ -16,6 +16,7 @@
 
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "backends/duckdb/api/cost_model_path.hpp"
+#include "backends/duckdb/api/sql_fallback.hpp"
 #include "backends/duckdb/api/verus_host.hpp"
 #include "backends/duckdb/engine/capture.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
@@ -313,6 +314,11 @@ DuckdbHost::Accelerator &DuckdbHost::Ensure(const SharedQueryCatalogEntry &entry
       verus_if_requested, accelerator->tables);
   accelerator->backend =
       std::make_unique<DuckDBAuxBackend>(*accelerator->runtime, *accelerator->connection->context);
+  accelerator->backend->SetSqlAnswer(
+      [connection = accelerator->connection.get(), &entry](const core::QueryArguments &arguments,
+                                                           core::AuxRowSink &sink) {
+        return AnswerFromFallbackSql(*connection, entry, arguments, sink);
+      });
   accelerator->runtime->UseModuleServices(*accelerator->backend);
 
   // Watch its columns from now on; writers that started before may have
