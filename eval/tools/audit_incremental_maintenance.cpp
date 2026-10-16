@@ -3,7 +3,7 @@
 //
 // Usage: audit_incremental_maintenance <db> <workload> <query>...
 //   workloads: rf-small (10-order RF1/RF2 chunks), rf-official (1500-order
-//   chunks: 0.1% of SF1), gate-mix (the slot gates' lineitem writes),
+//   chunks: 0.1% of SF1; AUDIT_RF_ORDERS sets the size, 1500 x SF is the official one), gate-mix (the slot gates' lineitem writes),
 //   fuzz-all (writes on every TPC-H table), sql-mix (the differential's
 //   targeted + per-table writes), sec-probes (SEC-EDGAR catalog probes, handed
 //   to the accelerator by hand), sec-sql (the same probes as SQL writes the
@@ -213,7 +213,7 @@ void AuditQuery(const std::string &db, const std::string &workload, const engine
   if (workload == "rf-small") {
     RunRf(connection, runtime, audit, 10, 6);
   } else if (workload == "rf-official") {
-    RunRf(connection, runtime, audit, 1500, 2);
+    RunRf(connection, runtime, audit, ts::EnvOrInt("AUDIT_RF_ORDERS", 1500), 2);
   } else if (workload == "gate-mix") {
     RunFuzz(connection, runtime, audit, true);
   } else if (workload == "fuzz-all") {
