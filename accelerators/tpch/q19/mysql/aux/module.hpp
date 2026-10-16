@@ -49,11 +49,14 @@ struct TpchQ19PartInput {
   int32_t size = 0;
 };
 
-// A lineitem of the shipping predicate (AIR / AIR REG, DELIVER IN PERSON).
-struct TpchQ19LineitemInput {
-  int64_t partkey = 0;
+// Qualifying lineitems (AIR / AIR REG, DELIVER IN PERSON) of eligible parts,
+// aggregated by (brand, family, quantity) in the engine.
+struct TpchQ19GroupAggregate {
+  std::string brand;
+  int family = 0;           // 1 SM, 2 MED, 3 LG
   int64_t quantity_raw = 0; // scale 2
-  int64_t revenue_raw = 0;  // l_extendedprice * (1 - l_discount), scale 4
+  __int128 revenue_raw = 0; // sum(price * (1 - discount)), scale 4
+  int64_t count = 0;
 };
 
 // One part's qualifying lineitems by quantity (point re-aggregation).
@@ -67,15 +70,12 @@ struct TpchQ19PartQuantityRevenue {
 class TpchQ19InitialScan {
 public:
   virtual ~TpchQ19InitialScan() = default;
-  // Every part / every lineitem of the shipping predicate, split into
-  // `partitions` fixed row ranges: sink(partition, row) runs concurrently for
-  // different partitions, one thread per partition.
-  virtual void ScanPartsPartitioned(
-      const core::AuxEngineServices &services, std::size_t partitions,
-      const std::function<void(std::size_t, const TpchQ19PartInput &)> &sink) = 0;
-  virtual void ScanShippedLineitemsPartitioned(
-      const core::AuxEngineServices &services, std::size_t partitions,
-      const std::function<void(std::size_t, const TpchQ19LineitemInput &)> &sink) = 0;
+  virtual void ScanParts(
+      const std::function<void(const TpchQ19PartInput &)> &) = 0;
+  // lineitem JOIN part, shipping predicate and family classification
+  // (TpchQ19FamilySql) applied and grouped in the engine.
+  virtual void ScanGroupAggregates(
+      const std::function<void(const TpchQ19GroupAggregate &)> &) = 0;
   // lineitem WHERE l_partkey IN (...) AND shipping predicate, grouped by
   // (l_partkey, l_quantity).
   virtual void ScanPartQuantityRevenue(
@@ -91,6 +91,10 @@ enum class TpchQ19Family : uint8_t {
   LG = 3,  // LG CASE, LG BOX, LG PACK, LG PKG ; p_size 1..15
 };
 
+// SQL `CASE` expression yielding the family number (1..3) of a part, NULL when
+// it can never qualify (container family unknown or size out of range): the
+// single source of the branch constants for engine-side aggregation.
+std::string TpchQ19FamilySql();
 // SQL predicate on lineitem columns: l_shipmode IN ('AIR', 'AIR REG') AND
 // l_shipinstruct = 'DELIVER IN PERSON'.
 std::string TpchQ19ShippingSql();
@@ -196,7 +200,10 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ19State> BuildState(core::AuxEngineServices &) const;
+  // `with_parts`: also fill the per-part codes (needed for maintenance; a
+  // fallback answer needs the aggregates only).
+  std::shared_ptr<TpchQ19State> BuildState(core::AuxEngineServices &,
+                                           bool with_parts) const;
   void Answer(const TpchQ19State &, const core::QueryArguments &,
               core::AuxRowSink &) const;
   void EmitResult(__int128 revenue_raw, int64_t matches,

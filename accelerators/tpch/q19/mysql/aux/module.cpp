@@ -1,11 +1,8 @@
 #include "tpch/q19/mysql/aux/module.hpp"
 #include "tpch/q19/calibration_writes.hpp"
 #include "prims/pg_numeric.hpp"
-#include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
-#include <iterator>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -294,7 +291,7 @@ void TpchQ19Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   builder.Write(core::StateImage::Make(
       Id(), kStatePartition, 0,
-      MakeStateImage(BuildState(services))));
+      MakeStateImage(BuildState(services, /*with_parts=*/true))));
   builder.Finish();
 }
 
@@ -386,106 +383,26 @@ void TpchQ19Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
-namespace {
-
-// The qualifying parts of one partition: key, family and the index of the
-// (collation-folded) brand in `brands`. Partitions are merged in order, so a
-// brand met by several appears several times, and ids are interned in
-// first-met order.
-struct QualifyingParts {
-  struct Row {
-    int64_t partkey;
-    uint32_t brand; // index into `brands`
-    TpchQ19Family family;
-  };
-  std::vector<std::string> brands;
-  std::unordered_map<std::string, uint32_t> local_ids;
-  std::vector<Row> rows;
-
-  void Add(const TpchQ19PartInput &input) {
-    const auto family = ClassifyContainerFamily(input.container);
-    if (family == TpchQ19Family::None || input.size < 1 ||
-        input.size > BranchSizeLimit(family))
-      return;
-    const auto [it, fresh] =
-        local_ids.try_emplace(CollateKey(input.brand), static_cast<uint32_t>(brands.size()));
-    if (fresh)
-      brands.push_back(it->first);
-    rows.push_back({input.key, it->second, family});
-  }
-  void Merge(QualifyingParts &&from) {
-    const auto offset = static_cast<uint32_t>(brands.size());
-    brands.insert(brands.end(), std::make_move_iterator(from.brands.begin()),
-                  std::make_move_iterator(from.brands.end()));
-    for (auto row : from.rows) {
-      row.brand += offset;
-      rows.push_back(row);
-    }
-  }
-};
-
-// Revenue and rows per (part code, quantity) of the qualifying lineitems.
-struct CodeQuantityTotals {
-  std::map<std::pair<uint32_t, int64_t>, TpchQ19State::QtyRev> cells;
-
-  void Add(uint32_t code, const TpchQ19LineitemInput &input) {
-    auto &cell = cells[{code, input.quantity_raw}];
-    cell.rev += input.revenue_raw;
-    ++cell.count;
-  }
-  void Merge(CodeQuantityTotals &&from) {
-    for (const auto &[key, cell] : from.cells) {
-      auto &into = cells[key];
-      into.rev += cell.rev;
-      into.count += cell.count;
-    }
-  }
-};
-
-} // namespace
-
 std::shared_ptr<TpchQ19State>
-TpchQ19Module::BuildState(core::AuxEngineServices &services) const {
+TpchQ19Module::BuildState(core::AuxEngineServices &services,
+                          bool with_parts) const {
+  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q19 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ19State>();
-  const std::size_t partitions = BuildPartitions(services);
-
-  // Columnar per-part codes, brands interned in partition order.
-  const auto parts = core::PartitionedBuild<QualifyingParts>(
-      services, [] { return QualifyingParts{}; },
-      [&](std::size_t parts_count, auto &&sink) {
-        initial_scan->ScanPartsPartitioned(
-            services, parts_count, [&](std::size_t partition, const TpchQ19PartInput &input) {
-              sink(partition, OneRowBatch<TpchQ19PartInput>{input});
-            });
-      },
-      [](QualifyingParts &into, const TpchQ19PartInput &input) { into.Add(input); },
-      [](QualifyingParts &into, QualifyingParts &&from) { into.Merge(std::move(from)); },
-      partitions);
-  std::vector<uint32_t> brand_ids;
-  for (const auto &brand : parts.brands)
-    brand_ids.push_back(state->InternBrand(brand));
-  for (const auto &row : parts.rows)
-    state->part_code.Set(row.partkey, TpchQ19State::Code(brand_ids[row.brand], row.family));
-
-  // The join with part: each lineitem reads the finished, no longer written codes.
-  const auto totals = core::PartitionedBuild<CodeQuantityTotals>(
-      services, [] { return CodeQuantityTotals{}; },
-      [&](std::size_t parts_count, auto &&sink) {
-        initial_scan->ScanShippedLineitemsPartitioned(
-            services, parts_count, [&](std::size_t partition, const TpchQ19LineitemInput &input) {
-              sink(partition, OneRowBatch<TpchQ19LineitemInput>{input});
-            });
-      },
-      [&](CodeQuantityTotals &into, const TpchQ19LineitemInput &input) {
-        if (const uint32_t code = state->part_code.Get(input.partkey); code != 0)
-          into.Add(code, input);
-      },
-      [](CodeQuantityTotals &into, CodeQuantityTotals &&from) { into.Merge(std::move(from)); },
-      partitions);
-  for (const auto &[key, cell] : totals.cells)
-    state->Add(key.first, key.second, cell.rev, cell.count);
+  if (with_parts) {
+    // Columnar per-part codes, streamed (no per-part map, no transient copy).
+    initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
+      const auto code = state->PartCode(input.brand, input.container, input.size);
+      if (code != 0)
+        state->part_code.Set(input.key, code);
+    });
+  }
+  initial_scan->ScanGroupAggregates([&](const TpchQ19GroupAggregate &agg) {
+    state->Add(TpchQ19State::Code(state->InternBrand(agg.brand),
+                                  static_cast<TpchQ19Family>(agg.family)),
+               agg.quantity_raw, agg.revenue_raw, agg.count);
+  });
   return state;
 }
 
@@ -626,7 +543,7 @@ void TpchQ19Module::Execute(core::AuxEngineServices &services,
 void TpchQ19Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  Answer(*BuildState(services), arguments, sink);
+  Answer(*BuildState(services, /*with_parts=*/false), arguments, sink);
 }
 
 void TpchQ19Module::Answer(const TpchQ19State &state,
