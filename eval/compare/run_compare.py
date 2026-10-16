@@ -36,6 +36,7 @@ the C++ Q18 accelerator keeps LIMIT 100 and the C++ Q21 accelerator drops it, so
 their answers are compared as sets and may report a row-count mismatch.
 
   python3 eval/compare/run_compare.py read --queries "1 3 6" --sets 4
+  python3 eval/compare/run_compare.py refresh --queries "1 3" --sf 20 --pairs 2
   python3 eval/compare/run_compare.py concurrent --readers 8 --seconds 60 --wps 5
   python3 eval/compare/run_compare.py multi --readers 8 --seconds 120 --wps 5
   python3 eval/compare/run_compare.py tpch --streams 3 --runs 3 --systems "cpp verus"
@@ -141,8 +142,10 @@ def drop(path):
             os.remove(p)
 
 
-def ids(q, system):
-    return (f"tpch:{q}" if system in ("cpp", "stateless") else f"tpch_q{q}_vgen"), f"tpch_q{q}_vgen"
+def ids(q, system, sql_dir=None):
+    """The accelerator and the baseline of query q; the baseline is its Verus kit's text, or sql_dir/q<N>.sql."""
+    base = os.path.join(sql_dir, f"q{q}.sql") if sql_dir else f"tpch_q{q}_vgen"
+    return (f"tpch:{q}" if system in ("cpp", "stateless") else f"tpch_q{q}_vgen"), base
 
 
 def cmd_read(a):
@@ -153,7 +156,7 @@ def cmd_read(a):
     reps = draws(a)
     for q in a.queries:
         for system in a.systems:
-            accel, base = ids(q, system)
+            accel, base = ids(q, system, a.baseline_sql_dir)
             path = os.path.join(a.work, f"cases_q{q}_{system}_all.tsv")
             spans = []  # (rep, seed, first case, number of cases)
             with open(path, "w") as f:
@@ -183,6 +186,35 @@ def cmd_read(a):
                     json.dump(out, f, indent=1)
                 print(f"  rep {k}: " + line_read(out), flush=True)
     summary(a.out)
+
+
+def cmd_refresh(a):
+    """Maintenance cost: per query, one process builds the accelerator and applies --pairs RF2 + RF1 commits of
+    --batch-orders orders each (default 0.1% of the orders, as the specification's refresh functions: the update
+    sets of --rf-dir, else clones of existing orders), on a fresh copy of the database; result under refresh_q<N>.json.  --force-action pins the maintenance action
+    (e.g. ApplyDelta: the policy would otherwise rebuild when it predicts that is cheaper)."""
+    log = os.path.join(a.out, "refresh.log")
+    os.makedirs(a.out, exist_ok=True)
+    if not a.rf_dir:
+        os.environ.setdefault("ACCEL_RF_BATCH_ORDERS", str(round(1500 * a.sf)))
+    os.environ["ACCEL_RF_ONLY"] = "1"
+    if a.force_action:
+        os.environ["ACCEL_FORCE_MAINTENANCE_ACTION"] = a.force_action
+    for q in a.queries:
+        db = fresh_copy(a.db, a.work, f"cmp_refresh_q{q}.duckdb")
+        print(f"refresh q{q} {time.strftime('%T')}", flush=True)
+        r = run([a.bin, "refresh", db, f"tpch:{q}", str(a.pairs), "1"], env_for("cpp", q, a.sf), log, a.timeout)
+        drop(db)
+        r.update(query=q)
+        with open(os.path.join(a.out, f"refresh_q{q}.json"), "w") as f:
+            json.dump(r, f, indent=1)
+        if "error" in r:
+            print("  ERROR " + r["error"], flush=True)
+            continue
+        c = r["commits"]
+        print(f"  build {r['build_ms'] / 1000:.1f}s  state {r['state_mb']:.0f}MB  actions {sorted({x['action'] for x in c})}  "
+              f"maintenance/commit median {statistics.median(x['pre_commit_us'] for x in c) / 1000:.1f}ms "
+              f"max {max(x['pre_commit_us'] for x in c) / 1000:.1f}ms", flush=True)
 
 
 def cmd_concurrent(a):
@@ -594,7 +626,7 @@ def summary(out):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="mode", required=True)
-    for mode in ("read", "concurrent", "multi", "cycle", "tpch"):
+    for mode in ("read", "refresh", "concurrent", "multi", "cycle", "tpch"):
         p = sub.add_parser(mode)
         p.add_argument("--db", default=os.environ.get("DB", os.path.join(ROOT, "..", "accelerator-codegen-duckdb", "tpch_sf20.duckdb")))
         p.add_argument("--work", default=os.environ.get("WORK", "/flash1/akhilvb/tpch/work"))
@@ -603,6 +635,8 @@ def main():
         p.add_argument("--bin", default=os.path.join(ROOT, "build-verus-duckdb", "aux_compare"))
         p.add_argument("--queries", default=" ".join(map(str, range(1, 23))))
         p.add_argument("--systems", default="cpp verus")
+        p.add_argument("--baseline-sql-dir", default=None,
+                       help="read mode: baseline queries from <dir>/q<N>.sql (workloads/tpch) instead of the Verus kits")
         p.add_argument("--sets", type=int, default=8, help="TPC-H parameter sets per query")
         p.add_argument("--seed", type=int, default=None,
                        help="base seed of the parameter draws (default: a fresh random one, recorded in seeds.json)")
@@ -613,6 +647,12 @@ def main():
     r = sub.choices["read"]
     r.add_argument("--reps", type=int, default=5)
     r.add_argument("--copy", action="store_true", help="run each on a fresh copy of the database")
+    f = sub.choices["refresh"]
+    f.add_argument("--pairs", type=int, default=2, help="RF2 + RF1 commit pairs")
+    f.add_argument("--batch-orders", type=int, default=None,
+                   help="orders per commit (default: the whole update set with --rf-dir, else 1500 x SF cloned orders)")
+    f.add_argument("--rf-dir", default=None, help="the TPC-H update sets written by dbgen -U (scripts/gen_tpch_refresh_sets.sh)")
+    f.add_argument("--force-action", default=None, help="pin the maintenance action (ApplyDelta, RebuildAll, ...)")
     c = sub.choices["concurrent"]
     c.add_argument("--readers", type=int, default=8)
     c.add_argument("--seconds", type=float, default=60)
@@ -700,7 +740,7 @@ def main():
     assert os.path.exists(a.bin), f"no {a.bin} (cmake --build build-verus-duckdb --target aux_compare)"
     assert os.path.exists(a.db), f"no database {a.db}"
     os.makedirs(a.work, exist_ok=True)
-    {"read": cmd_read, "concurrent": cmd_concurrent, "multi": cmd_multi, "cycle": cmd_cycle, "tpch": cmd_tpch}[a.mode](a)
+    {"read": cmd_read, "refresh": cmd_refresh, "concurrent": cmd_concurrent, "multi": cmd_multi, "cycle": cmd_cycle, "tpch": cmd_tpch}[a.mode](a)
 
 
 if __name__ == "__main__":

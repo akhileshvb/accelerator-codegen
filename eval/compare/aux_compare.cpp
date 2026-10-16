@@ -62,6 +62,8 @@
 // lineitems instead of one (the TPC-H refresh functions move 1500 x SF orders each).
 //   aux_compare tpch <db> <phase> <spec.tsv> <streams> <runs> <sf> [check=1]: the TPC-H power and throughput
 // tests (see Tpch).
+//   aux_compare refresh <db> <accel_id> <pairs> [seed=1]: one accelerator, `pairs` RF2 + RF1 commits of
+// ACCEL_RF_BATCH_ORDERS orders each (see Refresh).
 // Output: one JSON object on stdout.
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/shared_query_engine.hpp"
@@ -85,6 +87,7 @@
 #include <malloc.h>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -229,6 +232,16 @@ std::vector<std::string> Canon(duckdb::MaterializedQueryResult &r) {
   return rows;
 }
 
+// The baseline's SQL: a Verus kit's query text, or (no such kit built in) the file named by <baseline>,
+// e.g. workloads/tpch/q6.sql: the same text with the same $n parameters.
+std::string BaselineSql(const std::string &baseline) {
+  if (const auto *glue = kit::Find(baseline))
+    return glue->query_sql;
+  std::ifstream in(baseline);
+  Require(in.good(), "no baseline kit or SQL file " + baseline);
+  return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
 std::unique_ptr<duckdb::MaterializedQueryResult> RunBaseline(duckdb::Connection &c, const std::string &sql,
                                                              const std::string &args) {
   auto stmt = c.Prepare(sql);
@@ -335,10 +348,6 @@ public:
                             " OFFSET (SELECT count(*) // 2 FROM part)");
     next_order = Keys(c, "SELECT max(o_orderkey) FROM orders")[0] + 1;
     next_part = Keys(c, "SELECT max(p_partkey) FROM part")[0] + 1;
-    // new keys are max + 1, and the accelerators pack TPC-H keys into 32 bits: a database holding keys of a
-    // different magnitude (left by other tests) would make every insert fail inside an accelerator
-    Require(next_order < 2000000000 && next_part < 2000000000, "orders / part keys above 2e9: the database is not plain "
-            "TPC-H (polluted by earlier tests?); use a clean copy");
     next_supp = Keys(c, "SELECT max(s_suppkey) FROM supplier")[0] + 1;
     if (use_sets)
       LoadRfSets(c, max_writes);
@@ -590,13 +599,11 @@ int Read(const std::string &path, const std::string &id, const std::string &base
   duckdb::Connection wc(db), qc(db);
   accelerator_codegen::RegisterAcceleratorFunctions(qc);
   ApplyDuckdbThreads(qc);
-  const auto *glue = kit::Find(base_kit);
-  Require(glue != nullptr, "no baseline kit " + base_kit);
+  const auto base_sql = BaselineSql(base_kit);
   const auto fn = FunctionFor(id);
-  DuckdbRuntime rt(wc, EntryFor(id), 10.0);
-  const double rss_before = SettledRssMb(qc);
+  std::optional<DuckdbRuntime> rt(std::in_place, wc, EntryFor(id), 10.0);
   const auto b0 = Clock::now();
-  rt.Build();
+  rt->Build();
   const double build_ms = Us(b0, Clock::now()) / 1000;
   const double rss_peak = RssMb().second, rss_after = SettledRssMb(qc);
   core::ResetAuxExecuteCounts();
@@ -605,7 +612,7 @@ int Read(const std::string &path, const std::string &id, const std::string &base
   int n = 0, mismatches = 0;
   for (std::size_t i = 0; i < cases.size(); ++i) {
     const auto &c = cases[i];
-    auto base = RunBaseline(qc, glue->query_sql, c.base_args); // warm, and the reference answer
+    auto base = RunBaseline(qc, base_sql, c.base_args); // warm, and the reference answer
     auto acc = RunAccel(qc, fn, c.accel_args);
     const auto br = Canon(*base), ar = Canon(*acc);
     auto bs = br, as = ar;
@@ -616,7 +623,7 @@ int Read(const std::string &path, const std::string &id, const std::string &base
     std::vector<double> tb, ta;
     for (int r = 0; r < reps; ++r) {
       auto t0 = Clock::now();
-      RunBaseline(qc, glue->query_sql, c.base_args);
+      RunBaseline(qc, base_sql, c.base_args);
       tb.push_back(Us(t0, Clock::now()));
       t0 = Clock::now();
       RunAccel(qc, fn, c.accel_args);
@@ -630,9 +637,13 @@ int Read(const std::string &path, const std::string &id, const std::string &base
            ",\"accel_rows\":" + std::to_string(ar.size()) + ",\"match\":" + (match ? "true" : "false") + "}";
   }
   const auto counts = core::ReadAuxExecuteCounts();
-  std::cout << "{\"mode\":\"read\",\"accel\":" << Json(id) << ",\"function\":" << Json(fn) << ",\"store\":" << Json(rt.UsesVerusStore() ? "verus" : "cpp")
-            << ",\"build_ms\":" << build_ms << ",\"state_mb\":" << rss_after - rss_before
-            << ",\"rss_mb_settled_before\":" << rss_before << ",\"rss_mb_settled_after\":" << rss_after
+  const bool verus = rt->UsesVerusStore();
+  // the state is what the process gives back when the accelerator goes (scan buffers etc. stay in both)
+  rt.reset();
+  const double rss_freed = SettledRssMb(qc);
+  std::cout << "{\"mode\":\"read\",\"accel\":" << Json(id) << ",\"function\":" << Json(fn) << ",\"store\":" << Json(verus ? "verus" : "cpp")
+            << ",\"build_ms\":" << build_ms << ",\"state_mb\":" << rss_after - rss_freed
+            << ",\"rss_mb_settled_after\":" << rss_after << ",\"rss_mb_settled_freed\":" << rss_freed
             << ",\"rss_mb_peak_build\":" << rss_peak << ",\"speedup_geomean\":" << (n ? std::exp(log_sum / n) : 0)
             << ",\"mismatches\":" << mismatches << ",\"hits\":" << counts.hit << ",\"fallbacks\":" << counts.fallback
             << ",\"cases\":" << per << "]}" << std::endl;
@@ -1655,9 +1666,47 @@ int Cycle(const std::string &path, const std::string &id, const std::string &bas
   return 0;
 }
 
+// aux_compare refresh <db> <accel_id> <pairs> [seed=1]
+// One accelerator alone in the process, built, then `pairs` RF2 + RF1 commits (ACCEL_RF_BATCH_ORDERS orders each, clones of
+// existing orders) through its runtime.  Reported: the build's time and settled resident memory (as in `read`: the state's
+// size, roughly), per commit the statement, the accelerator's maintenance (PRE_COMMIT), the engine commit and the action
+// chosen, and the settled memory again after the last commit (state growth, old versions).
+int Refresh(const std::string &path, const std::string &id, int pairs, uint64_t seed) {
+  duckdb::DuckDB db(path);
+  duckdb::Connection wc(db), qc(db);
+  accelerator_codegen::RegisterAcceleratorFunctions(qc);
+  ApplyDuckdbThreads(qc);
+  Writes writes(qc, static_cast<std::size_t>(2 * pairs + 4), seed, RfBatchOrders());
+  std::optional<DuckdbRuntime> rt(std::in_place, wc, EntryFor(id), 10.0);
+  const auto b0 = Clock::now();
+  rt->Build();
+  const double build_ms = Us(b0, Clock::now()) / 1000;
+  const double rss_peak = RssMb().second, rss_built = SettledRssMb(qc);
+  std::string commits;
+  for (int i = 0; i < 2 * pairs; ++i) {
+    const auto [kind, sql] = writes.Next();
+    DuckdbRuntime::WriteAllTiming timing;
+    DuckdbRuntime::ApplyWriteAll({&*rt}, sql, &timing);
+    commits += std::string(i ? "," : "") + "{\"kind\":" + Json(kind) + ",\"statement_us\":" + std::to_string(timing.statement_us) +
+               ",\"pre_commit_us\":" + std::to_string(timing.pre_commit_us.empty() ? 0.0 : timing.pre_commit_us[0]) +
+               ",\"engine_commit_us\":" + std::to_string(timing.engine_commit_us) + ",\"action\":" +
+               Json(timing.action.empty() ? "none" : timing.action[0]) + ",\"builds\":" + std::to_string(rt->Stats().builds) +
+               ",\"commits_applied\":" + std::to_string(rt->Stats().commits_applied) + "}";
+  }
+  const double rss_final = SettledRssMb(qc);
+  rt.reset();
+  const double rss_freed = SettledRssMb(qc);
+  std::cout << "{\"mode\":\"refresh\",\"accel\":" << Json(id) << ",\"batch_orders\":" << RfBatchOrders()
+            << ",\"build_ms\":" << build_ms << ",\"state_mb\":" << rss_built - rss_freed
+            << ",\"rss_mb_peak_build\":" << rss_peak << ",\"rss_mb_settled_built\":" << rss_built
+            << ",\"rss_mb_settled_freed\":" << rss_freed << ",\"state_mb_after_commits\":" << rss_final - rss_freed
+            << ",\"commits\":[" << commits << "]}" << std::endl;
+  return 0;
+}
+
 int main(int argc, char **argv) {
   try {
-    Require(argc >= 6, "usage: aux_compare read|concurrent|multi <db> ...");
+    Require(argc >= 5, "usage: aux_compare read|concurrent|multi|refresh <db> ...");
     const std::string mode = argv[1];
     if (mode == "multi") {
       Require(argc >= 8, "multi: <db> <phase> <spec.tsv> <readers> <seconds> <writes_per_sec> [seed] [warmup_sec] "
@@ -1676,6 +1725,8 @@ int main(int argc, char **argv) {
       return Tpch(argv[2], argv[3], argv[4], std::stoi(argv[5]), std::stoi(argv[6]), std::stod(argv[7]),
                   argc > 8 ? std::string(argv[8]) != "0" : true);
     }
+    if (mode == "refresh")
+      return Refresh(argv[2], argv[3], std::stoi(argv[4]), argc > 5 ? std::stoull(argv[5]) : 1);
     const auto cases = ReadCases(argv[5]);
     if (mode == "read")
       return Read(argv[2], argv[3], argv[4], cases, argc > 6 ? std::stoi(argv[6]) : 5);
