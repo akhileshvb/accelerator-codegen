@@ -44,6 +44,21 @@ void ScanTpchQ15Lineitems(
               });
 }
 
+void ScanTpchQ15LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ15LineitemInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {IntColumn("l_suppkey"), DecimalColumn("l_extendedprice", 2),
+                   DecimalColumn("l_discount", 2), DateColumn("l_shipdate")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Date(3), row.Int(0), row.Decimal(1), 2,
+                                       row.Decimal(2), 2});
+                    }
+                  });
+}
+
 void ScanTpchQ15LineitemsForShipdateRange(
     int32_t start_days, int32_t end_days,
     const std::function<void(const query::TpchQ15LineitemInput &)> &consumer) {
@@ -67,6 +82,12 @@ void ScanTpchQ15LineitemsForShipdateRange(
 
 class TpchQ15Scan final : public query::TpchQ15InitialScan {
 public:
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ15LineitemInput &)> &sink)
+      override {
+    scans::ScanTpchQ15LineitemsPartitioned(services, partitions, sink);
+  }
   void ScanLineitems(
       const std::function<void(const query::TpchQ15LineitemInput &)> &consumer)
       override {

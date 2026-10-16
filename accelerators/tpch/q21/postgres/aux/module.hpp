@@ -60,11 +60,15 @@ public:
       const std::function<void(const TpchQ21SupplierInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ21NationInput &)> &) = 0;
-  // The orderkeys of the fulfilled orders ('F').
-  virtual void ScanFulfilledOrders(const std::function<void(int64_t)> &) = 0;
-  // Every lineitem, in any order (the module joins them to the orders).
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ21LineInput &)> &) = 0;
+  // The orderkeys of the fulfilled orders ('F') and every lineitem (the module
+  // joins them), each split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanFulfilledOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, int64_t)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ21LineInput &)> &sink) = 0;
   // The lineitems of the given fulfilled orders only, grouped by orderkey (all
   // rows of one order are consecutive), as the database holds them after the
   // calling statement (orders that are not fulfilled or have no lineitem

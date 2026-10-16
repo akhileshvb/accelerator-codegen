@@ -44,6 +44,37 @@ void ScanTpchQ12Lineitems(
               });
 }
 
+void ScanTpchQ12OrdersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ12OrderInput &)> &sink) {
+  ScanPartitioned(services, "orders",
+                  {IntColumn("o_orderkey"), TextColumn("o_orderpriority")}, partitions,
+                  [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Text(1), false});
+                    }
+                  });
+}
+
+void ScanTpchQ12LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ12LineitemInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {IntColumn("l_orderkey"), TextColumn("l_shipmode"),
+                   DateColumn("l_commitdate"), DateColumn("l_receiptdate"),
+                   DateColumn("l_shipdate")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      const int32_t commit = row.Date(2), receipt = row.Date(3),
+                                    ship = row.Date(4);
+                      if (query::TpchQ12LineitemQualifies(commit, receipt, ship))
+                        sink(partition, {row.Int(0), row.Text(1), commit, receipt, ship});
+                    }
+                  });
+}
+
 // Index lookup of the qualifying lineitems of some orders, as the transaction
 // leaves the database (this runs while staging maintenance at pre-commit).
 void LookupTpchQ12LineitemsByOrder(
@@ -84,6 +115,18 @@ public:
       const std::function<void(const query::TpchQ12LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ12Lineitems(consumer);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ12OrderInput &)> &sink)
+      override {
+    scans::ScanTpchQ12OrdersPartitioned(services, partitions, sink);
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ12LineitemInput &)> &sink)
+      override {
+    scans::ScanTpchQ12LineitemsPartitioned(services, partitions, sink);
   }
   void LookupLineitemsByOrder(
       const std::vector<int64_t> &orderkeys,

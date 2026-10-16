@@ -1,6 +1,8 @@
 #include "tpch/q21/postgres/aux/module.hpp"
 #include "tpch/q21/calibration_writes.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -434,13 +436,36 @@ std::vector<OrderContribution> ContributionsOfBucket(
 std::vector<std::vector<OrderContribution>>
 FulfilledContributions(TpchQ21InitialScan &scan,
                        const core::AuxEngineServices &services) {
+  const std::size_t partitions = BuildPartitions(services);
+  const auto fulfilled_keys = core::PartitionedBuild<std::vector<int64_t>>(
+      services, [] { return std::vector<int64_t>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanFulfilledOrdersPartitioned(
+            services, parts, [&](std::size_t partition, int64_t orderkey) {
+              sink(partition, OneRowBatch<int64_t>{orderkey});
+            });
+      },
+      [](std::vector<int64_t> &into, int64_t orderkey) { into.push_back(orderkey); },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      },
+      partitions);
   core::FlatHashMap<uint8_t> fulfilled;
-  scan.ScanFulfilledOrders([&](int64_t orderkey) { fulfilled.Upsert(orderkey, 1); });
-  std::vector<std::vector<TpchQ21LineInput>> buckets(kBuildBuckets);
-  scan.ScanLineitems([&](const TpchQ21LineInput &line) {
-    if (fulfilled.Contains(line.orderkey))
-      buckets[static_cast<uint64_t>(line.orderkey) % kBuildBuckets].push_back(line);
-  });
+  for (const int64_t orderkey : fulfilled_keys)
+    fulfilled.Upsert(orderkey, 1);
+  auto buckets = core::PartitionedBuild<Buckets<TpchQ21LineInput>>(
+      services, [] { return Buckets<TpchQ21LineInput>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ21LineInput &line) {
+              sink(partition, OneRowBatch<TpchQ21LineInput>{line});
+            });
+      },
+      [&](Buckets<TpchQ21LineInput> &into, const TpchQ21LineInput &line) {
+        if (fulfilled.Contains(line.orderkey))
+          into[static_cast<uint64_t>(line.orderkey) % kBuildBuckets].push_back(line);
+      },
+      AppendBuckets<TpchQ21LineInput>, partitions);
   std::vector<std::vector<OrderContribution>> found(kBuildBuckets);
   core::ParallelSlices(services, kBuildBuckets, 1,
                        [&](std::size_t, std::size_t begin, std::size_t end) {

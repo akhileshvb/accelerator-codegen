@@ -338,6 +338,14 @@ void TpchQ13State::SetValid(int64_t key, bool valid) {
     sparse_customers[key].valid = valid ? 1 : 0;
 }
 
+// Dense columns when the keys fill at least a quarter of their range (plus a
+// small floor), else everything is sparse.
+void TpchQ13State::SizeDenseKeys(int64_t customer_count, int64_t max_custkey) {
+  dense_limit = max_custkey >= 0 && max_custkey / 4 <= customer_count + (int64_t{1} << 18)
+                    ? max_custkey + 1 + (max_custkey >> 3)
+                    : 0;
+}
+
 void TpchQ13State::AddCustomer(int64_t custkey) {
   if (Valid(custkey))
     return;
@@ -503,9 +511,16 @@ TpchQ13Module::BuildState(core::AuxEngineServices &services,
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ13State>();
+  std::vector<int64_t> customer_keys;
+  int64_t max_custkey = -1;
   initial_scan->ScanCustomers([&](const TpchQ13CustomerInput &input) {
-    state->AddCustomer(input.key);
+    customer_keys.push_back(input.key);
+    max_custkey = std::max(max_custkey, input.key);
   });
+  state->SizeDenseKeys(static_cast<int64_t>(customer_keys.size()), max_custkey);
+  for (const int64_t key : customer_keys)
+    state->AddCustomer(key);
+  customer_keys = {};
   // Rows stream straight into the segments: no transient copy of the orders.
   initial_scan->ScanOrders([&](const TpchQ13OrderInput &input) {
     state->AddOrder(input.orderkey, input.custkey, input.comment);

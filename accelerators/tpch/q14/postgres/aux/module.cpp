@@ -1,6 +1,8 @@
 #include "tpch/q14/postgres/aux/module.hpp"
 #include "tpch/q14/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <cmath>
 #include <limits>
@@ -440,27 +442,44 @@ void TpchQ14Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 std::shared_ptr<TpchQ14State>
-TpchQ14Module::BuildState(core::AuxEngineServices &) const {
+TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q14 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ14State>();
   initial_scan->ScanParts([&](const TpchQ14PartInput &input) {
     state->SetPromo(input.key, ClassOfType(input.type));
   });
-  // Revenue per ship day of the lineitems that join a part.
-  std::unordered_map<int32_t, TpchQ14DayTotals> totals;
-  initial_scan->ScanLineitems([&](const TpchQ14LineitemInput &input) {
-    const auto promo = state->PromoOf(input.partkey);
-    if (promo == TpchQ14PromoClass::Absent)
-      return;
-    const __int128 revenue =
-        RevenueRaw(input.extendedprice_raw, 2, input.discount_raw, 2);
-    auto &cell = totals[input.shipdate_days];
-    cell.total_revenue_raw += revenue;
-    if (promo == TpchQ14PromoClass::Promo)
-      cell.promo_revenue_raw += revenue;
-    ++cell.count;
-  });
+  // Revenue per ship day of the lineitems that join a part (parts are final).
+  using DayTotals = std::unordered_map<int32_t, TpchQ14DayTotals>;
+  const auto totals = core::PartitionedBuild<DayTotals>(
+      services, [] { return DayTotals{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ14LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ14LineitemInput>{input});
+            });
+      },
+      [&](DayTotals &into, const TpchQ14LineitemInput &input) {
+        const auto promo = state->PromoOf(input.partkey);
+        if (promo == TpchQ14PromoClass::Absent)
+          return;
+        const __int128 revenue =
+            RevenueRaw(input.extendedprice_raw, 2, input.discount_raw, 2);
+        auto &cell = into[input.shipdate_days];
+        cell.total_revenue_raw += revenue;
+        if (promo == TpchQ14PromoClass::Promo)
+          cell.promo_revenue_raw += revenue;
+        ++cell.count;
+      },
+      [](DayTotals &into, DayTotals &&from) {
+        for (const auto &[day, cell] : from) {
+          auto &sum = into[day];
+          sum.total_revenue_raw += cell.total_revenue_raw;
+          sum.promo_revenue_raw += cell.promo_revenue_raw;
+          sum.count += cell.count;
+        }
+      },
+      BuildPartitions(services));
   for (const auto &[day, cell] : totals)
     state->days.Update(day, [&](TpchQ14DayTotals &into) {
       into.total_revenue_raw += cell.total_revenue_raw;
