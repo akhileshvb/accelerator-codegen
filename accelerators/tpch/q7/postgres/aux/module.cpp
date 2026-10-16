@@ -340,11 +340,13 @@ void RepointOrders(const core::AuxEngineServices &services, TpchQ7State &s, OnOr
   core::ParallelReduce(
       services, orders.NumChunkSlots(), kChunkGrain, cube,
       [&](Cube &into, std::size_t begin, std::size_t end) {
+        std::size_t visited = 0;
         for (std::size_t ci = begin; ci < end; ++ci)
           orders.ForEachInChunk(ci, [&](int64_t, std::string_view v) {
-            ++dense_orders;
+            ++visited;
             visit(into, v);
           });
+        dense_orders += visited;
       },
       MergeCube);
   if (dense_orders < orders.size()) { // some orders sit outside the chunked keys

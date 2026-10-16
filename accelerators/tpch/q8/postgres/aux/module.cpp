@@ -482,11 +482,13 @@ void ForEachContributingRecord(const core::AuxEngineServices &services, TpchQ8St
   core::ParallelReduce(
       services, orders.NumChunkSlots(), kChunkGrain, deltas,
       [&](CubeDeltas &into, std::size_t begin, std::size_t end) {
+        std::size_t visited = 0;
         for (std::size_t ci = begin; ci < end; ++ci)
           orders.ForEachInChunk(ci, [&](int64_t, std::string_view v) {
-            ++dense_orders;
+            ++visited;
             visit(into, v);
           });
+        dense_orders += visited;
       },
       [](CubeDeltas &into, CubeDeltas &&from) { into.Merge(std::move(from)); });
   if (dense_orders < orders.size()) { // some orders sit outside the chunked keys
