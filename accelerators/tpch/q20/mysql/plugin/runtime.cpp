@@ -20,59 +20,45 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ20Lineitems(
-    const std::function<void(const query::TpchQ20LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_shipdate, l_partkey, l_suppkey, l_quantity FROM lineitem "
-      "WHERE l_shipdate IS NOT NULL AND l_partkey IS NOT NULL AND "
-      "l_suppkey IS NOT NULL AND l_quantity IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ20LineitemInput{TypedDate(cols, 0),
-                                           TypedInt(cols, 1),
-                                           TypedInt(cols, 2),
-                                           TypedDecimalRaw(cols, 3)};
-      },
-      [&](query::TpchQ20LineitemInput &&input) { consumer(input); });
+SplitTable LineitemsTable() {
+  return {"l_shipdate, l_partkey, l_suppkey, l_quantity", "lineitem",
+          "l_shipdate IS NOT NULL AND l_partkey IS NOT NULL AND "
+          "l_suppkey IS NOT NULL AND l_quantity IS NOT NULL",
+          "l_orderkey"};
 }
 
-void ScanTpchQ20Parts(
-    const std::function<void(const query::TpchQ20PartInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT p_partkey, p_name FROM part "
-      "WHERE p_partkey IS NOT NULL AND p_name IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ20PartInput{TypedInt(cols, 0),
-                                       TypedText(cols, 1)};
-      },
-      [&](query::TpchQ20PartInput &&input) { consumer(input); });
+query::TpchQ20LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedDate(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2), TypedDecimalRaw(cols, 3)};
 }
 
-void ScanTpchQ20Partsupps(
-    const std::function<void(const query::TpchQ20PartsuppInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp "
-      "WHERE ps_partkey IS NOT NULL AND ps_suppkey IS NOT NULL AND "
-      "ps_availqty IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ20PartsuppInput{TypedInt(cols, 0),
-                                           TypedInt(cols, 1),
-                                           TypedInt(cols, 2)};
-      },
-      [&](query::TpchQ20PartsuppInput &&input) { consumer(input); });
+SplitTable PartsTable() {
+  return {"p_partkey, p_name", "part", "p_partkey IS NOT NULL AND p_name IS NOT NULL",
+          "p_partkey"};
 }
 
-void ScanTpchQ20Suppliers(
-    const std::function<void(const query::TpchQ20SupplierInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier "
-      "WHERE s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ20SupplierInput{TypedInt(cols, 0),
-                                           TypedText(cols, 1),
-                                           TypedText(cols, 2),
-                                           static_cast<int32_t>(TypedInt(cols, 3))};
-      },
-      [&](query::TpchQ20SupplierInput &&input) { consumer(input); });
+query::TpchQ20PartInput DecodePart(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1)};
+}
+
+SplitTable PartsuppsTable() {
+  return {"ps_partkey, ps_suppkey, ps_availqty", "partsupp",
+          "ps_partkey IS NOT NULL AND ps_suppkey IS NOT NULL AND "
+          "ps_availqty IS NOT NULL",
+          "ps_partkey"};
+}
+
+query::TpchQ20PartsuppInput DecodePartsupp(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2)};
+}
+
+SplitTable SuppliersTable() {
+  return {"s_suppkey, s_name, s_address, s_nationkey", "supplier",
+          "s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL", "s_suppkey"};
+}
+
+query::TpchQ20SupplierInput DecodeSupplier(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1), TypedText(cols, 2),
+          static_cast<int32_t>(TypedInt(cols, 3))};
 }
 
 void ScanTpchQ20Nations(
@@ -91,25 +77,45 @@ void ScanTpchQ20Nations(
 
 class TpchQ20Scan final : public query::TpchQ20InitialScan {
 public:
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ20LineitemInput &)> &consumer)
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ20LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ20Lineitems(consumer);
+    ScanTypedTuplesPartitioned(
+        services, scans::LineitemsTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeLineitem(cols));
+        });
   }
-  void ScanParts(
-      const std::function<void(const query::TpchQ20PartInput &)> &consumer)
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ20PartInput &)> &sink)
       override {
-    scans::ScanTpchQ20Parts(consumer);
+    ScanTypedTuplesPartitioned(
+        services, scans::PartsTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodePart(cols));
+        });
   }
-  void ScanPartsupps(
-      const std::function<void(const query::TpchQ20PartsuppInput &)> &consumer)
+  void ScanPartsuppsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ20PartsuppInput &)> &sink)
       override {
-    scans::ScanTpchQ20Partsupps(consumer);
+    ScanTypedTuplesPartitioned(
+        services, scans::PartsuppsTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodePartsupp(cols));
+        });
   }
-  void ScanSuppliers(
-      const std::function<void(const query::TpchQ20SupplierInput &)> &consumer)
+  void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ20SupplierInput &)> &sink)
       override {
-    scans::ScanTpchQ20Suppliers(consumer);
+    ScanTypedTuplesPartitioned(
+        services, scans::SuppliersTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeSupplier(cols));
+        });
   }
   void ScanNations(
       const std::function<void(const query::TpchQ20NationInput &)> &consumer)
