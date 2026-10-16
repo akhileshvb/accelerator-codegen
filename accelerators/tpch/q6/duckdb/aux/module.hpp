@@ -78,6 +78,9 @@ struct TpchQ6LineitemDelta {
   ::accelerator_codegen::Q6AccT contribution =
       static_cast<::accelerator_codegen::Q6AccT>(0);
   int8_t sign = 0;
+  // The row is outside the matrix's domain: it is in no cell, and adding one
+  // declines its month.
+  bool out_of_domain = false;
 };
 
 std::vector<uint8_t> EncodeTpchQ6Matrix(const ::accelerator_codegen::Q6RevenueMatrix &);

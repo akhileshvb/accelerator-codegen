@@ -272,8 +272,8 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ6LineitemDelta &delta,
   discount_raw = ScaleToRaw(discount_raw, discount_scale, 2);
   quantity_raw = ScaleToRaw(quantity_raw, quantity_scale, 2);
   extended_raw = ScaleToRaw(extended_raw, extended_scale, 2);
-  if (!::accelerator_codegen::Q6InDomain(discount_raw, quantity_raw))
-    return false;
+  delta.out_of_domain =
+      !::accelerator_codegen::Q6InDomain(discount_raw, quantity_raw);
   delta.shipdate_days = shipdate_days;
   delta.month_key = TpchQ6MonthKeyFromDays(shipdate_days);
   delta.discount_cent = static_cast<int8_t>(discount_raw);
@@ -282,6 +282,13 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ6LineitemDelta &delta,
       ::accelerator_codegen::Q6RowContributionRaw(extended_raw, discount_raw);
   delta.sign = sign;
   return true;
+}
+
+// Removing an out-of-domain row changes nothing: its month stays declined
+// until rebuilt.
+void AddDelta(TpchQ6TxnBuffer &buffer, const TpchQ6LineitemDelta &delta) {
+  if (!delta.out_of_domain || delta.sign > 0)
+    buffer.AddDelta(delta);
 }
 
 int64_t HugeintLower(const duckdb::hugeint_t &value) {
@@ -516,7 +523,7 @@ void TpchQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
       buffer.MarkRebuild();
       return;
     }
-    buffer.AddDelta(delta);
+    AddDelta(buffer, delta);
   };
 
   switch (mutation.kind) {
@@ -540,13 +547,8 @@ void TpchQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
         buffer.MarkRebuild();
         return;
       }
-      if (old_delta.shipdate_days != new_delta.shipdate_days ||
-          old_delta.month_key != new_delta.month_key) {
-        buffer.MarkRebuild();
-        return;
-      }
-      buffer.AddDelta(old_delta);
-      buffer.AddDelta(new_delta);
+      AddDelta(buffer, old_delta);
+      AddDelta(buffer, new_delta);
     }
     break;
   }
@@ -640,29 +642,31 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
   };
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), partitions);
-  // All partitions must exist.
-  if (snapshot.partitions.size() != partitions.size())
-    return rebuild_all();
   std::vector<const core::StateImage *> matched;
   MatchSnapshot(partitions, snapshot.partitions, matched);
   outcome.updates.reserve(partitions.size());
   for (std::size_t p = 0; p < partitions.size(); ++p) {
-    if (!matched[p])
-      return rebuild_all();
-    const auto &old = *matched[p];
-    const auto *typed = AsQ6Image(old);
-    if (old.partition != partitions[p] || !typed ||
-        typed->kind != KindOf(partitions[p]) ||
-        typed->key != KeyOf(partitions[p]))
+    // A month without rows has no partition yet: it starts empty.
+    const auto *old = matched[p];
+    const auto *typed = old ? AsQ6Image(*old) : nullptr;
+    if (old && (old->partition != partitions[p] || !typed ||
+                typed->kind != KindOf(partitions[p]) ||
+                typed->key != KeyOf(partitions[p])))
       return rebuild_all();
     // Copy-on-write: a fresh image holding the old matrix plus the delta.
-    auto image = NewStateImage(typed->kind, typed->key);
-    image->matrix = typed->matrix;
-    image->declined = typed->declined; // its out-of-domain row is still there
+    auto image = NewStateImage(KindOf(partitions[p]), KeyOf(partitions[p]));
+    if (typed) {
+      image->matrix = typed->matrix;
+      image->declined = typed->declined; // its out-of-domain row is still there
+    }
     const uint32_t begin = group_begin[p], end = group_begin[p + 1];
     if (end - begin <= 3) {
       for (uint32_t i = begin; i < end; ++i) {
         const auto &delta = deltas[order[i].second];
+        if (delta.out_of_domain) {
+          image->declined = true;
+          continue;
+        }
         image->matrix.AddCell(delta.discount_cent, delta.quantity_scaled,
                               delta.contribution, delta.sign);
       }
@@ -671,6 +675,10 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
       Q6RevenueMatrix batch;
       for (uint32_t i = begin; i < end; ++i) {
         const auto &delta = deltas[order[i].second];
+        if (delta.out_of_domain) {
+          image->declined = true;
+          continue;
+        }
         batch.AddRawCell(delta.discount_cent, delta.quantity_scaled,
                          delta.contribution, delta.sign);
       }
@@ -678,7 +686,7 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
       image->matrix.AddMatrix(batch);
     }
     outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ6Layout::kAccelerator, partitions[p], old.version,
+        core::TpchQ6Layout::kAccelerator, partitions[p], old ? old->version : 0,
         std::shared_ptr<const TpchQ6StateImage>(std::move(image))));
   }
   outcome.action = core::MaintenanceAction::ApplyDelta;
