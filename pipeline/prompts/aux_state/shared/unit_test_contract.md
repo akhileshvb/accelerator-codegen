@@ -1,39 +1,23 @@
 # Aux unit-test contract (mandatory)
 
-`test_*_q*_aux.cpp` smoke tests are **synthetic fixtures**, but they are still a **semantic contract** with the workload SQL. Wrong fixtures that “agree” with a buggy kernel are a failure.
+The module unit test is **shared, not written per query**: `eval/tests/test_tpch_module.cpp`, built as `test_tpch_q<N>_aux` and registered as ctest `tpch_q<N>_aux_smoke_test` for every query that has `accelerators/tpch/q<N>/duckdb/aux/register.cpp`. Do not add a `test_tpch_q<N>_aux.cpp`.
 
-Read the workload `reference_sql_path` (tar placeholders / materialized seeds) **before** writing asserts. Do not invent filter polarity.
+It hosts your module alone on `ModuleRuntime` (`eval/tests/test_support/module_runtime.hpp`: the real aux runtime on a DuckDB connection, no host or table function) over the small TPC-H test database, and checks through the public module interface only:
 
-## Hard rules
+1. build, then `Execute` for every argument variant of `BuildTpchArgPool` equals the reference SQL (`entry.base_sql`) **and** a second module built from scratch;
+2. point writes: the catalog probe is written in SQL, its `MutationBatch` committed (`runtime.Commit`), and the answer re-checked after each write;
+3. several probe rows in one SQL transaction delivered as one commit;
+4. invalidation, then a rebuild.
 
-1. **Predicate polarity must match SQL**
-   - `col NOT LIKE p` → fixture values that should survive must **fail** the LIKE against `p`.
-   - `col <> x` / `!=` → surviving rows must differ from `x`; add a case that equals `x` and is excluded.
-   - Anti-joins / `NOT IN` / `LIKE '%Customer%Complaints%'` → excluded keys contribute **0**; included keys count.
+So the test is only as strong as your **catalog entry** in `duckdb/aux/register.cpp`:
 
-2. **Bind args from real SQL when available**
-   - Prefer seed_1 / catalog bindings (brand, type pattern, sizes, dates) over made-up patterns.
-   - If you shorten patterns for a toy table, keep the **same operator polarity** (e.g. use `SMALL%` against `MED BOX`, never `MED%`).
-
-3. **Required cases (minimum)**
-   - Happy path: ≥1 expected output row with correct measures.
-   - Each selective predicate: at least one case proving exclusion.
-   - Anti-join / eligibility: included vs excluded entity.
-   - One mutation path that changes results (update watched column → republish → re-execute).
-   - Hot path and fallback must agree when both are reachable (same args / same expected rows).
-
-   - Off-spec generality cases (`hard_guidelines.md` §4): NULL/odd parameter values, off-range rows, wide and negative keys.
-
-4. **Comment each case with the SQL clause it exercises**
-   - Example: `// p_type NOT LIKE 'SMALL%': MED BOX survives`.
-
-5. **Never “fix” by weakening asserts**
-   - Do not delete cases, invert expected counts, or redefine eligibility to match a broken bitmap.
-   - If smoke passes but SF1 differential fails, the kernel (or catalog wiring) is wrong — fix the kernel.
+- `base_sql`, `benchmark_arguments` and the `SharedProbe` from `build_probe` must follow the workload SQL (read `reference_sql_path`; do not invent filter polarity): `NOT LIKE`, `<>`, anti-joins and `NOT IN` keep their sense in the arguments you bind.
+- `build_probe` must return probes that change the query result and whose `old_row`/`new_row` carry the module's `mutation_attnums` columns in order, with `update_sql` and `restore_sql` that match them. A probe that does not change the result fails `CollectInvalidatingSharedProbes` and so the test.
+- Edge cases of your module (NULLs, off-domain rows, empty inputs) belong in extra scenarios of `eval/tests/test_tpch_module.cpp`'s `ModuleCheck`, run for your query only, not in a private test file. Never weaken a check to make a kernel pass: if the module differs from a fresh build or from the SQL, the module is wrong.
 
 ## What `aux_correctness` checks
 
-1. **Smoke** — in-process `*_aux_smoke_test` (this contract).
-2. **SF1 differential** — base-engine reference SQL vs aux execute for the catalog seed binding. DuckDB default: `test_tpch_shared_differential`. Other `engine_name` values: agent-buildable `test_{engine}_tpch_differential` (see `query_host_bootstrap.md`).
+1. **Module test** - ctest `^tpch_q<N>_aux_smoke_test$` (above), on the `tpch_test_db` fixture.
+2. **SF1 differential** - base-engine reference SQL vs aux execute for the catalog seed binding. DuckDB default: `test_tpch_shared_differential`. Other `engine_name` values: agent-buildable `test_{engine}_tpch_differential` (see `query_host_bootstrap.md`).
 
 Both must pass. Smoke-only success is not enough.

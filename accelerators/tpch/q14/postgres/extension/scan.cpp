@@ -32,27 +32,15 @@ void ScanTpchQ14Parts(
               });
 }
 
-// lineitem JOIN part GROUP BY shipdate in the engine: one row per day with the
-// exact revenue sums (text, scale 4).
-void ScanTpchQ14DayAggregates(
-    const std::function<void(const query::TpchQ14DayAggregate &)> &consumer) {
-  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuplesParallel(
-      "SELECT l_shipdate, sum(l_extendedprice * (1 - l_discount)), "
-      "sum(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * "
-      "(1 - l_discount) ELSE 0 END), count(*) "
-      "FROM lineitem, part WHERE l_partkey = p_partkey GROUP BY l_shipdate",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        query::TpchQ14DayAggregate agg;
-        agg.shipdate_days = TypedDate(tuple, tuple_desc, 0);
-        if (!dec::Parse(TypedText(tuple, tuple_desc, 1), 4,
-                        agg.total_revenue_raw) ||
-            !dec::Parse(TypedText(tuple, tuple_desc, 2), 4,
-                        agg.promo_revenue_raw))
-          throw std::runtime_error("TPC-H Q14: unparsable numeric");
-        agg.count = TypedInt(tuple, tuple_desc, 3);
-        consumer(agg);
-      });
+void ScanTpchQ14Lineitems(
+    const std::function<void(const query::TpchQ14LineitemInput &)> &consumer) {
+  ScanColumns("lineitem",
+              {IntColumn("l_partkey"), DateColumn("l_shipdate"),
+               DecimalColumn("l_extendedprice", 2),
+               DecimalColumn("l_discount", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Date(1), row.Decimal(2), row.Decimal(3)});
+              });
 }
 
 // Point re-aggregation of the given parts' lineitems (l_partkey is indexed).
@@ -85,10 +73,10 @@ public:
       override {
     scans::ScanTpchQ14Parts(consumer);
   }
-  void ScanDayAggregates(
-      const std::function<void(const query::TpchQ14DayAggregate &)> &consumer)
+  void ScanLineitems(
+      const std::function<void(const query::TpchQ14LineitemInput &)> &consumer)
       override {
-    scans::ScanTpchQ14DayAggregates(consumer);
+    scans::ScanTpchQ14Lineitems(consumer);
   }
   void ScanPartDayRevenue(
       const std::vector<int64_t> &partkeys,

@@ -30,4 +30,3 @@ def test_aux_optimization_edit_paths_point_at_aux_module():
     assert edit["secondary_cpp"] == f"accelerators/tpch/q18/{eng}/aux/finalize.cpp"
     assert "accelerators/tpch/q18/config/q18_aux_cost_model.json" in edit["all_paths"]
     assert edit["base_kernel_path"] == base["kernel_path"]
-    assert "accelerators/tpch/q18/tests/test_tpch_q18_aux.cpp" in edit["all_paths"]

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "backends/duckdb/engine/duckdb_aux_backend.hpp"
+#include "backends/duckdb/engine/scan.hpp"
 #include "substrate/aux/runtime/runtime_host.hpp"
 #include "duckdb.hpp"
 
@@ -25,8 +26,13 @@ public:
   ModuleRuntime(::duckdb::Connection &connection_p, std::shared_ptr<core::AuxQueryModule> module_p,
                 maintenance::CostModelParams cost_model_p = {})
       : connection(connection_p), module(std::move(module_p)), cost_model(std::move(cost_model_p)),
-        host(*this, 2), accelerator(host.Register(module)),
+        host(*this, runtime::ResolveThreadBudget(0)), accelerator(host.Register(module)),
         backend(accelerator, *connection.context) {
+    // Phase caps follow ACCEL_AUX_{READ,BUILD,MAINT}_THREADS, as in the real host.
+    auto &threads = host.Threads();
+    threads.SetPhaseLimits(runtime::ResolveReadThreads(0, threads.Budget()),
+                           runtime::ResolveBuildThreads(0, threads.Budget()),
+                           runtime::ResolveMaintenanceThreads(0, threads.Budget()));
     accelerator.UseModuleServices(backend);
   }
 
@@ -62,6 +68,7 @@ public:
   // The newest state's answer, or the module's fallback when the state cannot
   // serve. Returns whether the state served.
   bool Read(const core::QueryArguments &arguments, core::AuxRowSink &sink) {
+    const engine::duckdb::scan::ScanServicesScope scans(backend);
     runtime::ReadOptions options;
     options.max_wait_us = 1'000'000;
     if (accelerator.Read(options, arguments, sink) == runtime::ReadResult::Served) {
@@ -125,6 +132,7 @@ private:
   bool EngineWorkOnHostThread() const override { return false; }
   void RunBuild(runtime::AcceleratorRuntime &, runtime::BuildSnapshot &,
                 core::StateBuilder &builder) override {
+    const engine::duckdb::scan::ScanServicesScope scans(backend);
     module->Build(backend, builder);
   }
   const maintenance::CostModelParams &CostModel(const core::AcceleratorId &) const override {

@@ -186,12 +186,13 @@ struct TpchQ11State {
   void SetSupplierNation(int64_t suppkey, int64_t nationkey); // kNoNation: absent
   // Re-group the parts of suppliers whose nation changed (old_map -> current).
   void RegroupSuppliers(
+      const core::AuxEngineServices &services,
       const core::FlatHashMap<uint8_t> &changed_suppliers,
       const core::AnyKeyCowArray<int64_t> &old_map);
   void UpsertNation(const TpchQ11NationInput &nation);
   void EraseNation(const TpchQ11NationInput &nation);
   // (Re)build every group from the facts and the supplier map.
-  void BuildGroups();
+  void BuildGroups(const core::AuxEngineServices &services);
 
   std::size_t MemoryBytes() const;
 

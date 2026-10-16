@@ -328,6 +328,8 @@ public:
   uint32_t InternString(std::string value);
   uint32_t InternUom(const std::string &uom);
   uint64_t KeyFor(const std::string &adsh);
+  // Appends `from`'s ops (buffered after this buffer's) re-interned here.
+  void Absorb(SecEdgarQ3TxnBuffer &&from);
 
   const std::vector<Op> &Ops() const { return ops; }
   const std::vector<std::string> &Strings() const { return strings; }

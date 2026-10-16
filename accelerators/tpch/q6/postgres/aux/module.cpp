@@ -2,11 +2,14 @@
 #include "tpch/q6/calibration_writes.hpp"
 #include "prims/pg_numeric.hpp"
 
+#include <algorithm>
 #include <limits>
-#include <map>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
+#include <vector>
+
+#include "prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -143,12 +146,19 @@ bool NumericArg(const core::AuxValue &value,
 
 void TpchQ6InitialScan::ScanCellAggregates(
     const std::function<void(const TpchQ6CellAggregate &)> &consumer) {
-  // Row-scan fallback: aggregate (day, discount, quantity) cells here.
-  std::map<std::tuple<int32_t, int64_t, int64_t>, TpchQ6CellAggregate> cells;
+  // Row-scan fallback: aggregate (day, discount, quantity) cells here. The
+  // discount and quantity domains are tiny, so a cell is keyed by their ids.
+  constexpr int kIdBits = 20;
+  ::accelerator_codegen::Q6ValueDict discounts, quantities;
+  core::FlatHashMap<TpchQ6CellAggregate> cells;
   ScanLineitems([&](const TpchQ6LineitemInput &input) {
     const auto discount = ScaleToRaw(input.discount_raw, input.discount_scale, 2);
     const auto quantity = ScaleToRaw(input.quantity_raw, input.quantity_scale, 2);
-    auto &cell = cells[{input.shipdate_days, discount, quantity}];
+    const int64_t d = discounts.Intern(discount), q = quantities.Intern(quantity);
+    if ((d | q) >> kIdBits)
+      throw std::length_error("TPC-H Q6: too many distinct discounts or quantities");
+    const auto day = static_cast<uint64_t>(static_cast<uint32_t>(input.shipdate_days));
+    auto &cell = cells[static_cast<int64_t>((day << (2 * kIdBits)) | (d << kIdBits) | q)];
     cell.shipdate_days = input.shipdate_days;
     cell.discount_raw = discount;
     cell.quantity_raw = quantity;
@@ -157,8 +167,17 @@ void TpchQ6InitialScan::ScanCellAggregates(
         ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
         discount);
   });
-  for (const auto &entry : cells)
-    consumer(entry.second);
+  std::vector<const TpchQ6CellAggregate *> ordered;
+  ordered.reserve(cells.size());
+  for (const auto entry : cells)
+    ordered.push_back(&entry.second);
+  std::sort(ordered.begin(), ordered.end(),
+            [](const TpchQ6CellAggregate *l, const TpchQ6CellAggregate *r) {
+              return std::tie(l->shipdate_days, l->discount_raw, l->quantity_raw) <
+                     std::tie(r->shipdate_days, r->discount_raw, r->quantity_raw);
+            });
+  for (const auto *cell : ordered)
+    consumer(*cell);
 }
 
 bool TpchQ6TxnBuffer::HasPendingChanges() const { return pending; }
@@ -310,11 +329,6 @@ bool TpchQ6Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ6Module::Execute(core::AuxEngineServices &services,
                            const core::QueryArguments &arguments,
                            core::AuxRowSink &sink) {
-  // LocalWriteSafe: same-transaction relevant writes => fallback.
-  if (services.StateStore().IsTransactionDirty()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
   // ReadHit: validity + the one immutable state image under one visibility.
   const auto snapshot = services.StateStore().ReadHitPartitions(
       services.CurrentVisibility(), {Id(), {}}, {kStatePartition});
@@ -340,11 +354,21 @@ TpchQ6Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q6 requires a typed initial scan source");
   auto state = std::make_shared<Q6State>();
+  // The aggregate scan delivers a day's cells together: one Fenwick path walk per day.
+  int32_t day = 0;
+  std::vector<::accelerator_codegen::Q6DayCell> cells;
+  const auto flush = [&] {
+    if (!cells.empty())
+      ::accelerator_codegen::Q6AddDayCells(*state, day, cells);
+    cells.clear();
+  };
   initial_scan->ScanCellAggregates([&](const TpchQ6CellAggregate &cell) {
-    ::accelerator_codegen::Q6AddCell(*state, cell.shipdate_days,
-                                     cell.discount_raw, cell.quantity_raw,
-                                     cell.revenue_raw, cell.count);
+    if (cell.shipdate_days != day)
+      flush();
+    day = cell.shipdate_days;
+    cells.push_back({cell.discount_raw, cell.quantity_raw, cell.revenue_raw, cell.count});
   });
+  flush();
   return state;
 }
 

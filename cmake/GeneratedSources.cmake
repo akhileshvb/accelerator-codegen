@@ -118,7 +118,6 @@ function(accel_collect_stateful_sources OUT_VAR)
         substrate/aux/state/aux_state_footprint.cpp
         substrate/aux/state/verus_aux_store.cpp
         substrate/verus/kit/verus_kit.cpp
-        substrate/aux/core/aux_registry.cpp
         substrate/aux/core/aux_engine_services.cpp
         substrate/aux/core/aux_maintenance_policy.cpp
         substrate/aux/core/aux_maintenance_decision_log.cpp
@@ -140,7 +139,6 @@ function(accel_collect_stateful_sources OUT_VAR)
         list(APPEND _sources
             backends/duckdb/api/duckdb_aux_table_functions.cpp
             backends/duckdb/engine/duckdb_aux_backend.cpp
-            backends/duckdb/state/duckdb_state_store.cpp
         )
     endif()
     if(ACCELERATOR_CODEGEN_BUILD_MYSQL)

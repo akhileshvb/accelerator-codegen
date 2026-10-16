@@ -1,6 +1,7 @@
 #include "tpch/q7/duckdb/aux/module.hpp"
 #include "tpch/q7/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,9 @@ namespace {
 
 using core::ByteReader;
 using core::ByteWriter;
+
+// Touched mid arrays per slice when publishing a side index.
+constexpr std::size_t kFinishGrain = 16;
 
 bool CustomProfileEnabled() {
   const char *v = std::getenv("ACCEL_AUX_CUSTOM_PROFILE");
@@ -876,11 +880,14 @@ TpchQ7Module::StageMaintenance(core::AuxEngineServices &services,
     auto new_side = std::make_shared<TpchQ7State>();
     new_side->nation_names = side.nation_names;
     new_side->num_nation_slots = side.num_nation_slots;
-    new_side->supplier_nations = supp.txn.Dirty() ? supp.txn.Finish()
+    const auto for_each_mid = [&](std::size_t n, const auto &fn) {
+      core::ParallelEach(services, n, kFinishGrain, fn);
+    };
+    new_side->supplier_nations = supp.txn.Dirty() ? supp.txn.Finish(for_each_mid)
                                  : side.supplier_nations;
-    new_side->customer_nations = cust.txn.Dirty() ? cust.txn.Finish()
+    new_side->customer_nations = cust.txn.Dirty() ? cust.txn.Finish(for_each_mid)
                                  : side.customer_nations;
-    new_side->order_custkeys = ords.txn.Dirty() ? ords.txn.Finish()
+    new_side->order_custkeys = ords.txn.Dirty() ? ords.txn.Finish(for_each_mid)
                                : side.order_custkeys;
     outcome.updates.push_back(core::StateImage::Make(
         core::TpchQ7Layout::kAccelerator,

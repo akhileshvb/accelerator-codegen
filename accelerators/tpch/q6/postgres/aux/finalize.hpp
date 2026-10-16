@@ -44,6 +44,17 @@ struct Q6State {
 	Q6ValueDict quantities;
 };
 
+// `revenue` / `count` rows of one (discount, quantity) cell of a day.
+struct Q6DayCell {
+	int64_t discount_raw = 0;
+	int64_t quantity_raw = 0;
+	Q6AccT revenue = 0;
+	int64_t count = 0;
+};
+
+// Add the cells of one day; its Fenwick path is walked once for all of them.
+void Q6AddDayCells(Q6State &state, int32_t day, const std::vector<Q6DayCell> &cells);
+
 // Add `revenue` / `count` rows to the (day, discount, quantity) cell.
 void Q6AddCell(Q6State &state, int32_t day, int64_t discount_raw, int64_t quantity_raw, Q6AccT revenue,
                int64_t count);

@@ -30,6 +30,7 @@ extern "C" {
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/stratnum.h"
 #include "access/parallel.h"
@@ -47,6 +48,7 @@ extern "C" {
 #include "nodes/tidbitmap.h"
 #include "optimizer/cost.h"
 #include "port/atomics.h"
+#include "storage/bufmgr.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/shm_mq.h"
@@ -1071,6 +1073,30 @@ namespace {
 constexpr uint64 kTocKeyHeader = UINT64CONST(0xACCE550000000001);
 constexpr size_t kMaxScans = 8;
 constexpr Size kQueueSize = 256 * 1024;
+//! Partitioned scans buffer more, so the workers decode ahead while the
+//! partitions consume the previous round.
+constexpr Size kPartitionedQueueSize = 4 * 1024 * 1024;
+
+//! Scan of the heap blocks [first, first + count) of `relid`, in block order,
+//! under the active snapshot (no synchronized start: the order is fixed).
+void ScanBlockRange(Oid relid, const ScanSpec &spec, BlockNumber first, BlockNumber count,
+                    const std::function<void(const Batch &)> &consume) {
+	Resolved rs;
+	Cursor cur;
+	char err[256];
+	PgGuard([&] {
+		cur.rel = table_open(relid, AccessShareLock);
+		ResolveColumns(cur.rel, spec, rs, err, sizeof(err));
+		if (err[0]) {
+			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("%s", err)));
+		}
+		cur.scan = table_beginscan_strat(cur.rel, GetActiveSnapshot(), 0, NULL, true, false);
+		heap_setscanlimits(cur.scan, first, count);
+		cur.slot = table_slot_create(cur.rel, NULL);
+		cur.tmp = AllocSetContextCreate(CurrentMemoryContext, "accel base range scan", ALLOCSET_DEFAULT_SIZES);
+	});
+	DrainCursor(cur, rs, consume);
+}
 
 struct ParallelHeader {
 	char task[64];
@@ -1083,8 +1109,10 @@ struct ParallelHeader {
 	Size input_off;
 	Size input_len;
 	Size queue_off;
+	Size queue_size;
 	uint32 nqueues;
-	pg_atomic_uint64 work_counter;
+	pg_atomic_uint64 work_counter; // next partition of a partitioned scan
+	uint32 nblocks[kMaxScans];     // table sizes the partitions are cut from
 	// Shared bitmap heap scans: scan i reads the flattened TID bitmap at
 	// flat_off[i] (flat_count[i] heap blocks, claimed kFlatClaim at a time).
 	uint8 flat_mode[kMaxScans];
@@ -1156,6 +1184,23 @@ public:
 			cur.tmp = AllocSetContextCreate(CurrentMemoryContext, "accel base pscan", ALLOCSET_DEFAULT_SIZES);
 		});
 		DrainCursor(cur, rs, consume);
+	}
+	void ScanPartitions(int scan_index, std::size_t partitions,
+	                    const std::function<void(std::size_t, const Batch &)> &consume) override {
+		if (scan_index < 0 || scan_index >= static_cast<int>(specs.size())) {
+			throw KernelError("TaskContext::ScanPartitions: scan index out of range");
+		}
+		for (;;) {
+			const uint64 p = pg_atomic_fetch_add_u64(&h->work_counter, 1);
+			if (p >= partitions) {
+				return;
+			}
+			const BlockRange blocks = PartitionBlocks(h->nblocks[scan_index], partitions, p);
+			if (blocks.count) {
+				ScanBlockRange(h->relid[scan_index], specs[scan_index], blocks.first, blocks.count,
+				               [&](const Batch &batch) { consume(p, batch); });
+			}
+		}
 	}
 	void SetOutput(std::string out) override {
 		output = std::move(out);
@@ -1240,7 +1285,8 @@ void DrainWorkers(shm_mq_handle **mqh, int workers, const MessageSink &sink) {
 //! `launched` reports how many workers started (0: nothing ran, the caller
 //! scans itself).
 std::vector<std::string> RunParallelImpl(const char *task, std::string_view input, const std::vector<ScanSpec> &scans,
-                                         int participants, const MessageSink *sink, int &launched) {
+                                         int participants, const MessageSink *sink, int &launched,
+                                         Size queue_size = kQueueSize) {
 	if (std::strlen(task) >= sizeof(ParallelHeader::task)) {
 		throw KernelError("parallel task name too long");
 	}
@@ -1304,7 +1350,7 @@ std::vector<std::string> RunParallelImpl(const char *task, std::string_view inpu
 			total = BUFFERALIGN(total + pscan_size[i]);
 		}
 		const Size queue_off = total;
-		total += static_cast<Size>(nworkers) * kQueueSize;
+		total += static_cast<Size>(nworkers) * queue_size;
 
 		EnterParallelMode();
 		pcxt = CreateParallelContext("$libdir/" ACCEL_BASE_PG_LIB, "accel_base_worker_main", nworkers);
@@ -1320,6 +1366,7 @@ std::vector<std::string> RunParallelImpl(const char *task, std::string_view inpu
 		h->participants_requested = static_cast<uint32>(nworkers + 1);
 		pg_atomic_init_u64(&h->work_counter, 0);
 		for (size_t i = 0; i < scans.size(); i++) {
+			h->nblocks[i] = RelationGetNumberOfBlocks(rels[i]);
 			h->flat_mode[i] = flat_mode[i];
 			h->flat_off[i] = flat_off[i];
 			h->flat_count[i] = flat_count[i];
@@ -1342,9 +1389,10 @@ std::vector<std::string> RunParallelImpl(const char *task, std::string_view inpu
 			std::memcpy(base + input_off, input.data(), input.size());
 		}
 		h->queue_off = queue_off;
+		h->queue_size = queue_size;
 		h->nqueues = static_cast<uint32>(pcxt->nworkers);
 		for (int i = 0; i < pcxt->nworkers; i++) {
-			shm_mq *mq = shm_mq_create(base + queue_off + static_cast<Size>(i) * kQueueSize, kQueueSize);
+			shm_mq *mq = shm_mq_create(base + queue_off + static_cast<Size>(i) * queue_size, queue_size);
 			shm_mq_set_receiver(mq, MyProc);
 			mqh[i] = shm_mq_attach(mq, pcxt->seg, NULL);
 		}
@@ -1408,6 +1456,32 @@ void StreamScanTask(TaskContext &ctx) {
 }
 const TaskRegistrar kStreamScanRegistrar(kStreamScanTask, &StreamScanTask);
 
+//! Worker side of ScanTablePartitioned: claim partitions, stream their batches
+//! tagged with the partition number.
+constexpr const char *kStreamPartitionsTask = "base_scan_partitions";
+void StreamPartitionsTask(TaskContext &ctx) {
+	const ScanSpec &spec = ctx.Spec(0);
+	ByteReader input(ctx.Input());
+	const auto partitions = input.Get<uint64_t>();
+	ctx.ScanPartitions(0, partitions, [&](std::size_t partition, const Batch &batch) {
+		ByteWriter message;
+		message.Put<uint32_t>(static_cast<uint32_t>(partition));
+		ctx.Emit(message.buf + EncodeBatch(spec, batch));
+	});
+}
+const TaskRegistrar kStreamPartitionsRegistrar(kStreamPartitionsTask, &StreamPartitionsTask);
+
+//! The table's oid and block count, read in the leader.
+std::pair<Oid, uint32_t> TableBlocks(const std::string &table) {
+	std::pair<Oid, uint32_t> out;
+	PgGuard([&] {
+		Relation rel = table_openrv(makeRangeVar(NULL, pstrdup(table.c_str()), -1), AccessShareLock);
+		out = {RelationGetRelid(rel), RelationGetNumberOfBlocks(rel)};
+		table_close(rel, NoLock);
+	});
+	return out;
+}
+
 } // namespace
 
 void ScanTableParallel(const ScanSpec &spec_in, int participants, const std::function<void(const Batch &)> &consume) {
@@ -1424,6 +1498,35 @@ void ScanTableParallel(const ScanSpec &spec_in, int participants, const std::fun
 	}
 }
 
+void ScanTablePartitioned(const ScanSpec &spec, int participants, std::size_t partitions,
+                          const std::function<void(std::size_t, std::string_view)> &on_message) {
+	ValidateSpec(spec);
+	if (!spec.filters.empty()) {
+		throw KernelError("scan of " + spec.table + ": partitioned scans take no filters");
+	}
+	int launched = 0;
+	if (participants > 1) {
+		ByteWriter input;
+		input.Put<uint64_t>(partitions);
+		const MessageSink sink = [&](std::string_view message) {
+			uint32_t partition;
+			std::memcpy(&partition, message.data(), sizeof(partition));
+			on_message(partition, message.substr(sizeof(partition)));
+		};
+		RunParallelImpl(kStreamPartitionsTask, input.buf, {spec}, participants, &sink, launched, kPartitionedQueueSize);
+	}
+	if (launched == 0) {
+		const auto [relid, blocks] = TableBlocks(spec.table);
+		for (std::size_t p = 0; p < partitions; p++) {
+			const BlockRange range = PartitionBlocks(blocks, partitions, p);
+			if (range.count) {
+				ScanBlockRange(relid, spec, range.first, range.count,
+				               [&](const Batch &batch) { on_message(p, EncodeBatch(spec, batch)); });
+			}
+		}
+	}
+}
+
 } // namespace accelerator_codegen::pg_base
 
 // ---------------------------------------------------------------------------
@@ -1437,7 +1540,7 @@ extern "C" void accel_base_worker_main(dsm_segment *seg, shm_toc *toc) {
 	char *base = static_cast<char *>(shm_toc_lookup(toc, kTocKeyHeader, false));
 	auto *h = reinterpret_cast<ParallelHeader *>(base);
 	const int worker = ParallelWorkerNumber;
-	shm_mq *mq = reinterpret_cast<shm_mq *>(base + h->queue_off + static_cast<Size>(worker) * kQueueSize);
+	shm_mq *mq = reinterpret_cast<shm_mq *>(base + h->queue_off + static_cast<Size>(worker) * h->queue_size);
 	shm_mq_set_sender(mq, MyProc);
 	shm_mq_handle *mqh = shm_mq_attach(mq, seg, NULL);
 	std::string output;

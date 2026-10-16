@@ -218,6 +218,35 @@ std::string TieAwareMismatch(duckdb::MaterializedQueryResult &base,
       &std::cerr);
 }
 
+bool KeysApproxEqual(const std::vector<std::string> &expected, const std::vector<std::string> &actual) {
+  if (expected.size() != actual.size()) {
+    return false;
+  }
+  const auto split = [](const std::string &key) {
+    std::vector<std::string> cells;
+    std::istringstream in(key);
+    for (std::string cell; std::getline(in, cell, '\t');) {
+      cells.push_back(cell);
+    }
+    return cells;
+  };
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    if (expected[i] == actual[i]) {
+      continue;
+    }
+    const auto e = split(expected[i]), a = split(actual[i]);
+    if (e.size() != a.size()) {
+      return false;
+    }
+    for (std::size_t c = 0; c < e.size(); ++c) {
+      if (!ValuesApproxEqual(e[c], a[c])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 void CompareRows(duckdb::MaterializedQueryResult &base,
                  const std::vector<core::AuxRow> &accelerated,
                  const SharedQueryCatalogEntry &entry,
@@ -241,7 +270,10 @@ void CompareRows(duckdb::MaterializedQueryResult &base,
     }
     std::sort(expected_keys.begin(), expected_keys.end());
     std::sort(actual_keys.begin(), actual_keys.end());
-    Require(expected_keys == actual_keys,
+    // Rows sorted by their text, compared cell by cell within the float
+    // tolerance (a float sum differs in its last digits with the summation
+    // order); keys that start with exact columns keep the pairs aligned.
+    Require(KeysApproxEqual(expected_keys, actual_keys),
             "DuckDB differential unordered row mismatch for Q" +
                 std::to_string(entry.query_id));
     return;

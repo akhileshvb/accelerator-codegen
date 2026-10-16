@@ -8,6 +8,8 @@
 #include "sec_edgar/q1/duckdb/aux/parallel/module.hpp"
 #include "sec_edgar/q1/layout.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -118,6 +120,34 @@ struct SecEdgarQ1Scan : SecEdgarQ1InitialScan {
   bool ScanPreChunks(
       const std::function<void(::duckdb::DataChunk &)> &consumer) const override {
     return ScanSecEdgarQ1PreNative(connection, consumer);
+  }
+  bool ScanPrePartitioned(const core::AuxEngineServices &services,
+                          q1::Builder &builder) const override {
+    if (services.WorkerCount() <= 1) {
+      return false; // the native serial scan is faster than one partition
+    }
+    // The partitioned scan takes NOT NULL columns: NULLs travel as defaults
+    // plus one bit mask (1 stmt, 2 rfile, 4 adsh, 8 line).
+    const auto nulls = IntColumn(
+        "(CASE WHEN stmt IS NULL THEN 1 ELSE 0 END + CASE WHEN rfile IS NULL THEN 2 ELSE 0 END"
+        " + CASE WHEN adsh IS NULL THEN 4 ELSE 0 END + CASE WHEN line IS NULL THEN 8 ELSE 0 END)");
+    builder = core::PartitionedBuild<q1::Builder>(
+        services, [] { return q1::Builder(); },
+        [&](std::size_t partitions, auto &&sink) {
+          scan::ScanPartitioned(services, connection, "pre",
+                                {TextColumn("COALESCE(stmt, '')"), TextColumn("COALESCE(rfile, '')"),
+                                 TextColumn("COALESCE(adsh, '')"), IntColumn("COALESCE(line, 0)"), nulls},
+                                partitions, sink);
+        },
+        [](q1::Builder &partial, const auto &row) {
+          const auto stmt = row.TextView(0), rfile = row.TextView(1), adsh = row.TextView(2);
+          const int64_t null_mask = row.Int(4);
+          partial.ConsumeRowView(stmt.data(), stmt.size(), null_mask & 1, rfile.data(), rfile.size(),
+                                 null_mask & 2, adsh.data(), adsh.size(), null_mask & 4,
+                                 static_cast<int32_t>(row.Int(3)), null_mask & 8);
+        },
+        [](q1::Builder &into, q1::Builder &&from) { into.Merge(std::move(from)); });
+    return true;
   }
   bool ScanPreInto(q1::Builder &builder) const override {
     return ScanSecEdgarQ1PreNative(

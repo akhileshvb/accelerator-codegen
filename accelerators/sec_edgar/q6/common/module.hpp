@@ -212,6 +212,8 @@ public:
                   std::string_view version, std::string_view uom, double value,
                   double old_value);
   void ReserveArena(size_t bytes) { arena_.reserve(arena_.size() + bytes); }
+  // Appends `from`'s changes (buffered after this buffer's).
+  void Absorb(SecEdgarQ6TxnBuffer &&from);
   void AddSubChange(SubChange change) {
     pending_ = true;
     sub_changes_.push_back(std::move(change));

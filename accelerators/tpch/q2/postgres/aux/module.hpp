@@ -100,8 +100,8 @@ public:
 // 4 offers/part) + ~150 B/supplier.  SF100 (20M parts, 80M partsupp, 1M
 // suppliers): ~1.9 GB; SF1000 (200M parts, 800M partsupp, 10M suppliers):
 // ~19 GB (was ~10 GB at SF100 and silently dropped keys above 32M).
-// Execute: a size-column scan over all parts (4 B/part, multi-threaded for
-// large tables) plus, for the ~1/250 parts that also match the type bitmap,
+// Execute: a size-column scan over all parts (4 B/part, sliced for large
+// tables) plus, for the ~1/250 parts that also match the type bitmap,
 // at most a few supplier lookups: ~25 ms at SF100, ~0.1-0.2 s at SF1000.
 // Any int64 key works: keys in [-2^35, 2^35) are zigzag-mapped into the dense
 // chunks, the rest live in sharded hash maps (AnyKeyCowArray).
@@ -231,7 +231,8 @@ struct TpchQ2Args {
   std::optional<std::string> region_name;
 };
 
-void TpchQ2FinalizeAndEmit(const TpchQ2State &state, const TpchQ2Args &args,
+void TpchQ2FinalizeAndEmit(const core::AuxEngineServices &services,
+                           const TpchQ2State &state, const TpchQ2Args &args,
                            core::AuxRowSink &sink);
 
 constexpr std::size_t kTpchQ2ResultLimit = 100;
@@ -289,8 +290,8 @@ private:
   TpchQ2State BuildState(core::AuxEngineServices &) const;
   std::shared_ptr<const TpchQ2State>
   LoadState(core::AuxEngineServices &) const;
-  void EmitResult(const TpchQ2State &, const core::QueryArguments &,
-                  core::AuxRowSink &) const;
+  void EmitResult(const core::AuxEngineServices &, const TpchQ2State &,
+                  const core::QueryArguments &, core::AuxRowSink &) const;
 
   TpchQ2Config config;
   TpchQ2InitialScan *initial_scan = nullptr;

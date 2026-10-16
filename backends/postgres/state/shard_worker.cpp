@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "backends/postgres/api/accelerators.hpp"
+#include "backends/postgres/api/engine_helpers.hpp"
 #include "backends/postgres/engine/accelerator_tables.hpp"
 #include "backends/postgres/state/shard_gucs.hpp"
 #include "backends/postgres/state/shard_server.hpp"
@@ -216,6 +217,16 @@ private:
   std::string applied_forced;
 };
 
+// The build's scans decode in parallel: this thread plus the build cap's other
+// threads as Postgres parallel workers.
+void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
+  const std::size_t budget = threads.Budget();
+  threads.SetPhaseLimits(runtime::ResolveReadThreads(PhaseReadThreads(), budget),
+                         runtime::ResolveBuildThreads(PhaseBuildThreads(), budget),
+                         runtime::ResolveMaintenanceThreads(PhaseMaintenanceThreads(), budget));
+  SetBuildScanParticipants(static_cast<int>(threads.BuildLimit()));
+}
+
 [[noreturn]] void RunWorker(int index) {
   ShardSegment *segment = Segment(index);
   if (!segment || segment->state.load() != ShardSegment::kStarting) {
@@ -241,6 +252,7 @@ private:
   CommitArrivals arrivals;
   PgSlots slots(index, *accelerator, arrivals);
   runtime::RuntimeHost host(slots, shared::ThreadBudget(), shared::ThreadTokens());
+  ApplyPhaseLimits(host.Threads());
   runtime::AcceleratorRuntime &runtime = host.Register(accelerator->Module(), nullptr, tables);
   slots.NotePreRegistrationWriters();
   ShardServer server(*segment, index, runtime, arrivals);

@@ -225,7 +225,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ8State> BuildState() const;
+  std::shared_ptr<TpchQ8State> BuildState(const core::AuxEngineServices &) const;
   void EmitResult(const TpchQ8State &, const core::QueryArguments &,
                   core::AuxRowSink &) const;
 

@@ -190,15 +190,16 @@ template <typename Sink>
 void DuckdbRuntime::Read(const core::QueryArguments &arguments, Sink &sink) {
   auto *reader = DuckDBAuxBackend::CurrentReader();
   runtime::ReadOptions options;
-  if (reader) {
-    options.epoch = DuckDBAuxBackend::SnapshotEpoch(*reader);
+  const auto snapshot = reader ? DuckDBAuxBackend::SnapshotEpoch(*reader) : 0;
+  if (snapshot != 0) { // 0: no transaction, the newest state
+    options.epoch = snapshot;
   }
   options.max_wait_us = ReadWaitUs();
   // Scans on the accelerator's connection read the reader's snapshot.
   std::optional<ScanRedirect> redirect;
   if (reader && reader != accelerator_.connection->context.get()) {
     redirect.emplace(*connection_.context->db, reader_fallbacks,
-                     static_cast<::duckdb::transaction_t>(options.epoch));
+                     static_cast<::duckdb::transaction_t>(snapshot));
   }
   auto guard = accelerator_.runtime->BeginRead(options);
   t_table_scans = 0;

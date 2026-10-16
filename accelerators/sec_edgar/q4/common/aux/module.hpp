@@ -197,6 +197,8 @@ public:
   void AddDirtyTagVersion(std::string tag, std::string version);
   void AddDirtyKey(std::string adsh, std::string tag, std::string version);
   void MarkPending() { pending = true; }
+  // Appends `from`'s deltas and dirty keys (buffered after this buffer's).
+  void Absorb(SecEdgarQ4TxnBuffer &&from);
 
   const std::vector<NumDelta> &Deltas() const { return deltas; }
   std::string_view Adsh(const NumDelta &d) const {

@@ -44,10 +44,52 @@ void RunOrderLines(
        });
 }
 
+void ScanTpchQ3Customers(
+    const std::function<void(const query::TpchQ3CustomerInput &)> &consumer) {
+  ScanColumns("customer", {IntColumn("c_custkey"), TextColumn("c_mktsegment")},
+              [&](const BuildRow &row) { consumer({row.Int(0), row.Text(1)}); });
+}
+
+void ScanTpchQ3Orders(
+    const std::function<void(const query::TpchQ3OrderInput &)> &consumer) {
+  ScanColumns("orders",
+              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+               DateColumn("o_orderdate"), IntColumn("o_shippriority")},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Int(1), row.Date(2),
+                          static_cast<int32_t>(row.Int(3))});
+              });
+}
+
+void ScanTpchQ3Lineitems(
+    const std::function<void(const query::TpchQ3LineitemInput &)> &consumer) {
+  ScanColumns("lineitem",
+              {IntColumn("l_orderkey"), DateColumn("l_shipdate"),
+               DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2)},
+              [&](const BuildRow &row) {
+                consumer({row.Int(0), row.Date(1), row.Decimal(2), row.Decimal(3)});
+              });
+}
+
 } // namespace scans
 
 class TpchQ3Scan final : public query::TpchQ3InitialScan {
 public:
+  void ScanCustomers(
+      const std::function<void(const query::TpchQ3CustomerInput &)> &consumer)
+      override {
+    scans::ScanTpchQ3Customers(consumer);
+  }
+  void ScanOrders(
+      const std::function<void(const query::TpchQ3OrderInput &)> &consumer)
+      override {
+    scans::ScanTpchQ3Orders(consumer);
+  }
+  void ScanLineitems(
+      const std::function<void(const query::TpchQ3LineitemInput &)> &consumer)
+      override {
+    scans::ScanTpchQ3Lineitems(consumer);
+  }
   void ScanOrderLines(
       const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer)
       override {

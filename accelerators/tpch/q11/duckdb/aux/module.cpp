@@ -4,6 +4,7 @@
 #include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -25,6 +26,8 @@ using core::ByteWriter;
 
 // Suppliers per build slice: sorting ~80 parts is ~10 us, so hundreds pay for a task.
 constexpr std::size_t kSupplierFoldGrain = 256;
+// Nation ops below which a commit applies its nations inline.
+constexpr std::size_t kNationOpsGrain = 2048;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kMetadataMagic = 0x4d313151; // Q11M
 constexpr uint32_t kNationMagic = 0x4e313151;   // Q11N
@@ -864,6 +867,7 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
     std::string name;
     core::Version version = 0;
     std::shared_ptr<const TpchQ11NationData> data;
+    std::vector<std::pair<int64_t, Q11AccT>> ops; // (partkey, signed value)
     std::optional<NationWork> work;
   };
   std::unordered_map<int32_t, NationSlot> nations;
@@ -892,17 +896,14 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
       return rebuild();
   }
 
-  bool ok = true;
+  // Per-supplier bookkeeping is serial; the nations' own work is only logged
+  // here and applied nation by nation afterwards.
   auto nation_apply = [&](int32_t nationkey, int64_t partkey,
                           Q11AccT signed_value) {
     const auto it = nations.find(nationkey);
     if (it == nations.end())
       return; // supplier's nation has no nation row: contributes nowhere
-    auto &slot = it->second;
-    if (!slot.work)
-      slot.work.emplace(slot.data);
-    if (!slot.work->Apply(partkey, signed_value))
-      ok = false;
+    it->second.ops.emplace_back(partkey, signed_value);
   };
 
   SupplierWork suppliers(metadata->supplier_buckets);
@@ -937,8 +938,6 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
         nation_apply(entry.nationkey, part.partkey,
                      static_cast<Q11AccT>(part.value));
     }
-    if (!ok)
-      return rebuild();
   }
 
   for (const auto &delta : buffer.PartsuppDeltas()) {
@@ -970,9 +969,28 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
                    static_cast<Q11AccT>(delta.sign) * delta.value);
     if (entry.parts.empty() && !entry.has_supplier)
       suppliers.Erase(delta.suppkey);
-    if (!ok)
-      return rebuild();
   }
+
+  // Nations are independent: each applies its own ops in arrival order.
+  std::vector<NationSlot *> touched;
+  std::size_t op_count = 0;
+  for (auto &entry : nations)
+    if (!entry.second.ops.empty()) {
+      touched.push_back(&entry.second);
+      op_count += entry.second.ops.size();
+    }
+  std::atomic<bool> inconsistent{false};
+  core::ParallelEach(
+      services, touched.size(), op_count < kNationOpsGrain ? touched.size() : 1,
+      [&](std::size_t i) {
+        auto &slot = *touched[i];
+        slot.work.emplace(slot.data);
+        for (const auto &[partkey, value] : slot.ops)
+          if (!slot.work->Apply(partkey, value))
+            inconsistent = true;
+      });
+  if (inconsistent)
+    return rebuild();
 
   auto new_state = std::make_shared<TpchQ11State>();
   new_state->nation_name_to_key = metadata->nation_name_to_key;

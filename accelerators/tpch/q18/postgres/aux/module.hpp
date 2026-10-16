@@ -48,13 +48,6 @@ struct TpchQ18CustomerInput {
   std::string name;
 };
 
-// One row per orderkey: SUM(l_quantity) and COUNT(*) over its lineitems.
-struct TpchQ18OrderQuantityAggregate {
-  int64_t orderkey = 0;
-  int64_t quantity_sum_raw = 0;
-  int64_t line_count = 0;
-};
-
 class TpchQ18InitialScan {
 public:
   virtual ~TpchQ18InitialScan() = default;
@@ -64,16 +57,6 @@ public:
       const std::function<void(const TpchQ18OrderInput &)> &) = 0;
   virtual void ScanCustomers(
       const std::function<void(const TpchQ18CustomerInput &)> &) = 0;
-
-  // Optional: SQL `SELECT l_orderkey, SUM(l_quantity), COUNT(*) FROM lineitem
-  // GROUP BY l_orderkey`, streamed (one row per orderkey). Returns false when
-  // the engine has no such scan; the caller then streams ScanLineitems.
-  virtual bool ScanOrderQuantityAggregates(
-      const std::function<void(const TpchQ18OrderQuantityAggregate &)>
-          &consumer) {
-    (void)consumer;
-    return false;
-  }
 
   // Names of the given customers (customers that do not exist are not
   // reported). Engines override this with a keyed SQL lookup; the default
@@ -225,7 +208,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ18State BuildState() const;
+  TpchQ18State BuildState(core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ18State> &state) const;
   // Customer names for the rows (cache first, then a keyed lookup), then the

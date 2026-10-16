@@ -37,13 +37,11 @@ struct TpchQ14PartInput {
   std::string type;
 };
 
-// Pre-aggregated (shipdate) revenue of lineitems that join a part, for
-// SQL-pushdown builds. Revenue is sum(price * (1 - discount)) at scale 4.
-struct TpchQ14DayAggregate {
+struct TpchQ14LineitemInput {
+  int64_t partkey = 0;
   int32_t shipdate_days = 0;
-  __int128 total_revenue_raw = 0;
-  __int128 promo_revenue_raw = 0;
-  int64_t count = 0;
+  int64_t extendedprice_raw = 0; // scale 2
+  int64_t discount_raw = 0;      // scale 2
 };
 
 // One part's lineitem revenue on one day (point re-aggregation by partkey).
@@ -59,9 +57,8 @@ public:
   virtual ~TpchQ14InitialScan() = default;
   virtual void ScanParts(
       const std::function<void(const TpchQ14PartInput &)> &) = 0;
-  // lineitem JOIN part GROUP BY shipdate, aggregated in the engine.
-  virtual void ScanDayAggregates(
-      const std::function<void(const TpchQ14DayAggregate &)> &) = 0;
+  virtual void ScanLineitems(
+      const std::function<void(const TpchQ14LineitemInput &)> &) = 0;
   // lineitem WHERE l_partkey IN (partkeys) GROUP BY l_partkey, shipdate.
   virtual void ScanPartDayRevenue(
       const std::vector<int64_t> &partkeys,

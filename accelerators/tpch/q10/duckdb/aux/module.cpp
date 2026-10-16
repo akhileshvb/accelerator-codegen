@@ -1,7 +1,9 @@
 #include "tpch/q10/duckdb/aux/module.hpp"
 #include "tpch/q10/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -20,6 +22,11 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 constexpr int32_t kEpoch = 719468;
+
+// Lineitem deltas per slice when resolving them against the orders map.
+constexpr std::size_t kResolveGrain = 4096;
+// Month delta entries below which the per-month / per-window images are built inline.
+constexpr std::size_t kImageWorkGrain = 2048;
 
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -888,15 +895,39 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
   // month -> (custkey, signed revenue) for this buffer's lineitem deltas.
   std::map<int32_t, std::vector<std::pair<int64_t, int64_t>>> month_deltas;
   if (!buffer.Deltas().empty()) {
-    for (const auto &delta : buffer.Deltas()) {
-      const TpchQ10Order *order = find_order(delta.orderkey);
-      if (!order)
-        return rebuild_all();
-      const auto month = TpchQ10MonthKeyFromDays(order->orderdate_days);
-      rebuild_months.insert(month);
-      month_deltas[month].emplace_back(
-          order->custkey,
-          static_cast<int64_t>(delta.sign) * delta.revenue_raw);
+    struct Resolved {
+      int32_t month;
+      int64_t custkey, revenue;
+    };
+    struct Resolution {
+      std::vector<Resolved> deltas;
+      bool ok = true;
+    } resolution;
+    const auto &deltas = buffer.Deltas();
+    core::ParallelReduce(
+        services, deltas.size(), kResolveGrain, resolution,
+        [&](Resolution &acc, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end && acc.ok; ++i) {
+            const TpchQ10Order *order = find_order(deltas[i].orderkey);
+            if (!order) {
+              acc.ok = false;
+              return;
+            }
+            acc.deltas.push_back(
+                {TpchQ10MonthKeyFromDays(order->orderdate_days), order->custkey,
+                 static_cast<int64_t>(deltas[i].sign) * deltas[i].revenue_raw});
+          }
+        },
+        [](Resolution &into, Resolution &&from) {
+          into.ok = into.ok && from.ok;
+          into.deltas.insert(into.deltas.end(), from.deltas.begin(),
+                             from.deltas.end());
+        });
+    if (!resolution.ok)
+      return rebuild_all();
+    for (const auto &d : resolution.deltas) {
+      rebuild_months.insert(d.month);
+      month_deltas[d.month].emplace_back(d.custkey, d.revenue);
     }
   }
 
@@ -1033,27 +1064,46 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
 
   if (!month_deltas.empty()) {
     // Aggregate to per-month sorted (custkey, delta), dropping zero sums.
-    std::map<int32_t, std::vector<TpchQ10KV>> agg;
-    for (auto &[month, deltas] : month_deltas) {
-      std::vector<TpchQ10KV> v;
+    std::vector<int32_t> months;
+    std::size_t entries = 0;
+    for (const auto &[month, deltas] : month_deltas) {
+      months.push_back(month);
+      entries += deltas.size();
+    }
+    // Months, windows and their images are independent; below the work grain
+    // they run as one inline slice.
+    const auto for_each_image = [&](std::size_t n, auto &&fn) {
+      core::ParallelSlices(
+          services, n, entries < kImageWorkGrain ? std::max<std::size_t>(n, 1) : 1,
+          [&](std::size_t, std::size_t begin, std::size_t end) {
+            for (std::size_t i = begin; i < end; ++i)
+              fn(i);
+          });
+    };
+    std::vector<std::vector<TpchQ10KV>> month_agg(months.size());
+    for_each_image(months.size(), [&](std::size_t i) {
+      auto &v = month_agg[i];
+      const auto &deltas = month_deltas.at(months[i]);
       v.reserve(deltas.size());
       for (const auto &[key, d] : deltas)
         v.push_back({key, d});
       std::sort(v.begin(), v.end(), TpchQ10ByKey{});
       std::size_t w = 0;
-      for (std::size_t i = 0; i < v.size(); ++i) {
-        if (w > 0 && v[w - 1].key == v[i].key)
-          v[w - 1].val += v[i].val;
+      for (std::size_t j = 0; j < v.size(); ++j) {
+        if (w > 0 && v[w - 1].key == v[j].key)
+          v[w - 1].val += v[j].val;
         else
-          v[w++] = v[i];
+          v[w++] = v[j];
       }
       v.resize(w);
       v.erase(std::remove_if(v.begin(), v.end(),
                              [](const TpchQ10KV &e) { return e.val == 0; }),
               v.end());
-      if (!v.empty())
-        agg.emplace(month, std::move(v));
-    }
+    });
+    std::map<int32_t, std::vector<TpchQ10KV>> agg;
+    for (std::size_t i = 0; i < months.size(); ++i)
+      if (!month_agg[i].empty())
+        agg.emplace(months[i], std::move(month_agg[i]));
 
     std::vector<core::PartitionId> partitions;
     for (const auto o : needed_month_ords)
@@ -1087,7 +1137,13 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
 
     // Windows: for each key with a delta in any of the window's months,
     // old window revenue = sum of the (published) month values.
-    for (const auto w : touched_window_ords) {
+    const std::vector<int32_t> window_ords(touched_window_ords.begin(),
+                                           touched_window_ords.end());
+    std::vector<std::optional<core::StateImage>> window_updates(
+        window_ords.size());
+    std::atomic<bool> failed{false};
+    for_each_image(window_ords.size(), [&](std::size_t i) {
+      const auto w = window_ords[i];
       std::vector<int64_t> keys;
       for (int32_t k = 0; k < 3; ++k) {
         const auto it = agg.find(MonthFromOrd(w + k));
@@ -1097,7 +1153,7 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
           keys.push_back(e.key);
       }
       if (keys.empty())
-        continue;
+        return;
       std::sort(keys.begin(), keys.end());
       keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
       std::vector<TpchQ10KV> rem, ins;
@@ -1126,19 +1182,27 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
       std::sort(rem.begin(), rem.end(), TpchQ10ByRank{});
       std::sort(ins.begin(), ins.end(), TpchQ10ByRank{});
       TpchQ10RankIndex next;
-      if (!TpchQ10RankIndex::Apply(win_imgs[w]->ranked, rem, ins, next))
-        return rebuild_all();
-      outcome.updates.push_back(core::StateImage::Make(
+      if (!TpchQ10RankIndex::Apply(win_imgs.at(w)->ranked, rem, ins, next)) {
+        failed = true;
+        return;
+      }
+      window_updates[i] = core::StateImage::Make(
           core::TpchQ10Layout::kAccelerator, WindowPartition(MonthFromOrd(w)),
-          win_versions[w], MakeWindowImage(MonthFromOrd(w), std::move(next))));
-    }
+          win_versions.at(w), MakeWindowImage(MonthFromOrd(w), std::move(next)));
+    });
 
     // Months.
-    for (const auto &[month, deltas] : agg) {
+    std::vector<std::pair<int32_t, const std::vector<TpchQ10KV> *>> month_list;
+    for (const auto &[month, deltas] : agg)
+      month_list.emplace_back(month, &deltas);
+    std::vector<std::optional<core::StateImage>> month_updates(
+        month_list.size());
+    for_each_image(month_list.size(), [&](std::size_t i) {
+      const auto month = month_list[i].first;
       const auto o = MonthOrd(month);
       std::vector<TpchQ10KV> rem, ins;
-      const auto &prev = month_imgs[o]->by_key;
-      for (const auto &e : deltas) {
+      const auto &prev = month_imgs.at(o)->by_key;
+      for (const auto &e : *month_list[i].second) {
         const int64_t old_val = prev.FindVal(e.key);
         if (old_val != 0)
           rem.push_back({e.key, old_val});
@@ -1146,12 +1210,20 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
           ins.push_back({e.key, old_val + e.val});
       }
       TpchQ10KeyIndex next;
-      if (!TpchQ10KeyIndex::Apply(prev, rem, ins, next))
-        return rebuild_all();
-      outcome.updates.push_back(core::StateImage::Make(
+      if (!TpchQ10KeyIndex::Apply(prev, rem, ins, next)) {
+        failed = true;
+        return;
+      }
+      month_updates[i] = core::StateImage::Make(
           core::TpchQ10Layout::kAccelerator, MonthPartition(month),
-          month_versions[o], MakeMonthImage(month, std::move(next))));
-    }
+          month_versions.at(o), MakeMonthImage(month, std::move(next)));
+    });
+    if (failed)
+      return rebuild_all();
+    for (auto *updates : {&window_updates, &month_updates})
+      for (auto &update : *updates)
+        if (update)
+          outcome.updates.push_back(std::move(*update));
     if (!outcome.updates.empty())
       outcome.action = core::MaintenanceAction::ApplyDelta;
   }

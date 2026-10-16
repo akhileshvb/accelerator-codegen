@@ -121,7 +121,7 @@ void TestCapEnforcement() {
   Check(f.CodeAt(25) == ValidityCode::Valid, "retained old version still served");
   Check(f.CodeAt(45) == ValidityCode::Valid, "newest served");
   Check(f.store->Read(At(45)).partitions.size() == 1, "newest readable");
-  Check(f.CodeAt(0) == ValidityCode::Valid, "kNewestSnapshot reads the newest");
+  Check(f.CodeAt(VersionedAuxStore::kNewestSnapshot) == ValidityCode::Valid, "kNewestSnapshot reads the newest");
 }
 
 void TestSharedPartitionsNotDoubleCounted() {

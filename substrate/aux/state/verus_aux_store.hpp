@@ -9,7 +9,7 @@
 //     pending commit and the snapshot -> version resolution are in Verus,
 //     and it is proved that every kept version's state answers for the
 //     database at that version.
-// Both implement core::AuxStateStore, so the coordinator and the engine
+// Both implement core::AuxStateStore, so the runtime and the engine
 // drive them the same way; the module prepares Verus-store versions itself
 // when its services' store is one (see tpch/q21/verus/store.hpp).
 //

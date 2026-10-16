@@ -4,6 +4,7 @@
 #endif
 #include "tpch/q5/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -26,6 +27,8 @@ using core::ByteWriter;
 
 constexpr uint32_t kVersion = 1;
 constexpr int32_t kEpoch = 719468;
+// Touched mid arrays per slice when publishing a side index.
+constexpr std::size_t kFinishGrain = 16;
 
 #if defined(__SIZEOF_INT128__)
 int64_t ComputeRevenueRaw(int64_t extended_price_raw, int64_t discount_raw) {
@@ -967,9 +970,12 @@ TpchQ5Module::StageIncrementalMaintenance(
   if (side_dirty) {
     auto new_side = std::make_shared<TpchQ5State>();
     new_side->meta = side->meta;
-    new_side->orders = otx.Finish();
-    new_side->supps = stx.Finish();
-    new_side->custs = ctx.Finish();
+    const auto for_each_mid = [&](std::size_t n, const auto &fn) {
+      core::ParallelEach(services, n, kFinishGrain, fn);
+    };
+    new_side->orders = otx.Finish(for_each_mid);
+    new_side->supps = stx.Finish(for_each_mid);
+    new_side->custs = ctx.Finish(for_each_mid);
     outcome.updates.push_back(core::StateImage::Make(
         kId, core::TpchQ5Layout::kSide, 0,
         MakeSideImage(std::shared_ptr<const TpchQ5State>(std::move(new_side)))));
