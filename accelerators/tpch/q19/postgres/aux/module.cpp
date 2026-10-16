@@ -1,8 +1,6 @@
 #include "tpch/q19/postgres/aux/module.hpp"
 #include "tpch/q19/calibration_writes.hpp"
 #include "prims/pg_numeric.hpp"
-#include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -379,46 +377,21 @@ void TpchQ19Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
-// Per-part codes as a state with just the code column and its brand
-// dictionary; partials intern brands locally and are remapped on merge.
-static TpchQ19State BuildPartCodes(core::AuxEngineServices &services,
-                                   TpchQ19InitialScan &scan) {
-  return core::PartitionedBuild<TpchQ19State>(
-      services, [] { return TpchQ19State{}; },
-      [&](std::size_t parts, auto &&sink) {
-        scan.ScanPartsPartitioned(
-            services, parts, [&](std::size_t partition, const TpchQ19PartInput &input) {
-              sink(partition, OneRowBatch<TpchQ19PartInput>{input});
-            });
-      },
-      [](TpchQ19State &partial, const TpchQ19PartInput &input) {
-        const auto code = partial.PartCode(input.brand, input.container, input.size);
-        if (code != 0)
-          partial.part_code.Set(input.key, code);
-      },
-      [](TpchQ19State &into, TpchQ19State &&from) {
-        std::vector<uint32_t> remap(from.brands->size());
-        for (std::size_t id = 0; id < remap.size(); ++id)
-          remap[id] = into.InternBrand(std::string(from.brands->Get(static_cast<uint32_t>(id))));
-        into.part_code.MergeFrom(
-            std::move(from.part_code), [&](uint32_t mine, uint32_t theirs) {
-              return theirs == 0 ? mine
-                                 : TpchQ19State::Code(
-                                       remap[(theirs >> 2) - 1],
-                                       static_cast<TpchQ19Family>(theirs & 3));
-            });
-      },
-      BuildPartitions(services));
-}
-
 std::shared_ptr<TpchQ19State>
 TpchQ19Module::BuildState(core::AuxEngineServices &services,
                           bool with_parts) const {
+  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q19 aux requires a typed initial scan source");
-  auto state = with_parts
-                   ? std::make_shared<TpchQ19State>(BuildPartCodes(services, *initial_scan))
-                   : std::make_shared<TpchQ19State>();
+  auto state = std::make_shared<TpchQ19State>();
+  if (with_parts) {
+    // Columnar per-part codes, streamed (no per-part map, no transient copy).
+    initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
+      const auto code = state->PartCode(input.brand, input.container, input.size);
+      if (code != 0)
+        state->part_code.Set(input.key, code);
+    });
+  }
   initial_scan->ScanGroupAggregates([&](const TpchQ19GroupAggregate &agg) {
     state->Add(TpchQ19State::Code(state->InternBrand(agg.brand),
                                   static_cast<TpchQ19Family>(agg.family)),
