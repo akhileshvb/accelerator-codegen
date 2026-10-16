@@ -15,9 +15,11 @@
 //   Int64   : int8 / int4                           -> int64_t
 //   Date    : date, days since 1970-01-01           -> int32_t
 //   Decimal : numeric, scaled by 10^scale (exact)   -> int64_t
+//   Double  : float8 / float4                       -> double
 //   Text    : varchar / text (bytes, no terminator)  -> StringRef
-// The TPC-H columns are NOT NULL; a NULL in any projected column makes the
-// runtime throw (kernels never see NULLs).
+// A column is NOT NULL unless its ColumnSpec is `nullable`: a NULL in any other
+// projected column makes the runtime throw. A nullable column's cells hold 0 /
+// an empty string where Batch::IsNull says NULL.
 #pragma once
 
 #include <cstddef>
@@ -32,12 +34,13 @@
 
 namespace accelerator_codegen::pg_base {
 
-enum class ColType : uint8_t { Int32, Int64, Date, Decimal, Text };
+enum class ColType : uint8_t { Int32, Int64, Date, Decimal, Text, Double };
 
 struct ColumnSpec {
 	std::string name;
 	ColType type;
 	int scale = 0; // Decimal only: values are scaled by 10^scale
+	bool nullable = false; // not allowed on a filtered column
 };
 
 enum class FilterOp : uint8_t {
@@ -86,11 +89,19 @@ inline constexpr int kMaxColumns = 16;
 
 //! A batch of rows in columnar form.  Column i points at `count` values of the
 //! type given by ScanSpec::columns[i] (int32_t for Int32/Date, int64_t for
-//! Int64/Decimal, StringRef for Text).  Arrays are 64-byte aligned.
+//! Int64/Decimal, double for Double, StringRef for Text).  Arrays are 64-byte
+//! aligned. nulls[i] is the NULL mask (1 = NULL) of a nullable column, else null.
 struct Batch {
 	std::size_t count = 0;
 	const void *cols[kMaxColumns] = {};
+	const uint8_t *nulls[kMaxColumns] = {};
 
+	bool IsNull(int i, std::size_t row) const {
+		return nulls[i] != nullptr && nulls[i][row] != 0;
+	}
+	const double *F64(int i) const {
+		return static_cast<const double *>(cols[i]);
+	}
 	const int32_t *I32(int i) const {
 		return static_cast<const int32_t *>(cols[i]);
 	}
@@ -153,6 +164,7 @@ private:
 	const ScanSpec &spec;
 	std::vector<std::vector<uint64_t>> words; // numeric columns
 	std::vector<std::vector<StringRef>> refs; // text columns
+	std::vector<std::vector<uint8_t>> masks;  // nullable columns
 	Batch batch;
 };
 

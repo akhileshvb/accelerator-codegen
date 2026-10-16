@@ -227,6 +227,7 @@ std::string SerializeSpec(const ScanSpec &spec) {
 		w.PutString(c.name);
 		w.Put<uint8_t>(static_cast<uint8_t>(c.type));
 		w.Put<int32_t>(c.scale);
+		w.Put<uint8_t>(c.nullable);
 	}
 	w.Put<uint32_t>(static_cast<uint32_t>(spec.filters.size()));
 	for (const auto &f : spec.filters) {
@@ -253,6 +254,7 @@ ScanSpec DeserializeSpec(std::string_view bytes) {
 		c.name = r.GetString();
 		c.type = static_cast<ColType>(r.Get<uint8_t>());
 		c.scale = r.Get<int32_t>();
+		c.nullable = r.Get<uint8_t>() != 0;
 		spec.columns.push_back(std::move(c));
 	}
 	const auto nfilters = r.Get<uint32_t>();
@@ -314,6 +316,7 @@ struct ColInfo {
 	int scale;
 	size_t width;
 	bool filtered;
+	bool nullable;
 };
 
 //! Resolved form of a ScanSpec (plain data: safe to use inside PgGuard bodies).
@@ -372,6 +375,9 @@ void ResolveColumns(Relation rel, const ScanSpec &spec, Resolved &out, char *err
 		case ColType::Decimal:
 			ok = typid == NUMERICOID || typid == INT8OID || typid == INT4OID || typid == INT2OID;
 			break;
+		case ColType::Double:
+			ok = typid == FLOAT8OID || typid == FLOAT4OID;
+			break;
 		case ColType::Text:
 			ok = typid == TEXTOID || typid == VARCHAROID;
 			width = sizeof(StringRef);
@@ -382,7 +388,7 @@ void ResolveColumns(Relation rel, const ScanSpec &spec, Resolved &out, char *err
 			         RelationGetRelationName(rel), c.name.c_str(), typid);
 			return;
 		}
-		out.cols[i] = ColInfo {att, typid, c.type, c.scale, width, filtered[i]};
+		out.cols[i] = ColInfo {att, typid, c.type, c.scale, width, filtered[i], c.nullable};
 		out.max_att = std::max(out.max_att, att);
 		if (filtered[i]) {
 			out.filter_cols[out.nfilter_cols++] = i;
@@ -398,11 +404,15 @@ void ResolveColumns(Relation rel, const ScanSpec &spec, Resolved &out, char *err
 
 struct BatchBuffers {
 	void *cols[kMaxColumns] = {};
+	uint8_t *nulls[kMaxColumns] = {}; // nullable columns only
 	char *arena = nullptr;
 	size_t arena_cap = 0;
 	size_t arena_used = 0;
 	~BatchBuffers() {
 		for (auto *p : cols) {
+			std::free(p);
+		}
+		for (auto *p : nulls) {
 			std::free(p);
 		}
 		std::free(arena);
@@ -412,6 +422,12 @@ struct BatchBuffers {
 			cols[i] = std::aligned_alloc(64, ((rs.cols[i].width * kBatchRows) + 63) / 64 * 64);
 			if (!cols[i]) {
 				throw std::bad_alloc();
+			}
+			if (rs.cols[i].nullable) {
+				nulls[i] = static_cast<uint8_t *>(std::malloc(kBatchRows));
+				if (!nulls[i]) {
+					throw std::bad_alloc();
+				}
 			}
 		}
 		arena_cap = 64 * 1024;
@@ -514,7 +530,34 @@ inline void TextOf(Datum d, const char **ptr, uint32_t *len) {
 //! stored as a raw (ptr,len) into the tuple; CopyText moves it to the arena.
 inline void DecodeColumn(const Resolved &rs, int i, TupleTableSlot *slot, BatchBuffers &bb, size_t row) {
 	const ColInfo &c = rs.cols[i];
-	if (slot->tts_isnull[c.att - 1]) {
+	const bool is_null = slot->tts_isnull[c.att - 1];
+	if (c.nullable) {
+		bb.nulls[i][row] = is_null;
+	}
+	if (is_null && c.nullable) {
+		switch (c.type) {
+		case ColType::Int32:
+		case ColType::Date:
+			static_cast<int32_t *>(bb.cols[i])[row] = 0;
+			break;
+		case ColType::Int64:
+		case ColType::Decimal:
+			static_cast<int64_t *>(bb.cols[i])[row] = 0;
+			break;
+		case ColType::Double:
+			static_cast<double *>(bb.cols[i])[row] = 0.0;
+			break;
+		case ColType::Text: {
+			auto &s = static_cast<StringRef *>(bb.cols[i])[row];
+			s.ptr = "";
+			s.len = 0;
+			s.pad_ = 0;
+			break;
+		}
+		}
+		return;
+	}
+	if (is_null) {
 		ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 		                errmsg("base accelerator: unexpected NULL in %s", rs.spec->columns[i].name.c_str())));
 	}
@@ -551,6 +594,10 @@ inline void DecodeColumn(const Resolved &rs, int i, TupleTableSlot *slot, BatchB
 		static_cast<int64_t *>(bb.cols[i])[row] = v;
 		break;
 	}
+	case ColType::Double:
+		static_cast<double *>(bb.cols[i])[row] =
+		    c.typid == FLOAT8OID ? DatumGetFloat8(d) : static_cast<double>(DatumGetFloat4(d));
+		break;
 	case ColType::Text: {
 		const char *p;
 		uint32_t len;
@@ -683,6 +730,7 @@ void DrainCursor(Cursor &cur, const Resolved &rs, const std::function<void(const
 	Batch batch;
 	for (int i = 0; i < rs.ncols; i++) {
 		batch.cols[i] = bb.cols[i];
+		batch.nulls[i] = bb.nulls[i];
 	}
 	while (!cur.done) {
 		size_t count = 0;

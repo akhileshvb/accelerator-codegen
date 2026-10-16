@@ -2,7 +2,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <algorithm>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
@@ -10,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "prims/string_blob.hpp"
 #include "substrate/aux/core/aux_query_module.hpp"
 #include "sec_edgar/q2/duckdb/aux/state.hpp"
 #include "sec_edgar/q2/layout.hpp"
@@ -98,6 +101,42 @@ struct SecEdgarQ2IdBatch {
   const int64_t *key = nullptr; // Q2ValueKey(value)
 };
 
+// The num rows of a partitioned build scan (rows with non-NULL adsh, tag, uom
+// and value), as strings local to the partition and value keys. Partials merge
+// by concatenation; ForEachBatch resolves the strings through the build's key
+// map, partition by partition, so the ids are those of a serial scan of the
+// same rows in order.
+class SecEdgarQ2NumRows {
+public:
+  // `Row` is the engine's build scan row (columns: adsh, tag, uom, value; all
+  // nullable): IsNull, TextView, Double.
+  template <class Row> void AddRow(const Row &row) {
+    for (int column = 0; column < 4; ++column) {
+      if (row.IsNull(column)) return;
+    }
+    if (chunks.empty()) chunks.emplace_back();
+    chunks.back().Add(row.TextView(0), row.TextView(1), row.TextView(2), Q2ValueKey(row.Double(3)));
+  }
+  void Merge(SecEdgarQ2NumRows &&from) {
+    std::move(from.chunks.begin(), from.chunks.end(), std::back_inserter(chunks));
+  }
+  void ForEachBatch(SecEdgarQ2KeyMap &keys, const std::function<void(const SecEdgarQ2IdBatch &)> &fn);
+
+private:
+  struct Chunk {
+    core::StringDict adsh, tag, uom;
+    std::vector<uint32_t> adsh_of, tag_of, uom_of; // by row, local ids
+    std::vector<int64_t> key;
+    void Add(std::string_view a, std::string_view t, std::string_view u, int64_t k) {
+      adsh_of.push_back(adsh.Intern(a));
+      tag_of.push_back(tag.Intern(t));
+      uom_of.push_back(uom.Intern(u));
+      key.push_back(k);
+    }
+  };
+  std::vector<Chunk> chunks;
+};
+
 // Data access for build / maintenance look-ups / uncovered-parameter path.
 // ScanNum and ScanSub are the only mandatory entry points; every other method
 // has a (slow, correct) default derived from them so unit-test fakes keep
@@ -134,6 +173,11 @@ public:
   virtual bool ScanNumIds(
       SecEdgarQ2KeyMap &keys,
       const std::function<void(const SecEdgarQ2IdBatch &)> &batch);
+  // Optional: the same rows from a partitioned scan, on the build's workers.
+  // Return false when unsupported (nothing added).
+  virtual bool ScanNumPartitioned(const core::AuxEngineServices &, SecEdgarQ2NumRows &) {
+    return false;
+  }
   // Full answer of the query (ordered, LIMIT applied) straight from the base
   // tables.  Used for uoms the aux state does not materialise and whenever
   // the aux state is unavailable.

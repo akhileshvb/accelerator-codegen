@@ -124,6 +124,7 @@ std::string EncodeBatch(const ScanSpec &spec, const Batch &batch) {
 			break;
 		case ColType::Int64:
 		case ColType::Decimal:
+		case ColType::Double:
 			w.buf.append(static_cast<const char *>(batch.cols[c]), batch.count * sizeof(int64_t));
 			break;
 		case ColType::Text: {
@@ -137,11 +138,14 @@ std::string EncodeBatch(const ScanSpec &spec, const Batch &batch) {
 			break;
 		}
 		}
+		if (spec.columns[c].nullable) {
+			w.buf.append(reinterpret_cast<const char *>(batch.nulls[c]), batch.count);
+		}
 	}
 	return w.Take();
 }
 
-BatchDecoder::BatchDecoder(const ScanSpec &spec_p) : spec(spec_p), words(spec_p.columns.size()), refs(spec_p.columns.size()) {
+BatchDecoder::BatchDecoder(const ScanSpec &spec_p) : spec(spec_p), words(spec_p.columns.size()), refs(spec_p.columns.size()), masks(spec_p.columns.size()) {
 }
 
 const Batch &BatchDecoder::Decode(std::string_view message) {
@@ -171,15 +175,21 @@ const Batch &BatchDecoder::Decode(std::string_view message) {
 				pos += len;
 			}
 			batch.cols[c] = refs[c].data();
-			continue;
+		} else {
+			const std::size_t width =
+			    (spec.columns[c].type == ColType::Int32 || spec.columns[c].type == ColType::Date) ? 4 : 8;
+			need(count * width);
+			words[c].resize((count * width + 7) / 8);
+			std::memcpy(words[c].data(), pos, count * width);
+			pos += count * width;
+			batch.cols[c] = words[c].data();
 		}
-		const std::size_t width =
-		    (spec.columns[c].type == ColType::Int32 || spec.columns[c].type == ColType::Date) ? 4 : 8;
-		need(count * width);
-		words[c].resize((count * width + 7) / 8);
-		std::memcpy(words[c].data(), pos, count * width);
-		pos += count * width;
-		batch.cols[c] = words[c].data();
+		if (spec.columns[c].nullable) {
+			need(count);
+			masks[c].assign(pos, pos + count);
+			pos += count;
+			batch.nulls[c] = masks[c].data();
+		}
 	}
 	return batch;
 }

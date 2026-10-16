@@ -12,8 +12,10 @@
 //  - with one partition it is the engine's serial scan on the calling thread.
 // A batch offers size() and Row(i), a view with typed accessors (Int, Date,
 // Decimal, Text, Char). Results are identical at any partition count when
-// `merge` is associative (integers, fixed-point sums, maps of those); a
-// floating-point sum is reproducible for a given count.
+// `merge` is associative (integers, fixed-point sums, maps of those). A partial
+// that holds a floating-point sum passes kFloatBuildPartitions (a function of
+// the data, not of the thread count): the result is then bit-identical at any
+// build thread count, threads only decide how many partitions run at once.
 #pragma once
 
 #include <algorithm>
@@ -24,6 +26,8 @@
 #include "substrate/aux/core/aux_types.hpp"
 
 namespace accelerator_codegen::aux_state::core {
+
+inline constexpr std::size_t kFloatBuildPartitions = 16;
 
 // Partitions = `partitions`, by default services.WorkerCount() (the build cap).
 //   make()                          a new empty Partial

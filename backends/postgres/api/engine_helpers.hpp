@@ -146,7 +146,8 @@ inline void ScanTypedTuples(const std::string &sql, Callback &&callback) {
 inline int g_build_scan_participants = 0;
 
 // Column descriptors of ScanColumns.  Integers arrive as int64, decimals as
-// value * 10^scale, text as std::string; the columns must be NOT NULL.
+// value * 10^scale, doubles as double, text as std::string; a column that can
+// hold NULL is declared Nullable and tested with BuildRow::IsNull first.
 inline pg_base::ColumnSpec IntColumn(const char *name) {
   return {name, pg_base::ColType::Int64, 0};
 }
@@ -156,8 +157,15 @@ inline pg_base::ColumnSpec DateColumn(const char *name) {
 inline pg_base::ColumnSpec DecimalColumn(const char *name, int scale) {
   return {name, pg_base::ColType::Decimal, scale};
 }
+inline pg_base::ColumnSpec DoubleColumn(const char *name) {
+  return {name, pg_base::ColType::Double, 0};
+}
 inline pg_base::ColumnSpec TextColumn(const char *name) {
   return {name, pg_base::ColType::Text, 0};
+}
+inline pg_base::ColumnSpec Nullable(pg_base::ColumnSpec column) {
+  column.nullable = true;
+  return column;
 }
 
 // One row of a build scan batch; indexes are positions in the column list.
@@ -167,6 +175,8 @@ struct BuildRow {
   int64_t Int(int column) const { return batch.I64(column)[row]; }
   int32_t Date(int column) const { return batch.I32(column)[row]; }
   int64_t Decimal(int column) const { return batch.I64(column)[row]; }
+  double Double(int column) const { return batch.F64(column)[row]; }
+  bool IsNull(int column) const { return batch.IsNull(column, row); }
   std::string_view TextView(int column) const { return batch.Str(column)[row].View(); }
   std::string Text(int column) const { return std::string(TextView(column)); }
   char Char(int column) const {

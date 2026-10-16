@@ -15,6 +15,9 @@
 #include <stdexcept>
 #include <string>
 
+#include "substrate/aux/core/partitioned_build.hpp"
+
+#include "backends/postgres/api/engine_helpers.hpp"
 #include "backends/postgres/api/engine_runtime.hpp"
 #include "backends/postgres/api/runtime.hpp"
 
@@ -147,6 +150,21 @@ public:
       input.line = line;
       consumer(input);
     });
+  }
+  bool ScanPrePartitioned(const core::AuxEngineServices &services, query::q1::Builder &builder) const override {
+    using Builder = query::q1::Builder;
+    if (services.WorkerCount() <= 1) return false; // the serial scan below is faster than one partition
+    builder = core::PartitionedBuild<Builder>(
+        services, [] { return Builder(); },
+        [&](std::size_t partitions, auto &&sink) {
+          ScanPartitioned(services, "pre",
+                          {Nullable(TextColumn("stmt")), Nullable(TextColumn("rfile")),
+                           Nullable(TextColumn("adsh")), Nullable(IntColumn("line"))},
+                          partitions, sink);
+        },
+        [](Builder &partial, const auto &row) { query::q1::AddPreRow(partial, row); },
+        [](Builder &into, Builder &&from) { into.Merge(std::move(from)); });
+    return true;
   }
   bool ScanPreInto(query::q1::Builder &builder) const override {
     ScanPreNative([&](const char *stmt, std::size_t stmt_len, bool stmt_null, const char *rfile,
