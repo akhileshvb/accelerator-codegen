@@ -5,6 +5,7 @@
 #include "tpch/q17/duckdb/aux/module.hpp"
 #include "tpch/q17/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -104,52 +105,29 @@ using namespace scan;
 struct TpchQ17Scan : TpchQ17InitialScan {
   explicit TpchQ17Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
-      const std::function<void(const TpchQ17PartInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT p_partkey, p_brand, p_container FROM part",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ17PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                  ChunkValue(chunk, 1, row).ToString(),
-                                  ChunkValue(chunk, 2, row).ToString()};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ17PartInput &)> &sink) override {
+    ScanPartitioned(services, connection, "part",
+                    {IntColumn("p_partkey"), TextColumn("p_brand"), TextColumn("p_container")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ17PartInput{row.Int(0), row.Text(1), row.Text(2)});
+                      }
+                    });
   }
   void ScanLineitems(
-      const std::function<void(const TpchQ17LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_partkey, l_quantity, l_extendedprice FROM lineitem" +
-            OptionalBenchScanLimitSuffix("ACCEL_Q17_BENCH_SCAN_LIMIT"),
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ17LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      DecimalRaw(ChunkValue(chunk, 1, row)),
-                                      DecimalRaw(ChunkValue(chunk, 2, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
-  bool ScanPartQuantityAggregates(
-      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer)
-      override {
-    // Bench scan limits apply to the row path only.
-    if (std::getenv("ACCEL_Q17_BENCH_SCAN_LIMIT")) {
-      return false;
-    }
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_partkey, "
-        "CAST(round(l_quantity * 100) AS BIGINT), "
-        "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
-        "COUNT(*)::BIGINT "
-        "FROM lineitem "
-        "GROUP BY 1, 2",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ17PartQuantityAggregate{SafeInt64(ChunkValue(chunk, 0, row)),
-                                              SafeInt64(ChunkValue(chunk, 1, row)),
-                                              SafeInt64(ChunkValue(chunk, 2, row)),
-                                              SafeInt64(ChunkValue(chunk, 3, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-    return true;
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ17LineitemInput &)> &sink) override {
+    ScanPartitioned(services, connection, "lineitem",
+                    {IntColumn("l_partkey"), DecimalColumn("l_quantity", 2),
+                     DecimalColumn("l_extendedprice", 2)},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ17LineitemInput{row.Int(0), row.Decimal(1), row.Decimal(2)});
+                      }
+                    });
   }
   bool ScanPartQuantityAggregatesForPart(
       int64_t partkey,

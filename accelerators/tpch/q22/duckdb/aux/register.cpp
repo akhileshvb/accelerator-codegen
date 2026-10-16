@@ -5,6 +5,7 @@
 #include "tpch/q22/duckdb/aux/module.hpp"
 #include "tpch/q22/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -141,54 +142,25 @@ void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
 struct TpchQ22Scan : TpchQ22InitialScan {
   explicit TpchQ22Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanCustomers(
-      const std::function<void(const TpchQ22CustomerInput &)> &consumer) override {
-    ScanTypedChunks(
-        connection,
-        "SELECT CAST(c_custkey AS BIGINT), c_phone, "
-        "CAST(round(c_acctbal * 100) AS BIGINT) FROM customer",
-        [&](::duckdb::DataChunk &chunk) {
-          TypedCol<int64_t> key, bal;
-          TypedCol<::duckdb::string_t> phone;
-          key.Init(chunk, 0);
-          phone.Init(chunk, 1);
-          bal.Init(chunk, 2);
-          TpchQ22CustomerInput input;
-          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
-            if (!key.Valid(i) || !phone.Valid(i) || !bal.Valid(i))
-              continue;
-            input.custkey = key(i);
-            input.phone.assign(phone(i).GetData(), phone(i).GetSize());
-            input.acctbal_raw = bal(i);
-            input.acctbal_scale = 2;
-            consumer(input);
-          }
-        });
-  }
-  bool ScanOrderCounts(
-      const std::function<void(int64_t, int64_t)> &consumer) override {
-    ScanTypedChunks(
-        connection,
-        "SELECT CAST(o_custkey AS BIGINT), COUNT(*) FROM orders GROUP BY o_custkey",
-        [&](::duckdb::DataChunk &chunk) {
-          TypedCol<int64_t> key, cnt;
-          key.Init(chunk, 0);
-          cnt.Init(chunk, 1);
-          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
-            if (!key.Valid(i) || !cnt.Valid(i))
-              continue;
-            consumer(key(i), cnt(i));
-          }
-        });
-    return true;
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ22CustomerInput &)> &sink) override {
+    ScanPartitioned(services, connection, "customer",
+                    {IntColumn("c_custkey"), TextColumn("c_phone"), DecimalColumn("c_acctbal", 2)},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ22CustomerInput{row.Int(0), row.Text(1), row.Decimal(2), 2});
+                      }
+                    });
   }
   void ScanOrders(
-      const std::function<void(const TpchQ22OrderInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT o_custkey FROM orders",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ22OrderInput{SafeInt64(ChunkValue(chunk, 0, row))};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ22OrderInput &)> &sink) override {
+    ScanPartitioned(services, connection, "orders", {IntColumn("o_custkey")}, partitions,
+                    [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i)
+                        sink(partition, TpchQ22OrderInput{batch.Row(i).Int(0)});
+                    });
   }
   ::duckdb::Connection &connection;
 };

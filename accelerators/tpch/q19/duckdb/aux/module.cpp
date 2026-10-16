@@ -1,6 +1,9 @@
 #include "tpch/q19/duckdb/aux/module.hpp"
 #include "tpch/q19/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -22,6 +25,8 @@ using core::ByteWriter;
 
 constexpr uint32_t kAggregateMagic = 0x51313941; // Q19A
 constexpr uint32_t kVersionV2 = 2;
+// Rows per sorted slice of the build: a stable sort of 64K small rows is ~5 ms.
+constexpr std::size_t kSortGrain = 65536;
 static constexpr uint32_t kVersionV1_Deprecated = 1;
 
 // ── Custom profiling (no-op unless ACCEL_AUX_CUSTOM_PROFILE is set) ─────────
@@ -148,7 +153,7 @@ bool ReadLineitemRow(const core::AuxRow &row, int64_t &partkey,
 }
 
 // ── Q19 family classification ───────────────────────────────────────────────
-TpchQ19Family ClassifyContainerFamily(const std::string &container) {
+TpchQ19Family ClassifyContainerFamily(std::string_view container) {
   if (container == "SM CASE" || container == "SM BOX" || container == "SM PACK" ||
       container == "SM PKG")
     return TpchQ19Family::SM;
@@ -171,9 +176,9 @@ int32_t BranchSizeLimit(TpchQ19Family family) {
 }
 
 // ── Shipping predicate ──────────────────────────────────────────────────────
-bool ShippingQualifies(const TpchQ19LineitemInput &li) {
-  return (li.shipmode == "AIR" || li.shipmode == "AIR REG") &&
-         li.shipinstruct == "DELIVER IN PERSON";
+bool ShippingQualifies(std::string_view shipmode, std::string_view shipinstruct) {
+  return (shipmode == "AIR" || shipmode == "AIR REG") &&
+         shipinstruct == "DELIVER IN PERSON";
 }
 
 // ── Revenue computation ─────────────────────────────────────────────────────
@@ -438,7 +443,7 @@ TpchQ19State::IndexEntries(int64_t partkey) const {
   if (it == b.keys.end() || *it != partkey)
     return out;
   const std::size_t i = static_cast<std::size_t>(it - b.keys.begin());
-  for (uint32_t j = b.off[i]; j < b.off[i + 1]; ++j)
+  for (uint64_t j = b.off[i]; j < b.off[i + 1]; ++j)
     out.push_back({b.ents[j].qty, b.ents[j].rev, b.ents[j].count});
   return out;
 }
@@ -531,14 +536,78 @@ void DimSet(TpchQ19State &s, DimStage &st, int64_t key, uint32_t code) {
     (*s.dim_sparse)[key] = code;
 }
 
-// Dimension code of a part row under Q19's three-branch predicate.
-uint32_t PartCode(TpchQ19State &s, const std::string &brand,
-                  const std::string &container, int32_t size) {
+// Qualifying family (1..3) of a part row under Q19's three-branch predicate,
+// 0 when no branch can match it.
+int PartFamily(std::string_view container, int32_t size) {
   const auto family = ClassifyContainerFamily(container);
   const bool ok = family != TpchQ19Family::None && size >= 1 &&
                   size <= BranchSizeLimit(family);
-  return s.EncodeDim(brand, ok ? static_cast<int>(family) : 0);
+  return ok ? static_cast<int>(family) : 0;
 }
+
+uint32_t PartCode(TpchQ19State &s, const std::string &brand,
+                  const std::string &container, int32_t size) {
+  return s.EncodeDim(brand, PartFamily(container, size));
+}
+
+// The part dimension codes one build partition has seen; brand indexes are
+// local until partitions fold in table order (the global dictionary is then
+// in order of first appearance, as in a serial scan).
+struct DimPartial {
+  std::vector<std::string> brands;
+  std::vector<std::shared_ptr<TpchQ19State::DimPage>> pages;
+  std::unordered_map<int64_t, uint32_t> sparse;
+
+  uint32_t Encode(const std::string &brand, int family) {
+    if (family < 1 || family > 3)
+      return 1u;
+    std::size_t i = 0;
+    while (i < brands.size() && brands[i] != brand)
+      ++i;
+    if (i == brands.size())
+      brands.push_back(brand);
+    return (static_cast<uint32_t>(i + 1) << 2) | static_cast<uint32_t>(family);
+  }
+  void Set(int64_t key, uint32_t code) {
+    if (key < 0 || key >= TpchQ19State::kDimDenseLimit) {
+      sparse[key] = code;
+      return;
+    }
+    const std::size_t page = static_cast<std::size_t>(key) / TpchQ19State::kDimPage;
+    if (pages.size() <= page)
+      pages.resize(page + 1);
+    if (!pages[page])
+      pages[page] = std::make_shared<TpchQ19State::DimPage>();
+    pages[page]->codes[static_cast<std::size_t>(key) % TpchQ19State::kDimPage] = code;
+  }
+  void MergeFrom(DimPartial &&from) {
+    std::vector<uint32_t> remap;
+    for (const auto &brand : from.brands) {
+      std::size_t i = 0;
+      while (i < brands.size() && brands[i] != brand)
+        ++i;
+      if (i == brands.size())
+        brands.push_back(brand);
+      remap.push_back(static_cast<uint32_t>(i));
+    }
+    const auto remapped = [&](uint32_t code) {
+      return code < 4 ? code : ((remap[(code >> 2) - 1] + 1) << 2) | (code & 3u);
+    };
+    if (pages.size() < from.pages.size())
+      pages.resize(from.pages.size());
+    for (std::size_t page = 0; page < from.pages.size(); ++page) {
+      if (!from.pages[page])
+        continue;
+      if (!pages[page])
+        pages[page] = std::make_shared<TpchQ19State::DimPage>();
+      for (std::size_t i = 0; i < TpchQ19State::kDimPage; ++i)
+        if (from.pages[page]->codes[i] != 0)
+          pages[page]->codes[i] = remapped(from.pages[page]->codes[i]);
+    }
+    for (const auto &[key, code] : from.sparse)
+      sparse[key] = remapped(code);
+  }
+};
 
 bool ReadPartRow(const core::AuxRow &row, int64_t &partkey, std::string &brand,
                  std::string &container, int32_t &size) {
@@ -717,7 +786,7 @@ TpchQ19State TpchQ19Module::BuildState(core::AuxEngineServices &services,
       parts[input.key] = input;
     });
     initial_scan->ScanLineitems([&](const TpchQ19LineitemInput &input) {
-      if (!ShippingQualifies(input))
+      if (!ShippingQualifies(input.shipmode, input.shipinstruct))
         return;
       const auto part_it = parts.find(input.partkey);
       if (part_it == parts.end())
@@ -734,17 +803,22 @@ TpchQ19State TpchQ19Module::BuildState(core::AuxEngineServices &services,
   }
 
   // Part dimension codes for every part.
-  DimStage dim_stage;
-  dim_stage.fresh = true;
-  if (!initial_scan->ScanPartFamilies(
-          [&](int64_t key, const std::string &brand, int family) {
-            DimSet(state, dim_stage, key, state.EncodeDim(brand, family));
-          })) {
-    initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
-      DimSet(state, dim_stage, input.key,
-             PartCode(state, input.brand, input.container, input.size));
-    });
-  }
+  auto dims = core::PartitionedBuild<DimPartial>(
+      services, [] { return DimPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsPartitioned(services, parts,
+                                           [&](std::size_t p, const TpchQ19PartInput &input) {
+                                             sink(p, TypedRowBatch<TpchQ19PartInput>{input});
+                                           });
+      },
+      [](DimPartial &partial, const TpchQ19PartInput &input) {
+        partial.Set(input.key,
+                    partial.Encode(input.brand, PartFamily(input.container, input.size)));
+      },
+      [](DimPartial &into, DimPartial &&from) { into.MergeFrom(std::move(from)); });
+  state.brands = std::move(dims.brands);
+  state.dim_pages = std::move(dims.pages);
+  state.dim_sparse = std::make_shared<std::unordered_map<int64_t, uint32_t>>(std::move(dims.sparse));
 
   // Per-part index; each closed part also feeds the (brand, family, qty)
   // aggregates under its current qualification.
@@ -790,7 +864,7 @@ TpchQ19State TpchQ19Module::BuildState(core::AuxEngineServices &services,
     for (const auto &e : merged)
       base->ents.push_back({e.rev, static_cast<int32_t>(e.count),
                             static_cast<int32_t>(e.qty)});
-    base->off.push_back(static_cast<uint32_t>(base->ents.size()));
+    base->off.push_back(base->ents.size());
   };
   const auto feed = [&](int64_t partkey, int64_t qty, int64_t rev,
                         int64_t count) {
@@ -803,22 +877,31 @@ TpchQ19State TpchQ19Module::BuildState(core::AuxEngineServices &services,
     has_cur = true;
     pending.push_back({qty, rev, count});
   };
-  if (!initial_scan->ScanQualifyingLineitemsByPart(feed)) {
-    struct Row {
-      int64_t partkey, qty, rev;
-    };
-    std::vector<Row> rows;
-    initial_scan->ScanLineitems([&](const TpchQ19LineitemInput &input) {
-      if (ShippingQualifies(input))
-        rows.push_back({input.partkey, input.quantity_raw,
-                        ComputeRevenue(input.extendedprice_raw,
-                                       input.discount_raw)});
-    });
-    std::stable_sort(rows.begin(), rows.end(),
-                     [](const Row &a, const Row &b) { return a.partkey < b.partkey; });
-    for (const auto &r : rows)
-      feed(r.partkey, r.qty, r.rev, 1);
-  }
+  // Qualifying lineitems of all partitions in table order, stably sorted by part.
+  struct Row {
+    int64_t partkey, qty, rev;
+  };
+  using Rows = std::vector<Row>;
+  auto rows = core::PartitionedBuild<Rows>(
+      services, [] { return Rows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t p, const TpchQ19LineitemRow &input) {
+              sink(p, TypedRowBatch<TpchQ19LineitemRow>{input});
+            });
+      },
+      [](Rows &partial, const TpchQ19LineitemRow &input) {
+        if (ShippingQualifies(input.shipmode, input.shipinstruct))
+          partial.push_back({input.partkey, input.quantity_raw,
+                             ComputeRevenue(input.extendedprice_raw, input.discount_raw)});
+      },
+      [](Rows &into, Rows &&from) { into.insert(into.end(), from.begin(), from.end()); });
+  ParallelStableSort(services, rows,
+                     [](const Row &a, const Row &b) { return a.partkey < b.partkey; },
+                     kSortGrain);
+  for (const auto &r : rows)
+    feed(r.partkey, r.qty, r.rev, 1);
+  rows = {};
   close_part();
   state.index_base = std::move(base);
   return state;

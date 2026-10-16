@@ -133,6 +133,24 @@ public:
   }
   void Add(int64_t key, const T &by) { Set(key, Get(key) + by); }
 
+  // Folds `other` (same fill) into this array: chunks this array lacks are
+  // adopted whole, the other slots become combine(mine, theirs). Merges
+  // partial arrays of a parallel build; both sides must be private copies.
+  template <typename Combine> void MergeFrom(AnyKeyCowArray &&other, Combine &&combine) {
+    other.ForEachChunk([&](std::size_t ci, const Chunk &theirs) {
+      auto &slot = dir_.Mutable(static_cast<int64_t>(ci));
+      if (!slot) {
+        slot = *other.dir_.Find(static_cast<int64_t>(ci));
+        return;
+      }
+      if (slot.use_count() > 1)
+        slot = std::make_shared<Chunk>(*slot);
+      for (std::size_t i = 0; i < kChunkSize; ++i)
+        (*slot)[i] = combine((*slot)[i], theirs[i]);
+    });
+    other.sparse_.ForEach([&](int64_t key, const T &value) { Set(key, combine(Get(key), value)); });
+  }
+
   // ---- iteration -----------------------------------------------------------
   // Dense directory in zigzag order: chunk `ci` holds keys KeyAt(ci, 0..).
   // ChunkAt is nullptr for unallocated chunks (also when ci >= NumChunks()).

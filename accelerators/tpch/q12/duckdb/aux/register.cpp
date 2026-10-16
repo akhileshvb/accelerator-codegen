@@ -6,6 +6,7 @@
 #include "tpch/q12/cost_model.hpp"
 #include "tpch/q12/layout.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -108,54 +109,33 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
-// Zone-map friendly: contiguous runs of days become BETWEEN ranges.
-std::string ReceiptRunsPredicate(const std::set<int32_t> &days) {
-  if (days.size() > 64)
-    return "l_receiptdate BETWEEN " + SqlDateLiteral(*days.begin()) + " AND " +
-           SqlDateLiteral(*days.rbegin());
-  std::string out = "(";
-  bool first = true;
-  auto it = days.begin();
-  while (it != days.end()) {
-    const int32_t lo = *it;
-    int32_t hi = lo;
-    for (++it; it != days.end() && *it == hi + 1; ++it)
-      hi = *it;
-    if (!first)
-      out += " OR ";
-    first = false;
-    out += "l_receiptdate BETWEEN " + SqlDateLiteral(lo) + " AND " +
-           SqlDateLiteral(hi);
-  }
-  return out + ")";
-}
-
 struct TpchQ12Scan : TpchQ12InitialScan {
   explicit TpchQ12Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanOrders(
-      const std::function<void(const TpchQ12OrderInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT o_orderkey, o_orderpriority FROM orders",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ12OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                   ChunkValue(chunk, 1, row).ToString()};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ12OrderInput &)> &sink) override {
+    ScanPartitioned(services, connection, "orders",
+                    {IntColumn("o_orderkey"), TextColumn("o_orderpriority")}, partitions,
+                    [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ12OrderInput{row.Int(0), row.Text(1)});
+                      }
+                    });
   }
   void ScanLineitems(
-      const std::function<void(const TpchQ12LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, "
-        "l_shipdate FROM lineitem",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ12LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      ChunkValue(chunk, 1, row).ToString(),
-                                      DateDays(ChunkValue(chunk, 2, row)),
-                                      DateDays(ChunkValue(chunk, 3, row)),
-                                      DateDays(ChunkValue(chunk, 4, row))};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ12LineitemInput &)> &sink) override {
+    ScanPartitioned(services, connection, "lineitem",
+                    {IntColumn("l_orderkey"), TextColumn("l_shipmode"), DateColumn("l_commitdate"),
+                     DateColumn("l_receiptdate"), DateColumn("l_shipdate")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ12LineitemInput{row.Int(0), row.Text(1), row.Date(2),
+                                                             row.Date(3), row.Date(4)});
+                      }
+                    });
   }
   bool LookupQualifyingLineitems(
       const std::vector<int64_t> &orderkeys,
@@ -180,25 +160,6 @@ struct TpchQ12Scan : TpchQ12InitialScan {
                    ChunkValue(chunk, 2, row).ToString());
         });
     return true;
-  }
-  void ScanLineitemsForReceiptDays(
-      const std::set<int32_t> &receipt_days,
-      const std::function<void(const TpchQ12LineitemInput &)> &consumer)
-      override {
-    if (receipt_days.empty())
-      return;
-    ScanQueryStreaming(
-        connection,
-        "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, "
-        "l_shipdate FROM lineitem WHERE " +
-            ReceiptRunsPredicate(receipt_days),
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    DateDays(ChunkValue(chunk, 2, row)),
-                    DateDays(ChunkValue(chunk, 3, row)),
-                    DateDays(ChunkValue(chunk, 4, row))});
-        });
   }
   ::duckdb::Connection &connection;
 };

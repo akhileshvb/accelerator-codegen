@@ -2,6 +2,8 @@
 #include "tpch/q12/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -986,28 +988,68 @@ void TpchQ12Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
-  TpchQ12State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q12 requires a typed initial scan source");
-  initial_scan->ScanOrders([&](const TpchQ12OrderInput &input) {
-    state.SetPriority(input.key, TpchQ12ClassifyPriority(input.orderpriority));
-  });
-  initial_scan->ScanLineitems([&](const TpchQ12LineitemInput &input) {
-    const auto priority = state.PriorityOf(input.orderkey);
-    if (priority == TpchQ12PriorityClass::Absent)
-      return;
-    if (priority == TpchQ12PriorityClass::Neither)
-      return;
-    if (!TpchQ12LineitemQualifies(input.commitdate_days, input.receiptdate_days,
-                                  input.shipdate_days))
-      return;
-    auto &stats = state.day_partitions[input.receiptdate_days][input.shipmode];
-    ApplyContribution(stats, priority, 1);
-    const auto count = state.line_counts.Get(input.orderkey);
-    if (count != std::numeric_limits<uint16_t>::max())
-      state.line_counts.Set(input.orderkey, static_cast<uint16_t>(count + 1));
-  });
+  using Priorities = decltype(TpchQ12State::order_priorities);
+  using Counts = decltype(TpchQ12State::line_counts);
+  TpchQ12State state;
+  state.order_priorities = core::PartitionedBuild<Priorities>(
+      services, [] { return Priorities{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrders(services, parts,
+                                 [&](std::size_t p, const TpchQ12OrderInput &input) {
+                                   sink(p, TypedRowBatch<TpchQ12OrderInput>{input});
+                                 });
+      },
+      [](Priorities &priorities, const TpchQ12OrderInput &input) {
+        priorities.Set(input.key,
+                       static_cast<uint8_t>(TpchQ12ClassifyPriority(input.orderpriority)));
+      },
+      [](Priorities &into, Priorities &&from) {
+        into.MergeFrom(std::move(from), [](uint8_t mine, uint8_t theirs) {
+          return theirs ? theirs : mine; // the last order row of a key wins
+        });
+      });
+
+  struct LineitemPartial {
+    TpchQ12State::DayMap days;
+    Counts counts;
+  };
+  auto lineitems = core::PartitionedBuild<LineitemPartial>(
+      services, [] { return LineitemPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ12LineitemInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ12LineitemInput>{input});
+                                    });
+      },
+      [&](LineitemPartial &partial, const TpchQ12LineitemInput &input) {
+        const auto priority = state.PriorityOf(input.orderkey);
+        if (priority == TpchQ12PriorityClass::Absent ||
+            priority == TpchQ12PriorityClass::Neither)
+          return;
+        if (!TpchQ12LineitemQualifies(input.commitdate_days, input.receiptdate_days,
+                                      input.shipdate_days))
+          return;
+        ApplyContribution(partial.days[input.receiptdate_days][input.shipmode], priority, 1);
+        const auto count = partial.counts.Get(input.orderkey);
+        if (count != std::numeric_limits<uint16_t>::max())
+          partial.counts.Set(input.orderkey, static_cast<uint16_t>(count + 1));
+      },
+      [](LineitemPartial &into, LineitemPartial &&from) {
+        for (auto &[day, modes] : from.days)
+          for (auto &[mode, stats] : modes) {
+            auto &merged = into.days[day][mode];
+            merged.high_line_count += stats.high_line_count;
+            merged.low_line_count += stats.low_line_count;
+          }
+        into.counts.MergeFrom(std::move(from.counts), [](uint16_t mine, uint16_t theirs) {
+          return static_cast<uint16_t>(std::min<uint32_t>(
+              std::numeric_limits<uint16_t>::max(), uint32_t{mine} + theirs));
+        });
+      });
+  state.day_partitions = std::move(lineitems.days);
+  state.line_counts = std::move(lineitems.counts);
   return state;
 }
 

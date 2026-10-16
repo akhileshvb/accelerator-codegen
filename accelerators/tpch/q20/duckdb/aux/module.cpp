@@ -2,6 +2,9 @@
 #include "tpch/q20/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -26,8 +29,10 @@ using core::ByteWriter;
 constexpr std::size_t kPairWalkGrain = 32768;
 // Partsupp rows per build slice: a merge step is ~20 ns, so ~1 ms.
 constexpr std::size_t kSeriesIdxGrain = 65536;
-// Pairs per maintenance slice: rebuilding one pair's series is ~1 us.
-constexpr std::size_t kSeriesGrain = 512;
+// Pairs per maintenance slice: ~1 us each, so RF-sized commits stay inline.
+constexpr std::size_t kSeriesGrain = 16384;
+// Rows per sorted slice of the build: a stable sort of 64K small rows is ~5 ms.
+constexpr std::size_t kSortGrain = 65536;
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
 constexpr uint32_t kVersion = 3;
 
@@ -283,12 +288,23 @@ public:
     ps.push_back(e);
   }
 
-  void AddPart(int64_t key, const char *name, std::size_t len) {
+  // One part name: its key and the bytes at [off, off + len) of an arena.
+  struct NameRef {
+    int64_t key;
+    uint64_t off;
+    uint32_t len;
+  };
+  void AddPart(int64_t key, std::string_view name) {
     if (key < 0)
       return;
     names.push_back({key, static_cast<uint64_t>(arena.size()),
-                     static_cast<uint32_t>(len)});
-    arena.append(name, len);
+                     static_cast<uint32_t>(name.size())});
+    arena.append(name);
+  }
+  // Takes the names of a parallel scan (offsets into `name_bytes`) as they are.
+  void AdoptNames(std::string name_bytes, std::vector<NameRef> refs) {
+    arena = std::move(name_bytes);
+    names = std::move(refs);
   }
 
   void AddSupplier(int64_t key, std::string name, std::string address,
@@ -349,11 +365,6 @@ private:
       fn(std::size_t{0}, std::size_t{0}, n);
   }
 
-  struct NameRef {
-    int64_t key;
-    uint64_t off;
-    uint32_t len;
-  };
   struct PsRow {
     int64_t partkey = 0;
     int64_t availqty = 0;
@@ -459,6 +470,8 @@ private:
         break;
       }
     }
+    if (base->series_key.size() >= TpchQ20Base::kNoSeries)
+      throw std::runtime_error("TPC-H Q20 aux: too many lineitem series");
     const uint32_t idx = static_cast<uint32_t>(base->series_key.size());
     base->series_key.push_back(cur_key);
     if (fits) {
@@ -468,8 +481,7 @@ private:
     } else {
       base->series_wide[idx] = cur;
     }
-    base->series_off.push_back(
-        static_cast<uint32_t>(base->series_entries.size()));
+    base->series_off.push_back(base->series_entries.size());
     cur.clear();
     has_cur = false;
   }
@@ -489,7 +501,7 @@ private:
     base->name_off.push_back(0);
     for (const auto &n : names) {
       base->name_arena.append(arena.data() + n.off, n.len);
-      base->name_off.push_back(static_cast<uint32_t>(base->name_arena.size()));
+      base->name_off.push_back(base->name_arena.size());
       base->name_partkey.push_back(n.key);
     }
     const int64_t dense = DenseLimit(names.size());
@@ -724,7 +736,7 @@ std::vector<TpchQ20DateQuantity> BaseSeriesCopy(const TpchQ20Base &base,
   const auto wit = base.series_wide.find(idx);
   if (wit != base.series_wide.end())
     return wit->second;
-  for (uint32_t i = base.series_off[idx]; i < base.series_off[idx + 1]; ++i)
+  for (uint64_t i = base.series_off[idx]; i < base.series_off[idx + 1]; ++i)
     out.push_back({base.series_entries[i].date, base.series_entries[i].qty});
   return out;
 }
@@ -888,7 +900,7 @@ bool DecodeTpchQ20State(const std::vector<uint8_t> &bytes,
     std::string name;
     if (!reader.I64(key) || !reader.String(name))
       return false;
-    builder.AddPart(key, name.data(), name.size());
+    builder.AddPart(key, name);
   }
 
   uint32_t supplier_count = 0;
@@ -1470,65 +1482,116 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
 
   BaseBuilder builder(&services);
 
-  // Lineitem series, grouped per (partkey, suppkey).
-  const bool ordered_series = initial_scan->ScanLineitemsByPair(
-      [&](int64_t partkey, int64_t suppkey, int32_t date, int64_t qty) {
-        if (partkey < 0 || suppkey < 0)
+  // Lineitem series, grouped per (partkey, suppkey): the rows of all
+  // partitions in table order, stably sorted by pair.
+  struct SeriesRow {
+    uint64_t key;
+    int32_t date;
+    int64_t qty;
+  };
+  using SeriesRows = std::vector<SeriesRow>;
+  auto series_rows = core::PartitionedBuild<SeriesRows>(
+      services, [] { return SeriesRows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ20LineitemInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ20LineitemInput>{input});
+                                    });
+      },
+      [](SeriesRows &rows, const TpchQ20LineitemInput &input) {
+        if (input.partkey < 0 || input.suppkey < 0)
           return;
-        RequirePairKey(partkey, suppkey);
-        builder.AddSeriesRow(MakePairKey(partkey, suppkey), date, qty);
+        RequirePairKey(input.partkey, input.suppkey);
+        rows.push_back({MakePairKey(input.partkey, input.suppkey), input.shipdate_days,
+                        input.quantity_raw});
+      },
+      [](SeriesRows &into, SeriesRows &&from) {
+        into.insert(into.end(), from.begin(), from.end());
       });
-  if (!ordered_series) {
-    struct Row {
-      uint64_t key;
-      int32_t date;
-      int64_t qty;
-    };
-    std::vector<Row> rows;
-    initial_scan->ScanLineitems([&](const TpchQ20LineitemInput &input) {
-      if (input.partkey < 0 || input.suppkey < 0)
-        return;
-      RequirePairKey(input.partkey, input.suppkey);
-      rows.push_back({MakePairKey(input.partkey, input.suppkey),
-                      input.shipdate_days, input.quantity_raw});
-    });
-    std::stable_sort(rows.begin(), rows.end(),
-                     [](const Row &a, const Row &b) { return a.key < b.key; });
-    for (const auto &r : rows)
-      builder.AddSeriesRow(r.key, r.date, r.qty);
-  }
+  ParallelStableSort(services, series_rows,
+                     [](const SeriesRow &a, const SeriesRow &b) { return a.key < b.key; },
+                     kSortGrain);
+  for (const auto &r : series_rows)
+    builder.AddSeriesRow(r.key, r.date, r.qty);
+  series_rows = {};
   builder.FinishSeries();
 
-  const bool ordered_ps = initial_scan->ScanPartsuppsOrdered(
-      [&](int64_t partkey, int64_t suppkey, int64_t availqty) {
-        builder.AddPartsupp(partkey, suppkey, availqty);
+  using PartsuppRows = std::vector<TpchQ20PartsuppInput>;
+  auto partsupp_rows = core::PartitionedBuild<PartsuppRows>(
+      services, [] { return PartsuppRows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsupps(services, parts,
+                                    [&](std::size_t p, const TpchQ20PartsuppInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ20PartsuppInput>{input});
+                                    });
+      },
+      [](PartsuppRows &rows, const TpchQ20PartsuppInput &input) { rows.push_back(input); },
+      [](PartsuppRows &into, PartsuppRows &&from) {
+        into.insert(into.end(), from.begin(), from.end());
       });
-  if (!ordered_ps) {
-    std::vector<TpchQ20PartsuppInput> rows;
-    initial_scan->ScanPartsupps([&](const TpchQ20PartsuppInput &input) {
-      rows.push_back(input);
-    });
-    std::sort(rows.begin(), rows.end(),
-              [](const TpchQ20PartsuppInput &a, const TpchQ20PartsuppInput &b) {
-                return a.partkey != b.partkey ? a.partkey < b.partkey
-                                              : a.suppkey < b.suppkey;
-              });
-    for (const auto &r : rows)
-      builder.AddPartsupp(r.partkey, r.suppkey, r.availqty);
-  }
+  ParallelStableSort(services, partsupp_rows,
+                     [](const TpchQ20PartsuppInput &a, const TpchQ20PartsuppInput &b) {
+                       return a.partkey != b.partkey ? a.partkey < b.partkey
+                                                     : a.suppkey < b.suppkey;
+                     },
+                     kSortGrain);
+  for (const auto &r : partsupp_rows)
+    builder.AddPartsupp(r.partkey, r.suppkey, r.availqty);
+  partsupp_rows = {};
 
-  if (!initial_scan->ScanPartNames(
-          [&](int64_t key, const char *name, std::size_t len) {
-            builder.AddPart(key, name, len);
-          })) {
-    initial_scan->ScanParts([&](const TpchQ20PartInput &input) {
-      builder.AddPart(input.key, input.name.data(), input.name.size());
-    });
-  }
+  struct PartNames {
+    std::string bytes;
+    std::vector<BaseBuilder::NameRef> refs;
+  };
+  auto names = core::PartitionedBuild<PartNames>(
+      services, [] { return PartNames{}; },
+      [&](std::size_t parts, auto &&sink) {
+        struct Name {
+          int64_t key;
+          std::string_view name;
+        };
+        initial_scan->ScanPartNames(services, parts,
+                                    [&](std::size_t p, int64_t key, std::string_view name) {
+                                      sink(p, TypedRowBatch<Name>{{key, name}});
+                                    });
+      },
+      [](PartNames &partial, const auto &part) {
+        if (part.key < 0)
+          return;
+        partial.refs.push_back({part.key, partial.bytes.size(),
+                                static_cast<uint32_t>(part.name.size())});
+        partial.bytes.append(part.name);
+      },
+      [](PartNames &into, PartNames &&from) {
+        const uint64_t shift = into.bytes.size();
+        into.bytes.append(from.bytes);
+        for (auto ref : from.refs) {
+          ref.off += shift;
+          into.refs.push_back(ref);
+        }
+      });
+  builder.AdoptNames(std::move(names.bytes), std::move(names.refs));
 
-  initial_scan->ScanSuppliers([&](const TpchQ20SupplierInput &input) {
-    builder.AddSupplier(input.key, input.name, input.address, input.nationkey);
-  });
+  using Suppliers = std::unordered_map<int64_t, TpchQ20SupplierRecord>;
+  auto suppliers = core::PartitionedBuild<Suppliers>(
+      services, [] { return Suppliers{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliers(services, parts,
+                                    [&](std::size_t p, const TpchQ20SupplierInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ20SupplierInput>{input});
+                                    });
+      },
+      [](Suppliers &partial, const TpchQ20SupplierInput &input) {
+        if (input.key >= 0)
+          partial[input.key] = {input.name, input.address, input.nationkey};
+      },
+      [](Suppliers &into, Suppliers &&from) {
+        for (auto &[key, record] : from)
+          into[key] = std::move(record);
+      });
+  for (auto &[key, record] : suppliers)
+    builder.AddSupplier(key, std::move(record.name), std::move(record.address),
+                        record.nationkey);
 
   initial_scan->ScanNations([&](const TpchQ20NationInput &input) {
     builder.AddNation(input.key, input.name);

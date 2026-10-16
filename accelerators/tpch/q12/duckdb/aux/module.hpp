@@ -39,10 +39,14 @@ struct TpchQ12LineitemInput {
 class TpchQ12InitialScan {
 public:
   virtual ~TpchQ12InitialScan() = default;
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanOrders(
-      const std::function<void(const TpchQ12OrderInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ12OrderInput &)> &) = 0;
   virtual void ScanLineitems(
-      const std::function<void(const TpchQ12LineitemInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ12LineitemInput &)> &) = 0;
   // Qualifying lineitems (l_commitdate < l_receiptdate AND l_shipdate <
   // l_commitdate) of the given orders in the current base-table snapshot
   // (including this transaction's own writes). False: unsupported.
@@ -51,16 +55,6 @@ public:
       const std::function<void(int64_t orderkey, int32_t receipt_day,
                                const std::string &shipmode)> &) {
     return false;
-  }
-  virtual void ScanLineitemsForReceiptDays(
-      const std::set<int32_t> &receipt_days,
-      const std::function<void(const TpchQ12LineitemInput &)> &consumer) {
-    if (receipt_days.empty())
-      return;
-    ScanLineitems([&](const TpchQ12LineitemInput &input) {
-      if (receipt_days.count(input.receiptdate_days))
-        consumer(input);
-    });
   }
 };
 
@@ -83,8 +77,8 @@ struct TpchQ12State {
   // Number of qualifying lineitems counted for each present order. An order
   // can be removed without moving contributions only when this is zero.
   core::AnyKeyCowArray<uint16_t, 12> line_counts{};
-  std::map<int32_t, std::unordered_map<std::string, TpchQ12DayShipmodeStats>>
-      day_partitions;
+  using DayMap = std::map<int32_t, std::unordered_map<std::string, TpchQ12DayShipmodeStats>>;
+  DayMap day_partitions;
 
   TpchQ12PriorityClass PriorityOf(int64_t orderkey) const {
     return static_cast<TpchQ12PriorityClass>(order_priorities.Get(orderkey));

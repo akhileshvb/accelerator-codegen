@@ -7,6 +7,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -23,11 +24,6 @@ struct TpchQ14Config {
   core::TableId lineitem_table = 0;
 };
 
-struct TpchQ14PartInput {
-  int64_t key = 0;
-  std::string type;
-};
-
 struct TpchQ14LineitemInput {
   int64_t partkey = 0;
   int64_t extended_price_raw = 0;
@@ -38,32 +34,24 @@ struct TpchQ14LineitemInput {
 };
 
 int32_t TpchQ14MonthKeyFromDays(int32_t days_since_epoch);
-bool TpchQ14IsPromoType(const std::string &type);
+bool TpchQ14IsPromoType(std::string_view type);
 int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                           int64_t discount_raw, int32_t discount_scale);
 
 class TpchQ14InitialScan {
 public:
   virtual ~TpchQ14InitialScan() = default;
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanParts(
-      const std::function<void(const TpchQ14PartInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t partition, int64_t key, bool promo)> &) = 0;
   virtual void ScanLineitems(
-      const std::function<void(const TpchQ14LineitemInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ14LineitemInput &)> &) = 0;
   virtual void ScanLineitemsForMonths(
       const std::set<int32_t> &months,
-      const std::function<void(const TpchQ14LineitemInput &)> &consumer) {
-    ScanLineitems([&](const TpchQ14LineitemInput &input) {
-      if (months.count(TpchQ14MonthKeyFromDays(input.shipdate_days)))
-        consumer(input);
-    });
-  }
-  // (partkey, is PROMO type) for every part.
-  virtual void ScanPartPromo(
-      const std::function<void(int64_t, bool)> &consumer) {
-    ScanParts([&](const TpchQ14PartInput &input) {
-      consumer(input.key, TpchQ14IsPromoType(input.type));
-    });
-  }
+      const std::function<void(const TpchQ14LineitemInput &)> &consumer) = 0;
   // Pushed-down GROUP BY month over lineitem JOIN part: (month, total
   // revenue raw, promo revenue raw, row count). `months` empty means every
   // month. Returns false when the source cannot aggregate (callers then scan
@@ -77,22 +65,7 @@ public:
   // given parts.
   virtual void ScanPartMonthRevenue(
       const std::vector<int64_t> &keys,
-      const std::function<void(int64_t, int32_t, int64_t, int64_t)> &consumer) {
-    const std::unordered_set<int64_t> wanted(keys.begin(), keys.end());
-    std::map<std::pair<int64_t, int32_t>, std::pair<int64_t, int64_t>> acc;
-    ScanLineitems([&](const TpchQ14LineitemInput &input) {
-      if (!wanted.count(input.partkey))
-        return;
-      auto &cell = acc[{input.partkey,
-                        TpchQ14MonthKeyFromDays(input.shipdate_days)}];
-      cell.first += TpchQ14RevenueRaw(input.extended_price_raw,
-                                      input.extended_price_scale,
-                                      input.discount_raw, input.discount_scale);
-      cell.second += 1;
-    });
-    for (const auto &[k, v] : acc)
-      consumer(k.first, k.second, v.first, v.second);
-  }
+      const std::function<void(int64_t, int32_t, int64_t, int64_t)> &consumer) = 0;
 };
 
 enum class TpchQ14PromoClass : uint8_t {
@@ -112,7 +85,7 @@ struct TpchQ14MonthTotals {
 // one chunk plus the chunk directory (published states are never mutated; a
 // copy of the state shares every chunk until SetRaw replaces the touched one).
 struct TpchQ14State {
-  static constexpr int64_t kMaxDensePartkey = 1 << 24; // 16M; SF20 is 4M
+  static constexpr int64_t kMaxDensePartkey = int64_t{1} << 30; // SF3000 parts reach 6e8
   static constexpr uint8_t kClassMask = 3;
   // Part inserted after the build and not yet referenced by any lineitem
   // delta: deleting/retyping it needs no lineitem scan.

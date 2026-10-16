@@ -2,6 +2,8 @@
 #include "tpch/q13/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <array>
@@ -137,7 +139,7 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
 
 
 // ── Sharded, copy-on-write state machinery ──────────────────────────────────
-constexpr int64_t kMaxKey = int64_t{1} << 36;  // keys outside are ignored
+constexpr int64_t kMaxKey = int64_t{1} << 36;  // customer keys beyond fail the build
 constexpr std::size_t kShardMask = kTpchQ13Shards - 1;
 
 bool KeyOk(int64_t ck) { return ck >= 0 && ck < kMaxKey; }
@@ -212,7 +214,8 @@ const char *SegFind(const char *t, std::size_t n, const TpchQ13Like::Seg &s) {
 constexpr std::size_t kFinishGrain = 32;  // bulk token index and match counts
 constexpr std::size_t kHistGrain = 64;     // ~200 customers per shard at SF 20
 constexpr std::size_t kEvalGrain = 1024;   // untracked-pattern read
-constexpr std::size_t kMaintGrain = 64;    // maintenance: shards touched per slice (~2 us each)
+constexpr std::size_t kMergeGrain = 256;   // build merge: shards folded per slice (~1 us each)
+constexpr std::size_t kMaintGrain = 4096;  // maintenance: shard runs per slice; RF-sized commits stay inline
 
 // Count changes of a batch of order/customer updates, kept apart from the
 // state so slices owning disjoint shards can run concurrently; summed in
@@ -610,16 +613,40 @@ struct Mut {
   }
 };
 
-void EnsureCust(TpchQ13CustShard &c, std::size_t lc, std::size_t np) {
+// A shard keeps the identity layout while its local ids stay within twice its
+// slot count plus this slack, and lists them explicitly beyond.
+constexpr std::size_t kIdentitySlack = 1024;
+
+// The slot of local id `lc`, created (all counts zero) when new.
+std::size_t EnsureCust(TpchQ13CustShard &c, std::size_t lc, std::size_t np) {
   if (c.match.size() < np)
     c.match.resize(np);
-  if (lc >= c.total.size()) {
-    c.total.resize(lc + 1, 0);
-    c.mult.resize(lc + 1, 0);
+  std::size_t slot = lc;
+  if (c.ids.empty() && lc < 2 * c.total.size() + kIdentitySlack) {
+    if (lc >= c.total.size()) {
+      c.total.resize(lc + 1, 0);
+      c.mult.resize(lc + 1, 0);
+    }
+  } else {
+    if (c.ids.empty()) {
+      c.ids.resize(c.total.size());
+      std::iota(c.ids.begin(), c.ids.end(), 0u);
+    }
+    const auto it = std::lower_bound(c.ids.begin(), c.ids.end(), static_cast<uint32_t>(lc));
+    slot = static_cast<std::size_t>(it - c.ids.begin());
+    if (it == c.ids.end() || *it != lc) {
+      for (auto &m : c.match)
+        if (m.size() == c.total.size())
+          m.insert(m.begin() + static_cast<std::ptrdiff_t>(slot), 0);
+      c.total.insert(c.total.begin() + static_cast<std::ptrdiff_t>(slot), 0);
+      c.mult.insert(c.mult.begin() + static_cast<std::ptrdiff_t>(slot), 0);
+      c.ids.insert(c.ids.begin() + static_cast<std::ptrdiff_t>(slot), static_cast<uint32_t>(lc));
+    }
   }
   for (auto &m : c.match)
     if (m.size() < c.total.size())
       m.resize(c.total.size(), 0);
+  return slot;
 }
 
 // Rewrites the live orders of base and tail into a fresh tail (no base); the
@@ -657,16 +684,24 @@ void CompactOrders(TpchQ13OrderShard &o) {
 // JOIN multiplies rows for duplicated customer keys.  Adds `delta` customers to
 // the histograms at the customer's current counts.
 void HistAll(Tally &tally, std::size_t np, const TpchQ13CustShard &c,
-             std::size_t lc, int64_t delta) {
-  const int64_t mult = c.mult[lc];
+             std::size_t slot, int64_t delta) {
+  const int64_t mult = c.mult[slot];
   if (tally.hist.size() < np)
     tally.hist.resize(np);
-  HistAdd(tally.base, mult * c.total[lc], delta);
+  HistAdd(tally.base, mult * c.total[slot], delta);
   for (std::size_t p = 0; p < np; ++p)
-    HistAdd(tally.hist[p], mult * (c.total[lc] - c.match[p][lc]), delta);
+    HistAdd(tally.hist[p], mult * (c.total[slot] - c.match[p][slot]), delta);
 }
 
 enum class Apply { Live, Raw };
+
+// A key outside the supported range: the initial load fails loudly; a live
+// update asks for a rebuild (which then fails the same way).
+bool RejectKey(Apply mode) {
+  if (mode == Apply::Raw)
+    throw std::runtime_error("TPC-H Q13: customer key outside [0, 2^36)");
+  return false;
+}
 
 // Applies one order insert (sign>0) or delete (sign<0).  Raw (initial load)
 // only stores the order and counts it; matches/histograms come from BulkFinish.
@@ -674,7 +709,7 @@ enum class Apply { Live, Raw };
 bool ApplyOrder(Mut &m, Tally &tally, int64_t ck, std::string_view comment,
                 int sign, Apply mode) {
   if (!KeyOk(ck))
-    return true;
+    return RejectKey(mode);
   const std::size_t s = static_cast<std::size_t>(ck) & kShardMask;
   const std::size_t lc = static_cast<std::size_t>(ck) >> kTpchQ13ShardBits;
   const std::size_t np = m.st.patterns.size();
@@ -682,6 +717,8 @@ bool ApplyOrder(Mut &m, Tally &tally, int64_t ck, std::string_view comment,
   tally.live_orders += sign;
   if (sign > 0) {
     TpchQ13OrderSeg &t = o.tail;
+    if (t.blob.size() + comment.size() > std::numeric_limits<uint32_t>::max())
+      throw std::runtime_error("TPC-H Q13: order comments of one shard exceed 4 GiB");
     t.custkey.push_back(ck);
     t.start.push_back(static_cast<uint32_t>(t.blob.size()));
     t.len.push_back(static_cast<uint32_t>(comment.size()));
@@ -720,21 +757,21 @@ bool ApplyOrder(Mut &m, Tally &tally, int64_t ck, std::string_view comment,
     }
   }
   TpchQ13CustShard &c = m.C(s);
-  EnsureCust(c, lc, np);
+  const std::size_t slot = EnsureCust(c, lc, np);
   if (mode == Apply::Raw) {
-    c.total[lc] += sign;
+    c.total[slot] += sign;
     return true;
   }
-  const bool valid = c.mult[lc] > 0;
+  const bool valid = c.mult[slot] > 0;
   if (valid)
-    HistAll(tally, np, c, lc, -1);
-  c.total[lc] += sign;
+    HistAll(tally, np, c, slot, -1);
+  c.total[slot] += sign;
   const uint64_t mask = LitMask(*m.st.lits, comment.data(), comment.size());
   for (std::size_t p = 0; p < np; ++p)
     if (PatMatch(m.st.patterns[p], mask, comment.data(), comment.size()))
-      c.match[p][lc] += sign;
+      c.match[p][slot] += sign;
   if (valid)
-    HistAll(tally, np, c, lc, +1);
+    HistAll(tally, np, c, slot, +1);
   return true;
 }
 
@@ -742,19 +779,19 @@ bool ApplyOrder(Mut &m, Tally &tally, int64_t ck, std::string_view comment,
 // non-existent customer.
 bool ApplyCustomer(Mut &m, Tally &tally, int64_t ck, int sign, Apply mode) {
   if (!KeyOk(ck))
-    return true;
+    return RejectKey(mode);
   const std::size_t s = static_cast<std::size_t>(ck) & kShardMask;
   const std::size_t lc = static_cast<std::size_t>(ck) >> kTpchQ13ShardBits;
   TpchQ13CustShard &c = m.C(s);
   const std::size_t np = m.st.patterns.size();
-  EnsureCust(c, lc, np);
-  if (sign < 0 && c.mult[lc] <= 0)
+  const std::size_t slot = EnsureCust(c, lc, np);
+  if (sign < 0 && c.mult[slot] <= 0)
     return false;
-  if (mode == Apply::Live && c.mult[lc] > 0)
-    HistAll(tally, np, c, lc, -1);
-  c.mult[lc] += sign;
-  if (mode == Apply::Live && c.mult[lc] > 0)
-    HistAll(tally, np, c, lc, +1);
+  if (mode == Apply::Live && c.mult[slot] > 0)
+    HistAll(tally, np, c, slot, -1);
+  c.mult[slot] += sign;
+  if (mode == Apply::Live && c.mult[slot] > 0)
+    HistAll(tally, np, c, slot, +1);
   return true;
 }
 
@@ -902,11 +939,11 @@ void BulkFinish(Mut &m, const core::AuxEngineServices &services) {
                  if (!os->alive[j])
                    continue;
                  const char *d = o->blob.data() + o->start[j];
-                 const std::size_t lc = static_cast<std::size_t>(o->custkey[j]) >>
-                                        kTpchQ13ShardBits;
+                 const std::size_t slot = c->SlotOf(static_cast<uint32_t>(
+                     static_cast<std::size_t>(o->custkey[j]) >> kTpchQ13ShardBits));
                  for (std::size_t p = 0; p < np; ++p)
                    if (PatMatch(m.st.patterns[p], mask[j], d, o->len[j]))
-                     ++c->match[p][lc];
+                     ++c->match[p][slot];
                }
                IndexSeg(*o, os->alive.data(), intern, df_add);
                o->custkey.shrink_to_fit();
@@ -915,6 +952,7 @@ void BulkFinish(Mut &m, const core::AuxEngineServices &services) {
                os->alive.shrink_to_fit();
                o->blob.shrink_to_fit();
                MergeTail(*os, df_add);
+               c->ids.shrink_to_fit();
                c->total.shrink_to_fit();
                c->mult.shrink_to_fit();
                for (auto &v : c->match)
@@ -941,15 +979,15 @@ void RecomputeHist(Mut &m, const core::AuxEngineServices &services) {
                const TpchQ13CustShard *c = m.ReadC(s);
                if (!c)
                  continue;
-               for (std::size_t lc = 0; lc < c->total.size(); ++lc) {
-                 if (c->mult[lc] <= 0)
+               for (std::size_t slot = 0; slot < c->total.size(); ++slot) {
+                 if (c->mult[slot] <= 0)
                    continue;
-                 const int64_t mult = c->mult[lc];
-                 HistAdd(h[np], mult * c->total[lc], 1);
+                 const int64_t mult = c->mult[slot];
+                 HistAdd(h[np], mult * c->total[slot], 1);
                  for (std::size_t p = 0; p < np; ++p)
                    HistAdd(h[p],
-                           mult * (c->total[lc] -
-                                   (p < c->match.size() ? c->match[p][lc] : 0)),
+                           mult * (c->total[slot] -
+                                   (p < c->match.size() ? c->match[p][slot] : 0)),
                            1);
                }
              }
@@ -1102,15 +1140,17 @@ bool PlanIndex(const TpchQ13State &st, const TpchQ13Like &like,
 
 // Customers owning matching orders of one shard: move them between buckets.
 // `m` is zero scratch (left zero), `touched` is empty scratch.
-void QuerySeg(const TpchQ13OrderSeg *o, const uint8_t *alive,
+void QuerySeg(const TpchQ13OrderSeg *o, const TpchQ13CustShard &c, const uint8_t *alive,
               const TpchQ13Like &like, bool anchored_scan, const IndexPlan *plan,
               std::vector<int32_t> &m, std::vector<uint32_t> &touched) {
   const char *blob = o->blob.data();
   auto count = [&](std::size_t j) {
-    const uint32_t lc = static_cast<uint32_t>(
-        static_cast<std::size_t>(o->custkey[j]) >> kTpchQ13ShardBits);
-    if (m[lc]++ == 0)
-      touched.push_back(lc);
+    const std::size_t slot = c.SlotOf(static_cast<uint32_t>(
+        static_cast<std::size_t>(o->custkey[j]) >> kTpchQ13ShardBits));
+    if (slot == TpchQ13CustShard::kNone)
+      return;
+    if (m[slot]++ == 0)
+      touched.push_back(static_cast<uint32_t>(slot));
   };
   auto check = [&](std::size_t j) {
     if (alive[j] && like.Matches(blob + o->start[j], o->len[j]))
@@ -1207,17 +1247,17 @@ void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
   if (m.size() < c->total.size())
     m.resize(c->total.size(), 0);
   if (o->base)
-    QuerySeg(o->base.get(), o->alive.data(), like, anchored_scan, plan, m,
+    QuerySeg(o->base.get(), *c, o->alive.data(), like, anchored_scan, plan, m,
              touched);
-  QuerySeg(&o->tail, o->alive.data() + o->BaseSize(), like, anchored_scan, plan,
+  QuerySeg(&o->tail, *c, o->alive.data() + o->BaseSize(), like, anchored_scan, plan,
            m, touched);
-  for (const uint32_t lc : touched) {
-    if (c->mult[lc] > 0) {
-      const int64_t mult = c->mult[lc];
-      HistAdd(delta, mult * c->total[lc], -1);
-      HistAdd(delta, mult * (c->total[lc] - m[lc]), +1);
+  for (const uint32_t slot : touched) {
+    if (c->mult[slot] > 0) {
+      const int64_t mult = c->mult[slot];
+      HistAdd(delta, mult * c->total[slot], -1);
+      HistAdd(delta, mult * (c->total[slot] - m[slot]), +1);
     }
-    m[lc] = 0;
+    m[slot] = 0;
   }
   touched.clear();
 }
@@ -1415,10 +1455,11 @@ std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state) {
     const auto &c = state.cust[s];
     if (!c)
       continue;
-    for (std::size_t lc = 0; lc < c->mult.size(); ++lc)
-      if (c->mult[lc] > 0)
+    for (std::size_t slot = 0; slot < c->mult.size(); ++slot)
+      if (c->mult[slot] > 0)
         custs.emplace_back(
-            static_cast<int64_t>((lc << kTpchQ13ShardBits) | s), c->mult[lc]);
+            static_cast<int64_t>((std::size_t{c->IdOf(slot)} << kTpchQ13ShardBits) | s),
+            c->mult[slot]);
   }
   writer.U64(custs.size());
   for (const auto &[ck, mult] : custs) {
@@ -1536,63 +1577,152 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
   builder.Finish();
 }
 
+namespace {
+
+// What one build partition has loaded: a working state holding only the
+// shards it touched, and its count changes.
+struct BuildPartial {
+  Mut m;
+  Tally tally;
+};
+
+// Appends the orders and adds the per-customer counts of `from`, shard by
+// shard in parallel. Partitions fold in table order, so each shard's orders
+// are in table order as in a serial scan.
+void MergeCust(TpchQ13CustShard &into, const TpchQ13CustShard &from) {
+  if (into.ids.empty() && from.ids.empty()) {
+    const std::size_t slots = std::max(into.total.size(), from.total.size());
+    into.total.resize(slots, 0);
+    into.mult.resize(slots, 0);
+    for (std::size_t i = 0; i < from.total.size(); ++i) {
+      into.total[i] += from.total[i];
+      into.mult[i] += from.mult[i];
+    }
+    for (std::size_t p = 0; p < from.match.size(); ++p) {
+      into.match[p].resize(slots, 0);
+      for (std::size_t i = 0; i < from.match[p].size(); ++i)
+        into.match[p][i] += from.match[p][i];
+    }
+    return;
+  }
+  TpchQ13CustShard merged;
+  merged.match.resize(into.match.size());
+  std::size_t a = 0, b = 0;
+  while (a < into.total.size() || b < from.total.size()) {
+    const bool has_a = a < into.total.size(), has_b = b < from.total.size();
+    const uint32_t id_a = has_a ? into.IdOf(a) : 0, id_b = has_b ? from.IdOf(b) : 0;
+    const bool take_a = has_a && (!has_b || id_a <= id_b);
+    const bool take_b = has_b && (!has_a || id_b <= id_a);
+    merged.ids.push_back(take_a ? id_a : id_b);
+    merged.total.push_back((take_a ? into.total[a] : 0) + (take_b ? from.total[b] : 0));
+    merged.mult.push_back((take_a ? into.mult[a] : 0) + (take_b ? from.mult[b] : 0));
+    for (std::size_t p = 0; p < merged.match.size(); ++p)
+      merged.match[p].push_back((take_a ? into.match[p][a] : 0) +
+                                (take_b ? from.match[p][b] : 0));
+    a += take_a;
+    b += take_b;
+  }
+  into = std::move(merged);
+}
+
+void MergeOrders(TpchQ13OrderShard &into, TpchQ13OrderShard &&from) {
+  auto &a = into.tail;
+  auto &b = from.tail;
+  if (a.blob.size() + b.blob.size() > std::numeric_limits<uint32_t>::max())
+    throw std::runtime_error("TPC-H Q13: order comments of one shard exceed 4 GiB");
+  const auto shift = static_cast<uint32_t>(a.blob.size());
+  a.custkey.insert(a.custkey.end(), b.custkey.begin(), b.custkey.end());
+  for (const auto start : b.start)
+    a.start.push_back(start + shift);
+  a.len.insert(a.len.end(), b.len.begin(), b.len.end());
+  a.blob.append(b.blob);
+  into.alive.insert(into.alive.end(), from.alive.begin(), from.alive.end());
+}
+
+void MergePartials(const core::AuxEngineServices &services, BuildPartial &into,
+                   BuildPartial &&from) {
+  core::ParallelSlices(
+      services, kTpchQ13Shards, kMergeGrain,
+      [&](std::size_t, std::size_t first, std::size_t last) {
+        for (std::size_t s = first; s < last; ++s) {
+          if (from.m.mo[s]) {
+            if (into.m.mo[s])
+              MergeOrders(*into.m.mo[s], std::move(*from.m.mo[s]));
+            else
+              into.m.mo[s] = std::move(from.m.mo[s]);
+          }
+          if (from.m.mc[s]) {
+            if (into.m.mc[s])
+              MergeCust(*into.m.mc[s], *from.m.mc[s]);
+            else
+              into.m.mc[s] = std::move(from.m.mc[s]);
+          }
+        }
+      });
+  into.tally.Merge(from.tally);
+}
+
+} // namespace
+
 TpchQ13State TpchQ13Module::BuildState(
     core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
 
   const bool profiling = CustomProfilingEnabled();
-  Mut m;
   // Every TPC-H-domain pattern is maintained from the start.
-  for (const auto &text : DomainPatterns())
-    m.st.patterns.push_back(MakePattern(text));
-  m.InitPatterns();
-
-  {  // exact per-shard sizes: reserve once, no growth slack or copies
-    std::vector<TpchQ13ShardSize> sizes;
-    if (initial_scan->ShardSizes(sizes))
-      for (const auto &z : sizes) {
-        if (z.shard >= kTpchQ13Shards)
-          continue;
-        if (z.orders > 0) {
-          auto &o = m.O(z.shard);
-          o.tail.custkey.reserve(z.orders);
-          o.tail.start.reserve(z.orders);
-          o.tail.len.reserve(z.orders);
-          o.alive.reserve(z.orders);
-          o.tail.blob.reserve(z.comment_bytes);
-        }
-        auto &c = m.C(z.shard);
-        const std::size_t slots = std::max<uint64_t>(z.cust_slots, 1);
-        c.total.reserve(slots);
-        c.mult.reserve(slots);
-        c.match.resize(m.st.patterns.size());
-        for (auto &v : c.match)
-          v.reserve(slots);
-      }
-  }
+  const auto make_partial = [] {
+    BuildPartial partial;
+    for (const auto &text : DomainPatterns())
+      partial.m.st.patterns.push_back(MakePattern(text));
+    partial.m.InitPatterns();
+    return partial;
+  };
+  const auto merge = [&](BuildPartial &into, BuildPartial &&from) {
+    MergePartials(services, into, std::move(from));
+  };
 
   CustomTimer t_cust(profiling);
-  Tally loaded;
-  int64_t ncust = 0;
-  initial_scan->ScanCustomers([&](const TpchQ13CustomerInput &input) {
-    ApplyCustomer(m, loaded, input.key, +1, Apply::Raw);
-    ++ncust;
-  });
+  auto built = core::PartitionedBuild<BuildPartial>(
+      services, make_partial,
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanCustomers(services, parts,
+                                    [&](std::size_t p, const TpchQ13CustomerInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ13CustomerInput>{input});
+                                    });
+      },
+      [](BuildPartial &partial, const TpchQ13CustomerInput &input) {
+        ApplyCustomer(partial.m, partial.tally, input.key, +1, Apply::Raw);
+      },
+      merge);
   if (profiling)
-    EmitCustomProfile("build_customers", t_cust.us(), ncust, 0, 0, 0);
+    EmitCustomProfile("build_customers", t_cust.us(), 0, 0, 0, 0);
 
   CustomTimer t_orders(profiling);
-  int64_t norders = 0;
-  initial_scan->ScanOrdersView([&](int64_t custkey, const char *data,
-                                   std::size_t len) {
-    ApplyOrder(m, loaded, custkey, std::string_view(data, len), +1, Apply::Raw);
-    ++norders;
-  });
+  struct OrderRow {
+    int64_t custkey;
+    std::string_view comment;
+  };
+  merge(built, core::PartitionedBuild<BuildPartial>(
+                   services, make_partial,
+                   [&](std::size_t parts, auto &&sink) {
+                     initial_scan->ScanOrders(
+                         services, parts,
+                         [&](std::size_t p, int64_t custkey, std::string_view comment) {
+                           const OrderRow row{custkey, comment};
+                           sink(p, TypedRowBatch<OrderRow>{row});
+                         });
+                   },
+                   [](BuildPartial &partial, const OrderRow &row) {
+                     ApplyOrder(partial.m, partial.tally, row.custkey, row.comment, +1,
+                                Apply::Raw);
+                   },
+                   merge));
   if (profiling)
-    EmitCustomProfile("build_orders", t_orders.us(), norders, 0, 0, 0);
+    EmitCustomProfile("build_orders", t_orders.us(), 0, 0, 0, 0);
 
-  m.Absorb(loaded);
+  Mut &m = built.m;
+  m.Absorb(built.tally);
   CustomTimer t_fin(profiling);
   BulkFinish(m, services);
   RecomputeHist(m, services);

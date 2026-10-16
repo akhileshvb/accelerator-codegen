@@ -97,6 +97,27 @@ public:
 
   void Clear() { dir_.clear(); }
 
+  // Folds `other` (same fill) into this array: chunks this array lacks are
+  // adopted whole, the other slots become combine(mine, theirs). Merges
+  // partial arrays of a parallel build; both sides must be private copies.
+  template <typename Combine> void MergeFrom(ChunkedCowArray &&other, Combine &&combine) {
+    if (dir_.size() < other.dir_.size())
+      dir_.resize(other.dir_.size());
+    for (std::size_t ci = 0; ci < other.dir_.size(); ++ci) {
+      if (!other.dir_[ci])
+        continue;
+      auto &mine = dir_[ci];
+      if (!mine) {
+        mine = std::move(other.dir_[ci]);
+        continue;
+      }
+      if (mine.use_count() > 1)
+        mine = std::make_shared<Chunk>(*mine);
+      for (std::size_t i = 0; i < kChunkSize; ++i)
+        (*mine)[i] = combine((*mine)[i], (*other.dir_[ci])[i]);
+    }
+  }
+
   // Directory introspection (iteration / diagnostics).
   std::size_t NumChunks() const { return dir_.size(); }
   const Chunk *ChunkAt(std::size_t ci) const {

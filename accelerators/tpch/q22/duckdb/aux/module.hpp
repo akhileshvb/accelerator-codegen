@@ -49,18 +49,14 @@ struct TpchQ22OrderInput {
 class TpchQ22InitialScan {
 public:
   virtual ~TpchQ22InitialScan() = default;
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanCustomers(
-      const std::function<void(const TpchQ22CustomerInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ22CustomerInput &)> &) = 0;
   virtual void ScanOrders(
-      const std::function<void(const TpchQ22OrderInput &)> &) = 0;
-
-  // Optional SQL pushdown for Build: orders per customer
-  // (SELECT o_custkey, COUNT(*) ... GROUP BY o_custkey).
-  virtual bool ScanOrderCounts(
-      const std::function<void(int64_t custkey, int64_t count)> &consumer) {
-    (void)consumer;
-    return false;
-  }
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ22OrderInput &)> &) = 0;
 };
 
 // ── State structures ────────────────────────────────────────────────────────
@@ -79,7 +75,7 @@ struct TpchQ22State {
   // write clones only the touched page(s). Keys outside the dense range go to
   // a (rarely used) copy-on-write sparse map. A null page means "no customers".
   static constexpr std::size_t kPageSize = 2048;
-  static constexpr int64_t kDenseLimit = int64_t{1} << 26;
+  static constexpr int64_t kDenseLimit = int64_t{1} << 30; // SF3000 customers reach 4.5e8
   struct Page {
     std::vector<CustomerRecord> recs = std::vector<CustomerRecord>(kPageSize);
   };

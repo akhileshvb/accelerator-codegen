@@ -2,8 +2,11 @@
 #include "tpch/q17/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -971,53 +974,98 @@ void TpchQ17Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 
+namespace {
+
+// Statistics of the lineitems seen per part key, in hash shards.
+struct PartStatsShards {
+  static constexpr std::size_t kShards = 64;
+  std::array<std::unordered_map<int64_t, TpchQ17PartStats>, kShards> shards;
+
+  static std::size_t ShardOf(int64_t partkey) {
+    return (static_cast<uint64_t>(partkey) * 0x9E3779B97F4A7C15ULL) >> 58;
+  }
+  static void AddBucket(TpchQ17PartStats &stats, int64_t quantity_raw, int64_t rows,
+                        int64_t price_raw) {
+    if (quantity_raw != static_cast<int32_t>(quantity_raw) ||
+        rows != static_cast<int32_t>(rows))
+      throw std::runtime_error("TPC-H Q17: quantity or row count exceeds 32 bits");
+    stats.sum_qty_raw += quantity_raw * rows;
+    stats.count += static_cast<int32_t>(rows);
+    for (auto &pair : stats.qty_price_pairs)
+      if (pair.quantity_raw == quantity_raw) {
+        pair.row_count += static_cast<int32_t>(rows);
+        pair.extendedprice_raw += price_raw;
+        return;
+      }
+    stats.qty_price_pairs.push_back({static_cast<int32_t>(quantity_raw),
+                                     static_cast<int32_t>(rows), price_raw});
+  }
+  void Add(const TpchQ17LineitemInput &input) {
+    AddBucket(shards[ShardOf(input.partkey)][input.partkey], input.quantity_raw, 1,
+              input.extendedprice_raw);
+  }
+  // Moves shard `shard` of `from` into this one's.
+  void FoldShard(std::size_t shard, PartStatsShards &&from) {
+    for (auto &[partkey, theirs] : from.shards[shard]) {
+      auto &mine = shards[shard][partkey];
+      for (const auto &pair : theirs.qty_price_pairs)
+        AddBucket(mine, pair.quantity_raw, pair.row_count, pair.extendedprice_raw);
+    }
+  }
+};
+
+} // namespace
+
 TpchQ17State TpchQ17Module::BuildState(
     core::AuxEngineServices &services) const {
-  TpchQ17State state;
   if (!initial_scan)
     throw std::logic_error(
         "TPC-H Q17 requires a typed initial scan source");
 
-  initial_scan->ScanParts([&](const TpchQ17PartInput &input) {
-    const auto key = TpchQ17State::MakeAttrKey(input.brand, input.container);
-    state.attribute_index[key].insert(input.key);
-    state.part_attr_keys[input.key] = key;
-  });
-
-  const bool used_sql = initial_scan->ScanPartQuantityAggregates(
-      [&](const TpchQ17PartQuantityAggregate &agg) {
-        auto &stats = state.part_stats[agg.partkey];
-        stats.sum_qty_raw += agg.quantity_raw * agg.row_count;
-        stats.count += static_cast<int32_t>(agg.row_count);
-        stats.qty_price_pairs.push_back(TpchQ17QtyPricePair{
-            static_cast<int32_t>(agg.quantity_raw),
-            static_cast<int32_t>(agg.row_count), agg.extendedprice_sum_raw});
+  TpchQ17State state = core::PartitionedBuild<TpchQ17State>(
+      services, [] { return TpchQ17State{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanParts(services, parts,
+                                [&](std::size_t p, const TpchQ17PartInput &input) {
+                                  sink(p, TypedRowBatch<TpchQ17PartInput>{input});
+                                });
+      },
+      [](TpchQ17State &partial, const TpchQ17PartInput &input) {
+        const auto key = TpchQ17State::MakeAttrKey(input.brand, input.container);
+        partial.attribute_index[key].insert(input.key);
+        partial.part_attr_keys[input.key] = key;
+      },
+      [](TpchQ17State &into, TpchQ17State &&from) {
+        for (auto &[key, partkeys] : from.attribute_index)
+          into.attribute_index[key].insert(partkeys.begin(), partkeys.end());
+        for (auto &[partkey, key] : from.part_attr_keys)
+          into.part_attr_keys[partkey] = std::move(key);
       });
-  if (!used_sql) {
-    std::unordered_map<int64_t,
-                       std::unordered_map<int64_t, std::pair<int32_t, int64_t>>>
-        qty_price_by_part;
-    initial_scan->ScanLineitems([&](const TpchQ17LineitemInput &input) {
-      auto &stats = state.part_stats[input.partkey];
-      stats.sum_qty_raw += input.quantity_raw;
-      stats.count += 1;
-      auto &bucket = qty_price_by_part[input.partkey][input.quantity_raw];
-      bucket.first += 1;
-      bucket.second += input.extendedprice_raw;
-    });
-    for (auto &[partkey, qty_map] : qty_price_by_part) {
-      auto &stats = state.part_stats[partkey];
-      stats.qty_price_pairs.reserve(qty_map.size());
-      for (const auto &[qty, bucket] : qty_map)
-        stats.qty_price_pairs.push_back(TpchQ17QtyPricePair{
-            static_cast<int32_t>(qty), bucket.first, bucket.second});
-    }
-  }
 
+  // Lineitem statistics per part, in hash shards so partial states fold shard
+  // by shard in parallel.
+  auto shards = core::PartitionedBuild<PartStatsShards>(
+      services, [] { return PartStatsShards{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ17LineitemInput &input) {
+                                      sink(p, TypedRowBatch<TpchQ17LineitemInput>{input});
+                                    });
+      },
+      [](PartStatsShards &partial, const TpchQ17LineitemInput &input) {
+        partial.Add(input);
+      },
+      [&](PartStatsShards &into, PartStatsShards &&from) {
+        core::ParallelSlices(services, PartStatsShards::kShards, 1,
+                             [&](std::size_t, std::size_t first, std::size_t last) {
+                               for (std::size_t s = first; s < last; ++s)
+                                 into.FoldShard(s, std::move(from));
+                             });
+      });
   std::vector<TpchQ17PartStats *> stats_list;
-  stats_list.reserve(state.part_stats.size());
-  for (auto &entry : state.part_stats)
-    stats_list.push_back(&entry.second);
+  for (auto &shard : shards.shards)
+    for (auto &entry : shard)
+      stats_list.push_back(&entry.second);
   core::ParallelSlices(
       services, stats_list.size(), kPartStatsGrain,
       [&](std::size_t, std::size_t begin, std::size_t end) {
@@ -1031,7 +1079,10 @@ TpchQ17State TpchQ17Module::BuildState(
           stats_list[i]->RecomputeContribution();
         }
       });
-
+  state.part_stats.reserve(stats_list.size());
+  for (auto &shard : shards.shards)
+    for (auto &entry : shard)
+      state.part_stats.emplace(entry.first, std::move(entry.second));
   return state;
 }
 

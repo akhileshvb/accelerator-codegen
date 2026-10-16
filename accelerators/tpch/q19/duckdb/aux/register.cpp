@@ -5,6 +5,7 @@
 #include "tpch/q19/duckdb/aux/module.hpp"
 #include "tpch/q19/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -132,41 +133,6 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
-// Typed streaming scan: reads DuckDB vectors directly (no boxed Values).
-template <typename T> struct TypedCol {
-  ::duckdb::UnifiedVectorFormat fmt;
-  const T *data = nullptr;
-  void Init(::duckdb::DataChunk &chunk, ::duckdb::idx_t col) {
-    chunk.data[col].ToUnifiedFormat(chunk.size(), fmt);
-    data = ::duckdb::UnifiedVectorFormat::GetData<T>(fmt);
-  }
-  bool Valid(::duckdb::idx_t row) const {
-    return fmt.validity.RowIsValid(fmt.sel->get_index(row));
-  }
-  const T &operator()(::duckdb::idx_t row) const {
-    return data[fmt.sel->get_index(row)];
-  }
-};
-
-template <typename Callback>
-void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
-                     Callback &&callback) {
-  auto scan_lock = LockScan(connection_p);
-  auto &connection = ScanConnection(connection_p);
-  auto result = connection.SendQuery(sql);
-  if (!result || result->HasError())
-    throw std::runtime_error(result ? result->GetError()
-                                    : "DuckDB scan returned null");
-  while (true) {
-    auto chunk = result->Fetch();
-    if (!chunk || chunk->size() == 0)
-      break;
-    callback(*chunk);
-  }
-  if (result->HasError())
-    throw std::runtime_error(result->GetError());
-}
-
 struct TpchQ19Scan : TpchQ19InitialScan {
   explicit TpchQ19Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
@@ -226,46 +192,38 @@ struct TpchQ19Scan : TpchQ19InitialScan {
         });
     return true;
   }
-  bool ScanQualifyingLineitemsByPart(
-      const std::function<void(int64_t, int64_t, int64_t, int64_t)> &consumer)
-      override {
-    ScanTypedChunks(
-        connection,
-        "SELECT CAST(l_partkey AS BIGINT), "
-        "CAST(round(l_quantity * 100) AS BIGINT), "
-        "CAST(SUM(CAST(round(l_extendedprice * 100) AS BIGINT) * "
-        "(100 - CAST(round(l_discount * 100) AS BIGINT))) AS BIGINT), "
-        "COUNT(*) FROM lineitem "
-        "WHERE l_shipmode IN ('AIR', 'AIR REG') "
-        "AND l_shipinstruct = 'DELIVER IN PERSON' "
-        "GROUP BY l_partkey, l_quantity ORDER BY l_partkey",
-        [&](::duckdb::DataChunk &chunk) {
-          TypedCol<int64_t> pk, qty, rev, cnt;
-          pk.Init(chunk, 0);
-          qty.Init(chunk, 1);
-          rev.Init(chunk, 2);
-          cnt.Init(chunk, 3);
-          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
-            if (!pk.Valid(i) || !qty.Valid(i))
-              continue;
-            consumer(pk(i), qty(i), rev.Valid(i) ? rev(i) : 0, cnt(i));
-          }
-        });
-    return true;
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ19PartInput &)> &sink) override {
+    ScanPartitioned(services, connection, "part",
+                    {IntColumn("p_partkey"), TextColumn("p_brand"), TextColumn("p_container"),
+                     IntColumn("p_size")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        const auto size = row.Int(3);
+                        if (size != static_cast<int32_t>(size))
+                          throw std::runtime_error("TPC-H Q19: p_size exceeds 32 bits");
+                        sink(partition, TpchQ19PartInput{row.Int(0), row.Text(1), row.Text(2),
+                                                         static_cast<int32_t>(size)});
+                      }
+                    });
   }
-  bool ScanPartFamilies(
-      const std::function<void(int64_t, const std::string &, int)> &consumer)
-      override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT p_partkey, p_brand, " + FamilyCase() + " FROM part",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return std::make_tuple(SafeInt64(ChunkValue(chunk, 0, row)),
-                                 ChunkValue(chunk, 1, row).ToString(),
-                                 static_cast<int>(SafeInt64(ChunkValue(chunk, 2, row))));
-        },
-        [&](auto &&input) { std::apply(consumer, input); });
-    return true;
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ19LineitemRow &)> &sink) override {
+    ScanPartitioned(services, connection, "lineitem",
+                    {IntColumn("l_partkey"), DecimalColumn("l_quantity", 2),
+                     DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2),
+                     TextColumn("l_shipmode"), TextColumn("l_shipinstruct")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ19LineitemRow{row.Int(0), row.Decimal(1), row.Decimal(2),
+                                                           row.Decimal(3), row.TextView(4),
+                                                           row.TextView(5)});
+                      }
+                    });
   }
   bool LookupPart(int64_t partkey, TpchQ19PartInput &out) override {
     auto scan_lock = LockScan(connection);

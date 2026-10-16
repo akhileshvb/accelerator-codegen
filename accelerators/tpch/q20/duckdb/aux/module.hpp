@@ -45,11 +45,6 @@ struct TpchQ20LineitemInput {
   int64_t quantity_raw = 0;
 };
 
-struct TpchQ20PartInput {
-  int64_t key = 0;
-  std::string name;
-};
-
 struct TpchQ20PartsuppInput {
   int64_t partkey = 0;
   int64_t suppkey = 0;
@@ -71,41 +66,22 @@ struct TpchQ20NationInput {
 class TpchQ20InitialScan {
 public:
   virtual ~TpchQ20InitialScan() = default;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ20LineitemInput &)> &) = 0;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ20PartInput &)> &) = 0;
-  virtual void ScanPartsupps(
-      const std::function<void(const TpchQ20PartsuppInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ20SupplierInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ20NationInput &)> &) = 0;
-
-  // Optional typed/ordered bulk scans used by Build (SQL ORDER BY, no boxed
-  // per-cell values). Return false when unsupported (generic path is used).
-  //   lineitems ordered by (partkey, suppkey)
-  virtual bool ScanLineitemsByPair(
-      const std::function<void(int64_t partkey, int64_t suppkey,
-                               int32_t shipdate_days, int64_t quantity_raw)>
-          &consumer) {
-    (void)consumer;
-    return false;
-  }
-  //   partsupps ordered by (partkey, suppkey)
-  virtual bool ScanPartsuppsOrdered(
-      const std::function<void(int64_t partkey, int64_t suppkey,
-                               int64_t availqty)> &consumer) {
-    (void)consumer;
-    return false;
-  }
-  //   parts, any order
-  virtual bool ScanPartNames(
-      const std::function<void(int64_t partkey, const char *name,
-                               std::size_t len)> &consumer) {
-    (void)consumer;
-    return false;
-  }
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
+  virtual void ScanLineitems(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ20LineitemInput &)> &) = 0;
+  virtual void ScanPartNames(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, int64_t partkey, std::string_view name)> &) = 0;
+  virtual void ScanPartsupps(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ20PartsuppInput &)> &) = 0;
+  virtual void ScanSuppliers(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ20SupplierInput &)> &) = 0;
 };
 
 // ── State structures ────────────────────────────────────────────────────────
@@ -147,7 +123,7 @@ struct TpchQ20Base {
 
   // (partkey << 20 | suppkey) sorted; CSR over series_entries.
   std::vector<uint64_t> series_key;
-  std::vector<uint32_t> series_off; // series_key.size() + 1
+  std::vector<uint64_t> series_off; // series_key.size() + 1
   std::vector<Entry> series_entries;
   // Pairs whose quantities do not fit Entry::qty (idx -> entries).
   std::unordered_map<uint32_t, std::vector<TpchQ20DateQuantity>> series_wide;
@@ -165,7 +141,7 @@ struct TpchQ20Base {
 
   // part names sorted bytewise; parallel partkey array.
   std::string name_arena;
-  std::vector<uint32_t> name_off; // n + 1
+  std::vector<uint64_t> name_off; // n + 1
   std::vector<int64_t> name_partkey;
   std::vector<uint32_t> part_rank; // dense by partkey: first rank, or kNoRank
   std::unordered_map<int64_t, uint32_t> sparse_rank; // keys past part_rank
