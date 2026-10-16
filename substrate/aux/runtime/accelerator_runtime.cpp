@@ -370,6 +370,9 @@ void AcceleratorRuntime::Applied(const CommittedChange &change, double us) {
     impl->stats.rows_applied += batch->row_count;
   }
   impl->stats.apply_us += us;
+  if (impl->stats.last_decision) {
+    impl->stats.last_decision->maintenance_us = us;
+  }
 }
 
 void AcceleratorRuntime::MarkStale(Epoch from) {

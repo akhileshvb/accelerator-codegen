@@ -357,6 +357,16 @@ std::string MysqlHost::LastMaintenanceAction() const {
   return decision && decision->valid ? maintenance::MaintenanceActionName(decision->staged_action) : "";
 }
 
+std::string MysqlHost::LastMaintenanceDecision() const {
+  const auto *accelerator = impl->last_read.load();
+  const auto decision = accelerator ? accelerator->Stats().last_decision : std::nullopt;
+  if (!decision) {
+    return "";
+  }
+  core::SetGlobalMaintenanceDecision(*decision);
+  return core::FormatLastMaintenanceDecision();
+}
+
 void MysqlHost::ForceMaintenanceAction(const std::string &action) {
   core::ClearMaintenanceDecisionLog();
   core::SetForcedMaintenanceActionName(action);
