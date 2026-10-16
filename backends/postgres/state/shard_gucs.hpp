@@ -19,6 +19,11 @@ int ReadWaitMs();
 // Workers (server settings).
 // accel.shard_read_threads: threads serving reads.
 int ReadThreads();
+// accel.read_threads / build_threads / maint_threads: caps of the module's parallel
+// reads, builds and maintenance (0: the runtime's default).
+int PhaseReadThreads();
+int PhaseBuildThreads();
+int PhaseMaintenanceThreads();
 // accel.shard_idle_exit_s: a worker exits after this much idleness (0: never).
 int IdleExitSeconds();
 
