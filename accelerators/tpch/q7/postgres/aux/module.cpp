@@ -12,7 +12,9 @@
 #include <utility>
 
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 #include "prims/sql_date.hpp"
 #include "tpch/q7/layout.hpp"
 
@@ -163,16 +165,6 @@ bool LoadEntry(const TpchQ7State &s, int64_t orderkey, OrderEntry &e) {
   return DecodeEntry(v, e);
 }
 
-bool StoreEntry(TpchQ7State &s, int64_t orderkey, const OrderEntry &e) {
-  if (!e.present && e.lines.empty()) {
-    s.orders.Erase(orderkey);
-    return true;
-  }
-  thread_local std::vector<uint8_t> buf;
-  EncodeEntry(e, buf);
-  return s.orders.Set(orderkey, buf);
-}
-
 // ---- Cube ------------------------------------------------------------------
 using Cube = std::map<TpchQ7CubeKey, TpchQ7CubeCell>;
 
@@ -189,11 +181,6 @@ void MergeCube(Cube &into, Cube &&from) {
     AddCell(into, key, cell.revenue, cell.rows);
 }
 
-void Contribute(TpchQ7State &s, int32_t supp_nk, int32_t cust_nk, int32_t year,
-                int64_t volume, int sign) {
-  AddCell(s.cube, {supp_nk, cust_nk, year}, static_cast<Int128>(sign) * volume, sign);
-}
-
 // The supplier / customer nation of a record when the whole join resolves.
 bool Joins(const TpchQ7State &s, int64_t suppkey, int64_t custkey,
            int32_t &supp_nk, int32_t &cust_nk) {
@@ -202,118 +189,165 @@ bool Joins(const TpchQ7State &s, int64_t suppkey, int64_t custkey,
   return supp_nk != TpchQ7State::kAbsent && cust_nk != TpchQ7State::kAbsent;
 }
 
-// ---- Incremental maintenance primitives ------------------------------------
-// Each returns false when the write cannot be applied exactly to this state
-// (inconsistent row, unsupported key); the caller then rebuilds.
-
-bool ApplyLineitem(TpchQ7State &s, int64_t orderkey, int64_t suppkey,
-                   int32_t year, int64_t volume, int sign) {
-  OrderEntry e;
-  if (!LoadEntry(s, orderkey, e))
-    return false;
-  const LineRec rec{suppkey, year, volume};
-  if (sign > 0) {
-    e.lines.push_back(rec);
-  } else {
-    const auto it = std::find(e.lines.begin(), e.lines.end(), rec);
-    if (it == e.lines.end())
-      return false;
-    e.lines.erase(it);
-  }
-  if (!StoreEntry(s, orderkey, e))
-    return false;
-  const uint32_t refs = s.supplier_refs.Get(suppkey);
-  if (sign > 0)
-    s.supplier_refs.Set(suppkey, refs + 1);
-  else if (refs > 0)
-    s.supplier_refs.Set(suppkey, refs - 1);
-  int32_t snk = 0, cnk = 0;
-  if (e.present && Joins(s, suppkey, e.custkey, snk, cnk))
-    Contribute(s, snk, cnk, year, volume, sign);
-  return true;
-}
-
-bool ApplyOrder(TpchQ7State &s, int64_t orderkey, int64_t custkey, int sign) {
-  OrderEntry e;
-  if (!LoadEntry(s, orderkey, e))
-    return false;
-  if (sign > 0) {
-    if (e.present)
-      return false; // duplicate order key: not a TPC-H orders table
-    e.present = true;
-    e.custkey = custkey;
-  } else {
-    if (!e.present || e.custkey != custkey)
-      return false;
-    e.present = false;
-  }
-  if (!StoreEntry(s, orderkey, e))
-    return false;
-  const uint32_t refs = s.customer_refs.Get(custkey);
-  if (sign > 0)
-    s.customer_refs.Set(custkey, refs + 1);
-  else if (refs > 0)
-    s.customer_refs.Set(custkey, refs - 1);
-  for (const auto &l : e.lines) {
-    int32_t snk = 0, cnk = 0;
-    if (Joins(s, l.suppkey, custkey, snk, cnk))
-      Contribute(s, snk, cnk, l.year, l.volume, sign);
-  }
-  return true;
-}
-
-// ---- Bulk build of the lineitem entries ------------------------------------
-// The build folds whole orders at once instead of applying lineitem by lineitem:
-// the in-window lineitems are dealt to owners by order, and each owner builds
-// the entries of its orders against the (read-only) orders applied so far. The
-// stores and counters are applied afterwards, serially.
-struct BuildLine {
+// ---- Folding rows into order entries ---------------------------------------
+// Build and maintenance fold whole batches of rows at once. The rows are dealt
+// to owners by order-map chunk; each owner folds its orders against the
+// (read-only) state, in parallel slices, into the new entries and the net
+// effects on the counters and the cube. The state is then written serially.
+struct LineRow {
   int64_t orderkey = 0;
   LineRec rec;
+  int sign = +1; // +1 added, -1 removed
+};
+
+struct OrderRow {
+  int64_t orderkey = 0;
+  int64_t custkey = 0;
+  int sign = +1;
 };
 
 struct FoldedOrders {
+  bool ok = true; // false: a row could not be applied exactly
   std::vector<int64_t> orderkeys; // ascending
-  std::vector<std::size_t> ends;  // end of each entry in `bytes`
+  std::vector<std::size_t> ends;  // end of each entry in `bytes` (empty: erased)
   std::vector<uint8_t> bytes;
-  std::unordered_map<int64_t, uint32_t> supplier_refs; // lineitems per supplier
+  std::unordered_map<int64_t, int64_t> supplier_refs; // net in-window lineitems per supplier
+  std::unordered_map<int64_t, int64_t> customer_refs; // net orders per customer
   Cube cube;
 };
 
-FoldedOrders FoldOrders(const TpchQ7State &s, std::vector<BuildLine> &lines) {
-  std::sort(lines.begin(), lines.end(), [](const BuildLine &l, const BuildLine &r) {
+FoldedOrders Unfoldable() {
+  FoldedOrders folded;
+  folded.ok = false;
+  return folded;
+}
+
+void AppendEntry(FoldedOrders &folded, int64_t orderkey, const OrderEntry &e) {
+  thread_local std::vector<uint8_t> encoded;
+  if (e.present || !e.lines.empty()) {
+    EncodeEntry(e, encoded);
+    folded.bytes.insert(folded.bytes.end(), encoded.begin(), encoded.end());
+  }
+  folded.orderkeys.push_back(orderkey);
+  folded.ends.push_back(folded.bytes.size());
+}
+
+FoldedOrders FoldLines(const TpchQ7State &s, std::vector<LineRow> &lines) {
+  std::sort(lines.begin(), lines.end(), [](const LineRow &l, const LineRow &r) {
     return std::tie(l.orderkey, l.rec.suppkey, l.rec.year, l.rec.volume) <
            std::tie(r.orderkey, r.rec.suppkey, r.rec.year, r.rec.volume);
   });
   FoldedOrders folded;
-  std::vector<uint8_t> entry_bytes;
   for (std::size_t i = 0; i < lines.size();) {
+    const int64_t orderkey = lines[i].orderkey;
     OrderEntry e;
-    if (!LoadEntry(s, lines[i].orderkey, e))
-      throw std::runtime_error("TPC-H Q7: unsupported lineitem row");
-    folded.orderkeys.push_back(lines[i].orderkey);
-    for (; i < lines.size() && lines[i].orderkey == folded.orderkeys.back(); ++i) {
+    if (!LoadEntry(s, orderkey, e))
+      return Unfoldable();
+    for (; i < lines.size() && lines[i].orderkey == orderkey; ++i) {
       const LineRec &rec = lines[i].rec;
-      e.lines.push_back(rec);
-      ++folded.supplier_refs[rec.suppkey];
+      const int sign = lines[i].sign;
+      if (sign > 0) {
+        e.lines.push_back(rec);
+      } else {
+        const auto it = std::find(e.lines.begin(), e.lines.end(), rec);
+        if (it == e.lines.end())
+          return Unfoldable();
+        e.lines.erase(it);
+      }
+      folded.supplier_refs[rec.suppkey] += sign;
       int32_t snk = 0, cnk = 0;
       if (e.present && Joins(s, rec.suppkey, e.custkey, snk, cnk))
-        AddCell(folded.cube, {snk, cnk, rec.year}, rec.volume, +1);
+        AddCell(folded.cube, {snk, cnk, rec.year}, static_cast<Int128>(sign) * rec.volume, sign);
     }
-    EncodeEntry(e, entry_bytes);
-    folded.bytes.insert(folded.bytes.end(), entry_bytes.begin(), entry_bytes.end());
-    folded.ends.push_back(folded.bytes.size());
+    AppendEntry(folded, orderkey, e);
   }
   return folded;
 }
 
+FoldedOrders FoldOrderRows(const TpchQ7State &s, std::vector<OrderRow> &orders) {
+  std::sort(orders.begin(), orders.end(), [](const OrderRow &l, const OrderRow &r) {
+    return std::tie(l.orderkey, l.custkey) < std::tie(r.orderkey, r.custkey);
+  });
+  FoldedOrders folded;
+  for (std::size_t i = 0; i < orders.size();) {
+    const int64_t orderkey = orders[i].orderkey;
+    OrderEntry e;
+    if (!LoadEntry(s, orderkey, e))
+      return Unfoldable();
+    for (; i < orders.size() && orders[i].orderkey == orderkey; ++i) {
+      const OrderRow &row = orders[i];
+      if (row.sign > 0) {
+        if (e.present)
+          return Unfoldable(); // duplicate order key: not a TPC-H orders table
+        e.present = true;
+        e.custkey = row.custkey;
+      } else {
+        if (!e.present || e.custkey != row.custkey)
+          return Unfoldable();
+        e.present = false;
+      }
+      folded.customer_refs[row.custkey] += row.sign;
+      for (const auto &l : e.lines) {
+        int32_t snk = 0, cnk = 0;
+        if (Joins(s, l.suppkey, row.custkey, snk, cnk))
+          AddCell(folded.cube, {snk, cnk, l.year}, static_cast<Int128>(row.sign) * l.volume,
+                  row.sign);
+      }
+    }
+    AppendEntry(folded, orderkey, e);
+  }
+  return folded;
+}
+
+void ApplyRefs(core::AnyKeyCowArray<uint32_t> &refs,
+               const std::unordered_map<int64_t, int64_t> &net) {
+  for (const auto &[key, change] : net)
+    refs.Set(key, static_cast<uint32_t>(std::max<int64_t>(0, int64_t{refs.Get(key)} + change)));
+}
+
 void InstallFolded(TpchQ7State &s, FoldedOrders &&folded) {
   std::size_t begin = 0;
-  for (std::size_t i = 0; i < folded.orderkeys.size(); begin = folded.ends[i++])
-    s.orders.Set(folded.orderkeys[i], folded.bytes.data() + begin, folded.ends[i] - begin);
-  for (const auto &[suppkey, count] : folded.supplier_refs)
-    s.supplier_refs.Set(suppkey, s.supplier_refs.Get(suppkey) + count);
+  for (std::size_t i = 0; i < folded.orderkeys.size(); begin = folded.ends[i++]) {
+    if (folded.ends[i] == begin)
+      s.orders.Erase(folded.orderkeys[i]);
+    else
+      s.orders.Set(folded.orderkeys[i], folded.bytes.data() + begin, folded.ends[i] - begin);
+  }
+  ApplyRefs(s.supplier_refs, folded.supplier_refs);
+  ApplyRefs(s.customer_refs, folded.customer_refs);
   MergeCube(s.cube, std::move(folded.cube));
+}
+
+// Owners of the folds of a batch: one for a small batch, else enough to keep
+// the workers busy past uneven chunks. A function of the data, not of threads.
+constexpr std::size_t kMaxOwners = 256;
+constexpr std::size_t kRowsPerOwner = 1024;
+
+std::size_t OwnerCount(std::size_t rows) {
+  return std::clamp<std::size_t>(rows / kRowsPerOwner, 1, kMaxOwners);
+}
+
+std::size_t OwnerOf(int64_t orderkey, std::size_t owners) {
+  return static_cast<uint64_t>(orderkey >> core::ChunkedBlobMap::kKeyShift) % owners;
+}
+
+// Folds each owner's rows in parallel slices, then installs the folds in owner
+// order. False (the state untouched) when a row cannot be applied exactly.
+template <class Row, class Fold>
+bool FoldAndInstall(const core::AuxEngineServices &services, TpchQ7State &s,
+                    Buckets<Row> &owners, Fold &&fold) {
+  std::vector<FoldedOrders> folded(owners.size());
+  const TpchQ7State &before = s;
+  core::ParallelEach(services, owners.size(), 1, [&](std::size_t owner) {
+    folded[owner] = fold(before, owners[owner]);
+    owners[owner] = {};
+  });
+  for (const FoldedOrders &part : folded)
+    if (!part.ok)
+      return false;
+  for (FoldedOrders &part : folded)
+    InstallFolded(s, std::move(part));
+  return true;
 }
 
 // Old / new nation key of a supplier or customer changed by one write batch
@@ -447,6 +481,25 @@ bool CollectKeyChanges(const core::MutationBatch &m, KeyChanges &out) {
   return true;
 }
 
+// Loads a dimension's (key -> nation key) column from its partitioned scan.
+template <class Input, class Scan>
+void LoadNationColumn(const core::AuxEngineServices &services, Scan &&scan,
+                      core::AnyKeyCowArray<int32_t> &column) {
+  using Rows = std::vector<std::pair<int64_t, int32_t>>;
+  const Rows rows = core::PartitionedBuild<Rows>(
+      services, [] { return Rows{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        scan(partitions, [&](std::size_t partition, const Input &input) {
+          sink(partition, OneRowBatch<Input>{input});
+        });
+      },
+      [](Rows &into, const Input &input) { into.emplace_back(input.key, input.nationkey); },
+      [](Rows &into, Rows &&from) { into.insert(into.end(), from.begin(), from.end()); },
+      BuildPartitions(services));
+  for (const auto &[key, nationkey] : rows)
+    column.Set(key, nationkey);
+}
+
 } // namespace
 
 core::AcceleratorId TpchQ7Module::Id() const { return kId; }
@@ -478,37 +531,58 @@ std::shared_ptr<TpchQ7State> TpchQ7Module::BuildState(const core::AuxEngineServi
   initial_scan->ScanNations([&](const TpchQ7NationInput &input) {
     s.nations[input.key] = input.name;
   });
-  initial_scan->ScanSuppliers([&](const TpchQ7SupplierInput &input) {
-    s.supplier_nation.Set(input.key, input.nationkey);
-  });
-  initial_scan->ScanCustomers([&](const TpchQ7CustomerInput &input) {
-    s.customer_nation.Set(input.key, input.nationkey);
-  });
-  initial_scan->ScanOrders([&](const TpchQ7OrderInput &input) {
-    if (!ApplyOrder(s, input.key, input.custkey, +1))
-      throw std::runtime_error("TPC-H Q7: unsupported orders row");
-  });
+  LoadNationColumn<TpchQ7SupplierInput>(
+      services,
+      [&](std::size_t partitions, const auto &sink) {
+        initial_scan->ScanSuppliersPartitioned(services, partitions, sink);
+      },
+      s.supplier_nation);
+  LoadNationColumn<TpchQ7CustomerInput>(
+      services,
+      [&](std::size_t partitions, const auto &sink) {
+        initial_scan->ScanCustomersPartitioned(services, partitions, sink);
+      },
+      s.customer_nation);
+
+  // Orders first: the lineitems fold against them.
+  auto orders = core::PartitionedBuild<Buckets<OrderRow>>(
+      services, [] { return Buckets<OrderRow>(kMaxOwners); },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(
+            services, partitions, [&](std::size_t partition, const TpchQ7OrderInput &input) {
+              sink(partition, OneRowBatch<TpchQ7OrderInput>{input});
+            });
+      },
+      [](Buckets<OrderRow> &into, const TpchQ7OrderInput &input) {
+        into[OwnerOf(input.key, kMaxOwners)].push_back({input.key, input.custkey});
+      },
+      AppendBuckets<OrderRow>, BuildPartitions(services));
+  if (!FoldAndInstall(services, s, orders, FoldOrderRows))
+    throw std::runtime_error("TPC-H Q7: unsupported orders row");
 
   const int64_t first_day = sql_date::DaysFromCivil(kTpchQ7MinYear, 1, 1);
   const int64_t last_day = sql_date::DaysFromCivil(kTpchQ7MaxYear, 12, 31);
-  std::vector<std::vector<BuildLine>> by_owner(std::max<std::size_t>(1, services.WorkerCount()));
-  initial_scan->ScanLineitems([&](const TpchQ7LineitemInput &input) {
-    if (input.shipdate_days < first_day || input.shipdate_days > last_day)
-      return;
-    int64_t volume = 0;
-    if (!VolumeRaw(input.extended_price_raw, input.extended_price_scale,
-                   input.discount_raw, input.discount_scale, volume))
-      throw std::runtime_error("TPC-H Q7: unsupported price / discount");
-    const std::size_t owner = static_cast<uint64_t>(input.orderkey >> core::ChunkedBlobMap::kKeyShift) % by_owner.size();
-    by_owner[owner].push_back(
-        {input.orderkey, {input.suppkey, sql_date::YearOf(input.shipdate_days), volume}});
-  });
-  std::vector<FoldedOrders> folded(by_owner.size());
-  services.ParallelFor(by_owner.size(), [&](std::size_t owner) {
-    folded[owner] = FoldOrders(s, by_owner[owner]);
-  });
-  for (FoldedOrders &part : folded)
-    InstallFolded(s, std::move(part));
+  auto lines = core::PartitionedBuild<Buckets<LineRow>>(
+      services, [] { return Buckets<LineRow>(kMaxOwners); },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, partitions, [&](std::size_t partition, const TpchQ7LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ7LineitemInput>{input});
+            });
+      },
+      [&](Buckets<LineRow> &into, const TpchQ7LineitemInput &input) {
+        if (input.shipdate_days < first_day || input.shipdate_days > last_day)
+          return;
+        int64_t volume = 0;
+        if (!VolumeRaw(input.extended_price_raw, input.extended_price_scale,
+                       input.discount_raw, input.discount_scale, volume))
+          throw std::runtime_error("TPC-H Q7: unsupported price / discount");
+        into[OwnerOf(input.orderkey, kMaxOwners)].push_back(
+            {input.orderkey, {input.suppkey, sql_date::YearOf(input.shipdate_days), volume}});
+      },
+      AppendBuckets<LineRow>, BuildPartitions(services));
+  if (!FoldAndInstall(services, s, lines, FoldLines))
+    throw std::runtime_error("TPC-H Q7: unsupported lineitem row");
   s.orders.Shrink();
   return state;
 }
@@ -627,6 +701,7 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
   } else if (mutation.table == config.orders_table) {
     const auto apply = [&](const std::vector<core::AuxRow> &rows, int sign) {
+      Buckets<OrderRow> owners(OwnerCount(rows.size()));
       for (const auto &row : rows) {
         int64_t orderkey = 0, custkey = 0;
         const Cell a = IntCell(row, 0, orderkey);
@@ -635,16 +710,16 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
           return false;
         if (a == Cell::Null || b == Cell::Null)
           continue; // never joins
-        if (!ApplyOrder(s, orderkey, custkey, sign))
-          return false;
+        owners[OwnerOf(orderkey, owners.size())].push_back({orderkey, custkey, sign});
       }
-      return true;
+      return FoldAndInstall(services, s, owners, FoldOrderRows);
     };
     ok = apply(mutation.old_rows, -1) && apply(mutation.new_rows, +1);
   } else if (mutation.table == config.lineitem_table) {
     const int64_t first_day = sql_date::DaysFromCivil(kTpchQ7MinYear, 1, 1);
     const int64_t last_day = sql_date::DaysFromCivil(kTpchQ7MaxYear, 12, 31);
     const auto apply = [&](const std::vector<core::AuxRow> &rows, int sign) {
+      Buckets<LineRow> owners(OwnerCount(rows.size()));
       for (const auto &row : rows) {
         int64_t orderkey = 0, suppkey = 0, price = 0, discount = 0;
         int32_t price_scale = 0, discount_scale = 0, shipdate = 0;
@@ -662,12 +737,12 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
         if (null_cell || shipdate < first_day || shipdate > last_day)
           continue; // not in the result
         int64_t volume = 0;
-        if (!VolumeRaw(price, price_scale, discount, discount_scale, volume) ||
-            !ApplyLineitem(s, orderkey, suppkey, sql_date::YearOf(shipdate),
-                           volume, sign))
+        if (!VolumeRaw(price, price_scale, discount, discount_scale, volume))
           return false;
+        owners[OwnerOf(orderkey, owners.size())].push_back(
+            {orderkey, {suppkey, sql_date::YearOf(shipdate), volume}, sign});
       }
-      return true;
+      return FoldAndInstall(services, s, owners, FoldLines);
     };
     ok = apply(mutation.old_rows, -1) && apply(mutation.new_rows, +1);
   }
