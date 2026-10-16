@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "tpch/common/partitioned_collect.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -618,7 +619,6 @@ void TpchQ11Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q11 requires a typed initial scan source");
   TpchQ11State state;
@@ -627,11 +627,14 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
   initial_scan->ScanSuppliers([&](const TpchQ11SupplierInput &input) {
     state.SetSupplierNation(input.suppkey, input.nationkey);
   });
-  initial_scan->ScanPartsupp([&](const TpchQ11PartsuppInput &input) {
+  // The scan runs in parallel; the offers are added in partition order.
+  for (const auto &input : CollectRows<TpchQ11PartsuppInput>(
+           services, BuildPartitions(services), [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsuppPartitioned(services, parts, sink);
+           }))
     state.AddOffer(input.partkey,
                    {input.suppkey, input.supplycost_raw,
                     static_cast<int32_t>(input.availqty)});
-  });
   state.BuildGroups(services);
   return state;
 }
