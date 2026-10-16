@@ -293,20 +293,14 @@ def resolve_optimization_edit_paths(
     paths = resolve_workload_paths(pipeline_config, workload, query)
     if workload.get("workload_kind") == "aux_state":
         aux = paths["aux_state_subdir"]
-        qdir = query_dir(str(workload.get("benchmark_name", "tpch")), int(workload.get("query_number", query)))
-        aux_test = f"{qdir}/tests/{paths['aux_test_target']}.cpp"
         all_paths = [
             f"{aux}/module.hpp",
             f"{aux}/module.cpp",
             f"{aux}/finalize.cpp",
-            aux_test,
         ]
         cost_model = paths.get("cost_model_config")
         if cost_model:
             all_paths.append(cost_model)
-        test_support = f"{qdir}/tests/q{int(workload.get('query_number', query))}_aux_helpers.hpp"
-        if (pipeline_config.repo_root / test_support).is_file():
-            all_paths.append(test_support)
         return {
             "primary_cpp": f"{aux}/module.cpp",
             "header": f"{aux}/module.hpp",
