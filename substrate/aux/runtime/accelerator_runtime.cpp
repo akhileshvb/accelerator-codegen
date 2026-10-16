@@ -52,11 +52,11 @@ double MicrosSince(Clock::time_point start) {
 thread_local const AcceleratorRuntime *t_reader = nullptr;
 thread_local Epoch t_reader_epoch = 0;
 
-// What this thread is doing for a runtime; ParallelFor is serial outside
-// reads and builds (maintenance stays single-threaded).
-enum class Phase { Maintenance, Read, Build };
+// What this thread is doing for a runtime; each phase has its own thread cap,
+// and ParallelFor is serial outside them.
+enum class Phase { None, Read, Build, Maintenance };
 thread_local const AcceleratorRuntime *t_phase_runtime = nullptr;
-thread_local Phase t_phase = Phase::Maintenance;
+thread_local Phase t_phase = Phase::None;
 
 class PhaseScope {
 public:
@@ -304,6 +304,7 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
     return true;
   }
   core::ClearMaintenanceDecisionLog();
+  const PhaseScope maintaining(this, Phase::Maintenance);
   try {
     const bool valid = Publish(Stage(change.batches), change.epoch);
     std::lock_guard<std::mutex> lock(impl->state_mutex);
@@ -681,6 +682,8 @@ std::size_t AcceleratorRuntime::WorkerCount() const {
   case Phase::Build:
     return threads.BuildLimit();
   case Phase::Maintenance:
+    return threads.MaintenanceLimit();
+  case Phase::None:
     break;
   }
   return 1;

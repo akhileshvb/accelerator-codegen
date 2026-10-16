@@ -93,7 +93,8 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
                            ::duckdb::DBConfig::GetConfig(db_p).options.maximum_threads)) {
     auto &threads = runtime.Threads();
     threads.SetPhaseLimits(runtime::ResolveReadThreads(0, threads.Budget()),
-                           runtime::ResolveBuildThreads(0, threads.Budget()));
+                           runtime::ResolveBuildThreads(0, threads.Budget()),
+                           runtime::ResolveMaintenanceThreads(0, threads.Budget()));
   }
 
   ::duckdb::DatabaseInstance &db;

@@ -431,9 +431,11 @@ void ThreadLimitsPerPhase() {
   CHECK(stage.workers == 1 && stage.peak == 1);
   CHECK(runtime.WorkerCount() == 1); // outside any phase
 
-  host.Threads().SetPhaseLimits(100, 0); // capped by, and defaulting to, the budget
-  ReadAt(runtime, e);
+  host.Threads().SetPhaseLimits(100, 0, 4); // capped by, and defaulting to, the budget
+  const Epoch e2 = WriteTxn(host, db, 2, 7);
+  CHECK(ReadAt(runtime, e2) == 12);
   CHECK(read.workers == 8);
+  CHECK(stage.workers == 4 && stage.peak == 4);
 }
 
 void MaintenanceLookups() {

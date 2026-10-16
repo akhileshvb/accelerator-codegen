@@ -57,23 +57,27 @@ std::size_t ResolveThreadBudget(std::size_t engine_setting) {
 namespace {
 
 std::size_t ResolvePhaseThreads(const char *env_name, std::size_t engine_setting,
-                                std::size_t budget) {
+                                std::size_t budget, std::size_t fallback) {
   std::size_t wanted = engine_setting;
   if (const char *env = std::getenv(env_name)) {
     const long long value = std::atoll(env);
     wanted = value > 0 ? static_cast<std::size_t>(value) : wanted;
   }
-  return wanted > 0 ? std::min(wanted, budget) : budget;
+  return std::min(wanted > 0 ? wanted : fallback, budget);
 }
 
 } // namespace
 
 std::size_t ResolveReadThreads(std::size_t engine_setting, std::size_t budget) {
-  return ResolvePhaseThreads("ACCEL_AUX_READ_THREADS", engine_setting, budget);
+  return ResolvePhaseThreads("ACCEL_AUX_READ_THREADS", engine_setting, budget, budget);
 }
 
 std::size_t ResolveBuildThreads(std::size_t engine_setting, std::size_t budget) {
-  return ResolvePhaseThreads("ACCEL_AUX_BUILD_THREADS", engine_setting, budget);
+  return ResolvePhaseThreads("ACCEL_AUX_BUILD_THREADS", engine_setting, budget, budget);
+}
+
+std::size_t ResolveMaintenanceThreads(std::size_t engine_setting, std::size_t budget) {
+  return ResolvePhaseThreads("ACCEL_AUX_MAINT_THREADS", engine_setting, budget, 1);
 }
 
 namespace {
@@ -98,6 +102,7 @@ struct ThreadBudget::Impl {
   std::size_t budget;
   std::size_t read_limit = 0;  // 0: the whole budget
   std::size_t build_limit = 0;
+  std::size_t maintenance_limit = 1;
   std::size_t in_use = 0;
   std::size_t peak = 0;
   std::size_t idle = 0;
@@ -310,10 +315,16 @@ std::size_t ThreadBudget::BuildLimit() const {
   return impl->build_limit > 0 ? std::min(impl->build_limit, impl->budget) : impl->budget;
 }
 
-void ThreadBudget::SetPhaseLimits(std::size_t read, std::size_t build) {
+std::size_t ThreadBudget::MaintenanceLimit() const {
+  std::lock_guard<std::mutex> lock(impl->mutex);
+  return std::max<std::size_t>(1, std::min(impl->maintenance_limit, impl->budget));
+}
+
+void ThreadBudget::SetPhaseLimits(std::size_t read, std::size_t build, std::size_t maintenance) {
   std::lock_guard<std::mutex> lock(impl->mutex);
   impl->read_limit = read;
   impl->build_limit = build;
+  impl->maintenance_limit = maintenance;
 }
 
 void ThreadBudget::ParallelFor(std::size_t n, const std::function<void(std::size_t)> &fn,
