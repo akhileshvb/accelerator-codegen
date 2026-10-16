@@ -191,6 +191,8 @@ public:
   const std::vector<Op> &Ops() const;
   void MarkRebuild();
   void AddOp(Op op);
+  // Appends `from`'s ops (buffered after this buffer's).
+  void Absorb(SecEdgarQ24TxnBuffer &&from);
 
 private:
   bool requires_rebuild = false;

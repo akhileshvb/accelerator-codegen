@@ -1,6 +1,9 @@
 #include "sec_edgar/q24/common/module.hpp"
 
+#include "substrate/aux/core/parallel_slices.hpp"
+
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cerrno>
 #include <cmath>
@@ -110,6 +113,41 @@ std::string MakeKey(const Q24Str &a, const Q24Str &t, const Q24Str &v) {
   Q24AppendComponent(key, t);
   Q24AppendComponent(key, v);
   return key;
+}
+
+// Rows per slice of a mutation's row loops (parse, probe, key building).
+constexpr std::size_t kAccumulateGrain = 4096;
+
+// Buffers rows [begin, end) of `rows` as `kind` ops keyed by their pre triple;
+// a triple with a NULL column can never match a num row and is skipped.
+void BufferPreRows(const std::vector<core::AuxRow> &rows, SecEdgarQ24TxnBuffer::Op::Kind kind,
+                   std::size_t begin, std::size_t end, SecEdgarQ24TxnBuffer &buffer) {
+  for (std::size_t i = begin; i < end; ++i) {
+    Q24Str a, t, v;
+    if (ReadStr(rows[i], kPreAdsh, a) != Parse::Ok ||
+        ReadStr(rows[i], kPreTag, t) != Parse::Ok ||
+        ReadStr(rows[i], kPreVersion, v) != Parse::Ok) {
+      buffer.MarkRebuild();
+      return;
+    }
+    if (a.null || t.null || v.null) continue;
+    SecEdgarQ24TxnBuffer::Op op;
+    op.kind = kind;
+    op.key = MakeKey(a, t, v);
+    buffer.AddOp(std::move(op));
+  }
+}
+
+void BufferPreRows(core::AuxEngineServices &services, const std::vector<core::AuxRow> &rows,
+                   SecEdgarQ24TxnBuffer::Op::Kind kind, SecEdgarQ24TxnBuffer &buffer) {
+  core::ParallelReduce(
+      services, rows.size(), kAccumulateGrain, buffer,
+      [&](SecEdgarQ24TxnBuffer &out, std::size_t begin, std::size_t end) {
+        BufferPreRows(rows, kind, begin, end, out);
+      },
+      [](SecEdgarQ24TxnBuffer &into, SecEdgarQ24TxnBuffer &&from) {
+        into.Absorb(std::move(from));
+      });
 }
 
 core::InvalidationPlan AllPartitions() {
@@ -280,6 +318,16 @@ void SecEdgarQ24TxnBuffer::AddOp(Op op) {
   ops.push_back(std::move(op));
 }
 
+void SecEdgarQ24TxnBuffer::Absorb(SecEdgarQ24TxnBuffer &&from) {
+  if (requires_rebuild) return;
+  if (from.requires_rebuild) {
+    MarkRebuild();
+    return;
+  }
+  ops.insert(ops.end(), std::make_move_iterator(from.ops.begin()),
+             std::make_move_iterator(from.ops.end()));
+}
+
 // ── module ─────────────────────────────────────────────────────────────────
 
 core::AcceleratorId SecEdgarQ24Module::Id() const { return kId; }
@@ -347,58 +395,37 @@ void SecEdgarQ24Module::AccumulateMutation(
     core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<SecEdgarQ24TxnBuffer &>(base_buffer);
   if (buffer.RequiresRebuild()) return;
+  const bool mismatched = mutation.kind == core::MutationKind::Update &&
+                          mutation.old_rows.size() != mutation.new_rows.size();
+  using Kind = SecEdgarQ24TxnBuffer::Op::Kind;
 
   if (mutation.table == config.pre_table) {
     if (mutation.kind == core::MutationKind::Update &&
         !UpdateTouches(mutation, PreColumnRelevant))
       return;
-    if (mutation.kind != core::MutationKind::Insert) {
-      // Removing / re-keying a pre triple can turn matched num rows into
-      // orphans; the triple is resolved from the base tables at Stage.
-      const auto touch = [&](const core::AuxRow &row) {
-        Q24Str a, t, v;
-        if (ReadStr(row, kPreAdsh, a) != Parse::Ok ||
-            ReadStr(row, kPreTag, t) != Parse::Ok ||
-            ReadStr(row, kPreVersion, v) != Parse::Ok) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (a.null || t.null || v.null) return; // can never match a num row
-        SecEdgarQ24TxnBuffer::Op op;
-        op.kind = SecEdgarQ24TxnBuffer::Op::Kind::PreTouch;
-        op.key = MakeKey(a, t, v);
-        buffer.AddOp(std::move(op));
-      };
-      for (const auto &row : mutation.old_rows) touch(row);
-      if (mutation.kind == core::MutationKind::Update) {
-        if (mutation.old_rows.size() != mutation.new_rows.size()) {
-          buffer.MarkRebuild();
-          return;
-        }
-        for (const auto &row : mutation.new_rows) touch(row);
-      }
+    if (mismatched) {
+      buffer.MarkRebuild();
       return;
     }
-    for (const auto &row : mutation.new_rows) {
-      Q24Str a, t, v;
-      if (ReadStr(row, kPreAdsh, a) != Parse::Ok ||
-          ReadStr(row, kPreTag, t) != Parse::Ok ||
-          ReadStr(row, kPreVersion, v) != Parse::Ok) {
-        buffer.MarkRebuild();
-        return;
-      }
-      if (a.null || t.null || v.null) continue; // can never match a num row
-      SecEdgarQ24TxnBuffer::Op op;
-      op.kind = SecEdgarQ24TxnBuffer::Op::Kind::PreInsert;
-      op.key = MakeKey(a, t, v);
-      buffer.AddOp(std::move(op));
+    if (mutation.kind == core::MutationKind::Insert) {
+      BufferPreRows(services, mutation.new_rows, Kind::PreInsert, buffer);
+      return;
     }
+    // Removing / re-keying a pre triple can turn matched num rows into
+    // orphans; the triple is resolved from the base tables at Stage.
+    BufferPreRows(services, mutation.old_rows, Kind::PreTouch, buffer);
+    if (mutation.kind == core::MutationKind::Update)
+      BufferPreRows(services, mutation.new_rows, Kind::PreTouch, buffer);
     return;
   }
   if (mutation.table != config.num_table) return;
   if (mutation.kind == core::MutationKind::Update &&
       !UpdateTouches(mutation, NumColumnRelevant))
     return;
+  if (mismatched) {
+    buffer.MarkRebuild();
+    return;
+  }
 
   // Rows whose (adsh, tag, version) has a pre match in the published state
   // are not in the anti-join before or after this write: they need no op.
@@ -408,23 +435,32 @@ void SecEdgarQ24Module::AccumulateMutation(
   // subsumed), and a later pre insert cannot unmatch it.  An earlier pre
   // insert in this transaction is not in the published state, so the row is
   // conservatively kept.
-  const std::size_t total_rows = mutation.old_rows.size() + mutation.new_rows.size();
+  const std::size_t old_n = mutation.old_rows.size();
+  const std::size_t total_rows = old_n + mutation.new_rows.size();
   thread_local std::vector<NumRow> parsed_rows;
   thread_local std::vector<Q24Str> pa, pt, pv;
   thread_local std::vector<uint8_t> matched;
   parsed_rows.resize(total_rows);
   matched.assign(total_rows, 0);
+  NumRow *parsed = parsed_rows.data(); // slices run on other threads
   {
-    std::size_t k = 0;
-    for (const auto *rows : {&mutation.old_rows, &mutation.new_rows}) {
-      for (const auto &row : *rows) {
-        NumRow &parsed = parsed_rows[k++];
-        if (ParseNum(row, parsed) != Parse::Ok ||
-            (parsed.relevant && !std::isfinite(parsed.value))) {
-          buffer.MarkRebuild();
-          return;
-        }
-      }
+    const auto row_at = [&](std::size_t k) -> const core::AuxRow & {
+      return k < old_n ? mutation.old_rows[k] : mutation.new_rows[k - old_n];
+    };
+    std::atomic<bool> malformed{false};
+    core::ParallelSlices(services, total_rows, kAccumulateGrain,
+                         [&](std::size_t, std::size_t begin, std::size_t end) {
+                           for (std::size_t k = begin; k < end; ++k) {
+                             if (ParseNum(row_at(k), parsed[k]) != Parse::Ok ||
+                                 (parsed[k].relevant && !std::isfinite(parsed[k].value))) {
+                               malformed = true;
+                               return;
+                             }
+                           }
+                         });
+    if (malformed) {
+      buffer.MarkRebuild();
+      return;
     }
     std::shared_ptr<const Q24PreState> pre;
     if (total_rows >= kMatchFilterMinRows) {
@@ -439,9 +475,7 @@ void SecEdgarQ24Module::AccumulateMutation(
         (!pre->overlay || (pre->overlay->keys.empty() && pre->overlay->removed.empty()));
     if (overlay_empty) {
       // An update that keeps the key (e.g. SET value = ...) probes it once.
-      const std::size_t old_n = mutation.old_rows.size();
-      const bool paired = mutation.kind == core::MutationKind::Update &&
-                          old_n == mutation.new_rows.size();
+      const bool paired = mutation.kind == core::MutationKind::Update;
       const auto same = [](const Q24Str &x, const Q24Str &y) {
         return x.null == y.null && x.size == y.size &&
                (x.size == 0 || std::memcmp(x.data, y.data, x.size) == 0);
@@ -467,42 +501,50 @@ void SecEdgarQ24Module::AccumulateMutation(
         pv.push_back(r.version);
       }
       probe_hit.resize(pa.size());
-      pre->base->ContainsBatch(pa.data(), pt.data(), pv.data(), pa.size(), probe_hit.data());
+      const Q24Str *a = pa.data(), *t = pt.data(), *v = pv.data();
+      uint8_t *hit = probe_hit.data();
+      const Q24PreBase &base = *pre->base;
+      core::ParallelSlices(services, pa.size(), kAccumulateGrain,
+                           [&](std::size_t, std::size_t begin, std::size_t end) {
+                             base.ContainsBatch(a + begin, t + begin, v + begin, end - begin,
+                                                hit + begin);
+                           });
       for (std::size_t i = 0; i < total_rows; ++i) matched[i] = probe_hit[probe_of[i]];
     }
   }
-  // parsed_rows / matched: old rows first, then new rows.
-  const std::size_t new_base = mutation.old_rows.size();
-  auto add = [&](std::size_t index, int8_t sign) {
-    const NumRow &parsed = parsed_rows[index];
-    if (!parsed.relevant || matched[index]) return;
+  // parsed / matched: old rows first, then new rows.
+  const uint8_t *is_matched = matched.data();
+  const auto add = [&](SecEdgarQ24TxnBuffer &out, std::size_t index, int8_t sign) {
+    const NumRow &row = parsed[index];
+    if (!row.relevant || is_matched[index]) return;
     SecEdgarQ24TxnBuffer::Op op;
-    op.kind = SecEdgarQ24TxnBuffer::Op::Kind::Num;
+    op.kind = Kind::Num;
     op.sign = sign;
-    op.year = parsed.year;
-    op.uom.assign(parsed.uom.data, parsed.uom.size);
-    op.value = parsed.value;
-    op.key = MakeKey(parsed.adsh, parsed.tag, parsed.version);
-    buffer.AddOp(std::move(op));
+    op.year = row.year;
+    op.uom.assign(row.uom.data, row.uom.size);
+    op.value = row.value;
+    op.key = MakeKey(row.adsh, row.tag, row.version);
+    out.AddOp(std::move(op));
   };
-  switch (mutation.kind) {
-  case core::MutationKind::Insert:
-    for (std::size_t i = 0; i < mutation.new_rows.size(); ++i) add(new_base + i, 1);
-    break;
-  case core::MutationKind::Delete:
-    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) add(i, -1);
-    break;
-  case core::MutationKind::Update:
-    if (mutation.old_rows.size() != mutation.new_rows.size()) {
-      buffer.MarkRebuild();
-      return;
-    }
-    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-      add(i, -1);
-      add(new_base + i, 1);
-    }
-    break;
-  }
+  const std::size_t logical_rows =
+      mutation.kind == core::MutationKind::Insert ? mutation.new_rows.size() : old_n;
+  core::ParallelReduce(
+      services, logical_rows, kAccumulateGrain, buffer,
+      [&](SecEdgarQ24TxnBuffer &out, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          switch (mutation.kind) {
+          case core::MutationKind::Insert: add(out, old_n + i, 1); break;
+          case core::MutationKind::Delete: add(out, i, -1); break;
+          case core::MutationKind::Update:
+            add(out, i, -1);
+            add(out, old_n + i, 1);
+            break;
+          }
+        }
+      },
+      [](SecEdgarQ24TxnBuffer &into, SecEdgarQ24TxnBuffer &&from) {
+        into.Absorb(std::move(from));
+      });
 }
 
 core::StagedMaintenanceOutcome

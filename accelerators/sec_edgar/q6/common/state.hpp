@@ -62,6 +62,7 @@
 #include "prims/cow_box.hpp"
 #include "prims/flat_hash_map.hpp"
 #include "prims/sharded_cow_open_map.hpp"
+#include "substrate/aux/core/aux_types.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -487,14 +488,16 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
 // changes). `overflow` is set when a finite sum would leave the double range
 // (the caller then rebuilds: removing such a contribution again is not exact).
 std::shared_ptr<const SecEdgarQ6State>
-SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
+SecEdgarQ6ApplyDeltas(const core::AuxEngineServices &services,
+                      const SecEdgarQ6State &old_state,
                       std::vector<SecEdgarQ6GroupDelta> &deltas,
                       bool *overflow = nullptr);
 
 // num inserts / deletes: resolves the refs (creating groups) and applies them.
 // `overflow` is also set when too many unused groups accumulated (rebuild).
 std::shared_ptr<const SecEdgarQ6State>
-SecEdgarQ6ApplyNums(const SecEdgarQ6State &old_state, const SecEdgarQ6NumRef *refs,
+SecEdgarQ6ApplyNums(const core::AuxEngineServices &services,
+                    const SecEdgarQ6State &old_state, const SecEdgarQ6NumRef *refs,
                     size_t n, bool *overflow = nullptr);
 
 // Rows of the answer for one combo, or {} when the (fy, stmt, uom) is not in the
@@ -541,7 +544,8 @@ struct SecEdgarQ6AdshEdit {
 // applied safely (group garbage limit, inconsistent old state); the caller
 // then rebuilds.
 std::shared_ptr<const SecEdgarQ6State>
-SecEdgarQ6ApplyEdits(const SecEdgarQ6State &old_state,
+SecEdgarQ6ApplyEdits(const core::AuxEngineServices &services,
+                     const SecEdgarQ6State &old_state,
                      const std::vector<SecEdgarQ6AdshEdit> &edits,
                      const std::vector<SecEdgarQ6NumRef> &other_refs,
                      bool *overflow = nullptr);
