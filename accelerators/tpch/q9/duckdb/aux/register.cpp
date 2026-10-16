@@ -5,6 +5,7 @@
 #include "tpch/q9/duckdb/aux/module.hpp"
 #include "tpch/q9/cost_model.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
+#include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
@@ -157,20 +158,20 @@ struct TpchQ9Scan : TpchQ9InitialScan {
         [&](auto &&input) { consumer(input); });
   }
   void ScanLineitems(
-      const std::function<void(const TpchQ9LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_partkey, l_suppkey, l_orderkey, l_quantity, "
-        "l_extendedprice, l_discount FROM lineitem",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ9LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     SafeInt64(ChunkValue(chunk, 1, row)),
-                                     SafeInt64(ChunkValue(chunk, 2, row)),
-                                     DecimalRaw(ChunkValue(chunk, 3, row)),
-                                     DecimalRaw(ChunkValue(chunk, 4, row)),
-                                     DecimalRaw(ChunkValue(chunk, 5, row))};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9LineitemInput &)> &sink) override {
+    ScanPartitioned(services, connection, "lineitem",
+                    {IntColumn("l_partkey"), IntColumn("l_suppkey"), IntColumn("l_orderkey"),
+                     DecimalColumn("l_quantity", 2), DecimalColumn("l_extendedprice", 2),
+                     DecimalColumn("l_discount", 2)},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition,
+                             TpchQ9LineitemInput{row.Int(0), row.Int(1), row.Int(2),
+                                                 row.Decimal(3), row.Decimal(4), row.Decimal(5)});
+                      }
+                    });
   }
   bool ScanProfitContributions(
       const std::function<void(const TpchQ9ProfitContribution &)> &consumer)
@@ -195,31 +196,6 @@ struct TpchQ9Scan : TpchQ9InitialScan {
                                           SafeInt64(ChunkValue(chunk, 3, row))};
         },
         [&](auto &&input) { consumer(input); });
-    return true;
-  }
-  bool ScanPairAggregates(
-      const std::function<void(int64_t, int64_t, int32_t, int64_t, int64_t)>
-          &consumer) override {
-    // Per (part, supplier, order year) lineitem aggregates; dimension-side
-    // joins (supplier/partsupp/nation) are applied in the accelerator so
-    // dimension writes stay incremental. rev = SUM(ep_raw * (100 - disc_raw)),
-    // qty = SUM(quantity_raw).
-    ScanQueryDecoded(
-        connection,
-        "SELECT l.l_partkey, l.l_suppkey, year(o.o_orderdate), "
-        "SUM(CAST(round(l.l_extendedprice * (1 - l.l_discount) * 10000) AS "
-        "BIGINT)), "
-        "SUM(CAST(round(l.l_quantity * 100) AS BIGINT)) "
-        "FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey "
-        "GROUP BY 1, 2, 3",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return std::make_tuple(SafeInt64(ChunkValue(chunk, 0, row)),
-                                 SafeInt64(ChunkValue(chunk, 1, row)),
-                                 SafeInt32(ChunkValue(chunk, 2, row)),
-                                 SafeInt64(ChunkValue(chunk, 3, row)),
-                                 SafeInt64(ChunkValue(chunk, 4, row)));
-        },
-        [&](auto &&input) { std::apply(consumer, input); });
     return true;
   }
   bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) override {
