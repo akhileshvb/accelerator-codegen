@@ -4,12 +4,15 @@
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_collect.hpp"
 
 #include <algorithm>
 #include <array>
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -165,6 +168,15 @@ struct EditBlock {
       throw std::overflow_error("Q9 profit cell overflow");
     it->rows = static_cast<uint32_t>(rows);
   }
+  // The cells and partsupp rows of `from` (a block of the same parts) added in.
+  void Absorb(const EditBlock &from) {
+    for (std::size_t slot = 0; slot < kParts; ++slot) {
+      for (const auto &cell : from.cells[slot])
+        AddCell(slot, cell.group, cell.rows, cell.profit);
+      for (const auto &entry : from.ps[slot])
+        SetPs(slot, entry.suppkey, entry.cost_raw);
+    }
+  }
   bool FindPs(std::size_t slot, int64_t suppkey, int64_t &cost) const {
     const auto &list = ps[slot];
     auto it = std::lower_bound(list.begin(), list.end(), suppkey,
@@ -251,21 +263,69 @@ constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key 
 // Blocks per encode slice: each copies a few thousand cells and prices (~50 us).
 constexpr std::size_t kBlocksGrain = 16;
 
+// Edited blocks by block index: the partial of one partition of a build scan.
+class BlockEdits {
+public:
+  EditBlock &For(int64_t partkey) {
+    auto &slot = blocks_[BlockOf(partkey)];
+    if (!slot)
+      slot = std::make_shared<EditBlock>();
+    return *slot;
+  }
+  // Blocks only `from` has are taken over; the others add its rows to theirs.
+  // Neighbouring partitions meet in at most one block, so this is O(blocks).
+  void Merge(BlockEdits &&from) {
+    for (auto entry : from.blocks_) {
+      auto &slot = blocks_[entry.first];
+      if (!slot)
+        slot = std::move(entry.second);
+      else
+        slot->Absorb(*entry.second);
+    }
+    from.blocks_.Clear();
+  }
+  core::FlatHashMap<std::shared_ptr<EditBlock>> &Blocks() { return blocks_; }
+
+private:
+  core::FlatHashMap<std::shared_ptr<EditBlock>> blocks_;
+};
+
 // Blocks being edited, keyed by block index; re-encoded into the state by Flush.
 class BlockEditor {
 public:
   explicit BlockEditor(TpchQ9State &state) : state_(state) {}
   EditBlock &For(int64_t partkey) {
-    auto &slot = edited_[BlockOf(partkey)];
+    auto &slot = edited_.Blocks()[BlockOf(partkey)];
     if (!slot)
       slot = DecodeBlock(state_.FindBlock(partkey));
     return *slot;
   }
+  // Takes over blocks built from scratch; rows of blocks both have are added.
+  void Absorb(BlockEdits &&built) { edited_.Merge(std::move(built)); }
+  // Decodes the blocks of `partkeys` on the pool, ahead of the serial edits
+  // that would decode them one by one.
+  void Prefetch(const core::AuxEngineServices &services, const std::vector<int64_t> &partkeys) {
+    std::vector<int64_t> blocks;
+    blocks.reserve(partkeys.size());
+    for (const int64_t partkey : partkeys)
+      blocks.push_back(BlockOf(partkey));
+    std::sort(blocks.begin(), blocks.end());
+    blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+    std::vector<std::shared_ptr<EditBlock>> decoded(blocks.size());
+    core::ParallelEach(services, blocks.size(), kBlocksGrain, [&](std::size_t i) {
+      decoded[i] = DecodeBlock(state_.blocks.Get(blocks[i]).get());
+    });
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+      auto &slot = edited_.Blocks()[blocks[i]];
+      if (!slot)
+        slot = std::move(decoded[i]);
+    }
+  }
   // Blocks encode independently; they enter the state in iteration order.
   void Flush(const core::AuxEngineServices &services) {
     std::vector<std::pair<int64_t, std::shared_ptr<EditBlock>>> edits;
-    edits.reserve(edited_.size());
-    for (auto entry : edited_)
+    edits.reserve(edited_.Blocks().size());
+    for (auto entry : edited_.Blocks())
       edits.emplace_back(entry.first, entry.second);
     std::vector<std::shared_ptr<TpchQ9PartBlock>> encoded(edits.size());
     core::ParallelSlices(services, edits.size(), kBlocksGrain,
@@ -276,12 +336,12 @@ public:
     for (std::size_t i = 0; i < edits.size(); ++i)
       if (encoded[i] || state_.blocks.Get(edits[i].first))
         state_.blocks.Set(edits[i].first, encoded[i]);
-    edited_.Clear();
+    edited_.Blocks().Clear();
   }
 
 private:
   TpchQ9State &state_;
-  core::FlatHashMap<std::shared_ptr<EditBlock>> edited_;
+  BlockEdits edited_;
 };
 
 // profit = extendedprice * (1 - discount) - supplycost * quantity, in 1e-4
@@ -312,15 +372,22 @@ int64_t TpchQ9ComputeProfitRaw(int64_t extendedprice_raw, int64_t discount_raw,
 }
 
 // ── TpchQ9State accessors ───────────────────────────────────────────────────
+static int64_t GroupKey(int32_t nationkey, int32_t year) {
+  return (static_cast<int64_t>(nationkey) << 32) | static_cast<uint32_t>(year);
+}
+
+const uint32_t *TpchQ9State::FindGroup(int32_t nationkey, int32_t year) const {
+  return group_index.Find(GroupKey(nationkey, year));
+}
+
 uint32_t TpchQ9State::GroupFor(int32_t nationkey, int32_t year) {
-  const int64_t key = (static_cast<int64_t>(nationkey) << 32) | static_cast<uint32_t>(year);
-  if (const uint32_t *found = group_index.Find(key))
+  if (const uint32_t *found = FindGroup(nationkey, year))
     return *found;
   if (groups.size() >= std::numeric_limits<uint32_t>::max())
     throw std::length_error("Q9 group dictionary overflow");
   const auto id = static_cast<uint32_t>(groups.size());
   groups.emplace_back(nationkey, year);
-  group_index.Upsert(key, id);
+  group_index.Upsert(GroupKey(nationkey, year), id);
   return id;
 }
 
@@ -435,37 +502,73 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q9 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ9State>();
+  const std::size_t partitions = BuildPartitions(services);
 
   initial_scan->ScanNations([&](const TpchQ9NationInput &input) {
     state->nation_names[input.nationkey] = input.name;
   });
-  initial_scan->ScanSuppliers([&](const TpchQ9SupplierInput &input) {
+  std::set<int32_t> nationkeys, years;
+  for (const auto &input : CollectRows<TpchQ9SupplierInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanSuppliersPartitioned(services, parts, sink);
+           })) {
     state->SetSupplierNation(input.suppkey, input.nationkey);
-  });
-  initial_scan->ScanOrders([&](const TpchQ9OrdersInput &input) {
-    state->SetOrderYear(input.orderkey, TpchQ9ExtractYear(input.orderdate_days));
-  });
-  initial_scan->ScanParts([&](const TpchQ9PartInput &input) {
-      state->part_names.Set(input.partkey, input.name);
-  });
+    nationkeys.insert(input.nationkey);
+  }
+  for (const auto &input : CollectRows<TpchQ9OrdersInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanOrdersPartitioned(services, parts, sink);
+           })) {
+    const int32_t year = TpchQ9ExtractYear(input.orderdate_days);
+    state->SetOrderYear(input.orderkey, year);
+    years.insert(year);
+  }
+  for (const auto &input : CollectRows<TpchQ9PartInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsPartitioned(services, parts, sink);
+           }))
+    state->part_names.Set(input.partkey, input.name);
+  // Every (nation, year) group is interned up front: the partitions below look
+  // groups up without adding any.
+  for (const int32_t nationkey : nationkeys)
+    for (const int32_t year : years)
+      state->GroupFor(nationkey, year);
 
   // Partsupp rows and profit cells are gathered per block in editable form and
   // encoded at the end (transient: the editable copy of the cells, ~1.3x).
+  // Partitions are ranges of the partkey, so they share at most their end blocks.
   BlockEditor editor(*state);
-  initial_scan->ScanPartsupps([&](const TpchQ9PartsuppInput &input) {
-      editor.For(input.partkey)
-          .SetPs(SlotOf(input.partkey), input.suppkey,
-                 input.supplycost_raw);
-  });
+  editor.Absorb(core::PartitionedBuild<BlockEdits>(
+      services, [] { return BlockEdits{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsuppsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ9PartsuppInput &input) {
+              sink(partition, OneRowBatch<TpchQ9PartsuppInput>{input});
+            });
+      },
+      [](BlockEdits &into, const TpchQ9PartsuppInput &input) {
+        into.For(input.partkey).SetPs(SlotOf(input.partkey), input.suppkey, input.supplycost_raw);
+      },
+      [](BlockEdits &into, BlockEdits &&from) { into.Merge(std::move(from)); }, partitions));
 
-  const bool pushed_down = initial_scan->ScanProfitContributions(
-      [&](const TpchQ9ProfitContribution &input) {
-        if (input.rows > 0)
-          editor.For(input.partkey)
-              .AddCell(SlotOf(input.partkey),
-                       state->GroupFor(input.nationkey, input.year), input.rows,
-                       input.profit_raw);
-      });
+  bool pushed_down = false;
+  editor.Absorb(core::PartitionedBuild<BlockEdits>(
+      services, [] { return BlockEdits{}; },
+      [&](std::size_t parts, auto &&sink) {
+        pushed_down = initial_scan->ScanProfitContributionsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ9ProfitContribution &input) {
+              sink(partition, OneRowBatch<TpchQ9ProfitContribution>{input});
+            });
+      },
+      [&](BlockEdits &into, const TpchQ9ProfitContribution &input) {
+        if (input.rows <= 0)
+          return;
+        const uint32_t *group = state->FindGroup(input.nationkey, input.year);
+        if (!group)
+          throw std::runtime_error("TPC-H Q9: profit group outside the scanned nations / years");
+        into.For(input.partkey).AddCell(SlotOf(input.partkey), *group, input.rows, input.profit_raw);
+      },
+      [](BlockEdits &into, BlockEdits &&from) { into.Merge(std::move(from)); }, partitions));
   if (!pushed_down) {
     initial_scan->ScanLineitems([&](const TpchQ9LineitemInput &input) {
       int32_t nationkey = 0, year = 0;
@@ -698,6 +801,17 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   // only the touched ones are cloned below.
   auto updated = std::make_shared<TpchQ9State>(old);
   BlockEditor editor(*updated);
+  {
+    std::vector<int64_t> touched;
+    touched.reserve(deletes.size() + inserts.size() + buffer.PartsuppDeltas().size());
+    for (const auto *d : deletes)
+      touched.push_back(d->partkey);
+    for (const auto *d : inserts)
+      touched.push_back(d->partkey);
+    for (const auto &d : buffer.PartsuppDeltas())
+      touched.push_back(d.partkey);
+    editor.Prefetch(services, touched);
+  }
 
   // 1. Deleted lineitems leave the cells they were counted in (resolved against
   //    the dimension values of the published state).
