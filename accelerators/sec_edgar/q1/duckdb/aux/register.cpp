@@ -126,13 +126,23 @@ struct SecEdgarQ1Scan : SecEdgarQ1InitialScan {
   ::duckdb::Connection &connection;
 };
 
+// Engine capture delivers pre's stmt, rfile, adsh, line: the compact row the
+// module reads.
+SecEdgarQ1Config Config() {
+  SecEdgarQ1Config c{1};
+  c.pre_attnums = {3, 5, 0, 2};
+  return c;
+}
+
+CaptureTableList CaptureTables(const SecEdgarQ1Config &c) { return {{"pre", c.pre_table}}; }
+
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ1Layout::kAccelerator,
     "accel_sec_edgar_q1_aux",
     {},
     [](::duckdb::Connection &connection) {
-      const SecEdgarQ1Config c{1};
-      return MakeBinding<SecEdgarQ1Scan, SecEdgarQ1Module>(connection, CaptureTableList{}, c);
+      const auto c = Config();
+      return MakeBinding<SecEdgarQ1Scan, SecEdgarQ1Module>(connection, CaptureTables(c), c);
     }}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
@@ -141,8 +151,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     std::string("accel_") + core::SecEdgarQ1Layout::kAccelerator + "_aux_parallel",
     {},
     [](::duckdb::Connection &connection) {
-      const SecEdgarQ1Config c{1};
-      return MakeBinding<SecEdgarQ1Scan, SecEdgarQ1ParallelModule>(connection, CaptureTableList{}, c);
+      const auto c = Config();
+      return MakeBinding<SecEdgarQ1Scan, SecEdgarQ1ParallelModule>(connection, CaptureTables(c), c);
     }}};
 #endif
 
