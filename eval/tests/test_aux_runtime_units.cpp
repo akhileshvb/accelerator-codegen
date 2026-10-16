@@ -290,7 +290,6 @@ BuildResult RunBuild(const std::vector<Epoch> &epochs, const SeqList &offered, E
   SequencedApplier a;
   a.StartBuild();
   CHECK(a.CurrentMode() == SequencedApplier::Mode::Building);
-  a.SetBuildEpoch(b);
   for (Seq s : offered) a.Offer(Change(s, epochs[s - 1]));
   CHECK(a.TakeReady().empty());   // not Synced: nothing ready while building
   auto returned = Seqs(a.TakeCatchUp(b));
@@ -350,7 +349,6 @@ void TestApplierCatchUpGapResume() {
 void TestApplierEmptyCommitsInBuild() {
   SequencedApplier a;
   a.StartBuild();
-  a.SetBuildEpoch(3);
   a.Offer(Change(2, 0, true));   // below the first kept change: in the build
   a.Offer(Change(3, 3));
   a.Offer(Change(4, 4));

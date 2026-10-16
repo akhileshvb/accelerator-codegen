@@ -46,10 +46,7 @@ bool SequencedApplier::HasGap() const {
 
 void SequencedApplier::StartBuild() {
   mode = Mode::Building;
-  build_epoch.reset();
 }
-
-void SequencedApplier::SetBuildEpoch(Epoch b) { build_epoch = b; }
 
 // The build contains exactly the commits with epoch <= b. Queued non-empty
 // changes with epoch <= b are therefore dropped, and s_b (the highest
@@ -106,7 +103,6 @@ void SequencedApplier::FinishCatchUp() {
   mode = Mode::Synced;
   applied_seq = catch_up_seq;
   applied_epoch = catch_up_epoch;
-  build_epoch.reset();
 }
 
 void SequencedApplier::ReturnCatchUp(std::vector<CommittedChange> changes) {
@@ -119,7 +115,6 @@ void SequencedApplier::ReturnCatchUp(std::vector<CommittedChange> changes) {
 
 void SequencedApplier::AbandonBuild() {
   mode = Mode::Stale;
-  build_epoch.reset();
 }
 
 void SequencedApplier::Invalidate() {

@@ -135,16 +135,20 @@ struct AcceleratorRuntime::Impl {
   std::unordered_map<core::TableId, core::TableId> module_table;        // host -> module
   StoreHandle store;
 
-  // Writer side. Held from BeginCommit to PublishCommit/AbortCommit, and
-  // around every store mutation (applies, installs).
+  // Lock order: build_mutex, then commit_mutex, then state_mutex.
+  // build_mutex: one build at a time.
+  std::mutex build_mutex;
+  // commit_mutex: serialises writers of the store. Held from BeginCommit to
+  // PublishCommit/AbortCommit, and around every store mutation (applies,
+  // installs); owns in_flight, next_seq, store_epoch and registration_checked.
   CommitLock commit_mutex;
-  std::mutex build_mutex; // one build at a time
   CommittedChange in_flight; // between BeginCommit and Publish/Abort
   Seq next_seq = 0;
   Epoch store_epoch = 0; // what the store's epoch provider returns
   bool registration_checked = false;
 
-  // Shared with readers.
+  // state_mutex: everything below; shared with readers, never held across
+  // module or store calls.
   mutable std::mutex state_mutex;
   std::condition_variable state_cv;
   SequencedApplier applier;
@@ -655,7 +659,6 @@ bool AcceleratorRuntime::BuildNow() {
       b = snapshot->SnapshotEpoch();
       {
         std::lock_guard<std::mutex> lock(impl->state_mutex);
-        impl->applier.SetBuildEpoch(b);
         impl->build_epoch = b;
       }
       slots.RunBuild(*this, *snapshot, builder);
