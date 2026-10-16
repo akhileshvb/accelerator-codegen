@@ -415,19 +415,19 @@ void TpchQ11State::BuildGroups(const core::AuxEngineServices &services) {
   });
 
   // Sort each nation's entries and cut them into blocks, nations in parallel.
-  std::vector<std::pair<int64_t, GroupBuild *>> order;
+  std::vector<std::pair<TpchQ11Group *, GroupBuild *>> order;
   for (auto &[nk, build] : builds) {
     auto &group = groups[nk] = std::make_shared<TpchQ11Group>();
     group->total = build.total;
     group->parts = build.parts;
     group->wide_positive = std::move(build.wide_positive);
     group->wide_negative = std::move(build.wide_negative);
-    order.emplace_back(nk, &build);
+    order.emplace_back(group.get(), &build);
   }
   services.ParallelFor(order.size(), [&](std::size_t i) {
     auto &keys = order[i].second->narrow;
     std::sort(keys.begin(), keys.end(), TpchQ11KeyLess());
-    groups[order[i].first]->narrow =
+    order[i].first->narrow =
         core::CowSortedBlocks<TpchQ11Key, TpchQ11KeyLess>::FromSorted(std::move(keys));
   });
 }
