@@ -8,7 +8,7 @@ Read `substrate_contract.md` and `maintenance_framework.md` for substrate APIs. 
 
 - **Per-query module** (`{{aux_function_name}}`) registered on every shared catalog / allowlist / TF surface that peer queries use (see `registration_checklist.md`).
 - **No cross-query state sharing** — but unrelated accelerators may be active concurrently.
-- **Threads**: maintenance and `Build` are single-threaded inside the accelerator; a read parallelizes only inside `Execute` through `services.ParallelFor`, sized by `services.WorkerCount()` (the backend's thread budget); partial results merge in task order.
+- **Threads**: `Execute`, `Build` and maintenance each split data-proportional work through `services` (`WorkerCount()` is the current phase's cap; rules in `engine_interfaces.md`, helpers in `substrate_primitives.md`).
 
 ## Relevance and irrelevant mutations
 

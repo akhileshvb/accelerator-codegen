@@ -76,7 +76,7 @@ def test_backend_stage_gates_are_wired():
             assert gate in GATE_SCRIPTS, gate
             assert (gates_dir / GATE_SCRIPTS[gate]).is_file(), gate
     slot_gates = [g for g in GATE_SCRIPTS if g.startswith("slot_")]
-    assert len(slot_gates) == 6
+    assert len(slot_gates) == 7
     for adapter in ("duckdb", "postgres", "mysql"):
         assert (gates_dir / "slot_adapters" / f"{adapter}.sh").is_file()
 

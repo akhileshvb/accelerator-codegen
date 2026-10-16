@@ -28,6 +28,7 @@ GATE_SCRIPTS = {
     "aux_bench_sweep": "run_aux_bench_sweep.sh",
     "aux_cross_accel": "run_aux_cross_accel.sh",
     "aux_multi_connection": "run_aux_multi_connection.sh",
+    "aux_tsan": "run_aux_tsan.sh",
     "aux_cost_model_calibrate": "run_aux_cost_model_calibrate.sh",
     "aux_optimization_probe": "run_aux_optimization_probe.sh",
     "engine_build": "run_engine_build.sh",
@@ -45,6 +46,7 @@ GATE_SCRIPTS = {
     "slot_read_after_commit": "run_slot_gates.sh",
     "slot_txn_edges": "run_slot_gates.sh",
     "slot_restart": "run_slot_gates.sh",
+    "slot_tsan": "run_aux_tsan.sh",
     "slot_differential": "run_slot_gates.sh",
 }
 
@@ -72,6 +74,8 @@ GATES_ALLOW_SKIP = frozenset(
         "engine_aux_smoke",
         "engine_host",
         "slot_restart",
+        "aux_tsan",
+        "slot_tsan",
     }
 )
 

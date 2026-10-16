@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <utility>
 #include <vector>
 
@@ -20,8 +21,20 @@
 
 namespace accelerator_codegen::aux_state::core {
 
+// Test-only: ACCEL_AUX_TEST_GRAIN=<g> caps every grain at g so tiny ranges split.
+inline std::size_t TestGrainCap() {
+  static const std::size_t cap = [] {
+    const char *value = std::getenv("ACCEL_AUX_TEST_GRAIN");
+    return value ? static_cast<std::size_t>(std::strtoull(value, nullptr, 10)) : std::size_t{0};
+  }();
+  return cap;
+}
+
 inline std::size_t SliceCount(const AuxEngineServices &services, std::size_t n,
                               std::size_t grain) {
+  if (const std::size_t cap = TestGrainCap(); cap != 0) {
+    grain = std::min(grain, cap);
+  }
   return std::max<std::size_t>(1, std::min(services.WorkerCount(), n / std::max<std::size_t>(1, grain)));
 }
 

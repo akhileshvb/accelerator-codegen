@@ -98,6 +98,9 @@ calibrate for this shape, not only for narrow-range point writes.
   s) over `ApplyDelta` (52 ms) for an RF-sized delta.
 - **Always go through `services.ChooseMaintenance`** so decisions and costs
   are logged; do not hard-wire the action.
-- **Parallelize independent per-partition maintenance** with the backend's
-  worker count (bounded): other accelerators' maintenance already runs in
-  parallel at commit.
+- **Parallelize independent per-partition and per-key maintenance** with
+  `core::ParallelEach` / `ParallelReduce` under the maintenance cap
+  (`engine_interfaces.md` for the fork-join rules: engine lookups first and
+  serially, slices own disjoint keys). Other accelerators' maintenance already
+  runs in parallel at commit, under the same cap. A serial per-row loop over a
+  refresh is what dominates at large scale factors.
