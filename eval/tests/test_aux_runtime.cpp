@@ -166,7 +166,7 @@ struct FakeSlots final : EngineSlots {
   explicit FakeSlots(FakeDb &db_p, bool host_thread = false) : db(db_p), host_thread(host_thread) {}
 
   Epoch PendingEpochLowerBound(uint64_t) const override { return db.Now() + 1; }
-  Epoch OldestReaderEpoch() const override { return 1; } // keep every version
+  Epoch OldestReaderEpoch() const override { return floor; }
   bool WaitForPreRegistrationWriters(const std::vector<core::TableId> &, uint64_t) override {
     return true;
   }
@@ -174,7 +174,7 @@ struct FakeSlots final : EngineSlots {
     if (fail_builds) {
       throw std::runtime_error("no build snapshot");
     }
-    return std::make_unique<FakeSnapshot>(db.Now());
+    return std::make_unique<FakeSnapshot>(build_at.value_or(db.Now()));
   }
   bool EngineWorkOnHostThread() const override { return host_thread; }
   void RunBuild(AcceleratorRuntime &runtime, BuildSnapshot &snapshot,
@@ -201,6 +201,8 @@ struct FakeSlots final : EngineSlots {
 
   // The epoch the engine's maintenance lookups see (default: the change's).
   std::optional<Epoch> lookup;
+  Epoch floor = 1; // keeps every version
+  std::optional<Epoch> build_at; // the next builds' snapshot (default: now)
 
   // Holds builds inside RunBuild until Release().
   void Hold() {
@@ -301,6 +303,55 @@ void InProcessCommits() {
   CHECK(ReadAt(runtime, e4) == 13);
   CHECK(runtime.IsSynced());
   CHECK(runtime.Stats().commits_applied == 3);
+}
+
+// A snapshot that sees no commit (epoch 0, as on Postgres before the first
+// one) is a snapshot, not "the newest": it reads the state built at 0, and
+// falls back when the state was built later.
+void ReaderBeforeFirstCommit() {
+  {
+    FakeDb db(0);
+    FakeSlots slots(db);
+    slots.floor = 0; // a reader is at epoch 0
+    RuntimeHost host(slots, 4);
+    auto &runtime = host.Register(std::make_shared<SumModule>());
+    host.BuildAll();
+    const Epoch e1 = WriteTxn(host, db, 1, 5);
+    CHECK(ReadAt(runtime, 0) == 0);
+    CHECK(ReadAt(runtime, e1) == 5);
+  }
+  FakeDb db(0);
+  FakeSlots slots(db);
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  const Epoch e1 = WriteTxn(host, db, 1, 5); // built at e1
+  CHECK(ReadAt(runtime, e1) == 5);
+  CHECK(!ReadAt(runtime, 0));
+}
+
+// Commits a failed apply left unpublished: after the rebuild, a reader in
+// that window falls back instead of reading the older version.
+void ReaderInStaleWindow() {
+  FakeDb db(0);
+  FakeSlots slots(db, /*host_thread=*/true);
+  RuntimeHost host(slots, 4);
+  auto &runtime = host.Register(std::make_shared<SumModule>());
+  host.BuildAll();
+  auto ship = [&](Seq seq, int64_t delta, bool invalidates) {
+    db.commits.emplace_back(seq, delta);
+    runtime.OfferCommit(CommittedChange{seq, seq, {Insert(delta)}, false, invalidates});
+  };
+  ship(1, 10, false);
+  runtime.Pump();
+  ship(2, 20, true); // cannot be maintained: stale from 2
+  ship(3, 30, false);
+  slots.build_at = 3;
+  runtime.Pump();
+  host.RunEngineWork();
+  CHECK(runtime.IsSynced());
+  CHECK(ReadAt(runtime, 1, Epoch{1}) == 10);
+  CHECK(!ReadAt(runtime, 2, Epoch{2}, 1000));
+  CHECK(ReadAt(runtime, 3, Epoch{3}) == 60);
 }
 
 void CommitsDuringBuild() {
@@ -491,6 +542,8 @@ int main() {
       {"module_requests_rebuild", ModuleRequestsRebuild},
       {"failed_build_releases_readers", FailedBuildReleasesReaders},
       {"invalidate_during_build", InvalidateDuringBuild},
+      {"reader_before_first_commit", ReaderBeforeFirstCommit},
+      {"reader_in_stale_window", ReaderInStaleWindow},
       {"shipped_commits", ShippedCommits},
       {"thread_limits_per_phase", ThreadLimitsPerPhase},
       {"maintenance_lookups", MaintenanceLookups},

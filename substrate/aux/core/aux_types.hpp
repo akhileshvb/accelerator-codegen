@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -159,8 +160,12 @@ struct StateImage {
   }
 };
 
+// A reader's epoch meaning "no snapshot: the newest version". Epoch 0 is a
+// snapshot like any other (it sees no commit).
+inline constexpr Version kNewestVersion = std::numeric_limits<Version>::max();
+
 struct VisibilityToken {
-  Version mutation_epoch = 0;
+  Version mutation_epoch = kNewestVersion;
 };
 
 struct StateSnapshot {
