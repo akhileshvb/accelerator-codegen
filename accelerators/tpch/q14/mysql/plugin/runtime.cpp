@@ -26,12 +26,13 @@ namespace scans {
 
 void ScanTpchQ14Parts(
     const std::function<void(const query::TpchQ14PartInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT p_partkey, p_type FROM part",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ14PartInput{TypedInt(cols, 0),
+                                       TypedText(cols, 1)};
+      },
+      [&](query::TpchQ14PartInput &&input) { consumer(input); });
 }
 
 // lineitem JOIN part GROUP BY shipdate in the engine: one row per day with the
@@ -40,20 +41,21 @@ void ScanTpchQ14Parts(
 void ScanTpchQ14DayAggregates(
     const std::function<void(const query::TpchQ14DayAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT l_shipdate, sum(l_extendedprice * (1 - l_discount)), "
       "sum(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * "
       "(1 - l_discount) ELSE 0 END), count(*) "
       "FROM lineitem, part WHERE l_partkey = p_partkey GROUP BY l_shipdate",
-      [&](const std::vector<std::string> &cols) {
+      [](const std::vector<std::string> &cols) {
         query::TpchQ14DayAggregate agg;
         agg.shipdate_days = TypedDate(cols, 0);
         if (!dec::Parse(TypedText(cols, 1), 4, agg.total_revenue_raw) ||
             !dec::Parse(TypedText(cols, 2), 4, agg.promo_revenue_raw))
           throw std::runtime_error("TPC-H Q14: unparsable decimal");
         agg.count = TypedInt(cols, 3);
-        consumer(agg);
-      });
+        return agg;
+      },
+      [&](query::TpchQ14DayAggregate &&input) { consumer(input); });
 }
 
 // Point re-aggregation of the given parts' lineitems (the schema has no
@@ -67,19 +69,20 @@ void ScanTpchQ14PartDayRevenue(
   std::string keys;
   for (const auto key : partkeys)
     keys += (keys.empty() ? "" : ",") + std::to_string(key);
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT l_partkey, l_shipdate, sum(l_extendedprice * (1 - l_discount)), "
       "count(*) FROM lineitem WHERE l_partkey IN (" + keys +
           ") GROUP BY l_partkey, l_shipdate",
-      [&](const std::vector<std::string> &cols) {
+      [](const std::vector<std::string> &cols) {
         query::TpchQ14PartDayRevenue row;
         row.partkey = TypedInt(cols, 0);
         row.shipdate_days = TypedDate(cols, 1);
         if (!dec::Parse(TypedText(cols, 2), 4, row.revenue_raw))
           throw std::runtime_error("TPC-H Q14: unparsable decimal");
         row.count = TypedInt(cols, 3);
-        consumer(row);
-      });
+        return row;
+      },
+      [&](query::TpchQ14PartDayRevenue &&input) { consumer(input); });
 }
 
 } // namespace scans

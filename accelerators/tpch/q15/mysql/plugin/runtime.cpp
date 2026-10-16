@@ -22,26 +22,28 @@ namespace scans {
 
 void ScanTpchQ15Suppliers(
     const std::function<void(const query::TpchQ15SupplierInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT s_suppkey, s_name, s_address, s_phone FROM supplier",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedText(cols, 2),
-                  TypedText(cols, 3)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ15SupplierInput{TypedInt(cols, 0),
+                                           TypedText(cols, 1),
+                                           TypedText(cols, 2),
+                                           TypedText(cols, 3)};
+      },
+      [&](query::TpchQ15SupplierInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ15Lineitems(
     const std::function<void(const query::TpchQ15LineitemInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedDate(cols, 3),
-                  TypedInt(cols, 0),
-                  TypedDecimalRaw(cols, 1), 2,
-                  TypedDecimalRaw(cols, 2), 2});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ15LineitemInput{TypedDate(cols, 3),
+                                           TypedInt(cols, 0),
+                                           TypedDecimalRaw(cols, 1), 2,
+                                           TypedDecimalRaw(cols, 2), 2};
+      },
+      [&](query::TpchQ15LineitemInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ15LineitemsForShipdateRange(
@@ -56,11 +58,14 @@ void ScanTpchQ15LineitemsForShipdateRange(
       std::to_string(start_days) +
       " DAY) AND l_shipdate < DATE_ADD('1970-01-01', INTERVAL " + std::to_string(end_days) +
       " DAY)";
-  ScanTypedTuples(sql, [&](const std::vector<std::string> &cols) {
-    consumer({TypedDate(cols, 3), TypedInt(cols, 0),
-              TypedDecimalRaw(cols, 1), 2,
-              TypedDecimalRaw(cols, 2), 2});
-  });
+  ScanTypedTuplesDecoded(
+      sql,
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ15LineitemInput{TypedDate(cols, 3), TypedInt(cols, 0),
+                                           TypedDecimalRaw(cols, 1), 2,
+                                           TypedDecimalRaw(cols, 2), 2};
+      },
+      [&](query::TpchQ15LineitemInput &&input) { consumer(input); });
 }
 
 } // namespace scans

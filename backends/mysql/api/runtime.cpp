@@ -204,22 +204,27 @@ std::vector<std::string> SplitTsv(const std::string &line) {
 namespace {
 thread_local const std::vector<std::string> *t_row = nullptr;
 thread_local const std::vector<char> *t_row_nulls = nullptr;
-
-struct RowScope {
-  RowScope(const std::vector<std::string> *row, const std::vector<char> *nulls) {
-    prev_row = t_row;
-    prev_nulls = t_row_nulls;
-    t_row = row;
-    t_row_nulls = nulls;
-  }
-  ~RowScope() {
-    t_row = prev_row;
-    t_row_nulls = prev_nulls;
-  }
-  const std::vector<std::string> *prev_row;
-  const std::vector<char> *prev_nulls;
-};
+thread_local const core::AuxEngineServices *t_scan_services = nullptr;
 } // namespace
+
+RowScope::RowScope(const std::vector<std::string> *row, const std::vector<char> *nulls)
+    : prev_row(t_row), prev_nulls(t_row_nulls) {
+  t_row = row;
+  t_row_nulls = nulls;
+}
+
+RowScope::~RowScope() {
+  t_row = prev_row;
+  t_row_nulls = prev_nulls;
+}
+
+ScanServicesScope::ScanServicesScope(const core::AuxEngineServices &services) : saved(t_scan_services) {
+  t_scan_services = &services;
+}
+
+ScanServicesScope::~ScanServicesScope() { t_scan_services = saved; }
+
+const core::AuxEngineServices *CurrentScanServices() { return t_scan_services; }
 
 // Table scans this thread ran (a query that scans answered from SQL).
 thread_local uint64_t t_table_scans = 0; // declared in runtime.hpp

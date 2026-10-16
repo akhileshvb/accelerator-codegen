@@ -23,51 +23,55 @@ namespace scans {
 
 void ScanTpchQ5Regions(
     const std::function<void(const query::TpchQ5RegionInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT r_regionkey, r_name FROM region "
       "WHERE r_regionkey IS NOT NULL AND r_name IS NOT NULL",
-      [&](const std::vector<std::string> &cols) {
-        consumer({static_cast<int32_t>(TypedInt(cols, 0)),
-                  TypedText(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ5RegionInput{static_cast<int32_t>(TypedInt(cols, 0)),
+                                        TypedText(cols, 1)};
+      },
+      [&](query::TpchQ5RegionInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ5Nations(
     const std::function<void(const query::TpchQ5NationInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT n_nationkey, n_name, n_regionkey, "
       "CASE WHEN n_name IS NULL THEN 1 ELSE 0 END, "
       "CASE WHEN n_regionkey IS NULL THEN 1 ELSE 0 END "
       "FROM nation WHERE n_nationkey IS NOT NULL",
-      [&](const std::vector<std::string> &cols) {
-        consumer({static_cast<int32_t>(TypedInt(cols, 0)),
-                  TypedText(cols, 1),
-                  static_cast<int32_t>(TypedInt(cols, 2)),
-                  TypedInt(cols, 3) != 0,
-                  TypedInt(cols, 4) != 0});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ5NationInput{static_cast<int32_t>(TypedInt(cols, 0)),
+                                        TypedText(cols, 1),
+                                        static_cast<int32_t>(TypedInt(cols, 2)),
+                                        TypedInt(cols, 3) != 0,
+                                        TypedInt(cols, 4) != 0};
+      },
+      [&](query::TpchQ5NationInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ5Customers(
     const std::function<void(const query::TpchQ5CustomerInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT c_custkey, c_nationkey FROM customer "
       "WHERE c_custkey IS NOT NULL AND c_nationkey IS NOT NULL",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  static_cast<int32_t>(TypedInt(cols, 1))});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ5CustomerInput{TypedInt(cols, 0),
+                                          static_cast<int32_t>(TypedInt(cols, 1))};
+      },
+      [&](query::TpchQ5CustomerInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ5Suppliers(
     const std::function<void(const query::TpchQ5SupplierInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT s_suppkey, s_nationkey FROM supplier "
       "WHERE s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  static_cast<int32_t>(TypedInt(cols, 1))});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ5SupplierInput{TypedInt(cols, 0),
+                                          static_cast<int32_t>(TypedInt(cols, 1))};
+      },
+      [&](query::TpchQ5SupplierInput &&input) { consumer(input); });
 }
 
 // Orders that can join: NULL custkey / orderdate never reach the revenue sum.
@@ -78,13 +82,14 @@ const char kOrdersSql[] =
 
 void ScanTpchQ5Orders(
     const std::function<void(const query::TpchQ5OrderInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       kOrdersSql,
       [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedInt(cols, 1),
-                  TypedDate(cols, 2)});
-      });
+        return query::TpchQ5OrderInput{TypedInt(cols, 0),
+                                       TypedInt(cols, 1),
+                                       TypedDate(cols, 2)};
+      },
+      [&](query::TpchQ5OrderInput &&input) { consumer(input); });
 }
 
 // Lineitems that reach the SUM; price and discount as exact cents.
@@ -96,14 +101,15 @@ const char kLineitemsSql[] =
 
 void ScanTpchQ5Lineitems(
     const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       kLineitemsSql,
       [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedInt(cols, 1),
-                  TypedInt(cols, 2), 2,
-                  TypedInt(cols, 3), 2});
-      });
+        return query::TpchQ5LineitemInput{TypedInt(cols, 0),
+                                          TypedInt(cols, 1),
+                                          TypedInt(cols, 2), 2,
+                                          TypedInt(cols, 3), 2};
+      },
+      [&](query::TpchQ5LineitemInput &&input) { consumer(input); });
 }
 
 // Index lookups (keys go in batches).

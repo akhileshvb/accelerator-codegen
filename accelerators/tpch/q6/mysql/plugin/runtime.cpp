@@ -26,14 +26,15 @@ namespace scans {
 
 void ScanTpchQ6Lineitems(
     const std::function<void(const query::TpchQ6LineitemInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT l_shipdate, l_discount, l_quantity, l_extendedprice FROM lineitem",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedDate(cols, 0),
-                  TypedDecimalRaw(cols, 1), 2,
-                  TypedDecimalRaw(cols, 2), 2,
-                  TypedDecimalRaw(cols, 3), 2});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ6LineitemInput{TypedDate(cols, 0),
+                                          TypedDecimalRaw(cols, 1), 2,
+                                          TypedDecimalRaw(cols, 2), 2,
+                                          TypedDecimalRaw(cols, 3), 2};
+      },
+      [&](query::TpchQ6LineitemInput &&input) { consumer(input); });
 }
 
 // One SQL GROUP BY: the engine aggregates, the process receives one row per
@@ -41,11 +42,11 @@ void ScanTpchQ6Lineitems(
 void ScanTpchQ6CellAggregates(
     const std::function<void(const query::TpchQ6CellAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT l_shipdate, l_discount, l_quantity, count(*), "
       "sum(l_extendedprice * l_discount) FROM lineitem "
       "GROUP BY l_shipdate, l_discount, l_quantity",
-      [&](const std::vector<std::string> &cols) {
+      [](const std::vector<std::string> &cols) {
         query::TpchQ6CellAggregate cell;
         cell.shipdate_days = TypedDate(cols, 0);
         __int128 discount = 0, quantity = 0;
@@ -56,8 +57,9 @@ void ScanTpchQ6CellAggregates(
         cell.discount_raw = static_cast<int64_t>(discount);
         cell.quantity_raw = static_cast<int64_t>(quantity);
         cell.count = TypedInt(cols, 3);
-        consumer(cell);
-      });
+        return cell;
+      },
+      [&](query::TpchQ6CellAggregate &&input) { consumer(input); });
 }
 
 } // namespace scans

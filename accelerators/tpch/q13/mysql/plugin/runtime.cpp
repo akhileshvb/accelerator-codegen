@@ -23,21 +23,23 @@ namespace scans {
 
 void ScanTpchQ13Customers(
     const std::function<void(const query::TpchQ13CustomerInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT c_custkey FROM customer WHERE c_custkey IS NOT NULL",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ13CustomerInput{TypedInt(cols, 0)};
+      },
+      [&](query::TpchQ13CustomerInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ13Orders(
     const std::function<void(const query::TpchQ13OrderInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT o_orderkey, o_custkey, o_comment FROM orders "
       "WHERE o_orderkey IS NOT NULL AND o_custkey IS NOT NULL AND o_comment IS NOT NULL",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0), TypedInt(cols, 1), TypedText(cols, 2)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ13OrderInput{TypedInt(cols, 0), TypedInt(cols, 1), TypedText(cols, 2)};
+      },
+      [&](query::TpchQ13OrderInput &&input) { consumer(input); });
 }
 
 } // namespace scans

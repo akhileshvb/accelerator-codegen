@@ -25,14 +25,15 @@ namespace scans {
 
 void ScanTpchQ19Parts(
     const std::function<void(const query::TpchQ19PartInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT p_partkey, p_brand, p_container, p_size FROM part",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedText(cols, 2),
-                  static_cast<int32_t>(TypedInt(cols, 3))});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ19PartInput{TypedInt(cols, 0),
+                                       TypedText(cols, 1),
+                                       TypedText(cols, 2),
+                                       static_cast<int32_t>(TypedInt(cols, 3))};
+      },
+      [&](query::TpchQ19PartInput &&input) { consumer(input); });
 }
 
 // lineitem JOIN part with the shipping predicate and family classification
@@ -42,13 +43,13 @@ void ScanTpchQ19GroupAggregates(
     const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
   const std::string family = query::TpchQ19FamilySql();
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT p_brand, " + family +
           " AS fam, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
           "count(*) FROM lineitem, part WHERE l_partkey = p_partkey AND " +
           query::TpchQ19ShippingSql() + " AND " + family +
           " IS NOT NULL GROUP BY p_brand, fam, l_quantity",
-      [&](const std::vector<std::string> &cols) {
+      [](const std::vector<std::string> &cols) {
         query::TpchQ19GroupAggregate agg;
         agg.brand = TypedText(cols, 0);
         agg.family = static_cast<int>(TypedInt(cols, 1));
@@ -58,8 +59,9 @@ void ScanTpchQ19GroupAggregates(
           throw std::runtime_error("TPC-H Q19: unparsable decimal");
         agg.quantity_raw = static_cast<int64_t>(quantity);
         agg.count = TypedInt(cols, 4);
-        consumer(agg);
-      });
+        return agg;
+      },
+      [&](query::TpchQ19GroupAggregate &&input) { consumer(input); });
 }
 
 // Point re-aggregation of the given parts' qualifying lineitems (the schema

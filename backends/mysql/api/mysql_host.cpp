@@ -192,6 +192,7 @@ struct MysqlHost::Impl final : runtime::EngineSlots {
   bool EngineWorkOnHostThread() const override { return false; }
   void RunBuild(runtime::AcceleratorRuntime &accelerator, runtime::BuildSnapshot &,
                 core::StateBuilder &builder) override {
+    const detail::ScanServicesScope scans(accelerator);
     accelerator.Module().Build(accelerator, builder);
   }
   const maintenance::CostModelParams &CostModel(const core::AcceleratorId &id) const override {

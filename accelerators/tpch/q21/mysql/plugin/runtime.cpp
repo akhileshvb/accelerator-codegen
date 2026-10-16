@@ -22,23 +22,25 @@ namespace scans {
 
 void ScanTpchQ21Suppliers(
     const std::function<void(const query::TpchQ21SupplierInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT s_suppkey, s_name, s_nationkey FROM supplier",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedInt(cols, 2)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ21SupplierInput{TypedInt(cols, 0),
+                                           TypedText(cols, 1),
+                                           TypedInt(cols, 2)};
+      },
+      [&](query::TpchQ21SupplierInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ21Nations(
     const std::function<void(const query::TpchQ21NationInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT n_nationkey, n_name FROM nation",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ21NationInput{TypedInt(cols, 0),
+                                         TypedText(cols, 1)};
+      },
+      [&](query::TpchQ21NationInput &&input) { consumer(input); });
 }
 
 // Lineitems of fulfilled orders, one order's rows consecutive. `restrict_sql`
@@ -46,16 +48,17 @@ void ScanTpchQ21Nations(
 void ScanTpchQ21FulfilledLineitems(
     const std::string &restrict_sql,
     const std::function<void(const query::TpchQ21LineInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT l_orderkey, l_suppkey, "
       "COALESCE(l_receiptdate > l_commitdate, 0) "
       "FROM lineitem JOIN orders ON o_orderkey = l_orderkey "
       "WHERE o_orderstatus = 'F'" +
           restrict_sql + " ORDER BY l_orderkey",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0), TypedInt(cols, 1),
-                  TypedInt(cols, 2) != 0});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ21LineInput{TypedInt(cols, 0), TypedInt(cols, 1),
+                                       TypedInt(cols, 2) != 0};
+      },
+      [&](query::TpchQ21LineInput &&input) { consumer(input); });
 }
 
 } // namespace scans

@@ -22,34 +22,37 @@ namespace scans {
 
 void ScanTpchQ11Partsupp(
     const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT ps_partkey, ps_suppkey, ps_availqty, ps_supplycost FROM partsupp",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedInt(cols, 1),
-                  TypedInt(cols, 2),
-                  TypedDecimalRaw(cols, 3), 2});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ11PartsuppInput{TypedInt(cols, 0),
+                                           TypedInt(cols, 1),
+                                           TypedInt(cols, 2),
+                                           TypedDecimalRaw(cols, 3), 2};
+      },
+      [&](query::TpchQ11PartsuppInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ11Suppliers(
     const std::function<void(const query::TpchQ11SupplierInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT s_suppkey, s_nationkey FROM supplier",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedInt(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ11SupplierInput{TypedInt(cols, 0),
+                                           TypedInt(cols, 1)};
+      },
+      [&](query::TpchQ11SupplierInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ11Nations(
     const std::function<void(const query::TpchQ11NationInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT n_nationkey, n_name FROM nation",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ11NationInput{TypedInt(cols, 0),
+                                         TypedText(cols, 1)};
+      },
+      [&](query::TpchQ11NationInput &&input) { consumer(input); });
 }
 
 } // namespace scans

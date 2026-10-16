@@ -22,33 +22,36 @@ namespace scans {
 
 void ScanTpchQ22Customers(
     const std::function<void(const query::TpchQ22CustomerInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT c_custkey, c_phone, c_acctbal FROM customer",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1),
-                  TypedDecimalRaw(cols, 2), 2});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ22CustomerInput{TypedInt(cols, 0),
+                                           TypedText(cols, 1),
+                                           TypedDecimalRaw(cols, 2), 2};
+      },
+      [&](query::TpchQ22CustomerInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ22Orders(
     const std::function<void(const query::TpchQ22OrderInput &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT o_custkey FROM orders",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ22OrderInput{TypedInt(cols, 0)};
+      },
+      [&](query::TpchQ22OrderInput &&input) { consumer(input); });
 }
 
 // Orders per customer, aggregated in SQL (one row per o_custkey).
 void ScanTpchQ22OrderCounts(
     const std::function<void(const query::TpchQ22OrderCount &)> &consumer) {
-  ScanTypedTuples(
+  ScanTypedTuplesDecoded(
       "SELECT o_custkey, CAST(COUNT(*) AS SIGNED) FROM orders "
       "WHERE o_custkey IS NOT NULL GROUP BY o_custkey",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0), TypedInt(cols, 1)});
-      });
+      [](const std::vector<std::string> &cols) {
+        return query::TpchQ22OrderCount{TypedInt(cols, 0), TypedInt(cols, 1)};
+      },
+      [&](query::TpchQ22OrderCount &&input) { consumer(input); });
 }
 
 } // namespace scans
