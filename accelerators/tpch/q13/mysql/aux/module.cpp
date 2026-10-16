@@ -2,6 +2,8 @@
 #include "tpch/q13/calibration_writes.hpp"
 #include "prims/sql_like.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -80,6 +82,15 @@ const TpchQ13StateImage *AsQ13Image(const core::StateImage &image,
   return payload && payload->kind == kind && payload->state ? payload : nullptr;
 }
 
+std::shared_ptr<TpchQ13OrderSegment> NewOrderSegment() {
+  auto segment = std::make_shared<TpchQ13OrderSegment>();
+  segment->orderkey.reserve(kTpchQ13SegmentRows);
+  segment->custkey.reserve(kTpchQ13SegmentRows);
+  segment->alive.reserve(kTpchQ13SegmentRows);
+  segment->comment.Reserve(kTpchQ13SegmentRows, 0);
+  return segment;
+}
+
 bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
                         const TpchQ13OutputRow &rhs) {
   if (lhs.custdist != rhs.custdist)
@@ -136,30 +147,32 @@ std::shared_ptr<TpchQ13OrderSegment> &TpchQ13State::MutableSegment(uint32_t id) 
   return segment;
 }
 
+std::size_t TpchQ13State::OpenSegmentRoom() const {
+  if (open_segment < 0)
+    return 0;
+  return kTpchQ13SegmentRows - segments[static_cast<std::size_t>(open_segment)]->orderkey.size();
+}
+
+uint32_t TpchQ13State::OpenFreshSegment() {
+  if (!free_segments.empty()) {
+    open_segment = free_segments.back();
+    free_segments.pop_back();
+  } else {
+    open_segment = static_cast<int64_t>(segments.size());
+    segments.emplace_back();
+  }
+  segments[static_cast<std::size_t>(open_segment)] = NewOrderSegment();
+  return static_cast<uint32_t>(open_segment);
+}
+
 // Orders count toward their custkey whether or not that customer exists yet
 // (the join only sees a customer row), so customer and order maintenance are
 // independent and a customer insert/delete is a single flag flip.
 void TpchQ13State::AddOrder(int64_t orderkey, int64_t custkey,
                             std::string_view comment) {
   RemoveOrder(orderkey); // primary key: re-adding an existing key replaces it
-  if (open_segment < 0 ||
-      segments[static_cast<std::size_t>(open_segment)]->orderkey.size() >=
-          kTpchQ13SegmentRows) {
-    if (!free_segments.empty()) {
-      open_segment = free_segments.back();
-      free_segments.pop_back();
-    } else {
-      open_segment = static_cast<int64_t>(segments.size());
-      segments.emplace_back();
-    }
-    auto &segment = segments[static_cast<std::size_t>(open_segment)];
-    segment = std::make_shared<TpchQ13OrderSegment>();
-    segment->orderkey.reserve(kTpchQ13SegmentRows);
-    segment->custkey.reserve(kTpchQ13SegmentRows);
-    segment->alive.reserve(kTpchQ13SegmentRows);
-    segment->comment.Reserve(kTpchQ13SegmentRows, 0);
-  }
-  const auto id = static_cast<uint32_t>(open_segment);
+  const auto id = OpenSegmentRoom() > 0 ? static_cast<uint32_t>(open_segment)
+                                        : OpenFreshSegment();
   auto &segment = *MutableSegment(id);
   const std::size_t slot = segment.orderkey.size();
   segment.orderkey.push_back(orderkey);
@@ -269,19 +282,312 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
   builder.Finish();
 }
 
+namespace {
+
+// Parallel loading of orders, for the build and for large maintenance batches.
+// The state's index shards and count chunks are written by the slice that owns
+// them: a key belongs to owner (shard or chunk) % kOwners, so slices never share
+// a write. What a slice may not write itself waits in buckets sorted by owner.
+constexpr std::size_t kOwners = 64;
+
+using OrderIndex = decltype(TpchQ13State::order_row);
+using CountArray = decltype(TpchQ13State::order_count);
+
+std::size_t IndexOwner(int64_t orderkey) { return OrderIndex::ShardOf(orderkey) % kOwners; }
+std::size_t CountOwner(int64_t custkey) {
+  return static_cast<std::size_t>(custkey) / CountArray::kChunkSize % kOwners;
+}
+
+struct CountChange {
+  int64_t custkey;
+  int32_t delta;
+};
+
+struct IndexEntry {
+  int64_t orderkey;
+  uint64_t ref; // (segment << kSlotBits) | slot
+};
+
+// Count changes and index entries of orders placed in segments, by owner.
+struct Placed {
+  Buckets<IndexEntry> index;
+  Buckets<CountChange> counts;
+  std::vector<CountChange> sparse_counts; // keys outside the dense range
+  int64_t max_dense_custkey = -1;
+  uint64_t segment_base = 0; // added to the segment of every entry
+
+  Placed() : index(kOwners), counts(kOwners) {}
+
+  void AddCount(int64_t custkey, int32_t delta) {
+    if (!TpchQ13State::Dense(custkey)) {
+      sparse_counts.push_back({custkey, delta});
+      return;
+    }
+    counts[CountOwner(custkey)].push_back({custkey, delta});
+    max_dense_custkey = std::max(max_dense_custkey, custkey);
+  }
+  void AddOrder(int64_t orderkey, uint64_t ref, int64_t custkey) {
+    index[IndexOwner(orderkey)].push_back({orderkey, ref});
+    AddCount(custkey, 1);
+  }
+};
+
+template <class Row> void Release(std::vector<Row> &rows) { std::vector<Row>().swap(rows); }
+
+// Writes the index entries and count changes into the state, one slice per owner.
+void ApplyPlaced(const core::AuxEngineServices &services, TpchQ13State &state,
+                 std::vector<Placed> &placed) {
+  int64_t max_dense_custkey = -1;
+  for (const auto &p : placed)
+    max_dense_custkey = std::max(max_dense_custkey, p.max_dense_custkey);
+  // The count directory is sized up front: slices then only fill their own chunks.
+  if (max_dense_custkey >= 0)
+    state.order_count.Mutable(max_dense_custkey);
+  core::ParallelEach(services, kOwners, 1, [&](std::size_t owner) {
+    for (auto &p : placed) {
+      for (const auto &entry : p.index[owner])
+        state.order_row.Upsert(entry.orderkey, entry.ref + (p.segment_base << kSlotBits));
+      for (const auto &change : p.counts[owner])
+        state.order_count.Mutable(change.custkey) += change.delta;
+      Release(p.index[owner]);
+      Release(p.counts[owner]);
+    }
+  });
+  for (const auto &p : placed)
+    for (const auto &change : p.sparse_counts)
+      state.AddCount(change.custkey, change.delta);
+}
+
+// ── Build ──────────────────────────────────────────────────────────────────
+
+// The orders of one scan partition: full segments of its own.
+struct OrderPartial {
+  std::vector<std::shared_ptr<TpchQ13OrderSegment>> segments;
+  Placed placed; // refs are relative to this partition's first segment
+
+  void Add(const TpchQ13OrderInput &order) {
+    if (segments.empty() || segments.back()->orderkey.size() >= kTpchQ13SegmentRows)
+      segments.push_back(NewOrderSegment());
+    auto &segment = *segments.back();
+    const uint64_t slot = segment.orderkey.size();
+    segment.orderkey.push_back(order.orderkey);
+    segment.custkey.push_back(order.custkey);
+    segment.alive.push_back(1);
+    segment.comment.Append(order.comment);
+    ++segment.live;
+    placed.AddOrder(order.orderkey, ((segments.size() - 1) << kSlotBits) | slot, order.custkey);
+  }
+};
+
+using OrderPartials = std::vector<OrderPartial>;
+
+// Moves the partitions' segments into the state in partition order, then indexes
+// and counts them. Order keys are unique (primary key), so no row replaces another.
+void LoadOrders(const core::AuxEngineServices &services, TpchQ13State &state,
+                OrderPartials &partials) {
+  std::vector<Placed> placed;
+  for (auto &partial : partials) {
+    partial.placed.segment_base = state.segments.size();
+    for (auto &segment : partial.segments) {
+      state.live_orders += segment->live;
+      state.segments.push_back(std::move(segment));
+    }
+    placed.push_back(std::move(partial.placed));
+  }
+  ApplyPlaced(services, state, placed);
+}
+
+// ── Maintenance ────────────────────────────────────────────────────────────
+
+constexpr uint64_t kNoRow = ~uint64_t{0};
+constexpr std::size_t kNoDelta = ~std::size_t{0};
+
+// What a batch does to one order key: any delta on it removes the row it had,
+// and the last delta, if an insert, is the new row.
+struct KeyNet {
+  uint64_t old_ref = kNoRow;
+  std::size_t insert = kNoDelta;
+};
+
+// The rows one owner of order keys removes and the inserts that stay, in delta order.
+struct Resolved {
+  std::vector<uint64_t> removed; // refs of the rows the keys had
+  std::vector<std::size_t> kept; // delta indexes
+};
+
+Resolved ResolveKeys(TpchQ13State &state, const std::vector<TpchQ13Delta> &deltas,
+                     const std::vector<std::size_t> &mine) {
+  std::unordered_map<int64_t, KeyNet> nets;
+  for (const std::size_t i : mine) {
+    const auto &delta = deltas[i];
+    const auto [net, fresh] = nets.try_emplace(delta.orderkey);
+    if (const uint64_t *ref = fresh ? state.order_row.Find(delta.orderkey) : nullptr) {
+      net->second.old_ref = *ref;
+      state.order_row.Erase(delta.orderkey);
+    }
+    net->second.insert = delta.sign > 0 ? i : kNoDelta;
+  }
+  Resolved out;
+  for (const std::size_t i : mine)
+    if (nets.find(deltas[i].orderkey)->second.insert == i)
+      out.kept.push_back(i);
+  for (const auto &[key, net] : nets)
+    if (net.old_ref != kNoRow)
+      out.removed.push_back(net.old_ref);
+  return out;
+}
+
+// Marks the removed rows dead, one slice per owner of their segments; returns
+// their customers' count changes.
+std::vector<Placed> KillRows(const core::AuxEngineServices &services, TpchQ13State &state,
+                             const std::vector<Resolved> &resolved) {
+  Buckets<uint64_t> by_segment(kOwners);
+  for (const auto &r : resolved)
+    for (const uint64_t ref : r.removed) {
+      by_segment[(ref >> kSlotBits) % kOwners].push_back(ref);
+      state.MarkTouched(static_cast<uint32_t>(ref >> kSlotBits));
+    }
+  std::vector<Placed> placed(kOwners);
+  core::ParallelEach(services, kOwners, 1, [&](std::size_t owner) {
+    for (const uint64_t ref : by_segment[owner]) {
+      auto &segment = *state.MutableSegment(static_cast<uint32_t>(ref >> kSlotBits));
+      const std::size_t slot = ref & (kTpchQ13SegmentRows - 1);
+      segment.alive[slot] = 0;
+      --segment.live;
+      placed[owner].AddCount(segment.custkey[slot], -1);
+    }
+  });
+  return placed;
+}
+
+// Appends the kept inserts to the open segment and to fresh ones, one slice per
+// target segment.
+std::vector<Placed> AppendRows(const core::AuxEngineServices &services, TpchQ13State &state,
+                               const std::vector<TpchQ13Delta> &deltas,
+                               const std::vector<std::size_t> &kept) {
+  std::vector<uint32_t> targets;
+  std::vector<std::size_t> first{0}; // kept[first[t] .. first[t + 1]) go to targets[t]
+  const auto target = [&](uint32_t id, std::size_t room) {
+    targets.push_back(id);
+    first.push_back(std::min(kept.size(), first.back() + room));
+  };
+  if (const std::size_t room = state.OpenSegmentRoom(); room > 0 && !kept.empty())
+    target(static_cast<uint32_t>(state.open_segment), room);
+  while (first.back() < kept.size())
+    target(state.OpenFreshSegment(), kTpchQ13SegmentRows);
+
+  std::vector<Placed> placed(targets.size());
+  core::ParallelEach(services, targets.size(), 1, [&](std::size_t t) {
+    auto &segment = *state.MutableSegment(targets[t]);
+    for (std::size_t k = first[t]; k < first[t + 1]; ++k) {
+      const auto &delta = deltas[kept[k]];
+      const uint64_t slot = segment.orderkey.size();
+      segment.orderkey.push_back(delta.orderkey);
+      segment.custkey.push_back(delta.custkey);
+      segment.alive.push_back(1);
+      segment.comment.Append(delta.comment);
+      ++segment.live;
+      placed[t].AddOrder(delta.orderkey, (uint64_t{targets[t]} << kSlotBits) | slot,
+                         delta.custkey);
+    }
+  });
+  return placed;
+}
+
+// The order deltas with the state AddOrder / RemoveOrder one by one would give
+// (rows may sit in other segment slots). The keys of a batch are resolved against
+// the index by shard owners, dead rows and appended rows are written by segment,
+// and the index and counts by owner.
+void ApplyOrderDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
+                      const std::vector<TpchQ13Delta> &deltas) {
+  Buckets<std::size_t> by_owner(kOwners);
+  for (std::size_t i = 0; i < deltas.size(); ++i)
+    if (deltas[i].table == TpchQ13Delta::Table::Order)
+      by_owner[IndexOwner(deltas[i].orderkey)].push_back(i);
+  std::vector<Resolved> resolved(kOwners);
+  core::ParallelEach(services, kOwners, 1, [&](std::size_t owner) {
+    resolved[owner] = ResolveKeys(state, deltas, by_owner[owner]);
+  });
+
+  std::size_t removed = 0;
+  std::vector<std::size_t> kept;
+  for (const auto &r : resolved) {
+    removed += r.removed.size();
+    kept.insert(kept.end(), r.kept.begin(), r.kept.end());
+  }
+  auto placed = KillRows(services, state, resolved);
+  auto appended = AppendRows(services, state, deltas, kept);
+  placed.insert(placed.end(), std::make_move_iterator(appended.begin()),
+                std::make_move_iterator(appended.end()));
+  state.live_orders += static_cast<int64_t>(kept.size()) - static_cast<int64_t>(removed);
+  ApplyPlaced(services, state, placed);
+}
+
+// Customers first, then orders: the two do not interact. A batch too small to
+// split runs delta by delta.
+constexpr std::size_t kDeltasGrain = 8192;
+
+void ApplyDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
+                 const std::vector<TpchQ13Delta> &deltas) {
+  const bool parallel = core::SliceCount(services, deltas.size(), kDeltasGrain) > 1;
+  for (const auto &delta : deltas) {
+    if (delta.table == TpchQ13Delta::Table::Customer) {
+      if (delta.sign > 0)
+        state.AddCustomer(delta.orderkey);
+      else
+        state.RemoveCustomer(delta.orderkey);
+    } else if (!parallel) {
+      if (delta.sign > 0)
+        state.AddOrder(delta.orderkey, delta.custkey, delta.comment);
+      else
+        state.RemoveOrder(delta.orderkey);
+    }
+  }
+  if (parallel)
+    ApplyOrderDeltas(services, state, deltas);
+}
+
+} // namespace
+
 std::shared_ptr<TpchQ13State>
 TpchQ13Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ13State>();
-  initial_scan->ScanCustomers([&](const TpchQ13CustomerInput &input) {
-    state->AddCustomer(input.key);
-  });
-  // Rows stream straight into the segments: no transient copy of the orders.
-  initial_scan->ScanOrders([&](const TpchQ13OrderInput &input) {
-    state->AddOrder(input.orderkey, input.custkey, input.comment);
-  });
+  const std::size_t partitions = BuildPartitions(services);
+  const auto customers = core::PartitionedBuild<std::vector<int64_t>>(
+      services, [] { return std::vector<int64_t>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanCustomersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ13CustomerInput &input) {
+              sink(partition, OneRowBatch<TpchQ13CustomerInput>{input});
+            });
+      },
+      [](std::vector<int64_t> &into, const TpchQ13CustomerInput &input) {
+        into.push_back(input.key);
+      },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      },
+      partitions);
+  for (const int64_t key : customers)
+    state->AddCustomer(key);
+
+  auto orders = core::PartitionedBuild<OrderPartials>(
+      services, [] { return OrderPartials(1); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ13OrderInput &input) {
+              sink(partition, OneRowBatch<TpchQ13OrderInput>{input});
+            });
+      },
+      [](OrderPartials &into, const TpchQ13OrderInput &input) { into.front().Add(input); },
+      [](OrderPartials &into, OrderPartials &&from) {
+        into.insert(into.end(), std::make_move_iterator(from.begin()),
+                    std::make_move_iterator(from.end()));
+      },
+      partitions);
+  LoadOrders(services, *state, orders);
   return state;
 }
 
@@ -386,18 +692,7 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   if (!updated_state)
     return outcome;
 
-  for (const auto &delta : buffer.Deltas()) {
-    if (delta.table == TpchQ13Delta::Table::Customer) {
-      if (delta.sign > 0)
-        updated_state->AddCustomer(delta.orderkey);
-      else
-        updated_state->RemoveCustomer(delta.orderkey);
-    } else if (delta.sign > 0) {
-      updated_state->AddOrder(delta.orderkey, delta.custkey, delta.comment);
-    } else {
-      updated_state->RemoveOrder(delta.orderkey);
-    }
-  }
+  ApplyDeltas(services, *updated_state, buffer.Deltas());
   updated_state->CompactTouched();
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -546,10 +841,15 @@ void TpchQ13Module::EmitResult(const core::AuxEngineServices &services,
   // (never expected) larger ones fall into a sparse map.
   constexpr int64_t kDense = int64_t{1} << 22;
   int64_t max_count = 0;
-  for (std::size_t ci = 0; ci < state.order_count.NumChunks(); ++ci)
-    if (const auto *chunk = state.order_count.ChunkAt(ci))
-      for (const int32_t c : *chunk)
-        max_count = std::max<int64_t>(max_count, c);
+  core::ParallelReduce(
+      services, state.order_count.NumChunks(), kChunksGrain, max_count,
+      [&](int64_t &acc, std::size_t begin, std::size_t end) {
+        for (std::size_t ci = begin; ci < end; ++ci)
+          if (const auto *chunk = state.order_count.ChunkAt(ci))
+            for (const int32_t c : *chunk)
+              acc = std::max<int64_t>(acc, c);
+      },
+      [](int64_t &into, int64_t &&from) { into = std::max(into, from); });
   state.sparse_customers.ForEach([&](int64_t, const TpchQ13State::SparseSlot &slot) {
     max_count = std::max<int64_t>(max_count, slot.count);
   });

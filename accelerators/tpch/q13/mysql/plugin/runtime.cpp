@@ -21,25 +21,34 @@ using namespace detail;
 
 namespace scans {
 
+SplitTable CustomersTable() {
+  return {"c_custkey", "customer", "c_custkey IS NOT NULL", "c_custkey"};
+}
+
+query::TpchQ13CustomerInput DecodeCustomer(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0)};
+}
+
+SplitTable OrdersTable() {
+  return {"o_orderkey, o_custkey, o_comment", "orders",
+          "o_orderkey IS NOT NULL AND o_custkey IS NOT NULL AND o_comment IS NOT NULL",
+          "o_orderkey"};
+}
+
+query::TpchQ13OrderInput DecodeOrder(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedText(cols, 2)};
+}
+
 void ScanTpchQ13Customers(
     const std::function<void(const query::TpchQ13CustomerInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT c_custkey FROM customer WHERE c_custkey IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ13CustomerInput{TypedInt(cols, 0)};
-      },
-      [&](query::TpchQ13CustomerInput &&input) { consumer(input); });
+  ScanTypedTuplesDecoded(SelectSql(CustomersTable()), DecodeCustomer,
+                         [&](query::TpchQ13CustomerInput &&input) { consumer(input); });
 }
 
 void ScanTpchQ13Orders(
     const std::function<void(const query::TpchQ13OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_orderkey, o_custkey, o_comment FROM orders "
-      "WHERE o_orderkey IS NOT NULL AND o_custkey IS NOT NULL AND o_comment IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ13OrderInput{TypedInt(cols, 0), TypedInt(cols, 1), TypedText(cols, 2)};
-      },
-      [&](query::TpchQ13OrderInput &&input) { consumer(input); });
+  ScanTypedTuplesDecoded(SelectSql(OrdersTable()), DecodeOrder,
+                         [&](query::TpchQ13OrderInput &&input) { consumer(input); });
 }
 
 } // namespace scans
@@ -55,6 +64,26 @@ public:
       const std::function<void(const query::TpchQ13OrderInput &)> &consumer)
       override {
     scans::ScanTpchQ13Orders(consumer);
+  }
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ13CustomerInput &)> &sink)
+      override {
+    ScanTypedTuplesPartitioned(
+        services, scans::CustomersTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeCustomer(cols));
+        });
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ13OrderInput &)> &sink)
+      override {
+    ScanTypedTuplesPartitioned(
+        services, scans::OrdersTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, scans::DecodeOrder(cols));
+        });
   }
 };
 
