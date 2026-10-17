@@ -110,24 +110,28 @@ using namespace scan;
 struct TpchQ9Scan : TpchQ9InitialScan {
   explicit TpchQ9Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
-      const std::function<void(const TpchQ9PartInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT p_partkey, p_name FROM part",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ9PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                 ChunkValue(chunk, 1, row).ToString()};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9PartInput &)> &sink) override {
+    ScanPartitioned(services, connection, "part",
+                    {IntColumn("p_partkey"), TextColumn("p_name")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ9PartInput{row.Int(0), row.Text(1)});
+                      }
+                    });
   }
   void ScanSuppliers(
-      const std::function<void(const TpchQ9SupplierInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT s_suppkey, s_nationkey FROM supplier",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ9SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     SafeInt32(ChunkValue(chunk, 1, row))};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9SupplierInput &)> &sink) override {
+    ScanPartitioned(services, connection, "supplier",
+                    {IntColumn("s_suppkey"), IntColumn("s_nationkey")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ9SupplierInput{row.Int(0), static_cast<int32_t>(row.Int(1))});
+                      }
+                    });
   }
   void ScanNations(
       const std::function<void(const TpchQ9NationInput &)> &consumer) override {
@@ -138,26 +142,28 @@ struct TpchQ9Scan : TpchQ9InitialScan {
               });
   }
   void ScanOrders(
-      const std::function<void(const TpchQ9OrdersInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT o_orderkey, o_orderdate FROM orders",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ9OrdersInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                   DateDays(ChunkValue(chunk, 1, row))};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9OrdersInput &)> &sink) override {
+    ScanPartitioned(services, connection, "orders",
+                    {IntColumn("o_orderkey"), DateColumn("o_orderdate")},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ9OrdersInput{row.Int(0), row.Date(1)});
+                      }
+                    });
   }
   void ScanPartsupps(
-      const std::function<void(const TpchQ9PartsuppInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ9PartsuppInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     SafeInt64(ChunkValue(chunk, 1, row)),
-                                     DecimalRaw(ChunkValue(chunk, 2, row))};
-        },
-        [&](auto &&input) { consumer(input); });
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9PartsuppInput &)> &sink) override {
+    ScanPartitioned(services, connection, "partsupp",
+                    {IntColumn("ps_partkey"), IntColumn("ps_suppkey"), DecimalColumn("ps_supplycost", 2)},
+                    partitions, [&](std::size_t partition, const ChunkBatch &batch) {
+                      for (std::size_t i = 0; i < batch.size(); ++i) {
+                        const auto row = batch.Row(i);
+                        sink(partition, TpchQ9PartsuppInput{row.Int(0), row.Int(1), row.Decimal(2)});
+                      }
+                    });
   }
   void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,

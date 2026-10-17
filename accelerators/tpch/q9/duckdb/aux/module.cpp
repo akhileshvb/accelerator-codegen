@@ -31,7 +31,6 @@ constexpr std::size_t kCandidateGrain = 8192;
 constexpr std::size_t kPairChunk = 4096;
 constexpr std::size_t kPairChunkGrain = 1;
 // Parts reserved before the part scan.
-constexpr std::size_t kPartScanReserve = 4096;
 
 // Order years 1992..1998 index the dense profit grid.
 constexpr int32_t kDenseNations = Q9TokenCube::kNations;
@@ -1669,30 +1668,37 @@ void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
   });
 
   // Scan parts for the name index, then size the profit slots from cardinality.
-  std::vector<std::pair<int64_t, std::string>> parts;
-  parts.reserve(kPartScanReserve);
-  initial_scan->ScanParts([&](const TpchQ9PartInput &input) {
-    parts.emplace_back(input.partkey, input.name);
-  });
+  auto parts = core::CollectRows<TpchQ9PartInput>(
+      services, [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanParts(services, partitions, sink);
+      });
   state.InitPartitions(parts.size());
   state.BeginBulkParts();
   state.postings_bulk = true;
-  for (const auto &[partkey, name] : parts)
-    state.AddNamePostings(partkey, name);
+  for (const auto &part : parts)
+    state.AddNamePostings(part.partkey, part.name);
   parts.clear();
   parts.shrink_to_fit();
 
   // Join-side maps (kept in state: maintenance resolves dimension and RF
   // writes against them, never point SQL).
-  initial_scan->ScanSuppliers([&](const TpchQ9SupplierInput &input) {
+  // The state's maps are copy-on-write arrays and hashes: the pool decodes the
+  // rows, one thread applies them in table order.
+  for (const auto &input : core::CollectRows<TpchQ9SupplierInput>(
+           services, [&](std::size_t partitions, auto &&sink) {
+             initial_scan->ScanSuppliers(services, partitions, sink);
+           }))
     state.SetSupplierNation(input.suppkey, input.nationkey);
-  });
-  initial_scan->ScanOrders([&](const TpchQ9OrdersInput &input) {
+  for (const auto &input : core::CollectRows<TpchQ9OrdersInput>(
+           services, [&](std::size_t partitions, auto &&sink) {
+             initial_scan->ScanOrders(services, partitions, sink);
+           }))
     state.SetOrderYear(input.orderkey, TpchQ9ExtractYear(input.orderdate_days));
-  });
-  initial_scan->ScanPartsupps([&](const TpchQ9PartsuppInput &input) {
+  for (const auto &input : core::CollectRows<TpchQ9PartsuppInput>(
+           services, [&](std::size_t partitions, auto &&sink) {
+             initial_scan->ScanPartsupps(services, partitions, sink);
+           }))
     state.SetPartsuppCost(input.partkey, input.suppkey, input.supplycost_raw);
-  });
 
   BuildPairAggregates(services, *initial_scan, state);
 
