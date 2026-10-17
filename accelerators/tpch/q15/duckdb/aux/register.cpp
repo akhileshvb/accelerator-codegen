@@ -32,13 +32,16 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr core::TableId kLineitemTable = 1;
+constexpr core::TableId kSupplierTable = 2;
+
 SharedProbe BuildTpchQ15Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   const auto orderkey = result.GetValue(0, row).ToString();
   const auto linenumber = result.GetValue(1, row).ToString();
   const double price = std::stod(result.GetValue(2, row).ToString());
   SharedProbe probe;
-  probe.table = 1;
+  probe.table = kLineitemTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {2};
   probe.write_delta = 0.01;
@@ -180,7 +183,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q15_aux",
     {::duckdb::LogicalType::DATE},
     [](::duckdb::Connection &connection) {
-      const TpchQ15Config c{1, 2};
+      const TpchQ15Config c{q15_catalog::kLineitemTable, q15_catalog::kSupplierTable};
       return MakeBinding<TpchQ15Scan, TpchQ15Module>(connection, CaptureTableList{{"lineitem", c.lineitem_table}, {"supplier", c.supplier_table}}, c);
     }}};
 
