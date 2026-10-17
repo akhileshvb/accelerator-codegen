@@ -1,2 +1,2 @@
-// Presence of this file registers the Q17 aux module with the build; the result
-// is produced by TpchQ17Module::Execute.
+// CMake registers the query's targets from the presence of this file.
+#include "tpch/q17/duckdb/aux/module.hpp"

@@ -1,2 +1,2 @@
-// Presence of this file registers the Q13 aux module with the build; the result
-// is produced by TpchQ13Module::EmitResult.
+// CMake registers the query's targets from the presence of this file.
+#include "tpch/q13/duckdb/aux/module.hpp"
