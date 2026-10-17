@@ -328,7 +328,7 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     return ReadGuard(false, nullptr);
   }
   if (!Servable(epoch, options.require_applied_through)) {
-    const uint64_t failures = impl->stats.build_failures; // before the build it may request
+    const uint64_t ended = impl->stats.build_failures + impl->stats.builds_abandoned; // before the build it may request
     lock.unlock();
     RequestBuild();
     lock.lock();
@@ -342,7 +342,7 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
     const auto done = [&] {
       return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
-             impl->stats.build_failures != failures;
+             impl->stats.build_failures + impl->stats.builds_abandoned != ended;
     };
     while (!done()) {
       const auto now = Clock::now();
@@ -703,6 +703,11 @@ void AcceleratorRuntime::UseModuleServices(core::AuxEngineServices &services) {
 }
 
 namespace {
+// A build that gave up without a fault: counted, not logged as a failure.
+struct BuildAbandoned : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
+
 // Called from a catch block.
 std::string CurrentExceptionMessage() {
   try {
@@ -727,7 +732,7 @@ void AcceleratorRuntime::RequestBuild() {
     try {
       BuildNow();
     } catch (...) {
-      // Left stale and recorded by BuildFailed; the next commit or read requests another build.
+      // Left stale and recorded by BuildEnded; the next commit or read requests another build.
     }
     std::lock_guard<std::mutex> lock(impl->state_mutex);
     impl->build_scheduled = false;
@@ -788,7 +793,7 @@ bool AcceleratorRuntime::BuildNow() {
     {
       std::lock_guard<std::mutex> lock(impl->state_mutex);
       if (impl->build_invalidated) {
-        throw std::runtime_error("invalidated while building: " + id);
+        throw BuildAbandoned("invalidated while building");
       }
     }
     impl->store.install(std::move(builder.images), b);
@@ -817,35 +822,46 @@ bool AcceleratorRuntime::BuildNow() {
     impl->stats.build_us += MicrosSince(start);
     impl->last_build_us = MicrosSince(start);
     impl->build_started.reset();
+  } catch (const BuildAbandoned &) {
+    AbandonBuild();
+    BuildEnded(&AcceleratorStats::builds_abandoned, "");
+    throw;
   } catch (...) {
-    {
-      std::lock_guard<std::mutex> lock(impl->state_mutex);
-      impl->build_started.reset();
-      impl->applier.AbandonBuild();
-    }
-    BuildFailed(CurrentExceptionMessage());
+    AbandonBuild();
+    BuildEnded(&AcceleratorStats::build_failures, CurrentExceptionMessage());
     throw;
   }
   impl->state_cv.notify_all();
   Pump(); // shipped changes that arrived after the catch-up was taken
   if (!IsSynced()) {
-    BuildFailed("the catch-up could not be applied");
+    BuildEnded(&AcceleratorStats::builds_abandoned, "");
     return false;
   }
   return true;
 }
 
-// Readers waiting for the build stop waiting; the next read requests another.
-// The error is kept in the stats and logged the first time it is seen, so an
-// accelerator that cannot build is visible rather than silently falling back.
-void AcceleratorRuntime::BuildFailed(const std::string &error) {
-  bool first_sighting;
+void AcceleratorRuntime::AbandonBuild() {
+  std::lock_guard<std::mutex> lock(impl->state_mutex);
+  impl->build_started.reset();
+  impl->applier.AbandonBuild();
+}
+
+// A build that ended without installing; readers waiting for it stop waiting
+// and the next read requests another. A failure keeps its error in the stats
+// and logs it the first time it is seen, so an accelerator that cannot build
+// is visible rather than silently falling back. An abandoned build (the state
+// was invalidated meanwhile, or its catch-up did not apply) is only counted:
+// it is routine under writes.
+void AcceleratorRuntime::BuildEnded(uint64_t AcceleratorStats::*counter, const std::string &error) {
+  bool first_sighting = false;
   {
     std::lock_guard<std::mutex> lock(impl->state_mutex);
-    impl->stats.build_failures++;
-    impl->stats.last_build_error = error;
-    first_sighting = impl->logged_build_error != error;
-    impl->logged_build_error = error;
+    impl->stats.*counter += 1;
+    if (counter == &AcceleratorStats::build_failures) {
+      impl->stats.last_build_error = error;
+      first_sighting = impl->logged_build_error != error;
+      impl->logged_build_error = error;
+    }
     impl->build_scheduled = false;
   }
   if (first_sighting) {

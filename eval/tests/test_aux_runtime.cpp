@@ -584,6 +584,7 @@ void FailedBuildReleasesReaders() {
   // The failure is visible in the stats, not only as fallbacks.
   CHECK(runtime.Stats().build_failures >= 1);
   CHECK(runtime.Stats().last_build_error == "no build snapshot");
+  CHECK(runtime.Stats().builds_abandoned == 0);
   slots.fail_builds = false;
   CHECK(ReadAt(runtime, db.Now()) == 0); // the next read builds again
 }
@@ -607,6 +608,9 @@ void InvalidateDuringBuild() {
   slots.Release();
   build.join();
   CHECK(failed && !runtime.IsSynced()); // the build is not installed
+  // Routine under writes: counted as abandoned, not as a failure.
+  CHECK(runtime.Stats().builds_abandoned == 1);
+  CHECK(runtime.Stats().build_failures == 0 && runtime.Stats().last_build_error.empty());
   CHECK(ReadAt(runtime, db.Now()) == 0); // the next one is
 }
 
