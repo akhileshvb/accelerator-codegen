@@ -1,4 +1,4 @@
-// GENERATED QUERY: TPC-H Q22 aux state on DuckDB.
+// TPC-H Q22 aux state on DuckDB.
 // Registers the catalog entry (SQL, probes, benchmark arguments), the
 // table function accel_tpch_q22_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
@@ -8,15 +8,8 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,21 +18,25 @@
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
-namespace q22_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
+
+constexpr core::TableId kOrdersTable = 1;
+constexpr core::TableId kCustomerTable = 2;
+
+namespace q22_catalog {
+
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
 SharedProbe BuildTpchQ22Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   // Projection: custkey, phone, acctbal. ReadCustomer expects all three.
-  // TpchQ22Config{1, 2} → orders_table=1, customer_table=2.
   const auto custkey = result.GetValue(0, row).ToString();
   const double acctbal = std::stod(result.GetValue(2, row).ToString());
   const int64_t bal_raw = DecimalRaw(result.GetValue(2, row));
   SharedProbe probe;
-  probe.table = 2;
+  probe.table = kCustomerTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {2};
   probe.write_delta = 100.0;
@@ -87,7 +84,7 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{22,
        core::AuxValue::Of(core::AuxType::String, std::string{"11"}),
        core::AuxValue::Of(core::AuxType::String, std::string{"22"}),
        core::AuxValue::Of(core::AuxType::String, std::string{"32"})}},
-     2,
+     kCustomerTable,
      false,
      BuildTpchQ22Probe,
      core::kTpchQ22CostModel,
@@ -111,41 +108,6 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
-
-// Typed streaming scan: reads DuckDB vectors directly (no boxed Values).
-template <typename T> struct TypedCol {
-  ::duckdb::UnifiedVectorFormat fmt;
-  const T *data = nullptr;
-  void Init(::duckdb::DataChunk &chunk, ::duckdb::idx_t col) {
-    chunk.data[col].ToUnifiedFormat(chunk.size(), fmt);
-    data = ::duckdb::UnifiedVectorFormat::GetData<T>(fmt);
-  }
-  bool Valid(::duckdb::idx_t row) const {
-    return fmt.validity.RowIsValid(fmt.sel->get_index(row));
-  }
-  const T &operator()(::duckdb::idx_t row) const {
-    return data[fmt.sel->get_index(row)];
-  }
-};
-
-template <typename Callback>
-void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
-                     Callback &&callback) {
-  auto scan_lock = LockScan(connection_p);
-  auto &connection = ScanConnection(connection_p);
-  auto result = connection.SendQuery(sql);
-  if (!result || result->HasError())
-    throw std::runtime_error(result ? result->GetError()
-                                    : "DuckDB scan returned null");
-  while (true) {
-    auto chunk = result->Fetch();
-    if (!chunk || chunk->size() == 0)
-      break;
-    callback(*chunk);
-  }
-  if (result->HasError())
-    throw std::runtime_error(result->GetError());
-}
 
 struct TpchQ22Scan : TpchQ22InitialScan {
   explicit TpchQ22Scan(::duckdb::Connection &connection) : connection(connection) {}
@@ -178,7 +140,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q22_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ22Config c{1, 2};
+      const TpchQ22Config c{kOrdersTable, kCustomerTable};
       return MakeBinding<TpchQ22Scan, TpchQ22Module>(connection, CaptureTableList{{"orders", c.orders_table}, {"customer", c.customer_table}}, c);
     }}};
 
