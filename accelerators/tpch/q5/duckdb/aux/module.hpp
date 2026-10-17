@@ -38,16 +38,6 @@ struct TpchQ5NationInput {
   int32_t regionkey = 0;
 };
 
-struct TpchQ5CustomerInput {
-  int64_t custkey = 0;
-  int32_t nationkey = 0;
-};
-
-struct TpchQ5SupplierInput {
-  int64_t suppkey = 0;
-  int32_t nationkey = 0;
-};
-
 struct TpchQ5OrderInput {
   int64_t orderkey = 0;
   int64_t custkey = 0;
@@ -70,10 +60,6 @@ public:
       const std::function<void(const TpchQ5RegionInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ5NationInput &)> &) = 0;
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ5CustomerInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ5SupplierInput &)> &) = 0;
   virtual void ScanOrders(
       const std::function<void(const TpchQ5OrderInput &)> &) = 0;
   virtual void ScanLineitems(
