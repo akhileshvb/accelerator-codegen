@@ -16,8 +16,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-int32_t TpchQ6MonthKeyFromDays(int32_t days_since_epoch);
-
 struct TpchQ6Config {
   core::TableId lineitem_table = 0;
 };
@@ -80,12 +78,6 @@ struct TpchQ6LineitemDelta {
 std::vector<uint8_t> EncodeTpchQ6Matrix(const ::accelerator_codegen::Q6RevenueMatrix &);
 bool DecodeTpchQ6Matrix(const std::vector<uint8_t> &,
                         ::accelerator_codegen::Q6RevenueMatrix &);
-
-int32_t TpchQ6MonthKeyFromDays(int32_t days_since_epoch);
-int32_t TpchQ6StartOfMonthDays(int32_t days_since_epoch);
-int32_t TpchQ6StartOfNextMonthDays(int32_t days_since_epoch);
-int32_t TpchQ6ExclusiveEndDays(int32_t start_days);
-int32_t TpchQ6AddMonths(int32_t days_since_epoch, int32_t months);
 
 struct TpchQ6QueryParams {
   int32_t start_days = 0;
@@ -153,6 +145,8 @@ private:
                           std::unordered_map<core::PartitionId,
                                              ::accelerator_codegen::Q6RevenueMatrix> &matrices,
                           std::set<core::PartitionId> &declined) const;
+  void RebuildMonths(const std::vector<core::PartitionId> &,
+                     core::StagedMaintenanceOutcome &) const;
   void CollectQueryPartitions(const TpchQ6QueryParams &params,
                               std::vector<core::PartitionId> &partitions) const;
   void EmitResult(::accelerator_codegen::Q6AccT revenue,
