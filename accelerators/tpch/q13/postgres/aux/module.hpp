@@ -31,8 +31,6 @@ namespace accelerator_codegen::aux_state::query {
 // ~80% load) => ~100 B/order, i.e. ~15 GB at SF100 and ~150 GB at SF1000; the
 // comment text is about half of it and is inherent: a general LIKE needs the
 // text. Customers cost 5 B per custkey in the arrays (0.75 GB at SF1000).
-// (Before: ~ 8+4+4+1 + comments in one std::string whose uint32 offsets wrapped
-// at 4.29 GB, ~SF58; whole-state copy per write batch.)
 //
 // Execute is O(orders) for a general pattern (a multithreaded SIMD scan of the
 // comment blobs, then one pass over the customers); nothing in the state can
@@ -79,11 +77,11 @@ public:
   // Both scans are split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
   // Only rows whose key is not NULL.
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ13CustomerInput &)> &sink) = 0;
   // Only rows whose orderkey, custkey and comment are not NULL.
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ13OrderInput &)> &sink) = 0;
 };
@@ -226,12 +224,9 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 private:
-  std::shared_ptr<TpchQ13State> BuildState(core::AuxEngineServices &services,
-                                           bool pattern_index) const;
+  std::shared_ptr<TpchQ13State> BuildState(core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ13State> &state) const;
   void EmitResult(const TpchQ13State &state, const core::QueryArguments &arguments,
