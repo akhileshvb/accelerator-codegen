@@ -59,14 +59,6 @@ public:
   virtual ~TpchQ7InitialScan() = default;
   virtual void ScanNations(
       const std::function<void(const TpchQ7NationInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ7SupplierInput &)> &) = 0;
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ7CustomerInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ7OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ7LineitemInput &)> &) = 0;
   // The scans of the big tables split into `partitions` fixed row ranges:
   // sink(partition, row) runs concurrently for different partitions, one
   // thread per partition.
@@ -104,13 +96,12 @@ struct TpchQ7CubeKey {
     return year < o.year;
   }
 };
+
 struct TpchQ7CubeCell {
   ::accelerator_codegen::pg_numeric::Int128 revenue = 0; // SUM(volume) at scale 4, exact
   int64_t rows = 0;                  // joined lineitems (group exists iff > 0)
 };
 
-// ---- State (immutable once published; copies share chunks) ----------------
-//
 // Everything the result depends on, in compact columnar form:
 //   supplier_nation[suppkey]  nation key (4 B/supplier)
 //   customer_nation[custkey]  nation key (4 B/customer)
@@ -127,7 +118,7 @@ struct TpchQ7CubeCell {
 // so nation / supplier / customer / orders / lineitem writes are all exact and
 // incremental. Memory (SF100 / SF1000, ~30% of lineitems are in the window,
 // 1.5e8 / 1.5e9 orders): ~(5+1.2*9)=~16 B per order + 8 B per supplier/
-// customer = about 2.5 GB / 25 GB; the old state was ~8 GB transient + maps.
+// customer = about 2.5 GB / 25 GB.
 // Per write batch: O(touched orders' chunks) (a chunk is ~10 KB), plus a copy
 // of the 3 small directories (O(#directory pages)).
 struct TpchQ7State {
@@ -196,8 +187,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

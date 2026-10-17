@@ -22,9 +22,7 @@ namespace accelerator_codegen::aux_state::query {
 //
 //   kOrderPriorities  priority class per orderkey: AnyKeyCowArray<uint8_t>,
 //                     1 B per key slot (TPC-H keys are ~25% dense => ~4 B per
-//                     order: 0.6 GB at SF100, 6 GB at SF1000; the old
-//                     DenseIdArray + whole-array copy per write batch was the
-//                     same size but copied up to 268 MB per batch).
+//                     order: 0.6 GB at SF100, 6 GB at SF1000).
 //   kCells            per (receipt day, shipmode): lineitem counts joined with
 //                     an existing order, split high / low / total.  Only
 //                     qualifying lineitems (commit < receipt, ship < commit)

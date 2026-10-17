@@ -20,8 +20,6 @@
 #include "prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q11 layout ──────────────────────────────────────────────────────────────
 struct TpchQ11Layout {
   static constexpr const char *kAccelerator = "tpch_q11_aux";
   static constexpr core::PartitionId kState = 0;
@@ -31,14 +29,12 @@ struct TpchQ11Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ11Config {
   core::TableId partsupp_table = 0;
   core::TableId supplier_table = 0;
   core::TableId nation_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ11PartsuppInput {
   int64_t partkey = 0;
   int64_t suppkey = 0;
@@ -60,8 +56,6 @@ struct TpchQ11NationInput {
 class TpchQ11InitialScan {
 public:
   virtual ~TpchQ11InitialScan() = default;
-  virtual void ScanPartsupp(
-      const std::function<void(const TpchQ11PartsuppInput &)> &) = 0;
   // The partsupp scan split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
   virtual void ScanPartsuppPartitioned(
@@ -74,8 +68,6 @@ public:
 };
 
 using Q11AccT = __int128_t;
-
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ11OutputRow {
   int64_t partkey = 0;
   Q11AccT value = 0;
@@ -124,11 +116,13 @@ struct TpchQ11Key {
   int64_t value = 0;
   int64_t partkey = 0;
 };
+
 struct TpchQ11KeyLess {
   bool operator()(const TpchQ11Key &a, const TpchQ11Key &b) const {
     return a.value != b.value ? a.value > b.value : a.partkey < b.partkey;
   }
 };
+
 struct TpchQ11WideKey {
   Q11AccT value = 0;
   int64_t partkey = 0;
@@ -181,8 +175,6 @@ struct TpchQ11State {
     const auto it = groups.find(nationkey);
     return it == groups.end() ? nullptr : it->second.get();
   }
-
-  // ── point edits (Build and incremental maintenance) ──
   // Facts only; the caller keeps the groups in step (see ApplyPartsupp).
   void AddOffer(int64_t partkey, const TpchQ11Offer &offer);
   bool RemoveOffer(int64_t partkey, const TpchQ11Offer &offer);
@@ -212,7 +204,6 @@ struct TpchQ11StateImage {
   std::shared_ptr<const TpchQ11State> state;
 };
 
-// ── Query arguments ─────────────────────────────────────────────────────────
 // fraction = coeff / 10^scale (exact decimal); `infinity` = +1 / -1 for
 // +/-Infinity (coeff unused), `nan` for NaN.
 struct TpchQ11Fraction {
@@ -221,6 +212,7 @@ struct TpchQ11Fraction {
   int infinity = 0;
   bool nan = false;
 };
+
 // Parses a decimal text (sign, digits, '.', exponent, Infinity, NaN).
 bool TpchQ11ParseFraction(std::string_view text, TpchQ11Fraction &out);
 
@@ -231,24 +223,23 @@ struct TpchQ11Args {
 
 void TpchQ11FinalizeAndEmit(const TpchQ11State &state, const TpchQ11Args &args,
                             core::AuxRowSink &sink);
-
-// ── Captured row changes ────────────────────────────────────────────────────
 struct TpchQ11PartsuppEvent {
   int8_t sign = 0;
   int64_t partkey = 0;
   TpchQ11Offer offer;
 };
+
 struct TpchQ11SupplierEvent {
   int8_t sign = 0;
   int64_t suppkey = 0;
   int64_t nationkey = kTpchQ11NoNation;
 };
+
 struct TpchQ11NationEvent {
   int8_t sign = 0;
   TpchQ11NationInput row;
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ11TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -267,7 +258,6 @@ private:
   bool requires_rebuild = false;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ11Module final : public core::AuxQueryModule {
 public:
   explicit TpchQ11Module(TpchQ11Config config,
@@ -290,14 +280,12 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
   TpchQ11State BuildState(core::AuxEngineServices &services) const;
   std::shared_ptr<const TpchQ11State>
-  LoadState(core::AuxEngineServices &services) const;
+  LoadState(core::AuxEngineServices &services, core::Version *version = nullptr) const;
   void EmitResult(const TpchQ11State &, const core::QueryArguments &,
                   core::AuxRowSink &) const;
 

@@ -55,12 +55,6 @@ void ScanTpchQ11Nations(
 
 class TpchQ11Scan final : public query::TpchQ11InitialScan {
 public:
-  void ScanPartsupp(
-      const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ11PartsuppInput>(scans::PartsuppTable(),
-                                                    scans::DecodePartsupp, consumer);
-  }
   void ScanPartsuppPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ11PartsuppInput &)> &sink) override {

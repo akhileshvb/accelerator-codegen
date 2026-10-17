@@ -8,44 +8,20 @@
 #include <stdexcept>
 #include <utility>
 
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
-#include "tpch/common/partitioned_collect.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
 // Offer chunks per slice: 1024 parts of a few offers each, ~5 us a chunk.
-constexpr std::size_t kChunksGrain = 32;
-
-// ── Cell helpers ────────────────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
+constexpr std::size_t kChunkGrain = 32;
+// Nation groups per slice when sorting them into blocks.
+constexpr std::size_t kGroupBuildGrain = 1;
 
 bool NullCell(const core::AuxRow &row, std::size_t index) {
   return index >= row.values.size() || row.values[index].is_null;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
 }
 
 // A decimal cell as an integer count of 1/100 units (ps_supplycost's scale);
@@ -70,14 +46,6 @@ bool CentsCell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
   return true;
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
-// ── Row readers (projected as in Dependencies()) ────────────────────────────
 // false: undecodable (forces a rebuild); `skip`: the row can never contribute
 // (a NULL key / cost / quantity), so it is ignored.
 bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, TpchQ11Offer &offer,
@@ -87,8 +55,8 @@ bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, TpchQ11Offer &offer
   if (skip)
     return true;
   int64_t qty = 0;
-  if (!IntCell(row, 0, partkey) || !IntCell(row, 1, offer.suppkey) ||
-      !IntCell(row, 2, qty) || !CentsCell(row, 3, offer.cost_raw) ||
+  if (!core::IntCell(row, 0, partkey) || !core::IntCell(row, 1, offer.suppkey) ||
+      !core::IntCell(row, 2, qty) || !CentsCell(row, 3, offer.cost_raw) ||
       qty < std::numeric_limits<int32_t>::min() ||
       qty > std::numeric_limits<int32_t>::max())
     return false;
@@ -99,12 +67,12 @@ bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, TpchQ11Offer &offer
 bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey,
                   int64_t &nationkey) {
   nationkey = kTpchQ11NoNation; // NULL s_nationkey joins no nation
-  if (!IntCell(row, 0, suppkey))
+  if (!core::IntCell(row, 0, suppkey))
     return false;
   if (NullCell(row, 1))
     return true;
   int64_t nk = 0;
-  if (!IntCell(row, 1, nk) || nk == kTpchQ11NoNation)
+  if (!core::IntCell(row, 1, nk) || nk == kTpchQ11NoNation)
     return false;
   nationkey = nk;
   return true;
@@ -113,10 +81,10 @@ bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey,
 bool ReadNation(const core::AuxRow &row, TpchQ11NationInput &out, bool &skip) {
   int64_t nk = 0;
   skip = NullCell(row, 1); // n_name = <arg> is never true for NULL
-  if (!IntCell(row, 0, nk))
+  if (!core::IntCell(row, 0, nk))
     return false;
   out.nationkey = nk;
-  return skip || StringCell(row, 1, out.name);
+  return skip || core::StringCell(row, 1, out.name);
 }
 
 Q11AccT Product(const TpchQ11Offer &offer) {
@@ -124,9 +92,35 @@ Q11AccT Product(const TpchQ11Offer &offer) {
          static_cast<Q11AccT>(offer.availqty);
 }
 
-} // namespace
+// Applies the buffered events on a copy of the published state, which shares
+// every chunk / block / group with it; edits clone only what they touch. Null
+// when the state disagrees with the table.
+std::shared_ptr<TpchQ11State> ApplyEvents(core::AuxEngineServices &services,
+                                          const TpchQ11State &old,
+                                          const TpchQ11TxnBuffer &buffer) {
+  auto state = std::make_shared<TpchQ11State>(old);
+  for (const auto &ev : buffer.nations)
+    ev.sign < 0 ? state->EraseNation(ev.row) : state->UpsertNation(ev.row);
+  // Partsupp changes first, against the supplier map as it was ...
+  for (const auto &ev : buffer.partsupps)
+    if (!state->ApplyPartsupp(ev.sign, ev.partkey, ev.offer))
+      return nullptr;
+  // ... then suppliers moving between nations re-group their parts.
+  if (!buffer.suppliers.empty()) {
+    const core::AnyKeyCowArray<int64_t> old_map = state->supplier_nation;
+    for (const auto &ev : buffer.suppliers)
+      state->SetSupplierNation(ev.suppkey, ev.nationkey);
+    core::FlatHashMap<uint8_t> changed;
+    for (const auto &ev : buffer.suppliers)
+      if (old_map.Get(ev.suppkey) != state->supplier_nation.Get(ev.suppkey))
+        changed.Upsert(ev.suppkey, 1);
+    if (!changed.empty())
+      state->RegroupSuppliers(services, changed, old_map);
+  }
+  return state;
+}
 
-// ── TpchQ11Group ────────────────────────────────────────────────────────────
+} // namespace
 void TpchQ11Group::Insert(int64_t partkey, Q11AccT value) {
   total += value;
   ++parts;
@@ -149,7 +143,6 @@ void TpchQ11Group::Erase(int64_t partkey, Q11AccT value) {
     narrow.Erase({static_cast<int64_t>(value), partkey});
 }
 
-// ── TpchQ11State ────────────────────────────────────────────────────────────
 TpchQ11Offer TpchQ11State::OfferAt(const TpchQ11OfferSlots &slots,
                                    int64_t partkey, uint32_t i) const {
   if (i < kTpchQ11InlineOffers)
@@ -285,7 +278,7 @@ void TpchQ11State::RegroupSuppliers(
   // the groups, serially and in part order.
   std::vector<Touched> touched;
   core::ParallelReduce(
-      services, offers.NumChunks(), kChunksGrain, touched,
+      services, offers.NumChunks(), kChunkGrain, touched,
       [&](std::vector<Touched> &acc, std::size_t begin, std::size_t end) {
         for (std::size_t ci = begin; ci < end; ++ci) {
           const auto *chunk = offers.ChunkAt(ci);
@@ -395,7 +388,7 @@ void TpchQ11State::BuildGroups(const core::AuxEngineServices &services) {
   std::vector<int64_t> order;
   for (const auto &entry : pending)
     order.push_back(entry.first);
-  services.ParallelFor(order.size(), [&](std::size_t i) {
+  core::ParallelEach(services, order.size(), kGroupBuildGrain, [&](std::size_t i) {
     auto &keys = pending[order[i]];
     std::sort(keys.begin(), keys.end(), TpchQ11KeyLess());
     groups[order[i]]->narrow =
@@ -411,10 +404,10 @@ std::size_t TpchQ11State::MemoryBytes() const {
   return n;
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ11TxnBuffer::HasPendingChanges() const {
   return requires_rebuild || EventCount() != 0;
 }
+
 void TpchQ11TxnBuffer::Clear() {
   requires_rebuild = false;
   partsupps.clear();
@@ -422,7 +415,6 @@ void TpchQ11TxnBuffer::Clear() {
   nations.clear();
 }
 
-// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ11Module::Id() const { return TpchQ11Layout::kAccelerator; }
 
 std::vector<core::TableDependency> TpchQ11Module::Dependencies() const {
@@ -513,76 +505,33 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
   if (!buffer.HasPendingChanges())
     return outcome;
 
-  bool need_rebuild = buffer.RequiresRebuild();
-  if (!need_rebuild) {
-    const auto old_state = LoadState(services);
+  if (!buffer.RequiresRebuild()) {
     core::Version old_version = 0;
+    const auto old_state = LoadState(services, &old_version);
     if (!old_state) {
       buffer.Clear();
       return outcome;
     }
-    const auto snapshot = services.StateStore().ReadPartitions(
-        services.CurrentVisibility(), {TpchQ11Layout::kState});
-    for (const auto &image : snapshot.partitions)
-      if (image.partition == TpchQ11Layout::kState)
-        old_version = image.version;
-
-    // Copy-on-write: the copy shares every chunk / block / group with the
-    // published state; edits clone only what they touch.
-    auto new_state = std::make_shared<TpchQ11State>(*old_state);
-    for (const auto &ev : buffer.nations)
-      ev.sign < 0 ? new_state->EraseNation(ev.row)
-                  : new_state->UpsertNation(ev.row);
-    // Partsupp changes first, against the supplier map as it was ...
-    for (const auto &ev : buffer.partsupps)
-      if (!new_state->ApplyPartsupp(ev.sign, ev.partkey, ev.offer)) {
-        need_rebuild = true; // the state disagrees with the table
-        break;
-      }
-    // ... then suppliers moving between nations re-group their parts.
-    if (!need_rebuild && !buffer.suppliers.empty()) {
-      const core::AnyKeyCowArray<int64_t> old_map = new_state->supplier_nation;
-      for (const auto &ev : buffer.suppliers)
-        new_state->SetSupplierNation(ev.suppkey, ev.nationkey);
-      core::FlatHashMap<uint8_t> changed;
-      for (const auto &ev : buffer.suppliers)
-        if (old_map.Get(ev.suppkey) != new_state->supplier_nation.Get(ev.suppkey))
-          changed.Upsert(ev.suppkey, 1);
-      if (!changed.empty())
-        new_state->RegroupSuppliers(services, changed, old_map);
-    }
-
-    if (!need_rebuild) {
+    if (auto new_state = ApplyEvents(services, *old_state, buffer)) {
       const auto decision = services.ChooseMaintenance(
-          {buffer.EventCount(), 1, true, false, true, false, false,
-           core::MaintenanceAction::NoOp,
-           services.ExpectedQueriesBeforeNextWrite()});
+          core::MaintenanceRequest::IncrementalSingleState(
+              buffer.EventCount(), services.ExpectedQueriesBeforeNextWrite()));
       if (decision.action == core::MaintenanceAction::ApplyDelta) {
         auto image = std::make_shared<TpchQ11StateImage>();
         image->state = std::move(new_state);
-        const std::shared_ptr<const TpchQ11StateImage> const_image =
-            std::move(image);
         outcome.action = core::MaintenanceAction::ApplyDelta;
         outcome.updates.push_back(core::StateImage::Make(
             TpchQ11Layout::kAccelerator, TpchQ11Layout::kState, old_version,
-            const_image));
+            std::shared_ptr<const TpchQ11StateImage>(std::move(image))));
         buffer.Clear();
         return outcome;
       }
-      // Cost-model rebuild: fall through with empty updates.
     }
   }
 
-  const auto decision = services.ChooseMaintenance(
-      {0, 0, false, false, true, true, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                       ? core::MaintenanceAction::RebuildAll
-                       : decision.action;
-  if (outcome.action == core::MaintenanceAction::RebuildPartition)
-    outcome.action = core::MaintenanceAction::RebuildAll;
-  outcome.invalidations = All();
-  outcome.pending_rebuild = outcome.invalidations;
+  core::FinishRebuildAll(
+      outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                   services.ExpectedQueriesBeforeNextWrite())));
   buffer.Clear();
   return outcome;
 }
@@ -611,13 +560,6 @@ void TpchQ11Module::Execute(core::AuxEngineServices &services,
   EmitResult(*state, arguments, sink);
 }
 
-void TpchQ11Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  const TpchQ11State state = BuildState(services);
-  EmitResult(state, arguments, sink);
-}
-
 TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q11 requires a typed initial scan source");
@@ -628,8 +570,8 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
     state.SetSupplierNation(input.suppkey, input.nationkey);
   });
   // The scan runs in parallel; the offers are added in partition order.
-  for (const auto &input : CollectRows<TpchQ11PartsuppInput>(
-           services, BuildPartitions(services), [&](std::size_t parts, auto &&sink) {
+  for (const auto &input : core::CollectRows<TpchQ11PartsuppInput>(
+           services, [&](std::size_t parts, auto &&sink) {
              initial_scan->ScanPartsuppPartitioned(services, parts, sink);
            }))
     state.AddOffer(input.partkey,
@@ -640,13 +582,15 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
 }
 
 std::shared_ptr<const TpchQ11State>
-TpchQ11Module::LoadState(core::AuxEngineServices &services) const {
+TpchQ11Module::LoadState(core::AuxEngineServices &services, core::Version *version) const {
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), {TpchQ11Layout::kState});
   for (const auto &image : snapshot.partitions) {
     if (image.partition != TpchQ11Layout::kState)
       continue;
     const auto *typed = image.As<TpchQ11StateImage>();
+    if (version)
+      *version = image.version;
     return typed ? typed->state : nullptr;
   }
   return nullptr;
