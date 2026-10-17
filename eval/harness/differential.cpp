@@ -43,14 +43,18 @@ void Require(bool condition, const std::string &message) {
   }
 }
 
-void RequireForcedMaintenanceAction() {
+void RequireForcedMaintenanceAction(DuckdbRuntime &runtime) {
   const char *force = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
   const std::string force_s = force ? force : "";
   if (force_s.empty()) {
     return;
   }
   core::SetForcedMaintenanceActionName(force_s);
-  const auto entry = core::LastMaintenanceDecision();
+  // The commit's decision lives in the accelerator's stats: the commit logs on its own thread.
+  auto entry = runtime.Stats().last_decision;
+  if (!entry) {
+    entry = core::LastMaintenanceDecision();
+  }
   Require(entry && entry->valid,
           "expected staged maintenance decision after Apply (force=" + force_s +
               ")");
@@ -393,7 +397,7 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
 
   try {
     runtime.Apply(probe);
-    RequireForcedMaintenanceAction();
+    RequireForcedMaintenanceAction(runtime);
 
     const auto after_fp = FingerprintSharedBaseSql(connection, entry);
     Require(after_fp != before_fp,
@@ -780,7 +784,7 @@ void RunAdversarialWriteDifferentialCheck(const std::string &db_path,
                   std::to_string(entry.query_id));
       try {
         runtime.Apply(probe);
-        RequireForcedMaintenanceAction();
+        RequireForcedMaintenanceAction(runtime);
         const auto after_fp = FingerprintSharedBaseSql(connection, entry);
         Require(after_fp != before_fp,
                 "adversarial Apply() did not invalidate DuckDB Q" +

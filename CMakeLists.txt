@@ -822,6 +822,23 @@ if(BUILD_TESTING)
             test_aux_snapshot_reads_q11_${_mode}
             PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 120)
     endforeach()
+    # Q14 under the same load: its reader threads drop the last reference to the
+    # database's host while a commit is maintaining through it.
+    add_test(
+        NAME test_aux_snapshot_reads_q14_private
+        COMMAND test_aux_snapshot_reads "${_accel_tpch_test_db}" 14 3 4 private)
+    # Regression: a forced partition rebuild leaves a build running when the
+    # test returns or fails; teardown must not outlive the host's state, and a
+    # fallback read must survive the build's snapshot on the same connection.
+    add_test(
+        NAME test_tpch_shared_differential_q1_forced_rebuild_partition
+        COMMAND test_tpch_shared_differential "${_accel_tpch_test_db}" 1)
+    set_tests_properties(
+        test_tpch_shared_differential_q1_forced_rebuild_partition
+        PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300
+        ENVIRONMENT "ACCEL_FORCE_MAINTENANCE_ACTION=RebuildPartition;ACCEL_AUX_READ_THREADS=8;ACCEL_AUX_BUILD_THREADS=8;ACCEL_AUX_MAINT_THREADS=8")
+    set_tests_properties(test_aux_snapshot_reads_q14_private
+        PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 120)
     # Fixture: a fresh small SEC-EDGAR DB in the build dir, built from the SEC
     # benchmark DB (ACCEL_SEC_EDGAR_DB, default the shared SF3, read-only) with
     # workloads/sec_edgar/test_db_subset.sql. Exits 77 (skip) when the source is
