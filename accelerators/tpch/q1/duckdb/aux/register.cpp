@@ -8,17 +8,9 @@
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
 #include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -31,13 +23,15 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr query::TpchQ1Config kTables{1};
+
 SharedProbe BuildTpchQ1Probe(::duckdb::MaterializedQueryResult &result,
                              ::duckdb::idx_t row) {
   const auto orderkey = result.GetValue(0, row).ToString();
   const auto linenumber = result.GetValue(1, row).ToString();
   const double price = std::stod(result.GetValue(4, row).ToString());
   SharedProbe probe;
-  probe.table = 1;
+  probe.table = kTables.lineitem_table;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {5};
   probe.write_delta = 0.01;
@@ -195,7 +189,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q1_aux",
     {::duckdb::LogicalType::INTEGER},
     [](::duckdb::Connection &connection) {
-      const TpchQ1Config c{1};
+      const TpchQ1Config c = q1_catalog::kTables;
       return MakeBinding<TpchQ1Scan, TpchQ1Module>(connection, CaptureTableList{{"lineitem", c.lineitem_table}}, c);
     }}};
 
