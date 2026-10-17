@@ -1,6 +1,7 @@
 #include "tpch/q14/postgres/aux/module.hpp"
 #include "tpch/q14/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/common/partitioned_rows.hpp"
 
@@ -18,6 +19,8 @@ namespace {
 constexpr core::PartitionId kStatePartition = 0;
 // More affected parts than this per commit: rebuild instead of point scans.
 constexpr std::size_t kMaxPointParts = 50000;
+// Lineitem deltas per slice below which a commit's deltas are folded inline.
+constexpr std::size_t kDeltaGrain = 4096;
 
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -132,6 +135,30 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ14LineitemDelta &delta,
   delta.sign = sign;
   return true;
 }
+
+struct RevenueSum {
+  __int128 revenue = 0;
+  int64_t count = 0;
+  RevenueSum &operator+=(const RevenueSum &o) {
+    revenue += o.revenue;
+    count += o.count;
+    return *this;
+  }
+};
+
+// A commit's lineitem deltas folded: per (part, day) for parts whose class
+// changed, per (day, class) for the rest.
+struct DeltaSums {
+  std::map<std::pair<int64_t, int32_t>, RevenueSum> moved_parts;
+  std::map<std::pair<int32_t, TpchQ14PromoClass>, RevenueSum> by_class;
+
+  void Merge(DeltaSums &&from) {
+    for (const auto &[key, sum] : from.moved_parts)
+      moved_parts[key] += sum;
+    for (const auto &[key, sum] : from.by_class)
+      by_class[key] += sum;
+  }
+};
 
 } // namespace
 
@@ -379,12 +406,26 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
   std::unordered_map<int64_t, bool> is_affected;
   for (const auto key : affected)
     is_affected[key] = true;
-  for (const auto &delta : buffer.Deltas()) {
-    if (!is_affected.count(delta.partkey))
-      continue;
-    auto &cell = moved[{delta.partkey, delta.shipdate_days}];
-    cell.pre -= delta.sign * delta.revenue_raw;
-    cell.pre_count -= delta.sign;
+  // Fold the deltas (slices in parallel; they only read the part classes).
+  const auto &deltas = buffer.Deltas();
+  DeltaSums sums;
+  core::ParallelReduce(
+      services, deltas.size(), kDeltaGrain, sums,
+      [&](DeltaSums &acc, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto &delta = deltas[i];
+          const RevenueSum sum{delta.sign * delta.revenue_raw, delta.sign};
+          if (is_affected.count(delta.partkey))
+            acc.moved_parts[{delta.partkey, delta.shipdate_days}] += sum;
+          else
+            acc.by_class[{delta.shipdate_days, next->PromoOf(delta.partkey)}] += sum;
+        }
+      },
+      [](DeltaSums &into, DeltaSums &&from) { into.Merge(std::move(from)); });
+  for (const auto &[key, sum] : sums.moved_parts) {
+    auto &cell = moved[key];
+    cell.pre -= sum.revenue;
+    cell.pre_count -= sum.count;
   }
   for (const auto &entry : moved) {
     const auto key = entry.first.first;
@@ -398,12 +439,8 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
     next->SetPromo(key, final_class.at(key));
 
   // Lineitems of unaffected parts: -old +new with the part's (unchanged) class.
-  for (const auto &delta : buffer.Deltas()) {
-    if (is_affected.count(delta.partkey))
-      continue;
-    next->AddRevenue(delta.shipdate_days, next->PromoOf(delta.partkey),
-                     delta.sign * delta.revenue_raw, delta.sign);
-  }
+  for (const auto &[key, sum] : sums.by_class)
+    next->AddRevenue(key.first, key.second, sum.revenue, sum.count);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
@@ -445,10 +482,23 @@ std::shared_ptr<TpchQ14State>
 TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q14 requires a typed initial scan source");
-  auto state = std::make_shared<TpchQ14State>();
-  initial_scan->ScanParts([&](const TpchQ14PartInput &input) {
-    state->SetPromo(input.key, ClassOfType(input.type));
-  });
+  // Each partition fills its own class array; arrays merge chunk-wise.
+  auto state = std::make_shared<TpchQ14State>(core::PartitionedBuild<TpchQ14State>(
+      services, [] { return TpchQ14State{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ14PartInput &input) {
+              sink(partition, OneRowBatch<TpchQ14PartInput>{input});
+            });
+      },
+      [](TpchQ14State &into, const TpchQ14PartInput &input) {
+        into.SetPromo(input.key, ClassOfType(input.type));
+      },
+      [](TpchQ14State &into, TpchQ14State &&from) {
+        into.part_class.MergeFrom(std::move(from.part_class),
+                                  [](uint8_t mine, uint8_t theirs) { return theirs ? theirs : mine; });
+      },
+      BuildPartitions(services)));
   // Revenue per ship day of the lineitems that join a part (parts are final).
   using DayTotals = std::unordered_map<int32_t, TpchQ14DayTotals>;
   const auto totals = core::PartitionedBuild<DayTotals>(

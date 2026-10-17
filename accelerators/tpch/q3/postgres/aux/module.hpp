@@ -68,12 +68,17 @@ struct TpchQ3LineitemInput {
 class TpchQ3InitialScan {
 public:
   virtual ~TpchQ3InitialScan() = default;
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ3CustomerInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ3OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ3LineitemInput &)> &) = 0;
+  // The partitioned scans of the three tables (the build joins them; any
+  // table order): sink(partition, row), one thread per partition at a time.
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ3CustomerInput &)> &) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ3OrderInput &)> &) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ3LineitemInput &)> &) = 0;
   // The join of the three, one row per lineitem, in orderkey order (the
   // fallback read streams it).
   virtual void ScanOrderLines(
@@ -140,8 +145,6 @@ struct TpchQ3State {
   void Install(const std::string &mktsegment, int64_t orderkey,
                const PreparedOrder &order);
 
-  // Replace the record of an order (no buckets: remove it).
-  void SetOrder(const std::string &mktsegment, const OrderRecord &record);
   void RemoveOrder(int64_t orderkey);
 };
 

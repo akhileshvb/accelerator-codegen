@@ -5,7 +5,6 @@
 #include <limits>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -116,51 +115,32 @@ public:
       const std::function<void(const TpchQ5RegionInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ5NationInput &)> &) = 0;
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ5CustomerInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ5SupplierInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ5OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ5LineitemInput &)> &) = 0;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ5CustomerInput &)> &sink) = 0;
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ5SupplierInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ5OrderInput &)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ5LineitemInput &)> &sink) = 0;
 
   // Point lookups against the database as the transaction leaves it (they run
-  // while maintenance is staged at pre-commit).  Backends override them with
-  // index lookups; the defaults filter a full scan.
+  // while maintenance is staged at pre-commit), by index.
   virtual void LookupLineitemsByOrder(
       const std::vector<int64_t> &orderkeys,
-      const std::function<void(const TpchQ5LineitemInput &)> &consumer) {
-    const std::set<int64_t> wanted(orderkeys.begin(), orderkeys.end());
-    if (wanted.empty())
-      return;
-    ScanLineitems([&](const TpchQ5LineitemInput &row) {
-      if (wanted.count(row.orderkey))
-        consumer(row);
-    });
-  }
+      const std::function<void(const TpchQ5LineitemInput &)> &consumer) = 0;
   virtual void LookupLineitemsBySupplier(
       const std::vector<int64_t> &suppkeys,
-      const std::function<void(const TpchQ5LineitemInput &)> &consumer) {
-    const std::set<int64_t> wanted(suppkeys.begin(), suppkeys.end());
-    if (wanted.empty())
-      return;
-    ScanLineitems([&](const TpchQ5LineitemInput &row) {
-      if (wanted.count(row.suppkey))
-        consumer(row);
-    });
-  }
+      const std::function<void(const TpchQ5LineitemInput &)> &consumer) = 0;
   virtual void LookupOrdersByCustomer(
       const std::vector<int64_t> &custkeys,
-      const std::function<void(const TpchQ5OrderInput &)> &consumer) {
-    const std::set<int64_t> wanted(custkeys.begin(), custkeys.end());
-    if (wanted.empty())
-      return;
-    ScanOrders([&](const TpchQ5OrderInput &row) {
-      if (wanted.count(row.custkey))
-        consumer(row);
-    });
-  }
+      const std::function<void(const TpchQ5OrderInput &)> &consumer) = 0;
 };
 
 using TpchQ5Money = __int128;  // revenue, scale 4

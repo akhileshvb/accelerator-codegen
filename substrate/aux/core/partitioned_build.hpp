@@ -33,6 +33,15 @@ inline constexpr std::size_t kFloatBuildPartitions = 16;
 // Buckets rows are dealt into by builds that merge bucket by bucket.
 inline constexpr std::size_t kBuildBuckets = 64;
 
+// Owners of the folds of a batch: one for a small batch, else enough to keep
+// the workers busy past uneven chunks. A function of the data, not of threads.
+inline constexpr std::size_t kMaxOwners = 256;
+inline constexpr std::size_t kRowsPerOwner = 1024;
+
+inline std::size_t OwnerCount(std::size_t rows) {
+  return std::clamp<std::size_t>(rows / kRowsPerOwner, 1, kMaxOwners);
+}
+
 // Partitions of a build scan: one for a serial build, else enough to keep the
 // workers busy past uneven partitions.
 inline std::size_t BuildPartitions(const AuxEngineServices &services) {
@@ -82,6 +91,29 @@ Partial PartitionedBuild(const AuxEngineServices &services, Make &&make, Scan &&
     merge(partials[0], std::move(partials[p]));
   }
   return std::move(partials[0]);
+}
+
+// Partial merge for std::vector partials: appends in partition order.
+template <class Row> void AppendRows(std::vector<Row> &into, std::vector<Row> &&from) {
+  into.insert(into.end(), std::make_move_iterator(from.begin()),
+              std::make_move_iterator(from.end()));
+  from = {};
+}
+
+// All rows of a partitioned scan in partition order: the scan decodes them on
+// pool threads, the caller applies them to the state serially.
+template <class Input, class Scan>
+std::vector<Input> CollectRows(const AuxEngineServices &services, Scan &&scan) {
+  using Rows = std::vector<Input>;
+  return PartitionedBuild<Rows>(
+      services, [] { return Rows{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        scan(partitions, [&](std::size_t partition, const Input &input) {
+          sink(partition, SingleRowBatch<Input>{input});
+        });
+      },
+      [](Rows &into, const Input &input) { into.push_back(input); }, AppendRows<Input>,
+      BuildPartitions(services));
 }
 
 } // namespace accelerator_codegen::aux_state::core

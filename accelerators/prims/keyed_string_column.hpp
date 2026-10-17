@@ -21,11 +21,11 @@
 #include <cstdint>
 #include <memory>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 #include "prims/chunked_cow_array.hpp"
 #include "prims/flat_hash_map.hpp"
+#include "prims/parallelism.hpp"
 #include "prims/sql_like.hpp"
 #include "prims/string_blob.hpp"
 
@@ -109,10 +109,11 @@ public:
   }
 
   // Calls fn(worker, key) for every key whose string matches. fn runs on up to
-  // `max_threads` workers concurrently (worker in [0, workers)); it must only
-  // touch worker-local state or be thread-safe. Returns the worker count used.
+  // `par.workers` workers of par's pool concurrently (worker in [0, workers));
+  // it must only touch worker-local state or be thread-safe. Returns the
+  // worker count used.
   template <typename Fn>
-  unsigned ForEachMatch(const sql_like::LikeMatcher &matcher, unsigned max_threads,
+  unsigned ForEachMatch(const sql_like::LikeMatcher &matcher, const Parallelism &par,
                         Fn &&fn) const {
     std::vector<std::pair<int64_t, const Segment *>> work;
     for (std::size_t si = 0; si < segs_.NumChunks() * SegArray::kChunkSize; ++si)
@@ -125,8 +126,8 @@ public:
     const std::size_t nseg = work.size();
     constexpr std::size_t kBlock = 8;
     unsigned workers = 1;
-    if (max_threads > 1 && size_ >= 8 * kSegKeys)
-      workers = std::min<unsigned>(max_threads, static_cast<unsigned>((nseg + kBlock - 1) / kBlock));
+    if (par.workers > 1 && size_ >= 8 * kSegKeys)
+      workers = std::min<unsigned>(static_cast<unsigned>(par.workers), static_cast<unsigned>((nseg + kBlock - 1) / kBlock));
     if (workers == 0)
       workers = 1;
     std::atomic<std::size_t> next{0};
@@ -140,7 +141,7 @@ public:
           const Segment &s = *work[wi].second;
           const std::size_t n = s.strings.size();
           const auto bits = sql_like::MatchBlobBitmap(matcher, s.strings.offsets(), n,
-                                                      s.strings.data(), 1);
+                                                      s.strings.data());
           for (std::size_t w = 0; w < bits.size(); ++w) {
             uint64_t b = bits[w];
             while (b) {
@@ -152,15 +153,7 @@ public:
         }
       }
     };
-    if (workers == 1) {
-      run(0);
-    } else {
-      std::vector<std::thread> pool;
-      for (unsigned t = 0; t < workers; ++t)
-        pool.emplace_back(run, t);
-      for (auto &th : pool)
-        th.join();
-    }
+    par.For(workers, [&](std::size_t worker) { run(static_cast<unsigned>(worker)); });
     return workers;
   }
 

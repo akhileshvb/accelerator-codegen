@@ -1,10 +1,12 @@
 #include "tpch/q1/postgres/aux/module.hpp"
 #include "tpch/q1/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <limits>
-#include <map>
 #include <stdexcept>
-#include <tuple>
+#include <unordered_map>
 #include <utility>
 #include "tpch/q1/layout.hpp"
 
@@ -108,6 +110,54 @@ const TpchQ1StateImage *AsQ1Image(const core::StateImage &image) {
   return image.As<TpchQ1StateImage>();
 }
 
+// Sums per (shipdate day, group): the unit both build and maintenance fold
+// rows into before touching the Fenwick tree.
+using DayGroupCells = std::unordered_map<int64_t, ::accelerator_codegen::Q1DayGroupStats>;
+
+int64_t CellKey(int32_t day, ::accelerator_codegen::Q1GroupKey group) {
+  return (static_cast<int64_t>(day) << 16) | group;
+}
+
+void AddToCell(DayGroupCells &cells, int32_t day,
+               ::accelerator_codegen::Q1GroupKey group,
+               const ::accelerator_codegen::Q1DayGroupStats &stats) {
+  ::accelerator_codegen::AddQ1Stats(cells[CellKey(day, group)], stats);
+}
+
+void MergeCells(DayGroupCells &into, DayGroupCells &&from) {
+  for (const auto &[key, stats] : from)
+    ::accelerator_codegen::AddQ1Stats(into[key], stats);
+}
+
+// Adds are exact integer sums, so the cell order does not change the state.
+void ApplyCells(const DayGroupCells &cells, Q1FenwickState &state) {
+  for (const auto &[key, stats] : cells)
+    ::accelerator_codegen::Q1FenwickAdd(
+        state, static_cast<int32_t>(key >> 16),
+        static_cast<::accelerator_codegen::Q1GroupKey>(key & 0xFFFF), stats);
+}
+
+// Deltas per slice below which maintenance folds them on the calling thread.
+constexpr std::size_t kDeltaGrain = 4096;
+
+DayGroupCells FoldDeltas(core::AuxEngineServices &services,
+                         const std::vector<TpchQ1LineitemDelta> &deltas) {
+  DayGroupCells cells;
+  core::ParallelReduce(
+      services, deltas.size(), kDeltaGrain, cells,
+      [&](DayGroupCells &into, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto &delta = deltas[i];
+          AddToCell(into, delta.shipdate_days, delta.group_key,
+                    ::accelerator_codegen::Q1RowContribution(
+                        delta.quantity_raw, delta.extended_price_raw,
+                        delta.discount_raw, delta.tax_raw, delta.sign));
+        }
+      },
+      MergeCells);
+  return cells;
+}
+
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
   plan.scope =
@@ -142,31 +192,6 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ1LineitemDelta &delta,
 }
 
 } // namespace
-
-void TpchQ1InitialScan::ScanDayGroupAggregates(
-    const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer) {
-  // Row-scan fallback: aggregate (day, group) cells here.
-  std::map<std::tuple<int32_t, char, char>, TpchQ1DayGroupAggregate> cells;
-  ScanLineitems([&](const TpchQ1LineitemInput &input) {
-    auto &cell = cells[{input.shipdate_days, input.returnflag, input.linestatus}];
-    cell.shipdate_days = input.shipdate_days;
-    cell.returnflag = input.returnflag;
-    cell.linestatus = input.linestatus;
-    const auto stats = ::accelerator_codegen::Q1RowContribution(
-        ScaleToRaw(input.quantity_raw, input.quantity_scale, 2),
-        ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
-        ScaleToRaw(input.discount_raw, input.discount_scale, 2),
-        ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1);
-    cell.count += stats.count;
-    cell.sum_qty_raw += stats.sum_qty;
-    cell.sum_base_price_raw += stats.sum_base_price;
-    cell.sum_discount_raw += stats.sum_discount;
-    cell.sum_disc_price_raw += stats.sum_disc_price;
-    cell.sum_charge_raw += stats.sum_charge;
-  });
-  for (const auto &entry : cells)
-    consumer(entry.second);
-}
 
 int32_t TpchQ1CutoffDays(int32_t day_offset) {
   return kQ1BaseDays - day_offset;
@@ -305,12 +330,9 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  for (const auto &delta : buffer.Deltas())
-    ::accelerator_codegen::Q1FenwickAdd(
-        *next, delta.shipdate_days, delta.group_key,
-        ::accelerator_codegen::Q1RowContribution(
-            delta.quantity_raw, delta.extended_price_raw, delta.discount_raw,
-            delta.tax_raw, delta.sign));
+  // The tree is one COW structure, so the adds stay serial; the deltas are
+  // folded in parallel into per-cell sums first (one tree add per cell).
+  ApplyCells(FoldDeltas(services, buffer.Deltas()), *next);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
@@ -377,23 +399,31 @@ void TpchQ1Module::ExecuteFallback(core::AuxEngineServices &services,
 
 std::shared_ptr<::accelerator_codegen::Q1FenwickState>
 TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q1 requires a typed initial scan source");
+  const auto cells = core::PartitionedBuild<DayGroupCells>(
+      services, [] { return DayGroupCells{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts,
+            [&](std::size_t partition, const TpchQ1LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ1LineitemInput>{input});
+            });
+      },
+      [](DayGroupCells &into, const TpchQ1LineitemInput &input) {
+        AddToCell(into, input.shipdate_days,
+                  ::accelerator_codegen::PackQ1GroupKey(input.returnflag,
+                                                        input.linestatus),
+                  ::accelerator_codegen::Q1RowContribution(
+                      ScaleToRaw(input.quantity_raw, input.quantity_scale, 2),
+                      ScaleToRaw(input.extended_price_raw,
+                                 input.extended_price_scale, 2),
+                      ScaleToRaw(input.discount_raw, input.discount_scale, 2),
+                      ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1));
+      },
+      MergeCells, BuildPartitions(services));
   auto state = std::make_shared<::accelerator_codegen::Q1FenwickState>();
-  initial_scan->ScanDayGroupAggregates([&](const TpchQ1DayGroupAggregate &agg) {
-    ::accelerator_codegen::Q1DayGroupStats stats;
-    stats.count = agg.count;
-    stats.sum_qty = agg.sum_qty_raw;
-    stats.sum_base_price = agg.sum_base_price_raw;
-    stats.sum_discount = agg.sum_discount_raw;
-    stats.sum_disc_price = agg.sum_disc_price_raw;
-    stats.sum_charge = agg.sum_charge_raw;
-    ::accelerator_codegen::Q1FenwickAdd(
-        *state, agg.shipdate_days,
-        ::accelerator_codegen::PackQ1GroupKey(agg.returnflag, agg.linestatus),
-        stats);
-  });
+  ApplyCells(cells, *state);
   return state;
 }
 

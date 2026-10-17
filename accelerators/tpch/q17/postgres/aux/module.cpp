@@ -19,7 +19,7 @@ namespace {
 using Int128 = __int128;
 
 // Buckets of the build's lineitem rows (by part) and parts per maintenance slice.
-constexpr std::size_t kBuildBuckets = 64;
+using core::kBuildBuckets;
 constexpr std::size_t kPartEditGrain = 256;
 
 // ── Row decoding ──────────────────────────────────────────────────────────

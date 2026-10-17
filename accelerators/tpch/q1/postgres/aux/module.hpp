@@ -31,31 +31,14 @@ struct TpchQ1LineitemInput {
   char linestatus = '\0';
 };
 
-// Pre-aggregated (day, returnflag, linestatus) stats for SQL-pushdown builds.
-// Sums are exact coefficients at the scales 2 / 2 / 2 / 4 / 6.
-struct TpchQ1DayGroupAggregate {
-  int32_t shipdate_days = 0;
-  char returnflag = '\0';
-  char linestatus = '\0';
-  int64_t count = 0;
-  ::accelerator_codegen::Q1AccT sum_qty_raw = 0;
-  ::accelerator_codegen::Q1AccT sum_base_price_raw = 0;
-  ::accelerator_codegen::Q1AccT sum_discount_raw = 0;
-  ::accelerator_codegen::Q1AccT sum_disc_price_raw = 0; // scale 4
-  ::accelerator_codegen::Q1AccT sum_charge_raw = 0;     // scale 6
-};
-
 class TpchQ1InitialScan {
 public:
   virtual ~TpchQ1InitialScan() = default;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ1LineitemInput &)> &) = 0;
-
-  // GROUP BY (shipdate, returnflag, linestatus) pushed into the engine. The
-  // default aggregates the row scan here; engines override it with one SQL
-  // aggregate so the build reads no rows into the process.
-  virtual void ScanDayGroupAggregates(
-      const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer);
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ1LineitemInput &)> &sink) = 0;
 };
 
 // The whole state is ONE image (partition 0): a copy-on-write Fenwick tree
@@ -122,7 +105,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  // Aggregate scan -> Fenwick state (one SQL GROUP BY; no row scan).
+  // Partitioned lineitem scan -> per-(day, group) sums -> Fenwick state.
   std::shared_ptr<::accelerator_codegen::Q1FenwickState>
   BuildState(core::AuxEngineServices &) const;
   void EmitResult(const std::vector<::accelerator_codegen::Q1OutputRow> &,

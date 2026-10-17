@@ -4,12 +4,16 @@
 
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "prims/flat_hash_map.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -142,43 +146,114 @@ bool NumericArg(const core::AuxValue &value,
   return false;
 }
 
-} // namespace
 
-void TpchQ6InitialScan::ScanCellAggregates(
-    const std::function<void(const TpchQ6CellAggregate &)> &consumer) {
-  // Row-scan fallback: aggregate (day, discount, quantity) cells here. The
-  // discount and quantity domains are tiny, so a cell is keyed by their ids.
-  constexpr int kIdBits = 20;
-  ::accelerator_codegen::Q6ValueDict discounts, quantities;
-  core::FlatHashMap<TpchQ6CellAggregate> cells;
-  ScanLineitems([&](const TpchQ6LineitemInput &input) {
+// Rows per slice below which a commit's deltas are aggregated inline.
+constexpr std::size_t kDeltaGrain = 4096;
+
+// Pre-aggregated (shipdate, discount, quantity) cell: the sum of
+// price * discount (scale 4) and the row count.
+struct CellAggregate {
+  int32_t shipdate_days = 0;
+  int64_t discount_raw = 0; // scale 2
+  int64_t quantity_raw = 0; // scale 2
+  int64_t count = 0;
+  ::accelerator_codegen::Q6AccT revenue_raw = 0;
+};
+
+// One build partition's cells. The discount and quantity domains are tiny, so
+// a cell is keyed by their (partition-local) ids.
+class CellTable {
+public:
+  void AddRow(const TpchQ6LineitemInput &input) {
     const auto discount = ScaleToRaw(input.discount_raw, input.discount_scale, 2);
-    const auto quantity = ScaleToRaw(input.quantity_raw, input.quantity_scale, 2);
-    const int64_t d = discounts.Intern(discount), q = quantities.Intern(quantity);
+    Add({input.shipdate_days, discount,
+         ScaleToRaw(input.quantity_raw, input.quantity_scale, 2), 1,
+         ::accelerator_codegen::Q6RowRevenue(
+             ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
+             discount)});
+  }
+
+  void Merge(CellTable &&from) {
+    for (const auto entry : from.cells)
+      Add(entry.second);
+  }
+
+  // The cells ordered by (day, discount, quantity), as the state build wants them.
+  std::vector<const CellAggregate *> Ordered() const {
+    std::vector<const CellAggregate *> ordered;
+    ordered.reserve(cells.size());
+    for (const auto entry : cells)
+      ordered.push_back(&entry.second);
+    std::sort(ordered.begin(), ordered.end(),
+              [](const CellAggregate *l, const CellAggregate *r) {
+                return std::tie(l->shipdate_days, l->discount_raw, l->quantity_raw) <
+                       std::tie(r->shipdate_days, r->discount_raw, r->quantity_raw);
+              });
+    return ordered;
+  }
+
+private:
+  static constexpr int kIdBits = 20;
+
+  void Add(const CellAggregate &add) {
+    const int64_t d = discounts.Intern(add.discount_raw);
+    const int64_t q = quantities.Intern(add.quantity_raw);
     if ((d | q) >> kIdBits)
       throw std::length_error("TPC-H Q6: too many distinct discounts or quantities");
-    const auto day = static_cast<uint64_t>(static_cast<uint32_t>(input.shipdate_days));
+    const auto day = static_cast<uint64_t>(static_cast<uint32_t>(add.shipdate_days));
     auto &cell = cells[static_cast<int64_t>((day << (2 * kIdBits)) | (d << kIdBits) | q)];
-    cell.shipdate_days = input.shipdate_days;
-    cell.discount_raw = discount;
-    cell.quantity_raw = quantity;
-    cell.count += 1;
-    cell.revenue_raw += ::accelerator_codegen::Q6RowRevenue(
-        ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
-        discount);
-  });
-  std::vector<const TpchQ6CellAggregate *> ordered;
-  ordered.reserve(cells.size());
-  for (const auto entry : cells)
-    ordered.push_back(&entry.second);
-  std::sort(ordered.begin(), ordered.end(),
-            [](const TpchQ6CellAggregate *l, const TpchQ6CellAggregate *r) {
-              return std::tie(l->shipdate_days, l->discount_raw, l->quantity_raw) <
-                     std::tie(r->shipdate_days, r->discount_raw, r->quantity_raw);
-            });
-  for (const auto *cell : ordered)
-    consumer(*cell);
+    cell.shipdate_days = add.shipdate_days;
+    cell.discount_raw = add.discount_raw;
+    cell.quantity_raw = add.quantity_raw;
+    cell.count += add.count;
+    cell.revenue_raw += add.revenue_raw;
+  }
+
+  ::accelerator_codegen::Q6ValueDict discounts, quantities;
+  core::FlatHashMap<CellAggregate> cells;
+};
+
+// A commit's deltas summed per (day, discount, quantity).
+using DeltaCells = std::map<std::tuple<int32_t, int64_t, int64_t>,
+                            std::pair<::accelerator_codegen::Q6AccT, int64_t>>;
+
+void AddDeltas(DeltaCells &into, const std::vector<TpchQ6LineitemDelta> &deltas,
+               std::size_t begin, std::size_t end) {
+  for (std::size_t i = begin; i < end; ++i) {
+    const auto &delta = deltas[i];
+    auto &cell = into[{delta.shipdate_days, delta.discount_raw, delta.quantity_raw}];
+    cell.first += delta.sign * delta.revenue;
+    cell.second += delta.sign;
+  }
 }
+
+void MergeDeltas(DeltaCells &into, DeltaCells &&from) {
+  for (const auto &[key, cell] : from) {
+    auto &sum = into[key];
+    sum.first += cell.first;
+    sum.second += cell.second;
+  }
+}
+
+// Applies the summed deltas day by day: one Fenwick path walk per day.
+void ApplyDeltaCells(Q6State &state, const DeltaCells &cells) {
+  int32_t day = 0;
+  std::vector<::accelerator_codegen::Q6DayCell> day_cells;
+  const auto flush = [&] {
+    if (!day_cells.empty())
+      ::accelerator_codegen::Q6AddDayCells(state, day, day_cells);
+    day_cells.clear();
+  };
+  for (const auto &[key, cell] : cells) {
+    if (std::get<0>(key) != day)
+      flush();
+    day = std::get<0>(key);
+    day_cells.push_back({std::get<1>(key), std::get<2>(key), cell.first, cell.second});
+  }
+  flush();
+}
+
+} // namespace
 
 bool TpchQ6TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ6TxnBuffer::Clear() {
@@ -307,10 +382,16 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  for (const auto &delta : buffer.Deltas())
-    ::accelerator_codegen::Q6AddCell(*next, delta.shipdate_days,
-                                     delta.discount_raw, delta.quantity_raw,
-                                     delta.sign * delta.revenue, delta.sign);
+  // Sum the deltas per cell (slices in parallel), then walk each day once.
+  const auto &deltas = buffer.Deltas();
+  DeltaCells cells;
+  core::ParallelReduce(
+      services, deltas.size(), kDeltaGrain, cells,
+      [&](DeltaCells &into, std::size_t begin, std::size_t end) {
+        AddDeltas(into, deltas, begin, end);
+      },
+      MergeDeltas);
+  ApplyDeltaCells(*next, cells);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
@@ -350,11 +431,21 @@ void TpchQ6Module::ExecuteFallback(core::AuxEngineServices &services,
 
 std::shared_ptr<::accelerator_codegen::Q6State>
 TpchQ6Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q6 requires a typed initial scan source");
+  const auto table = core::PartitionedBuild<CellTable>(
+      services, [] { return CellTable{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ6LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ6LineitemInput>{input});
+            });
+      },
+      [](CellTable &into, const TpchQ6LineitemInput &input) { into.AddRow(input); },
+      [](CellTable &into, CellTable &&from) { into.Merge(std::move(from)); },
+      BuildPartitions(services));
   auto state = std::make_shared<Q6State>();
-  // The aggregate scan delivers a day's cells together: one Fenwick path walk per day.
+  // A day's cells go in together: one Fenwick path walk per day.
   int32_t day = 0;
   std::vector<::accelerator_codegen::Q6DayCell> cells;
   const auto flush = [&] {
@@ -362,12 +453,12 @@ TpchQ6Module::BuildState(core::AuxEngineServices &services) const {
       ::accelerator_codegen::Q6AddDayCells(*state, day, cells);
     cells.clear();
   };
-  initial_scan->ScanCellAggregates([&](const TpchQ6CellAggregate &cell) {
-    if (cell.shipdate_days != day)
+  for (const auto *cell : table.Ordered()) {
+    if (cell->shipdate_days != day)
       flush();
-    day = cell.shipdate_days;
-    cells.push_back({cell.discount_raw, cell.quantity_raw, cell.revenue_raw, cell.count});
-  });
+    day = cell->shipdate_days;
+    cells.push_back({cell->discount_raw, cell->quantity_raw, cell->revenue_raw, cell->count});
+  }
   flush();
   return state;
 }

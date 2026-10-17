@@ -76,8 +76,9 @@ public:
   virtual void ScanLineitemsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ20LineitemInput &)> &sink) = 0;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ20PartInput &)> &) = 0;
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ20PartInput &)> &sink) = 0;
   virtual void ScanPartsuppsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ20PartsuppInput &)> &sink) = 0;
