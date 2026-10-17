@@ -51,21 +51,17 @@ struct TpchQ18CustomerInput {
 class TpchQ18InitialScan {
 public:
   virtual ~TpchQ18InitialScan() = default;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ18LineitemInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ18OrderInput &)> &) = 0;
-  virtual void ScanCustomers(
+  virtual void ScanCustomersSerial(
       const std::function<void(const TpchQ18CustomerInput &)> &) = 0;
-  // The same three scans split into `partitions` fixed row ranges: sink(partition,
-  // row) runs concurrently for different partitions, one thread per partition.
-  virtual void ScanLineitemsPartitioned(
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18LineitemInput &)> &sink) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18OrderInput &)> &sink) = 0;
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18CustomerInput &)> &sink) = 0;
 
@@ -101,8 +97,6 @@ struct TpchQ18OrderRec {
 // Memory: 32 B record + ~9 B hash slot / 0.875 load = ~47 B per order, plus
 // ~1 B per hot order and ~80 B per customer name (SF1000: +12 GB).
 //   SF100  (1.5e8 orders): ~7 GB      SF1000 (1.5e9 orders): ~70 GB
-// The previous state was an unordered_map per survivor (~100 B each) but its
-// build transiently held a node map over EVERY order (6 GB at SF100).
 // Write cost: a batch of B touched orders clones <= B shards of ~5K-25K
 // records (~1 MB each at SF1000); the shard directory is 64K pointers.
 struct TpchQ18State {
@@ -215,8 +209,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
@@ -226,7 +218,7 @@ private:
   // Customer names for the rows (cache first, then a keyed lookup), then the
   // ORDER BY and the output. Rows whose customer does not exist are dropped.
   void EmitRows(std::vector<TpchQ18OutputRow> rows,
-                const TpchQ18State *state, core::AuxRowSink &sink) const;
+                const TpchQ18State &state, core::AuxRowSink &sink) const;
 
   TpchQ18Config config;
   TpchQ18InitialScan *initial_scan = nullptr;
