@@ -66,10 +66,14 @@ struct TpchQ22OrderInput {
 class TpchQ22InitialScan {
 public:
   virtual ~TpchQ22InitialScan() = default;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
   virtual void ScanCustomers(
-      const std::function<void(const TpchQ22CustomerInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ22CustomerInput &)> &) = 0;
   virtual void ScanOrders(
-      const std::function<void(const TpchQ22OrderInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ22OrderInput &)> &) = 0;
 };
 
 // ── State structures ────────────────────────────────────────────────────────
@@ -177,6 +181,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
+  std::shared_ptr<const TpchQ22State> BuildState(core::AuxEngineServices &) const;
   static void Answer(const TpchQ22State &, const core::QueryArguments &,
                      core::AuxRowSink &);
   static void EmitRows(const std::vector<TpchQ22OutputRow> &rows,
