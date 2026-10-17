@@ -433,10 +433,24 @@ void TpchQ15Module::Build(core::AuxEngineServices &services,
     throw std::logic_error("TPC-H Q15 requires a typed initial scan source");
 
   auto directory = std::make_shared<TpchQ15SupplierDirectory>();
-  initial_scan->ScanSuppliers([&](const TpchQ15SupplierInput &input) {
-    directory->entries.Set(input.suppkey,
-                           PackSupplier(input.name, input.address, input.phone));
-  });
+  using Entries = decltype(directory->entries);
+  directory->entries = core::PartitionedBuild<Entries>(
+      services, [] { return Entries{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliers(
+            services, parts, [&](std::size_t partition, const TpchQ15SupplierInput &input) {
+              sink(partition, core::SingleRowBatch<TpchQ15SupplierInput>{input});
+            });
+      },
+      [](Entries &into, const TpchQ15SupplierInput &input) {
+        into.Set(input.suppkey, PackSupplier(input.name, input.address, input.phone));
+      },
+      [](Entries &into, Entries &&from) {
+        into.MergeFrom(std::move(from), [](const std::string &mine, const std::string &theirs) {
+          return mine.empty() ? theirs : mine;
+        });
+      },
+      core::BuildPartitions(services));
   builder.Write(MakeDirImage(std::move(directory)));
 
   // The scan only sorts rows into months; the months, which share nothing, are
