@@ -1,5 +1,6 @@
 #include "tpch/q5/mysql/aux/module.hpp"
 #include "tpch/q5/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "prims/mysql_collation.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
@@ -20,49 +21,7 @@ namespace {
 
 using core::RadixRangeTree;
 
-// Cell readers distinguish SQL NULL from an unreadable payload.
-enum class Cell { Null, Ok, Bad };
-
-Cell IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return Cell::Ok;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return Cell::Ok;
-  }
-  return Cell::Bad;
-}
-
-Cell Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
-  int64_t value = 0;
-  const Cell c = IntCell(row, index, value);
-  if (c != Cell::Ok)
-    return c;
-  if (value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return Cell::Bad;
-  out = static_cast<int32_t>(value);
-  return Cell::Ok;
-}
-
-Cell StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (!std::holds_alternative<std::string>(cell.payload))
-    return Cell::Bad;
-  out = std::get<std::string>(cell.payload);
-  return Cell::Ok;
-}
+using Cell = core::CellState;
 
 // A decimal value rescaled to cents (scale 2); false if that would lose digits.
 bool ScaleToCents(int64_t raw, int32_t scale, int64_t &cents) {
@@ -729,8 +688,8 @@ void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
     replay([&](const core::AuxRow &row, int8_t sign) {
       TpchQ5TxnBuffer::RegionDelta d;
       d.sign = sign;
-      const Cell k = Int32Cell(row, 0, d.key);
-      const Cell n = StringCell(row, 1, d.name);
+      const Cell k = core::NullableInt32OrDateCell(row, 0, d.key);
+      const Cell n = core::NullableStringCell(row, 1, d.name);
       if (k == Cell::Bad || n == Cell::Bad)
         return buffer.MarkRebuild();
       if (k == Cell::Null)
@@ -742,9 +701,9 @@ void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
     replay([&](const core::AuxRow &row, int8_t sign) {
       TpchQ5TxnBuffer::NationDelta d;
       d.sign = sign;
-      const Cell k = Int32Cell(row, 0, d.key);
-      const Cell n = StringCell(row, 1, d.nation.name);
-      const Cell r = Int32Cell(row, 2, d.nation.regionkey);
+      const Cell k = core::NullableInt32OrDateCell(row, 0, d.key);
+      const Cell n = core::NullableStringCell(row, 1, d.nation.name);
+      const Cell r = core::NullableInt32OrDateCell(row, 2, d.nation.regionkey);
       if (k == Cell::Bad || n == Cell::Bad || r == Cell::Bad)
         return buffer.MarkRebuild();
       if (k == Cell::Null)
@@ -760,8 +719,8 @@ void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
       TpchQ5TxnBuffer::KeyNationDelta d;
       d.sign = sign;
       int32_t nation = 0;
-      const Cell k = IntCell(row, 0, d.key);
-      const Cell n = Int32Cell(row, 1, nation);
+      const Cell k = core::NullableIntOrDateCell(row, 0, d.key);
+      const Cell n = core::NullableInt32OrDateCell(row, 1, nation);
       if (k == Cell::Bad || n == Cell::Bad)
         return buffer.MarkRebuild();
       if (k == Cell::Null)
@@ -773,9 +732,9 @@ void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
     replay([&](const core::AuxRow &row, int8_t sign) {
       TpchQ5TxnBuffer::OrderDelta d;
       d.sign = sign;
-      const Cell k = IntCell(row, 0, d.orderkey);
-      const Cell c = IntCell(row, 1, d.custkey);
-      const Cell t = Int32Cell(row, 2, d.orderdate_days);
+      const Cell k = core::NullableIntOrDateCell(row, 0, d.orderkey);
+      const Cell c = core::NullableIntOrDateCell(row, 1, d.custkey);
+      const Cell t = core::NullableInt32OrDateCell(row, 2, d.orderdate_days);
       if (k == Cell::Bad || c == Cell::Bad || t == Cell::Bad)
         return buffer.MarkRebuild();
       if (k == Cell::Null)
@@ -788,8 +747,8 @@ void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
       TpchQ5TxnBuffer::LineitemDelta d;
       d.sign = sign;
       int64_t price = 0, discount = 0;
-      const Cell k = IntCell(row, 0, d.orderkey);
-      const Cell s = IntCell(row, 1, d.suppkey);
+      const Cell k = core::NullableIntOrDateCell(row, 0, d.orderkey);
+      const Cell s = core::NullableIntOrDateCell(row, 1, d.suppkey);
       const Cell p = CentsCell(row, 2, price);
       const Cell c = CentsCell(row, 3, discount);
       if (k == Cell::Bad || s == Cell::Bad || p == Cell::Bad || c == Cell::Bad)

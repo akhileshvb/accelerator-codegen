@@ -24,26 +24,6 @@ bool StringValue(const core::AuxValue &value, std::string &out) {
 
 // A decimal cell as an integer count of 1/100 units (the scale of s_acctbal
 // and ps_supplycost); false when it is not exactly representable.
-bool CentsCell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (!std::holds_alternative<core::ScaledDecimal>(cell.payload))
-    return false;
-  const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-  int64_t value = decimal.value;
-  for (int32_t scale = decimal.scale; scale < 2; ++scale)
-    if (__builtin_mul_overflow(value, int64_t{10}, &value))
-      return false;
-  for (int32_t scale = decimal.scale; scale > 2; --scale) {
-    if (value % 10 != 0)
-      return false;
-    value /= 10;
-  }
-  raw = value;
-  return true;
-}
-
 bool NullCell(const core::AuxRow &row, std::size_t index) {
   return index >= row.values.size() || row.values[index].is_null;
 }
@@ -96,7 +76,7 @@ bool ReadSupplier(const core::AuxRow &row, TpchQ2SupplierInput &out,
       return false;
   }
   out.acctbal_raw = 0;
-  if (!NullCell(row, 5) && !CentsCell(row, 5, out.acctbal_raw))
+  if (!NullCell(row, 5) && !core::ExactDecimalCell(row, 5, 2, out.acctbal_raw))
     return false;
   return true;
 }
@@ -107,7 +87,7 @@ bool ReadPartsupp(const core::AuxRow &row, TpchQ2PartsuppInput &out,
   if (skip)
     return true; // a NULL key or cost never matches the join / the minimum
   return core::IntCell(row, 0, out.partkey) && core::IntCell(row, 1, out.suppkey) &&
-         CentsCell(row, 2, out.supplycost_raw);
+         core::ExactDecimalCell(row, 2, 2, out.supplycost_raw);
 }
 
 bool ReadNation(const core::AuxRow &row, TpchQ2NationInput &out, bool &skip) {

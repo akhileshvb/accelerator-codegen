@@ -30,15 +30,6 @@ namespace like = core::sql_like;
 constexpr bool kCaseInsensitive = true;
 
 constexpr std::size_t kParts = kTpchQ9BlockParts;
-bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
-  int64_t value = 0;
-  if (!core::IntCell(row, index, value) || value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  out = static_cast<int32_t>(value);
-  return true;
-}
-
 // Money / quantity columns as raw hundredths (decimal(15,2)).
 bool Decimal2Cell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -727,14 +718,14 @@ void TpchQ9Module::AccumulateMutation(const core::MutationBatch &mutation,
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9SupplierDelta d;
       d.sign = sign;
-      if (core::IntCell(row, 0, d.suppkey) && Int32Cell(row, 1, d.nationkey))
+      if (core::IntCell(row, 0, d.suppkey) && core::Int32Cell(row, 1, d.nationkey))
         buffer.Add(d);
     };
   } else if (mutation.table == config.nation_table) {
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9NationDelta d;
       d.sign = sign;
-      if (Int32Cell(row, 0, d.nationkey) && core::StringCell(row, 1, d.name))
+      if (core::Int32Cell(row, 0, d.nationkey) && core::StringCell(row, 1, d.name))
         buffer.Add(std::move(d));
     };
   } else if (mutation.table == config.orders_table) {
@@ -744,7 +735,7 @@ void TpchQ9Module::AccumulateMutation(const core::MutationBatch &mutation,
       TpchQ9OrderDelta d;
       d.sign = sign;
       int32_t days = 0;
-      if (core::IntCell(row, 0, d.orderkey) && Int32Cell(row, 1, days)) {
+      if (core::IntCell(row, 0, d.orderkey) && core::Int32Cell(row, 1, days)) {
         d.order_year = TpchQ9ExtractYear(days);
         buffer.Add(d);
       }
