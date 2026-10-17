@@ -5,12 +5,16 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include "prims/pg_numeric.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 #include "tpch/q10/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -23,8 +27,12 @@ using Int128 = ::accelerator_codegen::pg_numeric::Int128;
 constexpr core::PartitionId kStatePartition =
     core::TpchQ10Layout::kCustomerDimensions;
 constexpr uint32_t kMaxBuckets = 1u << 16;
+constexpr std::size_t kOrdersPerBucket = 20000;
 // Revenue lookups per read slice, ~0.2 us each.
 constexpr std::size_t kGetsGrain = 1 << 17;
+// Build rows per slice: order lookups / list rows sorted.
+constexpr std::size_t kResolveGrain = 1 << 14;
+constexpr std::size_t kSortGrain = 1 << 15;
 
 // ---- Row decoding (mutation capture rows) ---------------------------------
 // A cell is Ok, SQL NULL (the row cannot join / pass the filter), or of an
@@ -196,6 +204,12 @@ void DecodeRevRows(std::string_view v, std::vector<RevRow> &out) {
   }
 }
 
+void PutRevRow(std::vector<uint8_t> &out, const RevRow &r) {
+  core::PutSignedVarint(out, r.custkey);
+  core::PutVarint(out, static_cast<uint64_t>(r.rows));
+  core::PutSignedVarint(out, r.revenue);
+}
+
 // Adds (rows, revenue) to customer `custkey` on `day`.
 bool AdjustRevenue(TpchQ10State &s, int32_t day, int64_t custkey,
                    int64_t d_rows, int64_t d_revenue) {
@@ -225,11 +239,8 @@ bool AdjustRevenue(TpchQ10State &s, int32_t day, int64_t custkey,
   }
   thread_local std::vector<uint8_t> buf;
   buf.clear();
-  for (const auto &r : rows) {
-    core::PutSignedVarint(buf, r.custkey);
-    core::PutVarint(buf, static_cast<uint64_t>(r.rows));
-    core::PutSignedVarint(buf, r.revenue);
-  }
+  for (const auto &r : rows)
+    PutRevRow(buf, r);
   return s.revenue.Set(key, buf);
 }
 
@@ -252,21 +263,30 @@ bool GetString(const uint8_t *&p, const uint8_t *end, std::string &s) {
   return true;
 }
 
-bool StoreCustomer(TpchQ10State &s, int64_t custkey, int32_t nationkey,
-                   const CustomerRec &c) {
+void EncodeCustomer(const CustomerRec &c, std::vector<uint8_t> &out) {
+  out.clear();
+  core::PutSignedVarint(out, c.acctbal_raw);
+  PutString(out, c.name);
+  PutString(out, c.address);
+  PutString(out, c.phone);
+  PutString(out, c.comment);
+}
+
+bool StoreEncodedCustomer(TpchQ10State &s, int64_t custkey, int32_t nationkey,
+                          const std::vector<uint8_t> &bytes) {
   if (nationkey == TpchQ10State::kAbsent)
     return false;
-  thread_local std::vector<uint8_t> buf;
-  buf.clear();
-  core::PutSignedVarint(buf, c.acctbal_raw);
-  PutString(buf, c.name);
-  PutString(buf, c.address);
-  PutString(buf, c.phone);
-  PutString(buf, c.comment);
-  if (!s.customers.Set(custkey, buf))
+  if (!s.customers.Set(custkey, bytes))
     return false;
   s.customer_nation.Set(custkey, nationkey);
   return true;
+}
+
+bool StoreCustomer(TpchQ10State &s, int64_t custkey, int32_t nationkey,
+                   const CustomerRec &c) {
+  thread_local std::vector<uint8_t> buf;
+  EncodeCustomer(c, buf);
+  return StoreEncodedCustomer(s, custkey, nationkey, buf);
 }
 
 bool LoadCustomer(const TpchQ10State &s, int64_t custkey, CustomerRec &c) {
@@ -321,6 +341,201 @@ bool ApplyReturnedLineitem(TpchQ10State &s, int64_t orderkey, int64_t volume,
   return !e.present || AdjustRevenue(s, e.day, e.custkey, sign, sign * volume);
 }
 
+// ---- Initial build -----------------------------------------------------------
+// The scans only decode and encode rows on the build threads; the state's
+// blob maps are filled serially from the merged rows, in table order.
+
+struct EncodedCustomer {
+  int64_t custkey = 0;
+  int32_t nationkey = 0;
+  std::vector<uint8_t> bytes;
+};
+
+void BuildCustomers(core::AuxEngineServices &services, TpchQ10InitialScan &scan,
+                    TpchQ10State &s) {
+  using Rows = std::vector<EncodedCustomer>;
+  auto customers = core::PartitionedBuild<Rows>(
+      services, [] { return Rows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanCustomersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ10CustomerInput &input) {
+              sink(partition, OneRowBatch<TpchQ10CustomerInput>{input});
+            });
+      },
+      [](Rows &into, const TpchQ10CustomerInput &input) {
+        into.push_back({input.key, input.nationkey, {}});
+        EncodeCustomer({input.acctbal_raw, input.name, input.address, input.phone,
+                        input.comment},
+                       into.back().bytes);
+      },
+      AppendRows<EncodedCustomer>, BuildPartitions(services));
+  for (const auto &c : customers)
+    if (!StoreEncodedCustomer(s, c.custkey, c.nationkey, c.bytes))
+      throw std::runtime_error("TPC-H Q10: unsupported customer row");
+}
+
+struct OrderRow {
+  int64_t key = 0;
+  OrderEntry entry;
+};
+
+std::vector<OrderRow> ScanOrderRows(core::AuxEngineServices &services,
+                                    TpchQ10InitialScan &scan) {
+  using Rows = std::vector<OrderRow>;
+  return core::PartitionedBuild<Rows>(
+      services, [] { return Rows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanOrdersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ10OrderInput &input) {
+              sink(partition, OneRowBatch<TpchQ10OrderInput>{input});
+            });
+      },
+      [](Rows &into, const TpchQ10OrderInput &input) {
+        OrderRow row;
+        row.key = input.key;
+        row.entry.present = true;
+        row.entry.custkey = input.custkey;
+        row.entry.day = input.orderdate_days;
+        into.push_back(row);
+      },
+      AppendRows<OrderRow>, BuildPartitions(services));
+}
+
+// Returned lineitems summed per order, ascending by orderkey.
+struct OrderReturns {
+  int64_t orderkey = 0;
+  int64_t rows = 0;
+  int64_t volume = 0;
+};
+
+std::vector<OrderReturns> ScanReturns(core::AuxEngineServices &services,
+                                      TpchQ10InitialScan &scan) {
+  struct Line {
+    int64_t orderkey;
+    int64_t volume;
+  };
+  using Lines = std::vector<Line>;
+  auto lines = core::PartitionedBuild<Lines>(
+      services, [] { return Lines{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ10LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ10LineitemInput>{input});
+            });
+      },
+      [](Lines &into, const TpchQ10LineitemInput &input) {
+        if (!input.returned)
+          return;
+        int64_t volume = 0;
+        if (!VolumeRaw(input.extended_price_raw, input.extended_price_scale,
+                       input.discount_raw, input.discount_scale, volume))
+          throw std::runtime_error("TPC-H Q10: unsupported price / discount");
+        into.push_back({input.orderkey, volume});
+      },
+      AppendRows<Line>, BuildPartitions(services));
+  ParallelStableSort(
+      services, lines,
+      [](const Line &l, const Line &r) { return l.orderkey < r.orderkey; }, kSortGrain);
+  std::vector<OrderReturns> sums;
+  for (const auto &line : lines) {
+    if (sums.empty() || sums.back().orderkey != line.orderkey)
+      sums.push_back({line.orderkey, 0, 0});
+    auto &sum = sums.back();
+    ++sum.rows;
+    if (__builtin_add_overflow(sum.volume, line.volume, &sum.volume))
+      throw std::runtime_error("TPC-H Q10: unsupported lineitem row");
+  }
+  return sums;
+}
+
+// One order's share of a (day, bucket) revenue list.
+struct RevItem {
+  int64_t key = 0;
+  RevRow row;
+};
+
+// Gives each order its returned totals; those with any yield a revenue item.
+std::vector<RevItem> ResolveReturns(core::AuxEngineServices &services,
+                                    std::vector<OrderRow> &orders,
+                                    const std::vector<OrderReturns> &returns,
+                                    uint32_t buckets) {
+  std::vector<RevItem> items;
+  core::ParallelReduce(
+      services, orders.size(), kResolveGrain, items,
+      [&](std::vector<RevItem> &acc, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          auto &order = orders[i];
+          const auto found = std::lower_bound(
+              returns.begin(), returns.end(), order.key,
+              [](const OrderReturns &r, int64_t key) { return r.orderkey < key; });
+          if (found == returns.end() || found->orderkey != order.key)
+            continue;
+          order.entry.returned_rows = found->rows;
+          order.entry.returned_volume = found->volume;
+          acc.push_back({RevenueKey(buckets, order.entry.day, order.entry.custkey),
+                         {order.entry.custkey, found->rows, found->volume}});
+        }
+      },
+      AppendRows<RevItem>);
+  return items;
+}
+
+// Order entries, plus entries for returned lineitems whose order row is absent
+// (the order may be written later).
+void StoreOrders(core::AuxEngineServices &services, TpchQ10State &s,
+                 const std::vector<OrderRow> &orders,
+                 const std::vector<OrderReturns> &returns) {
+  for (const auto &order : orders) {
+    if (s.orders.Contains(order.key))
+      throw std::runtime_error("TPC-H Q10: duplicate order key");
+    if (!StoreEntry(s, order.key, order.entry))
+      throw std::runtime_error("TPC-H Q10: unsupported orders row");
+  }
+  std::vector<OrderReturns> orphans;
+  core::ParallelReduce(
+      services, returns.size(), kResolveGrain, orphans,
+      [&](std::vector<OrderReturns> &acc, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i)
+          if (!s.orders.Contains(returns[i].orderkey))
+            acc.push_back(returns[i]);
+      },
+      AppendRows<OrderReturns>);
+  for (const auto &orphan : orphans) {
+    OrderEntry e;
+    e.returned_rows = orphan.rows;
+    e.returned_volume = orphan.volume;
+    if (!StoreEntry(s, orphan.orderkey, e))
+      throw std::runtime_error("TPC-H Q10: unsupported lineitem row");
+  }
+}
+
+// One list per (day, bucket): its customers' items summed, ascending by custkey.
+void StoreRevenueLists(core::AuxEngineServices &services, TpchQ10State &s,
+                       std::vector<RevItem> &items) {
+  ParallelStableSort(
+      services, items,
+      [](const RevItem &l, const RevItem &r) {
+        return std::tie(l.key, l.row.custkey) < std::tie(r.key, r.row.custkey);
+      },
+      kSortGrain);
+  std::vector<uint8_t> buf;
+  for (std::size_t i = 0; i < items.size();) {
+    const int64_t key = items[i].key;
+    buf.clear();
+    while (i < items.size() && items[i].key == key) {
+      RevRow sum{items[i].row.custkey, 0, 0};
+      for (; i < items.size() && items[i].key == key &&
+             items[i].row.custkey == sum.custkey;
+           ++i)
+        if (__builtin_add_overflow(sum.rows, items[i].row.rows, &sum.rows) ||
+            __builtin_add_overflow(sum.revenue, items[i].row.revenue, &sum.revenue))
+          throw std::runtime_error("TPC-H Q10: unsupported order entry");
+      PutRevRow(buf, sum);
+    }
+    s.revenue.Set(key, buf);
+  }
+}
+
 } // namespace
 
 core::AcceleratorId TpchQ10Module::Id() const { return kId; }
@@ -342,7 +557,8 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ10Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ10TxnBuffer>();
 }
 
-std::shared_ptr<TpchQ10State> TpchQ10Module::BuildState() const {
+std::shared_ptr<TpchQ10State>
+TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q10 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ10State>();
@@ -351,70 +567,33 @@ std::shared_ptr<TpchQ10State> TpchQ10Module::BuildState() const {
   initial_scan->ScanNations([&](const TpchQ10NationInput &input) {
     s.nations[input.key] = input.name;
   });
-  initial_scan->ScanCustomers([&](const TpchQ10CustomerInput &input) {
-    CustomerRec c{input.acctbal_raw, input.name, input.address, input.phone,
-                  input.comment};
-    if (!StoreCustomer(s, input.key, input.nationkey, c))
-      throw std::runtime_error("TPC-H Q10: unsupported customer row");
-  });
+  BuildCustomers(services, *initial_scan, s);
 
-  // Orders first (entries without revenue), then the returned lineitems add
-  // their count / revenue to their order's entry, then one pass turns the
-  // entries into the per-(day, customer) revenue lists.
-  uint64_t order_count = 0;
-  initial_scan->ScanOrders([&](const TpchQ10OrderInput &input) {
-    OrderEntry e;
-    e.present = true;
-    e.custkey = input.custkey;
-    e.day = input.orderdate_days;
-    if (!StoreEntry(s, input.key, e))
-      throw std::runtime_error("TPC-H Q10: unsupported orders row");
-    ++order_count;
-  });
-  initial_scan->ScanLineitems([&](const TpchQ10LineitemInput &input) {
-    if (!input.returned)
-      return;
-    int64_t volume = 0;
-    if (!VolumeRaw(input.extended_price_raw, input.extended_price_scale,
-                   input.discount_raw, input.discount_scale, volume))
-      throw std::runtime_error("TPC-H Q10: unsupported price / discount");
-    OrderEntry e;
-    if (!LoadEntry(s, input.orderkey, e))
-      throw std::runtime_error("TPC-H Q10: corrupt order entry");
-    ++e.returned_rows;
-    if (__builtin_add_overflow(e.returned_volume, volume, &e.returned_volume) ||
-        !StoreEntry(s, input.orderkey, e))
-      throw std::runtime_error("TPC-H Q10: unsupported lineitem row");
-  });
+  // Order entries carry their returned lineitem count / revenue; then one list
+  // per (day, customer bucket) is built from the entries.
+  auto orders = ScanOrderRows(services, *initial_scan);
+  const auto returns = ScanReturns(services, *initial_scan);
 
   // ~4 revenue rows per (day, bucket) list: scale the bucket count with the
   // order count (~2500 distinct order days).
   uint32_t buckets = 1;
-  while (buckets < kMaxBuckets && order_count / 20000 >= buckets * 2ull)
+  while (buckets < kMaxBuckets && orders.size() / kOrdersPerBucket >= buckets * 2ull)
     buckets *= 2;
   s.buckets = buckets;
-  bool ok = true;
-  s.orders.ForEach([&](int64_t, std::string_view v) {
-    OrderEntry e;
-    if (!DecodeEntry(v, e))
-      ok = false;
-    else if (e.present && e.returned_rows > 0 &&
-             !AdjustRevenue(s, e.day, e.custkey, e.returned_rows,
-                            e.returned_volume))
-      ok = false;
-  });
-  if (!ok)
-    throw std::runtime_error("TPC-H Q10: unsupported order entry");
+
+  auto items = ResolveReturns(services, orders, returns, buckets);
+  StoreOrders(services, s, orders, returns);
+  StoreRevenueLists(services, s, items);
   s.customers.Shrink();
   s.orders.Shrink();
   s.revenue.Shrink();
   return state;
 }
 
-void TpchQ10Module::Build(core::AuxEngineServices &,
+void TpchQ10Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   auto image = std::make_shared<TpchQ10StateImage>();
-  image->state = BuildState();
+  image->state = BuildState(services);
   builder.Write(core::StateImage::Make(
       core::TpchQ10Layout::kAccelerator, kStatePartition, 0,
       std::shared_ptr<const TpchQ10StateImage>(std::move(image))));
@@ -642,7 +821,7 @@ void TpchQ10Module::Execute(core::AuxEngineServices &services,
 void TpchQ10Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  const auto state = BuildState();
+  const auto state = BuildState(services);
   EmitResult(services, *state, arguments, sink);
 }
 

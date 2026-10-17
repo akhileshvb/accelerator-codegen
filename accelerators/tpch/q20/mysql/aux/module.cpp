@@ -757,7 +757,7 @@ void TpchQ20Module::EmitResult(const core::AuxEngineServices &services, const Tp
 
   // Parts whose name matches (SIMD / prefix scan of the name column), then for
   // each of their partsupp pairs a binary search for the shipdate window.
-  state.part_names.ForEachMatch(matcher, max_threads, [&](unsigned worker, int64_t partkey) {
+  state.part_names.ForEachMatch(matcher, core::Parallelism::OnPool(services), [&](unsigned worker, int64_t partkey) {
     const TpchQ20PartBlock *block = state.FindBlock(partkey);
     if (!block)
       return;

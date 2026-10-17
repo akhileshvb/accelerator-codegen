@@ -23,28 +23,33 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ1Lineitems(
-    const std::function<void(const query::TpchQ1LineitemInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {DateColumn("l_shipdate"), DecimalColumn("l_quantity", 2),
-               DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2),
-               DecimalColumn("l_tax", 2), TextColumn("l_returnflag"),
-               TextColumn("l_linestatus")},
-              [&](const BuildRow &row) {
-                consumer({row.Date(0), row.Decimal(1), 2, row.Decimal(2), 2,
-                          row.Decimal(3), 2, row.Decimal(4), 2, row.Char(5),
-                          row.Char(6)});
-              });
+void ScanTpchQ1LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ1LineitemInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {DateColumn("l_shipdate"), DecimalColumn("l_quantity", 2),
+                   DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2),
+                   DecimalColumn("l_tax", 2), TextColumn("l_returnflag"),
+                   TextColumn("l_linestatus")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Date(0), row.Decimal(1), 2, row.Decimal(2), 2,
+                                       row.Decimal(3), 2, row.Decimal(4), 2, row.Char(5),
+                                       row.Char(6)});
+                    }
+                  });
 }
 
 } // namespace scans
 
 class TpchQ1Scan final : public query::TpchQ1InitialScan {
 public:
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ1LineitemInput &)> &consumer)
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ1LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ1Lineitems(consumer);
+    scans::ScanTpchQ1LineitemsPartitioned(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Scan> &Q1Runtime() {

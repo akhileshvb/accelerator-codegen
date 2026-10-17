@@ -76,12 +76,16 @@ struct TpchQ13OrderInput {
 class TpchQ13InitialScan {
 public:
   virtual ~TpchQ13InitialScan() = default;
+  // Both scans are split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
   // Only rows whose key is not NULL.
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ13CustomerInput &)> &) = 0;
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ13CustomerInput &)> &sink) = 0;
   // Only rows whose orderkey, custkey and comment are not NULL.
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ13OrderInput &)> &) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ13OrderInput &)> &sink) = 0;
 };
 
 struct TpchQ13OrderSegment {
@@ -99,6 +103,7 @@ struct TpchQ13PatternHist {
   std::map<int64_t, int64_t> big;    // larger c_count (never expected)
   static constexpr int64_t kDenseLimit = int64_t{1} << 16;
   void Add(int64_t c_count, int64_t delta);
+  void Merge(TpchQ13PatternHist &&from);
 };
 
 struct TpchQ13State {
@@ -133,7 +138,8 @@ struct TpchQ13State {
   bool patterns_ready = false;
   core::ChunkedCowArray<PatternCounts, 9> matched{PatternCounts{}};
   core::ShardedCowHashMap<PatternCounts, 8> sparse_matched;
-  std::array<TpchQ13PatternHist, kTpchQ13Patterns> hist;
+  using PatternHists = std::array<TpchQ13PatternHist, kTpchQ13Patterns>;
+  PatternHists hist;
   // Builds the index from the current orders/customers (O(orders), parallel).
   void EnablePatternIndex(const core::AuxEngineServices &services);
   // Index of a known pattern, or -1.
@@ -143,7 +149,13 @@ struct TpchQ13State {
 
   void AddCustomer(int64_t custkey);
   void RemoveCustomer(int64_t custkey);
-  void AddOrder(int64_t orderkey, int64_t custkey, std::string_view comment);
+  // `pattern_mask` is PatternMask(comment), computed ahead (it is only used
+  // while the pattern index is on).
+  void AddOrder(int64_t orderkey, int64_t custkey, std::string_view comment,
+                uint32_t pattern_mask);
+  // Takes over segments filled outside the state (orders as the build scan
+  // delivered them): indexes their rows and counts them per customer.
+  void AdoptSegments(std::vector<std::shared_ptr<TpchQ13OrderSegment>> &&adopted);
   void RemoveOrder(int64_t orderkey);
   // Rewrites the segments touched since the last call that are mostly dead
   // (once per write batch); releases segments that became empty.
@@ -152,6 +164,7 @@ struct TpchQ13State {
 private:
   PatternCounts Matched(int64_t key) const;
   void HistAdd(int64_t custkey, int64_t sign);
+  void HistAddTo(PatternHists &into, int64_t custkey, int64_t sign) const;
   void ApplyOrderCount(int64_t custkey, int32_t sign, uint32_t mask);
   void DisablePatternIndex();
   std::shared_ptr<TpchQ13OrderSegment> &MutableSegment(uint32_t id);

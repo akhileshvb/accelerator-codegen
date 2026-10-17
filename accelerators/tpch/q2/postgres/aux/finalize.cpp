@@ -220,8 +220,9 @@ void TpchQ2FinalizeAndEmit(const core::AuxEngineServices &services,
   // Evaluate LIKE once per distinct type, not once per part.
   const auto matcher = core::sql_like::LikeMatcher::Compile(*args.type_pattern);
   const auto &blob = state.types->blob();
-  q.type_bits = core::sql_like::MatchBlobBitmap(matcher, blob.offsets(),
-                                                state.types->size(), blob.data());
+  q.type_bits = core::sql_like::MatchBlobBitmap(
+      matcher, blob.offsets(), state.types->size(), blob.data(),
+      core::Parallelism::OnPool(services));
   q.type_bits.push_back(0); // keep TypeMatches in range for an empty dictionary
 
   const auto better = [&q](const Q2Candidate &a, const Q2Candidate &b) {

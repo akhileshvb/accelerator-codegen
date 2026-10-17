@@ -57,7 +57,7 @@ public:
       const std::function<void(const TpchQ18OrderInput &)> &) = 0;
   virtual void ScanCustomers(
       const std::function<void(const TpchQ18CustomerInput &)> &) = 0;
-  // The same two scans split into `partitions` fixed row ranges: sink(partition,
+  // The same three scans split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
   virtual void ScanLineitemsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
@@ -65,6 +65,9 @@ public:
   virtual void ScanOrdersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18OrderInput &)> &sink) = 0;
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18CustomerInput &)> &sink) = 0;
 
   // Names of the given customers (customers that do not exist are not
   // reported). Engines override this with a keyed SQL lookup; the default
@@ -118,8 +121,9 @@ struct TpchQ18State {
   // order and drops its record when nothing is left of it.
   TpchQ18OrderRec &MutableRec(int64_t orderkey) { return orders[orderkey]; }
   void Reindex(int64_t orderkey);
+  // Adds the net change of an order's lineitems (SUM and COUNT).
   // false: the delta would leave a negative lineitem count (state mismatch).
-  bool AddLineitem(int64_t orderkey, int64_t quantity_raw, int sign);
+  bool AddLineitems(int64_t orderkey, int64_t sum_delta_raw, int64_t lines_delta);
   void SetOrder(int64_t orderkey, int64_t custkey, int32_t orderdate_days,
                 int64_t totalprice_raw);
   // false: there was no orders row for the key.

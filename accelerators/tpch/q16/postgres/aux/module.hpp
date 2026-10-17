@@ -57,10 +57,14 @@ public:
   virtual ~TpchQ16InitialScan() = default;
   virtual void ScanSuppliers(
       const std::function<void(const TpchQ16SupplierInput &)> &) = 0;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ16PartInput &)> &) = 0;
-  virtual void ScanPartsupp(
-      const std::function<void(const TpchQ16PartsuppInput &)> &) = 0;
+  // Every row, split into `partitions` fixed row ranges: sink(partition, row)
+  // runs concurrently for different partitions, one thread per partition.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16PartInput &)> &sink) = 0;
+  virtual void ScanPartsuppPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16PartsuppInput &)> &sink) = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -145,7 +149,8 @@ struct TpchQ16State {
   // Returns true if the flag changed.
   bool SetComplaint(int64_t suppkey, bool complaint);
   // Groups containing any part that lists one of `suppliers` become dirty.
-  void MarkGroupsOfSuppliers(const core::FlatHashMap<uint8_t> &suppliers);
+  void MarkGroupsOfSuppliers(const core::AuxEngineServices &services,
+                             const core::FlatHashMap<uint8_t> &suppliers);
   // Recompute `distinct` of every dirty group.
   void RecomputeDirty(const core::AuxEngineServices &services);
   // Recompute every group (after a bulk load).

@@ -501,7 +501,7 @@ void CountMatchingOrders(const core::AuxEngineServices &services,
             continue;
           const std::size_t n = seg->orderkey.size();
           const auto bits = like::MatchBlobBitmap(
-              matcher, seg->comment.offsets(), n, seg->comment.data(), 1);
+              matcher, seg->comment.offsets(), n, seg->comment.data());
           for (std::size_t w = 0; w < bits.size(); ++w) {
             uint64_t b = bits[w];
             while (b) {

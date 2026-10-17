@@ -1,12 +1,16 @@
 #include "tpch/q5/postgres/aux/module.hpp"
 #include "tpch/q5/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include "tpch/q5/layout.hpp"
@@ -169,12 +173,96 @@ void AddBucket(TpchQ5State &s, int32_t day, int32_t nation, TpchQ5Money revenue,
     s.outliers.erase(bucket_key);
 }
 
+// Revenue and joined-lineitem count per (day, nation): the unit both build and
+// maintenance fold lineitems into before touching the trees.
+using BucketCells = std::unordered_map<uint64_t, TpchQ5Bucket>;
+
+void AddCell(BucketCells &cells, int32_t day, int32_t nation, TpchQ5Money revenue,
+             int64_t rows) {
+  auto &cell = cells[(static_cast<uint64_t>(static_cast<uint32_t>(day)) << 32) |
+                     static_cast<uint32_t>(nation)];
+  cell.revenue += revenue;
+  cell.rows += rows;
+}
+
+void MergeCells(BucketCells &into, BucketCells &&from) {
+  for (const auto &[key, cell] : from) {
+    auto &sum = into[key];
+    sum.revenue += cell.revenue;
+    sum.rows += cell.rows;
+  }
+}
+
+void ApplyCells(TpchQ5State &s, const BucketCells &cells) {
+  for (const auto &[key, cell] : cells)
+    if (cell.rows != 0 || cell.revenue != 0)
+      AddBucket(s, static_cast<int32_t>(static_cast<uint32_t>(key >> 32)),
+                static_cast<int32_t>(static_cast<uint32_t>(key)), cell.revenue,
+                cell.rows);
+}
+
 // A lineitem of an order with tuple `t` counts iff its supplier's nation is the
 // order's customer's nation (c_nationkey = s_nationkey).
-void ApplyLineitem(TpchQ5State &s, const Tuple &t, int64_t suppkey,
-                   TpchQ5Money revenue, int sign) {
+void ApplyLineitem(const TpchQ5State &s, BucketCells &cells, const Tuple &t,
+                   int64_t suppkey, TpchQ5Money revenue, int sign) {
   if (t.present && s.supp_nation.Get(suppkey) == t.nation)
-    AddBucket(s, t.day, t.nation, static_cast<TpchQ5Money>(sign) * revenue, sign);
+    AddCell(cells, t.day, t.nation, static_cast<TpchQ5Money>(sign) * revenue, sign);
+}
+
+// Build: key/value rows are dealt out to buckets by key; a bucket is filled
+// alone, so buckets run in parallel.
+using core::kBuildBuckets;
+// Maintenance: lineitem deltas per slice.
+constexpr std::size_t kDeltaGrain = 4096;
+
+// Bucket of `key`: the keys of one 2^15-id chunk (of every column) share a
+// bucket, so per-bucket columns hold disjoint chunks.
+std::size_t ColumnBucket(int64_t key) {
+  using Column = core::AnyKeyCowArray<int32_t, 15>;
+  const uint64_t id = Column::Zig(key);
+  return (Column::IsDense(key) ? id >> 15 : id) % kBuildBuckets;
+}
+
+// Folds `from`'s columns into `into`; the two hold disjoint keys.
+void MergeColumns(TpchQ5State &into, TpchQ5State &&from) {
+  const auto theirs = [](auto, auto value) { return value; };
+  into.order_date.MergeFrom(std::move(from.order_date), theirs);
+  into.order_nation.MergeFrom(std::move(from.order_nation), theirs);
+  into.cust_nation.MergeFrom(std::move(from.cust_nation), theirs);
+  into.supp_nation.MergeFrom(std::move(from.supp_nation), theirs);
+}
+
+struct KeyNation {
+  int64_t key = 0;
+  int32_t nation = kTpchQ5NoNation;
+};
+
+// An order with a join tuple.
+struct JoinedOrder {
+  int64_t key = 0;
+  int32_t day = 0;
+  int32_t nation = kTpchQ5NoNation;
+};
+
+struct LineitemFold {
+  BucketCells cells;
+  bool unsupported_decimal = false;
+};
+
+// Fills the columns of `state` from rows dealt out by ColumnBucket: one partial
+// state per bucket, merged by adopting chunks.
+template <class Row, class Set>
+void FillColumns(core::AuxEngineServices &services, TpchQ5State &state,
+                 const Buckets<Row> &rows, Set &&set) {
+  std::vector<TpchQ5State> parts(rows.size());
+  core::ParallelSlices(services, rows.size(), 1,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t b = begin; b < end; ++b)
+                           for (const Row &row : rows[b])
+                             set(parts[b], row);
+                       });
+  for (auto &part : parts)
+    MergeColumns(state, std::move(part));
 }
 
 }  // namespace
@@ -475,6 +563,7 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
   work->cust_nation = customers->state->cust_nation;
   work->supp_nation = suppliers->state->supp_nation;
 
+  BucketCells cells;
   bool unsupported_decimal = false;
   auto revenue_of = [&](const TpchQ5LineitemInput &row) {
     TpchQ5Money revenue = 0;
@@ -534,9 +623,9 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
           const TpchQ5Money revenue = revenue_of(row);
           const int32_t supplier_nation = work->supp_nation.Get(row.suppkey);
           if (m.before != kTpchQ5NoNation && supplier_nation == m.before)
-            AddBucket(*work, m.day, m.before, -revenue, -1);
+            AddCell(cells, m.day, m.before, -revenue, -1);
           if (m.after != kTpchQ5NoNation && supplier_nation == m.after)
-            AddBucket(*work, m.day, m.after, revenue, +1);
+            AddCell(cells, m.day, m.after, revenue, +1);
         });
     for (const auto &[key, m] : moved)
       SetOrderTuple(*work, key,
@@ -573,9 +662,9 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
           const Net &n = net.at(row.suppkey);
           const TpchQ5Money revenue = revenue_of(row);
           if (t.nation == n.before)
-            AddBucket(*work, t.day, t.nation, -revenue, -1);
+            AddCell(cells, t.day, t.nation, -revenue, -1);
           if (t.nation == n.after)
-            AddBucket(*work, t.day, t.nation, revenue, +1);
+            AddCell(cells, t.day, t.nation, revenue, +1);
         });
     for (const auto &[key, n] : net)
       work->supp_nation.Set(key, n.after);
@@ -615,15 +704,24 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
     initial_scan->LookupLineitemsByOrder(moved, [&](const TpchQ5LineitemInput &row) {
       const Change &c = changes.at(row.orderkey);
       const TpchQ5Money revenue = revenue_of(row);
-      ApplyLineitem(*work, c.after, row.suppkey, revenue, +1);
-      ApplyLineitem(*work, c.before, row.suppkey, revenue, -1);
+      ApplyLineitem(*work, cells, c.after, row.suppkey, revenue, +1);
+      ApplyLineitem(*work, cells, c.before, row.suppkey, revenue, -1);
     });
-    for (const auto &d : buffer.Lineitems()) {
-      const auto it = changes.find(d.orderkey);
-      const Tuple before =
-          it != changes.end() ? it->second.before : OrderTuple(*work, d.orderkey);
-      ApplyLineitem(*work, before, d.suppkey, d.revenue, d.sign);
-    }
+    // The batch's own lineitems only read the tables (written below).
+    const auto &lineitems = buffer.Lineitems();
+    core::ParallelReduce(
+        services, lineitems.size(), kDeltaGrain, cells,
+        [&](BucketCells &into, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            const auto &d = lineitems[i];
+            const auto it = changes.find(d.orderkey);
+            const Tuple before = it != changes.end()
+                                     ? it->second.before
+                                     : OrderTuple(*work, d.orderkey);
+            ApplyLineitem(*work, into, before, d.suppkey, d.revenue, d.sign);
+          }
+        },
+        MergeCells);
     for (const auto &[key, c] : changes)
       if (!(c.before == c.after)) {
         SetOrderTuple(*work, key, c.after);
@@ -633,6 +731,8 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
 
   if (unsupported_decimal)
     return rebuild_all();
+  // The trees are copy-on-write: one add per touched (day, nation) cell.
+  ApplyCells(*work, cells);
 
   const std::shared_ptr<const TpchQ5State> published = work;
   outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -776,11 +876,12 @@ void TpchQ5Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q5 requires a typed initial scan source");
   TpchQ5State state;
+  const auto partitions = BuildPartitions(services);
 
+  // Regions and nations are a handful of rows: scanned serially.
   initial_scan->ScanRegions([&](const TpchQ5RegionInput &input) {
     state.region_names[input.key] = input.name;
   });
@@ -792,26 +893,88 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
     nation.has_region = !input.regionkey_is_null;
     state.nations[input.key] = std::move(nation);
   });
-  initial_scan->ScanCustomers([&](const TpchQ5CustomerInput &input) {
-    state.cust_nation.Set(input.custkey, input.nationkey);
+
+  const auto customers = core::PartitionedBuild<Buckets<KeyNation>>(
+      services, [] { return Buckets<KeyNation>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanCustomersPartitioned(
+            services, parts,
+            [&](std::size_t partition, const TpchQ5CustomerInput &input) {
+              sink(partition, OneRowBatch<TpchQ5CustomerInput>{input});
+            });
+      },
+      [](Buckets<KeyNation> &into, const TpchQ5CustomerInput &input) {
+        into[ColumnBucket(input.custkey)].push_back({input.custkey, input.nationkey});
+      },
+      AppendBuckets<KeyNation>, partitions);
+  FillColumns(services, state, customers, [](TpchQ5State &part, const KeyNation &row) {
+    part.cust_nation.Set(row.key, row.nation);
   });
-  initial_scan->ScanSuppliers([&](const TpchQ5SupplierInput &input) {
-    state.supp_nation.Set(input.suppkey, input.nationkey);
+
+  const auto suppliers = core::PartitionedBuild<Buckets<KeyNation>>(
+      services, [] { return Buckets<KeyNation>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliersPartitioned(
+            services, parts,
+            [&](std::size_t partition, const TpchQ5SupplierInput &input) {
+              sink(partition, OneRowBatch<TpchQ5SupplierInput>{input});
+            });
+      },
+      [](Buckets<KeyNation> &into, const TpchQ5SupplierInput &input) {
+        into[ColumnBucket(input.suppkey)].push_back({input.suppkey, input.nationkey});
+      },
+      AppendBuckets<KeyNation>, partitions);
+  FillColumns(services, state, suppliers, [](TpchQ5State &part, const KeyNation &row) {
+    part.supp_nation.Set(row.key, row.nation);
   });
-  // An order joins only through a customer that has a nation.
-  initial_scan->ScanOrders([&](const TpchQ5OrderInput &input) {
-    const int32_t nation = state.cust_nation.Get(input.custkey);
-    if (nation != kTpchQ5NoNation)
-      SetOrderTuple(state, input.orderkey,
-                    Tuple{true, input.orderdate_days, nation});
+
+  // An order joins only through a customer that has a nation (the customer
+  // column is final, so the scan threads only read it).
+  const auto orders = core::PartitionedBuild<Buckets<JoinedOrder>>(
+      services, [] { return Buckets<JoinedOrder>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ5OrderInput &input) {
+              sink(partition, OneRowBatch<TpchQ5OrderInput>{input});
+            });
+      },
+      [&](Buckets<JoinedOrder> &into, const TpchQ5OrderInput &input) {
+        const int32_t nation = state.cust_nation.Get(input.custkey);
+        if (nation != kTpchQ5NoNation)
+          into[ColumnBucket(input.orderkey)].push_back(
+              {input.orderkey, input.orderdate_days, nation});
+      },
+      AppendBuckets<JoinedOrder>, partitions);
+  FillColumns(services, state, orders, [](TpchQ5State &part, const JoinedOrder &row) {
+    SetOrderTuple(part, row.key, Tuple{true, row.day, row.nation});
   });
-  initial_scan->ScanLineitems([&](const TpchQ5LineitemInput &input) {
-    TpchQ5Money revenue = 0;
-    if (!InputRevenue(input, revenue))
-      throw std::runtime_error("TPC-H Q5: unsupported decimal scale");
-    ApplyLineitem(state, OrderTuple(state, input.orderkey), input.suppkey,
-                  revenue, +1);
-  });
+
+  // Lineitems fold into per-(day, nation) cells; the tables are final.
+  const auto folded = core::PartitionedBuild<LineitemFold>(
+      services, [] { return LineitemFold{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts,
+            [&](std::size_t partition, const TpchQ5LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ5LineitemInput>{input});
+            });
+      },
+      [&](LineitemFold &into, const TpchQ5LineitemInput &input) {
+        TpchQ5Money revenue = 0;
+        if (!InputRevenue(input, revenue))
+          into.unsupported_decimal = true;
+        else
+          ApplyLineitem(state, into.cells, OrderTuple(state, input.orderkey),
+                        input.suppkey, revenue, +1);
+      },
+      [](LineitemFold &into, LineitemFold &&from) {
+        MergeCells(into.cells, std::move(from.cells));
+        into.unsupported_decimal |= from.unsupported_decimal;
+      },
+      partitions);
+  if (folded.unsupported_decimal)
+    throw std::runtime_error("TPC-H Q5: unsupported decimal scale");
+  ApplyCells(state, folded.cells);
   return state;
 }
 

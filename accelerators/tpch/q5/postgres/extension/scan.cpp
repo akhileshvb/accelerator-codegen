@@ -45,25 +45,32 @@ void ScanTpchQ5Nations(
       });
 }
 
-void ScanTpchQ5Customers(
-    const std::function<void(const query::TpchQ5CustomerInput &)> &consumer) {
-  ScanColumns("customer",
-              {IntColumn("c_custkey"), IntColumn("c_nationkey")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          static_cast<int32_t>(row.Int(1))});
-              });
+void ScanTpchQ5CustomersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ5CustomerInput &)> &sink) {
+  ScanPartitioned(services, "customer",
+                  {IntColumn("c_custkey"), IntColumn("c_nationkey")}, partitions,
+                  [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), static_cast<int32_t>(row.Int(1))});
+                    }
+                  });
 }
 
-void ScanTpchQ5Suppliers(
-    const std::function<void(const query::TpchQ5SupplierInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT s_suppkey, s_nationkey FROM supplier "
-      "WHERE s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
-      });
+// Suppliers with a key and a nationkey (a NULL never joins).
+void ScanTpchQ5SuppliersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ5SupplierInput &)> &sink) {
+  ScanPartitioned(services, "supplier",
+                  {Nullable(IntColumn("s_suppkey")), Nullable(IntColumn("s_nationkey"))},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      if (!row.IsNull(0) && !row.IsNull(1))
+                        sink(partition, {row.Int(0), static_cast<int32_t>(row.Int(1))});
+                    }
+                  });
 }
 
 // Orders that can join: NULL custkey / orderdate never reach the revenue sum.
@@ -72,14 +79,18 @@ const char kOrdersSql[] =
     "WHERE o_orderkey IS NOT NULL AND o_custkey IS NOT NULL "
     "AND o_orderdate IS NOT NULL";
 
-void ScanTpchQ5Orders(
-    const std::function<void(const query::TpchQ5OrderInput &)> &consumer) {
-  ScanColumns("orders",
-              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
-               DateColumn("o_orderdate")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0), row.Int(1), row.Date(2)});
-              });
+void ScanTpchQ5OrdersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ5OrderInput &)> &sink) {
+  ScanPartitioned(services, "orders",
+                  {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+                   DateColumn("o_orderdate")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1), row.Date(2)});
+                    }
+                  });
 }
 
 // Lineitems that reach the SUM; price and discount as exact cents.
@@ -89,16 +100,19 @@ const char kLineitemsSql[] =
     "WHERE l_orderkey IS NOT NULL AND l_suppkey IS NOT NULL "
     "AND l_extendedprice IS NOT NULL AND l_discount IS NOT NULL";
 
-void ScanTpchQ5Lineitems(
-    const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
-               DecimalColumn("l_extendedprice", 2),
-               DecimalColumn("l_discount", 2)},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0), row.Int(1), row.Decimal(2), 2,
-                          row.Decimal(3), 2});
-              });
+void ScanTpchQ5LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ5LineitemInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
+                   DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2)},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1), row.Decimal(2), 2,
+                                       row.Decimal(3), 2});
+                    }
+                  });
 }
 
 // Index lookups while maintenance is staged at pre-commit: they read the
@@ -152,25 +166,29 @@ public:
       override {
     scans::ScanTpchQ5Nations(consumer);
   }
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ5CustomerInput &)> &consumer)
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ5CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ5Customers(consumer);
+    scans::ScanTpchQ5CustomersPartitioned(services, partitions, sink);
   }
-  void ScanSuppliers(
-      const std::function<void(const query::TpchQ5SupplierInput &)> &consumer)
+  void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ5SupplierInput &)> &sink)
       override {
-    scans::ScanTpchQ5Suppliers(consumer);
+    scans::ScanTpchQ5SuppliersPartitioned(services, partitions, sink);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ5OrderInput &)> &consumer)
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ5OrderInput &)> &sink)
       override {
-    scans::ScanTpchQ5Orders(consumer);
+    scans::ScanTpchQ5OrdersPartitioned(services, partitions, sink);
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ5LineitemInput &)> &consumer)
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ5LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ5Lineitems(consumer);
+    scans::ScanTpchQ5LineitemsPartitioned(services, partitions, sink);
   }
   void LookupLineitemsByOrder(
       const std::vector<int64_t> &orderkeys,
