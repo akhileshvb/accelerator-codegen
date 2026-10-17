@@ -1150,9 +1150,12 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
     throw std::logic_error("TPC-H Q8 aux requires a typed initial scan source");
 
   // Dimension dictionaries: parts (value = index into part_types)
-  initial_scan->ScanParts([&](const TpchQ8PartInput &input) {
+  using scan::IntColumn;
+  for (const auto &input : CollectTable<TpchQ8PartInput>(
+           services, *initial_scan, "part", {IntColumn("p_partkey"), scan::TextColumn("p_type")},
+           [](const auto &row) { return TpchQ8PartInput{row.Int(0), row.Text(1)}; })) {
     if (input.key <= 0)
-      return;
+      continue;
     auto ti = dims.dict->part_type_to_index.find(input.type);
     if (ti == dims.dict->part_type_to_index.end()) {
       ti = dims.dict->part_type_to_index
@@ -1162,28 +1165,35 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
     }
     part_b.Add({input.key, ti->second});
     dims.part_build_max = std::max(dims.part_build_max, input.key);
-  });
+  }
 
   int32_t max_nation = 0;
-  initial_scan->ScanSuppliers([&](const TpchQ8SupplierInput &input) {
+  for (const auto &input : CollectTable<TpchQ8SupplierInput>(
+           services, *initial_scan, "supplier",
+           {IntColumn("s_suppkey"), IntColumn("s_nationkey")}, [](const auto &row) {
+             return TpchQ8SupplierInput{row.Int(0), static_cast<int32_t>(row.Int(1))};
+           })) {
     if (input.key <= 0)
-      return;
+      continue;
     supp_b.Add({input.key, input.nationkey});
     dims.supp_build_max = std::max(dims.supp_build_max, input.key);
     max_nation = std::max(max_nation, input.nationkey);
-  });
+  }
 
-  initial_scan->ScanCustomers([&](const TpchQ8CustomerInput &input) {
+  for (const auto &input : CollectTable<TpchQ8CustomerInput>(
+           services, *initial_scan, "customer",
+           {IntColumn("c_custkey"), IntColumn("c_nationkey")}, [](const auto &row) {
+             return TpchQ8CustomerInput{row.Int(0), static_cast<int32_t>(row.Int(1))};
+           })) {
     if (input.key <= 0)
-      return;
+      continue;
     cust_b.Add({input.key, input.nationkey});
     dims.cust_build_max = std::max(dims.cust_build_max, input.key);
     max_nation = std::max(max_nation, input.nationkey);
-  });
+  }
 
   using scan::DateColumn;
   using scan::DecimalColumn;
-  using scan::IntColumn;
   auto scanned = core::PartitionedBuild<OrdersPartial>(
       services, [] { return OrdersPartial{}; },
       [&](std::size_t parts, auto &&sink) {
