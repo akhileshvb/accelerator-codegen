@@ -1,8 +1,8 @@
 #include "tpch/q2/postgres/aux/module.hpp"
 #include "tpch/q2/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -20,24 +20,6 @@ bool StringValue(const core::AuxValue &value, std::string &out) {
     return false;
   out = std::get<std::string>(value.payload);
   return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
 }
 
 // A decimal cell as an integer count of 1/100 units (the scale of s_acctbal
@@ -66,27 +48,20 @@ bool NullCell(const core::AuxRow &row, std::size_t index) {
   return index >= row.values.size() || row.values[index].is_null;
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 // Row decoders for captured mutation rows (projected as in Dependencies()).
 // Return false when the row cannot be decoded; `skip` is set when the row can
 // never take part in the query (a NULL join/filter column), so it is ignored.
 bool ReadPart(const core::AuxRow &row, TpchQ2PartInput &out, bool &skip) {
   skip = false;
   int64_t key = 0, size = 0;
-  if (!IntCell(row, 0, key))
+  if (!core::IntCell(row, 0, key))
     return false;
   out.key = key;
   if (NullCell(row, 2) || NullCell(row, 3)) {
     skip = true; // NULL p_type / p_size never satisfies the predicates
     return true;
   }
-  if (!IntCell(row, 3, size) || !StringValue(row.values[2], out.type) ||
+  if (!core::IntCell(row, 3, size) || !StringValue(row.values[2], out.type) ||
       size < std::numeric_limits<int32_t>::min() ||
       size > std::numeric_limits<int32_t>::max())
     return false;
@@ -101,14 +76,14 @@ bool ReadSupplier(const core::AuxRow &row, TpchQ2SupplierInput &out,
                   bool &skip) {
   skip = false;
   int64_t key = 0, nationkey = 0;
-  if (!IntCell(row, 0, key))
+  if (!core::IntCell(row, 0, key))
     return false;
   out.key = key;
   if (NullCell(row, 3)) {
     skip = true; // no nation: the supplier joins nothing
     return true;
   }
-  if (!IntCell(row, 3, nationkey))
+  if (!core::IntCell(row, 3, nationkey))
     return false;
   out.nationkey = nationkey;
   for (const std::size_t col : {1, 2, 4, 6}) {
@@ -131,14 +106,14 @@ bool ReadPartsupp(const core::AuxRow &row, TpchQ2PartsuppInput &out,
   skip = NullCell(row, 0) || NullCell(row, 1) || NullCell(row, 2);
   if (skip)
     return true; // a NULL key or cost never matches the join / the minimum
-  return IntCell(row, 0, out.partkey) && IntCell(row, 1, out.suppkey) &&
+  return core::IntCell(row, 0, out.partkey) && core::IntCell(row, 1, out.suppkey) &&
          CentsCell(row, 2, out.supplycost_raw);
 }
 
 bool ReadNation(const core::AuxRow &row, TpchQ2NationInput &out, bool &skip) {
   skip = false;
   int64_t key = 0, region = 0;
-  if (!IntCell(row, 0, key))
+  if (!core::IntCell(row, 0, key))
     return false;
   out.key = key;
   out.name.clear();
@@ -149,7 +124,7 @@ bool ReadNation(const core::AuxRow &row, TpchQ2NationInput &out, bool &skip) {
     out.regionkey_null = true;
     return true;
   }
-  if (!IntCell(row, 2, region))
+  if (!core::IntCell(row, 2, region))
     return false;
   out.regionkey = region;
   return true;
@@ -158,7 +133,7 @@ bool ReadNation(const core::AuxRow &row, TpchQ2NationInput &out, bool &skip) {
 bool ReadRegion(const core::AuxRow &row, TpchQ2RegionInput &out, bool &skip) {
   skip = false;
   int64_t key = 0;
-  if (!IntCell(row, 0, key))
+  if (!core::IntCell(row, 0, key))
     return false;
   out.key = key;
   if (NullCell(row, 1)) {
@@ -166,6 +141,136 @@ bool ReadRegion(const core::AuxRow &row, TpchQ2RegionInput &out, bool &skip) {
     return true;
   }
   return StringValue(row.values[1], out.name);
+}
+
+// Buckets per slice of the build fill (each fills a whole partial state).
+constexpr std::size_t kBucketGrain = 1;
+
+// Build: part and partsupp rows are dealt out to buckets by part key; a bucket
+// is filled alone into a partial state, so buckets run in parallel.
+using core::kBuildBuckets;
+
+// Bucket of `key`: the keys of one 4096-id chunk of the part columns share a
+// bucket. The offers' smaller chunks nest in them, so the partial states of
+// different buckets hold disjoint chunks.
+std::size_t KeyBucket(int64_t key) {
+  using Ids = core::AnyKeyCowArray<int32_t>;
+  const uint64_t id = Ids::Zig(key);
+  return (Ids::IsDense(key) ? id / Ids::kChunkSize : id) % kBuildBuckets;
+}
+
+// The part rows of one scan partition, with the partition's own type and
+// manufacturer dictionaries (partitions cannot share one without locking).
+struct PartRow {
+  int64_t key = 0;
+  int32_t size = 0;
+  uint32_t type = 0, mfgr = 0; // ids of the owning piece's dictionaries
+};
+
+struct PartPiece {
+  core::Buckets<PartRow> rows = core::Buckets<PartRow>(kBuildBuckets);
+  core::StringDict types, mfgrs;
+
+  void Add(const TpchQ2PartInput &input) {
+    rows[KeyBucket(input.key)].push_back(
+        {input.key, input.size, types.Intern(input.type), mfgrs.Intern(input.mfgr)});
+  }
+};
+
+// Ids in `global` of the strings of `local`, by local id.
+std::vector<uint32_t> GlobalIds(const core::StringDict &local,
+                                core::StringDict &global) {
+  std::vector<uint32_t> ids(local.size());
+  for (uint32_t id = 0; id < ids.size(); ++id)
+    ids[id] = global.Intern(local.Get(id));
+  return ids;
+}
+
+// Folds the part and offer columns of `from` into `into`; they hold disjoint
+// keys, so chunks are adopted whole.
+void MergeColumns(TpchQ2State &into, TpchQ2State &&from) {
+  const auto theirs = [](const auto &, const auto &value) { return value; };
+  into.part_size.MergeFrom(std::move(from.part_size), theirs);
+  into.part_type.MergeFrom(std::move(from.part_type), theirs);
+  into.part_mfgr.MergeFrom(std::move(from.part_mfgr), theirs);
+  into.offers.MergeFrom(std::move(from.offers), theirs);
+  from.offer_overflow.ForEach([&](int64_t key, const std::vector<TpchQ2Offer> &extra) {
+    into.offer_overflow.Upsert(key, extra);
+  });
+}
+
+// Runs fill(bucket, partial state) for every bucket in parallel, then folds the
+// partial states into `state`.
+template <class Fill>
+void FillBuckets(core::AuxEngineServices &services, TpchQ2State &state, Fill &&fill) {
+  std::vector<TpchQ2State> parts(kBuildBuckets);
+  core::ParallelEach(services, kBuildBuckets, kBucketGrain,
+                      [&](std::size_t b) { fill(b, parts[b]); });
+  for (auto &part : parts)
+    MergeColumns(state, std::move(part));
+}
+
+struct PublishedState {
+  std::shared_ptr<const TpchQ2State> state;
+  core::Version version = 0;
+};
+
+// The published full image, or an empty state when it is absent or foreign.
+PublishedState LoadPublished(core::AuxEngineServices &services) {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {core::TpchQ2Layout::kFull});
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition != core::TpchQ2Layout::kFull)
+      continue;
+    const auto *typed = image.As<TpchQ2StateImage>();
+    if (!typed || !typed->state)
+      return {};
+    return {typed->state, image.version};
+  }
+  return {};
+}
+
+// Applies the buffered events to `state`; false when the state disagrees with
+// the table (a deleted offer that was never seen).
+bool ApplyEvents(TpchQ2State &state, const TpchQ2TxnBuffer &buffer) {
+  for (const auto &ev : buffer.regions)
+    ev.sign < 0 ? state.EraseRegion(ev.row) : state.UpsertRegion(ev.row);
+  for (const auto &ev : buffer.nations)
+    ev.sign < 0 ? state.EraseNation(ev.row) : state.UpsertNation(ev.row);
+  for (const auto &ev : buffer.suppliers)
+    ev.sign < 0 ? state.EraseSupplier(ev.row.key) : state.SetSupplier(ev.row.key, ev.row);
+  for (const auto &ev : buffer.parts)
+    ev.sign < 0 ? state.ErasePart(ev.row.key) : state.SetPart(ev.row.key, ev.row);
+  for (const auto &ev : buffer.partsupps) {
+    if (ev.sign > 0)
+      state.AddOffer(ev.row.partkey, ev.row.suppkey, ev.row.supplycost_raw);
+    else if (!state.RemoveOffer(ev.row.partkey, ev.row.suppkey, ev.row.supplycost_raw))
+      return false;
+  }
+  return true;
+}
+
+// Applies the events to a copy-on-write copy of `published` (it shares every
+// chunk and each point edit clones only the chunk it touches). Fills `outcome`
+// and returns true when the cost model keeps the delta; false when the copy is
+// inconsistent or a rebuild is chosen.
+bool TryApplyEvents(core::AuxEngineServices &services, const TpchQ2TxnBuffer &buffer,
+                    const PublishedState &published, core::StagedMaintenanceOutcome &outcome) {
+  auto next = std::make_shared<TpchQ2State>(*published.state);
+  if (!ApplyEvents(*next, buffer))
+    return false;
+  const auto decision = services.ChooseMaintenance(
+      core::MaintenanceRequest::IncrementalSingleState(
+          buffer.EventCount(), services.ExpectedQueriesBeforeNextWrite()));
+  if (decision.action != core::MaintenanceAction::ApplyDelta)
+    return false;
+  auto image = std::make_shared<TpchQ2StateImage>();
+  image->state = std::move(next);
+  outcome.action = core::MaintenanceAction::ApplyDelta;
+  outcome.updates.push_back(core::StateImage::Make(
+      core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull, published.version,
+      std::shared_ptr<const TpchQ2StateImage>(std::move(image))));
+  return true;
 }
 
 } // namespace
@@ -487,81 +592,22 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
   core::StagedMaintenanceOutcome outcome;
   if (!buffer.HasPendingChanges())
     return outcome;
-
-  bool need_rebuild = buffer.RequiresRebuild();
-  if (!need_rebuild) {
-    const auto old_state = LoadState(services);
-    core::Version old_version = 0;
-    if (old_state) {
-      const auto snapshot = services.StateStore().ReadPartitions(
-          services.CurrentVisibility(), {core::TpchQ2Layout::kFull});
-      for (const auto &image : snapshot.partitions)
-        if (image.partition == core::TpchQ2Layout::kFull)
-          old_version = image.version;
-    }
-    if (!old_state) {
+  if (!buffer.RequiresRebuild()) {
+    const auto published = LoadPublished(services);
+    if (!published.state) {
       buffer.Clear();
       return outcome;
     }
-
-    // Copy-on-write: the copy shares every chunk with the published state and
-    // each point edit clones only the chunk it touches.
-    auto new_state = std::make_shared<TpchQ2State>(*old_state);
-    for (const auto &ev : buffer.regions)
-      ev.sign < 0 ? new_state->EraseRegion(ev.row)
-                  : new_state->UpsertRegion(ev.row);
-    for (const auto &ev : buffer.nations)
-      ev.sign < 0 ? new_state->EraseNation(ev.row)
-                  : new_state->UpsertNation(ev.row);
-    for (const auto &ev : buffer.suppliers)
-      ev.sign < 0 ? new_state->EraseSupplier(ev.row.key)
-                  : new_state->SetSupplier(ev.row.key, ev.row);
-    for (const auto &ev : buffer.parts)
-      ev.sign < 0 ? new_state->ErasePart(ev.row.key)
-                  : new_state->SetPart(ev.row.key, ev.row);
-    for (const auto &ev : buffer.partsupps) {
-      if (ev.sign > 0) {
-        new_state->AddOffer(ev.row.partkey, ev.row.suppkey,
-                            ev.row.supplycost_raw);
-      } else if (!new_state->RemoveOffer(ev.row.partkey, ev.row.suppkey,
-                                         ev.row.supplycost_raw)) {
-        need_rebuild = true; // the state disagrees with the table
-        break;
-      }
+    if (TryApplyEvents(services, buffer, published, outcome)) {
+      buffer.Clear();
+      return outcome;
     }
-
-    if (!need_rebuild) {
-      const auto decision = services.ChooseMaintenance(
-          {buffer.EventCount(), 1, true, false, true, false, false,
-           core::MaintenanceAction::NoOp,
-           services.ExpectedQueriesBeforeNextWrite()});
-      if (decision.action == core::MaintenanceAction::ApplyDelta) {
-        auto image = std::make_shared<TpchQ2StateImage>();
-        image->state = std::move(new_state);
-        const std::shared_ptr<const TpchQ2StateImage> const_image =
-            std::move(image);
-        outcome.action = core::MaintenanceAction::ApplyDelta;
-        outcome.updates.push_back(core::StateImage::Make(
-            core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull,
-            old_version, const_image));
-        buffer.Clear();
-        return outcome;
-      }
-      // Cost-model rebuild: fall through with empty updates so PreCommit
-      // MaterializeSyncRebuild can run under an active snapshot.
-    }
+    // A rebuild chosen by the cost model leaves the updates empty, so PreCommit
+    // MaterializeSyncRebuild can run under an active snapshot.
   }
-
-  const auto decision = services.ChooseMaintenance(
-      {0, 0, false, false, true, true, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                       ? core::MaintenanceAction::RebuildAll
-                       : decision.action;
-  if (outcome.action == core::MaintenanceAction::RebuildPartition)
-    outcome.action = core::MaintenanceAction::RebuildAll;
-  outcome.invalidations = All();
-  outcome.pending_rebuild = outcome.invalidations;
+  core::FinishRebuildAll(
+      outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                   services.ExpectedQueriesBeforeNextWrite())));
   buffer.Clear();
   return outcome;
 }
@@ -590,90 +636,12 @@ void TpchQ2Module::Execute(core::AuxEngineServices &services,
   EmitResult(services, *state, arguments, sink);
 }
 
-void TpchQ2Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  const TpchQ2State state = BuildState(services);
-  EmitResult(services, state, arguments, sink);
-}
-
-namespace {
-
-// Build: part and partsupp rows are dealt out to buckets by part key; a bucket
-// is filled alone into a partial state, so buckets run in parallel.
-using core::kBuildBuckets;
-
-// Bucket of `key`: the keys of one 4096-id chunk of the part columns share a
-// bucket. The offers' smaller chunks nest in them, so the partial states of
-// different buckets hold disjoint chunks.
-std::size_t KeyBucket(int64_t key) {
-  using Ids = core::AnyKeyCowArray<int32_t>;
-  const uint64_t id = Ids::Zig(key);
-  return (Ids::IsDense(key) ? id / Ids::kChunkSize : id) % kBuildBuckets;
-}
-
-// The part rows of one scan partition, with the partition's own type and
-// manufacturer dictionaries (partitions cannot share one without locking).
-struct PartRow {
-  int64_t key = 0;
-  int32_t size = 0;
-  uint32_t type = 0, mfgr = 0; // ids of the owning piece's dictionaries
-};
-
-struct PartPiece {
-  Buckets<PartRow> rows = Buckets<PartRow>(kBuildBuckets);
-  core::StringDict types, mfgrs;
-
-  void Add(const TpchQ2PartInput &input) {
-    rows[KeyBucket(input.key)].push_back(
-        {input.key, input.size, types.Intern(input.type), mfgrs.Intern(input.mfgr)});
-  }
-};
-
-// Ids in `global` of the strings of `local`, by local id.
-std::vector<uint32_t> GlobalIds(const core::StringDict &local,
-                                core::StringDict &global) {
-  std::vector<uint32_t> ids(local.size());
-  for (uint32_t id = 0; id < ids.size(); ++id)
-    ids[id] = global.Intern(local.Get(id));
-  return ids;
-}
-
-// Folds the part and offer columns of `from` into `into`; they hold disjoint
-// keys, so chunks are adopted whole.
-void MergeColumns(TpchQ2State &into, TpchQ2State &&from) {
-  const auto theirs = [](const auto &, const auto &value) { return value; };
-  into.part_size.MergeFrom(std::move(from.part_size), theirs);
-  into.part_type.MergeFrom(std::move(from.part_type), theirs);
-  into.part_mfgr.MergeFrom(std::move(from.part_mfgr), theirs);
-  into.offers.MergeFrom(std::move(from.offers), theirs);
-  from.offer_overflow.ForEach([&](int64_t key, const std::vector<TpchQ2Offer> &extra) {
-    into.offer_overflow.Upsert(key, extra);
-  });
-}
-
-// Runs fill(bucket, partial state) for every bucket in parallel, then folds the
-// partial states into `state`.
-template <class Fill>
-void FillBuckets(core::AuxEngineServices &services, TpchQ2State &state, Fill &&fill) {
-  std::vector<TpchQ2State> parts(kBuildBuckets);
-  core::ParallelSlices(services, kBuildBuckets, 1,
-                       [&](std::size_t, std::size_t begin, std::size_t end) {
-                         for (std::size_t b = begin; b < end; ++b)
-                           fill(b, parts[b]);
-                       });
-  for (auto &part : parts)
-    MergeColumns(state, std::move(part));
-}
-
-} // namespace
-
 TpchQ2State
 TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q2 requires a typed initial scan source");
   TpchQ2State state;
-  const auto partitions = BuildPartitions(services);
+  const auto partitions = core::BuildPartitions(services);
   // The tables are independent in the state, so scan order is free. Nation
   // and region are a handful of rows: scanned serially.
   initial_scan->ScanRegions(
@@ -686,13 +654,13 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanPartsPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ2PartInput &input) {
-              sink(partition, OneRowBatch<TpchQ2PartInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ2PartInput>{input});
             });
       },
       [](std::vector<PartPiece> &into, const TpchQ2PartInput &input) {
         into.front().Add(input);
       },
-      AppendRows<PartPiece>, partitions);
+      core::AppendRows<PartPiece>, partitions);
   std::vector<std::vector<uint32_t>> type_ids, mfgr_ids;
   for (const auto &piece : pieces) {
     type_ids.push_back(GlobalIds(piece.types, *state.types));
@@ -713,29 +681,29 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
         initial_scan->ScanSuppliersPartitioned(
             services, parts,
             [&](std::size_t partition, const TpchQ2SupplierInput &input) {
-              sink(partition, OneRowBatch<TpchQ2SupplierInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ2SupplierInput>{input});
             });
       },
       [](std::vector<TpchQ2SupplierInput> &into, const TpchQ2SupplierInput &input) {
         into.push_back(input);
       },
-      AppendRows<TpchQ2SupplierInput>, partitions);
+      core::AppendRows<TpchQ2SupplierInput>, partitions);
   for (const auto &supplier : suppliers)
     state.SetSupplier(supplier.key, supplier);
 
-  const auto offers = core::PartitionedBuild<Buckets<TpchQ2PartsuppInput>>(
-      services, [] { return Buckets<TpchQ2PartsuppInput>(kBuildBuckets); },
+  const auto offers = core::PartitionedBuild<core::Buckets<TpchQ2PartsuppInput>>(
+      services, [] { return core::Buckets<TpchQ2PartsuppInput>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanPartsuppsPartitioned(
             services, parts,
             [&](std::size_t partition, const TpchQ2PartsuppInput &input) {
-              sink(partition, OneRowBatch<TpchQ2PartsuppInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ2PartsuppInput>{input});
             });
       },
-      [](Buckets<TpchQ2PartsuppInput> &into, const TpchQ2PartsuppInput &input) {
+      [](core::Buckets<TpchQ2PartsuppInput> &into, const TpchQ2PartsuppInput &input) {
         into[KeyBucket(input.partkey)].push_back(input);
       },
-      AppendBuckets<TpchQ2PartsuppInput>, partitions);
+      core::AppendBuckets<TpchQ2PartsuppInput>, partitions);
   FillBuckets(services, state, [&](std::size_t bucket, TpchQ2State &part) {
     for (const auto &input : offers[bucket])
       part.AddOffer(input.partkey, input.suppkey, input.supplycost_raw);
@@ -745,17 +713,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
 
 std::shared_ptr<const TpchQ2State>
 TpchQ2Module::LoadState(core::AuxEngineServices &services) const {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {core::TpchQ2Layout::kFull});
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition != core::TpchQ2Layout::kFull)
-      continue;
-    const auto *typed = image.As<TpchQ2StateImage>();
-    if (!typed || !typed->state)
-      return nullptr;
-    return typed->state;
-  }
-  return nullptr;
+  return LoadPublished(services).state;
 }
 
 void TpchQ2Module::EmitResult(const core::AuxEngineServices &services,

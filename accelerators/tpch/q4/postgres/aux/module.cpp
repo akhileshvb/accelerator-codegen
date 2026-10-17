@@ -2,17 +2,11 @@
 #include "tpch/q4/calibration_writes.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "prims/sql_date.hpp"
-#include "tpch/common/parallel_stable_sort.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
-#include <chrono>
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <variant>
 #include <limits>
 #include <map>
@@ -24,42 +18,15 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-struct CustomTimer {
-  using Clock = std::chrono::high_resolution_clock;
-  Clock::time_point start;
-  bool active;
-  explicit CustomTimer(bool enabled) : start(Clock::now()), active(enabled) {}
-  double us() const {
-    return static_cast<double>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            Clock::now() - start)
-            .count()) /
-           1000.0;
-  }
-};
-
-static bool CustomProfilingEnabled() {
-  static const bool enabled = []() {
-    const char *v = std::getenv("ACCEL_AUX_CUSTOM_PROFILE");
-    return v && v[0] != '\0';
-  }();
-  return enabled;
-}
-
-static void EmitCustomProfile(const char *phase, double us_val, int64_t rows,
-                              int64_t keys, int64_t nodes) {
-  if (!CustomProfilingEnabled())
-    return;
-  fprintf(stderr,
-          "ACCEL_CUSTOM_PROFILE {"
-          "\"phase\":\"%s\","
-          "\"us\":%.3f,"
-          "\"rows\":%ld,"
-          "\"keys\":%ld,"
-          "\"nodes\":%ld"
-          "}\n",
-          phase, us_val, (long)rows, (long)keys, (long)nodes);
-}
+// Build: lineitem and order rows are dealt out to buckets by order key; a
+// bucket is built alone, so buckets run in parallel.
+using core::kBuildBuckets;
+// Touched order keys per slice of maintenance.
+constexpr std::size_t kKeyGrain = 1024;
+// Buckets per slice of the build (each builds a whole partial state).
+constexpr std::size_t kBucketGrain = 1;
+// Months in the query's order-date window.
+constexpr int32_t kWindowMonths = 3;
 
 // Cell readers distinguish SQL NULL from an unreadable payload.
 enum class Cell { Null, Ok, Bad };
@@ -103,13 +70,6 @@ Cell StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
     return Cell::Bad;
   out = std::get<std::string>(cell.payload);
   return Cell::Ok;
-}
-
-core::InvalidationPlan EmptyPlan() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
 }
 
 std::shared_ptr<const TpchQ4StateImage>
@@ -193,11 +153,6 @@ void ApplyCells(const TreeCells &cells, TpchQ4Side &side, TpchQ4TreePayload &tre
                  static_cast<uint32_t>(key), by);
 }
 
-// Build: lineitem and order rows are dealt out to buckets by order key; a
-// bucket is built alone, so buckets run in parallel.
-using core::kBuildBuckets;
-// Maintenance: touched order keys per slice.
-constexpr std::size_t kKeyGrain = 1024;
 
 struct OrderRow {
   int64_t key = 0;
@@ -208,7 +163,7 @@ struct OrderRow {
 // The order rows of one scan partition, with the partition's own priority
 // dictionary (partitions cannot share one without locking).
 struct OrdersPiece {
-  Buckets<OrderRow> rows = Buckets<OrderRow>(kBuildBuckets);
+  core::Buckets<OrderRow> rows = core::Buckets<OrderRow>(kBuildBuckets);
   std::vector<std::string> names;
   std::unordered_map<std::string, uint32_t> index;
 
@@ -305,16 +260,27 @@ TpchQ4OrderInfo Resolve(TpchQ4OrderInfo info, const KeyEdit &edit,
   return info;
 }
 
+// The date argument as days; false when it is not a date.
+bool StartDays(const core::QueryArguments &arguments, bool &is_null,
+               int64_t &days) {
+  if (arguments.values.empty())
+    return false;
+  const auto &value = arguments.values[0];
+  is_null = value.is_null;
+  if (value.is_null)
+    return true;
+  if (std::holds_alternative<core::AuxDate>(value.payload)) {
+    days = std::get<core::AuxDate>(value.payload).days_since_epoch;
+    return true;
+  }
+  if (std::holds_alternative<int64_t>(value.payload)) {
+    days = std::get<int64_t>(value.payload);
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
-
-int32_t TpchQ4DaysFromYmd(int32_t year, unsigned month, unsigned day) {
-  return static_cast<int32_t>(core::sql_date::DaysFromCivil(year, month, day));
-}
-
-// date + INTERVAL 'months' MONTH with PostgreSQL/MySQL end-of-month clamping.
-int64_t TpchQ4AddMonths(int64_t days_since_epoch, int64_t months) {
-  return core::sql_date::AddMonths(days_since_epoch, months);
-}
 
 uint32_t TpchQ4PriorityIndex(const std::string &priority, bool is_null,
                              TpchQ4Side &side) {
@@ -492,43 +458,21 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
                                core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ4TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
-  auto rebuild_all = [&]() {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = EmptyPlan();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  };
-
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = EmptyPlan();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(
+        outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                     services.ExpectedQueriesBeforeNextWrite())));
     return outcome;
   }
-
-  if (buffer.Deltas().empty() && buffer.OrderDeltas().empty())
+  const auto total_deltas = buffer.Deltas().size() + buffer.OrderDeltas().size();
+  if (total_deltas == 0)
     return outcome;
 
-  const auto total_deltas =
-      buffer.Deltas().size() + buffer.OrderDeltas().size();
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(total_deltas), 1, true, false, true, false, false,
-       core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+  const auto decision =
+      services.ChooseMaintenance(core::MaintenanceRequest::IncrementalSingleState(
+          total_deltas, services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = EmptyPlan();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -550,8 +494,10 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
       elig_image = AsQ4EligibilityImage(image);
   }
   if (!side_image || !side_image->state || !tree_image ||
-      !tree_image->payload || !elig_image || !elig_image->payload)
-    return rebuild_all();
+      !tree_image->payload || !elig_image || !elig_image->payload) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
 
   auto side = std::make_shared<TpchQ4Side>(*side_image->state);
   auto tree = std::make_shared<TpchQ4TreePayload>(*tree_image->payload);
@@ -570,13 +516,13 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
     order_edits.push_back(edit);
   }
   auto line_edits = buffer.Deltas();
-  ParallelStableSort(
+  core::ParallelStableSort(
       services, line_edits,
       [](const TpchQ4LineitemDelta &l, const TpchQ4LineitemDelta &r) {
         return l.orderkey < r.orderkey;
       },
       kKeyGrain);
-  ParallelStableSort(
+  core::ParallelStableSort(
       services, order_edits,
       [](const OrderEdit &l, const OrderEdit &r) { return l.orderkey < r.orderkey; },
       kKeyGrain);
@@ -641,34 +587,9 @@ std::vector<int64_t> TpchQ4Module::CountRange(const TpchQ4Side &side,
   return counts;
 }
 
-namespace {
-
-// The date argument as days; false when it is not a date.
-bool StartDays(const core::QueryArguments &arguments, bool &is_null,
-               int64_t &days) {
-  if (arguments.values.empty())
-    return false;
-  const auto &value = arguments.values[0];
-  is_null = value.is_null;
-  if (value.is_null)
-    return true;
-  if (std::holds_alternative<core::AuxDate>(value.payload)) {
-    days = std::get<core::AuxDate>(value.payload).days_since_epoch;
-    return true;
-  }
-  if (std::holds_alternative<int64_t>(value.payload)) {
-    days = std::get<int64_t>(value.payload);
-    return true;
-  }
-  return false;
-}
-
-}  // namespace
-
 void TpchQ4Module::Execute(core::AuxEngineServices &services,
                            const core::QueryArguments &arguments,
                            core::AuxRowSink &sink) {
-  CustomTimer execute_timer(CustomProfilingEnabled());
   bool is_null = false;
   int64_t start = 0;
   if (!StartDays(arguments, is_null, start))
@@ -679,7 +600,6 @@ void TpchQ4Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  CustomTimer load_timer(CustomProfilingEnabled());
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(),
       {TpchQ4Layout::kSide, TpchQ4Layout::kTreeBase});
@@ -697,51 +617,32 @@ void TpchQ4Module::Execute(core::AuxEngineServices &services,
   }
 
   const auto counts = CountRange(*side_image->state, *tree_image->payload,
-                                 start, TpchQ4AddMonths(start, 3));
-  EmitCustomProfile("state_load", load_timer.us(),
-                    side_image->state->priority_names.size(), 0, 0);
+                                 start, core::sql_date::AddMonths(start, kWindowMonths));
   FinalizeTpchQ4(counts, *side_image->state, sink);
-}
-
-// Exact answer without published state: scan the tables.
-void TpchQ4Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  bool is_null = false;
-  int64_t start = 0;
-  StartDays(arguments, is_null, start);
-  if (is_null) {
-    FinalizeTpchQ4({}, TpchQ4Side{}, sink);
-    return;
-  }
-  const auto state = BuildState(services);
-  FinalizeTpchQ4(
-      CountRange(state.side, state.tree, start, TpchQ4AddMonths(start, 3)),
-      state.side, sink);
 }
 
 TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q4 requires a typed initial scan source");
-  const auto partitions = BuildPartitions(services);
+  const auto partitions = core::BuildPartitions(services);
 
   // First scan: qualifying lineitems per order key (also for keys that have
   // no order row yet; an order inserted later picks the count up).
-  auto qualifying = core::PartitionedBuild<Buckets<int64_t>>(
-      services, [] { return Buckets<int64_t>(kBuildBuckets); },
+  auto qualifying = core::PartitionedBuild<core::Buckets<int64_t>>(
+      services, [] { return core::Buckets<int64_t>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitemsPartitioned(
             services, parts,
             [&](std::size_t partition, const TpchQ4LineitemInput &input) {
-              sink(partition, OneRowBatch<TpchQ4LineitemInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ4LineitemInput>{input});
             });
       },
-      [](Buckets<int64_t> &into, const TpchQ4LineitemInput &input) {
+      [](core::Buckets<int64_t> &into, const TpchQ4LineitemInput &input) {
         if (LineitemQualifies(input.commitdate_days, input.receiptdate_days))
           into[TpchQ4OrderTable::BucketOf(input.orderkey, kBuildBuckets)].push_back(
               input.orderkey);
       },
-      AppendBuckets<int64_t>, partitions);
+      core::AppendBuckets<int64_t>, partitions);
 
   // Second scan: order rows.
   const auto pieces = core::PartitionedBuild<OrderPieces>(
@@ -750,11 +651,11 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
         initial_scan->ScanOrdersPartitioned(
             services, parts,
             [&](std::size_t partition, const TpchQ4OrderInput &input) {
-              sink(partition, OneRowBatch<TpchQ4OrderInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ4OrderInput>{input});
             });
       },
       [](OrderPieces &into, const TpchQ4OrderInput &input) { into.front().Add(input); },
-      AppendRows<OrdersPiece>, partitions);
+      core::AppendRows<OrdersPiece>, partitions);
 
   TpchQ4State state;
   std::vector<std::vector<uint32_t>> renumber;
@@ -765,13 +666,10 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   }
 
   std::vector<BucketBuild> built(kBuildBuckets);
-  core::ParallelSlices(services, kBuildBuckets, 1,
-                       [&](std::size_t, std::size_t begin, std::size_t end) {
-                         for (std::size_t b = begin; b < end; ++b) {
-                           built[b] = BuildBucket(qualifying[b], pieces, renumber, b);
-                           qualifying[b] = {};
-                         }
-                       });
+  core::ParallelEach(services, kBuildBuckets, kBucketGrain, [&](std::size_t b) {
+    built[b] = BuildBucket(qualifying[b], pieces, renumber, b);
+    qualifying[b] = {};
+  });
   TreeCells cells;
   for (auto &bucket : built) {
     state.eligibility.orders.MergeDisjoint(std::move(bucket.orders));

@@ -16,6 +16,8 @@ namespace {
 
 // Part chunks per read slice: ~10 us per chunk of size-column compares.
 constexpr std::size_t kChunkGrain = 16;
+// Distinct types above which the LIKE bitmap is evaluated on the pool.
+constexpr std::size_t kParallelMatchTypes = 1000000;
 
 // A qualifying (part, cheapest-regional-supplier) pair, ordered by
 // s_acctbal DESC, n_name, s_name, p_partkey.
@@ -222,7 +224,8 @@ void TpchQ2FinalizeAndEmit(const core::AuxEngineServices &services,
   const auto &blob = state.types->blob();
   q.type_bits = core::sql_like::MatchBlobBitmap(
       matcher, blob.offsets(), state.types->size(), blob.data(),
-      core::Parallelism::OnPool(services));
+      state.types->size() > kParallelMatchTypes ? core::Parallelism::OnPool(services)
+                                                : core::Parallelism{});
   q.type_bits.push_back(0); // keep TypeMatches in range for an empty dictionary
 
   const auto better = [&q](const Q2Candidate &a, const Q2Candidate &b) {
