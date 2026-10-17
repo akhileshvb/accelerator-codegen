@@ -253,8 +253,6 @@ struct TpchQ4OrderDelta {
   int8_t sign = 0;
 };
 
-int32_t TpchQ4DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int64_t TpchQ4AddMonths(int64_t days_since_epoch, int64_t months);
 uint32_t TpchQ4PriorityIndex(const std::string &priority, bool is_null,
                              TpchQ4Side &side);
 void FinalizeTpchQ4(const std::vector<int64_t> &counts,
@@ -303,8 +301,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

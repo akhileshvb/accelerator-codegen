@@ -66,36 +66,24 @@ public:
     int32_t shippriority = 0;
     int64_t custkey = 0;
   };
-  virtual bool LookupOrderContext(int64_t orderkey, OrderContext &out) {
-    (void)orderkey;
-    (void)out;
-    return false;
-  }
+  virtual bool LookupOrderContext(int64_t, OrderContext &) { return false; }
 
   // Point lookups on the same connection (the transaction's own writes are
   // visible). Return false when unsupported.
   virtual bool ScanOrdersByCustomer(
-      int64_t custkey,
-      const std::function<void(const TpchQ3OrderInput &)> &consumer) {
-    (void)custkey;
-    (void)consumer;
+      int64_t, const std::function<void(const TpchQ3OrderInput &)> &) {
     return false;
   }
   virtual bool ScanLineitemsByOrders(
-      const std::vector<int64_t> &orderkeys,
-      const std::function<void(const TpchQ3LineitemInput &)> &consumer) {
-    (void)orderkeys;
-    (void)consumer;
+      const std::vector<int64_t> &,
+      const std::function<void(const TpchQ3LineitemInput &)> &) {
     return false;
   }
 
   // Optional: DuckDB join filtered to one market segment for RebuildPartition.
   virtual bool ScanSegmentJoin(
-      const std::string &mktsegment,
-      const std::function<void(const TpchQ3OrderInput &,
-                               const TpchQ3LineitemInput &)> &consumer) {
-    (void)mktsegment;
-    (void)consumer;
+      const std::string &,
+      const std::function<void(const TpchQ3OrderInput &, const TpchQ3LineitemInput &)> &) {
     return false;
   }
 };
@@ -273,7 +261,6 @@ int64_t TpchQ3RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                          int64_t discount_raw, int32_t discount_scale);
 core::PartitionId TpchQ3PartitionFromMktsegment(const std::string &segment);
 std::string TpchQ3MktsegmentFromPartition(core::PartitionId partition);
-int32_t TpchQ3DaysFromYmd(int32_t year, unsigned month, unsigned day);
 
 void FinalizeTpchQ3OrderSummary(std::vector<TpchQ3ShipdateBucket> &buckets,
                                 const std::map<int32_t, int64_t> &day_revenue);

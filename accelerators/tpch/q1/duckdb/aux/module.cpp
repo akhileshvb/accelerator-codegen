@@ -1,5 +1,7 @@
 #include "tpch/q1/duckdb/aux/module.hpp"
 #include "tpch/q1/calibration_writes.hpp"
+#include "prims/sql_date.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 
@@ -7,12 +9,8 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cmath>
-#include <cstring>
-#include <limits>
 #include <set>
 #include <stdexcept>
-#include <unordered_set>
 #include <utility>
 #include "tpch/q1/layout.hpp"
 
@@ -27,29 +25,26 @@ using Q1GroupKey = ::accelerator_codegen::Q1GroupKey;
 
 constexpr uint32_t kVersion = 1;
 constexpr uint32_t kDayMagic = 0x44315151; // Q1D
-constexpr int32_t kEpoch = 719468;
 
-constexpr int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
-  year -= month <= 2;
-  const int32_t era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(year - era * 400);
-  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int32_t>(doe) - kEpoch;
+constexpr int32_t ToDays(int year, int month, int day) {
+  return static_cast<int32_t>(core::sql_date::DaysFromCivil(year, month, day));
 }
 
-constexpr int32_t kQ1BaseDays = DaysFromCivil(1998, 12, 1);
-// TPC-H lineitem shipdate lower bound (1992-01-02).
-constexpr int32_t kTpchMinLineitemShipdateDays = DaysFromCivil(1992, 1, 2);
+constexpr int32_t kQ1BaseDays = ToDays(1998, 12, 1);
 
 // Dyadic interval tree over the shipdate day index. Implicit heap numbering:
 // node 1 is the root, node n has children 2n and 2n+1, leaves are
 // kDomainSize + day_index. One partition per node (partition id = node id,
 // < 2^17, well inside the store's int32 key space). Days outside the domain
 // (before 1900 / after 2079) are clamped into the first / last leaf.
+// Deltas above which the cost model chooses between delta-apply and rebuild.
+constexpr std::size_t kBulkDeltaCount = 256;
+// Tree nodes per slice (~10 us).
+constexpr std::size_t kNodeGrain = 512;
+
 constexpr uint32_t kLeafBits = 16;
 constexpr uint32_t kDomainSize = 1u << kLeafBits;
-constexpr int32_t kDomainBase = DaysFromCivil(1900, 1, 1);
+constexpr int32_t kDomainBase = ToDays(1900, 1, 1);
 
 uint32_t LeafNode(int32_t day) {
   int64_t idx = static_cast<int64_t>(day) - kDomainBase;
@@ -104,79 +99,6 @@ bool ReadQ1Acc(ByteReader &reader, ::accelerator_codegen::Q1AccT &value) {
 #endif
 }
 
-// A one-character string cell (no copy).
-bool CharCell(const core::AuxRow &row, std::size_t index, char &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto *text = std::get_if<std::string>(&row.values[index].payload);
-  if (!text || text->size() != 1)
-    return false;
-  out = (*text)[0];
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
-  return true;
-}
-
-int64_t ScaleToRaw(int64_t raw, int32_t scale, int32_t target_scale) {
-  if (scale == target_scale)
-    return raw;
-  if (scale < target_scale) {
-    int64_t factor = 1;
-    for (int32_t i = scale; i < target_scale; ++i)
-      factor *= 10;
-    return raw * factor;
-  }
-  int64_t factor = 1;
-  for (int32_t i = target_scale; i < scale; ++i)
-    factor *= 10;
-  return raw / factor;
-}
-
-
 // For each requested partition the matching image of `found` (or nullptr).
 // Stores return found partitions in request order, but the interface does not
 // promise it: the in-order walk is the fast path, anything else is matched by
@@ -216,13 +138,6 @@ const TpchQ1StateImage *AsQ1Image(const core::StateImage &image) {
   return image.As<TpchQ1StateImage>();
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 bool ReadLineitem(const core::AuxRow &row, TpchQ1LineitemDelta &delta,
                   int8_t sign) {
   int32_t shipdate_days = 0;
@@ -230,19 +145,19 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ1LineitemDelta &delta,
   int32_t quantity_scale = 0, extended_scale = 0, discount_scale = 0,
           tax_scale = 0;
   char returnflag = 0, linestatus = 0;
-  if (!DateCell(row, 0, shipdate_days) ||
-      !RawDecimalCell(row, 1, quantity_raw, quantity_scale) ||
-      !RawDecimalCell(row, 2, extended_raw, extended_scale) ||
-      !RawDecimalCell(row, 3, discount_raw, discount_scale) ||
-      !RawDecimalCell(row, 4, tax_raw, tax_scale) ||
-      !CharCell(row, 5, returnflag) || !CharCell(row, 6, linestatus))
+  if (!core::DateCell(row, 0, shipdate_days) ||
+      !core::DecimalCell(row, 1, quantity_raw, quantity_scale) ||
+      !core::DecimalCell(row, 2, extended_raw, extended_scale) ||
+      !core::DecimalCell(row, 3, discount_raw, discount_scale) ||
+      !core::DecimalCell(row, 4, tax_raw, tax_scale) ||
+      !core::CharCell(row, 5, returnflag) || !core::CharCell(row, 6, linestatus))
     return false;
   delta.shipdate_days = shipdate_days;
   delta.group_key = ::accelerator_codegen::PackQ1GroupKey(returnflag, linestatus);
-  delta.quantity_raw = ScaleToRaw(quantity_raw, quantity_scale, 2);
-  delta.extended_price_raw = ScaleToRaw(extended_raw, extended_scale, 2);
-  delta.discount_raw = ScaleToRaw(discount_raw, discount_scale, 2);
-  delta.tax_raw = ScaleToRaw(tax_raw, tax_scale, 2);
+  delta.quantity_raw = core::ScaleToRaw(quantity_raw, quantity_scale, 2);
+  delta.extended_price_raw = core::ScaleToRaw(extended_raw, extended_scale, 2);
+  delta.discount_raw = core::ScaleToRaw(discount_raw, discount_scale, 2);
+  delta.tax_raw = core::ScaleToRaw(tax_raw, tax_scale, 2);
   delta.sign = sign;
   return true;
 }
@@ -255,15 +170,46 @@ void ApplyLineitemInput(const TpchQ1LineitemInput &input,
   if (!group)
     throw std::logic_error("TPC-H Q1: more (returnflag, linestatus) groups than slots");
   ::accelerator_codegen::ApplyQ1RowContribution(
-      *group, ScaleToRaw(input.quantity_raw, input.quantity_scale, 2),
-      ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
-      ScaleToRaw(input.discount_raw, input.discount_scale, 2),
-      ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1);
+      *group, core::ScaleToRaw(input.quantity_raw, input.quantity_scale, 2),
+      core::ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
+      core::ScaleToRaw(input.discount_raw, input.discount_scale, 2),
+      core::ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1);
 }
 
 core::ScaledDecimal128 WideDecimal(const duckdb::hugeint_t &value, int32_t scale) {
   const auto wide = (static_cast<__int128>(value.upper) << 64) | value.lower;
   return {wide, scale};
+}
+
+// A fresh image of `node` holding the stored one plus the deltas order[range]
+// (copy-on-write: published images are never mutated). Null if the stored
+// image is foreign or a group table overflows.
+std::shared_ptr<TpchQ1StateImage>
+ApplyToNode(core::PartitionId node, const core::StateImage *stored,
+            const std::vector<TpchQ1LineitemDelta> &deltas,
+            const std::vector<std::pair<uint32_t, uint32_t>> &order,
+            std::pair<uint32_t, uint32_t> range) {
+  auto image = std::make_shared<TpchQ1StateImage>();
+  image->shipdate_days = static_cast<int32_t>(node);
+  if (stored) {
+    const auto *typed = AsQ1Image(*stored);
+    if (!typed || typed->shipdate_days != image->shipdate_days)
+      return nullptr;
+    image->partition = typed->partition;
+  }
+  auto &part = image->partition;
+  for (uint32_t i = range.first; i < range.second; ++i) {
+    const auto &delta = deltas[order[i].second];
+    auto *group = part.FindOrAdd(delta.group_key);
+    if (!group)
+      return nullptr;
+    ::accelerator_codegen::ApplyQ1RowContribution(
+        *group, delta.quantity_raw, delta.extended_price_raw,
+        delta.discount_raw, delta.tax_raw, delta.sign);
+    if (group->count == 0)
+      part.EraseAt(static_cast<uint32_t>(group - part.stats));
+  }
+  return image;
 }
 
 } // namespace
@@ -345,7 +291,7 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ1Module::CreateTxnBuffer() const {
 
 void TpchQ1Module::Build(core::AuxEngineServices &services,
                          core::StateBuilder &builder) {
-  auto days = BuildState(services);
+  auto days = BuildState();
   // Fold the per-day aggregates into every dyadic ancestor node.
   std::map<uint32_t, TpchQ1StateImage> nodes;
   for (auto &entry : days) {
@@ -390,44 +336,6 @@ TpchQ1Module::InterpretMutation(const core::MutationBatch &mutation) const {
   }
   return {};
 }
-
-namespace {
-
-// Tree nodes per slice below which a commit's node images are built inline.
-constexpr std::size_t kNodeGrain = 512;
-
-// A fresh image of `node` holding the stored one plus the deltas order[range]
-// (copy-on-write: published images are never mutated). Null if the stored
-// image is foreign or a group table overflows.
-std::shared_ptr<TpchQ1StateImage>
-ApplyToNode(core::PartitionId node, const core::StateImage *stored,
-            const std::vector<TpchQ1LineitemDelta> &deltas,
-            const std::vector<std::pair<uint32_t, uint32_t>> &order,
-            std::pair<uint32_t, uint32_t> range) {
-  auto image = std::make_shared<TpchQ1StateImage>();
-  image->shipdate_days = static_cast<int32_t>(node);
-  if (stored) {
-    const auto *typed = AsQ1Image(*stored);
-    if (!typed || typed->shipdate_days != image->shipdate_days)
-      return nullptr;
-    image->partition = typed->partition;
-  }
-  auto &part = image->partition;
-  for (uint32_t i = range.first; i < range.second; ++i) {
-    const auto &delta = deltas[order[i].second];
-    auto *group = part.FindOrAdd(delta.group_key);
-    if (!group)
-      return nullptr;
-    ::accelerator_codegen::ApplyQ1RowContribution(
-        *group, delta.quantity_raw, delta.extended_price_raw,
-        delta.discount_raw, delta.tax_raw, delta.sign);
-    if (group->count == 0)
-      part.EraseAt(static_cast<uint32_t>(group - part.stats));
-  }
-  return image;
-}
-
-} // namespace
 
 void TpchQ1Module::AccumulateMutation(const core::MutationBatch &mutation,
                                       core::AuxEngineServices &,
@@ -480,15 +388,9 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
   auto &buffer = dynamic_cast<TpchQ1TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(
+        outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                     services.ExpectedQueriesBeforeNextWrite())));
     return outcome;
   }
   if (buffer.Deltas().empty())
@@ -498,18 +400,12 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
   // only consulted for bulk changes (a partition rebuild is not possible for
   // aggregate nodes, so it maps to RebuildAll). A forced action applies to
   // every batch.
-  if (core::ForcedMaintenanceAction() || buffer.Deltas().size() > 256) {
-    const auto decision = services.ChooseMaintenance(
-        {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
-         false, false, core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
+  if (core::ForcedMaintenanceAction() || buffer.Deltas().size() > kBulkDeltaCount) {
+    const auto decision =
+        services.ChooseMaintenance(core::MaintenanceRequest::IncrementalSingleState(
+            buffer.Deltas().size(), services.ExpectedQueriesBeforeNextWrite()));
     if (decision.action != core::MaintenanceAction::ApplyDelta) {
-      outcome.action =
-          decision.action == core::MaintenanceAction::RebuildPartition
-              ? core::MaintenanceAction::RebuildAll
-              : decision.action;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
+      core::FinishRebuildAll(outcome, decision);
       return outcome;
     }
   }
@@ -520,7 +416,7 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
   // contiguous run of `order` and the nodes of a level are found by a
   // forward-only walk (no maps, no searches).
   const auto &deltas = buffer.Deltas();
-  constexpr int kLevels = 17; // leaf level 0 .. root level 16
+  constexpr uint32_t kLevels = kLeafBits + 1; // leaf level 0 .. root level 16
   std::vector<std::pair<uint32_t, uint32_t>> order; // (leaf node, delta index)
   order.reserve(deltas.size());
   for (uint32_t i = 0; i < deltas.size(); ++i)
@@ -531,19 +427,14 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
   std::vector<std::pair<uint32_t, uint32_t>> runs; // per node: range in `order`
   partitions.reserve(order.size() * 4 + kLevels);
   runs.reserve(partitions.capacity());
-  for (int level = 0; level < kLevels; ++level) {
-    uint32_t last = 0;
-    for (uint32_t i = 0; i < order.size(); ++i) {
-      const uint32_t node = order[i].first >> level;
-      if (node != last) {
-        if (last != 0)
-          runs.back().second = i;
-        partitions.push_back(static_cast<core::PartitionId>(node));
-        runs.emplace_back(i, 0);
-        last = node;
-      }
+  for (uint32_t level = 0; level < kLevels; ++level) {
+    const auto starts = core::RunStarts(
+        order, [level](const auto &entry) { return entry.first >> level; });
+    for (std::size_t run = 0; run + 1 < starts.size(); ++run) {
+      partitions.push_back(
+          static_cast<core::PartitionId>(order[starts[run]].first >> level));
+      runs.emplace_back(starts[run], starts[run + 1]);
     }
-    runs.back().second = static_cast<uint32_t>(order.size());
   }
 
   const auto snapshot = services.StateStore().ReadPartitions(
@@ -554,27 +445,22 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
   // Nodes are independent: each slice builds its own images.
   outcome.updates.resize(partitions.size());
   std::atomic<bool> unusable{false};
-  core::ParallelSlices(
-      services, partitions.size(), kNodeGrain,
-      [&](std::size_t, std::size_t begin, std::size_t end) {
-        for (std::size_t slot = begin; slot < end; ++slot) {
-          auto image = ApplyToNode(partitions[slot], matched[slot], deltas,
-                                   order, runs[slot]);
-          if (!image) {
-            unusable = true;
-            return;
-          }
-          outcome.updates[slot] = core::StateImage::Make(
-              core::TpchQ1Layout::kAccelerator, partitions[slot],
-              matched[slot] ? matched[slot]->version : 0,
-              std::shared_ptr<const TpchQ1StateImage>(std::move(image)));
-        }
-      });
+  core::ParallelEach(services, partitions.size(), kNodeGrain, [&](std::size_t slot) {
+    if (unusable)
+      return;
+    auto image = ApplyToNode(partitions[slot], matched[slot], deltas, order,
+                             runs[slot]);
+    if (!image) {
+      unusable = true;
+      return;
+    }
+    outcome.updates[slot] = core::StateImage::Make(
+        core::TpchQ1Layout::kAccelerator, partitions[slot],
+        matched[slot] ? matched[slot]->version : 0,
+        std::shared_ptr<const TpchQ1StateImage>(std::move(image)));
+  });
   if (unusable) {
-    outcome.updates.clear();
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome);
     return outcome;
   }
   outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -639,14 +525,12 @@ void TpchQ1Module::Execute(core::AuxEngineServices &services,
 }
 
 std::unordered_map<int32_t, Q1DayPartition>
-TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
-  return BuildStateForDays(services, {});
+TpchQ1Module::BuildState() const {
+  return BuildStateForDays({});
 }
 
 std::unordered_map<int32_t, Q1DayPartition>
-TpchQ1Module::BuildStateForDays(core::AuxEngineServices &services,
-                                const std::set<int32_t> &days) const {
-  (void)services;
+TpchQ1Module::BuildStateForDays(const std::set<int32_t> &days) const {
   std::unordered_map<int32_t, Q1DayPartition> state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q1 requires a typed initial scan source");

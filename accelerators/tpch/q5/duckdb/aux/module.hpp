@@ -82,17 +82,11 @@ public:
   // Point lookups of the current (post-write, same connection) lineitems of
   // one supplier / a set of orders. Return false when unsupported.
   virtual bool ScanLineitemsBySupplier(
-      int64_t suppkey,
-      const std::function<void(const TpchQ5LineitemInput &)> &consumer) {
-    (void)suppkey;
-    (void)consumer;
+      int64_t, const std::function<void(const TpchQ5LineitemInput &)> &) {
     return false;
   }
   virtual bool ScanLineitemsByOrder(
-      int64_t orderkey,
-      const std::function<void(const TpchQ5LineitemInput &)> &consumer) {
-    (void)orderkey;
-    (void)consumer;
+      int64_t, const std::function<void(const TpchQ5LineitemInput &)> &) {
     return false;
   }
 };
@@ -248,9 +242,7 @@ void TpchQ5FinalizeColumns(const TpchQ5Meta &meta, int32_t target_regionkey,
                            const int64_t *revenue, std::size_t columns,
                            core::AuxRowSink &sink);
 
-int32_t TpchQ5DaysFromYmd(int32_t year, unsigned month, unsigned day);
 int32_t TpchQ5AddMonths(int32_t days_since_epoch, int32_t months);
-int64_t TpchQ5RevenueRaw(int64_t extended_price_raw, int64_t discount_raw);
 
 void TpchQ5FinalizeAndEmit(
     const std::unordered_map<int32_t, std::string> &nation_name,
@@ -267,10 +259,6 @@ inline int32_t TpchQ5DateOrdinal(int32_t orderdate_days,
 inline uint32_t TpchQ5LeafNode(uint32_t tree_size, int32_t ordinal) {
   return tree_size + static_cast<uint32_t>(ordinal);
 }
-
-// Canonical cover of [start, end) into tree node indices.
-std::vector<uint32_t> TpchQ5TreeCover(uint32_t tree_size, int32_t start_ordinal,
-                                      int32_t end_ordinal);
 
 class TpchQ5Module final : public core::AuxQueryModule {
 public:
@@ -311,9 +299,7 @@ private:
                   const std::unordered_map<int32_t, int64_t> &revenue_by_nation,
                   core::AuxRowSink &) const;
   core::StagedMaintenanceOutcome
-  StageIncrementalMaintenance(core::AuxEngineServices &,
-                              const core::InvalidationPlan &,
-                              TpchQ5TxnBuffer &);
+  StageIncrementalMaintenance(core::AuxEngineServices &, const TpchQ5TxnBuffer &);
 
   TpchQ5Config config;
   TpchQ5InitialScan *initial_scan = nullptr;

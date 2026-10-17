@@ -8,17 +8,9 @@
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
 #include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -31,6 +23,8 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr query::TpchQ5Config kTables{1, 2, 3, 4, 5, 6};
+
 SharedProbe BuildTpchQ5Probe(::duckdb::MaterializedQueryResult &result,
                              ::duckdb::idx_t row) {
   // Projection: orderkey, suppkey, price, discount, linenumber.
@@ -40,7 +34,7 @@ SharedProbe BuildTpchQ5Probe(::duckdb::MaterializedQueryResult &result,
   const auto linenumber = result.GetValue(4, row).ToString();
   const double price = std::stod(result.GetValue(2, row).ToString());
   SharedProbe probe;
-  probe.table = 6;
+  probe.table = kTables.lineitem_table;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {5};
   probe.write_delta = 0.01;
@@ -226,7 +220,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q5_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::DATE},
     [](::duckdb::Connection &connection) {
-      const TpchQ5Config c{1, 2, 3, 4, 5, 6};
+      const TpchQ5Config c = q5_catalog::kTables;
       return MakeBinding<TpchQ5Scan, TpchQ5Module>(connection, CaptureTableList{{"region", c.region_table}, {"nation", c.nation_table}, {"customer", c.customer_table}, {"supplier", c.supplier_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}}, c);
     }}};
 

@@ -1,8 +1,8 @@
 #pragma once
 //
 // parallelism (Parallelism)
-// PURPOSE    How a prim fans out its own bulk work without owning threads: the
-//            caller hands in its pool (e.g. AuxEngineServices::ParallelFor).
+// PURPOSE    Thin adapter so prims can fan out bulk work without seeing
+//            AuxEngineServices: the caller hands in its pool via OnPool(services).
 // THREADS    parallel_for(n, fn) runs fn(0..n-1), possibly concurrently, and
 //            returns when all are done; `workers` bounds the useful fan-out.
 //            Default-constructed: serial on the calling thread.

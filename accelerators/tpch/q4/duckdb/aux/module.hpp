@@ -138,8 +138,6 @@ struct TpchQ4OrderDelta {
   int8_t sign = 0;
 };
 
-int32_t TpchQ4DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int32_t TpchQ4AddMonths(int32_t days_since_epoch, int32_t months);
 int32_t TpchQ4PriorityIndex(const std::string &priority,
                             std::vector<std::string> &names,
                             std::unordered_map<std::string, int32_t> &pmap);
@@ -196,10 +194,6 @@ private:
   TpchQ4State BuildState(core::AuxEngineServices &) const;
   bool LoadSide(core::AuxEngineServices &, TpchQ4State &,
                 std::shared_ptr<const TpchQ4EligibilityPayload> &) const;
-  bool LoadMeta(core::AuxEngineServices &, TpchQ4State &) const;
-  bool LoadTree(core::AuxEngineServices &, const TpchQ4State &,
-                const std::vector<uint32_t> &node_indices,
-                std::vector<int64_t> &counts) const;
   void EmitResult(const TpchQ4State &, const std::vector<int64_t> &,
                   core::AuxRowSink &) const;
 

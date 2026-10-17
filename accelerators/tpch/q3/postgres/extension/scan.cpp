@@ -107,13 +107,6 @@ public:
       override {
     scans::ScanTpchQ3LineitemsPartitioned(services, partitions, sink);
   }
-  void ScanOrderLines(
-      const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer)
-      override {
-    scans::RunOrderLines(
-        [](const std::string &sql, auto &&row) { ScanTypedTuples(sql, row); },
-        "", consumer);
-  }
   bool LookupOrderLines(
       const std::vector<int64_t> &orderkeys,
       const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer)

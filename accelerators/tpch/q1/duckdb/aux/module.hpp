@@ -56,18 +56,15 @@ public:
   // Optional: DuckDB GROUP BY day/flag. Return true when the consumer was
   // invoked for the full aggregate; BuildState then skips the per-row scan.
   virtual bool ScanDayGroupAggregates(
-      const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer) {
-    (void)consumer;
+      const std::function<void(const TpchQ1DayGroupAggregate &)> &) {
     return false;
   }
 
   // Optional: same aggregates restricted to the given shipdate days. Used by
   // RebuildPartition so a local rescan does not read the rest of lineitem.
   virtual bool ScanDayGroupAggregatesForDays(
-      const std::set<int32_t> &days,
-      const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer) {
-    (void)days;
-    (void)consumer;
+      const std::set<int32_t> &,
+      const std::function<void(const TpchQ1DayGroupAggregate &)> &) {
     return false;
   }
 };
@@ -139,10 +136,9 @@ public:
 
 private:
   std::unordered_map<int32_t, ::accelerator_codegen::Q1DayPartition>
-  BuildState(core::AuxEngineServices &) const;
+  BuildState() const;
   std::unordered_map<int32_t, ::accelerator_codegen::Q1DayPartition>
-  BuildStateForDays(core::AuxEngineServices &,
-                    const std::set<int32_t> &days) const;
+  BuildStateForDays(const std::set<int32_t> &days) const;
   std::vector<::accelerator_codegen::Q1OutputRow>
   ComposeOutput(const std::unordered_map<int32_t, ::accelerator_codegen::Q1DayPartition> &,
                 int32_t cutoff_days) const;

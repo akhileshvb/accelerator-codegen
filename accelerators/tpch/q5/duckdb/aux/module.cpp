@@ -3,15 +3,12 @@
 #include <immintrin.h>
 #endif
 #include "tpch/q5/calibration_writes.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
+#include "prims/sql_date.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
-#include <chrono>
-#include <cmath>
-#include <cstring>
-#include <iostream>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -36,91 +33,27 @@ struct LineitemPartial {
 
 // Shards per slice when sorting a built index.
 constexpr std::size_t kSortShardGrain = 1024;
-
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kVersion = 1;
-constexpr int32_t kEpoch = 719468;
 // Touched mid arrays per slice when publishing a side index.
 constexpr std::size_t kFinishGrain = 16;
+// Deltas above which the cost model chooses between delta-apply and rebuild.
+constexpr std::size_t kBulkDeltaCount = 256;
+// Months in the query's order-date window.
+constexpr int32_t kWindowMonths = 12;
+constexpr uint32_t kQ5MaxStride = 64;
 
-#if defined(__SIZEOF_INT128__)
-int64_t ComputeRevenueRaw(int64_t extended_price_raw, int64_t discount_raw) {
-  __int128_t revenue = static_cast<__int128_t>(extended_price_raw) *
-                       static_cast<__int128_t>(100 - discount_raw);
-  return static_cast<int64_t>(revenue);
-}
-#else
+// extendedprice * (1 - discount) at scale 4.
 int64_t ComputeRevenueRaw(int64_t extended_price_raw, int64_t discount_raw) {
   return extended_price_raw * (100 - discount_raw);
-}
-#endif
-
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
 }
 
 bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
   int64_t value = 0;
-  if (!IntCell(row, index, value) ||
+  if (!core::IntCell(row, index, value) ||
       value < std::numeric_limits<int32_t>::min() ||
       value > std::numeric_limits<int32_t>::max())
     return false;
   out = static_cast<int32_t>(value);
   return true;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
-  return true;
-}
-
-int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
-  year -= month <= 2;
-  const int32_t era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(year - era * 400);
-  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int32_t>(doe) - kEpoch;
-}
-
-void CivilFromDays(int32_t days, int32_t &year, unsigned &month,
-                   unsigned &day) {
-  int32_t z = days + kEpoch;
-  const int32_t era = (z >= 0 ? z : z - 146096) / 146097;
-  const unsigned doe = static_cast<unsigned>(z - era * 146097);
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  year = static_cast<int32_t>(yoe) + era * 400;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const unsigned mp = (5 * doy + 2) / 153;
-  day = doy - (153 * mp + 2) / 5 + 1;
-  month = mp + (mp < 10 ? 3 : -9);
-  year += month <= 2;
 }
 
 uint32_t NextPowerOf2(uint32_t n) {
@@ -133,19 +66,6 @@ uint32_t NextPowerOf2(uint32_t n) {
   n |= n >> 8;
   n |= n >> 16;
   return n + 1;
-}
-
-core::InvalidationPlan EmptyPlan() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
-core::InvalidationPlan NoOpPlan() {
-  core::InvalidationPlan plan;
-  plan.scope = ::accelerator_codegen::aux_state::InvalidationScope::None;
-  return plan;
 }
 
 std::shared_ptr<const TpchQ5StateImage>
@@ -174,11 +94,11 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ5LineitemInput &out) {
   int64_t orderkey = 0, suppkey = 0;
   int64_t price_raw = 0, discount_raw = 0;
   int32_t price_scale = 2, discount_scale = 2;
-  if (!IntCell(row, 0, orderkey))
+  if (!core::IntCell(row, 0, orderkey))
     return false;
 
   // Scan and catalog probes project (orderkey, suppkey, price, discount).
-  if (!IntCell(row, 1, suppkey))
+  if (!core::IntCell(row, 1, suppkey))
     return false;
   if (row.values.size() > 2 && !row.values[2].is_null) {
     if (std::holds_alternative<core::ScaledDecimal>(row.values[2].payload)) {
@@ -209,139 +129,11 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ5LineitemInput &out) {
 
 bool ReadOrder(const core::AuxRow &row, int64_t &orderkey, int64_t &custkey,
                int32_t &orderdate_days) {
-  if (!IntCell(row, 0, orderkey) || !IntCell(row, 1, custkey) ||
-      !DateCell(row, 2, orderdate_days))
+  if (!core::IntCell(row, 0, orderkey) || !core::IntCell(row, 1, custkey) ||
+      !core::DateCell(row, 2, orderdate_days))
     return false;
   return true;
 }
-
-} // namespace
-
-// TxnBuffer
-
-bool TpchQ5TxnBuffer::HasPendingChanges() const { return pending; }
-void TpchQ5TxnBuffer::Clear() {
-  pending = false;
-  requires_rebuild = false;
-  lineitem_mutations.clear();
-  order_mutations.clear();
-  customer_mutations.clear();
-  supplier_mutations.clear();
-}
-bool TpchQ5TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-void TpchQ5TxnBuffer::MarkRebuild() {
-  pending = true;
-  requires_rebuild = true;
-}
-
-bool TpchQ5TxnBuffer::HasLineitemMutations() const {
-  return !lineitem_mutations.empty();
-}
-const std::vector<TpchQ5TxnBuffer::LineitemDelta> &
-TpchQ5TxnBuffer::LineitemMutations() const {
-  return lineitem_mutations;
-}
-void TpchQ5TxnBuffer::AddLineitemMutation(const LineitemDelta &d) {
-  pending = true;
-  lineitem_mutations.push_back(d);
-}
-
-void TpchQ5TxnBuffer::AddOrderMutation(const OrderDelta &d) {
-  pending = true;
-  order_mutations.push_back(d);
-}
-
-const std::vector<TpchQ5TxnBuffer::OrderDelta> &
-TpchQ5TxnBuffer::OrderMutations() const {
-  return order_mutations;
-}
-
-void TpchQ5TxnBuffer::AddCustomerMutation(const DimDelta &d) {
-  pending = true;
-  customer_mutations.push_back(d);
-}
-void TpchQ5TxnBuffer::AddSupplierMutation(const DimDelta &d) {
-  pending = true;
-  supplier_mutations.push_back(d);
-}
-const std::vector<TpchQ5TxnBuffer::DimDelta> &
-TpchQ5TxnBuffer::CustomerMutations() const {
-  return customer_mutations;
-}
-const std::vector<TpchQ5TxnBuffer::DimDelta> &
-TpchQ5TxnBuffer::SupplierMutations() const {
-  return supplier_mutations;
-}
-void TpchQ5TxnBuffer::MarkNoop() { pending = true; }
-bool TpchQ5TxnBuffer::HasAnyDelta() const {
-  return !lineitem_mutations.empty() || !order_mutations.empty() ||
-         !customer_mutations.empty() || !supplier_mutations.empty();
-}
-
-
-
-int32_t TpchQ5DaysFromYmd(int32_t year, unsigned month, unsigned day) {
-  return DaysFromCivil(year, month, day);
-}
-
-int32_t TpchQ5AddMonths(int32_t days_since_epoch, int32_t months) {
-  int32_t year = 0;
-  unsigned month = 0, day = 0;
-  CivilFromDays(days_since_epoch, year, month, day);
-  int total = year * 12 + static_cast<int>(month) - 1 + months;
-  int32_t new_year = total / 12;
-  unsigned new_month = static_cast<unsigned>(total % 12) + 1;
-  unsigned new_day = std::min(day, 28u);
-  return DaysFromCivil(new_year, new_month, new_day);
-}
-
-int64_t TpchQ5RevenueRaw(int64_t extended_price_raw, int64_t discount_raw) {
-  return ComputeRevenueRaw(extended_price_raw, discount_raw);
-}
-
-std::vector<uint32_t> TpchQ5TreeCover(uint32_t tree_size,
-                                      int32_t start_ordinal,
-                                      int32_t end_ordinal) {
-  std::vector<uint32_t> result;
-  if (start_ordinal >= end_ordinal)
-    return result;
-  int32_t l = start_ordinal + static_cast<int32_t>(tree_size);
-  int32_t r = end_ordinal + static_cast<int32_t>(tree_size);
-  while (l < r) {
-    if (l & 1) {
-      result.push_back(static_cast<uint32_t>(l));
-      l++;
-    }
-    if (r & 1) {
-      r--;
-      result.push_back(static_cast<uint32_t>(r));
-    }
-    l >>= 1;
-    r >>= 1;
-  }
-  return result;
-}
-
-// Module Implementation
-
-core::AcceleratorId TpchQ5Module::Id() const { return kId; }
-
-std::vector<core::TableDependency> TpchQ5Module::Dependencies() const {
-  return {
-      {config.region_table, {0, 1}, {0, 1}},
-      {config.nation_table, {0, 1, 2}, {0, 1, 2}},
-      {config.customer_table, {0, 1}, {0, 3}},
-      {config.supplier_table, {0, 1}, {0, 3}},
-      {config.orders_table, {0, 1, 2}, {0, 1, 4}},
-      {config.lineitem_table, {0, 1, 2, 3}, {0, 2, 5, 6}},
-  };
-}
-
-std::unique_ptr<core::AuxTxnBuffer> TpchQ5Module::CreateTxnBuffer() const {
-  return std::make_unique<TpchQ5TxnBuffer>();
-}
-
-namespace {
 
 // Copy-on-write writer over a published (immutable) tree: a delta is added
 // along the leaf-to-root path; only the touched 32-node pages are copied.
@@ -433,8 +225,6 @@ void ParseArgs(const core::QueryArguments &arguments, std::string &region_name,
   }
 }
 
-constexpr uint32_t kQ5MaxStride = 64;
-
 // acc[0..n) += row[0..n) (AVX-512 / AVX2 when available).
 inline void AddRow(int64_t *acc, const int64_t *row, uint32_t n) {
   uint32_t i = 0;
@@ -483,7 +273,398 @@ SumCover(const TpchQ5Meta &meta, const TpchQ5Tree &tree,
   return out;
 }
 
+// Applies a commit's order, lineitem, customer and supplier deltas to
+// copy-on-write transactions over the published side indexes and tree. Stage()
+// returns false when the published state cannot take them (the caller
+// rebuilds).
+class IncrementalStager {
+public:
+  using Kind = TpchQ5TxnBuffer::DimDelta::Kind;
+
+  IncrementalStager(core::AuxEngineServices &services, TpchQ5InitialScan *initial_scan,
+                    const TpchQ5TxnBuffer &buffer, std::shared_ptr<const TpchQ5State> side,
+                    const TpchQ5Tree &tree)
+      : services_(services), initial_scan_(initial_scan), buffer_(buffer),
+        side_(std::move(side)), meta_(*side_->meta), otx_(side_->orders),
+        stx_(side_->supps), ctx_(side_->custs), ttx_(tree) {}
+
+  bool Stage(core::StagedMaintenanceOutcome &outcome) {
+    if (!AddCustomers() || !ReplaceUpdatedOrders() || !InsertOrders() ||
+        !ApplyLineitems())
+      return false;
+    DeleteOrders();
+    if (!DeleteCustomers() || !ApplySupplierChanges())
+      return false;
+    Publish(outcome);
+    return true;
+  }
+
+private:
+  // Adds `rev` to (leaf of ordinal, nation column) and to the order's record.
+  void CreditOrder(TpchQ5OrderRec &orec, int64_t rev) {
+    const int32_t col = meta_.NationColumn(orec.nationkey);
+    if (col < 0 || rev == 0)
+      return;
+    orec.rev += rev;
+    ttx_.Add(TpchQ5LeafNode(meta_.tree_size, orec.ordinal), col, rev);
+  }
+
+  void DetachRevenue(const TpchQ5OrderRec &orec) {
+    const int32_t col = meta_.NationColumn(orec.nationkey);
+    if (col >= 0 && orec.rev != 0)
+      ttx_.Add(TpchQ5LeafNode(meta_.tree_size, orec.ordinal), col, -orec.rev);
+  }
+
+  // Adds `delta` to the customer's count of orders.
+  void AdjustOrderCount(int64_t custkey, int32_t delta) {
+    if (const auto *cust = TpchQ5Val(ctx_.Find(custkey)))
+      ctx_.Upsert({custkey, TpchQ5CustRec{cust->nationkey, cust->order_count + delta}});
+  }
+
+  // Contribution of an order's current lineitems under its new customer.
+  bool RecomputeRevenue(int64_t orderkey, int32_t nationkey, int64_t &rev) {
+    rev = 0;
+    return initial_scan_ &&
+           initial_scan_->ScanLineitemsByOrder(
+               orderkey, [&](const TpchQ5LineitemInput &li) {
+                 const auto *supp = TpchQ5Val(stx_.Find(li.suppkey));
+                 if (supp && supp->present && supp->nationkey == nationkey)
+                   rev += ComputeRevenueRaw(li.extended_price_raw, li.discount_raw);
+               });
+  }
+
+  // Phase A: customer inserts and nation changes. A nation change (or
+  // removal) of a customer that existing orders reference would re-attribute
+  // their revenue: rebuild in that (rare) case.
+  bool AddCustomers() {
+    for (const auto &d : buffer_.CustomerMutations()) {
+      if (d.kind == Kind::Insert) {
+        if (TpchQ5Val(ctx_.Find(d.key)))
+          return false;
+        ctx_.Upsert({d.key, TpchQ5CustRec{d.nationkey, 0}});
+      } else if (d.kind == Kind::UpdateNation) {
+        const auto *rec = TpchQ5Val(ctx_.Find(d.key));
+        if (!rec || rec->order_count > 0)
+          return false;
+        ctx_.Upsert({d.key, TpchQ5CustRec{d.nationkey, 0}});
+      }
+    }
+    return true;
+  }
+
+  // Phase A2: order UPDATEs (same key removed and inserted).
+  bool ReplaceUpdatedOrders() {
+    std::unordered_set<int64_t> inserted;
+    for (const auto &o : buffer_.OrderMutations())
+      if (o.sign > 0)
+        inserted.insert(o.orderkey);
+    for (const auto &o : buffer_.OrderMutations())
+      if (o.sign < 0 && inserted.count(o.orderkey))
+        updated_.insert(o.orderkey);
+
+    for (const auto key : updated_) {
+      const auto *found = TpchQ5Val(otx_.Find(key));
+      const TpchQ5TxnBuffer::OrderDelta *nd = nullptr;
+      for (const auto &o : buffer_.OrderMutations())
+        if (o.sign > 0 && o.orderkey == key)
+          nd = &o;
+      TpchQ5OrderRec old_rec;
+      const bool had = found != nullptr;
+      if (had) {
+        old_rec = *found;
+        DetachRevenue(old_rec);
+        AdjustOrderCount(old_rec.custkey, -1);
+        otx_.Erase(key);
+      }
+      const auto *cust = TpchQ5Val(ctx_.Find(nd->custkey));
+      if (!cust) {
+        dropped_.insert(key); // customer outside the join
+        continue;
+      }
+      const int32_t ord = TpchQ5DateOrdinal(nd->orderdate_days, meta_.min_orderdate_days);
+      if (ord < 0 || ord >= static_cast<int32_t>(meta_.tree_size))
+        return false;
+      TpchQ5OrderRec nr{cust->nationkey, ord, nd->custkey, 0};
+      if (had && old_rec.nationkey == cust->nationkey) {
+        // Same nation: the existing revenue just moves (date / customer).
+        CreditOrder(nr, old_rec.rev);
+      } else {
+        int64_t rev = 0;
+        if (!RecomputeRevenue(key, cust->nationkey, rev))
+          return false;
+        CreditOrder(nr, rev);
+        recomputed_.insert(key);
+      }
+      ctx_.Upsert({nd->custkey, TpchQ5CustRec{cust->nationkey, cust->order_count + 1}});
+      otx_.Upsert({key, nr});
+    }
+    return true;
+  }
+
+  // Phase A3: plain order inserts. Orders of unknown customers contribute
+  // nothing and are not tracked (as in BuildState).
+  bool InsertOrders() {
+    for (const auto &order : buffer_.OrderMutations()) {
+      if (order.sign < 0 || updated_.count(order.orderkey))
+        continue;
+      const auto *cust = TpchQ5Val(ctx_.Find(order.custkey));
+      if (!cust)
+        continue;
+      const int32_t ord = TpchQ5DateOrdinal(order.orderdate_days, meta_.min_orderdate_days);
+      if (ord < 0 || ord >= static_cast<int32_t>(meta_.tree_size))
+        return false; // outside the tree's date range: re-derive bounds
+      if (TpchQ5Val(otx_.Find(order.orderkey)))
+        return false;
+      otx_.Upsert({order.orderkey, TpchQ5OrderRec{cust->nationkey, ord, order.custkey, 0}});
+      ctx_.Upsert({order.custkey, TpchQ5CustRec{cust->nationkey, cust->order_count + 1}});
+    }
+    return true;
+  }
+
+  // Phase B: lineitems. Credit a nation only when supplier nation equals
+  // customer nation (same filter as BuildState / the Q5 join). A lineitem of
+  // an absent supplier only adjusts the supplier's reference count. False when
+  // a lineitem's order is not tracked.
+  bool ApplyLineitem(const TpchQ5LineitemInput &row, int64_t sign) {
+    const auto *supp = TpchQ5Val(stx_.Find(row.suppkey));
+    TpchQ5SuppRec srec = supp ? *supp : TpchQ5SuppRec{0, 0, false};
+    srec.line_count += static_cast<int32_t>(sign);
+    stx_.Upsert({row.suppkey, srec});
+    if (dropped_.count(row.orderkey) || recomputed_.count(row.orderkey))
+      return true;
+    const auto *order = TpchQ5Val(otx_.Find(row.orderkey));
+    if (!order)
+      return false;
+    if (!srec.present || srec.nationkey != order->nationkey)
+      return true;
+    TpchQ5OrderRec orec = *order;
+    CreditOrder(orec, sign * ComputeRevenueRaw(row.extended_price_raw, row.discount_raw));
+    otx_.Upsert({row.orderkey, orec});
+    return true;
+  }
+
+  bool ApplyLineitems() {
+    for (const auto &m : buffer_.LineitemMutations()) {
+      if (!m.is_insert && !ApplyLineitem(m.old_row, -1))
+        return false;
+      if (!m.is_delete && !ApplyLineitem(m.new_row, 1))
+        return false;
+    }
+    return true;
+  }
+
+  // Phase C: order deletes subtract whatever the order still contributes.
+  void DeleteOrders() {
+    for (const auto &order : buffer_.OrderMutations()) {
+      if (order.sign > 0 || updated_.count(order.orderkey))
+        continue;
+      const auto *rec = TpchQ5Val(otx_.Find(order.orderkey));
+      if (!rec)
+        continue;
+      const TpchQ5OrderRec orec = *rec;
+      DetachRevenue(orec);
+      AdjustOrderCount(orec.custkey, -1);
+      otx_.Erase(order.orderkey);
+    }
+  }
+
+  // Phase D: customer deletes (only when nothing references them).
+  bool DeleteCustomers() {
+    for (const auto &d : buffer_.CustomerMutations()) {
+      if (d.kind != Kind::Delete)
+        continue;
+      const auto *rec = TpchQ5Val(ctx_.Find(d.key));
+      if (!rec || rec->order_count > 0)
+        return false;
+      ctx_.Erase(d.key);
+    }
+    return true;
+  }
+
+  // Phase E: moves one supplier between nations against the post-write
+  // lineitem table: the supplier's lineitems are fetched with one point query
+  // and each matching contribution is removed / added through the order map.
+  // (A key with no lineitems needs no query.)
+  bool AdjustSupplier(int64_t suppkey, bool has_old, int32_t old_nation, bool has_new,
+                      int32_t new_nation) {
+    const auto *rec = TpchQ5Val(stx_.Find(suppkey));
+    const int32_t lines = rec ? rec->line_count : 0;
+    if (lines > 0) {
+      std::vector<TpchQ5LineitemInput> rows;
+      if (!initial_scan_ ||
+          !initial_scan_->ScanLineitemsBySupplier(
+              suppkey, [&](const TpchQ5LineitemInput &li) { rows.push_back(li); }))
+        return false;
+      for (const auto &li : rows) {
+        const auto *order = TpchQ5Val(otx_.Find(li.orderkey));
+        if (!order)
+          continue; // no tracked order: contributed nothing
+        TpchQ5OrderRec orec = *order;
+        const int64_t rev = ComputeRevenueRaw(li.extended_price_raw, li.discount_raw);
+        if (has_old && orec.nationkey == old_nation)
+          CreditOrder(orec, -rev);
+        if (has_new && orec.nationkey == new_nation)
+          CreditOrder(orec, rev);
+        otx_.Upsert({li.orderkey, orec});
+      }
+    }
+    if (has_new)
+      stx_.Upsert({suppkey, TpchQ5SuppRec{new_nation, lines, true}});
+    else if (lines > 0)
+      stx_.Upsert({suppkey, TpchQ5SuppRec{0, lines, false}});
+    else
+      stx_.Erase(suppkey);
+    return true;
+  }
+
+  // Supplier changes, in arrival order.
+  bool ApplySupplierChanges() {
+    for (const auto &d : buffer_.SupplierMutations()) {
+      const auto *rec = TpchQ5Val(stx_.Find(d.key));
+      if (d.kind == Kind::Insert) {
+        if (rec && rec->present)
+          return false; // duplicate key
+        if (!AdjustSupplier(d.key, false, 0, true, d.nationkey))
+          return false;
+      } else {
+        if (!rec || !rec->present)
+          return false;
+        const bool moves = d.kind != Kind::Delete;
+        if (!AdjustSupplier(d.key, true, rec->nationkey, moves, moves ? d.nationkey : 0))
+          return false;
+      }
+    }
+    return true;
+  }
+
+  void Publish(core::StagedMaintenanceOutcome &outcome) {
+    const bool side_dirty = otx_.Dirty() || stx_.Dirty() || ctx_.Dirty();
+    if (!side_dirty && !ttx_.Dirty())
+      return;
+    outcome.action = core::MaintenanceAction::ApplyDelta;
+    if (side_dirty) {
+      auto new_side = std::make_shared<TpchQ5State>();
+      new_side->meta = side_->meta;
+      const auto for_each_mid = [&](std::size_t n, const auto &fn) {
+        core::ParallelEach(services_, n, kFinishGrain, fn);
+      };
+      new_side->orders = otx_.Finish(for_each_mid);
+      new_side->supps = stx_.Finish(for_each_mid);
+      new_side->custs = ctx_.Finish(for_each_mid);
+      outcome.updates.push_back(core::StateImage::Make(
+          TpchQ5Module::kId, core::TpchQ5Layout::kSide, 0,
+          MakeSideImage(std::shared_ptr<const TpchQ5State>(std::move(new_side)))));
+    }
+    if (ttx_.Dirty()) {
+      auto new_tree = std::make_shared<const TpchQ5Tree>(ttx_.Finish());
+      outcome.updates.push_back(core::StateImage::Make(
+          TpchQ5Module::kId, core::TpchQ5Layout::kTreeBase, 0,
+          MakeTreeNodeImage(0, new_tree)));
+    }
+  }
+
+  core::AuxEngineServices &services_;
+  TpchQ5InitialScan *initial_scan_;
+  const TpchQ5TxnBuffer &buffer_;
+  std::shared_ptr<const TpchQ5State> side_;
+  const TpchQ5Meta &meta_;
+  TpchQ5ShardIndex<TpchQ5OrderRec>::Txn otx_;
+  TpchQ5ShardIndex<TpchQ5SuppRec>::Txn stx_;
+  TpchQ5ShardIndex<TpchQ5CustRec>::Txn ctx_;
+  Q5TreeTxn ttx_;
+  // Orders whose lineitem contribution was recomputed from the post-write
+  // table (their lineitem deltas must not be applied again), orders dropped by
+  // an update (lineitem deltas ignored), and keys both deleted and inserted.
+  std::unordered_set<int64_t> recomputed_, dropped_, updated_;
+};
+
 } // namespace
+
+// TxnBuffer
+
+bool TpchQ5TxnBuffer::HasPendingChanges() const { return pending; }
+void TpchQ5TxnBuffer::Clear() {
+  pending = false;
+  requires_rebuild = false;
+  lineitem_mutations.clear();
+  order_mutations.clear();
+  customer_mutations.clear();
+  supplier_mutations.clear();
+}
+bool TpchQ5TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
+void TpchQ5TxnBuffer::MarkRebuild() {
+  pending = true;
+  requires_rebuild = true;
+}
+
+bool TpchQ5TxnBuffer::HasLineitemMutations() const {
+  return !lineitem_mutations.empty();
+}
+const std::vector<TpchQ5TxnBuffer::LineitemDelta> &
+TpchQ5TxnBuffer::LineitemMutations() const {
+  return lineitem_mutations;
+}
+void TpchQ5TxnBuffer::AddLineitemMutation(const LineitemDelta &d) {
+  pending = true;
+  lineitem_mutations.push_back(d);
+}
+
+void TpchQ5TxnBuffer::AddOrderMutation(const OrderDelta &d) {
+  pending = true;
+  order_mutations.push_back(d);
+}
+
+const std::vector<TpchQ5TxnBuffer::OrderDelta> &
+TpchQ5TxnBuffer::OrderMutations() const {
+  return order_mutations;
+}
+
+void TpchQ5TxnBuffer::AddCustomerMutation(const DimDelta &d) {
+  pending = true;
+  customer_mutations.push_back(d);
+}
+void TpchQ5TxnBuffer::AddSupplierMutation(const DimDelta &d) {
+  pending = true;
+  supplier_mutations.push_back(d);
+}
+const std::vector<TpchQ5TxnBuffer::DimDelta> &
+TpchQ5TxnBuffer::CustomerMutations() const {
+  return customer_mutations;
+}
+const std::vector<TpchQ5TxnBuffer::DimDelta> &
+TpchQ5TxnBuffer::SupplierMutations() const {
+  return supplier_mutations;
+}
+void TpchQ5TxnBuffer::MarkNoop() { pending = true; }
+bool TpchQ5TxnBuffer::HasAnyDelta() const {
+  return !lineitem_mutations.empty() || !order_mutations.empty() ||
+         !customer_mutations.empty() || !supplier_mutations.empty();
+}
+
+
+
+int32_t TpchQ5AddMonths(int32_t days_since_epoch, int32_t months) {
+  return static_cast<int32_t>(core::sql_date::AddMonths(days_since_epoch, months));
+}
+
+// Module Implementation
+
+core::AcceleratorId TpchQ5Module::Id() const { return kId; }
+
+std::vector<core::TableDependency> TpchQ5Module::Dependencies() const {
+  return {
+      {config.region_table, {0, 1}, {0, 1}},
+      {config.nation_table, {0, 1, 2}, {0, 1, 2}},
+      {config.customer_table, {0, 1}, {0, 3}},
+      {config.supplier_table, {0, 1}, {0, 3}},
+      {config.orders_table, {0, 1, 2}, {0, 1, 4}},
+      {config.lineitem_table, {0, 1, 2, 3}, {0, 2, 5, 6}},
+  };
+}
+
+std::unique_ptr<core::AuxTxnBuffer> TpchQ5Module::CreateTxnBuffer() const {
+  return std::make_unique<TpchQ5TxnBuffer>();
+}
 
 void TpchQ5Module::Build(core::AuxEngineServices &services,
                          core::StateBuilder &builder) {
@@ -503,8 +684,8 @@ TpchQ5Module::InterpretMutation(const core::MutationBatch &mutation) const {
   // nation/region dimension tables do.
   if (mutation.table == config.nation_table ||
       mutation.table == config.region_table)
-    return EmptyPlan();
-  return NoOpPlan();
+    return core::AllPartitionsPlan();
+  return {};
 }
 
 void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
@@ -529,7 +710,7 @@ void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
     };
     auto read = [&](const core::AuxRow &row, int64_t &key,
                     int32_t &nation) -> bool {
-      return IntCell(row, 0, key) && Int32Cell(row, 1, nation);
+      return core::IntCell(row, 0, key) && Int32Cell(row, 1, nation);
     };
     using Kind = TpchQ5TxnBuffer::DimDelta::Kind;
     switch (mutation.kind) {
@@ -674,7 +855,7 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
   // Incremental maintenance for lineitem/orders RF writes, price updates and
   // customer/supplier dimension writes.
   if (!buffer.RequiresRebuild() && buffer.HasAnyDelta()) {
-    auto inc_outcome = StageIncrementalMaintenance(services, plan, buffer);
+    auto inc_outcome = StageIncrementalMaintenance(services, buffer);
     if (inc_outcome.action == core::MaintenanceAction::ApplyDelta) {
       // The updated partitions are the whole change; no blanket invalidation.
       return inc_outcome;
@@ -701,12 +882,11 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
 }
 
 core::StagedMaintenanceOutcome
-TpchQ5Module::StageIncrementalMaintenance(
-    core::AuxEngineServices &services, const core::InvalidationPlan &,
-    TpchQ5TxnBuffer &buffer) {
+TpchQ5Module::StageIncrementalMaintenance(core::AuxEngineServices &services,
+                                          const TpchQ5TxnBuffer &buffer) {
   core::StagedMaintenanceOutcome outcome;
   outcome.action = core::MaintenanceAction::NoOp;
-  auto rebuild = [&]() {
+  const auto rebuild = [&] {
     outcome.action = core::MaintenanceAction::RebuildAll;
     outcome.updates.clear();
     return outcome;
@@ -716,7 +896,6 @@ TpchQ5Module::StageIncrementalMaintenance(
   std::shared_ptr<const TpchQ5Tree> tree;
   if (!LoadSnapshot(services, side, tree))
     return rebuild();
-  const auto &meta = *side->meta;
 
   // RF-sized batches are always applied incrementally; the cost model is only
   // consulted for bulk changes.
@@ -724,282 +903,17 @@ TpchQ5Module::StageIncrementalMaintenance(
                             buffer.OrderMutations().size() +
                             buffer.CustomerMutations().size() +
                             buffer.SupplierMutations().size();
-  if (total_deltas > 256) {
-    const auto decision = services.ChooseMaintenance(
-        {static_cast<uint64_t>(total_deltas), 2, true, false, true, false,
-         false, core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    if (decision.action != core::MaintenanceAction::ApplyDelta)
+  if (total_deltas > kBulkDeltaCount) {
+    auto request = core::MaintenanceRequest::IncrementalSingleState(
+        total_deltas, services.ExpectedQueriesBeforeNextWrite());
+    request.affected_partition_count = 2; // side index and tree
+    if (services.ChooseMaintenance(request).action != core::MaintenanceAction::ApplyDelta)
       return rebuild();
   }
 
-  TpchQ5ShardIndex<TpchQ5OrderRec>::Txn otx(side->orders);
-  TpchQ5ShardIndex<TpchQ5SuppRec>::Txn stx(side->supps);
-  TpchQ5ShardIndex<TpchQ5CustRec>::Txn ctx(side->custs);
-  Q5TreeTxn ttx(*tree);
-  using Kind = TpchQ5TxnBuffer::DimDelta::Kind;
-
-  // Adds `rev` to (leaf of ordinal, nation column) and to the order's record.
-  auto credit_order = [&](TpchQ5OrderRec &orec, int64_t rev) {
-    const int32_t col = meta.NationColumn(orec.nationkey);
-    if (col < 0 || rev == 0)
-      return;
-    orec.rev += rev;
-    ttx.Add(TpchQ5LeafNode(meta.tree_size, orec.ordinal), col, rev);
-  };
-
-  // Phase A: customer inserts and nation changes. A nation change (or
-  // removal) of a customer that existing orders reference would re-attribute
-  // their revenue: rebuild in that (rare) case.
-  for (const auto &d : buffer.CustomerMutations()) {
-    if (d.kind == Kind::Insert) {
-      if (TpchQ5Val(ctx.Find(d.key)))
-        return rebuild();
-      ctx.Upsert({d.key, TpchQ5CustRec{d.nationkey, 0}});
-    } else if (d.kind == Kind::UpdateNation) {
-      const auto *rec = TpchQ5Val(ctx.Find(d.key));
-      if (!rec || rec->order_count > 0)
-        return rebuild();
-      ctx.Upsert({d.key, TpchQ5CustRec{d.nationkey, 0}});
-    }
-  }
-
-  // Orders whose lineitem contribution was recomputed from the post-write
-  // table (their lineitem deltas must not be applied again), and orders
-  // dropped by an update (lineitem deltas ignored).
-  std::unordered_set<int64_t> recomputed, dropped;
-  std::unordered_set<int64_t> updated; // keys both deleted and inserted
-  {
-    std::unordered_set<int64_t> ins;
-    for (const auto &o : buffer.OrderMutations())
-      if (o.sign > 0)
-        ins.insert(o.orderkey);
-    for (const auto &o : buffer.OrderMutations())
-      if (o.sign < 0 && ins.count(o.orderkey))
-        updated.insert(o.orderkey);
-  }
-
-  // Contribution of an order's current lineitems under its new customer.
-  auto recompute_rev = [&](int64_t orderkey, int32_t nationkey,
-                           bool &ok) -> int64_t {
-    int64_t rev = 0;
-    ok = initial_scan &&
-         initial_scan->ScanLineitemsByOrder(
-             orderkey, [&](const TpchQ5LineitemInput &li) {
-               const auto *supp = TpchQ5Val(stx.Find(li.suppkey));
-               if (supp && supp->present && supp->nationkey == nationkey)
-                 rev += ComputeRevenueRaw(li.extended_price_raw, li.discount_raw);
-             });
-    return rev;
-  };
-
-  // Phase A2: order UPDATEs (same key removed and inserted).
-  for (const auto key64 : updated) {
-    const auto *found = TpchQ5Val(otx.Find(key64));
-    const TpchQ5TxnBuffer::OrderDelta *nd = nullptr;
-    for (const auto &o : buffer.OrderMutations())
-      if (o.sign > 0 && o.orderkey == key64)
-        nd = &o;
-    TpchQ5OrderRec old_rec;
-    const bool had = found != nullptr;
-    if (had) {
-      old_rec = *found;
-      // Detach the old contribution and customer reference.
-      const int32_t col = meta.NationColumn(old_rec.nationkey);
-      if (col >= 0 && old_rec.rev != 0)
-        ttx.Add(TpchQ5LeafNode(meta.tree_size, old_rec.ordinal), col,
-                -old_rec.rev);
-      if (const auto *oc = TpchQ5Val(ctx.Find(old_rec.custkey)))
-        ctx.Upsert({old_rec.custkey, TpchQ5CustRec{oc->nationkey, oc->order_count - 1}});
-      otx.Erase(key64);
-    }
-    const auto *cust = TpchQ5Val(ctx.Find(nd->custkey));
-    if (!cust) {
-      dropped.insert(key64); // customer outside the join
-      continue;
-    }
-    const int32_t ord =
-        TpchQ5DateOrdinal(nd->orderdate_days, meta.min_orderdate_days);
-    if (ord < 0 || ord >= static_cast<int32_t>(meta.tree_size))
-      return rebuild();
-    TpchQ5OrderRec nr{cust->nationkey, ord, nd->custkey, 0};
-    if (had && old_rec.nationkey == cust->nationkey) {
-      // Same nation: the existing revenue just moves (date / customer).
-      credit_order(nr, old_rec.rev);
-    } else {
-      bool ok = false;
-      const int64_t rev = recompute_rev(key64, cust->nationkey, ok);
-      if (!ok)
-        return rebuild();
-      credit_order(nr, rev);
-      recomputed.insert(key64);
-    }
-    ctx.Upsert({nd->custkey, TpchQ5CustRec{cust->nationkey, cust->order_count + 1}});
-    otx.Upsert({key64, nr});
-  }
-
-  // Phase A3: plain order inserts. Orders of unknown customers contribute
-  // nothing and are not tracked (as in BuildState).
-  for (const auto &order : buffer.OrderMutations()) {
-    if (order.sign < 0 || updated.count(order.orderkey))
-      continue;
-    const auto *cust = TpchQ5Val(ctx.Find(order.custkey));
-    if (!cust)
-      continue;
-    const int32_t ord =
-        TpchQ5DateOrdinal(order.orderdate_days, meta.min_orderdate_days);
-    if (ord < 0 || ord >= static_cast<int32_t>(meta.tree_size))
-      return rebuild(); // outside the tree's date range: re-derive bounds
-    if (TpchQ5Val(otx.Find(order.orderkey)))
-      return rebuild();
-    otx.Upsert({order.orderkey, TpchQ5OrderRec{cust->nationkey, ord, order.custkey, 0}});
-    ctx.Upsert({order.custkey, TpchQ5CustRec{cust->nationkey, cust->order_count + 1}});
-  }
-
-  // Phase B: lineitems. Credit a nation only when supplier nation equals
-  // customer nation (same filter as BuildState / the Q5 join). A lineitem of
-  // an absent supplier only adjusts the supplier's reference count.
-  bool unresolved = false;
-  auto apply_row = [&](const TpchQ5LineitemInput &row, int64_t sign) {
-    const auto *supp = TpchQ5Val(stx.Find(row.suppkey));
-    TpchQ5SuppRec srec;
-    if (supp)
-      srec = *supp;
-    else
-      srec = TpchQ5SuppRec{0, 0, false};
-    srec.line_count += static_cast<int32_t>(sign);
-    stx.Upsert({row.suppkey, srec});
-    if (dropped.count(row.orderkey) || recomputed.count(row.orderkey))
-      return;
-    const auto *order = TpchQ5Val(otx.Find(row.orderkey));
-    if (!order) {
-      unresolved = true;
-      return;
-    }
-    if (!srec.present || srec.nationkey != order->nationkey)
-      return;
-    TpchQ5OrderRec orec = *order;
-    credit_order(orec, sign * ComputeRevenueRaw(row.extended_price_raw,
-                                                row.discount_raw));
-    otx.Upsert({row.orderkey, orec});
-  };
-  for (const auto &m : buffer.LineitemMutations()) {
-    if (!m.is_insert)
-      apply_row(m.old_row, -1);
-    if (!m.is_delete)
-      apply_row(m.new_row, 1);
-    if (unresolved)
-      return rebuild();
-  }
-
-  // Phase C: order deletes subtract whatever the order still contributes.
-  for (const auto &order : buffer.OrderMutations()) {
-    if (order.sign > 0 || updated.count(order.orderkey))
-      continue;
-    const auto *rec = TpchQ5Val(otx.Find(order.orderkey));
-    if (!rec)
-      continue;
-    const TpchQ5OrderRec orec = *rec;
-    if (orec.rev != 0) {
-      const int32_t col = meta.NationColumn(orec.nationkey);
-      if (col >= 0)
-        ttx.Add(TpchQ5LeafNode(meta.tree_size, orec.ordinal), col, -orec.rev);
-    }
-    if (const auto *cust = TpchQ5Val(ctx.Find(orec.custkey)))
-      ctx.Upsert({orec.custkey, TpchQ5CustRec{cust->nationkey, cust->order_count - 1}});
-    otx.Erase(order.orderkey);
-  }
-
-  // Phase D: customer deletes (only when nothing references them).
-  for (const auto &d : buffer.CustomerMutations()) {
-    if (d.kind != Kind::Delete)
-      continue;
-    const auto *rec = TpchQ5Val(ctx.Find(d.key));
-    if (!rec || rec->order_count > 0)
-      return rebuild();
-    ctx.Erase(d.key);
-  }
-
-  // Phase E: supplier changes, in arrival order, against the post-write
-  // lineitem table: the supplier's lineitems are fetched with one point query
-  // and each matching contribution is removed / added through the order map.
-  // (A key with no lineitems needs no query.)
-  auto adjust_supplier = [&](int64_t suppkey, bool has_old, int32_t old_nation,
-                             bool has_new, int32_t new_nation) -> bool {
-    const auto *rec = TpchQ5Val(stx.Find(suppkey));
-    const int32_t lines = rec ? rec->line_count : 0;
-    if (lines > 0) {
-      std::vector<TpchQ5LineitemInput> rows;
-      if (!initial_scan ||
-          !initial_scan->ScanLineitemsBySupplier(
-              suppkey,
-              [&](const TpchQ5LineitemInput &li) { rows.push_back(li); }))
-        return false;
-      for (const auto &li : rows) {
-        const auto *order = TpchQ5Val(otx.Find(li.orderkey));
-        if (!order)
-          continue; // no tracked order: contributed nothing
-        TpchQ5OrderRec orec = *order;
-        const int64_t rev =
-            ComputeRevenueRaw(li.extended_price_raw, li.discount_raw);
-        if (has_old && orec.nationkey == old_nation)
-          credit_order(orec, -rev);
-        if (has_new && orec.nationkey == new_nation)
-          credit_order(orec, rev);
-        otx.Upsert({li.orderkey, orec});
-      }
-    }
-    if (has_new)
-      stx.Upsert({suppkey, TpchQ5SuppRec{new_nation, lines, true}});
-    else if (lines > 0)
-      stx.Upsert({suppkey, TpchQ5SuppRec{0, lines, false}});
-    else
-      stx.Erase(suppkey);
-    return true;
-  };
-  for (const auto &d : buffer.SupplierMutations()) {
-    const auto *rec = TpchQ5Val(stx.Find(d.key));
-    if (d.kind == Kind::Insert) {
-      if (rec && rec->present)
-        return rebuild(); // duplicate key
-      if (!adjust_supplier(d.key, false, 0, true, d.nationkey))
-        return rebuild();
-    } else if (d.kind == Kind::Delete) {
-      if (!rec || !rec->present)
-        return rebuild();
-      if (!adjust_supplier(d.key, true, rec->nationkey, false, 0))
-        return rebuild();
-    } else {
-      if (!rec || !rec->present)
-        return rebuild();
-      if (!adjust_supplier(d.key, true, rec->nationkey, true, d.nationkey))
-        return rebuild();
-    }
-  }
-
-  const bool side_dirty = otx.Dirty() || stx.Dirty() || ctx.Dirty();
-  if (!side_dirty && !ttx.Dirty())
-    return outcome;
-
-  outcome.action = core::MaintenanceAction::ApplyDelta;
-  if (side_dirty) {
-    auto new_side = std::make_shared<TpchQ5State>();
-    new_side->meta = side->meta;
-    const auto for_each_mid = [&](std::size_t n, const auto &fn) {
-      core::ParallelEach(services, n, kFinishGrain, fn);
-    };
-    new_side->orders = otx.Finish(for_each_mid);
-    new_side->supps = stx.Finish(for_each_mid);
-    new_side->custs = ctx.Finish(for_each_mid);
-    outcome.updates.push_back(core::StateImage::Make(
-        kId, core::TpchQ5Layout::kSide, 0,
-        MakeSideImage(std::shared_ptr<const TpchQ5State>(std::move(new_side)))));
-  }
-  if (ttx.Dirty()) {
-    auto new_tree = std::make_shared<const TpchQ5Tree>(ttx.Finish());
-    outcome.updates.push_back(core::StateImage::Make(
-        kId, core::TpchQ5Layout::kTreeBase, 0, MakeTreeNodeImage(0, new_tree)));
-  }
+  IncrementalStager stager(services, initial_scan, buffer, side, *tree);
+  if (!stager.Stage(outcome))
+    return rebuild();
   return outcome;
 }
 
@@ -1021,7 +935,7 @@ void TpchQ5Module::Execute(core::AuxEngineServices &services,
   std::string region_name;
   int32_t start_days = 0;
   ParseArgs(arguments, region_name, start_days);
-  const int32_t end_days = TpchQ5AddMonths(start_days, 12);
+  const int32_t end_days = TpchQ5AddMonths(start_days, kWindowMonths);
 
   std::shared_ptr<const TpchQ5State> side;
   std::shared_ptr<const TpchQ5Tree> tree;
