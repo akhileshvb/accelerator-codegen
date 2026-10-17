@@ -8,24 +8,17 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
-#include <tuple>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
+
+constexpr accelerator_codegen::aux_state::query::TpchQ9Config kTables{1, 2, 3, 4, 5, 6};
+
 namespace q9_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
@@ -40,7 +33,7 @@ SharedProbe BuildTpchQ9Probe(::duckdb::MaterializedQueryResult &result,
   const auto linenumber = result.GetValue(1, row).ToString();
   const double price = std::stod(result.GetValue(5, row).ToString());
   SharedProbe probe;
-  probe.table = 6;
+  probe.table = kTables.lineitem_table;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {4};
   probe.write_delta = 0.01;
@@ -182,43 +175,6 @@ struct TpchQ9Scan : TpchQ9InitialScan {
                       }
                     });
   }
-  bool ScanProfitContributions(
-      const std::function<void(const TpchQ9ProfitContribution &)> &consumer)
-      override {
-    // Push LI ⨝ orders ⨝ supplier ⨝ partsupp profit aggregation into DuckDB.
-    ScanQueryDecoded(
-        connection,
-        "SELECT l.l_partkey, s.s_nationkey, year(o.o_orderdate), "
-        "SUM(CAST(round(l.l_extendedprice * (1 - l.l_discount) * 10000) AS "
-        "BIGINT) - "
-        "CAST(round(ps.ps_supplycost * l.l_quantity * 10000) AS BIGINT)) "
-        "FROM lineitem l "
-        "JOIN orders o ON l.l_orderkey = o.o_orderkey "
-        "JOIN supplier s ON l.l_suppkey = s.s_suppkey "
-        "JOIN partsupp ps ON l.l_partkey = ps.ps_partkey AND "
-        "l.l_suppkey = ps.ps_suppkey "
-        "GROUP BY 1, 2, 3",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ9ProfitContribution{SafeInt64(ChunkValue(chunk, 0, row)),
-                                          SafeInt32(ChunkValue(chunk, 1, row)),
-                                          SafeInt32(ChunkValue(chunk, 2, row)),
-                                          SafeInt64(ChunkValue(chunk, 3, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-    return true;
-  }
-  bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) override {
-    bool found = false;
-    ScanQueryStreaming(
-        connection,
-        "SELECT s_nationkey FROM supplier WHERE s_suppkey = " +
-            std::to_string(suppkey),
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          nationkey = SafeInt32(ChunkValue(chunk, 0, row));
-          found = true;
-        });
-    return found;
-  }
   bool LookupOrderYear(int64_t orderkey, int32_t &year) override {
     bool found = false;
     ScanQueryStreaming(
@@ -231,20 +187,6 @@ struct TpchQ9Scan : TpchQ9InitialScan {
         });
     return found;
   }
-  bool LookupPartsuppCost(int64_t partkey, int64_t suppkey,
-                          int64_t &supplycost_raw) override {
-    bool found = false;
-    ScanQueryStreaming(
-        connection,
-        "SELECT ps_supplycost FROM partsupp WHERE ps_partkey = " +
-            std::to_string(partkey) + " AND ps_suppkey = " +
-            std::to_string(suppkey),
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          supplycost_raw = DecimalRaw(ChunkValue(chunk, 0, row));
-          found = true;
-        });
-    return found;
-  }
   ::duckdb::Connection &connection;
 };
 
@@ -253,8 +195,15 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q9_aux",
     {::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ9Config c{1, 2, 3, 4, 5, 6};
-      return MakeBinding<TpchQ9Scan, TpchQ9Module>(connection, CaptureTableList{{"part", c.part_table}, {"supplier", c.supplier_table}, {"nation", c.nation_table}, {"orders", c.orders_table}, {"partsupp", c.partsupp_table}, {"lineitem", c.lineitem_table}}, c);
+      return MakeBinding<TpchQ9Scan, TpchQ9Module>(
+          connection,
+          CaptureTableList{{"part", kTables.part_table},
+                           {"supplier", kTables.supplier_table},
+                           {"nation", kTables.nation_table},
+                           {"orders", kTables.orders_table},
+                           {"partsupp", kTables.partsupp_table},
+                           {"lineitem", kTables.lineitem_table}},
+          kTables);
     }}};
 
 } // namespace

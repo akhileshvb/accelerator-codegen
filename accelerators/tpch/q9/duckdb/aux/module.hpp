@@ -5,12 +5,11 @@
 #include <climits>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -20,11 +19,10 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q9 layout ───────────────────────────────────────────────────────────────
 struct TpchQ9Layout {
   static constexpr const char *kAccelerator = "tpch_q9_aux";
   // Metadata partition (name index + nation labels; profit cells live in slot partitions).
-  static constexpr core::PartitionId kCompleteState = 0;
+  static constexpr core::PartitionId kMetadata = 0;
   // Maintenance-only side maps (supplier/order/partsupp); Execute never reads this.
   static constexpr core::PartitionId kMaintenanceSide = 1;
   // Per-name-token aggregate cube [token][nation][year]; read path for
@@ -40,11 +38,10 @@ struct TpchQ9Layout {
   }
 
   static std::array<core::PartitionId, 1> Partitions() {
-    return {kCompleteState};
+    return {kMetadata};
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ9Config {
   core::TableId part_table = 0;
   core::TableId supplier_table = 0;
@@ -54,7 +51,6 @@ struct TpchQ9Config {
   core::TableId lineitem_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ9PartInput {
   int64_t partkey = 0;
   std::string name;
@@ -90,13 +86,6 @@ struct TpchQ9LineitemInput {
   int64_t discount_raw = 0;
 };
 
-struct TpchQ9ProfitContribution {
-  int64_t partkey = 0;
-  int32_t nationkey = 0;
-  int32_t year = 0;
-  int64_t profit_raw = 0;
-};
-
 class TpchQ9InitialScan {
 public:
   virtual ~TpchQ9InitialScan() = default;
@@ -116,33 +105,10 @@ public:
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9LineitemInput &)> &) = 0;
 
-  // Optional: SQL pushdown of joined profit GROUP BY part/nation/year.
-  virtual bool ScanProfitContributions(
-      const std::function<void(const TpchQ9ProfitContribution &)> &consumer) {
-    (void)consumer;
-    return false;
-  }
-
-  virtual bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) {
-    (void)suppkey;
-    (void)nationkey;
-    return false;
-  }
-  virtual bool LookupOrderYear(int64_t orderkey, int32_t &year) {
-    (void)orderkey;
-    (void)year;
-    return false;
-  }
-  virtual bool LookupPartsuppCost(int64_t partkey, int64_t suppkey,
-                                  int64_t &supplycost_raw) {
-    (void)partkey;
-    (void)suppkey;
-    (void)supplycost_raw;
-    return false;
-  }
+  // Point lookup of an order's year; false when unsupported or absent.
+  virtual bool LookupOrderYear(int64_t, int32_t &) { return false; }
 };
 
-// ── Profit cell key ─────────────────────────────────────────────────────────
 struct Q9CellKey {
   int32_t nationkey = 0;
   int32_t year = 0;
@@ -164,7 +130,6 @@ struct Q9CellKeyHash {
   }
 };
 
-// ── Profit cell (packed: nation + year offset + profit, no padding) ─────────
 #pragma pack(push, 1)
 struct Q9ProfitCell {
   uint8_t nationkey = 0;
@@ -317,7 +282,6 @@ bool Q9BoundedSet(Array &array, int64_t key, const V &value,
 // Per-token aggregate of profit cells over all parts whose name has the token.
 struct Q9TokenCube;
 
-// ── State structures ────────────────────────────────────────────────────────
 struct TpchQ9State {
   struct PartProfitPartition {
     Q9PartMap parts;
@@ -571,16 +535,6 @@ struct TpchQ9State {
       partition.parts.FinishBulk();
   }
 
-  static Q9ProfitCell *FindCell(std::vector<Q9ProfitCell> &cells,
-                                int32_t nationkey, int32_t year) {
-    for (auto &cell : cells) {
-      if (cell.Nation() == nationkey && cell.Year() == year)
-        return &cell;
-    }
-    return nullptr;
-  }
-
-  static std::vector<std::string> NameTokensOf(const std::string &normalized);
   void FinalizePostings();
   void RebuildNationEmitOrder();
 
@@ -600,8 +554,6 @@ struct TpchQ9State {
   // Add signed aggregate; returns true if a new dense pair was created.
   static bool AddPairAgg(Q9PartRecord &rec, int32_t suppkey, int32_t year,
                          int64_t rev, int64_t qty);
-  // Add (sign=+1) / remove (sign=-1) one pair's contribution to the record's
-  // cells and the token cube, resolving supplier nation / cost from `side`.
   // Signed cell delta of one part, gathered during maintenance and netted
   // before it is applied to the part's cells and the token cube.
   struct CellDelta {
@@ -624,6 +576,8 @@ struct TpchQ9State {
   // parts' cells (per slot) and to the cube.
   void ApplyNetCellDeltas(const core::AuxEngineServices &services,
                           std::vector<std::vector<CellDelta>> &chunks);
+  // Add (sign=+1) / remove (sign=-1) one pair's contribution to the record's
+  // cells and the token cube, resolving supplier nation / cost from `side`.
   void ApplyPairContribution(int64_t partkey, Q9PartRecord &rec,
                              const std::vector<std::string> &tokens,
                              int32_t suppkey, int sign,
@@ -636,7 +590,7 @@ struct TpchQ9State {
 
   // ── Name posting helpers ───────────────────────────────────────────────
   void AddNamePostings(int64_t partkey, const std::string &raw_name);
-  void RemoveNamePostings(int64_t partkey, const std::string &raw_name);
+  void RemoveNamePostings(int64_t partkey);
 };
 
 struct Q9TokenCube {
@@ -649,7 +603,6 @@ struct Q9TokenCube {
 };
 
 enum class TpchQ9ImageKind : uint8_t {
-  CompleteState,
   Metadata,
   MaintenanceSide,
   ProfitSlot,
@@ -657,29 +610,11 @@ enum class TpchQ9ImageKind : uint8_t {
 };
 
 struct TpchQ9StateImage {
-  TpchQ9ImageKind kind = TpchQ9ImageKind::CompleteState;
+  TpchQ9ImageKind kind = TpchQ9ImageKind::Metadata;
   core::PartitionId profit_slot = 0;
   std::shared_ptr<const TpchQ9State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
-struct TpchQ9OutputRow {
-  std::string nation;
-  int32_t year = 0;
-  int64_t sum_profit_raw = 0; // fixed-point raw value
-};
-
-// ── Join-key reverse-dependency store ───────────────────────────────────────
-struct TpchQ9ReverseDeps {
-  // partkey -> set of orderkeys
-  std::unordered_map<int64_t, std::unordered_set<int64_t>> part_to_orderkeys;
-  // orderkey -> set of partkeys
-  std::unordered_map<int64_t, std::unordered_set<int64_t>> order_to_partkeys;
-  // suppkey -> set of partkeys (for supplier nation changes)
-  std::unordered_map<int64_t, std::unordered_set<int64_t>> suppkey_to_partkeys;
-};
-
-// ── Mutation deltas ─────────────────────────────────────────────────────────
 struct TpchQ9LineitemDelta {
   int64_t partkey = 0;
   int64_t suppkey = 0;
@@ -709,31 +644,8 @@ struct TpchQ9OrderDelta {
   int8_t sign = 0; // +1 insert, -1 delete
 };
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ9CompleteState(const TpchQ9State &state);
-bool DecodeTpchQ9CompleteState(const std::vector<uint8_t> &bytes,
-                                TpchQ9State &state);
-std::vector<uint8_t> EncodeTpchQ9Metadata(const TpchQ9State &state);
-bool DecodeTpchQ9Metadata(const std::vector<uint8_t> &bytes,
-                          TpchQ9State &state);
-std::vector<uint8_t> EncodeTpchQ9MaintenanceSide(const TpchQ9State &state);
-bool DecodeTpchQ9MaintenanceSide(const std::vector<uint8_t> &bytes,
-                                 TpchQ9State &state);
-std::vector<uint8_t> EncodeTpchQ9Cube(const TpchQ9State &state);
-bool DecodeTpchQ9Cube(const std::vector<uint8_t> &bytes, TpchQ9State &state);
-std::vector<uint8_t> EncodeTpchQ9ProfitSlot(
-    core::PartitionId slot, const TpchQ9State::PartProfitPartition &partition);
-bool DecodeTpchQ9ProfitSlot(const std::vector<uint8_t> &bytes,
-                            TpchQ9State::PartProfitPartition &partition);
-
-// ── Date helpers ────────────────────────────────────────────────────────────
 int32_t TpchQ9ExtractYear(int32_t days_since_epoch);
 
-// ── Profit computation ──────────────────────────────────────────────────────
-int64_t TpchQ9ComputeProfitRaw(int64_t extendedprice_raw, int64_t discount_raw,
-                                int64_t supplycost_raw, int64_t quantity_raw);
-
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ9TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -747,7 +659,6 @@ public:
   void AddOrderDelta(TpchQ9OrderDelta delta);
   void AddPartNamePosting(int64_t partkey, const std::string &old_name,
                           const std::string &new_name);
-  void AddRebuildPartkey(int64_t partkey);
 
   const std::vector<TpchQ9SupplierDelta> &SupplierDeltas() const {
     return supplier_deltas;
@@ -758,14 +669,8 @@ public:
   void AddSupplierDelta(TpchQ9SupplierDelta d);
   void AddPartsuppDelta(TpchQ9PartsuppDelta d);
 
-  bool PartNameChanged() const { return !part_name_deltas.empty(); }
   const std::vector<std::tuple<int64_t, std::string, std::string>> &
   PartNameDeltas() const { return part_name_deltas; }
-
-  bool HasRebuildSet() const { return !rebuild_partkeys.empty(); }
-  const std::unordered_set<int64_t> &RebuildPartkeys() const {
-    return rebuild_partkeys;
-  }
 
 private:
   bool pending = false;
@@ -775,19 +680,15 @@ private:
   std::vector<TpchQ9SupplierDelta> supplier_deltas;
   std::vector<TpchQ9PartsuppDelta> partsupp_deltas;
   std::vector<std::tuple<int64_t, std::string, std::string>> part_name_deltas;
-  std::unordered_set<int64_t> rebuild_partkeys;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ9Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ9Layout::kAccelerator;
 
   explicit TpchQ9Module(TpchQ9Config config,
-                        TpchQ9InitialScan *initial_scan = nullptr,
-                        TpchQ9ReverseDeps *reverse_deps = nullptr)
-      : config(config), initial_scan(initial_scan),
-        reverse_deps(reverse_deps) {}
+                        TpchQ9InitialScan *initial_scan = nullptr)
+      : config(config), initial_scan(initial_scan) {}
 
   core::AcceleratorId Id() const override;
   std::vector<core::TableDependency> Dependencies() const override;
@@ -808,29 +709,10 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  // Read-path helpers
-  // Emit from per-slot partition views (slots[i] may be null = absent).
-  // `candidates` (sorted part keys) restricts the scan; null scans all slots.
-  void EmitResult(const core::AuxEngineServices &services, const TpchQ9State &meta,
-                  const std::vector<const TpchQ9State::PartProfitPartition *> &slots,
-                  const std::string &color,
-                  const std::vector<int32_t> *candidates,
-                  core::AuxRowSink &sink) const;
-
-  // Build helper. `full` also populates the join-side maps and token cube.
-  void BuildStateInto(const core::AuxEngineServices &services, TpchQ9State &state,
-                      bool full = true) const;
-
+  void BuildStateInto(const core::AuxEngineServices &services, TpchQ9State &state) const;
 
   TpchQ9Config config;
   TpchQ9InitialScan *initial_scan = nullptr;
-  TpchQ9ReverseDeps *reverse_deps = nullptr;
 };
-
-// Free helper functions used internally
-std::string NormalizeForIndex(const std::string &s);
-std::vector<std::string> NameTokens(const std::string &normalized);
-std::vector<std::string> Trigrams(const std::string &normalized);
-bool ContainsSubstring(std::string_view haystack, std::string_view needle);
 
 } // namespace accelerator_codegen::aux_state::query
