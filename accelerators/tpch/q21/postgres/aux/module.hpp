@@ -118,7 +118,8 @@ struct TpchQ21OutputRow {
 
 // The answer per nation name, computed on the first read of a published state
 // version and kept with it (a state version is immutable). A copy (the next
-// version, made by maintenance) starts empty.
+// version, made by maintenance) starts empty. Worth its lock: removing it
+// slowed SF1 reads from ~0.22 to ~0.5 ms (8 threads).
 class TpchQ21AnswerCache {
 public:
   using Rows = std::shared_ptr<const std::vector<TpchQ21OutputRow>>;
