@@ -302,7 +302,6 @@ struct TpchQ9State {
   // Nations sorted by name for ORDER BY nation ASC without per-query sort.
   std::vector<std::pair<std::string, int32_t>> nation_emit_order;
 
-  // ── Side state (maintenance only; Execute never reads these) ────────────
   std::unordered_map<int32_t, std::string> nation_names;
 
   static constexpr uint8_t kAbsentNationCode = 255;
@@ -486,7 +485,6 @@ struct TpchQ9State {
     partsupp_overflow[PartsuppKey{partkey, suppkey}] = cost;
   }
 
-  // ── Initialization ─────────────────────────────────────────────────────
   static core::PartitionId ChooseProfitSlots(std::size_t part_count);
 
   // Fix the slot count exactly (InitPartitions takes a PART count).
@@ -538,7 +536,6 @@ struct TpchQ9State {
   void FinalizePostings();
   void RebuildNationEmitOrder();
 
-  // ── Pair aggregates / contributions ────────────────────────────────────
   static Q9Pair *FindPair(Q9PartRecord &rec, int32_t suppkey) {
     for (auto &p : rec.pairs)
       if (p.suppkey == suppkey)
@@ -588,7 +585,6 @@ struct TpchQ9State {
   void BuildCellsFromPairs(const core::AuxEngineServices &services);
   void BuildSuppPairsIndex();
 
-  // ── Name posting helpers ───────────────────────────────────────────────
   void AddNamePostings(int64_t partkey, const std::string &raw_name);
   void RemoveNamePostings(int64_t partkey);
 };

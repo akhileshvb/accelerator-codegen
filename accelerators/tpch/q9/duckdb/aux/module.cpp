@@ -1403,7 +1403,6 @@ void TpchQ9State::RemoveNamePostings(int64_t partkey) {
   }
 }
 
-// ── Pair aggregates ─────────────────────────────────────────────────────────
 bool TpchQ9State::AddPairAgg(Q9PartRecord &rec, int32_t suppkey, int32_t year,
                              int64_t rev, int64_t qty) {
   const int32_t yi = year - Q9Pair::kYearBase;
