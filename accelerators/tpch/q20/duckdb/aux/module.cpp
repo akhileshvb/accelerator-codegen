@@ -28,7 +28,7 @@ constexpr std::size_t kPartsuppGrain = 65536;
 // Series per maintenance slice (~1 ms: rebuilding one is ~1 us), so RF-sized commits stay inline.
 constexpr std::size_t kSeriesGrain = 16384;
 // Rows per sorted slice of the build (~5 ms: a stable sort of 64K small rows).
-constexpr std::size_t kSortRowGrain = 65536;
+constexpr std::size_t kSortGrain = 65536;
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
 constexpr uint32_t kVersion = 3;
 
@@ -1349,7 +1349,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
       });
   core::ParallelStableSort(services, series_rows,
                      [](const SeriesRow &a, const SeriesRow &b) { return a.key < b.key; },
-                     kSortRowGrain);
+                     kSortGrain);
   for (const auto &r : series_rows)
     builder.AddSeriesRow(r.key, r.date, r.qty);
   series_rows = {};
@@ -1373,7 +1373,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
                        return a.partkey != b.partkey ? a.partkey < b.partkey
                                                      : a.suppkey < b.suppkey;
                      },
-                     kSortRowGrain);
+                     kSortGrain);
   for (const auto &r : partsupp_rows)
     builder.AddPartsupp(r.partkey, r.suppkey, r.availqty);
   partsupp_rows = {};
