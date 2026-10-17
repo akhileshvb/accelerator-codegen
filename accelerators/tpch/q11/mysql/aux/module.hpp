@@ -61,8 +61,11 @@ public:
   virtual void ScanPartsuppPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ11PartsuppInput &)> &sink) = 0;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
   virtual void ScanSuppliers(
-      const std::function<void(const TpchQ11SupplierInput &)> &) = 0;
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ11SupplierInput &)> &sink) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ11NationInput &)> &) = 0;
 };

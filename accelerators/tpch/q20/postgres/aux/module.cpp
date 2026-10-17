@@ -649,10 +649,13 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
   initial_scan->ScanNations([&](const TpchQ20NationInput &input) {
     state->nations[input.key] = input.name;
   });
-  initial_scan->ScanSuppliers([&](const TpchQ20SupplierInput &input) {
-    state->suppliers.Upsert(input.key, {input.name, input.address, input.nationkey});
-  });
-  // Names are decoded in partitions; the COW name column is filled serially.
+  // Names are decoded in partitions; the COW columns are filled serially.
+  for (const auto &supplier : core::CollectRows<TpchQ20SupplierInput>(
+           services, [&](std::size_t parts_count, auto &&sink) {
+             initial_scan->ScanSuppliers(services, parts_count, sink);
+           }))
+    state->suppliers.Upsert(supplier.key,
+                            {supplier.name, supplier.address, supplier.nationkey});
   const std::size_t partitions = core::BuildPartitions(services);
   const auto parts = core::CollectRows<TpchQ20PartInput>(
       services, [&](std::size_t parts_count, auto &&sink) {

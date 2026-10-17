@@ -29,15 +29,12 @@ query::TpchQ11PartsuppInput DecodePartsupp(const std::vector<std::string> &cols)
   return {TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2), TypedDecimalRaw(cols, 3), 2};
 }
 
-void ScanTpchQ11Suppliers(
-    const std::function<void(const query::TpchQ11SupplierInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT s_suppkey, s_nationkey FROM supplier",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ11SupplierInput{TypedInt(cols, 0),
-                                           TypedInt(cols, 1)};
-      },
-      [&](query::TpchQ11SupplierInput &&input) { consumer(input); });
+SplitTable SuppliersTable() {
+  return {"s_suppkey, s_nationkey", "supplier", "", "s_suppkey"};
+}
+
+query::TpchQ11SupplierInput DecodeSupplier(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1)};
 }
 
 void ScanTpchQ11Nations(
@@ -62,9 +59,11 @@ public:
         services, scans::PartsuppTable(), partitions, scans::DecodePartsupp, sink);
   }
   void ScanSuppliers(
-      const std::function<void(const query::TpchQ11SupplierInput &)> &consumer)
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ11SupplierInput &)> &sink)
       override {
-    scans::ScanTpchQ11Suppliers(consumer);
+    split_scan::Partitioned<query::TpchQ11SupplierInput>(
+        services, scans::SuppliersTable(), partitions, scans::DecodeSupplier, sink);
   }
   void ScanNations(
       const std::function<void(const query::TpchQ11NationInput &)> &consumer)

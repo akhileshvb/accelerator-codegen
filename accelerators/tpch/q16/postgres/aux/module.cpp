@@ -504,9 +504,25 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
     throw std::logic_error("TPC-H Q16 requires a typed initial scan source");
   TpchQ16State state;
   state.track_dirty = false;
-  initial_scan->ScanSuppliers([&](const TpchQ16SupplierInput &input) {
-    state.SetComplaint(input.suppkey, IsComplaintComment(input.comment));
-  });
+  // Only the complaint flag is kept, so the comments are not held.
+  struct Complaint {
+    int64_t suppkey;
+    bool complaint;
+  };
+  const auto complaints = core::PartitionedBuild<std::vector<Complaint>>(
+      services, [] { return std::vector<Complaint>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliers(
+            services, parts, [&](std::size_t partition, const TpchQ16SupplierInput &input) {
+              sink(partition, core::SingleRowBatch<TpchQ16SupplierInput>{input});
+            });
+      },
+      [](std::vector<Complaint> &into, const TpchQ16SupplierInput &input) {
+        into.push_back({input.suppkey, IsComplaintComment(input.comment)});
+      },
+      core::AppendRows<Complaint>, core::BuildPartitions(services));
+  for (const auto &supplier : complaints)
+    state.SetComplaint(supplier.suppkey, supplier.complaint);
   // Group ids follow first appearance, so parts are applied in partition order.
   for (const auto &part : core::CollectRows<TpchQ16PartInput>(
            services, [&](std::size_t partitions, const auto &sink) {

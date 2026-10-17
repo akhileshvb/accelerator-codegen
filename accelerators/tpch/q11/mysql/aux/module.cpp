@@ -546,9 +546,11 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
   TpchQ11State state;
   initial_scan->ScanNations(
       [&](const TpchQ11NationInput &input) { state.UpsertNation(input); });
-  initial_scan->ScanSuppliers([&](const TpchQ11SupplierInput &input) {
+  for (const auto &input : core::CollectRows<TpchQ11SupplierInput>(
+           services, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanSuppliers(services, parts, sink);
+           }))
     state.SetSupplierNation(input.suppkey, input.nationkey);
-  });
   // The scan runs in parallel; the offers are added in partition order.
   for (const auto &input : core::CollectRows<TpchQ11PartsuppInput>(
            services, [&](std::size_t parts, auto &&sink) {

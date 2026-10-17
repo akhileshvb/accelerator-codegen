@@ -20,15 +20,17 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 namespace scans {
 
 void ScanTpchQ17Parts(
-    const std::function<void(const query::TpchQ17PartInput &)> &consumer) {
-  ScanColumns("part",
-              {IntColumn("p_partkey"), TextColumn("p_brand"),
-               TextColumn("p_container")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Text(1),
-                          row.Text(2)});
-              });
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ17PartInput &)> &sink) {
+  ScanPartitioned(services, "part",
+                  {IntColumn("p_partkey"), TextColumn("p_brand"),
+                   TextColumn("p_container")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Text(1), row.Text(2)});
+                    }
+                  });
 }
 
 void ScanTpchQ17Lineitems(
@@ -50,9 +52,10 @@ void ScanTpchQ17Lineitems(
 class TpchQ17Scan final : public query::TpchQ17InitialScan {
 public:
   void ScanParts(
-      const std::function<void(const query::TpchQ17PartInput &)> &consumer)
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ17PartInput &)> &sink)
       override {
-    scans::ScanTpchQ17Parts(consumer);
+    scans::ScanTpchQ17Parts(services, partitions, sink);
   }
   void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,

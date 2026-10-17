@@ -21,17 +21,12 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ15Suppliers(
-    const std::function<void(const query::TpchQ15SupplierInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT s_suppkey, s_name, s_address, s_phone FROM supplier",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ15SupplierInput{TypedInt(cols, 0),
-                                           TypedText(cols, 1),
-                                           TypedText(cols, 2),
-                                           TypedText(cols, 3)};
-      },
-      [&](query::TpchQ15SupplierInput &&input) { consumer(input); });
+SplitTable SuppliersTable() {
+  return {"s_suppkey, s_name, s_address, s_phone", "supplier", "", "s_suppkey"};
+}
+
+query::TpchQ15SupplierInput DecodeSupplier(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1), TypedText(cols, 2), TypedText(cols, 3)};
 }
 
 SplitTable LineitemsTable() {
@@ -54,9 +49,11 @@ public:
         services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
   }
   void ScanSuppliers(
-      const std::function<void(const query::TpchQ15SupplierInput &)> &consumer)
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ15SupplierInput &)> &sink)
       override {
-    scans::ScanTpchQ15Suppliers(consumer);
+    split_scan::Partitioned<query::TpchQ15SupplierInput>(
+        services, scans::SuppliersTable(), partitions, scans::DecodeSupplier, sink);
   }
 };
 

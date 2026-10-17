@@ -755,9 +755,11 @@ TpchQ21State TpchQ21Module::BuildState(
   initial_scan->ScanNations([&](const TpchQ21NationInput &input) {
     state.PutNation(input.nationkey, input.name);
   });
-  initial_scan->ScanSuppliers([&](const TpchQ21SupplierInput &input) {
+  for (const auto &input : core::CollectRows<TpchQ21SupplierInput>(
+           services, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanSuppliers(services, parts, sink);
+           }))
     state.PutSupplier(input.suppkey, input.name, input.nationkey);
-  });
 
   // Only the contributing orders are kept.
   const auto buckets = FulfilledContributions(*initial_scan, services);

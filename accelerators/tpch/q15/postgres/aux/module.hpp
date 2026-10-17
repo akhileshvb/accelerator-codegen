@@ -53,7 +53,8 @@ public:
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ15LineitemInput &)> &sink) = 0;
   virtual void ScanSuppliers(
-      const std::function<void(const TpchQ15SupplierInput &)> &) = 0;
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ15SupplierInput &)> &sink) = 0;
 };
 
 // ── State ─────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 #include "tpch/q19/calibration_writes.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 #include "prims/pg_numeric.hpp"
 
 #include <algorithm>
@@ -99,6 +100,32 @@ int32_t BranchSizeLimit(TpchQ19Family family) {
   default: return 0;
   }
 }
+
+// Part codes of one scan partition, with the brands in order of first
+// appearance. Partials merge in partition order, so the merged dictionary is
+// the one a serial scan builds.
+struct PartCodes {
+  core::StringDict brands;
+  core::AnyKeyCowArray<uint32_t, 14> codes{0};
+
+  void Add(const TpchQ19PartInput &part) {
+    const auto family = ClassifyContainerFamily(part.container);
+    if (family == TpchQ19Family::None || part.size < 1 ||
+        part.size > BranchSizeLimit(family))
+      return;
+    codes.Set(part.key,
+              TpchQ19State::Code(brands.Intern(CollateKey(part.brand)), family));
+  }
+  void Merge(PartCodes &&from) {
+    std::vector<uint32_t> brand_map;
+    for (uint32_t id = 0; id < from.brands.size(); ++id)
+      brand_map.push_back(brands.Intern(from.brands.Get(id)));
+    from.codes.ForEach([&](int64_t key, uint32_t code) {
+      if (code != 0)
+        codes.Set(key, ((brand_map[(code >> 2) - 1] + 1) << 2) | (code & 3u));
+    });
+  }
+};
 
 std::shared_ptr<const TpchQ19StateImage>
 MakeStateImage(std::shared_ptr<const TpchQ19State> state) {
@@ -238,7 +265,7 @@ void TpchQ19Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   builder.Write(core::StateImage::Make(
       Id(), kStatePartition, 0,
-      MakeStateImage(BuildState())));
+      MakeStateImage(BuildState(services))));
   builder.Finish();
 }
 
@@ -331,16 +358,24 @@ void TpchQ19Module::AccumulateMutation(const core::MutationBatch &mutation,
 }
 
 std::shared_ptr<TpchQ19State>
-TpchQ19Module::BuildState() const {
+TpchQ19Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q19 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ19State>();
-  // Columnar per-part codes, streamed (no per-part map, no transient copy).
-  initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
-    const auto code = state->PartCode(input.brand, input.container, input.size);
-    if (code != 0)
-      state->part_code.Set(input.key, code);
-  });
+  // Columnar per-part codes, decoded and folded in partitions.
+  auto parts = core::PartitionedBuild<PartCodes>(
+      services, [] { return PartCodes{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanParts(
+            services, partitions,
+            [&](std::size_t p, const TpchQ19PartInput &input) {
+              sink(p, core::SingleRowBatch<TpchQ19PartInput>{input});
+            });
+      },
+      [](PartCodes &partial, const TpchQ19PartInput &part) { partial.Add(part); },
+      [](PartCodes &into, PartCodes &&from) { into.Merge(std::move(from)); });
+  state->brands = std::make_shared<core::StringDict>(std::move(parts.brands));
+  state->part_code = std::move(parts.codes);
   initial_scan->ScanGroupAggregates([&](const TpchQ19GroupAggregate &agg) {
     state->Add(TpchQ19State::Code(state->InternBrand(agg.brand),
                                   static_cast<TpchQ19Family>(agg.family)),
