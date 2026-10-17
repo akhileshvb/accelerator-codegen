@@ -1,4 +1,4 @@
-// GENERATED QUERY: TPC-H Q21 aux state on DuckDB.
+// TPC-H Q21 aux state on DuckDB.
 // Registers the catalog entry (SQL, probes, benchmark arguments), the
 // table function accel_tpch_q21_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
@@ -8,15 +8,8 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,9 +18,16 @@
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
-namespace q21_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
+
+constexpr core::TableId kSupplierTable = 1;
+constexpr core::TableId kOrdersTable = 2;
+constexpr core::TableId kLineitemTable = 3;
+constexpr core::TableId kNationTable = 4;
+
+namespace q21_catalog {
+
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
@@ -39,7 +39,7 @@ SharedProbe BuildTpchQ21Probe(::duckdb::MaterializedQueryResult &result,
   const int32_t commit_days = DateDays(result.GetValue(3, row));
   const int32_t receipt_days = DateDays(result.GetValue(4, row));
   SharedProbe probe;
-  probe.table = 3;
+  probe.table = kLineitemTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {3};
   probe.write_delta = 1.0;
@@ -89,7 +89,7 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{21,
      "n_name = 'SAUDI ARABIA' "
      "ORDER BY l1.l_orderkey, l1.l_linenumber LIMIT 1",
      {{core::AuxValue::Of(core::AuxType::String, std::string{"SAUDI ARABIA"})}},
-     3,
+     kLineitemTable,
      false,
      BuildTpchQ21Probe,
      core::kTpchQ21CostModel,
@@ -235,7 +235,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q21_aux",
     {::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ21Config c{1, 2, 3, 4};
+      const TpchQ21Config c{kSupplierTable, kOrdersTable, kLineitemTable, kNationTable};
       return MakeBinding<TpchQ21Scan, TpchQ21Module>(connection, CaptureTableList{{"supplier", c.supplier_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}, {"nation", c.nation_table}}, c);
     }}};
 

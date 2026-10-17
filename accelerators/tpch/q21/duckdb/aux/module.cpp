@@ -1,16 +1,17 @@
 #include "tpch/q21/duckdb/aux/module.hpp"
 #include "tpch/q21/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/parallel_stable_sort.hpp"
-#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string_view>
@@ -31,64 +32,19 @@ constexpr uint32_t kOrdersMagic = 0x4f323151;   // Q21O
 constexpr uint32_t kNationMagic = 0x4e323151;   // Q21N
 constexpr uint32_t kNationNameIdxMagic = 0x49323151; // Q21I
 
-// Contributing orders per build slice: a small-vector scan and a hash add each.
-constexpr std::size_t kContributionGrain = 65536;
-
-// Maintenance grains: an order is a few hash probes and a small-vector scan, a
-// sort element a key compare, an apply item one shard write, a nation op one
-// row compare.
+// Orders per maintenance slice: a few hash probes and a small-vector scan each.
 constexpr std::size_t kOrderGrain = 2048;
+// Elements per sorted slice: a key compare each.
 constexpr std::size_t kSortGrain = 65536;
-constexpr std::size_t kApplyGrain = 1024;
-constexpr std::size_t kNationOpGrain = 4096;
+// Shard runs per maintenance slice: one shard write per item.
+constexpr std::size_t kRunGrain = 1024;
+// Below this many nation row compares a commit patches its nations inline.
+constexpr std::size_t kNationOpThreshold = 4096;
 
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
-  return true;
-}
-
-bool CharCell(const core::AuxRow &row, std::size_t index, char &out) {
-  std::string value;
-  if (!StringCell(row, index, value) || value.empty())
-    return false;
-  out = value[0];
-  return true;
-}
+using core::CharCell;
+using core::DateCell;
+using core::IntCell;
+using core::StringCell;
 
 // TPC-H Q21: ORDER BY numwait DESC, s_name LIMIT 100.
 constexpr std::size_t kTpchQ21Limit = 100;
@@ -104,14 +60,6 @@ bool ImageRowBefore(const TpchQ21ImageRow &a, const TpchQ21ImageRow &b) {
   if (a.numwait != b.numwait)
     return a.numwait > b.numwait;
   return *a.name < *b.name;
-}
-
-std::shared_ptr<const TpchQ21StateImage>
-MakeImage(TpchQ21ImageKind kind, int32_t nationkey = 0) {
-  auto image = std::make_shared<TpchQ21StateImage>();
-  image->kind = kind;
-  image->nationkey = nationkey;
-  return image;
 }
 
 std::shared_ptr<const TpchQ21StateImage>
@@ -168,13 +116,6 @@ const TpchQ21StateImage *AsQ21Image(const core::StateImage &image,
   return nullptr;
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 core::PartitionId NationPartition(int32_t nationkey) {
   return TpchQ21Layout::kNationBase + static_cast<core::PartitionId>(nationkey);
 }
@@ -192,7 +133,6 @@ core::PartitionId NationNamePartition(const std::string &name) {
          static_cast<core::PartitionId>(hash % TpchQ21Layout::kNationNameSlots);
 }
 
-// ── Contribution computation ────────────────────────────────────────────────
 // Reduce the two correlated EXISTS predicates to per-order sufficient facts:
 // Q21 can contribute only if exactly one supplier is late and at least one
 // different supplier participates. Returns true with the sole late supplier and
@@ -213,7 +153,6 @@ bool ComputeOrderContribution(const OrderSummary &order, int64_t &suppkey,
   return late_suppliers == 1;
 }
 
-// ── Mutation helpers ────────────────────────────────────────────────────────
 bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey, int64_t &suppkey,
                   int32_t &commitdate, int32_t &receiptdate) {
   return IntCell(row, 0, orderkey) && IntCell(row, 1, suppkey) &&
@@ -237,7 +176,6 @@ bool ReadOrder(const core::AuxRow &row, int64_t &orderkey, char &orderstatus) {
   return IntCell(row, 0, orderkey) && CharCell(row, 1, orderstatus);
 }
 
-// ── Nation row patching ─────────────────────────────────────────────────────
 using RowVec = std::vector<TpchQ21ImageRow>;
 
 // A net change of one s_name's merged row. `hint` is the row's current numwait
@@ -321,33 +259,6 @@ bool PatchNationRows(const RowVec &rows, std::vector<NameChange> changes, RowVec
   return true;
 }
 
-// Full recomputation of one nation's rows from the numwait totals.
-std::shared_ptr<const TpchQ21NationRows>
-ComputeNationRows(int32_t nationkey, const TpchQ21Dir &dir,
-                  const TpchQ21Core &core) {
-  std::map<std::string, std::pair<std::shared_ptr<const std::string>, int64_t>>
-      by_name;
-  core.numwait.ForEach([&](int64_t suppkey, int64_t nw) {
-    if (nw <= 0)
-      return;
-    const auto *supplier = dir.Find(suppkey);
-    if (!supplier || supplier->nationkey != nationkey)
-      return;
-    auto &slot = by_name[*supplier->name];
-    if (!slot.first)
-      slot.first = supplier->name;
-    slot.second += nw;
-  });
-  auto out = std::make_shared<TpchQ21NationRows>();
-  out->rows.reserve(by_name.size());
-  for (auto &[name, entry] : by_name) {
-    (void)name;
-    out->rows.push_back({entry.first, entry.second});
-  }
-  std::sort(out->rows.begin(), out->rows.end(), ImageRowBefore);
-  return out;
-}
-
 void EmitRow(core::AuxRowSink &sink, const std::string &name, int64_t numwait) {
   core::AuxRow out;
   out.values.reserve(2);
@@ -356,9 +267,487 @@ void EmitRow(core::AuxRowSink &sink, const std::string &name, int64_t numwait) {
   sink.WriteRow(out);
 }
 
+// An order touched by the commit, with its lineitem deltas as the range
+// [first, last) of the orderkey-sorted delta index.
+struct AffectedOrder {
+  enum class Source : uint8_t { Tracked, Inserted, Lookup, Skip };
+  int64_t orderkey = 0;
+  bool has_order_delta = false;
+  char first_old_status = 0; // status before the commit's first order delta
+  bool status_changed = false;
+  char new_status = 0; // status after the commit's last status change
+  std::size_t first = 0, last = 0;
+  Source source = Source::Skip;
+  std::size_t lookup = 0; // index into the batched lookups (Source::Lookup)
+};
+
+// The new state of one affected order: put it in the map, take it out, or leave
+// the map alone.
+struct OrderUpdate {
+  enum class Action : uint8_t { None, Put, Erase };
+  Action action = Action::None;
+  OrderSummary summary;
+};
+
+using KeyedIndex = std::vector<std::pair<int64_t, std::size_t>>;
+
+template <class Deltas>
+KeyedIndex SortedByOrder(const core::AuxEngineServices &services, const Deltas &deltas) {
+  KeyedIndex index(deltas.size());
+  for (std::size_t i = 0; i < deltas.size(); ++i)
+    index[i] = {deltas[i].orderkey, i};
+  core::ParallelStableSort(
+      services, index, [](const auto &a, const auto &b) { return a.first < b.first; },
+      kSortGrain);
+  return index;
+}
+
+struct AffectedOrders {
+  std::vector<AffectedOrder> orders; // ascending orderkey
+  KeyedIndex lineitems;              // (orderkey, delta position), arrival order within an order
+};
+
+// Joins the orderkey-sorted order and lineitem deltas into one entry per order.
+AffectedOrders CollectAffectedOrders(const core::AuxEngineServices &services,
+                                     const TpchQ21TxnBuffer &buffer) {
+  const auto &order_deltas = buffer.OrderDeltas();
+  const auto by_order = SortedByOrder(services, order_deltas);
+  AffectedOrders affected;
+  affected.lineitems = SortedByOrder(services, buffer.LineitemDeltas());
+  const auto &by_lineitem = affected.lineitems;
+  std::size_t o = 0, l = 0;
+  while (o < by_order.size() || l < by_lineitem.size()) {
+    AffectedOrder order;
+    order.orderkey = o == by_order.size()      ? by_lineitem[l].first
+                     : l == by_lineitem.size() ? by_order[o].first
+                                               : std::min(by_order[o].first, by_lineitem[l].first);
+    for (; o < by_order.size() && by_order[o].first == order.orderkey; ++o) {
+      const auto &delta = order_deltas[by_order[o].second];
+      if (!order.has_order_delta)
+        order.first_old_status = delta.old_orderstatus;
+      order.has_order_delta = true;
+      if (delta.old_orderstatus != delta.new_orderstatus) {
+        order.status_changed = true;
+        order.new_status = delta.new_orderstatus;
+      }
+    }
+    order.first = l;
+    while (l < by_lineitem.size() && by_lineitem[l].first == order.orderkey)
+      ++l;
+    order.last = l;
+    affected.orders.push_back(order);
+  }
+  return affected;
+}
+
+// Absent orders contribute nothing, so an absent one is only tracked again when
+// this commit inserts it; any other absent order is looked up in the table.
+AffectedOrder::Source ClassifyOrder(const AffectedOrder &order, bool tracked) {
+  using Source = AffectedOrder::Source;
+  if (tracked)
+    return Source::Tracked;
+  if (order.status_changed && order.new_status == 0)
+    return Source::Skip; // deleted by this commit
+  if (!order.has_order_delta || order.first_old_status != 0 || !order.status_changed)
+    return Source::Lookup;
+  return Source::Inserted; // RF1: its lineitems cannot predate it
+}
+
+OrderSummary SummaryOf(const TpchQ21InitialScan::OrderLookup &lookup) {
+  OrderSummary summary;
+  summary.orderstatus = lookup.status;
+  for (const auto &entry : lookup.suppliers)
+    if (entry[1] > 0)
+      summary.suppliers.push_back({entry[0], entry[1], entry[2]});
+  return summary;
+}
+
+using Numwait = std::unordered_map<int64_t, int64_t>; // suppkey -> numwait change
+
+// The side images a commit's maintenance builds on.
+struct Parents {
+  std::shared_ptr<const TpchQ21Dir> supplier_dir;
+  std::shared_ptr<const TpchQ21Core> order_core;
+  std::shared_ptr<const TpchQ21NationIndex> nation_index;
+};
+
+// Pointer fetches only; nothing is copied. Null when an image is missing or
+// not of its kind.
+std::optional<Parents> LoadParents(core::AuxEngineServices &services,
+                                   const core::VisibilityToken &visibility) {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      visibility, {TpchQ21Layout::kSupplierMetadata, TpchQ21Layout::kOrderSummaries,
+                   TpchQ21Layout::kNationNameIndex});
+  Parents parents;
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition == TpchQ21Layout::kSupplierMetadata) {
+      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::SupplierMetadata);
+      if (!typed)
+        return std::nullopt;
+      parents.supplier_dir = typed->dir;
+    } else if (image.partition == TpchQ21Layout::kOrderSummaries) {
+      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::OrderSummaries);
+      if (!typed)
+        return std::nullopt;
+      parents.order_core = typed->core;
+    } else if (image.partition == TpchQ21Layout::kNationNameIndex) {
+      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::NationNameIndex);
+      if (!typed)
+        return std::nullopt;
+      parents.nation_index = typed->nation_index;
+    }
+  }
+  if (!parents.supplier_dir || !parents.order_core || !parents.nation_index)
+    return std::nullopt;
+  return parents;
+}
+
+// What the commit does to the order summaries and, through them, to each
+// supplier's numwait.
+struct OrderUpdates {
+  AffectedOrders affected;
+  std::vector<OrderUpdate> updates; // parallel to affected.orders
+  Numwait numwait_delta;
+};
+
+// Classifies the affected orders, looks up the untracked ones in the table and
+// computes each order's new state. Nullopt when the lookups are unavailable.
+std::optional<OrderUpdates>
+ComputeOrderUpdates(const core::AuxEngineServices &services, TpchQ21InitialScan *initial_scan,
+                    const TpchQ21TxnBuffer &buffer, const TpchQ21Core &parent_core) {
+  using Source = AffectedOrder::Source;
+  OrderUpdates result;
+  result.affected = CollectAffectedOrders(services, buffer);
+  auto &orders = result.affected.orders;
+  const auto &sorted_lineitems = result.affected.lineitems;
+  const auto &lineitem_deltas = buffer.LineitemDeltas();
+  core::ParallelEach(services, orders.size(), kOrderGrain, [&](std::size_t i) {
+    orders[i].source = ClassifyOrder(orders[i], parent_core.orders.Contains(orders[i].orderkey));
+  });
+  std::vector<int64_t> lookup_keys;
+  for (auto &order : orders) {
+    if (order.source == Source::Lookup) {
+      order.lookup = lookup_keys.size();
+      lookup_keys.push_back(order.orderkey);
+    }
+  }
+  std::vector<TpchQ21InitialScan::OrderLookup> lookups;
+  if (!lookup_keys.empty() &&
+      (!initial_scan || !initial_scan->LookupOrderSummaries(lookup_keys, lookups)))
+    return std::nullopt;
+
+  result.updates.resize(orders.size());
+  auto &updates = result.updates;
+  const auto compute_order = [&](std::size_t i, Numwait &sums) {
+    const AffectedOrder &order = orders[i];
+    OrderUpdate &update = updates[i];
+    if (order.source == Source::Skip)
+      return;
+    if (order.source == Source::Lookup) {
+      const auto &lookup = lookups[order.lookup];
+      if (!lookup.found || lookup.status != 'F')
+        return;
+      auto fresh = SummaryOf(lookup);
+      int64_t supp = 0, count = 0;
+      if (ComputeOrderContribution(fresh, supp, count)) {
+        sums[supp] += count;
+        update = {OrderUpdate::Action::Put, std::move(fresh)};
+      }
+      return;
+    }
+    const bool tracked = order.source == Source::Tracked;
+    OrderSummary summary = tracked ? *parent_core.orders.Find(order.orderkey) : OrderSummary{};
+    int64_t old_supp = 0, old_count = 0;
+    const bool had_contrib = ComputeOrderContribution(summary, old_supp, old_count);
+    if (order.status_changed)
+      summary.orderstatus = order.new_status;
+    for (std::size_t k = order.first; k < order.last; ++k) {
+      const auto &delta = lineitem_deltas[sorted_lineitems[k].second];
+      auto *info = summary.FindSupplier(delta.suppkey);
+      if (!info) {
+        summary.suppliers.push_back({delta.suppkey, 0, 0});
+        info = &summary.suppliers.back();
+      }
+      info->total_count += delta.sign;
+      if (delta.receiptdate > delta.commitdate)
+        info->late_count += delta.sign;
+      if (info->total_count <= 0 && info->late_count <= 0)
+        summary.suppliers.erase(summary.suppliers.begin() + (info - summary.suppliers.data()));
+    }
+    int64_t new_supp = 0, new_count = 0;
+    const bool has_contrib = ComputeOrderContribution(summary, new_supp, new_count);
+    if (had_contrib)
+      sums[old_supp] -= old_count;
+    if (has_contrib)
+      sums[new_supp] += new_count;
+    if (has_contrib)
+      update = {OrderUpdate::Action::Put, std::move(summary)};
+    else if (tracked)
+      update.action = OrderUpdate::Action::Erase;
+  };
+  core::ParallelReduce(
+      services, orders.size(), kOrderGrain, result.numwait_delta,
+      [&](Numwait &sums, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i)
+          compute_order(i, sums);
+      },
+      [](Numwait &into, Numwait &&from) {
+        for (const auto &[suppkey, delta] : from)
+          into[suppkey] += delta;
+      });
+  return result;
+}
+
+// Writes the order updates into `next_core`: each task owns whole shards of the map.
+void ApplyOrderUpdates(const core::AuxEngineServices &services, OrderUpdates &order_updates,
+                       TpchQ21Core &next_core) {
+  const auto &orders = order_updates.affected.orders;
+  auto &updates = order_updates.updates;
+  std::vector<std::pair<std::size_t, std::size_t>> items; // (shard, order)
+  for (std::size_t i = 0; i < updates.size(); ++i)
+    if (updates[i].action != OrderUpdate::Action::None)
+      items.push_back({next_core.orders.ShardOf(orders[i].orderkey), i});
+  const auto shard_of = [](const auto &item) { return item.first; };
+  core::ParallelStableSort(
+      services, items, [&](const auto &a, const auto &b) { return shard_of(a) < shard_of(b); },
+      kSortGrain);
+  const auto runs = core::RunStarts(items, shard_of);
+  core::ParallelEach(services, runs.size() - 1, kRunGrain, [&](std::size_t run) {
+    for (std::size_t k = runs[run]; k < runs[run + 1]; ++k) {
+      const std::size_t i = items[k].second;
+      if (updates[i].action == OrderUpdate::Action::Put)
+        next_core.orders.Upsert(orders[i].orderkey, std::move(updates[i].summary));
+      else
+        next_core.orders.Erase(orders[i].orderkey);
+    }
+  });
+}
+
+// A supplier whose numwait changed, or whose directory row did.
+struct Affected {
+  int64_t suppkey = 0;
+  int64_t old_nw = 0;
+  int64_t new_nw = 0;
+};
+
+bool BySuppkey(const Affected &a, const Affected &b) { return a.suppkey < b.suppkey; }
+
+// Applies the numwait deltas to `next_core`, one task per run of shards.
+// Returns the suppliers whose numwait changed, ascending by suppkey.
+std::vector<Affected> ApplyNumwaitDeltas(const core::AuxEngineServices &services,
+                                         const Numwait &numwait_delta, TpchQ21Core &next_core) {
+  struct NumwaitChange {
+    std::size_t shard = 0;
+    Affected supplier;
+    int64_t delta = 0;
+  };
+  std::vector<NumwaitChange> changes;
+  for (const auto &[suppkey, delta] : numwait_delta)
+    if (delta != 0)
+      changes.push_back({next_core.numwait.ShardOf(suppkey), {suppkey, 0, 0}, delta});
+  core::ParallelStableSort(
+      services, changes,
+      [](const NumwaitChange &a, const NumwaitChange &b) {
+        return a.shard != b.shard ? a.shard < b.shard : a.supplier.suppkey < b.supplier.suppkey;
+      },
+      kSortGrain);
+  const auto runs = core::RunStarts(changes, [](const NumwaitChange &c) { return c.shard; });
+  core::ParallelEach(services, runs.size() - 1, kRunGrain, [&](std::size_t run) {
+    for (std::size_t k = runs[run]; k < runs[run + 1]; ++k) {
+      auto &change = changes[k];
+      const int64_t *cur = next_core.numwait.Find(change.supplier.suppkey);
+      change.supplier.old_nw = cur ? *cur : 0;
+      change.supplier.new_nw = change.supplier.old_nw + change.delta;
+      if (change.supplier.new_nw == 0)
+        next_core.numwait.Erase(change.supplier.suppkey);
+      else
+        next_core.numwait[change.supplier.suppkey] = change.supplier.new_nw;
+    }
+  });
+  std::vector<Affected> affected;
+  affected.reserve(changes.size());
+  for (const auto &change : changes)
+    affected.push_back(change.supplier);
+  std::sort(affected.begin(), affected.end(), BySuppkey);
+  return affected;
+}
+
+// Applies the supplier directory deltas to `next_dir` and adds the suppliers
+// they touch to `affected` (those not already in its sorted numwait prefix).
+void ApplySupplierDeltas(const std::vector<TpchQ21SupplierDelta> &supplier_deltas,
+                         const TpchQ21Core &next_core, TpchQ21Dir &next_dir,
+                         std::vector<Affected> &affected) {
+  const auto numwait_changed = affected.size();
+  affected.reserve(numwait_changed + supplier_deltas.size());
+  for (const auto &delta : supplier_deltas) {
+    if (!std::binary_search(affected.begin(), affected.begin() + numwait_changed,
+                            Affected{delta.suppkey}, BySuppkey)) {
+      const int64_t *cur = next_core.numwait.Find(delta.suppkey);
+      affected.push_back({delta.suppkey, cur ? *cur : 0, cur ? *cur : 0});
+    }
+    // had_old only records that a row went away; the final directory state is
+    // the last delta per supplier (delete then insert = replace).
+    auto &slot = next_dir.overlay[delta.suppkey];
+    if (delta.has_new) {
+      slot.present = true;
+      slot.supplier = {std::make_shared<const std::string>(delta.new_name), delta.new_nationkey};
+    } else {
+      slot.present = false;
+      slot.supplier = {};
+    }
+  }
+}
+
+struct PatchedNations {
+  std::vector<int32_t> nations;
+  std::vector<RowVec> rows; // parallel to nations
+};
+
+// Re-prices the affected suppliers' names in their (old and new) nations'
+// rows. Nullopt when a nation image is malformed or a change is inconsistent.
+std::optional<PatchedNations>
+PatchNations(core::AuxEngineServices &services, const core::VisibilityToken &visibility,
+             const TpchQ21Dir &parent_dir, const TpchQ21Dir &next_dir,
+             const std::vector<Affected> &affected) {
+  std::map<int32_t, std::vector<NameChange>> name_changes;
+  for (const auto &supplier : affected) {
+    const auto *old_rec = parent_dir.Find(supplier.suppkey);
+    const auto *new_rec = next_dir.Find(supplier.suppkey);
+    const int64_t old_contribution = std::max<int64_t>(supplier.old_nw, 0);
+    const int64_t new_contribution = std::max<int64_t>(supplier.new_nw, 0);
+    if (old_rec && old_contribution > 0)
+      name_changes[old_rec->nationkey].push_back({old_rec->name, -old_contribution, old_contribution});
+    if (new_rec && new_contribution > 0)
+      name_changes[new_rec->nationkey].push_back({new_rec->name, new_contribution, 0});
+  }
+
+  PatchedNations result;
+  std::vector<std::vector<NameChange>> nation_changes;
+  std::size_t nation_ops = 0;
+  for (auto &[nationkey, changes] : name_changes) {
+    result.nations.push_back(nationkey);
+    nation_ops += changes.size();
+    nation_changes.push_back(std::move(changes));
+  }
+  const auto &nations = result.nations;
+  std::vector<std::shared_ptr<const TpchQ21NationRows>> nation_rows(nations.size());
+  if (!nations.empty()) {
+    std::vector<core::PartitionId> partitions;
+    for (const auto nk : nations)
+      partitions.push_back(NationPartition(nk));
+    const auto snapshot = services.StateStore().ReadPartitions(visibility, partitions);
+    for (const auto &image : snapshot.partitions) {
+      if (image.partition < TpchQ21Layout::kNationBase)
+        continue;
+      const auto nk = static_cast<int32_t>(image.partition - TpchQ21Layout::kNationBase);
+      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::Nation);
+      if (!typed || typed->nationkey != nk)
+        return std::nullopt;
+      const auto at = std::find(nations.begin(), nations.end(), nk) - nations.begin();
+      nation_rows[static_cast<std::size_t>(at)] = typed->rows;
+    }
+  }
+  const RowVec no_rows; // an absent image = no waiters yet
+  result.rows.resize(nations.size());
+  std::vector<char> patched_ok(nations.size(), 0);
+  core::ParallelEachWhen(services, nations.size(), nation_ops, kNationOpThreshold,
+                         [&](std::size_t i) {
+                           patched_ok[i] = PatchNationRows(
+                               nation_rows[i] ? nation_rows[i]->rows : no_rows,
+                               std::move(nation_changes[i]), result.rows[i]);
+                         });
+  if (std::find(patched_ok.begin(), patched_ok.end(), 0) != patched_ok.end())
+    return std::nullopt;
+  return result;
+}
+
+// Publishes only the images that changed: the order summaries, the supplier
+// directory, and each patched nation's rows (also under its name partition).
+void PublishImages(core::StagedMaintenanceOutcome &outcome, const TpchQ21TxnBuffer &buffer,
+                   std::shared_ptr<const TpchQ21Core> next_core,
+                   std::shared_ptr<const TpchQ21Dir> next_dir,
+                   const TpchQ21NationIndex &nation_index, PatchedNations &patched) {
+  outcome.action = core::MaintenanceAction::ApplyDelta;
+  if (!buffer.LineitemDeltas().empty() || !buffer.OrderDeltas().empty()) {
+    outcome.updates.push_back(core::StateImage::Make(
+        TpchQ21Layout::kAccelerator, TpchQ21Layout::kOrderSummaries, 0,
+        MakeCoreImage(std::move(next_core))));
+  }
+  if (!buffer.SupplierDeltas().empty()) {
+    outcome.updates.push_back(core::StateImage::Make(
+        TpchQ21Layout::kAccelerator, TpchQ21Layout::kSupplierMetadata, 0,
+        MakeDirImage(std::move(next_dir))));
+  }
+
+  // nationkey -> unique name (duplicate names keep the slow path).
+  std::unordered_map<int32_t, std::string> nk_to_name;
+  for (const auto &[name, nkeys] : nation_index.nation_name_to_keys)
+    if (nkeys.size() == 1)
+      nk_to_name.emplace(nkeys.front(), name);
+  for (std::size_t i = 0; i < patched.nations.size(); ++i) {
+    const int32_t nk = patched.nations[i];
+    auto rows = std::make_shared<TpchQ21NationRows>();
+    rows->rows = std::move(patched.rows[i]);
+    const std::shared_ptr<const TpchQ21NationRows> shared = std::move(rows);
+    outcome.updates.push_back(core::StateImage::Make(
+        TpchQ21Layout::kAccelerator, NationPartition(nk), 0, MakeNationImage(nk, shared)));
+    const auto name_it = nk_to_name.find(nk);
+    if (name_it != nk_to_name.end()) {
+      outcome.updates.push_back(core::StateImage::Make(
+          TpchQ21Layout::kAccelerator, NationNamePartition(name_it->second), 0,
+          MakeNationImage(nk, shared, name_it->second)));
+    }
+  }
+}
+
+// Order keys in hash shards: the fulfilled orders, or the per-supplier
+// lineitem counts (an OrderSummary) of the orders seen. The shards are the
+// coarsest level of the final order map's shard hash, so a task owning one
+// build shard writes only its own shards of that map.
+struct OrderShards {
+  static constexpr unsigned kBits = 6;
+  static constexpr std::size_t kShards = std::size_t{1} << kBits;
+  using Shard = core::FlatHashMap<OrderSummary>;
+  std::array<Shard, kShards> shards;
+
+  static std::size_t ShardOf(int64_t orderkey) {
+    return core::ShardedCowHashMap<OrderSummary, 7>::ShardOf(orderkey, kBits);
+  }
+  void Fulfilled(int64_t orderkey) { shards[ShardOf(orderkey)][orderkey].orderstatus = 'F'; }
+  bool IsFulfilled(int64_t orderkey) const { return shards[ShardOf(orderkey)].Contains(orderkey); }
+  void Add(const TpchQ21LineitemInput &input) {
+    auto &summary = shards[ShardOf(input.orderkey)][input.orderkey];
+    summary.orderstatus = 'F';
+    AddSupplier(summary, input.suppkey, 1, input.receiptdate > input.commitdate ? 1 : 0);
+  }
+  static void AddSupplier(OrderSummary &summary, int64_t suppkey, int64_t total, int64_t late) {
+    if (auto *info = summary.FindSupplier(suppkey)) {
+      info->total_count += total;
+      info->late_count += late;
+    } else {
+      summary.suppliers.push_back({suppkey, total, late});
+    }
+  }
+};
+
+// Folds `from` into `into`, one pool task per run of shards.
+void FoldShards(const core::AuxEngineServices &services, OrderShards &into, OrderShards &&from) {
+  core::ParallelSlices(services, OrderShards::kShards, 1,
+                       [&](std::size_t, std::size_t first, std::size_t last) {
+                         for (std::size_t s = first; s < last; ++s)
+                           for (auto [orderkey, theirs] : from.shards[s]) {
+                             auto &mine = into.shards[s][orderkey];
+                             if (theirs.orderstatus)
+                               mine.orderstatus = theirs.orderstatus;
+                             for (const auto &info : theirs.suppliers)
+                               OrderShards::AddSupplier(mine, info.suppkey, info.total_count,
+                                                        info.late_count);
+                           }
+                       });
+}
+
 } // namespace
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
 std::vector<uint8_t> EncodeTpchQ21SupplierMetadata(const TpchQ21State &state) {
   std::map<int64_t, TpchQ21Supplier> merged;
   if (state.dir->base)
@@ -589,7 +978,6 @@ bool DecodeTpchQ21Nation(const std::vector<uint8_t> &bytes, int32_t nationkey,
   return reader.offset == bytes.size();
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ21TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ21TxnBuffer::Clear() {
   pending = false;
@@ -637,107 +1025,6 @@ void TpchQ21TxnBuffer::AddNationDelta(TpchQ21NationDelta delta) {
   nation_deltas.push_back(std::move(delta));
 }
 
-namespace {
-
-// ── Order maintenance ───────────────────────────────────────────────────────
-// An order touched by the commit, with its lineitem deltas as the range
-// [first, last) of the orderkey-sorted delta index.
-struct AffectedOrder {
-  enum class Source : uint8_t { Tracked, Inserted, Lookup, Skip };
-  int64_t orderkey = 0;
-  bool has_order_delta = false;
-  char first_old_status = 0; // status before the commit's first order delta
-  bool status_changed = false;
-  char new_status = 0; // status after the commit's last status change
-  std::size_t first = 0, last = 0;
-  Source source = Source::Skip;
-  std::size_t lookup = 0; // index into the batched lookups (Source::Lookup)
-};
-
-// The new state of one affected order: put it in the map, take it out, or leave
-// the map alone.
-struct OrderUpdate {
-  enum class Action : uint8_t { None, Put, Erase };
-  Action action = Action::None;
-  OrderSummary summary;
-};
-
-using KeyedIndex = std::vector<std::pair<int64_t, std::size_t>>;
-
-template <class Deltas>
-KeyedIndex SortedByOrder(const core::AuxEngineServices &services, const Deltas &deltas) {
-  KeyedIndex index(deltas.size());
-  for (std::size_t i = 0; i < deltas.size(); ++i)
-    index[i] = {deltas[i].orderkey, i};
-  ParallelStableSort(
-      services, index, [](const auto &a, const auto &b) { return a.first < b.first; },
-      kSortGrain);
-  return index;
-}
-
-struct AffectedOrders {
-  std::vector<AffectedOrder> orders; // ascending orderkey
-  KeyedIndex lineitems;              // (orderkey, delta position), arrival order within an order
-};
-
-// Joins the orderkey-sorted order and lineitem deltas into one entry per order.
-AffectedOrders CollectAffectedOrders(const core::AuxEngineServices &services,
-                                     const TpchQ21TxnBuffer &buffer) {
-  const auto &order_deltas = buffer.OrderDeltas();
-  const auto by_order = SortedByOrder(services, order_deltas);
-  AffectedOrders affected;
-  affected.lineitems = SortedByOrder(services, buffer.LineitemDeltas());
-  const auto &by_lineitem = affected.lineitems;
-  std::size_t o = 0, l = 0;
-  while (o < by_order.size() || l < by_lineitem.size()) {
-    AffectedOrder order;
-    order.orderkey = o == by_order.size()      ? by_lineitem[l].first
-                     : l == by_lineitem.size() ? by_order[o].first
-                                               : std::min(by_order[o].first, by_lineitem[l].first);
-    for (; o < by_order.size() && by_order[o].first == order.orderkey; ++o) {
-      const auto &delta = order_deltas[by_order[o].second];
-      if (!order.has_order_delta)
-        order.first_old_status = delta.old_orderstatus;
-      order.has_order_delta = true;
-      if (delta.old_orderstatus != delta.new_orderstatus) {
-        order.status_changed = true;
-        order.new_status = delta.new_orderstatus;
-      }
-    }
-    order.first = l;
-    while (l < by_lineitem.size() && by_lineitem[l].first == order.orderkey)
-      ++l;
-    order.last = l;
-    affected.orders.push_back(order);
-  }
-  return affected;
-}
-
-// Absent orders contribute nothing, so an absent one is only tracked again when
-// this commit inserts it; any other absent order is looked up in the table.
-AffectedOrder::Source ClassifyOrder(const AffectedOrder &order, bool tracked) {
-  using Source = AffectedOrder::Source;
-  if (tracked)
-    return Source::Tracked;
-  if (order.status_changed && order.new_status == 0)
-    return Source::Skip; // deleted by this commit
-  if (!order.has_order_delta || order.first_old_status != 0 || !order.status_changed)
-    return Source::Lookup;
-  return Source::Inserted; // RF1: its lineitems cannot predate it
-}
-
-OrderSummary SummaryOf(const TpchQ21InitialScan::OrderLookup &lookup) {
-  OrderSummary summary;
-  summary.orderstatus = lookup.status;
-  for (const auto &entry : lookup.suppliers)
-    if (entry[1] > 0)
-      summary.suppliers.push_back({entry[0], entry[1], entry[2]});
-  return summary;
-}
-
-} // namespace
-
-// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ21Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ21Module::Dependencies() const {
@@ -964,352 +1251,51 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
   auto &buffer = dynamic_cast<TpchQ21TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
 
-  const auto rebuild_all = [&]() {
-    outcome = core::StagedMaintenanceOutcome{};
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  };
-
   if (buffer.RequiresRebuild()) {
     const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+        core::MaintenanceRequest::RebuildOnly(services.ExpectedQueriesBeforeNextWrite()));
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
-  const auto &lineitem_deltas = buffer.LineitemDeltas();
-  const auto &order_deltas = buffer.OrderDeltas();
-  const auto &supplier_deltas = buffer.SupplierDeltas();
-  const auto &nation_deltas = buffer.NationDeltas();
-
-  if (lineitem_deltas.empty() && order_deltas.empty() &&
-      supplier_deltas.empty() && nation_deltas.empty())
+  const auto total_deltas = buffer.LineitemDeltas().size() + buffer.OrderDeltas().size() +
+                            buffer.SupplierDeltas().size() + buffer.NationDeltas().size();
+  if (total_deltas == 0)
     return outcome;
-
-  const auto total_deltas = lineitem_deltas.size() + order_deltas.size() +
-                            supplier_deltas.size() + nation_deltas.size();
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(total_deltas), 1, true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+      core::MaintenanceRequest::IncrementalSingleState(
+          total_deltas, services.ExpectedQueriesBeforeNextWrite()));
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    core::FinishRebuildAll(outcome, decision);
+    return outcome;
+  }
+
+  const auto visibility = services.CurrentVisibility();
+  const auto parents = LoadParents(services, visibility);
+  if (!parents) {
     core::FinishRebuildAll(outcome);
     return outcome;
   }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  // Load the three side partitions (pointer fetches; nothing is copied).
-  const auto visibility = services.CurrentVisibility();
-  const auto side_snapshot = services.StateStore().ReadPartitions(
-      visibility, {TpchQ21Layout::kSupplierMetadata,
-                   TpchQ21Layout::kOrderSummaries,
-                   TpchQ21Layout::kNationNameIndex});
-  std::shared_ptr<const TpchQ21Dir> parent_dir;
-  std::shared_ptr<const TpchQ21Core> parent_core;
-  std::shared_ptr<const TpchQ21NationIndex> index;
-  for (const auto &image : side_snapshot.partitions) {
-    if (image.partition == TpchQ21Layout::kSupplierMetadata) {
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::SupplierMetadata);
-      if (!typed)
-        return rebuild_all();
-      parent_dir = typed->dir;
-    } else if (image.partition == TpchQ21Layout::kOrderSummaries) {
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::OrderSummaries);
-      if (!typed)
-        return rebuild_all();
-      parent_core = typed->core;
-    } else if (image.partition == TpchQ21Layout::kNationNameIndex) {
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::NationNameIndex);
-      if (!typed)
-        return rebuild_all();
-      index = typed->nation_index;
-    }
-  }
-  if (!parent_dir || !parent_core || !index)
-    return rebuild_all();
-
   // Staged copies share every shard with the parents; a write clones only the
   // shard it touches, so published versions are never mutated.
-  auto next_core = std::make_shared<TpchQ21Core>(*parent_core);
-  auto next_dir = std::make_shared<TpchQ21Dir>(*parent_dir);
+  auto next_core = std::make_shared<TpchQ21Core>(*parents->order_core);
+  auto next_dir = std::make_shared<TpchQ21Dir>(*parents->supplier_dir);
 
-  // ── Orders: classify, look up the untracked ones, compute the new states ──
-  auto affected_orders = CollectAffectedOrders(services, buffer);
-  auto &orders = affected_orders.orders;
-  const auto &sorted_lineitems = affected_orders.lineitems;
-  core::ParallelEach(services, orders.size(), kOrderGrain, [&](std::size_t i) {
-    orders[i].source = ClassifyOrder(orders[i], parent_core->orders.Contains(orders[i].orderkey));
-  });
-  std::vector<int64_t> lookup_keys;
-  for (auto &order : orders) {
-    if (order.source == AffectedOrder::Source::Lookup) {
-      order.lookup = lookup_keys.size();
-      lookup_keys.push_back(order.orderkey);
-    }
+  auto order_updates = ComputeOrderUpdates(services, initial_scan, buffer, *parents->order_core);
+  if (!order_updates) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
   }
-  std::vector<TpchQ21InitialScan::OrderLookup> lookups;
-  if (!lookup_keys.empty() &&
-      (!initial_scan || !initial_scan->LookupOrderSummaries(lookup_keys, lookups)))
-    return rebuild_all();
-
-  using Numwait = std::unordered_map<int64_t, int64_t>;
-  Numwait numwait_delta; // suppkey -> change
-  std::vector<OrderUpdate> updates(orders.size());
-  const auto compute_order = [&](std::size_t i, Numwait &sums) {
-    using Source = AffectedOrder::Source;
-    const AffectedOrder &order = orders[i];
-    OrderUpdate &update = updates[i];
-    if (order.source == Source::Skip)
-      return;
-    if (order.source == Source::Lookup) {
-      const auto &lookup = lookups[order.lookup];
-      if (!lookup.found || lookup.status != 'F')
-        return;
-      auto fresh = SummaryOf(lookup);
-      int64_t supp = 0, count = 0;
-      if (ComputeOrderContribution(fresh, supp, count)) {
-        sums[supp] += count;
-        update = {OrderUpdate::Action::Put, std::move(fresh)};
-      }
-      return;
-    }
-    const bool tracked = order.source == Source::Tracked;
-    OrderSummary summary = tracked ? *parent_core->orders.Find(order.orderkey) : OrderSummary{};
-    int64_t old_supp = 0, old_count = 0;
-    const bool had_contrib = ComputeOrderContribution(summary, old_supp, old_count);
-    if (order.status_changed)
-      summary.orderstatus = order.new_status;
-    for (std::size_t k = order.first; k < order.last; ++k) {
-      const auto &delta = lineitem_deltas[sorted_lineitems[k].second];
-      auto *info = summary.FindSupplier(delta.suppkey);
-      if (!info) {
-        summary.suppliers.push_back({delta.suppkey, 0, 0});
-        info = &summary.suppliers.back();
-      }
-      info->total_count += delta.sign;
-      if (delta.receiptdate > delta.commitdate)
-        info->late_count += delta.sign;
-      if (info->total_count <= 0 && info->late_count <= 0)
-        summary.suppliers.erase(summary.suppliers.begin() + (info - summary.suppliers.data()));
-    }
-    int64_t new_supp = 0, new_count = 0;
-    const bool has_contrib = ComputeOrderContribution(summary, new_supp, new_count);
-    if (had_contrib)
-      sums[old_supp] -= old_count;
-    if (has_contrib)
-      sums[new_supp] += new_count;
-    if (has_contrib)
-      update = {OrderUpdate::Action::Put, std::move(summary)};
-    else if (tracked)
-      update.action = OrderUpdate::Action::Erase;
-  };
-  core::ParallelReduce(
-      services, orders.size(), kOrderGrain, numwait_delta,
-      [&](Numwait &sums, std::size_t begin, std::size_t end) {
-        for (std::size_t i = begin; i < end; ++i)
-          compute_order(i, sums);
-      },
-      [](Numwait &into, Numwait &&from) {
-        for (const auto &[suppkey, delta] : from)
-          into[suppkey] += delta;
-      });
-
-  // ── Apply the order updates: each task owns whole shards of the map ───────
-  using ShardedItems = std::vector<std::pair<std::size_t, std::size_t>>; // (shard, item)
-  const auto shard_runs = [](const ShardedItems &items) {
-    std::vector<std::size_t> starts;
-    for (std::size_t i = 0; i < items.size(); ++i)
-      if (i == 0 || items[i].first != items[i - 1].first)
-        starts.push_back(i);
-    starts.push_back(items.size());
-    return starts;
-  };
-  const auto by_shard = [](const auto &a, const auto &b) { return a.first < b.first; };
-  ShardedItems order_items;
-  for (std::size_t i = 0; i < updates.size(); ++i)
-    if (updates[i].action != OrderUpdate::Action::None)
-      order_items.push_back({next_core->orders.ShardOf(orders[i].orderkey), i});
-  ParallelStableSort(services, order_items, by_shard, kSortGrain);
-  const auto order_runs = shard_runs(order_items);
-  core::ParallelEach(services, order_runs.size() - 1, kApplyGrain, [&](std::size_t run) {
-    for (std::size_t k = order_runs[run]; k < order_runs[run + 1]; ++k) {
-      const std::size_t i = order_items[k].second;
-      if (updates[i].action == OrderUpdate::Action::Put)
-        next_core->orders.Upsert(orders[i].orderkey, std::move(updates[i].summary));
-      else
-        next_core->orders.Erase(orders[i].orderkey);
-    }
-  });
-
-  // ── Apply the numwait deltas; remember each affected supplier's change ────
-  struct Affected {
-    int64_t suppkey = 0;
-    int64_t old_nw = 0;
-    int64_t new_nw = 0;
-  };
-  struct NumwaitChange {
-    std::size_t shard = 0;
-    Affected supplier;
-    int64_t delta = 0;
-  };
-  std::vector<NumwaitChange> changes;
-  for (const auto &[suppkey, delta] : numwait_delta)
-    if (delta != 0)
-      changes.push_back({next_core->numwait.ShardOf(suppkey), {suppkey, 0, 0}, delta});
-  ParallelStableSort(
-      services, changes,
-      [](const NumwaitChange &a, const NumwaitChange &b) {
-        return a.shard != b.shard ? a.shard < b.shard : a.supplier.suppkey < b.supplier.suppkey;
-      },
-      kSortGrain);
-  std::vector<std::size_t> change_runs;
-  for (std::size_t i = 0; i < changes.size(); ++i)
-    if (i == 0 || changes[i].shard != changes[i - 1].shard)
-      change_runs.push_back(i);
-  change_runs.push_back(changes.size());
-  core::ParallelEach(services, change_runs.size() - 1, kApplyGrain, [&](std::size_t run) {
-    for (std::size_t k = change_runs[run]; k < change_runs[run + 1]; ++k) {
-      auto &change = changes[k];
-      const int64_t *cur = next_core->numwait.Find(change.supplier.suppkey);
-      change.supplier.old_nw = cur ? *cur : 0;
-      change.supplier.new_nw = change.supplier.old_nw + change.delta;
-      if (change.supplier.new_nw == 0)
-        next_core->numwait.Erase(change.supplier.suppkey);
-      else
-        next_core->numwait[change.supplier.suppkey] = change.supplier.new_nw;
-    }
-  });
-  std::vector<Affected> affected;
-  affected.reserve(changes.size() + supplier_deltas.size());
-  for (const auto &change : changes)
-    affected.push_back(change.supplier);
-  const auto by_suppkey = [](const Affected &a, const Affected &b) { return a.suppkey < b.suppkey; };
-  std::sort(affected.begin(), affected.end(), by_suppkey);
-
-  // ── Supplier directory deltas ─────────────────────────────────────────────
-  const auto numwait_changed = affected.size();
-  for (const auto &delta : supplier_deltas) {
-    if (!std::binary_search(affected.begin(), affected.begin() + numwait_changed,
-                            Affected{delta.suppkey}, by_suppkey)) {
-      const int64_t *cur = next_core->numwait.Find(delta.suppkey);
-      affected.push_back({delta.suppkey, cur ? *cur : 0, cur ? *cur : 0});
-    }
-    // had_old only records that a row went away; the final directory state is
-    // the last delta per supplier (delete then insert = replace).
-    auto &slot = next_dir->overlay[delta.suppkey];
-    if (delta.has_new) {
-      slot.present = true;
-      slot.supplier = {std::make_shared<const std::string>(delta.new_name),
-                       delta.new_nationkey};
-    } else {
-      slot.present = false;
-      slot.supplier = {};
-    }
+  ApplyOrderUpdates(services, *order_updates, *next_core);
+  auto affected = ApplyNumwaitDeltas(services, order_updates->numwait_delta, *next_core);
+  ApplySupplierDeltas(buffer.SupplierDeltas(), *next_core, *next_dir, affected);
+  auto patched = PatchNations(services, visibility, *parents->supplier_dir, *next_dir, affected);
+  if (!patched) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
   }
-
-  // ── Patch the affected nations' rows ──────────────────────────────────────
-  std::map<int32_t, std::vector<NameChange>> name_changes;
-  for (const auto &supplier : affected) {
-    const auto *old_rec = parent_dir->Find(supplier.suppkey);
-    const auto *new_rec = next_dir->Find(supplier.suppkey);
-    const int64_t old_contribution = std::max<int64_t>(supplier.old_nw, 0);
-    const int64_t new_contribution = std::max<int64_t>(supplier.new_nw, 0);
-    if (old_rec && old_contribution > 0)
-      name_changes[old_rec->nationkey].push_back({old_rec->name, -old_contribution, old_contribution});
-    if (new_rec && new_contribution > 0)
-      name_changes[new_rec->nationkey].push_back({new_rec->name, new_contribution, 0});
-  }
-
-  std::vector<int32_t> nations;
-  std::vector<std::vector<NameChange>> nation_changes;
-  std::size_t nation_ops = 0;
-  for (auto &[nk, nation_ops_of] : name_changes) {
-    nations.push_back(nk);
-    nation_ops += nation_ops_of.size();
-    nation_changes.push_back(std::move(nation_ops_of));
-  }
-  std::vector<std::shared_ptr<const TpchQ21NationRows>> nation_rows(nations.size());
-  if (!nations.empty()) {
-    std::vector<core::PartitionId> partitions;
-    for (const auto nk : nations)
-      partitions.push_back(NationPartition(nk));
-    const auto nation_snapshot =
-        services.StateStore().ReadPartitions(visibility, partitions);
-    for (const auto &image : nation_snapshot.partitions) {
-      if (image.partition < TpchQ21Layout::kNationBase)
-        continue;
-      const auto nk = static_cast<int32_t>(image.partition -
-                                           TpchQ21Layout::kNationBase);
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::Nation);
-      if (!typed || typed->nationkey != nk)
-        return rebuild_all();
-      const auto at = std::find(nations.begin(), nations.end(), nk) - nations.begin();
-      nation_rows[static_cast<std::size_t>(at)] = typed->rows;
-    }
-  }
-  const RowVec no_rows; // an absent image = no waiters yet
-  std::vector<RowVec> patched(nations.size());
-  std::vector<char> patched_ok(nations.size(), 0);
-  core::ParallelEach(services, nations.size(), nation_ops < kNationOpGrain ? nations.size() : 1,
-                     [&](std::size_t i) {
-                       patched_ok[i] = PatchNationRows(nation_rows[i] ? nation_rows[i]->rows : no_rows,
-                                                       std::move(nation_changes[i]), patched[i]);
-                     });
-  if (std::find(patched_ok.begin(), patched_ok.end(), 0) != patched_ok.end())
-    return rebuild_all();
-
-  outcome.action = core::MaintenanceAction::ApplyDelta;
-  const std::shared_ptr<const TpchQ21Core> core_published = next_core;
-  const std::shared_ptr<const TpchQ21Dir> dir_published = next_dir;
-
-  // Only publish the partitions that changed.
-  if (!lineitem_deltas.empty() || !order_deltas.empty()) {
-    outcome.updates.push_back(core::StateImage::Make(
-        TpchQ21Layout::kAccelerator, TpchQ21Layout::kOrderSummaries, 0,
-        MakeCoreImage(core_published)));
-  }
-  if (!supplier_deltas.empty()) {
-    outcome.updates.push_back(core::StateImage::Make(
-        TpchQ21Layout::kAccelerator, TpchQ21Layout::kSupplierMetadata, 0,
-        MakeDirImage(dir_published)));
-  }
-
-  // nationkey -> unique name (duplicate names keep the slow path).
-  std::unordered_map<int32_t, std::string> nk_to_name;
-  for (const auto &[name, nkeys] : index->nation_name_to_keys) {
-    if (nkeys.size() != 1)
-      continue;
-    nk_to_name.emplace(nkeys.front(), name);
-  }
-  for (std::size_t i = 0; i < nations.size(); ++i) {
-    const int32_t nk = nations[i];
-    auto published = std::make_shared<TpchQ21NationRows>();
-    published->rows = std::move(patched[i]);
-    const std::shared_ptr<const TpchQ21NationRows> shared = published;
-    outcome.updates.push_back(core::StateImage::Make(
-        TpchQ21Layout::kAccelerator, NationPartition(nk), 0,
-        MakeNationImage(nk, shared)));
-    const auto name_it = nk_to_name.find(nk);
-    if (name_it != nk_to_name.end()) {
-      outcome.updates.push_back(core::StateImage::Make(
-          TpchQ21Layout::kAccelerator, NationNamePartition(name_it->second), 0,
-          MakeNationImage(nk, shared, name_it->second)));
-    }
-  }
-  (void)nation_deltas;
+  PublishImages(outcome, buffer, std::move(next_core), std::move(next_dir),
+                *parents->nation_index, *patched);
   return outcome;
 }
 
@@ -1347,7 +1333,7 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
 
   const auto visibility = services.CurrentVisibility();
 
-  // ── Fast path: single-partition read via FNV-1a nation-name hash ──────
+  // Fast path: single-partition read via FNV-1a nation-name hash.
   {
     const auto fast_snapshot = services.StateStore().ReadPartitions(
         visibility, {NationNamePartition(nation_name)});
@@ -1371,7 +1357,7 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
     }
   }
 
-  // ── Slow path: resolve nation name via the tiny NationNameIndex ────────
+  // Slow path: resolve the nation name via the tiny NationNameIndex.
   const auto idx_snapshot = services.StateStore().ReadPartitions(
       visibility, {TpchQ21Layout::kNationNameIndex});
   std::shared_ptr<const TpchQ21NationIndex> idx_state;
@@ -1402,56 +1388,6 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
   EmitMerged(nations, sink);
 }
 
-namespace {
-
-// Order keys in hash shards: the fulfilled orders, or the per-supplier
-// lineitem counts (an OrderSummary) of the orders seen. The shards are the
-// coarsest level of the final order map's shard hash, so a task owning one
-// build shard writes only its own shards of that map.
-struct OrderShards {
-  static constexpr unsigned kBits = 6;
-  static constexpr std::size_t kShards = std::size_t{1} << kBits;
-  using Shard = core::FlatHashMap<OrderSummary>;
-  std::array<Shard, kShards> shards;
-
-  static std::size_t ShardOf(int64_t orderkey) {
-    return core::ShardedCowHashMap<OrderSummary, 7>::ShardOf(orderkey, kBits);
-  }
-  void Fulfilled(int64_t orderkey) { shards[ShardOf(orderkey)][orderkey].orderstatus = 'F'; }
-  bool IsFulfilled(int64_t orderkey) const { return shards[ShardOf(orderkey)].Contains(orderkey); }
-  void Add(const TpchQ21LineitemInput &input) {
-    auto &summary = shards[ShardOf(input.orderkey)][input.orderkey];
-    summary.orderstatus = 'F';
-    AddSupplier(summary, input.suppkey, 1, input.receiptdate > input.commitdate ? 1 : 0);
-  }
-  static void AddSupplier(OrderSummary &summary, int64_t suppkey, int64_t total, int64_t late) {
-    if (auto *info = summary.FindSupplier(suppkey)) {
-      info->total_count += total;
-      info->late_count += late;
-    } else {
-      summary.suppliers.push_back({suppkey, total, late});
-    }
-  }
-};
-
-// Folds `from` into `into`, one pool task per run of shards.
-void FoldShards(const core::AuxEngineServices &services, OrderShards &into, OrderShards &&from) {
-  core::ParallelSlices(services, OrderShards::kShards, 1,
-                       [&](std::size_t, std::size_t first, std::size_t last) {
-                         for (std::size_t s = first; s < last; ++s)
-                           for (auto [orderkey, theirs] : from.shards[s]) {
-                             auto &mine = into.shards[s][orderkey];
-                             if (theirs.orderstatus)
-                               mine.orderstatus = theirs.orderstatus;
-                             for (const auto &info : theirs.suppliers)
-                               OrderShards::AddSupplier(mine, info.suppkey, info.total_count,
-                                                        info.late_count);
-                           }
-                       });
-}
-
-} // namespace
-
 TpchQ21State
 TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ21State state;
@@ -1465,7 +1401,7 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanSuppliers(services, parts,
                                     [&](std::size_t p, const TpchQ21SupplierInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ21SupplierInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ21SupplierInput>{input});
                                     });
       },
       [](Suppliers &partial, const TpchQ21SupplierInput &input) {
@@ -1490,7 +1426,7 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanOrders(services, parts,
                                  [&](std::size_t p, const TpchQ21OrderInput &input) {
-                                   sink(p, TypedRowBatch<TpchQ21OrderInput>{input});
+                                   sink(p, core::SingleRowBatch<TpchQ21OrderInput>{input});
                                  });
       },
       [](OrderShards &partial, const TpchQ21OrderInput &input) {
@@ -1503,7 +1439,7 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitems(services, parts,
                                     [&](std::size_t p, const TpchQ21LineitemInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ21LineitemInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ21LineitemInput>{input});
                                     });
       },
       [&](OrderShards &partial, const TpchQ21LineitemInput &input) {
@@ -1526,10 +1462,9 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
       services, OrderShards::kShards, 1, totals,
       [&](Contributions &acc, std::size_t first, std::size_t last) {
         for (std::size_t s = first; s < last; ++s)
-          for (auto [orderkey, order] : summaries.shards[s]) {
-            (void)orderkey;
+          for (auto entry : summaries.shards[s]) {
             int64_t suppkey = 0, count = 0;
-            if (!ComputeOrderContribution(order, suppkey, count))
+            if (!ComputeOrderContribution(entry.second, suppkey, count))
               continue;
             ++acc.orders;
             if (count != 0)
@@ -1580,13 +1515,11 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
   for (auto it = per_nation.begin(); it != per_nation.end(); ++it)
     groups.push_back(it);
   std::vector<std::shared_ptr<TpchQ21NationRows>> nation_rows(groups.size());
-  services.ParallelFor(groups.size(), [&](std::size_t i) {
+  core::ParallelEach(services, groups.size(), 1, [&](std::size_t i) {
     auto rows = std::make_shared<TpchQ21NationRows>();
     rows->rows.reserve(groups[i]->second.size());
-    for (auto &[name, entry] : groups[i]->second) {
-      (void)name;
-      rows->rows.push_back({entry.first, entry.second});
-    }
+    for (auto &name_entry : groups[i]->second)
+      rows->rows.push_back({name_entry.second.first, name_entry.second.second});
     std::sort(rows->rows.begin(), rows->rows.end(), ImageRowBefore);
     nation_rows[i] = std::move(rows);
   });
