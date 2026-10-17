@@ -828,10 +828,10 @@ namespace {
 
 // The build deals the scanned rows to this many owners by part block, so that
 // owners edit disjoint blocks.
-constexpr std::size_t kBuildOwners = 256;
+using core::kMaxOwners;
 
 std::size_t BuildOwnerOf(int64_t partkey) {
-  return static_cast<uint64_t>(BlockOf(partkey)) % kBuildOwners;
+  return static_cast<uint64_t>(BlockOf(partkey)) % kMaxOwners;
 }
 
 struct PartsuppRow {
@@ -970,7 +970,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   // encoded at the end (transient: the editable copy of the cells, ~1.3x).
   BlockEditor editor(*state);
   auto partsupps = core::PartitionedBuild<Buckets<PartsuppRow>>(
-      services, [] { return Buckets<PartsuppRow>(kBuildOwners); },
+      services, [] { return Buckets<PartsuppRow>(kMaxOwners); },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanPartsuppsPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ9PartsuppInput &input) {
@@ -982,8 +982,8 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
             {input.partkey, input.suppkey, input.supplycost_raw});
       },
       AppendBuckets<PartsuppRow>, partitions);
-  std::vector<std::vector<std::pair<int64_t, std::shared_ptr<EditBlock>>>> built(kBuildOwners);
-  core::ParallelEach(services, kBuildOwners, 1, [&](std::size_t owner) {
+  std::vector<std::vector<std::pair<int64_t, std::shared_ptr<EditBlock>>>> built(kMaxOwners);
+  core::ParallelEach(services, kMaxOwners, 1, [&](std::size_t owner) {
     built[owner] = BuildPartsuppBlocks(partsupps[owner]);
     partsupps[owner] = {};
   });
@@ -995,7 +995,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
     for (const int32_t year : orders.years)
       state->GroupFor(nationkey, year);
   auto lineitems = core::PartitionedBuild<Buckets<TpchQ9LineitemInput>>(
-      services, [] { return Buckets<TpchQ9LineitemInput>(kBuildOwners); },
+      services, [] { return Buckets<TpchQ9LineitemInput>(kMaxOwners); },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitemsPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ9LineitemInput &input) {

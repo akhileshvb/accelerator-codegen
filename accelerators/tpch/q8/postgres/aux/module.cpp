@@ -455,14 +455,8 @@ void InstallFolded(TpchQ8State &s, FoldedOrders &&folded) {
   folded.cube.ApplyTo(s);
 }
 
-// Owners of the folds of a batch: one for a small batch, else enough to keep
-// the workers busy past uneven chunks. A function of the data, not of threads.
-constexpr std::size_t kMaxOwners = 256;
-constexpr std::size_t kRowsPerOwner = 1024;
-
-std::size_t OwnerCount(std::size_t rows) {
-  return std::clamp<std::size_t>(rows / kRowsPerOwner, 1, kMaxOwners);
-}
+using core::kMaxOwners;
+using core::OwnerCount;
 
 std::size_t OwnerOf(int64_t orderkey, std::size_t owners) {
   return static_cast<uint64_t>(orderkey >> core::ChunkedBlobMap::kKeyShift) % owners;

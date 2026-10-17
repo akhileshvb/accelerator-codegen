@@ -27,6 +27,7 @@ using Int128 = ::accelerator_codegen::pg_numeric::Int128;
 constexpr core::PartitionId kStatePartition =
     core::TpchQ10Layout::kCustomerDimensions;
 constexpr uint32_t kMaxBuckets = 1u << 16;
+constexpr std::size_t kOrdersPerBucket = 20000;
 // Revenue lookups per read slice, ~0.2 us each.
 constexpr std::size_t kGetsGrain = 1 << 17;
 // Build rows per slice: order lookups / list rows sorted.
@@ -576,7 +577,7 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
   // ~4 revenue rows per (day, bucket) list: scale the bucket count with the
   // order count (~2500 distinct order days).
   uint32_t buckets = 1;
-  while (buckets < kMaxBuckets && orders.size() / 20000 >= buckets * 2ull)
+  while (buckets < kMaxBuckets && orders.size() / kOrdersPerBucket >= buckets * 2ull)
     buckets *= 2;
   s.buckets = buckets;
 

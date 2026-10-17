@@ -33,6 +33,15 @@ inline constexpr std::size_t kFloatBuildPartitions = 16;
 // Buckets rows are dealt into by builds that merge bucket by bucket.
 inline constexpr std::size_t kBuildBuckets = 64;
 
+// Owners of the folds of a batch: one for a small batch, else enough to keep
+// the workers busy past uneven chunks. A function of the data, not of threads.
+inline constexpr std::size_t kMaxOwners = 256;
+inline constexpr std::size_t kRowsPerOwner = 1024;
+
+inline std::size_t OwnerCount(std::size_t rows) {
+  return std::clamp<std::size_t>(rows / kRowsPerOwner, 1, kMaxOwners);
+}
+
 // Partitions of a build scan: one for a serial build, else enough to keep the
 // workers busy past uneven partitions.
 inline std::size_t BuildPartitions(const AuxEngineServices &services) {
