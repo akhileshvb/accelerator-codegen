@@ -1,24 +1,21 @@
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
 #include <vector>
 
 #include "tpch/common/duckdb_partitioned_scan.hpp"
 #include "substrate/aux/core/aux_query_module.hpp"
 #include "prims/sharded_sorted_map.hpp"
+#include "prims/sql_date.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q8 layout ──────────────────────────────────────────────────────────────
 struct TpchQ8Layout {
   static constexpr const char *kAccelerator = "tpch_q8_aux";
   static constexpr core::PartitionId kYear1995 = 0;
@@ -29,7 +26,6 @@ struct TpchQ8Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ8Config {
   core::TableId part_table = 0;
   core::TableId supplier_table = 0;
@@ -40,7 +36,6 @@ struct TpchQ8Config {
   core::TableId region_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ8PartInput {
   int64_t key = 0;
   std::string type;
@@ -92,36 +87,17 @@ public:
   virtual void ScanNations(const std::function<void(const TpchQ8NationInput &)> &) = 0;
   virtual void ScanRegions(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
 
-  virtual bool LookupOrder(int64_t orderkey, TpchQ8OrdersInput &out) {
-    (void)orderkey; (void)out; return false;
-  }
-  virtual bool LookupPart(int64_t partkey, TpchQ8PartInput &out) {
-    (void)partkey; (void)out; return false;
-  }
-  virtual bool LookupSupplier(int64_t suppkey, TpchQ8SupplierInput &out) {
-    (void)suppkey; (void)out; return false;
-  }
-  virtual bool LookupCustomer(int64_t custkey, TpchQ8CustomerInput &out) {
-    (void)custkey; (void)out; return false;
-  }
+  virtual bool LookupOrder(int64_t, TpchQ8OrdersInput &) { return false; }
+  virtual bool LookupPart(int64_t, TpchQ8PartInput &) { return false; }
+  virtual bool LookupSupplier(int64_t, TpchQ8SupplierInput &) { return false; }
+  virtual bool LookupCustomer(int64_t, TpchQ8CustomerInput &) { return false; }
   // Point scans of the CURRENT lineitem rows (transaction-visible) that join a
   // given part / supplier / customer (via orders).  Return false if unsupported.
   using LineitemConsumer = std::function<void(const TpchQ8LineitemInput &)>;
-  virtual bool ScanLineitemsOfPart(int64_t partkey, const LineitemConsumer &) {
-    (void)partkey; return false;
-  }
-  virtual bool ScanLineitemsOfSupplier(int64_t suppkey,
-                                       const LineitemConsumer &) {
-    (void)suppkey; return false;
-  }
-  virtual bool ScanLineitemsOfOrder(int64_t orderkey,
-                                    const LineitemConsumer &) {
-    (void)orderkey; return false;
-  }
-  virtual bool ScanLineitemsOfCustomer(int64_t custkey,
-                                       const LineitemConsumer &) {
-    (void)custkey; return false;
-  }
+  virtual bool ScanLineitemsOfPart(int64_t, const LineitemConsumer &) { return false; }
+  virtual bool ScanLineitemsOfSupplier(int64_t, const LineitemConsumer &) { return false; }
+  virtual bool ScanLineitemsOfOrder(int64_t, const LineitemConsumer &) { return false; }
+  virtual bool ScanLineitemsOfCustomer(int64_t, const LineitemConsumer &) { return false; }
   // The current lineitem rows of every order in `orderkeys`, in as few scans as
   // the source can manage (a refresh touches tens of thousands of orders, and
   // one query per order is what made the delta cost as much as a rebuild).
@@ -135,32 +111,6 @@ public:
   }
 };
 
-// ── Cube key ────────────────────────────────────────────────────────────────
-struct TpchQ8CubeKey {
-  int32_t year = 0;
-  int32_t customer_nationkey = 0;
-  int32_t supplier_nationkey = 0;
-  int32_t part_type_index = 0;
-
-  bool operator==(const TpchQ8CubeKey &other) const {
-    return year == other.year &&
-           customer_nationkey == other.customer_nationkey &&
-           supplier_nationkey == other.supplier_nationkey &&
-           part_type_index == other.part_type_index;
-  }
-};
-
-struct TpchQ8CubeKeyHash {
-  std::size_t operator()(const TpchQ8CubeKey &k) const {
-    std::size_t h = static_cast<std::size_t>(k.year);
-    h = h * 31 + static_cast<std::size_t>(k.customer_nationkey);
-    h = h * 31 + static_cast<std::size_t>(k.supplier_nationkey);
-    h = h * 31 + static_cast<std::size_t>(k.part_type_index);
-    return h;
-  }
-};
-
-// ── Persistent sharded maps ─────────────────────────────────────────────────
 // core::ShardedSortedMap: 2^12 shards (64 x 64) for the small dictionaries and
 // 2^16 (256 x 256) for the order table.  Copying a map copies the top pointers;
 // a Txn clones the touched mid arrays and shards once per version.
@@ -176,7 +126,6 @@ template <class E> inline auto *TpchQ8ValMut(E *e) {
   return e ? &e->value : nullptr;
 }
 
-// ── State structures ────────────────────────────────────────────────────────
 // The dimension dictionaries are much larger than the annual cube.  They live
 // in a separate shared payload built from persistent sharded maps, so delta
 // maintenance copies only the shards it touches.
@@ -245,26 +194,21 @@ struct TpchQ8CubePage {
 };
 
 struct TpchQ8State {
-  struct VolumePair {
-    int64_t nation_volume_raw = 0;
-    int64_t total_volume_raw = 0;
-  };
-
   int32_t nat_dim = 1;
   // index = part_type_index * 2 + (year - 1995); null page = all zero.
   std::vector<std::shared_ptr<const TpchQ8CubePage>> pages;
   std::shared_ptr<const TpchQ8Dimensions> dims;
 
-  static constexpr int32_t kYear1995Start = 9131;
-  static constexpr int32_t kYear1997Start = 9862;
+  static constexpr int32_t kYear1995Start = core::sql_date::DaysFromCivil(1995, 1, 1);
+  static constexpr int32_t kYear1996Start = core::sql_date::DaysFromCivil(1996, 1, 1);
+  static constexpr int32_t kYear1997Start = core::sql_date::DaysFromCivil(1997, 1, 1);
 
+  // The order year, or 0 outside 1995-1996.
   static int32_t YearFromDays(int32_t days_since_epoch) {
-    if (days_since_epoch >= kYear1995Start && days_since_epoch < 9496) return 1995;
-    if (days_since_epoch >= 9496 && days_since_epoch < kYear1997Start) return 1996;
+    if (days_since_epoch >= kYear1995Start && days_since_epoch < kYear1996Start) return 1995;
+    if (days_since_epoch >= kYear1996Start && days_since_epoch < kYear1997Start) return 1996;
     return 0;
   }
-
-  static constexpr int32_t kYear1996Start_days() { return 9496; }
 };
 
 enum class TpchQ8ImageKind : uint8_t { AnnualCube };
@@ -275,13 +219,11 @@ struct TpchQ8StateImage {
   std::shared_ptr<const TpchQ8State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ8OutputRow {
   int64_t o_year = 0;
   double mkt_share = 0.0;
 };
 
-// ── Delta ───────────────────────────────────────────────────────────────────
 struct TpchQ8LineitemDelta {
   int64_t partkey = 0;
   int64_t orderkey = 0;
@@ -290,15 +232,11 @@ struct TpchQ8LineitemDelta {
   int8_t sign = 0;
 };
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
 std::vector<uint8_t> EncodeTpchQ8AnnualCube(const TpchQ8State &state);
 bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
                             TpchQ8State &state);
 
-// ── Revenue ─────────────────────────────────────────────────────────────────
-int64_t TpchQ8VolumeRaw(int64_t extendedprice_raw, int64_t discount_raw);
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 // Net per-key change of a dimension row inside one transaction.
 struct TpchQ8DimNet {
   bool present = false;
@@ -338,7 +276,6 @@ private:
       customer_net;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ8Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ8Layout::kAccelerator;
@@ -369,15 +306,13 @@ private:
   TpchQ8State BuildState(core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ8State> &state) const;
-  bool ResolveBindings(core::AuxEngineServices &services,
-                       const core::QueryArguments &arguments,
+  bool ResolveBindings(const core::QueryArguments &arguments,
                        std::string &nation_name, std::string &region_name,
                        std::string &part_type) const;
   void EmitResult(const TpchQ8State &state,
                   const std::string &nation_name,
                   const std::string &region_name,
                   const std::string &part_type,
-                  core::AuxEngineServices &services,
                   core::AuxRowSink &sink) const;
 
   TpchQ8Config config;

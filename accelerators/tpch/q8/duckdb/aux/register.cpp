@@ -8,15 +8,8 @@
 #include "catalog/query_catalog.hpp"
 
 #include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
 #include <vector>
 
 #include "duckdb.hpp"
@@ -24,6 +17,9 @@
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
+
+constexpr accelerator_codegen::aux_state::query::TpchQ8Config kTables{0, 1, 2, 3, 4, 5, 6};
+
 namespace q8_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
@@ -33,7 +29,6 @@ using namespace catalog_values;
 SharedProbe BuildTpchQ8Probe(::duckdb::MaterializedQueryResult &result,
                              ::duckdb::idx_t row) {
   // AuxRow matches TpchQ8 ReadLineitem: partkey, orderkey, suppkey, price, discount.
-  // table id matches TpchQ8Config{0,1,2,3,4}.lineitem_table = 4.
   // The bump is the line's own price, so mkt_share moves past the fingerprint's
   // rounding at any money scale (a fixed +100.00 rounds away on scaled prices).
   const auto orderkey = result.GetValue(1, row).ToString();
@@ -42,7 +37,7 @@ SharedProbe BuildTpchQ8Probe(::duckdb::MaterializedQueryResult &result,
   const double price = std::stod(price_text);
   const int64_t price_raw = DecimalRaw(result.GetValue(3, row));
   SharedProbe probe;
-  probe.table = 4;
+  probe.table = kTables.lineitem_table;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {3};
   probe.write_delta = price;
@@ -322,8 +317,16 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q8_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ8Config c{0, 1, 2, 3, 4, 5, 6};
-      return MakeBinding<TpchQ8Scan, TpchQ8Module>(connection, CaptureTableList{{"part", c.part_table}, {"supplier", c.supplier_table}, {"customer", c.customer_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}, {"nation", c.nation_table}, {"region", c.region_table}}, c);
+      return MakeBinding<TpchQ8Scan, TpchQ8Module>(
+          connection,
+          CaptureTableList{{"part", kTables.part_table},
+                           {"supplier", kTables.supplier_table},
+                           {"customer", kTables.customer_table},
+                           {"orders", kTables.orders_table},
+                           {"lineitem", kTables.lineitem_table},
+                           {"nation", kTables.nation_table},
+                           {"region", kTables.region_table}},
+          kTables);
     }}};
 
 } // namespace

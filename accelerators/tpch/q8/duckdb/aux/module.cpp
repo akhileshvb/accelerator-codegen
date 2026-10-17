@@ -1,19 +1,17 @@
 #include "tpch/q8/duckdb/aux/module.hpp"
 #include "tpch/q8/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
-#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
-
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -22,41 +20,24 @@ using core::ByteReader;
 using core::ByteWriter;
 
 constexpr uint32_t kCubeMagic = 0x51385143; // Q8C
-constexpr uint32_t kVersionV2 = 3;
+constexpr uint32_t kCubeVersion = 3;
 // Lineitem deltas per slice when resolving them against the dimensions.
 constexpr std::size_t kResolveGrain = 2048;
 // Touched mid arrays per slice when publishing a dimension map.
-constexpr std::size_t kFinishGrain = 16;
+constexpr std::size_t kMidArrayGrain = 16;
 // Shards per slice when sorting a built index.
 constexpr std::size_t kSortShardGrain = 1024;
 
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
+// The cube covers these two order years.
+constexpr int32_t kFirstYear = 1995;
+constexpr int32_t kLastYear = 1996;
 
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
+// Largest region size kept in an on-stack array when emitting.
+constexpr std::size_t kInlineRegionNations = 64;
 
 bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
   int64_t value = 0;
-  if (!IntCell(row, index, value) ||
+  if (!core::IntCell(row, index, value) ||
       value < std::numeric_limits<int32_t>::min() ||
       value > std::numeric_limits<int32_t>::max())
     return false;
@@ -64,28 +45,14 @@ bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
   return true;
 }
 
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
 bool ReadLineitem(const core::AuxRow &row, TpchQ8LineitemInput &out) {
   int64_t partkey = 0, orderkey = 0, suppkey = 0, extended_raw = 0, discount_raw = 0;
   int32_t scale = 0;
-  if (!IntCell(row, 0, partkey) ||
-      !IntCell(row, 1, orderkey) ||
-      !IntCell(row, 2, suppkey) ||
-      !RawDecimalCell(row, 3, extended_raw, scale) ||
-      !RawDecimalCell(row, 4, discount_raw, scale))
+  if (!core::IntCell(row, 0, partkey) ||
+      !core::IntCell(row, 1, orderkey) ||
+      !core::IntCell(row, 2, suppkey) ||
+      !core::DecimalCell(row, 3, extended_raw, scale) ||
+      !core::DecimalCell(row, 4, discount_raw, scale))
     return false;
   out.partkey = partkey;
   out.orderkey = orderkey;
@@ -97,7 +64,7 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ8LineitemInput &out) {
 
 bool ReadPart(const core::AuxRow &row, int64_t &key, std::string &type) {
   int64_t k = 0;
-  if (!IntCell(row, 0, k) || !StringCell(row, 1, type))
+  if (!core::IntCell(row, 0, k) || !core::StringCell(row, 1, type))
     return false;
   key = k;
   return true;
@@ -105,7 +72,7 @@ bool ReadPart(const core::AuxRow &row, int64_t &key, std::string &type) {
 
 bool ReadSupplier(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
   int64_t k = 0;
-  if (!IntCell(row, 0, k) || !Int32Cell(row, 1, nationkey))
+  if (!core::IntCell(row, 0, k) || !Int32Cell(row, 1, nationkey))
     return false;
   key = k;
   return true;
@@ -113,7 +80,7 @@ bool ReadSupplier(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
 
 bool ReadCustomer(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
   int64_t k = 0;
-  if (!IntCell(row, 0, k) || !Int32Cell(row, 1, nationkey))
+  if (!core::IntCell(row, 0, k) || !Int32Cell(row, 1, nationkey))
     return false;
   key = k;
   return true;
@@ -122,28 +89,13 @@ bool ReadCustomer(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
 bool ReadOrders(const core::AuxRow &row, int64_t &key, int64_t &custkey,
                 int32_t &orderdate_days) {
   int64_t k = 0, ck = 0;
-  if (!IntCell(row, 0, k) || !IntCell(row, 1, ck) || !Int32Cell(row, 2, orderdate_days))
+  if (!core::IntCell(row, 0, k) || !core::IntCell(row, 1, ck) || !Int32Cell(row, 2, orderdate_days))
     return false;
   key = k;
   custkey = ck;
   return true;
 }
 
-bool ReadNation(const core::AuxRow &row, int32_t &key, std::string &name,
-                int32_t &regionkey) {
-  if (!Int32Cell(row, 0, key) || !StringCell(row, 1, name) ||
-      !Int32Cell(row, 2, regionkey))
-    return false;
-  return true;
-}
-
-bool ReadRegion(const core::AuxRow &row, int32_t &key, std::string &name) {
-  if (!Int32Cell(row, 0, key) || !StringCell(row, 1, name))
-    return false;
-  return true;
-}
-
-// ── Image helpers ───────────────────────────────────────────────────────────
 std::shared_ptr<const TpchQ8StateImage>
 MakeStateImage(TpchQ8ImageKind kind, int32_t year,
                const std::shared_ptr<const TpchQ8State> &state) {
@@ -160,23 +112,6 @@ const TpchQ8StateImage *AsQ8Image(const core::StateImage &image,
   return payload && payload->kind == kind && payload->state ? payload : nullptr;
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
-core::InvalidationPlan PartitionSet(std::vector<core::PartitionId> partitions) {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
-  for (const auto partition : partitions)
-    plan.partitions.insert(partition);
-  return plan;
-}
-
-// ── Dense cube helpers ─────────────────────────────────────────────────────
 constexpr int32_t kAbsent = std::numeric_limits<int32_t>::min();
 
 int32_t AxisOf(const TpchQ8State &state) { return state.nat_dim + 1; }
@@ -266,30 +201,581 @@ struct DenseI32 {
   }
 };
 
-// ── Date helpers ────────────────────────────────────────────────────────────
-// Use the range-based helper on TpchQ8State. A naive Howard-Hinnant year
-// extraction without the Jan/Feb (m <= 2) civil adjustment mis-bins those
-// months (e.g. 1995-01 → 1994) and shifts Q8 market share (~0.046 vs 0.0455).
-int32_t OrderDateToYear(int32_t days) {
-  return TpchQ8State::YearFromDays(days);
-}
-
-// ── Volume computation ──────────────────────────────────────────────────────
+// volume = l_extendedprice * (1 - l_discount); both inputs have scale 2, so the
+// result has scale 4.
 int64_t ComputeVolumeRaw(int64_t extendedprice_raw, int64_t discount_raw) {
-  // volume = l_extendedprice * (1 - l_discount)
-  // Both inputs are scaled by 100 (scale=2).
-  // So volume_raw = extendedprice_raw * (100 - discount_raw)
-  // Result scale is 2+2=4, i.e. raw *= 100 for output scale 4
   return extendedprice_raw * (100 - discount_raw);
 }
 
-} // namespace
-
-int64_t TpchQ8VolumeRaw(int64_t extendedprice_raw, int64_t discount_raw) {
-  return ComputeVolumeRaw(extendedprice_raw, discount_raw);
+// Fold a dimension-table mutation into per-key net changes.  Any shape we
+// cannot interpret (unreadable row, size mismatch) forces a rebuild.
+template <class V, class ReadFn, class SetFn>
+void AccumulateDim(const core::MutationBatch &mutation, TpchQ8TxnBuffer &buffer,
+                   ReadFn read, SetFn set) {
+  switch (mutation.kind) {
+  case core::MutationKind::Insert:
+    for (const auto &row : mutation.new_rows) {
+      int64_t k = 0;
+      V v{};
+      if (!read(row, k, v)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      set(k, true, v);
+    }
+    break;
+  case core::MutationKind::Delete:
+    for (const auto &row : mutation.old_rows) {
+      int64_t k = 0;
+      V v{};
+      if (!read(row, k, v)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      set(k, false, v);
+    }
+    break;
+  case core::MutationKind::Update:
+    if (mutation.old_rows.size() != mutation.new_rows.size()) {
+      buffer.MarkRebuild();
+      return;
+    }
+    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+      int64_t ok = 0, nk = 0;
+      V ov{}, nv{};
+      if (!read(mutation.old_rows[i], ok, ov) ||
+          !read(mutation.new_rows[i], nk, nv)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (ok != nk)
+        set(ok, false, ov);
+      set(nk, true, nv);
+    }
+    break;
+  }
 }
 
-// ── Encode ──────────────────────────────────────────────────────────────────
+// Orders of one scan partition.
+struct OrdersPartial {
+  TpchQ8OrderMap::Builder orders;
+  int64_t max_key = 0;
+};
+
+// A partition's cube: the state and its editor (the editor keeps a reference,
+// so both live behind pointers and the partial can move).
+struct CubePartial {
+  explicit CubePartial(int32_t nat_dim) : state(std::make_unique<TpchQ8State>()) {
+    state->nat_dim = nat_dim;
+    editor = std::make_unique<CubeEditor>(*state);
+  }
+  std::unique_ptr<TpchQ8State> state;
+  std::unique_ptr<CubeEditor> editor;
+};
+
+// Adds the cells of `from` to `into` (same nation axis).
+void MergeCubes(TpchQ8State &into, TpchQ8State &from) {
+  if (into.pages.size() < from.pages.size())
+    into.pages.resize(from.pages.size());
+  for (std::size_t i = 0; i < from.pages.size(); ++i) {
+    if (!from.pages[i])
+      continue;
+    if (!into.pages[i]) {
+      into.pages[i] = std::move(from.pages[i]);
+      continue;
+    }
+    auto sum = std::make_shared<TpchQ8CubePage>(*into.pages[i]);
+    for (std::size_t c = 0; c < sum->cell.size(); ++c)
+      sum->cell[c] += from.pages[i]->cell[c];
+    for (std::size_t c = 0; c < sum->roll.size(); ++c)
+      sum->roll[c] += from.pages[i]->roll[c];
+    into.pages[i] = std::move(sum);
+  }
+}
+
+// Net lineitem work of one transaction on an order, resolved against the
+// dimensions in parallel before the cube is updated in delta order.
+struct ResolvedDelta {
+  bool joined = false; // part, supplier, order and customer all resolve
+  int64_t custkey = 0;
+  int year_idx = -1; // -1: outside the cube's years
+  int32_t part_type = 0, cust_slot = 0, supp_slot = 0;
+  bool unrepresentable = false;
+};
+
+// Delta maintenance of the cube for one commit.
+//   cube(L, dims) = sum over lineitems l in L of cell(l; dims).  Telescope:
+//     cube(L1,D1) - cube(L0,D0)
+//       = [cube(L1,D1) - cube(L1,D0)]      (A) dimension changes on current L1
+//       + [cube(L1,D0) - cube(L0,D0)]      (B) lineitem deltas under old dims
+//   (A) is computed by point-scanning the current lineitems of every "heavy"
+//   changed entity (part / supplier / customer / order), deduplicated so that
+//   a lineitem touching several changed entities is counted once.  (B) uses
+//   the old view of heavy entities.  "Fresh" entities (new keys nobody
+//   references) are not scanned; they are visible in both views.
+// The page table (a vector of shared_ptr) is copied; pages and dimension
+// shards are shared and copied only when touched. Run() is false when the
+// delta cannot be applied exactly and the state must rebuild.
+class CubeMaintainer {
+public:
+  CubeMaintainer(core::AuxEngineServices &services, const TpchQ8TxnBuffer &buffer,
+                 TpchQ8InitialScan *initial_scan, const TpchQ8State &published)
+      : services(services), buffer(buffer), initial_scan(initial_scan),
+        state(CopyForWrite(published)), editor(*state),
+        nat_dim(state->nat_dim), dims(state->dims.get()), old_dims(state->dims) {}
+
+  bool Run() {
+    CollectDeltaFacts();
+    ApplyPartChanges();
+    ApplyNationChanges(buffer.SupplierNet(), kSupplier, old_dims->supp_build_max,
+                       old_dims->fresh_supp_ref);
+    ApplyNationChanges(buffer.CustomerNet(), kCustomer, old_dims->cust_build_max,
+                       old_dims->fresh_cust_ref);
+    ApplyOrderChanges();
+    IndexHeavyKeys();
+    const bool any_heavy = !heavy[kPart].empty() || !heavy[kSupplier].empty() ||
+                           !heavy[kCustomer].empty() || !heavy_orders.empty();
+    if (any_heavy && !initial_scan)
+      return false;
+    if (!ScanHeavyEntities() || !ScanHeavyOrders() || !ApplyLineitemDeltas())
+      return false;
+    SettleLineCounts();
+    FinishDimensions();
+    return true;
+  }
+
+  std::shared_ptr<const TpchQ8State> Result() const { return state; }
+
+private:
+  enum Kind { kPart, kSupplier, kCustomer, kOrder };
+
+  struct Change {
+    int64_t key;
+    bool old_present;
+    int32_t old_val;
+    bool new_present;
+    int32_t new_val;
+
+    bool Unchanged() const {
+      return old_present == new_present && (!new_present || old_val == new_val);
+    }
+  };
+
+  static std::shared_ptr<TpchQ8State> CopyForWrite(const TpchQ8State &published) {
+    auto copy = std::make_shared<TpchQ8State>();
+    copy->nat_dim = published.nat_dim;
+    copy->pages = published.pages;
+    copy->dims = published.dims; // shared until a write needs it
+    return copy;
+  }
+
+  // The Dimensions object is copied (small dictionaries + shard pointer
+  // tables) at most once per commit, and only when a write needs it. Its map
+  // writers clone each touched shard once and are published at the end.
+  void EnsureMutableDims() {
+    if (mutable_dims)
+      return;
+    mutable_dims = std::make_shared<TpchQ8Dimensions>(*dims);
+    state->dims = mutable_dims;
+    dims = mutable_dims.get();
+    part_tx.emplace(dims->part_key_to_type);
+    supp_tx.emplace(dims->suppkey_to_nation);
+    cust_tx.emplace(dims->custkey_to_nation);
+    order_tx.emplace(dims->order_info);
+  }
+
+  // Current (new-view) lookups: through the writers once they exist.
+  const int32_t *NewPart(int64_t k) const {
+    return TpchQ8Val(part_tx ? part_tx->Find(k) : dims->part_key_to_type.Find(k));
+  }
+  const int32_t *NewSupp(int64_t k) const {
+    return TpchQ8Val(supp_tx ? supp_tx->Find(k) : dims->suppkey_to_nation.Find(k));
+  }
+  const int32_t *NewCust(int64_t k) const {
+    return TpchQ8Val(cust_tx ? cust_tx->Find(k) : dims->custkey_to_nation.Find(k));
+  }
+  const TpchQ8OrderInfo *NewOrder(int64_t k) const {
+    return TpchQ8Val(order_tx ? order_tx->Find(k) : dims->order_info.Find(k));
+  }
+
+  // Old view: heavy entities as before the transaction; everything else as
+  // in the new dims (identical unless fresh).
+  const int32_t *OldPart(int64_t k) const {
+    return heavy_keys[kPart].count(k) ? TpchQ8Val(old_dims->part_key_to_type.Find(k))
+                                      : NewPart(k);
+  }
+  const int32_t *OldSupp(int64_t k) const {
+    return heavy_keys[kSupplier].count(k) ? TpchQ8Val(old_dims->suppkey_to_nation.Find(k))
+                                          : NewSupp(k);
+  }
+  const int32_t *OldCust(int64_t k) const {
+    return heavy_keys[kCustomer].count(k) ? TpchQ8Val(old_dims->custkey_to_nation.Find(k))
+                                          : NewCust(k);
+  }
+  const TpchQ8OrderInfo *OldOrder(int64_t k) const {
+    return heavy_keys[kOrder].count(k) ? TpchQ8Val(old_dims->order_info.Find(k))
+                                       : NewOrder(k);
+  }
+
+  int32_t TypeIndex(const std::string &type) {
+    const auto it = dims->dict->part_type_to_index.find(type);
+    if (it != dims->dict->part_type_to_index.end())
+      return it->second;
+    EnsureMutableDims();
+    if (!dict_cloned) {
+      mutable_dims->dict = std::make_shared<TpchQ8Dict>(*mutable_dims->dict);
+      dict_cloned = true;
+    }
+    const int32_t idx = static_cast<int32_t>(mutable_dims->dict->part_types.size());
+    mutable_dims->dict->part_type_to_index[type] = idx;
+    mutable_dims->dict->part_types.push_back(type);
+    return idx;
+  }
+
+  // Net lineitem row count change per order, and the fresh keys this
+  // transaction's lineitem deltas reference.
+  void CollectDeltaFacts() {
+    line_delta_sum.reserve(buffer.Deltas().size());
+    for (const auto &delta : buffer.Deltas())
+      line_delta_sum[delta.orderkey] += delta.sign;
+
+    for (const auto &delta : buffer.Deltas()) {
+      if (delta.partkey > old_dims->part_build_max)
+        referenced_fresh[kPart].insert(delta.partkey);
+      if (delta.suppkey > old_dims->supp_build_max)
+        referenced_fresh[kSupplier].insert(delta.suppkey);
+      const TpchQ8Dimensions::OrderInfo *oi = nullptr;
+      const auto ov = buffer.OrderInfoOverlay().find(delta.orderkey);
+      if (ov != buffer.OrderInfoOverlay().end())
+        oi = &ov->second;
+      else
+        oi = TpchQ8Val(old_dims->order_info.Find(delta.orderkey));
+      if (oi && oi->custkey > old_dims->cust_build_max)
+        referenced_fresh[kCustomer].insert(oi->custkey);
+    }
+  }
+
+  void ApplyPartChanges() {
+    for (const auto &[key, net] : buffer.PartNet()) {
+      const int32_t *cur = NewPart(key);
+      Change c{key, cur != nullptr, cur ? *cur : 0, net.present, 0};
+      if (net.present)
+        c.new_val = TypeIndex(net.type);
+      if (c.Unchanged())
+        continue;
+      const bool fresh = key > old_dims->part_build_max &&
+                         !old_dims->fresh_part_ref.count(key) &&
+                         !referenced_fresh[kPart].count(key);
+      if (!fresh)
+        heavy[kPart].push_back(c);
+      EnsureMutableDims();
+      if (c.new_present)
+        part_tx->Upsert({key, c.new_val});
+      else
+        part_tx->Erase(key);
+    }
+  }
+
+  void ApplyNationChanges(const std::unordered_map<int64_t, TpchQ8DimNet> &nets,
+                          Kind kind, int64_t build_max,
+                          const std::unordered_set<int64_t> &ref_set) {
+    for (const auto &[key, net] : nets) {
+      const int32_t *cur = kind == kSupplier ? NewSupp(key) : NewCust(key);
+      Change c{key, cur != nullptr, cur ? *cur : 0, net.present,
+               net.present ? net.nationkey : 0};
+      if (c.Unchanged())
+        continue;
+      const bool fresh = key > build_max && !ref_set.count(key) &&
+                         !referenced_fresh[kind].count(key);
+      if (!fresh)
+        heavy[kind].push_back(c);
+      EnsureMutableDims();
+      auto &writer = kind == kSupplier ? supp_tx : cust_tx;
+      if (c.new_present)
+        writer->Upsert({key, c.new_val});
+      else
+        writer->Erase(key);
+    }
+  }
+
+  void ApplyOrderChanges() {
+    std::unordered_set<int64_t> order_keys;
+    for (const auto &kv : buffer.OrderInfoOverlay())
+      order_keys.insert(kv.first);
+    for (const auto k : buffer.OrderErase())
+      order_keys.insert(k);
+    for (const auto okey : order_keys) {
+      const auto ov = buffer.OrderInfoOverlay().find(okey);
+      const bool new_present = ov != buffer.OrderInfoOverlay().end() &&
+                               !buffer.OrderErase().count(okey);
+      const auto *cur = TpchQ8Val(old_dims->order_info.Find(okey));
+      const bool same = (cur != nullptr) == new_present &&
+                        (!new_present ||
+                         (cur->custkey == ov->second.custkey &&
+                          cur->orderdate_days == ov->second.orderdate_days));
+      if (same)
+        continue;
+      // Fresh order: a new key above every key seen at build, never deleted
+      // with lineitems left behind.  Its lineitems can only arrive as deltas.
+      const bool fresh = new_present && !cur &&
+                         okey > old_dims->order_build_max &&
+                         !old_dims->deleted_orders.count(okey);
+      if (!fresh) {
+        heavy_orders.push_back(okey);
+        if (cur && cur->lines >= 0) {
+          const auto ds = line_delta_sum.find(okey);
+          if (cur->lines + (ds == line_delta_sum.end() ? 0 : ds->second) == 0)
+            scan_skip.insert(okey);
+        }
+      }
+      EnsureMutableDims();
+      if (new_present) {
+        TpchQ8Dimensions::OrderInfo ni = ov->second;
+        ni.lines = cur ? cur->lines : (fresh ? 0 : -1);
+        order_tx->Upsert({okey, ni});
+        mutable_dims->deleted_orders.erase(okey);
+      } else {
+        order_tx->Erase(okey);
+      }
+    }
+  }
+
+  void IndexHeavyKeys() {
+    for (const Kind kind : {kPart, kSupplier, kCustomer})
+      for (const Change &c : heavy[kind])
+        heavy_keys[kind].insert(c.key);
+    for (const auto k : heavy_orders)
+      heavy_keys[kOrder].insert(k);
+  }
+
+  // Cell of a lineitem in the old (use_old) or new view.
+  // Returns 0 = not joinable / out of range, 1 = ok, -1 = unrepresentable.
+  int CellOf(bool use_old, int64_t partkey, int64_t orderkey, int64_t suppkey,
+             int &yi, int32_t &pt, int32_t &cs, int32_t &ss) const {
+    const auto *oi = use_old ? OldOrder(orderkey) : NewOrder(orderkey);
+    if (!oi)
+      return 0;
+    const int32_t year = TpchQ8State::YearFromDays(oi->orderdate_days);
+    if (year != kFirstYear && year != kLastYear)
+      return 0;
+    yi = year - kFirstYear;
+    const int32_t *pp = use_old ? OldPart(partkey) : NewPart(partkey);
+    const int32_t *sp = use_old ? OldSupp(suppkey) : NewSupp(suppkey);
+    const int32_t *cp = use_old ? OldCust(oi->custkey) : NewCust(oi->custkey);
+    if (!pp || !sp || !cp)
+      return 0;
+    pt = *pp;
+    if (!NationSlot(*cp, nat_dim, cs) || !NationSlot(*sp, nat_dim, ss))
+      return -1;
+    return 1;
+  }
+
+  void AddCell(bool use_old, int64_t partkey, int64_t orderkey, int64_t suppkey,
+               int64_t signed_vol) {
+    int yi = 0;
+    int32_t pt = 0, cs = 0, ss = 0;
+    const int r = CellOf(use_old, partkey, orderkey, suppkey, yi, pt, cs, ss);
+    if (r < 0)
+      failed = true;
+    else if (r > 0)
+      editor.Add(yi, pt, cs, ss, signed_vol);
+  }
+
+  // A changed entity's current lineitem moves from its old cell to its new one.
+  void MoveLineitem(const TpchQ8LineitemInput &row) {
+    const int64_t vol = ComputeVolumeRaw(row.extendedprice_raw, row.discount_raw);
+    AddCell(false, row.partkey, row.orderkey, row.suppkey, vol);
+    AddCell(true, row.partkey, row.orderkey, row.suppkey, -vol);
+  }
+
+  // Deleted while lineitems remain: remember so a re-insert is scanned.
+  void SettleScannedOrder(int64_t key, std::size_t rows) {
+    if (rows > 0 && !NewOrder(key)) {
+      EnsureMutableDims();
+      mutable_dims->deleted_orders.insert(key);
+    } else if (NewOrder(key)) {
+      scanned_lines[key] = static_cast<int32_t>(rows);
+    }
+  }
+
+  bool ScanHeavyEntities() {
+    for (const Kind kind : {kPart, kSupplier, kCustomer}) {
+      for (const Change &change : heavy[kind]) {
+        const int64_t key = change.key;
+        const auto consume = [&](const TpchQ8LineitemInput &row) {
+          // Dedup: a lineitem touching several changed entities is handled by
+          // the highest-priority one (order > part > supplier > customer).
+          if (kind == kPart && heavy_keys[kOrder].count(row.orderkey))
+            return;
+          if (kind == kSupplier && (heavy_keys[kOrder].count(row.orderkey) ||
+                                    heavy_keys[kPart].count(row.partkey)))
+            return;
+          if (kind == kCustomer && (heavy_keys[kOrder].count(row.orderkey) ||
+                                    heavy_keys[kPart].count(row.partkey) ||
+                                    heavy_keys[kSupplier].count(row.suppkey)))
+            return;
+          MoveLineitem(row);
+        };
+        bool ok = false;
+        if (kind == kPart)
+          ok = initial_scan->ScanLineitemsOfPart(key, consume);
+        else if (kind == kSupplier)
+          ok = initial_scan->ScanLineitemsOfSupplier(key, consume);
+        else
+          ok = initial_scan->ScanLineitemsOfCustomer(key, consume);
+        if (!ok || failed)
+          return false;
+      }
+    }
+    return true;
+  }
+
+  // Every heavy order's lineitems in one batched scan, not one query per
+  // order.  The cells are order-independent sums; the per-order row counts are
+  // settled after the scan (they only touch dims fields the cell lookups do
+  // not read).
+  bool ScanHeavyOrders() {
+    std::vector<int64_t> keys;
+    keys.reserve(heavy_orders.size());
+    for (const int64_t key : heavy_orders)
+      if (!scan_skip.count(key))
+        keys.push_back(key);
+    if (keys.empty())
+      return true;
+    std::unordered_map<int64_t, std::size_t> rows_of;
+    rows_of.reserve(keys.size());
+    const auto consume = [&](const TpchQ8LineitemInput &row) {
+      ++rows_of[row.orderkey];
+      MoveLineitem(row);
+    };
+    if (!initial_scan->ScanLineitemsOfOrders(keys, consume) || failed)
+      return false;
+    for (const int64_t key : keys) {
+      const auto it = rows_of.find(key);
+      SettleScannedOrder(key, it == rows_of.end() ? 0 : it->second);
+    }
+    return true;
+  }
+
+  // Each delta is resolved against the dimensions in parallel (read-only),
+  // then the cube and the fresh-key bookkeeping are updated in delta order.
+  bool ApplyLineitemDeltas() {
+    const auto &line_deltas = buffer.Deltas();
+    std::vector<ResolvedDelta> resolved(line_deltas.size());
+    core::ParallelEach(services, line_deltas.size(), kResolveGrain, [&](std::size_t i) {
+      const auto &delta = line_deltas[i];
+      auto &r = resolved[i];
+      // dims are exact, so an unresolved entity means the lineitem does not join.
+      const int32_t *pp = OldPart(delta.partkey);
+      const int32_t *sp = OldSupp(delta.suppkey);
+      const auto *oi = OldOrder(delta.orderkey);
+      if (!pp || !sp || !oi)
+        return;
+      const int32_t *cp = OldCust(oi->custkey);
+      if (!cp)
+        return;
+      r.joined = true;
+      r.custkey = oi->custkey;
+      const int32_t year = TpchQ8State::YearFromDays(oi->orderdate_days);
+      if (year != kFirstYear && year != kLastYear)
+        return;
+      r.year_idx = year - kFirstYear;
+      r.part_type = *pp;
+      r.unrepresentable = !NationSlot(*cp, nat_dim, r.cust_slot) ||
+                          !NationSlot(*sp, nat_dim, r.supp_slot);
+    });
+    for (std::size_t i = 0; i < line_deltas.size(); ++i) {
+      const auto &delta = line_deltas[i];
+      const auto &r = resolved[i];
+      if (!r.joined)
+        continue;
+
+      // Remember fresh keys that now have lineitems.
+      if (delta.partkey > dims->part_build_max &&
+          !dims->fresh_part_ref.count(delta.partkey)) {
+        EnsureMutableDims();
+        mutable_dims->fresh_part_ref.insert(delta.partkey);
+      }
+      if (delta.suppkey > dims->supp_build_max &&
+          !dims->fresh_supp_ref.count(delta.suppkey)) {
+        EnsureMutableDims();
+        mutable_dims->fresh_supp_ref.insert(delta.suppkey);
+      }
+      if (r.custkey > dims->cust_build_max &&
+          !dims->fresh_cust_ref.count(r.custkey)) {
+        EnsureMutableDims();
+        mutable_dims->fresh_cust_ref.insert(r.custkey);
+      }
+      if (r.year_idx < 0)
+        continue;
+      if (r.unrepresentable)
+        return false;
+      editor.Add(r.year_idx, r.part_type, r.cust_slot, r.supp_slot,
+                 static_cast<int64_t>(delta.sign) * delta.volume_raw);
+    }
+    return true;
+  }
+
+  // Keeps the per-order line counts exact.
+  void SettleLineCounts() {
+    for (const auto &sc : scanned_lines) {
+      EnsureMutableDims();
+      if (auto *e = TpchQ8ValMut(order_tx->Mutable(sc.first)))
+        e->lines = sc.second;
+    }
+    for (const auto &ds : line_delta_sum) {
+      if (ds.second == 0 || scanned_lines.count(ds.first))
+        continue;
+      const auto *cur = NewOrder(ds.first);
+      if (!cur || cur->lines < 0)
+        continue;
+      EnsureMutableDims();
+      auto *e = TpchQ8ValMut(order_tx->Mutable(ds.first));
+      e->lines += ds.second;
+      if (e->lines < 0)
+        e->lines = -1;
+    }
+  }
+
+  void FinishDimensions() {
+    if (!mutable_dims)
+      return;
+    const auto for_each_mid = [&](std::size_t n, const auto &fn) {
+      core::ParallelEach(services, n, kMidArrayGrain, fn);
+    };
+    mutable_dims->part_key_to_type = part_tx->Finish(for_each_mid);
+    mutable_dims->suppkey_to_nation = supp_tx->Finish(for_each_mid);
+    mutable_dims->custkey_to_nation = cust_tx->Finish(for_each_mid);
+    mutable_dims->order_info = order_tx->Finish(for_each_mid);
+  }
+
+  core::AuxEngineServices &services;
+  const TpchQ8TxnBuffer &buffer;
+  TpchQ8InitialScan *initial_scan;
+  std::shared_ptr<TpchQ8State> state;
+  CubeEditor editor;
+  const int32_t nat_dim;
+  const TpchQ8Dimensions *dims;
+  const std::shared_ptr<const TpchQ8Dimensions> old_dims;
+  std::shared_ptr<TpchQ8Dimensions> mutable_dims;
+  std::optional<TpchQ8SmallMap::Txn> part_tx, supp_tx, cust_tx;
+  std::optional<TpchQ8OrderMap::Txn> order_tx;
+  bool dict_cloned = false;
+  bool failed = false;
+  std::vector<Change> heavy[3];
+  std::vector<int64_t> heavy_orders;
+  // Heavy keys per kind, for dedup and for the old view.
+  std::unordered_set<int64_t> heavy_keys[4];
+  // Heavy orders whose lineitems are known to be all gone: no point scan needed.
+  std::unordered_set<int64_t> scan_skip;
+  // Current line count of scanned (heavy) orders that remain present.
+  std::unordered_map<int64_t, int32_t> scanned_lines;
+  std::unordered_map<int64_t, int32_t> line_delta_sum;
+  std::unordered_set<int64_t> referenced_fresh[3];
+};
+
+} // namespace
+
 // Format V2: sparse nonzero cells (same cell record as V1), then nat_dim and
 // the fresh-key bounds, then the dictionaries and reverse maps.
 std::vector<uint8_t> EncodeTpchQ8AnnualCube(const TpchQ8State &state) {
@@ -305,13 +791,13 @@ std::vector<uint8_t> EncodeTpchQ8AnnualCube(const TpchQ8State &state) {
       if (v != 0)
         ++cell_count;
   }
-  core::WriteImageHeader(writer, kCubeMagic, kVersionV2, cell_count);
+  core::WriteImageHeader(writer, kCubeMagic, kCubeVersion, cell_count);
   for (std::size_t idx = 0; idx < state.pages.size(); ++idx) {
     const auto &page = state.pages[idx];
     if (!page)
       continue;
     const int32_t pt = static_cast<int32_t>(idx / 2);
-    const int32_t year = 1995 + static_cast<int32_t>(idx % 2);
+    const int32_t year = kFirstYear + static_cast<int32_t>(idx % 2);
     for (int32_t c = 0; c < axis; ++c) {
       for (int32_t s = 0; s < axis; ++s) {
         const int64_t v = page->cell[static_cast<std::size_t>(c) * axis + s];
@@ -384,13 +870,12 @@ std::vector<uint8_t> EncodeTpchQ8AnnualCube(const TpchQ8State &state) {
   return std::move(writer.bytes);
 }
 
-// ── Decode ──────────────────────────────────────────────────────────────────
 bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
                             TpchQ8State &state) {
   TpchQ8Dimensions d;
   ByteReader reader{bytes};
   uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kCubeMagic, kVersionV2, count))
+  if (!core::ReadImageHeader(reader, kCubeMagic, kCubeVersion, count))
     return false;
 
   std::vector<TpchQ8CubeCell> cells;
@@ -538,7 +1023,7 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
   {
     CubeEditor editor(state);
     for (const auto &cell : cells) {
-      if ((cell.year != 1995 && cell.year != 1996) ||
+      if ((cell.year != kFirstYear && cell.year != kLastYear) ||
           cell.part_type_index < 0 ||
           static_cast<std::size_t>(cell.part_type_index) >= d.dict->part_types.size())
         return false;
@@ -546,7 +1031,7 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
       if (!NationSlot(cell.customer_nationkey, nat_dim, cs) ||
           !NationSlot(cell.supplier_nationkey, nat_dim, ss))
         return false;
-      editor.Add(cell.year - 1995, cell.part_type_index, cs, ss,
+      editor.Add(cell.year - kFirstYear, cell.part_type_index, cs, ss,
                  cell.total_volume_raw);
     }
   }
@@ -554,7 +1039,6 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
   return reader.FullyConsumed();
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ8TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ8TxnBuffer::Clear() {
   pending = false;
@@ -631,7 +1115,6 @@ TpchQ8TxnBuffer::CustomerNet() const {
   return customer_net;
 }
 
-// ── Module identity ─────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ8Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ8Module::Dependencies() const {
@@ -648,7 +1131,6 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ8Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ8TxnBuffer>();
 }
 
-// ── Build ───────────────────────────────────────────────────────────────────
 void TpchQ8Module::Build(core::AuxEngineServices &services,
                          core::StateBuilder &builder) {
   const auto state = BuildState(services);
@@ -656,14 +1138,13 @@ void TpchQ8Module::Build(core::AuxEngineServices &services,
   // Store full state in both year partitions (same full cube with both years)
   builder.Write(core::StateImage::Make(
       TpchQ8Layout::kAccelerator, TpchQ8Layout::kYear1995, 0,
-      MakeStateImage(TpchQ8ImageKind::AnnualCube, 1995, typed_state)));
+      MakeStateImage(TpchQ8ImageKind::AnnualCube, kFirstYear, typed_state)));
   builder.Write(core::StateImage::Make(
       TpchQ8Layout::kAccelerator, TpchQ8Layout::kYear1996, 0,
-      MakeStateImage(TpchQ8ImageKind::AnnualCube, 1996, typed_state)));
+      MakeStateImage(TpchQ8ImageKind::AnnualCube, kLastYear, typed_state)));
   builder.Finish();
 }
 
-// ── InterpretMutation ──────────────────────────────────────────────────────
 core::InvalidationPlan
 TpchQ8Module::InterpretMutation(const core::MutationBatch &mutation) const {
   if (mutation.table == config.lineitem_table ||
@@ -673,62 +1154,10 @@ TpchQ8Module::InterpretMutation(const core::MutationBatch &mutation) const {
       mutation.table == config.customer_table ||
       mutation.table == config.nation_table ||
       mutation.table == config.region_table) {
-    return All();
+    return core::AllPartitionsPlan();
   }
   return {};
 }
-
-// ── AccumulateMutation ─────────────────────────────────────────────────────
-namespace {
-// Fold a dimension-table mutation into per-key net changes.  Any shape we
-// cannot interpret (unreadable row, size mismatch) forces a rebuild.
-template <class V, class ReadFn, class SetFn>
-void AccumulateDim(const core::MutationBatch &mutation, TpchQ8TxnBuffer &buffer,
-                   ReadFn read, SetFn set) {
-  switch (mutation.kind) {
-  case core::MutationKind::Insert:
-    for (const auto &row : mutation.new_rows) {
-      int64_t k = 0;
-      V v{};
-      if (!read(row, k, v)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      set(k, true, v);
-    }
-    break;
-  case core::MutationKind::Delete:
-    for (const auto &row : mutation.old_rows) {
-      int64_t k = 0;
-      V v{};
-      if (!read(row, k, v)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      set(k, false, v);
-    }
-    break;
-  case core::MutationKind::Update:
-    if (mutation.old_rows.size() != mutation.new_rows.size()) {
-      buffer.MarkRebuild();
-      return;
-    }
-    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-      int64_t ok = 0, nk = 0;
-      V ov{}, nv{};
-      if (!read(mutation.old_rows[i], ok, ov) ||
-          !read(mutation.new_rows[i], nk, nv)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      if (ok != nk)
-        set(ok, false, ov);
-      set(nk, true, nv);
-    }
-    break;
-  }
-}
-} // namespace
 
 void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
                                       core::AuxEngineServices &,
@@ -868,7 +1297,6 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
-// ── StageMaintenance ───────────────────────────────────────────────────────
 core::StagedMaintenanceOutcome
 TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
                                const core::InvalidationPlan &,
@@ -876,24 +1304,10 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
   auto &buffer = dynamic_cast<TpchQ8TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
 
-  auto Rebuild = [&]() {
-    core::StagedMaintenanceOutcome o;
-    o.action = core::MaintenanceAction::RebuildAll;
-    o.invalidations = All();
-    o.pending_rebuild = o.invalidations;
-    return o;
-  };
-
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(
+        outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                     services.ExpectedQueriesBeforeNextWrite())));
     return outcome;
   }
   const std::size_t work =
@@ -904,486 +1318,49 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(work), 1, true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+      core::MaintenanceRequest::IncrementalSingleState(
+          work, services.ExpectedQueriesBeforeNextWrite()));
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    core::FinishRebuildAll(outcome, decision);
+    return outcome;
+  }
+
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {TpchQ8Layout::kYear1995});
+  const TpchQ8State *published = nullptr;
+  core::Version existing_version = 0;
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition != TpchQ8Layout::kYear1995)
+      continue;
+    const auto *typed = AsQ8Image(image, TpchQ8ImageKind::AnnualCube);
+    if (!typed)
+      break;
+    published = typed->state.get();
+    existing_version = image.version;
+    break;
+  }
+  if (!published) {
     core::FinishRebuildAll(outcome);
     return outcome;
   }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+
+  CubeMaintainer maintainer(services, buffer, initial_scan, *published);
+  if (!maintainer.Run()) {
+    core::FinishRebuildAll(outcome);
     return outcome;
   }
 
-  // Read existing state.  The page table (a vector of shared_ptr) is copied;
-  // pages and dimension shards are shared and copied only when touched.
-  core::Version existing_version = 0;
-  const auto visibility = services.CurrentVisibility();
-  std::shared_ptr<TpchQ8State> new_state;
-  const auto snapshot = services.StateStore().ReadPartitions(
-      visibility, {TpchQ8Layout::kYear1995});
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == TpchQ8Layout::kYear1995) {
-      const auto *typed = AsQ8Image(image, TpchQ8ImageKind::AnnualCube);
-      if (!typed)
-        return Rebuild();
-      new_state = std::make_shared<TpchQ8State>();
-      new_state->nat_dim = typed->state->nat_dim;
-      new_state->pages = typed->state->pages;
-      new_state->dims = typed->state->dims;  // shared until a write needs it
-      existing_version = image.version;
-      break;
-    }
-  }
-  if (!new_state)
-    return Rebuild();
-
-  CubeEditor editor(*new_state);
-  const int32_t nat_dim = new_state->nat_dim;
-
-  // COW helper: the Dimensions object is copied (small dictionaries + shard
-  // pointer tables) at most once per commit, and only when a write needs it.
-  const TpchQ8Dimensions *dims = new_state->dims.get();
-  std::shared_ptr<TpchQ8Dimensions> mutable_dims;
-  // Writers over the dimension maps (created with mutable_dims; they clone
-  // each touched shard once and are published into mutable_dims at the end).
-  std::optional<TpchQ8SmallMap::Txn> part_tx, supp_tx, cust_tx;
-  std::optional<TpchQ8OrderMap::Txn> order_tx;
-  auto EnsureMutableDims = [&]() {
-    if (!mutable_dims) {
-      mutable_dims = std::make_shared<TpchQ8Dimensions>(*dims);
-      new_state->dims = mutable_dims;
-      dims = mutable_dims.get();
-      part_tx.emplace(dims->part_key_to_type);
-      supp_tx.emplace(dims->suppkey_to_nation);
-      cust_tx.emplace(dims->custkey_to_nation);
-      order_tx.emplace(dims->order_info);
-    }
-  };
-  // Current (new-view) lookups: through the writers once they exist.
-  auto NewPart = [&](int64_t k) {
-    return TpchQ8Val(part_tx ? part_tx->Find(k) : dims->part_key_to_type.Find(k));
-  };
-  auto NewSupp = [&](int64_t k) {
-    return TpchQ8Val(supp_tx ? supp_tx->Find(k)
-                             : dims->suppkey_to_nation.Find(k));
-  };
-  auto NewCust = [&](int64_t k) {
-    return TpchQ8Val(cust_tx ? cust_tx->Find(k)
-                             : dims->custkey_to_nation.Find(k));
-  };
-  auto NewOrder = [&](int64_t k) {
-    return TpchQ8Val(order_tx ? order_tx->Find(k) : dims->order_info.Find(k));
-  };
-  bool dict_cloned = false;
-  auto TypeIndex = [&](const std::string &type) -> int32_t {
-    const auto it = dims->dict->part_type_to_index.find(type);
-    if (it != dims->dict->part_type_to_index.end())
-      return it->second;
-    EnsureMutableDims();
-    if (!dict_cloned) {
-      mutable_dims->dict = std::make_shared<TpchQ8Dict>(*mutable_dims->dict);
-      dict_cloned = true;
-    }
-    const int32_t idx = static_cast<int32_t>(mutable_dims->dict->part_types.size());
-    mutable_dims->dict->part_type_to_index[type] = idx;
-    mutable_dims->dict->part_types.push_back(type);
-    return idx;
-  };
-
-  // ── Exactness argument ─────────────────────────────────────────────────
-  // cube(L, dims) = sum over lineitems l in L of cell(l; dims).  Telescope:
-  //   cube(L1,D1) - cube(L0,D0)
-  //     = [cube(L1,D1) - cube(L1,D0)]      (A) dimension changes on current L1
-  //     + [cube(L1,D0) - cube(L0,D0)]      (B) lineitem deltas under old dims
-  // (A) is computed by point-scanning the current lineitems of every "heavy"
-  // changed entity (part / supplier / customer / order), deduplicated so that
-  // a lineitem touching several changed entities is counted once.  (B) uses
-  // the old view of heavy entities.  "Fresh" entities (new keys nobody
-  // references) are not scanned; they are visible in both views.
-  struct Chg {
-    int64_t key;
-    bool old_present;
-    int32_t old_val;
-    bool new_present;
-    int32_t new_val;
-  };
-  std::vector<Chg> heavy[3];  // 0 = part, 1 = supplier, 2 = customer
-  std::vector<int64_t> heavy_orders;
-  // Heavy orders whose lineitems are known to be all gone: no point scan needed.
-  std::unordered_set<int64_t> scan_skip;
-  // Current line count of scanned (heavy) orders that remain present.
-  std::unordered_map<int64_t, int32_t> scanned_lines;
-  const std::shared_ptr<const TpchQ8Dimensions> old_dims = new_state->dims;
-
-  // Net lineitem row count change per order in this transaction.
-  std::unordered_map<int64_t, int32_t> dsum;
-  dsum.reserve(buffer.Deltas().size());
-  for (const auto &delta : buffer.Deltas())
-    dsum[delta.orderkey] += delta.sign;
-
-  // Fresh keys referenced by this transaction's lineitem deltas.
-  std::unordered_set<int64_t> dref[3];
-  for (const auto &delta : buffer.Deltas()) {
-    if (delta.partkey > old_dims->part_build_max)
-      dref[0].insert(delta.partkey);
-    if (delta.suppkey > old_dims->supp_build_max)
-      dref[1].insert(delta.suppkey);
-    const TpchQ8Dimensions::OrderInfo *oi = nullptr;
-    const auto ov = buffer.OrderInfoOverlay().find(delta.orderkey);
-    if (ov != buffer.OrderInfoOverlay().end())
-      oi = &ov->second;
-    else
-      oi = TpchQ8Val(old_dims->order_info.Find(delta.orderkey));
-    if (oi && oi->custkey > old_dims->cust_build_max)
-      dref[2].insert(oi->custkey);
-  }
-
-  // ── Phase 1: apply dimension changes, classify them ────────────────────
-  for (const auto &[key, net] : buffer.PartNet()) {
-    const int32_t *cur = NewPart(key);
-    Chg c{key, cur != nullptr, cur ? *cur : 0, net.present, 0};
-    if (net.present)
-      c.new_val = TypeIndex(net.type);
-    if (c.old_present == c.new_present && (!c.new_present || c.old_val == c.new_val))
-      continue;
-    const bool fresh = key > old_dims->part_build_max &&
-                       !old_dims->fresh_part_ref.count(key) && !dref[0].count(key);
-    if (!fresh)
-      heavy[0].push_back(c);
-    EnsureMutableDims();
-    if (c.new_present)
-      part_tx->Upsert({key, c.new_val});
-    else
-      part_tx->Erase(key);
-  }
-  auto ApplyNationNet = [&](const std::unordered_map<int64_t, TpchQ8DimNet> &nets,
-                            int kind, int64_t build_max,
-                            const std::unordered_set<int64_t> &ref_set) {
-    for (const auto &[key, net] : nets) {
-      const int32_t *cur = kind == 1 ? NewSupp(key) : NewCust(key);
-      Chg c{key, cur != nullptr, cur ? *cur : 0, net.present,
-            net.present ? net.nationkey : 0};
-      if (c.old_present == c.new_present &&
-          (!c.new_present || c.old_val == c.new_val))
-        continue;
-      const bool fresh =
-          key > build_max && !ref_set.count(key) && !dref[kind].count(key);
-      if (!fresh)
-        heavy[kind].push_back(c);
-      EnsureMutableDims();
-      auto &mm = kind == 1 ? supp_tx : cust_tx;
-      if (c.new_present)
-        mm->Upsert({key, c.new_val});
-      else
-        mm->Erase(key);
-    }
-  };
-  ApplyNationNet(buffer.SupplierNet(), 1, old_dims->supp_build_max,
-                 old_dims->fresh_supp_ref);
-  ApplyNationNet(buffer.CustomerNet(), 2, old_dims->cust_build_max,
-                 old_dims->fresh_cust_ref);
-
-  {
-    std::unordered_set<int64_t> order_keys;
-    for (const auto &kv : buffer.OrderInfoOverlay())
-      order_keys.insert(kv.first);
-    for (const auto k : buffer.OrderErase())
-      order_keys.insert(k);
-    for (const auto okey : order_keys) {
-      const auto ov = buffer.OrderInfoOverlay().find(okey);
-      const bool new_present = ov != buffer.OrderInfoOverlay().end() &&
-                               !buffer.OrderErase().count(okey);
-      const auto *cur = TpchQ8Val(old_dims->order_info.Find(okey));
-      const bool same = (cur != nullptr) == new_present &&
-                        (!new_present ||
-                         (cur->custkey == ov->second.custkey &&
-                          cur->orderdate_days == ov->second.orderdate_days));
-      if (same)
-        continue;
-      // Fresh order: a new key above every key seen at build, never deleted
-      // with lineitems left behind.  Its lineitems can only arrive as deltas.
-      const bool fresh = new_present && !cur &&
-                         okey > old_dims->order_build_max &&
-                         !old_dims->deleted_orders.count(okey);
-      if (!fresh) {
-        heavy_orders.push_back(okey);
-        if (cur && cur->lines >= 0) {
-          const auto ds = dsum.find(okey);
-          if (cur->lines + (ds == dsum.end() ? 0 : ds->second) == 0)
-            scan_skip.insert(okey);
-        }
-      }
-      EnsureMutableDims();
-      if (new_present) {
-        TpchQ8Dimensions::OrderInfo ni = ov->second;
-        ni.lines = cur ? cur->lines : (fresh ? 0 : -1);
-        order_tx->Upsert({okey, ni});
-        mutable_dims->deleted_orders.erase(okey);
-      } else {
-        order_tx->Erase(okey);
-      }
-    }
-  }
-
-  // Heavy key sets (for dedup and for the old view).
-  std::unordered_set<int64_t> hk[4];
-  for (int k = 0; k < 3; ++k)
-    for (const Chg &c : heavy[k])
-      hk[k].insert(c.key);
-  for (const auto k : heavy_orders)
-    hk[3].insert(k);
-
-  // Old view: heavy entities as before the transaction; everything else as
-  // in the new dims (identical unless fresh).
-  auto OldPart = [&](int64_t k) {
-    return hk[0].count(k) ? TpchQ8Val(old_dims->part_key_to_type.Find(k))
-                          : NewPart(k);
-  };
-  auto OldSupp = [&](int64_t k) {
-    return hk[1].count(k) ? TpchQ8Val(old_dims->suppkey_to_nation.Find(k))
-                          : NewSupp(k);
-  };
-  auto OldCust = [&](int64_t k) {
-    return hk[2].count(k) ? TpchQ8Val(old_dims->custkey_to_nation.Find(k))
-                          : NewCust(k);
-  };
-  auto OldOrder = [&](int64_t k) {
-    return hk[3].count(k) ? TpchQ8Val(old_dims->order_info.Find(k))
-                          : NewOrder(k);
-  };
-
-  // Cell of a lineitem in the old (use_old) or new view.
-  // Returns 0 = not joinable / out of range, 1 = ok, -1 = unrepresentable.
-  auto CellOf = [&](bool use_old, int64_t partkey, int64_t orderkey,
-                    int64_t suppkey, int &yi, int32_t &pt, int32_t &cs,
-                    int32_t &ss) -> int {
-    const auto *oi = use_old ? OldOrder(orderkey) : NewOrder(orderkey);
-    if (!oi)
-      return 0;
-    const int32_t year = OrderDateToYear(oi->orderdate_days);
-    if (year != 1995 && year != 1996)
-      return 0;
-    yi = year - 1995;
-    const int32_t *pp = use_old ? OldPart(partkey) : NewPart(partkey);
-    const int32_t *sp = use_old ? OldSupp(suppkey) : NewSupp(suppkey);
-    const int32_t *cp = use_old ? OldCust(oi->custkey) : NewCust(oi->custkey);
-    if (!pp || !sp || !cp)
-      return 0;
-    pt = *pp;
-    if (!NationSlot(*cp, nat_dim, cs) || !NationSlot(*sp, nat_dim, ss))
-      return -1;
-    return 1;
-  };
-  bool failed = false;
-  auto AddCell = [&](bool use_old, int64_t partkey, int64_t orderkey,
-                     int64_t suppkey, int64_t signed_vol) {
-    int yi = 0;
-    int32_t pt = 0, cs = 0, ss = 0;
-    const int r = CellOf(use_old, partkey, orderkey, suppkey, yi, pt, cs, ss);
-    if (r < 0)
-      failed = true;
-    else if (r > 0)
-      editor.Add(yi, pt, cs, ss, signed_vol);
-  };
-
-  // ── Phase A: dimension changes applied to the current lineitems ────────
-  const bool any_heavy = !heavy[0].empty() || !heavy[1].empty() ||
-                         !heavy[2].empty() || !heavy_orders.empty();
-  if (any_heavy && !initial_scan)
-    return Rebuild();
-  for (int kind = 0; kind < 4; ++kind) {
-    if (kind == 3) {
-      // Orders: every heavy order's lineitems in one batched scan, not one query
-      // per order.  The cells are order-independent sums; the per-order row
-      // counts are settled after the scan (they only touch dims fields the
-      // cell lookups do not read).
-      std::vector<int64_t> keys;
-      keys.reserve(heavy_orders.size());
-      for (const int64_t key : heavy_orders)
-        if (!scan_skip.count(key))
-          keys.push_back(key);
-      if (keys.empty())
-        continue;
-      std::unordered_map<int64_t, std::size_t> rows_of;
-      rows_of.reserve(keys.size());
-      const auto consume_order = [&](const TpchQ8LineitemInput &row) {
-        ++rows_of[row.orderkey];
-        const int64_t vol =
-            ComputeVolumeRaw(row.extendedprice_raw, row.discount_raw);
-        AddCell(false, row.partkey, row.orderkey, row.suppkey, vol);
-        AddCell(true, row.partkey, row.orderkey, row.suppkey, -vol);
-      };
-      if (!initial_scan->ScanLineitemsOfOrders(keys, consume_order) || failed)
-        return Rebuild();
-      for (const int64_t key : keys) {
-        const auto it = rows_of.find(key);
-        const std::size_t rows = it == rows_of.end() ? 0 : it->second;
-        if (rows > 0 && !NewOrder(key)) {
-          // Deleted while lineitems remain: remember so a re-insert is scanned.
-          EnsureMutableDims();
-          mutable_dims->deleted_orders.insert(key);
-        } else if (NewOrder(key)) {
-          scanned_lines[key] = static_cast<int32_t>(rows);
-        }
-      }
-      continue;
-    }
-    const std::size_t n = kind < 3 ? heavy[kind].size() : heavy_orders.size();
-    for (std::size_t ci = 0; ci < n; ++ci) {
-      const int64_t key = kind < 3 ? heavy[kind][ci].key : heavy_orders[ci];
-      if (kind == 3 && scan_skip.count(key))
-        continue;
-      std::size_t rows = 0;
-      const auto consume = [&](const TpchQ8LineitemInput &row) {
-        ++rows;
-        // Dedup: a lineitem touching several changed entities is handled by
-        // the highest-priority one (order > part > supplier > customer).
-        if (kind == 0 && hk[3].count(row.orderkey))
-          return;
-        if (kind == 1 && (hk[3].count(row.orderkey) || hk[0].count(row.partkey)))
-          return;
-        if (kind == 2 && (hk[3].count(row.orderkey) || hk[0].count(row.partkey) ||
-                          hk[1].count(row.suppkey)))
-          return;
-        const int64_t vol =
-            ComputeVolumeRaw(row.extendedprice_raw, row.discount_raw);
-        AddCell(false, row.partkey, row.orderkey, row.suppkey, vol);
-        AddCell(true, row.partkey, row.orderkey, row.suppkey, -vol);
-      };
-      bool ok = false;
-      if (kind == 0)
-        ok = initial_scan->ScanLineitemsOfPart(key, consume);
-      else if (kind == 1)
-        ok = initial_scan->ScanLineitemsOfSupplier(key, consume);
-      else if (kind == 2)
-        ok = initial_scan->ScanLineitemsOfCustomer(key, consume);
-      else
-        ok = initial_scan->ScanLineitemsOfOrder(key, consume);
-      if (!ok || failed)
-        return Rebuild();
-      if (kind == 3) {
-        if (rows > 0 && !NewOrder(key)) {
-          // Deleted while lineitems remain: remember so a re-insert is scanned.
-          EnsureMutableDims();
-          mutable_dims->deleted_orders.insert(key);
-        } else if (NewOrder(key)) {
-          scanned_lines[key] = static_cast<int32_t>(rows);
-        }
-      }
-    }
-  }
-
-  // ── Phase B: lineitem deltas under the old view ────────────────────────
-  // Each delta is resolved against the dimensions in parallel (read-only),
-  // then the cube and the fresh-key bookkeeping are updated in delta order.
-  struct Resolved {
-    bool joined = false; // part, supplier, order and customer all resolve
-    int64_t custkey = 0;
-    int year_idx = -1; // -1: outside the cube's years
-    int32_t part_type = 0, cust_slot = 0, supp_slot = 0;
-    bool unrepresentable = false;
-  };
-  const auto &line_deltas = buffer.Deltas();
-  std::vector<Resolved> resolved(line_deltas.size());
-  core::ParallelEach(services, line_deltas.size(), kResolveGrain, [&](std::size_t i) {
-    const auto &delta = line_deltas[i];
-    auto &r = resolved[i];
-    // dims are exact, so an unresolved entity means the lineitem does not join.
-    const int32_t *pp = OldPart(delta.partkey);
-    const int32_t *sp = OldSupp(delta.suppkey);
-    const auto *oi = OldOrder(delta.orderkey);
-    if (!pp || !sp || !oi)
-      return;
-    const int32_t *cp = OldCust(oi->custkey);
-    if (!cp)
-      return;
-    r.joined = true;
-    r.custkey = oi->custkey;
-    const int32_t year = OrderDateToYear(oi->orderdate_days);
-    if (year != 1995 && year != 1996)
-      return;
-    r.year_idx = year - 1995;
-    r.part_type = *pp;
-    r.unrepresentable = !NationSlot(*cp, nat_dim, r.cust_slot) ||
-                        !NationSlot(*sp, nat_dim, r.supp_slot);
-  });
-  for (std::size_t i = 0; i < line_deltas.size(); ++i) {
-    const auto &delta = line_deltas[i];
-    const auto &r = resolved[i];
-    if (!r.joined)
-      continue;
-
-    // Remember fresh keys that now have lineitems.
-    if (delta.partkey > dims->part_build_max &&
-        !dims->fresh_part_ref.count(delta.partkey)) {
-      EnsureMutableDims();
-      mutable_dims->fresh_part_ref.insert(delta.partkey);
-    }
-    if (delta.suppkey > dims->supp_build_max &&
-        !dims->fresh_supp_ref.count(delta.suppkey)) {
-      EnsureMutableDims();
-      mutable_dims->fresh_supp_ref.insert(delta.suppkey);
-    }
-    if (r.custkey > dims->cust_build_max &&
-        !dims->fresh_cust_ref.count(r.custkey)) {
-      EnsureMutableDims();
-      mutable_dims->fresh_cust_ref.insert(r.custkey);
-    }
-    if (r.year_idx < 0)
-      continue;
-    if (r.unrepresentable)
-      return Rebuild();
-    editor.Add(r.year_idx, r.part_type, r.cust_slot, r.supp_slot,
-               static_cast<int64_t>(delta.sign) * delta.volume_raw);
-  }
-
-  // Keep the per-order line counts exact.
-  for (const auto &sc : scanned_lines) {
-    EnsureMutableDims();
-    if (auto *e = TpchQ8ValMut(order_tx->Mutable(sc.first)))
-      e->lines = sc.second;
-  }
-  for (const auto &ds : dsum) {
-    if (ds.second == 0 || scanned_lines.count(ds.first))
-      continue;
-    const auto *cur = NewOrder(ds.first);
-    if (!cur || cur->lines < 0)
-      continue;
-    EnsureMutableDims();
-    auto *e = TpchQ8ValMut(order_tx->Mutable(ds.first));
-    e->lines += ds.second;
-    if (e->lines < 0)
-      e->lines = -1;
-  }
-
-  if (mutable_dims) {
-    const auto for_each_mid = [&](std::size_t n, const auto &fn) {
-      core::ParallelEach(services, n, kFinishGrain, fn);
-    };
-    mutable_dims->part_key_to_type = part_tx->Finish(for_each_mid);
-    mutable_dims->suppkey_to_nation = supp_tx->Finish(for_each_mid);
-    mutable_dims->custkey_to_nation = cust_tx->Finish(for_each_mid);
-    mutable_dims->order_info = order_tx->Finish(for_each_mid);
-  }
-
   outcome.action = core::MaintenanceAction::ApplyDelta;
-  const auto typed_state =
-      std::static_pointer_cast<const TpchQ8State>(std::move(new_state));
-  // Publish to both year partitions
+  const auto typed_state = maintainer.Result();
   outcome.updates.push_back(core::StateImage::Make(
       TpchQ8Layout::kAccelerator, TpchQ8Layout::kYear1995, existing_version,
-      MakeStateImage(TpchQ8ImageKind::AnnualCube, 1995, typed_state)));
+      MakeStateImage(TpchQ8ImageKind::AnnualCube, kFirstYear, typed_state)));
   outcome.updates.push_back(core::StateImage::Make(
       TpchQ8Layout::kAccelerator, TpchQ8Layout::kYear1996, existing_version,
-      MakeStateImage(TpchQ8ImageKind::AnnualCube, 1996, typed_state)));
+      MakeStateImage(TpchQ8ImageKind::AnnualCube, kLastYear, typed_state)));
   return outcome;
 }
 
-// ── CheckValidity ──────────────────────────────────────────────────────────
 bool TpchQ8Module::CheckValidity(core::AuxEngineServices &services,
                                  const core::QueryArguments &arguments) const {
   if (arguments.values.size() < 3)
@@ -1393,13 +1370,10 @@ bool TpchQ8Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
-// ── ResolveBindings ────────────────────────────────────────────────────────
-bool TpchQ8Module::ResolveBindings(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
+bool TpchQ8Module::ResolveBindings(const core::QueryArguments &arguments,
                                    std::string &nation_name,
                                    std::string &region_name,
                                    std::string &part_type) const {
-  (void)services;
   if (arguments.values.size() < 3)
     return false;
   if (arguments.values[0].is_null || arguments.values[1].is_null ||
@@ -1411,19 +1385,16 @@ bool TpchQ8Module::ResolveBindings(core::AuxEngineServices &services,
   return !nation_name.empty() && !region_name.empty() && !part_type.empty();
 }
 
-// ── Execute ────────────────────────────────────────────────────────────────
 void TpchQ8Module::Execute(core::AuxEngineServices &services,
                            const core::QueryArguments &arguments,
                            core::AuxRowSink &sink) {
   std::string nation_name, region_name, part_type;
-  if (!ResolveBindings(services, arguments, nation_name, region_name, part_type)) {
+  if (!ResolveBindings(arguments, nation_name, region_name, part_type)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
 
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
+  if (!CheckValidity(services, arguments)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
@@ -1434,50 +1405,8 @@ void TpchQ8Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  EmitResult(*state, nation_name, region_name, part_type, services, sink);
+  EmitResult(*state, nation_name, region_name, part_type, sink);
 }
-
-// ── BuildState ─────────────────────────────────────────────────────────────
-namespace {
-
-// Orders of one scan partition.
-struct OrdersPartial {
-  TpchQ8OrderMap::Builder orders;
-  int64_t max_key = 0;
-};
-
-// A partition's cube: the state and its editor (the editor keeps a reference,
-// so both live behind pointers and the partial can move).
-struct CubePartial {
-  explicit CubePartial(int32_t nat_dim) : state(std::make_unique<TpchQ8State>()) {
-    state->nat_dim = nat_dim;
-    editor = std::make_unique<CubeEditor>(*state);
-  }
-  std::unique_ptr<TpchQ8State> state;
-  std::unique_ptr<CubeEditor> editor;
-};
-
-// Adds the cells of `from` to `into` (same nation axis).
-void MergeCubes(TpchQ8State &into, TpchQ8State &from) {
-  if (into.pages.size() < from.pages.size())
-    into.pages.resize(from.pages.size());
-  for (std::size_t i = 0; i < from.pages.size(); ++i) {
-    if (!from.pages[i])
-      continue;
-    if (!into.pages[i]) {
-      into.pages[i] = std::move(from.pages[i]);
-      continue;
-    }
-    auto sum = std::make_shared<TpchQ8CubePage>(*into.pages[i]);
-    for (std::size_t c = 0; c < sum->cell.size(); ++c)
-      sum->cell[c] += from.pages[i]->cell[c];
-    for (std::size_t c = 0; c < sum->roll.size(); ++c)
-      sum->roll[c] += from.pages[i]->roll[c];
-    into.pages[i] = std::move(sum);
-  }
-}
-
-} // namespace
 
 TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ8State state;
@@ -1605,13 +1534,13 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
             return;
           if (!supp_dense.Get(supp_b, suppkey, snk))
             return;
-          const int32_t year = OrderDateToYear(oi->orderdate_days);
-          if (year != 1995 && year != 1996)
+          const int32_t year = TpchQ8State::YearFromDays(oi->orderdate_days);
+          if (year != kFirstYear && year != kLastYear)
             return;
           int32_t cs = 0, ss = 0;
           if (!NationSlot(cnk, state.nat_dim, cs) || !NationSlot(snk, state.nat_dim, ss))
             return;
-          p.editor->Add(year - 1995, pt_idx, cs, ss,
+          p.editor->Add(year - kFirstYear, pt_idx, cs, ss,
                        ComputeVolumeRaw(row.Decimal(3), row.Decimal(4)));
         },
         [](CubePartial &into, CubePartial &&from) { MergeCubes(*into.state, *from.state); });
@@ -1630,7 +1559,6 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   return state;
 }
 
-// ── LoadState ──────────────────────────────────────────────────────────────
 bool TpchQ8Module::LoadState(core::AuxEngineServices &services,
                              std::shared_ptr<const TpchQ8State> &state) const {
   const auto snapshot = services.StateStore().ReadPartitions(
@@ -1645,17 +1573,12 @@ bool TpchQ8Module::LoadState(core::AuxEngineServices &services,
   return false;
 }
 
-
-// ── EmitResult ─────────────────────────────────────────────────────────────
 // Cost: O(years x region nations) page reads, independent of cube size.
 void TpchQ8Module::EmitResult(const TpchQ8State &state,
                               const std::string &nation_name,
                               const std::string &region_name,
                               const std::string &part_type,
-                              core::AuxEngineServices &services,
                               core::AuxRowSink &sink) const {
-  (void)services;
-
   // Resolve target nationkey
   int32_t target_nationkey = -1;
   const auto nn_it = state.dims->dict->nation_name_to_key.find(nation_name);
@@ -1679,7 +1602,7 @@ void TpchQ8Module::EmitResult(const TpchQ8State &state,
     return;
   }
   // Distinct valid region nation keys (a handful): small on-stack array.
-  int32_t region_nationkeys[64];
+  int32_t region_nationkeys[kInlineRegionNations];
   std::size_t region_count = 0;
   for (const int32_t cn : rn_it->second) {
     if (cn < 0 || cn >= state.nat_dim)
@@ -1689,23 +1612,23 @@ void TpchQ8Module::EmitResult(const TpchQ8State &state,
       dup |= region_nationkeys[i] == cn;
     if (dup)
       continue;
-    if (region_count == 64) {  // pathological: fall back to the generic path
-      region_count = 65;
+    if (region_count == kInlineRegionNations) {  // pathological: fall back to the generic path
+      region_count = kInlineRegionNations + 1;
       break;
     }
     region_nationkeys[region_count++] = cn;
   }
   std::vector<int32_t> region_overflow;
-  if (region_count == 65) {
+  if (region_count == kInlineRegionNations + 1) {
     region_overflow = rn_it->second;
     std::sort(region_overflow.begin(), region_overflow.end());
     region_overflow.erase(
         std::unique(region_overflow.begin(), region_overflow.end()),
         region_overflow.end());
   }
-  const int32_t *rk_begin = region_count == 65 ? region_overflow.data()
+  const int32_t *rk_begin = region_count == kInlineRegionNations + 1 ? region_overflow.data()
                                                : region_nationkeys;
-  const int32_t *rk_end = rk_begin + (region_count == 65 ? region_overflow.size()
+  const int32_t *rk_end = rk_begin + (region_count == kInlineRegionNations + 1 ? region_overflow.size()
                                                          : region_count);
 
   // Aggregate: year → (nation_volume, total_volume)
@@ -1714,8 +1637,6 @@ void TpchQ8Module::EmitResult(const TpchQ8State &state,
     int64_t total_volume_raw = 0;
   };
   YearAgg year_aggs[2];
-  static constexpr int32_t kYear1995 = 1995;
-  static constexpr int32_t kYear1996 = 1996;
 
   const std::size_t axis = static_cast<std::size_t>(AxisOf(state));
   const bool have_target =
@@ -1748,7 +1669,7 @@ void TpchQ8Module::EmitResult(const TpchQ8State &state,
     const auto &agg = year_aggs[i];
     if (agg.total_volume_raw == 0)
       continue;
-    const int64_t year = i == 0 ? kYear1995 : kYear1996;
+    const int64_t year = i == 0 ? kFirstYear : kLastYear;
     // nation_volume_raw / total_volume_raw; scales cancel.
     double mkt_share = static_cast<double>(agg.nation_volume_raw) /
                        static_cast<double>(agg.total_volume_raw);
