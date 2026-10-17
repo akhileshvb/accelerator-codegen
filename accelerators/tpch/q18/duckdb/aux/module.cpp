@@ -653,6 +653,25 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
           buffer.NoteOrderDeleted(key);
       break;
     case core::MutationKind::Update:
+      // The survivors' meta (customer, date, price) copies these columns.
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buffer.MarkRebuild();
+        return;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        const auto &before = mutation.old_rows[i].values;
+        const auto &after = mutation.new_rows[i].values;
+        const bool same =
+            before.size() == after.size() &&
+            std::equal(before.begin(), before.end(), after.begin(),
+                       [](const core::AuxValue &x, const core::AuxValue &y) {
+                         return x.is_null == y.is_null && (x.is_null || x.payload == y.payload);
+                       });
+        if (!same) {
+          buffer.MarkRebuild();
+          return;
+        }
+      }
       break;
     }
     return;

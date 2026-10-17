@@ -837,6 +837,17 @@ if(BUILD_TESTING)
         test_tpch_shared_differential_q1_forced_rebuild_partition
         PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300
         ENVIRONMENT "ACCEL_FORCE_MAINTENANCE_ACTION=RebuildPartition;ACCEL_AUX_READ_THREADS=8;ACCEL_AUX_BUILD_THREADS=8;ACCEL_AUX_MAINT_THREADS=8")
+    # A forced RebuildAll: the read right after the commit (the rebuild may
+    # still run) and the one after it settles both match DuckDB.
+    foreach(_q 2 7 13 18 21)
+        add_test(
+            NAME test_tpch_shared_differential_q${_q}_forced_rebuild_all
+            COMMAND test_tpch_shared_differential "${_accel_tpch_test_db}" ${_q})
+        set_tests_properties(
+            test_tpch_shared_differential_q${_q}_forced_rebuild_all
+            PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300
+            ENVIRONMENT "ACCEL_FORCE_MAINTENANCE_ACTION=RebuildAll")
+    endforeach()
     set_tests_properties(test_aux_snapshot_reads_q14_private
         PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 120)
     # Fixture: a fresh small SEC-EDGAR DB in the build dir, built from the SEC

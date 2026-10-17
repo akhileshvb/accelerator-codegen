@@ -54,6 +54,15 @@ std::vector<NamedWrite> TpchSqlWrites(duckdb::Connection &connection,
 void RunSqlWritesDifferentialCheck(const std::string &db_path,
                                    const aux_engine::SharedQueryCatalogEntry &entry, int rounds);
 
+// Writes big enough, or of a kind the module cannot apply incrementally, that
+// the policy (not a forced action) chooses a rebuild: each write is applied
+// and then undone; after each, the accelerator must match the query both while
+// the rebuild may still be running (SQL fallback) and once it has settled
+// (served from the state, no new fallback). Env: ACCEL_LOG_MAINTENANCE_ACTIONS=1
+// prints the action the policy chose for each write.
+void RunBulkWritesDifferentialCheck(const std::string &db_path,
+                                    const aux_engine::SharedQueryCatalogEntry &entry);
+
 void RunRfChunkDifferentialCheck(const std::string &db_path,
                                  const aux_engine::SharedQueryCatalogEntry &entry,
                                  int num_chunks = 4, int order_count = 1);

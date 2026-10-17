@@ -82,8 +82,29 @@ int main(int argc, char **argv) {
               << " chunks=" << num_chunks << " orders/chunk=" << order_count
               << '\n';
 
-    // ACCEL_TPCH_DIFF_MODE=sql: every write kind as captured SQL, all 22 queries by default
+    // ACCEL_TPCH_DIFF_MODE=bulk: writes the policy rebuilds for; =sql: every write kind as captured SQL, all 22 queries by default
     const char *mode = std::getenv("ACCEL_TPCH_DIFF_MODE");
+    if (mode && std::string(mode) == "bulk") {
+      const char *spec = std::getenv("ACCEL_TPCH_RF_DIFF_QUERIES");
+      std::vector<int> all;
+      for (int q = 1; q <= 22; ++q)
+        all.push_back(q);
+      const auto bulk_queries = spec && *spec ? queries : all;
+      int failed = 0;
+      for (const int query_id : bulk_queries) {
+        const auto &entry = accelerator_codegen::aux_state::engine::LookupSharedQuery("tpch", query_id);
+        CopyDb(source, work);
+        try {
+          accelerator_codegen::aux_state::harness::RunBulkWritesDifferentialCheck(work.string(), entry);
+          std::cerr << "PASS tpch Q" << query_id << '\n';
+        } catch (const std::exception &ex) {
+          ++failed;
+          std::cerr << "FAIL tpch Q" << query_id << ": " << ex.what() << '\n';
+        }
+      }
+      std::cerr << (failed ? "FAILED " : "PASS ") << failed << " of " << bulk_queries.size() << '\n';
+      return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
     if (mode && std::string(mode) == "sql") {
       const char *spec = std::getenv("ACCEL_TPCH_RF_DIFF_QUERIES");
       std::vector<int> all;
