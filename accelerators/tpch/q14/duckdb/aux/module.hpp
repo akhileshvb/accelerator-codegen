@@ -33,7 +33,6 @@ struct TpchQ14LineitemInput {
   int32_t shipdate_days = 0;
 };
 
-int32_t TpchQ14MonthKeyFromDays(int32_t days_since_epoch);
 bool TpchQ14IsPromoType(std::string_view type);
 int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                           int64_t discount_raw, int32_t discount_scale);
@@ -153,8 +152,6 @@ bool DecodeTpchQ14Month(const std::vector<uint8_t> &, int32_t month,
 bool FindTpchQ14PartPromo(const std::vector<uint8_t> &, int64_t partkey,
                           TpchQ14PromoClass &);
 
-int32_t TpchQ14DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int32_t TpchQ14AddMonths(int32_t days_since_epoch, int32_t months);
 double TpchQ14FinalizePromoRevenue(const TpchQ14MonthTotals &);
 
 struct TpchQ14PartEvent {
