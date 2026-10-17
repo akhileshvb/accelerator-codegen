@@ -2,13 +2,14 @@
 #include "tpch/q7/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include "tpch/q7/layout.hpp"
 
@@ -16,8 +17,6 @@ namespace accelerator_codegen::aux_state::query {
 
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
 namespace sql_date = core::sql_date;
 
 // Per-partition sums of the lineitem scan.
@@ -32,9 +31,6 @@ constexpr std::size_t kSortShardGrain = 1024;
 // Touched mid arrays per slice when publishing a side index.
 constexpr std::size_t kMidArrayGrain = 16;
 
-constexpr uint32_t kSideVersion = 6;
-constexpr uint32_t kRevenueVersion = 4;
-constexpr uint32_t kSideMagic = 0x53303751;
 constexpr core::PartitionId kRevenuePartition = 1;
 // extendedprice * (100 - discount), both at scale 2.
 constexpr double kRevenueUnit = 10000.0;
@@ -67,156 +63,6 @@ bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey,
          core::DecimalCell(row, 2, extended_raw, extended_scale) &&
          core::DecimalCell(row, 3, discount_raw, discount_scale) &&
          core::DateCell(row, 4, shipdate_days);
-}
-
-std::vector<uint8_t> EncodeTpchQ7Side(const TpchQ7State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kSideMagic, kSideVersion,
-                         static_cast<uint64_t>(state.nation_names.size() +
-                                               state.supplier_nations.size() +
-                                               state.customer_nations.size() +
-                                               state.order_custkeys.size()));
-  writer.U32(static_cast<uint32_t>(state.nation_names.size()));
-  for (const auto &[nk, name] : state.nation_names) {
-    writer.I32(nk);
-    writer.String(name);
-  }
-  const auto write_nc = [&](const TpchQ7Map<TpchQ7NationCount> &m) {
-    writer.U32(static_cast<uint32_t>(m.size()));
-    m.ForEach([&](const TpchQ7Map<TpchQ7NationCount>::Element &e) {
-      writer.I64(e.key);
-      writer.I32(e.value.nation);
-      writer.I32(e.value.window_count);
-    });
-  };
-  write_nc(state.supplier_nations);
-  write_nc(state.customer_nations);
-  writer.U64(state.order_custkeys.size());
-  state.order_custkeys.ForEach(
-      [&](const TpchQ7Map<TpchQ7OrderCust>::Element &e) {
-        writer.I64(e.key);
-        writer.I64(e.value.custkey);
-      });
-  return std::move(writer.bytes);
-}
-
-std::vector<uint8_t> EncodeTpchQ7Revenue(const TpchQ7State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kSideMagic, kRevenueVersion,
-                         static_cast<uint64_t>(state.revenue_1995.size() +
-                                               state.revenue_1996.size()));
-  writer.U32(static_cast<uint32_t>(state.num_nation_slots));
-  writer.U32(static_cast<uint32_t>(state.revenue_1995.size()));
-  for (const auto v : state.revenue_1995)
-    writer.I64(v);
-  writer.U32(static_cast<uint32_t>(state.revenue_1996.size()));
-  for (const auto v : state.revenue_1996)
-    writer.I64(v);
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ7Side(const std::vector<uint8_t> &bytes, TpchQ7State &state) {
-  ByteReader reader{bytes};
-  uint64_t total_count = 0;
-  // Older layouts (v1-v4) carried no per-key window counts / full order map and
-  // cannot be maintained incrementally: reject so the engine rebuilds.
-  if (!core::ReadImageHeader(reader, kSideMagic, kSideVersion, total_count))
-    return false;
-  state.nation_names.clear();
-  state.num_nation_slots = kTpchQ7MinNationSlots;
-
-  uint32_t count = 0;
-  if (!reader.U32(count))
-    return false;
-  for (uint32_t i = 0; i < count; ++i) {
-    int32_t nk = 0;
-    std::string name;
-    if (!reader.I32(nk) || !reader.String(name))
-      return false;
-    state.nation_names.emplace(nk, std::move(name));
-  }
-  const auto read_nc = [&](TpchQ7Map<TpchQ7NationCount> &out) {
-    uint32_t n = 0;
-    if (!reader.U32(n))
-      return false;
-    TpchQ7Map<TpchQ7NationCount>::Builder builder(n);
-    for (uint32_t i = 0; i < n; ++i) {
-      int64_t k = 0;
-      TpchQ7NationCount v;
-      if (!reader.I64(k) || !reader.I32(v.nation) ||
-          !reader.I32(v.window_count))
-        return false;
-      builder.Add({k, v});
-    }
-    builder.Sort();
-    out = builder.Finish();
-    return true;
-  };
-  if (!read_nc(state.supplier_nations) || !read_nc(state.customer_nations))
-    return false;
-  uint64_t order_count = 0;
-  if (!reader.U64(order_count))
-    return false;
-  TpchQ7Map<TpchQ7OrderCust>::Builder orders(order_count);
-  for (uint64_t i = 0; i < order_count; ++i) {
-    int64_t ok = 0;
-    TpchQ7OrderCust v;
-    if (!reader.I64(ok) || !reader.I64(v.custkey))
-      return false;
-    orders.Add({ok, v});
-  }
-  orders.Sort();
-  state.order_custkeys = orders.Finish();
-  for (const auto &[nk, name] : state.nation_names)
-    state.num_nation_slots = std::max(state.num_nation_slots, nk + 1);
-  const auto widen = [&](const TpchQ7NationCount &v) {
-    state.num_nation_slots = std::max(state.num_nation_slots, v.nation + 1);
-  };
-  state.supplier_nations.ForEach(
-      [&](const TpchQ7Map<TpchQ7NationCount>::Element &e) { widen(e.value); });
-  state.customer_nations.ForEach(
-      [&](const TpchQ7Map<TpchQ7NationCount>::Element &e) { widen(e.value); });
-  return reader.offset == bytes.size();
-}
-
-bool DecodeTpchQ7Revenue(const std::vector<uint8_t> &bytes, TpchQ7State &state) {
-  ByteReader reader{bytes};
-  uint64_t total_count = 0;
-  if (!core::ReadImageHeader(reader, kSideMagic, 3, total_count)) {
-    reader.offset = 0;
-    if (!core::ReadImageHeader(reader, kSideMagic, kRevenueVersion, total_count))
-      return false;
-  }
-  state.revenue_1995.clear();
-  state.revenue_1996.clear();
-
-  uint32_t count = 0;
-  if (!reader.U32(count))
-    return false;
-  state.num_nation_slots = count == 0
-      ? kTpchQ7MinNationSlots : static_cast<int32_t>(count);
-
-  if (!reader.U32(count))
-    return false;
-  state.revenue_1995.resize(count, 0);
-  for (uint32_t i = 0; i < count; ++i) {
-    int64_t v = 0;
-    if (!reader.I64(v))
-      return false;
-    state.revenue_1995[i] = v;
-  }
-
-  if (!reader.U32(count))
-    return false;
-  state.revenue_1996.resize(count, 0);
-  for (uint32_t i = 0; i < count; ++i) {
-    int64_t v = 0;
-    if (!reader.I64(v))
-      return false;
-    state.revenue_1996[i] = v;
-  }
-
-  return reader.offset == bytes.size();
 }
 
 // Read-through writer over an immutable TpchQ7Map: changes go to a Txn (which

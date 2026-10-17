@@ -175,15 +175,6 @@ struct TpchQ8Dimensions {
   std::unordered_set<int64_t> fresh_part_ref, fresh_supp_ref, fresh_cust_ref;
 };
 
-struct TpchQ8CubeCell {
-  int32_t year = 0;
-  int32_t customer_nationkey = 0;
-  int32_t supplier_nationkey = 0;
-  int32_t part_type_index = 0;
-  int64_t nation_volume_raw = 0;
-  int64_t total_volume_raw = 0;
-};
-
 // One page per (part_type_index, year): a dense (customer nation x supplier
 // nation) volume matrix plus a roll-up over supplier nation per customer
 // nation.  Axis size is nat_dim + 1 (last slot = "other / negative key").
@@ -231,11 +222,6 @@ struct TpchQ8LineitemDelta {
   int64_t volume_raw = 0;
   int8_t sign = 0;
 };
-
-std::vector<uint8_t> EncodeTpchQ8AnnualCube(const TpchQ8State &state);
-bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
-                            TpchQ8State &state);
-
 
 // Net per-key change of a dimension row inside one transaction.
 struct TpchQ8DimNet {

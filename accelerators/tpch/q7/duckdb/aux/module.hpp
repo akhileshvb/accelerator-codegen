@@ -1,15 +1,10 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <functional>
-#include <algorithm>
-#include <map>
-#include <optional>
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "substrate/aux/core/aux_query_module.hpp"
@@ -159,11 +154,6 @@ struct TpchQ7Op {
   // Lineitem: k0 = orderkey, v0 = suppkey, k1 = shipdate_days, v1 = revenue raw.
   int64_t k0 = 0, v0 = 0, k1 = 0, v1 = 0;
 };
-
-std::vector<uint8_t> EncodeTpchQ7Side(const TpchQ7State &);
-bool DecodeTpchQ7Side(const std::vector<uint8_t> &, TpchQ7State &);
-std::vector<uint8_t> EncodeTpchQ7Revenue(const TpchQ7State &);
-bool DecodeTpchQ7Revenue(const std::vector<uint8_t> &, TpchQ7State &);
 
 int64_t TpchQ7RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                          int64_t discount_raw, int32_t discount_scale);
