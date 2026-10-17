@@ -46,7 +46,7 @@ def main():
     ap.add_argument("--query-timeout", type=float, default=1800)
     a = ap.parse_args()
     a.backend = "postgres"; a.host = "127.0.0.1"; a.user = "postgres"; a.password = "postgres"
-    a.pg_so = "/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so"; a.schema = "public"; a.pg_workers = 8
+    a.pg_so = "/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so"; a.schema = "public"; a.pg_workers = int(os.environ.get("N", "8"))
     a.queries = [int(x) for x in a.queries.split()]
     os.makedirs(a.out, exist_ok=True)
     reps = run_compare.draws(argparse.Namespace(seed=a.seed, repeats=a.repeats, sets=a.sets, sf=a.sf, out=a.out))
@@ -59,7 +59,7 @@ def main():
         t_q = time.time(); load0 = open('/proc/loadavg').read().split()[0]
         rsb.restart_shared_worker(a)
         db = rsb.Db(a, accel=True)
-        db.cur.execute('SET max_parallel_workers = 8')  # the container's -c max_parallel_workers=48 beats ALTER SYSTEM
+        db.cur.execute(f'SET max_parallel_workers = {a.pg_workers}')  # the container's -c max_parallel_workers=48 beats ALTER SYSTEM
         s0 = stats(db)
         if q == a.queries[0]:
             db.cur.execute("select string_agg(name||'='||setting, ' ' order by name) from pg_settings where name in ('max_parallel_workers','max_parallel_workers_per_gather','accel.threads','accel.read_threads','accel.build_threads','accel.maint_threads','accel.shard_read_threads')")

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Thread GUCs for an N-core sweep (default 8 = CPUs 32-39), then restart the server and print the settings.
+# Thread GUCs for an N-core sweep (every cap = N, maintenance included; default 8 = CPUs 32-39), then restart the server and print the settings.
 # Env: N (8), T (container), PG_PORT, DB. Note: the container's `-c max_parallel_workers=48` command-line setting beats
 # ALTER SYSTEM, so sweep.py also runs SET max_parallel_workers = 8 in every session.
 set -euo pipefail

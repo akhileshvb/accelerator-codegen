@@ -10,6 +10,7 @@ perf_require_quiet
 perf_setup "$1" "$3"; SF=$2; OUT=$4; shift 4
 DB=${DB:-$(dirname "$PERF_ROOT")/accelerator-codegen-duckdb/tpch_sf${SF}.duckdb}
 mkdir -p "$OUT" "$WORK"
+perf_record_settings "$OUT"
 need=$(( $(stat -c %s "$DB") / 1048576 * 2 ))  # MB: the copy and its WAL/growth
 avail=$(df -Pm "$WORK" | awk 'NR==2{print $4}')
 [ "$avail" -gt "$need" ] || { echo "$WORK has ${avail} MB free, need ~${need}" >&2; exit 1; }

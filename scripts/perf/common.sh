@@ -26,6 +26,13 @@ print(n)' "$CORES")
   grep -q -- "--baseline-sql-dir" "$TREE/eval/compare/run_compare.py" && SQLDIR_FLAG="--baseline-sql-dir $TREE/workloads/tpch" || SQLDIR_FLAG=""
 }
 
+# Writes the run's thread settings next to its results (<out>/thread_settings.txt).
+perf_record_settings() {
+  mkdir -p "$1"
+  { echo "tree=$TREE commit=$(git -C "$TREE" rev-parse --short HEAD) cores=$CORES budget=$N"
+    env | grep -E '^ACCEL_(COMPARE_DUCKDB|AUX)_[A-Z_]*THREADS=' | sort; } > "$1/thread_settings.txt"
+}
+
 # Refuses to start on a busy machine (1-minute load >= MAX_LOAD, default 4) unless PERF_FORCE=1.
 perf_require_quiet() {
   local load
