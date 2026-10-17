@@ -26,9 +26,8 @@ namespace {
 namespace like = core::sql_like;
 
 // String semantics of the target DBMS (LIKE and ORDER BY nation): PostgreSQL is
-// case-sensitive; the MySQL copy of this file sets this to true (default utf8mb4
-// collations are case-insensitive). This is the only intentional difference
-// between the postgres/ and mysql/ copies. '_' matches one UTF-8 character.
+// case-sensitive; MySQL's default utf8mb4 collations are case-insensitive.
+// '_' matches one UTF-8 character.
 constexpr bool kCaseInsensitive = false;
 
 constexpr std::size_t kParts = kTpchQ9BlockParts;

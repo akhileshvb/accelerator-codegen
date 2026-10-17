@@ -130,8 +130,7 @@ public:
 //
 // Memory (TPC-H shapes): ~20 cells/part x 16 B + 4 partsupp rows x 16 B + ~25 B
 // block overhead + ~45 B name = ~450 B/part (~15 B per lineitem) + ~5 B/order
-// of year code: ~9 GB at SF100, ~90 GB at SF1000 (before: ~490 B/part in
-// node-based maps, ~10 GB at SF100, copied whole per touched shard).
+// of year code: ~9 GB at SF100, ~90 GB at SF1000.
 // Execute: O(parts) multithreaded name scan + O(matching cells); no state is
 // copied. Write batch: O(touched blocks + touched chunks).
 //

@@ -61,8 +61,7 @@ public:
 //                 with commitdate < receiptdate (2 B)  => 8 B per key slot.
 //                 TPC-H keys are ~25% dense, so ~32 B/order incl. the gaps
 //                 (dense keys: 8 B/order).  SF100 (150M orders): ~4.8 GB,
-//                 SF1000: ~48 GB; the former unordered_map was ~56 B/order
-//                 (8.4 GB at SF100) plus a full map copy on every write.
+//                 SF1000: ~48 GB.
 //                 Keys outside [0, 2^36) live in a sharded COW hash map
 //                 (core/any_key_cow_array.hpp).
 //   kTreeBase     per priority, a radix-64 counting tree over the order date

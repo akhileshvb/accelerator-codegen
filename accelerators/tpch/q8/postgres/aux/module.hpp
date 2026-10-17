@@ -154,8 +154,7 @@ using TpchQ8TypeCube = std::vector<TpchQ8CubeCell>;
 // not retained.
 //
 // Memory: ~12 B/order + 13 B per in-window lineitem (30% of lineitems) + 20 B
-// per part + 12 B per supplier/customer ~= 5.5 GB at SF100, 55 GB at SF1000
-// (before: ~13 GB at SF100 + 2 GB transient, string per part).
+// per part + 12 B per supplier/customer ~= 5.5 GB at SF100, 55 GB at SF1000.
 // Write batch: O(touched chunks) (1 KB-40 KB each) + the small maps.
 struct TpchQ8State {
   static constexpr int32_t kAbsent = INT32_MIN;

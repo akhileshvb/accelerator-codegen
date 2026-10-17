@@ -97,8 +97,7 @@ public:
 //
 // Memory: ~12 B per lineitem (shipdate + revenue) + ~40 B per order (record
 // header, hash slot, locator).
-//   SF100: ~11 GB   SF1000: ~110 GB   (before: ~75 B/order + a dense
-//   order_segment array + a transient 45-50 GB node-map build at SF100)
+//   SF100: ~11 GB   SF1000: ~110 GB
 // Write cost: an order write clones one bin shard (~2K records at SF1000) and
 // one locator shard; the bin directory (~1K bins) is copied per batch.
 struct TpchQ3State {

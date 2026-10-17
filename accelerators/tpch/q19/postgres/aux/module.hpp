@@ -22,9 +22,7 @@ struct TpchQ19Layout {
 //  * per-part code: 4 B per part, `(brand id + 1) << 2 | family` (0: the part
 //    can never qualify: absent, unknown container family, size outside its
 //    family's range). ChunkedCowArray<uint32_t>, 64 Ki-id chunks:
-//    80 MB at SF100 (2e7 parts), 800 MB at SF1000 (2e8). This replaces a
-//    node-based unordered_map of std::string dims (~100 B/part, +a transient
-//    second map in the build: ~4.5 GB at SF100).
+//    80 MB at SF100 (2e7 parts), 800 MB at SF1000 (2e8).
 //  * aggregates: per (brand, family) a sorted (quantity -> revenue, count)
 //    vector, shared copy-on-write: ~25 x 3 x 50 entries x 32 B = ~120 KB at
 //    any SF; fractional / off-spec quantities add entries, never drop rows.

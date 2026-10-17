@@ -24,8 +24,7 @@ namespace accelerator_codegen::aux_state::query {
 //                  order_nation (4 B)  } when it has a date and its customer
 //                                        has a nation
 //                8 B per key slot (TPC-H keys are ~25% dense => ~32 B/order:
-//                4.8 GB at SF100, 48 GB at SF1000, vs ~86 B/order for the old
-//                four unordered_maps: 13 GB / 130 GB).  Dense keys: 8 B/order.
+//                4.8 GB at SF100, 48 GB at SF1000).  Dense keys: 8 B/order.
 //   kCustomers   custkey -> nationkey (4 B/slot)   ~0.06 GB SF100, 0.6 GB SF1000
 //   kSuppliers   suppkey -> nationkey (4 B/slot)   negligible
 //   kTree        per nationkey: two core::RadixRangeTree over the order date,
