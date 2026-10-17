@@ -273,7 +273,6 @@ int64_t TpchQ3RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                          int64_t discount_raw, int32_t discount_scale);
 core::PartitionId TpchQ3PartitionFromMktsegment(const std::string &segment);
 std::string TpchQ3MktsegmentFromPartition(core::PartitionId partition);
-int32_t TpchQ3DaysFromYmd(int32_t year, unsigned month, unsigned day);
 
 void FinalizeTpchQ3OrderSummary(std::vector<TpchQ3ShipdateBucket> &buckets,
                                 const std::map<int32_t, int64_t> &day_revenue);
