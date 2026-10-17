@@ -33,9 +33,9 @@ namespace accelerator_codegen::aux_state::query {
 //
 // Memory: 16 B per custkey (customers and order-only custkeys) + ~2.5 B of
 // chunk overhead, plus 16 B per distinct (prefix, balance) of zero-order
-// customers (bounded by the balance domain): ~19 B/customer, 0.3 GB at SF100,
-// 2.8 GB at SF1000. Write batch: O(touched custkeys * 64-customer chunk +
-// touched prefixes' balance blocks); no table scan.
+// customers (bounded by the balance domain): ~19 B/customer, 8.5 GB at
+// SF3000. Write batch: O(touched custkeys * 64-customer chunk + touched
+// prefixes' balance blocks); no table scan.
 struct TpchQ22Layout {
   static constexpr const char *kAccelerator = "tpch_q22_aux";
   static constexpr core::PartitionId kFull = 0;
@@ -68,10 +68,15 @@ struct TpchQ22OrderCount {
 class TpchQ22InitialScan {
 public:
   virtual ~TpchQ22InitialScan() = default;
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanCustomers(
-      const std::function<void(const TpchQ22CustomerInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ22CustomerInput &)> &) = 0;
+  // A custkey may come back once per partition (the caller sums the counts).
   virtual void ScanOrderCounts(
-      const std::function<void(const TpchQ22OrderCount &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ22OrderCount &)> &) = 0;
 };
 
 // ── State structures ────────────────────────────────────────────────────────
@@ -179,6 +184,8 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
+  std::shared_ptr<const TpchQ22State> BuildState(core::AuxEngineServices &) const;
+  std::shared_ptr<const TpchQ22State> LoadState(core::AuxEngineServices &) const;
   static void Answer(const TpchQ22State &, const core::QueryArguments &,
                      core::AuxRowSink &);
   static void EmitRows(const std::vector<TpchQ22OutputRow> &rows,

@@ -3,9 +3,11 @@
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -213,20 +215,6 @@ core::StateImage MakeImage(std::shared_ptr<const TpchQ22State> state) {
       std::shared_ptr<const TpchQ22StateImage>(std::move(image)));
 }
 
-std::shared_ptr<const TpchQ22State> LoadState(core::AuxEngineServices &services) {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {TpchQ22Layout::kFull});
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition != TpchQ22Layout::kFull)
-      continue;
-    const auto *typed = image.As<TpchQ22StateImage>();
-    return typed && typed->kind == TpchQ22ImageKind::FullState && typed->state
-               ? typed->state
-               : nullptr;
-  }
-  return nullptr;
-}
-
 // The IN-list: non-NULL strings, de-duplicated (NULL never matches).
 std::set<std::string> CountryCodes(const core::QueryArguments &arguments) {
   std::set<std::string> codes;
@@ -235,6 +223,60 @@ std::set<std::string> CountryCodes(const core::QueryArguments &arguments) {
       codes.insert(std::get<std::string>(value.payload));
   return codes;
 }
+
+// The customers one build partition has seen. Prefix ids are local until the
+// partitions fold in table order, which assigns them in order of first
+// appearance, as in a serial scan.
+struct CustomerPartial {
+  struct PrefixTotals {
+    int64_t positive_count = 0;
+    Int128 positive_sum = 0;
+    std::map<int64_t, int64_t> zero_order; // balance -> customers without orders
+  };
+
+  TpchQ22PrefixDictionary dictionary;
+  std::vector<PrefixTotals> totals; // by local prefix id
+  core::AnyKeyCowArray<TpchQ22CustomerRecord, 6> customers;
+
+  uint32_t PrefixId(const std::string &prefix) {
+    const auto [it, added] = dictionary.ids.emplace(prefix, totals.size());
+    if (added)
+      totals.emplace_back();
+    return it->second;
+  }
+  void Add(int64_t custkey, const TpchQ22CustomerRecord &rec) {
+    customers.Set(custkey, rec);
+    if (!CountsInAverage(rec))
+      return;
+    auto &prefix = totals[rec.prefix_id];
+    ++prefix.positive_count;
+    prefix.positive_sum += rec.balance_raw;
+    if (rec.order_count == 0)
+      ++prefix.zero_order[rec.balance_raw];
+  }
+  void Merge(CustomerPartial &&from) {
+    std::vector<const std::string *> prefixes(from.totals.size());
+    for (const auto &[prefix, id] : from.dictionary.ids)
+      prefixes[id] = &prefix;
+    std::vector<uint32_t> remap(from.totals.size());
+    for (std::size_t id = 0; id < prefixes.size(); ++id)
+      remap[id] = PrefixId(*prefixes[id]);
+    from.customers.ForEach([&](int64_t custkey, TpchQ22CustomerRecord rec) {
+      if (rec.prefix_id == kTpchQ22NoCustomer)
+        return;
+      if (rec.prefix_id != kTpchQ22NullPhone)
+        rec.prefix_id = remap[rec.prefix_id];
+      customers.Set(custkey, rec);
+    });
+    for (std::size_t id = 0; id < from.totals.size(); ++id) {
+      auto &into = totals[remap[id]];
+      into.positive_count += from.totals[id].positive_count;
+      into.positive_sum += from.totals[id].positive_sum;
+      for (const auto &[balance, count] : from.totals[id].zero_order)
+        into.zero_order[balance] += count;
+    }
+  }
+};
 
 } // namespace
 
@@ -269,36 +311,90 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ22Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ22TxnBuffer>();
 }
 
-void TpchQ22Module::Build(core::AuxEngineServices &,
-                          core::StateBuilder &builder) {
+std::shared_ptr<const TpchQ22State>
+TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q22 aux requires a typed initial scan source");
+
+  using OrderCounts = core::AnyKeyCowArray<int64_t, 12>;
+  const OrderCounts order_counts = core::PartitionedBuild<OrderCounts>(
+      services, [] { return OrderCounts{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanOrderCounts(services, partitions,
+                                      [&](std::size_t p, const TpchQ22OrderCount &input) {
+                                        sink(p, core::SingleRowBatch<TpchQ22OrderCount>{input});
+                                      });
+      },
+      [](OrderCounts &counts, const TpchQ22OrderCount &input) {
+        counts.Add(input.custkey, input.count);
+      },
+      [](OrderCounts &into, OrderCounts &&from) {
+        into.MergeFrom(std::move(from),
+                       [](int64_t mine, int64_t theirs) { return mine + theirs; });
+      });
+
+  auto customers = core::PartitionedBuild<CustomerPartial>(
+      services, [] { return CustomerPartial{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanCustomers(services, partitions,
+                                    [&](std::size_t p, const TpchQ22CustomerInput &input) {
+                                      sink(p, core::SingleRowBatch<TpchQ22CustomerInput>{input});
+                                    });
+      },
+      [&](CustomerPartial &partial, const TpchQ22CustomerInput &input) {
+        int64_t balance = 0;
+        if (!ToScale2(input.acctbal_raw, input.acctbal_scale, balance))
+          throw std::logic_error("TPC-H Q22: c_acctbal not representable at scale 2");
+        const int64_t orders = order_counts.Get(input.custkey);
+        if (orders > std::numeric_limits<int32_t>::max())
+          throw std::overflow_error("TPC-H Q22 order count overflow");
+        partial.Add(input.custkey,
+                    {balance, static_cast<int32_t>(orders),
+                     partial.PrefixId(PhonePrefix(input.phone))});
+      },
+      [](CustomerPartial &into, CustomerPartial &&from) { into.Merge(std::move(from)); });
+
   auto state = std::make_shared<TpchQ22State>();
-  StateEditor editor(*state, /*fresh=*/true);
-
-  // Order counts first (custkeys without a customer row keep theirs), straight
-  // into the per-custkey column.
-  initial_scan->ScanOrderCounts([&](const TpchQ22OrderCount &c) {
-    auto &rec = state->customers.Mutable(c.custkey);
-    const int64_t total = static_cast<int64_t>(rec.order_count) + c.count;
-    if (total > std::numeric_limits<int32_t>::max())
+  state->customers = std::move(customers.customers);
+  // Custkeys with orders but no customer row keep their order count.
+  order_counts.ForEach([&](int64_t custkey, int64_t count) {
+    if (count == 0 || state->customers.Get(custkey).prefix_id != kTpchQ22NoCustomer)
+      return;
+    if (count > std::numeric_limits<int32_t>::max())
       throw std::overflow_error("TPC-H Q22 order count overflow");
-    rec.order_count = static_cast<int32_t>(total);
+    state->customers.Set(custkey, {0, static_cast<int32_t>(count), kTpchQ22NoCustomer});
   });
-
-  initial_scan->ScanCustomers([&](const TpchQ22CustomerInput &input) {
-    int64_t balance = 0;
-    if (!ToScale2(input.acctbal_raw, input.acctbal_scale, balance))
-      throw std::logic_error("TPC-H Q22: c_acctbal not representable at scale 2");
-    auto &rec = state->customers.Mutable(input.custkey);
-    rec.prefix_id = editor.PrefixId(PhonePrefix(input.phone));
-    rec.balance_raw = balance;
-    Contribute(editor, rec, +1);
+  state->dictionary =
+      std::make_shared<TpchQ22PrefixDictionary>(std::move(customers.dictionary));
+  state->prefixes.resize(customers.totals.size());
+  core::ParallelEach(services, customers.totals.size(), 1, [&](std::size_t id) {
+    auto entry = std::make_shared<TpchQ22PrefixEntry>();
+    entry->positive_count = customers.totals[id].positive_count;
+    entry->positive_sum_raw = customers.totals[id].positive_sum;
+    for (const auto &[balance, count] : customers.totals[id].zero_order)
+      entry->zero_order.Add(balance, count);
+    state->prefixes[id] = std::move(entry);
   });
-  editor.Finish();
+  return state;
+}
 
-  builder.Write(MakeImage(std::move(state)));
+void TpchQ22Module::Build(core::AuxEngineServices &services,
+                          core::StateBuilder &builder) {
+  builder.Write(MakeImage(BuildState(services)));
   builder.Finish();
+}
+
+std::shared_ptr<const TpchQ22State>
+TpchQ22Module::LoadState(core::AuxEngineServices &services) const {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {TpchQ22Layout::kFull});
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition != TpchQ22Layout::kFull)
+      continue;
+    const auto *typed = image.As<TpchQ22StateImage>();
+    return typed && typed->kind == TpchQ22ImageKind::FullState ? typed->state : nullptr;
+  }
+  return nullptr;
 }
 
 core::InvalidationPlan

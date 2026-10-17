@@ -2,6 +2,7 @@
 #include "tpch/q19/calibration_writes.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 #include "prims/pg_numeric.hpp"
 
 #include <algorithm>
@@ -106,6 +107,12 @@ int32_t BranchSizeLimit(TpchQ19Family family) {
   }
 }
 
+// The branch a part can qualify for (None: it never does).
+TpchQ19Family PartFamily(const std::string &container, int32_t size) {
+  const auto family = ClassifyContainerFamily(container);
+  return size >= 1 && size <= BranchSizeLimit(family) ? family : TpchQ19Family::None;
+}
+
 std::shared_ptr<const TpchQ19StateImage>
 MakeStateImage(std::shared_ptr<const TpchQ19State> state) {
   auto image = std::make_shared<TpchQ19StateImage>();
@@ -116,6 +123,29 @@ MakeStateImage(std::shared_ptr<const TpchQ19State> state) {
 const TpchQ19StateImage *AsQ19Image(const core::StateImage &image) {
   return image.As<TpchQ19StateImage>();
 }
+
+// The part codes one build partition has seen. Brand ids are local until the
+// partitions fold in table order, so the dictionary ends up in order of first
+// appearance, as in a serial scan.
+struct PartCodes {
+  core::StringDict brands;
+  core::AnyKeyCowArray<uint32_t, 14> codes{0};
+
+  void Add(const TpchQ19PartInput &part) {
+    const auto family = PartFamily(part.container, part.size);
+    if (family != TpchQ19Family::None)
+      codes.Set(part.key, TpchQ19State::Code(brands.Intern(CollateKey(part.brand)), family));
+  }
+  void Merge(PartCodes &&from) {
+    std::vector<uint32_t> brand_map;
+    for (uint32_t id = 0; id < from.brands.size(); ++id)
+      brand_map.push_back(brands.Intern(from.brands.Get(id)));
+    from.codes.ForEach([&](int64_t key, uint32_t code) {
+      if (code != 0)
+        codes.Set(key, ((brand_map[(code >> 2) - 1] + 1) << 2) | (code & 3u));
+    });
+  }
+};
 
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
@@ -139,11 +169,8 @@ uint32_t TpchQ19State::InternBrand(const std::string &brand) {
 
 uint32_t TpchQ19State::PartCode(const std::string &brand,
                                 const std::string &container, int32_t size) {
-  const auto family = ClassifyContainerFamily(container);
-  if (family == TpchQ19Family::None || size < 1 ||
-      size > BranchSizeLimit(family))
-    return 0;
-  return Code(InternBrand(brand), family);
+  const auto family = PartFamily(container, size);
+  return family == TpchQ19Family::None ? 0 : Code(InternBrand(brand), family);
 }
 
 void TpchQ19State::Add(uint32_t code, int64_t qty, __int128 revenue,
@@ -244,7 +271,7 @@ void TpchQ19Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   builder.Write(core::StateImage::Make(
       Id(), kStatePartition, 0,
-      MakeStateImage(BuildState())));
+      MakeStateImage(BuildState(services))));
   builder.Finish();
 }
 
@@ -337,21 +364,30 @@ void TpchQ19Module::AccumulateMutation(const core::MutationBatch &mutation,
 }
 
 std::shared_ptr<TpchQ19State>
-TpchQ19Module::BuildState() const {
+TpchQ19Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q19 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ19State>();
-  // Columnar per-part codes, streamed (no per-part map, no transient copy).
-  initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
-    const auto code = state->PartCode(input.brand, input.container, input.size);
-    if (code != 0)
-      state->part_code.Set(input.key, code);
-  });
-  initial_scan->ScanGroupAggregates([&](const TpchQ19GroupAggregate &agg) {
+  auto parts = core::PartitionedBuild<PartCodes>(
+      services, [] { return PartCodes{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanPartsPartitioned(
+            services, partitions, [&](std::size_t p, const TpchQ19PartInput &input) {
+              sink(p, core::SingleRowBatch<TpchQ19PartInput>{input});
+            });
+      },
+      [](PartCodes &partial, const TpchQ19PartInput &part) { partial.Add(part); },
+      [](PartCodes &into, PartCodes &&from) { into.Merge(std::move(from)); });
+  state->brands = std::make_shared<core::StringDict>(std::move(parts.brands));
+  state->part_code = std::move(parts.codes);
+  const auto aggregates = core::CollectRows<TpchQ19GroupAggregate>(
+      services, [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanGroupAggregatesPartitioned(services, partitions, sink);
+      });
+  for (const auto &agg : aggregates)
     state->Add(TpchQ19State::Code(state->InternBrand(agg.brand),
                                   static_cast<TpchQ19Family>(agg.family)),
                agg.quantity_raw, agg.revenue_raw, agg.count);
-  });
   return state;
 }
 

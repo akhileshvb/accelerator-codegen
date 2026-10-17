@@ -70,12 +70,17 @@ struct TpchQ19PartQuantityRevenue {
 class TpchQ19InitialScan {
 public:
   virtual ~TpchQ19InitialScan() = default;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ19PartInput &)> &) = 0;
+  // Partitioned scans for builds: sink(partition, row) runs concurrently for
+  // different partitions, rows of one partition in statement order.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ19PartInput &)> &) = 0;
   // lineitem JOIN part, shipping predicate and family classification
-  // (TpchQ19FamilySql) applied and grouped in the engine.
-  virtual void ScanGroupAggregates(
-      const std::function<void(const TpchQ19GroupAggregate &)> &) = 0;
+  // (TpchQ19FamilySql) applied and grouped in the engine; a group may come
+  // back once per partition (the caller sums them).
+  virtual void ScanGroupAggregatesPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ19GroupAggregate &)> &) = 0;
   // lineitem WHERE l_partkey IN (...) AND shipping predicate, grouped by
   // (l_partkey, l_quantity).
   virtual void ScanPartQuantityRevenue(
@@ -198,7 +203,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ19State> BuildState() const;
+  std::shared_ptr<TpchQ19State> BuildState(core::AuxEngineServices &) const;
   void Answer(const TpchQ19State &, const core::QueryArguments &,
               core::AuxRowSink &) const;
   void EmitResult(__int128 revenue_raw, int64_t matches,
