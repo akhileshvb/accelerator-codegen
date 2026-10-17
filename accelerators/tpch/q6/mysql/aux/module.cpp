@@ -1,12 +1,18 @@
 #include "tpch/q6/mysql/aux/module.hpp"
 #include "tpch/q6/calibration_writes.hpp"
 #include "prims/pg_numeric.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
+#include <iterator>
 #include <limits>
 #include <map>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -139,7 +145,55 @@ bool NumericArg(const core::AuxValue &value,
   return false;
 }
 
+// Elements per slice below which sorting or summing stays on one thread.
+constexpr std::size_t kCellGrain = 1 << 14;
+
+using CellKey = std::tuple<int32_t, int64_t, int64_t>; // day, discount, quantity
+struct CellSum {
+  ::accelerator_codegen::Q6AccT revenue = 0;
+  int64_t count = 0;
+};
+using CellSums = std::map<CellKey, CellSum>;
+
+void MergeSums(CellSums &into, CellSums &&from) {
+  for (const auto &[key, sum] : from) {
+    auto &cell = into[key];
+    cell.revenue += sum.revenue;
+    cell.count += sum.count;
+  }
+}
+
+// The deltas summed per cell: each slice sums its own range, the slices merge
+// in order, and the integer sums equal the serial ones.
+CellSums SumDeltas(const core::AuxEngineServices &services,
+                   const std::vector<TpchQ6LineitemDelta> &deltas) {
+  CellSums cells;
+  core::ParallelReduce(
+      services, deltas.size(), kCellGrain, cells,
+      [&](CellSums &into, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto &delta = deltas[i];
+          auto &cell = into[CellKey{delta.shipdate_days, delta.discount_raw, delta.quantity_raw}];
+          cell.revenue += delta.sign * delta.revenue;
+          cell.count += delta.sign;
+        }
+      },
+      MergeSums);
+  return cells;
+}
+
+bool CellLess(const TpchQ6CellAggregate &l, const TpchQ6CellAggregate &r) {
+  return std::tie(l.shipdate_days, l.discount_raw, l.quantity_raw) <
+         std::tie(r.shipdate_days, r.discount_raw, r.quantity_raw);
+}
+
 } // namespace
+
+void TpchQ6InitialScan::ScanCellAggregatesPartitioned(
+    const core::AuxEngineServices &, std::size_t,
+    const std::function<void(std::size_t, const TpchQ6CellAggregate &)> &sink) {
+  ScanCellAggregates([&](const TpchQ6CellAggregate &cell) { sink(0, cell); });
+}
 
 void TpchQ6InitialScan::ScanCellAggregates(
     const std::function<void(const TpchQ6CellAggregate &)> &consumer) {
@@ -288,10 +342,9 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  for (const auto &delta : buffer.Deltas())
-    ::accelerator_codegen::Q6AddCell(*next, delta.shipdate_days,
-                                     delta.discount_raw, delta.quantity_raw,
-                                     delta.sign * delta.revenue, delta.sign);
+  for (const auto &[key, sum] : SumDeltas(services, buffer.Deltas()))
+    ::accelerator_codegen::Q6AddCell(*next, std::get<0>(key), std::get<1>(key),
+                                     std::get<2>(key), sum.revenue, sum.count);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
@@ -331,15 +384,36 @@ void TpchQ6Module::ExecuteFallback(core::AuxEngineServices &services,
 
 std::shared_ptr<::accelerator_codegen::Q6State>
 TpchQ6Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q6 requires a typed initial scan source");
+  // A cell comes once per partition: gather them all, sort, add equal cells up.
+  using Cells = std::vector<TpchQ6CellAggregate>;
+  auto cells = core::PartitionedBuild<Cells>(
+      services, [] { return Cells{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanCellAggregatesPartitioned(
+            services, partitions,
+            [&](std::size_t partition, const TpchQ6CellAggregate &cell) {
+              sink(partition, OneRowBatch<TpchQ6CellAggregate>{cell});
+            });
+      },
+      [](Cells &into, const TpchQ6CellAggregate &cell) { into.push_back(cell); },
+      [](Cells &into, Cells &&from) {
+        into.insert(into.end(), std::make_move_iterator(from.begin()),
+                    std::make_move_iterator(from.end()));
+      });
+  ParallelStableSort(services, cells, CellLess, kCellGrain);
   auto state = std::make_shared<Q6State>();
-  initial_scan->ScanCellAggregates([&](const TpchQ6CellAggregate &cell) {
-    ::accelerator_codegen::Q6AddCell(*state, cell.shipdate_days,
-                                     cell.discount_raw, cell.quantity_raw,
-                                     cell.revenue_raw, cell.count);
-  });
+  for (std::size_t i = 0; i < cells.size();) {
+    auto sum = cells[i];
+    // Sorted, so a cell that does not sort after `sum` is the same cell.
+    for (++i; i < cells.size() && !CellLess(sum, cells[i]); ++i) {
+      sum.count += cells[i].count;
+      sum.revenue_raw += cells[i].revenue_raw;
+    }
+    ::accelerator_codegen::Q6AddCell(*state, sum.shipdate_days, sum.discount_raw,
+                                     sum.quantity_raw, sum.revenue_raw, sum.count);
+  }
   return state;
 }
 

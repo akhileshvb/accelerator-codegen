@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q11/mysql/aux/module.hpp"
 #include "tpch/q11/cost_model.hpp"
@@ -20,17 +21,12 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ11Partsupp(
-    const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT ps_partkey, ps_suppkey, ps_availqty, ps_supplycost FROM partsupp",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ11PartsuppInput{TypedInt(cols, 0),
-                                           TypedInt(cols, 1),
-                                           TypedInt(cols, 2),
-                                           TypedDecimalRaw(cols, 3), 2};
-      },
-      [&](query::TpchQ11PartsuppInput &&input) { consumer(input); });
+SplitTable PartsuppTable() {
+  return {"ps_partkey, ps_suppkey, ps_availqty, ps_supplycost", "partsupp", "", "ps_partkey"};
+}
+
+query::TpchQ11PartsuppInput DecodePartsupp(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2), TypedDecimalRaw(cols, 3), 2};
 }
 
 void ScanTpchQ11Suppliers(
@@ -62,7 +58,14 @@ public:
   void ScanPartsupp(
       const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer)
       override {
-    scans::ScanTpchQ11Partsupp(consumer);
+    split_scan::Serial<query::TpchQ11PartsuppInput>(scans::PartsuppTable(),
+                                                    scans::DecodePartsupp, consumer);
+  }
+  void ScanPartsuppPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ11PartsuppInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ11PartsuppInput>(
+        services, scans::PartsuppTable(), partitions, scans::DecodePartsupp, sink);
   }
   void ScanSuppliers(
       const std::function<void(const query::TpchQ11SupplierInput &)> &consumer)

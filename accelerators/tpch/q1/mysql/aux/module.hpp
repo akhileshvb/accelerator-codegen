@@ -56,6 +56,13 @@ public:
   // aggregate so the build reads no rows into the process.
   virtual void ScanDayGroupAggregates(
       const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer);
+  // The same aggregate cut into `partitions` row ranges, each grouped on its
+  // own: sink(partition, cell) runs concurrently for different partitions and
+  // a cell may come once per partition (the caller sums them). The default is
+  // the serial aggregate as partition 0.
+  virtual void ScanDayGroupAggregatesPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ1DayGroupAggregate &)> &sink);
 };
 
 // The whole state is ONE image (partition 0): a copy-on-write Fenwick tree

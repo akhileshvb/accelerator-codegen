@@ -65,6 +65,18 @@ public:
   virtual void ScanCustomers(
       const std::function<void(const TpchQ18CustomerInput &)> &) = 0;
 
+  // The same three scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18LineitemInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18OrderInput &)> &sink) = 0;
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ18CustomerInput &)> &sink) = 0;
+
   // Optional: SQL `SELECT l_orderkey, SUM(l_quantity), COUNT(*) FROM lineitem
   // GROUP BY l_orderkey`, streamed (one row per orderkey). Returns false when
   // the engine has no such scan; the caller then streams ScanLineitems.
@@ -225,7 +237,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ18State BuildState() const;
+  TpchQ18State BuildState(core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ18State> &state) const;
   // Customer names for the rows (cache first, then a keyed lookup), then the

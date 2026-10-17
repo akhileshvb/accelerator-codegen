@@ -2,6 +2,9 @@
 #include "tpch/q5/calibration_writes.hpp"
 #include "prims/mysql_collation.hpp"
 #include "prims/sql_date.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_collect.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -16,6 +19,9 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 using core::RadixRangeTree;
+
+// Lineitem deltas per maintenance slice: ~100 us.
+constexpr std::size_t kLineitemGrain = 1 << 14;
 
 // Cell readers distinguish SQL NULL from an unreadable payload.
 enum class Cell { Null, Ok, Bad };
@@ -619,12 +625,34 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
       ApplyLineitem(*work, c.after, row.suppkey, revenue, +1);
       ApplyLineitem(*work, c.before, row.suppkey, revenue, -1);
     });
-    for (const auto &d : buffer.Lineitems()) {
-      const auto it = changes.find(d.orderkey);
-      const Tuple before =
-          it != changes.end() ? it->second.before : OrderTuple(*work, d.orderkey);
-      ApplyLineitem(*work, before, d.suppkey, d.revenue, d.sign);
-    }
+    // Slices read the state and the changes and sum into their own buckets
+    // (integers: the merge is exact); the buckets are applied afterwards.
+    using Buckets = std::map<std::pair<int32_t, int32_t>, TpchQ5Bucket>;
+    const auto &lines = buffer.Lineitems();
+    Buckets deltas;
+    core::ParallelReduce(
+        services, lines.size(), kLineitemGrain, deltas,
+        [&](Buckets &acc, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            const auto &d = lines[i];
+            const auto it = changes.find(d.orderkey);
+            const Tuple before =
+                it != changes.end() ? it->second.before : OrderTuple(*work, d.orderkey);
+            if (!before.present || work->supp_nation.Get(d.suppkey) != before.nation)
+              continue;
+            auto &bucket = acc[{before.day, before.nation}];
+            bucket.revenue += static_cast<TpchQ5Money>(d.sign) * d.revenue;
+            bucket.rows += d.sign;
+          }
+        },
+        [](Buckets &into, Buckets &&from) {
+          for (const auto &[key, bucket] : from) {
+            into[key].revenue += bucket.revenue;
+            into[key].rows += bucket.rows;
+          }
+        });
+    for (const auto &[key, bucket] : deltas)
+      AddBucket(*work, key.first, key.second, bucket.revenue, bucket.rows);
     for (const auto &[key, c] : changes)
       if (!(c.before == c.after)) {
         SetOrderTuple(*work, key, c.after);
@@ -777,7 +805,6 @@ void TpchQ5Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q5 requires a typed initial scan source");
   TpchQ5State state;
@@ -793,26 +820,74 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
     nation.has_region = !input.regionkey_is_null;
     state.nations[input.key] = std::move(nation);
   });
-  initial_scan->ScanCustomers([&](const TpchQ5CustomerInput &input) {
+  const std::size_t partitions = BuildPartitions(services);
+  for (const auto &input : CollectRows<TpchQ5CustomerInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanCustomersPartitioned(services, parts, sink);
+           }))
     state.cust_nation.Set(input.custkey, input.nationkey);
-  });
-  initial_scan->ScanSuppliers([&](const TpchQ5SupplierInput &input) {
+  for (const auto &input : CollectRows<TpchQ5SupplierInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanSuppliersPartitioned(services, parts, sink);
+           }))
     state.supp_nation.Set(input.suppkey, input.nationkey);
-  });
-  // An order joins only through a customer that has a nation.
-  initial_scan->ScanOrders([&](const TpchQ5OrderInput &input) {
-    const int32_t nation = state.cust_nation.Get(input.custkey);
-    if (nation != kTpchQ5NoNation)
-      SetOrderTuple(state, input.orderkey,
-                    Tuple{true, input.orderdate_days, nation});
-  });
-  initial_scan->ScanLineitems([&](const TpchQ5LineitemInput &input) {
-    TpchQ5Money revenue = 0;
-    if (!InputRevenue(input, revenue))
-      throw std::runtime_error("TPC-H Q5: unsupported decimal scale");
-    ApplyLineitem(state, OrderTuple(state, input.orderkey), input.suppkey,
-                  revenue, +1);
-  });
+
+  // An order joins only through a customer that has a nation (the customers
+  // are final here, so partitions only read them).
+  struct JoinedOrder {
+    int64_t orderkey;
+    Tuple tuple;
+  };
+  const auto orders = core::PartitionedBuild<std::vector<JoinedOrder>>(
+      services, [] { return std::vector<JoinedOrder>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ5OrderInput &input) {
+              sink(partition, OneRowBatch<TpchQ5OrderInput>{input});
+            });
+      },
+      [&](std::vector<JoinedOrder> &into, const TpchQ5OrderInput &input) {
+        const int32_t nation = state.cust_nation.Get(input.custkey);
+        if (nation != kTpchQ5NoNation)
+          into.push_back({input.orderkey, Tuple{true, input.orderdate_days, nation}});
+      },
+      [](std::vector<JoinedOrder> &into, std::vector<JoinedOrder> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      },
+      partitions);
+  for (const auto &order : orders)
+    SetOrderTuple(state, order.orderkey, order.tuple);
+
+  // Revenue sums are exact integers: partitions add into their own buckets.
+  using Buckets = std::map<std::pair<int32_t, int32_t>, TpchQ5Bucket>;
+  const auto buckets = core::PartitionedBuild<Buckets>(
+      services, [] { return Buckets{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ5LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ5LineitemInput>{input});
+            });
+      },
+      [&](Buckets &into, const TpchQ5LineitemInput &input) {
+        TpchQ5Money revenue = 0;
+        if (!InputRevenue(input, revenue))
+          throw std::runtime_error("TPC-H Q5: unsupported decimal scale");
+        const Tuple tuple = OrderTuple(state, input.orderkey);
+        if (!tuple.present || state.supp_nation.Get(input.suppkey) != tuple.nation)
+          return;
+        auto &bucket = into[{tuple.day, tuple.nation}];
+        bucket.revenue += revenue;
+        bucket.rows += 1;
+      },
+      [](Buckets &into, Buckets &&from) {
+        for (const auto &[key, bucket] : from) {
+          into[key].revenue += bucket.revenue;
+          into[key].rows += bucket.rows;
+        }
+      },
+      partitions);
+  for (const auto &[key, bucket] : buckets)
+    AddBucket(state, key.first, key.second, bucket.revenue, bucket.rows);
   return state;
 }
 

@@ -10,6 +10,8 @@
 
 #include "prims/sql_like.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_collect.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -535,20 +537,43 @@ void TpchQ16Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q16 requires a typed initial scan source");
   TpchQ16State state;
   state.track_dirty = false;
-  initial_scan->ScanSuppliers([&](const TpchQ16SupplierInput &input) {
-    state.SetComplaint(input.suppkey, IsComplaintComment(input.comment));
-  });
-  initial_scan->ScanParts([&](const TpchQ16PartInput &input) {
+  // The scans run in parallel; the rows are applied in partition order.
+  const std::size_t partitions = BuildPartitions(services);
+  struct Complaint {
+    int64_t suppkey;
+    bool complaint;
+  };
+  const auto complaints = core::PartitionedBuild<std::vector<Complaint>>(
+      services, [] { return std::vector<Complaint>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ16SupplierInput &input) {
+              sink(partition, OneRowBatch<TpchQ16SupplierInput>{input});
+            });
+      },
+      [](std::vector<Complaint> &into, const TpchQ16SupplierInput &input) {
+        into.push_back({input.suppkey, IsComplaintComment(input.comment)});
+      },
+      [](std::vector<Complaint> &into, std::vector<Complaint> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      },
+      partitions);
+  for (const auto &supplier : complaints)
+    state.SetComplaint(supplier.suppkey, supplier.complaint);
+  for (const auto &input : CollectRows<TpchQ16PartInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsPartitioned(services, parts, sink);
+           }))
     state.SetPart(input.partkey, input);
-  });
-  initial_scan->ScanPartsupp([&](const TpchQ16PartsuppInput &input) {
+  for (const auto &input : CollectRows<TpchQ16PartsuppInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsuppPartitioned(services, parts, sink);
+           }))
     state.AddSupplier(input.partkey, input.suppkey);
-  });
   state.RecomputeAll(services);
   state.track_dirty = true;
   return state;

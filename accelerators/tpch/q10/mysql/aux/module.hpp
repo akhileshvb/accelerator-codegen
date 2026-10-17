@@ -66,6 +66,17 @@ public:
       const std::function<void(const TpchQ10OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ10LineitemInput &)> &) = 0;
+  // The big tables' scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ10CustomerInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ10OrderInput &)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ10LineitemInput &)> &sink) = 0;
 };
 
 // TPC-H Q10 returns the top 20 customers by revenue.
@@ -173,7 +184,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ10State> BuildState() const;
+  std::shared_ptr<TpchQ10State> BuildState(const core::AuxEngineServices &services) const;
   void EmitResult(const TpchQ10State &, const core::QueryArguments &,
                   const core::AuxEngineServices &, core::AuxRowSink &) const;
 
