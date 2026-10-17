@@ -579,9 +579,11 @@ void ApplySupplierDeltas(const std::vector<TpchQ21SupplierDelta> &supplier_delta
                          std::vector<Affected> &affected) {
   const auto numwait_changed = affected.size();
   affected.reserve(numwait_changed + supplier_deltas.size());
+  std::unordered_set<int64_t> added; // an UPDATE arrives as a delete delta plus an insert delta
   for (const auto &delta : supplier_deltas) {
     if (!std::binary_search(affected.begin(), affected.begin() + numwait_changed,
-                            Affected{delta.suppkey}, BySuppkey)) {
+                            Affected{delta.suppkey}, BySuppkey) &&
+        added.insert(delta.suppkey).second) {
       const int64_t *cur = next_core.numwait.Find(delta.suppkey);
       affected.push_back({delta.suppkey, cur ? *cur : 0, cur ? *cur : 0});
     }
