@@ -31,6 +31,9 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr core::TableId kPartTable = 1;
+constexpr core::TableId kLineitemTable = 2;
+
 SharedProbe BuildTpchQ17Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   // Bump extendedprice on a row already in the Q17 brand/container filter so
@@ -40,7 +43,7 @@ SharedProbe BuildTpchQ17Probe(::duckdb::MaterializedQueryResult &result,
   const int64_t quantity_raw = DecimalRaw(result.GetValue(3, row));
   const int64_t price_raw = DecimalRaw(result.GetValue(4, row));
   SharedProbe probe;
-  probe.table = 2;
+  probe.table = kLineitemTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {2};
   probe.write_delta = 1.0;
@@ -192,7 +195,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q17_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ17Config c{1, 2};
+      const TpchQ17Config c{q17_catalog::kPartTable, q17_catalog::kLineitemTable};
       return MakeBinding<TpchQ17Scan, TpchQ17Module>(connection, CaptureTableList{{"part", c.part_table}, {"lineitem", c.lineitem_table}}, c);
     }}};
 
