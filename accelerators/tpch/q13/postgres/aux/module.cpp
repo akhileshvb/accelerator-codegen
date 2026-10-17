@@ -1,9 +1,9 @@
 #include "tpch/q13/postgres/aux/module.hpp"
 #include "tpch/q13/calibration_writes.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,7 +13,6 @@
 #endif
 #include <limits>
 #include <map>
-#include <mutex>
 #include <unordered_map>
 #include <stdexcept>
 #include <string>
@@ -41,33 +40,6 @@ constexpr std::size_t kChunkGrain = 4;
 constexpr std::size_t kMaskGrain = 256;
 constexpr std::size_t kSlotBits = 12; // log2(kTpchQ13SegmentRows)
 static_assert(kTpchQ13SegmentRows == (std::size_t{1} << kSlotBits));
-
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
 
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
@@ -542,7 +514,7 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ13Module::CreateTxnBuffer() const {
 
 void TpchQ13Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  const auto state = BuildState(services, /*pattern_index=*/true);
+  const auto state = BuildState(services);
   builder.Write(core::StateImage::Make(
       kId, core::TpchQ13Layout::kCustomerCounts, 0,
       MakeStateImage(TpchQ13ImageKind::CustomerCounts, state)));
@@ -581,18 +553,17 @@ struct SegmentRun {
 } // namespace
 
 std::shared_ptr<TpchQ13State>
-TpchQ13Module::BuildState(core::AuxEngineServices &services,
-                          bool pattern_index) const {
+TpchQ13Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ13State>();
-  const std::size_t partitions = BuildPartitions(services);
+  const std::size_t partitions = core::BuildPartitions(services);
   const auto customers = core::PartitionedBuild<CustomerKeys>(
       services, [] { return CustomerKeys{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanCustomersPartitioned(
+        initial_scan->ScanCustomers(
             services, parts, [&](std::size_t partition, const TpchQ13CustomerInput &input) {
-              sink(partition, OneRowBatch<TpchQ13CustomerInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ13CustomerInput>{input});
             });
       },
       [](CustomerKeys &into, const TpchQ13CustomerInput &input) {
@@ -611,9 +582,9 @@ TpchQ13Module::BuildState(core::AuxEngineServices &services,
   auto runs = core::PartitionedBuild<SegmentRun>(
       services, [] { return SegmentRun{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ13OrderInput &input) {
-              sink(partition, OneRowBatch<TpchQ13OrderInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ13OrderInput>{input});
             });
       },
       [](SegmentRun &into, const TpchQ13OrderInput &input) { into.Add(input); },
@@ -623,8 +594,7 @@ TpchQ13Module::BuildState(core::AuxEngineServices &services,
       },
       partitions);
   state->AdoptSegments(std::move(runs.segments));
-  if (pattern_index)
-    state->EnablePatternIndex(services);
+  state->EnablePatternIndex(services);
   return state;
 }
 
@@ -644,7 +614,7 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
 
   auto add_customer = [&](const core::AuxRow &row, int8_t sign) {
     int64_t custkey = 0;
-    if (!IntCell(row, 0, custkey))
+    if (!core::IntCell(row, 0, custkey))
       return; // a NULL key never joins
     TpchQ13Delta delta;
     delta.table = TpchQ13Delta::Table::Customer;
@@ -657,8 +627,8 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
   auto add_order = [&](const core::AuxRow &row, int8_t sign) {
     TpchQ13Delta delta;
     delta.sign = sign;
-    if (!IntCell(row, 0, delta.orderkey) || !IntCell(row, 1, delta.custkey) ||
-        !StringCell(row, 2, delta.comment))
+    if (!core::IntCell(row, 0, delta.orderkey) || !core::IntCell(row, 1, delta.custkey) ||
+        !core::StringCell(row, 2, delta.comment))
       return;
     buffer.AddDelta(std::move(delta));
   };
@@ -693,18 +663,10 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   if (buffer.Deltas().empty())
     return outcome;
 
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+  const auto decision = services.ChooseMaintenance(core::MaintenanceRequest::IncrementalSingleState(
+      buffer.Deltas().size(), services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -785,14 +747,6 @@ void TpchQ13Module::Execute(core::AuxEngineServices &services,
   EmitResult(*state, arguments, services, sink);
 }
 
-void TpchQ13Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  // One-shot state: the pattern index would not pay for itself.
-  const auto state = BuildState(services, /*pattern_index=*/false);
-  EmitResult(*state, arguments, services, sink);
-}
-
 bool TpchQ13Module::LoadState(
     core::AuxEngineServices &services,
     std::shared_ptr<const TpchQ13State> &state) const {
@@ -814,21 +768,16 @@ bool TpchQ13Module::LoadState(
 namespace {
 
 // excluded[custkey] = number of the customer's orders whose comment matches
-// `matcher`. Segments are handed out in blocks to worker threads; each segment
-// is matched with one SIMD pass over its comment blob.
-// Matches are counted in a flat array when the custkey range is dense enough,
-// otherwise (and for negative / huge keys) in a mutex-protected hash.
+// `matcher`: a flat array when the custkey range is dense enough, otherwise
+// (and for negative / huge keys) a hash.
 struct Excluded {
   std::vector<int32_t> flat;
-  std::mutex mu;
   std::unordered_map<int64_t, int32_t> hash;
   void Add(int64_t key) {
-    if (key >= 0 && static_cast<std::size_t>(key) < flat.size()) {
-      __atomic_fetch_add(&flat[static_cast<std::size_t>(key)], 1, __ATOMIC_RELAXED);
-      return;
-    }
-    std::lock_guard<std::mutex> lock(mu);
-    ++hash[key];
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
+      ++flat[static_cast<std::size_t>(key)];
+    else
+      ++hash[key];
   }
   int32_t Get(int64_t key) const {
     if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
@@ -838,30 +787,36 @@ struct Excluded {
   }
 };
 
-void CountMatchingOrders(const TpchQ13State &state,
-                         const like::LikeMatcher &matcher, Excluded &excluded,
-                         const core::AuxEngineServices &services) {
-  core::ParallelSlices(
-      services, state.segments.size(), kSegmentGrain,
-      [&](std::size_t, std::size_t begin, std::size_t end) {
+// Custkeys of the live orders matching `matcher`, one SIMD pass per segment;
+// slices collect their segments' keys, merged in slice order.
+std::vector<int64_t> MatchingCustkeys(const TpchQ13State &state, const like::LikeMatcher &matcher,
+                                      const core::AuxEngineServices &services) {
+  std::vector<int64_t> matched;
+  core::ParallelReduce(
+      services, state.segments.size(), kSegmentGrain, matched,
+      [&](std::vector<int64_t> &part, std::size_t begin, std::size_t end) {
         for (std::size_t s = begin; s < end; ++s) {
           const auto *seg = state.segments[s].get();
           if (!seg || seg->live == 0)
             continue;
           const std::size_t n = seg->orderkey.size();
-          const auto bits = like::MatchBlobBitmap(
-              matcher, seg->comment.offsets(), n, seg->comment.data());
+          const auto bits =
+              like::MatchBlobBitmap(matcher, seg->comment.offsets(), n, seg->comment.data());
           for (std::size_t w = 0; w < bits.size(); ++w) {
             uint64_t b = bits[w];
             while (b) {
               const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
               b &= b - 1;
               if (seg->alive[i])
-                excluded.Add(seg->custkey[i]);
+                part.push_back(seg->custkey[i]);
             }
           }
         }
+      },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
       });
+  return matched;
 }
 
 } // namespace
@@ -915,17 +870,15 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
       std::max(state.order_count.NumChunks(), state.customer_valid.NumChunks()) *
       Array::kChunkSize;
 
-  // `o_comment NOT LIKE NULL` is never true: no order joins, every customer has
-  // c_count 0. Otherwise count the matching orders per customer.
+  // Count the matching orders per customer.
   Excluded excluded;
-  if (!pattern_null) {
-    const auto matcher = like::LikeMatcher::Compile(
-        std::get<std::string>(arguments.values[0].payload), '\\',
-        kLikeCaseInsensitive, /*utf8_underscore=*/true);
-    if (span <= static_cast<std::size_t>(state.customers) * 4 + (std::size_t{1} << 20))
-      excluded.flat.assign(span, 0);
-    CountMatchingOrders(state, matcher, excluded, services);
-  }
+  const auto matcher = like::LikeMatcher::Compile(
+      std::get<std::string>(arguments.values[0].payload), '\\', kLikeCaseInsensitive,
+      /*utf8_underscore=*/true);
+  if (span <= static_cast<std::size_t>(state.customers) * 4 + (std::size_t{1} << 20))
+    excluded.flat.assign(span, 0);
+  for (const int64_t custkey : MatchingCustkeys(state, matcher, services))
+    excluded.Add(custkey);
 
   // Histogram of effective counts. Counts up to kDense use a flat array; the
   // (never expected) larger ones fall into a sparse map.
@@ -950,9 +903,7 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
     for (std::size_t j = 0; j < valid->size(); ++j) {
       if (!(*valid)[j])
         continue;
-      int64_t eff = pattern_null ? 0 : (counts ? (*counts)[j] : 0);
-      if (!pattern_null)
-        eff -= excluded.Get(static_cast<int64_t>(base + j));
+      const int64_t eff = (counts ? (*counts)[j] : 0) - excluded.Get(static_cast<int64_t>(base + j));
       if (eff <= kDense)
         ++dense[static_cast<std::size_t>(eff)];
       else
@@ -962,7 +913,7 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
   state.sparse_customers.ForEach([&](int64_t key, const TpchQ13State::SparseSlot &slot) {
     if (!slot.valid)
       return;
-    const int64_t eff = pattern_null ? 0 : slot.count - excluded.Get(key);
+    const int64_t eff = slot.count - excluded.Get(key);
     if (eff <= kDense)
       ++dense[static_cast<std::size_t>(eff)];
     else

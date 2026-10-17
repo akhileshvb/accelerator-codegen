@@ -7,7 +7,6 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -210,15 +209,6 @@ struct TpchQ16SupplierPage {
 // Result of a full build: every image of the accelerator.
 struct TpchQ16State {
   std::vector<core::StateImage> images;
-};
-
-struct Q16ResultRow {
-  std::string brand;
-  std::string type;
-  uint16_t brand_id = 0;
-  uint16_t type_id = 0;
-  int32_t size = 0;
-  int64_t count = 0;
 };
 
 // ── Deltas ──────────────────────────────────────────────────────────────────

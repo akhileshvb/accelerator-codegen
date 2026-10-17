@@ -32,19 +32,6 @@ void ScanTpchQ15Suppliers(
 }
 
 void ScanTpchQ15Lineitems(
-    const std::function<void(const query::TpchQ15LineitemInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {IntColumn("l_suppkey"), DecimalColumn("l_extendedprice", 2),
-               DecimalColumn("l_discount", 2), DateColumn("l_shipdate")},
-              [&](const BuildRow &row) {
-                consumer({row.Date(3),
-                          row.Int(0),
-                          row.Decimal(1), 2,
-                          row.Decimal(2), 2});
-              });
-}
-
-void ScanTpchQ15LineitemsPartitioned(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ15LineitemInput &)> &sink) {
   ScanPartitioned(services, "lineitem",
@@ -59,45 +46,15 @@ void ScanTpchQ15LineitemsPartitioned(
                   });
 }
 
-void ScanTpchQ15LineitemsForShipdateRange(
-    int32_t start_days, int32_t end_days,
-    const std::function<void(const query::TpchQ15LineitemInput &)> &consumer) {
-  if (end_days <= start_days) {
-    return;
-  }
-  const std::string sql =
-      "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem "
-      "WHERE l_shipdate >= (DATE '1970-01-01' + " +
-      std::to_string(start_days) +
-      ") AND l_shipdate < (DATE '1970-01-01' + " + std::to_string(end_days) +
-      ")";
-  ScanTypedTuples(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
-    consumer({TypedDate(tuple, tuple_desc, 3), TypedInt(tuple, tuple_desc, 0),
-              TypedDecimalRaw(tuple, tuple_desc, 1), 2,
-              TypedDecimalRaw(tuple, tuple_desc, 2), 2});
-  });
-}
-
 } // namespace scans
 
 class TpchQ15Scan final : public query::TpchQ15InitialScan {
 public:
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ15LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ15LineitemsPartitioned(services, partitions, sink);
-  }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ15LineitemInput &)> &consumer)
-      override {
-    scans::ScanTpchQ15Lineitems(consumer);
-  }
-  void ScanLineitemsForShipdateRange(
-      int32_t start_days, int32_t end_days,
-      const std::function<void(const query::TpchQ15LineitemInput &)> &consumer)
-      override {
-    scans::ScanTpchQ15LineitemsForShipdateRange(start_days, end_days, consumer);
+    scans::ScanTpchQ15Lineitems(services, partitions, sink);
   }
   void ScanSuppliers(
       const std::function<void(const query::TpchQ15SupplierInput &)> &consumer)

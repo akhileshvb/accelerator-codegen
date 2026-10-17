@@ -32,18 +32,6 @@ void ScanTpchQ17Parts(
 }
 
 void ScanTpchQ17Lineitems(
-    const std::function<void(const query::TpchQ17LineitemInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {IntColumn("l_partkey"), DecimalColumn("l_quantity", 2),
-               DecimalColumn("l_extendedprice", 2)},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Decimal(1),
-                          row.Decimal(2)});
-              });
-}
-
-void ScanTpchQ17LineitemsPartitioned(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ17LineitemInput &)> &sink) {
   ScanPartitioned(services, "lineitem",
@@ -67,15 +55,10 @@ public:
     scans::ScanTpchQ17Parts(consumer);
   }
   void ScanLineitems(
-      const std::function<void(const query::TpchQ17LineitemInput &)> &consumer)
-      override {
-    scans::ScanTpchQ17Lineitems(consumer);
-  }
-  void ScanLineitemsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ17LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ17LineitemsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ17Lineitems(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ17Module, query::TpchQ17Config, TpchQ17Scan> &

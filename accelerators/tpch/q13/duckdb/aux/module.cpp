@@ -1,21 +1,18 @@
 #include "tpch/q13/duckdb/aux/module.hpp"
-#include "tpch/q13/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/typed_row_batch.hpp"
+#include "tpch/q13/calibration_writes.hpp"
+#include "tpch/q13/layout.hpp"
 
 #include <algorithm>
 #include <array>
-#include <functional>
-#include <cctype>
-#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <map>
+#include <mutex>
 #include <numeric>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -23,54 +20,9 @@
 #include <utility>
 #include <vector>
 
-#include <chrono>
 #if defined(__AVX2__)
 #include <immintrin.h>
 #endif
-#include <cstdio>
-#include "tpch/q13/layout.hpp"
-#include <algorithm>
-#include <array>
-#include <vector>
-
-// ── Custom profiling (no-op unless ACCEL_AUX_CUSTOM_PROFILE is set) ─────────
-struct CustomTimer {
-  using Clock = std::chrono::high_resolution_clock;
-  Clock::time_point start;
-  bool active;
-  explicit CustomTimer(bool enabled) : start(Clock::now()), active(enabled) {}
-  double us() const {
-    return static_cast<double>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            Clock::now() - start)
-            .count()) /
-           1000.0;
-  }
-};
-
-static bool CustomProfilingEnabled() {
-  static const bool enabled = []() {
-    const char *v = std::getenv("ACCEL_AUX_CUSTOM_PROFILE");
-    return v && v[0] != '\0';
-  }();
-  return enabled;
-}
-
-static void EmitCustomProfile(const char *phase, double us_val, int64_t rows,
-                              int64_t keys, int64_t groups, int64_t scanned) {
-  if (!CustomProfilingEnabled())
-    return;
-  fprintf(stderr,
-          "ACCEL_CUSTOM_PROFILE {"
-          "\"phase\":\"%s\","
-          "\"us\":%.3f,"
-          "\"rows\":%ld,"
-          "\"keys\":%ld,"
-          "\"groups\":%ld,"
-          "\"scanned\":%ld"
-          "}\n",
-          phase, us_val, (long)rows, (long)keys, (long)groups, (long)scanned);
-}
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -80,33 +32,6 @@ using core::ByteWriter;
 
 constexpr uint32_t kCustomerMagic = 0x43313351; // Q13C
 constexpr uint32_t kVersion = 1;
-
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
 
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
@@ -1308,6 +1233,89 @@ std::vector<TpchQ13OutputRow> EvalUntracked(const TpchQ13State &st,
   return SortedRows(h);
 }
 
+// What one build partition has loaded: a working state holding only the
+// shards it touched, and its count changes.
+struct BuildPartial {
+  Mut m;
+  Tally tally;
+};
+
+// Appends the orders and adds the per-customer counts of `from`, shard by
+// shard in parallel. Partitions fold in table order, so each shard's orders
+// are in table order as in a serial scan.
+void MergeCust(TpchQ13CustShard &into, const TpchQ13CustShard &from) {
+  if (into.ids.empty() && from.ids.empty()) {
+    const std::size_t slots = std::max(into.total.size(), from.total.size());
+    into.total.resize(slots, 0);
+    into.mult.resize(slots, 0);
+    for (std::size_t i = 0; i < from.total.size(); ++i) {
+      into.total[i] += from.total[i];
+      into.mult[i] += from.mult[i];
+    }
+    for (std::size_t p = 0; p < from.match.size(); ++p) {
+      into.match[p].resize(slots, 0);
+      for (std::size_t i = 0; i < from.match[p].size(); ++i)
+        into.match[p][i] += from.match[p][i];
+    }
+    return;
+  }
+  TpchQ13CustShard merged;
+  merged.match.resize(into.match.size());
+  std::size_t a = 0, b = 0;
+  while (a < into.total.size() || b < from.total.size()) {
+    const bool has_a = a < into.total.size(), has_b = b < from.total.size();
+    const uint32_t id_a = has_a ? into.IdOf(a) : 0, id_b = has_b ? from.IdOf(b) : 0;
+    const bool take_a = has_a && (!has_b || id_a <= id_b);
+    const bool take_b = has_b && (!has_a || id_b <= id_a);
+    merged.ids.push_back(take_a ? id_a : id_b);
+    merged.total.push_back((take_a ? into.total[a] : 0) + (take_b ? from.total[b] : 0));
+    merged.mult.push_back((take_a ? into.mult[a] : 0) + (take_b ? from.mult[b] : 0));
+    for (std::size_t p = 0; p < merged.match.size(); ++p)
+      merged.match[p].push_back((take_a ? into.match[p][a] : 0) +
+                                (take_b ? from.match[p][b] : 0));
+    a += take_a;
+    b += take_b;
+  }
+  into = std::move(merged);
+}
+
+void MergeOrders(TpchQ13OrderShard &into, TpchQ13OrderShard &&from) {
+  auto &a = into.tail;
+  auto &b = from.tail;
+  if (a.blob.size() + b.blob.size() > std::numeric_limits<uint32_t>::max())
+    throw std::runtime_error("TPC-H Q13: order comments of one shard exceed 4 GiB");
+  const auto shift = static_cast<uint32_t>(a.blob.size());
+  a.custkey.insert(a.custkey.end(), b.custkey.begin(), b.custkey.end());
+  for (const auto start : b.start)
+    a.start.push_back(start + shift);
+  a.len.insert(a.len.end(), b.len.begin(), b.len.end());
+  a.blob.append(b.blob);
+  into.alive.insert(into.alive.end(), from.alive.begin(), from.alive.end());
+}
+
+void MergePartials(const core::AuxEngineServices &services, BuildPartial &into,
+                   BuildPartial &&from) {
+  core::ParallelSlices(
+      services, kTpchQ13Shards, kMergeGrain,
+      [&](std::size_t, std::size_t first, std::size_t last) {
+        for (std::size_t s = first; s < last; ++s) {
+          if (from.m.mo[s]) {
+            if (into.m.mo[s])
+              MergeOrders(*into.m.mo[s], std::move(*from.m.mo[s]));
+            else
+              into.m.mo[s] = std::move(from.m.mo[s]);
+          }
+          if (from.m.mc[s]) {
+            if (into.m.mc[s])
+              MergeCust(*into.m.mc[s], *from.m.mc[s]);
+            else
+              into.m.mc[s] = std::move(from.m.mc[s]);
+          }
+        }
+      });
+  into.tally.Merge(from.tally);
+}
+
 } // namespace
 
 // ── LIKE matcher ────────────────────────────────────────────────────────────
@@ -1374,64 +1382,6 @@ bool TpchQ13Like::Matches(const char *data, std::size_t len) const {
     pos = static_cast<std::size_t>(f - data) + m;
   }
   return true;
-}
-
-
-// ── TwoPartLikeMatcher ──────────────────────────────────────────────────────
-void TpchQ13TwoPartLikeMatcher::Build(const std::string &pattern) {
-  enabled = false;
-  part1.clear();
-  part2.clear();
-  if (pattern.size() < 4 || pattern.front() != '%' || pattern.back() != '%')
-    return;
-  const std::size_t first_end = pattern.find('%', 1);
-  if (first_end == std::string::npos || first_end == 1)
-    return;
-  const std::size_t second_start = first_end + 1;
-  const std::size_t second_end = pattern.find('%', second_start);
-  if (second_end == std::string::npos || second_end == second_start)
-    return;
-  if (pattern.find('%', second_end + 1) != std::string::npos)
-    return;
-  part1 = pattern.substr(1, first_end - 1);
-  part2 = pattern.substr(second_start, second_end - second_start);
-  enabled = !part1.empty() && !part2.empty() &&
-            part1.find('_') == std::string::npos &&
-            part2.find('_') == std::string::npos &&
-            part1.find('\\') == std::string::npos &&
-            part2.find('\\') == std::string::npos;
-}
-
-bool TpchQ13TwoPartLikeMatcher::Matches(const std::string &text) const {
-  if (!enabled)
-    return false;
-  const std::string_view haystack(text.data(), text.size());
-  std::size_t pos = 0;
-  while (pos + part1.size() <= haystack.size()) {
-    const auto found = haystack.find(part1, pos);
-    if (found == std::string_view::npos)
-      return false;
-    if (haystack.find(part2, found + part1.size()) != std::string_view::npos)
-      return true;
-    pos = found + 1;
-  }
-  return false;
-}
-
-bool TpchQ13TwoPartLikeMatcher::MatchesView(const char *data, std::size_t len) const {
-  if (!enabled)
-    return false;
-  const std::string_view haystack(data, len);
-  std::size_t pos = 0;
-  while (pos + part1.size() <= haystack.size()) {
-    const auto found = haystack.find(part1, pos);
-    if (found == std::string_view::npos)
-      return false;
-    if (haystack.find(part2, found + part1.size()) != std::string_view::npos)
-      return true;
-    pos = found + 1;
-  }
-  return false;
 }
 
 
@@ -1577,99 +1527,11 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
   builder.Finish();
 }
 
-namespace {
-
-// What one build partition has loaded: a working state holding only the
-// shards it touched, and its count changes.
-struct BuildPartial {
-  Mut m;
-  Tally tally;
-};
-
-// Appends the orders and adds the per-customer counts of `from`, shard by
-// shard in parallel. Partitions fold in table order, so each shard's orders
-// are in table order as in a serial scan.
-void MergeCust(TpchQ13CustShard &into, const TpchQ13CustShard &from) {
-  if (into.ids.empty() && from.ids.empty()) {
-    const std::size_t slots = std::max(into.total.size(), from.total.size());
-    into.total.resize(slots, 0);
-    into.mult.resize(slots, 0);
-    for (std::size_t i = 0; i < from.total.size(); ++i) {
-      into.total[i] += from.total[i];
-      into.mult[i] += from.mult[i];
-    }
-    for (std::size_t p = 0; p < from.match.size(); ++p) {
-      into.match[p].resize(slots, 0);
-      for (std::size_t i = 0; i < from.match[p].size(); ++i)
-        into.match[p][i] += from.match[p][i];
-    }
-    return;
-  }
-  TpchQ13CustShard merged;
-  merged.match.resize(into.match.size());
-  std::size_t a = 0, b = 0;
-  while (a < into.total.size() || b < from.total.size()) {
-    const bool has_a = a < into.total.size(), has_b = b < from.total.size();
-    const uint32_t id_a = has_a ? into.IdOf(a) : 0, id_b = has_b ? from.IdOf(b) : 0;
-    const bool take_a = has_a && (!has_b || id_a <= id_b);
-    const bool take_b = has_b && (!has_a || id_b <= id_a);
-    merged.ids.push_back(take_a ? id_a : id_b);
-    merged.total.push_back((take_a ? into.total[a] : 0) + (take_b ? from.total[b] : 0));
-    merged.mult.push_back((take_a ? into.mult[a] : 0) + (take_b ? from.mult[b] : 0));
-    for (std::size_t p = 0; p < merged.match.size(); ++p)
-      merged.match[p].push_back((take_a ? into.match[p][a] : 0) +
-                                (take_b ? from.match[p][b] : 0));
-    a += take_a;
-    b += take_b;
-  }
-  into = std::move(merged);
-}
-
-void MergeOrders(TpchQ13OrderShard &into, TpchQ13OrderShard &&from) {
-  auto &a = into.tail;
-  auto &b = from.tail;
-  if (a.blob.size() + b.blob.size() > std::numeric_limits<uint32_t>::max())
-    throw std::runtime_error("TPC-H Q13: order comments of one shard exceed 4 GiB");
-  const auto shift = static_cast<uint32_t>(a.blob.size());
-  a.custkey.insert(a.custkey.end(), b.custkey.begin(), b.custkey.end());
-  for (const auto start : b.start)
-    a.start.push_back(start + shift);
-  a.len.insert(a.len.end(), b.len.begin(), b.len.end());
-  a.blob.append(b.blob);
-  into.alive.insert(into.alive.end(), from.alive.begin(), from.alive.end());
-}
-
-void MergePartials(const core::AuxEngineServices &services, BuildPartial &into,
-                   BuildPartial &&from) {
-  core::ParallelSlices(
-      services, kTpchQ13Shards, kMergeGrain,
-      [&](std::size_t, std::size_t first, std::size_t last) {
-        for (std::size_t s = first; s < last; ++s) {
-          if (from.m.mo[s]) {
-            if (into.m.mo[s])
-              MergeOrders(*into.m.mo[s], std::move(*from.m.mo[s]));
-            else
-              into.m.mo[s] = std::move(from.m.mo[s]);
-          }
-          if (from.m.mc[s]) {
-            if (into.m.mc[s])
-              MergeCust(*into.m.mc[s], *from.m.mc[s]);
-            else
-              into.m.mc[s] = std::move(from.m.mc[s]);
-          }
-        }
-      });
-  into.tally.Merge(from.tally);
-}
-
-} // namespace
-
 TpchQ13State TpchQ13Module::BuildState(
     core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
 
-  const bool profiling = CustomProfilingEnabled();
   // Every TPC-H-domain pattern is maintained from the start.
   const auto make_partial = [] {
     BuildPartial partial;
@@ -1682,23 +1544,19 @@ TpchQ13State TpchQ13Module::BuildState(
     MergePartials(services, into, std::move(from));
   };
 
-  CustomTimer t_cust(profiling);
   auto built = core::PartitionedBuild<BuildPartial>(
       services, make_partial,
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanCustomers(services, parts,
                                     [&](std::size_t p, const TpchQ13CustomerInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ13CustomerInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ13CustomerInput>{input});
                                     });
       },
       [](BuildPartial &partial, const TpchQ13CustomerInput &input) {
         ApplyCustomer(partial.m, partial.tally, input.key, +1, Apply::Raw);
       },
       merge);
-  if (profiling)
-    EmitCustomProfile("build_customers", t_cust.us(), 0, 0, 0, 0);
 
-  CustomTimer t_orders(profiling);
   struct OrderRow {
     int64_t custkey;
     std::string_view comment;
@@ -1710,7 +1568,7 @@ TpchQ13State TpchQ13Module::BuildState(
                          services, parts,
                          [&](std::size_t p, int64_t custkey, std::string_view comment) {
                            const OrderRow row{custkey, comment};
-                           sink(p, TypedRowBatch<OrderRow>{row});
+                           sink(p, core::SingleRowBatch<OrderRow>{row});
                          });
                    },
                    [](BuildPartial &partial, const OrderRow &row) {
@@ -1718,43 +1576,12 @@ TpchQ13State TpchQ13Module::BuildState(
                                 Apply::Raw);
                    },
                    merge));
-  if (profiling)
-    EmitCustomProfile("build_orders", t_orders.us(), 0, 0, 0, 0);
 
   Mut &m = built.m;
   m.Absorb(built.tally);
-  CustomTimer t_fin(profiling);
   BulkFinish(m, services);
   RecomputeHist(m, services);
-  if (profiling)
-    EmitCustomProfile("build_finish", t_fin.us(), 0, 0, 0, 0);
-  auto state = m.Finish();
-  if (profiling) {
-    uint64_t blob = 0, ids = 0, cust = 0, post = 0, tokoff = 0, matchb = 0;
-    for (const auto &o : state.orders)
-      if (o && o->base) {
-        const auto &b = *o->base;
-        blob += b.blob.capacity();
-        ids += b.custkey.capacity() * 8 + b.start.capacity() * 4 +
-               b.len.capacity() * 4 + o->alive.capacity();
-        post += b.ix.ords.capacity() * 2 + b.ix.always.capacity() * 2;
-        tokoff += b.ix.toks.capacity() * 2 + b.ix.off.capacity() * 4;
-      }
-    for (const auto &c : state.cust)
-      if (c) {
-        cust += (c->total.capacity() + c->mult.capacity()) * 4;
-        for (const auto &v : c->match)
-          matchb += v.capacity() * 4;
-      }
-    fprintf(stderr,
-            "ACCEL_CUSTOM_PROFILE {\"phase\":\"memory_mb\",\"comment_blob\":%.1f,"
-            "\"order_arrays\":%.1f,\"postings\":%.1f,\"index_toks_offs\":%.1f,"
-            "\"cust_total_mult\":%.1f,\"cust_match16\":%.1f,\"vocab\":%zu}\n",
-            blob / 1048576.0, ids / 1048576.0, post / 1048576.0,
-            tokoff / 1048576.0, cust / 1048576.0, matchb / 1048576.0,
-            state.vocab ? state.vocab->toks.size() : size_t{0});
-  }
-  return state;
+  return m.Finish();
 }
 
 core::InvalidationPlan
@@ -1774,7 +1601,7 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
   if (mutation.table == config.customer_table) {
     auto addc = [&](const core::AuxRow &row, int8_t sign) {
       int64_t custkey = 0;
-      if (!IntCell(row, 0, custkey)) {
+      if (!core::IntCell(row, 0, custkey)) {
         buffer.MarkRebuild();
         return;
       }
@@ -1796,8 +1623,8 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
       }
       for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
         int64_t ok = 0, nk = 0;
-        if (IntCell(mutation.old_rows[i], 0, ok) &&
-            IntCell(mutation.new_rows[i], 0, nk) && ok == nk)
+        if (core::IntCell(mutation.old_rows[i], 0, ok) &&
+            core::IntCell(mutation.new_rows[i], 0, nk) && ok == nk)
           continue;  // key unchanged: no effect on Q13
         addc(mutation.old_rows[i], -1);
         addc(mutation.new_rows[i], 1);
@@ -1812,7 +1639,7 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
   auto add = [&](const core::AuxRow &row, int8_t sign) {
     int64_t custkey = 0;
     std::string comment;
-    if (!IntCell(row, 0, custkey) || !StringCell(row, 1, comment)) {
+    if (!core::IntCell(row, 0, custkey) || !core::StringCell(row, 1, comment)) {
       buffer.MarkRebuild();
       return;
     }
@@ -1850,17 +1677,9 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   auto &buffer = dynamic_cast<TpchQ13TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
 
-  auto request_rebuild = [&]() {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.updates.clear();
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+  const auto request_rebuild = [&] {
+    core::FinishRebuildAll(outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                                        services.ExpectedQueriesBeforeNextWrite())));
   };
 
   if (buffer.RequiresRebuild()) {
@@ -1870,18 +1689,10 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   if (buffer.Deltas().empty())
     return outcome;
 
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+  const auto decision = services.ChooseMaintenance(core::MaintenanceRequest::IncrementalSingleState(
+      buffer.Deltas().size(), services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -1909,7 +1720,6 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
 
   // Copy-on-write: copies the shard pointer tables and clones only the shards
   // touched by the deltas; the published base is never mutated.
-  CustomTimer t_apply(CustomProfilingEnabled());
   Mut m(*base);
 
   // Shards are independent: slices own whole shards (updates of one shard
@@ -1922,20 +1732,13 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   std::iota(by_shard.begin(), by_shard.end(), 0u);
   std::stable_sort(by_shard.begin(), by_shard.end(),
                    [&](uint32_t l, uint32_t r) { return shard_of(l) < shard_of(r); });
-  std::vector<std::pair<std::size_t, std::size_t>> runs; // by_shard ranges
-  for (std::size_t i = 0; i < by_shard.size();) {
-    std::size_t j = i + 1;
-    while (j < by_shard.size() && shard_of(by_shard[j]) == shard_of(by_shard[i]))
-      ++j;
-    runs.emplace_back(i, j);
-    i = j;
-  }
+  const auto runs = core::RunStarts(by_shard, [&](uint32_t i) { return shard_of(i); });
   Tally tally;
   core::ParallelReduce(
-      services, runs.size(), kMaintGrain, tally,
+      services, runs.size() - 1, kMaintGrain, tally,
       [&](Tally &part, std::size_t first, std::size_t last) {
         for (std::size_t r = first; r < last && part.ok; ++r) {
-          for (std::size_t k = runs[r].first; k < runs[r].second; ++k) {
+          for (std::size_t k = runs[r]; k < runs[r + 1]; ++k) {
             const auto &delta = deltas[by_shard[k]];
             part.ok = delta.customer
                           ? ApplyCustomer(m, part, delta.custkey, delta.sign, Apply::Live)
@@ -1953,16 +1756,11 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   }
   m.Absorb(tally);
 
-  const double apply_us = t_apply.us();
-  CustomTimer t_fin(CustomProfilingEnabled());
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
       kId, core::TpchQ13Layout::kCustomerCounts, existing_version,
       MakeStateImage(TpchQ13ImageKind::CustomerCounts,
                      std::make_shared<const TpchQ13State>(m.Finish()))));
-  EmitCustomProfile("maint_apply", apply_us,
-                    static_cast<int64_t>(buffer.Deltas().size()), 0, 0, 0);
-  EmitCustomProfile("maint_finish", t_fin.us(), 0, 0, 0, 0);
   return outcome;
 }
 
@@ -2023,16 +1821,10 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
                                const std::string &pattern,
                                core::AuxEngineServices &services,
                                core::AuxRowSink &sink) const {
-  const bool profiling = CustomProfilingEnabled();
-  CustomTimer t(profiling);
-
   // Tracked pattern (all 16 TPC-H ones): the maintained, pre-sorted histogram.
   for (std::size_t p = 0; p < state.patterns.size(); ++p) {
     if (state.patterns[p].text == pattern) {
       EmitSorted(state.sorted[p], sink);
-      if (profiling)
-        EmitCustomProfile("hist_emit", t.us(), 0, 0,
-                          static_cast<int64_t>(state.hist[p].size()), 0);
       return;
     }
   }
@@ -2041,9 +1833,6 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
   // customers that own matching orders.
   const auto rows = EvalUntracked(state, pattern, services);
   EmitSorted(rows, sink);
-  if (profiling)
-    EmitCustomProfile("untracked_eval", t.us(), 0, 0,
-                      static_cast<int64_t>(rows.size()), 0);
 }
 
 std::vector<core::CalibrationWrite> TpchQ13Module::CalibrationWrites() const {

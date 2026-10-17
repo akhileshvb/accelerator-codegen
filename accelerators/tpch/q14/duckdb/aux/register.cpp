@@ -9,8 +9,6 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -19,7 +17,6 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
 #include <vector>
 
 #include "duckdb.hpp"
@@ -33,6 +30,9 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr core::TableId kPartTable = 1;
+constexpr core::TableId kLineitemTable = 2;
+
 SharedProbe BuildTpchQ14Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   // Ratio is insensitive to +0.01 at SF1; use a large price bump so promo_revenue
@@ -43,7 +43,7 @@ SharedProbe BuildTpchQ14Probe(::duckdb::MaterializedQueryResult &result,
   const int64_t price_raw = DecimalRaw(result.GetValue(2, row));
   constexpr int64_t kBumpRaw = 1000000000; // +10,000,000.00
   SharedProbe probe;
-  probe.table = 2;
+  probe.table = kLineitemTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {1};
   probe.write_delta = 10000000.0;
@@ -228,7 +228,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q14_aux",
     {::duckdb::LogicalType::DATE},
     [](::duckdb::Connection &connection) {
-      const TpchQ14Config c{1, 2};
+      const TpchQ14Config c{q14_catalog::kPartTable, q14_catalog::kLineitemTable};
       return MakeBinding<TpchQ14Scan, TpchQ14Module>(connection, CaptureTableList{{"part", c.part_table}, {"lineitem", c.lineitem_table}}, c);
     }}};
 

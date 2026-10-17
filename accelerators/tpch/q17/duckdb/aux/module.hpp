@@ -65,13 +65,6 @@ struct TpchQ17LineitemInput {
   int64_t extendedprice_raw = 0;  // decimal(15,2) raw (×100)
 };
 
-struct TpchQ17PartQuantityAggregate {
-  int64_t partkey = 0;
-  int64_t quantity_raw = 0;
-  int64_t extendedprice_sum_raw = 0;
-  int64_t row_count = 0;
-};
-
 class TpchQ17InitialScan {
 public:
   virtual ~TpchQ17InitialScan() = default;
@@ -83,26 +76,6 @@ public:
   virtual void ScanLineitems(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ17LineitemInput &)> &) = 0;
-
-  // Optional: same aggregate for a single partkey (incremental pair rebuild).
-  virtual bool ScanPartQuantityAggregatesForPart(
-      int64_t partkey,
-      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer) {
-    (void)partkey;
-    (void)consumer;
-    return false;
-  }
-
-  virtual bool ScanPartQuantityAggregatesForParts(
-      const std::unordered_set<int64_t> &partkeys,
-      const std::function<void(const TpchQ17PartQuantityAggregate &)>
-          &consumer) {
-    if (partkeys.size() == 1)
-      return ScanPartQuantityAggregatesForPart(*partkeys.begin(), consumer);
-    (void)partkeys;
-    (void)consumer;
-    return false;
-  }
 };
 
 // ── Per-part statistics ─────────────────────────────────────────────────────

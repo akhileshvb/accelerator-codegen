@@ -48,13 +48,13 @@ void ScanTpchQ13OrdersPartitioned(
 
 class TpchQ13Scan final : public query::TpchQ13InitialScan {
 public:
-  void ScanCustomersPartitioned(
+  void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ13CustomerInput &)> &sink)
       override {
     scans::ScanTpchQ13CustomersPartitioned(services, partitions, sink);
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ13OrderInput &)> &sink)
       override {
