@@ -22,14 +22,22 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 namespace like = core::sql_like;
 
-// LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; the
-// MySQL copy of this file sets this to true (default utf8mb4 collations are
-// case-insensitive). This is the only intentional difference between the
-// postgres/ and mysql/ copies. '_' matches one UTF-8 character in both.
+// LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; MySQL's
+// default utf8mb4 collations are case-insensitive. '_' matches one UTF-8
+// character in both.
 constexpr bool kLikeCaseInsensitive = true;
 
 constexpr std::size_t kSlotBits = 12; // log2(kTpchQ13SegmentRows)
 static_assert(kTpchQ13SegmentRows == (std::size_t{1} << kSlotBits));
+
+// Deltas per slice (untimed); a batch below one slice runs delta by delta.
+constexpr std::size_t kDeltaGrain = 4096;
+
+// Customer chunks per slice (~160 us: 4096 customers each, ~10 us a chunk).
+constexpr std::size_t kChunkGrain = 16;
+
+// Segments per slice (~1.6 ms: one holds thousands of comments, ~0.1 ms to match).
+constexpr std::size_t kSegmentGrain = 16;
 
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
@@ -308,10 +316,7 @@ void ApplyOrderDeltas(const core::AuxEngineServices &services, TpchQ13State &sta
   ApplyPlaced(services, state, placed);
 }
 
-// Customers first, then orders: the two do not interact. A batch too small to
-// split runs delta by delta.
-constexpr std::size_t kDeltaGrain = 4096;
-
+// Customers first, then orders: the two do not interact.
 void ApplyDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
                  const std::vector<TpchQ13Delta> &deltas) {
   const bool parallel = core::SliceCount(services, deltas.size(), kDeltaGrain) > 1;
@@ -351,12 +356,6 @@ struct Excluded {
     return it == hash.end() ? 0 : it->second;
   }
 };
-
-// Customer chunks per slice: 4096 customers each, ~10 us a chunk.
-constexpr std::size_t kChunkGrain = 16;
-
-// Segments per slice: one holds thousands of comments (~0.1 ms to match).
-constexpr std::size_t kSegmentGrain = 16;
 
 // Custkeys of the live orders matching `matcher`, one SIMD pass per segment;
 // slices collect their segments' keys, merged in slice order.

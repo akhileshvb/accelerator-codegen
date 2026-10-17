@@ -122,7 +122,7 @@ bool ReadRegion(const core::AuxRow &row, TpchQ2RegionInput &out, bool &skip) {
   return StringValue(row.values[1], out.name);
 }
 
-// Buckets per slice of the build fill (each fills a whole partial state).
+// Buckets per slice of the build fill (untimed): each fills a whole partial state.
 constexpr std::size_t kBucketGrain = 1;
 
 // Build: part and partsupp rows are dealt out to buckets by part key; a bucket

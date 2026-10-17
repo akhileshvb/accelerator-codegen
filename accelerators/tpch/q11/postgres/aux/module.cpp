@@ -14,13 +14,13 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Offer chunks (1024 parts) per slice: ~100 us each.
+// Offer chunks (1024 parts) per slice (~400 us: ~100 us each).
 constexpr std::size_t kChunkGrain = 4;
 
 // Group edits (each up to a 64 KB block copy) below which nations are not
 // edited in parallel.
 constexpr std::size_t kGroupUpdateOpThreshold = 256;
-// Nation groups per slice when sorting them into blocks.
+// Nation groups per slice when sorting them into blocks (untimed).
 constexpr std::size_t kGroupBuildGrain = 1;
 bool NullCell(const core::AuxRow &row, std::size_t index) {
   return index >= row.values.size() || row.values[index].is_null;

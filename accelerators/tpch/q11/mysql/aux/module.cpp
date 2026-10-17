@@ -15,9 +15,9 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Offer chunks per slice: 1024 parts of a few offers each, ~5 us a chunk.
+// Offer chunks per slice (~160 us: 1024 parts of a few offers each, ~5 us a chunk).
 constexpr std::size_t kChunkGrain = 32;
-// Nation groups per slice when sorting them into blocks.
+// Nation groups per slice when sorting them into blocks (untimed).
 constexpr std::size_t kGroupBuildGrain = 1;
 
 bool NullCell(const core::AuxRow &row, std::size_t index) {

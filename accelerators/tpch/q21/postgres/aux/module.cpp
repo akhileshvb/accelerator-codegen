@@ -16,11 +16,11 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Orders or numwait entries per slice; an item is a shard-local hash write.
+// Orders or numwait entries per slice (untimed); an item is a shard-local hash write.
 constexpr std::size_t kRunGrain = 1024;
 // Nation index changes below which a commit patches its nations inline.
-constexpr std::size_t kNationOpThreshold = 1024;
-// Elements per sorted slice: a key compare each.
+constexpr std::size_t kNationOpThreshold = 4096;
+// Elements per sorted slice (untimed): a key compare each.
 constexpr std::size_t kSortGrain = 65536;
 
 using core::IntCell;

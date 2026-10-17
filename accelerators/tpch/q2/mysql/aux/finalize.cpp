@@ -24,7 +24,7 @@ struct Q2Candidate {
   int64_t partkey = 0;
 };
 
-// Part chunks per slice: each holds thousands of parts (~0.1 ms).
+// Part chunks per slice (~25 ms: each holds thousands of parts, ~0.1 ms).
 constexpr std::size_t kChunkGrain = 256;
 // Distinct types above which the LIKE bitmap is evaluated on the pool.
 constexpr std::size_t kParallelMatchTypes = 1000000;

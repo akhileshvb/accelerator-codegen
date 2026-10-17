@@ -29,6 +29,9 @@ namespace like = core::sql_like;
 constexpr bool kCaseInsensitive = true;
 
 constexpr std::size_t kParts = kTpchQ9BlockParts;
+
+// Blocks per encode slice (~800 us: each copies a few thousand cells and prices, ~50 us).
+constexpr std::size_t kBlockGrain = 16;
 // Money / quantity columns as raw hundredths (decimal(15,2)).
 bool Decimal2Cell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -202,9 +205,6 @@ static_assert((kBlockParts & (kBlockParts - 1)) == 0);
 constexpr int64_t BlockOf(int64_t key) { return key >> __builtin_ctzll(static_cast<uint64_t>(kBlockParts)); }
 constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key & (kBlockParts - 1)); }
 
-// Blocks per encode slice: each copies a few thousand cells and prices (~50 us).
-constexpr std::size_t kBlocksGrain = 16;
-
 // Edited blocks by block index: the partial of one partition of a build scan.
 class BlockEdits {
 public:
@@ -254,7 +254,7 @@ public:
     std::sort(blocks.begin(), blocks.end());
     blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
     std::vector<std::shared_ptr<EditBlock>> decoded(blocks.size());
-    core::ParallelEach(services, blocks.size(), kBlocksGrain, [&](std::size_t i) {
+    core::ParallelEach(services, blocks.size(), kBlockGrain, [&](std::size_t i) {
       decoded[i] = DecodeBlock(state_.blocks.Get(blocks[i]).get());
     });
     for (std::size_t i = 0; i < blocks.size(); ++i) {
@@ -270,7 +270,7 @@ public:
     for (auto entry : edited_.Blocks())
       edits.emplace_back(entry.first, entry.second);
     std::vector<std::shared_ptr<TpchQ9PartBlock>> encoded(edits.size());
-    core::ParallelSlices(services, edits.size(), kBlocksGrain,
+    core::ParallelSlices(services, edits.size(), kBlockGrain,
                          [&](std::size_t, std::size_t begin, std::size_t end) {
                            for (std::size_t i = begin; i < end; ++i)
                              encoded[i] = EncodeBlock(*edits[i].second);

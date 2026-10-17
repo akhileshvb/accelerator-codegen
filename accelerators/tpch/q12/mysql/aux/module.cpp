@@ -21,7 +21,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 constexpr int64_t kModeBits = 24;  // cell key = day << 24 | shipmode id
-// Lineitem deltas per slice below which a commit's deltas are summed inline.
+// Lineitem deltas per slice (untimed); a commit below one slice sums its deltas inline.
 constexpr std::size_t kDeltaGrain = 4096;
 
 using Cell = core::CellState;

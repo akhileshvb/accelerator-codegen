@@ -27,7 +27,7 @@ using Int128 = ::accelerator_codegen::pg_numeric::Int128;
 constexpr core::PartitionId kStatePartition = core::TpchQ7Layout::kSidePartition;
 // Revenue = price * (1 - discount): both numeric(15,2) -> scale 4.
 constexpr int32_t kRevenueScale = 4;
-// Order-map chunks (<= 1024 orders) per slice: ~0.3 us per decoded order.
+// Order-map chunks (<= 1024 orders) per slice (~600 us: ~0.3 us per decoded order).
 constexpr std::size_t kChunkGrain = 2;
 using Cell = core::CellState;
 

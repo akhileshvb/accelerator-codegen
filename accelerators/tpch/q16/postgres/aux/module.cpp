@@ -16,10 +16,10 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-// Groups per parallel slice (a group is a pass over its parts' supplier lists).
+// Groups per slice (untimed): a group is a pass over its parts' supplier lists.
 constexpr std::size_t kGroupGrain = 64;
 
-// Supplier-list chunks (1024 parts) per slice: ~100 us each.
+// Supplier-list chunks (1024 parts) per slice (~400 us: ~100 us each).
 constexpr std::size_t kChunkGrain = 4;
 
 bool NullCell(const core::AuxRow &row, std::size_t index) {

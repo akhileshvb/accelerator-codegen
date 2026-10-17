@@ -22,6 +22,12 @@ using core::RadixRangeTree;
 
 using Cell = core::CellState;
 
+// Lineitem deltas per maintenance slice (~4 us).
+constexpr std::size_t kDeltaGrain = 4096;
+
+// Buckets per slice of the build fill (untimed): each fills a whole partial state.
+constexpr std::size_t kBucketGrain = 1;
+
 // A decimal value rescaled to cents (scale 2); false if that would lose digits.
 bool ScaleToCents(int64_t raw, int32_t scale, int64_t &cents) {
   if (scale == 2) {
@@ -163,10 +169,6 @@ void ApplyLineitem(const TpchQ5State &s, BucketCells &cells, const Tuple &t,
 // Build: key/value rows are dealt out to buckets by key; a bucket is filled
 // alone, so buckets run in parallel.
 using core::kBuildBuckets;
-// Lineitem deltas per slice of maintenance (~4 us).
-constexpr std::size_t kDeltaGrain = 4096;
-// Buckets per slice of the build fill (each fills a whole partial state).
-constexpr std::size_t kBucketGrain = 1;
 
 // Bucket of `key`: the keys of one 2^15-id chunk (of every column) share a
 // bucket, so per-bucket columns hold disjoint chunks.

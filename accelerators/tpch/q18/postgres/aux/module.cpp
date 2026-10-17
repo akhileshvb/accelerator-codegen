@@ -19,8 +19,8 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-// Lineitem deltas per slice when netting a write batch by order.
-constexpr std::size_t kDeltaGrain = 16384;
+// Lineitem deltas per slice (~200 us: ~50 ns each); netting a write batch by order.
+constexpr std::size_t kDeltaGrain = 4096;
 
 bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey,
                   int64_t &quantity_raw) {

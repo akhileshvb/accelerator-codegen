@@ -14,7 +14,7 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Part chunks per read slice: ~10 us per chunk of size-column compares.
+// Part chunks per read slice (~160 us: ~10 us per chunk of size-column compares).
 constexpr std::size_t kChunkGrain = 16;
 // Distinct types above which the LIKE bitmap is evaluated on the pool.
 constexpr std::size_t kParallelMatchTypes = 1000000;

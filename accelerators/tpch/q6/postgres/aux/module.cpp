@@ -21,7 +21,7 @@ using Q6State = ::accelerator_codegen::Q6State;
 
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
-// Deltas per slice (~4 us); below it a commit aggregates its deltas inline.
+// Deltas per slice (~4 us); a commit below one slice aggregates its deltas inline.
 constexpr std::size_t kDeltaGrain = 4096;
 
 std::shared_ptr<const TpchQ6StateImage>

@@ -15,6 +15,9 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
+// Groups per slice (untimed): a group is a pass over its parts' supplier lists.
+constexpr std::size_t kGroupGrain = 64;
+
 bool NullCell(const core::AuxRow &row, std::size_t index) {
   return index >= row.values.size() || row.values[index].is_null;
 }
@@ -198,9 +201,6 @@ void TpchQ16State::MarkGroupsOfSuppliers(
   }
   suppliers_of.ForEachSparse(visit);
 }
-
-// Groups per slice: each walks its parts' supplier lists (~1 us per part).
-constexpr std::size_t kGroupGrain = 64;
 
 // Distinct non-complaint suppliers over the parts of one group.
 int64_t TpchQ16State::CountDistinct(uint32_t gid) const {

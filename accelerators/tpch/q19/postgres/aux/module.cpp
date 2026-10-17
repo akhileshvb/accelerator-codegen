@@ -20,7 +20,7 @@ using Vec = TpchQ19State::Vec;
 
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
-// Lineitem deltas per maintenance slice (~70 ns each: >= 250 us a slice).
+// Lineitem deltas per maintenance slice (~290 us: ~70 ns each).
 constexpr std::size_t kDeltaGrain = 4096;
 // l_quantity BETWEEN qty AND qty + kQuantityWindow.
 constexpr int64_t kQuantityWindow = 10;

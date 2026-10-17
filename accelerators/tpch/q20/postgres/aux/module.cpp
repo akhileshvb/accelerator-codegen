@@ -21,12 +21,11 @@ namespace like = core::sql_like;
 namespace sql_date = core::sql_date;
 
 // String semantics of the target DBMS (LIKE and `n_name = ...`): PostgreSQL is
-// case-sensitive; the MySQL copy of this file sets this to true (default utf8mb4
-// collations are case-insensitive). This is the only intentional difference
-// between the postgres/ and mysql/ copies. '_' matches one UTF-8 character.
+// case-sensitive; MySQL's default utf8mb4 collations are case-insensitive.
+// '_' matches one UTF-8 character.
 constexpr bool kCaseInsensitive = false;
 
-// Blocks per maintenance slice (a block of a few parts encodes in ~10 us).
+// Blocks per maintenance slice (~2.5 ms: a block of a few parts encodes in ~10 us).
 constexpr std::size_t kBlockGrain = 256;
 
 using core::IntCell;

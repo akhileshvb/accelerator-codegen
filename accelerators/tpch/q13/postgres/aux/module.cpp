@@ -25,17 +25,16 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 namespace like = core::sql_like;
 
-// LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; the
-// MySQL copy of this file sets this to true (default utf8mb4 collations are
-// case-insensitive). This is the only intentional difference between the
-// postgres/ and mysql/ copies. '_' matches one UTF-8 character in both.
+// LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; MySQL's
+// default utf8mb4 collations are case-insensitive. '_' matches one UTF-8
+// character in both.
 constexpr bool kLikeCaseInsensitive = false;
 
-// Segments per parallel slice (a segment is 4096 orders, ~100 us of matching).
+// Segments per slice (~1.6 ms: a segment is 4096 orders, ~100 us of matching).
 constexpr std::size_t kSegmentGrain = 16;
-// Customer-key chunks per slice of the histogram build; added orders per slice
-// of the pattern-mask precompute (~1 us each).
+// Customer-key chunks per slice of the histogram build (untimed).
 constexpr std::size_t kChunkGrain = 4;
+// Added orders per slice of the pattern-mask precompute (~256 us: ~1 us each).
 constexpr std::size_t kMaskGrain = 256;
 constexpr std::size_t kSlotBits = 12; // log2(kTpchQ13SegmentRows)
 static_assert(kTpchQ13SegmentRows == (std::size_t{1} << kSlotBits));

@@ -22,9 +22,9 @@ namespace {
 // Build: lineitem and order rows are dealt out to buckets by order key; a
 // bucket is built alone, so buckets run in parallel.
 using core::kBuildBuckets;
-// Touched order keys per slice of maintenance.
+// Touched order keys per maintenance slice (untimed).
 constexpr std::size_t kKeyGrain = 1024;
-// Buckets per slice of the build (each builds a whole partial state).
+// Buckets per slice of the build (untimed): each builds a whole partial state.
 constexpr std::size_t kBucketGrain = 1;
 // Months in the query's order-date window.
 constexpr int32_t kWindowMonths = 3;

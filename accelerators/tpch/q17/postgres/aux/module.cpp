@@ -16,7 +16,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 using Int128 = __int128;
 
-// Parts per maintenance slice.
+// Parts per maintenance slice (untimed).
 constexpr std::size_t kPartEditGrain = 256;
 
 // A lineitem with a NULL partkey (never joins) or NULL quantity (ignored by

@@ -27,9 +27,9 @@ constexpr int64_t kMonthPartitionBias = 1000000;
 constexpr int32_t kRevenueScale = 4;
 // Dates this close to the int32 limits are PostgreSQL +/-infinity sentinels.
 constexpr int64_t kFiniteDateLimit = std::numeric_limits<int32_t>::max() - 1;
-// Supplier-array chunks per read slice (a chunk sums every whole month, ~50 us).
-constexpr std::size_t kSweepGrain = 8;
-// Months per build or maintenance slice (a month is ~70K lineitems at SF 1).
+// Supplier-array chunks per read slice (~1.6 ms: a chunk sums every whole month, ~100 us).
+constexpr std::size_t kSweepGrain = 16;
+// Months per build or maintenance slice (untimed; a month is ~70K lineitems at SF 1).
 constexpr std::size_t kMonthGrain = 1;
 
 core::PartitionId MonthPartition(int64_t month_index) {

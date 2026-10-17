@@ -16,10 +16,10 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 constexpr std::size_t kTopK = 10;
-// Orders per slice (~4000 us: sorting a few days, merging them and encoding
-// the record costs ~0.5 us each).
+// Orders per slice (~4 ms: sorting a few days, merging them and encoding the
+// record costs ~0.5 us each).
 constexpr std::size_t kOrderGrain = 8192;
-// Lineitems per sorted slice of the build's join.
+// Lineitems per sorted slice of the build's join (untimed).
 constexpr std::size_t kLineSortGrain = 65536;
 
 std::shared_ptr<const TpchQ3StateImage>

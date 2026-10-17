@@ -18,11 +18,11 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 constexpr std::size_t kTopK = 10;
-// Elements per slice below which sorting stays on one thread.
+// Elements per sorted slice (untimed); below one slice sorting stays on one thread.
 constexpr std::size_t kSortGrain = 16384;
-// Order results per slice below which their records are encoded serially.
+// Order results per slice (untimed); below one slice their records are encoded serially.
 constexpr std::size_t kPrepareGrain = 1024;
-// Segment bins per slice of a read wave (each bin is scanned whole).
+// Segment bins per slice of a read wave (untimed): each bin is scanned whole.
 constexpr std::size_t kBinGrain = 1;
 
 std::shared_ptr<const TpchQ3StateImage>

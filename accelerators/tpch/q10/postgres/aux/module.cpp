@@ -28,11 +28,11 @@ constexpr core::PartitionId kStatePartition =
     core::TpchQ10Layout::kCustomerDimensions;
 constexpr uint32_t kMaxBuckets = 65536;
 constexpr std::size_t kOrdersPerBucket = 20000;
-// Revenue lookups per read slice (~0.2 us each).
+// Revenue lookups per read slice (~26 ms: ~0.2 us each).
 constexpr std::size_t kLookupGrain = 131072;
-// Build rows per slice when resolving order lookups.
+// Build rows per slice when resolving order lookups (untimed).
 constexpr std::size_t kResolveGrain = 16384;
-// Build rows per slice when sorting them.
+// Build rows per sorted slice (untimed).
 constexpr std::size_t kSortGrain = 32768;
 using Cell = core::CellState;
 

@@ -32,12 +32,13 @@ constexpr bool kCaseInsensitive = false;
 
 constexpr std::size_t kParts = kTpchQ9BlockParts;
 
-// Part blocks per color-index slice: ~16 us per block of 16 parts.
+// Part blocks per color-index slice (~2 ms: ~16 us per block of 16 parts).
 constexpr std::size_t kColorBlockGrain = 128;
-// Blocks per slice: ~5 us to decode one, ~8 us to encode one and diff its colors.
+// Blocks per slice when decoding (~1.3 ms: ~5 us a block).
 constexpr std::size_t kDecodeBlockGrain = 256;
+// Blocks per slice when flushing (~1 ms: ~8 us to encode a block and diff its colors).
 constexpr std::size_t kFlushBlockGrain = 128;
-// Lineitems resolved per slice: ~0.3 us each (three lookups).
+// Lineitems per slice (~1.2 ms: ~0.3 us each, three lookups).
 constexpr std::size_t kResolveGrain = 4096;
 // Money / quantity columns as raw hundredths (decimal(15,2)).
 bool Decimal2Cell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
