@@ -2,7 +2,6 @@
 #include "tpch/q20/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
@@ -18,9 +17,6 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
-
 // Base pairs per read slice (~3000 us): a cache-missing series lookup is ~100 ns.
 constexpr std::size_t kPairGrain = 32768;
 // Partsupp rows per build slice (~1300 us): a merge step is ~20 ns.
@@ -30,8 +26,6 @@ constexpr std::size_t kPartsuppGrain = 65536;
 constexpr std::size_t kSeriesGrain = 16384;
 // Rows per sorted slice of the build (~5000 us): a stable sort of 64K small rows.
 constexpr std::size_t kSortGrain = 65536;
-constexpr uint32_t kStateMagic = 0x51323053; // Q20S
-constexpr uint32_t kVersion = 3;
 
 using core::DateCell;
 using core::IntCell;
@@ -454,7 +448,6 @@ private:
       }
     }
   }
-
 
   const core::AuxEngineServices *services;
   std::shared_ptr<TpchQ20Base> base;
@@ -962,197 +955,6 @@ TpchQ20State::FindNationKeysByName(const std::string &name) const {
   if (it != base->nation_name_index.end())
     return it->second;
   return {};
-}
-
-
-std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state) {
-  const auto &base = *state.base;
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kStateMagic, kVersion, 0);
-
-  // series (merged, ascending key)
-  std::vector<uint64_t> keys(base.series_key.begin(), base.series_key.end());
-  state.series.ForEachKey([&](uint64_t k) { keys.push_back(k); });
-  std::sort(keys.begin(), keys.end());
-  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
-  struct SeriesOut {
-    uint64_t key;
-    std::vector<TpchQ20DateQuantity> entries;
-  };
-  std::vector<SeriesOut> series_out;
-  for (const uint64_t k : keys) {
-    std::vector<TpchQ20DateQuantity> entries;
-    if (const auto ov = state.series.Find(k); ov.found) {
-      entries.assign(ov.begin(), ov.end());
-    } else {
-      const uint32_t idx = base.FindSeries(k);
-      if (idx != TpchQ20Base::kNoSeries)
-        entries = BaseSeriesCopy(base, idx);
-    }
-    if (!entries.empty())
-      series_out.push_back({k, std::move(entries)});
-  }
-  writer.U32(static_cast<uint32_t>(series_out.size()));
-  for (const auto &s : series_out) {
-    writer.U64(s.key);
-    writer.U32(static_cast<uint32_t>(s.entries.size()));
-    for (const auto &e : s.entries) {
-      writer.I32(e.shipdate_days);
-      writer.I64(e.quantity_raw);
-    }
-  }
-
-  // partsupps (merged, ascending)
-  struct PsRow {
-    int64_t part, supp, avail;
-  };
-  std::vector<PsRow> ps_rows;
-  for (const auto &e : base.pairs) {
-    const int64_t part = base.name_partkey[e.rank];
-    // A part with several names has its pairs once per name: keep one copy.
-    if (base.RankOf(part) != e.rank || state.partsupps.Find(part))
-      continue;
-    ps_rows.push_back({part, e.suppkey, base.Avail(e)});
-  }
-  for (const auto &p : base.orphan_pairs)
-    if (!state.partsupps.Find(p.partkey))
-      ps_rows.push_back({p.partkey, p.suppkey, p.availqty});
-  state.partsupps.ForEach([&](uint64_t part, const auto &list) {
-    for (const auto &p : list)
-      ps_rows.push_back({static_cast<int64_t>(part), p.suppkey, p.availqty});
-  });
-  std::sort(ps_rows.begin(), ps_rows.end(), [](const PsRow &a, const PsRow &b) {
-    return a.part != b.part ? a.part < b.part : a.supp < b.supp;
-  });
-  writer.U32(static_cast<uint32_t>(ps_rows.size()));
-  for (const auto &r : ps_rows) {
-    writer.I64(r.part);
-    writer.I64(r.supp);
-    writer.I64(r.avail);
-  }
-
-  // parts (merged)
-  std::vector<std::pair<int64_t, std::string>> part_rows;
-  for (std::size_t i = 0; i < base.name_partkey.size(); ++i) {
-    if (state.parts.Find(base.name_partkey[i]))
-      continue;
-    part_rows.emplace_back(base.name_partkey[i],
-                           std::string(base.PartName(i)));
-  }
-  state.parts.ForEach([&](uint64_t k, const TpchQ20PartOverlay &ov) {
-    if (ov.present)
-      part_rows.emplace_back(static_cast<int64_t>(k), ov.name);
-  });
-  writer.U32(static_cast<uint32_t>(part_rows.size()));
-  for (const auto &[k, name] : part_rows) {
-    writer.I64(k);
-    writer.String(name);
-  }
-
-  // suppliers (merged)
-  std::map<int64_t, TpchQ20SupplierRecord> supp_rows;
-  for (std::size_t r = 0; r < base.supplier_keys.size(); ++r)
-    supp_rows[base.supplier_keys[r]] = base.supplier_records[r];
-  state.suppliers.ForEach([&](uint64_t k, const TpchQ20SupplierOverlay &ov) {
-    if (ov.present)
-      supp_rows[static_cast<int64_t>(k)] = ov.record;
-    else
-      supp_rows.erase(static_cast<int64_t>(k));
-  });
-  writer.U32(static_cast<uint32_t>(supp_rows.size()));
-  for (const auto &[key, supplier] : supp_rows) {
-    writer.I64(key);
-    writer.String(supplier.name);
-    writer.String(supplier.address);
-    writer.I32(supplier.nationkey);
-  }
-
-  std::map<int32_t, std::string> nation_rows(base.nations.begin(),
-                                             base.nations.end());
-  writer.U32(static_cast<uint32_t>(nation_rows.size()));
-  for (const auto &[key, name] : nation_rows) {
-    writer.I32(key);
-    writer.String(name);
-  }
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ20State(const std::vector<uint8_t> &bytes,
-                        TpchQ20State &state) {
-  ByteReader reader(bytes);
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kStateMagic, kVersion, count))
-    return false;
-
-  BaseBuilder builder;
-  uint32_t series_count = 0;
-  if (!reader.U32(series_count))
-    return false;
-  for (uint32_t i = 0; i < series_count; ++i) {
-    uint64_t key = 0;
-    uint32_t entry_count = 0;
-    if (!reader.U64(key) || !reader.U32(entry_count))
-      return false;
-    for (uint32_t j = 0; j < entry_count; ++j) {
-      int32_t date = 0;
-      int64_t qty = 0;
-      if (!reader.I32(date) || !reader.I64(qty))
-        return false;
-      builder.AddSeriesRow(key, date, qty);
-    }
-  }
-  builder.FinishSeries();
-
-  uint32_t ps_count = 0;
-  if (!reader.U32(ps_count))
-    return false;
-  for (uint32_t i = 0; i < ps_count; ++i) {
-    int64_t part = 0, supp = 0, avail = 0;
-    if (!reader.I64(part) || !reader.I64(supp) || !reader.I64(avail))
-      return false;
-    builder.AddPartsupp(part, supp, avail);
-  }
-
-  uint32_t part_count = 0;
-  if (!reader.U32(part_count))
-    return false;
-  for (uint32_t i = 0; i < part_count; ++i) {
-    int64_t key = 0;
-    std::string name;
-    if (!reader.I64(key) || !reader.String(name))
-      return false;
-    builder.AddPart(key, name);
-  }
-
-  uint32_t supplier_count = 0;
-  if (!reader.U32(supplier_count))
-    return false;
-  for (uint32_t i = 0; i < supplier_count; ++i) {
-    int64_t key = 0;
-    int32_t nationkey = 0;
-    std::string name, address;
-    if (!reader.I64(key) || !reader.String(name) || !reader.String(address) ||
-        !reader.I32(nationkey))
-      return false;
-    builder.AddSupplier(key, std::move(name), std::move(address), nationkey);
-  }
-
-  uint32_t nation_count = 0;
-  if (!reader.U32(nation_count))
-    return false;
-  for (uint32_t i = 0; i < nation_count; ++i) {
-    int32_t key = 0;
-    std::string name;
-    if (!reader.I32(key) || !reader.String(name))
-      return false;
-    builder.AddNation(key, name);
-  }
-  if (!reader.FullyConsumed())
-    return false;
-
-  state = TpchQ20State{};
-  state.base = builder.Finish();
-  return true;
 }
 
 bool TpchQ20TxnBuffer::HasPendingChanges() const { return pending; }

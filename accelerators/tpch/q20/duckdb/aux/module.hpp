@@ -512,8 +512,6 @@ struct TpchQ20SupplierDelta {
   TpchQ20SupplierRecord record;
 };
 
-std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state);
-bool DecodeTpchQ20State(const std::vector<uint8_t> &bytes, TpchQ20State &state);
 
 class TpchQ20TxnBuffer final : public core::AuxTxnBuffer {
 public:

@@ -75,9 +75,6 @@ struct TpchQ6LineitemDelta {
   bool out_of_domain = false;
 };
 
-std::vector<uint8_t> EncodeTpchQ6Matrix(const ::accelerator_codegen::Q6RevenueMatrix &);
-bool DecodeTpchQ6Matrix(const std::vector<uint8_t> &,
-                        ::accelerator_codegen::Q6RevenueMatrix &);
 
 struct TpchQ6QueryParams {
   int32_t start_days = 0;

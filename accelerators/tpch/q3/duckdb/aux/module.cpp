@@ -1,7 +1,6 @@
 #include "tpch/q3/duckdb/aux/module.hpp"
 #include "tpch/q3/calibration_writes.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 
@@ -15,13 +14,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kVersion = 2;
-constexpr uint32_t kOrderSegmentMagic = 0x53335151; // Q3S
-constexpr uint32_t kIntervalMagic = 0x49335151;     // Q3I
 
 // Shards per slice when sorting or scanning the built order index (untimed).
 constexpr std::size_t kSortShardGrain = 1024;
@@ -1298,150 +1290,6 @@ std::string TpchQ3MktsegmentFromPartition(core::PartitionId partition) {
   default:
     return {};
   }
-}
-
-std::vector<uint8_t> EncodeTpchQ3OrderSegmentSide(const TpchQ3Side &side) {
-  uint64_t order_count = 0, cust_count = 0;
-  side.orders.ForEach([&](const TpchQ3OrderRec &) { ++order_count; });
-  side.custs.ForEach([&](const TpchQ3CustRec &) { ++cust_count; });
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kOrderSegmentMagic, kVersion, order_count);
-  side.orders.ForEach([&](const TpchQ3OrderRec &rec) {
-    writer.U64(rec.key);
-    writer.U32(rec.orderdate);
-    writer.U8(rec.seg_flags);
-    writer.U8(rec.shippriority);
-    writer.I64(rec.bound);
-  });
-  writer.U64(cust_count);
-  side.custs.ForEach([&](const TpchQ3CustRec &rec) {
-    writer.U64(rec.key);
-    writer.U32(rec.orphan_orders);
-    writer.U8(rec.segment);
-  });
-  return std::move(writer.bytes);
-}
-
-std::vector<uint8_t>
-EncodeTpchQ3SegmentIntervalIndex(const TpchQ3Segment &segment) {
-  uint64_t count = 0;
-  for (const auto &bin : segment.bins)
-    for (const auto &chunk : bin.second->chunks)
-      count += chunk->entries.size();
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kIntervalMagic, kVersion, count);
-  for (const auto &bin : segment.bins) {
-    for (const auto &chunk : bin.second->chunks) {
-      for (const auto &order : chunk->entries) {
-        writer.I64(order.orderkey);
-        writer.I32(order.orderdate);
-        writer.I32(order.shippriority);
-        writer.I32(order.maxship);
-        writer.U32(order.bucket_count);
-        for (uint32_t b = 0; b < order.bucket_count; ++b) {
-          const auto &bucket = chunk->pool[order.bucket_begin + b];
-          writer.I32(bucket.shipdate);
-          writer.I64(bucket.suffix_revenue);
-        }
-      }
-    }
-  }
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &bytes,
-                                  TpchQ3Side &side) {
-  ByteReader reader{bytes};
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kOrderSegmentMagic, kVersion, count))
-    return false;
-  TpchQ3ShardIndex<TpchQ3OrderRec>::Builder orders;
-  for (uint64_t i = 0; i < count; ++i) {
-    TpchQ3OrderRec rec;
-    uint32_t orderdate = 0;
-    if (!reader.U64(rec.key) || !reader.U32(orderdate) ||
-        !reader.U8(rec.seg_flags) || !reader.U8(rec.shippriority) ||
-        !reader.I64(rec.bound))
-      return false;
-    rec.orderdate = static_cast<uint16_t>(orderdate);
-    orders.Add(rec);
-  }
-  uint64_t cust_count = 0;
-  if (!reader.U64(cust_count))
-    return false;
-  TpchQ3ShardIndex<TpchQ3CustRec>::Builder custs;
-  for (uint64_t i = 0; i < cust_count; ++i) {
-    TpchQ3CustRec rec;
-    if (!reader.U64(rec.key) || !reader.U32(rec.orphan_orders) ||
-        !reader.U8(rec.segment))
-      return false;
-    custs.Add(rec);
-  }
-  orders.Sort();
-  custs.Sort();
-  side.orders = orders.Finish();
-  side.custs = custs.Finish();
-  return reader.offset == bytes.size();
-}
-
-bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &bytes,
-                                      core::PartitionId segment_id,
-                                      TpchQ3Segment &segment) {
-  ByteReader reader{bytes};
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kIntervalMagic, kVersion, count))
-    return false;
-  segment.segment = segment_id;
-  segment.bins.clear();
-  std::map<uint16_t, std::pair<std::vector<TpchQ3Entry>,
-                               std::vector<TpchQ3ShipdateBucket>>>
-      staging;
-  for (uint64_t i = 0; i < count; ++i) {
-    TpchQ3Entry order;
-    uint32_t bucket_count = 0;
-    int64_t orderkey = 0;
-    int32_t orderdate_days = 0, shippriority = 0, max_shipdate = 0;
-    if (!reader.I64(orderkey) || !reader.I32(orderdate_days) ||
-        !reader.I32(shippriority) || !reader.I32(max_shipdate) ||
-        !reader.U32(bucket_count))
-      return false;
-    order.orderkey = PackTpchQ3Orderkey(orderkey);
-    order.orderdate = PackTpchQ3Date(orderdate_days);
-    order.shippriority = PackTpchQ3Shippriority(shippriority);
-    order.maxship = PackTpchQ3Date(max_shipdate);
-    auto &stage = staging[BinOf(order.orderdate)];
-    order.bucket_begin = static_cast<uint32_t>(stage.second.size());
-    order.bucket_count = static_cast<uint16_t>(bucket_count);
-    int64_t bound = 0;
-    std::vector<TpchQ3ShipdateBucket> buckets;
-    for (uint32_t b = 0; b < bucket_count; ++b) {
-      int32_t shipdate = 0;
-      TpchQ3ShipdateBucket bucket;
-      if (!reader.I32(shipdate) || !reader.I64(bucket.suffix_revenue))
-        return false;
-      bucket.shipdate = PackTpchQ3Date(shipdate);
-      buckets.push_back(bucket);
-    }
-    // day revenue = suffix[i] - suffix[i+1]
-    for (std::size_t b = 0; b < buckets.size(); ++b) {
-      const int64_t next =
-          b + 1 < buckets.size() ? buckets[b + 1].suffix_revenue : 0;
-      const int64_t day = buckets[b].suffix_revenue - next;
-      if (day > 0)
-        bound += day;
-    }
-    order.bound = bound;
-    stage.second.insert(stage.second.end(), buckets.begin(), buckets.end());
-    stage.first.push_back(order);
-  }
-  for (auto &[bin_id, stage] : staging) {
-    std::sort(stage.first.begin(), stage.first.end(),
-              [](const TpchQ3Entry &a, const TpchQ3Entry &b) {
-                return EntryBefore(a, b.bound, b.orderkey);
-              });
-    segment.bins[bin_id] = MakeBinList(stage.first, stage.second);
-  }
-  return reader.offset == bytes.size();
 }
 
 bool TpchQ3TxnBuffer::HasPendingChanges() const { return pending; }

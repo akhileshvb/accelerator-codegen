@@ -236,9 +236,6 @@ struct TpchQ2Op {
   TpchQ2PartInput part;
 };
 
-std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &);
-bool DecodeTpchQ2State(core::AuxEngineServices &, const std::vector<uint8_t> &,
-                       TpchQ2State &);
 
 bool TpchQ2MatchesLike(const std::string &text, const std::string &pattern);
 

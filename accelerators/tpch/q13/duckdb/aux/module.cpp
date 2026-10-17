@@ -1,6 +1,5 @@
 #include "tpch/q13/duckdb/aux/module.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/q13/calibration_writes.hpp"
@@ -26,12 +25,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kCustomerMagic = 0x43313351; // Q13C
-constexpr uint32_t kVersion = 1;
 
 // Shards per slice of the bulk token index and match counts (~3000 us at SF 1).
 constexpr std::size_t kFinishGrain = 32;
@@ -1382,103 +1375,6 @@ bool TpchQ13Like::Matches(const char *data, std::size_t len) const {
 }
 
 // Layout: header, patterns, customer rows (key, multiplicity), live orders.
-std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state) {
-  ByteWriter writer;
-  uint64_t live_orders = 0;
-  for (const auto &o : state.orders)
-    if (o)
-      live_orders += o->Size() - o->dead;
-  core::WriteImageHeader(writer, kCustomerMagic, kVersion,
-                         static_cast<uint64_t>(live_orders));
-
-  writer.U32(static_cast<uint32_t>(state.patterns.size()));
-  for (const auto &p : state.patterns)
-    writer.String(p.text);
-
-  std::vector<std::pair<int64_t, int32_t>> custs;
-  for (std::size_t s = 0; s < state.cust.size(); ++s) {
-    const auto &c = state.cust[s];
-    if (!c)
-      continue;
-    for (std::size_t slot = 0; slot < c->mult.size(); ++slot)
-      if (c->mult[slot] > 0)
-        custs.emplace_back(
-            static_cast<int64_t>((std::size_t{c->IdOf(slot)} << kTpchQ13ShardBits) | s),
-            c->mult[slot]);
-  }
-  writer.U64(custs.size());
-  for (const auto &[ck, mult] : custs) {
-    writer.I64(ck);
-    writer.I32(mult);
-  }
-
-  writer.U64(live_orders);
-  for (const auto &o : state.orders) {
-    if (!o)
-      continue;
-    std::size_t g = 0;
-    auto emit = [&](const TpchQ13OrderSeg &sg) {
-      for (std::size_t i = 0; i < sg.custkey.size(); ++i, ++g) {
-        if (!o->alive[g])
-          continue;
-        writer.I64(sg.custkey[i]);
-        writer.String(std::string(sg.blob, sg.start[i], sg.len[i]));
-      }
-    };
-    if (o->base)
-      emit(*o->base);
-    emit(o->tail);
-  }
-  return writer.bytes;
-}
-
-bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
-                                 TpchQ13State &state,
-                                 const core::AuxEngineServices &services) {
-  ByteReader reader(bytes);
-  uint64_t magic = 0, version = 0, record_count = 0;
-  if (!core::ReadImageHeader(reader, magic, version, record_count) ||
-      magic != kCustomerMagic)
-    return false;
-  uint32_t np = 0;
-  if (!reader.U32(np) || np > kTpchQ13MaxPatterns)
-    return false;
-  Mut m;
-  for (uint32_t p = 0; p < np; ++p) {
-    std::string text;
-    if (!reader.String(text))
-      return false;
-    m.st.patterns.push_back(MakePattern(text));
-  }
-  m.InitPatterns();
-  Tally loaded;
-  uint64_t ncust = 0;
-  if (!reader.U64(ncust))
-    return false;
-  for (uint64_t i = 0; i < ncust; ++i) {
-    int64_t ck = 0;
-    int32_t mult = 0;
-    if (!reader.I64(ck) || !reader.I32(mult) || mult < 0)
-      return false;
-    for (int32_t k = 0; k < mult; ++k)
-      ApplyCustomer(m, loaded, ck, +1, Apply::Raw);
-  }
-  uint64_t norders = 0;
-  if (!reader.U64(norders))
-    return false;
-  for (uint64_t i = 0; i < norders; ++i) {
-    int64_t ck = 0;
-    std::string comment;
-    if (!reader.I64(ck) || !reader.String(comment))
-      return false;
-    ApplyOrder(m, loaded, ck, comment, +1, Apply::Raw);
-  }
-  m.Absorb(loaded);
-  BulkFinish(m, services);
-  RecomputeHist(m, services);
-  state = m.Finish();
-  return true;
-}
 
 bool TpchQ13TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ13TxnBuffer::Clear() {

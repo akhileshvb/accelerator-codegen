@@ -1,6 +1,5 @@
 #include "tpch/q18/duckdb/aux/module.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/q18/calibration_writes.hpp"
@@ -18,13 +17,6 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kQuantitySumsMagic = 0x51313851; // Q18Q
-constexpr uint32_t kVersionV1 = 1;
-constexpr uint32_t kVersionV2 = 2;
-constexpr uint32_t kVersionV3 = 3;
 // Deltas per slice (~200 us): netting one lineitem delta per order is ~50 ns.
 constexpr std::size_t kDeltaGrain = 4096;
 
@@ -342,142 +334,6 @@ int32_t TpchQ18State::OrderOrderdate(int64_t orderkey) const {
 int64_t TpchQ18State::OrderTotalprice(int64_t orderkey) const {
   const auto *meta = survivors.Find(orderkey);
   return meta ? meta->totalprice_raw : 0;
-}
-
-std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state) {
-  std::vector<int64_t> survivor_keys;
-  survivor_keys.reserve(state.survivors.size());
-  state.survivors.ForEach([&](int64_t orderkey, const TpchQ18SurvivorMeta &) {
-    survivor_keys.push_back(orderkey);
-  });
-  std::sort(survivor_keys.begin(), survivor_keys.end());
-
-  std::vector<std::pair<int64_t, int64_t>> qty_entries;
-  CollectSparseQuantities(state, qty_entries);
-
-  std::vector<std::pair<int64_t, std::string>> names;
-  names.reserve(state.customer_names.size());
-  state.customer_names.ForEach([&](int64_t custkey, const std::string &name) {
-    names.emplace_back(custkey, name);
-  });
-  std::sort(names.begin(), names.end(),
-            [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
-
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kQuantitySumsMagic, kVersionV3,
-                         static_cast<uint64_t>(survivor_keys.size()));
-  for (const int64_t orderkey : survivor_keys) {
-    const auto &meta = *state.survivors.Find(orderkey);
-    writer.I64(orderkey);
-    writer.I64(meta.custkey);
-    writer.I32(meta.orderdate_days);
-    writer.I64(meta.totalprice_raw);
-  }
-  writer.U32(static_cast<uint32_t>(qty_entries.size()));
-  for (const auto &[orderkey, sum] : qty_entries) {
-    writer.I64(orderkey);
-    writer.I64(sum);
-  }
-  writer.U32(static_cast<uint32_t>(names.size()));
-  for (const auto &[custkey, name] : names) {
-    writer.I64(custkey);
-    writer.String(name);
-  }
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
-                                    TpchQ18State &state) {
-  auto decode_v3 = [&](ByteReader &reader, uint32_t survivor_count) -> bool {
-    state = TpchQ18State{};
-
-    for (uint32_t i = 0; i < survivor_count; ++i) {
-      int64_t orderkey = 0, custkey = 0, totalprice = 0;
-      int32_t orderdate = 0;
-      if (!reader.I64(orderkey) || !reader.I64(custkey) || !reader.I32(orderdate) ||
-          !reader.I64(totalprice))
-        return false;
-      if (orderkey < 0 || custkey <= 0)
-        return false;
-      state.survivors.Upsert(
-          orderkey, TpchQ18SurvivorMeta{custkey, orderdate, totalprice, 0});
-    }
-
-    uint32_t qty_count = 0;
-    if (!reader.U32(qty_count))
-      return false;
-    for (uint32_t i = 0; i < qty_count; ++i) {
-      int64_t key = 0, sum = 0;
-      if (!reader.I64(key) || !reader.I64(sum))
-        return false;
-      if (key < 0)
-        return false;
-      state.SetOrderQuantitySum(key, sum);
-      state.SyncSurvivorQuantity(key);
-    }
-
-    uint32_t name_count = 0;
-    if (!reader.U32(name_count))
-      return false;
-    for (uint32_t i = 0; i < name_count; ++i) {
-      int64_t custkey = 0;
-      std::string name;
-      if (!reader.I64(custkey) || !reader.String(name))
-        return false;
-      if (custkey <= 0)
-        return false;
-      if (!state.customer_names.Contains(custkey))
-        state.customer_names.Upsert(custkey, std::move(name));
-    }
-
-    return reader.FullyConsumed();
-  };
-
-  auto decode_v2 = [&](ByteReader &reader, uint64_t count) -> bool {
-    state = TpchQ18State{};
-
-    for (uint32_t i = 0; i < count; ++i) {
-      int64_t key = 0, sum = 0, custkey = 0, totalprice = 0;
-      int32_t orderdate = 0;
-      if (!reader.I64(key) || !reader.I64(sum) || !reader.I64(custkey) ||
-          !reader.I32(orderdate) || !reader.I64(totalprice))
-        return false;
-      if (key < 0 || custkey <= 0)
-        return false;
-      state.SetOrderQuantitySum(key, sum);
-      if (sum > TpchQ18State::kMinPersistQuantityRaw)
-        state.SetOrderMeta(key, custkey, orderdate, totalprice);
-    }
-    return reader.FullyConsumed();
-  };
-
-  auto decode_v1 = [&](ByteReader &reader, uint64_t count) -> bool {
-    state = TpchQ18State{};
-
-    for (uint32_t i = 0; i < count; ++i) {
-      int64_t key = 0, sum = 0;
-      if (!reader.I64(key) || !reader.I64(sum))
-        return false;
-      if (key < 0)
-        return false;
-      state.SetOrderQuantitySum(key, sum);
-    }
-    return reader.FullyConsumed();
-  };
-
-  ByteReader reader_v3{bytes};
-  uint64_t count = 0;
-  if (core::ReadImageHeader(reader_v3, kQuantitySumsMagic, kVersionV3, count))
-    return decode_v3(reader_v3, count);
-
-  ByteReader reader_v2{bytes};
-  if (core::ReadImageHeader(reader_v2, kQuantitySumsMagic, kVersionV2, count))
-    return decode_v2(reader_v2, count);
-
-  ByteReader reader_v1{bytes};
-  if (!core::ReadImageHeader(reader_v1, kQuantitySumsMagic, kVersionV1, count))
-    return false;
-  return decode_v1(reader_v1, count);
 }
 
 bool TpchQ18TxnBuffer::HasPendingChanges() const { return pending; }

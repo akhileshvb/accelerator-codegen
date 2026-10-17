@@ -174,11 +174,6 @@ struct TpchQ15SupplierDelta {
   std::string new_phone;
 };
 
-std::vector<uint8_t> EncodeTpchQ15Directory(const TpchQ15SupplierDirectory &);
-std::vector<uint8_t> EncodeTpchQ15Window(int32_t month_key, const TpchQ15WindowState &);
-bool DecodeTpchQ15Directory(const std::vector<uint8_t> &, TpchQ15SupplierDirectory &);
-bool DecodeTpchQ15Window(const std::vector<uint8_t> &, int32_t month_key,
-                         TpchQ15WindowState &);
 
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                           int64_t discount_raw, int32_t discount_scale);

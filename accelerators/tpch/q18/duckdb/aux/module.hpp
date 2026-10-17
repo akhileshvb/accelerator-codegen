@@ -162,9 +162,6 @@ struct TpchQ18LineitemDelta {
   int8_t sign = 0;
 };
 
-std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state);
-bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
-                                    TpchQ18State &state);
 
 class TpchQ18TxnBuffer final : public core::AuxTxnBuffer {
 public:

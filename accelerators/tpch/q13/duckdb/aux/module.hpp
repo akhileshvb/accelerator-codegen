@@ -178,10 +178,6 @@ struct TpchQ13Delta {
   bool customer = false;  // customer-row delta (comment unused)
 };
 
-std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state);
-bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
-                                 TpchQ13State &state,
-                                 const core::AuxEngineServices &services);
 
 class TpchQ13TxnBuffer final : public core::AuxTxnBuffer {
 public:

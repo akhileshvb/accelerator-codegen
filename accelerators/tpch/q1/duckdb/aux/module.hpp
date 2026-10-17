@@ -86,9 +86,6 @@ struct TpchQ1LineitemDelta {
   int8_t sign = 0;
 };
 
-std::vector<uint8_t> EncodeTpchQ1Day(const ::accelerator_codegen::Q1DayPartition &);
-bool DecodeTpchQ1Day(const std::vector<uint8_t> &,
-                     ::accelerator_codegen::Q1DayPartition &);
 
 int32_t TpchQ1CutoffDays(int32_t day_offset);
 

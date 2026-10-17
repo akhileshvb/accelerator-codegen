@@ -1,7 +1,6 @@
 #include "tpch/q15/duckdb/aux/module.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/q15/calibration_writes.hpp"
@@ -17,12 +16,6 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kVersion = 2;
-constexpr uint32_t kDirMagic = 0x44313551;   // Q15D
-constexpr uint32_t kWindowMagic = 0x57313551; // Q15W
 // Windows per slice (untimed): a rescan walks every supplier slot.
 constexpr std::size_t kWindowGrain = 8;
 // Lineitem deltas below which a commit applies its month windows inline (untimed).
@@ -270,103 +263,6 @@ std::size_t TpchQ15SupplierDirectory::Size() const {
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t,
                           int64_t discount_raw, int32_t) {
   return extended_price_raw * (100 - discount_raw);
-}
-
-std::vector<uint8_t> EncodeTpchQ15Directory(
-    const TpchQ15SupplierDirectory &dir) {
-  ByteWriter writer;
-  writer.U32(kVersion);
-  writer.U32(kDirMagic);
-  writer.I64(static_cast<int64_t>(dir.Size()));
-  for (const auto &[cid, chunk] : dir.chunks) {
-    for (const auto &[key, record] : chunk->items) {
-      writer.I64(key);
-      writer.String(record->name);
-      writer.String(record->address);
-      writer.String(record->phone);
-    }
-  }
-  return writer.bytes;
-}
-
-bool DecodeTpchQ15Directory(const std::vector<uint8_t> &bytes,
-                             TpchQ15SupplierDirectory &dir) {
-  ByteReader reader{bytes};
-  uint32_t version = 0, magic = 0;
-  if (!reader.U32(version) || !reader.U32(magic) ||
-      version != kVersion || magic != kDirMagic)
-    return false;
-  int64_t count = 0;
-  if (!reader.I64(count) || count < 0)
-    return false;
-  dir.chunks.clear();
-  for (int64_t i = 0; i < count; ++i) {
-    int64_t key = 0;
-    if (!reader.I64(key))
-      return false;
-    TpchQ15SupplierRecord rec;
-    if (!reader.String(rec.name))
-      return false;
-    if (!reader.String(rec.address))
-      return false;
-    if (!reader.String(rec.phone))
-      return false;
-    dir.Add(key, std::move(rec));
-  }
-  return true;
-}
-
-std::vector<uint8_t> EncodeTpchQ15Window(int32_t month_key,
-                                          const TpchQ15WindowState &win) {
-  ByteWriter writer;
-  writer.U32(kVersion);
-  writer.U32(kWindowMagic);
-  writer.I32(month_key);
-  writer.U32(static_cast<uint32_t>(win.winners.empty() ? 0 : 1)); // has_winners
-  writer.I64(win.nonzero);
-  win.rev.ForEachNonZero([&](int64_t key, int64_t r) {
-    writer.I64(key);
-    writer.I64(r);
-  });
-  writer.I64(win.max_revenue);
-  writer.I64(static_cast<int64_t>(win.winners.size()));
-  for (const auto sk : win.winners)
-    writer.I64(sk);
-  return writer.bytes;
-}
-
-bool DecodeTpchQ15Window(const std::vector<uint8_t> &bytes, int32_t month_key,
-                          TpchQ15WindowState &win) {
-  ByteReader reader{bytes};
-  uint32_t version = 0, magic = 0;
-  if (!reader.U32(version) || !reader.U32(magic) ||
-      version != kVersion || magic != kWindowMagic)
-    return false;
-  int32_t stored_month = 0;
-  if (!reader.I32(stored_month) || stored_month != month_key)
-    return false;
-  uint32_t has_winners = 0;
-  reader.U32(has_winners);
-  int64_t count = 0;
-  if (!reader.I64(count) || count < 0)
-    return false;
-  win = TpchQ15WindowState{};
-  for (int64_t i = 0; i < count; ++i) {
-    int64_t key = 0, rev = 0;
-    if (!reader.I64(key) || !reader.I64(rev))
-      return false;
-    win.rev.Add(key, rev);
-  }
-  win.Rescan();
-  int64_t max_rev = 0, winner_count = 0;
-  if (!reader.I64(max_rev) || !reader.I64(winner_count) || winner_count < 0)
-    return false;
-  for (int64_t i = 0; i < winner_count; ++i) {
-    int64_t sk = 0;
-    if (!reader.I64(sk))
-      return false;
-  }
-  return true;
 }
 
 bool TpchQ15TxnBuffer::HasPendingChanges() const { return pending; }

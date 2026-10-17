@@ -237,19 +237,6 @@ struct TpchQ21NationDelta {
   std::string new_name;
 };
 
-std::vector<uint8_t> EncodeTpchQ21SupplierMetadata(const TpchQ21State &state);
-std::vector<uint8_t> EncodeTpchQ21OrderSummaries(const TpchQ21State &state);
-std::vector<uint8_t> EncodeTpchQ21NationNameIndex(const TpchQ21State &state);
-std::vector<uint8_t> EncodeTpchQ21Nation(int32_t nationkey,
-                                          const TpchQ21State &state);
-bool DecodeTpchQ21SupplierMetadata(const std::vector<uint8_t> &bytes,
-                                    TpchQ21State &state);
-bool DecodeTpchQ21OrderSummaries(const std::vector<uint8_t> &bytes,
-                                  TpchQ21State &state);
-bool DecodeTpchQ21NationNameIndex(const std::vector<uint8_t> &bytes,
-                                   TpchQ21State &state);
-bool DecodeTpchQ21Nation(const std::vector<uint8_t> &bytes, int32_t nationkey,
-                          TpchQ21State &state);
 
 class TpchQ21TxnBuffer final : public core::AuxTxnBuffer {
 public:

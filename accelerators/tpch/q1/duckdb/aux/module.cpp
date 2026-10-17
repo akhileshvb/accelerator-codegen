@@ -2,7 +2,6 @@
 #include "tpch/q1/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
 
@@ -18,14 +17,8 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
-
 using Q1DayPartition = ::accelerator_codegen::Q1DayPartition;
 using Q1GroupKey = ::accelerator_codegen::Q1GroupKey;
-
-constexpr uint32_t kVersion = 1;
-constexpr uint32_t kDayMagic = 0x44315151; // Q1D
 
 constexpr int32_t ToDays(int year, int month, int day) {
   return static_cast<int32_t>(core::sql_date::DaysFromCivil(year, month, day));
@@ -74,30 +67,6 @@ uint32_t CoverPrefix(int32_t cutoff_days, uint32_t *nodes) {
     r >>= 1;
   }
   return count;
-}
-
-void WriteQ1Acc(ByteWriter &writer, ::accelerator_codegen::Q1AccT value) {
-#if defined(__SIZEOF_INT128__)
-  writer.U64(static_cast<uint64_t>(value));
-  writer.U64(static_cast<uint64_t>(value >> 64));
-#else
-  writer.I64(value);
-#endif
-}
-
-bool ReadQ1Acc(ByteReader &reader, ::accelerator_codegen::Q1AccT &value) {
-#if defined(__SIZEOF_INT128__)
-  uint64_t lo = 0;
-  uint64_t hi = 0;
-  if (!reader.U64(lo) || !reader.U64(hi)) {
-    return false;
-  }
-  value = static_cast<::accelerator_codegen::Q1AccT>(hi) << 64;
-  value |= static_cast<::accelerator_codegen::Q1AccT>(lo);
-  return true;
-#else
-  return reader.I64(value);
-#endif
 }
 
 const TpchQ1StateImage *AsQ1Image(const core::StateImage &image) {
@@ -179,47 +148,6 @@ ApplyToNode(core::PartitionId node, const core::StateImage *stored,
 }
 
 } // namespace
-
-std::vector<uint8_t> EncodeTpchQ1Day(const Q1DayPartition &partition) {
-  std::vector<Q1GroupKey> keys(partition.keys, partition.keys + partition.n);
-  std::sort(keys.begin(), keys.end());
-
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kDayMagic, kVersion, static_cast<uint64_t>(keys.size()));
-  for (const auto key : keys) {
-    const auto &stats = partition.stats[partition.Find(key)];
-    writer.U16(key);
-    writer.I64(stats.count);
-    writer.I64(stats.sum_qty);
-    writer.I64(stats.sum_base_price);
-    WriteQ1Acc(writer, stats.sum_disc_price);
-    WriteQ1Acc(writer, stats.sum_charge);
-    WriteQ1Acc(writer, stats.sum_discount);
-  }
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ1Day(const std::vector<uint8_t> &bytes, Q1DayPartition &partition) {
-  ByteReader reader{bytes};
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kDayMagic, kVersion, count))
-    return false;
-  partition = Q1DayPartition{};
-  for (uint32_t i = 0; i < count; ++i) {
-    uint16_t key = 0;
-    ::accelerator_codegen::Q1DayGroupStats stats;
-    if (!reader.U16(key) || !reader.I64(stats.count) ||
-        !reader.I64(stats.sum_qty) || !reader.I64(stats.sum_base_price) ||
-        !ReadQ1Acc(reader, stats.sum_disc_price) || !ReadQ1Acc(reader, stats.sum_charge) ||
-        !ReadQ1Acc(reader, stats.sum_discount))
-      return false;
-    auto *slot = partition.FindOrAdd(key);
-    if (!slot)
-      return false;
-    *slot = stats;
-  }
-  return reader.offset == bytes.size();
-}
 
 int32_t TpchQ1CutoffDays(int32_t day_offset) {
   return kQ1BaseDays - day_offset;

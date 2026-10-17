@@ -230,12 +230,6 @@ struct TpchQ3CustomerDelta {
   core::PartitionId segment = 0; // new segment; 0 = not a tracked segment
 };
 
-std::vector<uint8_t> EncodeTpchQ3OrderSegmentSide(const TpchQ3Side &side);
-std::vector<uint8_t> EncodeTpchQ3SegmentIntervalIndex(const TpchQ3Segment &);
-bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &, TpchQ3Side &);
-bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &,
-                                      core::PartitionId segment,
-                                      TpchQ3Segment &);
 
 int64_t TpchQ3RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                          int64_t discount_raw, int32_t discount_scale);

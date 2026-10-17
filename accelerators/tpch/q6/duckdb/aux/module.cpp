@@ -2,7 +2,6 @@
 #include "tpch/q6/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
@@ -20,9 +19,6 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
-
 using Q6AccT = ::accelerator_codegen::Q6AccT;
 using Q6RevenueMatrix = ::accelerator_codegen::Q6RevenueMatrix;
 
@@ -30,52 +26,8 @@ using Q6RevenueMatrix = ::accelerator_codegen::Q6RevenueMatrix;
 constexpr std::size_t kEvalGrain = 4096;
 // Month images per slice (~5 us: a matrix copy plus the deltas).
 constexpr std::size_t kPartitionGrain = 16;
-constexpr uint32_t kVersion = 3; // cells are 2D prefix sums
-constexpr uint32_t kMatrixMagic = 0x51364D58; // Q6MX
 // Months in the query's shipdate window.
 constexpr int32_t kWindowMonths = 12;
-
-void WriteQ6Acc(ByteWriter &writer, Q6AccT value) {
-#if defined(__SIZEOF_INT128__)
-  writer.U32(static_cast<uint32_t>(value));
-  writer.U32(static_cast<uint32_t>(value >> 32));
-  writer.U32(static_cast<uint32_t>(value >> 64));
-  writer.U32(static_cast<uint32_t>(value >> 96));
-#else
-  writer.U32(static_cast<uint32_t>(value.lower));
-  writer.U32(static_cast<uint32_t>(value.lower >> 32));
-  writer.U32(static_cast<uint32_t>(value.upper));
-  writer.U32(static_cast<uint32_t>(value.upper >> 32));
-#endif
-}
-
-bool ReadQ6Acc(ByteReader &reader, Q6AccT &value) {
-#if defined(__SIZEOF_INT128__)
-  uint32_t w0 = 0;
-  uint32_t w1 = 0;
-  uint32_t w2 = 0;
-  uint32_t w3 = 0;
-  if (!reader.U32(w0) || !reader.U32(w1) || !reader.U32(w2) || !reader.U32(w3)) {
-    return false;
-  }
-  value = static_cast<Q6AccT>(w0) | (static_cast<Q6AccT>(w1) << 32) |
-          (static_cast<Q6AccT>(w2) << 64) | (static_cast<Q6AccT>(w3) << 96);
-  return true;
-#else
-  uint32_t lo_lo = 0;
-  uint32_t lo_hi = 0;
-  uint32_t hi_lo = 0;
-  uint32_t hi_hi = 0;
-  if (!reader.U32(lo_lo) || !reader.U32(lo_hi) || !reader.U32(hi_lo) ||
-      !reader.U32(hi_hi)) {
-    return false;
-  }
-  value.lower = static_cast<uint64_t>(lo_lo) | (static_cast<uint64_t>(lo_hi) << 32);
-  value.upper = static_cast<int64_t>(static_cast<uint64_t>(hi_lo) |
-                                     (static_cast<uint64_t>(hi_hi) << 32));
-  return true;
-#endif
-}
 
 int32_t MonthKeyOf(int32_t days) {
   return static_cast<int32_t>(core::sql_date::MonthIndex(days));
@@ -237,32 +189,6 @@ bool ApplyToMonths(core::AuxEngineServices &services,
 }
 
 } // namespace
-
-std::vector<uint8_t> EncodeTpchQ6Matrix(const Q6RevenueMatrix &matrix) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kMatrixMagic, kVersion,
-                         static_cast<uint64_t>(matrix.cells.size()));
-  for (const auto &cell : matrix.cells) {
-    WriteQ6Acc(writer, cell);
-  }
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ6Matrix(const std::vector<uint8_t> &bytes,
-                        Q6RevenueMatrix &matrix) {
-  ByteReader reader{bytes};
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kMatrixMagic, kVersion, count) ||
-      count != matrix.cells.size()) {
-    return false;
-  }
-  for (auto &cell : matrix.cells) {
-    if (!ReadQ6Acc(reader, cell)) {
-      return false;
-    }
-  }
-  return reader.FullyConsumed();
-}
 
 bool ParseTpchQ6QueryParams(const core::QueryArguments &arguments,
                             TpchQ6QueryParams &params) {
