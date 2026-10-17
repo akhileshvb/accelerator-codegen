@@ -31,16 +31,6 @@ constexpr std::size_t kBookkeepOpThreshold = 2048;
 // Scale of the emitted value column.
 constexpr int32_t kValueScale = 2;
 
-bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
-  int64_t value = 0;
-  if (!core::IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  out = static_cast<int32_t>(value);
-  return true;
-}
-
 #if defined(__SIZEOF_INT128__)
 void AddAcc(Q11AccT &accumulator, int64_t supplycost_raw, int64_t availqty) {
   accumulator += static_cast<Q11AccT>(supplycost_raw) *
@@ -95,12 +85,12 @@ bool ReadPartsupp(const core::AuxRow &row, TpchQ11PartsuppInput &out) {
 
 bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey,
                   int32_t &nationkey) {
-  return core::IntCell(row, 0, suppkey) && Int32Cell(row, 1, nationkey);
+  return core::IntCell(row, 0, suppkey) && core::Int32Cell(row, 1, nationkey);
 }
 
 bool ReadNation(const core::AuxRow &row, int32_t &nationkey,
                 std::string &name) {
-  return Int32Cell(row, 0, nationkey) && core::StringCell(row, 1, name);
+  return core::Int32Cell(row, 0, nationkey) && core::StringCell(row, 1, name);
 }
 
 bool RowBefore(const TpchQ11OutputRow &lhs, const TpchQ11OutputRow &rhs) {

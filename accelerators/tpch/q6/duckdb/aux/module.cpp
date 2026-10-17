@@ -5,6 +5,7 @@
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "substrate/aux/core/query_module_helpers.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
 
@@ -109,41 +110,6 @@ int32_t KeyOf(core::PartitionId partition) {
              : core::TpchQ6Layout::DaysFromPartition(partition);
 }
 
-// For each requested partition the matching image of `found` (or nullptr).
-// Stores return found partitions in request order, but the interface does not
-// promise it: the in-order walk is the fast path, anything else is matched by
-// sorted lookup.
-void MatchSnapshot(const std::vector<core::PartitionId> &requested,
-                   const std::vector<core::StateImage> &found,
-                   std::vector<const core::StateImage *> &out) {
-  out.assign(requested.size(), nullptr);
-  std::size_t at = 0;
-  for (std::size_t slot = 0; slot < requested.size(); ++slot) {
-    if (at < found.size() && found[at].partition == requested[slot])
-      out[slot] = &found[at++];
-  }
-  if (at == found.size())
-    return;
-  std::vector<const core::StateImage *> sorted;
-  sorted.reserve(found.size());
-  for (const auto &image : found)
-    sorted.push_back(&image);
-  std::sort(sorted.begin(), sorted.end(),
-            [](const core::StateImage *l, const core::StateImage *r) {
-              return l->partition < r->partition;
-            });
-  for (std::size_t slot = 0; slot < requested.size(); ++slot) {
-    const auto it = std::lower_bound(
-        sorted.begin(), sorted.end(), requested[slot],
-        [](const core::StateImage *image, core::PartitionId id) {
-          return image->partition < id;
-        });
-    out[slot] = it != sorted.end() && (*it)->partition == requested[slot]
-                    ? *it
-                    : nullptr;
-  }
-}
-
 const TpchQ6StateImage *AsQ6Image(const core::StateImage &image) {
   return image.As<TpchQ6StateImage>();
 }
@@ -244,7 +210,7 @@ bool ApplyToMonths(core::AuxEngineServices &services,
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), partitions);
   std::vector<const core::StateImage *> matched;
-  MatchSnapshot(partitions, snapshot.partitions, matched);
+  core::MatchSnapshot(partitions, snapshot.partitions, matched);
   std::vector<const TpchQ6StateImage *> base(partitions.size());
   for (std::size_t p = 0; p < partitions.size(); ++p) {
     if (!matched[p])

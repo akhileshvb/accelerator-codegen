@@ -43,6 +43,14 @@ struct MaintenanceRequest {
     return {rows, partitions, true, true, true, false, false,
             maintenance::MaintenanceAction::NoOp, expected_queries};
   }
+  // Partitioned state whose deltas cannot be redone per partition: deltas apply, or everything rebuilds.
+  static MaintenanceRequest IncrementalPartitionedNoPartitionRebuild(uint64_t rows,
+                                                                      uint64_t partitions,
+                                                                      double expected_queries) {
+    MaintenanceRequest request = IncrementalPartitioned(rows, partitions, expected_queries);
+    request.partition_rebuild_supported = false;
+    return request;
+  }
 };
 
 struct MaintenanceDecision {

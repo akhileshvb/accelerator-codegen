@@ -26,26 +26,6 @@ bool NullCell(const core::AuxRow &row, std::size_t index) {
 
 // A decimal cell as an integer count of 1/100 units (ps_supplycost's scale);
 // false when it is not exactly representable.
-bool CentsCell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (!std::holds_alternative<core::ScaledDecimal>(cell.payload))
-    return false;
-  const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-  int64_t value = decimal.value;
-  for (int32_t scale = decimal.scale; scale < 2; ++scale)
-    if (__builtin_mul_overflow(value, int64_t{10}, &value))
-      return false;
-  for (int32_t scale = decimal.scale; scale > 2; --scale) {
-    if (value % 10 != 0)
-      return false;
-    value /= 10;
-  }
-  raw = value;
-  return true;
-}
-
 // false: undecodable (forces a rebuild); `skip`: the row can never contribute
 // (a NULL key / cost / quantity), so it is ignored.
 bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, TpchQ11Offer &offer,
@@ -56,7 +36,7 @@ bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, TpchQ11Offer &offer
     return true;
   int64_t qty = 0;
   if (!core::IntCell(row, 0, partkey) || !core::IntCell(row, 1, offer.suppkey) ||
-      !core::IntCell(row, 2, qty) || !CentsCell(row, 3, offer.cost_raw) ||
+      !core::IntCell(row, 2, qty) || !core::ExactDecimalCell(row, 3, 2, offer.cost_raw) ||
       qty < std::numeric_limits<int32_t>::min() ||
       qty > std::numeric_limits<int32_t>::max())
     return false;

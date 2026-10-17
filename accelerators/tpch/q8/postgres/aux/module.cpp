@@ -1,5 +1,6 @@
 #include "tpch/q8/postgres/aux/module.hpp"
 #include "tpch/q8/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 
 #include <algorithm>
 #include <map>
@@ -29,80 +30,19 @@ constexpr core::PartitionId kStatePartition = TpchQ8Layout::kYear1995;
 constexpr int32_t kVolumeScale = 4;
 // Order-map chunks (<= 1024 orders) per slice: ~0.3 us per decoded order.
 constexpr std::size_t kChunkGrain = 2;
-// A cell is Ok, SQL NULL (the row cannot join / pass a predicate), or of an
-// unexpected type (the state cannot follow the write: it is rebuilt).
-enum class Cell { Ok, Null, Bad };
-
-Cell IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return Cell::Ok;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return Cell::Bad;
-    out = static_cast<int64_t>(value);
-    return Cell::Ok;
-  }
-  return Cell::Bad;
-}
+using Cell = core::CellState;
 
 // A nation / region key (int32 column). INT32_MIN is the state's "absent"
 // marker, so it cannot be stored.
 Cell KeyCell(const core::AuxRow &row, std::size_t index, int32_t &out) {
   int64_t v = 0;
-  const Cell c = IntCell(row, index, v);
+  const Cell c = core::NullableIntCell(row, index, v);
   if (c != Cell::Ok)
     return c;
   if (v <= std::numeric_limits<int32_t>::min() ||
       v > std::numeric_limits<int32_t>::max())
     return Cell::Bad;
   out = static_cast<int32_t>(v);
-  return Cell::Ok;
-}
-
-Cell DecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                 int32_t &scale) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (!std::holds_alternative<core::ScaledDecimal>(cell.payload))
-    return Cell::Bad;
-  const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-  raw = decimal.value;
-  scale = decimal.scale;
-  return Cell::Ok;
-}
-
-Cell DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (!std::holds_alternative<core::AuxDate>(cell.payload))
-    return Cell::Bad;
-  days = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-  return Cell::Ok;
-}
-
-Cell TextCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (!std::holds_alternative<std::string>(cell.payload))
-    return Cell::Bad;
-  out = std::get<std::string>(cell.payload);
   return Cell::Ok;
 }
 
@@ -602,7 +542,7 @@ bool CollectNationChanges(const core::MutationBatch &m, Changes<int32_t> &out) {
     for (const auto &row : rows) {
       int64_t key = 0;
       int32_t nation = 0;
-      const Cell k = IntCell(row, 0, key);
+      const Cell k = core::NullableIntCell(row, 0, key);
       const Cell n = KeyCell(row, 1, nation);
       if (k == Cell::Bad || n == Cell::Bad)
         return false;
@@ -857,7 +797,7 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
       int32_t key = 0, regionkey = 0;
       std::string name;
       const Cell k = KeyCell(row, 0, key);
-      const Cell n = TextCell(row, 1, name);
+      const Cell n = core::NullableStringCell(row, 1, name);
       const Cell r = KeyCell(row, 2, regionkey);
       if (k == Cell::Bad || n == Cell::Bad || r == Cell::Bad) {
         ok = false;
@@ -881,7 +821,7 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
       int32_t key = 0;
       std::string name;
       const Cell k = KeyCell(row, 0, key);
-      const Cell n = TextCell(row, 1, name);
+      const Cell n = core::NullableStringCell(row, 1, name);
       if (k == Cell::Bad || n == Cell::Bad) {
         ok = false;
         break;
@@ -896,8 +836,8 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
       for (const auto &row : rows) {
         int64_t key = 0;
         std::string type;
-        const Cell k = IntCell(row, 0, key);
-        const Cell t = TextCell(row, 1, type);
+        const Cell k = core::NullableIntCell(row, 0, key);
+        const Cell t = core::NullableStringCell(row, 1, type);
         if (k == Cell::Bad || t == Cell::Bad)
           return false;
         if (k != Cell::Ok)
@@ -957,9 +897,9 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
       for (const auto &row : rows) {
         int64_t orderkey = 0, custkey = 0;
         int32_t day = 0;
-        const Cell a = IntCell(row, 0, orderkey);
-        const Cell b = IntCell(row, 1, custkey);
-        const Cell d = DateCell(row, 2, day);
+        const Cell a = core::NullableIntCell(row, 0, orderkey);
+        const Cell b = core::NullableIntCell(row, 1, custkey);
+        const Cell d = core::NullableDateCell(row, 2, day);
         if (a == Cell::Bad || b == Cell::Bad || d == Cell::Bad)
           return false;
         // A NULL key or date never passes the join / window predicate.
@@ -976,11 +916,11 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
       for (const auto &row : rows) {
         int64_t partkey = 0, orderkey = 0, suppkey = 0, price = 0, discount = 0;
         int32_t price_scale = 0, discount_scale = 0;
-        const Cell cells[5] = {IntCell(row, 0, partkey),
-                               IntCell(row, 1, orderkey),
-                               IntCell(row, 2, suppkey),
-                               DecimalCell(row, 3, price, price_scale),
-                               DecimalCell(row, 4, discount, discount_scale)};
+        const Cell cells[5] = {core::NullableIntCell(row, 0, partkey),
+                               core::NullableIntCell(row, 1, orderkey),
+                               core::NullableIntCell(row, 2, suppkey),
+                               core::NullableDecimalCell(row, 3, price, price_scale),
+                               core::NullableDecimalCell(row, 4, discount, discount_scale)};
         bool null_cell = false;
         for (const Cell c : cells) {
           if (c == Cell::Bad)

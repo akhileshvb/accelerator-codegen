@@ -29,16 +29,6 @@ constexpr int32_t kLastYear = 1996;
 // Largest region size kept in an on-stack array when emitting.
 constexpr std::size_t kInlineRegionNations = 64;
 
-bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
-  int64_t value = 0;
-  if (!core::IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  out = static_cast<int32_t>(value);
-  return true;
-}
-
 bool ReadLineitem(const core::AuxRow &row, TpchQ8LineitemInput &out) {
   int64_t partkey = 0, orderkey = 0, suppkey = 0, extended_raw = 0, discount_raw = 0;
   int32_t scale = 0;
@@ -66,7 +56,7 @@ bool ReadPart(const core::AuxRow &row, int64_t &key, std::string &type) {
 
 bool ReadSupplier(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
   int64_t k = 0;
-  if (!core::IntCell(row, 0, k) || !Int32Cell(row, 1, nationkey))
+  if (!core::IntCell(row, 0, k) || !core::Int32Cell(row, 1, nationkey))
     return false;
   key = k;
   return true;
@@ -74,7 +64,7 @@ bool ReadSupplier(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
 
 bool ReadCustomer(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
   int64_t k = 0;
-  if (!core::IntCell(row, 0, k) || !Int32Cell(row, 1, nationkey))
+  if (!core::IntCell(row, 0, k) || !core::Int32Cell(row, 1, nationkey))
     return false;
   key = k;
   return true;
@@ -83,7 +73,7 @@ bool ReadCustomer(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
 bool ReadOrders(const core::AuxRow &row, int64_t &key, int64_t &custkey,
                 int32_t &orderdate_days) {
   int64_t k = 0, ck = 0;
-  if (!core::IntCell(row, 0, k) || !core::IntCell(row, 1, ck) || !Int32Cell(row, 2, orderdate_days))
+  if (!core::IntCell(row, 0, k) || !core::IntCell(row, 1, ck) || !core::Int32Cell(row, 2, orderdate_days))
     return false;
   key = k;
   custkey = ck;

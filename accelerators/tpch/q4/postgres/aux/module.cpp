@@ -1,5 +1,6 @@
 #include "tpch/q4/postgres/aux/module.hpp"
 #include "tpch/q4/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"
@@ -28,49 +29,7 @@ constexpr std::size_t kBucketGrain = 1;
 // Months in the query's order-date window.
 constexpr int32_t kWindowMonths = 3;
 
-// Cell readers distinguish SQL NULL from an unreadable payload.
-enum class Cell { Null, Ok, Bad };
-
-Cell IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return Cell::Ok;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return Cell::Ok;
-  }
-  return Cell::Bad;
-}
-
-Cell DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  const Cell c = IntCell(row, index, value);
-  if (c != Cell::Ok)
-    return c;
-  if (value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return Cell::Bad;
-  days = static_cast<int32_t>(value);
-  return Cell::Ok;
-}
-
-Cell StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (!std::holds_alternative<std::string>(cell.payload))
-    return Cell::Bad;
-  out = std::get<std::string>(cell.payload);
-  return Cell::Ok;
-}
+using Cell = core::CellState;
 
 std::shared_ptr<const TpchQ4StateImage>
 MakeSideImage(std::shared_ptr<const TpchQ4Side> state) {
@@ -377,9 +336,9 @@ void TpchQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
     auto add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ4OrderDelta delta;
       delta.sign = sign;
-      const Cell key = IntCell(row, 0, delta.orderkey);
-      const Cell date = DateCell(row, 1, delta.orderdate_days);
-      const Cell prio = StringCell(row, 2, delta.orderpriority);
+      const Cell key = core::NullableIntOrDateCell(row, 0, delta.orderkey);
+      const Cell date = core::NullableInt32OrDateCell(row, 1, delta.orderdate_days);
+      const Cell prio = core::NullableStringCell(row, 2, delta.orderpriority);
       if (key == Cell::Bad || date == Cell::Bad || prio == Cell::Bad) {
         buffer.MarkRebuild();
         return;
@@ -418,9 +377,9 @@ void TpchQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
   auto add = [&](const core::AuxRow &row, int8_t sign) {
     int64_t orderkey = 0;
     int32_t commit = 0, receipt = 0;
-    const Cell k = IntCell(row, 0, orderkey);
-    const Cell c = DateCell(row, 1, commit);
-    const Cell r = DateCell(row, 2, receipt);
+    const Cell k = core::NullableIntOrDateCell(row, 0, orderkey);
+    const Cell c = core::NullableInt32OrDateCell(row, 1, commit);
+    const Cell r = core::NullableInt32OrDateCell(row, 2, receipt);
     if (k == Cell::Bad || c == Cell::Bad || r == Cell::Bad) {
       buffer.MarkRebuild();
       return;

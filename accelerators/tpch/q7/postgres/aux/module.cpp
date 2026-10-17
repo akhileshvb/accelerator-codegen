@@ -1,5 +1,6 @@
 #include "tpch/q7/postgres/aux/module.hpp"
 #include "tpch/q7/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -28,57 +29,7 @@ constexpr core::PartitionId kStatePartition = core::TpchQ7Layout::kSidePartition
 constexpr int32_t kRevenueScale = 4;
 // Order-map chunks (<= 1024 orders) per slice: ~0.3 us per decoded order.
 constexpr std::size_t kChunkGrain = 2;
-// A cell is Ok, SQL NULL (the row cannot join / pass the filter), or of an
-// unexpected type (the capture layout is not what this module expects: the
-// state cannot follow the write, so it is rebuilt).
-enum class Cell { Ok, Null, Bad };
-
-Cell IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return Cell::Ok;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return Cell::Bad;
-    out = static_cast<int64_t>(value);
-    return Cell::Ok;
-  }
-  return Cell::Bad;
-}
-
-Cell DecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                 int32_t &scale) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (!std::holds_alternative<core::ScaledDecimal>(cell.payload))
-    return Cell::Bad;
-  const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-  raw = decimal.value;
-  scale = decimal.scale;
-  return Cell::Ok;
-}
-
-Cell DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  if (index >= row.values.size())
-    return Cell::Bad;
-  const auto &cell = row.values[index];
-  if (cell.is_null)
-    return Cell::Null;
-  if (!std::holds_alternative<core::AuxDate>(cell.payload))
-    return Cell::Bad;
-  days = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-  return Cell::Ok;
-}
+using Cell = core::CellState;
 
 // volume = price * (1 - discount) as a scale-4 integer; false on overflow or
 // when the operand scales do not give scale 4.
@@ -438,8 +389,8 @@ void RepointCustomers(const core::AuxEngineServices &services, TpchQ7State &s,
 bool CollectKeyChanges(const core::MutationBatch &m, Changes &out) {
   const auto read = [](const core::AuxRow &row, int64_t &key, int32_t &nk) {
     int64_t nationkey = 0;
-    const Cell k = IntCell(row, 0, key);
-    const Cell n = IntCell(row, 1, nationkey);
+    const Cell k = core::NullableIntCell(row, 0, key);
+    const Cell n = core::NullableIntCell(row, 1, nationkey);
     if (k == Cell::Bad || n == Cell::Bad)
       return Cell::Bad;
     if (k == Cell::Null)
@@ -637,7 +588,7 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
     // Only the key -> name table changes; the cube is keyed by nation keys.
     for (const auto &row : mutation.old_rows) {
       int64_t key = 0;
-      const Cell c = IntCell(row, 0, key);
+      const Cell c = core::NullableIntCell(row, 0, key);
       if (c == Cell::Bad) {
         ok = false;
         break;
@@ -647,7 +598,7 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
     for (const auto &row : mutation.new_rows) {
       int64_t key = 0;
-      const Cell c = IntCell(row, 0, key);
+      const Cell c = core::NullableIntCell(row, 0, key);
       if (c == Cell::Bad || row.values.size() < 2 ||
           (!row.values[1].is_null &&
            !std::holds_alternative<std::string>(row.values[1].payload))) {
@@ -695,8 +646,8 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
       core::Buckets<OrderRow> owners(OwnerCount(rows.size()));
       for (const auto &row : rows) {
         int64_t orderkey = 0, custkey = 0;
-        const Cell a = IntCell(row, 0, orderkey);
-        const Cell b = IntCell(row, 1, custkey);
+        const Cell a = core::NullableIntCell(row, 0, orderkey);
+        const Cell b = core::NullableIntCell(row, 1, custkey);
         if (a == Cell::Bad || b == Cell::Bad)
           return false;
         if (a == Cell::Null || b == Cell::Null)
@@ -714,11 +665,11 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
       for (const auto &row : rows) {
         int64_t orderkey = 0, suppkey = 0, price = 0, discount = 0;
         int32_t price_scale = 0, discount_scale = 0, shipdate = 0;
-        const Cell cells[5] = {IntCell(row, 0, orderkey),
-                               IntCell(row, 1, suppkey),
-                               DecimalCell(row, 2, price, price_scale),
-                               DecimalCell(row, 3, discount, discount_scale),
-                               DateCell(row, 4, shipdate)};
+        const Cell cells[5] = {core::NullableIntCell(row, 0, orderkey),
+                               core::NullableIntCell(row, 1, suppkey),
+                               core::NullableDecimalCell(row, 2, price, price_scale),
+                               core::NullableDecimalCell(row, 3, discount, discount_scale),
+                               core::NullableDateCell(row, 4, shipdate)};
         bool null_cell = false;
         for (const Cell c : cells) {
           if (c == Cell::Bad)

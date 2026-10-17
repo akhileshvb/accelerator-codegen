@@ -32,15 +32,6 @@ constexpr std::size_t kBlockGrain = 256;
 using core::IntCell;
 using core::StringCell;
 
-bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) || value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  out = static_cast<int32_t>(value);
-  return true;
-}
-
 // Quantity in hundredths (the engine hands columns over as scaled decimals).
 bool QuantityCell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
   int32_t scale = 0;
@@ -61,7 +52,7 @@ bool QuantityCell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
 // contribute, so these readers return false and the row is ignored.
 bool ReadLineitem(const core::AuxRow &row, int32_t &shipdate_days,
                   int64_t &partkey, int64_t &suppkey, int64_t &quantity_raw) {
-  return Int32Cell(row, 0, shipdate_days) && IntCell(row, 1, partkey) &&
+  return core::Int32Cell(row, 0, shipdate_days) && IntCell(row, 1, partkey) &&
          IntCell(row, 2, suppkey) && QuantityCell(row, 3, quantity_raw);
 }
 
@@ -78,12 +69,12 @@ bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, int64_t &suppkey,
 bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey, std::string &name,
                   std::string &address, int32_t &nationkey) {
   return IntCell(row, 0, suppkey) && StringCell(row, 1, name) &&
-         StringCell(row, 2, address) && Int32Cell(row, 3, nationkey);
+         StringCell(row, 2, address) && core::Int32Cell(row, 3, nationkey);
 }
 
 bool ReadNation(const core::AuxRow &row, int32_t &nationkey,
                 std::string &name) {
-  return Int32Cell(row, 0, nationkey) && StringCell(row, 1, name);
+  return core::Int32Cell(row, 0, nationkey) && StringCell(row, 1, name);
 }
 
 std::shared_ptr<const TpchQ20StateImage>

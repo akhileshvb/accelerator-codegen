@@ -36,15 +36,6 @@ using core::DateCell;
 using core::IntCell;
 using core::StringCell;
 
-bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) || value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  out = static_cast<int32_t>(value);
-  return true;
-}
-
 // (partkey, suppkey) packed 32/32: exact (no collisions) for every key pair
 // PairKeyFits accepts -- TPC-H stays far inside it at any scale factor.
 inline bool PairKeyFits(int64_t partkey, int64_t suppkey) {
@@ -140,7 +131,7 @@ bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, int64_t &suppkey,
 bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey, std::string &name,
                   std::string &address, int32_t &nationkey) {
   return IntCell(row, 0, suppkey) && StringCell(row, 1, name) &&
-         StringCell(row, 2, address) && Int32Cell(row, 3, nationkey);
+         StringCell(row, 2, address) && core::Int32Cell(row, 3, nationkey);
 }
 
 // Dense key-indexed arrays cover keys below max(kMinDense, 4 x row count);
