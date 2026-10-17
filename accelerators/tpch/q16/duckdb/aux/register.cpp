@@ -8,17 +8,10 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -31,6 +24,10 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr core::TableId kPartTable = 1;
+constexpr core::TableId kPartsuppTable = 2;
+constexpr core::TableId kSupplierTable = 3;
+
 SharedProbe BuildTpchQ16Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   // Flip supplier eligibility (Customer Complaints) so ApplyDelta can run.
@@ -38,8 +35,7 @@ SharedProbe BuildTpchQ16Probe(::duckdb::MaterializedQueryResult &result,
   const auto suppkey = result.GetValue(0, row).ToString();
   const auto comment = result.GetValue(1, row).ToString();
   SharedProbe probe;
-  // TpchQ16Config{1, 2, 3} → supplier_table = 3.
-  probe.table = 3;
+  probe.table = kSupplierTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {1};
   probe.write_delta = 1.0;
@@ -173,7 +169,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q16_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER},
     [](::duckdb::Connection &connection) {
-      const TpchQ16Config c{1, 2, 3};
+      const TpchQ16Config c{q16_catalog::kPartTable, q16_catalog::kPartsuppTable, q16_catalog::kSupplierTable};
       return MakeBinding<TpchQ16Scan, TpchQ16Module>(connection, CaptureTableList{{"part", c.part_table}, {"partsupp", c.partsupp_table}, {"supplier", c.supplier_table}}, c);
     }}};
 
