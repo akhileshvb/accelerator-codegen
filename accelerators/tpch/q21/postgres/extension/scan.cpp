@@ -21,14 +21,16 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 namespace scans {
 
 void ScanTpchQ21Suppliers(
-    const std::function<void(const query::TpchQ21SupplierInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT s_suppkey, s_name, s_nationkey FROM supplier",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2)});
-      });
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ21SupplierInput &)> &sink) {
+  ScanPartitioned(services, "supplier",
+                  {IntColumn("s_suppkey"), TextColumn("s_name"), IntColumn("s_nationkey")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Text(1), row.Int(2)});
+                    }
+                  });
 }
 
 void ScanTpchQ21Nations(
@@ -93,9 +95,10 @@ void LookupTpchQ21FulfilledLineitems(
 class TpchQ21Scan final : public query::TpchQ21InitialScan {
 public:
   void ScanSuppliers(
-      const std::function<void(const query::TpchQ21SupplierInput &)> &consumer)
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ21SupplierInput &)> &sink)
       override {
-    scans::ScanTpchQ21Suppliers(consumer);
+    scans::ScanTpchQ21Suppliers(services, partitions, sink);
   }
   void ScanNations(
       const std::function<void(const query::TpchQ21NationInput &)> &consumer)

@@ -57,8 +57,11 @@ struct TpchQ21LineInput {
 class TpchQ21InitialScan {
 public:
   virtual ~TpchQ21InitialScan() = default;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
   virtual void ScanSuppliers(
-      const std::function<void(const TpchQ21SupplierInput &)> &) = 0;
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ21SupplierInput &)> &sink) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ21NationInput &)> &) = 0;
   // The orderkeys of the fulfilled orders ('F') and every lineitem (the module
