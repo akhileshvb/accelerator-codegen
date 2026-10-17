@@ -14,7 +14,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 bool StringValue(const core::AuxValue &value, std::string &out) {
   if (value.is_null || !std::holds_alternative<std::string>(value.payload))
     return false;
@@ -188,8 +187,6 @@ bool TryApplyEvents(core::AuxEngineServices &services, const TpchQ2TxnBuffer &bu
 
 } // namespace
 
-// ── supplier text packing ────────────────────────────────────────────────────
-
 std::string TpchQ2PackSupplierText(const std::string &name,
                                    const std::string &address,
                                    const std::string &phone,
@@ -222,8 +219,6 @@ TpchQ2SupplierText TpchQ2UnpackSupplierText(std::string_view packed) {
       at, static_cast<std::size_t>(packed.data() + packed.size() - at));
   return text;
 }
-
-// ── TpchQ2State point edits ──────────────────────────────────────────────────
 
 void TpchQ2State::InternInto(std::shared_ptr<core::StringDict> &dict,
                              const std::string &value, uint32_t &id) {
@@ -383,8 +378,6 @@ std::size_t TpchQ2State::MemoryBytes() const {
          mfgrs->MemoryBytes();
 }
 
-// ── transaction buffer ───────────────────────────────────────────────────────
-
 bool TpchQ2TxnBuffer::HasPendingChanges() const {
   return requires_rebuild || EventCount() != 0;
 }
@@ -397,8 +390,6 @@ void TpchQ2TxnBuffer::Clear() {
   regions.clear();
 }
 void TpchQ2TxnBuffer::MarkRebuild() { requires_rebuild = true; }
-
-// ── module ───────────────────────────────────────────────────────────────────
 
 core::AcceleratorId TpchQ2Module::Id() const { return kId; }
 

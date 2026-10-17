@@ -6,7 +6,6 @@
 #include "tpch/q11/postgres/aux/module.hpp"
 #include "tpch/q11/cost_model.hpp"
 
-
 #include "tpch/common/postgres_tpch_table_ids.hpp"
 #include "backends/postgres/api/engine_runtime.hpp"
 #include "backends/postgres/api/runtime.hpp"
@@ -23,11 +22,9 @@ extern "C" {
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
-
 namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables;
 
 namespace scans {
-
 void ScanTpchQ11Partsupp(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ11PartsuppInput &)> &sink) {
@@ -104,10 +101,7 @@ Q11Runtime() {
 namespace core = accelerator_codegen::aux_state::core;
 
 namespace {
-
-// ── Q11 fallback result rows: direct numeric construction ───────────────────
 namespace q11wire {
-
 inline bool FitsInt64(query::Q11AccT v) {
   return v >= std::numeric_limits<int64_t>::min() &&
          v <= std::numeric_limits<int64_t>::max();

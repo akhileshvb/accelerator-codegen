@@ -15,13 +15,10 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 using Int128 = __int128;
 
 // Parts per maintenance slice.
 constexpr std::size_t kPartEditGrain = 256;
-
-// ── Row decoding ──────────────────────────────────────────────────────────
 
 // decimal(15,2) cell as an exact x100 integer.
 bool Scale2Cell(const core::AuxRow &row, std::size_t index, int64_t &out) {
@@ -60,8 +57,6 @@ RowStatus ReadLineitem(const core::AuxRow &row, TpchQ17LineitemInput &out) {
     return RowStatus::Bad;
   return RowStatus::Ok;
 }
-
-// ── Histograms and contributions ─────────────────────────────────────────
 
 struct Contribution {
   Int128 price_sum_raw = 0;
@@ -139,8 +134,6 @@ bool EditHistogram(const TpchQ17State &state, int64_t partkey,
   }
   return true;
 }
-
-// ── State editing ─────────────────────────────────────────────────────────
 
 void AdjustTotal(TpchQ17State &state, uint32_t group, const Contribution &c,
                  int sign) {
@@ -232,8 +225,6 @@ core::StateImage MakeImage(std::shared_ptr<const TpchQ17State> state) {
       std::shared_ptr<const TpchQ17StateImage>(std::move(image)));
 }
 
-// ── Query arguments / output ──────────────────────────────────────────────
-
 // False when either argument is SQL NULL (p_brand = NULL is never true).
 bool ReadArguments(const core::QueryArguments &arguments, std::string &brand,
                    std::string &container) {
@@ -275,8 +266,6 @@ std::string TpchQ17GroupDictionary::MakeKey(const std::string &brand,
   return key;
 }
 
-// ── TxnBuffer ─────────────────────────────────────────────────────────────
-
 bool TpchQ17TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ17TxnBuffer::Clear() {
   pending = false;
@@ -307,8 +296,6 @@ void TpchQ17TxnBuffer::AddPartDelta(TpchQ17PartDelta delta) {
   part_deltas.push_back(std::move(delta));
 }
 
-// ── Module ────────────────────────────────────────────────────────────────
-
 core::AcceleratorId TpchQ17Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ17Module::Dependencies() const {
@@ -321,7 +308,6 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ17Module::CreateTxnBuffer() const {
 }
 
 namespace {
-
 struct PartRow {
   int64_t partkey;
   int64_t quantity_raw;

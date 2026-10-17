@@ -23,7 +23,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 namespace like = core::sql_like;
 
 // LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; the
@@ -71,7 +70,6 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
 
 } // namespace
 
-// ── Known patterns ─────────────────────────────────────────────────────────
 namespace {
 constexpr std::string_view kWord1[4] = {"special", "pending", "unusual", "express"};
 constexpr std::string_view kWord2[4] = {"packages", "requests", "accounts", "deposits"};
@@ -312,7 +310,6 @@ void TpchQ13State::EnablePatternIndex(const core::AuxEngineServices &services) {
   patterns_ready = true;
 }
 
-// ── TpchQ13State implementation ─────────────────────────────────────────────
 int32_t TpchQ13State::Count(int64_t key) const {
   if (Dense(key))
     return order_count.Get(key);
@@ -485,7 +482,6 @@ void TpchQ13State::CompactTouched() {
   touched_.clear();
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ13TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ13TxnBuffer::Clear() {
   pending = false;
@@ -497,7 +493,6 @@ void TpchQ13TxnBuffer::AddDelta(TpchQ13Delta delta) {
   deltas.push_back(std::move(delta));
 }
 
-// ── TpchQ13Module ───────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ13Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
@@ -522,7 +517,6 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
 }
 
 namespace {
-
 struct CustomerKeys {
   std::vector<int64_t> keys;
   int64_t max_key = -1;
@@ -766,7 +760,6 @@ bool TpchQ13Module::LoadState(
 }
 
 namespace {
-
 // excluded[custkey] = number of the customer's orders whose comment matches
 // `matcher`: a flat array when the custkey range is dense enough, otherwise
 // (and for negative / huge keys) a hash.

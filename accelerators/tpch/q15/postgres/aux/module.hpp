@@ -15,7 +15,6 @@
 #include "prims/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
 struct TpchQ15Layout {
   static constexpr const char *kAccelerator = "tpch_q15";
   static constexpr core::PartitionId kSupplierDirectory = 0;
@@ -57,7 +56,6 @@ public:
       const std::function<void(std::size_t, const TpchQ15SupplierInput &)> &sink) = 0;
 };
 
-// ── State ─────────────────────────────────────────────────────────────────
 //
 // Layout (all published partitions are immutable; copies share COW chunks):
 //   * kSupplierDirectory: suppkey -> packed (name, address, phone), a
@@ -141,12 +139,8 @@ struct TpchQ15SupplierDelta {
   std::string new_phone;
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                           int64_t discount_raw, int32_t discount_scale);
-
-// ── TxnBuffer ─────────────────────────────────────────────────────────────
 
 class TpchQ15TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -166,8 +160,6 @@ private:
   std::vector<TpchQ15LineitemDelta> lineitem_deltas;
   std::vector<TpchQ15SupplierDelta> supplier_deltas;
 };
-
-// ── Module ────────────────────────────────────────────────────────────────
 
 class TpchQ15Module final : public core::AuxQueryModule {
 public:

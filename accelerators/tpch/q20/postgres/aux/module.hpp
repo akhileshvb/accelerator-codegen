@@ -16,8 +16,6 @@
 #include "prims/keyed_string_column.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q20 layout ──────────────────────────────────────────────────────────────
 struct TpchQ20Layout {
   static constexpr const char *kAccelerator = "tpch_q20_aux";
   static constexpr core::PartitionId kFullState = 0;
@@ -35,7 +33,6 @@ struct TpchQ20Config {
   core::TableId nation_table = 0;
 };
 
-// ── Typed bulk-scan contract ───────────────────────────────────────────────
 // Scans return only rows whose join / filter columns are NOT NULL (a row with a
 // NULL there can never satisfy the query's predicates).
 struct TpchQ20LineitemInput {
@@ -91,7 +88,6 @@ public:
       const std::function<void(const TpchQ20NationInput &)> &) = 0;
 };
 
-// ── State ───────────────────────────────────────────────────────────────────
 //
 // For every (partkey, suppkey) pair that appears in partsupp and/or lineitem,
 // the state keeps ps_availqty (if any) and the pair's lineitems as a sorted
@@ -153,13 +149,11 @@ struct TpchQ20StateImage {
   std::shared_ptr<const TpchQ20State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ20OutputRow {
   std::string name;
   std::string address;
 };
 
-// ── Delta types ─────────────────────────────────────────────────────────────
 struct TpchQ20LineitemDelta {
   int32_t shipdate_days = 0;
   int64_t partkey = 0;
@@ -193,7 +187,6 @@ struct TpchQ20NationDelta {
   int8_t sign = 0;
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ20TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -220,7 +213,6 @@ private:
   std::vector<TpchQ20NationDelta> nation_deltas;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ20Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ20Layout::kAccelerator;

@@ -15,8 +15,6 @@
 #include "tpch/q12/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ---------------------------------------------------------------------------
 // State layout (published as three images; a write batch copies directories /
 // shard pointers and clones only the chunks and shards it touches).
 //
@@ -30,7 +28,6 @@ namespace accelerator_codegen::aux_state::query {
 //                     independent of SF.
 //   kSide             shipmode dictionary.
 // Execute reads 2 x 366 cells: O(1) in the data size.
-// ---------------------------------------------------------------------------
 struct TpchQ12Parts {
   static constexpr core::PartitionId kOrderPriorities =
       core::TpchQ12Layout::kOrderPriorities;

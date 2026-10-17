@@ -15,8 +15,6 @@
 #include "prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q21 layout ──────────────────────────────────────────────────────────────
 struct TpchQ21Layout {
   static constexpr const char *kAccelerator = "tpch_q21_aux";
   static constexpr core::PartitionId kState = 0;
@@ -26,7 +24,6 @@ struct TpchQ21Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ21Config {
   core::TableId supplier_table = 0;
   core::TableId orders_table = 0;
@@ -34,7 +31,6 @@ struct TpchQ21Config {
   core::TableId nation_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ21SupplierInput {
   int64_t suppkey = 0;
   std::string name;
@@ -82,7 +78,6 @@ public:
       const std::function<void(const TpchQ21LineInput &)> &) = 0;
 };
 
-// ── State ───────────────────────────────────────────────────────────────────
 // What an order adds to the answer: `count` rows for supplier `suppkey`. An
 // order contributes iff it is fulfilled, has lineitems of at least two
 // suppliers and exactly one supplier has late ones (that supplier, with its
@@ -116,7 +111,6 @@ struct TpchQ21NationEntry {
   TpchQ21Name name;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ21OutputRow {
   std::string name;
   int64_t numwait = 0;
@@ -203,8 +197,6 @@ struct TpchQ21StateImage {
   std::shared_ptr<const TpchQ21State> state;
 };
 
-// ── Deltas ──────────────────────────────────────────────────────────────────
-
 // A supplier or nation row change (insert: new only, delete: old only,
 // update: both).
 struct TpchQ21SupplierDelta {
@@ -221,7 +213,6 @@ struct TpchQ21NationDelta {
   TpchQ21NationInput new_row;
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ21TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -246,7 +237,6 @@ private:
   std::vector<TpchQ21NationDelta> nation_deltas;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ21Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ21Layout::kAccelerator;

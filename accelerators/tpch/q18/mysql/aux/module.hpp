@@ -12,8 +12,6 @@
 #include "prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q18 layout ──────────────────────────────────────────────────────────────
 struct TpchQ18Layout {
   static constexpr const char *kAccelerator = "tpch_q18_aux";
   static constexpr core::PartitionId kOrderQuantitySums = 0;
@@ -23,14 +21,12 @@ struct TpchQ18Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ18Config {
   core::TableId lineitem_table = 0;
   core::TableId orders_table = 0;
   core::TableId customer_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ18LineitemInput {
   int64_t orderkey = 0;
   int64_t quantity_raw = 0;
@@ -73,7 +69,6 @@ public:
       const std::function<void(const TpchQ18CustomerInput &)> &consumer);
 };
 
-// ── State ───────────────────────────────────────────────────────────────────
 // One record per orderkey that has an orders row or at least one lineitem.
 // The record carries everything the query needs about the order, so a write to
 // lineitem or orders is a per-key delta that needs no lookup in the database.
@@ -127,7 +122,6 @@ struct TpchQ18StateImage {
   std::shared_ptr<const TpchQ18State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ18OutputRow {
   std::string name;
   int64_t custkey = 0;
@@ -137,7 +131,6 @@ struct TpchQ18OutputRow {
   int64_t quantity_sum_raw = 0;
 };
 
-// ── Deltas ──────────────────────────────────────────────────────────────────
 struct TpchQ18LineitemDelta {
   int64_t orderkey = 0;
   int64_t quantity_raw = 0;
@@ -158,7 +151,6 @@ struct TpchQ18CustomerDelta {
   TpchQ18CustomerInput new_row;
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ18TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -183,7 +175,6 @@ private:
   std::vector<TpchQ18CustomerDelta> customers;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ18Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ18Layout::kAccelerator;

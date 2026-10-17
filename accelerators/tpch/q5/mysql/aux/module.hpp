@@ -16,8 +16,6 @@
 #include "tpch/q5/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ---------------------------------------------------------------------------
 // State layout.  Published as five images; a write batch copies directories /
 // small maps and clones only the chunks it touches (never O(state)).
 //
@@ -47,7 +45,6 @@ namespace accelerator_codegen::aux_state::query {
 //                        lineitems, found by index lookups.
 // Only a batch that mixes customer/supplier changes with orders/lineitem
 // changes is rebuilt (rare; exact).
-// ---------------------------------------------------------------------------
 struct TpchQ5Parts {
   static constexpr core::PartitionId kSide = core::TpchQ5Layout::kSide;
   static constexpr core::PartitionId kTree = core::TpchQ5Layout::kTreeBase;

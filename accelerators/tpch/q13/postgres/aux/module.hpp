@@ -16,7 +16,6 @@
 #include "tpch/q13/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
 // Q13: for every customer, count the orders whose o_comment does NOT match the
 // LIKE pattern argument, then histogram those counts (c_count -> custdist).
 //
@@ -131,7 +130,6 @@ struct TpchQ13State {
   int64_t open_segment = -1;           // segment receiving appends
   core::ShardedCowHashMap<uint64_t, 16> order_row; // orderkey -> seg*4096+slot
 
-  // ── pattern index (see the header comment) ──
   using PatternCounts = std::array<uint8_t, kTpchQ13Patterns>;
   bool patterns_ready = false;
   core::ChunkedCowArray<PatternCounts, 9> matched{PatternCounts{}};

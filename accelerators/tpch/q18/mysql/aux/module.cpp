@@ -19,7 +19,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 // Deltas per maintenance slice (~200 us): applying one lineitem delta is ~50 ns.
 constexpr std::size_t kDeltaGrain = 4096;
 
@@ -57,7 +56,6 @@ bool ReadCustomer(const core::AuxRow &row, TpchQ18CustomerInput &out) {
   return core::IntCell(row, 0, out.key) && core::StringCell(row, 1, out.name);
 }
 
-// ── The QUANTITY parameter ──────────────────────────────────────────────────
 // The query keeps an order when SUM(l_quantity) > QUANTITY. Sums are integers
 // at scale 2, so for any exact decimal QUANTITY the test is
 // sum_raw > floor(QUANTITY * 100): `Value` carries that floor, `All` and
@@ -215,7 +213,6 @@ void TpchQ18InitialScan::LookupCustomerNames(
   });
 }
 
-// ── State ───────────────────────────────────────────────────────────────────
 void TpchQ18State::Reindex(int64_t orderkey) {
   const TpchQ18OrderRec *rec = orders.Find(orderkey);
   if (!rec)
@@ -271,7 +268,6 @@ bool TpchQ18State::ClearOrder(int64_t orderkey) {
   return true;
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ18TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ18TxnBuffer::Clear() {
   pending = false;
@@ -313,7 +309,6 @@ uint64_t TpchQ18TxnBuffer::Size() const {
   return lineitems.size() + orders.size() + customers.size();
 }
 
-// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ18Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ18Module::Dependencies() const {
@@ -416,7 +411,6 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
 }
 
 namespace {
-
 // A key's deltas are applied by the slice that owns its hot-set shard. The
 // orders record map has at least as many shards, so a slice also owns every
 // record shard of its keys, and no two slices write the same shard.
@@ -586,7 +580,6 @@ void TpchQ18Module::Execute(core::AuxEngineServices &services,
 }
 
 namespace {
-
 struct OrderQuantity {
   int64_t orderkey;
   int64_t quantity_raw;

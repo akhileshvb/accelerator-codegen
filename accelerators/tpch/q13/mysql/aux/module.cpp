@@ -20,7 +20,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 namespace like = core::sql_like;
 
 // LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; the
@@ -32,7 +31,6 @@ constexpr bool kLikeCaseInsensitive = true;
 constexpr std::size_t kSlotBits = 12; // log2(kTpchQ13SegmentRows)
 static_assert(kTpchQ13SegmentRows == (std::size_t{1} << kSlotBits));
 
-// ── Cell extraction helpers ─────────────────────────────────────────────────
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
   plan.scope = ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
@@ -72,7 +70,6 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
 
 } // namespace
 
-// ── TpchQ13State implementation ─────────────────────────────────────────────
 int32_t TpchQ13State::Count(int64_t key) const {
   if (Dense(key))
     return order_count.Get(key);
@@ -218,7 +215,6 @@ void TpchQ13State::CompactTouched() {
   touched_.clear();
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ13TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ13TxnBuffer::Clear() {
   pending = false;
@@ -230,7 +226,6 @@ void TpchQ13TxnBuffer::AddDelta(TpchQ13Delta delta) {
   deltas.push_back(std::move(delta));
 }
 
-// ── TpchQ13Module ───────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ13Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
@@ -255,7 +250,6 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
 }
 
 namespace {
-
 // Parallel loading of orders, for the build and for large maintenance batches.
 // The state's index shards and count chunks are written by the slice that owns
 // them: a key belongs to owner (shard or chunk) % kOwners, so slices never share
@@ -335,8 +329,6 @@ void ApplyPlaced(const core::AuxEngineServices &services, TpchQ13State &state,
       state.AddCount(change.custkey, change.delta);
 }
 
-// ── Build ──────────────────────────────────────────────────────────────────
-
 // The orders of one scan partition: full segments of its own.
 struct OrderPartial {
   std::vector<std::shared_ptr<TpchQ13OrderSegment>> segments;
@@ -373,8 +365,6 @@ void LoadOrders(const core::AuxEngineServices &services, TpchQ13State &state,
   }
   ApplyPlaced(services, state, placed);
 }
-
-// ── Maintenance ────────────────────────────────────────────────────────────
 
 constexpr uint64_t kNoRow = ~uint64_t{0};
 constexpr std::size_t kNoDelta = ~std::size_t{0};
@@ -715,7 +705,6 @@ bool TpchQ13Module::LoadState(
 }
 
 namespace {
-
 // excluded[custkey] = number of the customer's orders whose comment matches
 // `matcher`: a flat array when the custkey range is dense enough, otherwise
 // (and for negative / huge keys) a hash.

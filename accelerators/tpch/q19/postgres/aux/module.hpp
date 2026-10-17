@@ -13,8 +13,6 @@
 #include "prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q19 layout ──────────────────────────────────────────────────────────────
 struct TpchQ19Layout {
   static constexpr const char *kAccelerator = "tpch_q19_aux";
   static constexpr core::PartitionId kAggregatePartition = 0;
@@ -35,13 +33,11 @@ struct TpchQ19Layout {
 // with one indexed point scan (WHERE l_partkey IN (...)) and moves their
 // contributions. Execute: 3 binary searches, independent of SF.
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ19Config {
   core::TableId lineitem_table = 0;
   core::TableId part_table = 0;
 };
 
-// ── Typed scan contract ─────────────────────────────────────────────────────
 struct TpchQ19PartInput {
   int64_t key = 0;
   std::string brand;
@@ -86,7 +82,6 @@ public:
       const std::function<void(const TpchQ19PartQuantityRevenue &)> &) = 0;
 };
 
-// ── Template constants (the three OR branches of the query) ─────────────────
 enum class TpchQ19Family : uint8_t {
   None = 0,
   SM = 1,  // SM CASE, SM BOX, SM PACK, SM PKG ; p_size 1..5
@@ -102,7 +97,6 @@ std::string TpchQ19FamilySql();
 // l_shipinstruct = 'DELIVER IN PERSON'.
 std::string TpchQ19ShippingSql();
 
-// ── State ───────────────────────────────────────────────────────────────────
 struct TpchQ19State {
   struct QtyRev {
     int64_t qty = 0; // l_quantity raw (scale 2)
@@ -138,7 +132,6 @@ struct TpchQ19StateImage {
   std::shared_ptr<const TpchQ19State> state;
 };
 
-// ── Delta ───────────────────────────────────────────────────────────────────
 struct TpchQ19LineitemDelta {
   int64_t partkey = 0;
   int64_t quantity_raw = 0;
@@ -153,7 +146,6 @@ struct TpchQ19PartEvent {
   int64_t partkey = 0;
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ19TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -173,7 +165,6 @@ private:
   std::vector<TpchQ19PartEvent> part_events;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ19Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ19Layout::kAccelerator;

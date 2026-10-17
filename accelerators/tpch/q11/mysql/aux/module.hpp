@@ -76,7 +76,6 @@ struct TpchQ11OutputRow {
   Q11AccT value = 0;
 };
 
-// ---------------------------------------------------------------------------
 // State layout
 //
 // Q11 groups the partsupp rows of one nation by part and keeps the groups whose
@@ -97,7 +96,6 @@ struct TpchQ11OutputRow {
 // Memory: ~22 B/partsupp row facts + ~19 B/row ordered entries = ~41 B/row:
 // SF100 (80M rows) ~3.3 GB, SF1000 (800M rows) ~33 GB (was ~15-20 GB at SF100).
 // Execute: O(output rows + log n); deltas O(log n + 64 KB block copy).
-// ---------------------------------------------------------------------------
 constexpr int64_t kTpchQ11NoNation = std::numeric_limits<int64_t>::min();
 constexpr std::size_t kTpchQ11InlineOffers = 4;
 constexpr int64_t kTpchQ11NarrowLimit = int64_t{1} << 62;

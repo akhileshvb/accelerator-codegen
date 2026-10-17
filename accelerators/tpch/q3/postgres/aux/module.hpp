@@ -15,8 +15,6 @@
 #include "prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q3 layout ───────────────────────────────────────────────────────────────
 struct TpchQ3Layout {
   static constexpr const char *kAccelerator = "tpch_q3";
   static constexpr core::PartitionId kState = 0;
@@ -32,7 +30,6 @@ struct TpchQ3Config {
   core::TableId lineitem_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 // One row per lineitem of customer ⨝ orders ⨝ lineitem. The rows of one order
 // are consecutive (ordered by orderkey).
 struct TpchQ3OrderLineInput {
@@ -90,7 +87,6 @@ public:
                                        std::vector<int64_t> &orderkeys) = 0;
 };
 
-// ── State ───────────────────────────────────────────────────────────────────
 // An order that has a customer and at least one lineitem is one record:
 //   orderdate, shippriority and its lineitems as (shipdate, revenue) pairs,
 //   revenue = SUM(extendedprice * (1 - discount)) at scale 4 per shipdate.
@@ -167,7 +163,6 @@ struct TpchQ3OrderResult {
 // Largest revenue sum an order of bound-bin `bin` can have (see TpchQ3State).
 int64_t TpchQ3BinUpperBound(int32_t bin);
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ3TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;

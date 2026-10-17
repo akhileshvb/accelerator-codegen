@@ -15,7 +15,6 @@
 #include "prims/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
 struct TpchQ4Layout {
   static constexpr const char *kAccelerator = "tpch_q4";
   static constexpr core::PartitionId kSide = 0;
@@ -55,7 +54,6 @@ public:
       const std::function<void(std::size_t, const TpchQ4LineitemInput &)> &sink) = 0;
 };
 
-// ---------------------------------------------------------------------------
 // State layout (all per-write copies are O(touched chunks), never O(state)).
 //
 //   kEligibility  per-order columns keyed by o_orderkey (AnyKeyCowArray):
@@ -77,7 +75,6 @@ public:
 //                 tree window (|days| > ~23000 years) go to a small ordered
 //                 outlier map in the side image.
 //   kSide         priority dictionary (+ NULL priority slot) and outliers.
-// ---------------------------------------------------------------------------
 
 constexpr uint32_t kTpchQ4NoOrder = 0xFFFFFFFFu;  // priority sentinel: no order row
 

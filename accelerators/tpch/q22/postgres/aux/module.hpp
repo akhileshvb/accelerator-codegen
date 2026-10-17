@@ -17,8 +17,6 @@
 #include "prims/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q22 layout ──────────────────────────────────────────────────────────────
 // One published partition holds the whole state, built from copy-on-write
 // pieces (a write batch copies pointers plus the pieces it touches):
 //   * per custkey (columnar): present flag + phone-prefix id, account balance,
@@ -45,13 +43,11 @@ struct TpchQ22Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ22Config {
   core::TableId orders_table = 0;
   core::TableId customer_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ22CustomerInput {
   int64_t custkey = 0;
   std::string phone;
@@ -76,7 +72,6 @@ public:
       const std::function<void(std::size_t, const TpchQ22OrderInput &)> &) = 0;
 };
 
-// ── State structures ────────────────────────────────────────────────────────
 constexpr uint32_t kTpchQ22NoCustomer = 0xffffffffu; // no customer row
 constexpr uint32_t kTpchQ22NullPhone = 0xfffffffeu;  // customer, phone NULL
 constexpr int64_t kTpchQ22NullBalance = std::numeric_limits<int64_t>::min();
@@ -112,14 +107,12 @@ struct TpchQ22StateImage {
   std::shared_ptr<const TpchQ22State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ22OutputRow {
   std::string cntrycode;
   int64_t numcust = 0;
   int64_t totacctbal_raw = 0;
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ22TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -153,7 +146,6 @@ private:
   bool requires_rebuild = false;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ22Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ22Layout::kAccelerator;
