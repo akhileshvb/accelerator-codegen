@@ -420,7 +420,7 @@ std::vector<EncodedBlock> EncodeBucket(BucketRows &rows) {
 constexpr std::size_t kDeltaGrain = 256;
 
 // Rows of a partition-ordered scan merge by appending.
-template <class Row> void AppendRows(std::vector<Row> &into, std::vector<Row> &&from) {
+template <class Row> void AppendInputRows(std::vector<Row> &into, std::vector<Row> &&from) {
   into.insert(into.end(), std::make_move_iterator(from.begin()),
               std::make_move_iterator(from.end()));
 }
@@ -741,7 +741,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
       [](std::vector<TpchQ20SupplierInput> &into, const TpchQ20SupplierInput &input) {
         into.push_back(input);
       },
-      AppendRows<TpchQ20SupplierInput>, partitions);
+      AppendInputRows<TpchQ20SupplierInput>, partitions);
   for (const auto &input : suppliers)
     state->suppliers.Upsert(input.key, {input.name, input.address, input.nationkey});
   const auto part_names = core::PartitionedBuild<std::vector<TpchQ20PartInput>>(
@@ -755,7 +755,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
       [](std::vector<TpchQ20PartInput> &into, const TpchQ20PartInput &input) {
         into.push_back(input);
       },
-      AppendRows<TpchQ20PartInput>, partitions);
+      AppendInputRows<TpchQ20PartInput>, partitions);
   for (const auto &input : part_names)
     state->part_names.Set(input.key, input.name);
 
