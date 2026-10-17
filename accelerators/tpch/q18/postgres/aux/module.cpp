@@ -236,6 +236,58 @@ LineitemNets NetLineitems(const core::AuxEngineServices &services,
   return nets;
 }
 
+struct OrderQuantity {
+  int64_t orderkey;
+  int64_t quantity_raw;
+};
+
+// The build's rows of the orders whose key falls into one bucket.
+struct BuildBucket {
+  std::vector<OrderQuantity> lineitems;
+  std::vector<TpchQ18OrderInput> orders;
+};
+
+struct BucketRecords {
+  std::vector<std::pair<int64_t, TpchQ18OrderRec>> records;
+  std::vector<int64_t> hot;
+};
+
+// The record of every order of the bucket (its orders row, SUM(l_quantity) and
+// COUNT(*) of its lineitems) and which of them are hot.
+BucketRecords BuildRecords(BuildBucket &bucket) {
+  std::sort(bucket.lineitems.begin(), bucket.lineitems.end(),
+            [](const OrderQuantity &a, const OrderQuantity &b) {
+              return a.orderkey < b.orderkey;
+            });
+  std::stable_sort(bucket.orders.begin(), bucket.orders.end(),
+                   [](const TpchQ18OrderInput &a, const TpchQ18OrderInput &b) {
+                     return a.key < b.key;
+                   });
+  BucketRecords out;
+  auto line = bucket.lineitems.begin();
+  auto order = bucket.orders.begin();
+  while (line != bucket.lineitems.end() || order != bucket.orders.end()) {
+    constexpr int64_t kEnd = std::numeric_limits<int64_t>::max();
+    const int64_t key = std::min(line != bucket.lineitems.end() ? line->orderkey : kEnd,
+                                 order != bucket.orders.end() ? order->key : kEnd);
+    TpchQ18OrderRec rec;
+    for (; line != bucket.lineitems.end() && line->orderkey == key; ++line) {
+      rec.sum_raw += line->quantity_raw;
+      ++rec.flags_lines;
+    }
+    for (; order != bucket.orders.end() && order->key == key; ++order) {
+      rec.custkey = order->custkey; // a repeated key keeps the last row
+      rec.orderdate_days = order->orderdate_days;
+      rec.totalprice_raw = order->totalprice_raw;
+      rec.flags_lines |= TpchQ18OrderRec::kHasOrder;
+    }
+    out.records.emplace_back(key, rec);
+    if (rec.Qualifies(TpchQ18State::kHotFloorRaw))
+      out.hot.push_back(key);
+  }
+  return out;
+}
+
 } // namespace
 
 void TpchQ18InitialScan::LookupCustomerNames(
@@ -574,61 +626,6 @@ void TpchQ18Module::Execute(core::AuxEngineServices &services,
   }
   EmitRows(std::move(rows), *state, sink);
 }
-
-namespace {
-struct OrderQuantity {
-  int64_t orderkey;
-  int64_t quantity_raw;
-};
-
-// The build's rows of the orders whose key falls into one bucket.
-struct BuildBucket {
-  std::vector<OrderQuantity> lineitems;
-  std::vector<TpchQ18OrderInput> orders;
-};
-
-struct BucketRecords {
-  std::vector<std::pair<int64_t, TpchQ18OrderRec>> records;
-  std::vector<int64_t> hot;
-};
-
-// The record of every order of the bucket (its orders row, SUM(l_quantity) and
-// COUNT(*) of its lineitems) and which of them are hot.
-BucketRecords BuildRecords(BuildBucket &bucket) {
-  std::sort(bucket.lineitems.begin(), bucket.lineitems.end(),
-            [](const OrderQuantity &a, const OrderQuantity &b) {
-              return a.orderkey < b.orderkey;
-            });
-  std::stable_sort(bucket.orders.begin(), bucket.orders.end(),
-                   [](const TpchQ18OrderInput &a, const TpchQ18OrderInput &b) {
-                     return a.key < b.key;
-                   });
-  BucketRecords out;
-  auto line = bucket.lineitems.begin();
-  auto order = bucket.orders.begin();
-  while (line != bucket.lineitems.end() || order != bucket.orders.end()) {
-    constexpr int64_t kEnd = std::numeric_limits<int64_t>::max();
-    const int64_t key = std::min(line != bucket.lineitems.end() ? line->orderkey : kEnd,
-                                 order != bucket.orders.end() ? order->key : kEnd);
-    TpchQ18OrderRec rec;
-    for (; line != bucket.lineitems.end() && line->orderkey == key; ++line) {
-      rec.sum_raw += line->quantity_raw;
-      ++rec.flags_lines;
-    }
-    for (; order != bucket.orders.end() && order->key == key; ++order) {
-      rec.custkey = order->custkey; // a repeated key keeps the last row
-      rec.orderdate_days = order->orderdate_days;
-      rec.totalprice_raw = order->totalprice_raw;
-      rec.flags_lines |= TpchQ18OrderRec::kHasOrder;
-    }
-    out.records.emplace_back(key, rec);
-    if (rec.Qualifies(TpchQ18State::kHotFloorRaw))
-      out.hot.push_back(key);
-  }
-  return out;
-}
-
-} // namespace
 
 TpchQ18State TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)

@@ -321,6 +321,38 @@ struct Leaders {
   }
 };
 
+// One scanned lineitem's contribution to a month.
+struct MonthRow {
+  int64_t suppkey;
+  int64_t revenue;
+  int day_offset;
+};
+
+// Month columns are filled in place; the per-day lists accumulate in plain
+// vectors and are frozen (shrunk to size) at the end.
+std::shared_ptr<const TpchQ15MonthState>
+BuildMonth(const std::vector<MonthRow> &rows) {
+  auto month = std::make_shared<TpchQ15MonthState>();
+  std::array<std::vector<uint64_t>, 31> narrow;
+  std::array<std::vector<TpchQ15DayEntry>, 31> wide;
+  for (const auto &row : rows) {
+    AddToMonthColumns(*month, row.suppkey, row.revenue, 1);
+    if (FitsNarrow(row.suppkey, row.revenue, 1))
+      narrow[row.day_offset].push_back(PackNarrow(row.suppkey, row.revenue));
+    else
+      wide[row.day_offset].push_back({row.suppkey, row.revenue, 1});
+  }
+  for (int d = 0; d < 31; ++d) {
+    if (!narrow[d].empty())
+      month->days[d].narrow = std::make_shared<const std::vector<uint64_t>>(
+          narrow[d].begin(), narrow[d].end());
+    if (!wide[d].empty())
+      month->days[d].wide = std::make_shared<const std::vector<TpchQ15DayEntry>>(
+          std::move(wide[d]));
+  }
+  return month;
+}
+
 } // namespace
 
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
@@ -377,41 +409,6 @@ std::vector<core::TableDependency> TpchQ15Module::Dependencies() const {
 std::unique_ptr<core::AuxTxnBuffer> TpchQ15Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ15TxnBuffer>();
 }
-
-namespace {
-// One scanned lineitem's contribution to a month.
-struct MonthRow {
-  int64_t suppkey;
-  int64_t revenue;
-  int day_offset;
-};
-
-// Month columns are filled in place; the per-day lists accumulate in plain
-// vectors and are frozen (shrunk to size) at the end.
-std::shared_ptr<const TpchQ15MonthState>
-BuildMonth(const std::vector<MonthRow> &rows) {
-  auto month = std::make_shared<TpchQ15MonthState>();
-  std::array<std::vector<uint64_t>, 31> narrow;
-  std::array<std::vector<TpchQ15DayEntry>, 31> wide;
-  for (const auto &row : rows) {
-    AddToMonthColumns(*month, row.suppkey, row.revenue, 1);
-    if (FitsNarrow(row.suppkey, row.revenue, 1))
-      narrow[row.day_offset].push_back(PackNarrow(row.suppkey, row.revenue));
-    else
-      wide[row.day_offset].push_back({row.suppkey, row.revenue, 1});
-  }
-  for (int d = 0; d < 31; ++d) {
-    if (!narrow[d].empty())
-      month->days[d].narrow = std::make_shared<const std::vector<uint64_t>>(
-          narrow[d].begin(), narrow[d].end());
-    if (!wide[d].empty())
-      month->days[d].wide = std::make_shared<const std::vector<TpchQ15DayEntry>>(
-          std::move(wide[d]));
-  }
-  return month;
-}
-
-} // namespace
 
 void TpchQ15Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {

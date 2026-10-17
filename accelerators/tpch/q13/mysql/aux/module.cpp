@@ -68,188 +68,6 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
   return lhs.c_count > rhs.c_count;
 }
 
-} // namespace
-
-int32_t TpchQ13State::Count(int64_t key) const {
-  if (Dense(key))
-    return order_count.Get(key);
-  const SparseSlot *s = sparse_customers.Find(key);
-  return s ? s->count : 0;
-}
-bool TpchQ13State::Valid(int64_t key) const {
-  if (Dense(key))
-    return customer_valid.Get(key) != 0;
-  const SparseSlot *s = sparse_customers.Find(key);
-  return s && s->valid;
-}
-void TpchQ13State::AddCount(int64_t key, int32_t delta) {
-  if (Dense(key))
-    order_count.Mutable(key) += delta;
-  else
-    sparse_customers[key].count += delta;
-}
-void TpchQ13State::SetValid(int64_t key, bool valid) {
-  if (Dense(key))
-    customer_valid.Set(key, valid ? 1 : 0);
-  else
-    sparse_customers[key].valid = valid ? 1 : 0;
-}
-
-void TpchQ13State::AddCustomer(int64_t custkey) {
-  if (Valid(custkey))
-    return;
-  SetValid(custkey, true);
-  ++customers;
-}
-
-void TpchQ13State::RemoveCustomer(int64_t custkey) {
-  if (!Valid(custkey))
-    return;
-  SetValid(custkey, false);
-  --customers;
-}
-
-std::shared_ptr<TpchQ13OrderSegment> &TpchQ13State::MutableSegment(uint32_t id) {
-  auto &segment = segments[id];
-  if (segment.use_count() > 1)
-    segment = std::make_shared<TpchQ13OrderSegment>(*segment);
-  return segment;
-}
-
-std::size_t TpchQ13State::OpenSegmentRoom() const {
-  if (open_segment < 0)
-    return 0;
-  return kTpchQ13SegmentRows - segments[static_cast<std::size_t>(open_segment)]->orderkey.size();
-}
-
-uint32_t TpchQ13State::OpenFreshSegment() {
-  if (!free_segments.empty()) {
-    open_segment = free_segments.back();
-    free_segments.pop_back();
-  } else {
-    open_segment = static_cast<int64_t>(segments.size());
-    segments.emplace_back();
-  }
-  segments[static_cast<std::size_t>(open_segment)] = NewOrderSegment();
-  return static_cast<uint32_t>(open_segment);
-}
-
-// Orders count toward their custkey whether or not that customer exists yet
-// (the join only sees a customer row), so customer and order maintenance are
-// independent and a customer insert/delete is a single flag flip.
-void TpchQ13State::AddOrder(int64_t orderkey, int64_t custkey,
-                            std::string_view comment) {
-  RemoveOrder(orderkey); // primary key: re-adding an existing key replaces it
-  const auto id = OpenSegmentRoom() > 0 ? static_cast<uint32_t>(open_segment)
-                                        : OpenFreshSegment();
-  auto &segment = *MutableSegment(id);
-  const std::size_t slot = segment.orderkey.size();
-  segment.orderkey.push_back(orderkey);
-  segment.custkey.push_back(custkey);
-  segment.alive.push_back(1);
-  segment.comment.Append(comment);
-  ++segment.live;
-  order_row.Upsert(orderkey, (static_cast<uint64_t>(id) << kSlotBits) | slot);
-  AddCount(custkey, 1);
-  ++live_orders;
-}
-
-void TpchQ13State::RemoveOrder(int64_t orderkey) {
-  const uint64_t *found = order_row.Find(orderkey);
-  if (!found)
-    return;
-  const auto id = static_cast<uint32_t>(*found >> kSlotBits);
-  const std::size_t slot = *found & (kTpchQ13SegmentRows - 1);
-  auto &segment = *MutableSegment(id);
-  segment.alive[slot] = 0;
-  --segment.live;
-  AddCount(segment.custkey[slot], -1);
-  order_row.Erase(orderkey);
-  --live_orders;
-  touched_.push_back(id);
-}
-
-// A segment that is mostly dead is rewritten without its dead rows (moved rows
-// get new index entries); an empty one is released for reuse. Cost O(segment).
-void TpchQ13State::CompactSegment(uint32_t id) {
-  auto &slot_ptr = segments[id];
-  if (!slot_ptr)
-    return;
-  const auto &old = *slot_ptr;
-  const std::size_t rows = old.orderkey.size();
-  if (old.live == 0) {
-    slot_ptr.reset();
-    free_segments.push_back(id);
-    if (open_segment == static_cast<int64_t>(id))
-      open_segment = -1;
-    return;
-  }
-  if ((rows - old.live) * 2 <= rows)
-    return;
-  auto fresh = std::make_shared<TpchQ13OrderSegment>();
-  fresh->orderkey.reserve(old.live);
-  fresh->custkey.reserve(old.live);
-  fresh->alive.reserve(old.live);
-  fresh->comment.Reserve(old.live, old.comment.bytes());
-  for (std::size_t i = 0; i < rows; ++i) {
-    if (!old.alive[i])
-      continue;
-    const std::size_t slot = fresh->orderkey.size();
-    fresh->orderkey.push_back(old.orderkey[i]);
-    fresh->custkey.push_back(old.custkey[i]);
-    fresh->alive.push_back(1);
-    fresh->comment.Append(old.comment.View(i));
-    if (slot != i)
-      order_row.Upsert(old.orderkey[i],
-                       (static_cast<uint64_t>(id) << kSlotBits) | slot);
-  }
-  fresh->live = old.live;
-  slot_ptr = std::move(fresh);
-}
-
-void TpchQ13State::CompactTouched() {
-  std::sort(touched_.begin(), touched_.end());
-  touched_.erase(std::unique(touched_.begin(), touched_.end()), touched_.end());
-  for (const uint32_t id : touched_)
-    CompactSegment(id);
-  touched_.clear();
-}
-
-bool TpchQ13TxnBuffer::HasPendingChanges() const { return pending; }
-void TpchQ13TxnBuffer::Clear() {
-  pending = false;
-  deltas.clear();
-}
-const std::vector<TpchQ13Delta> &TpchQ13TxnBuffer::Deltas() const { return deltas; }
-void TpchQ13TxnBuffer::AddDelta(TpchQ13Delta delta) {
-  pending = true;
-  deltas.push_back(std::move(delta));
-}
-
-core::AcceleratorId TpchQ13Module::Id() const { return kId; }
-
-std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
-  // orders projection: o_orderkey, o_custkey, o_comment.
-  return {
-      {config.customer_table, {0}, {0}},
-      {config.orders_table, {0, 1, 2}, {0, 1, 8}},
-  };
-}
-
-std::unique_ptr<core::AuxTxnBuffer> TpchQ13Module::CreateTxnBuffer() const {
-  return std::make_unique<TpchQ13TxnBuffer>();
-}
-
-void TpchQ13Module::Build(core::AuxEngineServices &services,
-                          core::StateBuilder &builder) {
-  const auto state = BuildState(services);
-  builder.Write(core::StateImage::Make(
-      kId, core::TpchQ13Layout::kCustomerCounts, 0,
-      MakeStateImage(TpchQ13ImageKind::CustomerCounts, state)));
-  builder.Finish();
-}
-
-namespace {
 // Parallel loading of orders, for the build and for large maintenance batches.
 // The state's index shards and count chunks are written by the slice that owns
 // them: a key belongs to owner (shard or chunk) % kOwners, so slices never share
@@ -514,7 +332,245 @@ void ApplyDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
     ApplyOrderDeltas(services, state, deltas);
 }
 
+// excluded[custkey] = number of the customer's orders whose comment matches
+// `matcher`: a flat array when the custkey range is dense enough, otherwise
+// (and for negative / huge keys) a hash.
+struct Excluded {
+  std::vector<int32_t> flat;
+  std::unordered_map<int64_t, int32_t> hash;
+  void Add(int64_t key) {
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
+      ++flat[static_cast<std::size_t>(key)];
+    else
+      ++hash[key];
+  }
+  int32_t Get(int64_t key) const {
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
+      return flat[static_cast<std::size_t>(key)];
+    const auto it = hash.find(key);
+    return it == hash.end() ? 0 : it->second;
+  }
+};
+
+// Customer chunks per slice: 4096 customers each, ~10 us a chunk.
+constexpr std::size_t kChunkGrain = 16;
+
+// Segments per slice: one holds thousands of comments (~0.1 ms to match).
+constexpr std::size_t kSegmentGrain = 16;
+
+// Custkeys of the live orders matching `matcher`, one SIMD pass per segment;
+// slices collect their segments' keys, merged in slice order.
+std::vector<int64_t> MatchingCustkeys(const core::AuxEngineServices &services,
+                                      const TpchQ13State &state,
+                                      const like::LikeMatcher &matcher) {
+  std::vector<int64_t> matched;
+  core::ParallelReduce(
+      services, state.segments.size(), kSegmentGrain, matched,
+      [&](std::vector<int64_t> &part, std::size_t begin, std::size_t end) {
+        for (std::size_t s = begin; s < end; ++s) {
+          const auto *seg = state.segments[s].get();
+          if (!seg || seg->live == 0)
+            continue;
+          const std::size_t n = seg->orderkey.size();
+          const auto bits =
+              like::MatchBlobBitmap(matcher, seg->comment.offsets(), n, seg->comment.data());
+          for (std::size_t w = 0; w < bits.size(); ++w) {
+            uint64_t b = bits[w];
+            while (b) {
+              const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
+              b &= b - 1;
+              if (seg->alive[i])
+                part.push_back(seg->custkey[i]);
+            }
+          }
+        }
+      },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      });
+  return matched;
+}
+
 } // namespace
+
+int32_t TpchQ13State::Count(int64_t key) const {
+  if (Dense(key))
+    return order_count.Get(key);
+  const SparseSlot *s = sparse_customers.Find(key);
+  return s ? s->count : 0;
+}
+bool TpchQ13State::Valid(int64_t key) const {
+  if (Dense(key))
+    return customer_valid.Get(key) != 0;
+  const SparseSlot *s = sparse_customers.Find(key);
+  return s && s->valid;
+}
+void TpchQ13State::AddCount(int64_t key, int32_t delta) {
+  if (Dense(key))
+    order_count.Mutable(key) += delta;
+  else
+    sparse_customers[key].count += delta;
+}
+void TpchQ13State::SetValid(int64_t key, bool valid) {
+  if (Dense(key))
+    customer_valid.Set(key, valid ? 1 : 0);
+  else
+    sparse_customers[key].valid = valid ? 1 : 0;
+}
+
+void TpchQ13State::AddCustomer(int64_t custkey) {
+  if (Valid(custkey))
+    return;
+  SetValid(custkey, true);
+  ++customers;
+}
+
+void TpchQ13State::RemoveCustomer(int64_t custkey) {
+  if (!Valid(custkey))
+    return;
+  SetValid(custkey, false);
+  --customers;
+}
+
+std::shared_ptr<TpchQ13OrderSegment> &TpchQ13State::MutableSegment(uint32_t id) {
+  auto &segment = segments[id];
+  if (segment.use_count() > 1)
+    segment = std::make_shared<TpchQ13OrderSegment>(*segment);
+  return segment;
+}
+
+std::size_t TpchQ13State::OpenSegmentRoom() const {
+  if (open_segment < 0)
+    return 0;
+  return kTpchQ13SegmentRows - segments[static_cast<std::size_t>(open_segment)]->orderkey.size();
+}
+
+uint32_t TpchQ13State::OpenFreshSegment() {
+  if (!free_segments.empty()) {
+    open_segment = free_segments.back();
+    free_segments.pop_back();
+  } else {
+    open_segment = static_cast<int64_t>(segments.size());
+    segments.emplace_back();
+  }
+  segments[static_cast<std::size_t>(open_segment)] = NewOrderSegment();
+  return static_cast<uint32_t>(open_segment);
+}
+
+// Orders count toward their custkey whether or not that customer exists yet
+// (the join only sees a customer row), so customer and order maintenance are
+// independent and a customer insert/delete is a single flag flip.
+void TpchQ13State::AddOrder(int64_t orderkey, int64_t custkey,
+                            std::string_view comment) {
+  RemoveOrder(orderkey); // primary key: re-adding an existing key replaces it
+  const auto id = OpenSegmentRoom() > 0 ? static_cast<uint32_t>(open_segment)
+                                        : OpenFreshSegment();
+  auto &segment = *MutableSegment(id);
+  const std::size_t slot = segment.orderkey.size();
+  segment.orderkey.push_back(orderkey);
+  segment.custkey.push_back(custkey);
+  segment.alive.push_back(1);
+  segment.comment.Append(comment);
+  ++segment.live;
+  order_row.Upsert(orderkey, (static_cast<uint64_t>(id) << kSlotBits) | slot);
+  AddCount(custkey, 1);
+  ++live_orders;
+}
+
+void TpchQ13State::RemoveOrder(int64_t orderkey) {
+  const uint64_t *found = order_row.Find(orderkey);
+  if (!found)
+    return;
+  const auto id = static_cast<uint32_t>(*found >> kSlotBits);
+  const std::size_t slot = *found & (kTpchQ13SegmentRows - 1);
+  auto &segment = *MutableSegment(id);
+  segment.alive[slot] = 0;
+  --segment.live;
+  AddCount(segment.custkey[slot], -1);
+  order_row.Erase(orderkey);
+  --live_orders;
+  touched_.push_back(id);
+}
+
+// A segment that is mostly dead is rewritten without its dead rows (moved rows
+// get new index entries); an empty one is released for reuse. Cost O(segment).
+void TpchQ13State::CompactSegment(uint32_t id) {
+  auto &slot_ptr = segments[id];
+  if (!slot_ptr)
+    return;
+  const auto &old = *slot_ptr;
+  const std::size_t rows = old.orderkey.size();
+  if (old.live == 0) {
+    slot_ptr.reset();
+    free_segments.push_back(id);
+    if (open_segment == static_cast<int64_t>(id))
+      open_segment = -1;
+    return;
+  }
+  if ((rows - old.live) * 2 <= rows)
+    return;
+  auto fresh = std::make_shared<TpchQ13OrderSegment>();
+  fresh->orderkey.reserve(old.live);
+  fresh->custkey.reserve(old.live);
+  fresh->alive.reserve(old.live);
+  fresh->comment.Reserve(old.live, old.comment.bytes());
+  for (std::size_t i = 0; i < rows; ++i) {
+    if (!old.alive[i])
+      continue;
+    const std::size_t slot = fresh->orderkey.size();
+    fresh->orderkey.push_back(old.orderkey[i]);
+    fresh->custkey.push_back(old.custkey[i]);
+    fresh->alive.push_back(1);
+    fresh->comment.Append(old.comment.View(i));
+    if (slot != i)
+      order_row.Upsert(old.orderkey[i],
+                       (static_cast<uint64_t>(id) << kSlotBits) | slot);
+  }
+  fresh->live = old.live;
+  slot_ptr = std::move(fresh);
+}
+
+void TpchQ13State::CompactTouched() {
+  std::sort(touched_.begin(), touched_.end());
+  touched_.erase(std::unique(touched_.begin(), touched_.end()), touched_.end());
+  for (const uint32_t id : touched_)
+    CompactSegment(id);
+  touched_.clear();
+}
+
+bool TpchQ13TxnBuffer::HasPendingChanges() const { return pending; }
+void TpchQ13TxnBuffer::Clear() {
+  pending = false;
+  deltas.clear();
+}
+const std::vector<TpchQ13Delta> &TpchQ13TxnBuffer::Deltas() const { return deltas; }
+void TpchQ13TxnBuffer::AddDelta(TpchQ13Delta delta) {
+  pending = true;
+  deltas.push_back(std::move(delta));
+}
+
+core::AcceleratorId TpchQ13Module::Id() const { return kId; }
+
+std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
+  // orders projection: o_orderkey, o_custkey, o_comment.
+  return {
+      {config.customer_table, {0}, {0}},
+      {config.orders_table, {0, 1, 2}, {0, 1, 8}},
+  };
+}
+
+std::unique_ptr<core::AuxTxnBuffer> TpchQ13Module::CreateTxnBuffer() const {
+  return std::make_unique<TpchQ13TxnBuffer>();
+}
+
+void TpchQ13Module::Build(core::AuxEngineServices &services,
+                          core::StateBuilder &builder) {
+  const auto state = BuildState(services);
+  builder.Write(core::StateImage::Make(
+      kId, core::TpchQ13Layout::kCustomerCounts, 0,
+      MakeStateImage(TpchQ13ImageKind::CustomerCounts, state)));
+  builder.Finish();
+}
 
 std::shared_ptr<TpchQ13State>
 TpchQ13Module::BuildState(core::AuxEngineServices &services) const {
@@ -703,68 +759,6 @@ bool TpchQ13Module::LoadState(
   }
   return false;
 }
-
-namespace {
-// excluded[custkey] = number of the customer's orders whose comment matches
-// `matcher`: a flat array when the custkey range is dense enough, otherwise
-// (and for negative / huge keys) a hash.
-struct Excluded {
-  std::vector<int32_t> flat;
-  std::unordered_map<int64_t, int32_t> hash;
-  void Add(int64_t key) {
-    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
-      ++flat[static_cast<std::size_t>(key)];
-    else
-      ++hash[key];
-  }
-  int32_t Get(int64_t key) const {
-    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
-      return flat[static_cast<std::size_t>(key)];
-    const auto it = hash.find(key);
-    return it == hash.end() ? 0 : it->second;
-  }
-};
-
-// Customer chunks per slice: 4096 customers each, ~10 us a chunk.
-constexpr std::size_t kChunkGrain = 16;
-
-// Segments per slice: one holds thousands of comments (~0.1 ms to match).
-constexpr std::size_t kSegmentGrain = 16;
-
-// Custkeys of the live orders matching `matcher`, one SIMD pass per segment;
-// slices collect their segments' keys, merged in slice order.
-std::vector<int64_t> MatchingCustkeys(const core::AuxEngineServices &services,
-                                      const TpchQ13State &state,
-                                      const like::LikeMatcher &matcher) {
-  std::vector<int64_t> matched;
-  core::ParallelReduce(
-      services, state.segments.size(), kSegmentGrain, matched,
-      [&](std::vector<int64_t> &part, std::size_t begin, std::size_t end) {
-        for (std::size_t s = begin; s < end; ++s) {
-          const auto *seg = state.segments[s].get();
-          if (!seg || seg->live == 0)
-            continue;
-          const std::size_t n = seg->orderkey.size();
-          const auto bits =
-              like::MatchBlobBitmap(matcher, seg->comment.offsets(), n, seg->comment.data());
-          for (std::size_t w = 0; w < bits.size(); ++w) {
-            uint64_t b = bits[w];
-            while (b) {
-              const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
-              b &= b - 1;
-              if (seg->alive[i])
-                part.push_back(seg->custkey[i]);
-            }
-          }
-        }
-      },
-      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
-        into.insert(into.end(), from.begin(), from.end());
-      });
-  return matched;
-}
-
-} // namespace
 
 void TpchQ13Module::EmitResult(const core::AuxEngineServices &services,
                                const TpchQ13State &state,

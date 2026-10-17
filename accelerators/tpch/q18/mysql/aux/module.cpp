@@ -201,6 +201,110 @@ void EmitEmpty(core::AuxRowSink &sink) {
   sink.End();
 }
 
+// A key's deltas are applied by the slice that owns its hot-set shard. The
+// orders record map has at least as many shards, so a slice also owns every
+// record shard of its keys, and no two slices write the same shard.
+using HotIndex = decltype(TpchQ18State::hot);
+// The hot set is default-built: kShards shards.
+constexpr unsigned kHotShardBits = static_cast<unsigned>(__builtin_ctzll(HotIndex::kShards));
+static_assert(decltype(TpchQ18State::orders)::kShards >= HotIndex::kShards);
+
+// Orders rows (a delete then an insert of one key is an update), then
+// lineitem rows, for the keys whose hot-set shard lies in [first, last).
+bool ApplyOwnedDeltas(TpchQ18State &state, const TpchQ18TxnBuffer &buffer,
+                      std::size_t first, std::size_t last) {
+  const auto owned = [&](int64_t orderkey) {
+    const std::size_t shard = HotIndex::ShardOf(orderkey, kHotShardBits);
+    return shard >= first && shard < last;
+  };
+  for (const auto &delta : buffer.Orders()) {
+    const auto &order = delta.order;
+    if (!owned(order.key))
+      continue;
+    if (delta.sign < 0) {
+      if (!state.ClearOrder(order.key))
+        return false;
+    } else {
+      state.SetOrder(order.key, order.custkey, order.orderdate_days,
+                     order.totalprice_raw);
+    }
+    state.Reindex(order.key);
+  }
+  for (const auto &delta : buffer.Lineitems()) {
+    if (!owned(delta.orderkey))
+      continue;
+    if (!state.AddLineitem(delta.orderkey, delta.quantity_raw, delta.sign))
+      return false;
+    state.Reindex(delta.orderkey);
+  }
+  return true;
+}
+
+// False when a delta does not fit the state. A small batch is one slice.
+bool ApplyKeyDeltas(core::AuxEngineServices &services, TpchQ18State &state,
+                    const TpchQ18TxnBuffer &buffer) {
+  const std::size_t slices = core::SliceCount(
+      services, buffer.Orders().size() + buffer.Lineitems().size(), kDeltaGrain);
+  std::vector<uint8_t> fits(slices, 1);
+  core::RunSlices(services, slices, HotIndex::kShards,
+                  [&](std::size_t slice, std::size_t first, std::size_t last) {
+                    fits[slice] = ApplyOwnedDeltas(state, buffer, first, last);
+                  });
+  return std::all_of(fits.begin(), fits.end(), [](uint8_t fit) { return fit != 0; });
+}
+
+struct OrderQuantity {
+  int64_t orderkey;
+  int64_t quantity_raw;
+};
+
+// The build's rows of the orders whose key falls into one bucket.
+struct BuildBucket {
+  std::vector<OrderQuantity> lineitems;
+  std::vector<TpchQ18OrderInput> orders;
+};
+
+struct BucketRecords {
+  std::vector<std::pair<int64_t, TpchQ18OrderRec>> records;
+  std::vector<int64_t> hot;
+};
+
+// The record of every order of the bucket (its orders row, SUM(l_quantity) and
+// COUNT(*) of its lineitems) and which of them are hot.
+BucketRecords BuildRecords(BuildBucket &bucket) {
+  std::sort(bucket.lineitems.begin(), bucket.lineitems.end(),
+            [](const OrderQuantity &a, const OrderQuantity &b) {
+              return a.orderkey < b.orderkey;
+            });
+  std::stable_sort(bucket.orders.begin(), bucket.orders.end(),
+                   [](const TpchQ18OrderInput &a, const TpchQ18OrderInput &b) {
+                     return a.key < b.key;
+                   });
+  BucketRecords out;
+  auto line = bucket.lineitems.begin();
+  auto order = bucket.orders.begin();
+  while (line != bucket.lineitems.end() || order != bucket.orders.end()) {
+    constexpr int64_t kEnd = std::numeric_limits<int64_t>::max();
+    const int64_t key = std::min(line != bucket.lineitems.end() ? line->orderkey : kEnd,
+                                 order != bucket.orders.end() ? order->key : kEnd);
+    TpchQ18OrderRec rec;
+    for (; line != bucket.lineitems.end() && line->orderkey == key; ++line) {
+      rec.sum_raw += line->quantity_raw;
+      ++rec.flags_lines;
+    }
+    for (; order != bucket.orders.end() && order->key == key; ++order) {
+      rec.custkey = order->custkey; // a repeated key keeps the last row
+      rec.orderdate_days = order->orderdate_days;
+      rec.totalprice_raw = order->totalprice_raw;
+      rec.flags_lines |= TpchQ18OrderRec::kHasOrder;
+    }
+    out.records.emplace_back(key, rec);
+    if (rec.Qualifies(TpchQ18State::kHotFloorRaw))
+      out.hot.push_back(key);
+  }
+  return out;
+}
+
 } // namespace
 
 void TpchQ18InitialScan::LookupCustomerNames(
@@ -410,61 +514,6 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
-namespace {
-// A key's deltas are applied by the slice that owns its hot-set shard. The
-// orders record map has at least as many shards, so a slice also owns every
-// record shard of its keys, and no two slices write the same shard.
-using HotIndex = decltype(TpchQ18State::hot);
-// The hot set is default-built: kShards shards.
-constexpr unsigned kHotShardBits = static_cast<unsigned>(__builtin_ctzll(HotIndex::kShards));
-static_assert(decltype(TpchQ18State::orders)::kShards >= HotIndex::kShards);
-
-// Orders rows (a delete then an insert of one key is an update), then
-// lineitem rows, for the keys whose hot-set shard lies in [first, last).
-bool ApplyOwnedDeltas(TpchQ18State &state, const TpchQ18TxnBuffer &buffer,
-                      std::size_t first, std::size_t last) {
-  const auto owned = [&](int64_t orderkey) {
-    const std::size_t shard = HotIndex::ShardOf(orderkey, kHotShardBits);
-    return shard >= first && shard < last;
-  };
-  for (const auto &delta : buffer.Orders()) {
-    const auto &order = delta.order;
-    if (!owned(order.key))
-      continue;
-    if (delta.sign < 0) {
-      if (!state.ClearOrder(order.key))
-        return false;
-    } else {
-      state.SetOrder(order.key, order.custkey, order.orderdate_days,
-                     order.totalprice_raw);
-    }
-    state.Reindex(order.key);
-  }
-  for (const auto &delta : buffer.Lineitems()) {
-    if (!owned(delta.orderkey))
-      continue;
-    if (!state.AddLineitem(delta.orderkey, delta.quantity_raw, delta.sign))
-      return false;
-    state.Reindex(delta.orderkey);
-  }
-  return true;
-}
-
-// False when a delta does not fit the state. A small batch is one slice.
-bool ApplyKeyDeltas(core::AuxEngineServices &services, TpchQ18State &state,
-                    const TpchQ18TxnBuffer &buffer) {
-  const std::size_t slices = core::SliceCount(
-      services, buffer.Orders().size() + buffer.Lineitems().size(), kDeltaGrain);
-  std::vector<uint8_t> fits(slices, 1);
-  core::RunSlices(services, slices, HotIndex::kShards,
-                  [&](std::size_t slice, std::size_t first, std::size_t last) {
-                    fits[slice] = ApplyOwnedDeltas(state, buffer, first, last);
-                  });
-  return std::all_of(fits.begin(), fits.end(), [](uint8_t fit) { return fit != 0; });
-}
-
-} // namespace
-
 core::StagedMaintenanceOutcome
 TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
                                 const core::InvalidationPlan &,
@@ -578,61 +627,6 @@ void TpchQ18Module::Execute(core::AuxEngineServices &services,
   }
   EmitRows(std::move(rows), *state, sink);
 }
-
-namespace {
-struct OrderQuantity {
-  int64_t orderkey;
-  int64_t quantity_raw;
-};
-
-// The build's rows of the orders whose key falls into one bucket.
-struct BuildBucket {
-  std::vector<OrderQuantity> lineitems;
-  std::vector<TpchQ18OrderInput> orders;
-};
-
-struct BucketRecords {
-  std::vector<std::pair<int64_t, TpchQ18OrderRec>> records;
-  std::vector<int64_t> hot;
-};
-
-// The record of every order of the bucket (its orders row, SUM(l_quantity) and
-// COUNT(*) of its lineitems) and which of them are hot.
-BucketRecords BuildRecords(BuildBucket &bucket) {
-  std::sort(bucket.lineitems.begin(), bucket.lineitems.end(),
-            [](const OrderQuantity &a, const OrderQuantity &b) {
-              return a.orderkey < b.orderkey;
-            });
-  std::stable_sort(bucket.orders.begin(), bucket.orders.end(),
-                   [](const TpchQ18OrderInput &a, const TpchQ18OrderInput &b) {
-                     return a.key < b.key;
-                   });
-  BucketRecords out;
-  auto line = bucket.lineitems.begin();
-  auto order = bucket.orders.begin();
-  while (line != bucket.lineitems.end() || order != bucket.orders.end()) {
-    constexpr int64_t kEnd = std::numeric_limits<int64_t>::max();
-    const int64_t key = std::min(line != bucket.lineitems.end() ? line->orderkey : kEnd,
-                                 order != bucket.orders.end() ? order->key : kEnd);
-    TpchQ18OrderRec rec;
-    for (; line != bucket.lineitems.end() && line->orderkey == key; ++line) {
-      rec.sum_raw += line->quantity_raw;
-      ++rec.flags_lines;
-    }
-    for (; order != bucket.orders.end() && order->key == key; ++order) {
-      rec.custkey = order->custkey; // a repeated key keeps the last row
-      rec.orderdate_days = order->orderdate_days;
-      rec.totalprice_raw = order->totalprice_raw;
-      rec.flags_lines |= TpchQ18OrderRec::kHasOrder;
-    }
-    out.records.emplace_back(key, rec);
-    if (rec.Qualifies(TpchQ18State::kHotFloorRaw))
-      out.hot.push_back(key);
-  }
-  return out;
-}
-
-} // namespace
 
 TpchQ18State TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)

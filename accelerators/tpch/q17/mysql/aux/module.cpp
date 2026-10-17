@@ -20,27 +20,6 @@ using Int128 = __int128;
 // Parts per maintenance slice.
 constexpr std::size_t kPartEditGrain = 256;
 
-// decimal(15,2) cell as an exact x100 integer.
-bool Scale2Cell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<core::ScaledDecimal>(row.values[index].payload))
-    return false;
-  const auto decimal = std::get<core::ScaledDecimal>(row.values[index].payload);
-  Int128 raw = decimal.value;
-  for (int32_t s = decimal.scale; s < 2; ++s)
-    raw *= 10;
-  for (int32_t s = decimal.scale; s > 2; --s) {
-    if (raw % 10 != 0)
-      return false; // not representable at scale 2: rebuild instead
-    raw /= 10;
-  }
-  if (raw > std::numeric_limits<int64_t>::max() ||
-      raw < std::numeric_limits<int64_t>::min())
-    return false;
-  out = static_cast<int64_t>(raw);
-  return true;
-}
-
 // A lineitem with a NULL partkey (never joins) or NULL quantity (ignored by
 // AVG and never < anything) is skipped. Anything unreadable forces a rebuild.
 enum class RowStatus { Ok, Skip, Bad };
@@ -50,10 +29,10 @@ RowStatus ReadLineitem(const core::AuxRow &row, TpchQ17LineitemInput &out) {
     return RowStatus::Bad;
   if (row.values[0].is_null || row.values[1].is_null)
     return RowStatus::Skip;
-  if (!core::IntCell(row, 0, out.partkey) || !Scale2Cell(row, 1, out.quantity_raw))
+  if (!core::IntCell(row, 0, out.partkey) || !core::ExactDecimalCell(row, 1, 2, out.quantity_raw))
     return RowStatus::Bad;
   out.extendedprice_raw = 0;
-  if (!row.values[2].is_null && !Scale2Cell(row, 2, out.extendedprice_raw))
+  if (!row.values[2].is_null && !core::ExactDecimalCell(row, 2, 2, out.extendedprice_raw))
     return RowStatus::Bad;
   return RowStatus::Ok;
 }
@@ -251,63 +230,6 @@ void EmitAverageYearly(core::AuxRowSink &sink, const Contribution *total) {
   sink.End();
 }
 
-} // namespace
-
-std::string TpchQ17GroupDictionary::MakeKey(const std::string &brand,
-                                            const std::string &container) {
-  std::string key;
-  key.reserve(4 + brand.size() + container.size());
-  const uint32_t n = static_cast<uint32_t>(brand.size());
-  key.append(reinterpret_cast<const char *>(&n), sizeof(n));
-  // p_brand = ? AND p_container = ? are case-insensitive (MySQL default
-  // collation): the key is the ASCII-folded pair.
-  key.append(mysql_collation::FoldAscii(brand));
-  key.append(mysql_collation::FoldAscii(container));
-  return key;
-}
-
-bool TpchQ17TxnBuffer::HasPendingChanges() const { return pending; }
-void TpchQ17TxnBuffer::Clear() {
-  pending = false;
-  rebuild = false;
-  lineitem_deltas.clear();
-  part_deltas.clear();
-}
-bool TpchQ17TxnBuffer::RequiresRebuild() const { return rebuild; }
-const std::vector<TpchQ17LineitemDelta> &
-TpchQ17TxnBuffer::LineitemDeltas() const {
-  return lineitem_deltas;
-}
-const std::vector<TpchQ17PartDelta> &TpchQ17TxnBuffer::PartDeltas() const {
-  return part_deltas;
-}
-void TpchQ17TxnBuffer::MarkRebuild() {
-  pending = true;
-  rebuild = true;
-  lineitem_deltas.clear();
-  part_deltas.clear();
-}
-void TpchQ17TxnBuffer::AddLineitemDelta(TpchQ17LineitemDelta delta) {
-  pending = true;
-  lineitem_deltas.push_back(delta);
-}
-void TpchQ17TxnBuffer::AddPartDelta(TpchQ17PartDelta delta) {
-  pending = true;
-  part_deltas.push_back(std::move(delta));
-}
-
-core::AcceleratorId TpchQ17Module::Id() const { return kId; }
-
-std::vector<core::TableDependency> TpchQ17Module::Dependencies() const {
-  return {{config.part_table, {0, 1, 2}, {0, 3, 6}},
-          {config.lineitem_table, {0, 1, 2}, {1, 4, 5}}};
-}
-
-std::unique_ptr<core::AuxTxnBuffer> TpchQ17Module::CreateTxnBuffer() const {
-  return std::make_unique<TpchQ17TxnBuffer>();
-}
-
-namespace {
 struct PartRow {
   int64_t partkey;
   int64_t quantity_raw;
@@ -375,6 +297,60 @@ struct PartGroups {
 };
 
 } // namespace
+
+std::string TpchQ17GroupDictionary::MakeKey(const std::string &brand,
+                                            const std::string &container) {
+  std::string key;
+  key.reserve(4 + brand.size() + container.size());
+  const uint32_t n = static_cast<uint32_t>(brand.size());
+  key.append(reinterpret_cast<const char *>(&n), sizeof(n));
+  // p_brand = ? AND p_container = ? are case-insensitive (MySQL default
+  // collation): the key is the ASCII-folded pair.
+  key.append(mysql_collation::FoldAscii(brand));
+  key.append(mysql_collation::FoldAscii(container));
+  return key;
+}
+
+bool TpchQ17TxnBuffer::HasPendingChanges() const { return pending; }
+void TpchQ17TxnBuffer::Clear() {
+  pending = false;
+  rebuild = false;
+  lineitem_deltas.clear();
+  part_deltas.clear();
+}
+bool TpchQ17TxnBuffer::RequiresRebuild() const { return rebuild; }
+const std::vector<TpchQ17LineitemDelta> &
+TpchQ17TxnBuffer::LineitemDeltas() const {
+  return lineitem_deltas;
+}
+const std::vector<TpchQ17PartDelta> &TpchQ17TxnBuffer::PartDeltas() const {
+  return part_deltas;
+}
+void TpchQ17TxnBuffer::MarkRebuild() {
+  pending = true;
+  rebuild = true;
+  lineitem_deltas.clear();
+  part_deltas.clear();
+}
+void TpchQ17TxnBuffer::AddLineitemDelta(TpchQ17LineitemDelta delta) {
+  pending = true;
+  lineitem_deltas.push_back(delta);
+}
+void TpchQ17TxnBuffer::AddPartDelta(TpchQ17PartDelta delta) {
+  pending = true;
+  part_deltas.push_back(std::move(delta));
+}
+
+core::AcceleratorId TpchQ17Module::Id() const { return kId; }
+
+std::vector<core::TableDependency> TpchQ17Module::Dependencies() const {
+  return {{config.part_table, {0, 1, 2}, {0, 3, 6}},
+          {config.lineitem_table, {0, 1, 2}, {1, 4, 5}}};
+}
+
+std::unique_ptr<core::AuxTxnBuffer> TpchQ17Module::CreateTxnBuffer() const {
+  return std::make_unique<TpchQ17TxnBuffer>();
+}
 
 void TpchQ17Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {

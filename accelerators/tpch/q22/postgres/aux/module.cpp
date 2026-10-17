@@ -48,12 +48,6 @@ bool ToScale2(int64_t raw_in, int32_t scale, int64_t &out) {
   return true;
 }
 
-bool Scale2Cell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  int64_t raw = 0;
-  int32_t scale = 0;
-  return core::DecimalCell(row, index, raw, scale) && ToScale2(raw, scale, out);
-}
-
 // substring(c_phone from 1 for 2): the first two CHARACTERS (UTF-8 aware); a
 // shorter phone yields what there is (possibly the empty string).
 std::string PhonePrefix(const std::string &phone) {
@@ -439,7 +433,7 @@ void TpchQ22Module::AccumulateMutation(const core::MutationBatch &mutation,
         }
         delta.new_balance = kTpchQ22NullBalance;
         if (new_row->values.size() > 2 && !new_row->values[2].is_null &&
-            !Scale2Cell(*new_row, 2, delta.new_balance)) {
+            !core::ExactDecimalCell(*new_row, 2, kBalanceScale, delta.new_balance)) {
           buffer.MarkRebuild();
           return;
         }
