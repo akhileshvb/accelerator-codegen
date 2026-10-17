@@ -371,7 +371,7 @@ TpchQ19Module::BuildState(core::AuxEngineServices &services) const {
   auto parts = core::PartitionedBuild<PartCodes>(
       services, [] { return PartCodes{}; },
       [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanPartsPartitioned(
+        initial_scan->ScanParts(
             services, partitions, [&](std::size_t p, const TpchQ19PartInput &input) {
               sink(p, core::SingleRowBatch<TpchQ19PartInput>{input});
             });
@@ -382,7 +382,7 @@ TpchQ19Module::BuildState(core::AuxEngineServices &services) const {
   state->part_code = std::move(parts.codes);
   const auto aggregates = core::CollectRows<TpchQ19GroupAggregate>(
       services, [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanGroupAggregatesPartitioned(services, partitions, sink);
+        initial_scan->ScanGroupAggregates(services, partitions, sink);
       });
   for (const auto &agg : aggregates)
     state->Add(TpchQ19State::Code(state->InternBrand(agg.brand),

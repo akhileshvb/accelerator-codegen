@@ -78,35 +78,35 @@ void ScanTpchQ20Nations(
 
 class TpchQ20Scan final : public query::TpchQ20InitialScan {
 public:
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ20LineitemInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ20LineitemInput>(
         services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
   }
-  void ScanPartsPartitioned(
+  void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ20PartInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ20PartInput>(
         services, scans::PartsTable(), partitions, scans::DecodePart, sink);
   }
-  void ScanPartsuppsPartitioned(
+  void ScanPartsupps(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ20PartsuppInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ20PartsuppInput>(
         services, scans::PartsuppsTable(), partitions, scans::DecodePartsupp, sink);
   }
-  void ScanSuppliersPartitioned(
+  void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ20SupplierInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ20SupplierInput>(
         services, scans::SuppliersTable(), partitions, scans::DecodeSupplier, sink);
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const query::TpchQ20NationInput &)> &consumer)
       override {
     scans::ScanTpchQ20Nations(consumer);

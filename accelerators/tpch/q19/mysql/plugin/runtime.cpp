@@ -95,14 +95,14 @@ void ScanTpchQ19PartQuantityRevenue(
 
 class TpchQ19Scan final : public query::TpchQ19InitialScan {
 public:
-  void ScanPartsPartitioned(
+  void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ19PartInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ19PartInput>(
         services, scans::PartsTable(), partitions, scans::DecodePart, sink);
   }
-  void ScanGroupAggregatesPartitioned(
+  void ScanGroupAggregates(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ19GroupAggregate &)> &sink)
       override {

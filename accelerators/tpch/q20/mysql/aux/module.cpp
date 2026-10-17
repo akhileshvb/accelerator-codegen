@@ -654,20 +654,20 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
         "TPC-H Q20 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ20State>();
 
-  initial_scan->ScanNations([&](const TpchQ20NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ20NationInput &input) {
     state->nations[input.key] = input.name;
   });
   // Suppliers and names are decoded in partitions; the COW columns are filled serially.
   const std::size_t partitions = core::BuildPartitions(services);
   const auto suppliers = core::CollectRows<TpchQ20SupplierInput>(
       services, [&](std::size_t parts_count, auto &&sink) {
-        initial_scan->ScanSuppliersPartitioned(services, parts_count, sink);
+        initial_scan->ScanSuppliers(services, parts_count, sink);
       });
   for (const auto &input : suppliers)
     state->suppliers.Upsert(input.key, {input.name, input.address, input.nationkey});
   const auto parts = core::CollectRows<TpchQ20PartInput>(
       services, [&](std::size_t parts_count, auto &&sink) {
-        initial_scan->ScanPartsPartitioned(services, parts_count, sink);
+        initial_scan->ScanParts(services, parts_count, sink);
       });
   for (const auto &part : parts)
     state->part_names.Set(part.key, part.name);
@@ -677,7 +677,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
   auto partsupps = core::PartitionedBuild<core::Buckets<TpchQ20PartsuppInput>>(
       services, [] { return core::Buckets<TpchQ20PartsuppInput>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsuppsPartitioned(
+        initial_scan->ScanPartsupps(
             services, parts, [&](std::size_t partition, const TpchQ20PartsuppInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ20PartsuppInput>{input});
             });
@@ -689,7 +689,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
   auto lineitems = core::PartitionedBuild<core::Buckets<TpchQ20LineitemInput>>(
       services, [] { return core::Buckets<TpchQ20LineitemInput>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ20LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ20LineitemInput>{input});
             });

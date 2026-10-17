@@ -79,17 +79,17 @@ void ScanTpchQ21FulfilledLineitems(
 
 class TpchQ21Scan final : public query::TpchQ21InitialScan {
 public:
-  void ScanSuppliers(
+  void ScanSuppliersSerial(
       const std::function<void(const query::TpchQ21SupplierInput &)> &consumer)
       override {
     scans::ScanTpchQ21Suppliers(consumer);
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const query::TpchQ21NationInput &)> &consumer)
       override {
     scans::ScanTpchQ21Nations(consumer);
   }
-  void ScanFulfilledOrdersPartitioned(
+  void ScanFulfilledOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, int64_t)> &sink) override {
     detail::ScanTypedTuplesPartitioned(
@@ -98,7 +98,7 @@ public:
           sink(partition, TypedInt(cols, 0));
         });
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ21LineInput &)> &sink)
       override {

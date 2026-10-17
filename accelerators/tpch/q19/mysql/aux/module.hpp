@@ -72,13 +72,13 @@ public:
   virtual ~TpchQ19InitialScan() = default;
   // Partitioned scans for builds: sink(partition, row) runs concurrently for
   // different partitions, rows of one partition in statement order.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ19PartInput &)> &) = 0;
   // lineitem JOIN part, shipping predicate and family classification
   // (TpchQ19FamilySql) applied and grouped in the engine; a group may come
   // back once per partition (the caller sums them).
-  virtual void ScanGroupAggregatesPartitioned(
+  virtual void ScanGroupAggregates(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ19GroupAggregate &)> &) = 0;
   // lineitem WHERE l_partkey IN (...) AND shipping predicate, grouped by
