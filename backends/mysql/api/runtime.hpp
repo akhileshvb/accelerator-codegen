@@ -148,6 +148,12 @@ struct SnapshotLane;
 std::vector<SnapshotLane *> SnapshotLanes();
 void ScanOnSnapshotLane(SnapshotLane &lane, const std::string &sql,
                         const std::function<void(const std::vector<std::string> &)> &callback);
+// Takes the metadata locks of `from` (a FROM clause) in the lane's transaction,
+// which keeps them until the session ends. kProbe: false (and the lane is
+// closed) if they are not granted within seconds; kPatient: waits as long as
+// a scan would, throwing on timeout.
+enum class LockWait { kPatient, kProbe };
+bool HoldTables(SnapshotLane &lane, const std::string &from, LockWait wait);
 
 // A table cut into partitions by the value of an integer column.
 struct SplitTable {

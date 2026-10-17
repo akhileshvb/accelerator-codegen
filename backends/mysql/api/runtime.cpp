@@ -374,6 +374,17 @@ bool CliForced() {
   return v && std::strcmp(v, "cli") == 0;
 }
 
+// No lane waits forever for a metadata lock: a DDL queued behind another lane's
+// open transaction would otherwise stall the whole build.
+constexpr unsigned kLaneLockWaitSeconds = 300;
+// A lane that asks for a table after a DDL queued behind its sibling lanes
+// can only be granted it once they end; it gives up quickly instead.
+constexpr unsigned kProbeLockWaitSeconds = 2;
+
+void SetLockWait(Conn &conn, unsigned seconds) {
+  Exec(conn, ("SET SESSION lock_wait_timeout = " + std::to_string(seconds)).c_str());
+}
+
 // A connection holding one read view. (Never END it with a COMMIT/ROLLBACK
 // statement: the audit plugin reads those as transaction events of the
 // accelerators; closing the connection ends it.)
@@ -382,6 +393,7 @@ std::unique_ptr<SnapshotLane> OpenSnapshotConnection() {
   Connect(*conn);
   Exec(*conn, "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ");
   Exec(*conn, "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY");
+  SetLockWait(*conn, kLaneLockWaitSeconds);
   return conn;
 }
 } // namespace
@@ -491,6 +503,20 @@ void ScanOnSnapshotLane(SnapshotLane &lane, const std::string &sql,
   StreamQuery(lane, sql, callback);
 }
 
+bool HoldTables(SnapshotLane &lane, const std::string &from, LockWait wait) {
+  const bool probe = wait == LockWait::kProbe;
+  try {
+    if (probe) SetLockWait(lane, kProbeLockWaitSeconds);
+    StreamQuery(lane, "SELECT 1 FROM " + from + " LIMIT 0", [](const std::vector<std::string> &) {});
+    if (probe) SetLockWait(lane, kLaneLockWaitSeconds);
+    return true;
+  } catch (const std::exception &) {
+    if (!probe) throw;
+    lane.Close();
+    return false;
+  }
+}
+
 #else // !ACCEL_MYSQL_HAVE_CLIENT
 
 bool SnapshotScansSupported() { return false; }
@@ -500,6 +526,7 @@ void ScanOnSnapshotLane(SnapshotLane &, const std::string &,
                         const std::function<void(const std::vector<std::string> &)> &) {
   throw std::logic_error("snapshot scans need the MySQL client library (ACCEL_MYSQL_HAVE_CLIENT)");
 }
+bool HoldTables(SnapshotLane &, const std::string &, LockWait) { return false; }
 SnapshotScanSession::SnapshotScanSession(std::size_t) {
   throw std::logic_error("snapshot scans need the MySQL client library (ACCEL_MYSQL_HAVE_CLIENT)");
 }
@@ -616,6 +643,22 @@ std::optional<std::pair<int64_t, int64_t>> SplitBounds(const SplitTable &table) 
   return bounds;
 }
 
+// The lanes of this thread's session, at most one per partition, that hold the
+// metadata locks on `from`. The thread's own connection takes them first, so
+// a DDL queued meanwhile waits on lanes that already have them; a later lane
+// that cannot get them in time is left out (nothing of ours would release
+// them), down to the one connection.
+std::vector<SnapshotLane *> LanesHolding(const std::string &from, std::size_t partitions) {
+  auto lanes = SnapshotLanes();
+  lanes.resize(std::min(lanes.size(), partitions));
+  if (lanes.empty()) return lanes;
+  HoldTables(*lanes[0], from, LockWait::kPatient);
+  std::size_t held = 1;
+  while (held < lanes.size() && HoldTables(*lanes[held], from, LockWait::kProbe)) ++held;
+  lanes.resize(held);
+  return lanes;
+}
+
 } // namespace
 
 void ScanTypedTuplesPartitioned(const core::AuxEngineServices &services, const SplitTable &table,
@@ -636,8 +679,7 @@ void ScanTypedTuplesPartitioned(const core::AuxEngineServices &services, const S
                                   : (p == 0 ? std::optional<std::string>("TRUE") : std::nullopt);
     if (condition) statements[p] = SelectWhere(table, *condition);
   }
-  auto lanes = SnapshotLanes(); // taken here: the connections belong to this thread's session
-  lanes.resize(std::min(lanes.size(), partitions));
+  auto lanes = LanesHolding(table.table, partitions);
   if (lanes.empty()) {
     for (std::size_t p = 0; p < partitions; ++p) {
       if (statements[p].empty()) continue;
