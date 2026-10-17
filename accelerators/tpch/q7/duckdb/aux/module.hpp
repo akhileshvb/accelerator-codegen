@@ -1,15 +1,10 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <functional>
-#include <algorithm>
-#include <map>
-#include <optional>
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "substrate/aux/core/aux_query_module.hpp"
@@ -160,15 +155,8 @@ struct TpchQ7Op {
   int64_t k0 = 0, v0 = 0, k1 = 0, v1 = 0;
 };
 
-std::vector<uint8_t> EncodeTpchQ7Side(const TpchQ7State &);
-bool DecodeTpchQ7Side(const std::vector<uint8_t> &, TpchQ7State &);
-std::vector<uint8_t> EncodeTpchQ7Revenue(const TpchQ7State &);
-bool DecodeTpchQ7Revenue(const std::vector<uint8_t> &, TpchQ7State &);
-
 int64_t TpchQ7RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                          int64_t discount_raw, int32_t discount_scale);
-int32_t TpchQ7MonthKeyFromDays(int32_t days_since_epoch);
-int32_t TpchQ7DaysFromYmd(int32_t year, unsigned month, unsigned day);
 
 class TpchQ7TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -214,11 +202,6 @@ public:
 
 private:
   TpchQ7State BuildState(core::AuxEngineServices &) const;
-  bool LoadState(core::AuxEngineServices &, const std::string &nation1,
-                 const std::string &nation2,
-                 std::shared_ptr<const TpchQ7State> &side,
-                 std::vector<std::pair<int32_t, std::shared_ptr<const TpchQ7State>>> &months,
-                 std::map<core::PartitionId, core::Version> *versions = nullptr) const;
   void EmitResult(const std::shared_ptr<const TpchQ7State> &side,
                   const std::shared_ptr<const TpchQ7State> &revenue,
                   const std::string &nation1, const std::string &nation2,

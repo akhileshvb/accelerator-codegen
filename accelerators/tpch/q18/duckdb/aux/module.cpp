@@ -1,9 +1,9 @@
 #include "tpch/q18/duckdb/aux/module.hpp"
-#include "tpch/q18/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/typed_row_batch.hpp"
+#include "tpch/q18/calibration_writes.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,61 +25,16 @@ constexpr uint32_t kQuantitySumsMagic = 0x51313851; // Q18Q
 constexpr uint32_t kVersionV1 = 1;
 constexpr uint32_t kVersionV2 = 2;
 constexpr uint32_t kVersionV3 = 3;
-// Per maintenance slice: netting one lineitem delta per order is ~50 ns.
-constexpr std::size_t kNetGrain = 16384;
-
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
+// Deltas per slice (~200 us): netting one lineitem delta per order is ~50 ns.
+constexpr std::size_t kDeltaGrain = 4096;
 
 bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey,
                   int64_t &quantity_raw) {
-  if (!IntCell(row, 0, orderkey))
+  if (!core::IntCell(row, 0, orderkey))
     return false;
   int64_t raw = 0;
   int32_t scale = 0;
-  if (!RawDecimalCell(row, 1, raw, scale))
+  if (!core::DecimalCell(row, 1, raw, scale))
     return false;
   if (scale != 2)
     return false;
@@ -168,7 +123,7 @@ ScanOrderQuantitySums(TpchQ18InitialScan *initial_scan) {
           [&](const TpchQ18OrderQuantityAggregate &agg) {
             sums[agg.orderkey] += agg.quantity_sum_raw;
           })) {
-    initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
+    initial_scan->ScanLineitemsSerial([&](const TpchQ18LineitemInput &input) {
       sums[input.orderkey] += input.quantity_raw;
     });
   }
@@ -196,7 +151,7 @@ void EmitResultScanOrders(const TpchQ18State &state, int64_t threshold_raw,
   std::unordered_map<int64_t, OrderMeta> orders;
   std::unordered_set<int64_t> needed_custkeys;
 
-  initial_scan->ScanOrders([&](const TpchQ18OrderInput &input) {
+  initial_scan->ScanOrdersSerial([&](const TpchQ18OrderInput &input) {
     if (input.key < 0)
       return;
     const int64_t sum = sum_of(input.key);
@@ -215,7 +170,7 @@ void EmitResultScanOrders(const TpchQ18State &state, int64_t threshold_raw,
   }
 
   std::unordered_map<int64_t, std::string> customer_names;
-  initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
+  initial_scan->ScanCustomersSerial([&](const TpchQ18CustomerInput &input) {
     if (needed_custkeys.find(input.key) == needed_custkeys.end())
       return;
     customer_names.emplace(input.key, input.name);
@@ -284,7 +239,7 @@ void AppendNonSurvivorRows(const TpchQ18State &state, int64_t threshold_raw,
   std::unordered_map<int64_t, OrderMeta> orders;
   std::unordered_set<int64_t> needed_custkeys;
 
-  initial_scan->ScanOrders([&](const TpchQ18OrderInput &input) {
+  initial_scan->ScanOrdersSerial([&](const TpchQ18OrderInput &input) {
     if (input.key < 0 || skip_orderkeys.find(input.key) != skip_orderkeys.end())
       return;
     const int64_t sum = sum_of(input.key);
@@ -304,7 +259,7 @@ void AppendNonSurvivorRows(const TpchQ18State &state, int64_t threshold_raw,
       customer_names.emplace(custkey, name);
   });
   if (customer_names.size() < needed_custkeys.size()) {
-    initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
+    initial_scan->ScanCustomersSerial([&](const TpchQ18CustomerInput &input) {
       if (needed_custkeys.find(input.key) == needed_custkeys.end())
         return;
       customer_names.emplace(input.key, input.name);
@@ -625,10 +580,10 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
     for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
       int64_t ok = 0, nk = 0;
       std::string on, nn;
-      if (!IntCell(mutation.old_rows[i], 0, ok) ||
-          !StringCell(mutation.old_rows[i], 1, on) ||
-          !IntCell(mutation.new_rows[i], 0, nk) ||
-          !StringCell(mutation.new_rows[i], 1, nn) || ok != nk) {
+      if (!core::IntCell(mutation.old_rows[i], 0, ok) ||
+          !core::StringCell(mutation.old_rows[i], 1, on) ||
+          !core::IntCell(mutation.new_rows[i], 0, nk) ||
+          !core::StringCell(mutation.new_rows[i], 1, nn) || ok != nk) {
         buffer.MarkRebuild();
         return;
       }
@@ -644,15 +599,34 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
     switch (mutation.kind) {
     case core::MutationKind::Insert:
       for (const auto &row : mutation.new_rows)
-        if (IntCell(row, 0, key))
+        if (core::IntCell(row, 0, key))
           buffer.NoteOrderInserted(key);
       break;
     case core::MutationKind::Delete:
       for (const auto &row : mutation.old_rows)
-        if (IntCell(row, 0, key))
+        if (core::IntCell(row, 0, key))
           buffer.NoteOrderDeleted(key);
       break;
     case core::MutationKind::Update:
+      // The survivors' meta (customer, date, price) copies these columns.
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buffer.MarkRebuild();
+        return;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        const auto &before = mutation.old_rows[i].values;
+        const auto &after = mutation.new_rows[i].values;
+        const bool same =
+            before.size() == after.size() &&
+            std::equal(before.begin(), before.end(), after.begin(),
+                       [](const core::AuxValue &x, const core::AuxValue &y) {
+                         return x.is_null == y.is_null && (x.is_null || x.payload == y.payload);
+                       });
+        if (!same) {
+          buffer.MarkRebuild();
+          return;
+        }
+      }
       break;
     }
     return;
@@ -699,34 +673,18 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
   core::StagedMaintenanceOutcome outcome;
 
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                                        services.ExpectedQueriesBeforeNextWrite())));
     return outcome;
   }
   if (buffer.Deltas().empty() && buffer.CustomerNames().empty())
     return outcome;
 
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size() +
-                             buffer.CustomerNames().size()),
-       1, true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+  const auto decision = services.ChooseMaintenance(core::MaintenanceRequest::IncrementalSingleState(
+      buffer.Deltas().size() + buffer.CustomerNames().size(),
+      services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -740,9 +698,7 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
     if (image.partition == TpchQ18Layout::kOrderQuantitySums) {
       const auto *typed = AsQ18Image(image, TpchQ18ImageKind::OrderQuantitySums);
       if (!typed) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
+        core::FinishRebuildAll(outcome);
         return outcome;
       }
       base_state = typed->state;
@@ -752,16 +708,14 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
     }
   }
   if (!found) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome);
     return outcome;
   }
 
   std::unordered_map<int64_t, int64_t> net_by_order;
   const auto &deltas = buffer.Deltas();
   core::ParallelReduce(
-      services, deltas.size(), kNetGrain, net_by_order,
+      services, deltas.size(), kDeltaGrain, net_by_order,
       [&](std::unordered_map<int64_t, int64_t> &net, std::size_t first,
           std::size_t last) {
         for (std::size_t i = first; i < last; ++i) {
@@ -832,9 +786,7 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
       TpchQ18OrderInput order;
       if (!initial_scan || !initial_scan->LookupOrder(orderkey, order) ||
           order.custkey <= 0) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
+        core::FinishRebuildAll(outcome);
         return outcome;
       }
       st.SetOrderMeta(order.key, order.custkey, order.orderdate_days,
@@ -844,7 +796,7 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
         if (initial_scan->LookupCustomerName(order.custkey, name))
           st.customer_names.Upsert(order.custkey, std::move(name));
         else
-          initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
+          initial_scan->ScanCustomersSerial([&](const TpchQ18CustomerInput &input) {
             if (input.key == order.custkey)
               st.customer_names.Upsert(input.key, input.name);
           });
@@ -904,7 +856,7 @@ void TpchQ18Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  EmitResult(*state, threshold_raw, services, sink);
+  EmitResult(*state, threshold_raw, sink);
 }
 
 TpchQ18State
@@ -918,9 +870,9 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   auto sums = core::PartitionedBuild<OrderSums>(
       services, [] { return OrderSums{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t p, const TpchQ18LineitemInput &input) {
-              sink(p, TypedRowBatch<TpchQ18LineitemInput>{input});
+              sink(p, core::SingleRowBatch<TpchQ18LineitemInput>{input});
             });
       },
       [](OrderSums &partial, const TpchQ18LineitemInput &input) {
@@ -955,9 +907,9 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   const auto survivors = core::PartitionedBuild<Survivors>(
       services, [] { return Survivors{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(services, parts,
+        initial_scan->ScanOrders(services, parts,
                                             [&](std::size_t p, const TpchQ18OrderInput &input) {
-                                              sink(p, TypedRowBatch<TpchQ18OrderInput>{input});
+                                              sink(p, core::SingleRowBatch<TpchQ18OrderInput>{input});
                                             });
       },
       [&](Survivors &partial, const TpchQ18OrderInput &input) {
@@ -980,9 +932,9 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   const auto names = core::PartitionedBuild<Names>(
       services, [] { return Names{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanCustomersPartitioned(
+        initial_scan->ScanCustomers(
             services, parts, [&](std::size_t p, const TpchQ18CustomerInput &input) {
-              sink(p, TypedRowBatch<TpchQ18CustomerInput>{input});
+              sink(p, core::SingleRowBatch<TpchQ18CustomerInput>{input});
             });
       },
       [&](Names &partial, const TpchQ18CustomerInput &input) {
@@ -1017,9 +969,7 @@ bool TpchQ18Module::LoadState(core::AuxEngineServices &services,
 
 void TpchQ18Module::EmitResult(const TpchQ18State &state,
                                int64_t threshold_raw,
-                               core::AuxEngineServices &services,
                                core::AuxRowSink &sink) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q18 aux requires a typed initial scan source");
 
@@ -1069,7 +1019,7 @@ void TpchQ18Module::EmitResult(const TpchQ18State &state,
     });
     if (!needed_custkeys.empty()) {
       std::unordered_map<int64_t, std::string> customer_names;
-      initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
+      initial_scan->ScanCustomersSerial([&](const TpchQ18CustomerInput &input) {
         if (needed_custkeys.find(input.key) == needed_custkeys.end())
           return;
         customer_names.emplace(input.key, input.name);

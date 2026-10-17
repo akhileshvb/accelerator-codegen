@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <iomanip>
@@ -43,19 +44,41 @@ void Require(bool condition, const std::string &message) {
   }
 }
 
-void RequireForcedMaintenanceAction() {
+// ACCEL_LOG_MAINTENANCE_ACTIONS=1: what the policy chose for each commit.
+void LogMaintenanceAction(DuckdbRuntime &runtime, const std::string &what) {
+  if (!std::getenv("ACCEL_LOG_MAINTENANCE_ACTIONS")) {
+    return;
+  }
+  const auto entry = runtime.Stats().last_decision;
+  std::cerr << "maintenance_action="
+            << (entry ? maintenance::MaintenanceActionName(entry->staged_action) : "none")
+            << (what.empty() ? "" : " after " + what) << '\n';
+}
+
+void RequireForcedMaintenanceAction(DuckdbRuntime &runtime) {
   const char *force = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
   const std::string force_s = force ? force : "";
   if (force_s.empty()) {
+    LogMaintenanceAction(runtime, "");
     return;
   }
   core::SetForcedMaintenanceActionName(force_s);
-  const auto entry = core::LastMaintenanceDecision();
+  // The commit's decision lives in the accelerator's stats: the commit logs on its own thread.
+  auto entry = runtime.Stats().last_decision;
+  if (!entry) {
+    entry = core::LastMaintenanceDecision();
+  }
   Require(entry && entry->valid,
           "expected staged maintenance decision after Apply (force=" + force_s +
               ")");
   const std::string action =
       maintenance::MaintenanceActionName(entry->staged_action);
+  if (force_s != "NoOp" && entry->staged_action == maintenance::MaintenanceAction::NoOp) {
+    // The module applies changes this small incrementally without asking the
+    // policy (it consults it for bulk changes only): nothing to force here.
+    std::cerr << "maintenance_action=not-consulted force=" << force_s << " (N/A)\n";
+    return;
+  }
   if (force_s == "ApplyDelta") {
     Require(action == "ApplyDelta",
             "expected ApplyDelta maintenance but got action=[" + action +
@@ -393,7 +416,7 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
 
   try {
     runtime.Apply(probe);
-    RequireForcedMaintenanceAction();
+    RequireForcedMaintenanceAction(runtime);
 
     const auto after_fp = FingerprintSharedBaseSql(connection, entry);
     Require(after_fp != before_fp,
@@ -724,10 +747,75 @@ void RunSqlWritesDifferentialCheck(const std::string &db_path, const SharedQuery
   const auto writes = TpchSqlWrites(connection, entry, rounds);
   for (const auto &write : writes) {
     runtime.ApplyWrite(write.sql);
+    LogMaintenanceAction(runtime, write.name);
     try {
       RequireSharedMatchesBase(connection, runtime, entry);
     } catch (const std::exception &ex) {
       throw std::runtime_error(std::string(ex.what()) + " (after " + write.name + ")");
+    }
+  }
+}
+
+void RunBulkWritesDifferentialCheck(const std::string &db_path, const SharedQueryCatalogEntry &entry) {
+  duckdb::DuckDB database(db_path.c_str());
+  duckdb::Connection connection(database);
+  DuckdbRuntime runtime(connection, entry, 10.0);
+  runtime.Build();
+  RequireSharedMatchesBase(connection, runtime, entry);
+  const std::string customers = "(SELECT max(c_custkey) FROM customer)";
+  // {name, apply, undo}: every write is undone by its second statement(s).
+  const std::vector<std::array<std::string, 3>> writes = {
+      {"lineitem update, every row", "UPDATE lineitem SET l_quantity = l_quantity + 1",
+       "UPDATE lineitem SET l_quantity = l_quantity - 1"},
+      {"orders and lineitems deleted, 25%",
+       "CREATE OR REPLACE TABLE bulk_orders AS SELECT * FROM orders WHERE o_orderkey % 4 = 0; "
+       "CREATE OR REPLACE TABLE bulk_lineitem AS SELECT * FROM lineitem WHERE l_orderkey % 4 = 0; "
+       "DELETE FROM lineitem WHERE l_orderkey % 4 = 0; DELETE FROM orders WHERE o_orderkey % 4 = 0",
+       "INSERT INTO orders SELECT * FROM bulk_orders; INSERT INTO lineitem SELECT * FROM bulk_lineitem"},
+      {"orders customer moved, every row",
+       "UPDATE orders SET o_custkey = o_custkey % " + customers + " + 1",
+       "UPDATE orders SET o_custkey = (o_custkey + " + customers + " - 2) % " + customers + " + 1"},
+      {"partsupp deleted, 10%",
+       "CREATE OR REPLACE TABLE bulk_partsupp AS SELECT * FROM partsupp WHERE ps_partkey % 10 = 0; "
+       "DELETE FROM partsupp WHERE ps_partkey % 10 = 0",
+       "INSERT INTO partsupp SELECT * FROM bulk_partsupp"},
+      {"part update, every row", "UPDATE part SET p_size = p_size + 1", "UPDATE part SET p_size = p_size - 1"},
+      {"supplier renamed, every row", "UPDATE supplier SET s_name = s_name || 'x'",
+       "UPDATE supplier SET s_name = left(s_name, length(s_name) - 1)"},
+      {"customer nation moved, 1%",
+       "UPDATE customer SET c_nationkey = (c_nationkey + 1) % 25 WHERE c_custkey % 100 = 0",
+       "UPDATE customer SET c_nationkey = (c_nationkey + 24) % 25 WHERE c_custkey % 100 = 0"},
+      {"nation renamed", "UPDATE nation SET n_name = n_name || 'X'",
+       "UPDATE nation SET n_name = left(n_name, length(n_name) - 1)"},
+      {"region renamed", "UPDATE region SET r_name = r_name || 'X'",
+       "UPDATE region SET r_name = left(r_name, length(r_name) - 1)"},
+  };
+  for (const auto &[name, apply, undo] : writes) {
+    for (const auto &[step, sql] : {std::pair<std::string, std::string>{"", apply}, {" undone", undo}}) {
+      const auto label = name + step;
+      const auto before = runtime.Stats();
+      runtime.ApplyWrite(sql);
+      const auto after = runtime.Stats();
+      const bool maintained = after.commits_applied + after.commits_stale >
+                              before.commits_applied + before.commits_stale;
+      if (maintained) {
+        LogMaintenanceAction(runtime, label);
+      } else if (std::getenv("ACCEL_LOG_MAINTENANCE_ACTIONS")) {
+        std::cerr << "maintenance_action=none after " << label << " (not a dependency)\n";
+      }
+      try {
+        try {
+          RequireSharedMatchesBase(connection, runtime, entry); // maybe mid-rebuild: fallback
+        } catch (const std::exception &ex) {
+          throw std::runtime_error(std::string(ex.what()) + " [first read, fallbacks=" + std::to_string(runtime.Stats().reads_fallback) + " builds=" + std::to_string(runtime.Stats().builds) + "]");
+        }
+        runtime.EnsureBuilt();
+        const auto fallbacks = runtime.Stats().reads_fallback;
+        RequireSharedMatchesBase(connection, runtime, entry);
+        Require(runtime.Stats().reads_fallback == fallbacks, "the settled state did not serve the read");
+      } catch (const std::exception &ex) {
+        throw std::runtime_error(std::string(ex.what()) + " (after " + label + ")");
+      }
     }
   }
 }
@@ -780,7 +868,7 @@ void RunAdversarialWriteDifferentialCheck(const std::string &db_path,
                   std::to_string(entry.query_id));
       try {
         runtime.Apply(probe);
-        RequireForcedMaintenanceAction();
+        RequireForcedMaintenanceAction(runtime);
         const auto after_fp = FingerprintSharedBaseSql(connection, entry);
         Require(after_fp != before_fp,
                 "adversarial Apply() did not invalidate DuckDB Q" +

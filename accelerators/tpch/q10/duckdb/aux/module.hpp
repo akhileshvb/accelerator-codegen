@@ -99,8 +99,7 @@ public:
       const std::function<void(const TpchQ10LineitemInput &)> &) = 0;
 
   virtual bool ScanReturnedCustomerRevenue(
-      const std::function<void(const TpchQ10ReturnedRevenueInput &)> &consumer) {
-    (void)consumer;
+      const std::function<void(const TpchQ10ReturnedRevenueInput &)> &) {
     return false;
   }
 
@@ -116,24 +115,18 @@ public:
         });
   }
 
-  virtual bool LookupOrders(
-      const std::vector<int64_t> &orderkeys,
-      std::unordered_map<int64_t, TpchQ10Order> &out) {
-    (void)orderkeys;
-    (void)out;
+  virtual bool LookupOrders(const std::vector<int64_t> &,
+                            std::unordered_map<int64_t, TpchQ10Order> &) {
     return false;
   }
 
   // Which of `orderkeys` still have returned ('R') lineitems in the base table.
   // Used to confirm an order delete carries all of its lineitems (so the
   // lineitem deltas cancel the order's revenue). false = unsupported.
-  virtual bool OrdersWithReturnedLineitems(
-      const std::vector<int64_t> &orderkeys, std::set<int64_t> &out) {
-    (void)orderkeys;
-    (void)out;
+  virtual bool OrdersWithReturnedLineitems(const std::vector<int64_t> &,
+                                           std::set<int64_t> &) {
     return false;
   }
-
 };
 
 using TpchQ10CustomerMap = std::unordered_map<int64_t, TpchQ10Customer>;
@@ -159,7 +152,6 @@ struct TpchQ10CustomerSlot {
 };
 using TpchQ10CustomerOverlay = std::unordered_map<int64_t, TpchQ10CustomerSlot>;
 
-// ── Persistent chunked sorted layout ────────────────────────────────────────
 // A sorted sequence of (key, val) entries stored as shared immutable chunks
 // plus a small top-level index (first entry of each chunk). A commit copies
 // only the chunks it touches and the (n / chunk) sized index; every other
@@ -402,9 +394,6 @@ struct TpchQ10OrderDelta {
   int8_t sign = 0; // +1 insert/update-new, -1 delete/update-old
 };
 
-int32_t TpchQ10MonthKeyFromDays(int32_t days_since_epoch);
-int32_t TpchQ10MonthStartDays(int32_t month_key);
-int32_t TpchQ10AddMonths(int32_t days_since_epoch, int32_t months);
 int64_t TpchQ10RevenueRaw(double extended_price, double discount);
 
 // TPC-H Q10 returns the top 20 customers by revenue.
@@ -469,8 +458,6 @@ public:
 
 private:
   TpchQ10BuildData BuildState(core::AuxEngineServices &) const;
-  void EmitResult(const TpchQ10BuildData &, int32_t start_days,
-                  core::AuxRowSink &) const;
 
   TpchQ10Config config;
   TpchQ10InitialScan *initial_scan = nullptr;

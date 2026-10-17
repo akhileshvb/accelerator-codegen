@@ -29,7 +29,7 @@ void ScanTpchQ16Suppliers(
       });
 }
 
-void ScanTpchQ16PartsPartitioned(
+void ScanTpchQ16Parts(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ16PartInput &)> &sink) {
   ScanPartitioned(services, "part",
@@ -44,7 +44,7 @@ void ScanTpchQ16PartsPartitioned(
                   });
 }
 
-void ScanTpchQ16PartsuppPartitioned(
+void ScanTpchQ16Partsupp(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ16PartsuppInput &)> &sink) {
   ScanPartitioned(services, "partsupp",
@@ -66,17 +66,17 @@ public:
       override {
     scans::ScanTpchQ16Suppliers(consumer);
   }
-  void ScanPartsPartitioned(
+  void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ16PartInput &)> &sink)
       override {
-    scans::ScanTpchQ16PartsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ16Parts(services, partitions, sink);
   }
-  void ScanPartsuppPartitioned(
+  void ScanPartsupp(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ16PartsuppInput &)> &sink)
       override {
-    scans::ScanTpchQ16PartsuppPartitioned(services, partitions, sink);
+    scans::ScanTpchQ16Partsupp(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ16Module, query::TpchQ16Config, TpchQ16Scan> &

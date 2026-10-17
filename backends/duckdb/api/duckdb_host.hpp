@@ -68,6 +68,7 @@ public:
 private:
   void InvalidateStraddled(uint64_t start, uint64_t epoch);
   explicit DuckdbHost(::duckdb::DatabaseInstance &db);
+  void Attach(const std::shared_ptr<DuckdbHost> &self);
   struct Impl;
   std::unique_ptr<Impl> impl;
 };

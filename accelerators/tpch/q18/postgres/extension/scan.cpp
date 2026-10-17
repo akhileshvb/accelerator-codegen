@@ -19,30 +19,7 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ18Lineitems(
-    const std::function<void(const query::TpchQ18LineitemInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {IntColumn("l_orderkey"), DecimalColumn("l_quantity", 2)},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Decimal(1)});
-              });
-}
-
-void ScanTpchQ18Orders(
-    const std::function<void(const query::TpchQ18OrderInput &)> &consumer) {
-  ScanColumns("orders",
-              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
-               DateColumn("o_orderdate"), DecimalColumn("o_totalprice", 2)},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Int(1),
-                          row.Date(2),
-                          row.Decimal(3)});
-              });
-}
-
-void ScanTpchQ18Customers(
+void ScanTpchQ18CustomersSerial(
     const std::function<void(const query::TpchQ18CustomerInput &)> &consumer) {
   ScanColumns("customer",
               {IntColumn("c_custkey"), TextColumn("c_name")},
@@ -52,7 +29,7 @@ void ScanTpchQ18Customers(
               });
 }
 
-void ScanTpchQ18LineitemsPartitioned(
+void ScanTpchQ18Lineitems(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ18LineitemInput &)> &sink) {
   ScanPartitioned(services, "lineitem",
@@ -65,7 +42,7 @@ void ScanTpchQ18LineitemsPartitioned(
                   });
 }
 
-void ScanTpchQ18OrdersPartitioned(
+void ScanTpchQ18Orders(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ18OrderInput &)> &sink) {
   ScanPartitioned(services, "orders",
@@ -79,7 +56,7 @@ void ScanTpchQ18OrdersPartitioned(
                   });
 }
 
-void ScanTpchQ18CustomersPartitioned(
+void ScanTpchQ18Customers(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ18CustomerInput &)> &sink) {
   ScanPartitioned(services, "customer",
@@ -109,38 +86,28 @@ void LookupTpchQ18CustomerNames(
 
 class TpchQ18Scan final : public query::TpchQ18InitialScan {
 public:
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ18LineitemInput &)> &consumer)
-      override {
-    scans::ScanTpchQ18Lineitems(consumer);
-  }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ18OrderInput &)> &consumer)
-      override {
-    scans::ScanTpchQ18Orders(consumer);
-  }
-  void ScanCustomers(
+  void ScanCustomersSerial(
       const std::function<void(const query::TpchQ18CustomerInput &)> &consumer)
       override {
-    scans::ScanTpchQ18Customers(consumer);
+    scans::ScanTpchQ18CustomersSerial(consumer);
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ18LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ18LineitemsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ18Lineitems(services, partitions, sink);
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ18OrderInput &)> &sink)
       override {
-    scans::ScanTpchQ18OrdersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ18Orders(services, partitions, sink);
   }
-  void ScanCustomersPartitioned(
+  void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ18CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ18CustomersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ18Customers(services, partitions, sink);
   }
   void LookupCustomerNames(
       const std::vector<int64_t> &custkeys,

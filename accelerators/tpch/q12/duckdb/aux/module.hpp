@@ -1,14 +1,11 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "substrate/aux/core/aux_query_module.hpp"
@@ -144,19 +141,9 @@ struct TpchQ12OrderDelta {
   int8_t sign = 0; // +1 insert, -1 delete
 };
 
-std::vector<uint8_t> EncodeTpchQ12OrderPriorities(const TpchQ12State &);
-std::vector<uint8_t> EncodeTpchQ12Day(int32_t receipt_day, const TpchQ12State &);
-bool DecodeTpchQ12OrderPriorities(const std::vector<uint8_t> &, TpchQ12State &);
-bool DecodeTpchQ12Day(const std::vector<uint8_t> &, int32_t receipt_day,
-                      TpchQ12State &);
-bool FindTpchQ12OrderPriority(const std::vector<uint8_t> &, int64_t orderkey,
-                              TpchQ12PriorityClass &);
-
 TpchQ12PriorityClass TpchQ12ClassifyPriority(const std::string &priority);
 bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
                               int32_t shipdate_days);
-int32_t TpchQ12DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int32_t TpchQ12AddMonths(int32_t days_since_epoch, int32_t months);
 
 // `parts` holds the aligned tree nodes covering the query window (null entries
 // are skipped).

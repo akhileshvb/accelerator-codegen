@@ -4,7 +4,6 @@
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -21,6 +20,8 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 constexpr int64_t kModeBits = 24;  // cell key = day << 24 | shipmode id
+// Lineitem deltas per slice below which a commit's deltas are summed inline.
+constexpr std::size_t kDeltaGrain = 4096;
 
 // Cell readers distinguish SQL NULL from an unreadable payload.
 enum class Cell { Null, Ok, Bad };
@@ -79,13 +80,6 @@ const TpchQ12StateImage *AsQ12Image(const core::StateImage &image,
                                     TpchQ12ImageKind kind) {
   const auto *payload = image.As<TpchQ12StateImage>();
   return payload && payload->kind == kind && payload->state ? payload : nullptr;
-}
-
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
 }
 
 // What one joined qualifying lineitem adds to its (day, shipmode) cell for an
@@ -171,9 +165,8 @@ void AddPartial(TpchQ12State &state, const PartialCells &joined) {
 struct ClassChange {
   TpchQ12PriorityClass before, after;
 };
-using ClassChanges = std::map<int64_t, ClassChange>;
 
-constexpr std::size_t kDeltaGrain = 8192;
+using ClassChanges = std::map<int64_t, ClassChange>;
 
 // Each lineitem delta moves its cell by its sign x the order's class before the
 // batch.  Slices read the finished priorities and add into partials of their own.
@@ -197,16 +190,79 @@ void ApplyLineitemDeltas(core::AuxEngineServices &services, TpchQ12State &work,
   AddPartial(work, joined);
 }
 
+// A string parameter: nullopt for SQL NULL (which equals no shipmode).
+bool StringArg(const core::AuxValue &value, std::string &out, bool &is_null) {
+  is_null = value.is_null;
+  if (value.is_null)
+    return true;
+  if (!std::holds_alternative<std::string>(value.payload))
+    return false;
+  out = std::get<std::string>(value.payload);
+  return true;
+}
+
+bool DateArg(const core::AuxValue &value, int64_t &days, bool &is_null) {
+  is_null = value.is_null;
+  if (value.is_null)
+    return true;
+  if (std::holds_alternative<core::AuxDate>(value.payload)) {
+    days = std::get<core::AuxDate>(value.payload).days_since_epoch;
+    return true;
+  }
+  if (std::holds_alternative<int64_t>(value.payload)) {
+    days = std::get<int64_t>(value.payload);
+    return true;
+  }
+  return false;
+}
+
+struct OrderClass {
+  int64_t orderkey;
+  TpchQ12PriorityClass priority;
+};
+
+// Order changes replayed in sequence: delete, then insert for an update.
+ClassChanges CollectClassChanges(const TpchQ12State &work, const TpchQ12TxnBuffer &buffer) {
+  ClassChanges changes;
+  for (const auto &delta : buffer.OrderDeltas()) {
+    auto it = changes.find(delta.orderkey);
+    if (it == changes.end()) {
+      const auto before = work.PriorityOf(delta.orderkey);
+      it = changes.emplace(delta.orderkey, ClassChange{before, before}).first;
+    }
+    it->second.after = delta.sign < 0 ? TpchQ12PriorityClass::Absent : delta.priority;
+  }
+  return changes;
+}
+
+// A key whose class changed (order inserted, deleted, reclassified) moves ALL
+// of its qualifying lineitems between classes, including ones this batch did
+// not touch: asks the database for them (index lookup). False when the scan
+// cannot.
+bool MoveReclassifiedLineitems(TpchQ12InitialScan *scan, TpchQ12State &work,
+                               const ClassChanges &changes) {
+  std::vector<int64_t> moved;
+  for (const auto &[key, change] : changes)
+    if (change.before != change.after)
+      moved.push_back(key);
+  if (moved.empty())
+    return true;
+  if (!scan)
+    return false;
+  scan->LookupLineitemsByOrder(moved, [&](const TpchQ12LineitemInput &input) {
+    if (!TpchQ12LineitemQualifies(input.commitdate_days, input.receiptdate_days,
+                                  input.shipdate_days))
+      return;
+    const auto it = changes.find(input.orderkey);
+    if (it == changes.end() || it->second.before == it->second.after)
+      return;
+    AddToCell(work, input.receiptdate_days, input.shipmode, Contribution(it->second.after, +1));
+    AddToCell(work, input.receiptdate_days, input.shipmode, Contribution(it->second.before, -1));
+  });
+  return true;
+}
+
 }  // namespace
-
-int32_t TpchQ12DaysFromYmd(int32_t year, unsigned month, unsigned day) {
-  return static_cast<int32_t>(core::sql_date::DaysFromCivil(year, month, day));
-}
-
-// date + INTERVAL 'months' MONTH with PostgreSQL/MySQL end-of-month clamping.
-int64_t TpchQ12AddMonths(int64_t days_since_epoch, int64_t months) {
-  return core::sql_date::AddMonths(days_since_epoch, months);
-}
 
 // o_orderpriority = '1-URGENT' OR = '2-HIGH' counts high; <> both counts low;
 // NULL satisfies neither (the row joins but adds 0 to both sums).
@@ -232,23 +288,28 @@ void TpchQ12TxnBuffer::Clear() {
   deltas.clear();
   order_deltas.clear();
 }
+
 bool TpchQ12TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 const std::vector<TpchQ12LineitemDelta> &TpchQ12TxnBuffer::Deltas() const {
   return deltas;
 }
+
 const std::vector<TpchQ12OrderDelta> &TpchQ12TxnBuffer::OrderDeltas() const {
   return order_deltas;
 }
+
 void TpchQ12TxnBuffer::MarkRebuild() {
   pending = true;
   requires_rebuild = true;
   deltas.clear();
   order_deltas.clear();
 }
+
 void TpchQ12TxnBuffer::AddDelta(TpchQ12LineitemDelta delta) {
   pending = true;
   deltas.push_back(std::move(delta));
 }
+
 void TpchQ12TxnBuffer::AddOrderDelta(TpchQ12OrderDelta delta) {
   pending = true;
   order_deltas.push_back(delta);
@@ -259,6 +320,7 @@ std::vector<core::TableDependency> TpchQ12Module::Dependencies() const {
   return {{config.orders_table, {0, 1}, {0, 5}},
           {config.lineitem_table, {0, 1, 2, 3, 4}, {0, 14, 11, 12, 10}}};
 }
+
 std::unique_ptr<core::AuxTxnBuffer> TpchQ12Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ12TxnBuffer>();
 }
@@ -383,39 +445,21 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
                                 core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ12TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
-  auto rebuild_all = [&]() {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  };
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(
+        outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                     services.ExpectedQueriesBeforeNextWrite())));
     return outcome;
   }
   if (buffer.Deltas().empty() && buffer.OrderDeltas().empty())
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size() + buffer.OrderDeltas().size()),
-       1, true, false, true, false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+      core::MaintenanceRequest::IncrementalSingleState(
+          buffer.Deltas().size() + buffer.OrderDeltas().size(),
+          services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -435,8 +479,10 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
     else if (image.partition == TpchQ12Parts::kSide)
       side_image = AsQ12Image(image, TpchQ12ImageKind::Side);
   }
-  if (!orders_image || !cells_image || !side_image)
-    return rebuild_all();
+  if (!orders_image || !cells_image || !side_image) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
   auto work = std::make_shared<TpchQ12State>();
   work->order_class = orders_image->state->order_class;
   work->cells = cells_image->state->cells;
@@ -444,41 +490,10 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
   work->shipmode_ids = side_image->state->shipmode_ids;
   const std::size_t modes_before = work->shipmodes.size();
 
-  // The class of every touched order key before and after the batch (order
-  // changes replayed in sequence: delete, then insert for an update).
-  ClassChanges changes;
-  for (const auto &delta : buffer.OrderDeltas()) {
-    auto it = changes.find(delta.orderkey);
-    if (it == changes.end()) {
-      const auto before = work->PriorityOf(delta.orderkey);
-      it = changes.emplace(delta.orderkey, ClassChange{before, before}).first;
-    }
-    it->second.after = delta.sign < 0 ? TpchQ12PriorityClass::Absent
-                                      : delta.priority;
-  }
-
-  // A key whose class changed (order inserted, deleted, reclassified) moves
-  // ALL of its qualifying lineitems between classes, including ones this
-  // batch did not touch: ask the database for them (index lookup).
-  std::vector<int64_t> moved;
-  for (const auto &[key, change] : changes)
-    if (change.before != change.after)
-      moved.push_back(key);
-  if (!moved.empty()) {
-    if (!initial_scan)
-      return rebuild_all();
-    initial_scan->LookupLineitemsByOrder(moved, [&](const TpchQ12LineitemInput &input) {
-      if (!TpchQ12LineitemQualifies(input.commitdate_days,
-                                    input.receiptdate_days, input.shipdate_days))
-        return;
-      const auto it = changes.find(input.orderkey);
-      if (it == changes.end() || it->second.before == it->second.after)
-        return;
-      AddToCell(*work, input.receiptdate_days, input.shipmode,
-                Contribution(it->second.after, +1));
-      AddToCell(*work, input.receiptdate_days, input.shipmode,
-                Contribution(it->second.before, -1));
-    });
+  const ClassChanges changes = CollectClassChanges(*work, buffer);
+  if (!MoveReclassifiedLineitems(initial_scan, *work, changes)) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
   }
   // The lookup returned the lineitem set AFTER the batch, and above it was
   // taken out of the OLD class for all of it.  The batch's own lineitem
@@ -513,36 +528,6 @@ bool TpchQ12Module::CheckValidity(core::AuxEngineServices &services,
       .CheckValidity({Id(), {}}, services.CurrentVisibility())
       .IsValid();
 }
-
-namespace {
-
-// A string parameter: nullopt for SQL NULL (which equals no shipmode).
-bool StringArg(const core::AuxValue &value, std::string &out, bool &is_null) {
-  is_null = value.is_null;
-  if (value.is_null)
-    return true;
-  if (!std::holds_alternative<std::string>(value.payload))
-    return false;
-  out = std::get<std::string>(value.payload);
-  return true;
-}
-
-bool DateArg(const core::AuxValue &value, int64_t &days, bool &is_null) {
-  is_null = value.is_null;
-  if (value.is_null)
-    return true;
-  if (std::holds_alternative<core::AuxDate>(value.payload)) {
-    days = std::get<core::AuxDate>(value.payload).days_since_epoch;
-    return true;
-  }
-  if (std::holds_alternative<int64_t>(value.payload)) {
-    days = std::get<int64_t>(value.payload);
-    return true;
-  }
-  return false;
-}
-
-}  // namespace
 
 std::vector<TpchQ12Group> TpchQ12Module::Answer(const TpchQ12State &state,
                                                 const core::QueryArguments &arguments) {
@@ -603,33 +588,17 @@ void TpchQ12Module::Execute(core::AuxEngineServices &services,
   TpchQ12FinalizeAndEmit(Answer(view, arguments), sink);
 }
 
-// Exact answer without published state: scan the tables.
-void TpchQ12Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  TpchQ12FinalizeAndEmit(Answer(BuildState(services), arguments), sink);
-}
-
-namespace {
-
-struct OrderClass {
-  int64_t orderkey;
-  TpchQ12PriorityClass priority;
-};
-
-}  // namespace
-
 TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q12 requires a typed initial scan source");
   TpchQ12State state;
-  const std::size_t partitions = BuildPartitions(services);
+  const std::size_t partitions = core::BuildPartitions(services);
   const auto priorities = core::PartitionedBuild<std::vector<OrderClass>>(
       services, [] { return std::vector<OrderClass>{}; },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanOrdersPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ12OrderInput &input) {
-              sink(partition, OneRowBatch<TpchQ12OrderInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ12OrderInput>{input});
             });
       },
       [](std::vector<OrderClass> &into, const TpchQ12OrderInput &input) {
@@ -649,7 +618,7 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitemsPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ12LineitemInput &input) {
-              sink(partition, OneRowBatch<TpchQ12LineitemInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ12LineitemInput>{input});
             });
       },
       [&](PartialCells &into, const TpchQ12LineitemInput &input) {

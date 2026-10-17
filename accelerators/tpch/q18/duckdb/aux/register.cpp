@@ -8,17 +8,10 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -31,6 +24,10 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr core::TableId kLineitemTable = 0;
+constexpr core::TableId kOrdersTable = 1;
+constexpr core::TableId kCustomerTable = 2;
+
 SharedProbe BuildTpchQ18Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   // Large quantity bump so SUM(l_quantity) / sum_qty in the answer moves.
@@ -38,7 +35,7 @@ SharedProbe BuildTpchQ18Probe(::duckdb::MaterializedQueryResult &result,
   const auto linenumber = result.GetValue(1, row).ToString();
   const int64_t quantity_raw = DecimalRaw(result.GetValue(2, row));
   SharedProbe probe;
-  probe.table = 0;
+  probe.table = kLineitemTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {1};
   probe.write_delta = 1.0;
@@ -104,7 +101,7 @@ using namespace scan;
 
 struct TpchQ18Scan : TpchQ18InitialScan {
   explicit TpchQ18Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanLineitems(
+  void ScanLineitemsSerial(
       const std::function<void(const TpchQ18LineitemInput &)> &consumer) override {
     ScanQueryDecoded(
         connection, "SELECT l_orderkey, l_quantity FROM lineitem",
@@ -133,7 +130,7 @@ struct TpchQ18Scan : TpchQ18InitialScan {
         [&](auto &&input) { consumer(input); });
     return true;
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18LineitemInput &)> &sink) override {
     ScanPartitioned(services, connection, "lineitem",
@@ -145,7 +142,7 @@ struct TpchQ18Scan : TpchQ18InitialScan {
                       }
                     });
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18OrderInput &)> &sink) override {
     ScanPartitioned(services, connection, "orders",
@@ -159,7 +156,7 @@ struct TpchQ18Scan : TpchQ18InitialScan {
                       }
                     });
   }
-  void ScanCustomersPartitioned(
+  void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18CustomerInput &)> &sink) override {
     ScanPartitioned(services, connection, "customer",
@@ -171,7 +168,7 @@ struct TpchQ18Scan : TpchQ18InitialScan {
                       }
                     });
   }
-  void ScanOrders(
+  void ScanOrdersSerial(
       const std::function<void(const TpchQ18OrderInput &)> &consumer) override {
     ScanQueryDecoded(
         connection,
@@ -227,7 +224,7 @@ struct TpchQ18Scan : TpchQ18InitialScan {
         });
     return found;
   }
-  void ScanCustomers(
+  void ScanCustomersSerial(
       const std::function<void(const TpchQ18CustomerInput &)> &consumer) override {
     ScanQueryDecoded(
         connection, "SELECT c_custkey, c_name FROM customer",
@@ -245,7 +242,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q18_aux",
     {::duckdb::LogicalType::BIGINT},
     [](::duckdb::Connection &connection) {
-      const TpchQ18Config c{0, 1, 2};
+      const TpchQ18Config c{q18_catalog::kLineitemTable, q18_catalog::kOrdersTable, q18_catalog::kCustomerTable};
       return MakeBinding<TpchQ18Scan, TpchQ18Module>(connection, CaptureTableList{{"lineitem", c.lineitem_table}, {"orders", c.orders_table}, {"customer", c.customer_table}}, c);
     }}};
 

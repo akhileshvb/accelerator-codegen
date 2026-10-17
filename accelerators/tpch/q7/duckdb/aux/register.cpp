@@ -8,16 +8,8 @@
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
 #include <vector>
 
 #include "duckdb.hpp"
@@ -25,6 +17,9 @@
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
+
+constexpr accelerator_codegen::aux_state::query::TpchQ7Config kTables{0, 1, 2, 3, 4};
+
 namespace q7_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
@@ -43,8 +38,7 @@ SharedProbe BuildTpchQ7Probe(::duckdb::MaterializedQueryResult &result,
   const int64_t discount_raw = DecimalRaw(result.GetValue(4, row));
   const int32_t shipdate_days = DateDays(result.GetValue(5, row));
   SharedProbe probe;
-  // Must match TpchQ7Config{0,1,2,3,4}.lineitem_table.
-  probe.table = 4;
+  probe.table = kTables.lineitem_table;
   probe.kind = core::MutationKind::Update;
   // Column ids match full lineitem mutation layout (extendedprice=2, discount=3).
   probe.updated_columns = {2};
@@ -296,8 +290,14 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q7_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ7Config c{0, 1, 2, 3, 4};
-      return MakeBinding<TpchQ7Scan, TpchQ7Module>(connection, CaptureTableList{{"nation", c.nation_table}, {"supplier", c.supplier_table}, {"customer", c.customer_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}}, c);
+      return MakeBinding<TpchQ7Scan, TpchQ7Module>(
+          connection,
+          CaptureTableList{{"nation", kTables.nation_table},
+                           {"supplier", kTables.supplier_table},
+                           {"customer", kTables.customer_table},
+                           {"orders", kTables.orders_table},
+                           {"lineitem", kTables.lineitem_table}},
+          kTables);
     }}};
 
 } // namespace

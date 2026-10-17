@@ -1,14 +1,13 @@
 #include "tpch/q17/duckdb/aux/module.hpp"
-#include "tpch/q17/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/typed_row_batch.hpp"
+#include "tpch/q17/calibration_writes.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -17,7 +16,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
-#include <algorithm>
 #include <vector>
 
 namespace accelerator_codegen::aux_state::query {
@@ -26,55 +24,15 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
-// Per build slice: sorting a part's few (quantity, price) buckets is ~1 us.
+// Parts per slice: sorting a part's few (quantity, price) buckets is ~1 us.
 constexpr std::size_t kPartStatsGrain = 4096;
-// Per build slice: sorting one 1024-part page is ~50 us.
+// Pages per slice: sorting one 1024-part page is ~50 us.
 constexpr std::size_t kPageSortGrain = 16;
-// Per maintenance slice: restaging one 1024-part page run is ~20 us.
+// Page runs per slice: restaging one 1024-part page run is ~20 us.
 constexpr std::size_t kStageRunGrain = 8;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kAttrMagic = 0x49313751;  // Q17I
 constexpr uint32_t kPartMagic = 0x50313751;  // Q17P
-
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
 
 core::PartitionId AttrPartsPartition(const std::string &brand,
                                      const std::string &container) {
@@ -117,19 +75,12 @@ const TpchQ17StateImage *AsQ17Image(const core::StateImage &image,
   return payload;
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 bool ReadLineitem(const core::AuxRow &row, TpchQ17LineitemInput &out) {
   int64_t partkey = 0, quantity_raw = 0, extended_raw = 0;
   int32_t quantity_scale = 0, extended_scale = 0;
-  if (!IntCell(row, 0, partkey) ||
-      !RawDecimalCell(row, 1, quantity_raw, quantity_scale) ||
-      !RawDecimalCell(row, 2, extended_raw, extended_scale))
+  if (!core::IntCell(row, 0, partkey) ||
+      !core::DecimalCell(row, 1, quantity_raw, quantity_scale) ||
+      !core::DecimalCell(row, 2, extended_raw, extended_scale))
     return false;
   out.partkey = partkey;
   out.quantity_raw = quantity_raw;
@@ -200,9 +151,309 @@ bool ApplyPairDelta(PairVec &pairs, const TpchQ17LineitemDelta &delta) {
 
 bool ReadPartRow(const core::AuxRow &row, int64_t &partkey, std::string &brand,
                  std::string &container) {
-  return IntCell(row, 0, partkey) && StringCell(row, 1, brand) &&
-         StringCell(row, 2, container);
+  return core::IntCell(row, 0, partkey) && core::StringCell(row, 1, brand) &&
+         core::StringCell(row, 2, container);
 }
+
+// Net change of each (brand, container) total, plus names to create it.
+struct AttrDelta {
+  int64_t total_delta = 0;
+  std::string brand, container;
+  bool named = false;
+};
+using AttrMap = std::map<core::PartitionId, AttrDelta>;
+
+// The page runs of one commit: its deltas ordered by (partkey, arrival), so
+// each 1024-part page is a contiguous run and is copied exactly once.
+class PageStager {
+public:
+  struct Result {
+    std::shared_ptr<const TpchQ17StateImage> image;
+    core::Version version = 0;
+    int64_t page = 0;
+    bool missing = false; // no published page: only legal on an empty state
+  };
+
+  // Reads the published pages on the calling thread; StageRun only computes.
+  PageStager(core::AuxEngineServices &services, const TpchQ17TxnBuffer &buffer)
+      : buffer(buffer) {
+    ops.reserve(buffer.LineitemDeltas().size() + buffer.PartDeltas().size());
+    uint32_t seq = 0;
+    uint32_t i = 0;
+    for (const auto &delta : buffer.PartDeltas())
+      ops.push_back({delta.partkey, seq++, true, i++});
+    i = 0;
+    for (const auto &delta : buffer.LineitemDeltas())
+      ops.push_back({delta.partkey, seq++, false, i++});
+    std::sort(ops.begin(), ops.end(), [](const Op &a, const Op &b) {
+      return a.partkey != b.partkey ? a.partkey < b.partkey : a.seq < b.seq;
+    });
+    run_starts = core::RunStarts(ops, [](const Op &op) { return PageOf(op.partkey); });
+
+    const auto visibility = services.CurrentVisibility();
+    results.resize(RunCount());
+    snapshots.reserve(RunCount());
+    for (std::size_t r = 0; r < RunCount(); ++r)
+      snapshots.push_back(services.StateStore().ReadPartitions(
+          visibility, {PagePartition(PageOf(ops[run_starts[r]].partkey))}));
+  }
+
+  std::size_t RunCount() const { return run_starts.size() - 1; }
+
+  // Stages page run r into results[r]; false asks for a full rebuild.
+  bool StageRun(std::size_t r, AttrMap &attr_deltas);
+
+  std::vector<Result> results;
+
+private:
+  struct Op {
+    int64_t partkey;
+    uint32_t seq;
+    bool is_part;
+    uint32_t index;
+  };
+
+  const TpchQ17TxnBuffer &buffer;
+  std::vector<Op> ops;
+  std::vector<std::size_t> run_starts; // page runs over `ops`, end sentinel last
+  std::vector<core::StateSnapshot> snapshots;
+};
+
+bool PageStager::StageRun(std::size_t r, AttrMap &attr_deltas) {
+  const std::size_t begin = run_starts[r], end = run_starts[r + 1];
+  const auto page_index = PageOf(ops[begin].partkey);
+  auto &result = results[r];
+  result.page = page_index;
+
+  TpchQ17PartStatsChunk chunk;
+  chunk.chunk_index = page_index;
+  bool have = false;
+  for (const auto &image : snapshots[r].partitions) {
+    const auto *typed = AsQ17Image(image, TpchQ17ImageKind::PartStatsChunk);
+    if (!typed || !typed->chunk)
+      continue;
+    chunk.parts.reserve(typed->chunk->parts.size() + (end - begin));
+    chunk.parts = typed->chunk->parts; // copy-on-write of one small page
+    result.version = image.version;
+    have = true;
+  }
+  result.missing = !have;
+  auto &parts = chunk.parts;
+
+  for (std::size_t i = begin; i < end;) {
+    const auto partkey = ops[i].partkey;
+    std::size_t k = i;
+    while (k < end && ops[k].partkey == partkey)
+      ++k;
+    auto pos = std::lower_bound(
+        parts.begin(), parts.end(), partkey,
+        [](const TpchQ17PartEntry &e, int64_t key) { return e.partkey < key; });
+    if (pos == parts.end() || pos->partkey != partkey) {
+      TpchQ17PartEntry fresh;
+      fresh.partkey = partkey;
+      pos = parts.insert(pos, std::move(fresh));
+    }
+    TpchQ17PartEntry &entry = *pos;
+    const auto old_attr = entry.attr_partition;
+    const auto old_contribution = entry.contribution_raw;
+
+    bool has_lineitems = false;
+    for (std::size_t o = i; o < k; ++o) {
+      if (!ops[o].is_part) {
+        has_lineitems = true;
+        continue;
+      }
+      const auto &op = buffer.PartDeltas()[ops[o].index];
+      const auto op_attr = AttrPartsPartition(op.brand, op.container);
+      if (op.sign < 0) {
+        if (entry.attr_partition != op_attr)
+          return false;
+        entry.attr_partition = 0;
+      } else {
+        if (entry.attr_partition != 0)
+          return false;
+        entry.attr_partition = op_attr;
+        auto &ad = attr_deltas[op_attr];
+        ad.brand = op.brand;
+        ad.container = op.container;
+        ad.named = true;
+      }
+    }
+
+    if (has_lineitems) {
+      PairVec pairs;
+      if (entry.pairs) {
+        pairs.reserve(entry.pairs->size() + (k - i));
+        pairs = *entry.pairs;
+      }
+      for (std::size_t o = i; o < k; ++o) {
+        if (ops[o].is_part)
+          continue;
+        const auto &op = buffer.LineitemDeltas()[ops[o].index];
+        if (!ApplyPairDelta(pairs, op))
+          return false;
+        entry.sum_qty_raw += static_cast<int64_t>(op.sign) * op.quantity_raw;
+        entry.count += op.sign;
+      }
+      if (entry.count < 0)
+        return false;
+      entry.contribution_raw = ContributionRaw(entry.sum_qty_raw, entry.count, pairs.data(),
+                                               pairs.data() + pairs.size());
+      if (pairs.empty())
+        entry.pairs.reset();
+      else
+        entry.pairs = std::make_shared<const PairVec>(std::move(pairs));
+    }
+
+    if (old_attr != 0)
+      attr_deltas[old_attr].total_delta -= old_contribution;
+    if (entry.attr_partition != 0)
+      attr_deltas[entry.attr_partition].total_delta += entry.contribution_raw;
+    if (entry.attr_partition == 0 && entry.count == 0 && !entry.pairs)
+      parts.erase(pos);
+    i = k;
+  }
+  result.image =
+      MakeChunkImage(std::make_shared<const TpchQ17PartStatsChunk>(std::move(chunk)));
+  return true;
+}
+
+// Distinct pages the commit touches.
+std::size_t TouchedPages(const TpchQ17TxnBuffer &buffer) {
+  std::vector<int64_t> pages;
+  pages.reserve(buffer.LineitemDeltas().size() + buffer.PartDeltas().size());
+  for (const auto &d : buffer.LineitemDeltas())
+    pages.push_back(PageOf(d.partkey));
+  for (const auto &d : buffer.PartDeltas())
+    pages.push_back(PageOf(d.partkey));
+  std::sort(pages.begin(), pages.end());
+  return static_cast<std::size_t>(std::unique(pages.begin(), pages.end()) - pages.begin());
+}
+
+// Appends the new image of every (brand, container) partition whose total
+// moved. False when a partition needs names the commit did not supply.
+bool StageAttrImages(const core::AuxStateStore &store, const core::VisibilityToken &visibility,
+                     const AttrMap &attr_deltas, core::StagedMaintenanceOutcome &outcome) {
+  for (const auto &[attr_partition, ad] : attr_deltas) {
+    if (ad.total_delta == 0)
+      continue; // an absent AttrParts image already reads as NULL
+    const auto snapshot = store.ReadPartitions(visibility, {attr_partition});
+    std::shared_ptr<TpchQ17AttrParts> next;
+    core::Version version = 0;
+    for (const auto &image : snapshot.partitions) {
+      const auto *typed = AsQ17Image(image, TpchQ17ImageKind::AttrParts);
+      if (!typed || !typed->attr_parts)
+        continue;
+      next = std::make_shared<TpchQ17AttrParts>(*typed->attr_parts);
+      version = image.version;
+      break;
+    }
+    if (next && ad.named && (next->brand != ad.brand || next->container != ad.container))
+      next->shared = true; // a second pair in this partition
+    if (!next) {
+      if (!ad.named)
+        return false;
+      next = std::make_shared<TpchQ17AttrParts>();
+      next->brand = ad.brand;
+      next->container = ad.container;
+    }
+    next->total_contribution_raw += ad.total_delta;
+    outcome.updates.push_back(core::StateImage::Make(
+        TpchQ17Layout::kAccelerator, attr_partition, version,
+        MakeAttrPartsImage(std::const_pointer_cast<const TpchQ17AttrParts>(next))));
+  }
+  return true;
+}
+
+// FNV-1a over brand, '\0', container: the same hash as AttrPartsPartition,
+// without materializing the key.
+core::PartitionId AttrPartsPartitionView(const std::string &brand,
+                                                const std::string &container) {
+  uint64_t hash = 1469598103934665603ULL;
+  for (const unsigned char c : brand) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+  hash *= 1099511628211ULL; // the '\0' separator: hash ^= 0
+  for (const unsigned char c : container) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+  return TpchQ17Layout::kAttrPartsBase +
+         static_cast<core::PartitionId>(hash % TpchQ17Layout::kAttrPartsSlots);
+}
+
+const std::string *StringArg(const core::QueryArguments &arguments,
+                                    std::size_t i) {
+  if (arguments.values.size() <= i || arguments.values[i].is_null)
+    return nullptr;
+  return std::get_if<std::string>(&arguments.values[i].payload);
+}
+
+// One-column nullable DOUBLE result, built once.
+const core::OutputSchema &Q17Schema() {
+  static const core::OutputSchema schema{
+      {{"avg_yearly", core::AuxType::Double, true}}};
+  return schema;
+}
+
+void EmitQ17(core::AuxRowSink &sink, int64_t contribution_raw) {
+  thread_local core::AuxRow row = [] {
+    core::AuxRow r;
+    r.values.resize(1);
+    return r;
+  }();
+  sink.Begin(Q17Schema());
+  if (contribution_raw == 0) {
+    row.values[0].type = core::AuxType::Double;
+    row.values[0].is_null = true;
+  } else {
+    row.values[0].type = core::AuxType::Double;
+    row.values[0].is_null = false;
+    row.values[0].payload =
+        static_cast<double>(contribution_raw) / 100.0 / 7.0;
+  }
+  sink.WriteRow(row);
+  sink.End();
+}
+
+// Statistics of the lineitems seen per part key, in hash shards.
+struct PartStatsShards {
+  static constexpr std::size_t kShards = 64;
+  std::array<std::unordered_map<int64_t, TpchQ17PartStats>, kShards> shards;
+
+  static std::size_t ShardOf(int64_t partkey) {
+    return (static_cast<uint64_t>(partkey) * 0x9E3779B97F4A7C15ULL) >> 58;
+  }
+  static void AddBucket(TpchQ17PartStats &stats, int64_t quantity_raw, int64_t rows,
+                        int64_t price_raw) {
+    if (quantity_raw != static_cast<int32_t>(quantity_raw) ||
+        rows != static_cast<int32_t>(rows))
+      throw std::runtime_error("TPC-H Q17: quantity or row count exceeds 32 bits");
+    stats.sum_qty_raw += quantity_raw * rows;
+    stats.count += static_cast<int32_t>(rows);
+    for (auto &pair : stats.qty_price_pairs)
+      if (pair.quantity_raw == quantity_raw) {
+        pair.row_count += static_cast<int32_t>(rows);
+        pair.extendedprice_raw += price_raw;
+        return;
+      }
+    stats.qty_price_pairs.push_back({static_cast<int32_t>(quantity_raw),
+                                     static_cast<int32_t>(rows), price_raw});
+  }
+  void Add(const TpchQ17LineitemInput &input) {
+    AddBucket(shards[ShardOf(input.partkey)][input.partkey], input.quantity_raw, 1,
+              input.extendedprice_raw);
+  }
+  // Moves shard `shard` of `from` into this one's.
+  void FoldShard(std::size_t shard, PartStatsShards &&from) {
+    for (auto &[partkey, theirs] : from.shards[shard]) {
+      auto &mine = shards[shard][partkey];
+      for (const auto &pair : theirs.qty_price_pairs)
+        AddBucket(mine, pair.quantity_raw, pair.row_count, pair.extendedprice_raw);
+    }
+  }
+};
 
 } // namespace
 
@@ -406,12 +657,9 @@ void TpchQ17Module::Build(core::AuxEngineServices &services,
   page_list.reserve(pages.size());
   for (auto &entry : pages)
     page_list.push_back(&entry.second);
-  core::ParallelSlices(services, page_list.size(), kPageSortGrain,
-                       [&](std::size_t, std::size_t begin, std::size_t end) {
-                         for (std::size_t i = begin; i < end; ++i)
-                           std::sort(page_list[i]->parts.begin(),
-                                     page_list[i]->parts.end(), by_key);
-                       });
+  core::ParallelEach(services, page_list.size(), kPageSortGrain, [&](std::size_t i) {
+    std::sort(page_list[i]->parts.begin(), page_list[i]->parts.end(), by_key);
+  });
 
   // Pass 2: attach (brand, container); parts without lineitems get an entry.
   std::unordered_map<int64_t, std::vector<TpchQ17PartEntry>> extras;
@@ -578,213 +826,33 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
   auto &buffer = dynamic_cast<TpchQ17TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
 
-  auto rebuild_all = [&]() {
-    core::StagedMaintenanceOutcome rebuilt;
-    rebuilt.action = core::MaintenanceAction::RebuildAll;
-    rebuilt.invalidations = All();
-    rebuilt.pending_rebuild = rebuilt.invalidations;
-    return rebuilt;
-  };
-
-  if (buffer.HasPartRebuild())
-    return rebuild_all();
+  if (buffer.HasPartRebuild()) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
   if (buffer.LineitemDeltas().empty() && buffer.PartDeltas().empty())
     return outcome;
 
-  // Ask the maintenance policy (decision log / cost model) like other modules.
-  {
-    std::size_t touched_pages = 0;
-    {
-      std::vector<int64_t> pages;
-      pages.reserve(buffer.LineitemDeltas().size() + buffer.PartDeltas().size());
-      for (const auto &d : buffer.LineitemDeltas())
-        pages.push_back(PageOf(d.partkey));
-      for (const auto &d : buffer.PartDeltas())
-        pages.push_back(PageOf(d.partkey));
-      std::sort(pages.begin(), pages.end());
-      touched_pages = static_cast<std::size_t>(
-          std::unique(pages.begin(), pages.end()) - pages.begin());
-    }
-    const auto decision = services.ChooseMaintenance(
-        {static_cast<uint64_t>(buffer.LineitemDeltas().size() +
-                               buffer.PartDeltas().size()),
-         static_cast<uint64_t>(std::max<std::size_t>(1, touched_pages)), true,
-         false, true, false, false, core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    if (decision.action != core::MaintenanceAction::ApplyDelta)
-      return rebuild_all();
+  auto request = core::MaintenanceRequest::IncrementalSingleState(
+      buffer.LineitemDeltas().size() + buffer.PartDeltas().size(),
+      services.ExpectedQueriesBeforeNextWrite());
+  request.affected_partition_count = std::max<std::size_t>(1, TouchedPages(buffer));
+  if (services.ChooseMaintenance(request).action != core::MaintenanceAction::ApplyDelta) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
   }
 
-  // Order the transaction's deltas by (partkey, arrival) so each page is a
-  // contiguous run and is copied exactly once.
-  struct Op {
-    int64_t partkey;
-    uint32_t seq;
-    bool is_part;
-    uint32_t index;
-  };
-  std::vector<Op> ops;
-  ops.reserve(buffer.LineitemDeltas().size() + buffer.PartDeltas().size());
-  {
-    uint32_t seq = 0;
-    uint32_t i = 0;
-    for (const auto &delta : buffer.PartDeltas())
-      ops.push_back({delta.partkey, seq++, true, i++});
-    i = 0;
-    for (const auto &delta : buffer.LineitemDeltas())
-      ops.push_back({delta.partkey, seq++, false, i++});
-  }
-  std::sort(ops.begin(), ops.end(), [](const Op &a, const Op &b) {
-    return a.partkey != b.partkey ? a.partkey < b.partkey : a.seq < b.seq;
-  });
-  // Page runs [begin, end) over `ops`.
-  std::vector<std::pair<std::size_t, std::size_t>> runs;
-  for (std::size_t i = 0; i < ops.size();) {
-    std::size_t j = i + 1;
-    const auto page = PageOf(ops[i].partkey);
-    while (j < ops.size() && PageOf(ops[j].partkey) == page)
-      ++j;
-    runs.emplace_back(i, j);
-    i = j;
-  }
-
-  const auto visibility = services.CurrentVisibility();
-  const auto &store = services.StateStore();
-
-  // Net change of each (brand, container) total, plus names to create it.
-  struct AttrDelta {
-    int64_t total_delta = 0;
-    std::string brand, container;
-    bool named = false;
-  };
-  using AttrMap = std::map<core::PartitionId, AttrDelta>;
-
-  struct PageResult {
-    std::shared_ptr<const TpchQ17StateImage> image;
-    core::Version version = 0;
-    int64_t page = 0;
-    bool missing = false; // no published page: only legal on an empty state
-  };
-  std::vector<PageResult> results(runs.size());
-  // Engine reads stay serial; the slices only compute on the snapshots.
-  std::vector<core::StateSnapshot> snapshots;
-  snapshots.reserve(runs.size());
-  for (const auto &run : runs) {
-    snapshots.push_back(store.ReadPartitions(
-        visibility, {PagePartition(PageOf(ops[run.first].partkey))}));
-  }
-
-  // Stages page run r into results[r]; false asks for a full rebuild.
-  const auto stage_run = [&](std::size_t r, AttrMap &attr_deltas) {
-    const auto [begin, end] = runs[r];
-    const auto page_index = PageOf(ops[begin].partkey);
-    auto &result = results[r];
-    result.page = page_index;
-
-    TpchQ17PartStatsChunk chunk;
-    chunk.chunk_index = page_index;
-    bool have = false;
-    for (const auto &image : snapshots[r].partitions) {
-      const auto *typed = AsQ17Image(image, TpchQ17ImageKind::PartStatsChunk);
-      if (!typed || !typed->chunk)
-        continue;
-      chunk.parts.reserve(typed->chunk->parts.size() + (end - begin));
-      chunk.parts = typed->chunk->parts; // copy-on-write of one small page
-      result.version = image.version;
-      have = true;
-    }
-    result.missing = !have;
-    auto &parts = chunk.parts;
-
-    for (std::size_t i = begin; i < end;) {
-      const auto partkey = ops[i].partkey;
-      std::size_t k = i;
-      while (k < end && ops[k].partkey == partkey)
-        ++k;
-      auto pos = std::lower_bound(
-          parts.begin(), parts.end(), partkey,
-          [](const TpchQ17PartEntry &e, int64_t key) { return e.partkey < key; });
-      if (pos == parts.end() || pos->partkey != partkey) {
-        TpchQ17PartEntry fresh;
-        fresh.partkey = partkey;
-        pos = parts.insert(pos, std::move(fresh));
-      }
-      TpchQ17PartEntry &entry = *pos;
-      const auto old_attr = entry.attr_partition;
-      const auto old_contribution = entry.contribution_raw;
-
-      bool has_lineitems = false;
-      for (std::size_t o = i; o < k; ++o) {
-        if (!ops[o].is_part) {
-          has_lineitems = true;
-          continue;
-        }
-        const auto &op = buffer.PartDeltas()[ops[o].index];
-        const auto op_attr = AttrPartsPartition(op.brand, op.container);
-        if (op.sign < 0) {
-          if (entry.attr_partition != op_attr)
-            return false;
-          entry.attr_partition = 0;
-        } else {
-          if (entry.attr_partition != 0)
-            return false;
-          entry.attr_partition = op_attr;
-          auto &ad = attr_deltas[op_attr];
-          ad.brand = op.brand;
-          ad.container = op.container;
-          ad.named = true;
-        }
-      }
-
-      if (has_lineitems) {
-        PairVec pairs;
-        if (entry.pairs) {
-          pairs.reserve(entry.pairs->size() + (k - i));
-          pairs = *entry.pairs;
-        }
-        for (std::size_t o = i; o < k; ++o) {
-          if (ops[o].is_part)
-            continue;
-          const auto &op = buffer.LineitemDeltas()[ops[o].index];
-          if (!ApplyPairDelta(pairs, op))
-            return false;
-          entry.sum_qty_raw += static_cast<int64_t>(op.sign) * op.quantity_raw;
-          entry.count += op.sign;
-        }
-        if (entry.count < 0)
-          return false;
-        entry.contribution_raw = ContributionRaw(
-            entry.sum_qty_raw, entry.count, pairs.data(),
-            pairs.data() + pairs.size());
-        if (pairs.empty())
-          entry.pairs.reset();
-        else
-          entry.pairs = std::make_shared<const PairVec>(std::move(pairs));
-      }
-
-      if (old_attr != 0)
-        attr_deltas[old_attr].total_delta -= old_contribution;
-      if (entry.attr_partition != 0)
-        attr_deltas[entry.attr_partition].total_delta += entry.contribution_raw;
-      if (entry.attr_partition == 0 && entry.count == 0 && !entry.pairs)
-        parts.erase(pos);
-      i = k;
-    }
-    result.image = MakeChunkImage(
-        std::make_shared<const TpchQ17PartStatsChunk>(std::move(chunk)));
-    return true;
-  };
-
+  PageStager stager(services, buffer);
   struct Staged {
     AttrMap attrs;
     bool rebuild = false;
   };
   Staged staged;
   core::ParallelReduce(
-      services, runs.size(), kStageRunGrain, staged,
+      services, stager.RunCount(), kStageRunGrain, staged,
       [&](Staged &acc, std::size_t first, std::size_t last) {
         for (std::size_t r = first; r < last && !acc.rebuild; ++r)
-          acc.rebuild = !stage_run(r, acc.attrs);
+          acc.rebuild = !stager.StageRun(r, acc.attrs);
       },
       [](Staged &into, Staged &&from) {
         into.rebuild |= from.rebuild;
@@ -798,53 +866,26 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
           }
         }
       });
-  if (staged.rebuild)
-    return rebuild_all();
-  const AttrMap &attr_deltas = staged.attrs;
-  for (const auto &result : results) {
-    if (result.missing &&
-        !store.CheckValidity({Id(), {}}, visibility).IsValid())
-      return rebuild_all();
+  const auto visibility = services.CurrentVisibility();
+  const auto &store = services.StateStore();
+  const bool unpublished_page_on_invalid_state =
+      std::any_of(stager.results.begin(), stager.results.end(), [&](const auto &result) {
+        return result.missing && !store.CheckValidity({Id(), {}}, visibility).IsValid();
+      });
+  if (staged.rebuild || unpublished_page_on_invalid_state) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
   }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
-
-  outcome.updates.reserve(results.size() + attr_deltas.size());
-  for (auto &result : results) {
+  outcome.updates.reserve(stager.results.size() + staged.attrs.size());
+  for (auto &result : stager.results) {
     outcome.updates.push_back(core::StateImage::Make(
         TpchQ17Layout::kAccelerator, PagePartition(result.page), result.version,
         std::move(result.image)));
   }
-
-  for (const auto &[attr_partition, ad] : attr_deltas) {
-    if (ad.total_delta == 0)
-      continue; // an absent AttrParts image already reads as NULL
-    const auto snapshot = store.ReadPartitions(visibility, {attr_partition});
-    std::shared_ptr<TpchQ17AttrParts> next;
-    core::Version version = 0;
-    for (const auto &image : snapshot.partitions) {
-      const auto *typed = AsQ17Image(image, TpchQ17ImageKind::AttrParts);
-      if (!typed || !typed->attr_parts)
-        continue;
-      next = std::make_shared<TpchQ17AttrParts>(*typed->attr_parts);
-      version = image.version;
-      break;
-    }
-    if (next && ad.named && (next->brand != ad.brand || next->container != ad.container))
-      next->shared = true; // a second pair in this partition
-    if (!next) {
-      if (!ad.named)
-        return rebuild_all();
-      next = std::make_shared<TpchQ17AttrParts>();
-      next->brand = ad.brand;
-      next->container = ad.container;
-    }
-    next->total_contribution_raw += ad.total_delta;
-    outcome.updates.push_back(core::StateImage::Make(
-        TpchQ17Layout::kAccelerator, attr_partition, version,
-        MakeAttrPartsImage(std::const_pointer_cast<const TpchQ17AttrParts>(next))));
-  }
-
+  if (!StageAttrImages(store, visibility, staged.attrs, outcome))
+    core::FinishRebuildAll(outcome);
   return outcome;
 }
 
@@ -854,62 +895,6 @@ bool TpchQ17Module::CheckValidity(core::AuxEngineServices &services,
       .CheckValidity({Id(), {}}, services.CurrentVisibility())
       .IsValid();
 }
-
-namespace {
-
-// FNV-1a over brand, '\0', container: the same hash as AttrPartsPartition,
-// without materializing the key.
-inline core::PartitionId AttrPartsPartitionView(const std::string &brand,
-                                                const std::string &container) {
-  uint64_t hash = 1469598103934665603ULL;
-  for (const unsigned char c : brand) {
-    hash ^= c;
-    hash *= 1099511628211ULL;
-  }
-  hash *= 1099511628211ULL; // the '\0' separator: hash ^= 0
-  for (const unsigned char c : container) {
-    hash ^= c;
-    hash *= 1099511628211ULL;
-  }
-  return TpchQ17Layout::kAttrPartsBase +
-         static_cast<core::PartitionId>(hash % TpchQ17Layout::kAttrPartsSlots);
-}
-
-inline const std::string *StringArg(const core::QueryArguments &arguments,
-                                    std::size_t i) {
-  if (arguments.values.size() <= i || arguments.values[i].is_null)
-    return nullptr;
-  return std::get_if<std::string>(&arguments.values[i].payload);
-}
-
-// One-column nullable DOUBLE result, built once.
-inline const core::OutputSchema &Q17Schema() {
-  static const core::OutputSchema schema{
-      {{"avg_yearly", core::AuxType::Double, true}}};
-  return schema;
-}
-
-inline void EmitQ17(core::AuxRowSink &sink, int64_t contribution_raw) {
-  thread_local core::AuxRow row = [] {
-    core::AuxRow r;
-    r.values.resize(1);
-    return r;
-  }();
-  sink.Begin(Q17Schema());
-  if (contribution_raw == 0) {
-    row.values[0].type = core::AuxType::Double;
-    row.values[0].is_null = true;
-  } else {
-    row.values[0].type = core::AuxType::Double;
-    row.values[0].is_null = false;
-    row.values[0].payload =
-        static_cast<double>(contribution_raw) / 100.0 / 7.0;
-  }
-  sink.WriteRow(row);
-  sink.End();
-}
-
-} // namespace
 
 void TpchQ17Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
@@ -956,48 +941,6 @@ void TpchQ17Module::Execute(core::AuxEngineServices &services,
   EmitQ17(sink, 0);
 }
 
-namespace {
-
-// Statistics of the lineitems seen per part key, in hash shards.
-struct PartStatsShards {
-  static constexpr std::size_t kShards = 64;
-  std::array<std::unordered_map<int64_t, TpchQ17PartStats>, kShards> shards;
-
-  static std::size_t ShardOf(int64_t partkey) {
-    return (static_cast<uint64_t>(partkey) * 0x9E3779B97F4A7C15ULL) >> 58;
-  }
-  static void AddBucket(TpchQ17PartStats &stats, int64_t quantity_raw, int64_t rows,
-                        int64_t price_raw) {
-    if (quantity_raw != static_cast<int32_t>(quantity_raw) ||
-        rows != static_cast<int32_t>(rows))
-      throw std::runtime_error("TPC-H Q17: quantity or row count exceeds 32 bits");
-    stats.sum_qty_raw += quantity_raw * rows;
-    stats.count += static_cast<int32_t>(rows);
-    for (auto &pair : stats.qty_price_pairs)
-      if (pair.quantity_raw == quantity_raw) {
-        pair.row_count += static_cast<int32_t>(rows);
-        pair.extendedprice_raw += price_raw;
-        return;
-      }
-    stats.qty_price_pairs.push_back({static_cast<int32_t>(quantity_raw),
-                                     static_cast<int32_t>(rows), price_raw});
-  }
-  void Add(const TpchQ17LineitemInput &input) {
-    AddBucket(shards[ShardOf(input.partkey)][input.partkey], input.quantity_raw, 1,
-              input.extendedprice_raw);
-  }
-  // Moves shard `shard` of `from` into this one's.
-  void FoldShard(std::size_t shard, PartStatsShards &&from) {
-    for (auto &[partkey, theirs] : from.shards[shard]) {
-      auto &mine = shards[shard][partkey];
-      for (const auto &pair : theirs.qty_price_pairs)
-        AddBucket(mine, pair.quantity_raw, pair.row_count, pair.extendedprice_raw);
-    }
-  }
-};
-
-} // namespace
-
 TpchQ17State TpchQ17Module::BuildState(
     core::AuxEngineServices &services) const {
   if (!initial_scan)
@@ -1009,7 +952,7 @@ TpchQ17State TpchQ17Module::BuildState(
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanParts(services, parts,
                                 [&](std::size_t p, const TpchQ17PartInput &input) {
-                                  sink(p, TypedRowBatch<TpchQ17PartInput>{input});
+                                  sink(p, core::SingleRowBatch<TpchQ17PartInput>{input});
                                 });
       },
       [](TpchQ17State &partial, const TpchQ17PartInput &input) {
@@ -1031,36 +974,28 @@ TpchQ17State TpchQ17Module::BuildState(
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitems(services, parts,
                                     [&](std::size_t p, const TpchQ17LineitemInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ17LineitemInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ17LineitemInput>{input});
                                     });
       },
       [](PartStatsShards &partial, const TpchQ17LineitemInput &input) {
         partial.Add(input);
       },
       [&](PartStatsShards &into, PartStatsShards &&from) {
-        core::ParallelSlices(services, PartStatsShards::kShards, 1,
-                             [&](std::size_t, std::size_t first, std::size_t last) {
-                               for (std::size_t s = first; s < last; ++s)
-                                 into.FoldShard(s, std::move(from));
-                             });
+        core::ParallelEach(services, PartStatsShards::kShards, 1,
+                           [&](std::size_t s) { into.FoldShard(s, std::move(from)); });
       });
   std::vector<TpchQ17PartStats *> stats_list;
   for (auto &shard : shards.shards)
     for (auto &entry : shard)
       stats_list.push_back(&entry.second);
-  core::ParallelSlices(
-      services, stats_list.size(), kPartStatsGrain,
-      [&](std::size_t, std::size_t begin, std::size_t end) {
-        for (std::size_t i = begin; i < end; ++i) {
-          auto &pairs = stats_list[i]->qty_price_pairs;
-          std::sort(pairs.begin(), pairs.end(),
-                    [](const TpchQ17QtyPricePair &lhs,
-                       const TpchQ17QtyPricePair &rhs) {
-                      return lhs.quantity_raw < rhs.quantity_raw;
-                    });
-          stats_list[i]->RecomputeContribution();
-        }
-      });
+  core::ParallelEach(services, stats_list.size(), kPartStatsGrain, [&](std::size_t i) {
+    auto &pairs = stats_list[i]->qty_price_pairs;
+    std::sort(pairs.begin(), pairs.end(),
+              [](const TpchQ17QtyPricePair &lhs, const TpchQ17QtyPricePair &rhs) {
+                return lhs.quantity_raw < rhs.quantity_raw;
+              });
+    stats_list[i]->RecomputeContribution();
+  });
   state.part_stats.reserve(stats_list.size());
   for (auto &shard : shards.shards)
     for (auto &entry : shard)

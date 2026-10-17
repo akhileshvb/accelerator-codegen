@@ -1,8 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -14,7 +14,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q11 layout ──────────────────────────────────────────────────────────────
 struct TpchQ11Layout {
   static constexpr const char *kAccelerator = "tpch_q11_aux";
   static constexpr core::PartitionId kMetadata = 0;
@@ -27,14 +26,12 @@ struct TpchQ11Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ11Config {
   core::TableId partsupp_table = 0;
   core::TableId supplier_table = 0;
   core::TableId nation_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ11PartsuppInput {
   int64_t partkey = 0;
   int64_t suppkey = 0;
@@ -64,20 +61,17 @@ public:
       const std::function<void(const TpchQ11NationInput &)> &) = 0;
 };
 
-// ── Contribution value types ────────────────────────────────────────────────
 #if defined(__SIZEOF_INT128__)
 using Q11AccT = __int128_t;
 #else
 using Q11AccT = int64_t;
 #endif
 
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ11OutputRow {
   int64_t partkey = 0;
   Q11AccT value = 0;
 };
 
-// ── Chunked copy-on-write structures ────────────────────────────────────────
 constexpr std::size_t kQ11ValueBuckets = 512;
 constexpr std::size_t kQ11SupplierBuckets = 4096;
 constexpr std::size_t kQ11ChunkTarget = 512;
@@ -121,7 +115,6 @@ struct Q11SupplierEntry {
 };
 using Q11SupplierBucket = std::unordered_map<int64_t, Q11SupplierEntry>;
 
-// ── State structures ────────────────────────────────────────────────────────
 struct TpchQ11State {
   std::unordered_map<std::string, int32_t> nation_name_to_key;
   // Per-supplier nation + contributions, bucketed by suppkey (COW per bucket).
@@ -148,7 +141,6 @@ struct TpchQ11StateImage {
   std::shared_ptr<const TpchQ11NationData> data;
 };
 
-// ── Deltas ──────────────────────────────────────────────────────────────────
 struct TpchQ11PartsuppDelta {
   int64_t partkey = 0;
   int64_t suppkey = 0;
@@ -170,19 +162,6 @@ struct TpchQ11NationDelta {
   std::string new_name;
 };
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ11Metadata(const TpchQ11State &state);
-std::vector<uint8_t> EncodeTpchQ11NationPartition(
-    int32_t nationkey, const std::string &nation_name,
-    const TpchQ11NationData &data);
-bool DecodeTpchQ11Metadata(const std::vector<uint8_t> &bytes,
-                           TpchQ11State &state);
-bool DecodeTpchQ11NationPartition(
-    const std::vector<uint8_t> &bytes,
-    int32_t &nationkey, std::string &nation_name,
-    std::shared_ptr<const TpchQ11NationData> &data);
-
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ11TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -205,7 +184,6 @@ private:
   std::vector<TpchQ11NationDelta> nation_deltas;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ11Module final : public core::AuxQueryModule {
 public:
   explicit TpchQ11Module(TpchQ11Config config,
@@ -232,19 +210,11 @@ public:
 
 private:
   TpchQ11Built BuildState(core::AuxEngineServices &services) const;
-  void EmitResult(const std::vector<TpchQ11OutputRow> &rows,
-                  core::AuxRowSink &sink) const;
 
   TpchQ11Config config;
   TpchQ11InitialScan *initial_scan = nullptr;
 };
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
 core::PartitionId NationNamePartition(const std::string &name);
-
-// ── Finalize ────────────────────────────────────────────────────────────────
-std::vector<TpchQ11OutputRow> FinalizeQ11FromSorted(
-    const std::vector<TpchQ11OutputRow> &sorted_rows,
-    Q11AccT total_value, double fraction);
 
 } // namespace accelerator_codegen::aux_state::query

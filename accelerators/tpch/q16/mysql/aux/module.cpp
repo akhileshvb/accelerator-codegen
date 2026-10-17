@@ -9,49 +9,15 @@
 #include <utility>
 
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_collect.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// ── Cell helpers ────────────────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
 bool NullCell(const core::AuxRow &row, std::size_t index) {
   return index >= row.values.size() || row.values[index].is_null;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
-
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
 }
 
 // s_comment LIKE '%Customer%Complaints%' (a NULL comment is not a complaint).
@@ -66,13 +32,13 @@ bool IsComplaintComment(std::string_view comment) {
 // (a NULL brand / type / size / key), so a new image of it is ignored.
 bool ReadPart(const core::AuxRow &row, TpchQ16PartInput &out, bool &skip) {
   int64_t size = 0;
-  if (!IntCell(row, 0, out.partkey))
+  if (!core::IntCell(row, 0, out.partkey))
     return false;
   skip = NullCell(row, 1) || NullCell(row, 2) || NullCell(row, 3);
   if (skip)
     return true;
-  if (!StringCell(row, 1, out.brand) || !StringCell(row, 2, out.type) ||
-      !IntCell(row, 3, size) || size < std::numeric_limits<int32_t>::min() ||
+  if (!core::StringCell(row, 1, out.brand) || !core::StringCell(row, 2, out.type) ||
+      !core::IntCell(row, 3, size) || size < std::numeric_limits<int32_t>::min() ||
       size > std::numeric_limits<int32_t>::max())
     return false;
   out.size = static_cast<int32_t>(size);
@@ -82,7 +48,7 @@ bool ReadPart(const core::AuxRow &row, TpchQ16PartInput &out, bool &skip) {
 bool ReadPartsupp(const core::AuxRow &row, TpchQ16PartsuppInput &out,
                   bool &skip) {
   skip = NullCell(row, 0) || NullCell(row, 1);
-  return skip || (IntCell(row, 0, out.partkey) && IntCell(row, 1, out.suppkey));
+  return skip || (core::IntCell(row, 0, out.partkey) && core::IntCell(row, 1, out.suppkey));
 }
 
 uint32_t Intern(std::shared_ptr<core::StringDict> &dict,
@@ -237,7 +203,7 @@ void TpchQ16State::MarkGroupsOfSuppliers(
 }
 
 // Groups per slice: each walks its parts' supplier lists (~1 us per part).
-constexpr std::size_t kGroupsGrain = 64;
+constexpr std::size_t kGroupGrain = 64;
 
 // Distinct non-complaint suppliers over the parts of one group.
 int64_t TpchQ16State::CountDistinct(uint32_t gid) const {
@@ -268,12 +234,8 @@ std::vector<int64_t>
 TpchQ16State::CountDistinctMany(const core::AuxEngineServices &services,
                                 std::size_t n, GroupAt &&group_at) const {
   std::vector<int64_t> counts(n, 0);
-  core::ParallelSlices(
-      services, n, kGroupsGrain,
-      [&](std::size_t, std::size_t begin, std::size_t end) {
-        for (std::size_t i = begin; i < end; ++i)
-          counts[i] = CountDistinct(group_at(i));
-      });
+  core::ParallelEach(services, n, kGroupGrain,
+                     [&](std::size_t i) { counts[i] = CountDistinct(group_at(i)); });
   return counts;
 }
 
@@ -407,13 +369,13 @@ void TpchQ16Module::AccumulateMutation(const core::MutationBatch &mutation,
       return;
     each_image([&](const core::AuxRow &row, int8_t sign) {
       TpchQ16SupplierEvent event;
-      if (!IntCell(row, 0, event.suppkey)) {
+      if (!core::IntCell(row, 0, event.suppkey)) {
         buffer.MarkRebuild();
         return;
       }
       std::string comment;
       event.sign = sign;
-      event.complaint = sign > 0 && StringCell(row, 1, comment) &&
+      event.complaint = sign > 0 && core::StringCell(row, 1, comment) &&
                         IsComplaintComment(comment);
       buffer.suppliers.push_back(event);
     });
@@ -475,9 +437,8 @@ TpchQ16Module::StageMaintenance(core::AuxEngineServices &services,
       new_state->RecomputeDirty(services);
 
       const auto decision = services.ChooseMaintenance(
-          {buffer.EventCount(), 1, true, false, true, false, false,
-           core::MaintenanceAction::NoOp,
-           services.ExpectedQueriesBeforeNextWrite()});
+          core::MaintenanceRequest::IncrementalSingleState(
+              buffer.EventCount(), services.ExpectedQueriesBeforeNextWrite()));
       if (decision.action == core::MaintenanceAction::ApplyDelta) {
         auto image = std::make_shared<TpchQ16StateImage>();
         image->state = std::move(new_state);
@@ -493,16 +454,8 @@ TpchQ16Module::StageMaintenance(core::AuxEngineServices &services,
     }
   }
 
-  const auto decision = services.ChooseMaintenance(
-      {0, 0, false, false, true, true, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                       ? core::MaintenanceAction::RebuildAll
-                       : decision.action;
-  if (outcome.action == core::MaintenanceAction::RebuildPartition)
-    outcome.action = core::MaintenanceAction::RebuildAll;
-  outcome.invalidations = All();
-  outcome.pending_rebuild = outcome.invalidations;
+  core::FinishRebuildAll(outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                                      services.ExpectedQueriesBeforeNextWrite())));
   buffer.Clear();
   return outcome;
 }
@@ -529,20 +482,13 @@ void TpchQ16Module::Execute(core::AuxEngineServices &services,
   EmitResult(*state, arguments, sink);
 }
 
-void TpchQ16Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  const TpchQ16State state = BuildState(services);
-  EmitResult(state, arguments, sink);
-}
-
 TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q16 requires a typed initial scan source");
   TpchQ16State state;
   state.track_dirty = false;
   // The scans run in parallel; the rows are applied in partition order.
-  const std::size_t partitions = BuildPartitions(services);
+  const std::size_t partitions = core::BuildPartitions(services);
   struct Complaint {
     int64_t suppkey;
     bool complaint;
@@ -550,9 +496,9 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
   const auto complaints = core::PartitionedBuild<std::vector<Complaint>>(
       services, [] { return std::vector<Complaint>{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanSuppliersPartitioned(
+        initial_scan->ScanSuppliers(
             services, parts, [&](std::size_t partition, const TpchQ16SupplierInput &input) {
-              sink(partition, OneRowBatch<TpchQ16SupplierInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ16SupplierInput>{input});
             });
       },
       [](std::vector<Complaint> &into, const TpchQ16SupplierInput &input) {
@@ -564,14 +510,14 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
       partitions);
   for (const auto &supplier : complaints)
     state.SetComplaint(supplier.suppkey, supplier.complaint);
-  for (const auto &input : CollectRows<TpchQ16PartInput>(
-           services, partitions, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanPartsPartitioned(services, parts, sink);
+  for (const auto &input : core::CollectRows<TpchQ16PartInput>(
+           services, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanParts(services, parts, sink);
            }))
     state.SetPart(input.partkey, input);
-  for (const auto &input : CollectRows<TpchQ16PartsuppInput>(
-           services, partitions, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanPartsuppPartitioned(services, parts, sink);
+  for (const auto &input : core::CollectRows<TpchQ16PartsuppInput>(
+           services, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsupp(services, parts, sink);
            }))
     state.AddSupplier(input.partkey, input.suppkey);
   state.RecomputeAll(services);

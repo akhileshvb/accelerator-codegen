@@ -9,17 +9,10 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -32,12 +25,15 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr core::TableId kCustomerTable = 0;
+constexpr core::TableId kOrdersTable = 1;
+
 SharedProbe BuildTpchQ13Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   const auto orderkey = result.GetValue(0, row).ToString();
   const auto comment = result.GetValue(2, row).ToString();
   SharedProbe probe;
-  probe.table = 1;  // TpchQ13Config{0,1}.orders_table
+  probe.table = kOrdersTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {1};
   probe.write_delta = 1.0;
@@ -124,7 +120,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q13_aux",
     {::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ13Config c{0, 1};
+      const TpchQ13Config c{q13_catalog::kCustomerTable, q13_catalog::kOrdersTable};
       return MakeBinding<TpchQ13Scan, TpchQ13Module>(connection, CaptureTableList{{"customer", c.customer_table}, {"orders", c.orders_table}}, c);
     }}};
 

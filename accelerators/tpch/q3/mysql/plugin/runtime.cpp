@@ -91,11 +91,6 @@ std::string KeyList(const std::vector<int64_t> &keys) {
 
 class TpchQ3Scan final : public query::TpchQ3InitialScan {
 public:
-  void ScanOrderLines(
-      const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer)
-      override {
-    scans::ScanTpchQ3OrderLines("", consumer);
-  }
   void ScanCustomersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ3CustomerInput &)> &sink)

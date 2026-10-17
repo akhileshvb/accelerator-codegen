@@ -16,19 +16,16 @@
 #include "prims/keyed_string_column.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q9 layout ───────────────────────────────────────────────────────────────
 struct TpchQ9Layout {
   static constexpr const char *kAccelerator = "tpch_q9_aux";
   // The whole state is one copy-on-write image.
-  static constexpr core::PartitionId kCompleteState = 0;
+  static constexpr core::PartitionId kState = 0;
 
   static std::array<core::PartitionId, 1> Partitions() {
-    return {kCompleteState};
+    return {kState};
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ9Config {
   core::TableId part_table = 0;
   core::TableId supplier_table = 0;
@@ -38,7 +35,6 @@ struct TpchQ9Config {
   core::TableId lineitem_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 // Scans return only rows whose join / filter columns are NOT NULL.
 struct TpchQ9PartInput {
   int64_t partkey = 0;
@@ -103,18 +99,12 @@ public:
   // database (index lookups at pre-commit), with their l_linenumber; returns
   // false when not supported (a join change then rebuilds).
   virtual bool LookupLineitems(
-      const char *column, const std::vector<int64_t> &keys,
-      const std::function<void(const TpchQ9LineitemInput &, int32_t linenumber)>
-          &consumer) {
-    (void)column;
-    (void)keys;
-    (void)consumer;
+      const char *, const std::vector<int64_t> &,
+      const std::function<void(const TpchQ9LineitemInput &, int32_t linenumber)> &) {
     return false;
   }
 };
 
-// ── State ───────────────────────────────────────────────────────────────────
-//
 // Profit is kept per (part, group), where a group is a (supplier nationkey,
 // order year) pair interned in a small dictionary: a cell is
 // {group id, joined-lineitem count, SUM(amount)} = 16 B. Execute only adds up
@@ -183,7 +173,7 @@ struct TpchQ9GroupColors {
 
 struct TpchQ9State {
   core::AnyKeyCowArray<std::shared_ptr<TpchQ9PartBlock>, 12> blocks;
-  bool color_index = false; // color_groups maintained (false in fallback builds)
+  bool color_index = false; // color_groups maintained (dropped on overflow)
   // Per group id (may be shorter than groups; null / missing = all zero).
   std::vector<std::shared_ptr<const TpchQ9GroupColors>> color_groups;
   core::KeyedStringColumn part_names;
@@ -215,21 +205,10 @@ struct TpchQ9State {
   void EraseOrder(int64_t orderkey);
 };
 
-enum class TpchQ9ImageKind : uint8_t { CompleteState };
-
 struct TpchQ9StateImage {
-  TpchQ9ImageKind kind = TpchQ9ImageKind::CompleteState;
   std::shared_ptr<const TpchQ9State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
-struct TpchQ9OutputRow {
-  std::string nation;
-  int32_t year = 0;
-  int64_t sum_profit_raw = 0; // fixed-point raw value
-};
-
-// ── Mutation deltas ─────────────────────────────────────────────────────────
 struct TpchQ9LineitemDelta {
   int64_t partkey = 0;
   int64_t suppkey = 0;
@@ -271,12 +250,7 @@ struct TpchQ9NationDelta {
   int8_t sign = 0;
 };
 
-// ── Date / profit helpers ───────────────────────────────────────────────────
 int32_t TpchQ9ExtractYear(int32_t days_since_epoch);
-int64_t TpchQ9ComputeProfitRaw(int64_t extendedprice_raw, int64_t discount_raw,
-                               int64_t supplycost_raw, int64_t quantity_raw);
-
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ9TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -306,7 +280,6 @@ private:
   std::vector<TpchQ9NationDelta> nations;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ9Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ9Layout::kAccelerator;
@@ -331,15 +304,12 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ9State> BuildState(core::AuxEngineServices &services,
-                                          bool color_index) const;
-  bool LoadState(core::AuxEngineServices &services,
-                 std::shared_ptr<const TpchQ9State> &state) const;
+  std::shared_ptr<TpchQ9State> BuildState(core::AuxEngineServices &services) const;
+  bool LoadState(core::AuxEngineServices &services, std::shared_ptr<const TpchQ9State> &state,
+                 core::Version *version = nullptr) const;
   void EmitResult(const core::AuxEngineServices &services, const TpchQ9State &state,
                   const core::QueryArguments &arguments, core::AuxRowSink &sink) const;
 

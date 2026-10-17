@@ -317,28 +317,38 @@ runtime::ColumnarBatch ToColumnarBatch(const ::duckdb::TableMutationEvent &event
 
 void DatabaseCapture::OnTableMutation(::duckdb::ClientContext &context,
                                       const ::duckdb::TableMutationEvent &event) {
-  host.OnMutation(context, event);
+  if (const auto live = host.lock()) {
+    live->OnMutation(context, event);
+  }
 }
 
 void DatabaseCapture::TransactionPreCommit(::duckdb::MetaTransaction &transaction,
                                            ::duckdb::ClientContext &) {
-  host.OnPreCommit(transaction);
+  if (const auto live = host.lock()) {
+    live->OnPreCommit(transaction);
+  }
 }
 
 void DatabaseCapture::TransactionCommit(::duckdb::MetaTransaction &transaction,
                                         ::duckdb::ClientContext &context) {
-  host.OnCommit(transaction, context);
+  if (const auto live = host.lock()) {
+    live->OnCommit(transaction, context);
+  }
 }
 
 void DatabaseCapture::TransactionRollback(::duckdb::MetaTransaction &transaction,
                                           ::duckdb::ClientContext &) {
-  host.OnRollback(transaction);
+  if (const auto live = host.lock()) {
+    live->OnRollback(transaction);
+  }
 }
 
 void CommitIds::OnCommitWithContext(::duckdb::ClientContext &context,
                                     ::duckdb::AttachedDatabase &db,
                                     ::duckdb::transaction_t commit_id) {
-  host.OnCommitId(context, db, commit_id);
+  if (const auto live = host.lock()) {
+    live->OnCommitId(context, db, commit_id);
+  }
 }
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

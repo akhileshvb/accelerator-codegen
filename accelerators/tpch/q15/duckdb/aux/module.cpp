@@ -1,9 +1,10 @@
 #include "tpch/q15/duckdb/aux/module.hpp"
-#include "tpch/q15/calibration_writes.hpp"
+#include "prims/sql_date.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/typed_row_batch.hpp"
+#include "tpch/q15/calibration_writes.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -22,120 +23,22 @@ using core::ByteWriter;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kDirMagic = 0x44313551;   // Q15D
 constexpr uint32_t kWindowMagic = 0x57313551; // Q15W
-constexpr int32_t kEpoch = 719468;
-// Windows per build slice: a rescan walks every supplier slot (~tens of us at SF 1).
-constexpr std::size_t kRescanGrain = 8;
+// Windows per slice: a rescan walks every supplier slot (~tens of us at SF 1).
+constexpr std::size_t kWindowGrain = 8;
 // Commits below this many lineitem deltas apply their month windows inline.
-constexpr std::size_t kParallelDeltaMin = 4096;
-
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
-  return true;
-}
-
-int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
-  year -= month <= 2;
-  const int32_t era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(year - era * 400);
-  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int32_t>(doe) - kEpoch;
-}
-
-void CivilFromDays(int32_t days, int32_t &year, unsigned &month,
-                   unsigned &day) {
-  int32_t z = days + kEpoch;
-  const int32_t era = (z >= 0 ? z : z - 146096) / 146097;
-  const unsigned doe = static_cast<unsigned>(z - era * 146097);
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  year = static_cast<int32_t>(yoe) + era * 400;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const unsigned mp = (5 * doy + 2) / 153;
-  day = doy - (153 * mp + 2) / 5 + 1;
-  month = mp + (mp < 10 ? 3 : -9);
-  year += month <= 2;
-}
+constexpr std::size_t kDeltaOpThreshold = 4096;
 
 int32_t MonthKey(int32_t days) {
-  int32_t year = 0;
-  unsigned month = 0, day = 0;
-  CivilFromDays(days, year, month, day);
-  return year * 100 + static_cast<int32_t>(month);
+  const auto civil = core::sql_date::CivilFromDays(days);
+  return civil.year * 100 + civil.month;
 }
 
 int32_t StartOfMonthDays(int32_t days) {
-  int32_t year = 0;
-  unsigned month = 0, day = 0;
-  CivilFromDays(days, year, month, day);
-  return DaysFromCivil(year, month, 1);
-}
-
-bool IsFirstOfMonth(int32_t days) {
-  return days == StartOfMonthDays(days);
+  return static_cast<int32_t>(core::sql_date::MonthStart(days));
 }
 
 int32_t AddMonthsDays(int32_t days, int32_t months) {
-  int32_t year = 0;
-  unsigned month = 0, day = 0;
-  CivilFromDays(days, year, month, day);
-  const int total = year * 12 + static_cast<int>(month) - 1 + months;
-  const int new_year = (total >= 0 ? total : total - 11) / 12;
-  const unsigned new_month = static_cast<unsigned>(total - new_year * 12 + 1);
-  const unsigned last_day = (new_month == 1 || new_month == 3 || new_month == 5 ||
-                             new_month == 7 || new_month == 8 || new_month == 10 ||
-                             new_month == 12)
-                                ? 31
-                            : new_month == 4 || new_month == 6 ||
-                                    new_month == 9 || new_month == 11
-                                ? 30
-                            : (new_year % 4 == 0 && (new_year % 100 != 0 ||
-                                                     new_year % 400 == 0))
-                                ? 29
-                                : 28;
-  return DaysFromCivil(new_year, new_month,
-                       std::min(day, static_cast<unsigned>(last_day)));
+  return static_cast<int32_t>(core::sql_date::AddMonths(days, months));
 }
 
 // Each lineitem with shipdate days S falls into up to three month-start
@@ -201,10 +104,10 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ15LineitemInput &out) {
   int64_t extended_raw = 0, discount_raw = 0;
   int32_t extended_scale = 0, discount_scale = 0;
   // Mutation rows are [shipdate, suppkey, extendedprice, discount].
-  if (!DateCell(row, 0, out.shipdate_days) ||
-      !IntCell(row, 1, suppkey) ||
-      !RawDecimalCell(row, 2, extended_raw, extended_scale) ||
-      !RawDecimalCell(row, 3, discount_raw, discount_scale))
+  if (!core::DateCell(row, 0, out.shipdate_days) ||
+      !core::IntCell(row, 1, suppkey) ||
+      !core::DecimalCell(row, 2, extended_raw, extended_scale) ||
+      !core::DecimalCell(row, 3, discount_raw, discount_scale))
     return false;
   out.suppkey = suppkey;
   out.extended_price_raw = extended_raw;
@@ -216,14 +119,14 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ15LineitemInput &out) {
 
 bool ReadSupplier(const core::AuxRow &row, TpchQ15SupplierInput &out) {
   int64_t suppkey = 0;
-  if (!IntCell(row, 0, suppkey))
+  if (!core::IntCell(row, 0, suppkey))
     return false;
   out.suppkey = suppkey;
-  if (!StringCell(row, 1, out.name))
+  if (!core::StringCell(row, 1, out.name))
     return false;
-  if (!StringCell(row, 2, out.address))
+  if (!core::StringCell(row, 2, out.address))
     return false;
-  if (!StringCell(row, 3, out.phone))
+  if (!core::StringCell(row, 3, out.phone))
     return false;
   return true;
 }
@@ -367,27 +270,6 @@ std::size_t TpchQ15SupplierDirectory::Size() const {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-int32_t TpchQ15MonthKeyFromDays(int32_t days_since_epoch) {
-  return MonthKey(days_since_epoch);
-}
-
-int32_t TpchQ15DaysFromYmd(int32_t year, unsigned month, unsigned day) {
-  return DaysFromCivil(year, month, day);
-}
-
-bool TpchQ15IsFirstOfMonth(int32_t days_since_epoch) {
-  return IsFirstOfMonth(days_since_epoch);
-}
-
-int32_t TpchQ15AddMonths(int32_t days_since_epoch, int32_t months) {
-  return AddMonthsDays(days_since_epoch, months);
-}
-
-std::vector<int32_t> TpchQ15WindowMonths(int32_t, int32_t) {
-  // Not used; retained for API completeness.
-  return {};
-}
 
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t,
                           int64_t discount_raw, int32_t) {
@@ -682,13 +564,8 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
   core::StagedMaintenanceOutcome outcome;
 
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                                        services.ExpectedQueriesBeforeNextWrite())));
     return outcome;
   }
 
@@ -705,13 +582,11 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
   const bool can_rebuild_windows =
       !touched_months.empty() && !has_supplier_deltas && initial_scan;
 
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.LineitemDeltas().size() +
-                             buffer.SupplierDeltas().size()),
-       static_cast<uint64_t>(std::max<std::size_t>(1, touched_months.size())),
-       true, can_rebuild_windows, true, false, false,
-       core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
+  auto request = core::MaintenanceRequest::IncrementalPartitioned(
+      buffer.LineitemDeltas().size() + buffer.SupplierDeltas().size(),
+      std::max<std::size_t>(1, touched_months.size()), services.ExpectedQueriesBeforeNextWrite());
+  request.partition_rebuild_supported = can_rebuild_windows;
+  const auto decision = services.ChooseMaintenance(request);
 
   if (decision.action == core::MaintenanceAction::RebuildPartition) {
     if (!can_rebuild_windows) {
@@ -721,9 +596,8 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
     int32_t scan_lo = std::numeric_limits<int32_t>::max();
     int32_t scan_hi = std::numeric_limits<int32_t>::min();
     for (const auto month_key : touched_months) {
-      const int32_t year = month_key / 100;
-      const unsigned month = static_cast<unsigned>(month_key % 100);
-      const int32_t start = DaysFromCivil(year, month, 1);
+      const int32_t start = static_cast<int32_t>(
+          core::sql_date::DaysFromCivil(month_key / 100, month_key % 100, 1));
       const int32_t end = AddMonthsDays(start, 3);
       scan_lo = std::min(scan_lo, start);
       scan_hi = std::max(scan_hi, end);
@@ -757,9 +631,7 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -768,9 +640,7 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
   for (const auto month : touched_months) {
     TpchQ15WindowState ws;
     if (!LoadMonth(services, month, ws)) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
+      core::FinishRebuildAll(outcome);
       return outcome;
     }
     windows[month] = std::move(ws);
@@ -785,22 +655,16 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
       jobs;
   for (auto &[month, ws] : windows)
     jobs.emplace_back(&ws, &month_deltas[month]);
-  core::ParallelSlices(
-      services, jobs.size(),
-      buffer.LineitemDeltas().size() < kParallelDeltaMin ? jobs.size() : 1,
-      [&](std::size_t, std::size_t first, std::size_t last) {
-        for (std::size_t j = first; j < last; ++j)
-          ApplyWindowDeltas(*jobs[j].first, buffer.LineitemDeltas(),
-                            *jobs[j].second);
-      });
+  core::ParallelEachWhen(services, jobs.size(), buffer.LineitemDeltas().size(), kDeltaOpThreshold,
+                         [&](std::size_t j) {
+                           ApplyWindowDeltas(*jobs[j].first, buffer.LineitemDeltas(), *jobs[j].second);
+                         });
 
   // Apply supplier deltas to a directory copy (chunk-level copy on write).
   TpchQ15SupplierDirectory dir_copy;
   if (has_supplier_deltas) {
     if (!LoadDirectory(services, dir_copy)) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
+      core::FinishRebuildAll(outcome);
       return outcome;
     }
     for (const auto &delta : buffer.SupplierDeltas()) {
@@ -854,7 +718,7 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
       start = static_cast<int32_t>(std::get<int64_t>(arguments.values[0].payload));
   }
 
-  if (!TpchQ15IsFirstOfMonth(start)) {
+  if (!core::sql_date::IsMonthStart(start)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
@@ -866,7 +730,7 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  const auto month_key = TpchQ15MonthKeyFromDays(start);
+  const auto month_key = MonthKey(start);
 
   // Direct state access: reference the shared state; only winners +
   // max_revenue are needed (no revenue array access).
@@ -931,7 +795,7 @@ TpchQ15State TpchQ15Module::BuildState(
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanSuppliers(services, parts,
                                     [&](std::size_t p, const TpchQ15SupplierInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ15SupplierInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ15SupplierInput>{input});
                                     });
       },
       [](TpchQ15SupplierDirectory &dir, const TpchQ15SupplierInput &input) {
@@ -950,11 +814,11 @@ TpchQ15State TpchQ15Module::BuildState(
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitems(services, parts,
                                     [&](std::size_t p, const TpchQ15LineitemInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ15LineitemInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ15LineitemInput>{input});
                                     });
       },
       [](MonthRevenue &revenue, const TpchQ15LineitemInput &input) {
-        revenue[TpchQ15MonthKeyFromDays(input.shipdate_days)].Add(
+        revenue[MonthKey(input.shipdate_days)].Add(
             input.suppkey,
             TpchQ15RevenueRaw(input.extended_price_raw, input.extended_price_scale,
                               input.discount_raw, input.discount_scale));
@@ -972,7 +836,7 @@ TpchQ15State TpchQ15Module::BuildState(
   std::vector<TpchQ15WindowState *> windows;
   for (auto &entry : state.windows)
     windows.push_back(&entry.second);
-  core::ParallelSlices(services, windows.size(), kRescanGrain,
+  core::ParallelSlices(services, windows.size(), kWindowGrain,
                        [&](std::size_t, std::size_t begin, std::size_t end) {
                          for (std::size_t i = begin; i < end; ++i)
                            windows[i]->Rescan();

@@ -1,10 +1,10 @@
 #include "tpch/q1/postgres/aux/module.hpp"
 #include "tpch/q1/calibration_writes.hpp"
+#include "prims/sql_date.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
-#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -15,89 +15,12 @@ namespace {
 
 using Q1FenwickState = ::accelerator_codegen::Q1FenwickState;
 
-constexpr int32_t kEpoch = 719468;
+// Deltas per slice (~4 us); below it maintenance folds them on the calling thread.
+constexpr std::size_t kDeltaGrain = 4096;
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
 
-constexpr int64_t DaysFromCivil(int64_t year, unsigned month, unsigned day) {
-  year -= month <= 2;
-  const int64_t era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(year - era * 400);
-  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int64_t>(doe) - kEpoch;
-}
-
-constexpr int64_t kQ1BaseDays = DaysFromCivil(1998, 12, 1);
-
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
-  return true;
-}
-
-int64_t ScaleToRaw(int64_t raw, int32_t scale, int32_t target_scale) {
-  if (scale == target_scale)
-    return raw;
-  if (scale < target_scale) {
-    int64_t factor = 1;
-    for (int32_t i = scale; i < target_scale; ++i)
-      factor *= 10;
-    return raw * factor;
-  }
-  int64_t factor = 1;
-  for (int32_t i = target_scale; i < scale; ++i)
-    factor *= 10;
-  return raw / factor;
-}
+constexpr int64_t kQ1BaseDays = core::sql_date::DaysFromCivil(1998, 12, 1);
 
 std::shared_ptr<const TpchQ1StateImage>
 MakeStateImage(std::shared_ptr<const Q1FenwickState> state) {
@@ -137,9 +60,6 @@ void ApplyCells(const DayGroupCells &cells, Q1FenwickState &state) {
         static_cast<::accelerator_codegen::Q1GroupKey>(key & 0xFFFF), stats);
 }
 
-// Deltas per slice below which maintenance folds them on the calling thread.
-constexpr std::size_t kDeltaGrain = 4096;
-
 DayGroupCells FoldDeltas(core::AuxEngineServices &services,
                          const std::vector<TpchQ1LineitemDelta> &deltas) {
   DayGroupCells cells;
@@ -158,13 +78,6 @@ DayGroupCells FoldDeltas(core::AuxEngineServices &services,
   return cells;
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 bool ReadLineitem(const core::AuxRow &row, TpchQ1LineitemDelta &delta,
                   int8_t sign) {
   int32_t shipdate_days = 0;
@@ -172,22 +85,34 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ1LineitemDelta &delta,
   int32_t quantity_scale = 0, extended_scale = 0, discount_scale = 0,
           tax_scale = 0;
   std::string returnflag, linestatus;
-  if (!DateCell(row, 0, shipdate_days) ||
-      !RawDecimalCell(row, 1, quantity_raw, quantity_scale) ||
-      !RawDecimalCell(row, 2, extended_raw, extended_scale) ||
-      !RawDecimalCell(row, 3, discount_raw, discount_scale) ||
-      !RawDecimalCell(row, 4, tax_raw, tax_scale) ||
-      !StringCell(row, 5, returnflag) || !StringCell(row, 6, linestatus) ||
+  if (!core::DateCell(row, 0, shipdate_days) ||
+      !core::DecimalCell(row, 1, quantity_raw, quantity_scale) ||
+      !core::DecimalCell(row, 2, extended_raw, extended_scale) ||
+      !core::DecimalCell(row, 3, discount_raw, discount_scale) ||
+      !core::DecimalCell(row, 4, tax_raw, tax_scale) ||
+      !core::StringCell(row, 5, returnflag) || !core::StringCell(row, 6, linestatus) ||
       returnflag.size() != 1 || linestatus.size() != 1)
     return false;
   delta.shipdate_days = shipdate_days;
   delta.group_key = ::accelerator_codegen::PackQ1GroupKey(returnflag[0],
                                                             linestatus[0]);
-  delta.quantity_raw = ScaleToRaw(quantity_raw, quantity_scale, 2);
-  delta.extended_price_raw = ScaleToRaw(extended_raw, extended_scale, 2);
-  delta.discount_raw = ScaleToRaw(discount_raw, discount_scale, 2);
-  delta.tax_raw = ScaleToRaw(tax_raw, tax_scale, 2);
+  delta.quantity_raw = core::ScaleToRaw(quantity_raw, quantity_scale, 2);
+  delta.extended_price_raw = core::ScaleToRaw(extended_raw, extended_scale, 2);
+  delta.discount_raw = core::ScaleToRaw(discount_raw, discount_scale, 2);
+  delta.tax_raw = core::ScaleToRaw(tax_raw, tax_scale, 2);
   delta.sign = sign;
+  return true;
+}
+
+// DELTA of the template: the cutoff day is 1998-12-01 - DELTA, computed in
+// 64 bits (any int32 DELTA, negative or huge, stays exact). NULL: no row
+// qualifies, so the grouped result is empty.
+bool CutoffOf(const core::QueryArguments &arguments, int64_t &cutoff_days) {
+  if (arguments.values.empty() || arguments.values[0].is_null ||
+      !std::holds_alternative<int64_t>(arguments.values[0].payload))
+    return false;
+  cutoff_days = static_cast<int64_t>(kQ1BaseDays) -
+                std::get<int64_t>(arguments.values[0].payload);
   return true;
 }
 
@@ -284,8 +209,8 @@ void TpchQ1Module::AccumulateMutation(const core::MutationBatch &mutation,
         buffer.MarkRebuild();
         return;
       }
-      add(mutation.old_rows[i], -1);
-      add(mutation.new_rows[i], 1);
+      buffer.AddDelta(old_delta);
+      buffer.AddDelta(new_delta);
     }
     break;
   }
@@ -297,36 +222,35 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
                                core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ1TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
-  if (!buffer.RequiresRebuild() && buffer.Deltas().empty())
+  if (buffer.RequiresRebuild()) {
+    core::FinishRebuildAll(
+        outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                     services.ExpectedQueriesBeforeNextWrite())));
+    return outcome;
+  }
+  if (buffer.Deltas().empty())
     return outcome;
 
   // The state is one copy-on-write Fenwick tree: applying a delta is always
-  // cheaper than any rebuild, so a rebuild is chosen only when the deltas
-  // could not be read (or the state is missing) or when it is forced.
+  // cheaper than any rebuild, so a rebuild is chosen only when the state is
+  // missing or when it is forced.
   std::shared_ptr<Q1FenwickState> next;
   core::Version version = 0;
-  if (!buffer.RequiresRebuild()) {
-    const auto snapshot = services.StateStore().ReadPartitions(
-        services.CurrentVisibility(), {kStatePartition});
-    for (const auto &image : snapshot.partitions) {
-      const auto *typed = AsQ1Image(image);
-      if (image.partition == kStatePartition && typed && typed->state) {
-        next = std::make_shared<Q1FenwickState>(*typed->state); // COW copy
-        version = image.version;
-      }
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {kStatePartition});
+  for (const auto &image : snapshot.partitions) {
+    const auto *typed = AsQ1Image(image);
+    if (image.partition == kStatePartition && typed && typed->state) {
+      next = std::make_shared<Q1FenwickState>(*typed->state); // COW copy
+      version = image.version;
     }
   }
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, next != nullptr,
-       false, true, false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
+  auto request = core::MaintenanceRequest::IncrementalSingleState(
+      buffer.Deltas().size(), services.ExpectedQueriesBeforeNextWrite());
+  request.incremental_supported = next != nullptr;
+  const auto decision = services.ChooseMaintenance(request);
   if (!next || decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta ||
-                             decision.action == core::MaintenanceAction::RebuildPartition
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -347,22 +271,6 @@ bool TpchQ1Module::CheckValidity(core::AuxEngineServices &services,
       .CheckValidity({Id(), {}}, services.CurrentVisibility())
       .IsValid();
 }
-
-namespace {
-
-// DELTA of the template: the cutoff day is 1998-12-01 - DELTA, computed in
-// 64 bits (any int32 DELTA, negative or huge, stays exact). NULL: no row
-// qualifies, so the grouped result is empty.
-bool CutoffOf(const core::QueryArguments &arguments, int64_t &cutoff_days) {
-  if (arguments.values.empty() || arguments.values[0].is_null ||
-      !std::holds_alternative<int64_t>(arguments.values[0].payload))
-    return false;
-  cutoff_days = static_cast<int64_t>(kQ1BaseDays) -
-                std::get<int64_t>(arguments.values[0].payload);
-  return true;
-}
-
-} // namespace
 
 void TpchQ1Module::Execute(core::AuxEngineServices &services,
                            const core::QueryArguments &arguments,
@@ -386,17 +294,6 @@ void TpchQ1Module::Execute(core::AuxEngineServices &services,
              sink);
 }
 
-void TpchQ1Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  int64_t cutoff_days = 0;
-  if (!CutoffOf(arguments, cutoff_days))
-    return;
-  EmitResult(::accelerator_codegen::Q1FenwickPrefixRows(*BuildState(services),
-                                                        cutoff_days),
-             sink);
-}
-
 std::shared_ptr<::accelerator_codegen::Q1FenwickState>
 TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
@@ -407,7 +304,7 @@ TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
         initial_scan->ScanLineitemsPartitioned(
             services, parts,
             [&](std::size_t partition, const TpchQ1LineitemInput &input) {
-              sink(partition, OneRowBatch<TpchQ1LineitemInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ1LineitemInput>{input});
             });
       },
       [](DayGroupCells &into, const TpchQ1LineitemInput &input) {
@@ -415,13 +312,13 @@ TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
                   ::accelerator_codegen::PackQ1GroupKey(input.returnflag,
                                                         input.linestatus),
                   ::accelerator_codegen::Q1RowContribution(
-                      ScaleToRaw(input.quantity_raw, input.quantity_scale, 2),
-                      ScaleToRaw(input.extended_price_raw,
+                      core::ScaleToRaw(input.quantity_raw, input.quantity_scale, 2),
+                      core::ScaleToRaw(input.extended_price_raw,
                                  input.extended_price_scale, 2),
-                      ScaleToRaw(input.discount_raw, input.discount_scale, 2),
-                      ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1));
+                      core::ScaleToRaw(input.discount_raw, input.discount_scale, 2),
+                      core::ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1));
       },
-      MergeCells, BuildPartitions(services));
+      MergeCells, core::BuildPartitions(services));
   auto state = std::make_shared<::accelerator_codegen::Q1FenwickState>();
   ApplyCells(cells, *state);
   return state;

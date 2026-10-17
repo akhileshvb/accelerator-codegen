@@ -25,23 +25,6 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ1Lineitems(
-    const std::function<void(const query::TpchQ1LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_shipdate, l_quantity, l_extendedprice, l_discount, l_tax, "
-      "l_returnflag, l_linestatus FROM lineitem",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ1LineitemInput{TypedDate(cols, 0),
-                                          TypedDecimalRaw(cols, 1), 2,
-                                          TypedDecimalRaw(cols, 2), 2,
-                                          TypedDecimalRaw(cols, 3), 2,
-                                          TypedDecimalRaw(cols, 4), 2,
-                                          TypedChar(cols, 5),
-                                          TypedChar(cols, 6)};
-      },
-      [&](query::TpchQ1LineitemInput &&input) { consumer(input); });
-}
-
 // One SQL GROUP BY: the engine aggregates, the process receives one row per
 // (shipdate, returnflag, linestatus) cell with exact DECIMAL sums (text).
 SplitTable DayGroupAggregatesTable() {
@@ -72,28 +55,10 @@ query::TpchQ1DayGroupAggregate DecodeDayGroupAggregate(const std::vector<std::st
   return agg;
 }
 
-void ScanTpchQ1DayGroupAggregates(
-    const std::function<void(const query::TpchQ1DayGroupAggregate &)> &consumer) {
-  ScanTypedTuples(SelectSql(DayGroupAggregatesTable()),
-                  [&](const std::vector<std::string> &cols) {
-                    consumer(DecodeDayGroupAggregate(cols));
-                  });
-}
-
 } // namespace scans
 
 class TpchQ1Scan final : public query::TpchQ1InitialScan {
 public:
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ1LineitemInput &)> &consumer)
-      override {
-    scans::ScanTpchQ1Lineitems(consumer);
-  }
-  void ScanDayGroupAggregates(
-      const std::function<void(const query::TpchQ1DayGroupAggregate &)>
-          &consumer) override {
-    scans::ScanTpchQ1DayGroupAggregates(consumer);
-  }
   void ScanDayGroupAggregatesPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ1DayGroupAggregate &)> &sink)

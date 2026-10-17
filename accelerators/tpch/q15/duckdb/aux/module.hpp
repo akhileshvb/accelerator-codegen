@@ -186,11 +186,6 @@ bool DecodeTpchQ15Window(const std::vector<uint8_t> &, int32_t month_key,
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-int32_t TpchQ15MonthKeyFromDays(int32_t days_since_epoch);
-int32_t TpchQ15DaysFromYmd(int32_t year, unsigned month, unsigned day);
-bool TpchQ15IsFirstOfMonth(int32_t days_since_epoch);
-int32_t TpchQ15AddMonths(int32_t days_since_epoch, int32_t months);
-std::vector<int32_t> TpchQ15WindowMonths(int32_t start_days, int32_t end_days);
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                           int64_t discount_raw, int32_t discount_scale);
 

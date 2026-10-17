@@ -51,47 +51,11 @@ void ScanTpchQ5Nations(
       [&](query::TpchQ5NationInput &&input) { consumer(input); });
 }
 
-void ScanTpchQ5Customers(
-    const std::function<void(const query::TpchQ5CustomerInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT c_custkey, c_nationkey FROM customer "
-      "WHERE c_custkey IS NOT NULL AND c_nationkey IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ5CustomerInput{TypedInt(cols, 0),
-                                          static_cast<int32_t>(TypedInt(cols, 1))};
-      },
-      [&](query::TpchQ5CustomerInput &&input) { consumer(input); });
-}
-
-void ScanTpchQ5Suppliers(
-    const std::function<void(const query::TpchQ5SupplierInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT s_suppkey, s_nationkey FROM supplier "
-      "WHERE s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ5SupplierInput{TypedInt(cols, 0),
-                                          static_cast<int32_t>(TypedInt(cols, 1))};
-      },
-      [&](query::TpchQ5SupplierInput &&input) { consumer(input); });
-}
-
 // Orders that can join: NULL custkey / orderdate never reach the revenue sum.
 const char kOrdersSql[] =
     "SELECT o_orderkey, o_custkey, o_orderdate FROM orders "
     "WHERE o_orderkey IS NOT NULL AND o_custkey IS NOT NULL "
     "AND o_orderdate IS NOT NULL";
-
-void ScanTpchQ5Orders(
-    const std::function<void(const query::TpchQ5OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      kOrdersSql,
-      [&](const std::vector<std::string> &cols) {
-        return query::TpchQ5OrderInput{TypedInt(cols, 0),
-                                       TypedInt(cols, 1),
-                                       TypedDate(cols, 2)};
-      },
-      [&](query::TpchQ5OrderInput &&input) { consumer(input); });
-}
 
 // Lineitems that reach the SUM; price and discount as exact cents.
 const char kLineitemsSql[] =
@@ -141,19 +105,6 @@ query::TpchQ5LineitemInput DecodeLineitem(const std::vector<std::string> &cols) 
   return {TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2), 2, TypedInt(cols, 3), 2};
 }
 
-void ScanTpchQ5Lineitems(
-    const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      kLineitemsSql,
-      [&](const std::vector<std::string> &cols) {
-        return query::TpchQ5LineitemInput{TypedInt(cols, 0),
-                                          TypedInt(cols, 1),
-                                          TypedInt(cols, 2), 2,
-                                          TypedInt(cols, 3), 2};
-      },
-      [&](query::TpchQ5LineitemInput &&input) { consumer(input); });
-}
-
 // Index lookups (keys go in batches).
 template <typename Consumer>
 void LookupBatches(const std::string &base_sql, const char *key_column,
@@ -201,26 +152,6 @@ public:
       const std::function<void(const query::TpchQ5NationInput &)> &consumer)
       override {
     scans::ScanTpchQ5Nations(consumer);
-  }
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ5CustomerInput &)> &consumer)
-      override {
-    scans::ScanTpchQ5Customers(consumer);
-  }
-  void ScanSuppliers(
-      const std::function<void(const query::TpchQ5SupplierInput &)> &consumer)
-      override {
-    scans::ScanTpchQ5Suppliers(consumer);
-  }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ5OrderInput &)> &consumer)
-      override {
-    scans::ScanTpchQ5Orders(consumer);
-  }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ5LineitemInput &)> &consumer)
-      override {
-    scans::ScanTpchQ5Lineitems(consumer);
   }
   void ScanCustomersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,

@@ -44,17 +44,6 @@ query::TpchQ4LineitemInput DecodeLineitem(const std::vector<std::string> &cols) 
 
 class TpchQ4Scan final : public query::TpchQ4InitialScan {
 public:
-  void ScanOrders(
-      const std::function<void(const query::TpchQ4OrderInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ4OrderInput>(scans::OrdersTable(), scans::DecodeOrder, consumer);
-  }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ4LineitemInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ4LineitemInput>(scans::LineitemsTable(), scans::DecodeLineitem,
-                                                   consumer);
-  }
   void ScanOrdersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ4OrderInput &)> &sink) override {

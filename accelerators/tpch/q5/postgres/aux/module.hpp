@@ -262,8 +262,6 @@ private:
   std::vector<RegionDelta> regions;
 };
 
-int32_t TpchQ5DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int64_t TpchQ5AddMonths(int64_t days_since_epoch, int64_t months);
 // extendedprice * (1 - discount) at scale 4, from scale-2 raw values.
 TpchQ5Money TpchQ5Revenue(int64_t extended_price_raw, int64_t discount_raw);
 
@@ -300,8 +298,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

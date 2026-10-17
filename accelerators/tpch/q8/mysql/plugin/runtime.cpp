@@ -84,31 +84,6 @@ void ScanTpchQ8Regions(
 
 class TpchQ8Scan final : public query::TpchQ8InitialScan {
 public:
-  void ScanParts(
-      const std::function<void(const query::TpchQ8PartInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::PartsTable(), scans::DecodePart, consumer);
-  }
-  void ScanSuppliers(
-      const std::function<void(const query::TpchQ8SupplierInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::SuppliersTable(), scans::DecodeSupplier, consumer);
-  }
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ8CustomerInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::CustomersTable(), scans::DecodeCustomer, consumer);
-  }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ8OrdersInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::OrdersTable(), scans::DecodeOrder, consumer);
-  }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ8LineitemInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::LineitemsTable(), scans::DecodeLineitem, consumer);
-  }
   void ScanNations(
       const std::function<void(const query::TpchQ8NationInput &)> &consumer)
       override {

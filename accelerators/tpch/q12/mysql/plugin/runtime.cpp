@@ -65,18 +65,6 @@ void LookupTpchQ12LineitemsByOrder(
 
 class TpchQ12Scan final : public query::TpchQ12InitialScan {
 public:
-  void ScanOrders(
-      const std::function<void(const query::TpchQ12OrderInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ12OrderInput>(
-        scans::OrdersTable(), scans::DecodeOrder, consumer);
-  }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ12LineitemInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ12LineitemInput>(
-        scans::QualifyingLineitemsTable(), scans::DecodeLineitem, consumer);
-  }
   void ScanOrdersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ12OrderInput &)> &sink)

@@ -22,9 +22,7 @@ namespace accelerator_codegen::aux_state::query {
 //
 //   kOrderPriorities  priority class per orderkey: AnyKeyCowArray<uint8_t>,
 //                     1 B per key slot (TPC-H keys are ~25% dense => ~4 B per
-//                     order: 0.6 GB at SF100, 6 GB at SF1000; the old
-//                     DenseIdArray + whole-array copy per write batch was the
-//                     same size but copied up to 268 MB per batch).
+//                     order: 0.6 GB at SF100, 6 GB at SF1000).
 //   kCells            per (receipt day, shipmode): lineitem counts joined with
 //                     an existing order, split high / low / total.  Only
 //                     qualifying lineitems (commit < receipt, ship < commit)
@@ -155,14 +153,13 @@ TpchQ12PriorityClass TpchQ12ClassifyPriority(const std::string &priority,
                                              bool is_null = false);
 bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
                               int32_t shipdate_days);
-int32_t TpchQ12DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int64_t TpchQ12AddMonths(int64_t days_since_epoch, int64_t months);
 
 // One result group: a shipmode with at least one joined qualifying lineitem.
 struct TpchQ12Group {
   std::string shipmode;
   TpchQ12Counts counts;
 };
+
 void TpchQ12FinalizeAndEmit(std::vector<TpchQ12Group> groups,
                             core::AuxRowSink &sink);
 
@@ -209,8 +206,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

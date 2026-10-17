@@ -400,8 +400,9 @@ AcceleratorRuntime::Stage(const std::vector<ColumnarBatchRef> &batches) {
 bool AcceleratorRuntime::Publish(const core::StagedMaintenanceOutcome &outcome, Epoch epoch) {
   auto invalidate = outcome.invalidations;
   MergeInvalidationPlan(invalidate, outcome.pending_rebuild);
-  if (outcome.action == core::MaintenanceAction::RebuildAll && invalidate.IsEmpty() &&
-      !outcome.updates.empty()) {
+  // A rebuild that names no partitions rebuilds them all (with updates, they
+  // replace the images; without, the state is invalid until a build).
+  if (outcome.action == core::MaintenanceAction::RebuildAll && invalidate.IsEmpty()) {
     invalidate = core::AllPartitionsPlan();
   }
   if (outcome.action == core::MaintenanceAction::RebuildPartition &&

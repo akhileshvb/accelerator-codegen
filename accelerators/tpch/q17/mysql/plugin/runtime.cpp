@@ -40,58 +40,23 @@ query::TpchQ17LineitemInput DecodeLineitem(const std::vector<std::string> &cols)
   return {TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2)};
 }
 
-// GROUP BY (partkey, quantity), ordered by partkey so the module can assemble
-// one part's histogram at a time. Rows with a NULL partkey or quantity never
-// take part in the query.
-void ScanTpchQ17PartQuantityAggregates(
-    const std::function<void(const query::TpchQ17PartQuantityAggregate &)>
-        &consumer) {
-  ScanTypedTuples(
-      "SELECT l_partkey, CAST(ROUND(l_quantity * 100) AS SIGNED) AS q, "
-      "CAST(SUM(CAST(ROUND(IFNULL(l_extendedprice, 0) * 100) AS SIGNED)) "
-      "AS SIGNED), CAST(COUNT(*) AS SIGNED) "
-      "FROM lineitem WHERE l_partkey IS NOT NULL AND l_quantity IS NOT NULL "
-      "GROUP BY l_partkey, q ORDER BY l_partkey, q",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2),
-                  TypedInt(cols, 3)});
-      });
-}
-
 } // namespace scans
 
 class TpchQ17Scan final : public query::TpchQ17InitialScan {
 public:
   void ScanParts(
-      const std::function<void(const query::TpchQ17PartInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ17PartInput>(scans::PartsTable(), scans::DecodePart, consumer);
-  }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ17LineitemInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ17LineitemInput>(
-        scans::LineitemsTable(), scans::DecodeLineitem, consumer);
-  }
-  void ScanPartsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ17PartInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ17PartInput>(
         services, scans::PartsTable(), partitions, scans::DecodePart, sink);
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ17LineitemInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ17LineitemInput>(
         services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
-  }
-  bool ScanPartQuantityAggregates(
-      const std::function<void(const query::TpchQ17PartQuantityAggregate &)>
-          &consumer) override {
-    scans::ScanTpchQ17PartQuantityAggregates(consumer);
-    return true;
   }
 };
 

@@ -16,19 +16,16 @@
 #include "prims/keyed_string_column.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q9 layout ───────────────────────────────────────────────────────────────
 struct TpchQ9Layout {
   static constexpr const char *kAccelerator = "tpch_q9_aux";
   // The whole state is one copy-on-write image.
-  static constexpr core::PartitionId kCompleteState = 0;
+  static constexpr core::PartitionId kState = 0;
 
   static std::array<core::PartitionId, 1> Partitions() {
-    return {kCompleteState};
+    return {kState};
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ9Config {
   core::TableId part_table = 0;
   core::TableId supplier_table = 0;
@@ -38,7 +35,6 @@ struct TpchQ9Config {
   core::TableId lineitem_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 // Scans return only rows whose join / filter columns are NOT NULL.
 struct TpchQ9PartInput {
   int64_t partkey = 0;
@@ -89,27 +85,11 @@ struct TpchQ9ProfitContribution {
 class TpchQ9InitialScan {
 public:
   virtual ~TpchQ9InitialScan() = default;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ9PartInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ9SupplierInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ9NationInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ9OrdersInput &)> &) = 0;
-  virtual void ScanPartsupps(
-      const std::function<void(const TpchQ9PartsuppInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ9LineitemInput &)> &) = 0;
 
-  // Optional: the DBMS evaluates the join + GROUP BY (pre-aggregation) and
-  // streams the groups; returns false when not supported (the module then
-  // joins ScanLineitems itself).
-  virtual bool ScanProfitContributions(
-      const std::function<void(const TpchQ9ProfitContribution &)> &consumer) {
-    (void)consumer;
-    return false;
-  }
   // The scans of the big tables split into `partitions` fixed row ranges:
   // sink(partition, row) runs concurrently for different partitions, one
   // thread per partition. The contributions of a part all come from the
@@ -127,17 +107,12 @@ public:
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9PartsuppInput &)> &sink) = 0;
   virtual bool ScanProfitContributionsPartitioned(
-      const core::AuxEngineServices &services, std::size_t partitions,
-      const std::function<void(std::size_t, const TpchQ9ProfitContribution &)> &sink) {
-    (void)services;
-    (void)partitions;
-    (void)sink;
+      const core::AuxEngineServices &, std::size_t,
+      const std::function<void(std::size_t, const TpchQ9ProfitContribution &)> &) {
     return false;
   }
 };
 
-// ── State ───────────────────────────────────────────────────────────────────
-//
 // Profit is kept per (part, group), where a group is a (supplier nationkey,
 // order year) pair interned in a small dictionary: a cell is
 // {group id, joined-lineitem count, SUM(amount)} = 16 B. Execute only adds up
@@ -213,21 +188,10 @@ struct TpchQ9State {
   void EraseOrder(int64_t orderkey);
 };
 
-enum class TpchQ9ImageKind : uint8_t { CompleteState };
-
 struct TpchQ9StateImage {
-  TpchQ9ImageKind kind = TpchQ9ImageKind::CompleteState;
   std::shared_ptr<const TpchQ9State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
-struct TpchQ9OutputRow {
-  std::string nation;
-  int32_t year = 0;
-  int64_t sum_profit_raw = 0; // fixed-point raw value
-};
-
-// ── Mutation deltas ─────────────────────────────────────────────────────────
 struct TpchQ9LineitemDelta {
   int64_t partkey = 0;
   int64_t suppkey = 0;
@@ -269,12 +233,7 @@ struct TpchQ9NationDelta {
   int8_t sign = 0;
 };
 
-// ── Date / profit helpers ───────────────────────────────────────────────────
 int32_t TpchQ9ExtractYear(int32_t days_since_epoch);
-int64_t TpchQ9ComputeProfitRaw(int64_t extendedprice_raw, int64_t discount_raw,
-                               int64_t supplycost_raw, int64_t quantity_raw);
-
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ9TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -304,7 +263,6 @@ private:
   std::vector<TpchQ9NationDelta> nations;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ9Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ9Layout::kAccelerator;
@@ -329,14 +287,12 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
   std::shared_ptr<TpchQ9State> BuildState(const core::AuxEngineServices &) const;
-  bool LoadState(core::AuxEngineServices &services,
-                 std::shared_ptr<const TpchQ9State> &state) const;
+  bool LoadState(core::AuxEngineServices &services, std::shared_ptr<const TpchQ9State> &state,
+                 core::Version *version = nullptr) const;
   void EmitResult(const core::AuxEngineServices &services, const TpchQ9State &state,
                   const core::QueryArguments &arguments,
                   core::AuxRowSink &sink) const;

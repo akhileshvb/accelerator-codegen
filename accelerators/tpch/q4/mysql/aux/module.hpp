@@ -45,12 +45,8 @@ struct TpchQ4LineitemInput {
 class TpchQ4InitialScan {
 public:
   virtual ~TpchQ4InitialScan() = default;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ4OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ4LineitemInput &)> &) = 0;
-  // The same scans split into `partitions` fixed row ranges: sink(partition,
-  // row) runs concurrently for different partitions, one thread per partition.
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
   virtual void ScanOrdersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ4OrderInput &)> &sink) = 0;
@@ -129,6 +125,22 @@ public:
       qualifying_.Set(key, static_cast<uint16_t>(q + 1));
     else
       SetCount(key, Get(key).qualifying_count + 1);
+  }
+  // Build bucket of `key`. The keys of one 2^16-id chunk (of every column)
+  // share a bucket, so tables built per bucket hold disjoint chunks.
+  static std::size_t BucketOf(int64_t key, std::size_t buckets) {
+    using Ids = core::AnyKeyCowArray<uint16_t, 16>;
+    const uint64_t id = Ids::Zig(key);
+    return (Ids::IsDense(key) ? id >> 16 : id) % buckets;
+  }
+  // Folds in a table over a disjoint key set (another build bucket).
+  void MergeDisjoint(TpchQ4OrderTable &&other) {
+    const auto theirs = [](auto, auto value) { return value; };
+    orderdate_.MergeFrom(std::move(other.orderdate_), theirs);
+    priority_.MergeFrom(std::move(other.priority_), theirs);
+    qualifying_.MergeFrom(std::move(other.qualifying_), theirs);
+    other.big_counts_.ForEach(
+        [&](int64_t key, uint32_t count) { big_counts_.Upsert(key, count); });
   }
   std::size_t MemoryBytes() const {
     return orderdate_.MemoryBytes() + priority_.MemoryBytes() +
@@ -241,8 +253,6 @@ struct TpchQ4OrderDelta {
   int8_t sign = 0;
 };
 
-int32_t TpchQ4DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int64_t TpchQ4AddMonths(int64_t days_since_epoch, int64_t months);
 uint32_t TpchQ4PriorityIndex(const std::string &priority, bool is_null,
                              TpchQ4Side &side);
 void FinalizeTpchQ4(const std::vector<int64_t> &counts,
@@ -291,8 +301,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

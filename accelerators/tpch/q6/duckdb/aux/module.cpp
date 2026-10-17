@@ -1,20 +1,18 @@
 #include "tpch/q6/duckdb/aux/module.hpp"
 #include "tpch/q6/calibration_writes.hpp"
+#include "prims/sql_date.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/typed_row_batch.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
-#include <limits>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include "tpch/q6/layout.hpp"
 
@@ -27,11 +25,14 @@ using core::ByteWriter;
 using Q6AccT = ::accelerator_codegen::Q6AccT;
 using Q6RevenueMatrix = ::accelerator_codegen::Q6RevenueMatrix;
 
-// Month matrices per read slice: two loads each, so only thousands pay for a task.
+// Month matrices per read slice (~4 us: two loads each).
 constexpr std::size_t kEvalGrain = 4096;
+// Month images per slice (~5 us: a matrix copy plus the deltas).
+constexpr std::size_t kPartitionGrain = 16;
 constexpr uint32_t kVersion = 3; // cells are 2D prefix sums
 constexpr uint32_t kMatrixMagic = 0x51364D58; // Q6MX
-constexpr int32_t kEpoch = 719468;
+// Months in the query's shipdate window.
+constexpr int32_t kWindowMonths = 12;
 
 void WriteQ6Acc(ByteWriter &writer, Q6AccT value) {
 #if defined(__SIZEOF_INT128__)
@@ -75,27 +76,16 @@ bool ReadQ6Acc(ByteReader &reader, Q6AccT &value) {
 #endif
 }
 
-int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
-  year -= month <= 2;
-  const int32_t era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(year - era * 400);
-  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int32_t>(doe) - kEpoch;
+int32_t MonthKeyOf(int32_t days) {
+  return static_cast<int32_t>(core::sql_date::MonthIndex(days));
 }
 
-void CivilFromDays(int32_t days, int32_t &year, unsigned &month,
-                   unsigned &day) {
-  int32_t z = days + kEpoch;
-  const int32_t era = (z >= 0 ? z : z - 146096) / 146097;
-  const unsigned doe = static_cast<unsigned>(z - era * 146097);
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  year = static_cast<int32_t>(yoe) + era * 400;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const unsigned mp = (5 * doy + 2) / 153;
-  day = doy - (153 * mp + 2) / 5 + 1;
-  month = mp + (mp < 10 ? 3 : -9);
-  year += month <= 2;
+int32_t StartOfMonth(int32_t days) {
+  return static_cast<int32_t>(core::sql_date::MonthStart(days));
+}
+
+int32_t AddMonths(int32_t days, int32_t months) {
+  return static_cast<int32_t>(core::sql_date::AddMonths(days, months));
 }
 
 // A fresh, zeroed image to fill in place before it is published as const.
@@ -158,107 +148,17 @@ const TpchQ6StateImage *AsQ6Image(const core::StateImage &image) {
   return image.As<TpchQ6StateImage>();
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
+// A decimal column; a double cell is taken at scale 2.
+bool DecimalOrDoubleCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
+                         int32_t &scale) {
+  if (core::DecimalCell(row, index, raw, scale))
     return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
-bool DoubleCell(const core::AuxRow &row, std::size_t index, double &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<double>(cell.payload)) {
-    out = std::get<double>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = static_cast<double>(std::get<int64_t>(cell.payload));
-    return true;
-  }
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    out = static_cast<double>(decimal.value);
-    for (int32_t i = 0; i < decimal.scale; ++i)
-      out /= 10.0;
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
   double value = 0.0;
-  if (!DoubleCell(row, index, value))
+  if (!core::DoubleCell(row, index, value))
     return false;
   raw = static_cast<int64_t>(std::llround(value * 100.0));
   scale = 2;
   return true;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
-  return true;
-}
-
-int64_t ScaleToRaw(int64_t raw, int32_t scale, int32_t target_scale) {
-  if (scale == target_scale)
-    return raw;
-  if (scale < target_scale) {
-    int64_t factor = 1;
-    for (int32_t i = scale; i < target_scale; ++i)
-      factor *= 10;
-    return raw * factor;
-  }
-  int64_t factor = 1;
-  for (int32_t i = target_scale; i < scale; ++i)
-    factor *= 10;
-  return raw / factor;
 }
 
 bool ReadLineitem(const core::AuxRow &row, TpchQ6LineitemDelta &delta,
@@ -266,18 +166,18 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ6LineitemDelta &delta,
   int32_t shipdate_days = 0;
   int64_t discount_raw = 0, quantity_raw = 0, extended_raw = 0;
   int32_t discount_scale = 0, quantity_scale = 0, extended_scale = 0;
-  if (!DateCell(row, 0, shipdate_days) ||
-      !RawDecimalCell(row, 1, discount_raw, discount_scale) ||
-      !RawDecimalCell(row, 2, quantity_raw, quantity_scale) ||
-      !RawDecimalCell(row, 3, extended_raw, extended_scale))
+  if (!core::DateCell(row, 0, shipdate_days) ||
+      !DecimalOrDoubleCell(row, 1, discount_raw, discount_scale) ||
+      !DecimalOrDoubleCell(row, 2, quantity_raw, quantity_scale) ||
+      !DecimalOrDoubleCell(row, 3, extended_raw, extended_scale))
     return false;
-  discount_raw = ScaleToRaw(discount_raw, discount_scale, 2);
-  quantity_raw = ScaleToRaw(quantity_raw, quantity_scale, 2);
-  extended_raw = ScaleToRaw(extended_raw, extended_scale, 2);
+  discount_raw = core::ScaleToRaw(discount_raw, discount_scale, 2);
+  quantity_raw = core::ScaleToRaw(quantity_raw, quantity_scale, 2);
+  extended_raw = core::ScaleToRaw(extended_raw, extended_scale, 2);
   delta.out_of_domain =
       !::accelerator_codegen::Q6InDomain(discount_raw, quantity_raw);
   delta.shipdate_days = shipdate_days;
-  delta.month_key = TpchQ6MonthKeyFromDays(shipdate_days);
+  delta.month_key = MonthKeyOf(shipdate_days);
   delta.discount_cent = static_cast<int8_t>(discount_raw);
   delta.quantity_scaled = quantity_raw;
   delta.contribution =
@@ -295,6 +195,79 @@ void AddDelta(TpchQ6TxnBuffer &buffer, const TpchQ6LineitemDelta &delta) {
 
 int64_t HugeintLower(const duckdb::hugeint_t &value) {
   return static_cast<int64_t>(value.lower);
+}
+
+// Copy-on-write: a fresh image holding `base`'s matrix (none: a month without
+// rows yet) plus the deltas order[begin, end).
+std::shared_ptr<TpchQ6StateImage>
+ApplyDeltas(const TpchQ6StateImage *base, core::PartitionId partition,
+            const std::vector<TpchQ6LineitemDelta> &deltas,
+            const std::vector<std::pair<core::PartitionId, uint32_t>> &order,
+            std::size_t begin, std::size_t end) {
+  auto image = NewStateImage(KindOf(partition), KeyOf(partition));
+  if (base) {
+    image->matrix = base->matrix;
+    image->declined = base->declined; // its out-of-domain row is still there
+  }
+  // Accumulate the batch raw, prefix it once, add the whole block.
+  Q6RevenueMatrix batch;
+  const bool small = end - begin <= 3;
+  for (std::size_t i = begin; i < end; ++i) {
+    const auto &delta = deltas[order[i].second];
+    if (delta.out_of_domain) {
+      image->declined = true;
+    } else if (small) {
+      image->matrix.AddCell(delta.discount_cent, delta.quantity_scaled,
+                            delta.contribution, delta.sign);
+    } else {
+      batch.AddRawCell(delta.discount_cent, delta.quantity_scaled,
+                       delta.contribution, delta.sign);
+    }
+  }
+  if (!small) {
+    batch.PrefixInPlace();
+    image->matrix.AddMatrix(batch);
+  }
+  return image;
+}
+
+using DeltaOrder = std::vector<std::pair<core::PartitionId, uint32_t>>;
+
+// The images for the month partitions touched by `deltas` (`order` groups them
+// by partition, `starts` delimits the groups) built copy-on-write from the
+// published ones. False when a published image is foreign: the caller rebuilds.
+bool ApplyToMonths(core::AuxEngineServices &services,
+                   const std::vector<TpchQ6LineitemDelta> &deltas, const DeltaOrder &order,
+                   const std::vector<core::PartitionId> &partitions,
+                   const std::vector<std::size_t> &starts,
+                   core::StagedMaintenanceOutcome &outcome) {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), partitions);
+  std::vector<const core::StateImage *> matched;
+  MatchSnapshot(partitions, snapshot.partitions, matched);
+  std::vector<const TpchQ6StateImage *> base(partitions.size());
+  for (std::size_t p = 0; p < partitions.size(); ++p) {
+    if (!matched[p])
+      continue; // a month without rows has no partition yet
+    const auto *typed = AsQ6Image(*matched[p]);
+    if (matched[p]->partition != partitions[p] || !typed ||
+        typed->kind != KindOf(partitions[p]) || typed->key != KeyOf(partitions[p]))
+      return false;
+    base[p] = typed;
+  }
+  // Partitions are independent: each slice builds its own images.
+  std::vector<std::shared_ptr<TpchQ6StateImage>> images(partitions.size());
+  core::ParallelEach(services, partitions.size(), kPartitionGrain, [&](std::size_t p) {
+    images[p] = ApplyDeltas(base[p], partitions[p], deltas, order, starts[p], starts[p + 1]);
+  });
+  outcome.updates.reserve(partitions.size());
+  for (std::size_t p = 0; p < partitions.size(); ++p)
+    outcome.updates.push_back(core::StateImage::Make(
+        core::TpchQ6Layout::kAccelerator, partitions[p],
+        matched[p] ? matched[p]->version : 0,
+        std::shared_ptr<const TpchQ6StateImage>(std::move(images[p]))));
+  outcome.action = core::MaintenanceAction::ApplyDelta;
+  return true;
 }
 
 } // namespace
@@ -323,38 +296,6 @@ bool DecodeTpchQ6Matrix(const std::vector<uint8_t> &bytes,
     }
   }
   return reader.FullyConsumed();
-}
-
-int32_t TpchQ6MonthKeyFromDays(int32_t days_since_epoch) {
-  int32_t year = 0;
-  unsigned month = 0, day = 0;
-  CivilFromDays(days_since_epoch, year, month, day);
-  return year * 12 + static_cast<int32_t>(month) - 1;
-}
-
-int32_t TpchQ6StartOfMonthDays(int32_t days_since_epoch) {
-  int32_t year = 0;
-  unsigned month = 0, day = 0;
-  CivilFromDays(days_since_epoch, year, month, day);
-  return DaysFromCivil(year, month, 1);
-}
-
-int32_t TpchQ6StartOfNextMonthDays(int32_t days_since_epoch) {
-  return TpchQ6AddMonths(TpchQ6StartOfMonthDays(days_since_epoch), 1);
-}
-
-int32_t TpchQ6AddMonths(int32_t days_since_epoch, int32_t months) {
-  int32_t year = 0;
-  unsigned month = 0, day = 0;
-  CivilFromDays(days_since_epoch, year, month, day);
-  const int total = year * 12 + static_cast<int>(month) - 1 + months;
-  const int new_year = total / 12;
-  const unsigned new_month = static_cast<unsigned>(total % 12 + 1);
-  return DaysFromCivil(new_year, new_month, day);
-}
-
-int32_t TpchQ6ExclusiveEndDays(int32_t start_days) {
-  return TpchQ6AddMonths(start_days, 12);
 }
 
 bool ParseTpchQ6QueryParams(const core::QueryArguments &arguments,
@@ -392,7 +333,7 @@ bool ParseTpchQ6QueryParams(const core::QueryArguments &arguments,
   } else {
     return false;
   }
-  discount_raw = ScaleToRaw(discount_raw, discount_scale, 2);
+  discount_raw = core::ScaleToRaw(discount_raw, discount_scale, 2);
   params.discount_lower_raw = discount_raw - 1;
   params.discount_upper_raw = discount_raw + 1;
 
@@ -414,8 +355,8 @@ bool ParseTpchQ6QueryParams(const core::QueryArguments &arguments,
   } else {
     return false;
   }
-  params.quantity_upper_raw = ScaleToRaw(quantity_raw, quantity_scale, 2);
-  params.end_days = TpchQ6ExclusiveEndDays(params.start_days);
+  params.quantity_upper_raw = core::ScaleToRaw(quantity_raw, quantity_scale, 2);
+  params.end_days = AddMonths(params.start_days, kWindowMonths);
   return true;
 }
 
@@ -460,13 +401,13 @@ void TpchQ6Module::ApplyLineitemInput(
     std::unordered_map<core::PartitionId, Q6RevenueMatrix> &matrices,
     std::set<core::PartitionId> &declined) const {
   const auto discount_raw =
-      ScaleToRaw(input.discount_raw, input.discount_scale, 2);
+      core::ScaleToRaw(input.discount_raw, input.discount_scale, 2);
   const auto quantity_raw =
-      ScaleToRaw(input.quantity_raw, input.quantity_scale, 2);
+      core::ScaleToRaw(input.quantity_raw, input.quantity_scale, 2);
   const auto extended_raw =
-      ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2);
+      core::ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2);
   const auto month_partition = core::TpchQ6Layout::MonthPartition(
-      TpchQ6MonthKeyFromDays(input.shipdate_days));
+      MonthKeyOf(input.shipdate_days));
   auto &matrix = matrices[month_partition];
   if (input.null_cell ||
       !::accelerator_codegen::Q6InDomain(discount_raw, quantity_raw)) {
@@ -486,7 +427,7 @@ TpchQ6Module::BuildMatrices(core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitems(services, parts,
                                     [&](std::size_t p, const TpchQ6LineitemInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ6LineitemInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ6LineitemInput>{input});
                                     });
       },
       [&](MonthMatrices &partial, const TpchQ6LineitemInput &input) {
@@ -526,47 +467,6 @@ TpchQ6Module::InterpretMutation(const core::MutationBatch &mutation) const {
   }
   return {};
 }
-
-namespace {
-
-// Partitions per slice below which a commit's images are built inline.
-constexpr std::size_t kPartitionGrain = 16;
-
-// Copy-on-write: a fresh image holding `base`'s matrix (none: a month without
-// rows yet) plus the deltas order[begin, end).
-std::shared_ptr<TpchQ6StateImage>
-ApplyDeltas(const TpchQ6StateImage *base, core::PartitionId partition,
-            const std::vector<TpchQ6LineitemDelta> &deltas,
-            const std::vector<std::pair<core::PartitionId, uint32_t>> &order,
-            uint32_t begin, uint32_t end) {
-  auto image = NewStateImage(KindOf(partition), KeyOf(partition));
-  if (base) {
-    image->matrix = base->matrix;
-    image->declined = base->declined; // its out-of-domain row is still there
-  }
-  // Accumulate the batch raw, prefix it once, add the whole block.
-  Q6RevenueMatrix batch;
-  const bool small = end - begin <= 3;
-  for (uint32_t i = begin; i < end; ++i) {
-    const auto &delta = deltas[order[i].second];
-    if (delta.out_of_domain) {
-      image->declined = true;
-    } else if (small) {
-      image->matrix.AddCell(delta.discount_cent, delta.quantity_scaled,
-                            delta.contribution, delta.sign);
-    } else {
-      batch.AddRawCell(delta.discount_cent, delta.quantity_scaled,
-                       delta.contribution, delta.sign);
-    }
-  }
-  if (!small) {
-    batch.PrefixInPlace();
-    image->matrix.AddMatrix(batch);
-  }
-  return image;
-}
-
-} // namespace
 
 void TpchQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
                                       core::AuxEngineServices &,
@@ -612,6 +512,36 @@ void TpchQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
+// Rescans the given month partitions and publishes their images.
+void TpchQ6Module::RebuildMonths(const std::vector<core::PartitionId> &partitions,
+                                 core::StagedMaintenanceOutcome &outcome) const {
+  std::set<int32_t> month_keys;
+  for (const auto partition : partitions) {
+    if (core::TpchQ6Layout::IsMonthPartition(partition))
+      month_keys.insert(core::TpchQ6Layout::MonthKeyFromPartition(partition));
+  }
+  std::unordered_map<core::PartitionId, Q6RevenueMatrix> rebuilt;
+  std::set<core::PartitionId> declined;
+  if (initial_scan) {
+    initial_scan->ScanLineitemsForMonths(month_keys, [&](const TpchQ6LineitemInput &input) {
+      ApplyLineitemInput(input, rebuilt, declined);
+    });
+  }
+  for (const auto partition : partitions) {
+    auto image = NewStateImage(KindOf(partition), KeyOf(partition));
+    const auto it = rebuilt.find(partition);
+    if (it != rebuilt.end()) {
+      image->matrix = it->second;
+      image->matrix.PrefixInPlace();
+    }
+    image->declined = declined.count(partition) != 0;
+    outcome.updates.push_back(core::StateImage::Make(
+        core::TpchQ6Layout::kAccelerator, partition, 0,
+        std::shared_ptr<const TpchQ6StateImage>(std::move(image))));
+  }
+  core::FinishRebuildPartition(outcome);
+}
+
 core::StagedMaintenanceOutcome
 TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
                                const core::InvalidationPlan &,
@@ -619,15 +549,9 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
   auto &buffer = dynamic_cast<TpchQ6TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(
+        outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                     services.ExpectedQueriesBeforeNextWrite())));
     return outcome;
   }
   if (buffer.Deltas().empty())
@@ -635,99 +559,28 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
 
   // Deltas grouped by month partition: indices sorted by (partition, index).
   const auto &deltas = buffer.Deltas();
-  std::vector<std::pair<core::PartitionId, uint32_t>> order;
+  DeltaOrder order;
   order.reserve(deltas.size());
   for (uint32_t i = 0; i < deltas.size(); ++i)
-    order.emplace_back(core::TpchQ6Layout::MonthPartition(deltas[i].month_key),
-                       i);
+    order.emplace_back(core::TpchQ6Layout::MonthPartition(deltas[i].month_key), i);
   std::sort(order.begin(), order.end());
+  const auto starts =
+      core::RunStarts(order, [](const auto &entry) { return entry.first; });
   std::vector<core::PartitionId> partitions; // unique, ascending
-  std::vector<uint32_t> group_begin;         // into `order`, + end sentinel
-  for (uint32_t i = 0; i < order.size(); ++i) {
-    if (partitions.empty() || partitions.back() != order[i].first) {
-      partitions.push_back(order[i].first);
-      group_begin.push_back(i);
-    }
-  }
-  group_begin.push_back(static_cast<uint32_t>(order.size()));
+  for (std::size_t r = 0; r + 1 < starts.size(); ++r)
+    partitions.push_back(order[starts[r]].first);
 
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(deltas.size()),
-       static_cast<uint64_t>(partitions.size()), true, true, true, false, false,
-       core::MaintenanceAction::NoOp, services.ExpectedQueriesBeforeNextWrite()});
+      core::MaintenanceRequest::IncrementalPartitioned(
+          deltas.size(), partitions.size(), services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    std::set<int32_t> month_keys;
-    for (const auto partition : partitions) {
-      if (core::TpchQ6Layout::IsMonthPartition(partition))
-        month_keys.insert(core::TpchQ6Layout::MonthKeyFromPartition(partition));
-    }
-    std::unordered_map<core::PartitionId, Q6RevenueMatrix> rebuilt;
-    std::set<core::PartitionId> declined;
-    if (initial_scan) {
-      initial_scan->ScanLineitemsForMonths(
-          month_keys, [&](const TpchQ6LineitemInput &input) {
-            ApplyLineitemInput(input, rebuilt, declined);
-          });
-    }
-    for (const auto partition : partitions) {
-      auto image = NewStateImage(KindOf(partition), KeyOf(partition));
-      const auto it = rebuilt.find(partition);
-      if (it != rebuilt.end()) {
-        image->matrix = it->second;
-        image->matrix.PrefixInPlace();
-      }
-      image->declined = declined.count(partition) != 0;
-      outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ6Layout::kAccelerator, partition, 0,
-          std::shared_ptr<const TpchQ6StateImage>(std::move(image))));
-    }
-    core::FinishRebuildPartition(outcome);
+    RebuildMonths(partitions, outcome);
     return outcome;
   }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
+  if (decision.action != core::MaintenanceAction::ApplyDelta ||
+      !ApplyToMonths(services, deltas, order, partitions, starts, outcome)) {
+    core::FinishRebuildAll(outcome, decision);
   }
-
-  auto rebuild_all = [&]() {
-    outcome.updates.clear();
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  };
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), partitions);
-  std::vector<const core::StateImage *> matched;
-  MatchSnapshot(partitions, snapshot.partitions, matched);
-  std::vector<const TpchQ6StateImage *> base(partitions.size());
-  for (std::size_t p = 0; p < partitions.size(); ++p) {
-    if (!matched[p])
-      continue; // a month without rows has no partition yet
-    const auto *typed = AsQ6Image(*matched[p]);
-    if (matched[p]->partition != partitions[p] || !typed ||
-        typed->kind != KindOf(partitions[p]) ||
-        typed->key != KeyOf(partitions[p]))
-      return rebuild_all();
-    base[p] = typed;
-  }
-  // Partitions are independent: each slice builds its own images.
-  std::vector<std::shared_ptr<TpchQ6StateImage>> images(partitions.size());
-  core::ParallelSlices(
-      services, partitions.size(), kPartitionGrain,
-      [&](std::size_t, std::size_t begin, std::size_t end) {
-        for (std::size_t p = begin; p < end; ++p)
-          images[p] = ApplyDeltas(base[p], partitions[p], deltas, order,
-                                  group_begin[p], group_begin[p + 1]);
-      });
-  outcome.updates.reserve(partitions.size());
-  for (std::size_t p = 0; p < partitions.size(); ++p)
-    outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ6Layout::kAccelerator, partitions[p], matched[p] ? matched[p]->version : 0,
-        std::shared_ptr<const TpchQ6StateImage>(std::move(images[p]))));
-  outcome.action = core::MaintenanceAction::ApplyDelta;
   return outcome;
 }
 
@@ -747,12 +600,10 @@ void TpchQ6Module::CollectQueryPartitions(
   {
     // Fast path (every TPC-H instance): a window that starts on the first of a
     // month and ends exactly twelve months later is twelve whole months.
-    int32_t year = 0;
-    unsigned month = 0, day = 0;
-    CivilFromDays(params.start_days, year, month, day);
-    if (day == 1 && params.end_days == DaysFromCivil(year + 1, month, 1)) {
-      const int32_t first = year * 12 + static_cast<int32_t>(month) - 1;
-      for (int32_t i = 0; i < 12; ++i)
+    if (params.start_days == StartOfMonth(params.start_days) &&
+        params.end_days == AddMonths(params.start_days, kWindowMonths)) {
+      const int32_t first = MonthKeyOf(params.start_days);
+      for (int32_t i = 0; i < kWindowMonths; ++i)
         partitions.push_back(core::TpchQ6Layout::MonthPartition(first + i));
       return; // ascending, unique
     }
@@ -760,11 +611,11 @@ void TpchQ6Module::CollectQueryPartitions(
   int32_t cursor = params.start_days;
   const int32_t end = params.end_days;
   while (cursor < end) {
-    if (cursor == TpchQ6StartOfMonthDays(cursor)) {
-      const int32_t month_end = TpchQ6StartOfNextMonthDays(cursor);
+    if (cursor == StartOfMonth(cursor)) {
+      const int32_t month_end = AddMonths(cursor, 1);
       if (month_end <= end) {
         partitions.push_back(core::TpchQ6Layout::MonthPartition(
-            TpchQ6MonthKeyFromDays(cursor)));
+            MonthKeyOf(cursor)));
         cursor = month_end;
         continue;
       }

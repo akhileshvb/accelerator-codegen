@@ -7,17 +7,9 @@
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
 #include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -30,6 +22,8 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr query::TpchQ4Config kTables{1, 2};
+
 SharedProbe BuildTpchQ4Probe(::duckdb::MaterializedQueryResult &result,
                              ::duckdb::idx_t row) {
   // Clear late-receipt on a sole Q4-qualifying lineitem so EXISTS flips false
@@ -41,7 +35,7 @@ SharedProbe BuildTpchQ4Probe(::duckdb::MaterializedQueryResult &result,
   const int32_t commit_days = DateDays(result.GetValue(2, row));
   const int32_t receipt_days = DateDays(result.GetValue(3, row));
   SharedProbe probe;
-  probe.table = 2;
+  probe.table = kTables.lineitem_table;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {2};
   probe.write_delta = 1.0;
@@ -153,7 +147,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q4_aux",
     {::duckdb::LogicalType::DATE},
     [](::duckdb::Connection &connection) {
-      const TpchQ4Config c{1, 2};
+      const TpchQ4Config c = q4_catalog::kTables;
       return MakeBinding<TpchQ4Scan, TpchQ4Module>(connection, CaptureTableList{{"orders", c.orders_table}, {"lineitem", c.lineitem_table}}, c);
     }}};
 

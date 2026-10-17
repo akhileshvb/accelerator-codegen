@@ -59,10 +59,10 @@ public:
       const std::function<void(const TpchQ16SupplierInput &)> &) = 0;
   // Every row, split into `partitions` fixed row ranges: sink(partition, row)
   // runs concurrently for different partitions, one thread per partition.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ16PartInput &)> &sink) = 0;
-  virtual void ScanPartsuppPartitioned(
+  virtual void ScanPartsupp(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ16PartsuppInput &)> &sink) = 0;
 };
@@ -249,8 +249,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

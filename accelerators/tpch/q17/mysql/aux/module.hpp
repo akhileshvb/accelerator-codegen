@@ -27,10 +27,9 @@ namespace accelerator_codegen::aux_state::query {
 //
 // Memory: a histogram entry is 20 B (~one per distinct quantity of a part),
 // plus ~60 B of per-part overhead (shared_ptr, vector header, group id, chunk
-// directory): about 20 B per lineitem, ~12 GB at SF100 and ~120 GB at SF1000
-// (the previous state held ~800 B per part transiently and copied whole
-// 65,536-part chunks per write). Build streams a GROUP BY (partkey, quantity)
-// ordered by partkey, so there is no transient copy of the histograms.
+// directory): about 20 B per lineitem, ~12 GB at SF100 and ~120 GB at SF1000.
+// Build buckets the lineitem scan by part and folds the buckets into histograms
+// in parallel.
 // Write batch: O(touched parts * (histogram + 64-part chunk) + groups touched);
 // no table scan. Execute: O(1).
 struct TpchQ17Layout {
@@ -57,39 +56,18 @@ struct TpchQ17LineitemInput {
   int64_t extendedprice_raw = 0;  // decimal(15,2) raw (x100)
 };
 
-struct TpchQ17PartQuantityAggregate {
-  int64_t partkey = 0;
-  int64_t quantity_raw = 0;
-  int64_t extendedprice_sum_raw = 0;
-  int64_t row_count = 0;
-};
-
 class TpchQ17InitialScan {
 public:
   virtual ~TpchQ17InitialScan() = default;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ17PartInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ17LineitemInput &)> &) = 0;
-
-  // The same two scans split into `partitions` fixed row ranges: sink(partition,
+  // Split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
   // The lineitem scan skips rows with a NULL partkey or quantity.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ17PartInput &)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ17LineitemInput &)> &sink) = 0;
-
-  // Optional SQL pre-aggregation: GROUP BY (partkey, quantity) with summed
-  // price and row count, ORDER BY partkey, quantity. Returns false when the
-  // engine does not implement it (the module then scans lineitems). Rows of one
-  // part should arrive together; any other order is still handled, just slower.
-  virtual bool ScanPartQuantityAggregates(
-      const std::function<void(const TpchQ17PartQuantityAggregate &)> &) {
-    return false;
-  }
 };
 
 // ── State ───────────────────────────────────────────────────────────────────
@@ -198,18 +176,9 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  // Streams the lineitem histograms through `consumer(partkey, histogram)`
-  // (one call per part; a part may be reported more than once if the scan
-  // delivers its rows non-contiguously).
-  void ScanHistograms(
-      const std::function<void(int64_t, TpchQ17PartHistogram &&)> &consumer)
-      const;
-
   TpchQ17Config config;
   TpchQ17InitialScan *initial_scan = nullptr;
 };

@@ -8,17 +8,9 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -31,6 +23,9 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+constexpr core::TableId kPartTable = 1;
+constexpr core::TableId kLineitemTable = 2;
+
 SharedProbe BuildTpchQ17Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   // Bump extendedprice on a row already in the Q17 brand/container filter so
@@ -40,7 +35,7 @@ SharedProbe BuildTpchQ17Probe(::duckdb::MaterializedQueryResult &result,
   const int64_t quantity_raw = DecimalRaw(result.GetValue(3, row));
   const int64_t price_raw = DecimalRaw(result.GetValue(4, row));
   SharedProbe probe;
-  probe.table = 2;
+  probe.table = kLineitemTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {2};
   probe.write_delta = 1.0;
@@ -135,55 +130,6 @@ struct TpchQ17Scan : TpchQ17InitialScan {
                       }
                     });
   }
-  bool ScanPartQuantityAggregatesForPart(
-      int64_t partkey,
-      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer)
-      override {
-    if (std::getenv("ACCEL_Q17_BENCH_SCAN_LIMIT")) {
-      return false;
-    }
-    ScanQueryStreaming(
-        connection,
-        "SELECT " + std::to_string(partkey) +
-            "::BIGINT, "
-            "CAST(round(l_quantity * 100) AS BIGINT), "
-            "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
-            "COUNT(*)::BIGINT "
-            "FROM lineitem WHERE l_partkey = " +
-            std::to_string(partkey) + " GROUP BY 2",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    SafeInt64(ChunkValue(chunk, 3, row))});
-        });
-    return true;
-  }
-  bool ScanPartQuantityAggregatesForParts(
-      const std::unordered_set<int64_t> &partkeys,
-      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer)
-      override {
-    if (partkeys.empty() || std::getenv("ACCEL_Q17_BENCH_SCAN_LIMIT"))
-      return false;
-    if (partkeys.size() == 1)
-      return ScanPartQuantityAggregatesForPart(*partkeys.begin(), consumer);
-    ScanQueryStreaming(
-        connection,
-        "SELECT l_partkey, "
-        "CAST(round(l_quantity * 100) AS BIGINT), "
-        "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
-        "COUNT(*)::BIGINT "
-        "FROM lineitem WHERE " +
-            SqlInt64InPredicate("l_partkey", partkeys) +
-            " GROUP BY 1, 2",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    SafeInt64(ChunkValue(chunk, 3, row))});
-        });
-    return true;
-  }
   ::duckdb::Connection &connection;
 };
 
@@ -192,7 +138,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q17_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ17Config c{1, 2};
+      const TpchQ17Config c{q17_catalog::kPartTable, q17_catalog::kLineitemTable};
       return MakeBinding<TpchQ17Scan, TpchQ17Module>(connection, CaptureTableList{{"part", c.part_table}, {"lineitem", c.lineitem_table}}, c);
     }}};
 

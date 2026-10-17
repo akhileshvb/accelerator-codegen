@@ -8,16 +8,11 @@
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
 #include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
-#include <utility>
 #include <vector>
 
 #include "duckdb.hpp"
@@ -25,6 +20,9 @@
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
+
+constexpr accelerator_codegen::aux_state::query::TpchQ10Config kTables{1, 2, 3, 4};
+
 namespace q10_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
@@ -37,7 +35,7 @@ SharedProbe BuildTpchQ10Probe(::duckdb::MaterializedQueryResult &result,
   const auto linenumber = result.GetValue(1, row).ToString();
   const double price = std::stod(result.GetValue(2, row).ToString());
   SharedProbe probe;
-  probe.table = 4;
+  probe.table = kTables.lineitem_table;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {5};
   probe.write_delta = 0.01;
@@ -281,8 +279,13 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q10_aux",
     {::duckdb::LogicalType::DATE},
     [](::duckdb::Connection &connection) {
-      const TpchQ10Config c{1, 2, 3, 4};
-      return MakeBinding<TpchQ10Scan, TpchQ10Module>(connection, CaptureTableList{{"customer", c.customer_table}, {"nation", c.nation_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}}, c);
+      return MakeBinding<TpchQ10Scan, TpchQ10Module>(
+          connection,
+          CaptureTableList{{"customer", kTables.customer_table},
+                           {"nation", kTables.nation_table},
+                           {"orders", kTables.orders_table},
+                           {"lineitem", kTables.lineitem_table}},
+          kTables);
     }}};
 
 } // namespace

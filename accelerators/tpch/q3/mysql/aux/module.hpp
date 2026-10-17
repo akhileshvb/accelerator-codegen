@@ -80,8 +80,6 @@ public:
   virtual void ScanLineitemsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3LineitemInput &)> &sink) = 0;
-  virtual void ScanOrderLines(
-      const std::function<void(const TpchQ3OrderLineInput &)> &) = 0;
   // The same rows for the given orders only, as the database holds them after
   // the calling statement.
   virtual bool LookupOrderLines(
@@ -212,8 +210,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

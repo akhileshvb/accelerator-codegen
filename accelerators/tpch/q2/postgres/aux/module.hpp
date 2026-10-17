@@ -104,7 +104,7 @@ public:
 // Memory: ~12 B/part + 72 B/part for up to 4 offers (= 18 B per partsupp row at
 // 4 offers/part) + ~150 B/supplier.  SF100 (20M parts, 80M partsupp, 1M
 // suppliers): ~1.9 GB; SF1000 (200M parts, 800M partsupp, 10M suppliers):
-// ~19 GB (was ~10 GB at SF100 and silently dropped keys above 32M).
+// ~19 GB.
 // Execute: a size-column scan over all parts (4 B/part, sliced for large
 // tables) plus, for the ~1/250 parts that also match the type bitmap,
 // at most a few supplier lookups: ~25 ms at SF100, ~0.1-0.2 s at SF1000.
@@ -290,8 +290,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

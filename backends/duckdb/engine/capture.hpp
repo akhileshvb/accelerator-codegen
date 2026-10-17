@@ -9,6 +9,7 @@
 // writes and transactions reach the host.
 
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -62,10 +63,12 @@ runtime::ColumnarBatch ToColumnarBatch(const ::duckdb::TableMutationEvent &event
 
 // Forwards every connection's mutations and transaction lifecycle to a host.
 // (Commit ids come through CommitIds: both interfaces derive from
-// ClientContextState, so they are separate objects.)
+// ClientContextState, so they are separate objects.) A connection keeps these
+// objects past the host, so they hold it weakly and hold it for each callback.
 class DatabaseCapture final : public ::duckdb::MutationConsumer {
 public:
-  explicit DatabaseCapture(DuckdbHost &host) : host(host) {}
+  // Before the object is registered.
+  void Bind(std::weak_ptr<DuckdbHost> bound) { host = std::move(bound); }
   void OnTableMutation(::duckdb::ClientContext &context,
                        const ::duckdb::TableMutationEvent &event) override;
   void TransactionPreCommit(::duckdb::MetaTransaction &transaction,
@@ -76,18 +79,18 @@ public:
                            ::duckdb::ClientContext &context) override;
 
 private:
-  DuckdbHost &host;
+  std::weak_ptr<DuckdbHost> host;
 };
 
 class CommitIds final : public ::duckdb::CommitObserver {
 public:
-  explicit CommitIds(DuckdbHost &host) : host(host) {}
+  void Bind(std::weak_ptr<DuckdbHost> bound) { host = std::move(bound); }
   void OnCommit(::duckdb::AttachedDatabase &, ::duckdb::transaction_t) override {}
   void OnCommitWithContext(::duckdb::ClientContext &context, ::duckdb::AttachedDatabase &db,
                            ::duckdb::transaction_t commit_id) override;
 
 private:
-  DuckdbHost &host;
+  std::weak_ptr<DuckdbHost> host;
 };
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

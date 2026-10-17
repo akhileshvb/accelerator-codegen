@@ -7,16 +7,8 @@
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
 #include <vector>
 
 #include "duckdb.hpp"
@@ -24,6 +16,9 @@
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
+
+constexpr accelerator_codegen::aux_state::query::TpchQ11Config kTables{1, 2, 3};
+
 namespace q11_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
@@ -32,12 +27,12 @@ using namespace catalog_values;
 
 SharedProbe BuildTpchQ11Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
-  // Aux row: partkey, suppkey, availqty, supplycost (TpchQ11Config partsupp=1).
+  // Aux row: partkey, suppkey, availqty, supplycost.
   const auto partkey = result.GetValue(0, row).ToString();
   const auto suppkey = result.GetValue(1, row).ToString();
   const int64_t supplycost_raw = DecimalRaw(result.GetValue(3, row));
   SharedProbe probe;
-  probe.table = 1;
+  probe.table = kTables.partsupp_table;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {3};
   probe.write_delta = 0.01;
@@ -153,8 +148,12 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q11_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::DOUBLE},
     [](::duckdb::Connection &connection) {
-      const TpchQ11Config c{1, 2, 3};
-      return MakeBinding<TpchQ11Scan, TpchQ11Module>(connection, CaptureTableList{{"partsupp", c.partsupp_table}, {"supplier", c.supplier_table}, {"nation", c.nation_table}}, c);
+      return MakeBinding<TpchQ11Scan, TpchQ11Module>(
+          connection,
+          CaptureTableList{{"partsupp", kTables.partsupp_table},
+                           {"supplier", kTables.supplier_table},
+                           {"nation", kTables.nation_table}},
+          kTables);
     }}};
 
 } // namespace

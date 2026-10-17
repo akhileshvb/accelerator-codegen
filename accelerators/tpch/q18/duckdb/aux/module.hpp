@@ -15,7 +15,7 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q18 layout (inlined here because query_layouts.hpp is not writable) ─────
+// ── Q18 layout ──────────────────────────────────────────────────────────────
 struct TpchQ18Layout {
   static constexpr const char *kAccelerator = "tpch_q18_aux";
   static constexpr core::PartitionId kOrderQuantitySums = 0;
@@ -58,51 +58,44 @@ struct TpchQ18OrderQuantityAggregate {
 class TpchQ18InitialScan {
 public:
   virtual ~TpchQ18InitialScan() = default;
-  virtual void ScanLineitems(
+  virtual void ScanLineitemsSerial(
       const std::function<void(const TpchQ18LineitemInput &)> &) = 0;
-  virtual void ScanOrders(
+  virtual void ScanOrdersSerial(
       const std::function<void(const TpchQ18OrderInput &)> &) = 0;
-  virtual void ScanCustomers(
+  virtual void ScanCustomersSerial(
       const std::function<void(const TpchQ18CustomerInput &)> &) = 0;
 
   // Optional: SQL SUM(quantity) GROUP BY orderkey.
   virtual bool ScanOrderQuantityAggregates(
-      const std::function<void(const TpchQ18OrderQuantityAggregate &)> &consumer) {
-    (void)consumer;
+      const std::function<void(const TpchQ18OrderQuantityAggregate &)> &) {
     return false;
   }
 
   // Partitioned scans for builds: rows of one partition arrive in table order
   // on one thread; partitions run concurrently on the pool.
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18LineitemInput &)> &) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18OrderInput &)> &) = 0;
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ18CustomerInput &)> &) = 0;
 
   // Point-lookup for write maintenance when a lineitem delta crosses the
   // survivor threshold and order metadata is not yet cached.
-  virtual bool LookupOrder(int64_t orderkey, TpchQ18OrderInput &out) {
-    (void)orderkey;
-    (void)out;
+  virtual bool LookupOrder(int64_t, TpchQ18OrderInput &) {
     return false;
   }
 
   // Point lookup of one customer name.
-  virtual bool LookupCustomerName(int64_t custkey, std::string &name) {
-    (void)custkey;
-    (void)name;
+  virtual bool LookupCustomerName(int64_t, std::string &) {
     return false;
   }
 
   // Current SUM(l_quantity) for one order, including the open transaction.
-  virtual bool LookupOrderQuantitySum(int64_t orderkey, int64_t &sum_raw) {
-    (void)orderkey;
-    (void)sum_raw;
+  virtual bool LookupOrderQuantitySum(int64_t, int64_t &) {
     return false;
   }
 };
@@ -240,7 +233,6 @@ private:
   bool LoadState(core::AuxEngineServices &services,
                   std::shared_ptr<const TpchQ18State> &state) const;
   void EmitResult(const TpchQ18State &state, int64_t threshold_raw,
-                  core::AuxEngineServices &services,
                   core::AuxRowSink &sink) const;
 
   TpchQ18Config config;
