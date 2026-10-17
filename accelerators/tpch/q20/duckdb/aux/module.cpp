@@ -21,13 +21,14 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
-// Base pairs per read slice (~3 ms: a cache-missing series lookup is ~100 ns).
+// Base pairs per read slice (~3000 us): a cache-missing series lookup is ~100 ns.
 constexpr std::size_t kPairGrain = 32768;
-// Partsupp rows per build slice (~1 ms: a merge step is ~20 ns).
+// Partsupp rows per build slice (~1300 us): a merge step is ~20 ns.
 constexpr std::size_t kPartsuppGrain = 65536;
-// Series per maintenance slice (~1 ms: rebuilding one is ~1 us), so RF-sized commits stay inline.
+// Series per maintenance slice (~16000 us): rebuilding one is ~1 us, so RF-sized commits stay
+// inline.
 constexpr std::size_t kSeriesGrain = 16384;
-// Rows per sorted slice of the build (~5 ms: a stable sort of 64K small rows).
+// Rows per sorted slice of the build (~5000 us): a stable sort of 64K small rows.
 constexpr std::size_t kSortGrain = 65536;
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
 constexpr uint32_t kVersion = 3;
@@ -498,6 +499,345 @@ std::vector<TpchQ20DateQuantity> BaseSeriesCopy(const TpchQ20Base &base,
   for (uint64_t i = base.series_off[idx]; i < base.series_off[idx + 1]; ++i)
     out.push_back({base.series_entries[i].date, base.series_entries[i].qty});
   return out;
+}
+
+// The part-name LIKE pattern. The literal text before the first wildcard
+// bounds a contiguous range of the sorted base names [RankLo, RankHi). A
+// pattern that is exactly that literal plus '%' (the TPC-H form) needs no
+// further test; any other is tested only on the ranks a read visits.
+class PartNameFilter {
+public:
+  PartNameFilter(const TpchQ20Base &base, const std::string &pattern)
+      : base_(base), pattern_(pattern) {
+    const std::size_t wild = pattern.find_first_of("%_");
+    prefix_ = pattern.substr(0, wild);
+    prefix_only_ = wild != std::string::npos && wild + 1 == pattern.size() &&
+                   pattern[wild] == '%';
+    const std::size_t name_count = base.name_partkey.size();
+    std::size_t lo = 0, hi = name_count;
+    while (lo < hi) { // first name >= prefix
+      const std::size_t mid = lo + (hi - lo) / 2;
+      if (base.PartName(mid) < std::string_view(prefix_))
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    rank_lo_ = static_cast<uint32_t>(lo);
+    hi = name_count;
+    while (lo < hi) { // first name past the names starting with prefix
+      const std::size_t mid = lo + (hi - lo) / 2;
+      if (HasPrefix(base.PartName(mid)))
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    rank_hi_ = static_cast<uint32_t>(lo);
+  }
+
+  uint32_t RankLo() const { return rank_lo_; }
+  uint32_t RankHi() const { return rank_hi_; }
+
+  bool Matches(std::string_view name) const {
+    if (prefix_only_)
+      return HasPrefix(name);
+    return SqlLikeAt(name.data(), name.size(), pattern_.data(), pattern_.size(), 0, 0);
+  }
+  bool RankOk(uint32_t rank) const { return prefix_only_ || Matches(base_.PartName(rank)); }
+
+private:
+  bool HasPrefix(std::string_view name) const {
+    return name.size() >= prefix_.size() &&
+           std::memcmp(name.data(), prefix_.data(), prefix_.size()) == 0;
+  }
+
+  const TpchQ20Base &base_;
+  const std::string &pattern_;
+  std::string prefix_;
+  bool prefix_only_ = false;
+  uint32_t rank_lo_ = 0;
+  uint32_t rank_hi_ = 0;
+};
+
+// The suppliers of the target nations that have a part/supplier pair with
+// lineitems in the shipdate window and availqty above half their quantity.
+class QualifyingSuppliers {
+public:
+  QualifyingSuppliers(const TpchQ20State &state, int32_t start_date_days,
+                      int32_t end_date_days, const PartNameFilter &names,
+                      std::vector<int32_t> target_nations, core::AuxEngineServices &services)
+      : state_(state), base_(*state.base), start_date_days_(start_date_days),
+        end_date_days_(end_date_days), names_(names),
+        target_nations_(std::move(target_nations)), services_(services),
+        overlay_parts_(state.parts.size() != 0), overlay_ps_(state.partsupps.size() != 0),
+        overlay_series_(!state.series.Empty()),
+        overlay_suppliers_(state.suppliers.size() != 0) {}
+
+  bool IsTarget(int32_t nationkey) const {
+    return nationkey >= 0 && std::find(target_nations_.begin(), target_nations_.end(),
+                                       nationkey) != target_nations_.end();
+  }
+
+  // Sorted and deduplicated.
+  std::vector<int64_t> Find() {
+    WalkBaseNations();
+    EvaluateChangedParts();
+    WalkMovedSuppliers();
+    std::sort(suppkeys_.begin(), suppkeys_.end());
+    suppkeys_.erase(std::unique(suppkeys_.begin(), suppkeys_.end()), suppkeys_.end());
+    return std::move(suppkeys_);
+  }
+
+private:
+  // A part whose name or partsupp list changed since the base is evaluated
+  // from the overlays (EvaluateChangedParts), never from its base pairs.
+  bool PartChanged(int64_t partkey) const {
+    return (overlay_parts_ && state_.parts.Find(partkey)) ||
+           (overlay_ps_ && state_.partsupps.Find(partkey));
+  }
+
+  // The pair qualifies when it has lineitems in the window and availqty
+  // exceeds half their quantity. The supplier's nation is checked by the caller.
+  void Evaluate(std::vector<int64_t> &out, int64_t partkey, int64_t suppkey, int64_t availqty,
+                uint32_t series_idx, bool resolve_idx) const {
+    const uint64_t pair_key = MakePairKey(partkey, suppkey);
+    int64_t sum = 0;
+    bool has = false;
+    const TpchQ20SeriesView overlay =
+        overlay_series_ ? state_.series.Find(pair_key) : TpchQ20SeriesView{};
+    if (overlay.found) {
+      for (const auto &e : overlay) {
+        if (e.shipdate_days < start_date_days_)
+          continue;
+        if (e.shipdate_days >= end_date_days_)
+          break;
+        has = true;
+        sum += e.quantity_raw;
+      }
+    } else {
+      if (resolve_idx)
+        series_idx = base_.FindSeries(pair_key);
+      if (series_idx == TpchQ20Base::kNoSeries)
+        return;
+      has = base_.WindowSum(series_idx, start_date_days_, end_date_days_, sum);
+    }
+    if (has && AvailQtyGreaterThanHalfSum(availqty, sum))
+      out.push_back(suppkey);
+  }
+
+  // Walks pairs [b, e) of a slot's name range; `keep` filters suppkeys.
+  template <class Keep>
+  void WalkPairs(std::vector<int64_t> &out, std::size_t b, std::size_t e, Keep &&keep) const {
+    constexpr std::size_t kAhead = 16;
+    const auto *pairs = base_.pairs.data();
+    for (std::size_t i = b; i < e; ++i) {
+      if (i + kAhead < e && pairs[i + kAhead].series_idx != TpchQ20Base::kNoSeries)
+        __builtin_prefetch(&base_.series_off[pairs[i + kAhead].series_idx]);
+      if (i + kAhead / 2 < e && pairs[i + kAhead / 2].series_idx != TpchQ20Base::kNoSeries)
+        __builtin_prefetch(base_.series_entries.data() +
+                           base_.series_off[pairs[i + kAhead / 2].series_idx]);
+      if (overlay_series_) {
+        if (i + kAhead < e) {
+          const auto &q = pairs[i + kAhead];
+          state_.series.PrefetchSlot(MakePairKey(base_.name_partkey[q.rank], q.suppkey));
+        }
+        if (i + kAhead / 2 < e) {
+          const auto &q = pairs[i + kAhead / 2];
+          state_.series.PrefetchData(MakePairKey(base_.name_partkey[q.rank], q.suppkey));
+        }
+      }
+      const auto &p = pairs[i];
+      if (!keep(p.suppkey) || !names_.RankOk(p.rank))
+        continue;
+      const int64_t partkey = base_.name_partkey[p.rank];
+      if ((overlay_parts_ || overlay_ps_) && PartChanged(partkey))
+        continue;
+      Evaluate(out, partkey, p.suppkey, base_.Avail(p), p.series_idx, false);
+    }
+  }
+
+  // Slices may append in any grouping: the result is sorted afterwards.
+  template <class Keep> void WalkSlot(uint32_t slot, Keep &&keep) {
+    const auto [b, e] = base_.RankRange(slot, names_.RankLo(), names_.RankHi());
+    core::ParallelReduce(
+        services_, e - b, kPairGrain, suppkeys_,
+        [&](std::vector<int64_t> &out, std::size_t begin, std::size_t end) {
+          WalkPairs(out, b + begin, b + end, keep);
+        },
+        [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+          into.insert(into.end(), from.begin(), from.end());
+        });
+  }
+
+  // Base pairs whose supplier's base nation is a target nation (minus
+  // suppliers since moved out or deleted).
+  void WalkBaseNations() {
+    for (const int32_t nationkey : target_nations_) {
+      const uint32_t slot = base_.SlotOfNation(nationkey);
+      if (slot == TpchQ20Base::kNoSlot)
+        continue;
+      if (overlay_suppliers_)
+        WalkSlot(slot, [&](int32_t suppkey) { return IsTarget(state_.SupplierNation(suppkey)); });
+      else
+        WalkSlot(slot, [](int32_t) { return true; });
+    }
+  }
+
+  // Parts whose name or partsupp list changed since the base.
+  void EvaluateChangedParts() {
+    if (!overlay_parts_ && !overlay_ps_)
+      return;
+    std::vector<int64_t> changed;
+    state_.parts.ForEach([&](uint64_t k, const TpchQ20PartOverlay &) {
+      changed.push_back(static_cast<int64_t>(k));
+    });
+    state_.partsupps.ForEach([&](uint64_t k, const auto &) {
+      changed.push_back(static_cast<int64_t>(k));
+    });
+    std::sort(changed.begin(), changed.end());
+    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
+    for (const int64_t partkey : changed) {
+      if (!ChangedPartNameMatches(partkey))
+        continue;
+      const auto consider = [&](int64_t suppkey, int64_t availqty, uint32_t series_idx,
+                                bool resolve_idx) {
+        if (IsTarget(state_.SupplierNation(suppkey)))
+          Evaluate(suppkeys_, partkey, suppkey, availqty, series_idx, resolve_idx);
+      };
+      if (const auto *list = overlay_ps_ ? state_.partsupps.Find(partkey) : nullptr) {
+        for (const auto &p : *list)
+          consider(p.suppkey, p.availqty, TpchQ20Base::kNoSeries, true);
+      } else {
+        base_.ForEachBasePair(partkey, [&](int64_t suppkey, int64_t availqty,
+                                           uint32_t series_idx) {
+          consider(suppkey, availqty, series_idx, false);
+        });
+      }
+    }
+  }
+
+  bool ChangedPartNameMatches(int64_t partkey) const {
+    if (const auto *overlay = state_.parts.Find(partkey))
+      return overlay->present && names_.Matches(overlay->name);
+    const uint32_t rank = base_.RankOf(partkey);
+    if (rank == TpchQ20Base::kNoRank)
+      return false;
+    if (names_.Matches(base_.PartName(rank)))
+      return true;
+    const auto extra = base_.extra_ranks.find(partkey);
+    if (extra == base_.extra_ranks.end())
+      return false;
+    for (const uint32_t extra_rank : extra->second)
+      if (names_.Matches(base_.PartName(extra_rank)))
+        return true;
+    return false;
+  }
+
+  // Suppliers now in a target nation whose base nation is not (moved, or new):
+  // their base pairs sit in their base nation's slot.
+  void WalkMovedSuppliers() {
+    if (!overlay_suppliers_)
+      return;
+    std::vector<std::pair<uint32_t, int32_t>> moved; // (base slot, suppkey)
+    state_.suppliers.ForEach([&](uint64_t k, const TpchQ20SupplierOverlay &overlay) {
+      if (!overlay.present || !IsTarget(overlay.record.nationkey))
+        return;
+      const auto suppkey = static_cast<int64_t>(k);
+      const int32_t base_nation = base_.BaseNation(suppkey);
+      const bool in_base = base_nation >= 0 || base_.BaseSupplier(suppkey) != nullptr;
+      if (in_base && IsTarget(base_nation))
+        return; // already walked by WalkBaseNations
+      const uint32_t slot = in_base ? base_.SlotOfNation(base_nation) : base_.NoNationSlot();
+      if (slot != TpchQ20Base::kNoSlot)
+        moved.emplace_back(slot, static_cast<int32_t>(suppkey));
+    });
+    std::sort(moved.begin(), moved.end());
+    for (std::size_t i = 0; i < moved.size();) {
+      std::size_t j = i;
+      while (j < moved.size() && moved[j].first == moved[i].first)
+        ++j;
+      WalkSlot(moved[i].first, [&](int32_t suppkey) {
+        return std::binary_search(moved.begin() + static_cast<std::ptrdiff_t>(i),
+                                  moved.begin() + static_cast<std::ptrdiff_t>(j),
+                                  std::pair<uint32_t, int32_t>{moved[i].first, suppkey});
+      });
+      i = j;
+    }
+  }
+
+  const TpchQ20State &state_;
+  const TpchQ20Base &base_;
+  const int32_t start_date_days_;
+  const int32_t end_date_days_;
+  const PartNameFilter &names_;
+  const std::vector<int32_t> target_nations_;
+  core::AuxEngineServices &services_;
+  const bool overlay_parts_;
+  const bool overlay_ps_;
+  const bool overlay_series_;
+  const bool overlay_suppliers_;
+  std::vector<int64_t> suppkeys_;
+};
+
+struct OutputSupplier {
+  const TpchQ20SupplierRecord *record;
+  uint32_t rank; // TpchQ20Base::kNoRank: overlay record
+};
+
+// The qualifying suppliers still in a target nation, in name order. A base
+// supplier's name rank is its index in the name-sorted records, so without
+// supplier changes this sorts integers and reads the records in memory order;
+// a changed supplier (overlay record, no rank) compares by name, after base
+// suppliers of an equal name.
+std::vector<OutputSupplier> InNameOrder(const TpchQ20State &state,
+                                        const QualifyingSuppliers &qualifying,
+                                        const std::vector<int64_t> &suppkeys) {
+  const TpchQ20Base &base = *state.base;
+  const bool overlay_suppliers = state.suppliers.size() != 0;
+  std::vector<OutputSupplier> rows;
+  rows.reserve(suppkeys.size());
+  for (const auto suppkey : suppkeys) {
+    const TpchQ20SupplierOverlay *overlay =
+        overlay_suppliers ? state.suppliers.Find(suppkey) : nullptr;
+    OutputSupplier row{nullptr, TpchQ20Base::kNoRank};
+    if (overlay) {
+      if (overlay->present)
+        row.record = &overlay->record;
+    } else {
+      row.rank = base.SupplierRank(suppkey);
+      if (row.rank != TpchQ20Base::kNoRank)
+        row.record = &base.supplier_records[row.rank];
+    }
+    if (row.record && qualifying.IsTarget(row.record->nationkey))
+      rows.push_back(row);
+  }
+  std::sort(rows.begin(), rows.end(), [](const OutputSupplier &a, const OutputSupplier &b) {
+    constexpr uint32_t kNone = TpchQ20Base::kNoRank;
+    if (a.rank != kNone && b.rank != kNone)
+      return a.rank < b.rank;
+    const int c = a.record->name.compare(b.record->name);
+    if (c != 0)
+      return c < 0;
+    return a.rank != kNone && b.rank == kNone;
+  });
+  return rows;
+}
+
+void WriteSuppliers(const std::vector<OutputSupplier> &suppliers, core::AuxRowSink &sink) {
+  sink.Begin(core::OutputSchema{});
+  // One two-cell row buffer for every row: its strings keep their capacity.
+  core::AuxRow out;
+  out.values.resize(2);
+  for (auto &cell : out.values) {
+    cell.type = core::AuxType::String;
+    cell.is_null = false;
+    cell.payload = std::string();
+  }
+  for (const auto &supplier : suppliers) {
+    std::get<std::string>(out.values[0].payload).assign(supplier.record->name);
+    std::get<std::string>(out.values[1].payload).assign(supplier.record->address);
+    sink.WriteRow(out);
+  }
+  sink.End();
 }
 
 } // namespace
@@ -1423,7 +1763,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
     builder.AddSupplier(key, std::move(record.name), std::move(record.address),
                         record.nationkey);
 
-  initial_scan->ScanNations([&](const TpchQ20NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ20NationInput &input) {
     builder.AddNation(input.key, input.name);
   });
 
@@ -1448,318 +1788,21 @@ bool TpchQ20Module::LoadState(core::AuxEngineServices &services,
   return false;
 }
 
-void TpchQ20Module::EmitResult(const TpchQ20State &state,
-                               int32_t start_date_days,
-                               int32_t end_date_days,
-                               const std::string &part_name_pattern,
-                               const std::string &nation_name,
-                               core::AuxEngineServices &services,
+void TpchQ20Module::EmitResult(const TpchQ20State &state, int32_t start_date_days,
+                               int32_t end_date_days, const std::string &part_name_pattern,
+                               const std::string &nation_name, core::AuxEngineServices &services,
                                core::AuxRowSink &sink) const {
-  const TpchQ20Base &base = *state.base;
-
-  const auto nation_keys = state.FindNationKeysByName(nation_name);
-  if (nation_keys.empty()) {
-    // No nation has this name: no supplier qualifies.
+  auto nation_keys = state.FindNationKeysByName(nation_name);
+  if (nation_keys.empty()) { // no nation has this name: no supplier qualifies
     sink.Begin(core::OutputSchema{});
     sink.End();
     return;
   }
-  const auto is_target = [&](int32_t nationkey) {
-    if (nationkey < 0)
-      return false;
-    for (const int32_t k : nation_keys)
-      if (k == nationkey)
-        return true;
-    return false;
-  };
-
-  // The literal text before the first wildcard bounds a contiguous range of
-  // the sorted base names [rank_lo, rank_hi).  A pattern that is exactly that
-  // literal plus '%' (the TPC-H form) needs no further test; any other is
-  // tested only on the ranks a read actually visits.
-  const std::size_t wild = part_name_pattern.find_first_of("%_");
-  const std::string prefix = part_name_pattern.substr(0, wild);
-  const bool prefix_only = wild != std::string::npos &&
-                           wild + 1 == part_name_pattern.size() &&
-                           part_name_pattern[wild] == '%';
-  const auto has_prefix = [&](std::string_view name) {
-    return name.size() >= prefix.size() &&
-           std::memcmp(name.data(), prefix.data(), prefix.size()) == 0;
-  };
-  const auto matches = [&](const char *name, std::size_t len) {
-    if (prefix_only)
-      return has_prefix(std::string_view(name, len));
-    return SqlLikeAt(name, len, part_name_pattern.data(),
-                     part_name_pattern.size(), 0, 0);
-  };
-  const std::size_t name_count = base.name_partkey.size();
-  std::size_t lo = 0, hi = name_count;
-  while (lo < hi) { // first name >= prefix
-    const std::size_t mid = lo + (hi - lo) / 2;
-    if (base.PartName(mid) < std::string_view(prefix))
-      lo = mid + 1;
-    else
-      hi = mid;
-  }
-  const auto rank_lo = static_cast<uint32_t>(lo);
-  hi = name_count;
-  while (lo < hi) { // first name past the names starting with prefix
-    const std::size_t mid = lo + (hi - lo) / 2;
-    if (has_prefix(base.PartName(mid)))
-      lo = mid + 1;
-    else
-      hi = mid;
-  }
-  const auto rank_hi = static_cast<uint32_t>(lo);
-  const auto rank_ok = [&](uint32_t rank) {
-    if (prefix_only)
-      return true;
-    const auto name = base.PartName(rank);
-    return matches(name.data(), name.size());
-  };
-
-  const bool overlay_parts = state.parts.size() != 0;
-  const bool overlay_ps = state.partsupps.size() != 0;
-  const bool overlay_series = !state.series.Empty();
-  const bool overlay_suppliers = state.suppliers.size() != 0;
-  // A part whose name or partsupp list changed since the base is evaluated
-  // from the overlays (pass 2), never from its base pairs.
-  const auto part_changed = [&](int64_t partkey) {
-    const int64_t k = partkey;
-    return (overlay_parts && state.parts.Find(k)) ||
-           (overlay_ps && state.partsupps.Find(k));
-  };
-  std::vector<int64_t> qualifying_suppkeys;
-
-  // The pair qualifies when it has lineitems in the window and availqty
-  // exceeds half their quantity.  The supplier's nation is checked by caller.
-  const auto evaluate = [&](std::vector<int64_t> &out, int64_t partkey,
-                            int64_t suppkey, int64_t availqty,
-                            uint32_t series_idx, bool resolve_idx) {
-    const uint64_t pair_key = MakePairKey(partkey, suppkey);
-    int64_t sum = 0;
-    bool has = false;
-    const TpchQ20SeriesView ov =
-        overlay_series ? state.series.Find(pair_key) : TpchQ20SeriesView{};
-    if (ov.found) {
-      for (const auto &e : ov) {
-        if (e.shipdate_days < start_date_days)
-          continue;
-        if (e.shipdate_days >= end_date_days)
-          break;
-        has = true;
-        sum += e.quantity_raw;
-      }
-    } else {
-      if (resolve_idx)
-        series_idx = base.FindSeries(pair_key);
-      if (series_idx == TpchQ20Base::kNoSeries)
-        return;
-      has = base.WindowSum(series_idx, start_date_days, end_date_days, sum);
-    }
-    if (has && AvailQtyGreaterThanHalfSum(availqty, sum))
-      out.push_back(suppkey);
-  };
-
-  // Walks pairs [b, e) of a slot's name range; `keep` filters suppkeys.
-  const auto walk_pairs = [&](std::vector<int64_t> &out, std::size_t b,
-                              std::size_t e, auto &&keep) {
-    constexpr std::size_t kAhead = 16;
-    const auto *pairs = base.pairs.data();
-    for (std::size_t i = b; i < e; ++i) {
-      if (i + kAhead < e && pairs[i + kAhead].series_idx != TpchQ20Base::kNoSeries)
-        __builtin_prefetch(&base.series_off[pairs[i + kAhead].series_idx]);
-      if (i + kAhead / 2 < e &&
-          pairs[i + kAhead / 2].series_idx != TpchQ20Base::kNoSeries)
-        __builtin_prefetch(base.series_entries.data() +
-                           base.series_off[pairs[i + kAhead / 2].series_idx]);
-      if (overlay_series) {
-        if (i + kAhead < e) {
-          const auto &q = pairs[i + kAhead];
-          state.series.PrefetchSlot(MakePairKey(base.name_partkey[q.rank], q.suppkey));
-        }
-        if (i + kAhead / 2 < e) {
-          const auto &q = pairs[i + kAhead / 2];
-          state.series.PrefetchData(MakePairKey(base.name_partkey[q.rank], q.suppkey));
-        }
-      }
-      const auto &p = pairs[i];
-      if (!keep(p.suppkey) || !rank_ok(p.rank))
-        continue;
-      const int64_t partkey = base.name_partkey[p.rank];
-      if ((overlay_parts || overlay_ps) && part_changed(partkey))
-        continue;
-      evaluate(out, partkey, p.suppkey, base.Avail(p), p.series_idx, false);
-    }
-  };
-  // Qualifying suppkeys are sorted and deduplicated afterwards, so slices may
-  // append in any grouping.
-  const auto walk_slot = [&](uint32_t slot, auto &&keep) {
-    const auto [b, e] = base.RankRange(slot, rank_lo, rank_hi);
-    core::ParallelReduce(
-        services, e - b, kPairGrain, qualifying_suppkeys,
-        [&](std::vector<int64_t> &out, std::size_t begin, std::size_t end) {
-          walk_pairs(out, b + begin, b + end, keep);
-        },
-        [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
-          into.insert(into.end(), from.begin(), from.end());
-        });
-  };
-
-  // 1. Base pairs whose supplier's base nation is a target nation (minus
-  //    suppliers since moved out or deleted).
-  for (const int32_t nationkey : nation_keys) {
-    const uint32_t slot = base.SlotOfNation(nationkey);
-    if (slot == TpchQ20Base::kNoSlot)
-      continue;
-    if (overlay_suppliers)
-      walk_slot(slot, [&](int32_t suppkey) {
-        return is_target(state.SupplierNation(suppkey));
-      });
-    else
-      walk_slot(slot, [](int32_t) { return true; });
-  }
-
-  // 2. Parts whose name or partsupp list changed since the base.
-  if (overlay_parts || overlay_ps) {
-    std::vector<int64_t> changed;
-    state.parts.ForEach([&](uint64_t k, const TpchQ20PartOverlay &) {
-      changed.push_back(static_cast<int64_t>(k));
-    });
-    state.partsupps.ForEach([&](uint64_t k, const auto &) {
-      changed.push_back(static_cast<int64_t>(k));
-    });
-    std::sort(changed.begin(), changed.end());
-    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
-    for (const int64_t partkey : changed) {
-      bool name_ok = false;
-      if (const auto *ov = state.parts.Find(partkey)) {
-        name_ok = ov->present && matches(ov->name.data(), ov->name.size());
-      } else if (const uint32_t r = base.RankOf(partkey);
-                 r != TpchQ20Base::kNoRank) {
-        const auto name = base.PartName(r);
-        name_ok = matches(name.data(), name.size());
-        if (!name_ok) {
-          const auto extra = base.extra_ranks.find(partkey);
-          if (extra != base.extra_ranks.end())
-            for (const uint32_t er : extra->second) {
-              const auto n = base.PartName(er);
-              name_ok = name_ok || matches(n.data(), n.size());
-            }
-        }
-      }
-      if (!name_ok)
-        continue;
-      const auto consider = [&](int64_t suppkey, int64_t availqty,
-                                uint32_t series_idx, bool resolve_idx) {
-        if (is_target(state.SupplierNation(suppkey)))
-          evaluate(qualifying_suppkeys, partkey, suppkey, availqty, series_idx,
-                   resolve_idx);
-      };
-      if (const auto *list =
-              overlay_ps ? state.partsupps.Find(partkey)
-                         : nullptr) {
-        for (const auto &p : *list)
-          consider(p.suppkey, p.availqty, TpchQ20Base::kNoSeries, true);
-      } else {
-        base.ForEachBasePair(partkey, [&](int64_t suppkey, int64_t availqty,
-                                          uint32_t series_idx) {
-          consider(suppkey, availqty, series_idx, false);
-        });
-      }
-    }
-  }
-
-  // 3. Suppliers now in a target nation whose base nation is not (moved, or
-  //    new): their base pairs sit in their base nation's slot.
-  if (overlay_suppliers) {
-    std::vector<std::pair<uint32_t, int32_t>> moved; // (base slot, suppkey)
-    state.suppliers.ForEach([&](uint64_t k, const TpchQ20SupplierOverlay &ov) {
-      if (!ov.present || !is_target(ov.record.nationkey))
-        return;
-      const auto suppkey = static_cast<int64_t>(k);
-      const int32_t base_nation = base.BaseNation(suppkey);
-      const bool in_base = base_nation >= 0 ||
-                           base.BaseSupplier(suppkey) != nullptr;
-      if (in_base && is_target(base_nation))
-        return; // already walked in pass 1
-      const uint32_t slot =
-          in_base ? base.SlotOfNation(base_nation) : base.NoNationSlot();
-      if (slot != TpchQ20Base::kNoSlot)
-        moved.emplace_back(slot, static_cast<int32_t>(suppkey));
-    });
-    std::sort(moved.begin(), moved.end());
-    for (std::size_t i = 0; i < moved.size();) {
-      std::size_t j = i;
-      while (j < moved.size() && moved[j].first == moved[i].first)
-        ++j;
-      walk_slot(moved[i].first, [&](int32_t suppkey) {
-        return std::binary_search(
-            moved.begin() + static_cast<std::ptrdiff_t>(i),
-            moved.begin() + static_cast<std::ptrdiff_t>(j),
-            std::pair<uint32_t, int32_t>{moved[i].first, suppkey});
-      });
-      i = j;
-    }
-  }
-
-  std::sort(qualifying_suppkeys.begin(), qualifying_suppkeys.end());
-  qualifying_suppkeys.erase(
-      std::unique(qualifying_suppkeys.begin(), qualifying_suppkeys.end()),
-      qualifying_suppkeys.end());
-
-  // Output in name order.  A base supplier's name rank is its index in the
-  // name-sorted records, so without supplier changes this sorts integers and
-  // reads the records in memory order; a changed supplier (overlay record,
-  // no rank) compares by name, after base suppliers of an equal name.
-  struct OutRow {
-    const TpchQ20SupplierRecord *rec;
-    uint32_t rank; // kNoRank: overlay record
-  };
-  std::vector<OutRow> output_rows;
-  output_rows.reserve(qualifying_suppkeys.size());
-  for (const auto suppkey : qualifying_suppkeys) {
-    const TpchQ20SupplierOverlay *ov =
-        overlay_suppliers ? state.suppliers.Find(suppkey)
-                          : nullptr;
-    OutRow row{nullptr, TpchQ20Base::kNoRank};
-    if (ov) {
-      if (ov->present)
-        row.rec = &ov->record;
-    } else {
-      row.rank = base.SupplierRank(suppkey);
-      if (row.rank != TpchQ20Base::kNoRank)
-        row.rec = &base.supplier_records[row.rank];
-    }
-    if (row.rec && is_target(row.rec->nationkey))
-      output_rows.push_back(row);
-  }
-  std::sort(output_rows.begin(), output_rows.end(),
-            [](const OutRow &a, const OutRow &b) {
-              constexpr uint32_t kNone = TpchQ20Base::kNoRank;
-              if (a.rank != kNone && b.rank != kNone)
-                return a.rank < b.rank;
-              const int c = a.rec->name.compare(b.rec->name);
-              if (c != 0)
-                return c < 0;
-              return a.rank != kNone && b.rank == kNone;
-            });
-
-  sink.Begin(core::OutputSchema{});
-  // One two-cell row buffer for every row: its strings keep their capacity.
-  core::AuxRow out;
-  out.values.resize(2);
-  for (auto &cell : out.values) {
-    cell.type = core::AuxType::String;
-    cell.is_null = false;
-    cell.payload = std::string();
-  }
-  for (const auto &row : output_rows) {
-    std::get<std::string>(out.values[0].payload).assign(row.rec->name);
-    std::get<std::string>(out.values[1].payload).assign(row.rec->address);
-    sink.WriteRow(out);
-  }
-  sink.End();
+  const PartNameFilter names(*state.base, part_name_pattern);
+  QualifyingSuppliers qualifying(state, start_date_days, end_date_days, names,
+                                 std::move(nation_keys), services);
+  const auto suppkeys = qualifying.Find();
+  WriteSuppliers(InNameOrder(state, qualifying, suppkeys), sink);
 }
 
 std::vector<core::CalibrationWrite> TpchQ20Module::CalibrationWrites() const {

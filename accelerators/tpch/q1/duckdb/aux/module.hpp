@@ -50,7 +50,7 @@ struct TpchQ1DayGroupAggregate {
 class TpchQ1InitialScan {
 public:
   virtual ~TpchQ1InitialScan() = default;
-  virtual void ScanLineitems(
+  virtual void ScanLineitemsSerial(
       const std::function<void(const TpchQ1LineitemInput &)> &) = 0;
 
   // Optional: DuckDB GROUP BY day/flag. Return true when the consumer was

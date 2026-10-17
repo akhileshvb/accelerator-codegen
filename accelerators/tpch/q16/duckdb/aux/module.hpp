@@ -15,7 +15,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q16 layout ──────────────────────────────────────────────────────────────
 // The state is a set of small copy-on-write pages, so a point write to part,
 // partsupp or supplier republishes only the few pages it touches:
 //   0                      meta: brand/type dictionaries + sort ranks
@@ -69,14 +68,12 @@ struct TpchQ16Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ16Config {
   core::TableId part_table = 0;
   core::TableId partsupp_table = 0;
   core::TableId supplier_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ16SupplierInput {
   int64_t suppkey = 0;
   std::string comment;
@@ -110,7 +107,6 @@ public:
       const std::function<void(std::size_t, const TpchQ16PartsuppInput &)> &) = 0;
 };
 
-// ── State payloads (each published image is immutable) ─────────────────────
 struct TpchQ16Meta {
   std::vector<std::string> brands;
   std::vector<std::string> types;
@@ -211,7 +207,6 @@ struct TpchQ16State {
   std::vector<core::StateImage> images;
 };
 
-// ── Deltas ──────────────────────────────────────────────────────────────────
 // Applied in arrival order against the published pages (order independent in
 // effect: partsupp rows are kept for parts that do not exist).
 struct TpchQ16Op {
@@ -231,11 +226,9 @@ struct TpchQ16Op {
   std::string type;
 };
 
-// ── Predicates ──────────────────────────────────────────────────────────────
 bool TpchQ16IsComplaintSupplier(const std::string &comment);
 bool TpchQ16TypeNotLike(const std::string &type, const std::string &pattern);
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ16TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -252,7 +245,6 @@ private:
   std::vector<TpchQ16Op> ops;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ16Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ16Layout::kAccelerator;

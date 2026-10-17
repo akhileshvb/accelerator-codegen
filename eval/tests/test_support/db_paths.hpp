@@ -19,11 +19,18 @@
 // that only reads should open the file read-only. Scratch files go in a
 // ScratchDir (unique per process, removed on exit), never a fixed /tmp name.
 
+#include <algorithm>
+#include <cerrno>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <vector>
+#include <signal.h>
 #include <unistd.h>
 
 namespace accelerator_codegen::test_support {
@@ -65,17 +72,24 @@ inline std::string SecEdgarSmokeDbPath() { return EnvOr("ACCEL_SEC_EDGAR_DB", Se
 
 // A fresh directory under $TMPDIR (default /tmp), unique to this process and
 // removed with everything in it (DuckDB .wal files included) on destruction.
+// A test killed by SIGTERM/SIGINT/SIGALRM/SIGHUP removes its directories before
+// dying; one killed by SIGKILL (a ctest timeout) leaves its directory, which
+// the next ScratchDir in any process reaps once the owning pid is gone.
 class ScratchDir {
  public:
   explicit ScratchDir(const std::string &prefix = "accel_test") {
+    ReapStale();
     const auto base = std::filesystem::temp_directory_path();
     std::string templ = (base / (prefix + "_" + std::to_string(::getpid()) + "_XXXXXX")).string();
     if (::mkdtemp(templ.data()) == nullptr) {
       throw std::runtime_error("mkdtemp failed for " + templ);
     }
     path_ = templ;
+    std::ofstream(path_ / kMarker).put('\n');
+    Live().Add(path_.string());
   }
   ~ScratchDir() {
+    Live().Remove(path_.string());
     std::error_code ignored;
     std::filesystem::remove_all(path_, ignored);
   }
@@ -85,7 +99,70 @@ class ScratchDir {
   const std::filesystem::path &path() const { return path_; }
   std::string File(const std::string &name) const { return (path_ / name).string(); }
 
+  // Removes `<prefix>_<pid>_<suffix>` directories (recognised by their marker
+  // file) whose process no longer exists. Runs once per process.
+  static void ReapStale() {
+    static const bool done = [] {
+      namespace fs = std::filesystem;
+      std::error_code ec;
+      for (fs::directory_iterator it(fs::temp_directory_path(), ec), end; !ec && it != end;
+           it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        const std::size_t tail = name.rfind('_');
+        if (tail == std::string::npos || tail == 0) continue;
+        const std::size_t head = name.rfind('_', tail - 1);
+        if (head == std::string::npos) continue;
+        const std::string pid_text = name.substr(head + 1, tail - head - 1);
+        if (pid_text.empty() || pid_text.find_first_not_of("0123456789") != std::string::npos) continue;
+        std::error_code probe;
+        if (!fs::exists(it->path() / kMarker, probe)) continue;
+        const long pid = std::stol(pid_text);
+        if (::kill(static_cast<pid_t>(pid), 0) == 0 || errno != ESRCH) continue;
+        std::error_code ignored;
+        fs::remove_all(it->path(), ignored);
+      }
+      return true;
+    }();
+    (void)done;
+  }
+
  private:
+  static constexpr const char *kMarker = ".accel_scratch";
+
+  // Directories of this process, for the signal handler.
+  class LiveSet {
+   public:
+    void Add(const std::string &path) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!installed_) {
+        for (const int signo : {SIGTERM, SIGINT, SIGALRM, SIGHUP}) std::signal(signo, &LiveSet::OnSignal);
+        installed_ = true;
+      }
+      paths_.push_back(path);
+    }
+    void Remove(const std::string &path) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      paths_.erase(std::remove(paths_.begin(), paths_.end(), path), paths_.end());
+    }
+
+   private:
+    // Not async-signal-safe (no lock, remove_all allocates), but the process is
+    // about to die and a leaked tmpfs copy is the worse outcome.
+    static void OnSignal(int signo) {
+      std::error_code ignored;
+      for (const std::string &path : Live().paths_) std::filesystem::remove_all(path, ignored);
+      std::signal(signo, SIG_DFL);
+      ::raise(signo);
+    }
+    std::mutex mutex_;
+    std::vector<std::string> paths_;
+    bool installed_ = false;
+  };
+  static LiveSet &Live() {
+    static LiveSet live;
+    return live;
+  }
+
   std::filesystem::path path_;
 };
 

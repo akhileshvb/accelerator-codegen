@@ -29,34 +29,9 @@ struct TpchQ10Config {
 // Query-specific initial-scan contract.  Engine adapters implement this
 // using their native column/vector APIs; no generic variant row crosses the
 // bulk-scan boundary.
-struct TpchQ10CustomerInput {
-  int64_t key = 0;
-  std::string name;
-  int64_t acctbal_raw = 0;
-  int32_t nationkey = 0;
-  std::string address;
-  std::string phone;
-  std::string comment;
-};
-
 struct TpchQ10NationInput {
   int32_t key = 0;
   std::string name;
-};
-
-struct TpchQ10OrderInput {
-  int64_t key = 0;
-  int64_t custkey = 0;
-  int32_t orderdate_days = 0;
-};
-
-struct TpchQ10LineitemInput {
-  int64_t orderkey = 0;
-  int64_t extended_price_raw = 0;
-  int32_t extended_price_scale = 2;
-  int64_t discount_raw = 0;
-  int32_t discount_scale = 2;
-  bool returned = false;
 };
 
 // Pre-aggregated returned revenue for the SQL-pushdown build path.
@@ -89,14 +64,8 @@ struct TpchQ10CustomerRank {
 class TpchQ10InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ10InitialScan() = default;
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ10CustomerInput &)> &) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ10NationInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ10OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ10LineitemInput &)> &) = 0;
 
   virtual bool ScanReturnedCustomerRevenue(
       const std::function<void(const TpchQ10ReturnedRevenueInput &)> &) {

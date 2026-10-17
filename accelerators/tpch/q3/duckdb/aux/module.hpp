@@ -70,11 +70,6 @@ public:
   }
 
   // Optional: DuckDB join filtered to one market segment for RebuildPartition.
-  virtual bool ScanSegmentJoin(
-      const std::string &,
-      const std::function<void(const TpchQ3OrderInput &, const TpchQ3LineitemInput &)> &) {
-    return false;
-  }
 };
 
 // Packed live records. Encode still writes a fixed wire format.
@@ -109,13 +104,11 @@ inline uint8_t PackTpchQ3Shippriority(int32_t shippriority) {
   return static_cast<uint8_t>(shippriority);
 }
 
-// ---------------------------------------------------------------------------
 // Persistent (copy-on-write) hash-sharded sorted maps keyed by uint64 `key`
 // (core::ShardedSortedMap, 2^18 shards: 1024 top slots x 256 leaves per mid).
 // A published index is never mutated: a write copies the top array, the
 // touched mid arrays and the touched leaves (a few hundred entries);
 // everything else stays shared.
-// ---------------------------------------------------------------------------
 struct TpchQ3KeyOf {
   template <typename E> const uint64_t &operator()(const E &e) const {
     return e.key;
@@ -158,14 +151,12 @@ struct TpchQ3Side {
   TpchQ3ShardIndex<TpchQ3CustRec> custs;
 };
 
-// ---------------------------------------------------------------------------
 // Segment partition: orders with >= 1 lineitem, grouped into 16-day orderdate
 // bins; each bin is a list of immutable chunks sorted by (bound desc,
 // orderkey asc). A chunk owns its entries and their shipdate buckets.
 // Query: only bins that can hold an order with orderdate < cutoff < maxship are
 // visited, and a best-first merge over the bins stops as soon as the next
 // bound cannot beat the current 10th result.
-// ---------------------------------------------------------------------------
 constexpr uint32_t kTpchQ3BinShift = 4;
 constexpr std::size_t kTpchQ3ChunkMax = 256;
 constexpr std::size_t kTpchQ3ChunkTarget = 128;

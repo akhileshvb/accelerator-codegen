@@ -46,6 +46,19 @@ double HugeintScaleToDouble(Q1AccT value, uint8_t scale, uint64_t count) {
 	return scaled / static_cast<double>(count);
 }
 
+void FillQ1Row(Q1GroupKey key, const Q1MergedGroupStats &stats, Q1OutputRow &row) {
+	row.group_key = key;
+	row.sum_qty = AccToHugeint(stats.sum_qty);
+	row.sum_base_price = AccToHugeint(stats.sum_base_price);
+	row.sum_disc_price = AccToHugeint(stats.sum_disc_price);
+	row.sum_charge = AccToHugeint(stats.sum_charge);
+	const auto count = static_cast<uint64_t>(stats.count);
+	row.avg_qty = HugeintScaleToDouble(stats.sum_qty, kDecimalScale2, count);
+	row.avg_price = HugeintScaleToDouble(stats.sum_base_price, kDecimalScale2, count);
+	row.avg_disc = HugeintScaleToDouble(stats.sum_discount, kDecimalScale2, count);
+	row.count_order = stats.count;
+}
+
 } // namespace
 
 Q1GroupKey PackQ1GroupKey(char returnflag, char linestatus) {
@@ -100,21 +113,6 @@ bool Q1MergedFlat::AddPartition(const Q1DayPartition &node) {
 	}
 	return true;
 }
-
-namespace {
-void FillQ1Row(Q1GroupKey key, const Q1MergedGroupStats &stats, Q1OutputRow &row) {
-	row.group_key = key;
-	row.sum_qty = AccToHugeint(stats.sum_qty);
-	row.sum_base_price = AccToHugeint(stats.sum_base_price);
-	row.sum_disc_price = AccToHugeint(stats.sum_disc_price);
-	row.sum_charge = AccToHugeint(stats.sum_charge);
-	const auto count = static_cast<uint64_t>(stats.count);
-	row.avg_qty = HugeintScaleToDouble(stats.sum_qty, kDecimalScale2, count);
-	row.avg_price = HugeintScaleToDouble(stats.sum_base_price, kDecimalScale2, count);
-	row.avg_disc = HugeintScaleToDouble(stats.sum_discount, kDecimalScale2, count);
-	row.count_order = stats.count;
-}
-} // namespace
 
 uint32_t FinalizeQ1MergedFlat(const Q1MergedFlat &merged, Q1OutputRow *rows) {
 	uint32_t out = 0;

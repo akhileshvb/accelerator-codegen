@@ -38,12 +38,6 @@ struct TpchQ5NationInput {
   int32_t regionkey = 0;
 };
 
-struct TpchQ5OrderInput {
-  int64_t orderkey = 0;
-  int64_t custkey = 0;
-  int32_t orderdate_days = 0;
-};
-
 struct TpchQ5LineitemInput {
   int64_t orderkey = 0;
   int64_t suppkey = 0;
@@ -56,14 +50,10 @@ struct TpchQ5LineitemInput {
 class TpchQ5InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ5InitialScan() = default;
-  virtual void ScanRegions(
+  virtual void ScanRegionsSerial(
       const std::function<void(const TpchQ5RegionInput &)> &) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ5NationInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ5OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ5LineitemInput &)> &) = 0;
 
   // Point lookups of the current (post-write, same connection) lineitems of
   // one supplier / a set of orders. Return false when unsupported.
@@ -77,12 +67,10 @@ public:
   }
 };
 
-// ---------------------------------------------------------------------------
 // Persistent (copy-on-write) key -> record maps (core::ShardedSortedMap,
 // 2^17 shards: 1024 top slots x 128 leaves per mid).  A published image is
 // never mutated: writes copy the top array, the touched mid arrays and the
 // touched leaves (a few hundred entries), everything else stays shared.
-// ---------------------------------------------------------------------------
 template <typename V>
 using TpchQ5ShardIndex =
     core::ShardedSortedKvMap<int64_t, V, core::ShardedSortedMapHash<int64_t>, 17, 7>;

@@ -57,8 +57,6 @@ public:
       const std::function<void(const TpchQ15LineitemInput &)> &consumer) = 0;
 };
 
-// ── State ─────────────────────────────────────────────────────────────────
-
 struct TpchQ15SupplierRecord {
   std::string name;
   std::string address;
@@ -176,20 +174,14 @@ struct TpchQ15SupplierDelta {
   std::string new_phone;
 };
 
-// ── Encode / Decode ───────────────────────────────────────────────────────
-
 std::vector<uint8_t> EncodeTpchQ15Directory(const TpchQ15SupplierDirectory &);
 std::vector<uint8_t> EncodeTpchQ15Window(int32_t month_key, const TpchQ15WindowState &);
 bool DecodeTpchQ15Directory(const std::vector<uint8_t> &, TpchQ15SupplierDirectory &);
 bool DecodeTpchQ15Window(const std::vector<uint8_t> &, int32_t month_key,
                          TpchQ15WindowState &);
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                           int64_t discount_raw, int32_t discount_scale);
-
-// ── TxnBuffer ─────────────────────────────────────────────────────────────
 
 class TpchQ15TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -209,8 +201,6 @@ private:
   std::vector<TpchQ15LineitemDelta> lineitem_deltas;
   std::vector<TpchQ15SupplierDelta> supplier_deltas;
 };
-
-// ── Module ────────────────────────────────────────────────────────────────
 
 class TpchQ15Module final : public core::AuxQueryModule {
 public:

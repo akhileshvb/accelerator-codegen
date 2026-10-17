@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <mutex>
@@ -165,7 +166,7 @@ struct AcceleratorRuntime::Impl {
   bool build_invalidated = false; // the state became invalid while a build ran
   std::optional<Epoch> build_epoch;     // the snapshot of the running build or of the state
   std::optional<Epoch> uncaptured_from; // the earliest uncaptured commit seen while no build was synced
-  uint64_t build_failures = 0; // readers waiting for a build stop waiting when it fails
+  std::string logged_build_error; // the last error written to stderr: each distinct one is logged once
   std::optional<Clock::time_point> gap_since;
   // What a reader that cannot be served weighs (C11): the running build's
   // start, the last build's duration, and the engine-reported SQL time (a
@@ -327,7 +328,7 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     return ReadGuard(false, nullptr);
   }
   if (!Servable(epoch, options.require_applied_through)) {
-    const uint64_t failures = impl->build_failures; // before the build it may request
+    const uint64_t failures = impl->stats.build_failures; // before the build it may request
     lock.unlock();
     RequestBuild();
     lock.lock();
@@ -341,7 +342,7 @@ AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &o
     const auto deadline = Clock::now() + std::chrono::microseconds(options.max_wait_us);
     const auto done = [&] {
       return Servable(epoch, options.require_applied_through) || Collapsed(epoch) ||
-             impl->build_failures != failures;
+             impl->stats.build_failures != failures;
     };
     while (!done()) {
       const auto now = Clock::now();
@@ -701,6 +702,19 @@ void AcceleratorRuntime::UseModuleServices(core::AuxEngineServices &services) {
   impl->module_services = &services;
 }
 
+namespace {
+// Called from a catch block.
+std::string CurrentExceptionMessage() {
+  try {
+    throw;
+  } catch (const std::exception &error) {
+    return error.what();
+  } catch (...) {
+    return "unknown exception";
+  }
+}
+} // namespace
+
 void AcceleratorRuntime::RequestBuild() {
   {
     std::lock_guard<std::mutex> lock(impl->state_mutex);
@@ -713,7 +727,7 @@ void AcceleratorRuntime::RequestBuild() {
     try {
       BuildNow();
     } catch (...) {
-      // Left stale; the next commit or read requests another build.
+      // Left stale and recorded by BuildFailed; the next commit or read requests another build.
     }
     std::lock_guard<std::mutex> lock(impl->state_mutex);
     impl->build_scheduled = false;
@@ -809,24 +823,33 @@ bool AcceleratorRuntime::BuildNow() {
       impl->build_started.reset();
       impl->applier.AbandonBuild();
     }
-    BuildFailed();
+    BuildFailed(CurrentExceptionMessage());
     throw;
   }
   impl->state_cv.notify_all();
   Pump(); // shipped changes that arrived after the catch-up was taken
   if (!IsSynced()) {
-    BuildFailed(); // the catch-up could not be applied
+    BuildFailed("the catch-up could not be applied");
     return false;
   }
   return true;
 }
 
 // Readers waiting for the build stop waiting; the next read requests another.
-void AcceleratorRuntime::BuildFailed() {
+// The error is kept in the stats and logged the first time it is seen, so an
+// accelerator that cannot build is visible rather than silently falling back.
+void AcceleratorRuntime::BuildFailed(const std::string &error) {
+  bool first_sighting;
   {
     std::lock_guard<std::mutex> lock(impl->state_mutex);
-    impl->build_failures++;
+    impl->stats.build_failures++;
+    impl->stats.last_build_error = error;
+    first_sighting = impl->logged_build_error != error;
+    impl->logged_build_error = error;
     impl->build_scheduled = false;
+  }
+  if (first_sighting) {
+    std::fprintf(stderr, "[aux] %s: build failed: %s\n", id.c_str(), error.c_str());
   }
   impl->state_cv.notify_all();
 }

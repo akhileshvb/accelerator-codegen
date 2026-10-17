@@ -27,30 +27,11 @@ struct TpchQ7NationInput {
   std::string name;
 };
 
-struct TpchQ7OrderInput {
-  int64_t key = 0;
-  int64_t custkey = 0;
-};
-
-struct TpchQ7LineitemInput {
-  int64_t orderkey = 0;
-  int64_t suppkey = 0;
-  int64_t extended_price_raw = 0;
-  int32_t extended_price_scale = 2;
-  int64_t discount_raw = 0;
-  int32_t discount_scale = 2;
-  int32_t shipdate_days = 0;
-};
-
 class TpchQ7InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ7InitialScan() = default;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ7NationInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ7OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ7LineitemInput &)> &) = 0;
 
   // Optional fast paths (engine pushes the join + GROUP BY into SQL). Return
   // false when unsupported; BuildState then falls back to ScanLineitems.

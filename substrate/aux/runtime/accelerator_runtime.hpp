@@ -31,6 +31,8 @@ struct AcceleratorStats {
   double apply_us = 0;       // time maintaining them
   uint64_t builds = 0;
   double build_us = 0;
+  uint64_t build_failures = 0; // builds that threw or could not catch up
+  std::string last_build_error;
   uint64_t catch_up_commits = 0;
   uint64_t reads_hit = 0;
   uint64_t reads_waited = 0;
@@ -181,7 +183,7 @@ private:
   void RecordStale(const std::string &reason);
   void ApplyReady();
   void Collapse(Epoch from, Epoch to);
-  void BuildFailed();
+  void BuildFailed(const std::string &error);
   void Applied(const CommittedChange &change, double us);
   void MarkStale(Epoch from);
   bool Servable(Epoch epoch, const std::optional<Epoch> &applied_through) const;

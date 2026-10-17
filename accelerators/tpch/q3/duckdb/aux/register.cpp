@@ -167,34 +167,6 @@ struct TpchQ3Scan : TpchQ3InitialScan {
         });
     return true;
   }
-  bool ScanSegmentJoin(
-      const std::string &mktsegment,
-      const std::function<void(const TpchQ3OrderInput &,
-                               const TpchQ3LineitemInput &)> &consumer) override {
-    if (mktsegment.empty())
-      return true;
-    std::ostringstream sql;
-    sql << "SELECT o.o_orderkey, o.o_orderdate, o.o_custkey, o.o_shippriority, "
-           "l.l_extendedprice, l.l_discount, l.l_shipdate "
-           "FROM lineitem l "
-           "JOIN orders o ON l.l_orderkey = o.o_orderkey "
-           "JOIN customer c ON o.o_custkey = c.c_custkey "
-           "WHERE c.c_mktsegment = '"
-        << mktsegment << "'";
-    ScanQueryStreaming(
-        connection, sql.str(),
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    DateDays(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    SafeInt32(ChunkValue(chunk, 3, row))},
-                   {SafeInt64(ChunkValue(chunk, 0, row)),
-                    DecimalRaw(ChunkValue(chunk, 4, row)), 2,
-                    DecimalRaw(ChunkValue(chunk, 5, row)), 2,
-                    DateDays(ChunkValue(chunk, 6, row))});
-        });
-    return true;
-  }
   void ScanTable(const core::AuxEngineServices &services, const std::string &table,
                  const std::vector<BuildColumn> &columns, std::size_t partitions,
                  const Sink &sink) override {

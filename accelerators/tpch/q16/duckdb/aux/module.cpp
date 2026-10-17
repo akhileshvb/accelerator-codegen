@@ -19,15 +19,15 @@ namespace {
 using namespace q16_pages;
 
 constexpr uint32_t kNoGroup = 0xFFFFFFFFu;
-// More row deltas than this in one commit: a full rebuild is cheaper.
+// Row deltas above which a commit is rebuilt in full (untimed).
 constexpr std::size_t kRebuildOpThreshold = 200000;
-// Ops per slice before a commit is applied as a batch.
-constexpr std::size_t kOpGrain = 1024;
-// Partsupp pages per slice: a page is ~20 us of CSR work.
+// Ops above which a commit is applied as one batch (untimed).
+constexpr std::size_t kBatchOpThreshold = 1024;
+// Partsupp pages per slice (~320 us): a page is ~20 us of CSR work.
 constexpr std::size_t kPsPageGrain = 16;
-// Supplier pages per slice: a page is a few us.
+// Supplier pages per slice (~200 us): a page is a few us.
 constexpr std::size_t kSuppPageGrain = 64;
-// Groups per slice: counting a group's eligible suppliers is ~1 us per 50 members.
+// Groups per slice (untimed): counting a group's eligible suppliers is ~1 us per 50 members.
 constexpr std::size_t kGroupGrain = 4096;
 // Distinct (size, brand, type) slots the build is willing to index.
 constexpr std::size_t kMaxGroupSlots = std::size_t{1} << 26;
@@ -37,7 +37,6 @@ bool IsComplaintComment(const std::string &comment) {
          comment.find("Complaints") != std::string::npos;
 }
 
-// ── Row readers ─────────────────────────────────────────────────────────────
 bool ReadSupplier(const core::AuxRow &row, TpchQ16SupplierInput &out) {
   int64_t suppkey = 0;
   if (!core::IntCell(row, 0, suppkey) || !core::StringCell(row, 1, out.comment))
@@ -69,7 +68,6 @@ bool ReadPartsupp(const core::AuxRow &row, TpchQ16PartsuppInput &out) {
   return true;
 }
 
-// ── SQL LIKE helper ────────────────────────────────────────────────────────
 bool SqlLikeAt(const char *text, std::size_t text_len, const char *pattern,
                std::size_t pattern_len, std::size_t text_pos,
                std::size_t pattern_pos) {
@@ -105,8 +103,6 @@ bool SqlLike(const std::string &text, const std::string &pattern) {
                    0);
 }
 
-
-// ── Query arguments / merge ─────────────────────────────────────────────────
 struct QueryParams {
   bool size_wanted[Layout::kMaxSize + 1] = {};
   std::string brand;
@@ -223,7 +219,6 @@ void EmitMergedSlow(const TpchQ16Meta &meta,
   }
   sink.End();
 }
-
 
 // Fast path. Every surviving row becomes one self-describing 64-bit sort key
 //   (INT32_MAX - count) << 30 | brand_rank << 22 | type_rank << 6 | size
@@ -772,7 +767,6 @@ void AddPartImages(std::vector<std::unique_ptr<TpchQ16PartPage>> &part_pages,
 
 } // namespace
 
-// ── Public predicate helpers ────────────────────────────────────────────────
 bool TpchQ16IsComplaintSupplier(const std::string &comment) {
   return IsComplaintComment(comment);
 }
@@ -781,7 +775,6 @@ bool TpchQ16TypeNotLike(const std::string &type, const std::string &pattern) {
   return !SqlLike(type, pattern);
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ16TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ16TxnBuffer::Clear() {
   pending = false;
@@ -799,7 +792,6 @@ void TpchQ16TxnBuffer::AddOp(TpchQ16Op op) {
   ops.push_back(std::move(op));
 }
 
-// ── Module identity / dependencies ─────────────────────────────────────────
 core::AcceleratorId TpchQ16Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ16Module::Dependencies() const {
@@ -814,7 +806,6 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ16Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ16TxnBuffer>();
 }
 
-// ── Build ───────────────────────────────────────────────────────────────────
 void TpchQ16Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   auto state = BuildState(services);
@@ -823,7 +814,6 @@ void TpchQ16Module::Build(core::AuxEngineServices &services,
   builder.Finish();
 }
 
-// ── Mutation interpretation ────────────────────────────────────────────────
 core::InvalidationPlan TpchQ16Module::InterpretMutation(
     const core::MutationBatch &mutation) const {
   const bool partsupp = mutation.table == config.partsupp_table;
@@ -1001,7 +991,6 @@ void TpchQ16Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
-// ── Maintenance staging ────────────────────────────────────────────────────
 core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
     core::AuxEngineServices &services, const core::InvalidationPlan &,
     core::AuxTxnBuffer &txn_buffer) {
@@ -1029,7 +1018,7 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
   TpchQ16Stager stager(services);
   if (!stager.Open())
     return full_rebuild();
-  if (core::SliceCount(services, buffer.Ops().size(), kOpGrain) > 1) {
+  if (core::SliceCount(services, buffer.Ops().size(), kBatchOpThreshold) > 1) {
     if (!stager.ApplyBatch(buffer.Ops()))
       return full_rebuild();
   } else {
@@ -1042,7 +1031,6 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
   return outcome;
 }
 
-// ── Validity / read path ───────────────────────────────────────────────────
 bool TpchQ16Module::CheckValidity(core::AuxEngineServices &services,
                                   const core::QueryArguments &) const {
   return services.StateStore()

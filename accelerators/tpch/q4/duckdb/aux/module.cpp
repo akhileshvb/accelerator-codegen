@@ -28,11 +28,11 @@ constexpr uint32_t kMaxStride = 64;
 constexpr int32_t kWindowMonths = 3;
 // Deltas above which the cost model chooses between delta-apply and rebuild.
 constexpr std::size_t kBulkDeltaCount = 256;
-// Shards per slice when sorting the built index.
+// Shards per slice when sorting the built index (untimed).
 constexpr std::size_t kSortShardGrain = 1024;
-// Touched orders per slice when reading their current info.
+// Touched orders per slice when reading their current info (untimed).
 constexpr std::size_t kLookupGrain = 2048;
-// Touched mid arrays per slice when publishing the eligibility index.
+// Touched mid arrays per slice when publishing the eligibility index (untimed).
 constexpr std::size_t kFinishGrain = 16;
 
 std::shared_ptr<const TpchQ4StateImage>

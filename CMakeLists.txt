@@ -509,6 +509,9 @@ if(BUILD_TESTING)
     add_test(NAME shard_segment_test COMMAND test_shard_segment)
 endif()
 
+add_executable(test_scratch_dir eval/tests/test_scratch_dir.cpp)
+target_include_directories(test_scratch_dir PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(test_aux_calibration
     eval/tests/test_aux_calibration.cpp
 )
@@ -797,6 +800,7 @@ if(BUILD_TESTING)
     endforeach()
     add_test(NAME shared_aux_state_unit_test COMMAND test_shared_aux_state)
     add_test(NAME aux_calibration_unit_test COMMAND test_aux_calibration)
+    add_test(NAME scratch_dir_cleanup_test COMMAND test_scratch_dir)
     # Fixture: a fresh small TPC-H DB in the build dir, built from the TPC-H
     # source DB (ACCEL_TPCH_DB, default the shared SF1, read-only) with
     # workloads/tpch/test_db_subset.sql, so tests never depend on a shared

@@ -13,11 +13,11 @@ using namespace q16_pages;
 
 namespace {
 
-// Pages per slice when copying them for writing.
+// Pages per slice when copying them for writing (untimed).
 constexpr std::size_t kCopyPageGrain = 4;
-// Events per slice of the group-event sort.
+// Events per slice of the group-event sort (untimed).
 constexpr std::size_t kEventGrain = 16384;
-// Size-list changes below which the lists are re-sorted on one thread.
+// Size-list changes below which the lists are re-sorted on one thread (untimed).
 constexpr std::size_t kListChangeOpThreshold = 1024;
 
 } // namespace

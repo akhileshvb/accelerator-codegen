@@ -19,17 +19,16 @@ namespace {
 
 namespace sql_date = core::sql_date;
 
+// Shards per slice when sorting a built index (untimed).
+constexpr std::size_t kSortShardGrain = 1024;
+// Touched mid arrays per slice when publishing a side index (untimed).
+constexpr std::size_t kMidArrayGrain = 16;
+
 // Per-partition sums of the lineitem scan.
 struct LineitemPartial {
   std::vector<int64_t> revenue_1995, revenue_1996; // supplier nation x customer nation
   std::unordered_map<int64_t, int64_t> supp_orphans, cust_orphans;
 };
-
-// Shards per slice when sorting a built index.
-constexpr std::size_t kSortShardGrain = 1024;
-
-// Touched mid arrays per slice when publishing a side index.
-constexpr std::size_t kMidArrayGrain = 16;
 
 constexpr core::PartitionId kRevenuePartition = 1;
 // extendedprice * (100 - discount), both at scale 2.
@@ -716,7 +715,7 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q7 requires a typed initial scan source");
 
-  initial_scan->ScanNations([&](const TpchQ7NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ7NationInput &input) {
     state.nation_names.emplace(input.key, input.name);
   });
 

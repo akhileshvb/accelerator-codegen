@@ -104,7 +104,7 @@ using namespace scan;
 
 struct TpchQ11Scan : TpchQ11InitialScan {
   explicit TpchQ11Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const TpchQ11NationInput &)> &consumer) override {
     ScanQuery(connection, "SELECT n_nationkey, n_name FROM nation",
               [&](auto &result, ::duckdb::idx_t row) {

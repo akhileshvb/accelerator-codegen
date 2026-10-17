@@ -28,12 +28,6 @@ struct TpchQ4Config {
   core::TableId lineitem_table = 0;
 };
 
-struct TpchQ4OrderInput {
-  int64_t key = 0;
-  int32_t orderdate_days = 0;
-  std::string orderpriority;
-};
-
 struct TpchQ4LineitemInput {
   int64_t orderkey = 0;
   int32_t commitdate_days = 0;
@@ -43,10 +37,6 @@ struct TpchQ4LineitemInput {
 class TpchQ4InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ4InitialScan() = default;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ4OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ4LineitemInput &)> &) = 0;
 };
 
 struct TpchQ4OrderInfo {

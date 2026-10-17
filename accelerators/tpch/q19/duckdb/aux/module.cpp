@@ -19,7 +19,7 @@ using Vec = TpchQ19State::Vec;
 
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
-// Lineitem deltas per maintenance slice (~70 ns each: >= 250 us a slice).
+// Lineitem deltas per maintenance slice (~290 us): ~70 ns each.
 constexpr std::size_t kDeltaGrain = 4096;
 // l_quantity BETWEEN qty AND qty + kQuantityWindow.
 constexpr int64_t kQuantityWindow = 10;
@@ -353,7 +353,7 @@ TpchQ19Module::BuildState(core::AuxEngineServices &services) const {
   auto parts = core::PartitionedBuild<PartCodes>(
       services, [] { return PartCodes{}; },
       [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanPartsPartitioned(
+        initial_scan->ScanParts(
             services, partitions,
             [&](std::size_t p, const TpchQ19PartInput &input) {
               sink(p, core::SingleRowBatch<TpchQ19PartInput>{input});

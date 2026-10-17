@@ -79,8 +79,8 @@ struct TpchQ8RegionInput {
 class TpchQ8InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ8InitialScan() = default;
-  virtual void ScanNations(const std::function<void(const TpchQ8NationInput &)> &) = 0;
-  virtual void ScanRegions(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
+  virtual void ScanNationsSerial(const std::function<void(const TpchQ8NationInput &)> &) = 0;
+  virtual void ScanRegionsSerial(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
 
   virtual bool LookupOrder(int64_t, TpchQ8OrdersInput &) { return false; }
   virtual bool LookupPart(int64_t, TpchQ8PartInput &) { return false; }

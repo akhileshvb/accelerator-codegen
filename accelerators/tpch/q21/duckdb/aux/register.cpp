@@ -193,7 +193,7 @@ struct TpchQ21Scan : TpchQ21InitialScan {
     }
     return true;
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const TpchQ21NationInput &)> &consumer) override {
     ScanQuery(connection, "SELECT n_nationkey, n_name FROM nation",
               [&](auto &result, ::duckdb::idx_t row) {

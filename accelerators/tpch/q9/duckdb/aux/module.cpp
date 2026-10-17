@@ -19,16 +19,17 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Profit slots per slice when visiting their part records (~0.1 ms per slot).
+// Profit slots per slice when visiting their part records (~1600 us).
 constexpr std::size_t kSlotGrain = 16;
-// Profit slots per slice when copying them or folding them into the cube (~10 us per slot).
+// Profit slots per slice when copying them or folding them into the cube (~80 us).
 constexpr std::size_t kSlotFoldGrain = 8;
-// Profit slots per slice when applying buffered pair aggregates at build.
+// Profit slots per slice when applying buffered pair aggregates at build (untimed).
 constexpr std::size_t kPairSlotGrain = 4;
-// Candidate parts per read slice: a hash lookup, substring test and cells, ~0.1 us each.
+// Candidate parts per read slice (~800 us): a hash lookup, substring test and cells.
 constexpr std::size_t kCandidateGrain = 8192;
-// Affected pairs per snapshot chunk; one chunk per slice.
+// Affected pairs per snapshot chunk.
 constexpr std::size_t kPairChunk = 4096;
+// Pair chunks per slice (untimed).
 constexpr std::size_t kPairChunkGrain = 1;
 // Parts reserved before the part scan.
 
@@ -1662,7 +1663,7 @@ void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
   if (!initial_scan)
     throw std::logic_error("TPC-H Q9 aux requires a typed initial scan source");
 
-  initial_scan->ScanNations([&](const TpchQ9NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ9NationInput &input) {
     state.nation_names.emplace(input.nationkey, input.name);
   });
 

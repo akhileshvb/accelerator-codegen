@@ -23,9 +23,9 @@ using core::ByteWriter;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kDirMagic = 0x44313551;   // Q15D
 constexpr uint32_t kWindowMagic = 0x57313551; // Q15W
-// Windows per slice: a rescan walks every supplier slot (~tens of us at SF 1).
+// Windows per slice (untimed): a rescan walks every supplier slot.
 constexpr std::size_t kWindowGrain = 8;
-// Commits below this many lineitem deltas apply their month windows inline.
+// Lineitem deltas below which a commit applies its month windows inline (untimed).
 constexpr std::size_t kDeltaOpThreshold = 4096;
 
 int32_t MonthKey(int32_t days) {
@@ -176,8 +176,6 @@ void ApplyWindowDeltas(TpchQ15WindowState &ws,
 
 } // namespace
 
-// ── State containers ──────────────────────────────────────────────────────
-
 void TpchQ15WindowState::Rescan() {
   int64_t count = 0;
   int64_t max_rev = std::numeric_limits<int64_t>::min();
@@ -269,14 +267,10 @@ std::size_t TpchQ15SupplierDirectory::Size() const {
   return n;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t,
                           int64_t discount_raw, int32_t) {
   return extended_price_raw * (100 - discount_raw);
 }
-
-// ── Encode / Decode ───────────────────────────────────────────────────────
 
 std::vector<uint8_t> EncodeTpchQ15Directory(
     const TpchQ15SupplierDirectory &dir) {
@@ -375,8 +369,6 @@ bool DecodeTpchQ15Window(const std::vector<uint8_t> &bytes, int32_t month_key,
   return true;
 }
 
-// ── TxnBuffer ─────────────────────────────────────────────────────────────
-
 bool TpchQ15TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ15TxnBuffer::Clear() {
   pending = false;
@@ -405,8 +397,6 @@ void TpchQ15TxnBuffer::AddSupplierDelta(TpchQ15SupplierDelta delta) {
   pending = true;
   supplier_deltas.push_back(delta);
 }
-
-// ── Module ────────────────────────────────────────────────────────────────
 
 core::AcceleratorId TpchQ15Module::Id() const { return kId; }
 

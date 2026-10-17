@@ -150,7 +150,7 @@ using namespace scan;
 
 struct TpchQ19Scan : TpchQ19InitialScan {
   explicit TpchQ19Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanPartsPartitioned(
+  void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ19PartInput &)> &sink) override {
     ScanPartitioned(services, connection, "part",

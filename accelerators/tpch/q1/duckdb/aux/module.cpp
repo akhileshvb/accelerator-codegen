@@ -525,7 +525,7 @@ TpchQ1Module::BuildStateForDays(const std::set<int32_t> &days) const {
   if (initial_scan->ScanDayGroupAggregates(consume))
     return state;
 
-  initial_scan->ScanLineitems([&](const TpchQ1LineitemInput &input) {
+  initial_scan->ScanLineitemsSerial([&](const TpchQ1LineitemInput &input) {
     if (!days.empty() && days.find(input.shipdate_days) == days.end())
       return;
     ApplyLineitemInput(input, state[input.shipdate_days]);

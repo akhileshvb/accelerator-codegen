@@ -581,6 +581,9 @@ void FailedBuildReleasesReaders() {
   const auto start = std::chrono::steady_clock::now();
   CHECK(!ReadAt(runtime, db.Now(), std::nullopt, 60'000'000)); // falls back when the build fails
   CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(10));
+  // The failure is visible in the stats, not only as fallbacks.
+  CHECK(runtime.Stats().build_failures >= 1);
+  CHECK(runtime.Stats().last_build_error == "no build snapshot");
   slots.fail_builds = false;
   CHECK(ReadAt(runtime, db.Now()) == 0); // the next read builds again
 }

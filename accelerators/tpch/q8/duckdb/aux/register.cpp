@@ -119,7 +119,7 @@ using namespace scan;
 
 struct TpchQ8Scan : TpchQ8InitialScan {
   explicit TpchQ8Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const TpchQ8NationInput &)> &consumer) override {
     ScanQueryStreaming(
         connection, "SELECT n_nationkey, n_name, n_regionkey FROM nation",
@@ -129,7 +129,7 @@ struct TpchQ8Scan : TpchQ8InitialScan {
                     SafeInt32(ChunkValue(chunk, 2, row))});
         });
   }
-  void ScanRegions(
+  void ScanRegionsSerial(
       const std::function<void(const TpchQ8RegionInput &)> &consumer) override {
     ScanQueryStreaming(
         connection, "SELECT r_regionkey, r_name FROM region",

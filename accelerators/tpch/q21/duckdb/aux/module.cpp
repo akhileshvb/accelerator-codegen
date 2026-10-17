@@ -32,13 +32,13 @@ constexpr uint32_t kOrdersMagic = 0x4f323151;   // Q21O
 constexpr uint32_t kNationMagic = 0x4e323151;   // Q21N
 constexpr uint32_t kNationNameIdxMagic = 0x49323151; // Q21I
 
-// Orders per maintenance slice: a few hash probes and a small-vector scan each.
+// Orders per maintenance slice (untimed): a few hash probes and a small-vector scan each.
 constexpr std::size_t kOrderGrain = 2048;
-// Elements per sorted slice: a key compare each.
+// Elements per sorted slice (untimed): a key compare each.
 constexpr std::size_t kSortGrain = 65536;
-// Shard runs per maintenance slice: one shard write per item.
+// Shard runs per maintenance slice (untimed): one shard write per item.
 constexpr std::size_t kRunGrain = 1024;
-// Below this many nation row compares a commit patches its nations inline.
+// Nation row compares below which a commit patches its nations inline (untimed).
 constexpr std::size_t kNationOpThreshold = 4096;
 
 using core::CharCell;
@@ -1417,7 +1417,7 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
       }));
 
   // Nations.
-  initial_scan->ScanNations([&](const TpchQ21NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ21NationInput &input) {
     state.nation_index->nation_name_to_keys[input.name].push_back(
         input.nationkey);
   });
