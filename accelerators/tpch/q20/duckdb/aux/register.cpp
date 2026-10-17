@@ -1,4 +1,4 @@
-// GENERATED QUERY: TPC-H Q20 aux state on DuckDB.
+// TPC-H Q20 aux state on DuckDB.
 // Registers the catalog entry (SQL, probes, benchmark arguments), the
 // table function accel_tpch_q20_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
@@ -8,15 +8,8 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,9 +18,17 @@
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
-namespace q20_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
+
+constexpr core::TableId kLineitemTable = 1;
+constexpr core::TableId kPartTable = 2;
+constexpr core::TableId kPartsuppTable = 3;
+constexpr core::TableId kSupplierTable = 4;
+constexpr core::TableId kNationTable = 5;
+
+namespace q20_catalog {
+
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
@@ -37,7 +38,7 @@ SharedProbe BuildTpchQ20Probe(::duckdb::MaterializedQueryResult &result,
   const auto linenumber = result.GetValue(1, row).ToString();
   const double quantity = std::stod(result.GetValue(2, row).ToString());
   SharedProbe probe;
-  probe.table = 1;  // TpchQ20Config lineitem_table
+  probe.table = kLineitemTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {3};
   probe.write_delta = 100000.0;
@@ -91,7 +92,7 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{20,
                               ::duckdb::Date::FromString("1997-01-01"))}),
        core::AuxValue::Of(core::AuxType::String, std::string{"gainsboro%"}),
        core::AuxValue::Of(core::AuxType::String, std::string{"RUSSIA"})}},
-     1,
+     kLineitemTable,
      false,
      BuildTpchQ20Probe,
      core::kTpchQ20CostModel,
@@ -192,7 +193,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q20_aux",
     {::duckdb::LogicalType::DATE, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ20Config c{1, 2, 3, 4, 5};
+      const TpchQ20Config c{kLineitemTable, kPartTable, kPartsuppTable, kSupplierTable, kNationTable};
       return MakeBinding<TpchQ20Scan, TpchQ20Module>(connection, CaptureTableList{{"lineitem", c.lineitem_table}, {"part", c.part_table}, {"partsupp", c.partsupp_table}, {"supplier", c.supplier_table}, {"nation", c.nation_table}}, c);
     }}};
 

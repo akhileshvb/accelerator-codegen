@@ -1,4 +1,4 @@
-// GENERATED QUERY: TPC-H Q19 aux state on DuckDB.
+// TPC-H Q19 aux state on DuckDB.
 // Registers the catalog entry (SQL, probes, benchmark arguments), the
 // table function accel_tpch_q19_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
@@ -9,16 +9,8 @@
 #include "backends/duckdb/engine/decimal128.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
-#include <tuple>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -27,16 +19,21 @@
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
-namespace q19_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
+
+constexpr core::TableId kLineitemTable = 5;
+constexpr core::TableId kPartTable = 6;
+
+namespace q19_catalog {
+
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
 SharedProbe BuildTpchQ19Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   // Select columns: orderkey, partkey, linenumber, qty, price, discount,
-  // shipmode, shipinstruct. table=5 matches TpchQ19Config{5,6}.lineitem_table.
+  // shipmode, shipinstruct.
   const auto orderkey = result.GetValue(0, row).ToString();
   const auto partkey = result.GetValue(1, row).ToString();
   const auto linenumber = result.GetValue(2, row).ToString();
@@ -47,7 +44,7 @@ SharedProbe BuildTpchQ19Probe(::duckdb::MaterializedQueryResult &result,
     quantity = static_cast<double>(DecimalRaw(result.GetValue(3, row))) / 100.0;
   }
   SharedProbe probe;
-  probe.table = 5;
+  probe.table = kLineitemTable;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {1};
   probe.write_delta = 100.0;
@@ -117,7 +114,7 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{19,
        core::AuxValue::Of(core::AuxType::Int64, int64_t{15}),
        core::AuxValue::Of(core::AuxType::String, std::string{"Brand#51"}),
        core::AuxValue::Of(core::AuxType::Int64, int64_t{23})}},
-     5,
+     kLineitemTable,
      false,
      BuildTpchQ19Probe,
      core::kTpchQ19CostModel,
@@ -228,7 +225,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q19_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::BIGINT},
     [](::duckdb::Connection &connection) {
-      const TpchQ19Config c{5, 6};
+      const TpchQ19Config c{kLineitemTable, kPartTable};
       return MakeBinding<TpchQ19Scan, TpchQ19Module>(connection, CaptureTableList{{"lineitem", c.lineitem_table}, {"part", c.part_table}}, c);
     }}};
 

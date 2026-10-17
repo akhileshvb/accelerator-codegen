@@ -1,9 +1,9 @@
 #include "tpch/q22/duckdb/aux/module.hpp"
 #include "tpch/q22/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/parallel_stable_sort.hpp"
-#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -23,41 +23,20 @@ constexpr std::size_t kRunGrain = 64;
 // Key events per sorted slice of the owner sort.
 constexpr std::size_t kSortGrain = 65536;
 // Below this many balance ops a commit updates its prefixes inline.
-constexpr std::size_t kPrefixOpGrain = 4096;
+constexpr std::size_t kPrefixOpThreshold = 4096;
 
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
+// c_acctbal is DECIMAL(15,2).
+constexpr int32_t kBalanceScale = 2;
 
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
+using core::IntCell;
+using core::StringCell;
 
 // A decimal as an exact x100 integer; false when it is not representable.
 bool ToScale2(int64_t raw_in, int32_t scale, int64_t &out) {
   Int128 raw = raw_in;
-  for (int32_t s = scale; s < 2; ++s)
+  for (int32_t s = scale; s < kBalanceScale; ++s)
     raw *= 10;
-  for (int32_t s = scale; s > 2; --s) {
+  for (int32_t s = scale; s > kBalanceScale; --s) {
     if (raw % 10 != 0)
       return false;
     raw /= 10;
@@ -70,11 +49,9 @@ bool ToScale2(int64_t raw_in, int32_t scale, int64_t &out) {
 }
 
 bool Scale2Cell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<core::ScaledDecimal>(row.values[index].payload))
-    return false;
-  const auto decimal = std::get<core::ScaledDecimal>(row.values[index].payload);
-  return ToScale2(decimal.value, decimal.scale, out);
+  int64_t raw = 0;
+  int32_t scale = 0;
+  return core::DecimalCell(row, index, raw, scale) && ToScale2(raw, scale, out);
 }
 
 // substring(c_phone from 1 for 2): the first two CHARACTERS (UTF-8 aware); a
@@ -89,8 +66,6 @@ std::string PhonePrefix(const std::string &phone) {
   }
   return phone.substr(0, i);
 }
-
-// ── State editing ───────────────────────────────────────────────────────────
 
 // Edits a private copy of the state: clones the prefix dictionary only when a
 // new prefix appears and each touched prefix entry once.
@@ -222,13 +197,6 @@ struct KeyEvent {
   std::size_t delta; // index into the customer or order deltas
 };
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 core::InvalidationPlan StatePlan() {
   core::InvalidationPlan plan;
   plan.scope =
@@ -255,44 +223,6 @@ std::set<std::string> CountryCodes(const core::QueryArguments &arguments) {
       codes.insert(std::get<std::string>(value.payload));
   return codes;
 }
-
-} // namespace
-
-// ── TxnBuffer methods ───────────────────────────────────────────────────────
-bool TpchQ22TxnBuffer::HasPendingChanges() const {
-  return pending || !customer_deltas.empty() || !order_deltas.empty();
-}
-
-void TpchQ22TxnBuffer::Clear() {
-  pending = false;
-  requires_rebuild = false;
-  customer_deltas.clear();
-  order_deltas.clear();
-}
-
-bool TpchQ22TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-
-void TpchQ22TxnBuffer::MarkRebuild() {
-  pending = true;
-  requires_rebuild = true;
-  customer_deltas.clear();
-  order_deltas.clear();
-}
-
-// ── Module identity ─────────────────────────────────────────────────────────
-core::AcceleratorId TpchQ22Module::Id() const { return kId; }
-
-std::vector<core::TableDependency> TpchQ22Module::Dependencies() const {
-  return {{config.customer_table, {0, 1, 2}, {0, 4, 5}},
-          {config.orders_table, {0}, {1}}};
-}
-
-std::unique_ptr<core::AuxTxnBuffer> TpchQ22Module::CreateTxnBuffer() const {
-  return std::make_unique<TpchQ22TxnBuffer>();
-}
-
-// ── Build ───────────────────────────────────────────────────────────────────
-namespace {
 
 // The customers one build partition has seen. Prefix ids are local until the
 // partitions fold in table order, which assigns them in order of first
@@ -350,6 +280,37 @@ struct CustomerPartial {
 
 } // namespace
 
+bool TpchQ22TxnBuffer::HasPendingChanges() const {
+  return pending || !customer_deltas.empty() || !order_deltas.empty();
+}
+
+void TpchQ22TxnBuffer::Clear() {
+  pending = false;
+  requires_rebuild = false;
+  customer_deltas.clear();
+  order_deltas.clear();
+}
+
+bool TpchQ22TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
+
+void TpchQ22TxnBuffer::MarkRebuild() {
+  pending = true;
+  requires_rebuild = true;
+  customer_deltas.clear();
+  order_deltas.clear();
+}
+
+core::AcceleratorId TpchQ22Module::Id() const { return kId; }
+
+std::vector<core::TableDependency> TpchQ22Module::Dependencies() const {
+  return {{config.customer_table, {0, 1, 2}, {0, 4, 5}},
+          {config.orders_table, {0}, {1}}};
+}
+
+std::unique_ptr<core::AuxTxnBuffer> TpchQ22Module::CreateTxnBuffer() const {
+  return std::make_unique<TpchQ22TxnBuffer>();
+}
+
 std::shared_ptr<const TpchQ22State>
 TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
@@ -361,7 +322,7 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
       [&](std::size_t partitions, auto &&sink) {
         initial_scan->ScanOrders(services, partitions,
                                  [&](std::size_t p, const TpchQ22OrderInput &input) {
-                                   sink(p, TypedRowBatch<TpchQ22OrderInput>{input});
+                                   sink(p, core::SingleRowBatch<TpchQ22OrderInput>{input});
                                  });
       },
       [](OrderCounts &counts, const TpchQ22OrderInput &input) {
@@ -377,7 +338,7 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
       [&](std::size_t partitions, auto &&sink) {
         initial_scan->ScanCustomers(services, partitions,
                                     [&](std::size_t p, const TpchQ22CustomerInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ22CustomerInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ22CustomerInput>{input});
                                     });
       },
       [&](CustomerPartial &partial, const TpchQ22CustomerInput &input) {
@@ -406,7 +367,7 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
   state->dictionary =
       std::make_shared<TpchQ22PrefixDictionary>(std::move(customers.dictionary));
   state->prefixes.resize(customers.totals.size());
-  services.ParallelFor(customers.totals.size(), [&](std::size_t id) {
+  core::ParallelEach(services, customers.totals.size(), 1, [&](std::size_t id) {
     auto entry = std::make_shared<TpchQ22PrefixEntry>();
     entry->positive_count = customers.totals[id].positive_count;
     entry->positive_sum_raw = customers.totals[id].positive_sum;
@@ -436,7 +397,6 @@ TpchQ22Module::LoadState(core::AuxEngineServices &services) const {
   return nullptr;
 }
 
-// ── Mutation interpretation ─────────────────────────────────────────────────
 core::InvalidationPlan
 TpchQ22Module::InterpretMutation(const core::MutationBatch &mutation) const {
   if (mutation.table == config.customer_table ||
@@ -445,7 +405,6 @@ TpchQ22Module::InterpretMutation(const core::MutationBatch &mutation) const {
   return {};
 }
 
-// ── Mutation accumulation ───────────────────────────────────────────────────
 void TpchQ22Module::AccumulateMutation(const core::MutationBatch &mutation,
                                        core::AuxEngineServices &,
                                        core::AuxTxnBuffer &base_buffer) {
@@ -542,7 +501,6 @@ void TpchQ22Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
-// ── StageMaintenance ────────────────────────────────────────────────────────
 core::StagedMaintenanceOutcome
 TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
                                 const core::InvalidationPlan &,
@@ -561,17 +519,11 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
   // partitions, so anything but ApplyDelta is a whole-state rebuild.
   {
     const auto decision = services.ChooseMaintenance(
-        {static_cast<uint64_t>(buffer.customer_deltas.size() + buffer.order_deltas.size()), 1, true, false, true, false, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    if (decision.action == core::MaintenanceAction::RebuildPartition) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
+        core::MaintenanceRequest::IncrementalSingleState(
+            buffer.customer_deltas.size() + buffer.order_deltas.size(),
+            services.ExpectedQueriesBeforeNextWrite()));
     if (decision.action != core::MaintenanceAction::ApplyDelta) {
-      outcome.action = decision.action;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
+      core::FinishRebuildAll(outcome, decision);
       return outcome;
     }
   }
@@ -584,11 +536,6 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
   // A copy shares every chunk / prefix entry; edits clone only what they touch.
   auto state = std::make_shared<TpchQ22State>(*current);
   StateEditor editor(*state);
-
-  auto inconsistent = [&] {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  };
 
   // Serial prologue: prefix ids for the new rows, then the deltas as key
   // events (all customer deltas, then all order deltas), grouped by the owner
@@ -612,14 +559,11 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
     event.owner = state->customers.OwnerOf(event.key);
     state->customers.Reserve(event.key);
   }
-  ParallelStableSort(services, events,
+  core::ParallelStableSort(services, events,
                      [](const KeyEvent &a, const KeyEvent &b) { return a.owner < b.owner; },
                      kSortGrain);
-  std::vector<std::size_t> run_starts; // first event of each owner run
-  for (std::size_t i = 0; i < events.size(); ++i)
-    if (i == 0 || events[i].owner != events[i - 1].owner)
-      run_starts.push_back(i);
-  run_starts.push_back(events.size());
+  const auto run_starts =
+      core::RunStarts(events, [](const KeyEvent &event) { return event.owner; });
 
   // Slices own whole runs, so each edits only its own directory pages and
   // chunks; the sparse-key run is one run and so one slice.
@@ -668,8 +612,10 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
           part.ok = apply(events[i], part);
       },
       [](Staged &into, Staged &&from) { into.Merge(std::move(from)); });
-  if (!staged.ok)
-    return inconsistent();
+  if (!staged.ok) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
 
   // Prefixes are independent: each clones and updates its own entry.
   std::vector<std::pair<uint32_t, PrefixDelta *>> touched;
@@ -680,8 +626,8 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
   }
   std::sort(touched.begin(), touched.end());
   std::vector<char> consistent(touched.size(), 1);
-  core::ParallelEach(services, touched.size(),
-                     balance_ops < kPrefixOpGrain ? touched.size() : 1, [&](std::size_t i) {
+  core::ParallelEachWhen(services, touched.size(), balance_ops, kPrefixOpThreshold,
+                         [&](std::size_t i) {
     auto &entry = editor.Entry(touched[i].first);
     const auto &delta = *touched[i].second;
     entry.positive_count += delta.positive_count;
@@ -689,8 +635,10 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
     consistent[i] = entry.positive_count >= 0 &&
                     ApplyBalanceOps(entry.zero_order, touched[i].second->zero_order);
   });
-  if (std::find(consistent.begin(), consistent.end(), 0) != consistent.end())
-    return inconsistent();
+  if (std::find(consistent.begin(), consistent.end(), 0) != consistent.end()) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
   editor.Finish();
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -699,7 +647,6 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
   return outcome;
 }
 
-// ── CheckValidity ───────────────────────────────────────────────────────────
 bool TpchQ22Module::CheckValidity(core::AuxEngineServices &services,
                                   const core::QueryArguments &) const {
   return services.StateStore()
@@ -723,7 +670,6 @@ void TpchQ22Module::EmitRows(const std::vector<TpchQ22OutputRow> &rows,
   sink.End();
 }
 
-// ── Execute ─────────────────────────────────────────────────────────────────
 void TpchQ22Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {

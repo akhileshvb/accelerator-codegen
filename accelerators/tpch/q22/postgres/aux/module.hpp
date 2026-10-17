@@ -34,9 +34,8 @@ namespace accelerator_codegen::aux_state::query {
 // Memory: 16 B per custkey (customers and order-only custkeys) + ~2.5 B of
 // chunk overhead, plus 16 B per distinct (prefix, balance) of zero-order
 // customers (bounded by the balance domain): ~19 B/customer, 0.3 GB at SF100,
-// 2.8 GB at SF1000 (the old unordered_map<custkey, record with a std::string>
-// cost ~80 B/customer: 1.2 GB at SF100). Write batch: O(touched custkeys *
-// 64-customer chunk + touched prefixes' balance blocks); no table scan.
+// 2.8 GB at SF1000. Write batch: O(touched custkeys * 64-customer chunk +
+// touched prefixes' balance blocks); no table scan.
 struct TpchQ22Layout {
   static constexpr const char *kAccelerator = "tpch_q22_aux";
   static constexpr core::PartitionId kFull = 0;
@@ -175,11 +174,11 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
+  static void Answer(const TpchQ22State &, const core::QueryArguments &,
+                     core::AuxRowSink &);
   static void EmitRows(const std::vector<TpchQ22OutputRow> &rows,
                        core::AuxRowSink &sink);
 

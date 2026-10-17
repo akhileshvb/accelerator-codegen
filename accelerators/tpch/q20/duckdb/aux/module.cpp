@@ -1,17 +1,14 @@
 #include "tpch/q20/duckdb/aux/module.hpp"
 #include "tpch/q20/calibration_writes.hpp"
+#include "prims/sql_date.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/parallel_stable_sort.hpp"
-#include "tpch/common/typed_row_batch.hpp"
 
 #include <algorithm>
-#include <cstdlib>
-#include <cmath>
-#include <chrono>
 #include <cstring>
-#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -24,83 +21,20 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
-// Base pairs per read slice: ~100 ns each (cache-missing series lookup), so a
-// slice is ~3 ms (an earlier 1024-pair grain was slower than serial).
-constexpr std::size_t kPairWalkGrain = 32768;
-// Partsupp rows per build slice: a merge step is ~20 ns, so ~1 ms.
-constexpr std::size_t kSeriesIdxGrain = 65536;
-// Pairs per maintenance slice: ~1 us each, so RF-sized commits stay inline.
+// Base pairs per read slice (~3 ms: a cache-missing series lookup is ~100 ns).
+constexpr std::size_t kPairGrain = 32768;
+// Partsupp rows per build slice (~1 ms: a merge step is ~20 ns).
+constexpr std::size_t kPartsuppGrain = 65536;
+// Series per maintenance slice (~1 ms: rebuilding one is ~1 us), so RF-sized commits stay inline.
 constexpr std::size_t kSeriesGrain = 16384;
-// Rows per sorted slice of the build: a stable sort of 64K small rows is ~5 ms.
+// Rows per sorted slice of the build (~5 ms: a stable sort of 64K small rows).
 constexpr std::size_t kSortGrain = 65536;
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
 constexpr uint32_t kVersion = 3;
 
-// Calendar helpers (proleptic Gregorian; days since 1970-01-01).
-int64_t DaysFromCivil(int64_t y, unsigned m, unsigned d) {
-  y -= m <= 2;
-  const int64_t era = (y >= 0 ? y : y - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(y - era * 400);
-  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int64_t>(doe) - 719468;
-}
-
-void CivilFromDays(int64_t z, int64_t &y, unsigned &m, unsigned &d) {
-  z += 719468;
-  const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
-  const unsigned doe = static_cast<unsigned>(z - era * 146097);
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  y = static_cast<int64_t>(yoe) + era * 400;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const unsigned mp = (5 * doy + 2) / 153;
-  d = doy - (153 * mp + 2) / 5 + 1;
-  m = mp < 10 ? mp + 3 : mp - 9;
-  y += m <= 2;
-}
-
-// start + INTERVAL '1' YEAR (Feb 29 clamps to Feb 28, as SQL does).
-int32_t AddOneYear(int32_t start_days) {
-  int64_t y = 0;
-  unsigned m = 0, d = 0;
-  CivilFromDays(start_days, y, m, d);
-  ++y;
-  if (m == 2 && d == 29) {
-    const bool leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    if (!leap)
-      d = 28;
-  }
-  return static_cast<int32_t>(DaysFromCivil(y, m, d));
-}
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
+using core::DateCell;
+using core::IntCell;
+using core::StringCell;
 
 bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
   int64_t value = 0;
@@ -108,30 +42,6 @@ bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
       value > std::numeric_limits<int32_t>::max())
     return false;
   out = static_cast<int32_t>(value);
-  return true;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
   return true;
 }
 
@@ -148,13 +58,6 @@ inline uint64_t MakePairKey(int64_t partkey, int64_t suppkey) {
 inline void RequirePairKey(int64_t partkey, int64_t suppkey) {
   if (!PairKeyFits(partkey, suppkey))
     throw std::runtime_error("TPC-H Q20 aux: (partkey, suppkey) out of range");
-}
-
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
 }
 
 std::shared_ptr<const TpchQ20StateImage>
@@ -218,14 +121,7 @@ bool ReadLineitem(const core::AuxRow &row, int32_t &shipdate_days,
   if (!DateCell(row, 0, shipdate_days) || !IntCell(row, 1, partkey) ||
       !IntCell(row, 2, suppkey))
     return false;
-  int64_t raw = 0;
-  int32_t scale = 0;
-  if (!RawDecimalCell(row, 3, raw, scale))
-    return false;
-  if (scale != 2)
-    return false;
-  quantity_raw = raw;
-  return true;
+  return core::DecimalCellAtScale(row, 3, 2, quantity_raw);
 }
 
 bool ReadPart(const core::AuxRow &row, int64_t &partkey, std::string &name) {
@@ -247,7 +143,6 @@ bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey, std::string &name,
          StringCell(row, 2, address) && Int32Cell(row, 3, nationkey);
 }
 
-// ── Base builder ────────────────────────────────────────────────────────────
 // Dense key-indexed arrays cover keys below max(kMinDense, 4 x row count);
 // larger keys live in hash maps, so sparse keys never blow up memory.
 constexpr int64_t kMinDense = int64_t{1} << 20;
@@ -327,7 +222,7 @@ public:
     // starts its merge cursor at its first key.
     {
       const auto &keys = base->series_key;
-      Slices(ps.size(), kSeriesIdxGrain,
+      Slices(ps.size(), kPartsuppGrain,
              [&](std::size_t, std::size_t begin, std::size_t end) {
                if (begin == end)
                  return;
@@ -602,9 +497,20 @@ void ApplySeriesDelta(std::vector<TpchQ20DateQuantity> &series,
   }
 }
 
+// Effective (merged) views used by Encode.
+std::vector<TpchQ20DateQuantity> BaseSeriesCopy(const TpchQ20Base &base,
+                                                uint32_t idx) {
+  std::vector<TpchQ20DateQuantity> out;
+  const auto wit = base.series_wide.find(idx);
+  if (wit != base.series_wide.end())
+    return wit->second;
+  for (uint64_t i = base.series_off[idx]; i < base.series_off[idx + 1]; ++i)
+    out.push_back({base.series_entries[i].date, base.series_entries[i].qty});
+  return out;
+}
+
 } // namespace
 
-// ── Base / state accessors ──────────────────────────────────────────────────
 uint32_t TpchQ20Base::FindSeries(uint64_t pair_key) const {
   const auto it =
       std::lower_bound(series_key.begin(), series_key.end(), pair_key);
@@ -727,23 +633,7 @@ TpchQ20State::FindNationKeysByName(const std::string &name) const {
   return {};
 }
 
-namespace {
 
-// Effective (merged) views used by Encode.
-std::vector<TpchQ20DateQuantity> BaseSeriesCopy(const TpchQ20Base &base,
-                                                uint32_t idx) {
-  std::vector<TpchQ20DateQuantity> out;
-  const auto wit = base.series_wide.find(idx);
-  if (wit != base.series_wide.end())
-    return wit->second;
-  for (uint64_t i = base.series_off[idx]; i < base.series_off[idx + 1]; ++i)
-    out.push_back({base.series_entries[i].date, base.series_entries[i].qty});
-  return out;
-}
-
-} // namespace
-
-// ── Encode / Decode ─────────────────────────────────────────────────────────
 std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state) {
   const auto &base = *state.base;
   ByteWriter writer;
@@ -934,7 +824,6 @@ bool DecodeTpchQ20State(const std::vector<uint8_t> &bytes,
   return true;
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ20TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ20TxnBuffer::Clear() {
   pending = false;
@@ -986,7 +875,6 @@ void TpchQ20TxnBuffer::AddSupplierDelta(TpchQ20SupplierDelta delta) {
   supplier_deltas.push_back(std::move(delta));
 }
 
-// ── Module implementation ───────────────────────────────────────────────────
 core::AcceleratorId TpchQ20Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ20Module::Dependencies() const {
@@ -1196,14 +1084,9 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
 
   if (buffer.RequiresRebuild()) {
     const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+        core::MaintenanceRequest::RebuildOnly(
+            services.ExpectedQueriesBeforeNextWrite()));
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -1218,17 +1101,10 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
       buffer.LineitemDeltas().size() + buffer.PartsuppDeltas().size() +
       buffer.PartNameDeltas().size() + buffer.SupplierDeltas().size();
   const auto decision = services.ChooseMaintenance(
-      {delta_count, 1, true, false, true, false, false,
-       core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+      core::MaintenanceRequest::IncrementalSingleState(
+          delta_count, services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -1242,9 +1118,7 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
     if (image.partition == TpchQ20Layout::kFullState) {
       const auto *typed = AsQ20Image(image);
       if (!typed) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
+        core::FinishRebuildAll(outcome);
         return outcome;
       }
       parent = typed->state;
@@ -1254,9 +1128,7 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
     }
   }
   if (!found || !parent) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome);
     return outcome;
   }
 
@@ -1422,7 +1294,7 @@ void TpchQ20Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  const int32_t end_date_days = AddOneYear(start_date_days);
+  const int32_t end_date_days = core::sql_date::AddYears(start_date_days, 1);
 
   if (!services.StateStore()
            .CheckValidity({Id(), {}}, services.CurrentVisibility())
@@ -1462,7 +1334,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitems(services, parts,
                                     [&](std::size_t p, const TpchQ20LineitemInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ20LineitemInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ20LineitemInput>{input});
                                     });
       },
       [](SeriesRows &rows, const TpchQ20LineitemInput &input) {
@@ -1475,7 +1347,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
       [](SeriesRows &into, SeriesRows &&from) {
         into.insert(into.end(), from.begin(), from.end());
       });
-  ParallelStableSort(services, series_rows,
+  core::ParallelStableSort(services, series_rows,
                      [](const SeriesRow &a, const SeriesRow &b) { return a.key < b.key; },
                      kSortGrain);
   for (const auto &r : series_rows)
@@ -1489,14 +1361,14 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanPartsupps(services, parts,
                                     [&](std::size_t p, const TpchQ20PartsuppInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ20PartsuppInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ20PartsuppInput>{input});
                                     });
       },
       [](PartsuppRows &rows, const TpchQ20PartsuppInput &input) { rows.push_back(input); },
       [](PartsuppRows &into, PartsuppRows &&from) {
         into.insert(into.end(), from.begin(), from.end());
       });
-  ParallelStableSort(services, partsupp_rows,
+  core::ParallelStableSort(services, partsupp_rows,
                      [](const TpchQ20PartsuppInput &a, const TpchQ20PartsuppInput &b) {
                        return a.partkey != b.partkey ? a.partkey < b.partkey
                                                      : a.suppkey < b.suppkey;
@@ -1519,7 +1391,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
         };
         initial_scan->ScanPartNames(services, parts,
                                     [&](std::size_t p, int64_t key, std::string_view name) {
-                                      sink(p, TypedRowBatch<Name>{{key, name}});
+                                      sink(p, core::SingleRowBatch<Name>{{key, name}});
                                     });
       },
       [](PartNames &partial, const auto &part) {
@@ -1545,7 +1417,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanSuppliers(services, parts,
                                     [&](std::size_t p, const TpchQ20SupplierInput &input) {
-                                      sink(p, TypedRowBatch<TpchQ20SupplierInput>{input});
+                                      sink(p, core::SingleRowBatch<TpchQ20SupplierInput>{input});
                                     });
       },
       [](Suppliers &partial, const TpchQ20SupplierInput &input) {
@@ -1734,7 +1606,7 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
   const auto walk_slot = [&](uint32_t slot, auto &&keep) {
     const auto [b, e] = base.RankRange(slot, rank_lo, rank_hi);
     core::ParallelReduce(
-        services, e - b, kPairWalkGrain, qualifying_suppkeys,
+        services, e - b, kPairGrain, qualifying_suppkeys,
         [&](std::vector<int64_t> &out, std::size_t begin, std::size_t end) {
           walk_pairs(out, b + begin, b + end, keep);
         },

@@ -102,7 +102,7 @@ public:
 // Memory: 8 B per lineitem entry + 16 B per pair (~7.5 lineitems per pair in
 // TPC-H => ~2.1 B/lineitem) + ~22 B/part of block overhead + part names
 // (~45 B/part) => ~12 B per lineitem all-in: ~7.5 GB at SF100, ~75 GB at
-// SF1000 (the old per-pair std::vector design needed 25-30 GB / 250-300 GB).
+// SF1000.
 // Execute is a multithreaded SIMD scan of the part-name column (O(parts)),
 // then O(log entries) per partsupp pair of the matching parts.
 constexpr std::size_t kTpchQ20BlockParts = 8; // power of two (block = key >> 3)
@@ -242,8 +242,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

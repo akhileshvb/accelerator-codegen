@@ -199,10 +199,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  // `with_parts`: also fill the per-part codes (needed for maintenance; a
-  // fallback answer needs the aggregates only).
-  std::shared_ptr<TpchQ19State> BuildState(core::AuxEngineServices &,
-                                           bool with_parts) const;
+  std::shared_ptr<TpchQ19State> BuildState(core::AuxEngineServices &) const;
   std::shared_ptr<const TpchQ19State> LoadState(core::AuxEngineServices &) const;
   void Answer(const TpchQ19State &, const core::QueryArguments &,
               core::AuxRowSink &) const;
@@ -211,14 +208,6 @@ private:
 
   TpchQ19Config config;
   TpchQ19InitialScan *initial_scan = nullptr;
-
-  // Read-path cache: skips the ReadPartitions slot scan while the visible
-  // partition version is unchanged. Swapped atomically (concurrent readers).
-  struct CachedRead {
-    std::shared_ptr<const TpchQ19State> state;
-    core::Version version = 0;
-  };
-  mutable std::shared_ptr<const CachedRead> cached_read_;
 };
 
 } // namespace accelerator_codegen::aux_state::query
