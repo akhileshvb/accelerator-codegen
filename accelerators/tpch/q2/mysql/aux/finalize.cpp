@@ -26,6 +26,8 @@ struct Q2Candidate {
 
 // Part chunks per slice: each holds thousands of parts (~0.1 ms).
 constexpr std::size_t kChunksGrain = 256;
+// Distinct types above which the LIKE bitmap is evaluated on the pool.
+constexpr std::size_t kParallelMatchTypes = 1000000;
 
 // Everything one Execute derives from its arguments.
 struct Q2Query {
@@ -223,7 +225,8 @@ void TpchQ2FinalizeAndEmit(const core::AuxEngineServices &services, const TpchQ2
   const auto &blob = state.types->blob();
   q.type_bits = core::sql_like::MatchBlobBitmap(
       matcher, blob.offsets(), state.types->size(), blob.data(),
-      state.types->size() > 1000000 ? core::Parallelism::OnPool(services) : core::Parallelism{});
+      state.types->size() > kParallelMatchTypes ? core::Parallelism::OnPool(services)
+                                                : core::Parallelism{});
   q.type_bits.push_back(0); // keep TypeMatches in range for an empty dictionary
 
   const auto better = [&q](const Q2Candidate &a, const Q2Candidate &b) {

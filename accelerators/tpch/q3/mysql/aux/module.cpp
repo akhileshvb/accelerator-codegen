@@ -2,10 +2,16 @@
 #include "tpch/q3/calibration_writes.hpp"
 
 #include "prims/mysql_collation.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/parallel_stable_sort.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <queue>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -152,6 +158,11 @@ public:
       heap.push(row);
     }
   }
+  // Offers the rows of `other`, which is left empty.
+  void Merge(TopK &other) {
+    for (const auto &row : other.Sorted())
+      Offer(row);
+  }
   bool Full() const { return heap.size() >= kTopK; }
   int64_t KthRevenue() const { return heap.top().revenue_raw; }
   std::vector<TpchQ3OutputRow> Sorted() {
@@ -243,6 +254,30 @@ bool ReadParameters(const core::QueryArguments &arguments, std::string &segment,
   return false;
 }
 
+// Order results per slice below which their records are encoded serially.
+constexpr std::size_t kPrepareGrain = 1024;
+
+// Records are encoded in slices; replacing them in the shared bin and locator
+// shards stays serial, in result order.
+void ApplyOrderResults(const core::AuxEngineServices &services, TpchQ3State &state,
+                       const std::vector<TpchQ3OrderResult> &results) {
+  const auto has_record = [](const TpchQ3OrderResult &result) {
+    return result.present && !result.record.buckets.empty();
+  };
+  std::vector<TpchQ3State::PreparedOrder> prepared(results.size());
+  core::ParallelEach(services, results.size(), kPrepareGrain, [&](std::size_t i) {
+    if (has_record(results[i]))
+      prepared[i] = TpchQ3State::Prepare(results[i].record);
+  });
+  for (std::size_t i = 0; i < results.size(); ++i) {
+    state.RemoveOrder(results[i].orderkey);
+    if (has_record(results[i]))
+      // c_mktsegment = ? is case-insensitive (MySQL default collation): folded ids.
+      state.Install(state.SegmentId(mysql_collation::FoldAscii(results[i].mktsegment)),
+                    results[i].orderkey, prepared[i]);
+  }
+}
+
 } // namespace
 
 int64_t TpchQ3BinUpperBound(int32_t bin) {
@@ -259,23 +294,25 @@ int64_t TpchQ3BinUpperBound(int32_t bin) {
 }
 
 // ── State ───────────────────────────────────────────────────────────────────
-void TpchQ3State::SetOrder(const std::string &mktsegment,
-                           const OrderRecord &record) {
-  RemoveOrder(record.orderkey);
-  if (record.buckets.empty())
-    return;
+TpchQ3State::PreparedOrder TpchQ3State::Prepare(const OrderRecord &record) {
   int64_t bound = 0; // no answer can take more than the positive day sums
   for (const auto &bucket : record.buckets)
     if (bucket.revenue_raw > 0)
       bound += bucket.revenue_raw;
-  const uint32_t segment =
-      // c_mktsegment = ? is case-insensitive (MySQL default collation): folded ids.
-      segment_ids.emplace(mysql_collation::FoldAscii(mktsegment), static_cast<uint32_t>(segment_ids.size()))
-          .first->second;
-  const int32_t bin = BinOfBound(bound);
-  const auto bytes = EncodeRecord(record);
-  bins[{segment, bin}].Put(record.orderkey, bytes.data(), bytes.size());
-  locators.Upsert(record.orderkey, Locator{segment, bin});
+  return {BinOfBound(bound), EncodeRecord(record)};
+}
+
+uint32_t TpchQ3State::SegmentId(const std::string &folded_mktsegment) {
+  return segment_ids
+      .emplace(folded_mktsegment, static_cast<uint32_t>(segment_ids.size()))
+      .first->second;
+}
+
+void TpchQ3State::Install(uint32_t segment, int64_t orderkey,
+                          const PreparedOrder &order) {
+  bins[{segment, order.bin}].Put(orderkey, order.bytes.data(),
+                                 order.bytes.size());
+  locators.Upsert(orderkey, Locator{segment, order.bin});
 }
 
 void TpchQ3State::RemoveOrder(int64_t orderkey) {
@@ -326,9 +363,9 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ3Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ3TxnBuffer>();
 }
 
-void TpchQ3Module::Build(core::AuxEngineServices &,
+void TpchQ3Module::Build(core::AuxEngineServices &services,
                          core::StateBuilder &builder) {
-  const auto typed_state = std::make_shared<const TpchQ3State>(BuildState());
+  const auto typed_state = std::make_shared<const TpchQ3State>(BuildState(services));
   builder.Write(core::StateImage::Make(TpchQ3Layout::kAccelerator,
                                        TpchQ3Layout::kState, 0,
                                        MakeStateImage(typed_state)));
@@ -470,12 +507,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
   }
   // Copy-on-write copy: only the shards a record write touches are cloned.
   auto new_state = std::make_shared<TpchQ3State>(*current);
-  for (const auto &result : buffer.OrderResults()) {
-    if (result.present)
-      new_state->SetOrder(result.mktsegment, result.record);
-    else
-      new_state->RemoveOrder(result.orderkey);
-  }
+  ApplyOrderResults(services, *new_state, buffer.OrderResults());
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   const auto typed_state =
@@ -523,22 +555,46 @@ void TpchQ3Module::Execute(core::AuxEngineServices &services,
   }
   const uint32_t segment_id = segment_it->second;
 
-  TopK top;
+  // The segment's bins from the largest bound down.
+  struct Candidate {
+    int32_t bound_bin;
+    const TpchQ3State::Bin *bin;
+  };
+  std::vector<Candidate> candidates;
   auto it = state->bins.upper_bound({segment_id, std::numeric_limits<int32_t>::max()});
   while (it != state->bins.begin()) {
     --it;
     if (it->first.first != segment_id)
       break;
-    if (top.Full() && top.KthRevenue() > TpchQ3BinUpperBound(it->first.second))
+    candidates.push_back({it->first.second, &it->second});
+  }
+
+  // Waves of one bin per worker, each scanned into its own top k. The best k
+  // rows do not depend on the order bins are visited in, and a bin the wave
+  // skips by the k-th revenue it started with is one the serial walk skips too.
+  TopK top;
+  const std::size_t wave = std::max<std::size_t>(1, services.WorkerCount());
+  for (std::size_t first = 0; first < candidates.size(); first += wave) {
+    if (top.Full() && top.KthRevenue() > TpchQ3BinUpperBound(candidates[first].bound_bin))
       break;
-    it->second.ForEach(
-        [&](int64_t orderkey, const TpchQ3State::Bin::View &view) {
-          const OrderView order = OrderView::Of(view);
-          int64_t revenue = 0;
-          if (order.RevenueAfter(cutoff, revenue))
-            top.Offer({orderkey, revenue, order.orderdate_days,
-                       order.shippriority});
-        });
+    const std::size_t count = std::min(wave, candidates.size() - first);
+    const bool full = top.Full();
+    const int64_t kth = full ? top.KthRevenue() : 0;
+    std::vector<TopK> found(count);
+    core::ParallelEach(services, count, 1, [&](std::size_t i) {
+      if (full && kth > TpchQ3BinUpperBound(candidates[first + i].bound_bin))
+        return;
+      candidates[first + i].bin->ForEach(
+          [&](int64_t orderkey, const TpchQ3State::Bin::View &view) {
+            const OrderView order = OrderView::Of(view);
+            int64_t revenue = 0;
+            if (order.RevenueAfter(cutoff, revenue))
+              found[i].Offer({orderkey, revenue, order.orderdate_days,
+                              order.shippriority});
+          });
+    });
+    for (auto &partial : found)
+      top.Merge(partial);
   }
   EmitResult(top.Sorted(), sink);
 }
@@ -574,17 +630,192 @@ void TpchQ3Module::ExecuteFallback(core::AuxEngineServices &,
   EmitResult(top.Sorted(), sink);
 }
 
-TpchQ3State TpchQ3Module::BuildState() const {
+namespace {
+
+// Elements per slice below which sorting stays on one thread.
+constexpr std::size_t kSortGrain = 1 << 14;
+
+// Customers of one scan partition: key and market segment, the segments
+// case-folded (c_mktsegment = ? ignores case) and numbered by the partition's
+// own dictionary.
+struct CustomerPartial {
+  std::vector<std::string> segments;
+  std::vector<std::pair<int64_t, uint32_t>> customers; // custkey, segment index
+
+  uint32_t IndexOf(const std::string &folded) {
+    for (uint32_t i = 0; i < segments.size(); ++i)
+      if (segments[i] == folded)
+        return i;
+    segments.push_back(folded);
+    return static_cast<uint32_t>(segments.size() - 1);
+  }
+  void Merge(CustomerPartial &&from) {
+    std::vector<uint32_t> index;
+    for (const auto &segment : from.segments)
+      index.push_back(IndexOf(segment));
+    for (const auto &[custkey, segment] : from.customers)
+      customers.emplace_back(custkey, index[segment]);
+  }
+};
+
+struct JoinedOrder {
+  int64_t orderkey = 0;
+  int32_t orderdate_days = 0;
+  int32_t shippriority = 0;
+  uint32_t segment = 0; // index in the customers' dictionary
+};
+
+struct Line {
+  int64_t orderkey = 0;
+  int32_t shipdate_days = 0;
+  int64_t revenue_raw = 0;
+};
+
+// The lineitems of a build scan as one chunk per partition, so that merging
+// moves vectors instead of lines.
+using LineChunks = std::vector<std::vector<Line>>;
+
+struct PreparedRecord {
+  int64_t orderkey = 0;
+  uint32_t segment = 0;
+  TpchQ3State::PreparedOrder order;
+};
+
+// The segment of a customer, or null when there is no such customer.
+const uint32_t *SegmentOf(const std::vector<std::pair<int64_t, uint32_t>> &customers,
+                          int64_t custkey) {
+  const auto found = std::lower_bound(
+      customers.begin(), customers.end(), custkey,
+      [](const std::pair<int64_t, uint32_t> &customer, int64_t key) {
+        return customer.first < key;
+      });
+  return found != customers.end() && found->first == custkey ? &found->second : nullptr;
+}
+
+// The record of `order` from its lineitems lines[begin, end), sorted by shipdate.
+PreparedRecord PrepareRecord(const JoinedOrder &order, const std::vector<Line> &lines,
+                             std::size_t begin, std::size_t end) {
+  TpchQ3State::OrderRecord record;
+  record.orderkey = order.orderkey;
+  record.orderdate_days = order.orderdate_days;
+  record.shippriority = order.shippriority;
+  for (std::size_t i = begin; i < end; ++i) {
+    auto &buckets = record.buckets;
+    if (!buckets.empty() && buckets.back().shipdate == lines[i].shipdate_days)
+      buckets.back().revenue_raw += lines[i].revenue_raw;
+    else
+      buckets.push_back({lines[i].shipdate_days, lines[i].revenue_raw});
+  }
+  return {order.orderkey, order.segment, TpchQ3State::Prepare(record)};
+}
+
+// The records of the orders (ascending orderkey) that `lines` belong to. The
+// lines are sorted here; the order cursor only moves forward.
+std::vector<PreparedRecord> PrepareRecords(const std::vector<JoinedOrder> &orders,
+                                           std::vector<Line> &lines) {
+  std::sort(lines.begin(), lines.end(), [](const Line &l, const Line &r) {
+    return std::tie(l.orderkey, l.shipdate_days) < std::tie(r.orderkey, r.shipdate_days);
+  });
+  std::vector<PreparedRecord> records;
+  if (lines.empty())
+    return records;
+  auto order = std::lower_bound(orders.begin(), orders.end(), lines.front().orderkey,
+                                [](const JoinedOrder &o, int64_t key) { return o.orderkey < key; });
+  for (std::size_t begin = 0, end = 0; begin < lines.size(); begin = end) {
+    const int64_t key = lines[begin].orderkey;
+    while (end < lines.size() && lines[end].orderkey == key)
+      ++end;
+    while (order != orders.end() && order->orderkey < key)
+      ++order;
+    if (order != orders.end() && order->orderkey == key)
+      records.push_back(PrepareRecord(*order, lines, begin, end));
+  }
+  return records;
+}
+
+} // namespace
+
+// Customers, orders and lineitems are scanned in partitions (customer ->
+// orders -> lineitems, each probing the one before); each lineitem chunk then
+// becomes its orders' records on its own. Installing the records in the shared
+// bin and locator shards stays serial, in orderkey order.
+TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q3 requires a typed initial scan source");
-  TpchQ3State state;
-  // Streamed: each order goes straight into the final state.
-  OrderLineGrouper grouper([&](TpchQ3OrderResult &&result) {
-    state.SetOrder(result.mktsegment, result.record);
+  const std::size_t partitions = BuildPartitions(services);
+
+  auto customers = core::PartitionedBuild<CustomerPartial>(
+      services, [] { return CustomerPartial{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanCustomersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ3CustomerInput &input) {
+              sink(partition, OneRowBatch<TpchQ3CustomerInput>{input});
+            });
+      },
+      [](CustomerPartial &into, const TpchQ3CustomerInput &input) {
+        into.customers.emplace_back(
+            input.custkey, into.IndexOf(mysql_collation::FoldAscii(input.mktsegment)));
+      },
+      [](CustomerPartial &into, CustomerPartial &&from) { into.Merge(std::move(from)); },
+      partitions);
+  ParallelStableSort(services, customers.customers,
+                     [](const auto &l, const auto &r) { return l.first < r.first; },
+                     kSortGrain);
+
+  auto orders = core::PartitionedBuild<std::vector<JoinedOrder>>(
+      services, [] { return std::vector<JoinedOrder>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ3OrderInput &input) {
+              sink(partition, OneRowBatch<TpchQ3OrderInput>{input});
+            });
+      },
+      [&](std::vector<JoinedOrder> &into, const TpchQ3OrderInput &input) {
+        if (const uint32_t *segment = SegmentOf(customers.customers, input.custkey))
+          into.push_back({input.orderkey, input.orderdate_days, input.shippriority, *segment});
+      },
+      [](std::vector<JoinedOrder> &into, std::vector<JoinedOrder> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      },
+      partitions);
+  ParallelStableSort(services, orders,
+                     [](const JoinedOrder &l, const JoinedOrder &r) { return l.orderkey < r.orderkey; },
+                     kSortGrain);
+
+  auto chunks = core::PartitionedBuild<LineChunks>(
+      services, [] { return LineChunks(1); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ3LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ3LineitemInput>{input});
+            });
+      },
+      [](LineChunks &into, const TpchQ3LineitemInput &input) {
+        into.back().push_back({input.orderkey, input.shipdate_days,
+                               input.extended_price_raw * (100 - input.discount_raw)});
+      },
+      [](LineChunks &into, LineChunks &&from) {
+        into.insert(into.end(), std::make_move_iterator(from.begin()),
+                    std::make_move_iterator(from.end()));
+      },
+      partitions);
+
+  // The chunks cover ascending orderkey ranges: chunk order is orderkey order.
+  std::vector<std::vector<PreparedRecord>> records(chunks.size());
+  core::ParallelEach(services, chunks.size(), 1, [&](std::size_t chunk) {
+    records[chunk] = PrepareRecords(orders, chunks[chunk]);
+    std::vector<Line>().swap(chunks[chunk]);
   });
-  initial_scan->ScanOrderLines(
-      [&](const TpchQ3OrderLineInput &line) { grouper.Add(line); });
-  grouper.Flush();
+
+  TpchQ3State state;
+  std::vector<uint32_t> segment_ids;
+  for (const auto &segment : customers.segments)
+    segment_ids.push_back(state.SegmentId(segment));
+  for (auto &chunk : records) {
+    for (const auto &record : chunk)
+      state.Install(segment_ids[record.segment], record.orderkey, record.order);
+    std::vector<PreparedRecord>().swap(chunk);
+  }
   return state;
 }
 

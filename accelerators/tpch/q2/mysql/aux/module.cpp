@@ -1,5 +1,6 @@
 #include "tpch/q2/mysql/aux/module.hpp"
 #include "tpch/q2/calibration_writes.hpp"
+#include "tpch/common/partitioned_collect.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -591,7 +592,6 @@ void TpchQ2Module::ExecuteFallback(core::AuxEngineServices &services,
 
 TpchQ2State
 TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q2 requires a typed initial scan source");
   TpchQ2State state;
@@ -601,14 +601,23 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
       [&](const TpchQ2RegionInput &input) { state.UpsertRegion(input); });
   initial_scan->ScanNations(
       [&](const TpchQ2NationInput &input) { state.UpsertNation(input); });
-  initial_scan->ScanParts(
-      [&](const TpchQ2PartInput &input) { state.SetPart(input.key, input); });
-  initial_scan->ScanSuppliers([&](const TpchQ2SupplierInput &input) {
+  // The scans run in parallel; the rows are applied in partition order.
+  const std::size_t partitions = BuildPartitions(services);
+  for (const auto &input : CollectRows<TpchQ2PartInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsPartitioned(services, parts, sink);
+           }))
+    state.SetPart(input.key, input);
+  for (const auto &input : CollectRows<TpchQ2SupplierInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanSuppliersPartitioned(services, parts, sink);
+           }))
     state.SetSupplier(input.key, input);
-  });
-  initial_scan->ScanPartsupps([&](const TpchQ2PartsuppInput &input) {
+  for (const auto &input : CollectRows<TpchQ2PartsuppInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsuppsPartitioned(services, parts, sink);
+           }))
     state.AddOffer(input.partkey, input.suppkey, input.supplycost_raw);
-  });
   return state;
 }
 

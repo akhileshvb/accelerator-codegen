@@ -1179,7 +1179,7 @@ if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
         endif()
     endif()
     foreach(_t IN ITEMS test_mysql_cross_accel test_mysql_aux_multi_connection_stress
-                        test_mysql_aux_build_race test_mysql_aux_session_isolation
+                        test_mysql_aux_build_race test_mysql_aux_build_ddl_race test_mysql_aux_session_isolation
                         test_mysql_aux_read_after_commit test_mysql_tpch_rf_differential)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/${_t}.cpp")
             accel_add_mysql_test(${_t} eval/tests/${_t}.cpp)

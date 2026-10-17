@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "prims/decimal_text.hpp"
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q6/mysql/aux/module.hpp"
 #include "tpch/q6/cost_model.hpp"
@@ -39,27 +40,24 @@ void ScanTpchQ6Lineitems(
 
 // One SQL GROUP BY: the engine aggregates, the process receives one row per
 // (shipdate, discount, quantity) cell with the exact revenue sum (text).
-void ScanTpchQ6CellAggregates(
-    const std::function<void(const query::TpchQ6CellAggregate &)> &consumer) {
+SplitTable CellAggregatesTable() {
+  return {"l_shipdate, l_discount, l_quantity, count(*), sum(l_extendedprice * l_discount)",
+          "lineitem", "", "l_orderkey", "l_shipdate, l_discount, l_quantity"};
+}
+
+query::TpchQ6CellAggregate DecodeCellAggregate(const std::vector<std::string> &cols) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuplesDecoded(
-      "SELECT l_shipdate, l_discount, l_quantity, count(*), "
-      "sum(l_extendedprice * l_discount) FROM lineitem "
-      "GROUP BY l_shipdate, l_discount, l_quantity",
-      [](const std::vector<std::string> &cols) {
-        query::TpchQ6CellAggregate cell;
-        cell.shipdate_days = TypedDate(cols, 0);
-        __int128 discount = 0, quantity = 0;
-        if (!dec::Parse(TypedText(cols, 1), 2, discount) ||
-            !dec::Parse(TypedText(cols, 2), 2, quantity) ||
-            !dec::Parse(TypedText(cols, 4), 4, cell.revenue_raw))
-          throw std::runtime_error("TPC-H Q6: unparsable decimal");
-        cell.discount_raw = static_cast<int64_t>(discount);
-        cell.quantity_raw = static_cast<int64_t>(quantity);
-        cell.count = TypedInt(cols, 3);
-        return cell;
-      },
-      [&](query::TpchQ6CellAggregate &&input) { consumer(input); });
+  query::TpchQ6CellAggregate cell;
+  cell.shipdate_days = TypedDate(cols, 0);
+  __int128 discount = 0, quantity = 0;
+  if (!dec::Parse(TypedText(cols, 1), 2, discount) ||
+      !dec::Parse(TypedText(cols, 2), 2, quantity) ||
+      !dec::Parse(TypedText(cols, 4), 4, cell.revenue_raw))
+    throw std::runtime_error("TPC-H Q6: unparsable decimal");
+  cell.discount_raw = static_cast<int64_t>(discount);
+  cell.quantity_raw = static_cast<int64_t>(quantity);
+  cell.count = TypedInt(cols, 3);
+  return cell;
 }
 
 } // namespace scans
@@ -74,7 +72,15 @@ public:
   void ScanCellAggregates(
       const std::function<void(const query::TpchQ6CellAggregate &)> &consumer)
       override {
-    scans::ScanTpchQ6CellAggregates(consumer);
+    split_scan::Serial<query::TpchQ6CellAggregate>(
+        scans::CellAggregatesTable(), scans::DecodeCellAggregate, consumer);
+  }
+  void ScanCellAggregatesPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ6CellAggregate &)> &sink)
+      override {
+    split_scan::Partitioned<query::TpchQ6CellAggregate>(
+        services, scans::CellAggregatesTable(), partitions, scans::DecodeCellAggregate, sink);
   }
 };
 

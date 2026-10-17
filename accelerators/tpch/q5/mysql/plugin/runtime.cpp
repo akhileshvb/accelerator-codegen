@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q5/mysql/aux/module.hpp"
 #include "tpch/q5/cost_model.hpp"
@@ -99,6 +100,47 @@ const char kLineitemsSql[] =
     "WHERE l_orderkey IS NOT NULL AND l_suppkey IS NOT NULL "
     "AND l_extendedprice IS NOT NULL AND l_discount IS NOT NULL";
 
+SplitTable CustomersTable() {
+  return {"c_custkey, c_nationkey", "customer",
+          "c_custkey IS NOT NULL AND c_nationkey IS NOT NULL", "c_custkey"};
+}
+
+SplitTable SuppliersTable() {
+  return {"s_suppkey, s_nationkey", "supplier",
+          "s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL", "s_suppkey"};
+}
+
+SplitTable OrdersTable() {
+  return {"o_orderkey, o_custkey, o_orderdate", "orders",
+          "o_orderkey IS NOT NULL AND o_custkey IS NOT NULL AND o_orderdate IS NOT NULL",
+          "o_orderkey"};
+}
+
+SplitTable LineitemsTable() {
+  return {"l_orderkey, l_suppkey, CAST(l_extendedprice * 100 AS SIGNED), "
+          "CAST(l_discount * 100 AS SIGNED)",
+          "lineitem",
+          "l_orderkey IS NOT NULL AND l_suppkey IS NOT NULL "
+          "AND l_extendedprice IS NOT NULL AND l_discount IS NOT NULL",
+          "l_orderkey"};
+}
+
+query::TpchQ5CustomerInput DecodeCustomer(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), static_cast<int32_t>(TypedInt(cols, 1))};
+}
+
+query::TpchQ5SupplierInput DecodeSupplier(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), static_cast<int32_t>(TypedInt(cols, 1))};
+}
+
+query::TpchQ5OrderInput DecodeOrder(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedDate(cols, 2)};
+}
+
+query::TpchQ5LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2), 2, TypedInt(cols, 3), 2};
+}
+
 void ScanTpchQ5Lineitems(
     const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
   ScanTypedTuplesDecoded(
@@ -179,6 +221,30 @@ public:
       const std::function<void(const query::TpchQ5LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ5Lineitems(consumer);
+  }
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ5CustomerInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ5CustomerInput>(
+        services, scans::CustomersTable(), partitions, scans::DecodeCustomer, sink);
+  }
+  void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ5SupplierInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ5SupplierInput>(
+        services, scans::SuppliersTable(), partitions, scans::DecodeSupplier, sink);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ5OrderInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ5OrderInput>(services, scans::OrdersTable(), partitions,
+                                                     scans::DecodeOrder, sink);
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ5LineitemInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ5LineitemInput>(
+        services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
   }
   void LookupLineitemsByOrder(
       const std::vector<int64_t> &orderkeys,

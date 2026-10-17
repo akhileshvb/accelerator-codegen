@@ -1,5 +1,8 @@
 #include "tpch/q1/mysql/aux/module.hpp"
 #include "tpch/q1/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <limits>
 #include <map>
@@ -97,6 +100,49 @@ int64_t ScaleToRaw(int64_t raw, int32_t scale, int32_t target_scale) {
   return raw / factor;
 }
 
+// Running sums per (shipdate day, group), in key order.
+using DayGroupCells =
+    std::map<std::pair<int32_t, ::accelerator_codegen::Q1GroupKey>,
+             ::accelerator_codegen::Q1DayGroupStats>;
+
+::accelerator_codegen::Q1DayGroupStats StatsOf(const TpchQ1DayGroupAggregate &agg) {
+  ::accelerator_codegen::Q1DayGroupStats stats;
+  stats.count = agg.count;
+  stats.sum_qty = agg.sum_qty_raw;
+  stats.sum_base_price = agg.sum_base_price_raw;
+  stats.sum_discount = agg.sum_discount_raw;
+  stats.sum_disc_price = agg.sum_disc_price_raw;
+  stats.sum_charge = agg.sum_charge_raw;
+  return stats;
+}
+
+// Deltas per slice below which a delta batch is summed serially.
+constexpr std::size_t kDeltaGrain = 1 << 14;
+
+// The deltas summed per (shipdate day, group): each slice sums its own range,
+// the slices merge in order, and the integer sums equal the serial ones.
+DayGroupCells SumDeltas(const core::AuxEngineServices &services,
+                        const std::vector<TpchQ1LineitemDelta> &deltas) {
+  DayGroupCells cells;
+  core::ParallelReduce(
+      services, deltas.size(), kDeltaGrain, cells,
+      [&](DayGroupCells &into, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto &delta = deltas[i];
+          ::accelerator_codegen::AddQ1Stats(
+              into[{delta.shipdate_days, delta.group_key}],
+              ::accelerator_codegen::Q1RowContribution(
+                  delta.quantity_raw, delta.extended_price_raw, delta.discount_raw,
+                  delta.tax_raw, delta.sign));
+        }
+      },
+      [](DayGroupCells &into, DayGroupCells &&from) {
+        for (const auto &[key, stats] : from)
+          ::accelerator_codegen::AddQ1Stats(into[key], stats);
+      });
+  return cells;
+}
+
 std::shared_ptr<const TpchQ1StateImage>
 MakeStateImage(std::shared_ptr<const Q1FenwickState> state) {
   auto image = std::make_shared<TpchQ1StateImage>();
@@ -166,6 +212,12 @@ void TpchQ1InitialScan::ScanDayGroupAggregates(
   });
   for (const auto &entry : cells)
     consumer(entry.second);
+}
+
+void TpchQ1InitialScan::ScanDayGroupAggregatesPartitioned(
+    const core::AuxEngineServices &, std::size_t,
+    const std::function<void(std::size_t, const TpchQ1DayGroupAggregate &)> &sink) {
+  ScanDayGroupAggregates([&](const TpchQ1DayGroupAggregate &agg) { sink(0, agg); });
 }
 
 int32_t TpchQ1CutoffDays(int32_t day_offset) {
@@ -305,12 +357,8 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  for (const auto &delta : buffer.Deltas())
-    ::accelerator_codegen::Q1FenwickAdd(
-        *next, delta.shipdate_days, delta.group_key,
-        ::accelerator_codegen::Q1RowContribution(
-            delta.quantity_raw, delta.extended_price_raw, delta.discount_raw,
-            delta.tax_raw, delta.sign));
+  for (const auto &[key, stats] : SumDeltas(services, buffer.Deltas()))
+    ::accelerator_codegen::Q1FenwickAdd(*next, key.first, key.second, stats);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
@@ -379,23 +427,31 @@ void TpchQ1Module::ExecuteFallback(core::AuxEngineServices &services,
 
 std::shared_ptr<::accelerator_codegen::Q1FenwickState>
 TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q1 requires a typed initial scan source");
+  // Integer sums, so the cells add up the same in any partition order.
+  const auto cells = core::PartitionedBuild<DayGroupCells>(
+      services, [] { return DayGroupCells{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanDayGroupAggregatesPartitioned(
+            services, partitions,
+            [&](std::size_t partition, const TpchQ1DayGroupAggregate &agg) {
+              sink(partition, OneRowBatch<TpchQ1DayGroupAggregate>{agg});
+            });
+      },
+      [](DayGroupCells &into, const TpchQ1DayGroupAggregate &agg) {
+        ::accelerator_codegen::AddQ1Stats(
+            into[{agg.shipdate_days,
+                  ::accelerator_codegen::PackQ1GroupKey(agg.returnflag, agg.linestatus)}],
+            StatsOf(agg));
+      },
+      [](DayGroupCells &into, DayGroupCells &&from) {
+        for (const auto &[key, stats] : from)
+          ::accelerator_codegen::AddQ1Stats(into[key], stats);
+      });
   auto state = std::make_shared<::accelerator_codegen::Q1FenwickState>();
-  initial_scan->ScanDayGroupAggregates([&](const TpchQ1DayGroupAggregate &agg) {
-    ::accelerator_codegen::Q1DayGroupStats stats;
-    stats.count = agg.count;
-    stats.sum_qty = agg.sum_qty_raw;
-    stats.sum_base_price = agg.sum_base_price_raw;
-    stats.sum_discount = agg.sum_discount_raw;
-    stats.sum_disc_price = agg.sum_disc_price_raw;
-    stats.sum_charge = agg.sum_charge_raw;
-    ::accelerator_codegen::Q1FenwickAdd(
-        *state, agg.shipdate_days,
-        ::accelerator_codegen::PackQ1GroupKey(agg.returnflag, agg.linestatus),
-        stats);
-  });
+  for (const auto &[key, stats] : cells)
+    ::accelerator_codegen::Q1FenwickAdd(*state, key.first, key.second, stats);
   return state;
 }
 

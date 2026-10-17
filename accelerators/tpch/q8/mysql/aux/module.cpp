@@ -2,7 +2,9 @@
 #include "tpch/q8/calibration_writes.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string_view>
@@ -14,6 +16,9 @@
 #include "prims/mysql_decimal.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
 #include "prims/sql_date.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_collect.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -23,6 +28,8 @@ namespace sql_date = core::sql_date;
 using Int128 = ::accelerator_codegen::pg_numeric::Int128;
 
 constexpr core::PartitionId kStatePartition = TpchQ8Layout::kYear1995;
+// Order-map chunks (<= 1024 orders) per slice: ~0.3 us per decoded order.
+constexpr std::size_t kChunkGrain = 2;
 // volume = price * (1 - discount): numeric(15,2) * numeric(15,2) -> scale 4.
 constexpr int32_t kVolumeScale = 4;
 
@@ -226,8 +233,8 @@ bool StoreEntry(TpchQ8State &s, int64_t orderkey, const OrderEntry &e) {
 }
 
 // ---- Cube --------------------------------------------------------------------
-void Contribute(TpchQ8State &s, uint32_t type_id, int32_t year, int32_t cust_nk,
-                int32_t supp_nk, int64_t volume, int sign) {
+void ContributeSum(TpchQ8State &s, uint32_t type_id, int32_t year, int32_t cust_nk,
+                   int32_t supp_nk, Int128 volume, int64_t rows) {
   auto &cube = s.cubes.Mutable(type_id);
   if (!cube)
     cube = std::make_shared<TpchQ8TypeCube>();
@@ -242,11 +249,45 @@ void Contribute(TpchQ8State &s, uint32_t type_id, int32_t year, int32_t cust_nk,
   if (it == cube->end() || it->year != year || it->customer_nationkey != cust_nk ||
       it->supplier_nationkey != supp_nk)
     it = cube->insert(it, TpchQ8CubeCell{year, cust_nk, supp_nk, 0, 0});
-  it->volume += static_cast<Int128>(sign) * volume;
-  it->rows += sign;
+  it->volume += volume;
+  it->rows += rows;
   if (it->rows == 0 && it->volume == 0)
     cube->erase(it);
 }
+
+void Contribute(TpchQ8State &s, uint32_t type_id, int32_t year, int32_t cust_nk,
+                int32_t supp_nk, int64_t volume, int sign) {
+  ContributeSum(s, type_id, year, cust_nk, supp_nk, static_cast<Int128>(sign) * volume, sign);
+}
+
+// Cube contributions gathered by parallel passes, applied to the state after.
+class CubeDeltas {
+public:
+  void Add(uint32_t type_id, int32_t year, int32_t cust_nk, int32_t supp_nk,
+           int64_t volume, int sign) {
+    auto &cell = cells_[{type_id, year, cust_nk, supp_nk}];
+    cell.volume += static_cast<Int128>(sign) * volume;
+    cell.rows += sign;
+  }
+  void Merge(CubeDeltas &&from) {
+    for (const auto &[key, cell] : from.cells_) {
+      cells_[key].volume += cell.volume;
+      cells_[key].rows += cell.rows;
+    }
+  }
+  void ApplyTo(TpchQ8State &s) const {
+    for (const auto &[key, cell] : cells_)
+      ContributeSum(s, std::get<0>(key), std::get<1>(key), std::get<2>(key),
+                    std::get<3>(key), cell.volume, cell.rows);
+  }
+
+private:
+  struct Cell {
+    Int128 volume = 0;
+    int64_t rows = 0;
+  };
+  std::map<std::tuple<uint32_t, int32_t, int32_t, int32_t>, Cell> cells_;
+};
 
 // The cube contribution of a record of the present, in-window order `e`.
 void ContributeRec(TpchQ8State &s, const OrderEntry &e, const LineRec &r,
@@ -354,6 +395,77 @@ bool ApplyOrder(TpchQ8State &s, int64_t orderkey, int64_t custkey, int32_t day,
   return StoreEntry(s, orderkey, e);
 }
 
+// ---- Bulk build of the lineitem entries ------------------------------------
+// The build folds whole orders at once instead of applying lineitem by lineitem:
+// the lineitems are dealt to owners by order, and each owner builds the entries
+// of its orders against the (read-only) orders applied so far. The stores and
+// counters are applied afterwards, serially.
+struct BuildLine {
+  int64_t orderkey = 0;
+  LineRec rec;
+};
+
+struct FoldedOrders {
+  std::vector<int64_t> orderkeys; // ascending
+  std::vector<std::size_t> ends;  // end of each entry in `bytes`
+  std::vector<uint8_t> bytes;
+  std::unordered_map<int64_t, uint32_t> part_refs, supplier_refs; // retained lineitems per key
+  CubeDeltas cube;
+};
+
+FoldedOrders FoldOrders(const TpchQ8State &s, std::vector<BuildLine> &lines) {
+  std::sort(lines.begin(), lines.end(), [](const BuildLine &l, const BuildLine &r) {
+    return std::tie(l.orderkey, l.rec.partkey, l.rec.suppkey, l.rec.volume) <
+           std::tie(r.orderkey, r.rec.partkey, r.rec.suppkey, r.rec.volume);
+  });
+  FoldedOrders folded;
+  std::vector<uint8_t> entry_bytes;
+  for (std::size_t i = 0; i < lines.size();) {
+    OrderEntry e;
+    if (!LoadEntry(s, lines[i].orderkey, e))
+      throw std::runtime_error("TPC-H Q8: unsupported lineitem row");
+    folded.orderkeys.push_back(lines[i].orderkey);
+    for (; i < lines.size() && lines[i].orderkey == folded.orderkeys.back(); ++i) {
+      const LineRec &rec = lines[i].rec;
+      if (e.counts_only) {
+        ++e.nlines;
+        continue;
+      }
+      e.lines.push_back(rec);
+      ++folded.part_refs[rec.partkey];
+      ++folded.supplier_refs[rec.suppkey];
+      const uint32_t type_id = s.part_type.Get(rec.partkey);
+      const int32_t snk = s.supplier_nation.Get(rec.suppkey);
+      const int32_t cnk = s.customer_nation.Get(e.custkey);
+      if (e.present && type_id != TpchQ8State::kNoType && snk != TpchQ8State::kAbsent &&
+          cnk != TpchQ8State::kAbsent)
+        folded.cube.Add(type_id, sql_date::YearOf(e.day), cnk, snk, rec.volume, +1);
+    }
+    EncodeEntry(e, entry_bytes);
+    folded.bytes.insert(folded.bytes.end(), entry_bytes.begin(), entry_bytes.end());
+    folded.ends.push_back(folded.bytes.size());
+  }
+  return folded;
+}
+
+void InstallFolded(TpchQ8State &s, FoldedOrders &&folded) {
+  std::size_t begin = 0;
+  for (std::size_t i = 0; i < folded.orderkeys.size(); begin = folded.ends[i++])
+    s.orders.Set(folded.orderkeys[i], folded.bytes.data() + begin, folded.ends[i] - begin);
+  for (const auto &[partkey, count] : folded.part_refs)
+    s.part_refs.Set(partkey, s.part_refs.Get(partkey) + count);
+  for (const auto &[suppkey, count] : folded.supplier_refs)
+    s.supplier_refs.Set(suppkey, s.supplier_refs.Get(suppkey) + count);
+  folded.cube.ApplyTo(s);
+}
+
+// In-window lineitems dealt to one bucket per owner (by order chunk); the
+// partitions of the scan fill their own and merge in partition order.
+struct LinePartial {
+  Buckets<BuildLine> by_owner;
+  explicit LinePartial(std::size_t owners) : by_owner(owners) {}
+};
+
 // Dimension rows changed in one write batch: key -> value before / after
 // (absent marker when the row does not exist before / after).
 template <typename V> struct Change {
@@ -362,29 +474,51 @@ template <typename V> struct Change {
 };
 template <typename V> using Changes = std::map<int64_t, Change<V>>;
 
-// Visits every record of every present in-window order. `fn(entry, record)`.
-// Iterates a shallow copy, so the callback may modify the state.
-template <typename F> void ForEachContributingRecord(TpchQ8State &s, F &&fn) {
-  const core::ChunkedBlobMap snapshot = s.orders;
-  snapshot.ForEach([&](int64_t, std::string_view v) {
+// Calls fn(deltas, entry, record) for every record of every present in-window
+// order: the dense part of the order map in slices (each into its own deltas),
+// orders at keys outside it serially. The deltas are applied to `s` afterwards.
+template <typename F>
+void ForEachContributingRecord(const core::AuxEngineServices &services, TpchQ8State &s, F &&fn) {
+  const core::ChunkedBlobMap &orders = s.orders;
+  const auto visit = [&](CubeDeltas &deltas, std::string_view v) {
     OrderEntry e;
     if (!DecodeEntry(v, e) || !e.present || e.counts_only)
       return;
     for (const auto &r : e.lines)
-      fn(e, r);
-  });
+      fn(deltas, e, r);
+  };
+  CubeDeltas deltas;
+  std::atomic<std::size_t> dense_orders{0};
+  core::ParallelReduce(
+      services, orders.NumChunkSlots(), kChunkGrain, deltas,
+      [&](CubeDeltas &into, std::size_t begin, std::size_t end) {
+        std::size_t visited = 0;
+        for (std::size_t ci = begin; ci < end; ++ci)
+          orders.ForEachInChunk(ci, [&](int64_t, std::string_view v) {
+            ++visited;
+            visit(into, v);
+          });
+        dense_orders += visited;
+      },
+      [](CubeDeltas &into, CubeDeltas &&from) { into.Merge(std::move(from)); });
+  if (dense_orders < orders.size()) { // some orders sit outside the chunked keys
+    deltas = CubeDeltas{};
+    orders.ForEach([&](int64_t, std::string_view v) { visit(deltas, v); });
+  }
+  deltas.ApplyTo(s);
 }
 
 // Part types changed: move the contribution of the referenced parts' lineitems
 // from the old type's cube to the new one's.
-void RetypeParts(TpchQ8State &s, const Changes<uint32_t> &changes) {
+void RetypeParts(const core::AuxEngineServices &services, TpchQ8State &s,
+                 const Changes<uint32_t> &changes) {
   std::unordered_map<int64_t, Change<uint32_t>> hot;
   for (const auto &[partkey, change] : changes)
     if (s.part_refs.Get(partkey) > 0)
       hot.emplace(partkey, change);
   if (hot.empty())
     return;
-  ForEachContributingRecord(s, [&](const OrderEntry &e, const LineRec &r) {
+  ForEachContributingRecord(services, s, [&](CubeDeltas &deltas, const OrderEntry &e, const LineRec &r) {
     const auto it = hot.find(r.partkey);
     if (it == hot.end())
       return;
@@ -394,20 +528,21 @@ void RetypeParts(TpchQ8State &s, const Changes<uint32_t> &changes) {
       return;
     const int32_t year = sql_date::YearOf(e.day);
     if (it->second.before != TpchQ8State::kNoType)
-      Contribute(s, it->second.before, year, cnk, snk, r.volume, -1);
+      deltas.Add(it->second.before, year, cnk, snk, r.volume, -1);
     if (it->second.after != TpchQ8State::kNoType)
-      Contribute(s, it->second.after, year, cnk, snk, r.volume, +1);
+      deltas.Add(it->second.after, year, cnk, snk, r.volume, +1);
   });
 }
 
-void RepointSuppliers(TpchQ8State &s, const Changes<int32_t> &changes) {
+void RepointSuppliers(const core::AuxEngineServices &services, TpchQ8State &s,
+                      const Changes<int32_t> &changes) {
   std::unordered_map<int64_t, Change<int32_t>> hot;
   for (const auto &[suppkey, change] : changes)
     if (s.supplier_refs.Get(suppkey) > 0)
       hot.emplace(suppkey, change);
   if (hot.empty())
     return;
-  ForEachContributingRecord(s, [&](const OrderEntry &e, const LineRec &r) {
+  ForEachContributingRecord(services, s, [&](CubeDeltas &deltas, const OrderEntry &e, const LineRec &r) {
     const auto it = hot.find(r.suppkey);
     if (it == hot.end())
       return;
@@ -417,20 +552,21 @@ void RepointSuppliers(TpchQ8State &s, const Changes<int32_t> &changes) {
       return;
     const int32_t year = sql_date::YearOf(e.day);
     if (it->second.before != TpchQ8State::kAbsent)
-      Contribute(s, type_id, year, cnk, it->second.before, r.volume, -1);
+      deltas.Add(type_id, year, cnk, it->second.before, r.volume, -1);
     if (it->second.after != TpchQ8State::kAbsent)
-      Contribute(s, type_id, year, cnk, it->second.after, r.volume, +1);
+      deltas.Add(type_id, year, cnk, it->second.after, r.volume, +1);
   });
 }
 
-void RepointCustomers(TpchQ8State &s, const Changes<int32_t> &changes) {
+void RepointCustomers(const core::AuxEngineServices &services, TpchQ8State &s,
+                      const Changes<int32_t> &changes) {
   std::unordered_map<int64_t, Change<int32_t>> hot;
   for (const auto &[custkey, change] : changes)
     if (s.customer_refs.Get(custkey) > 0)
       hot.emplace(custkey, change);
   if (hot.empty())
     return;
-  ForEachContributingRecord(s, [&](const OrderEntry &e, const LineRec &r) {
+  ForEachContributingRecord(services, s, [&](CubeDeltas &deltas, const OrderEntry &e, const LineRec &r) {
     const auto it = hot.find(e.custkey);
     if (it == hot.end())
       return;
@@ -440,9 +576,9 @@ void RepointCustomers(TpchQ8State &s, const Changes<int32_t> &changes) {
       return;
     const int32_t year = sql_date::YearOf(e.day);
     if (it->second.before != TpchQ8State::kAbsent)
-      Contribute(s, type_id, year, it->second.before, snk, r.volume, -1);
+      deltas.Add(type_id, year, it->second.before, snk, r.volume, -1);
     if (it->second.after != TpchQ8State::kAbsent)
-      Contribute(s, type_id, year, it->second.after, snk, r.volume, +1);
+      deltas.Add(type_id, year, it->second.after, snk, r.volume, +1);
   });
 }
 
@@ -511,11 +647,12 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ8Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ8TxnBuffer>();
 }
 
-std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState() const {
+std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState(const core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q8 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ8State>();
   TpchQ8State &s = *state;
+  const std::size_t partitions = BuildPartitions(services);
 
   initial_scan->ScanNations([&](const TpchQ8NationInput &input) {
     s.nations[input.key] = {input.name, input.regionkey};
@@ -523,37 +660,69 @@ std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState() const {
   initial_scan->ScanRegions([&](const TpchQ8RegionInput &input) {
     s.regions[input.key] = input.name;
   });
-  initial_scan->ScanParts([&](const TpchQ8PartInput &input) {
+  for (const auto &input : CollectRows<TpchQ8PartInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsPartitioned(services, parts, sink);
+           }))
     s.part_type.Set(input.key, InternType(s, input.type));
-  });
-  initial_scan->ScanSuppliers([&](const TpchQ8SupplierInput &input) {
+  for (const auto &input : CollectRows<TpchQ8SupplierInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanSuppliersPartitioned(services, parts, sink);
+           })) {
     if (input.nationkey == TpchQ8State::kAbsent)
       throw std::runtime_error("TPC-H Q8: unsupported supplier row");
     s.supplier_nation.Set(input.key, input.nationkey);
-  });
-  initial_scan->ScanCustomers([&](const TpchQ8CustomerInput &input) {
+  }
+  for (const auto &input : CollectRows<TpchQ8CustomerInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanCustomersPartitioned(services, parts, sink);
+           })) {
     if (input.nationkey == TpchQ8State::kAbsent)
       throw std::runtime_error("TPC-H Q8: unsupported customer row");
     s.customer_nation.Set(input.key, input.nationkey);
-  });
-  initial_scan->ScanOrders([&](const TpchQ8OrdersInput &input) {
+  }
+  for (const auto &input : CollectRows<TpchQ8OrdersInput>(
+           services, partitions, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanOrdersPartitioned(services, parts, sink);
+           }))
     if (!ApplyOrder(s, input.key, input.custkey, input.orderdate_days, +1))
       throw std::runtime_error("TPC-H Q8: unsupported orders row");
+
+  const std::size_t owners = std::max<std::size_t>(1, services.WorkerCount());
+  auto dealt = core::PartitionedBuild<LinePartial>(
+      services, [&] { return LinePartial(owners); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ8LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ8LineitemInput>{input});
+            });
+      },
+      [&](LinePartial &into, const TpchQ8LineitemInput &input) {
+        int64_t volume = 0;
+        if (!VolumeRaw(input.extendedprice_raw, 2, input.discount_raw, 2, volume))
+          throw std::runtime_error("TPC-H Q8: unsupported lineitem row");
+        const std::size_t owner =
+            static_cast<uint64_t>(input.orderkey >> core::ChunkedBlobMap::kKeyShift) % owners;
+        into.by_owner[owner].push_back(
+            {input.orderkey, {input.partkey, input.suppkey, volume}});
+      },
+      [](LinePartial &into, LinePartial &&from) {
+        AppendBuckets(into.by_owner, std::move(from.by_owner));
+      },
+      partitions);
+  std::vector<FoldedOrders> folded(owners);
+  services.ParallelFor(owners, [&](std::size_t owner) {
+    folded[owner] = FoldOrders(s, dealt.by_owner[owner]);
   });
-  initial_scan->ScanLineitems([&](const TpchQ8LineitemInput &input) {
-    int64_t volume = 0;
-    if (!VolumeRaw(input.extendedprice_raw, 2, input.discount_raw, 2, volume) ||
-        !ApplyLineitem(s, input.orderkey, input.partkey, input.suppkey, volume,
-                       +1))
-      throw std::runtime_error("TPC-H Q8: unsupported lineitem row");
-  });
+  for (FoldedOrders &part : folded)
+    InstallFolded(s, std::move(part));
   s.orders.Shrink();
   return state;
 }
 
-void TpchQ8Module::Build(core::AuxEngineServices &, core::StateBuilder &builder) {
+void TpchQ8Module::Build(core::AuxEngineServices &services, core::StateBuilder &builder) {
   auto image = std::make_shared<TpchQ8StateImage>();
-  image->state = BuildState();
+  image->state = BuildState(services);
   builder.Write(core::StateImage::Make(
       TpchQ8Layout::kAccelerator, kStatePartition, 0,
       std::shared_ptr<const TpchQ8StateImage>(std::move(image))));
@@ -696,7 +865,7 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
       }
     }
     if (ok)
-      RetypeParts(s, changes);
+      RetypeParts(services, s, changes);
   } else if (mutation.table == config.supplier_table ||
              mutation.table == config.customer_table) {
     const bool supplier = mutation.table == config.supplier_table;
@@ -715,9 +884,9 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
     if (ok) {
       if (supplier)
-        RepointSuppliers(s, changes);
+        RepointSuppliers(services, s, changes);
       else
-        RepointCustomers(s, changes);
+        RepointCustomers(services, s, changes);
     }
   } else if (mutation.table == config.orders_table) {
     const auto apply = [&](const std::vector<core::AuxRow> &rows, int sign) {
@@ -828,10 +997,10 @@ void TpchQ8Module::Execute(core::AuxEngineServices &services,
   ExecuteFallback(services, arguments, sink);
 }
 
-void TpchQ8Module::ExecuteFallback(core::AuxEngineServices &,
+void TpchQ8Module::ExecuteFallback(core::AuxEngineServices &services,
                                    const core::QueryArguments &arguments,
                                    core::AuxRowSink &sink) {
-  const auto state = BuildState();
+  const auto state = BuildState(services);
   EmitResult(*state, arguments, sink);
 }
 

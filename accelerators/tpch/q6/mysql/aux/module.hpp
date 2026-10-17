@@ -57,6 +57,13 @@ public:
   // aggregate (its output is bounded by days x discounts x quantities).
   virtual void ScanCellAggregates(
       const std::function<void(const TpchQ6CellAggregate &)> &consumer);
+  // The same aggregate cut into `partitions` row ranges, each grouped on its
+  // own: sink(partition, cell) runs concurrently for different partitions and
+  // a cell may come once per partition (the caller sums them). The default is
+  // the serial aggregate as partition 0.
+  virtual void ScanCellAggregatesPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ6CellAggregate &)> &sink);
 };
 
 // The whole state is one image (partition 0).
