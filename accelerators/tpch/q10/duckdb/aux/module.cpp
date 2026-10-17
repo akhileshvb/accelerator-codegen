@@ -21,13 +21,13 @@ namespace {
 
 namespace sql_date = core::sql_date;
 
-// Lineitem deltas per slice when resolving them against the orders map.
+// Lineitem deltas per slice when resolving them against the orders map (untimed).
 constexpr std::size_t kResolveGrain = 4096;
-// Month or window images per slice when building or publishing.
+// Month or window images per slice when building or publishing (untimed).
 constexpr std::size_t kImageGrain = 1;
-// Month tables per slice when sorting them after the scan.
+// Month tables per slice when sorting them after the scan (untimed).
 constexpr std::size_t kMonthTableGrain = 1;
-// Month delta entries below which the per-month / per-window images are built inline.
+// Month delta entries below which the per-month / per-window images are built inline (untimed).
 constexpr std::size_t kImageOpThreshold = 2048;
 // Customer changes kept in the copy-on-write overlay before it is folded into the base.
 constexpr std::size_t kCustomerOverlayCap = 2048;
@@ -112,7 +112,7 @@ bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey,
   return true;
 }
 
-// Matches ScanOrders: o_orderkey, o_custkey, o_orderdate
+// Row layout: o_orderkey, o_custkey, o_orderdate
 bool ReadOrder(const core::AuxRow &row, int64_t &orderkey, int64_t &custkey,
                int32_t &orderdate_days) {
   return core::IntCell(row, 0, orderkey) && core::IntCell(row, 1, custkey) &&
@@ -1218,6 +1218,7 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
     throw std::logic_error("TPC-H Q10 requires a typed initial scan source");
 
   auto base = std::make_shared<TpchQ10SideBase>();
+  using scan::DateColumn;
   using scan::DecimalColumn;
   using scan::IntColumn;
   using scan::TextColumn;
@@ -1241,43 +1242,57 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
     base->SetCustomerRank(key, customer.acctbal_raw, customer.nationkey);
   state.side_base = std::move(base);
 
-  initial_scan->ScanNations([&](const TpchQ10NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ10NationInput &input) {
     state.nations[input.key] = input.name;
   });
 
-  // Prefer engine-side aggregation of returned revenue (DuckDB SQL join).
-  // Skip the full orders map in that case; write maintenance uses LookupOrders.
-  const bool used_sql_revenue = initial_scan->ScanReturnedCustomerRevenue(
-      [&](const TpchQ10ReturnedRevenueInput &input) {
+  // One build thread: the engine joins and aggregates the returned revenue in
+  // SQL (write maintenance then uses LookupOrders, not an orders map). More
+  // threads: partitioned orders and lineitem scans.
+  const bool used_sql_revenue =
+      services.WorkerCount() == 1 &&
+      initial_scan->ScanReturnedCustomerRevenue([&](const TpchQ10ReturnedRevenueInput &input) {
         if (input.revenue_raw == 0)
           return;
-        data.months[input.month_key].push_back(
-            {input.custkey, input.revenue_raw});
+        data.months[input.month_key].push_back({input.custkey, input.revenue_raw});
       });
 
   if (!used_sql_revenue) {
-    initial_scan->ScanOrders([&](const TpchQ10OrderInput &input) {
-      state.orders.Upsert(input.key,
-                          TpchQ10Order{input.custkey, input.orderdate_days});
-    });
-    initial_scan->ScanLineitems([&](const TpchQ10LineitemInput &input) {
-      if (!input.returned)
-        return;
-      const TpchQ10Order *order = state.orders.Find(input.orderkey);
-      if (!order)
-        return;
-      double extended_scale = 1.0;
-      double discount_scale = 1.0;
-      for (int32_t i = 0; i < input.extended_price_scale; ++i)
-        extended_scale *= 10.0;
-      for (int32_t i = 0; i < input.discount_scale; ++i)
-        discount_scale *= 10.0;
-      const auto revenue = TpchQ10RevenueRaw(
-          static_cast<double>(input.extended_price_raw) / extended_scale,
-          static_cast<double>(input.discount_raw) / discount_scale);
-      data.months[MonthKey(order->orderdate_days)]
-          .push_back({order->custkey, revenue});
-    });
+    using OrderEntry = std::pair<int64_t, TpchQ10Order>;
+    const auto orders = CollectTable<OrderEntry>(
+        services, *initial_scan, "orders",
+        {IntColumn("o_orderkey"), IntColumn("o_custkey"), DateColumn("o_orderdate")},
+        [](const auto &row) {
+          return OrderEntry{row.Int(0), TpchQ10Order{row.Int(1), row.Date(2)}};
+        });
+    for (const auto &[key, order] : orders)
+      state.orders.Upsert(key, order);
+
+    using MonthTables = std::map<int32_t, std::vector<TpchQ10KV>>;
+    data.months = core::PartitionedBuild<MonthTables>(
+        services, [] { return MonthTables{}; },
+        [&](std::size_t parts, auto &&sink) {
+          initial_scan->ScanTable(services, "lineitem",
+                                  {IntColumn("l_orderkey"), DecimalColumn("l_extendedprice", 2),
+                                   DecimalColumn("l_discount", 2), TextColumn("l_returnflag")},
+                                  parts, sink);
+        },
+        [&](MonthTables &months, const auto &row) {
+          if (row.Char(3) != 'R')
+            return;
+          const TpchQ10Order *order = state.orders.Find(row.Int(0));
+          if (!order)
+            return;
+          const auto revenue = TpchQ10RevenueRaw(static_cast<double>(row.Decimal(1)) / 100.0,
+                                                 static_cast<double>(row.Decimal(2)) / 100.0);
+          months[MonthKey(order->orderdate_days)].push_back({order->custkey, revenue});
+        },
+        [](MonthTables &into, MonthTables &&from) {
+          for (auto &[month, entries] : from) {
+            auto &target = into[month];
+            target.insert(target.end(), entries.begin(), entries.end());
+          }
+        });
   }
   // Key-sorted, deduplicated (summed), nonzero month tables.
   std::vector<std::vector<TpchQ10KV> *> tables;

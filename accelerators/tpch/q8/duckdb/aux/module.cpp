@@ -15,11 +15,11 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Lineitem deltas per slice when resolving them against the dimensions.
+// Lineitem deltas per slice when resolving them against the dimensions (untimed).
 constexpr std::size_t kResolveGrain = 2048;
-// Touched mid arrays per slice when publishing a dimension map.
+// Touched mid arrays per slice when publishing a dimension map (untimed).
 constexpr std::size_t kMidArrayGrain = 16;
-// Shards per slice when sorting a built index.
+// Shards per slice when sorting a built index (untimed).
 constexpr std::size_t kSortShardGrain = 1024;
 
 // The cube covers these two order years.
@@ -1208,11 +1208,11 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
 
   // Nation/region dictionaries in one pass each.
   std::unordered_map<int32_t, std::string> regionkey_to_name;
-  initial_scan->ScanRegions([&](const TpchQ8RegionInput &input) {
+  initial_scan->ScanRegionsSerial([&](const TpchQ8RegionInput &input) {
     regionkey_to_name[input.key] = input.name;
   });
 
-  initial_scan->ScanNations([&](const TpchQ8NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ8NationInput &input) {
     dims.dict->nation_name_to_key[input.name] = input.key;
     max_nation = std::max(max_nation, input.key);
     const auto rit = regionkey_to_name.find(input.regionkey);

@@ -33,6 +33,17 @@ using core::ByteWriter;
 constexpr uint32_t kCustomerMagic = 0x43313351; // Q13C
 constexpr uint32_t kVersion = 1;
 
+// Shards per slice of the bulk token index and match counts (~3000 us at SF 1).
+constexpr std::size_t kFinishGrain = 32;
+// Shards per slice when histogramming customers (untimed).
+constexpr std::size_t kHistGrain = 64;
+// Shards per slice of the untracked-pattern read (untimed).
+constexpr std::size_t kEvalGrain = 1024;
+// Shards folded per slice by the build merge (~256 us).
+constexpr std::size_t kMergeGrain = 256;
+// Shard runs per maintenance slice (untimed); RF-sized commits stay inline.
+constexpr std::size_t kMaintGrain = 4096;
+
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
   plan.scope = ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
@@ -61,15 +72,11 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
   return lhs.c_count > rhs.c_count;
 }
 
-
-
-// ── Sharded, copy-on-write state machinery ──────────────────────────────────
 constexpr int64_t kMaxKey = int64_t{1} << 36;  // customer keys beyond fail the build
 constexpr std::size_t kShardMask = kTpchQ13Shards - 1;
 
 bool KeyOk(int64_t ck) { return ck >= 0 && ck < kMaxKey; }
 
-// ── Literal search ──────────────────────────────────────────────────────────
 // Leftmost occurrence of nd[0..m) in h[0..n), or nullptr.  AVX2: compare the
 // first and last needle byte at 32 positions at once, then verify the middle.
 const char *FindLit(const char *h, std::size_t n, const char *nd, std::size_t m) {
@@ -133,14 +140,6 @@ const char *SegFind(const char *t, std::size_t n, const TpchQ13Like::Seg &s) {
       return t + i;
   return nullptr;
 }
-
-// Shards per slice. A shard holds ~100 orders per SF-1 (about 1us each
-// when indexed), so only large builds and reads pay for a task.
-constexpr std::size_t kFinishGrain = 32;  // bulk token index and match counts
-constexpr std::size_t kHistGrain = 64;     // ~200 customers per shard at SF 20
-constexpr std::size_t kEvalGrain = 1024;   // untracked-pattern read
-constexpr std::size_t kMergeGrain = 256;   // build merge: shards folded per slice (~1 us each)
-constexpr std::size_t kMaintGrain = 4096;  // maintenance: shard runs per slice; RF-sized commits stay inline
 
 // Count changes of a batch of order/customer updates, kept apart from the
 // state so slices owning disjoint shards can run concurrently; summed in
@@ -239,7 +238,6 @@ std::vector<TpchQ13OutputRow> SortedRows(const std::vector<int64_t> &h) {
   return out;
 }
 
-// ── Word-token index ────────────────────────────────────────────────────────
 constexpr std::size_t kMaxTokLen = 64;
 constexpr std::size_t kMaxVocab = 60000;
 constexpr std::size_t kMaxIndexedOrders = 65535;  // postings are uint16
@@ -1318,7 +1316,6 @@ void MergePartials(const core::AuxEngineServices &services, BuildPartial &into,
 
 } // namespace
 
-// ── LIKE matcher ────────────────────────────────────────────────────────────
 void TpchQ13Like::Build(const std::string &p) {
   pattern = p;
   parts.clear();
@@ -1384,8 +1381,6 @@ bool TpchQ13Like::Matches(const char *data, std::size_t len) const {
   return true;
 }
 
-
-// ── Encode / Decode ─────────────────────────────────────────────────────────
 // Layout: header, patterns, customer rows (key, multiplicity), live orders.
 std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state) {
   ByteWriter writer;
@@ -1485,7 +1480,6 @@ bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
   return true;
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ13TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ13TxnBuffer::Clear() {
   pending = false;
@@ -1503,7 +1497,6 @@ void TpchQ13TxnBuffer::AddDelta(TpchQ13Delta delta) {
   deltas.push_back(std::move(delta));
 }
 
-// ── TpchQ13Module ───────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ13Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
@@ -1516,7 +1509,6 @@ std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
 std::unique_ptr<core::AuxTxnBuffer> TpchQ13Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ13TxnBuffer>();
 }
-
 
 void TpchQ13Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {

@@ -97,7 +97,7 @@ public:
   virtual void ScanSuppliers(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9SupplierInput &)> &) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ9NationInput &)> &) = 0;
   virtual void ScanOrders(
       const core::AuxEngineServices &, std::size_t partitions,

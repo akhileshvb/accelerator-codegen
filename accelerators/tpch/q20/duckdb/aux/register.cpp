@@ -176,7 +176,7 @@ struct TpchQ20Scan : TpchQ20InitialScan {
                       }
                     });
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const TpchQ20NationInput &)> &consumer) override {
     ScanQueryStreaming(
         connection, "SELECT n_nationkey, n_name FROM nation",

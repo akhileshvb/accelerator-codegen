@@ -21,18 +21,13 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
 
-// Parts per slice: sorting a part's few (quantity, price) buckets is ~1 us.
+// Parts per slice (~4000 us): sorting a part's few (quantity, price) buckets is ~1 us.
 constexpr std::size_t kPartStatsGrain = 4096;
-// Pages per slice: sorting one 1024-part page is ~50 us.
+// Pages per slice (~800 us): sorting one 1024-part page is ~50 us.
 constexpr std::size_t kPageSortGrain = 16;
-// Page runs per slice: restaging one 1024-part page run is ~20 us.
+// Page runs per slice (~160 us): restaging one 1024-part page run is ~20 us.
 constexpr std::size_t kStageRunGrain = 8;
-constexpr uint32_t kVersion = 2;
-constexpr uint32_t kAttrMagic = 0x49313751;  // Q17I
-constexpr uint32_t kPartMagic = 0x50313751;  // Q17P
 
 core::PartitionId AttrPartsPartition(const std::string &brand,
                                      const std::string &container) {
@@ -483,103 +478,6 @@ void TpchQ17State::SplitAttrKey(const std::string &key, std::string &brand,
   }
   brand = key.substr(0, nul);
   container = key.substr(nul + 1);
-}
-
-// Legacy byte encoders (tooling compatibility).
-std::vector<uint8_t> EncodeTpchQ17AttributeIndex(const TpchQ17State &state) {
-  ByteWriter writer;
-  uint32_t total_entries = 0;
-  for (const auto &entry : state.attribute_index)
-    total_entries += static_cast<uint32_t>(entry.second.size());
-  core::WriteImageHeader(writer, kAttrMagic, kVersion, total_entries);
-  std::vector<std::pair<std::string, int64_t>> sorted;
-  sorted.reserve(total_entries);
-  for (const auto &kv : state.attribute_index)
-    for (const auto pk : kv.second)
-      sorted.emplace_back(kv.first, pk);
-  std::sort(sorted.begin(), sorted.end());
-  for (const auto &entry : sorted) {
-    writer.String(entry.first);
-    writer.I64(entry.second);
-  }
-  return std::move(writer.bytes);
-}
-
-std::vector<uint8_t> EncodeTpchQ17PartStats(int64_t partkey,
-                                            const TpchQ17State &state) {
-  ByteWriter writer;
-  const auto it = state.part_stats.find(partkey);
-  uint32_t count = 0;
-  if (it != state.part_stats.end()) {
-    const auto &stats = it->second;
-    count = static_cast<uint32_t>(stats.qty_price_pairs.size());
-    core::WriteImageHeader(writer, kPartMagic, kVersion, count);
-    writer.I64(stats.sum_qty_raw);
-    writer.I32(stats.count);
-    for (const auto &pair : stats.qty_price_pairs) {
-      writer.I32(pair.quantity_raw);
-      writer.I32(pair.row_count);
-      writer.I64(pair.extendedprice_raw);
-    }
-  } else {
-    core::WriteImageHeader(writer, kPartMagic, kVersion, 0);
-    writer.I64(0);
-    writer.I32(0);
-  }
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ17AttributeIndex(const std::vector<uint8_t> &bytes,
-                                 TpchQ17State &state) {
-  ByteReader reader{bytes};
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kAttrMagic, kVersion, count))
-    return false;
-  state.attribute_index.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    std::string key;
-    int64_t partkey = 0;
-    if (!reader.String(key) || !reader.I64(partkey))
-      return false;
-    state.attribute_index[key].insert(partkey);
-  }
-  return reader.offset == bytes.size();
-}
-
-bool DecodeTpchQ17PartStats(const std::vector<uint8_t> &bytes, int64_t partkey,
-                            TpchQ17State &state) {
-  ByteReader reader{bytes};
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kPartMagic, kVersion, count))
-    return false;
-  TpchQ17PartStats stats;
-  if (!reader.I64(stats.sum_qty_raw) || !reader.I32(stats.count))
-    return false;
-  stats.qty_price_pairs.resize(count);
-  for (uint32_t i = 0; i < count; ++i) {
-    if (!reader.I32(stats.qty_price_pairs[i].quantity_raw) ||
-        !reader.I32(stats.qty_price_pairs[i].row_count) ||
-        !reader.I64(stats.qty_price_pairs[i].extendedprice_raw))
-      return false;
-  }
-  stats.RecomputeContribution();
-  state.part_stats[partkey] = std::move(stats);
-  return reader.offset == bytes.size();
-}
-
-bool FindTpchQ17PartKeys(const std::vector<uint8_t> &bytes,
-                         const std::string &brand,
-                         const std::string &container,
-                         std::unordered_set<int64_t> &partkeys) {
-  TpchQ17State state;
-  if (!DecodeTpchQ17AttributeIndex(bytes, state))
-    return false;
-  const auto key = TpchQ17State::MakeAttrKey(brand, container);
-  const auto it = state.attribute_index.find(key);
-  partkeys.clear();
-  if (it != state.attribute_index.end())
-    partkeys = it->second;
-  return true;
 }
 
 bool TpchQ17TxnBuffer::HasPendingChanges() const { return pending; }

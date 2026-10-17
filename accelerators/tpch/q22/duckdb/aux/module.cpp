@@ -17,12 +17,12 @@ namespace {
 
 using Int128 = __int128;
 
-// Owner runs (customer-array directory pages) per maintenance slice: a page
-// clone plus ~10 key edits is ~5 us.
+// Owner runs (customer-array directory pages) per maintenance slice (~320 us): a page clone plus
+// ~10 key edits is ~5 us.
 constexpr std::size_t kRunGrain = 64;
-// Key events per sorted slice of the owner sort.
+// Key events per sorted slice of the owner sort (untimed).
 constexpr std::size_t kSortGrain = 65536;
-// Below this many balance ops a commit updates its prefixes inline.
+// Balance ops below which a commit updates its prefixes inline (untimed).
 constexpr std::size_t kPrefixOpThreshold = 4096;
 
 // c_acctbal is DECIMAL(15,2).

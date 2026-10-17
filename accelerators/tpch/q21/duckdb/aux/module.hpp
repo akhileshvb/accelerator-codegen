@@ -15,7 +15,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q21 layout ──────────────────────────────────────────────────────────────
 struct TpchQ21Layout {
   static constexpr const char *kAccelerator = "tpch_q21_aux";
   static constexpr core::PartitionId kSupplierMetadata = 0;
@@ -34,7 +33,6 @@ struct TpchQ21Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ21Config {
   core::TableId supplier_table = 0;
   core::TableId orders_table = 0;
@@ -42,7 +40,6 @@ struct TpchQ21Config {
   core::TableId nation_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ21SupplierInput {
   int64_t suppkey = 0;
   std::string name;
@@ -69,7 +66,7 @@ struct TpchQ21LineitemInput {
 class TpchQ21InitialScan {
 public:
   virtual ~TpchQ21InitialScan() = default;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ21NationInput &)> &) = 0;
   // Partitioned scans for builds: rows of one partition arrive in table order
   // on one thread; partitions run concurrently on the pool.
@@ -107,7 +104,6 @@ public:
   }
 };
 
-// ── State structures ────────────────────────────────────────────────────────
 struct SupplierOrderInfo {
   int64_t suppkey = 0;
   int64_t total_count = 0; // lineitems of this supplier on this order
@@ -189,7 +185,6 @@ struct TpchQ21State {
   std::map<int32_t, std::shared_ptr<const TpchQ21NationRows>> nations;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ21OutputRow {
   std::string name;
   int64_t numwait = 0;
@@ -214,7 +209,6 @@ struct TpchQ21StateImage {
   std::shared_ptr<const TpchQ21NationRows> rows;        // Nation
 };
 
-// ── Delta ───────────────────────────────────────────────────────────────────
 struct TpchQ21LineitemDelta {
   int64_t orderkey = 0;
   int64_t suppkey = 0;
@@ -243,7 +237,6 @@ struct TpchQ21NationDelta {
   std::string new_name;
 };
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
 std::vector<uint8_t> EncodeTpchQ21SupplierMetadata(const TpchQ21State &state);
 std::vector<uint8_t> EncodeTpchQ21OrderSummaries(const TpchQ21State &state);
 std::vector<uint8_t> EncodeTpchQ21NationNameIndex(const TpchQ21State &state);
@@ -258,7 +251,6 @@ bool DecodeTpchQ21NationNameIndex(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ21Nation(const std::vector<uint8_t> &bytes, int32_t nationkey,
                           TpchQ21State &state);
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ21TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -284,7 +276,6 @@ private:
   std::vector<TpchQ21NationDelta> nation_deltas;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ21Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ21Layout::kAccelerator;

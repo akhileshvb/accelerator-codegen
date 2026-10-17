@@ -19,13 +19,13 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Suppliers per build slice: sorting ~80 parts is ~10 us, so hundreds pay for a task.
+// Suppliers per build slice (~2500 us): sorting ~80 parts is ~10 us, so hundreds pay for a task.
 constexpr std::size_t kSupplierFoldGrain = 256;
-// Nation aggregates per slice when building (~ms each).
+// Nation aggregates per slice when building (~1000 us).
 constexpr std::size_t kNationJobGrain = 1;
-// Nation ops below which a commit applies its nations inline.
+// Nation ops below which a commit applies its nations inline (untimed).
 constexpr std::size_t kNationOpThreshold = 2048;
-// Deltas in a commit below which the supplier bookkeeping stays on one thread.
+// Deltas in a commit below which the supplier bookkeeping stays on one thread (untimed).
 constexpr std::size_t kBookkeepOpThreshold = 2048;
 
 // Scale of the emitted value column.
@@ -126,8 +126,6 @@ MakeNationData(const std::vector<TpchQ11OutputRow> &sorted, Q11AccT total) {
 std::shared_ptr<const TpchQ11NationData> EmptyNationData() {
   return MakeNationData({}, 0);
 }
-
-
 
 // Copy-on-write working copy of a nation aggregate.  Only the touched value
 // bucket(s) and sorted chunk(s) are copied; everything else is shared with the
@@ -309,7 +307,6 @@ private:
   std::vector<char> owned;
 };
 
-
 // A change of a nation's per-part value, logged by the supplier bookkeeping.
 struct NationOp {
   std::size_t delta; // arrival index of the delta that caused it
@@ -429,7 +426,6 @@ bool BookkeepSuppliers(core::AuxEngineServices &services, const TpchQ11TxnBuffer
                    [](const NationOp &a, const NationOp &b) { return a.delta < b.delta; });
   return true;
 }
-
 
 // The low 64 bits of an accumulator: the raw value of the emitted decimal.
 int64_t ToRaw64(Q11AccT value) {
@@ -781,7 +777,6 @@ void EmitRowsAbove(const TpchQ11NationData &data, Q11AccT threshold_raw,
 
 } // namespace
 
-// ── Partition helpers ───────────────────────────────────────────────────────
 core::PartitionId NationNamePartition(const std::string &name) {
   uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char c : name) {
@@ -791,7 +786,6 @@ core::PartitionId NationNamePartition(const std::string &name) {
   return TpchQ11Layout::kNationNameBase +
          static_cast<core::PartitionId>(hash % TpchQ11Layout::kNationNameSlots);
 }
-
 
 bool TpchQ11TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ11TxnBuffer::Clear() {
@@ -831,7 +825,6 @@ void TpchQ11TxnBuffer::AddNationDelta(TpchQ11NationDelta delta) {
   nation_deltas.push_back(delta);
 }
 
-
 core::AcceleratorId TpchQ11Module::Id() const { return TpchQ11Layout::kAccelerator; }
 
 std::vector<core::TableDependency> TpchQ11Module::Dependencies() const {
@@ -867,7 +860,6 @@ void TpchQ11Module::Build(core::AuxEngineServices &services,
   builder.Finish();
 }
 
-
 core::InvalidationPlan
 TpchQ11Module::InterpretMutation(const core::MutationBatch &mutation) const {
   if (mutation.table == config.partsupp_table ||
@@ -880,7 +872,6 @@ TpchQ11Module::InterpretMutation(const core::MutationBatch &mutation) const {
   }
   return {};
 }
-
 
 void TpchQ11Module::AccumulateMutation(const core::MutationBatch &mutation,
                                        core::AuxEngineServices &,
@@ -1032,7 +1023,7 @@ TpchQ11Built TpchQ11Module::BuildState(
     throw std::logic_error("TPC-H Q11 requires a typed initial scan source");
 
   auto state = std::make_shared<TpchQ11State>();
-  initial_scan->ScanNations([&](const TpchQ11NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ11NationInput &input) {
     state->nation_name_to_key[input.name] = input.nationkey;
   });
 

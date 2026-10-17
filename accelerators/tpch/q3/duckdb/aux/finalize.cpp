@@ -25,6 +25,39 @@ struct TopKLess {
   }
 };
 
+// Best-first walk over the bins' (bound desc, orderkey asc) entry streams.
+// Every order's revenue at any cutoff is <= its bound, so once the next
+// bound is below the current 10th result nothing remaining can enter the
+// top 10: the walk touches O(answer * bins) entries, not the whole segment.
+struct Cursor {
+  const TpchQ3BinList *bin = nullptr;
+  std::size_t chunk = 0;
+  std::size_t idx = 0;
+  const TpchQ3Entry &Current() const { return bin->chunks[chunk]->entries[idx]; }
+  const TpchQ3Chunk &CurrentChunk() const { return *bin->chunks[chunk]; }
+  // Moves to the next entry; false when the bin is exhausted.
+  bool Advance() {
+    if (++idx < bin->chunks[chunk]->entries.size())
+      return true;
+    ++chunk;
+    idx = 0;
+    while (chunk < bin->chunks.size() && bin->chunks[chunk]->entries.empty())
+      ++chunk;
+    return chunk < bin->chunks.size();
+  }
+};
+
+struct CursorWorse {
+  // priority_queue keeps the "largest" at top: make it the best entry.
+  bool operator()(const Cursor &a, const Cursor &b) const {
+    const auto &x = a.Current();
+    const auto &y = b.Current();
+    if (x.bound != y.bound)
+      return x.bound < y.bound;
+    return x.orderkey > y.orderkey;
+  }
+};
+
 } // namespace
 
 void FinalizeTpchQ3OrderSummary(std::vector<TpchQ3ShipdateBucket> &buckets,
@@ -69,43 +102,6 @@ int64_t TpchQ3RevenueAboveCutoff(const TpchQ3Entry &order,
     return 0;
   return it->suffix_revenue;
 }
-
-namespace {
-
-// Best-first walk over the bins' (bound desc, orderkey asc) entry streams.
-// Every order's revenue at any cutoff is <= its bound, so once the next
-// bound is below the current 10th result nothing remaining can enter the
-// top 10: the walk touches O(answer * bins) entries, not the whole segment.
-struct Cursor {
-  const TpchQ3BinList *bin = nullptr;
-  std::size_t chunk = 0;
-  std::size_t idx = 0;
-  const TpchQ3Entry &Current() const { return bin->chunks[chunk]->entries[idx]; }
-  const TpchQ3Chunk &CurrentChunk() const { return *bin->chunks[chunk]; }
-  // Moves to the next entry; false when the bin is exhausted.
-  bool Advance() {
-    if (++idx < bin->chunks[chunk]->entries.size())
-      return true;
-    ++chunk;
-    idx = 0;
-    while (chunk < bin->chunks.size() && bin->chunks[chunk]->entries.empty())
-      ++chunk;
-    return chunk < bin->chunks.size();
-  }
-};
-
-struct CursorWorse {
-  // priority_queue keeps the "largest" at top: make it the best entry.
-  bool operator()(const Cursor &a, const Cursor &b) const {
-    const auto &x = a.Current();
-    const auto &y = b.Current();
-    if (x.bound != y.bound)
-      return x.bound < y.bound;
-    return x.orderkey > y.orderkey;
-  }
-};
-
-} // namespace
 
 std::vector<TpchQ3OutputRow> ComposeTpchQ3TopK(const TpchQ3Segment &segment,
                                                int32_t cutoff_days) {

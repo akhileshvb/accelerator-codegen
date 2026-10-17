@@ -120,55 +120,13 @@ using namespace scan;
 
 struct TpchQ10Scan : TpchQ10InitialScan {
   explicit TpchQ10Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanCustomers(
-      const std::function<void(const TpchQ10CustomerInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, "
-        "c_phone, c_comment FROM customer",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ10CustomerInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      ChunkValue(chunk, 1, row).ToString(),
-                                      DecimalRaw(ChunkValue(chunk, 2, row)),
-                                      SafeInt32(ChunkValue(chunk, 3, row)),
-                                      ChunkValue(chunk, 4, row).ToString(),
-                                      ChunkValue(chunk, 5, row).ToString(),
-                                      ChunkValue(chunk, 6, row).ToString()};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const TpchQ10NationInput &)> &consumer) override {
     ScanQuery(connection, "SELECT n_nationkey, n_name FROM nation",
               [&](auto &result, ::duckdb::idx_t row) {
                 consumer({SafeInt32(result.GetValue(0, row)),
                           result.GetValue(1, row).ToString()});
               });
-  }
-  void ScanOrders(
-      const std::function<void(const TpchQ10OrderInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT o_orderkey, o_custkey, o_orderdate FROM orders",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ10OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                   SafeInt64(ChunkValue(chunk, 1, row)),
-                                   DateDays(ChunkValue(chunk, 2, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
-  void ScanLineitems(
-      const std::function<void(const TpchQ10LineitemInput &)> &consumer) override {
-    // Fallback path only: filter returned rows in SQL when the C++ join is used.
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_orderkey, l_extendedprice, l_discount, l_returnflag "
-        "FROM lineitem WHERE l_returnflag = 'R'",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ10LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-                                      DecimalRaw(ChunkValue(chunk, 2, row)), 2, true};
-        },
-        [&](auto &&input) { consumer(input); });
   }
   bool ScanReturnedCustomerRevenue(
       const std::function<void(const TpchQ10ReturnedRevenueInput &)> &consumer)

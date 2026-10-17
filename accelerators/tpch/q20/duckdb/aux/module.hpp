@@ -19,7 +19,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q20 layout ──────────────────────────────────────────────────────────────
 struct TpchQ20Layout {
   static constexpr const char *kAccelerator = "tpch_q20_aux";
   static constexpr core::PartitionId kFullState = 0;
@@ -37,7 +36,6 @@ struct TpchQ20Config {
   core::TableId nation_table = 0;
 };
 
-// ── Typed bulk-scan contract ───────────────────────────────────────────────
 struct TpchQ20LineitemInput {
   int32_t shipdate_days = 0;
   int64_t partkey = 0;
@@ -66,7 +64,7 @@ struct TpchQ20NationInput {
 class TpchQ20InitialScan {
 public:
   virtual ~TpchQ20InitialScan() = default;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ20NationInput &)> &) = 0;
   // Partitioned scans for builds: rows of one partition arrive in table order
   // on one thread; partitions run concurrently on the pool.
@@ -84,7 +82,6 @@ public:
       const std::function<void(std::size_t, const TpchQ20SupplierInput &)> &) = 0;
 };
 
-// ── State structures ────────────────────────────────────────────────────────
 struct TpchQ20DateQuantity {
   int32_t shipdate_days = 0;
   int64_t quantity_raw = 0;
@@ -487,13 +484,6 @@ struct TpchQ20StateImage {
   std::shared_ptr<const TpchQ20State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
-struct TpchQ20OutputRow {
-  std::string name;
-  std::string address;
-};
-
-// ── Delta types ─────────────────────────────────────────────────────────────
 struct TpchQ20LineitemDelta {
   int32_t shipdate_days = 0;
   int64_t partkey = 0;
@@ -522,11 +512,9 @@ struct TpchQ20SupplierDelta {
   TpchQ20SupplierRecord record;
 };
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
 std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state);
 bool DecodeTpchQ20State(const std::vector<uint8_t> &bytes, TpchQ20State &state);
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ20TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -554,7 +542,6 @@ private:
   std::vector<TpchQ20SupplierDelta> supplier_deltas;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ20Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ20Layout::kAccelerator;

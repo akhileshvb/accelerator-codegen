@@ -15,7 +15,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q18 layout ──────────────────────────────────────────────────────────────
 struct TpchQ18Layout {
   static constexpr const char *kAccelerator = "tpch_q18_aux";
   static constexpr core::PartitionId kOrderQuantitySums = 0;
@@ -25,14 +24,12 @@ struct TpchQ18Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ18Config {
   core::TableId lineitem_table = 0;
   core::TableId orders_table = 0;
   core::TableId customer_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ18LineitemInput {
   int64_t orderkey = 0;
   int64_t quantity_raw = 0;
@@ -100,7 +97,6 @@ public:
   }
 };
 
-// ── State structures ────────────────────────────────────────────────────────
 struct TpchQ18SurvivorMeta {
   int64_t custkey = 0;
   int32_t orderdate_days = 0;
@@ -130,12 +126,10 @@ struct TpchQ18State {
   // the customer table on every hit (dominant cost at SF20).
   core::ShardedCowHashMap<std::string, 8> customer_names;
 
-  // ── Quantity sum accessors ──────────────────────────────────────────────
   void AddOrderQuantity(int64_t orderkey, int64_t delta);
   void SetOrderQuantitySum(int64_t orderkey, int64_t sum);
   int64_t OrderQuantitySum(int64_t orderkey) const;
 
-  // ── Survivor metadata accessors ─────────────────────────────────────────
   void SetOrderMeta(int64_t orderkey, int64_t custkey, int32_t orderdate_days,
                     int64_t totalprice_raw);
   void RemoveSurvivor(int64_t orderkey);
@@ -153,7 +147,6 @@ struct TpchQ18StateImage {
   std::shared_ptr<const TpchQ18State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ18OutputRow {
   std::string name;
   int64_t custkey = 0;
@@ -163,19 +156,16 @@ struct TpchQ18OutputRow {
   int64_t quantity_sum_raw = 0;
 };
 
-// ── Delta ───────────────────────────────────────────────────────────────────
 struct TpchQ18LineitemDelta {
   int64_t orderkey = 0;
   int64_t quantity_raw = 0;
   int8_t sign = 0;
 };
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
 std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state);
 bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
                                     TpchQ18State &state);
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ18TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -201,7 +191,6 @@ private:
   std::vector<TpchQ18LineitemDelta> deltas;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ18Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ18Layout::kAccelerator;

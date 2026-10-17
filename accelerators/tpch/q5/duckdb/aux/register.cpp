@@ -113,7 +113,7 @@ using namespace scan;
 
 struct TpchQ5Scan : TpchQ5InitialScan {
   explicit TpchQ5Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanRegions(
+  void ScanRegionsSerial(
       const std::function<void(const TpchQ5RegionInput &)> &consumer) override {
     ScanQueryStreaming(
         connection, "SELECT r_regionkey, r_name FROM region",
@@ -122,7 +122,7 @@ struct TpchQ5Scan : TpchQ5InitialScan {
                     ChunkValue(chunk, 1, row).ToString()});
         });
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const TpchQ5NationInput &)> &consumer) override {
     ScanQueryStreaming(
         connection, "SELECT n_nationkey, n_name, n_regionkey FROM nation",
@@ -131,31 +131,6 @@ struct TpchQ5Scan : TpchQ5InitialScan {
                     ChunkValue(chunk, 1, row).ToString(),
                     SafeInt32(ChunkValue(chunk, 2, row))});
         });
-  }
-  void ScanOrders(
-      const std::function<void(const TpchQ5OrderInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT o_orderkey, o_custkey, o_orderdate FROM orders",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ5OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                  SafeInt64(ChunkValue(chunk, 1, row)),
-                                  DateDays(ChunkValue(chunk, 2, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
-  void ScanLineitems(
-      const std::function<void(const TpchQ5LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount FROM lineitem",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ5LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     SafeInt64(ChunkValue(chunk, 1, row)),
-                                     DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-                                     DecimalRaw(ChunkValue(chunk, 3, row)), 2};
-        },
-        [&](auto &&input) { consumer(input); });
   }
   bool ScanLineitemsBySupplier(
       int64_t suppkey,

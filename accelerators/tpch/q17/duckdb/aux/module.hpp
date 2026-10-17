@@ -14,7 +14,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q17 layout ──────────────────────────────────────────────────────────────
 // Maintenance uses small pages (1024 partkeys) of per-part (quantity -> count,
 // price sum) buckets, so a lineitem/part delta updates state locally with no
 // SQL; reads use one AttrParts partition per (brand, container) holding the
@@ -46,13 +45,11 @@ struct TpchQ17Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ17Config {
   core::TableId part_table = 0;
   core::TableId lineitem_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ17PartInput {
   int64_t key = 0;
   std::string brand;
@@ -78,7 +75,6 @@ public:
       const std::function<void(std::size_t, const TpchQ17LineitemInput &)> &) = 0;
 };
 
-// ── Per-part statistics ─────────────────────────────────────────────────────
 // One (quantity -> row count, price sum) bucket of a part, sorted by quantity.
 // 16 bytes; the count lets a delete retire a bucket exactly (bag semantics).
 struct TpchQ17QtyPricePair {
@@ -147,7 +143,6 @@ struct TpchQ17StateImage {
   std::shared_ptr<const TpchQ17AttrParts> attr_parts;
 };
 
-// ── Delta ───────────────────────────────────────────────────────────────────
 struct TpchQ17LineitemDelta {
   int64_t partkey = 0;
   int64_t quantity_raw = 0;
@@ -163,20 +158,6 @@ struct TpchQ17PartDelta {
   int8_t sign = 0;
 };
 
-// ── Encode / Decode (byte format retained for tooling) ──────────────────────
-std::vector<uint8_t> EncodeTpchQ17AttributeIndex(const TpchQ17State &state);
-std::vector<uint8_t> EncodeTpchQ17PartStats(int64_t partkey,
-                                            const TpchQ17State &state);
-bool DecodeTpchQ17AttributeIndex(const std::vector<uint8_t> &bytes,
-                                 TpchQ17State &state);
-bool DecodeTpchQ17PartStats(const std::vector<uint8_t> &bytes, int64_t partkey,
-                            TpchQ17State &state);
-bool FindTpchQ17PartKeys(
-    const std::vector<uint8_t> &bytes, const std::string &brand,
-    const std::string &container,
-    std::unordered_set<int64_t> &partkeys);
-
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ17TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -197,7 +178,6 @@ private:
   std::vector<TpchQ17PartDelta> part_deltas;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ17Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ17Layout::kAccelerator;

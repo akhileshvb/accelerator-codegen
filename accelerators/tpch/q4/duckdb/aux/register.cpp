@@ -111,29 +111,6 @@ using namespace scan;
 
 struct TpchQ4Scan : TpchQ4InitialScan {
   explicit TpchQ4Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanOrders(
-      const std::function<void(const TpchQ4OrderInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT o_orderkey, o_orderdate, o_orderpriority FROM orders",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ4OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                  DateDays(ChunkValue(chunk, 1, row)),
-                                  ChunkValue(chunk, 2, row).ToString()};
-        },
-        [&](const TpchQ4OrderInput &input) { consumer(input); });
-  }
-  void ScanLineitems(
-      const std::function<void(const TpchQ4LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_orderkey, l_commitdate, l_receiptdate FROM lineitem",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ4LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     DateDays(ChunkValue(chunk, 1, row)),
-                                     DateDays(ChunkValue(chunk, 2, row))};
-        },
-        [&](const TpchQ4LineitemInput &input) { consumer(input); });
-  }
   void ScanTable(const core::AuxEngineServices &services, const std::string &table,
                  const std::vector<BuildColumn> &columns, std::size_t partitions,
                  const Sink &sink) override {

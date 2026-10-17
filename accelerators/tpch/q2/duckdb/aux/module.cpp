@@ -23,17 +23,17 @@ using core::ByteWriter;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kStateMagic = 0x5132534d; // Q2SM
 
-// Ops per slice; a commit spanning several slices applies its ops as one batch.
-constexpr std::size_t kBatchOpGrain = 1024;
+// Ops above which a commit is applied as one batch (untimed).
+constexpr std::size_t kBatchOpThreshold = 1024;
 // Parts per slice of the maintenance entry diff (~1500 us).
 constexpr std::size_t kEntryGrain = 512;
-// Entries per slice of the sorted maintenance diff.
+// Entries per slice of the sorted maintenance diff (untimed).
 constexpr std::size_t kSortGrain = 16384;
-// Groups per slice of list edits.
+// Groups per slice of list edits (untimed).
 constexpr std::size_t kGroupGrain = 4;
 // Part slots per slice of the initial entry computation (~65000 us).
 constexpr std::size_t kPartGrain = 65536;
-// Candidate lists per slice of the initial list build (each list is sorted).
+// Candidate lists per slice of the initial list build (untimed): each list is sorted.
 constexpr std::size_t kListGrain = 1;
 
 // Entries per chunk of a candidate list when built, and the size that splits it.
@@ -78,7 +78,6 @@ bool AcceptFlatKey(int64_t key) {
                             std::to_string(key));
   return true;
 }
-
 
 // Total order of candidate entries = final ORDER BY of Q2, plus suppkey as a
 // last tie-break.  Supplier names are only consulted when the cheaper fields
@@ -414,7 +413,6 @@ public:
   }
 
 private:
-  // ---- sorted list primitives -------------------------------------------
   void InsertEntry(int64_t group, const TpchQ2Entry &e) {
     InsertIntoList(TpchQ2MutOf(TpchQ2MutOf(st.groups)[group]), EntryLess{&st}, e);
   }
@@ -442,7 +440,6 @@ private:
       InsertEntry(g.group, g.e);
   }
 
-  // ---- table edits (no candidate-list work) -------------------------------
   // False (and !ok) when a deleted offer was never seen.
   bool EditOffers(const TpchQ2PartsuppDelta &d) {
     if (!AcceptDenseKey(d.partkey) || !AcceptDenseKey(d.suppkey))
@@ -509,7 +506,6 @@ private:
     return parts;
   }
 
-  // ---- operations ---------------------------------------------------------
   void ApplyPartsupp(const TpchQ2PartsuppDelta &d) {
     if (!AcceptDenseKey(d.partkey) || !AcceptDenseKey(d.suppkey))
       return;
@@ -573,7 +569,6 @@ private:
     ApplyDiff(rest, after);
   }
 
-  // ---- batch ----------------------------------------------------------------
   // What a batch of table edits touched: parts whose candidate entries may
   // differ, and suppliers whose entries' sort key moved. Both sorted, unique.
   struct BatchEdits {
@@ -877,7 +872,7 @@ PublishedState LoadPublished(core::AuxEngineServices &services) {
 bool TryApplyOps(core::AuxEngineServices &services, const std::vector<TpchQ2Op> &ops,
                  const PublishedState &published, core::StagedMaintenanceOutcome &outcome) {
   Maintainer work(*published.state);
-  if (core::SliceCount(services, ops.size(), kBatchOpGrain) > 1) {
+  if (core::SliceCount(services, ops.size(), kBatchOpThreshold) > 1) {
     work.ApplyBatch(services, ops, *published.state);
   } else {
     for (const auto &op : ops) {
@@ -1370,12 +1365,12 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   auto nation_regions = std::make_shared<std::vector<int32_t>>();
   TpchQ2TypeDict types;
 
-  initial_scan->ScanRegions([&](const TpchQ2RegionInput &input) {
+  initial_scan->ScanRegionsSerial([&](const TpchQ2RegionInput &input) {
     AcceptFlatKey(input.key);
     EnsureFlatSize(*regions, static_cast<std::size_t>(input.key) + 1);
     (*regions)[static_cast<std::size_t>(input.key)] = input.name;
   });
-  initial_scan->ScanNations([&](const TpchQ2NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ2NationInput &input) {
     AcceptFlatKey(input.key);
     if (input.regionkey < 0)
       return;

@@ -23,18 +23,19 @@ constexpr uint32_t kVersion = 2;
 constexpr uint32_t kOrderSegmentMagic = 0x53335151; // Q3S
 constexpr uint32_t kIntervalMagic = 0x49335151;     // Q3I
 
-// Shards per slice when sorting or scanning the built order index.
+// Shards per slice when sorting or scanning the built order index (untimed).
 constexpr std::size_t kSortShardGrain = 1024;
+// Order shards per slice when staging a commit's day lists (untimed).
 constexpr std::size_t kStageShardGrain = 512;
-// Order keys per slice of the side-index lookups.
+// Order keys per slice of the side-index lookups (untimed).
 constexpr std::size_t kLookupGrain = 1024;
-// Orders per slice of the entry computation.
+// Orders per slice of the entry computation (untimed).
 constexpr std::size_t kWorkGrain = 256;
-// Segment bins per slice (each bin is an independent copy-on-write unit).
+// Segment bins per slice (untimed): each bin is an independent copy-on-write unit.
 constexpr std::size_t kBinGrain = 1;
-// Line-item buckets per slice of the day-list chaining (each bucket is heavy).
+// Line-item buckets per slice of the day-list chaining (untimed): each bucket is heavy.
 constexpr std::size_t kBucketGrain = 1;
-// Bins or shards per slice when publishing a commit's images.
+// Bins or shards per slice when publishing a commit's images (untimed).
 constexpr std::size_t kFinishGrain = 1;
 // Deltas above which the cost model chooses between delta-apply and rebuild.
 constexpr std::size_t kBulkDeltaCount = 256;

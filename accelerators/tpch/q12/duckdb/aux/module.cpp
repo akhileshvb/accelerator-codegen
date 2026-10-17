@@ -19,7 +19,7 @@ namespace {
 
 namespace sql_date = core::sql_date;
 
-// Tree contributions below which a commit applies its levels inline.
+// Tree contributions below which a commit applies its levels inline (untimed).
 constexpr std::size_t kLevelOpThreshold = 2048;
 
 std::shared_ptr<const TpchQ12StateImage>

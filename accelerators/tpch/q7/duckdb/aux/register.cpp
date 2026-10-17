@@ -125,7 +125,7 @@ using namespace scan;
 
 struct TpchQ7Scan : TpchQ7InitialScan {
   explicit TpchQ7Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const TpchQ7NationInput &)> &consumer) override {
     ScanQueryStreaming(
         connection, "SELECT n_nationkey, n_name FROM nation",
@@ -133,31 +133,6 @@ struct TpchQ7Scan : TpchQ7InitialScan {
           consumer({SafeInt32(ChunkValue(chunk, 0, row)),
                     ChunkValue(chunk, 1, row).ToString()});
         });
-  }
-  void ScanOrders(
-      const std::function<void(const TpchQ7OrderInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT o_orderkey, o_custkey FROM orders",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ7OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                  SafeInt64(ChunkValue(chunk, 1, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
-  void ScanLineitems(
-      const std::function<void(const TpchQ7LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount, l_shipdate "
-        "FROM lineitem",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ7LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     SafeInt64(ChunkValue(chunk, 1, row)),
-                                     DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-                                     DecimalRaw(ChunkValue(chunk, 3, row)), 2,
-                                     DateDays(ChunkValue(chunk, 4, row))};
-        },
-        [&](auto &&input) { consumer(input); });
   }
   int64_t CountOrders() override {
     int64_t n = -1;

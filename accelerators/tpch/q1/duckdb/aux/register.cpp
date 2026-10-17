@@ -105,7 +105,7 @@ using namespace scan;
 
 struct TpchQ1Scan : TpchQ1InitialScan {
   explicit TpchQ1Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanLineitems(
+  void ScanLineitemsSerial(
       const std::function<void(const TpchQ1LineitemInput &)> &consumer) override {
     ScanQueryDecoded(
         connection,

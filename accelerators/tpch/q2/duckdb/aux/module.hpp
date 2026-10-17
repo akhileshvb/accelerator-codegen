@@ -39,12 +39,6 @@ struct TpchQ2SupplierInput {
   std::string comment;
 };
 
-struct TpchQ2PartsuppInput {
-  int64_t partkey = 0;
-  int64_t suppkey = 0;
-  int64_t supplycost_raw = 0;
-};
-
 struct TpchQ2NationInput {
   int32_t key = 0;
   std::string name;
@@ -59,9 +53,9 @@ struct TpchQ2RegionInput {
 class TpchQ2InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ2InitialScan() = default;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ2NationInput &)> &) = 0;
-  virtual void ScanRegions(
+  virtual void ScanRegionsSerial(
       const std::function<void(const TpchQ2RegionInput &)> &) = 0;
 };
 

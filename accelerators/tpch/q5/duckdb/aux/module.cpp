@@ -21,6 +21,11 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
+// Shards per slice when sorting a built index (untimed).
+constexpr std::size_t kSortShardGrain = 1024;
+// Touched mid arrays per slice when publishing a side index (untimed).
+constexpr std::size_t kFinishGrain = 16;
+
 // Per-partition builder state of the orders and lineitem scans.
 struct OrdersPartial {
   TpchQ5ShardIndex<TpchQ5OrderRec>::Builder orders;
@@ -54,10 +59,6 @@ struct LineitemPartial {
   std::unordered_map<int64_t, int32_t> orphan_supp;
 };
 
-// Shards per slice when sorting a built index.
-constexpr std::size_t kSortShardGrain = 1024;
-// Touched mid arrays per slice when publishing a side index.
-constexpr std::size_t kFinishGrain = 16;
 // Deltas above which the cost model chooses between delta-apply and rebuild.
 constexpr std::size_t kBulkDeltaCount = 256;
 // Months in the query's order-date window.
@@ -1011,11 +1012,11 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   auto meta_ptr = std::make_shared<TpchQ5Meta>();
   auto &meta = *meta_ptr;
 
-  initial_scan->ScanRegions([&](const TpchQ5RegionInput &input) {
+  initial_scan->ScanRegionsSerial([&](const TpchQ5RegionInput &input) {
     meta.region_name_to_key[input.name] = input.key;
   });
 
-  initial_scan->ScanNations([&](const TpchQ5NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ5NationInput &input) {
     meta.nation_name[input.key] = input.name;
     meta.nation_region[input.key] = input.regionkey;
     meta.region_nations[input.regionkey].push_back(input.key);

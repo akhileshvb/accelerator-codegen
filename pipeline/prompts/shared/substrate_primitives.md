@@ -48,7 +48,11 @@ Everything below exists; use it before writing a private equivalent. Rules for *
 
 ## Naming grains
 
-A grain is `k<Unit>Grain` with a singular unit (`kDeltaGrain`, `kGroupGrain`, `kChunkGrain`), declared in the module's top constant block (never mid-file or function-local) with the comment "<Unit> per slice (~N us)"; a work threshold is `k<Unit>OpThreshold`. Write literals in decimal (`4096`, `16384`), not `1 << n`. A loop folding deltas per slice uses one value (4096) in every engine unless a measured reason is written next to the constant.
+A grain is `k<Unit>Grain` with a singular unit (`kDeltaGrain`, `kGroupGrain`, `kChunkGrain`), declared in the module's top constant block (never mid-file or function-local) with the comment "<Unit> per slice (~N us)"; a work threshold is `k<Unit>OpThreshold`. Write literals in decimal (`4096`, `16384`), not `1 << n`. A loop folding deltas per slice uses one value (4096) in every engine unless a measured reason is written next to the constant. Write "(untimed)" in place of "(~N us)" when the slice was not timed; never invent a number. A threshold comment reads "<Unit> below (or above) which <what> runs inline (~N us)".
+
+## Naming scans
+
+An `InitialScan` method that reads a whole table is named for the table: `Scan<Table>(services, partitions, sink)` is partitioned (`sink(partition, row)`, one thread per partition, partitions merged in order); `Scan<Table>Serial(consumer)` delivers rows one at a time on the calling thread (small dimension tables). Point lookups and SQL aggregate pushdowns are named for what they read (`ScanLineitemsByOrder`, `ScanMonthAggregates`), never `Serial`. A query with no `Scan<Table>` of its own scans through `PartitionedTableScan::ScanTable` and `CollectTable`. Delete a scan method nothing calls.
 
 ## Containers (copy-on-write)
 
