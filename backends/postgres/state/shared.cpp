@@ -48,7 +48,11 @@ struct Registry {
   slock_t activation; // serializes appends to ids
   pg_atomic_uint32 count;
   pg_atomic_uint64 generation;
+  // Pool tokens taken, and the part of them held by shard worker i. Invariant:
+  // tokens_in_use >= sum(tokens_held); a dead worker's share is returned by
+  // ReleaseHeldTokens, so the pool cannot shrink for good.
   pg_atomic_uint32 tokens_in_use;
+  pg_atomic_uint32 tokens_held[kMaxAccelerators];
   // The next xid when ids[i] was added (invalid until set): every transaction
   // that wrote without an epoch for i began before it.
   pg_atomic_uint32 activated_xid[kMaxAccelerators];
@@ -65,6 +69,9 @@ void InitRegistry(void *ptr) {
   pg_atomic_init_u32(&registry->count, 0);
   pg_atomic_init_u64(&registry->generation, 0);
   pg_atomic_init_u32(&registry->tokens_in_use, 0);
+  for (auto &held : registry->tokens_held) {
+    pg_atomic_init_u32(&held, 0);
+  }
   for (auto &xid : registry->activated_xid) {
     pg_atomic_init_u32(&xid, InvalidTransactionId);
   }
@@ -174,7 +181,7 @@ int g_ship_timeout_ms = 2000;
 
 class SharedTokens final : public runtime::TokenSource {
 public:
-  explicit SharedTokens(pg_atomic_uint32 &in_use) : in_use_(in_use) {}
+  SharedTokens(pg_atomic_uint32 &in_use, pg_atomic_uint32 &held) : in_use_(in_use), held_(held) {}
 
   std::size_t TryAcquire(std::size_t wanted) override {
     const auto budget = static_cast<uint32>(ThreadBudget());
@@ -185,15 +192,20 @@ public:
         return 0;
       }
       if (pg_atomic_compare_exchange_u32(&in_use_, &used, used + take)) {
+        pg_atomic_fetch_add_u32(&held_, take);
         return take;
       }
     }
   }
 
-  void Release(std::size_t count) override { pg_atomic_fetch_sub_u32(&in_use_, static_cast<uint32>(count)); }
+  void Release(std::size_t count) override {
+    pg_atomic_fetch_sub_u32(&held_, static_cast<uint32>(count)); // before the pool: held <= in_use
+    pg_atomic_fetch_sub_u32(&in_use_, static_cast<uint32>(count));
+  }
 
 private:
   pg_atomic_uint32 &in_use_;
+  pg_atomic_uint32 &held_;
 };
 
 } // namespace
@@ -324,14 +336,26 @@ Epoch HorizonEpoch(int index) {
 // ---- thread budget --------------------------------------------------------------
 std::size_t ThreadBudget() { return runtime::ResolveThreadBudget(static_cast<std::size_t>(g_threads)); }
 
-std::shared_ptr<runtime::TokenSource> ThreadTokens() {
-  static std::shared_ptr<runtime::TokenSource> tokens;
+std::shared_ptr<runtime::TokenSource> ThreadTokens(int index) {
+  static std::shared_ptr<runtime::TokenSource> tokens[kMaxAccelerators];
   static Oid database = InvalidOid;
-  if (!tokens || database != MyDatabaseId) {
-    tokens = std::make_shared<SharedTokens>(Reg().tokens_in_use);
+  if (database != MyDatabaseId) {
+    for (auto &t : tokens) {
+      t.reset();
+    }
     database = MyDatabaseId;
   }
-  return tokens;
+  if (!tokens[index]) {
+    Registry &registry = Reg();
+    tokens[index] = std::make_shared<SharedTokens>(registry.tokens_in_use, registry.tokens_held[index]);
+  }
+  return tokens[index];
+}
+
+void ReleaseHeldTokens(int index) {
+  Registry &registry = Reg();
+  const uint32 held = pg_atomic_exchange_u32(&registry.tokens_held[index], 0);
+  pg_atomic_fetch_sub_u32(&registry.tokens_in_use, held);
 }
 
 std::chrono::milliseconds CommitShipTimeout() { return std::chrono::milliseconds(g_ship_timeout_ms); }

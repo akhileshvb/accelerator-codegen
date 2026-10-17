@@ -87,7 +87,10 @@ Epoch HorizonEpoch(int index);
 // accel.threads (default: the CPUs this process may run on), and the token
 // pool that caps the sum over all of the database's shard workers.
 std::size_t ThreadBudget();
-std::shared_ptr<runtime::TokenSource> ThreadTokens();
+// The pool, charged to shard worker `index`.
+std::shared_ptr<runtime::TokenSource> ThreadTokens(int index);
+// Returns the tokens shard `index`'s worker held: it exited, or a dead one's remain.
+void ReleaseHeldTokens(int index);
 
 // accel.commit_ship_timeout_ms: how long COMMIT waits to queue its commit
 // messages for a shard worker.

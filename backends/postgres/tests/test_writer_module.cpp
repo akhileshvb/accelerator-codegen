@@ -284,20 +284,27 @@ Datum wt_sent_reset(PG_FUNCTION_ARGS) {
   PG_RETURN_VOID();
 }
 
-// Thread tokens held by this backend.
+// Tokens taken in this backend, charged to the shard worker given as argument 2.
 std::size_t g_tokens_held = 0;
 
 PG_FUNCTION_INFO_V1(wt_tokens_take);
 Datum wt_tokens_take(PG_FUNCTION_ARGS) {
-  const auto taken = pg::shared::ThreadTokens()->TryAcquire(static_cast<std::size_t>(PG_GETARG_INT32(0)));
+  const auto taken = pg::shared::ThreadTokens(PG_GETARG_INT32(1))->TryAcquire(static_cast<std::size_t>(PG_GETARG_INT32(0)));
   g_tokens_held += taken;
   PG_RETURN_INT32(static_cast<int32>(taken));
 }
 
 PG_FUNCTION_INFO_V1(wt_tokens_release);
 Datum wt_tokens_release(PG_FUNCTION_ARGS) {
-  pg::shared::ThreadTokens()->Release(g_tokens_held);
+  pg::shared::ThreadTokens(PG_GETARG_INT32(0))->Release(g_tokens_held);
   g_tokens_held = 0;
+  PG_RETURN_VOID();
+}
+
+// What a restarted (or exiting) worker for the shard does with its predecessor's tokens.
+PG_FUNCTION_INFO_V1(wt_tokens_reconcile);
+Datum wt_tokens_reconcile(PG_FUNCTION_ARGS) {
+  pg::shared::ReleaseHeldTokens(PG_GETARG_INT32(0));
   PG_RETURN_VOID();
 }
 
