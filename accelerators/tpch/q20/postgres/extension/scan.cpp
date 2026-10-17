@@ -59,16 +59,20 @@ void ScanTpchQ20PartsuppsPartitioned(
 }
 
 void ScanTpchQ20Suppliers(
-    const std::function<void(const query::TpchQ20SupplierInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier "
-      "WHERE s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3))});
-      });
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ20SupplierInput &)> &sink) {
+  ScanPartitioned(services, "supplier",
+                  {Nullable(IntColumn("s_suppkey")), TextColumn("s_name"),
+                   TextColumn("s_address"), Nullable(IntColumn("s_nationkey"))},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      if (row.IsNull(0) || row.IsNull(3))
+                        continue;
+                      sink(partition, {row.Int(0), row.Text(1), row.Text(2),
+                                       static_cast<int32_t>(row.Int(3))});
+                    }
+                  });
 }
 
 void ScanTpchQ20Nations(
@@ -105,9 +109,10 @@ public:
     scans::ScanTpchQ20PartsuppsPartitioned(services, partitions, sink);
   }
   void ScanSuppliers(
-      const std::function<void(const query::TpchQ20SupplierInput &)> &consumer)
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ20SupplierInput &)> &sink)
       override {
-    scans::ScanTpchQ20Suppliers(consumer);
+    scans::ScanTpchQ20Suppliers(services, partitions, sink);
   }
   void ScanNations(
       const std::function<void(const query::TpchQ20NationInput &)> &consumer)
