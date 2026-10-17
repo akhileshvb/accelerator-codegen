@@ -17,8 +17,7 @@ namespace accelerator_codegen::aux_state::query {
 // State size and costs (one image, copy-on-write):
 //  * part class: 1 B per part (ChunkedCowArray<uint8_t>, 64 Ki-id chunks;
 //    absent / non-promo / promo) = 20 MB at SF100 (2e7 parts), 200 MB at
-//    SF1000 (2e8 parts). The previous layout (dense array to 16M + an
-//    unordered_map overflow) cost ~40 B per part beyond 16M ids.
+//    SF1000 (2e8 parts).
 //  * revenue: a Fenwick tree over shipdate days with {total, promo, count}
 //    cells: ~2 x days nodes x 48 B = well under 1 MB, independent of SF.
 // A lineitem insert/delete/update costs O(log days) node clones; a part
@@ -57,18 +56,14 @@ struct TpchQ14PartDayRevenue {
 class TpchQ14InitialScan {
 public:
   virtual ~TpchQ14InitialScan() = default;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ14PartInput &)> &) = 0;
-  // lineitem JOIN part GROUP BY shipdate, aggregated in the engine.
-  virtual void ScanDayAggregates(
-      const std::function<void(const TpchQ14DayAggregate &)> &) = 0;
-  // The two build scans split into `partitions` fixed row ranges: sink(partition,
+  // Both build scans are split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
   // A partition aggregates its own range, so a day may come back once per partition.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ14PartInput &)> &sink) = 0;
-  virtual void ScanDayAggregatesPartitioned(
+  // lineitem JOIN part GROUP BY shipdate, aggregated in the engine.
+  virtual void ScanDayAggregates(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ14DayAggregate &)> &sink) = 0;
   // lineitem WHERE l_partkey IN (partkeys) GROUP BY l_partkey, shipdate.
@@ -170,8 +165,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

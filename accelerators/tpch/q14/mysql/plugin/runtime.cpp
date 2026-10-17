@@ -85,24 +85,13 @@ void ScanTpchQ14PartDayRevenue(
 class TpchQ14Scan final : public query::TpchQ14InitialScan {
 public:
   void ScanParts(
-      const std::function<void(const query::TpchQ14PartInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ14PartInput>(scans::PartsTable(), scans::DecodePart, consumer);
-  }
-  void ScanDayAggregates(
-      const std::function<void(const query::TpchQ14DayAggregate &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ14DayAggregate>(
-        scans::DayAggregatesTable(), scans::DecodeDayAggregate, consumer);
-  }
-  void ScanPartsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ14PartInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ14PartInput>(
         services, scans::PartsTable(), partitions, scans::DecodePart, sink);
   }
-  void ScanDayAggregatesPartitioned(
+  void ScanDayAggregates(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ14DayAggregate &)> &sink)
       override {

@@ -51,39 +51,22 @@ query::TpchQ16PartsuppInput DecodePartsupp(const std::vector<std::string> &cols)
 class TpchQ16Scan final : public query::TpchQ16InitialScan {
 public:
   void ScanSuppliers(
-      const std::function<void(const query::TpchQ16SupplierInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ16SupplierInput>(scans::SuppliersTable(),
-                                                    scans::DecodeSupplier, consumer);
-  }
-  void ScanSuppliersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ16SupplierInput &)> &sink) override {
     split_scan::Partitioned<query::TpchQ16SupplierInput>(
         services, scans::SuppliersTable(), partitions, scans::DecodeSupplier, sink);
   }
-  void ScanPartsPartitioned(
+  void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ16PartInput &)> &sink) override {
     split_scan::Partitioned<query::TpchQ16PartInput>(services, scans::PartsTable(), partitions,
                                                      scans::DecodePart, sink);
   }
-  void ScanPartsuppPartitioned(
+  void ScanPartsupp(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ16PartsuppInput &)> &sink) override {
     split_scan::Partitioned<query::TpchQ16PartsuppInput>(
         services, scans::PartsuppTable(), partitions, scans::DecodePartsupp, sink);
-  }
-  void ScanParts(
-      const std::function<void(const query::TpchQ16PartInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ16PartInput>(scans::PartsTable(), scans::DecodePart, consumer);
-  }
-  void ScanPartsupp(
-      const std::function<void(const query::TpchQ16PartsuppInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ16PartsuppInput>(scans::PartsuppTable(),
-                                                    scans::DecodePartsupp, consumer);
   }
 };
 

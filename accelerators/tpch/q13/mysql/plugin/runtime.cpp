@@ -45,25 +45,13 @@ query::TpchQ13OrderInput DecodeOrder(const std::vector<std::string> &cols) {
 class TpchQ13Scan final : public query::TpchQ13InitialScan {
 public:
   void ScanCustomers(
-      const std::function<void(const query::TpchQ13CustomerInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ13CustomerInput>(
-        scans::CustomersTable(), scans::DecodeCustomer, consumer);
-  }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ13OrderInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ13OrderInput>(
-        scans::OrdersTable(), scans::DecodeOrder, consumer);
-  }
-  void ScanCustomersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ13CustomerInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ13CustomerInput>(
         services, scans::CustomersTable(), partitions, scans::DecodeCustomer, sink);
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ13OrderInput &)> &sink)
       override {
