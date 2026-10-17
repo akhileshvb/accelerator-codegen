@@ -1,7 +1,6 @@
 #include "tpch/q14/duckdb/aux/module.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/q14/calibration_writes.hpp"
@@ -18,12 +17,6 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kVersion = 1;
-constexpr uint32_t kPartMagic = 0x50313451;  // Q14P
-constexpr uint32_t kMonthMagic = 0x4d313451; // Q14M
 // Deltas per slice (~120 us): classifying and summing one is ~30 ns.
 constexpr std::size_t kDeltaGrain = 4096;
 // Lineitem deltas below which a commit is applied as deltas whatever the policy chose.
@@ -158,7 +151,7 @@ bool RebuildMonths(TpchQ14InitialScan *scan, const TpchQ14State *part_state,
     return false;
   const std::set<int32_t> touched_months(touched.begin(), touched.end());
   TpchQ14State rebuilt;
-  const bool aggregated = scan->ScanMonthAggregates(
+  scan->ScanMonthAggregates(
       touched_months, [&](int32_t month, int64_t total, int64_t promo, int64_t count) {
         auto &totals = rebuilt.month_totals[month];
         totals.total_revenue_raw += total;
@@ -166,22 +159,6 @@ bool RebuildMonths(TpchQ14InitialScan *scan, const TpchQ14State *part_state,
         totals.row_count += count;
         totals.saw_contribution = totals.saw_contribution || count > 0;
       });
-  if (!aggregated) {
-    scan->ScanLineitemsForMonths(touched_months, [&](const TpchQ14LineitemInput &input) {
-      const auto promo = part_state->PromoOf(input.partkey);
-      if (promo == TpchQ14PromoClass::Absent)
-        return;
-      const auto revenue =
-          TpchQ14RevenueRaw(input.extended_price_raw, input.extended_price_scale,
-                            input.discount_raw, input.discount_scale);
-      auto &totals = rebuilt.month_totals[MonthKey(input.shipdate_days)];
-      totals.total_revenue_raw += revenue;
-      totals.row_count++;
-      totals.saw_contribution = true;
-      if (promo == TpchQ14PromoClass::Promo)
-        totals.promo_revenue_raw += revenue;
-    });
-  }
   for (const auto month : touched_months) {
     const auto it = rebuilt.month_totals.find(month);
     outcome.updates.push_back(core::StateImage::Make(
@@ -410,121 +387,6 @@ int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
   for (int32_t i = 0; i < discount_scale; ++i)
     discount /= 10.0;
   return static_cast<int64_t>(std::llround(price * (1.0 - discount) * 10000.0));
-}
-
-std::vector<uint8_t> EncodeTpchQ14PartPromo(const TpchQ14State &state) {
-  ByteWriter writer;
-  std::vector<int64_t> keys;
-  for (std::size_t p = 0; p < state.classes.NumChunks(); ++p) {
-    const auto *page = state.classes.ChunkAt(p);
-    if (!page)
-      continue;
-    for (std::size_t i = 0; i < page->size(); ++i) {
-      if (((*page)[i] & TpchQ14State::kClassMask) != 0)
-        keys.push_back(state.classes.ChunkBase(p) + static_cast<int64_t>(i));
-    }
-  }
-  const auto dense = keys.size();
-  for (const auto &[key, raw] : state.promo_overflow) {
-    if ((raw & TpchQ14State::kClassMask) != 0)
-      keys.push_back(key);
-  }
-  std::sort(keys.begin() + static_cast<std::ptrdiff_t>(dense), keys.end());
-  core::WriteImageHeader(writer, kPartMagic, kVersion, static_cast<uint64_t>(keys.size()));
-  for (const auto key : keys) {
-    writer.I64(key);
-    writer.U8(static_cast<uint8_t>(state.PromoOf(key)));
-  }
-  return std::move(writer.bytes);
-}
-
-std::vector<uint8_t> EncodeTpchQ14Month(int32_t month,
-                                        const TpchQ14State &state) {
-  ByteWriter writer;
-  const auto it = state.month_totals.find(month);
-  TpchQ14MonthTotals totals;
-  if (it != state.month_totals.end())
-    totals = it->second;
-  core::WriteImageHeader(writer, kMonthMagic, kVersion, 1);
-  writer.I64(totals.total_revenue_raw);
-  writer.I64(totals.promo_revenue_raw);
-  writer.I64(totals.row_count);
-  writer.U8(totals.saw_contribution ? 1 : 0);
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ14PartPromo(const std::vector<uint8_t> &bytes,
-                            TpchQ14State &state) {
-  ByteReader reader{bytes};
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kPartMagic, kVersion, count))
-    return false;
-  state.classes.Clear();
-  state.promo_overflow.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    int64_t key = 0;
-    uint8_t promo = 0;
-    if (!reader.I64(key) || !reader.U8(promo))
-      return false;
-    state.SetPromo(key, static_cast<TpchQ14PromoClass>(promo));
-  }
-  return reader.offset == bytes.size();
-}
-
-bool DecodeTpchQ14Month(const std::vector<uint8_t> &bytes, int32_t month,
-                          TpchQ14State &state) {
-  ByteReader reader{bytes};
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(reader, kMonthMagic, kVersion, count) || count != 1)
-    return false;
-  TpchQ14MonthTotals totals;
-  uint8_t saw = 0;
-  if (!reader.I64(totals.total_revenue_raw) ||
-      !reader.I64(totals.promo_revenue_raw) || !reader.I64(totals.row_count) ||
-      !reader.U8(saw))
-    return false;
-  totals.saw_contribution = saw != 0;
-  state.month_totals[month] = totals;
-  return reader.offset == bytes.size();
-}
-
-bool FindTpchQ14PartPromo(const std::vector<uint8_t> &bytes, int64_t partkey,
-                            TpchQ14PromoClass &promo) {
-  ByteReader header{bytes};
-  uint64_t count = 0;
-  if (!core::ReadImageHeader(header, kPartMagic, kVersion, count))
-    return false;
-  constexpr std::size_t kHeaderBytes = 12;
-  constexpr std::size_t kRecordBytes = 9;
-  if (count > (std::numeric_limits<std::size_t>::max() - kHeaderBytes) /
-                 kRecordBytes ||
-      bytes.size() != kHeaderBytes +
-                          static_cast<std::size_t>(count) * kRecordBytes)
-    return false;
-  std::size_t first = 0;
-  std::size_t last = count;
-  while (first < last) {
-    const auto middle = first + (last - first) / 2;
-    ByteReader reader{bytes};
-    reader.offset = kHeaderBytes + middle * kRecordBytes;
-    int64_t key = 0;
-    if (!reader.I64(key))
-      return false;
-    if (key < partkey) {
-      first = middle + 1;
-      continue;
-    }
-    if (key > partkey) {
-      last = middle;
-      continue;
-    }
-    uint8_t value = 0;
-    if (!reader.U8(value))
-      return false;
-    promo = static_cast<TpchQ14PromoClass>(value);
-    return true;
-  }
-  return false;
 }
 
 bool TpchQ14TxnBuffer::HasPendingChanges() const { return pending; }

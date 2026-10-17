@@ -48,18 +48,12 @@ public:
   virtual void ScanLineitems(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ14LineitemInput &)> &) = 0;
-  virtual void ScanLineitemsForMonths(
-      const std::set<int32_t> &months,
-      const std::function<void(const TpchQ14LineitemInput &)> &consumer) = 0;
   // Pushed-down GROUP BY month over lineitem JOIN part: (month, total
   // revenue raw, promo revenue raw, row count). `months` empty means every
-  // month. Returns false when the source cannot aggregate (callers then scan
-  // rows).
-  virtual bool ScanMonthAggregates(
-      const std::set<int32_t> &,
-      const std::function<void(int32_t, int64_t, int64_t, int64_t)> &) {
-    return false;
-  }
+  // month.
+  virtual void ScanMonthAggregates(
+      const std::set<int32_t> &months,
+      const std::function<void(int32_t, int64_t, int64_t, int64_t)> &consumer) = 0;
   // Per (partkey, month): (revenue raw, row count) of the lineitems of the
   // given parts.
   virtual void ScanPartMonthRevenue(
@@ -144,13 +138,6 @@ struct TpchQ14LineitemDelta {
   int8_t sign = 0;
 };
 
-std::vector<uint8_t> EncodeTpchQ14PartPromo(const TpchQ14State &);
-std::vector<uint8_t> EncodeTpchQ14Month(int32_t month, const TpchQ14State &);
-bool DecodeTpchQ14PartPromo(const std::vector<uint8_t> &, TpchQ14State &);
-bool DecodeTpchQ14Month(const std::vector<uint8_t> &, int32_t month,
-                        TpchQ14State &);
-bool FindTpchQ14PartPromo(const std::vector<uint8_t> &, int64_t partkey,
-                          TpchQ14PromoClass &);
 
 double TpchQ14FinalizePromoRevenue(const TpchQ14MonthTotals &);
 

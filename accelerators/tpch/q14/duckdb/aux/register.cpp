@@ -119,13 +119,6 @@ struct TpchQ14Scan : TpchQ14InitialScan {
                       }
                     });
   }
-  static TpchQ14LineitemInput DecodeLineitem(const ::duckdb::DataChunk &chunk,
-                                             ::duckdb::idx_t row) {
-    return {SafeInt64(ChunkValue(chunk, 0, row)),
-            DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-            DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-            DateDays(ChunkValue(chunk, 3, row))};
-  }
   void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ14LineitemInput &)> &sink) override {
@@ -165,19 +158,7 @@ struct TpchQ14Scan : TpchQ14InitialScan {
       "((l_extendedprice * 100)::BIGINT * (100 - (l_discount * 100)::BIGINT))";
   static constexpr const char *kMonthKey =
       "(year(l_shipdate) * 100 + month(l_shipdate))::BIGINT";
-  void ScanLineitemsForMonths(
-      const std::set<int32_t> &months,
-      const std::function<void(const TpchQ14LineitemInput &)> &consumer)
-      override {
-    if (months.empty())
-      return;
-    const std::string sql =
-        "SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM "
-        "lineitem WHERE " + MonthRanges(months);
-    ScanQueryDecoded(connection, sql, DecodeLineitem,
-                     [&](TpchQ14LineitemInput &&input) { consumer(input); });
-  }
-  bool ScanMonthAggregates(
+  void ScanMonthAggregates(
       const std::set<int32_t> &months,
       const std::function<void(int32_t, int64_t, int64_t, int64_t)> &consumer)
       override {
@@ -197,7 +178,6 @@ struct TpchQ14Scan : TpchQ14InitialScan {
                    SafeInt64(ChunkValue(chunk, 2, row)),
                    SafeInt64(ChunkValue(chunk, 3, row)));
         });
-    return true;
   }
   void ScanPartMonthRevenue(
       const std::vector<int64_t> &keys,
