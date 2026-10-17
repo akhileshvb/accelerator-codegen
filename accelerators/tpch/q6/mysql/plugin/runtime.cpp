@@ -25,19 +25,6 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ6Lineitems(
-    const std::function<void(const query::TpchQ6LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_shipdate, l_discount, l_quantity, l_extendedprice FROM lineitem",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ6LineitemInput{TypedDate(cols, 0),
-                                          TypedDecimalRaw(cols, 1), 2,
-                                          TypedDecimalRaw(cols, 2), 2,
-                                          TypedDecimalRaw(cols, 3), 2};
-      },
-      [&](query::TpchQ6LineitemInput &&input) { consumer(input); });
-}
-
 // One SQL GROUP BY: the engine aggregates, the process receives one row per
 // (shipdate, discount, quantity) cell with the exact revenue sum (text).
 SplitTable CellAggregatesTable() {
@@ -64,17 +51,6 @@ query::TpchQ6CellAggregate DecodeCellAggregate(const std::vector<std::string> &c
 
 class TpchQ6Scan final : public query::TpchQ6InitialScan {
 public:
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ6LineitemInput &)> &consumer)
-      override {
-    scans::ScanTpchQ6Lineitems(consumer);
-  }
-  void ScanCellAggregates(
-      const std::function<void(const query::TpchQ6CellAggregate &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ6CellAggregate>(
-        scans::CellAggregatesTable(), scans::DecodeCellAggregate, consumer);
-  }
   void ScanCellAggregatesPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ6CellAggregate &)> &sink)

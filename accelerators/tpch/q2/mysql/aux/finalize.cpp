@@ -25,7 +25,7 @@ struct Q2Candidate {
 };
 
 // Part chunks per slice: each holds thousands of parts (~0.1 ms).
-constexpr std::size_t kChunksGrain = 256;
+constexpr std::size_t kChunkGrain = 256;
 // Distinct types above which the LIKE bitmap is evaluated on the pool.
 constexpr std::size_t kParallelMatchTypes = 1000000;
 
@@ -233,7 +233,7 @@ void TpchQ2FinalizeAndEmit(const core::AuxEngineServices &services, const TpchQ2
     return Q2Better(q, a, b);
   };
   const std::size_t chunks = state.part_size.NumChunks();
-  const std::size_t slices = core::SliceCount(services, chunks, kChunksGrain);
+  const std::size_t slices = core::SliceCount(services, chunks, kChunkGrain);
   std::vector<Q2Heap> heaps;
   for (std::size_t t = 0; t < slices; ++t)
     heaps.emplace_back(better);

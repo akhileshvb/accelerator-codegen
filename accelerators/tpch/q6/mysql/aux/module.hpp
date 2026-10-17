@@ -27,16 +27,6 @@ struct TpchQ6Config {
   core::TableId lineitem_table = 0;
 };
 
-struct TpchQ6LineitemInput {
-  int32_t shipdate_days = 0;
-  int64_t discount_raw = 0;
-  int32_t discount_scale = 2;
-  int64_t quantity_raw = 0;
-  int32_t quantity_scale = 2;
-  int64_t extended_price_raw = 0;
-  int32_t extended_price_scale = 2;
-};
-
 // Pre-aggregated (shipdate, discount, quantity) cell for SQL-pushdown builds.
 struct TpchQ6CellAggregate {
   int32_t shipdate_days = 0;
@@ -49,21 +39,14 @@ struct TpchQ6CellAggregate {
 class TpchQ6InitialScan {
 public:
   virtual ~TpchQ6InitialScan() = default;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ6LineitemInput &)> &) = 0;
-
-  // GROUP BY (shipdate, discount, quantity) pushed into the engine. The
-  // default aggregates the row scan here; engines override it with one SQL
-  // aggregate (its output is bounded by days x discounts x quantities).
-  virtual void ScanCellAggregates(
-      const std::function<void(const TpchQ6CellAggregate &)> &consumer);
-  // The same aggregate cut into `partitions` row ranges, each grouped on its
-  // own: sink(partition, cell) runs concurrently for different partitions and
-  // a cell may come once per partition (the caller sums them). The default is
-  // the serial aggregate as partition 0.
+  // GROUP BY (shipdate, discount, quantity) pushed into the engine (one SQL
+  // aggregate, bounded by days x discounts x quantities), cut into
+  // `partitions` row ranges, each grouped on its own: sink(partition, cell)
+  // runs concurrently for different partitions and a cell may come once per
+  // partition (the caller sums them).
   virtual void ScanCellAggregatesPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
-      const std::function<void(std::size_t, const TpchQ6CellAggregate &)> &sink);
+      const std::function<void(std::size_t, const TpchQ6CellAggregate &)> &sink) = 0;
 };
 
 // The whole state is one image (partition 0).
@@ -119,8 +102,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

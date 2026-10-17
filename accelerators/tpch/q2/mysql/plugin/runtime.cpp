@@ -76,11 +76,6 @@ void ScanTpchQ2Regions(
 
 class TpchQ2Scan final : public query::TpchQ2InitialScan {
 public:
-  void ScanParts(
-      const std::function<void(const query::TpchQ2PartInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ2PartInput>(scans::PartsTable(), scans::DecodePart, consumer);
-  }
   void ScanPartsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ2PartInput &)> &sink) override {
@@ -98,18 +93,6 @@ public:
       const std::function<void(std::size_t, const query::TpchQ2PartsuppInput &)> &sink) override {
     split_scan::Partitioned<query::TpchQ2PartsuppInput>(
         services, scans::PartsuppsTable(), partitions, scans::DecodePartsupp, sink);
-  }
-  void ScanSuppliers(
-      const std::function<void(const query::TpchQ2SupplierInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ2SupplierInput>(scans::SuppliersTable(), scans::DecodeSupplier,
-                                                   consumer);
-  }
-  void ScanPartsupps(
-      const std::function<void(const query::TpchQ2PartsuppInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ2PartsuppInput>(scans::PartsuppsTable(), scans::DecodePartsupp,
-                                                   consumer);
   }
   void ScanNations(
       const std::function<void(const query::TpchQ2NationInput &)> &consumer)
