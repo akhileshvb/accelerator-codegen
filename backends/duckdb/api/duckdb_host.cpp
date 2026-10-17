@@ -96,9 +96,10 @@ struct DuckdbBuildSnapshot final : runtime::BuildSnapshot {
 } // namespace
 
 struct DuckdbHost::Impl final : runtime::EngineSlots {
-  explicit Impl(::duckdb::DatabaseInstance &db_p)
-      : db(db_p), capture(::duckdb::make_shared_ptr<DatabaseCapture>()),
-        commit_ids(::duckdb::make_shared_ptr<CommitIds>()),
+  Impl(DuckdbHost &host_p, ::duckdb::DatabaseInstance &db_p)
+      : db(db_p), link(std::make_shared<HostLink>(host_p)),
+        capture(::duckdb::make_shared_ptr<DatabaseCapture>(link)),
+        commit_ids(::duckdb::make_shared_ptr<CommitIds>(link)),
         runtime(*this, runtime::ResolveThreadBudget(
                            ::duckdb::DBConfig::GetConfig(db_p).options.maximum_threads)) {
     auto &threads = runtime.Threads();
@@ -108,6 +109,7 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
   }
 
   ::duckdb::DatabaseInstance &db;
+  std::shared_ptr<HostLink> link;
   ::duckdb::shared_ptr<DatabaseCapture> capture;
   ::duckdb::shared_ptr<CommitIds> commit_ids;
   ::duckdb::shared_ptr<::duckdb::AttachedDatabase> default_db; // set by the first Ensure
@@ -129,10 +131,10 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
   // earlier may have written its tables uncaptured, so its first build waits
   // them out.
   std::atomic<Epoch> registered_at{0};
-  // Writing transactions that began before the latest registration, by txn: when
-  // one commits after an accelerator's build snapshot it may hold uncaptured
-  // writes the barrier did not see (a statement already running).
-  std::unordered_map<uint64_t, Epoch> straddlers;
+  // Start time of each writing transaction, by txn: one that began before an
+  // accelerator registered and commits after its build snapshot may hold
+  // uncaptured writes the barrier did not see (a statement already running).
+  std::unordered_map<uint64_t, Epoch> write_starts;
   std::unordered_map<::duckdb::ClientContext *, ::duckdb::transaction_t> commit_id_of;
 
   // Used by builds (TableRows), so declared before `runtime`: it outlives them.
@@ -247,7 +249,6 @@ std::shared_ptr<DuckdbHost> DuckdbHost::Get(::duckdb::DatabaseInstance &db) {
     return host;
   }
   std::shared_ptr<DuckdbHost> host(new DuckdbHost(db));
-  host->Attach(host);
   slot = host;
   return host;
 }
@@ -258,18 +259,21 @@ std::shared_ptr<DuckdbHost> DuckdbHost::Existing(::duckdb::DatabaseInstance &db)
   return it == Hosts().end() ? nullptr : it->second.lock();
 }
 
-DuckdbHost::DuckdbHost(::duckdb::DatabaseInstance &db) : impl(std::make_unique<Impl>(db)) {}
-
-// Starts the engine's callbacks into the host (which must already be shared).
-void DuckdbHost::Attach(const std::shared_ptr<DuckdbHost> &self) {
-  impl->capture->Bind(self);
-  impl->commit_ids->Bind(self);
+DuckdbHost::DuckdbHost(::duckdb::DatabaseInstance &db) : impl(std::make_unique<Impl>(*this, db)) {
+  {
+    // Known before the first writer commits, so every write's start is recorded.
+    ::duckdb::Connection connection(impl->db);
+    impl->default_db = ::duckdb::DatabaseManager::Get(*connection.context)
+                           .GetDatabase(::duckdb::DatabaseManager::GetDefaultDatabase(*connection.context));
+    impl->default_db_published = impl->default_db.get();
+  }
   auto &registry = impl->db.GetCaptureRegistry();
   registry.Add(impl->capture);
   registry.Add(impl->commit_ids);
 }
 
 DuckdbHost::~DuckdbHost() {
+  impl->link->Close(); // no engine callback is inside the host past this point
   auto &registry = impl->db.GetCaptureRegistry();
   registry.Remove(impl->capture.get());
   registry.Remove(impl->commit_ids.get());
@@ -433,8 +437,10 @@ void DuckdbHost::OnPreCommit(::duckdb::MetaTransaction &transaction) {
   bool captured;
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
-    if (write_start && *write_start < impl->registered_at) {
-      impl->straddlers[txn] = *write_start;
+    // Whether it straddles a registration is decided at commit: a registration
+    // finishing between here and the commit id would be missed now.
+    if (write_start) {
+      impl->write_starts[txn] = *write_start;
     }
     captured = impl->writers.count(txn) != 0;
   }
@@ -456,7 +462,7 @@ void DuckdbHost::OnCommit(::duckdb::MetaTransaction &transaction, ::duckdb::Clie
   const auto txn = TxnId(transaction);
   ::duckdb::transaction_t commit_id = 0;
   bool captured, has_id;
-  std::optional<Epoch> straddled_from;
+  std::optional<Epoch> write_start_of_commit;
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
     auto id = impl->commit_id_of.find(&context);
@@ -466,9 +472,9 @@ void DuckdbHost::OnCommit(::duckdb::MetaTransaction &transaction, ::duckdb::Clie
       impl->commit_id_of.erase(id);
     }
     captured = impl->writers.erase(txn) != 0;
-    if (auto it = impl->straddlers.find(txn); it != impl->straddlers.end()) {
-      straddled_from = it->second;
-      impl->straddlers.erase(it);
+    if (auto it = impl->write_starts.find(txn); it != impl->write_starts.end()) {
+      write_start_of_commit = it->second;
+      impl->write_starts.erase(it);
     }
     if (captured && !has_id) {
       throw std::logic_error("a captured write committed without a commit id");
@@ -478,8 +484,8 @@ void DuckdbHost::OnCommit(::duckdb::MetaTransaction &transaction, ::duckdb::Clie
   if (captured) {
     impl->runtime.Commit(txn, commit_id + 1);
   }
-  if (straddled_from && has_id) {
-    InvalidateStraddled(*straddled_from, commit_id + 1);
+  if (write_start_of_commit && has_id) {
+    InvalidateStraddled(*write_start_of_commit, commit_id + 1);
   }
 }
 
@@ -505,7 +511,7 @@ void DuckdbHost::OnRollback(::duckdb::MetaTransaction &transaction) {
   const auto txn = TxnId(transaction);
   {
     std::lock_guard<std::mutex> lock(impl->writers_mutex);
-    impl->straddlers.erase(txn);
+    impl->write_starts.erase(txn);
     if (!impl->writers.erase(txn)) {
       return;
     }
