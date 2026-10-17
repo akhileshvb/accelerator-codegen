@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "prims/decimal_text.hpp"
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q19/mysql/aux/module.hpp"
 #include "tpch/q19/cost_model.hpp"
@@ -23,45 +24,42 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ19Parts(
-    const std::function<void(const query::TpchQ19PartInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT p_partkey, p_brand, p_container, p_size FROM part",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ19PartInput{TypedInt(cols, 0),
-                                       TypedText(cols, 1),
-                                       TypedText(cols, 2),
-                                       static_cast<int32_t>(TypedInt(cols, 3))};
-      },
-      [&](query::TpchQ19PartInput &&input) { consumer(input); });
+SplitTable PartsTable() {
+  return {"p_partkey, p_brand, p_container, p_size", "part", "", "p_partkey"};
+}
+
+query::TpchQ19PartInput DecodePart(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1), TypedText(cols, 2),
+          static_cast<int32_t>(TypedInt(cols, 3))};
 }
 
 // lineitem JOIN part with the shipping predicate and family classification
 // applied and grouped in the engine: one row per (brand, family, quantity)
 // with exact decimal sums (text). Comparisons follow the columns' collation.
-void ScanTpchQ19GroupAggregates(
-    const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer) {
-  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
+// Partitions are ranges of l_partkey and each groups its own range: a group
+// may come back once per partition.
+SplitTable GroupAggregatesTable() {
   const std::string family = query::TpchQ19FamilySql();
-  ScanTypedTuplesDecoded(
-      "SELECT p_brand, " + family +
-          " AS fam, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
-          "count(*) FROM lineitem, part WHERE l_partkey = p_partkey AND " +
-          query::TpchQ19ShippingSql() + " AND " + family +
-          " IS NOT NULL GROUP BY p_brand, fam, l_quantity",
-      [](const std::vector<std::string> &cols) {
-        query::TpchQ19GroupAggregate agg;
-        agg.brand = TypedText(cols, 0);
-        agg.family = static_cast<int>(TypedInt(cols, 1));
-        __int128 quantity = 0;
-        if (!dec::Parse(TypedText(cols, 2), 2, quantity) ||
-            !dec::Parse(TypedText(cols, 3), 4, agg.revenue_raw))
-          throw std::runtime_error("TPC-H Q19: unparsable decimal");
-        agg.quantity_raw = static_cast<int64_t>(quantity);
-        agg.count = TypedInt(cols, 4);
-        return agg;
-      },
-      [&](query::TpchQ19GroupAggregate &&input) { consumer(input); });
+  return {"p_brand, " + family +
+              " AS fam, l_quantity, sum(l_extendedprice * (1 - l_discount)), count(*)",
+          "lineitem, part",
+          "l_partkey = p_partkey AND " + query::TpchQ19ShippingSql() + " AND " + family +
+              " IS NOT NULL",
+          "l_partkey", "p_brand, fam, l_quantity", "lineitem"};
+}
+
+query::TpchQ19GroupAggregate DecodeGroupAggregate(const std::vector<std::string> &cols) {
+  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
+  query::TpchQ19GroupAggregate agg;
+  agg.brand = TypedText(cols, 0);
+  agg.family = static_cast<int>(TypedInt(cols, 1));
+  __int128 quantity = 0;
+  if (!dec::Parse(TypedText(cols, 2), 2, quantity) ||
+      !dec::Parse(TypedText(cols, 3), 4, agg.revenue_raw))
+    throw std::runtime_error("TPC-H Q19: unparsable decimal");
+  agg.quantity_raw = static_cast<int64_t>(quantity);
+  agg.count = TypedInt(cols, 4);
+  return agg;
 }
 
 // Point re-aggregation of the given parts' qualifying lineitems (the schema
@@ -97,15 +95,19 @@ void ScanTpchQ19PartQuantityRevenue(
 
 class TpchQ19Scan final : public query::TpchQ19InitialScan {
 public:
-  void ScanParts(
-      const std::function<void(const query::TpchQ19PartInput &)> &consumer)
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ19PartInput &)> &sink)
       override {
-    scans::ScanTpchQ19Parts(consumer);
+    split_scan::Partitioned<query::TpchQ19PartInput>(
+        services, scans::PartsTable(), partitions, scans::DecodePart, sink);
   }
-  void ScanGroupAggregates(
-      const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer)
+  void ScanGroupAggregatesPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ19GroupAggregate &)> &sink)
       override {
-    scans::ScanTpchQ19GroupAggregates(consumer);
+    split_scan::Partitioned<query::TpchQ19GroupAggregate>(
+        services, scans::GroupAggregatesTable(), partitions, scans::DecodeGroupAggregate, sink);
   }
   void ScanPartQuantityRevenue(
       const std::vector<int64_t> &partkeys,

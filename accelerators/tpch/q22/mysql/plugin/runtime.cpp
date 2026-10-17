@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q22/mysql/aux/module.hpp"
 #include "tpch/q22/cost_model.hpp"
@@ -20,38 +21,23 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ22Customers(
-    const std::function<void(const query::TpchQ22CustomerInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT c_custkey, c_phone, c_acctbal FROM customer",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ22CustomerInput{TypedInt(cols, 0),
-                                           TypedText(cols, 1),
-                                           TypedDecimalRaw(cols, 2), 2};
-      },
-      [&](query::TpchQ22CustomerInput &&input) { consumer(input); });
+SplitTable CustomersTable() {
+  return {"c_custkey, c_phone, c_acctbal", "customer", "", "c_custkey"};
 }
 
-void ScanTpchQ22Orders(
-    const std::function<void(const query::TpchQ22OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_custkey FROM orders",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ22OrderInput{TypedInt(cols, 0)};
-      },
-      [&](query::TpchQ22OrderInput &&input) { consumer(input); });
+query::TpchQ22CustomerInput DecodeCustomer(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1), TypedDecimalRaw(cols, 2), 2};
 }
 
-// Orders per customer, aggregated in SQL (one row per o_custkey).
-void ScanTpchQ22OrderCounts(
-    const std::function<void(const query::TpchQ22OrderCount &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_custkey, CAST(COUNT(*) AS SIGNED) FROM orders "
-      "WHERE o_custkey IS NOT NULL GROUP BY o_custkey",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ22OrderCount{TypedInt(cols, 0), TypedInt(cols, 1)};
-      },
-      [&](query::TpchQ22OrderCount &&input) { consumer(input); });
+// Orders per customer, aggregated in SQL. Partitions are ranges of o_custkey,
+// so each custkey comes back once.
+SplitTable OrderCountsTable() {
+  return {"o_custkey, CAST(COUNT(*) AS SIGNED)", "orders", "o_custkey IS NOT NULL", "o_custkey",
+          "o_custkey"};
+}
+
+query::TpchQ22OrderCount DecodeOrderCount(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1)};
 }
 
 } // namespace scans
@@ -59,20 +45,18 @@ void ScanTpchQ22OrderCounts(
 class TpchQ22Scan final : public query::TpchQ22InitialScan {
 public:
   void ScanCustomers(
-      const std::function<void(const query::TpchQ22CustomerInput &)> &consumer)
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ22CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ22Customers(consumer);
+    split_scan::Partitioned<query::TpchQ22CustomerInput>(
+        services, scans::CustomersTable(), partitions, scans::DecodeCustomer, sink);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ22OrderInput &)> &consumer)
+  void ScanOrderCounts(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ22OrderCount &)> &sink)
       override {
-    scans::ScanTpchQ22Orders(consumer);
-  }
-  bool ScanOrderCounts(
-      const std::function<void(const query::TpchQ22OrderCount &)> &consumer)
-      override {
-    scans::ScanTpchQ22OrderCounts(consumer);
-    return true;
+    split_scan::Partitioned<query::TpchQ22OrderCount>(
+        services, scans::OrderCountsTable(), partitions, scans::DecodeOrderCount, sink);
   }
 };
 

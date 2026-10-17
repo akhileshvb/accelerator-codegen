@@ -1,6 +1,8 @@
 #include "tpch/q19/mysql/aux/module.hpp"
 #include "tpch/q19/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 #include "prims/pg_numeric.hpp"
 
 #include <algorithm>
@@ -8,6 +10,7 @@
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -19,6 +22,16 @@ using Vec = TpchQ19State::Vec;
 constexpr core::PartitionId kStatePartition = 0;
 // Lineitem deltas per maintenance slice (~70 ns each: >= 250 us a slice).
 constexpr std::size_t kDeltaGrain = 4096;
+// l_quantity BETWEEN qty AND qty + kQuantityWindow.
+constexpr int64_t kQuantityWindow = 10;
+// One unit of a scale-2 decimal (quantity, price, discount).
+constexpr int64_t kScale2Unit = 100;
+constexpr int32_t kScale2 = 2;
+
+using core::DecimalCell;
+using core::IntCell;
+using core::ScaleToRaw;
+using core::StringCell;
 
 // String comparison as the engine's column collation does it. MySQL's default
 // collation (utf8mb4_0900_ai_ci) is case-insensitive: compare ASCII-folded.
@@ -28,62 +41,6 @@ std::string CollateKey(const std::string &text) {
     if (c >= 'A' && c <= 'Z')
       c = static_cast<char>(c - 'A' + 'a');
   return folded;
-}
-
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
-int64_t ScaleToRaw(int64_t raw, int32_t scale, int32_t target_scale) {
-  if (scale == target_scale)
-    return raw;
-  if (scale < target_scale) {
-    int64_t factor = 1;
-    for (int32_t i = scale; i < target_scale; ++i)
-      factor *= 10;
-    return raw * factor;
-  }
-  int64_t factor = 1;
-  for (int32_t i = target_scale; i < scale; ++i)
-    factor *= 10;
-  return raw / factor;
 }
 
 bool ReadPartRow(const core::AuxRow &row, TpchQ19PartInput &out) {
@@ -110,24 +67,23 @@ bool ReadLineitemRow(const core::AuxRow &row, TpchQ19LineitemDelta &out,
   int32_t qty_scale = 0, ext_scale = 0, disc_scale = 0;
   std::string shipmode, shipinstruct;
   if (!IntCell(row, 0, partkey) ||
-      !RawDecimalCell(row, 1, quantity_raw, qty_scale) ||
-      !RawDecimalCell(row, 2, extendedprice_raw, ext_scale) ||
-      !RawDecimalCell(row, 3, discount_raw, disc_scale) ||
+      !DecimalCell(row, 1, quantity_raw, qty_scale) ||
+      !DecimalCell(row, 2, extendedprice_raw, ext_scale) ||
+      !DecimalCell(row, 3, discount_raw, disc_scale) ||
       !StringCell(row, 4, shipmode) || !StringCell(row, 5, shipinstruct))
     return false;
   shipmode = CollateKey(shipmode);
   qualifies = (shipmode == CollateKey("AIR") || shipmode == CollateKey("AIR REG")) &&
               CollateKey(shipinstruct) == CollateKey("DELIVER IN PERSON");
   out.partkey = partkey;
-  out.quantity_raw = ScaleToRaw(quantity_raw, qty_scale, 2);
+  out.quantity_raw = ScaleToRaw(quantity_raw, qty_scale, kScale2);
   // l_extendedprice * (1 - l_discount) at scale 4.
   out.revenue_raw =
-      static_cast<__int128>(ScaleToRaw(extendedprice_raw, ext_scale, 2)) *
-      (100 - ScaleToRaw(discount_raw, disc_scale, 2));
+      static_cast<__int128>(ScaleToRaw(extendedprice_raw, ext_scale, kScale2)) *
+      (kScale2Unit - ScaleToRaw(discount_raw, disc_scale, kScale2));
   return true;
 }
 
-// ── Q19 family classification ───────────────────────────────────────────────
 TpchQ19Family ClassifyContainerFamily(const std::string &container_text) {
   const std::string container = CollateKey(container_text);
   for (const char *c : {"SM CASE", "SM BOX", "SM PACK", "SM PKG"})
@@ -151,6 +107,12 @@ int32_t BranchSizeLimit(TpchQ19Family family) {
   }
 }
 
+// The branch a part can qualify for (None: it never does).
+TpchQ19Family PartFamily(const std::string &container, int32_t size) {
+  const auto family = ClassifyContainerFamily(container);
+  return size >= 1 && size <= BranchSizeLimit(family) ? family : TpchQ19Family::None;
+}
+
 std::shared_ptr<const TpchQ19StateImage>
 MakeStateImage(std::shared_ptr<const TpchQ19State> state) {
   auto image = std::make_shared<TpchQ19StateImage>();
@@ -162,6 +124,29 @@ const TpchQ19StateImage *AsQ19Image(const core::StateImage &image) {
   return image.As<TpchQ19StateImage>();
 }
 
+// The part codes one build partition has seen. Brand ids are local until the
+// partitions fold in table order, so the dictionary ends up in order of first
+// appearance, as in a serial scan.
+struct PartCodes {
+  core::StringDict brands;
+  core::AnyKeyCowArray<uint32_t, 14> codes{0};
+
+  void Add(const TpchQ19PartInput &part) {
+    const auto family = PartFamily(part.container, part.size);
+    if (family != TpchQ19Family::None)
+      codes.Set(part.key, TpchQ19State::Code(brands.Intern(CollateKey(part.brand)), family));
+  }
+  void Merge(PartCodes &&from) {
+    std::vector<uint32_t> brand_map;
+    for (uint32_t id = 0; id < from.brands.size(); ++id)
+      brand_map.push_back(brands.Intern(from.brands.Get(id)));
+    from.codes.ForEach([&](int64_t key, uint32_t code) {
+      if (code != 0)
+        codes.Set(key, ((brand_map[(code >> 2) - 1] + 1) << 2) | (code & 3u));
+    });
+  }
+};
+
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
   plan.scope =
@@ -171,7 +156,6 @@ core::InvalidationPlan All() {
 
 } // namespace
 
-// ── State accessors ─────────────────────────────────────────────────────────
 uint32_t TpchQ19State::InternBrand(const std::string &brand) {
   const auto key = CollateKey(brand);
   const auto found = brands->Find(key);
@@ -185,11 +169,8 @@ uint32_t TpchQ19State::InternBrand(const std::string &brand) {
 
 uint32_t TpchQ19State::PartCode(const std::string &brand,
                                 const std::string &container, int32_t size) {
-  const auto family = ClassifyContainerFamily(container);
-  if (family == TpchQ19Family::None || size < 1 ||
-      size > BranchSizeLimit(family))
-    return 0;
-  return Code(InternBrand(brand), family);
+  const auto family = PartFamily(container, size);
+  return family == TpchQ19Family::None ? 0 : Code(InternBrand(brand), family);
 }
 
 void TpchQ19State::Add(uint32_t code, int64_t qty, __int128 revenue,
@@ -236,7 +217,6 @@ void TpchQ19State::RangeSum(const std::string &brand, TpchQ19Family family,
   }
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ19TxnBuffer::HasPendingChanges() const { return pending; }
 
 void TpchQ19TxnBuffer::Clear() {
@@ -272,7 +252,6 @@ void TpchQ19TxnBuffer::AddPartEvent(TpchQ19PartEvent event) {
   part_events.push_back(std::move(event));
 }
 
-// ── Module methods ──────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ19Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ19Module::Dependencies() const {
@@ -292,7 +271,7 @@ void TpchQ19Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   builder.Write(core::StateImage::Make(
       Id(), kStatePartition, 0,
-      MakeStateImage(BuildState(services, /*with_parts=*/true))));
+      MakeStateImage(BuildState(services))));
   builder.Finish();
 }
 
@@ -385,25 +364,30 @@ void TpchQ19Module::AccumulateMutation(const core::MutationBatch &mutation,
 }
 
 std::shared_ptr<TpchQ19State>
-TpchQ19Module::BuildState(core::AuxEngineServices &services,
-                          bool with_parts) const {
-  (void)services;
+TpchQ19Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q19 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ19State>();
-  if (with_parts) {
-    // Columnar per-part codes, streamed (no per-part map, no transient copy).
-    initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
-      const auto code = state->PartCode(input.brand, input.container, input.size);
-      if (code != 0)
-        state->part_code.Set(input.key, code);
-    });
-  }
-  initial_scan->ScanGroupAggregates([&](const TpchQ19GroupAggregate &agg) {
+  auto parts = core::PartitionedBuild<PartCodes>(
+      services, [] { return PartCodes{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanPartsPartitioned(
+            services, partitions, [&](std::size_t p, const TpchQ19PartInput &input) {
+              sink(p, core::SingleRowBatch<TpchQ19PartInput>{input});
+            });
+      },
+      [](PartCodes &partial, const TpchQ19PartInput &part) { partial.Add(part); },
+      [](PartCodes &into, PartCodes &&from) { into.Merge(std::move(from)); });
+  state->brands = std::make_shared<core::StringDict>(std::move(parts.brands));
+  state->part_code = std::move(parts.codes);
+  const auto aggregates = core::CollectRows<TpchQ19GroupAggregate>(
+      services, [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanGroupAggregatesPartitioned(services, partitions, sink);
+      });
+  for (const auto &agg : aggregates)
     state->Add(TpchQ19State::Code(state->InternBrand(agg.brand),
                                   static_cast<TpchQ19Family>(agg.family)),
                agg.quantity_raw, agg.revenue_raw, agg.count);
-  });
   return state;
 }
 
@@ -420,45 +404,38 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
   // cheaper than a rebuild, which is chosen only when the deltas could not be
   // read, the state is missing, too many parts changed, or it is forced.
   std::shared_ptr<TpchQ19State> next;
-  core::Version version = 0;
-  struct Final {
-    uint32_t code = 0;
-  };
-  std::unordered_map<int64_t, Final> final_part;
-  std::vector<int64_t> affected;
+  std::unordered_map<int64_t, uint32_t> final_code; // last part event wins
+  std::vector<int64_t> affected;                    // parts whose code changed
   if (!buf.RequiresRebuild()) {
     const auto snapshot = services.StateStore().ReadPartitions(
         services.CurrentVisibility(), {kStatePartition});
     for (const auto &image : snapshot.partitions) {
       const auto *typed = AsQ19Image(image);
-      if (image.partition == kStatePartition && typed && typed->state) {
+      if (image.partition == kStatePartition && typed && typed->state)
         next = std::make_shared<TpchQ19State>(*typed->state); // COW copy
-        version = image.version;
-      }
     }
     if (next) {
-      for (const auto &event : buf.PartEvents()) // last event per part wins
-        final_part[event.partkey].code =
+      for (const auto &event : buf.PartEvents())
+        final_code[event.partkey] =
             event.present ? next->PartCode(event.part.brand, event.part.container,
                                            event.part.size)
                           : 0;
-      for (const auto &entry : final_part)
-        if (next->part_code.Get(entry.first) != entry.second.code)
-          affected.push_back(entry.first);
+      for (const auto &[key, code] : final_code)
+        if (next->part_code.Get(key) != code)
+          affected.push_back(key);
     }
   }
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buf.Deltas().size() + affected.size()), 1,
-       next != nullptr && initial_scan,
-       false, true, false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
+  // Nothing to apply (e.g. a part that never qualified deleted): the state
+  // stays valid as it is.
+  if (next && affected.empty() && buf.Deltas().empty())
+    return outcome;
+  auto request = core::MaintenanceRequest::IncrementalSingleState(
+      buf.Deltas().size() + affected.size(),
+      services.ExpectedQueriesBeforeNextWrite());
+  request.incremental_supported = next != nullptr && initial_scan;
+  const auto decision = services.ChooseMaintenance(request);
   if (!next || decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta ||
-                             decision.action == core::MaintenanceAction::RebuildPartition
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -472,9 +449,7 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
     int64_t post_count = 0, pre_count = 0;
   };
   std::map<std::pair<int64_t, int64_t>, QtyCell> moved; // (partkey, qty)
-  std::unordered_map<int64_t, bool> is_affected;
-  for (const auto key : affected)
-    is_affected[key] = true;
+  const std::unordered_set<int64_t> is_affected(affected.begin(), affected.end());
   if (!affected.empty()) {
     initial_scan->ScanPartQuantityRevenue(
         affected, [&](const TpchQ19PartQuantityRevenue &row) {
@@ -492,16 +467,13 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
     cell.pre -= delta.sign * delta.revenue_raw;
     cell.pre_count -= delta.sign;
   }
-  for (const auto &entry : moved) {
-    const auto key = entry.first.first;
-    const auto qty = entry.first.second;
-    next->Add(final_part.at(key).code, qty, entry.second.post,
-              entry.second.post_count);
-    next->Add(next->part_code.Get(key), qty, -entry.second.pre,
-              -entry.second.pre_count);
+  for (const auto &[part_qty, cell] : moved) {
+    const auto [key, qty] = part_qty;
+    next->Add(final_code.at(key), qty, cell.post, cell.post_count);
+    next->Add(next->part_code.Get(key), qty, -cell.pre, -cell.pre_count);
   }
   for (const auto key : affected)
-    next->part_code.Set(key, final_part.at(key).code);
+    next->part_code.Set(key, final_code.at(key));
 
   // Lineitems of unaffected parts: -old +new under the part's (unchanged)
   // code, netted per (code, quantity) cell by slices of the delta list.
@@ -534,7 +506,7 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
-      Id(), kStatePartition, version, MakeStateImage(std::move(next))));
+      Id(), kStatePartition, 0, MakeStateImage(std::move(next))));
   return outcome;
 }
 
@@ -548,7 +520,6 @@ bool TpchQ19Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ19Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  // ReadHit: validity + the one immutable state image under one visibility.
   const auto snapshot = services.StateStore().ReadHitPartitions(
       services.CurrentVisibility(), {Id(), {}}, {kStatePartition});
   const auto *typed = snapshot.available && snapshot.partitions.size() == 1
@@ -561,17 +532,11 @@ void TpchQ19Module::Execute(core::AuxEngineServices &services,
   Answer(*typed->state, arguments, sink);
 }
 
-void TpchQ19Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  Answer(*BuildState(services, /*with_parts=*/false), arguments, sink);
-}
-
 void TpchQ19Module::Answer(const TpchQ19State &state,
                            const core::QueryArguments &arguments,
                            core::AuxRowSink &sink) const {
   // Branch i: p_brand = brand_i, family_i containers, p_size 1..max_i (all
-  // folded into the state), l_quantity BETWEEN qty_i AND qty_i + 10, shipping
+  // folded into the state), l_quantity BETWEEN qty_i AND qty_i + window, shipping
   // predicate (folded in too). A NULL argument makes its branch NULL (false).
   static constexpr TpchQ19Family kFamilies[3] = {
       TpchQ19Family::SM, TpchQ19Family::MED, TpchQ19Family::LG};
@@ -585,12 +550,11 @@ void TpchQ19Module::Answer(const TpchQ19State &state,
         !std::holds_alternative<std::string>(arguments.values[brand_index].payload) ||
         !std::holds_alternative<int64_t>(arguments.values[qty_index].payload))
       continue;
-    // Quantities are hundredths: [qty * 100, (qty + 10) * 100], in 128 bits
-    // so any BIGINT argument stays exact.
+    // Quantities are hundredths, in 128 bits so any BIGINT argument stays exact.
     const __int128 qty = std::get<int64_t>(arguments.values[qty_index].payload);
     state.RangeSum(std::get<std::string>(arguments.values[brand_index].payload),
-                   kFamilies[branch], qty * 100, (qty + 10) * 100, revenue,
-                   matches);
+                   kFamilies[branch], qty * kScale2Unit,
+                   (qty + kQuantityWindow) * kScale2Unit, revenue, matches);
   }
   EmitResult(revenue, matches, sink);
 }
