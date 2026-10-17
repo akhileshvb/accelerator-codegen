@@ -195,15 +195,10 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  // `with_parts`: also fill the per-part codes (needed for maintenance; a
-  // fallback answer needs the aggregates only).
-  std::shared_ptr<TpchQ19State> BuildState(core::AuxEngineServices &,
-                                           bool with_parts) const;
+  std::shared_ptr<TpchQ19State> BuildState() const;
   void Answer(const TpchQ19State &, const core::QueryArguments &,
               core::AuxRowSink &) const;
   void EmitResult(__int128 revenue_raw, int64_t matches,

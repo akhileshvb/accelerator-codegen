@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q21/mysql/aux/module.hpp"
 #include "tpch/q21/cost_model.hpp"
@@ -43,8 +44,21 @@ void ScanTpchQ21Nations(
       [&](query::TpchQ21NationInput &&input) { consumer(input); });
 }
 
-// Lineitems of fulfilled orders, one order's rows consecutive. `restrict_sql`
-// is an extra predicate (empty: every order).
+SplitTable FulfilledOrdersTable() {
+  return {"o_orderkey", "orders", "o_orderstatus = 'F'", "o_orderkey"};
+}
+
+SplitTable LineitemsTable() {
+  return {"l_orderkey, l_suppkey, COALESCE(l_receiptdate > l_commitdate, 0)", "lineitem", "",
+          "l_orderkey"};
+}
+
+query::TpchQ21LineInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2) != 0};
+}
+
+// Lineitems of the given fulfilled orders, one order's rows consecutive.
+// `restrict_sql` is the extra predicate naming them.
 void ScanTpchQ21FulfilledLineitems(
     const std::string &restrict_sql,
     const std::function<void(const query::TpchQ21LineInput &)> &consumer) {
@@ -75,10 +89,21 @@ public:
       override {
     scans::ScanTpchQ21Nations(consumer);
   }
-  void ScanFulfilledLineitems(
-      const std::function<void(const query::TpchQ21LineInput &)> &consumer)
+  void ScanFulfilledOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, int64_t)> &sink) override {
+    detail::ScanTypedTuplesPartitioned(
+        services, scans::FulfilledOrdersTable(), partitions,
+        [&](std::size_t partition, const std::vector<std::string> &cols) {
+          sink(partition, TypedInt(cols, 0));
+        });
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ21LineInput &)> &sink)
       override {
-    scans::ScanTpchQ21FulfilledLineitems("", consumer);
+    split_scan::Partitioned<query::TpchQ21LineInput>(
+        services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
   }
   bool LookupFulfilledLineitems(
       const std::vector<int64_t> &orderkeys,

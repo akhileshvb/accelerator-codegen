@@ -32,16 +32,6 @@ void ScanTpchQ22Customers(
       [&](query::TpchQ22CustomerInput &&input) { consumer(input); });
 }
 
-void ScanTpchQ22Orders(
-    const std::function<void(const query::TpchQ22OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_custkey FROM orders",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ22OrderInput{TypedInt(cols, 0)};
-      },
-      [&](query::TpchQ22OrderInput &&input) { consumer(input); });
-}
-
 // Orders per customer, aggregated in SQL (one row per o_custkey).
 void ScanTpchQ22OrderCounts(
     const std::function<void(const query::TpchQ22OrderCount &)> &consumer) {
@@ -63,16 +53,10 @@ public:
       override {
     scans::ScanTpchQ22Customers(consumer);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ22OrderInput &)> &consumer)
-      override {
-    scans::ScanTpchQ22Orders(consumer);
-  }
-  bool ScanOrderCounts(
+  void ScanOrderCounts(
       const std::function<void(const query::TpchQ22OrderCount &)> &consumer)
       override {
     scans::ScanTpchQ22OrderCounts(consumer);
-    return true;
   }
 };
 
