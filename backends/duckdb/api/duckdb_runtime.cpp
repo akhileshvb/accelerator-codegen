@@ -195,9 +195,11 @@ void DuckdbRuntime::Read(const core::QueryArguments &arguments, Sink &sink) {
     options.epoch = snapshot;
   }
   options.max_wait_us = ReadWaitUs();
-  // Scans on the accelerator's connection read the reader's snapshot.
+  // Scans never run on the accelerator's connection: a build may hold its
+  // (older) snapshot open there. They read the reader's snapshot, else the
+  // newest data.
   std::optional<ScanRedirect> redirect;
-  if (reader && reader != accelerator_.connection->context.get()) {
+  if (reader != accelerator_.connection->context.get()) {
     redirect.emplace(*connection_.context->db, reader_fallbacks,
                      static_cast<::duckdb::transaction_t>(snapshot));
   }
