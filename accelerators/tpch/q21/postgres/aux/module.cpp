@@ -155,7 +155,7 @@ FulfilledContributions(TpchQ21InitialScan &scan,
   const auto fulfilled_keys = core::PartitionedBuild<std::vector<int64_t>>(
       services, [] { return std::vector<int64_t>{}; },
       [&](std::size_t parts, auto &&sink) {
-        scan.ScanFulfilledOrdersPartitioned(
+        scan.ScanFulfilledOrders(
             services, parts, [&](std::size_t partition, int64_t orderkey) {
               sink(partition, core::SingleRowBatch<int64_t>{orderkey});
             });
@@ -171,7 +171,7 @@ FulfilledContributions(TpchQ21InitialScan &scan,
   auto buckets = core::PartitionedBuild<core::Buckets<TpchQ21LineInput>>(
       services, [] { return core::Buckets<TpchQ21LineInput>(core::kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        scan.ScanLineitemsPartitioned(
+        scan.ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ21LineInput &line) {
               sink(partition, core::SingleRowBatch<TpchQ21LineInput>{line});
             });
@@ -752,7 +752,7 @@ TpchQ21State TpchQ21Module::BuildState(
     throw std::logic_error("TPC-H Q21 aux requires a typed initial scan source");
   TpchQ21State state;
 
-  initial_scan->ScanNations([&](const TpchQ21NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ21NationInput &input) {
     state.PutNation(input.nationkey, input.name);
   });
   for (const auto &input : core::CollectRows<TpchQ21SupplierInput>(

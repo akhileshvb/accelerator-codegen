@@ -111,22 +111,22 @@ struct TpchQ5LineitemInput {
 class TpchQ5InitialScan {
 public:
   virtual ~TpchQ5InitialScan() = default;
-  virtual void ScanRegions(
+  virtual void ScanRegionsSerial(
       const std::function<void(const TpchQ5RegionInput &)> &) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ5NationInput &)> &) = 0;
   // Split into `partitions` fixed row ranges: sink(partition, row) runs
   // concurrently for different partitions, one thread per partition.
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ5CustomerInput &)> &sink) = 0;
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ5SupplierInput &)> &sink) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ5OrderInput &)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ5LineitemInput &)> &sink) = 0;
 

@@ -555,7 +555,7 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
   const auto priorities = core::PartitionedBuild<std::vector<OrderClass>>(
       services, [] { return std::vector<OrderClass>{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ12OrderInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ12OrderInput>{input});
             });
@@ -575,7 +575,7 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
   const auto joined = core::PartitionedBuild<PartialCells>(
       services, [] { return PartialCells{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ12LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ12LineitemInput>{input});
             });

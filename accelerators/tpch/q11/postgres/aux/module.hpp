@@ -58,7 +58,7 @@ public:
   virtual ~TpchQ11InitialScan() = default;
   // Every partsupp row, split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
-  virtual void ScanPartsuppPartitioned(
+  virtual void ScanPartsupp(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ11PartsuppInput &)> &sink) = 0;
   // Split into `partitions` fixed row ranges: sink(partition, row) runs
@@ -66,7 +66,7 @@ public:
   virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ11SupplierInput &)> &sink) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ11NationInput &)> &) = 0;
 };
 

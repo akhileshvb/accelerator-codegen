@@ -20,7 +20,7 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ12Orders(
+void ScanTpchQ12OrdersSerial(
     const std::function<void(const query::TpchQ12OrderInput &)> &consumer) {
   ScanColumns("orders",
               {IntColumn("o_orderkey"), TextColumn("o_orderpriority")},
@@ -30,7 +30,7 @@ void ScanTpchQ12Orders(
 }
 
 // Lineitems that can contribute: commit < receipt and ship < commit.
-void ScanTpchQ12Lineitems(
+void ScanTpchQ12LineitemsSerial(
     const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
   ScanColumns("lineitem",
               {IntColumn("l_orderkey"), TextColumn("l_shipmode"),
@@ -44,7 +44,7 @@ void ScanTpchQ12Lineitems(
               });
 }
 
-void ScanTpchQ12OrdersPartitioned(
+void ScanTpchQ12Orders(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ12OrderInput &)> &sink) {
   ScanPartitioned(services, "orders",
@@ -57,7 +57,7 @@ void ScanTpchQ12OrdersPartitioned(
                   });
 }
 
-void ScanTpchQ12LineitemsPartitioned(
+void ScanTpchQ12Lineitems(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ12LineitemInput &)> &sink) {
   ScanPartitioned(services, "lineitem",
@@ -106,27 +106,27 @@ void LookupTpchQ12LineitemsByOrder(
 
 class TpchQ12Scan final : public query::TpchQ12InitialScan {
 public:
-  void ScanOrders(
+  void ScanOrdersSerial(
       const std::function<void(const query::TpchQ12OrderInput &)> &consumer)
       override {
-    scans::ScanTpchQ12Orders(consumer);
+    scans::ScanTpchQ12OrdersSerial(consumer);
   }
-  void ScanLineitems(
+  void ScanLineitemsSerial(
       const std::function<void(const query::TpchQ12LineitemInput &)> &consumer)
       override {
-    scans::ScanTpchQ12Lineitems(consumer);
+    scans::ScanTpchQ12LineitemsSerial(consumer);
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ12OrderInput &)> &sink)
       override {
-    scans::ScanTpchQ12OrdersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ12Orders(services, partitions, sink);
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ12LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ12LineitemsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ12Lineitems(services, partitions, sink);
   }
   void LookupLineitemsByOrder(
       const std::vector<int64_t> &orderkeys,

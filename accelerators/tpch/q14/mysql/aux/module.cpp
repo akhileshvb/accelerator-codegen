@@ -288,7 +288,7 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
   };
   std::map<std::pair<int64_t, int32_t>, DayRevenue> moved;
   if (!affected.empty()) {
-    initial_scan->ScanPartDayRevenue(
+    initial_scan->ScanPartDayRevenueSerial(
         affected, [&](const TpchQ14PartDayRevenue &row) {
           auto &cell = moved[{row.partkey, row.shipdate_days}];
           cell.post += row.revenue_raw;

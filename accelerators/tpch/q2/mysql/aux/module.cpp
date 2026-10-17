@@ -551,24 +551,24 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ2State state;
   // The five tables are independent in the state, so scan order is free and
   // each row is one point edit: no intermediate copies of any table.
-  initial_scan->ScanRegions(
+  initial_scan->ScanRegionsSerial(
       [&](const TpchQ2RegionInput &input) { state.UpsertRegion(input); });
-  initial_scan->ScanNations(
+  initial_scan->ScanNationsSerial(
       [&](const TpchQ2NationInput &input) { state.UpsertNation(input); });
   // The scans run in parallel; the rows are applied in partition order.
   for (const auto &input : core::CollectRows<TpchQ2PartInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanPartsPartitioned(services, parts, sink);
+             initial_scan->ScanParts(services, parts, sink);
            }))
     state.SetPart(input.key, input);
   for (const auto &input : core::CollectRows<TpchQ2SupplierInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanSuppliersPartitioned(services, parts, sink);
+             initial_scan->ScanSuppliers(services, parts, sink);
            }))
     state.SetSupplier(input.key, input);
   for (const auto &input : core::CollectRows<TpchQ2PartsuppInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanPartsuppsPartitioned(services, parts, sink);
+             initial_scan->ScanPartsupps(services, parts, sink);
            }))
     state.AddOffer(input.partkey, input.suppkey, input.supplycost_raw);
   return state;

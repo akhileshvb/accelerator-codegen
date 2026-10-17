@@ -62,15 +62,15 @@ public:
   virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ21SupplierInput &)> &sink) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ21NationInput &)> &) = 0;
   // The orderkeys of the fulfilled orders ('F') and every lineitem (the module
   // joins them), each split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
-  virtual void ScanFulfilledOrdersPartitioned(
+  virtual void ScanFulfilledOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, int64_t)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ21LineInput &)> &sink) = 0;
   // The lineitems of the given fulfilled orders only, grouped by orderkey (all

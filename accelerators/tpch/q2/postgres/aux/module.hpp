@@ -68,18 +68,18 @@ public:
   virtual ~TpchQ2InitialScan() = default;
   // Split into `partitions` fixed row ranges: sink(partition, row) runs
   // concurrently for different partitions, one thread per partition.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ2PartInput &)> &sink) = 0;
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ2SupplierInput &)> &sink) = 0;
-  virtual void ScanPartsuppsPartitioned(
+  virtual void ScanPartsupps(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ2PartsuppInput &)> &sink) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ2NationInput &)> &) = 0;
-  virtual void ScanRegions(
+  virtual void ScanRegionsSerial(
       const std::function<void(const TpchQ2RegionInput &)> &) = 0;
 };
 

@@ -70,13 +70,13 @@ public:
   virtual ~TpchQ3InitialScan() = default;
   // The partitioned scans of the three tables (the build joins them; any
   // table order): sink(partition, row), one thread per partition at a time.
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3CustomerInput &)> &) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3OrderInput &)> &) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3LineitemInput &)> &) = 0;
   // The join of the three, one row per lineitem, for the given orders only, as

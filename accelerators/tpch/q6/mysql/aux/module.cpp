@@ -290,7 +290,7 @@ TpchQ6Module::BuildState(core::AuxEngineServices &services) const {
   auto cells = core::PartitionedBuild<Cells>(
       services, [] { return Cells{}; },
       [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanCellAggregatesPartitioned(
+        initial_scan->ScanCellAggregates(
             services, partitions,
             [&](std::size_t partition, const TpchQ6CellAggregate &cell) {
               sink(partition, core::SingleRowBatch<TpchQ6CellAggregate>{cell});

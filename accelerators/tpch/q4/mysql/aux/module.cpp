@@ -590,7 +590,7 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   auto qualifying = core::PartitionedBuild<core::Buckets<int64_t>>(
       services, [] { return core::Buckets<int64_t>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts,
             [&](std::size_t partition, const TpchQ4LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ4LineitemInput>{input});
@@ -607,7 +607,7 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   const auto pieces = core::PartitionedBuild<OrderPieces>(
       services, [] { return OrderPieces(1); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts,
             [&](std::size_t partition, const TpchQ4OrderInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ4OrderInput>{input});

@@ -436,22 +436,22 @@ std::shared_ptr<TpchQ7State> TpchQ7Module::BuildState(const core::AuxEngineServi
   TpchQ7State &s = *state;
   const std::size_t partitions = core::BuildPartitions(services);
 
-  initial_scan->ScanNations([&](const TpchQ7NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ7NationInput &input) {
     s.nations[input.key] = input.name;
   });
   for (const auto &input : core::CollectRows<TpchQ7SupplierInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanSuppliersPartitioned(services, parts, sink);
+             initial_scan->ScanSuppliers(services, parts, sink);
            }))
     s.supplier_nation.Set(input.key, input.nationkey);
   for (const auto &input : core::CollectRows<TpchQ7CustomerInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanCustomersPartitioned(services, parts, sink);
+             initial_scan->ScanCustomers(services, parts, sink);
            }))
     s.customer_nation.Set(input.key, input.nationkey);
   for (const auto &input : core::CollectRows<TpchQ7OrderInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanOrdersPartitioned(services, parts, sink);
+             initial_scan->ScanOrders(services, parts, sink);
            }))
     if (!ApplyOrder(s, input.key, input.custkey, +1))
       throw std::runtime_error("TPC-H Q7: unsupported orders row");
@@ -462,7 +462,7 @@ std::shared_ptr<TpchQ7State> TpchQ7Module::BuildState(const core::AuxEngineServi
   auto dealt = core::PartitionedBuild<LinePartial>(
       services, [&] { return LinePartial(owners); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ7LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ7LineitemInput>{input});
             });

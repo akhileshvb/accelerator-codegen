@@ -470,19 +470,19 @@ std::shared_ptr<TpchQ7State> TpchQ7Module::BuildState(const core::AuxEngineServi
   auto state = std::make_shared<TpchQ7State>();
   TpchQ7State &s = *state;
 
-  initial_scan->ScanNations([&](const TpchQ7NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ7NationInput &input) {
     s.nations[input.key] = input.name;
   });
   LoadNationColumn<TpchQ7SupplierInput>(
       services,
       [&](std::size_t partitions, const auto &sink) {
-        initial_scan->ScanSuppliersPartitioned(services, partitions, sink);
+        initial_scan->ScanSuppliers(services, partitions, sink);
       },
       s.supplier_nation);
   LoadNationColumn<TpchQ7CustomerInput>(
       services,
       [&](std::size_t partitions, const auto &sink) {
-        initial_scan->ScanCustomersPartitioned(services, partitions, sink);
+        initial_scan->ScanCustomers(services, partitions, sink);
       },
       s.customer_nation);
 
@@ -490,7 +490,7 @@ std::shared_ptr<TpchQ7State> TpchQ7Module::BuildState(const core::AuxEngineServi
   auto orders = core::PartitionedBuild<core::Buckets<OrderRow>>(
       services, [] { return core::Buckets<OrderRow>(kMaxOwners); },
       [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, partitions, [&](std::size_t partition, const TpchQ7OrderInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ7OrderInput>{input});
             });
@@ -507,7 +507,7 @@ std::shared_ptr<TpchQ7State> TpchQ7Module::BuildState(const core::AuxEngineServi
   auto lines = core::PartitionedBuild<core::Buckets<LineRow>>(
       services, [] { return core::Buckets<LineRow>(kMaxOwners); },
       [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, partitions, [&](std::size_t partition, const TpchQ7LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ7LineitemInput>{input});
             });

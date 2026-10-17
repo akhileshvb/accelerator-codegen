@@ -358,7 +358,7 @@ TpchQ6Module::BuildState(core::AuxEngineServices &services) const {
   const auto table = core::PartitionedBuild<CellTable>(
       services, [] { return CellTable{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ6LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ6LineitemInput>{input});
             });

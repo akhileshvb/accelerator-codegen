@@ -39,7 +39,7 @@ public:
   // `partitions` row ranges, each grouped on its own: sink(partition, cell)
   // runs concurrently for different partitions and a cell may come once per
   // partition (the caller sums them).
-  virtual void ScanDayGroupAggregatesPartitioned(
+  virtual void ScanDayGroupAggregates(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ1DayGroupAggregate &)> &sink) = 0;
 };

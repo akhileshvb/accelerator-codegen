@@ -23,7 +23,7 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ10CustomersPartitioned(
+void ScanTpchQ10Customers(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ10CustomerInput &)> &sink) {
   ScanPartitioned(services, "customer",
@@ -41,7 +41,7 @@ void ScanTpchQ10CustomersPartitioned(
                   });
 }
 
-void ScanTpchQ10Nations(
+void ScanTpchQ10NationsSerial(
     const std::function<void(const query::TpchQ10NationInput &)> &consumer) {
   ScanTypedTuples(
       "SELECT n_nationkey, n_name FROM nation",
@@ -51,7 +51,7 @@ void ScanTpchQ10Nations(
       });
 }
 
-void ScanTpchQ10OrdersPartitioned(
+void ScanTpchQ10Orders(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ10OrderInput &)> &sink) {
   ScanPartitioned(services, "orders",
@@ -65,7 +65,7 @@ void ScanTpchQ10OrdersPartitioned(
                   });
 }
 
-void ScanTpchQ10LineitemsPartitioned(
+void ScanTpchQ10Lineitems(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ10LineitemInput &)> &sink) {
   ScanPartitioned(services, "lineitem",
@@ -84,28 +84,28 @@ void ScanTpchQ10LineitemsPartitioned(
 
 class TpchQ10Scan final : public query::TpchQ10InitialScan {
 public:
-  void ScanCustomersPartitioned(
+  void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ10CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ10CustomersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ10Customers(services, partitions, sink);
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const query::TpchQ10NationInput &)> &consumer)
       override {
-    scans::ScanTpchQ10Nations(consumer);
+    scans::ScanTpchQ10NationsSerial(consumer);
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ10OrderInput &)> &sink)
       override {
-    scans::ScanTpchQ10OrdersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ10Orders(services, partitions, sink);
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ10LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ10LineitemsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ10Lineitems(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ10Module, query::TpchQ10Config, TpchQ10Scan> &

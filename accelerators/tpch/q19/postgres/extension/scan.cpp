@@ -39,7 +39,7 @@ void ScanTpchQ19Parts(
 // lineitem JOIN part with the shipping predicate and family classification
 // applied and grouped in the engine: one row per (brand, family, quantity)
 // with exact numeric sums (text).
-void ScanTpchQ19GroupAggregates(
+void ScanTpchQ19GroupAggregatesSerial(
     const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
   const std::string family = query::TpchQ19FamilySql();
@@ -65,7 +65,7 @@ void ScanTpchQ19GroupAggregates(
 
 // Point re-aggregation of the given parts' qualifying lineitems (l_partkey is
 // indexed).
-void ScanTpchQ19PartQuantityRevenue(
+void ScanTpchQ19PartQuantityRevenueSerial(
     const std::vector<int64_t> &partkeys,
     const std::function<void(const query::TpchQ19PartQuantityRevenue &)>
         &consumer) {
@@ -98,16 +98,16 @@ public:
       override {
     scans::ScanTpchQ19Parts(services, partitions, sink);
   }
-  void ScanGroupAggregates(
+  void ScanGroupAggregatesSerial(
       const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer)
       override {
-    scans::ScanTpchQ19GroupAggregates(consumer);
+    scans::ScanTpchQ19GroupAggregatesSerial(consumer);
   }
-  void ScanPartQuantityRevenue(
+  void ScanPartQuantityRevenueSerial(
       const std::vector<int64_t> &partkeys,
       const std::function<void(const query::TpchQ19PartQuantityRevenue &)>
           &consumer) override {
-    scans::ScanTpchQ19PartQuantityRevenue(partkeys, consumer);
+    scans::ScanTpchQ19PartQuantityRevenueSerial(partkeys, consumer);
   }
 };
 Runtime<query::TpchQ19Module, query::TpchQ19Config, TpchQ19Scan> &

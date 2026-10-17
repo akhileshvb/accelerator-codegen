@@ -1079,7 +1079,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   auto state = std::make_shared<TpchQ9State>();
   const std::size_t partitions = core::BuildPartitions(services);
 
-  initial_scan->ScanNations([&](const TpchQ9NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ9NationInput &input) {
     state->nation_names[input.nationkey] = input.name;
   });
 
@@ -1088,7 +1088,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   const auto suppliers = core::PartitionedBuild<SupplierRows>(
       services, [] { return SupplierRows{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanSuppliersPartitioned(
+        initial_scan->ScanSuppliers(
             services, parts, [&](std::size_t partition, const TpchQ9SupplierInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9SupplierInput>{input});
             });
@@ -1108,7 +1108,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   const auto orders = core::PartitionedBuild<OrderRows>(
       services, [] { return OrderRows{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ9OrdersInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9OrdersInput>{input});
             });
@@ -1129,7 +1129,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   auto part_names = core::PartitionedBuild<KeyedNames>(
       services, [] { return KeyedNames{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsPartitioned(
+        initial_scan->ScanParts(
             services, parts, [&](std::size_t partition, const TpchQ9PartInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9PartInput>{input});
             });
@@ -1148,7 +1148,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   auto partsupps = core::PartitionedBuild<core::Buckets<PartsuppRow>>(
       services, [] { return core::Buckets<PartsuppRow>(kMaxOwners); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsuppsPartitioned(
+        initial_scan->ScanPartsupps(
             services, parts, [&](std::size_t partition, const TpchQ9PartsuppInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9PartsuppInput>{input});
             });
@@ -1173,7 +1173,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   auto lineitems = core::PartitionedBuild<core::Buckets<TpchQ9LineitemInput>>(
       services, [] { return core::Buckets<TpchQ9LineitemInput>(kMaxOwners); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ9LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9LineitemInput>{input});
             });

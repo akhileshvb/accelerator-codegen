@@ -666,7 +666,7 @@ TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   auto customers = core::PartitionedBuild<CustomerPartial>(
       services, [] { return CustomerPartial{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanCustomersPartitioned(
+        initial_scan->ScanCustomers(
             services, parts, [&](std::size_t partition, const TpchQ3CustomerInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ3CustomerInput>{input});
             });
@@ -684,7 +684,7 @@ TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   auto orders = core::PartitionedBuild<std::vector<JoinedOrder>>(
       services, [] { return std::vector<JoinedOrder>{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ3OrderInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ3OrderInput>{input});
             });
@@ -704,7 +704,7 @@ TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   auto chunks = core::PartitionedBuild<LineChunks>(
       services, [] { return LineChunks(1); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ3LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ3LineitemInput>{input});
             });

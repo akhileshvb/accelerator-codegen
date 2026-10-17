@@ -77,11 +77,11 @@ public:
       const std::function<void(std::size_t, const TpchQ19PartInput &)> &sink) = 0;
   // lineitem JOIN part, shipping predicate and family classification
   // (TpchQ19FamilySql) applied and grouped in the engine.
-  virtual void ScanGroupAggregates(
+  virtual void ScanGroupAggregatesSerial(
       const std::function<void(const TpchQ19GroupAggregate &)> &) = 0;
   // lineitem WHERE l_partkey IN (...) AND shipping predicate, grouped by
   // (l_partkey, l_quantity).
-  virtual void ScanPartQuantityRevenue(
+  virtual void ScanPartQuantityRevenueSerial(
       const std::vector<int64_t> &partkeys,
       const std::function<void(const TpchQ19PartQuantityRevenue &)> &) = 0;
 };

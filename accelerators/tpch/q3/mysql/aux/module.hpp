@@ -71,13 +71,13 @@ public:
   // The three scans split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition,
   // and the partitions of a table cover ascending key ranges.
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3CustomerInput &)> &sink) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3OrderInput &)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3LineitemInput &)> &sink) = 0;
   // The same rows for the given orders only, as the database holds them after

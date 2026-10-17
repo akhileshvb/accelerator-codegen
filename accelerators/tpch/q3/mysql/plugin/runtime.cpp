@@ -23,7 +23,7 @@ namespace scans {
 
 // customer ⨝ orders ⨝ lineitem, one row per lineitem, one order's rows
 // consecutive. `restrict_sql` is an extra predicate (empty: every order).
-void ScanTpchQ3OrderLines(
+void ScanTpchQ3OrderLinesSerial(
     const std::string &restrict_sql,
     const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer) {
   ScanTypedTuplesDecoded(
@@ -91,21 +91,21 @@ std::string KeyList(const std::vector<int64_t> &keys) {
 
 class TpchQ3Scan final : public query::TpchQ3InitialScan {
 public:
-  void ScanCustomersPartitioned(
+  void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ3CustomerInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ3CustomerInput>(
         services, scans::CustomersTable(), partitions, scans::DecodeCustomer, sink);
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ3OrderInput &)> &sink)
       override {
     split_scan::Partitioned<query::TpchQ3OrderInput>(
         services, scans::OrdersTable(), partitions, scans::DecodeOrder, sink);
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ3LineitemInput &)> &sink)
       override {
@@ -118,7 +118,7 @@ public:
       override {
     if (orderkeys.empty())
       return true;
-    scans::ScanTpchQ3OrderLines(
+    scans::ScanTpchQ3OrderLinesSerial(
         " WHERE o.o_orderkey IN " + scans::KeyList(orderkeys), consumer);
     return true;
   }

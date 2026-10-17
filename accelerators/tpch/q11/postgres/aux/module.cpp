@@ -593,7 +593,7 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
   if (!initial_scan)
     throw std::logic_error("TPC-H Q11 requires a typed initial scan source");
   TpchQ11State state;
-  initial_scan->ScanNations(
+  initial_scan->ScanNationsSerial(
       [&](const TpchQ11NationInput &input) { state.UpsertNation(input); });
   // The scans decode rows on pool threads; the state is filled serially, in
   // partition order.
@@ -608,7 +608,7 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
   const Rows rows = core::PartitionedBuild<Rows>(
       services, [] { return Rows{}; },
       [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanPartsuppPartitioned(
+        initial_scan->ScanPartsupp(
             services, partitions,
             [&](std::size_t partition, const TpchQ11PartsuppInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ11PartsuppInput>{input});

@@ -51,7 +51,7 @@ query::TpchQ6CellAggregate DecodeCellAggregate(const std::vector<std::string> &c
 
 class TpchQ6Scan final : public query::TpchQ6InitialScan {
 public:
-  void ScanCellAggregatesPartitioned(
+  void ScanCellAggregates(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ6CellAggregate &)> &sink)
       override {

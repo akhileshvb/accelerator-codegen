@@ -82,23 +82,23 @@ public:
   virtual ~TpchQ8InitialScan() = default;
   // Partitioned scans of the big tables: sink(partition, row), one thread per
   // partition at a time.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8PartInput &)> &) = 0;
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8SupplierInput &)> &) = 0;
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8CustomerInput &)> &) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8OrdersInput &)> &) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8LineitemInput &)> &) = 0;
-  virtual void ScanNations(const std::function<void(const TpchQ8NationInput &)> &) = 0;
-  virtual void ScanRegions(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
+  virtual void ScanNationsSerial(const std::function<void(const TpchQ8NationInput &)> &) = 0;
+  virtual void ScanRegionsSerial(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
 };
 
 // The years of the template (o_orderdate BETWEEN 1995-01-01 AND 1996-12-31)

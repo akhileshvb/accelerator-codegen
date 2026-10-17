@@ -324,7 +324,7 @@ private:
     auto found = core::PartitionedBuild<CustomerSegments>(
         services, [] { return CustomerSegments{}; },
         [&](std::size_t parts, auto &&sink) {
-          scan.ScanCustomersPartitioned(
+          scan.ScanCustomers(
               services, parts, [&](std::size_t partition, const TpchQ3CustomerInput &input) {
                 sink(partition, core::SingleRowBatch<TpchQ3CustomerInput>{input});
               });
@@ -345,7 +345,7 @@ private:
     return core::PartitionedBuild<std::vector<Order>>(
         services, [] { return std::vector<Order>{}; },
         [&](std::size_t parts, auto &&sink) {
-          scan.ScanOrdersPartitioned(
+          scan.ScanOrders(
               services, parts, [&](std::size_t partition, const TpchQ3OrderInput &input) {
                 sink(partition, core::SingleRowBatch<TpchQ3OrderInput>{input});
               });
@@ -367,7 +367,7 @@ private:
     return core::PartitionedBuild<std::vector<Line>>(
         services, [] { return std::vector<Line>{}; },
         [&](std::size_t parts, auto &&sink) {
-          scan.ScanLineitemsPartitioned(
+          scan.ScanLineitems(
               services, parts, [&](std::size_t partition, const TpchQ3LineitemInput &input) {
                 sink(partition, core::SingleRowBatch<TpchQ3LineitemInput>{input});
               });

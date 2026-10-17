@@ -591,20 +591,20 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
   auto state = std::make_shared<TpchQ9State>();
   const std::size_t partitions = core::BuildPartitions(services);
 
-  initial_scan->ScanNations([&](const TpchQ9NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ9NationInput &input) {
     state->nation_names[input.nationkey] = input.name;
   });
   std::set<int32_t> nationkeys, years;
   for (const auto &input : core::CollectRows<TpchQ9SupplierInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanSuppliersPartitioned(services, parts, sink);
+             initial_scan->ScanSuppliers(services, parts, sink);
            })) {
     state->SetSupplierNation(input.suppkey, input.nationkey);
     nationkeys.insert(input.nationkey);
   }
   for (const auto &input : core::CollectRows<TpchQ9OrdersInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanOrdersPartitioned(services, parts, sink);
+             initial_scan->ScanOrders(services, parts, sink);
            })) {
     const int32_t year = TpchQ9ExtractYear(input.orderdate_days);
     state->SetOrderYear(input.orderkey, year);
@@ -612,7 +612,7 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
   }
   for (const auto &input : core::CollectRows<TpchQ9PartInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanPartsPartitioned(services, parts, sink);
+             initial_scan->ScanParts(services, parts, sink);
            }))
     state->part_names.Set(input.partkey, input.name);
   // Every (nation, year) group is interned up front: the partitions below look
@@ -628,7 +628,7 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
   editor.Absorb(core::PartitionedBuild<BlockEdits>(
       services, [] { return BlockEdits{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsuppsPartitioned(
+        initial_scan->ScanPartsupps(
             services, parts, [&](std::size_t partition, const TpchQ9PartsuppInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9PartsuppInput>{input});
             });
@@ -642,7 +642,7 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
   editor.Absorb(core::PartitionedBuild<BlockEdits>(
       services, [] { return BlockEdits{}; },
       [&](std::size_t parts, auto &&sink) {
-        pushed_down = initial_scan->ScanProfitContributionsPartitioned(
+        pushed_down = initial_scan->ScanProfitContributions(
             services, parts, [&](std::size_t partition, const TpchQ9ProfitContribution &input) {
               sink(partition, core::SingleRowBatch<TpchQ9ProfitContribution>{input});
             });
@@ -657,7 +657,7 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
       },
       [](BlockEdits &into, BlockEdits &&from) { into.Merge(std::move(from)); }, partitions));
   if (!pushed_down) {
-    initial_scan->ScanLineitems([&](const TpchQ9LineitemInput &input) {
+    initial_scan->ScanLineitemsSerial([&](const TpchQ9LineitemInput &input) {
       int32_t nationkey = 0, year = 0;
       if (!state->LookupSupplierNation(input.suppkey, nationkey) ||
           !state->LookupOrderYear(input.orderkey, year))

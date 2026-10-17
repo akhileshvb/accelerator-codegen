@@ -42,7 +42,7 @@ public:
   virtual ~TpchQ6InitialScan() = default;
   // Partitioned row scan: sink(partition, row) runs on pool threads, one
   // thread per partition at a time.
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ6LineitemInput &)> &sink) = 0;
 };

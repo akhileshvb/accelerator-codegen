@@ -57,20 +57,20 @@ struct TpchQ7LineitemInput {
 class TpchQ7InitialScan {
 public:
   virtual ~TpchQ7InitialScan() = default;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ7NationInput &)> &) = 0;
   // Partitioned scans of the big tables: sink(partition, row), one thread per
   // partition at a time.
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ7SupplierInput &)> &) = 0;
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ7CustomerInput &)> &) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ7OrderInput &)> &) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ7LineitemInput &)> &) = 0;
 };

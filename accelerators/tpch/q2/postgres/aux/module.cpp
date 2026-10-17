@@ -624,15 +624,15 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   const auto partitions = core::BuildPartitions(services);
   // The tables are independent in the state, so scan order is free. Nation
   // and region are a handful of rows: scanned serially.
-  initial_scan->ScanRegions(
+  initial_scan->ScanRegionsSerial(
       [&](const TpchQ2RegionInput &input) { state.UpsertRegion(input); });
-  initial_scan->ScanNations(
+  initial_scan->ScanNationsSerial(
       [&](const TpchQ2NationInput &input) { state.UpsertNation(input); });
 
   const auto pieces = core::PartitionedBuild<std::vector<PartPiece>>(
       services, [] { return std::vector<PartPiece>(1); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsPartitioned(
+        initial_scan->ScanParts(
             services, parts, [&](std::size_t partition, const TpchQ2PartInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ2PartInput>{input});
             });
@@ -658,7 +658,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   const auto suppliers = core::PartitionedBuild<std::vector<TpchQ2SupplierInput>>(
       services, [] { return std::vector<TpchQ2SupplierInput>{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanSuppliersPartitioned(
+        initial_scan->ScanSuppliers(
             services, parts,
             [&](std::size_t partition, const TpchQ2SupplierInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ2SupplierInput>{input});
@@ -674,7 +674,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   const auto offers = core::PartitionedBuild<core::Buckets<TpchQ2PartsuppInput>>(
       services, [] { return core::Buckets<TpchQ2PartsuppInput>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsuppsPartitioned(
+        initial_scan->ScanPartsupps(
             services, parts,
             [&](std::size_t partition, const TpchQ2PartsuppInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ2PartsuppInput>{input});

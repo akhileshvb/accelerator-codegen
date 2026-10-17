@@ -20,7 +20,7 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ13CustomersPartitioned(
+void ScanTpchQ13Customers(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ13CustomerInput &)> &sink) {
   ScanPartitioned(services, "customer", {IntColumn("c_custkey")}, partitions,
@@ -30,7 +30,7 @@ void ScanTpchQ13CustomersPartitioned(
                   });
 }
 
-void ScanTpchQ13OrdersPartitioned(
+void ScanTpchQ13Orders(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ13OrderInput &)> &sink) {
   ScanPartitioned(services, "orders",
@@ -52,13 +52,13 @@ public:
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ13CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ13CustomersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ13Customers(services, partitions, sink);
   }
   void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ13OrderInput &)> &sink)
       override {
-    scans::ScanTpchQ13OrdersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ13Orders(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Scan> &

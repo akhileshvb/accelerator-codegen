@@ -65,10 +65,10 @@ public:
   virtual ~TpchQ12InitialScan() = default;
   // The scans of the big tables split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ12OrderInput &)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ12LineitemInput &)> &sink) = 0;
   // Qualifying lineitems of the given orders, as the database stands now

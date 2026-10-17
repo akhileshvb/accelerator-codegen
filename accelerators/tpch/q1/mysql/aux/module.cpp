@@ -324,7 +324,7 @@ TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
   const auto cells = core::PartitionedBuild<DayGroupCells>(
       services, [] { return DayGroupCells{}; },
       [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanDayGroupAggregatesPartitioned(
+        initial_scan->ScanDayGroupAggregates(
             services, partitions,
             [&](std::size_t partition, const TpchQ1DayGroupAggregate &agg) {
               sink(partition, core::SingleRowBatch<TpchQ1DayGroupAggregate>{agg});

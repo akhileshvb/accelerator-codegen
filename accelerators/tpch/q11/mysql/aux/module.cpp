@@ -544,7 +544,7 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
   if (!initial_scan)
     throw std::logic_error("TPC-H Q11 requires a typed initial scan source");
   TpchQ11State state;
-  initial_scan->ScanNations(
+  initial_scan->ScanNationsSerial(
       [&](const TpchQ11NationInput &input) { state.UpsertNation(input); });
   for (const auto &input : core::CollectRows<TpchQ11SupplierInput>(
            services, [&](std::size_t parts, auto &&sink) {
@@ -554,7 +554,7 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
   // The scan runs in parallel; the offers are added in partition order.
   for (const auto &input : core::CollectRows<TpchQ11PartsuppInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanPartsuppPartitioned(services, parts, sink);
+             initial_scan->ScanPartsupp(services, parts, sink);
            }))
     state.AddOffer(input.partkey,
                    {input.suppkey, input.supplycost_raw,
