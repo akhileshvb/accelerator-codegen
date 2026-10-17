@@ -115,42 +115,15 @@ query::TpchQ9ProfitContribution DecodeProfitContribution(const std::vector<std::
 
 class TpchQ9Scan final : public query::TpchQ9InitialScan {
 public:
-  void ScanParts(
-      const std::function<void(const query::TpchQ9PartInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::PartsTable(), scans::DecodePart, consumer);
-  }
-  void ScanSuppliers(
-      const std::function<void(const query::TpchQ9SupplierInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::SuppliersTable(), scans::DecodeSupplier, consumer);
-  }
   void ScanNations(
       const std::function<void(const query::TpchQ9NationInput &)> &consumer)
       override {
     scans::ScanTpchQ9Nations(consumer);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ9OrdersInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::OrdersTable(), scans::DecodeOrder, consumer);
-  }
-  void ScanPartsupps(
-      const std::function<void(const query::TpchQ9PartsuppInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::PartsuppsTable(), scans::DecodePartsupp, consumer);
-  }
   void ScanLineitems(
       const std::function<void(const query::TpchQ9LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ9Lineitems(consumer);
-  }
-  bool ScanProfitContributions(
-      const std::function<void(const query::TpchQ9ProfitContribution &)> &consumer)
-      override {
-    split_scan::Serial(scans::ProfitContributionsTable(), scans::DecodeProfitContribution,
-                       consumer);
-    return true;
   }
   void ScanPartsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,

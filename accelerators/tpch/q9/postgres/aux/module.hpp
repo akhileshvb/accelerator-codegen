@@ -105,7 +105,6 @@ public:
   }
 };
 
-//
 // Profit is kept per (part, group), where a group is a (supplier nationkey,
 // order year) pair interned in a small dictionary: a cell is
 // {group id, joined-lineitem count, SUM(amount)} = 16 B. Execute only adds up

@@ -70,26 +70,6 @@ public:
       override {
     scans::ScanTpchQ7Nations(consumer);
   }
-  void ScanSuppliers(
-      const std::function<void(const query::TpchQ7SupplierInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::SuppliersTable(), scans::DecodeSupplier, consumer);
-  }
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ7CustomerInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::CustomersTable(), scans::DecodeCustomer, consumer);
-  }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ7OrderInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::OrdersTable(), scans::DecodeOrder, consumer);
-  }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ7LineitemInput &)> &consumer)
-      override {
-    split_scan::Serial(scans::LineitemsTable(), scans::DecodeLineitem, consumer);
-  }
   void ScanSuppliersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ7SupplierInput &)> &sink)

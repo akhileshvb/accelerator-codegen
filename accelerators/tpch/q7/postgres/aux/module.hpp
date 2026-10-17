@@ -101,7 +101,6 @@ struct TpchQ7CubeCell {
   int64_t rows = 0;                  // joined lineitems (group exists iff > 0)
 };
 
-//
 // Everything the result depends on, in compact columnar form:
 //   supplier_nation[suppkey]  nation key (4 B/supplier)
 //   customer_nation[custkey]  nation key (4 B/customer)

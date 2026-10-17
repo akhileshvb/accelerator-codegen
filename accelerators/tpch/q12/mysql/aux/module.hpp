@@ -22,9 +22,7 @@ namespace accelerator_codegen::aux_state::query {
 //
 //   kOrderPriorities  priority class per orderkey: AnyKeyCowArray<uint8_t>,
 //                     1 B per key slot (TPC-H keys are ~25% dense => ~4 B per
-//                     order: 0.6 GB at SF100, 6 GB at SF1000; the old
-//                     DenseIdArray + whole-array copy per write batch was the
-//                     same size but copied up to 268 MB per batch).
+//                     order: 0.6 GB at SF100, 6 GB at SF1000).
 //   kCells            per (receipt day, shipmode): lineitem counts joined with
 //                     an existing order, split high / low / total.  Only
 //                     qualifying lineitems (commit < receipt, ship < commit)
@@ -65,11 +63,7 @@ struct TpchQ12LineitemInput {
 class TpchQ12InitialScan {
 public:
   virtual ~TpchQ12InitialScan() = default;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ12OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ12LineitemInput &)> &) = 0;
-  // The same two scans split into `partitions` fixed row ranges: sink(partition,
+  // The scans of the big tables split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
   virtual void ScanOrdersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,
@@ -78,19 +72,10 @@ public:
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ12LineitemInput &)> &sink) = 0;
   // Qualifying lineitems of the given orders, as the database stands now
-  // (including this transaction's writes).  Backends override this with an
-  // index lookup; the default filters a full scan.
+  // (including this transaction's writes): an index lookup.
   virtual void LookupLineitemsByOrder(
       const std::vector<int64_t> &orderkeys,
-      const std::function<void(const TpchQ12LineitemInput &)> &consumer) {
-    if (orderkeys.empty())
-      return;
-    const std::set<int64_t> wanted(orderkeys.begin(), orderkeys.end());
-    ScanLineitems([&](const TpchQ12LineitemInput &input) {
-      if (wanted.count(input.orderkey))
-        consumer(input);
-    });
-  }
+      const std::function<void(const TpchQ12LineitemInput &)> &consumer) = 0;
 };
 
 enum class TpchQ12PriorityClass : uint8_t {
@@ -155,14 +140,13 @@ TpchQ12PriorityClass TpchQ12ClassifyPriority(const std::string &priority,
                                              bool is_null = false);
 bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
                               int32_t shipdate_days);
-int32_t TpchQ12DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int64_t TpchQ12AddMonths(int64_t days_since_epoch, int64_t months);
 
 // One result group: a shipmode with at least one joined qualifying lineitem.
 struct TpchQ12Group {
   std::string shipmode;
   TpchQ12Counts counts;
 };
+
 void TpchQ12FinalizeAndEmit(std::vector<TpchQ12Group> groups,
                             core::AuxRowSink &sink);
 
@@ -209,8 +193,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

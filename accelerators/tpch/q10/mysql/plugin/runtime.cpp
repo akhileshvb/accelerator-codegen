@@ -65,28 +65,10 @@ void ScanTpchQ10Nations(
 
 class TpchQ10Scan final : public query::TpchQ10InitialScan {
 public:
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ10CustomerInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ10CustomerInput>(scans::CustomersTable(),
-                                                    scans::DecodeCustomer, consumer);
-  }
   void ScanNations(
       const std::function<void(const query::TpchQ10NationInput &)> &consumer)
       override {
     scans::ScanTpchQ10Nations(consumer);
-  }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ10OrderInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ10OrderInput>(scans::OrdersTable(), scans::DecodeOrder,
-                                                 consumer);
-  }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ10LineitemInput &)> &consumer)
-      override {
-    split_scan::Serial<query::TpchQ10LineitemInput>(scans::LineitemsTable(),
-                                                    scans::DecodeLineitem, consumer);
   }
   void ScanCustomersPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,

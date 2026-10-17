@@ -3,9 +3,9 @@
 #include "prims/pg_numeric.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_collect.hpp"
 
 #include <algorithm>
 #include <array>
@@ -30,41 +30,9 @@ namespace like = core::sql_like;
 constexpr bool kCaseInsensitive = true;
 
 constexpr std::size_t kParts = kTpchQ9BlockParts;
-
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
 bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
   int64_t value = 0;
-  if (!IntCell(row, index, value) || value < std::numeric_limits<int32_t>::min() ||
+  if (!core::IntCell(row, index, value) || value < std::numeric_limits<int32_t>::min() ||
       value > std::numeric_limits<int32_t>::max())
     return false;
   out = static_cast<int32_t>(value);
@@ -92,30 +60,15 @@ bool Decimal2Cell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
 // A NULL in any column the query joins on or computes with means the row can
 // never contribute, so these readers return false and the row is ignored.
 bool ReadLineitem(const core::AuxRow &row, TpchQ9LineitemDelta &d) {
-  return IntCell(row, 0, d.partkey) && IntCell(row, 1, d.suppkey) &&
-         IntCell(row, 2, d.orderkey) && Decimal2Cell(row, 3, d.quantity_raw) &&
+  return core::IntCell(row, 0, d.partkey) && core::IntCell(row, 1, d.suppkey) &&
+         core::IntCell(row, 2, d.orderkey) && Decimal2Cell(row, 3, d.quantity_raw) &&
          Decimal2Cell(row, 4, d.extendedprice_raw) &&
          Decimal2Cell(row, 5, d.discount_raw);
-}
-
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
-core::InvalidationPlan PartitionSet() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
-  return plan;
 }
 
 std::shared_ptr<const TpchQ9StateImage>
 MakeStateImage(const std::shared_ptr<const TpchQ9State> &state) {
   auto image = std::make_shared<TpchQ9StateImage>();
-  image->kind = TpchQ9ImageKind::CompleteState;
   image->state = state;
   return image;
 }
@@ -139,7 +92,6 @@ bool NameLess(const std::string &a, const std::string &b) {
   return a.size() < b.size();
 }
 
-// ── Editable form of a block ────────────────────────────────────────────────
 // Used for the bulk build and for write batches: a block is decoded, edited
 // and re-encoded once per batch.
 struct EditBlock {
@@ -357,21 +309,161 @@ bool ProfitRaw(int64_t extendedprice_raw, int64_t discount_raw, int64_t supplyco
   return true;
 }
 
-} // namespace
+// A dimension row whose join value changes (order year, supplier nation,
+// supplycost) moves the profit of its existing lineitems between cells, which
+// the lineitem deltas cannot express. Net effect per key: the published state
+// vs. the last value after the batch.
+bool HasJoinValueChange(const TpchQ9State &old, const TpchQ9TxnBuffer &buffer) {
+  std::unordered_map<int64_t, std::optional<int32_t>> year_after;
+  for (const auto &d : buffer.OrderDeltas())
+    year_after[d.orderkey] = d.sign > 0 ? std::optional<int32_t>(d.order_year) : std::nullopt;
+  std::unordered_map<int64_t, std::optional<int32_t>> nation_after;
+  for (const auto &d : buffer.SupplierDeltas())
+    nation_after[d.suppkey] = d.sign > 0 ? std::optional<int32_t>(d.nationkey) : std::nullopt;
+  std::map<std::pair<int64_t, int64_t>, std::optional<int64_t>> cost_after;
+  for (const auto &d : buffer.PartsuppDeltas())
+    cost_after[{d.partkey, d.suppkey}] = d.sign > 0 ? std::optional<int64_t>(d.cost_raw) : std::nullopt;
+  bool value_change = false;
+  for (const auto &[key, after] : year_after) {
+    int32_t before = 0;
+    value_change |= after && old.LookupOrderYear(key, before) && before != *after;
+  }
+  for (const auto &[key, after] : nation_after) {
+    int32_t before = 0;
+    value_change |= after && old.LookupSupplierNation(key, before) && before != *after;
+  }
+  for (const auto &[key, after] : cost_after) {
+    int64_t before = 0;
+    value_change |= after &&
+                    BlockFindPs(old.FindBlock(key.first), SlotOf(key.first), key.second, before) &&
+                    before != *after;
+  }
+  return value_change;
+}
 
-// ── Public date/profit helpers ──────────────────────────────────────────────
+// The batch's lineitems; inserts and deletes of the same lineitem cancel out.
+struct BatchLineitems {
+  std::vector<const TpchQ9LineitemDelta *> inserts, deletes;
+};
+
+BatchLineitems CancelLineitems(const TpchQ9TxnBuffer &buffer) {
+  BatchLineitems lines;
+  std::map<std::array<int64_t, 6>, std::vector<std::size_t>> pending;
+  std::vector<bool> cancelled;
+  for (const auto &d : buffer.LineitemDeltas()) {
+    const std::array<int64_t, 6> key = {d.partkey, d.suppkey, d.orderkey, d.quantity_raw,
+                                        d.extendedprice_raw, d.discount_raw};
+    if (d.sign > 0) {
+      pending[key].push_back(lines.inserts.size());
+      lines.inserts.push_back(&d);
+      cancelled.push_back(false);
+    } else {
+      auto it = pending.find(key);
+      if (it != pending.end() && !it->second.empty()) {
+        cancelled[it->second.back()] = true;
+        it->second.pop_back();
+      } else {
+        lines.deletes.push_back(&d);
+      }
+    }
+  }
+  std::vector<const TpchQ9LineitemDelta *> kept;
+  for (std::size_t i = 0; i < lines.inserts.size(); ++i)
+    if (!cancelled[i])
+      kept.push_back(lines.inserts[i]);
+  lines.inserts.swap(kept);
+  return lines;
+}
+
+// The blocks of every part edited below, decoded in parallel up front.
+void PrepareBlocks(const core::AuxEngineServices &services, const TpchQ9TxnBuffer &buffer,
+                   const BatchLineitems &lines, BlockEditor &editor) {
+  std::vector<int64_t> partkeys;
+  partkeys.reserve(lines.deletes.size() + lines.inserts.size() + buffer.PartsuppDeltas().size());
+  for (const auto *d : lines.deletes)
+    partkeys.push_back(d->partkey);
+  for (const auto *d : lines.inserts)
+    partkeys.push_back(d->partkey);
+  for (const auto &d : buffer.PartsuppDeltas())
+    partkeys.push_back(d.partkey);
+  editor.Prefetch(services, partkeys);
+}
+
+// Deleted lineitems leave the cells they were counted in (resolved against the
+// dimension values of the published state).
+void RemoveDeletedLineitems(const TpchQ9State &old, TpchQ9State &updated, BlockEditor &editor,
+                            const std::vector<const TpchQ9LineitemDelta *> &deletes) {
+  for (const auto *d : deletes) {
+    int32_t nationkey = 0, year = 0;
+    int64_t cost = 0, profit = 0;
+    const auto slot = SlotOf(d->partkey);
+    if (!old.LookupSupplierNation(d->suppkey, nationkey) ||
+        !old.LookupOrderYear(d->orderkey, year) ||
+        !BlockFindPs(old.FindBlock(d->partkey), slot, d->suppkey, cost))
+      continue; // never joined: nothing to remove
+    ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
+    editor.For(d->partkey).AddCell(slot, updated.GroupFor(nationkey, year), -1, -profit);
+  }
+}
+
+// Dimension changes (value changes were ruled out by HasJoinValueChange).
+void ApplyDimensionChanges(const TpchQ9TxnBuffer &buffer, TpchQ9State &updated,
+                           BlockEditor &editor) {
+  for (const auto &d : buffer.SupplierDeltas()) {
+    if (d.sign > 0)
+      updated.SetSupplierNation(d.suppkey, d.nationkey);
+    else
+      updated.EraseSupplier(d.suppkey);
+  }
+  for (const auto &d : buffer.OrderDeltas()) {
+    if (d.sign > 0)
+      updated.SetOrderYear(d.orderkey, d.order_year);
+    else
+      updated.EraseOrder(d.orderkey);
+  }
+  for (const auto &d : buffer.PartsuppDeltas()) {
+    auto &edit = editor.For(d.partkey);
+    const auto slot = SlotOf(d.partkey);
+    if (d.sign > 0)
+      edit.SetPs(slot, d.suppkey, d.cost_raw);
+    else
+      edit.ErasePs(slot, d.suppkey);
+  }
+  for (const auto &d : buffer.PartDeltas()) {
+    if (d.sign > 0)
+      updated.part_names.Set(d.partkey, d.name);
+    else
+      updated.part_names.Erase(d.partkey);
+  }
+  for (const auto &d : buffer.NationDeltas()) {
+    if (d.sign > 0)
+      updated.nation_names[d.nationkey] = d.name;
+    else
+      updated.nation_names.erase(d.nationkey);
+  }
+}
+
+// Inserted lineitems join against the post-batch dimensions.
+void AddInsertedLineitems(TpchQ9State &updated, BlockEditor &editor,
+                          const std::vector<const TpchQ9LineitemDelta *> &inserts) {
+  for (const auto *d : inserts) {
+    int32_t nationkey = 0, year = 0;
+    int64_t cost = 0, profit = 0;
+    auto &edit = editor.For(d->partkey);
+    const auto slot = SlotOf(d->partkey);
+    if (!updated.LookupSupplierNation(d->suppkey, nationkey) ||
+        !updated.LookupOrderYear(d->orderkey, year) || !edit.FindPs(slot, d->suppkey, cost))
+      continue; // does not join (yet)
+    ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
+    edit.AddCell(slot, updated.GroupFor(nationkey, year), 1, profit);
+  }
+}
+
+} // namespace
 int32_t TpchQ9ExtractYear(int32_t days_since_epoch) {
   return core::sql_date::YearOf(days_since_epoch);
 }
 
-int64_t TpchQ9ComputeProfitRaw(int64_t extendedprice_raw, int64_t discount_raw,
-                               int64_t supplycost_raw, int64_t quantity_raw) {
-  int64_t out = 0;
-  ProfitRaw(extendedprice_raw, discount_raw, supplycost_raw, quantity_raw, out);
-  return out;
-}
-
-// ── TpchQ9State accessors ───────────────────────────────────────────────────
 static int64_t GroupKey(int32_t nationkey, int32_t year) {
   return (static_cast<int64_t>(nationkey) << 32) | static_cast<uint32_t>(year);
 }
@@ -445,7 +537,6 @@ void TpchQ9State::EraseOrder(int64_t orderkey) {
   order_year_overflow.Erase(orderkey);
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ9TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ9TxnBuffer::Clear() {
   pending = false;
@@ -456,32 +547,37 @@ void TpchQ9TxnBuffer::Clear() {
   parts.clear();
   nations.clear();
 }
+
 void TpchQ9TxnBuffer::Add(TpchQ9LineitemDelta delta) {
   pending = true;
   lineitems.push_back(delta);
 }
+
 void TpchQ9TxnBuffer::Add(TpchQ9OrderDelta delta) {
   pending = true;
   orders.push_back(delta);
 }
+
 void TpchQ9TxnBuffer::Add(TpchQ9SupplierDelta delta) {
   pending = true;
   suppliers.push_back(delta);
 }
+
 void TpchQ9TxnBuffer::Add(TpchQ9PartsuppDelta delta) {
   pending = true;
   partsupps.push_back(delta);
 }
+
 void TpchQ9TxnBuffer::Add(TpchQ9PartDelta delta) {
   pending = true;
   parts.push_back(std::move(delta));
 }
+
 void TpchQ9TxnBuffer::Add(TpchQ9NationDelta delta) {
   pending = true;
   nations.push_back(std::move(delta));
 }
 
-// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ9Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ9Module::Dependencies() const {
@@ -502,29 +598,29 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q9 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ9State>();
-  const std::size_t partitions = BuildPartitions(services);
+  const std::size_t partitions = core::BuildPartitions(services);
 
   initial_scan->ScanNations([&](const TpchQ9NationInput &input) {
     state->nation_names[input.nationkey] = input.name;
   });
   std::set<int32_t> nationkeys, years;
-  for (const auto &input : CollectRows<TpchQ9SupplierInput>(
-           services, partitions, [&](std::size_t parts, auto &&sink) {
+  for (const auto &input : core::CollectRows<TpchQ9SupplierInput>(
+           services, [&](std::size_t parts, auto &&sink) {
              initial_scan->ScanSuppliersPartitioned(services, parts, sink);
            })) {
     state->SetSupplierNation(input.suppkey, input.nationkey);
     nationkeys.insert(input.nationkey);
   }
-  for (const auto &input : CollectRows<TpchQ9OrdersInput>(
-           services, partitions, [&](std::size_t parts, auto &&sink) {
+  for (const auto &input : core::CollectRows<TpchQ9OrdersInput>(
+           services, [&](std::size_t parts, auto &&sink) {
              initial_scan->ScanOrdersPartitioned(services, parts, sink);
            })) {
     const int32_t year = TpchQ9ExtractYear(input.orderdate_days);
     state->SetOrderYear(input.orderkey, year);
     years.insert(year);
   }
-  for (const auto &input : CollectRows<TpchQ9PartInput>(
-           services, partitions, [&](std::size_t parts, auto &&sink) {
+  for (const auto &input : core::CollectRows<TpchQ9PartInput>(
+           services, [&](std::size_t parts, auto &&sink) {
              initial_scan->ScanPartsPartitioned(services, parts, sink);
            }))
     state->part_names.Set(input.partkey, input.name);
@@ -543,7 +639,7 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanPartsuppsPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ9PartsuppInput &input) {
-              sink(partition, OneRowBatch<TpchQ9PartsuppInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ9PartsuppInput>{input});
             });
       },
       [](BlockEdits &into, const TpchQ9PartsuppInput &input) {
@@ -557,7 +653,7 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
       [&](std::size_t parts, auto &&sink) {
         pushed_down = initial_scan->ScanProfitContributionsPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ9ProfitContribution &input) {
-              sink(partition, OneRowBatch<TpchQ9ProfitContribution>{input});
+              sink(partition, core::SingleRowBatch<TpchQ9ProfitContribution>{input});
             });
       },
       [&](BlockEdits &into, const TpchQ9ProfitContribution &input) {
@@ -592,7 +688,7 @@ TpchQ9Module::BuildState(const core::AuxEngineServices &services) const {
 void TpchQ9Module::Build(core::AuxEngineServices &services, core::StateBuilder &builder) {
   const auto state = BuildState(services);
   builder.Write(core::StateImage::Make(
-      TpchQ9Layout::kAccelerator, TpchQ9Layout::kCompleteState, 0,
+      TpchQ9Layout::kAccelerator, TpchQ9Layout::kState, 0,
       MakeStateImage(state)));
   builder.Finish();
 }
@@ -606,7 +702,10 @@ TpchQ9Module::InterpretMutation(const core::MutationBatch &mutation) const {
       mutation.table == config.orders_table ||
       mutation.table == config.partsupp_table ||
       mutation.table == config.lineitem_table) {
-    return PartitionSet();
+    core::InvalidationPlan plan;
+    plan.scope =
+        ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
+    return plan;
   }
   return {};
 }
@@ -621,21 +720,21 @@ void TpchQ9Module::AccumulateMutation(const core::MutationBatch &mutation,
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9PartDelta d;
       d.sign = sign;
-      if (IntCell(row, 0, d.partkey) && StringCell(row, 1, d.name))
+      if (core::IntCell(row, 0, d.partkey) && core::StringCell(row, 1, d.name))
         buffer.Add(std::move(d));
     };
   } else if (mutation.table == config.supplier_table) {
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9SupplierDelta d;
       d.sign = sign;
-      if (IntCell(row, 0, d.suppkey) && Int32Cell(row, 1, d.nationkey))
+      if (core::IntCell(row, 0, d.suppkey) && Int32Cell(row, 1, d.nationkey))
         buffer.Add(d);
     };
   } else if (mutation.table == config.nation_table) {
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9NationDelta d;
       d.sign = sign;
-      if (Int32Cell(row, 0, d.nationkey) && StringCell(row, 1, d.name))
+      if (Int32Cell(row, 0, d.nationkey) && core::StringCell(row, 1, d.name))
         buffer.Add(std::move(d));
     };
   } else if (mutation.table == config.orders_table) {
@@ -645,7 +744,7 @@ void TpchQ9Module::AccumulateMutation(const core::MutationBatch &mutation,
       TpchQ9OrderDelta d;
       d.sign = sign;
       int32_t days = 0;
-      if (IntCell(row, 0, d.orderkey) && Int32Cell(row, 1, days)) {
+      if (core::IntCell(row, 0, d.orderkey) && Int32Cell(row, 1, days)) {
         d.order_year = TpchQ9ExtractYear(days);
         buffer.Add(d);
       }
@@ -654,7 +753,7 @@ void TpchQ9Module::AccumulateMutation(const core::MutationBatch &mutation,
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9PartsuppDelta d;
       d.sign = sign;
-      if (IntCell(row, 0, d.partkey) && IntCell(row, 1, d.suppkey) &&
+      if (core::IntCell(row, 0, d.partkey) && core::IntCell(row, 1, d.suppkey) &&
           Decimal2Cell(row, 2, d.cost_raw))
         buffer.Add(d);
     };
@@ -693,191 +792,36 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {total_changes, 1, true, false, true, false, false,
-       core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+      core::MaintenanceRequest::IncrementalSingleState(
+          total_changes, services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
   std::shared_ptr<const TpchQ9State> old_state;
   core::Version existing_version = 0;
-  {
-    const auto snapshot = services.StateStore().ReadPartitions(
-        services.CurrentVisibility(), {TpchQ9Layout::kCompleteState});
-    for (const auto &image : snapshot.partitions) {
-      if (image.partition != TpchQ9Layout::kCompleteState)
-        continue;
-      const auto *typed = AsQ9Image(image);
-      if (typed) {
-        old_state = typed->state;
-        existing_version = image.version;
-      }
-      break;
-    }
-  }
-  if (!old_state) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+  if (!LoadState(services, old_state, &existing_version) ||
+      HasJoinValueChange(*old_state, buffer)) {
+    core::FinishRebuildAll(outcome);
     return outcome;
   }
   const TpchQ9State &old = *old_state;
-
-  // A dimension row whose join value changes (order year, supplier nation,
-  // supplycost) moves the profit of its existing lineitems between cells,
-  // which the lineitem deltas cannot express: rebuild. Net effect per key
-  // (old value in the published state vs. last value after the batch).
-  {
-    std::unordered_map<int64_t, std::optional<int32_t>> year_after;
-    for (const auto &d : buffer.OrderDeltas())
-      year_after[d.orderkey] = d.sign > 0 ? std::optional<int32_t>(d.order_year) : std::nullopt;
-    std::unordered_map<int64_t, std::optional<int32_t>> nation_after;
-    for (const auto &d : buffer.SupplierDeltas())
-      nation_after[d.suppkey] = d.sign > 0 ? std::optional<int32_t>(d.nationkey) : std::nullopt;
-    std::map<std::pair<int64_t, int64_t>, std::optional<int64_t>> cost_after;
-    for (const auto &d : buffer.PartsuppDeltas())
-      cost_after[{d.partkey, d.suppkey}] = d.sign > 0 ? std::optional<int64_t>(d.cost_raw) : std::nullopt;
-    bool value_change = false;
-    for (const auto &[key, after] : year_after) {
-      int32_t before = 0;
-      value_change |= after && old.LookupOrderYear(key, before) && before != *after;
-    }
-    for (const auto &[key, after] : nation_after) {
-      int32_t before = 0;
-      value_change |= after && old.LookupSupplierNation(key, before) && before != *after;
-    }
-    for (const auto &[key, after] : cost_after) {
-      int64_t before = 0;
-      value_change |= after &&
-                      BlockFindPs(old.FindBlock(key.first),
-                                  SlotOf(key.first), key.second,
-                                  before) &&
-                      before != *after;
-    }
-    if (value_change) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
-  }
-
-  // Lineitems inserted and deleted within the same batch cancel out.
-  std::vector<const TpchQ9LineitemDelta *> inserts, deletes;
-  {
-    std::map<std::array<int64_t, 6>, std::vector<std::size_t>> pending;
-    std::vector<bool> cancelled;
-    for (const auto &d : buffer.LineitemDeltas()) {
-      const std::array<int64_t, 6> key = {d.partkey, d.suppkey, d.orderkey, d.quantity_raw,
-                                          d.extendedprice_raw, d.discount_raw};
-      if (d.sign > 0) {
-        pending[key].push_back(inserts.size());
-        inserts.push_back(&d);
-        cancelled.push_back(false);
-      } else {
-        auto it = pending.find(key);
-        if (it != pending.end() && !it->second.empty()) {
-          cancelled[it->second.back()] = true;
-          it->second.pop_back();
-        } else {
-          deletes.push_back(&d);
-        }
-      }
-    }
-    std::vector<const TpchQ9LineitemDelta *> kept;
-    for (std::size_t i = 0; i < inserts.size(); ++i)
-      if (!cancelled[i])
-        kept.push_back(inserts[i]);
-    inserts.swap(kept);
-  }
+  const BatchLineitems lines = CancelLineitems(buffer);
 
   // Copy-on-write: shares every block / chunk / shard with the published state;
   // only the touched ones are cloned below.
   auto updated = std::make_shared<TpchQ9State>(old);
   BlockEditor editor(*updated);
-  {
-    std::vector<int64_t> touched;
-    touched.reserve(deletes.size() + inserts.size() + buffer.PartsuppDeltas().size());
-    for (const auto *d : deletes)
-      touched.push_back(d->partkey);
-    for (const auto *d : inserts)
-      touched.push_back(d->partkey);
-    for (const auto &d : buffer.PartsuppDeltas())
-      touched.push_back(d.partkey);
-    editor.Prefetch(services, touched);
-  }
-
-  // 1. Deleted lineitems leave the cells they were counted in (resolved against
-  //    the dimension values of the published state).
-  for (const auto *d : deletes) {
-    int32_t nationkey = 0, year = 0;
-    int64_t cost = 0, profit = 0;
-    const auto slot = SlotOf(d->partkey);
-    if (!old.LookupSupplierNation(d->suppkey, nationkey) ||
-        !old.LookupOrderYear(d->orderkey, year) ||
-        !BlockFindPs(old.FindBlock(d->partkey), slot, d->suppkey, cost))
-      continue; // never joined: nothing to remove
-    ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
-    editor.For(d->partkey).AddCell(slot, updated->GroupFor(nationkey, year), -1, -profit);
-  }
-
-  // 2. Dimension changes (value changes were ruled out above).
-  for (const auto &d : buffer.SupplierDeltas()) {
-    if (d.sign > 0)
-      updated->SetSupplierNation(d.suppkey, d.nationkey);
-    else
-      updated->EraseSupplier(d.suppkey);
-  }
-  for (const auto &d : buffer.OrderDeltas()) {
-    if (d.sign > 0)
-      updated->SetOrderYear(d.orderkey, d.order_year);
-    else
-      updated->EraseOrder(d.orderkey);
-  }
-  for (const auto &d : buffer.PartsuppDeltas()) {
-    auto &edit = editor.For(d.partkey);
-    const auto slot = SlotOf(d.partkey);
-    if (d.sign > 0)
-      edit.SetPs(slot, d.suppkey, d.cost_raw);
-    else
-      edit.ErasePs(slot, d.suppkey);
-  }
-  for (const auto &d : buffer.PartDeltas()) {
-    if (d.sign > 0)
-      updated->part_names.Set(d.partkey, d.name);
-    else
-      updated->part_names.Erase(d.partkey);
-  }
-  for (const auto &d : buffer.NationDeltas()) {
-    if (d.sign > 0)
-      updated->nation_names[d.nationkey] = d.name;
-    else
-      updated->nation_names.erase(d.nationkey);
-  }
-
-  // 3. Inserted lineitems join against the post-batch dimensions.
-  for (const auto *d : inserts) {
-    int32_t nationkey = 0, year = 0;
-    int64_t cost = 0, profit = 0;
-    auto &edit = editor.For(d->partkey);
-    const auto slot = SlotOf(d->partkey);
-    if (!updated->LookupSupplierNation(d->suppkey, nationkey) ||
-        !updated->LookupOrderYear(d->orderkey, year) || !edit.FindPs(slot, d->suppkey, cost))
-      continue; // does not join (yet)
-    ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
-    edit.AddCell(slot, updated->GroupFor(nationkey, year), 1, profit);
-  }
+  PrepareBlocks(services, buffer, lines, editor);
+  RemoveDeletedLineitems(old, *updated, editor, lines.deletes);
+  ApplyDimensionChanges(buffer, *updated, editor);
+  AddInsertedLineitems(*updated, editor, lines.inserts);
   editor.Flush(services);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
-      TpchQ9Layout::kAccelerator, TpchQ9Layout::kCompleteState, existing_version,
+      TpchQ9Layout::kAccelerator, TpchQ9Layout::kState, existing_version,
       MakeStateImage(std::static_pointer_cast<const TpchQ9State>(updated))));
   return outcome;
 }
@@ -887,7 +831,7 @@ bool TpchQ9Module::CheckValidity(core::AuxEngineServices &services,
   if (arguments.values.empty())
     return false;
   return services.StateStore()
-      .CheckValidity({Id(), std::to_string(TpchQ9Layout::kCompleteState)},
+      .CheckValidity({Id(), std::to_string(TpchQ9Layout::kState)},
                      services.CurrentVisibility())
       .IsValid();
 }
@@ -895,10 +839,7 @@ bool TpchQ9Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ9Module::Execute(core::AuxEngineServices &services,
                            const core::QueryArguments &arguments,
                            core::AuxRowSink &sink) {
-  if (!services.StateStore()
-           .CheckValidity({Id(), std::to_string(TpchQ9Layout::kCompleteState)},
-                          services.CurrentVisibility())
-           .IsValid()) {
+  if (!CheckValidity(services, arguments)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
@@ -910,25 +851,20 @@ void TpchQ9Module::Execute(core::AuxEngineServices &services,
   EmitResult(services, *state, arguments, sink);
 }
 
-void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  // Recompute from base tables: build state and emit
-  const auto state = BuildState(services);
-  EmitResult(services, *state, arguments, sink);
-}
-
 bool TpchQ9Module::LoadState(core::AuxEngineServices &services,
-                             std::shared_ptr<const TpchQ9State> &state) const {
+                             std::shared_ptr<const TpchQ9State> &state,
+                             core::Version *version) const {
   const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {TpchQ9Layout::kCompleteState});
+      services.CurrentVisibility(), {TpchQ9Layout::kState});
   for (const auto &image : snapshot.partitions) {
-    if (image.partition != TpchQ9Layout::kCompleteState)
+    if (image.partition != TpchQ9Layout::kState)
       continue;
     const auto *typed = AsQ9Image(image);
     if (!typed)
       return false;
     state = typed->state;
+    if (version)
+      *version = image.version;
     return true;
   }
   return false;
