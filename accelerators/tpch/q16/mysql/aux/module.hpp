@@ -61,6 +61,17 @@ public:
       const std::function<void(const TpchQ16PartInput &)> &) = 0;
   virtual void ScanPartsupp(
       const std::function<void(const TpchQ16PartsuppInput &)> &) = 0;
+  // The same scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16SupplierInput &)> &sink) = 0;
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16PartInput &)> &sink) = 0;
+  virtual void ScanPartsuppPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16PartsuppInput &)> &sink) = 0;
 };
 
 // ---------------------------------------------------------------------------

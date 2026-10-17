@@ -17,20 +17,6 @@ struct TpchQ1Config {
   core::TableId lineitem_table = 0;
 };
 
-struct TpchQ1LineitemInput {
-  int32_t shipdate_days = 0;
-  int64_t quantity_raw = 0;
-  int32_t quantity_scale = 2;
-  int64_t extended_price_raw = 0;
-  int32_t extended_price_scale = 2;
-  int64_t discount_raw = 0;
-  int32_t discount_scale = 2;
-  int64_t tax_raw = 0;
-  int32_t tax_scale = 2;
-  char returnflag = '\0';
-  char linestatus = '\0';
-};
-
 // Pre-aggregated (day, returnflag, linestatus) stats for SQL-pushdown builds.
 // Sums are exact coefficients at the scales 2 / 2 / 2 / 4 / 6.
 struct TpchQ1DayGroupAggregate {
@@ -48,14 +34,14 @@ struct TpchQ1DayGroupAggregate {
 class TpchQ1InitialScan {
 public:
   virtual ~TpchQ1InitialScan() = default;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ1LineitemInput &)> &) = 0;
-
-  // GROUP BY (shipdate, returnflag, linestatus) pushed into the engine. The
-  // default aggregates the row scan here; engines override it with one SQL
-  // aggregate so the build reads no rows into the process.
-  virtual void ScanDayGroupAggregates(
-      const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer);
+  // GROUP BY (shipdate, returnflag, linestatus) pushed into the engine (one SQL
+  // aggregate) so the build reads no rows into the process, cut into
+  // `partitions` row ranges, each grouped on its own: sink(partition, cell)
+  // runs concurrently for different partitions and a cell may come once per
+  // partition (the caller sums them).
+  virtual void ScanDayGroupAggregatesPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ1DayGroupAggregate &)> &sink) = 0;
 };
 
 // The whole state is ONE image (partition 0): a copy-on-write Fenwick tree
@@ -117,8 +103,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

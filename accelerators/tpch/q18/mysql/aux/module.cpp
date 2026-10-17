@@ -1,5 +1,8 @@
 #include "tpch/q18/mysql/aux/module.hpp"
 #include "tpch/q18/calibration_writes.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -7,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
@@ -15,6 +19,10 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
+
+// Buckets of the build's lineitem rows (by order); deltas per maintenance slice.
+constexpr std::size_t kBuildBuckets = 64;
+constexpr std::size_t kApplyGrain = 4096;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -386,9 +394,10 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ18Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ18TxnBuffer>();
 }
 
-void TpchQ18Module::Build(core::AuxEngineServices &,
+void TpchQ18Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  const auto typed_state = std::make_shared<const TpchQ18State>(BuildState());
+  const auto typed_state =
+      std::make_shared<const TpchQ18State>(BuildState(services));
   builder.Write(core::StateImage::Make(
       TpchQ18Layout::kAccelerator, TpchQ18Layout::kOrderQuantitySums, 0,
       MakeStateImage(typed_state)));
@@ -474,6 +483,62 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
+namespace {
+
+// A key's deltas are applied by the slice that owns its hot-set shard. The
+// orders record map has at least as many shards, so a slice also owns every
+// record shard of its keys, and no two slices write the same shard.
+using HotIndex = decltype(TpchQ18State::hot);
+// The hot set is default-built: kShards shards.
+constexpr unsigned kHotShardBits = static_cast<unsigned>(__builtin_ctzll(HotIndex::kShards));
+static_assert(decltype(TpchQ18State::orders)::kShards >= HotIndex::kShards);
+
+// Orders rows (a delete then an insert of one key is an update), then
+// lineitem rows, for the keys whose hot-set shard lies in [first, last).
+bool ApplyOwnedDeltas(TpchQ18State &state, const TpchQ18TxnBuffer &buffer,
+                      std::size_t first, std::size_t last) {
+  const auto owned = [&](int64_t orderkey) {
+    const std::size_t shard = HotIndex::ShardOf(orderkey, kHotShardBits);
+    return shard >= first && shard < last;
+  };
+  for (const auto &delta : buffer.Orders()) {
+    const auto &order = delta.order;
+    if (!owned(order.key))
+      continue;
+    if (delta.sign < 0) {
+      if (!state.ClearOrder(order.key))
+        return false;
+    } else {
+      state.SetOrder(order.key, order.custkey, order.orderdate_days,
+                     order.totalprice_raw);
+    }
+    state.Reindex(order.key);
+  }
+  for (const auto &delta : buffer.Lineitems()) {
+    if (!owned(delta.orderkey))
+      continue;
+    if (!state.AddLineitem(delta.orderkey, delta.quantity_raw, delta.sign))
+      return false;
+    state.Reindex(delta.orderkey);
+  }
+  return true;
+}
+
+// False when a delta does not fit the state. A small batch is one slice.
+bool ApplyKeyDeltas(core::AuxEngineServices &services, TpchQ18State &state,
+                    const TpchQ18TxnBuffer &buffer) {
+  const std::size_t slices = core::SliceCount(
+      services, buffer.Orders().size() + buffer.Lineitems().size(), kApplyGrain);
+  std::vector<uint8_t> fits(slices, 1);
+  core::RunSlices(services, slices, HotIndex::kShards,
+                  [&](std::size_t slice, std::size_t first, std::size_t last) {
+                    fits[slice] = ApplyOwnedDeltas(state, buffer, first, last);
+                  });
+  return std::all_of(fits.begin(), fits.end(), [](uint8_t fit) { return fit != 0; });
+}
+
+} // namespace
+
 core::StagedMaintenanceOutcome
 TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
                                 const core::InvalidationPlan &,
@@ -524,27 +589,9 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
   // the first time a delta touches it.
   auto new_state = std::make_shared<TpchQ18State>(*current);
 
-  // orders rows (a delete then an insert of one key is an update).
-  for (const auto &delta : buffer.Orders()) {
-    const auto &order = delta.order;
-    if (delta.sign < 0) {
-      if (!new_state->ClearOrder(order.key)) {
-        core::FinishRebuildAll(outcome); // state and tables disagree
-        return outcome;
-      }
-    } else {
-      new_state->SetOrder(order.key, order.custkey, order.orderdate_days,
-                          order.totalprice_raw);
-    }
-    new_state->Reindex(order.key);
-  }
-  for (const auto &delta : buffer.Lineitems()) {
-    if (!new_state->AddLineitem(delta.orderkey, delta.quantity_raw,
-                                delta.sign)) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
-    new_state->Reindex(delta.orderkey);
+  if (!ApplyKeyDeltas(services, *new_state, buffer)) {
+    core::FinishRebuildAll(outcome); // state and tables disagree
+    return outcome;
   }
 
   // Customer names: every customer is kept, so a result never needs SQL.
@@ -671,40 +718,134 @@ void TpchQ18Module::ExecuteFallback(core::AuxEngineServices &,
   EmitRows(std::move(rows), nullptr, sink);
 }
 
-TpchQ18State TpchQ18Module::BuildState() const {
+namespace {
+
+struct OrderQuantity {
+  int64_t orderkey;
+  int64_t quantity_raw;
+};
+
+// The build's rows of the orders whose key falls into one bucket.
+struct BuildBucket {
+  std::vector<OrderQuantity> lineitems;
+  std::vector<TpchQ18OrderInput> orders;
+};
+
+struct BucketRecords {
+  std::vector<std::pair<int64_t, TpchQ18OrderRec>> records;
+  std::vector<int64_t> hot;
+};
+
+// The record of every order of the bucket (its orders row, SUM(l_quantity) and
+// COUNT(*) of its lineitems) and which of them are hot.
+BucketRecords BuildRecords(BuildBucket &bucket) {
+  std::sort(bucket.lineitems.begin(), bucket.lineitems.end(),
+            [](const OrderQuantity &a, const OrderQuantity &b) {
+              return a.orderkey < b.orderkey;
+            });
+  std::stable_sort(bucket.orders.begin(), bucket.orders.end(),
+                   [](const TpchQ18OrderInput &a, const TpchQ18OrderInput &b) {
+                     return a.key < b.key;
+                   });
+  BucketRecords out;
+  auto line = bucket.lineitems.begin();
+  auto order = bucket.orders.begin();
+  while (line != bucket.lineitems.end() || order != bucket.orders.end()) {
+    constexpr int64_t kEnd = std::numeric_limits<int64_t>::max();
+    const int64_t key = std::min(line != bucket.lineitems.end() ? line->orderkey : kEnd,
+                                 order != bucket.orders.end() ? order->key : kEnd);
+    TpchQ18OrderRec rec;
+    for (; line != bucket.lineitems.end() && line->orderkey == key; ++line) {
+      rec.sum_raw += line->quantity_raw;
+      ++rec.flags_lines;
+    }
+    for (; order != bucket.orders.end() && order->key == key; ++order) {
+      rec.custkey = order->custkey; // a repeated key keeps the last row
+      rec.orderdate_days = order->orderdate_days;
+      rec.totalprice_raw = order->totalprice_raw;
+      rec.flags_lines |= TpchQ18OrderRec::kHasOrder;
+    }
+    out.records.emplace_back(key, rec);
+    if (rec.Qualifies(TpchQ18State::kHotFloorRaw))
+      out.hot.push_back(key);
+  }
+  return out;
+}
+
+} // namespace
+
+TpchQ18State TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q18 aux requires a typed initial scan source");
   TpchQ18State state;
 
-  // Streamed: every row lands directly in the (sharded) final state.
-  initial_scan->ScanOrders([&](const TpchQ18OrderInput &input) {
-    state.SetOrder(input.key, input.custkey, input.orderdate_days,
-                   input.totalprice_raw);
-  });
-  const bool aggregated = initial_scan->ScanOrderQuantityAggregates(
-      [&](const TpchQ18OrderQuantityAggregate &agg) {
-        TpchQ18OrderRec &rec = state.MutableRec(agg.orderkey);
-        rec.sum_raw += agg.quantity_sum_raw;
-        rec.flags_lines += static_cast<uint32_t>(agg.line_count);
-      });
-  if (!aggregated) {
-    initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
-      state.AddLineitem(input.orderkey, input.quantity_raw, 1);
-    });
+  // The scans only deal the rows out to buckets by order; the buckets are
+  // joined and summed in parallel slices and then merged into the state.
+  const auto bucket_of = [](int64_t orderkey) {
+    return static_cast<uint64_t>(orderkey) % kBuildBuckets;
+  };
+  const std::size_t partitions = BuildPartitions(services);
+  auto orders = core::PartitionedBuild<Buckets<TpchQ18OrderInput>>(
+      services, [] { return Buckets<TpchQ18OrderInput>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanOrdersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ18OrderInput &input) {
+              sink(partition, OneRowBatch<TpchQ18OrderInput>{input});
+            });
+      },
+      [&](Buckets<TpchQ18OrderInput> &into, const TpchQ18OrderInput &input) {
+        into[bucket_of(input.key)].push_back(input);
+      },
+      AppendBuckets<TpchQ18OrderInput>, partitions);
+  auto lineitems = core::PartitionedBuild<Buckets<OrderQuantity>>(
+      services, [] { return Buckets<OrderQuantity>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ18LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ18LineitemInput>{input});
+            });
+      },
+      [&](Buckets<OrderQuantity> &into, const TpchQ18LineitemInput &input) {
+        into[bucket_of(input.orderkey)].push_back({input.orderkey, input.quantity_raw});
+      },
+      AppendBuckets<OrderQuantity>, partitions);
+  std::vector<BuildBucket> buckets(kBuildBuckets);
+  for (std::size_t b = 0; b < kBuildBuckets; ++b) {
+    buckets[b].orders = std::move(orders[b]);
+    buckets[b].lineitems = std::move(lineitems[b]);
   }
-
-  // Hot set and the names of its customers.
-  std::vector<int64_t> hot_orders;
-  state.orders.ForEach([&](int64_t orderkey, const TpchQ18OrderRec &rec) {
-    if (!rec.Qualifies(TpchQ18State::kHotFloorRaw))
-      return;
-    hot_orders.push_back(orderkey);
-  });
-  for (const int64_t orderkey : hot_orders)
-    state.hot.Upsert(orderkey, 1);
-  initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
-    state.customer_names.Upsert(input.key, input.name);
-  });
+  std::vector<BucketRecords> built(kBuildBuckets);
+  core::ParallelSlices(services, kBuildBuckets, 1,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i) {
+                           built[i] = BuildRecords(buckets[i]);
+                           buckets[i] = {};
+                         }
+                       });
+  for (const auto &bucket : built) {
+    for (const auto &[orderkey, rec] : bucket.records)
+      state.MutableRec(orderkey) = rec;
+    for (const int64_t orderkey : bucket.hot)
+      state.hot.Upsert(orderkey, 1);
+  }
+  const auto customers = core::PartitionedBuild<std::vector<TpchQ18CustomerInput>>(
+      services, [] { return std::vector<TpchQ18CustomerInput>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanCustomersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ18CustomerInput &input) {
+              sink(partition, OneRowBatch<TpchQ18CustomerInput>{input});
+            });
+      },
+      [](std::vector<TpchQ18CustomerInput> &into, const TpchQ18CustomerInput &input) {
+        into.push_back(input);
+      },
+      [](std::vector<TpchQ18CustomerInput> &into, std::vector<TpchQ18CustomerInput> &&from) {
+        into.insert(into.end(), std::make_move_iterator(from.begin()),
+                    std::make_move_iterator(from.end()));
+      },
+      partitions);
+  for (const auto &customer : customers)
+    state.customer_names.Upsert(customer.key, customer.name);
   return state;
 }
 

@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q9/mysql/aux/module.hpp"
 #include "tpch/q9/cost_model.hpp"
@@ -20,28 +21,22 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ9Parts(
-    const std::function<void(const query::TpchQ9PartInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT p_partkey, p_name FROM part "
-      "WHERE p_partkey IS NOT NULL AND p_name IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ9PartInput{TypedInt(cols, 0),
-                                      TypedText(cols, 1)};
-      },
-      [&](query::TpchQ9PartInput &&input) { consumer(input); });
+SplitTable PartsTable() {
+  return {"p_partkey, p_name", "part", "p_partkey IS NOT NULL AND p_name IS NOT NULL",
+          "p_partkey"};
 }
 
-void ScanTpchQ9Suppliers(
-    const std::function<void(const query::TpchQ9SupplierInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT s_suppkey, s_nationkey FROM supplier "
-      "WHERE s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ9SupplierInput{TypedInt(cols, 0),
-                                          static_cast<int32_t>(TypedInt(cols, 1))};
-      },
-      [&](query::TpchQ9SupplierInput &&input) { consumer(input); });
+query::TpchQ9PartInput DecodePart(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1)};
+}
+
+SplitTable SuppliersTable() {
+  return {"s_suppkey, s_nationkey", "supplier",
+          "s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL", "s_suppkey"};
+}
+
+query::TpchQ9SupplierInput DecodeSupplier(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), static_cast<int32_t>(TypedInt(cols, 1))};
 }
 
 void ScanTpchQ9Nations(
@@ -56,30 +51,24 @@ void ScanTpchQ9Nations(
       [&](query::TpchQ9NationInput &&input) { consumer(input); });
 }
 
-void ScanTpchQ9Orders(
-    const std::function<void(const query::TpchQ9OrdersInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_orderkey, o_orderdate FROM orders "
-      "WHERE o_orderkey IS NOT NULL AND o_orderdate IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ9OrdersInput{TypedInt(cols, 0),
-                                        TypedDate(cols, 1)};
-      },
-      [&](query::TpchQ9OrdersInput &&input) { consumer(input); });
+SplitTable OrdersTable() {
+  return {"o_orderkey, o_orderdate", "orders",
+          "o_orderkey IS NOT NULL AND o_orderdate IS NOT NULL", "o_orderkey"};
 }
 
-void ScanTpchQ9Partsupps(
-    const std::function<void(const query::TpchQ9PartsuppInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp "
-      "WHERE ps_partkey IS NOT NULL AND ps_suppkey IS NOT NULL AND "
-      "ps_supplycost IS NOT NULL",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ9PartsuppInput{TypedInt(cols, 0),
-                                          TypedInt(cols, 1),
-                                          TypedDecimalRaw(cols, 2)};
-      },
-      [&](query::TpchQ9PartsuppInput &&input) { consumer(input); });
+query::TpchQ9OrdersInput DecodeOrder(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedDate(cols, 1)};
+}
+
+SplitTable PartsuppsTable() {
+  return {"ps_partkey, ps_suppkey, ps_supplycost", "partsupp",
+          "ps_partkey IS NOT NULL AND ps_suppkey IS NOT NULL AND "
+          "ps_supplycost IS NOT NULL",
+          "ps_partkey"};
+}
+
+query::TpchQ9PartsuppInput DecodePartsupp(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedDecimalRaw(cols, 2)};
 }
 
 void ScanTpchQ9Lineitems(
@@ -101,30 +90,25 @@ void ScanTpchQ9Lineitems(
       [&](query::TpchQ9LineitemInput &&input) { consumer(input); });
 }
 
-
 // Pre-aggregation in SQL: the DBMS runs the join lineitem x partsupp x supplier
 // x orders and groups it by (part, supplier nation, order year); the module
-// keeps those groups as its profit cells. Amounts are in 1e-4 units.
-void ScanTpchQ9ProfitContributions(
-    const std::function<void(const query::TpchQ9ProfitContribution &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_partkey, s_nationkey, YEAR(o_orderdate), COUNT(*), "
-      "CAST(SUM(l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity) "
-      "* 10000 AS SIGNED) "
-      "FROM lineitem, partsupp, supplier, orders "
-      "WHERE ps_suppkey = l_suppkey AND ps_partkey = l_partkey "
-      "AND s_suppkey = l_suppkey AND o_orderkey = l_orderkey "
-      "AND l_extendedprice IS NOT NULL AND l_discount IS NOT NULL "
-      "AND l_quantity IS NOT NULL AND ps_supplycost IS NOT NULL "
-      "GROUP BY l_partkey, s_nationkey, YEAR(o_orderdate)",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ9ProfitContribution{TypedInt(cols, 0),
-                                               static_cast<int32_t>(TypedInt(cols, 1)),
-                                               static_cast<int32_t>(TypedInt(cols, 2)),
-                                               TypedInt(cols, 3),
-                                               TypedInt(cols, 4)};
-      },
-      [&](query::TpchQ9ProfitContribution &&input) { consumer(input); });
+// keeps those groups as its profit cells. Amounts are in 1e-4 units. Split by
+// l_partkey, each part's groups come from one partition.
+SplitTable ProfitContributionsTable() {
+  return {"l_partkey, s_nationkey, YEAR(o_orderdate), COUNT(*), "
+          "CAST(SUM(l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity) "
+          "* 10000 AS SIGNED)",
+          "lineitem, partsupp, supplier, orders",
+          "ps_suppkey = l_suppkey AND ps_partkey = l_partkey "
+          "AND s_suppkey = l_suppkey AND o_orderkey = l_orderkey "
+          "AND l_extendedprice IS NOT NULL AND l_discount IS NOT NULL "
+          "AND l_quantity IS NOT NULL AND ps_supplycost IS NOT NULL",
+          "l_partkey", "l_partkey, s_nationkey, YEAR(o_orderdate)", "lineitem"};
+}
+
+query::TpchQ9ProfitContribution DecodeProfitContribution(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), static_cast<int32_t>(TypedInt(cols, 1)),
+          static_cast<int32_t>(TypedInt(cols, 2)), TypedInt(cols, 3), TypedInt(cols, 4)};
 }
 
 } // namespace scans
@@ -134,12 +118,12 @@ public:
   void ScanParts(
       const std::function<void(const query::TpchQ9PartInput &)> &consumer)
       override {
-    scans::ScanTpchQ9Parts(consumer);
+    split_scan::Serial(scans::PartsTable(), scans::DecodePart, consumer);
   }
   void ScanSuppliers(
       const std::function<void(const query::TpchQ9SupplierInput &)> &consumer)
       override {
-    scans::ScanTpchQ9Suppliers(consumer);
+    split_scan::Serial(scans::SuppliersTable(), scans::DecodeSupplier, consumer);
   }
   void ScanNations(
       const std::function<void(const query::TpchQ9NationInput &)> &consumer)
@@ -149,12 +133,12 @@ public:
   void ScanOrders(
       const std::function<void(const query::TpchQ9OrdersInput &)> &consumer)
       override {
-    scans::ScanTpchQ9Orders(consumer);
+    split_scan::Serial(scans::OrdersTable(), scans::DecodeOrder, consumer);
   }
   void ScanPartsupps(
       const std::function<void(const query::TpchQ9PartsuppInput &)> &consumer)
       override {
-    scans::ScanTpchQ9Partsupps(consumer);
+    split_scan::Serial(scans::PartsuppsTable(), scans::DecodePartsupp, consumer);
   }
   void ScanLineitems(
       const std::function<void(const query::TpchQ9LineitemInput &)> &consumer)
@@ -164,7 +148,43 @@ public:
   bool ScanProfitContributions(
       const std::function<void(const query::TpchQ9ProfitContribution &)> &consumer)
       override {
-    scans::ScanTpchQ9ProfitContributions(consumer);
+    split_scan::Serial(scans::ProfitContributionsTable(), scans::DecodeProfitContribution,
+                       consumer);
+    return true;
+  }
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ9PartInput &)> &sink)
+      override {
+    split_scan::Partitioned(services, scans::PartsTable(), partitions, scans::DecodePart, sink);
+  }
+  void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ9SupplierInput &)> &sink)
+      override {
+    split_scan::Partitioned(services, scans::SuppliersTable(), partitions,
+                            scans::DecodeSupplier, sink);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ9OrdersInput &)> &sink)
+      override {
+    split_scan::Partitioned(services, scans::OrdersTable(), partitions, scans::DecodeOrder,
+                            sink);
+  }
+  void ScanPartsuppsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ9PartsuppInput &)> &sink)
+      override {
+    split_scan::Partitioned(services, scans::PartsuppsTable(), partitions,
+                            scans::DecodePartsupp, sink);
+  }
+  bool ScanProfitContributionsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ9ProfitContribution &)> &sink)
+      override {
+    split_scan::Partitioned(services, scans::ProfitContributionsTable(), partitions,
+                            scans::DecodeProfitContribution, sink);
     return true;
   }
 };

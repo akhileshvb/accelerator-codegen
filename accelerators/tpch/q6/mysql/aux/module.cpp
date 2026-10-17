@@ -1,12 +1,17 @@
 #include "tpch/q6/mysql/aux/module.hpp"
 #include "tpch/q6/calibration_writes.hpp"
 #include "prims/pg_numeric.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
-#include <limits>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -15,67 +20,10 @@ using Q6State = ::accelerator_codegen::Q6State;
 
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
-  return true;
-}
-
-int64_t ScaleToRaw(int64_t raw, int32_t scale, int32_t target_scale) {
-  if (scale == target_scale)
-    return raw;
-  if (scale < target_scale) {
-    int64_t factor = 1;
-    for (int32_t i = scale; i < target_scale; ++i)
-      factor *= 10;
-    return raw * factor;
-  }
-  int64_t factor = 1;
-  for (int32_t i = target_scale; i < scale; ++i)
-    factor *= 10;
-  return raw / factor;
-}
+// Deltas per slice (~4 us); below it a commit sums its deltas inline.
+constexpr std::size_t kDeltaGrain = 4096;
+// Cells per slice of the build's sort of the partition cells.
+constexpr std::size_t kCellGrain = 16384;
 
 std::shared_ptr<const TpchQ6StateImage>
 MakeStateImage(std::shared_ptr<const Q6State> state) {
@@ -88,26 +36,19 @@ const TpchQ6StateImage *AsQ6Image(const core::StateImage &image) {
   return image.As<TpchQ6StateImage>();
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 bool ReadLineitem(const core::AuxRow &row, TpchQ6LineitemDelta &delta,
                   int8_t sign) {
   int32_t shipdate_days = 0;
   int64_t discount_raw = 0, quantity_raw = 0, extended_raw = 0;
   int32_t discount_scale = 0, quantity_scale = 0, extended_scale = 0;
-  if (!DateCell(row, 0, shipdate_days) ||
-      !RawDecimalCell(row, 1, discount_raw, discount_scale) ||
-      !RawDecimalCell(row, 2, quantity_raw, quantity_scale) ||
-      !RawDecimalCell(row, 3, extended_raw, extended_scale))
+  if (!core::DateCell(row, 0, shipdate_days) ||
+      !core::DecimalCell(row, 1, discount_raw, discount_scale) ||
+      !core::DecimalCell(row, 2, quantity_raw, quantity_scale) ||
+      !core::DecimalCell(row, 3, extended_raw, extended_scale))
     return false;
-  discount_raw = ScaleToRaw(discount_raw, discount_scale, 2);
-  quantity_raw = ScaleToRaw(quantity_raw, quantity_scale, 2);
-  extended_raw = ScaleToRaw(extended_raw, extended_scale, 2);
+  discount_raw = core::ScaleToRaw(discount_raw, discount_scale, 2);
+  quantity_raw = core::ScaleToRaw(quantity_raw, quantity_scale, 2);
+  extended_raw = core::ScaleToRaw(extended_raw, extended_scale, 2);
   delta.shipdate_days = shipdate_days;
   delta.discount_raw = discount_raw;
   delta.quantity_raw = quantity_raw;
@@ -139,27 +80,46 @@ bool NumericArg(const core::AuxValue &value,
   return false;
 }
 
-} // namespace
+using CellKey = std::tuple<int32_t, int64_t, int64_t>; // day, discount, quantity
+struct CellSum {
+  ::accelerator_codegen::Q6AccT revenue = 0;
+  int64_t count = 0;
+};
+using CellSums = std::map<CellKey, CellSum>;
 
-void TpchQ6InitialScan::ScanCellAggregates(
-    const std::function<void(const TpchQ6CellAggregate &)> &consumer) {
-  // Row-scan fallback: aggregate (day, discount, quantity) cells here.
-  std::map<std::tuple<int32_t, int64_t, int64_t>, TpchQ6CellAggregate> cells;
-  ScanLineitems([&](const TpchQ6LineitemInput &input) {
-    const auto discount = ScaleToRaw(input.discount_raw, input.discount_scale, 2);
-    const auto quantity = ScaleToRaw(input.quantity_raw, input.quantity_scale, 2);
-    auto &cell = cells[{input.shipdate_days, discount, quantity}];
-    cell.shipdate_days = input.shipdate_days;
-    cell.discount_raw = discount;
-    cell.quantity_raw = quantity;
-    cell.count += 1;
-    cell.revenue_raw += ::accelerator_codegen::Q6RowRevenue(
-        ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
-        discount);
-  });
-  for (const auto &entry : cells)
-    consumer(entry.second);
+void MergeSums(CellSums &into, CellSums &&from) {
+  for (const auto &[key, sum] : from) {
+    auto &cell = into[key];
+    cell.revenue += sum.revenue;
+    cell.count += sum.count;
+  }
 }
+
+// The deltas summed per cell: each slice sums its own range, the slices merge
+// in order, and the integer sums equal the serial ones.
+CellSums SumDeltas(const core::AuxEngineServices &services,
+                   const std::vector<TpchQ6LineitemDelta> &deltas) {
+  CellSums cells;
+  core::ParallelReduce(
+      services, deltas.size(), kDeltaGrain, cells,
+      [&](CellSums &into, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto &delta = deltas[i];
+          auto &cell = into[CellKey{delta.shipdate_days, delta.discount_raw, delta.quantity_raw}];
+          cell.revenue += delta.sign * delta.revenue;
+          cell.count += delta.sign;
+        }
+      },
+      MergeSums);
+  return cells;
+}
+
+bool CellLess(const TpchQ6CellAggregate &l, const TpchQ6CellAggregate &r) {
+  return std::tie(l.shipdate_days, l.discount_raw, l.quantity_raw) <
+         std::tie(r.shipdate_days, r.discount_raw, r.quantity_raw);
+}
+
+} // namespace
 
 bool TpchQ6TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ6TxnBuffer::Clear() {
@@ -255,43 +215,41 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
                                core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ6TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
-  if (!buffer.RequiresRebuild() && buffer.Deltas().empty())
+  if (buffer.RequiresRebuild()) {
+    core::FinishRebuildAll(
+        outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                     services.ExpectedQueriesBeforeNextWrite())));
+    return outcome;
+  }
+  if (buffer.Deltas().empty())
     return outcome;
 
   // The state is one copy-on-write tree: applying a delta is always cheaper
-  // than a rebuild, which is chosen only when the deltas could not be read
-  // (or the state is missing) or when it is forced.
+  // than a rebuild, which is chosen only when the state is missing or when it
+  // is forced.
   std::shared_ptr<Q6State> next;
   core::Version version = 0;
-  if (!buffer.RequiresRebuild()) {
-    const auto snapshot = services.StateStore().ReadPartitions(
-        services.CurrentVisibility(), {kStatePartition});
-    for (const auto &image : snapshot.partitions) {
-      const auto *typed = AsQ6Image(image);
-      if (image.partition == kStatePartition && typed && typed->state) {
-        next = std::make_shared<Q6State>(*typed->state); // COW copy
-        version = image.version;
-      }
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {kStatePartition});
+  for (const auto &image : snapshot.partitions) {
+    const auto *typed = AsQ6Image(image);
+    if (image.partition == kStatePartition && typed && typed->state) {
+      next = std::make_shared<Q6State>(*typed->state); // COW copy
+      version = image.version;
     }
   }
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, next != nullptr,
-       false, true, false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
+  auto request = core::MaintenanceRequest::IncrementalSingleState(
+      buffer.Deltas().size(), services.ExpectedQueriesBeforeNextWrite());
+  request.incremental_supported = next != nullptr;
+  const auto decision = services.ChooseMaintenance(request);
   if (!next || decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta ||
-                             decision.action == core::MaintenanceAction::RebuildPartition
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
-  for (const auto &delta : buffer.Deltas())
-    ::accelerator_codegen::Q6AddCell(*next, delta.shipdate_days,
-                                     delta.discount_raw, delta.quantity_raw,
-                                     delta.sign * delta.revenue, delta.sign);
+  for (const auto &[key, sum] : SumDeltas(services, buffer.Deltas()))
+    ::accelerator_codegen::Q6AddCell(*next, std::get<0>(key), std::get<1>(key),
+                                     std::get<2>(key), sum.revenue, sum.count);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
@@ -323,23 +281,38 @@ void TpchQ6Module::Execute(core::AuxEngineServices &services,
   Answer(*typed->state, arguments, sink);
 }
 
-void TpchQ6Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  Answer(*BuildState(services), arguments, sink);
-}
-
 std::shared_ptr<::accelerator_codegen::Q6State>
 TpchQ6Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q6 requires a typed initial scan source");
+  // A cell comes once per partition: gather them all, sort, add equal cells up.
+  using Cells = std::vector<TpchQ6CellAggregate>;
+  auto cells = core::PartitionedBuild<Cells>(
+      services, [] { return Cells{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanCellAggregatesPartitioned(
+            services, partitions,
+            [&](std::size_t partition, const TpchQ6CellAggregate &cell) {
+              sink(partition, core::SingleRowBatch<TpchQ6CellAggregate>{cell});
+            });
+      },
+      [](Cells &into, const TpchQ6CellAggregate &cell) { into.push_back(cell); },
+      [](Cells &into, Cells &&from) {
+        into.insert(into.end(), std::make_move_iterator(from.begin()),
+                    std::make_move_iterator(from.end()));
+      });
+  core::ParallelStableSort(services, cells, CellLess, kCellGrain);
   auto state = std::make_shared<Q6State>();
-  initial_scan->ScanCellAggregates([&](const TpchQ6CellAggregate &cell) {
-    ::accelerator_codegen::Q6AddCell(*state, cell.shipdate_days,
-                                     cell.discount_raw, cell.quantity_raw,
-                                     cell.revenue_raw, cell.count);
-  });
+  for (std::size_t i = 0; i < cells.size();) {
+    auto sum = cells[i];
+    // Sorted, so a cell that does not sort after `sum` is the same cell.
+    for (++i; i < cells.size() && !CellLess(sum, cells[i]); ++i) {
+      sum.count += cells[i].count;
+      sum.revenue_raw += cells[i].revenue_raw;
+    }
+    ::accelerator_codegen::Q6AddCell(*state, sum.shipdate_days, sum.discount_raw,
+                                     sum.quantity_raw, sum.revenue_raw, sum.count);
+  }
   return state;
 }
 

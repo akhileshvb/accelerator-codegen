@@ -44,8 +44,10 @@ inline WriteProbe ResolveWriteProbe(const Tools &tools, int query_num,
                                           const char *delta) {
     Require(f.size() >= 3, "lineitem price probe needs 3 fields");
     WriteProbe p;
-    p.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + " +
-                   std::string(delta) + " WHERE l_orderkey = " + f[0] +
+    // `delta` is a percentage of the row's own price: a fixed amount would
+    // round away in the fingerprint of magnified money columns.
+    p.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + "
+                   "l_extendedprice * " + std::string(delta) + " / 100 WHERE l_orderkey = " + f[0] +
                    " AND l_linenumber = " + f[1];
     p.restore_sql = "UPDATE lineitem SET l_extendedprice = " + f[2] +
                     " WHERE l_orderkey = " + f[0] + " AND l_linenumber = " + f[1];
@@ -77,7 +79,7 @@ inline WriteProbe ResolveWriteProbe(const Tools &tools, int query_num,
         "ORDER BY s.s_acctbal DESC, n.n_name, s.s_name, p.p_partkey " + lim);
     Require(f.size() >= 2, "Q2 probe fields");
     WriteProbe p;
-    p.update_sql = "UPDATE supplier SET s_acctbal = s_acctbal + 1000 "
+    p.update_sql = "UPDATE supplier SET s_acctbal = s_acctbal + s_acctbal "
                    "WHERE s_suppkey = " +
                    f[0];
     p.restore_sql = "UPDATE supplier SET s_acctbal = " + f[1] +
@@ -258,7 +260,7 @@ inline WriteProbe ResolveWriteProbe(const Tools &tools, int query_num,
               "AND l.l_shipdate >= DATE '1995-06-01' "
               "AND l.l_shipdate < DATE_ADD(DATE '1995-06-01', INTERVAL 1 MONTH) "
               "ORDER BY l.l_orderkey, l.l_linenumber " + lim),
-        "10000000");
+        "100000");
   case 15:
     return LinePriceBump(
         Fetch("SELECT l_orderkey, l_linenumber, l_extendedprice FROM lineitem "

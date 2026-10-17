@@ -66,16 +66,21 @@ struct TpchQ2RegionInput {
 class TpchQ2InitialScan {
 public:
   virtual ~TpchQ2InitialScan() = default;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ2PartInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ2SupplierInput &)> &) = 0;
-  virtual void ScanPartsupps(
-      const std::function<void(const TpchQ2PartsuppInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ2NationInput &)> &) = 0;
   virtual void ScanRegions(
       const std::function<void(const TpchQ2RegionInput &)> &) = 0;
+  // The big tables' scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ2PartInput &)> &sink) = 0;
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ2SupplierInput &)> &sink) = 0;
+  virtual void ScanPartsuppsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ2PartsuppInput &)> &sink) = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -99,7 +104,7 @@ public:
 // Memory: ~12 B/part + 72 B/part for up to 4 offers (= 18 B per partsupp row at
 // 4 offers/part) + ~150 B/supplier.  SF100 (20M parts, 80M partsupp, 1M
 // suppliers): ~1.9 GB; SF1000 (200M parts, 800M partsupp, 10M suppliers):
-// ~19 GB (was ~10 GB at SF100 and silently dropped keys above 32M).
+// ~19 GB.
 // Execute: a size-column scan over all parts (4 B/part, multi-threaded for
 // large tables) plus, for the ~1/250 parts that also match the type bitmap,
 // at most a few supplier lookups: ~25 ms at SF100, ~0.1-0.2 s at SF1000.
@@ -281,8 +286,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

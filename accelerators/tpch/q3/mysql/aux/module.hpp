@@ -45,11 +45,41 @@ struct TpchQ3OrderLineInput {
   int64_t discount_raw = 0;       // scale 2
 };
 
+// The three tables of the join, scanned separately by the build.
+struct TpchQ3CustomerInput {
+  int64_t custkey = 0;
+  std::string mktsegment;
+};
+
+struct TpchQ3OrderInput {
+  int64_t orderkey = 0;
+  int64_t custkey = 0;
+  int32_t orderdate_days = 0;
+  int32_t shippriority = 0;
+};
+
+struct TpchQ3LineitemInput {
+  int64_t orderkey = 0;
+  int32_t shipdate_days = 0;
+  int64_t extended_price_raw = 0; // scale 2
+  int64_t discount_raw = 0;       // scale 2
+};
+
 class TpchQ3InitialScan {
 public:
   virtual ~TpchQ3InitialScan() = default;
-  virtual void ScanOrderLines(
-      const std::function<void(const TpchQ3OrderLineInput &)> &) = 0;
+  // The three scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition,
+  // and the partitions of a table cover ascending key ranges.
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ3CustomerInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ3OrderInput &)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ3LineitemInput &)> &sink) = 0;
   // The same rows for the given orders only, as the database holds them after
   // the calling statement.
   virtual bool LookupOrderLines(
@@ -103,8 +133,16 @@ struct TpchQ3State {
     std::vector<Bucket> buckets; // ascending shipdate, one per distinct day
   };
 
-  // Replace the record of an order (no buckets: remove it).
-  void SetOrder(const std::string &mktsegment, const OrderRecord &record);
+  // An order record ready to install: its bound bin and encoded bytes.
+  struct PreparedOrder {
+    int32_t bin = 0;
+    std::vector<uint8_t> bytes;
+  };
+  static PreparedOrder Prepare(const OrderRecord &record);
+  // The id of a market segment (given case-folded), new ones numbered in turn.
+  uint32_t SegmentId(const std::string &folded_mktsegment);
+  void Install(uint32_t segment, int64_t orderkey, const PreparedOrder &order);
+
   void RemoveOrder(int64_t orderkey);
 };
 
@@ -172,12 +210,10 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ3State BuildState() const;
+  TpchQ3State BuildState(core::AuxEngineServices &) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ3State> &state,
                  core::Version *version = nullptr) const;

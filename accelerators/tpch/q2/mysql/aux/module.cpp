@@ -1,5 +1,8 @@
 #include "tpch/q2/mysql/aux/module.hpp"
 #include "tpch/q2/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -17,24 +20,6 @@ bool StringValue(const core::AuxValue &value, std::string &out) {
     return false;
   out = std::get<std::string>(value.payload);
   return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
 }
 
 // A decimal cell as an integer count of 1/100 units (the scale of s_acctbal
@@ -63,27 +48,20 @@ bool NullCell(const core::AuxRow &row, std::size_t index) {
   return index >= row.values.size() || row.values[index].is_null;
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 // Row decoders for captured mutation rows (projected as in Dependencies()).
 // Return false when the row cannot be decoded; `skip` is set when the row can
 // never take part in the query (a NULL join/filter column), so it is ignored.
 bool ReadPart(const core::AuxRow &row, TpchQ2PartInput &out, bool &skip) {
   skip = false;
   int64_t key = 0, size = 0;
-  if (!IntCell(row, 0, key))
+  if (!core::IntCell(row, 0, key))
     return false;
   out.key = key;
   if (NullCell(row, 2) || NullCell(row, 3)) {
     skip = true; // NULL p_type / p_size never satisfies the predicates
     return true;
   }
-  if (!IntCell(row, 3, size) || !StringValue(row.values[2], out.type) ||
+  if (!core::IntCell(row, 3, size) || !StringValue(row.values[2], out.type) ||
       size < std::numeric_limits<int32_t>::min() ||
       size > std::numeric_limits<int32_t>::max())
     return false;
@@ -98,14 +76,14 @@ bool ReadSupplier(const core::AuxRow &row, TpchQ2SupplierInput &out,
                   bool &skip) {
   skip = false;
   int64_t key = 0, nationkey = 0;
-  if (!IntCell(row, 0, key))
+  if (!core::IntCell(row, 0, key))
     return false;
   out.key = key;
   if (NullCell(row, 3)) {
     skip = true; // no nation: the supplier joins nothing
     return true;
   }
-  if (!IntCell(row, 3, nationkey))
+  if (!core::IntCell(row, 3, nationkey))
     return false;
   out.nationkey = nationkey;
   for (const std::size_t col : {1, 2, 4, 6}) {
@@ -128,14 +106,14 @@ bool ReadPartsupp(const core::AuxRow &row, TpchQ2PartsuppInput &out,
   skip = NullCell(row, 0) || NullCell(row, 1) || NullCell(row, 2);
   if (skip)
     return true; // a NULL key or cost never matches the join / the minimum
-  return IntCell(row, 0, out.partkey) && IntCell(row, 1, out.suppkey) &&
+  return core::IntCell(row, 0, out.partkey) && core::IntCell(row, 1, out.suppkey) &&
          CentsCell(row, 2, out.supplycost_raw);
 }
 
 bool ReadNation(const core::AuxRow &row, TpchQ2NationInput &out, bool &skip) {
   skip = false;
   int64_t key = 0, region = 0;
-  if (!IntCell(row, 0, key))
+  if (!core::IntCell(row, 0, key))
     return false;
   out.key = key;
   out.name.clear();
@@ -146,7 +124,7 @@ bool ReadNation(const core::AuxRow &row, TpchQ2NationInput &out, bool &skip) {
     out.regionkey_null = true;
     return true;
   }
-  if (!IntCell(row, 2, region))
+  if (!core::IntCell(row, 2, region))
     return false;
   out.regionkey = region;
   return true;
@@ -155,7 +133,7 @@ bool ReadNation(const core::AuxRow &row, TpchQ2NationInput &out, bool &skip) {
 bool ReadRegion(const core::AuxRow &row, TpchQ2RegionInput &out, bool &skip) {
   skip = false;
   int64_t key = 0;
-  if (!IntCell(row, 0, key))
+  if (!core::IntCell(row, 0, key))
     return false;
   out.key = key;
   if (NullCell(row, 1)) {
@@ -163,6 +141,69 @@ bool ReadRegion(const core::AuxRow &row, TpchQ2RegionInput &out, bool &skip) {
     return true;
   }
   return StringValue(row.values[1], out.name);
+}
+
+struct PublishedState {
+  std::shared_ptr<const TpchQ2State> state;
+  core::Version version = 0;
+};
+
+// The published full image, or an empty state when it is absent or foreign.
+PublishedState LoadPublished(core::AuxEngineServices &services) {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {core::TpchQ2Layout::kFull});
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition != core::TpchQ2Layout::kFull)
+      continue;
+    const auto *typed = image.As<TpchQ2StateImage>();
+    if (!typed || !typed->state)
+      return {};
+    return {typed->state, image.version};
+  }
+  return {};
+}
+
+// Applies the buffered events to `state`; false when the state disagrees with
+// the table (a deleted offer that was never seen).
+bool ApplyEvents(TpchQ2State &state, const TpchQ2TxnBuffer &buffer) {
+  for (const auto &ev : buffer.regions)
+    ev.sign < 0 ? state.EraseRegion(ev.row) : state.UpsertRegion(ev.row);
+  for (const auto &ev : buffer.nations)
+    ev.sign < 0 ? state.EraseNation(ev.row) : state.UpsertNation(ev.row);
+  for (const auto &ev : buffer.suppliers)
+    ev.sign < 0 ? state.EraseSupplier(ev.row.key) : state.SetSupplier(ev.row.key, ev.row);
+  for (const auto &ev : buffer.parts)
+    ev.sign < 0 ? state.ErasePart(ev.row.key) : state.SetPart(ev.row.key, ev.row);
+  for (const auto &ev : buffer.partsupps) {
+    if (ev.sign > 0)
+      state.AddOffer(ev.row.partkey, ev.row.suppkey, ev.row.supplycost_raw);
+    else if (!state.RemoveOffer(ev.row.partkey, ev.row.suppkey, ev.row.supplycost_raw))
+      return false;
+  }
+  return true;
+}
+
+// Applies the events to a copy-on-write copy of `published` (it shares every
+// chunk and each point edit clones only the chunk it touches). Fills `outcome`
+// and returns true when the cost model keeps the delta; false when the copy is
+// inconsistent or a rebuild is chosen.
+bool TryApplyEvents(core::AuxEngineServices &services, const TpchQ2TxnBuffer &buffer,
+                    const PublishedState &published, core::StagedMaintenanceOutcome &outcome) {
+  auto next = std::make_shared<TpchQ2State>(*published.state);
+  if (!ApplyEvents(*next, buffer))
+    return false;
+  const auto decision = services.ChooseMaintenance(
+      core::MaintenanceRequest::IncrementalSingleState(
+          buffer.EventCount(), services.ExpectedQueriesBeforeNextWrite()));
+  if (decision.action != core::MaintenanceAction::ApplyDelta)
+    return false;
+  auto image = std::make_shared<TpchQ2StateImage>();
+  image->state = std::move(next);
+  outcome.action = core::MaintenanceAction::ApplyDelta;
+  outcome.updates.push_back(core::StateImage::Make(
+      core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull, published.version,
+      std::shared_ptr<const TpchQ2StateImage>(std::move(image))));
+  return true;
 }
 
 } // namespace
@@ -479,81 +520,22 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
   core::StagedMaintenanceOutcome outcome;
   if (!buffer.HasPendingChanges())
     return outcome;
-
-  bool need_rebuild = buffer.RequiresRebuild();
-  if (!need_rebuild) {
-    const auto old_state = LoadState(services);
-    core::Version old_version = 0;
-    if (old_state) {
-      const auto snapshot = services.StateStore().ReadPartitions(
-          services.CurrentVisibility(), {core::TpchQ2Layout::kFull});
-      for (const auto &image : snapshot.partitions)
-        if (image.partition == core::TpchQ2Layout::kFull)
-          old_version = image.version;
-    }
-    if (!old_state) {
+  if (!buffer.RequiresRebuild()) {
+    const auto published = LoadPublished(services);
+    if (!published.state) {
       buffer.Clear();
       return outcome;
     }
-
-    // Copy-on-write: the copy shares every chunk with the published state and
-    // each point edit clones only the chunk it touches.
-    auto new_state = std::make_shared<TpchQ2State>(*old_state);
-    for (const auto &ev : buffer.regions)
-      ev.sign < 0 ? new_state->EraseRegion(ev.row)
-                  : new_state->UpsertRegion(ev.row);
-    for (const auto &ev : buffer.nations)
-      ev.sign < 0 ? new_state->EraseNation(ev.row)
-                  : new_state->UpsertNation(ev.row);
-    for (const auto &ev : buffer.suppliers)
-      ev.sign < 0 ? new_state->EraseSupplier(ev.row.key)
-                  : new_state->SetSupplier(ev.row.key, ev.row);
-    for (const auto &ev : buffer.parts)
-      ev.sign < 0 ? new_state->ErasePart(ev.row.key)
-                  : new_state->SetPart(ev.row.key, ev.row);
-    for (const auto &ev : buffer.partsupps) {
-      if (ev.sign > 0) {
-        new_state->AddOffer(ev.row.partkey, ev.row.suppkey,
-                            ev.row.supplycost_raw);
-      } else if (!new_state->RemoveOffer(ev.row.partkey, ev.row.suppkey,
-                                         ev.row.supplycost_raw)) {
-        need_rebuild = true; // the state disagrees with the table
-        break;
-      }
+    if (TryApplyEvents(services, buffer, published, outcome)) {
+      buffer.Clear();
+      return outcome;
     }
-
-    if (!need_rebuild) {
-      const auto decision = services.ChooseMaintenance(
-          {buffer.EventCount(), 1, true, false, true, false, false,
-           core::MaintenanceAction::NoOp,
-           services.ExpectedQueriesBeforeNextWrite()});
-      if (decision.action == core::MaintenanceAction::ApplyDelta) {
-        auto image = std::make_shared<TpchQ2StateImage>();
-        image->state = std::move(new_state);
-        const std::shared_ptr<const TpchQ2StateImage> const_image =
-            std::move(image);
-        outcome.action = core::MaintenanceAction::ApplyDelta;
-        outcome.updates.push_back(core::StateImage::Make(
-            core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull,
-            old_version, const_image));
-        buffer.Clear();
-        return outcome;
-      }
-      // Cost-model rebuild: fall through with empty updates so PreCommit
-      // MaterializeSyncRebuild can run under an active snapshot.
-    }
+    // A rebuild chosen by the cost model leaves the updates empty, so PreCommit
+    // MaterializeSyncRebuild can run under an active snapshot.
   }
-
-  const auto decision = services.ChooseMaintenance(
-      {0, 0, false, false, true, true, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                       ? core::MaintenanceAction::RebuildAll
-                       : decision.action;
-  if (outcome.action == core::MaintenanceAction::RebuildPartition)
-    outcome.action = core::MaintenanceAction::RebuildAll;
-  outcome.invalidations = All();
-  outcome.pending_rebuild = outcome.invalidations;
+  core::FinishRebuildAll(
+      outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                   services.ExpectedQueriesBeforeNextWrite())));
   buffer.Clear();
   return outcome;
 }
@@ -582,16 +564,8 @@ void TpchQ2Module::Execute(core::AuxEngineServices &services,
   EmitResult(services, *state, arguments, sink);
 }
 
-void TpchQ2Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  const TpchQ2State state = BuildState(services);
-  EmitResult(services, state, arguments, sink);
-}
-
 TpchQ2State
 TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q2 requires a typed initial scan source");
   TpchQ2State state;
@@ -601,33 +575,32 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
       [&](const TpchQ2RegionInput &input) { state.UpsertRegion(input); });
   initial_scan->ScanNations(
       [&](const TpchQ2NationInput &input) { state.UpsertNation(input); });
-  initial_scan->ScanParts(
-      [&](const TpchQ2PartInput &input) { state.SetPart(input.key, input); });
-  initial_scan->ScanSuppliers([&](const TpchQ2SupplierInput &input) {
+  // The scans run in parallel; the rows are applied in partition order.
+  for (const auto &input : core::CollectRows<TpchQ2PartInput>(
+           services, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsPartitioned(services, parts, sink);
+           }))
+    state.SetPart(input.key, input);
+  for (const auto &input : core::CollectRows<TpchQ2SupplierInput>(
+           services, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanSuppliersPartitioned(services, parts, sink);
+           }))
     state.SetSupplier(input.key, input);
-  });
-  initial_scan->ScanPartsupps([&](const TpchQ2PartsuppInput &input) {
+  for (const auto &input : core::CollectRows<TpchQ2PartsuppInput>(
+           services, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanPartsuppsPartitioned(services, parts, sink);
+           }))
     state.AddOffer(input.partkey, input.suppkey, input.supplycost_raw);
-  });
   return state;
 }
 
 std::shared_ptr<const TpchQ2State>
 TpchQ2Module::LoadState(core::AuxEngineServices &services) const {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {core::TpchQ2Layout::kFull});
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition != core::TpchQ2Layout::kFull)
-      continue;
-    const auto *typed = image.As<TpchQ2StateImage>();
-    if (!typed || !typed->state)
-      return nullptr;
-    return typed->state;
-  }
-  return nullptr;
+  return LoadPublished(services).state;
 }
 
-void TpchQ2Module::EmitResult(const core::AuxEngineServices &services, const TpchQ2State &state,
+void TpchQ2Module::EmitResult(const core::AuxEngineServices &services,
+                              const TpchQ2State &state,
                               const core::QueryArguments &arguments,
                               core::AuxRowSink &sink) const {
   // SQL NULL (or a missing / mistyped argument) makes its predicate unknown,

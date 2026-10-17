@@ -65,6 +65,14 @@ public:
   // Only rows whose orderkey, custkey and comment are not NULL.
   virtual void ScanOrders(
       const std::function<void(const TpchQ13OrderInput &)> &) = 0;
+  // The same two scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ13CustomerInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ13OrderInput &)> &sink) = 0;
 };
 
 struct TpchQ13OrderSegment {
@@ -99,6 +107,15 @@ struct TpchQ13State {
   int64_t open_segment = -1;           // segment receiving appends
   core::ShardedCowHashMap<uint64_t, 16> order_row; // orderkey -> seg*4096+slot
 
+  // For the parallel loaders: slices may call MutableSegment for distinct
+  // segment ids only; the rest is serial.
+  std::shared_ptr<TpchQ13OrderSegment> &MutableSegment(uint32_t id);
+  void MarkTouched(uint32_t id) { touched_.push_back(id); }
+  // Room left in the open segment (0 if none is open).
+  std::size_t OpenSegmentRoom() const;
+  // Opens a new, empty segment (reusing a released id) and returns its id.
+  uint32_t OpenFreshSegment();
+
   void AddCustomer(int64_t custkey);
   void RemoveCustomer(int64_t custkey);
   void AddOrder(int64_t orderkey, int64_t custkey, std::string_view comment);
@@ -108,7 +125,6 @@ struct TpchQ13State {
   void CompactTouched();
 
 private:
-  std::shared_ptr<TpchQ13OrderSegment> &MutableSegment(uint32_t id);
   void CompactSegment(uint32_t id);
   std::vector<uint32_t> touched_;
 };

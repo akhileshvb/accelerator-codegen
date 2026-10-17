@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q15/mysql/aux/module.hpp"
 #include "tpch/q15/cost_model.hpp"
@@ -33,17 +34,13 @@ void ScanTpchQ15Suppliers(
       [&](query::TpchQ15SupplierInput &&input) { consumer(input); });
 }
 
-void ScanTpchQ15Lineitems(
-    const std::function<void(const query::TpchQ15LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ15LineitemInput{TypedDate(cols, 3),
-                                           TypedInt(cols, 0),
-                                           TypedDecimalRaw(cols, 1), 2,
-                                           TypedDecimalRaw(cols, 2), 2};
-      },
-      [&](query::TpchQ15LineitemInput &&input) { consumer(input); });
+SplitTable LineitemsTable() {
+  return {"l_suppkey, l_extendedprice, l_discount, l_shipdate", "lineitem", "", "l_orderkey"};
+}
+
+query::TpchQ15LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedDate(cols, 3), TypedInt(cols, 0), TypedDecimalRaw(cols, 1), 2,
+          TypedDecimalRaw(cols, 2), 2};
 }
 
 void ScanTpchQ15LineitemsForShipdateRange(
@@ -75,7 +72,14 @@ public:
   void ScanLineitems(
       const std::function<void(const query::TpchQ15LineitemInput &)> &consumer)
       override {
-    scans::ScanTpchQ15Lineitems(consumer);
+    split_scan::Serial<query::TpchQ15LineitemInput>(scans::LineitemsTable(),
+                                                    scans::DecodeLineitem, consumer);
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ15LineitemInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ15LineitemInput>(
+        services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
   }
   void ScanLineitemsForShipdateRange(
       int32_t start_days, int32_t end_days,

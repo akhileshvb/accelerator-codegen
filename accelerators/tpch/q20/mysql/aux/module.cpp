@@ -3,10 +3,14 @@
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -374,41 +378,112 @@ static_assert((kBlockParts & (kBlockParts - 1)) == 0);
 constexpr int64_t BlockOf(int64_t key) { return key >> __builtin_ctzll(static_cast<uint64_t>(kBlockParts)); }
 constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key & (kBlockParts - 1)); }
 
-// Blocks per encode slice: each sorts a few thousand lineitem entries (~0.1 ms).
-constexpr std::size_t kBlocksGrain = 8;
+// Buckets of the build's rows (by block index).
+constexpr std::size_t kBuildBuckets = 64;
 
-// Blocks being edited, keyed by block index; re-encoded into the state by Flush.
-class BlockEditor {
-public:
-  explicit BlockEditor(TpchQ20State &state) : state_(state) {}
-  RawBlock &For(int64_t partkey) {
-    const int64_t bi = BlockOf(partkey);
-    auto it = edited_.find(bi);
-    if (it == edited_.end())
-      it = edited_.emplace(bi, DecodeBlock(state_.FindBlock(partkey))).first;
-    return it->second;
-  }
-  // Blocks encode independently; they enter the state in block order.
-  void Flush(const core::AuxEngineServices &services) {
-    std::vector<const std::pair<const int64_t, RawBlock> *> edits;
-    edits.reserve(edited_.size());
-    for (const auto &entry : edited_)
-      edits.push_back(&entry);
-    std::vector<std::shared_ptr<TpchQ20PartBlock>> encoded(edits.size());
-    core::ParallelSlices(services, edits.size(), kBlocksGrain,
-                         [&](std::size_t, std::size_t begin, std::size_t end) {
-                           for (std::size_t i = begin; i < end; ++i)
-                             encoded[i] = EncodeBlock(edits[i]->second);
-                         });
-    for (std::size_t i = 0; i < edits.size(); ++i)
-      if (encoded[i] || state_.blocks.Get(edits[i]->first))
-        state_.blocks.Set(edits[i]->first, encoded[i]);
-    edited_.clear();
-  }
-private:
-  TpchQ20State &state_;
-  std::map<int64_t, RawBlock> edited_;
+std::size_t BucketOf(int64_t partkey) {
+  return static_cast<uint64_t>(BlockOf(partkey)) % kBuildBuckets;
+}
+
+struct BucketRows {
+  std::vector<TpchQ20PartsuppInput> partsupps;
+  std::vector<TpchQ20LineitemInput> lineitems;
 };
+
+using EncodedBlock = std::pair<int64_t, std::shared_ptr<TpchQ20PartBlock>>;
+
+// Encodes every block that has rows in the bucket.
+std::vector<EncodedBlock> EncodeBucket(BucketRows &rows) {
+  const auto by_part = [](const auto &a, const auto &b) { return a.partkey < b.partkey; };
+  std::sort(rows.partsupps.begin(), rows.partsupps.end(), by_part);
+  std::sort(rows.lineitems.begin(), rows.lineitems.end(), by_part);
+  std::vector<EncodedBlock> encoded;
+  auto ps = rows.partsupps.begin();
+  auto li = rows.lineitems.begin();
+  while (ps != rows.partsupps.end() || li != rows.lineitems.end()) {
+    const int64_t block = std::min(
+        ps != rows.partsupps.end() ? BlockOf(ps->partkey) : INT64_MAX,
+        li != rows.lineitems.end() ? BlockOf(li->partkey) : INT64_MAX);
+    RawBlock raw;
+    for (; ps != rows.partsupps.end() && BlockOf(ps->partkey) == block; ++ps)
+      raw.SetAvail(SlotOf(ps->partkey), ps->suppkey, ps->availqty);
+    for (; li != rows.lineitems.end() && BlockOf(li->partkey) == block; ++li)
+      raw.AddLine(SlotOf(li->partkey), li->suppkey, li->shipdate_days,
+                  li->quantity_raw);
+    if (auto encoded_block = EncodeBlock(raw))
+      encoded.emplace_back(block, std::move(encoded_block));
+  }
+  return encoded;
+}
+
+// Deltas per maintenance slice (editing a touched block takes ~10 us).
+constexpr std::size_t kDeltaGrain = 256;
+
+// Rows of a partition-ordered scan merge by appending.
+template <class Row> void AppendInputRows(std::vector<Row> &into, std::vector<Row> &&from) {
+  into.insert(into.end(), std::make_move_iterator(from.begin()),
+              std::make_move_iterator(from.end()));
+}
+
+// A block entry for the state; an emptied block is nullptr.
+using EditedBlock = std::pair<int64_t, std::shared_ptr<TpchQ20PartBlock>>;
+
+// Applies the lineitem and partsupp deltas of the blocks owned by slice `owner`
+// of `owners` (block index modulo `owners`) to decoded copies of them and
+// re-encodes those, in block order. Reads the unchanged state only.
+std::vector<EditedBlock> EditOwnedBlocks(const TpchQ20State &state,
+                                         const TpchQ20TxnBuffer &buffer,
+                                         std::size_t owner, std::size_t owners) {
+  std::map<int64_t, RawBlock> edited;
+  const auto raw_of = [&](int64_t partkey) -> RawBlock * {
+    const int64_t block = BlockOf(partkey);
+    if (static_cast<uint64_t>(block) % owners != owner)
+      return nullptr;
+    auto it = edited.find(block);
+    if (it == edited.end())
+      it = edited.emplace(block, DecodeBlock(state.FindBlock(partkey))).first;
+    return &it->second;
+  };
+  for (const auto &d : buffer.LineitemDeltas()) {
+    RawBlock *raw = raw_of(d.partkey);
+    if (!raw)
+      continue;
+    if (d.sign > 0)
+      raw->AddLine(SlotOf(d.partkey), d.suppkey, d.shipdate_days, d.quantity_raw);
+    else
+      raw->RemoveLine(SlotOf(d.partkey), d.suppkey, d.shipdate_days, d.quantity_raw);
+  }
+  for (const auto &d : buffer.PartsuppDeltas()) {
+    RawBlock *raw = raw_of(d.partkey);
+    if (!raw)
+      continue;
+    if (d.sign > 0)
+      raw->SetAvail(SlotOf(d.partkey), d.suppkey, d.availqty);
+    else
+      raw->ClearAvail(SlotOf(d.partkey), d.suppkey);
+  }
+  std::vector<EditedBlock> encoded;
+  encoded.reserve(edited.size());
+  for (const auto &[block, raw] : edited)
+    encoded.emplace_back(block, EncodeBlock(raw));
+  return encoded;
+}
+
+// Edits the blocks of the deltas in parallel slices (disjoint blocks per slice,
+// every slice reading the unchanged state) and stores them in slice order.
+void ApplyBlockDeltas(const core::AuxEngineServices &services, TpchQ20State &state,
+                      const TpchQ20TxnBuffer &buffer) {
+  const std::size_t owners = core::SliceCount(
+      services, buffer.LineitemDeltas().size() + buffer.PartsuppDeltas().size(), kDeltaGrain);
+  std::vector<std::vector<EditedBlock>> edited(owners);
+  core::ParallelEach(services, owners, 1, [&](std::size_t owner) {
+    edited[owner] = EditOwnedBlocks(state, buffer, owner, owners);
+  });
+  for (const auto &slice : edited)
+    for (const auto &[block, encoded] : slice)
+      if (encoded || state.blocks.Get(block))
+        state.blocks.Set(block, encoded);
+}
 
 } // namespace
 
@@ -585,24 +660,7 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
   if (!updated)
     return outcome;
 
-  BlockEditor editor(*updated);
-  for (const auto &d : buffer.LineitemDeltas()) {
-    auto &raw = editor.For(d.partkey);
-    const auto slot = SlotOf(d.partkey);
-    if (d.sign > 0)
-      raw.AddLine(slot, d.suppkey, d.shipdate_days, d.quantity_raw);
-    else
-      raw.RemoveLine(slot, d.suppkey, d.shipdate_days, d.quantity_raw);
-  }
-  for (const auto &d : buffer.PartsuppDeltas()) {
-    auto &raw = editor.For(d.partkey);
-    const auto slot = SlotOf(d.partkey);
-    if (d.sign > 0)
-      raw.SetAvail(slot, d.suppkey, d.availqty);
-    else
-      raw.ClearAvail(slot, d.suppkey);
-  }
-  editor.Flush(services);
+  ApplyBlockDeltas(services, *updated, buffer);
 
   for (const auto &d : buffer.PartDeltas()) {
     if (d.sign > 0)
@@ -671,27 +729,78 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
   initial_scan->ScanNations([&](const TpchQ20NationInput &input) {
     state->nations[input.key] = input.name;
   });
-  initial_scan->ScanSuppliers([&](const TpchQ20SupplierInput &input) {
+  const std::size_t partitions = BuildPartitions(services);
+  const auto suppliers = core::PartitionedBuild<std::vector<TpchQ20SupplierInput>>(
+      services, [] { return std::vector<TpchQ20SupplierInput>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanSuppliersPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ20SupplierInput &input) {
+              sink(partition, OneRowBatch<TpchQ20SupplierInput>{input});
+            });
+      },
+      [](std::vector<TpchQ20SupplierInput> &into, const TpchQ20SupplierInput &input) {
+        into.push_back(input);
+      },
+      AppendInputRows<TpchQ20SupplierInput>, partitions);
+  for (const auto &input : suppliers)
     state->suppliers.Upsert(input.key, {input.name, input.address, input.nationkey});
-  });
-  initial_scan->ScanParts([&](const TpchQ20PartInput &input) {
-      state->part_names.Set(input.key, input.name);
-  });
+  const auto part_names = core::PartitionedBuild<std::vector<TpchQ20PartInput>>(
+      services, [] { return std::vector<TpchQ20PartInput>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ20PartInput &input) {
+              sink(partition, OneRowBatch<TpchQ20PartInput>{input});
+            });
+      },
+      [](std::vector<TpchQ20PartInput> &into, const TpchQ20PartInput &input) {
+        into.push_back(input);
+      },
+      AppendInputRows<TpchQ20PartInput>, partitions);
+  for (const auto &input : part_names)
+    state->part_names.Set(input.key, input.name);
 
-  // Pair / lineitem data is gathered per block in editable form and encoded at
-  // the end; the raw form is 12 B/lineitem (transient peak ~1.5x the final).
-  BlockEditor editor(*state);
-  initial_scan->ScanPartsupps([&](const TpchQ20PartsuppInput &input) {
-      editor.For(input.partkey)
-          .SetAvail(SlotOf(input.partkey), input.suppkey,
-                    input.availqty);
-  });
-  initial_scan->ScanLineitems([&](const TpchQ20LineitemInput &input) {
-      editor.For(input.partkey)
-          .AddLine(SlotOf(input.partkey), input.suppkey,
-                   input.shipdate_days, input.quantity_raw);
-  });
-  editor.Flush(services);
+  // The scans only deal the rows out to buckets by block; the buckets are then
+  // sorted into blocks, filled and encoded in parallel slices.
+  auto partsupps = core::PartitionedBuild<Buckets<TpchQ20PartsuppInput>>(
+      services, [] { return Buckets<TpchQ20PartsuppInput>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsuppsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ20PartsuppInput &input) {
+              sink(partition, OneRowBatch<TpchQ20PartsuppInput>{input});
+            });
+      },
+      [](Buckets<TpchQ20PartsuppInput> &into, const TpchQ20PartsuppInput &input) {
+        into[BucketOf(input.partkey)].push_back(input);
+      },
+      AppendBuckets<TpchQ20PartsuppInput>, partitions);
+  auto lineitems = core::PartitionedBuild<Buckets<TpchQ20LineitemInput>>(
+      services, [] { return Buckets<TpchQ20LineitemInput>(kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ20LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ20LineitemInput>{input});
+            });
+      },
+      [](Buckets<TpchQ20LineitemInput> &into, const TpchQ20LineitemInput &input) {
+        into[BucketOf(input.partkey)].push_back(input);
+      },
+      AppendBuckets<TpchQ20LineitemInput>, partitions);
+  std::vector<BucketRows> buckets(kBuildBuckets);
+  for (std::size_t b = 0; b < kBuildBuckets; ++b) {
+    buckets[b].partsupps = std::move(partsupps[b]);
+    buckets[b].lineitems = std::move(lineitems[b]);
+  }
+  std::vector<std::vector<EncodedBlock>> encoded(kBuildBuckets);
+  core::ParallelSlices(services, kBuildBuckets, 1,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i) {
+                           encoded[i] = EncodeBucket(buckets[i]);
+                           buckets[i] = {};
+                         }
+                       });
+  for (const auto &bucket : encoded)
+    for (const auto &[block_index, block] : bucket)
+      state->blocks.Set(block_index, block);
   return state;
 }
 
