@@ -55,8 +55,11 @@ struct TpchQ16PartsuppInput {
 class TpchQ16InitialScan {
 public:
   virtual ~TpchQ16InitialScan() = default;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
   virtual void ScanSuppliers(
-      const std::function<void(const TpchQ16SupplierInput &)> &) = 0;
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ16SupplierInput &)> &sink) = 0;
   // Every row, split into `partitions` fixed row ranges: sink(partition, row)
   // runs concurrently for different partitions, one thread per partition.
   virtual void ScanParts(
