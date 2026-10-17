@@ -1,5 +1,5 @@
 // Base PostgreSQL accelerators: PostgreSQL-free parts of the runtime
-// (kernel/task registries, ParallelFor, date helpers).
+// (kernel/task registries, date helpers).
 #include "backends/postgres/api/base/pg_base.hpp"
 #include "runtime_internal.hpp"
 
@@ -47,47 +47,6 @@ TaskFn FindTask(const char *name) {
 		}
 	}
 	return nullptr;
-}
-
-void ParallelFor(std::size_t tasks, int threads, const std::function<void(std::size_t task, int thread)> &fn) {
-	if (threads < 1) {
-		threads = 1;
-	}
-	if (static_cast<std::size_t>(threads) > tasks) {
-		threads = static_cast<int>(tasks == 0 ? 1 : tasks);
-	}
-	std::atomic<std::size_t> next {0};
-	std::exception_ptr error;
-	std::mutex error_lock;
-	auto body = [&](int thread) {
-		try {
-			for (;;) {
-				const auto t = next.fetch_add(1, std::memory_order_relaxed);
-				if (t >= tasks) {
-					return;
-				}
-				fn(t, thread);
-			}
-		} catch (...) {
-			std::lock_guard<std::mutex> guard(error_lock);
-			if (!error) {
-				error = std::current_exception();
-			}
-			next.store(tasks, std::memory_order_relaxed);
-		}
-	};
-	std::vector<std::thread> pool;
-	pool.reserve(static_cast<std::size_t>(threads - 1));
-	for (int i = 1; i < threads; i++) {
-		pool.emplace_back(body, i);
-	}
-	body(0);
-	for (auto &t : pool) {
-		t.join();
-	}
-	if (error) {
-		std::rethrow_exception(error);
-	}
 }
 
 // Howard Hinnant's civil-from-days / days-from-civil.

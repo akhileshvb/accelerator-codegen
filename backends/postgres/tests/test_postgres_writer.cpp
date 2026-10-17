@@ -168,8 +168,9 @@ void Setup() {
   function("wt_unlock", "int, int", "void");
   function("wt_sent", "", "text");
   function("wt_sent_reset", "", "void");
-  function("wt_tokens_take", "int", "int");
-  function("wt_tokens_release", "", "void");
+  function("wt_tokens_take", "int, int", "int");
+  function("wt_tokens_release", "int", "void");
+  function("wt_tokens_reconcile", "int", "void");
   function("wt_threads", "", "int");
   sql << "CREATE FUNCTION accel_aux_capture_transition() RETURNS trigger AS '" << module
       << "', 'AcceleratorCodegenCaptureTransition' LANGUAGE C;\n"
@@ -576,12 +577,27 @@ void TestTokens() {
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   Conn a(kDb), b(kDb);
   CheckEq(a.Int("SELECT wt_threads()"), 4L, "accel.threads");
-  CheckEq(a.Int("SELECT wt_tokens_take(3)"), 3L, "three tokens");
-  CheckEq(b.Int("SELECT wt_tokens_take(3)"), 1L, "the pool is shared across sessions: one left");
-  CheckEq(a.Int("SELECT wt_tokens_take(1)"), 0L, "none left");
-  a.Ok("SELECT wt_tokens_release()");
-  CheckEq(b.Int("SELECT wt_tokens_take(3)"), 3L, "released tokens are available again");
-  b.Ok("SELECT wt_tokens_release()");
+  CheckEq(a.Int("SELECT wt_tokens_take(3, 0)"), 3L, "three tokens");
+  CheckEq(b.Int("SELECT wt_tokens_take(3, 1)"), 1L, "the pool is shared across sessions: one left");
+  CheckEq(a.Int("SELECT wt_tokens_take(1, 0)"), 0L, "none left");
+  a.Ok("SELECT wt_tokens_release(0)");
+  CheckEq(b.Int("SELECT wt_tokens_take(3, 1)"), 3L, "released tokens are available again");
+  b.Ok("SELECT wt_tokens_release(1)");
+
+  // A worker that dies holding tokens: they come back when its slot is reconciled
+  // (by its exit hook, or by the next worker of the shard), and only its own.
+  {
+    Conn dying(kDb), survivor(kDb);
+    CheckEq(dying.Int("SELECT wt_tokens_take(3, 2)"), 3L, "the dying worker holds three");
+    CheckEq(survivor.Int("SELECT wt_tokens_take(1, 3)"), 1L, "the survivor holds one");
+  } // both sessions end without releasing
+  CheckEq(a.Int("SELECT wt_tokens_take(1, 0)"), 0L, "the leaked tokens are gone from the pool");
+  a.Ok("SELECT wt_tokens_reconcile(2)");
+  CheckEq(a.Int("SELECT wt_tokens_take(4, 0)"), 3L, "reconciling shard 2 returns its three, not shard 3's one");
+  a.Ok("SELECT wt_tokens_release(0)");
+  a.Ok("SELECT wt_tokens_reconcile(3)");
+  CheckEq(a.Int("SELECT wt_tokens_take(4, 0)"), 4L, "the pool is whole again");
+  a.Ok("SELECT wt_tokens_release(0)");
   g_admin->Ok("ALTER SYSTEM RESET accel.threads");
   g_admin->Ok("SELECT pg_reload_conf()");
 }

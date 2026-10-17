@@ -299,11 +299,6 @@ private:
 	std::size_t pos = 0;
 };
 
-//! Run fn(task) for task in [0, tasks) on `threads` std::threads (the calling
-//! thread included), for pure C++ work in one process (e.g. a large merge in
-//! the leader).  Tasks are claimed dynamically.  Exceptions propagate.
-void ParallelFor(std::size_t tasks, int threads, const std::function<void(std::size_t task, int thread)> &fn);
-
 //! Date helpers (days since 1970-01-01, proleptic Gregorian).
 int32_t DaysFromCivil(int y, unsigned m, unsigned d);
 void CivilFromDays(int32_t days, int &y, unsigned &m, unsigned &d);

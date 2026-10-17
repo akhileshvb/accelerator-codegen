@@ -160,6 +160,7 @@ bool StartWorker(int index) {
 
 ShardSegment *g_segment = nullptr; // the worker's own shard
 ShardServer *g_server = nullptr;
+int g_index = -1;
 
 void WorkerExit(int, Datum) {
   if (g_segment) {
@@ -167,6 +168,9 @@ void WorkerExit(int, Datum) {
   }
   if (g_server) {
     g_server->Stop();
+  }
+  if (g_index >= 0) {
+    shared::ReleaseHeldTokens(g_index);
   }
   if (g_segment) {
     g_segment->Close();
@@ -217,14 +221,17 @@ private:
   std::string applied_forced;
 };
 
-// The build's scans decode in parallel: this thread plus the build cap's other
-// threads as Postgres parallel workers.
+// Applies the phase caps (at start and on every config reload). The build's
+// scans decode in parallel: this thread plus the build cap's other threads as
+// Postgres parallel workers.
 void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
   const std::size_t budget = threads.Budget();
   threads.SetPhaseLimits(runtime::ResolveReadThreads(PhaseReadThreads(), budget),
                          runtime::ResolveBuildThreads(PhaseBuildThreads(), budget),
                          runtime::ResolveMaintenanceThreads(PhaseMaintenanceThreads(), budget));
   SetBuildScanParticipants(static_cast<int>(threads.BuildLimit()));
+  elog(LOG, "accel shard worker phase caps: read=%zu build=%zu maint=%zu", threads.ReadLimit(),
+       threads.BuildLimit(), threads.MaintenanceLimit());
 }
 
 [[noreturn]] void RunWorker(int index) {
@@ -233,6 +240,8 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
     proc_exit(0); // a starter that gave up has started another worker
   }
   g_segment = segment;
+  g_index = index;
+  shared::ReleaseHeldTokens(index); // a predecessor that died holding some
   before_shmem_exit(WorkerExit, 0);
   segment->pid = MyProcPid;
   segment->generation++;
@@ -251,7 +260,7 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
 
   CommitArrivals arrivals;
   PgSlots slots(index, *accelerator, arrivals);
-  runtime::RuntimeHost host(slots, shared::ThreadBudget(), shared::ThreadTokens());
+  runtime::RuntimeHost host(slots, shared::ThreadBudget(), shared::ThreadTokens(index));
   ApplyPhaseLimits(host.Threads());
   runtime::AcceleratorRuntime &runtime = host.Register(accelerator->Module(), nullptr, tables);
   slots.NotePreRegistrationWriters();
@@ -276,6 +285,7 @@ void ApplyPhaseLimits(runtime::ThreadBudget &threads) {
     if (ConfigReloadPending) {
       ConfigReloadPending = false;
       ProcessConfigFile(PGC_SIGHUP);
+      ApplyPhaseLimits(host.Threads());
     }
     server.WaitWork(milliseconds(runtime.IsSynced() ? 50 : 5));
     if (server.Failed()) {
