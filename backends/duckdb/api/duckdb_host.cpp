@@ -19,6 +19,7 @@
 #include "backends/duckdb/api/sql_fallback.hpp"
 #include "backends/duckdb/api/verus_host.hpp"
 #include "backends/duckdb/engine/capture.hpp"
+#include "backends/duckdb/engine/scan.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "duckdb/accelerator/capture_registry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
@@ -72,13 +73,17 @@ std::vector<int32_t> WatchedAttnums(::duckdb::Connection &connection, const std:
   return all;
 }
 
-// The build's read: a transaction on the accelerator's connection.
+// The build's read: a transaction on the accelerator's connection. Beginning
+// and ending it take the scan lock: a fallback read streaming on this
+// connection would be closed under its reader.
 struct DuckdbBuildSnapshot final : runtime::BuildSnapshot {
   explicit DuckdbBuildSnapshot(::duckdb::Connection &connection_p) : connection(connection_p) {
+    const auto lock = scan::LockScan(connection);
     connection.BeginTransaction();
     epoch = DuckDBAuxBackend::SnapshotEpoch(*connection.context);
   }
   ~DuckdbBuildSnapshot() override {
+    const auto lock = scan::LockScan(connection);
     if (connection.HasActiveTransaction()) {
       connection.Rollback();
     }
@@ -91,9 +96,9 @@ struct DuckdbBuildSnapshot final : runtime::BuildSnapshot {
 } // namespace
 
 struct DuckdbHost::Impl final : runtime::EngineSlots {
-  Impl(DuckdbHost &host_p, ::duckdb::DatabaseInstance &db_p)
-      : db(db_p), capture(::duckdb::make_shared_ptr<DatabaseCapture>(host_p)),
-        commit_ids(::duckdb::make_shared_ptr<CommitIds>(host_p)),
+  explicit Impl(::duckdb::DatabaseInstance &db_p)
+      : db(db_p), capture(::duckdb::make_shared_ptr<DatabaseCapture>()),
+        commit_ids(::duckdb::make_shared_ptr<CommitIds>()),
         runtime(*this, runtime::ResolveThreadBudget(
                            ::duckdb::DBConfig::GetConfig(db_p).options.maximum_threads)) {
     auto &threads = runtime.Threads();
@@ -129,6 +134,10 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
   // writes the barrier did not see (a statement already running).
   std::unordered_map<uint64_t, Epoch> straddlers;
   std::unordered_map<::duckdb::ClientContext *, ::duckdb::transaction_t> commit_id_of;
+
+  // Used by builds (TableRows), so declared before `runtime`: it outlives them.
+  mutable std::mutex statistics_mutex;
+  mutable std::unique_ptr<::duckdb::Connection> statistics_connection;
 
   // Declared last: torn down first, so no build outlives the accelerators.
   runtime::RuntimeHost runtime;
@@ -215,8 +224,6 @@ struct DuckdbHost::Impl final : runtime::EngineSlots {
     });
     return rows;
   }
-  mutable std::mutex statistics_mutex;
-  mutable std::unique_ptr<::duckdb::Connection> statistics_connection;
 };
 
 namespace {
@@ -240,12 +247,18 @@ std::shared_ptr<DuckdbHost> DuckdbHost::Get(::duckdb::DatabaseInstance &db) {
     return host;
   }
   std::shared_ptr<DuckdbHost> host(new DuckdbHost(db));
+  host->Attach(host);
   slot = host;
   return host;
 }
 
-DuckdbHost::DuckdbHost(::duckdb::DatabaseInstance &db) : impl(std::make_unique<Impl>(*this, db)) {
-  auto &registry = db.GetCaptureRegistry();
+DuckdbHost::DuckdbHost(::duckdb::DatabaseInstance &db) : impl(std::make_unique<Impl>(db)) {}
+
+// Starts the engine's callbacks into the host (which must already be shared).
+void DuckdbHost::Attach(const std::shared_ptr<DuckdbHost> &self) {
+  impl->capture->Bind(self);
+  impl->commit_ids->Bind(self);
+  auto &registry = impl->db.GetCaptureRegistry();
   registry.Add(impl->capture);
   registry.Add(impl->commit_ids);
 }
