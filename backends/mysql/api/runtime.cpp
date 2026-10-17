@@ -493,7 +493,9 @@ std::vector<SnapshotLane *> SnapshotLanes() {
   std::vector<SnapshotLane *> lanes;
   if (t_session) {
     lanes.push_back(t_session);
-    for (const auto &lane : t_extra_lanes) lanes.push_back(lane.get());
+    // A lane closed after a failed lock probe or query has lost its view.
+    for (const auto &lane : t_extra_lanes)
+      if (lane->m) lanes.push_back(lane.get());
   }
   return lanes;
 }
