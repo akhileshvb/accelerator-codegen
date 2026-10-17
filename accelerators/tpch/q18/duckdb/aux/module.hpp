@@ -15,7 +15,7 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q18 layout (inlined here because query_layouts.hpp is not writable) ─────
+// ── Q18 layout ──────────────────────────────────────────────────────────────
 struct TpchQ18Layout {
   static constexpr const char *kAccelerator = "tpch_q18_aux";
   static constexpr core::PartitionId kOrderQuantitySums = 0;

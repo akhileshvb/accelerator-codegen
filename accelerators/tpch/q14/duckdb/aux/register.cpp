@@ -9,8 +9,6 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -19,7 +17,6 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
 #include <vector>
 
 #include "duckdb.hpp"

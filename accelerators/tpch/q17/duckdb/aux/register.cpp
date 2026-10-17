@@ -8,17 +8,9 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -137,55 +129,6 @@ struct TpchQ17Scan : TpchQ17InitialScan {
                         sink(partition, TpchQ17LineitemInput{row.Int(0), row.Decimal(1), row.Decimal(2)});
                       }
                     });
-  }
-  bool ScanPartQuantityAggregatesForPart(
-      int64_t partkey,
-      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer)
-      override {
-    if (std::getenv("ACCEL_Q17_BENCH_SCAN_LIMIT")) {
-      return false;
-    }
-    ScanQueryStreaming(
-        connection,
-        "SELECT " + std::to_string(partkey) +
-            "::BIGINT, "
-            "CAST(round(l_quantity * 100) AS BIGINT), "
-            "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
-            "COUNT(*)::BIGINT "
-            "FROM lineitem WHERE l_partkey = " +
-            std::to_string(partkey) + " GROUP BY 2",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    SafeInt64(ChunkValue(chunk, 3, row))});
-        });
-    return true;
-  }
-  bool ScanPartQuantityAggregatesForParts(
-      const std::unordered_set<int64_t> &partkeys,
-      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer)
-      override {
-    if (partkeys.empty() || std::getenv("ACCEL_Q17_BENCH_SCAN_LIMIT"))
-      return false;
-    if (partkeys.size() == 1)
-      return ScanPartQuantityAggregatesForPart(*partkeys.begin(), consumer);
-    ScanQueryStreaming(
-        connection,
-        "SELECT l_partkey, "
-        "CAST(round(l_quantity * 100) AS BIGINT), "
-        "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
-        "COUNT(*)::BIGINT "
-        "FROM lineitem WHERE " +
-            SqlInt64InPredicate("l_partkey", partkeys) +
-            " GROUP BY 1, 2",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    SafeInt64(ChunkValue(chunk, 1, row)),
-                    SafeInt64(ChunkValue(chunk, 2, row)),
-                    SafeInt64(ChunkValue(chunk, 3, row))});
-        });
-    return true;
   }
   ::duckdb::Connection &connection;
 };
