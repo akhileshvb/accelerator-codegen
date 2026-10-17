@@ -10,6 +10,7 @@ perf_setup "$1" "$2"; OUT=$3; shift 3
 SF=${SF:-20}
 DB=${DB:-$(dirname "$PERF_ROOT")/accelerator-codegen-duckdb/tpch_sf${SF}.duckdb}
 mkdir -p "$OUT"
+perf_record_settings "$OUT"
 # --copy: each (query, system) process works on a fresh copy, the original is never opened for writing
 $RUN read --db "$DB" --sf "$SF" --systems cpp --copy --out "$OUT" --bin "$TREE/build-release/aux_compare" \
   --repeats "${REPEATS:-5}" --sets "${SETS:-8}" --queries "${QUERIES:-$(seq -s' ' 1 22)}" $SQLDIR_FLAG "$@" 2>&1 | tee "$OUT/run.log"

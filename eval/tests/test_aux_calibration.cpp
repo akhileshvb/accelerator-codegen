@@ -5,8 +5,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <numeric>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_cost_model_path.hpp"
@@ -154,31 +156,32 @@ void TestDecisionRecordsDataScale() {
         "a decision without data_rows: unknown");
 }
 
-// Every shipped Postgres and MySQL model records the scale it was calibrated
-// at; a Postgres refresh of 0.2% of the data, at SF3000 relative to the SF20
-// calibration, is still applied as a delta where the TPC-H refresh functions
-// reach (orders / lineitem).
-void TestShippedModelsScaleWithData() {
+// A refresh of 0.2% of the data, at SF3000 relative to the scale factor a
+// model was calibrated at, is still applied as a delta.
+void CheckRefreshStaysIncremental(const std::string &engine, uint64_t growth, const std::vector<int> &queries) {
   using accelerator_codegen::aux_state::maintenance::MaintenanceAction;
-  constexpr uint64_t kSf3000OverSf20 = 150;
-  const std::string config = std::string(ACCEL_SOURCE_DIR) + "/accelerators/tpch/q";
-  for (const char *engine : {"postgres", "mysql"}) {
-    for (int q = 1; q <= 22; ++q) {
-      const auto path = config + std::to_string(q) + "/config/q" + std::to_string(q) +
-                        "_aux_cost_model_" + engine + ".json";
-      Check(LoadAuxCostModelJson(path).calibrated_scale_rows != 0, path + " records its scale");
-    }
-  }
-  for (const int q : {1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22}) {
-    const auto params = LoadAuxCostModelJson(config + std::to_string(q) + "/config/q" +
-                                             std::to_string(q) + "_aux_cost_model_postgres.json");
-    const uint64_t data_rows = params.calibrated_scale_rows * kSf3000OverSf20;
-    MaintenanceRequest refresh{data_rows / 500, 4, true, true, true, false, false,
-                               MaintenanceAction::NoOp, 1.0};
+  for (const int q : queries) {
+    const auto path = std::string(ACCEL_SOURCE_DIR) + "/accelerators/tpch/q" + std::to_string(q) + "/config/q" +
+                      std::to_string(q) + "_aux_cost_model_" + engine + ".json";
+    const auto params = LoadAuxCostModelJson(path);
+    Check(params.calibrated_scale_rows != 0, path + " records its scale");
+    const uint64_t data_rows = params.calibrated_scale_rows * growth;
+    MaintenanceRequest refresh{data_rows / 500, 4, true, true, true, false, false, MaintenanceAction::NoOp, 1.0};
     refresh.data_rows_hint = data_rows;
     Check(SelectAuxMaintenanceAction(refresh, params).action == MaintenanceAction::ApplyDelta,
-          "Q" + std::to_string(q) + " refresh at SF3000 stays incremental");
+          engine + " Q" + std::to_string(q) + " refresh at SF3000 stays incremental");
   }
+}
+
+void TestShippedModelsScaleWithData() {
+  constexpr uint64_t kSf3000OverSf20 = 150;
+  constexpr uint64_t kSf3000OverSf1 = 3000;
+  // Postgres: the queries the TPC-H refresh functions reach (orders / lineitem).
+  CheckRefreshStaysIncremental("postgres", kSf3000OverSf20,
+                               {1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22});
+  std::vector<int> all(22);
+  std::iota(all.begin(), all.end(), 1);
+  CheckRefreshStaysIncremental("mysql", kSf3000OverSf1, all);
 }
 
 int main() {
