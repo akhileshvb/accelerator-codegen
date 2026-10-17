@@ -47,21 +47,11 @@ struct TpchQ15SupplierInput {
 class TpchQ15InitialScan {
 public:
   virtual ~TpchQ15InitialScan() = default;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ15LineitemInput &)> &) = 0;
-  // The same scan split into `partitions` fixed row ranges: sink(partition, row)
+  // Split into `partitions` fixed row ranges: sink(partition, row)
   // runs concurrently for different partitions, one thread per partition.
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ15LineitemInput &)> &sink) = 0;
-  virtual void ScanLineitemsForShipdateRange(
-      int32_t start_days, int32_t end_days,
-      const std::function<void(const TpchQ15LineitemInput &)> &consumer) {
-    ScanLineitems([&](const TpchQ15LineitemInput &input) {
-      if (input.shipdate_days >= start_days && input.shipdate_days < end_days)
-        consumer(input);
-    });
-  }
   virtual void ScanSuppliers(
       const std::function<void(const TpchQ15SupplierInput &)> &) = 0;
 };
@@ -82,8 +72,7 @@ public:
 // Memory: dense columns 12 B per (month, supplier) slot (touched chunks only;
 // TPC-H has ~84 months), day lists 8 B per lineitem (u32 suppkey, u32 revenue;
 // anything that does not fit goes to a 24 B "wide" entry). That is ~10 B per
-// lineitem: ~6 GB at SF100, ~60 GB at SF1000 (the old per-window hash maps
-// were ~3.4 GB / 34 GB at 3 windows per row but copied whole per write batch).
+// lineitem: ~6 GB at SF100, ~60 GB at SF1000.
 // Write batch: O(touched months * (dense chunk dir + 31 day lists) + touched
 // chunks + delta rows); the day-list overlay is compacted when it grows past
 // 1/16 of its base. Execute: O(edge rows + suppliers) per call (about 4 ns per
@@ -153,10 +142,6 @@ struct TpchQ15SupplierDelta {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-int32_t TpchQ15MonthKeyFromDays(int32_t days_since_epoch);
-int32_t TpchQ15DaysFromYmd(int32_t year, unsigned month, unsigned day);
-bool TpchQ15IsFirstOfMonth(int32_t days_since_epoch);
-int32_t TpchQ15AddMonths(int32_t days_since_epoch, int32_t months);
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                           int64_t discount_raw, int32_t discount_scale);
 
@@ -207,8 +192,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

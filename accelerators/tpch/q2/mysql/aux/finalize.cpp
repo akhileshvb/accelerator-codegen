@@ -28,7 +28,6 @@ struct Q2Candidate {
 constexpr std::size_t kChunksGrain = 256;
 // Distinct part types from which the LIKE bitmap is matched on several threads.
 constexpr std::size_t kParallelLikeTypes = 1000000;
-constexpr std::size_t kLikeMaxThreads = 4; // thread-budget-ok: a bound on the pool's WorkerCount()
 
 // Everything one Execute derives from its arguments.
 struct Q2Query {

@@ -2,9 +2,9 @@
 #include "tpch/q14/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +12,7 @@
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -21,77 +22,8 @@ namespace {
 constexpr core::PartitionId kStatePartition = 0;
 // More affected parts than this per commit: rebuild instead of point scans.
 constexpr std::size_t kMaxPointParts = 50000;
-// Lineitem deltas per maintenance slice.
-constexpr std::size_t kDeltaGrain = 8192;
-
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
-  return true;
-}
-
-int64_t ScaleToRaw(int64_t raw, int32_t scale, int32_t target_scale) {
-  if (scale == target_scale)
-    return raw;
-  if (scale < target_scale) {
-    int64_t factor = 1;
-    for (int32_t i = scale; i < target_scale; ++i)
-      factor *= 10;
-    return raw * factor;
-  }
-  int64_t factor = 1;
-  for (int32_t i = target_scale; i < scale; ++i)
-    factor *= 10;
-  return raw / factor;
-}
+// Lineitem deltas per slice below which a commit's deltas are folded inline.
+constexpr std::size_t kDeltaGrain = 4096;
 
 std::shared_ptr<const TpchQ14StateImage>
 MakeStateImage(std::shared_ptr<const TpchQ14State> state) {
@@ -104,13 +36,6 @@ const TpchQ14StateImage *AsQ14Image(const core::StateImage &image) {
   return image.As<TpchQ14StateImage>();
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 TpchQ14PromoClass ClassOfType(const std::string &type) {
   return TpchQ14IsPromoType(type) ? TpchQ14PromoClass::Promo
                                   : TpchQ14PromoClass::NonPromo;
@@ -119,18 +44,18 @@ TpchQ14PromoClass ClassOfType(const std::string &type) {
 // l_extendedprice * (1 - l_discount) at scale 4 (price and discount scale 2).
 __int128 RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                     int64_t discount_raw, int32_t discount_scale) {
-  return static_cast<__int128>(ScaleToRaw(extended_price_raw, extended_scale, 2)) *
-         (100 - ScaleToRaw(discount_raw, discount_scale, 2));
+  return static_cast<__int128>(core::ScaleToRaw(extended_price_raw, extended_scale, 2)) *
+         (100 - core::ScaleToRaw(discount_raw, discount_scale, 2));
 }
 
 bool ReadLineitem(const core::AuxRow &row, TpchQ14LineitemDelta &delta,
                   int8_t sign) {
   int64_t extended_raw = 0, discount_raw = 0;
   int32_t extended_scale = 0, discount_scale = 0;
-  if (!IntCell(row, 0, delta.partkey) ||
-      !RawDecimalCell(row, 1, extended_raw, extended_scale) ||
-      !RawDecimalCell(row, 2, discount_raw, discount_scale) ||
-      !DateCell(row, 3, delta.shipdate_days))
+  if (!core::IntCell(row, 0, delta.partkey) ||
+      !core::DecimalCell(row, 1, extended_raw, extended_scale) ||
+      !core::DecimalCell(row, 2, discount_raw, discount_scale) ||
+      !core::DateCell(row, 3, delta.shipdate_days))
     return false;
   delta.revenue_raw =
       RevenueRaw(extended_raw, extended_scale, discount_raw, discount_scale);
@@ -228,7 +153,7 @@ void TpchQ14Module::AccumulateMutation(const core::MutationBatch &mutation,
     auto part_of = [&](const core::AuxRow &row, int64_t &key,
                        TpchQ14PromoClass &promo) {
       std::string type;
-      if (!IntCell(row, 0, key) || !StringCell(row, 1, type))
+      if (!core::IntCell(row, 0, key) || !core::StringCell(row, 1, type))
         return false;
       promo = ClassOfType(type);
       return true;
@@ -341,19 +266,14 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
           affected.push_back(entry.first);
     }
   }
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size() + affected.size()), 1,
-       next != nullptr && affected.size() <= kMaxPointParts && initial_scan,
-       false, true, false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
+  auto request = core::MaintenanceRequest::IncrementalSingleState(
+      buffer.Deltas().size() + affected.size(), services.ExpectedQueriesBeforeNextWrite());
+  request.incremental_supported =
+      next != nullptr && affected.size() <= kMaxPointParts && initial_scan;
+  const auto decision = services.ChooseMaintenance(request);
   if (!next || affected.size() > kMaxPointParts ||
       decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta ||
-                             decision.action == core::MaintenanceAction::RebuildPartition
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -377,9 +297,9 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
           cell.pre_count += row.count;
         });
   }
-  std::unordered_map<int64_t, bool> is_affected;
+  std::unordered_set<int64_t> is_affected;
   for (const auto key : affected)
-    is_affected[key] = true;
+    is_affected.insert(key);
   for (const auto &delta : buffer.Deltas()) {
     if (!is_affected.count(delta.partkey))
       continue;
@@ -465,12 +385,6 @@ void TpchQ14Module::Execute(core::AuxEngineServices &services,
   Answer(*typed->state, arguments, sink);
 }
 
-void TpchQ14Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  Answer(*BuildState(services), arguments, sink);
-}
-
 std::shared_ptr<TpchQ14State>
 TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
@@ -480,9 +394,9 @@ TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
   state->part_class = core::PartitionedBuild<PartClasses>(
       services, [] { return PartClasses{0}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsPartitioned(
+        initial_scan->ScanParts(
             services, parts, [&](std::size_t partition, const TpchQ14PartInput &input) {
-              sink(partition, OneRowBatch<TpchQ14PartInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ14PartInput>{input});
             });
       },
       [](PartClasses &into, const TpchQ14PartInput &input) {
@@ -493,15 +407,15 @@ TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
           return theirs ? theirs : mine; // the last part row of a key wins
         });
       },
-      BuildPartitions(services));
+      core::BuildPartitions(services));
   // Each partition joins its own range of lineitems with every part (the engine
   // repeats the part side per partition), so there is one partition per worker.
   const auto days = core::PartitionedBuild<std::vector<TpchQ14DayAggregate>>(
       services, [] { return std::vector<TpchQ14DayAggregate>{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanDayAggregatesPartitioned(
+        initial_scan->ScanDayAggregates(
             services, parts, [&](std::size_t partition, const TpchQ14DayAggregate &input) {
-              sink(partition, OneRowBatch<TpchQ14DayAggregate>{input});
+              sink(partition, core::SingleRowBatch<TpchQ14DayAggregate>{input});
             });
       },
       [](std::vector<TpchQ14DayAggregate> &into, const TpchQ14DayAggregate &agg) {

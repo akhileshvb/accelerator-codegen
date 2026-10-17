@@ -1,17 +1,15 @@
 #include "tpch/q13/mysql/aux/module.hpp"
 #include "tpch/q13/calibration_writes.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <map>
-#include <mutex>
 #include <unordered_map>
 #include <stdexcept>
 #include <string>
@@ -35,32 +33,6 @@ constexpr std::size_t kSlotBits = 12; // log2(kTpchQ13SegmentRows)
 static_assert(kTpchQ13SegmentRows == (std::size_t{1} << kSlotBits));
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
-
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
   plan.scope = ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
@@ -315,8 +287,8 @@ struct IndexEntry {
 
 // Count changes and index entries of orders placed in segments, by owner.
 struct Placed {
-  Buckets<IndexEntry> index;
-  Buckets<CountChange> counts;
+  core::Buckets<IndexEntry> index;
+  core::Buckets<CountChange> counts;
   std::vector<CountChange> sparse_counts; // keys outside the dense range
   int64_t max_dense_custkey = -1;
   uint64_t segment_base = 0; // added to the segment of every entry
@@ -446,7 +418,7 @@ Resolved ResolveKeys(TpchQ13State &state, const std::vector<TpchQ13Delta> &delta
 // their customers' count changes.
 std::vector<Placed> KillRows(const core::AuxEngineServices &services, TpchQ13State &state,
                              const std::vector<Resolved> &resolved) {
-  Buckets<uint64_t> by_segment(kOwners);
+  core::Buckets<uint64_t> by_segment(kOwners);
   for (const auto &r : resolved)
     for (const uint64_t ref : r.removed) {
       by_segment[(ref >> kSlotBits) % kOwners].push_back(ref);
@@ -505,7 +477,7 @@ std::vector<Placed> AppendRows(const core::AuxEngineServices &services, TpchQ13S
 // and the index and counts by owner.
 void ApplyOrderDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
                       const std::vector<TpchQ13Delta> &deltas) {
-  Buckets<std::size_t> by_owner(kOwners);
+  core::Buckets<std::size_t> by_owner(kOwners);
   for (std::size_t i = 0; i < deltas.size(); ++i)
     if (deltas[i].table == TpchQ13Delta::Table::Order)
       by_owner[IndexOwner(deltas[i].orderkey)].push_back(i);
@@ -530,11 +502,11 @@ void ApplyOrderDeltas(const core::AuxEngineServices &services, TpchQ13State &sta
 
 // Customers first, then orders: the two do not interact. A batch too small to
 // split runs delta by delta.
-constexpr std::size_t kDeltasGrain = 8192;
+constexpr std::size_t kDeltaGrain = 4096;
 
 void ApplyDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
                  const std::vector<TpchQ13Delta> &deltas) {
-  const bool parallel = core::SliceCount(services, deltas.size(), kDeltasGrain) > 1;
+  const bool parallel = core::SliceCount(services, deltas.size(), kDeltaGrain) > 1;
   for (const auto &delta : deltas) {
     if (delta.table == TpchQ13Delta::Table::Customer) {
       if (delta.sign > 0)
@@ -559,13 +531,13 @@ TpchQ13Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ13State>();
-  const std::size_t partitions = BuildPartitions(services);
+  const std::size_t partitions = core::BuildPartitions(services);
   const auto customers = core::PartitionedBuild<std::vector<int64_t>>(
       services, [] { return std::vector<int64_t>{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanCustomersPartitioned(
+        initial_scan->ScanCustomers(
             services, parts, [&](std::size_t partition, const TpchQ13CustomerInput &input) {
-              sink(partition, OneRowBatch<TpchQ13CustomerInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ13CustomerInput>{input});
             });
       },
       [](std::vector<int64_t> &into, const TpchQ13CustomerInput &input) {
@@ -581,9 +553,9 @@ TpchQ13Module::BuildState(core::AuxEngineServices &services) const {
   auto orders = core::PartitionedBuild<OrderPartials>(
       services, [] { return OrderPartials(1); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ13OrderInput &input) {
-              sink(partition, OneRowBatch<TpchQ13OrderInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ13OrderInput>{input});
             });
       },
       [](OrderPartials &into, const TpchQ13OrderInput &input) { into.front().Add(input); },
@@ -612,7 +584,7 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
 
   auto add_customer = [&](const core::AuxRow &row, int8_t sign) {
     int64_t custkey = 0;
-    if (!IntCell(row, 0, custkey))
+    if (!core::IntCell(row, 0, custkey))
       return; // a NULL key never joins
     TpchQ13Delta delta;
     delta.table = TpchQ13Delta::Table::Customer;
@@ -625,8 +597,8 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
   auto add_order = [&](const core::AuxRow &row, int8_t sign) {
     TpchQ13Delta delta;
     delta.sign = sign;
-    if (!IntCell(row, 0, delta.orderkey) || !IntCell(row, 1, delta.custkey) ||
-        !StringCell(row, 2, delta.comment))
+    if (!core::IntCell(row, 0, delta.orderkey) || !core::IntCell(row, 1, delta.custkey) ||
+        !core::StringCell(row, 2, delta.comment))
       return;
     buffer.AddDelta(std::move(delta));
   };
@@ -661,18 +633,10 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   if (buffer.Deltas().empty())
     return outcome;
 
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+  const auto decision = services.ChooseMaintenance(core::MaintenanceRequest::IncrementalSingleState(
+      buffer.Deltas().size(), services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -732,13 +696,6 @@ void TpchQ13Module::Execute(core::AuxEngineServices &services,
   EmitResult(services, *state, arguments, sink);
 }
 
-void TpchQ13Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  const auto state = BuildState(services);
-  EmitResult(services, *state, arguments, sink);
-}
-
 bool TpchQ13Module::LoadState(
     core::AuxEngineServices &services,
     std::shared_ptr<const TpchQ13State> &state) const {
@@ -760,20 +717,16 @@ bool TpchQ13Module::LoadState(
 namespace {
 
 // excluded[custkey] = number of the customer's orders whose comment matches
-// `matcher`. Each segment is matched with one SIMD pass over its comment blob.
-// Matches are counted in a flat array when the custkey range is dense enough,
-// otherwise (and for negative / huge keys) in a mutex-protected hash.
+// `matcher`: a flat array when the custkey range is dense enough, otherwise
+// (and for negative / huge keys) a hash.
 struct Excluded {
   std::vector<int32_t> flat;
-  std::mutex mu;
   std::unordered_map<int64_t, int32_t> hash;
   void Add(int64_t key) {
-    if (key >= 0 && static_cast<std::size_t>(key) < flat.size()) {
-      __atomic_fetch_add(&flat[static_cast<std::size_t>(key)], 1, __ATOMIC_RELAXED);
-      return;
-    }
-    std::lock_guard<std::mutex> lock(mu);
-    ++hash[key];
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
+      ++flat[static_cast<std::size_t>(key)];
+    else
+      ++hash[key];
   }
   int32_t Get(int64_t key) const {
     if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
@@ -784,35 +737,42 @@ struct Excluded {
 };
 
 // Customer chunks per slice: 4096 customers each, ~10 us a chunk.
-constexpr std::size_t kChunksGrain = 16;
+constexpr std::size_t kChunkGrain = 16;
 
 // Segments per slice: one holds thousands of comments (~0.1 ms to match).
-constexpr std::size_t kSegmentsGrain = 16;
+constexpr std::size_t kSegmentGrain = 16;
 
-void CountMatchingOrders(const core::AuxEngineServices &services,
-                         const TpchQ13State &state,
-                         const like::LikeMatcher &matcher, Excluded &excluded) {
-  core::ParallelSlices(
-      services, state.segments.size(), kSegmentsGrain,
-      [&](std::size_t, std::size_t begin, std::size_t end) {
+// Custkeys of the live orders matching `matcher`, one SIMD pass per segment;
+// slices collect their segments' keys, merged in slice order.
+std::vector<int64_t> MatchingCustkeys(const core::AuxEngineServices &services,
+                                      const TpchQ13State &state,
+                                      const like::LikeMatcher &matcher) {
+  std::vector<int64_t> matched;
+  core::ParallelReduce(
+      services, state.segments.size(), kSegmentGrain, matched,
+      [&](std::vector<int64_t> &part, std::size_t begin, std::size_t end) {
         for (std::size_t s = begin; s < end; ++s) {
           const auto *seg = state.segments[s].get();
           if (!seg || seg->live == 0)
             continue;
           const std::size_t n = seg->orderkey.size();
-          const auto bits = like::MatchBlobBitmap(
-              matcher, seg->comment.offsets(), n, seg->comment.data());
+          const auto bits =
+              like::MatchBlobBitmap(matcher, seg->comment.offsets(), n, seg->comment.data());
           for (std::size_t w = 0; w < bits.size(); ++w) {
             uint64_t b = bits[w];
             while (b) {
               const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
               b &= b - 1;
               if (seg->alive[i])
-                excluded.Add(seg->custkey[i]);
+                part.push_back(seg->custkey[i]);
             }
           }
         }
+      },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
       });
+  return matched;
 }
 
 } // namespace
@@ -835,11 +795,12 @@ void TpchQ13Module::EmitResult(const core::AuxEngineServices &services,
   Excluded excluded;
   if (!pattern_null) {
     const auto matcher = like::LikeMatcher::Compile(
-        std::get<std::string>(arguments.values[0].payload), '\\',
-        kLikeCaseInsensitive, /*utf8_underscore=*/true);
+        std::get<std::string>(arguments.values[0].payload), '\\', kLikeCaseInsensitive,
+        /*utf8_underscore=*/true);
     if (span <= static_cast<std::size_t>(state.customers) * 4 + (std::size_t{1} << 20))
       excluded.flat.assign(span, 0);
-    CountMatchingOrders(services, state, matcher, excluded);
+    for (const int64_t custkey : MatchingCustkeys(services, state, matcher))
+      excluded.Add(custkey);
   }
 
   // Histogram of effective counts. Counts up to kDense use a flat array; the
@@ -847,7 +808,7 @@ void TpchQ13Module::EmitResult(const core::AuxEngineServices &services,
   constexpr int64_t kDense = int64_t{1} << 22;
   int64_t max_count = 0;
   core::ParallelReduce(
-      services, state.order_count.NumChunks(), kChunksGrain, max_count,
+      services, state.order_count.NumChunks(), kChunkGrain, max_count,
       [&](int64_t &acc, std::size_t begin, std::size_t end) {
         for (std::size_t ci = begin; ci < end; ++ci)
           if (const auto *chunk = state.order_count.ChunkAt(ci))
@@ -873,7 +834,7 @@ void TpchQ13Module::EmitResult(const core::AuxEngineServices &services,
   };
   Histogram histogram;
   core::ParallelReduce(
-      services, state.customer_valid.NumChunks(), kChunksGrain, histogram,
+      services, state.customer_valid.NumChunks(), kChunkGrain, histogram,
       [&](Histogram &acc, std::size_t begin, std::size_t end) {
         for (std::size_t ci = begin; ci < end; ++ci) {
           const auto *valid = state.customer_valid.ChunkAt(ci);

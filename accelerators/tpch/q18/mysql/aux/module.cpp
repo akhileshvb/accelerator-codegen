@@ -1,8 +1,8 @@
 #include "tpch/q18/mysql/aux/module.hpp"
 #include "tpch/q18/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -20,67 +20,14 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Buckets of the build's lineitem rows (by order); deltas per maintenance slice.
-constexpr std::size_t kBuildBuckets = 64;
-constexpr std::size_t kApplyGrain = 4096;
-
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
+// Deltas per maintenance slice (~200 us): applying one lineitem delta is ~50 ns.
+constexpr std::size_t kDeltaGrain = 4096;
 
 bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey,
                   int64_t &quantity_raw) {
-  if (!IntCell(row, 0, orderkey))
+  if (!core::IntCell(row, 0, orderkey))
     return false;
-  int64_t raw = 0;
-  int32_t scale = 0;
-  if (!RawDecimalCell(row, 1, raw, scale))
-    return false;
-  if (scale != 2)
-    return false;
-  quantity_raw = raw;
-  return true;
+  return core::DecimalCellAtScale(row, 1, 2, quantity_raw);
 }
 
 std::shared_ptr<const TpchQ18StateImage>
@@ -95,31 +42,19 @@ const TpchQ18StateImage *AsQ18Image(const core::StateImage &image) {
   return payload && payload->state ? payload : nullptr;
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 bool ReadOrder(const core::AuxRow &row, TpchQ18OrderInput &out) {
-  int64_t raw = 0;
-  int32_t scale = 0;
-  if (!IntCell(row, 0, out.key) || !IntCell(row, 1, out.custkey))
+  if (!core::IntCell(row, 0, out.key) || !core::IntCell(row, 1, out.custkey))
     return false;
   int64_t days = 0;
-  if (!IntCell(row, 2, days) || days < std::numeric_limits<int32_t>::min() ||
+  if (!core::IntCell(row, 2, days) || days < std::numeric_limits<int32_t>::min() ||
       days > std::numeric_limits<int32_t>::max())
     return false;
   out.orderdate_days = static_cast<int32_t>(days);
-  if (!RawDecimalCell(row, 3, raw, scale) || scale != 2)
-    return false;
-  out.totalprice_raw = raw;
-  return true;
+  return core::DecimalCellAtScale(row, 3, 2, out.totalprice_raw);
 }
 
 bool ReadCustomer(const core::AuxRow &row, TpchQ18CustomerInput &out) {
-  return IntCell(row, 0, out.key) && StringCell(row, 1, out.name);
+  return core::IntCell(row, 0, out.key) && core::StringCell(row, 1, out.name);
 }
 
 // ── The QUANTITY parameter ──────────────────────────────────────────────────
@@ -268,16 +203,13 @@ void EmitEmpty(core::AuxRowSink &sink) {
   sink.End();
 }
 
-// Customers of at most this many keys are fetched by key, more by one scan.
-constexpr std::size_t kMaxKeyedCustomerLookup = 4096;
-
 } // namespace
 
 void TpchQ18InitialScan::LookupCustomerNames(
     const std::vector<int64_t> &custkeys,
     const std::function<void(const TpchQ18CustomerInput &)> &consumer) {
   const std::unordered_set<int64_t> wanted(custkeys.begin(), custkeys.end());
-  ScanCustomers([&](const TpchQ18CustomerInput &input) {
+  ScanCustomersSerial([&](const TpchQ18CustomerInput &input) {
     if (wanted.find(input.key) != wanted.end())
       consumer(input);
   });
@@ -528,7 +460,7 @@ bool ApplyOwnedDeltas(TpchQ18State &state, const TpchQ18TxnBuffer &buffer,
 bool ApplyKeyDeltas(core::AuxEngineServices &services, TpchQ18State &state,
                     const TpchQ18TxnBuffer &buffer) {
   const std::size_t slices = core::SliceCount(
-      services, buffer.Orders().size() + buffer.Lineitems().size(), kApplyGrain);
+      services, buffer.Orders().size() + buffer.Lineitems().size(), kDeltaGrain);
   std::vector<uint8_t> fits(slices, 1);
   core::RunSlices(services, slices, HotIndex::kShards,
                   [&](std::size_t slice, std::size_t first, std::size_t last) {
@@ -547,31 +479,17 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
   core::StagedMaintenanceOutcome outcome;
 
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                                        services.ExpectedQueriesBeforeNextWrite())));
     return outcome;
   }
   if (buffer.Size() == 0)
     return outcome;
 
-  const auto decision = services.ChooseMaintenance(
-      {buffer.Size(), 1, true, false, true, false, false,
-       core::MaintenanceAction::NoOp, services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+  const auto decision = services.ChooseMaintenance(core::MaintenanceRequest::IncrementalSingleState(
+      buffer.Size(), services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -664,58 +582,7 @@ void TpchQ18Module::Execute(core::AuxEngineServices &services,
   } else {
     state->orders.ForEach(consider);
   }
-  EmitRows(std::move(rows), state.get(), sink);
-}
-
-// No usable state (a writer in flight, this transaction wrote the tables):
-// stream the per-order sums from SQL keeping only the qualifying orders, then
-// the orders and the customers of those.
-void TpchQ18Module::ExecuteFallback(core::AuxEngineServices &,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  if (!initial_scan)
-    throw std::logic_error("TPC-H Q18 aux requires a typed initial scan source");
-  const QuantityBound bound = ParseQuantity(arguments);
-  if (bound.kind == QuantityBound::Kind::None) {
-    EmitEmpty(sink);
-    return;
-  }
-  const int64_t threshold = bound.kind == QuantityBound::Kind::All
-                                ? std::numeric_limits<int64_t>::min()
-                                : bound.raw;
-
-  std::unordered_map<int64_t, int64_t> qualifying; // orderkey -> sum
-  const bool aggregated = initial_scan->ScanOrderQuantityAggregates(
-      [&](const TpchQ18OrderQuantityAggregate &agg) {
-        if (agg.line_count > 0 && agg.quantity_sum_raw > threshold)
-          qualifying[agg.orderkey] = agg.quantity_sum_raw;
-      });
-  if (!aggregated) {
-    std::unordered_map<int64_t, int64_t> sums;
-    initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
-      sums[input.orderkey] += input.quantity_raw;
-    });
-    for (const auto &[orderkey, sum] : sums)
-      if (sum > threshold)
-        qualifying[orderkey] = sum;
-  }
-
-  std::vector<TpchQ18OutputRow> rows;
-  if (!qualifying.empty()) {
-    initial_scan->ScanOrders([&](const TpchQ18OrderInput &input) {
-      const auto it = qualifying.find(input.key);
-      if (it == qualifying.end())
-        return;
-      TpchQ18OutputRow row;
-      row.custkey = input.custkey;
-      row.orderkey = input.key;
-      row.orderdate_days = input.orderdate_days;
-      row.totalprice_raw = input.totalprice_raw;
-      row.quantity_sum_raw = it->second;
-      rows.push_back(std::move(row));
-    });
-  }
-  EmitRows(std::move(rows), nullptr, sink);
+  EmitRows(std::move(rows), *state, sink);
 }
 
 namespace {
@@ -782,46 +649,43 @@ TpchQ18State TpchQ18Module::BuildState(core::AuxEngineServices &services) const 
   // The scans only deal the rows out to buckets by order; the buckets are
   // joined and summed in parallel slices and then merged into the state.
   const auto bucket_of = [](int64_t orderkey) {
-    return static_cast<uint64_t>(orderkey) % kBuildBuckets;
+    return static_cast<uint64_t>(orderkey) % core::kBuildBuckets;
   };
-  const std::size_t partitions = BuildPartitions(services);
-  auto orders = core::PartitionedBuild<Buckets<TpchQ18OrderInput>>(
-      services, [] { return Buckets<TpchQ18OrderInput>(kBuildBuckets); },
+  const std::size_t partitions = core::BuildPartitions(services);
+  auto orders = core::PartitionedBuild<core::Buckets<TpchQ18OrderInput>>(
+      services, [] { return core::Buckets<TpchQ18OrderInput>(core::kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ18OrderInput &input) {
-              sink(partition, OneRowBatch<TpchQ18OrderInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ18OrderInput>{input});
             });
       },
-      [&](Buckets<TpchQ18OrderInput> &into, const TpchQ18OrderInput &input) {
+      [&](core::Buckets<TpchQ18OrderInput> &into, const TpchQ18OrderInput &input) {
         into[bucket_of(input.key)].push_back(input);
       },
-      AppendBuckets<TpchQ18OrderInput>, partitions);
-  auto lineitems = core::PartitionedBuild<Buckets<OrderQuantity>>(
-      services, [] { return Buckets<OrderQuantity>(kBuildBuckets); },
+      core::AppendBuckets<TpchQ18OrderInput>, partitions);
+  auto lineitems = core::PartitionedBuild<core::Buckets<OrderQuantity>>(
+      services, [] { return core::Buckets<OrderQuantity>(core::kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ18LineitemInput &input) {
-              sink(partition, OneRowBatch<TpchQ18LineitemInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ18LineitemInput>{input});
             });
       },
-      [&](Buckets<OrderQuantity> &into, const TpchQ18LineitemInput &input) {
+      [&](core::Buckets<OrderQuantity> &into, const TpchQ18LineitemInput &input) {
         into[bucket_of(input.orderkey)].push_back({input.orderkey, input.quantity_raw});
       },
-      AppendBuckets<OrderQuantity>, partitions);
-  std::vector<BuildBucket> buckets(kBuildBuckets);
-  for (std::size_t b = 0; b < kBuildBuckets; ++b) {
+      core::AppendBuckets<OrderQuantity>, partitions);
+  std::vector<BuildBucket> buckets(core::kBuildBuckets);
+  for (std::size_t b = 0; b < core::kBuildBuckets; ++b) {
     buckets[b].orders = std::move(orders[b]);
     buckets[b].lineitems = std::move(lineitems[b]);
   }
-  std::vector<BucketRecords> built(kBuildBuckets);
-  core::ParallelSlices(services, kBuildBuckets, 1,
-                       [&](std::size_t, std::size_t begin, std::size_t end) {
-                         for (std::size_t i = begin; i < end; ++i) {
-                           built[i] = BuildRecords(buckets[i]);
-                           buckets[i] = {};
-                         }
-                       });
+  std::vector<BucketRecords> built(core::kBuildBuckets);
+  core::ParallelEach(services, core::kBuildBuckets, 1, [&](std::size_t i) {
+    built[i] = BuildRecords(buckets[i]);
+    buckets[i] = {};
+  });
   for (const auto &bucket : built) {
     for (const auto &[orderkey, rec] : bucket.records)
       state.MutableRec(orderkey) = rec;
@@ -831,9 +695,9 @@ TpchQ18State TpchQ18Module::BuildState(core::AuxEngineServices &services) const 
   const auto customers = core::PartitionedBuild<std::vector<TpchQ18CustomerInput>>(
       services, [] { return std::vector<TpchQ18CustomerInput>{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanCustomersPartitioned(
+        initial_scan->ScanCustomers(
             services, parts, [&](std::size_t partition, const TpchQ18CustomerInput &input) {
-              sink(partition, OneRowBatch<TpchQ18CustomerInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ18CustomerInput>{input});
             });
       },
       [](std::vector<TpchQ18CustomerInput> &into, const TpchQ18CustomerInput &input) {
@@ -866,7 +730,7 @@ bool TpchQ18Module::LoadState(core::AuxEngineServices &services,
 }
 
 void TpchQ18Module::EmitRows(std::vector<TpchQ18OutputRow> rows,
-                             const TpchQ18State *state,
+                             const TpchQ18State &state,
                              core::AuxRowSink &sink) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q18 aux requires a typed initial scan source");
@@ -877,7 +741,7 @@ void TpchQ18Module::EmitRows(std::vector<TpchQ18OutputRow> rows,
   {
     std::unordered_set<int64_t> seen;
     for (const auto &row : rows) {
-      if (state && state->customer_names.Contains(row.custkey))
+      if (state.customer_names.Contains(row.custkey))
         continue;
       if (seen.insert(row.custkey).second)
         missing.push_back(row.custkey);
@@ -893,8 +757,7 @@ void TpchQ18Module::EmitRows(std::vector<TpchQ18OutputRow> rows,
   std::vector<TpchQ18OutputRow> output_rows;
   output_rows.reserve(rows.size());
   for (auto &row : rows) {
-    const std::string *name = state ? state->customer_names.Find(row.custkey)
-                                    : nullptr;
+    const std::string *name = state.customer_names.Find(row.custkey);
     if (!name) {
       const auto it = looked_up.find(row.custkey);
       if (it == looked_up.end())

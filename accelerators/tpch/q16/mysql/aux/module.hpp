@@ -55,21 +55,15 @@ struct TpchQ16PartsuppInput {
 class TpchQ16InitialScan {
 public:
   virtual ~TpchQ16InitialScan() = default;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ16SupplierInput &)> &) = 0;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ16PartInput &)> &) = 0;
-  virtual void ScanPartsupp(
-      const std::function<void(const TpchQ16PartsuppInput &)> &) = 0;
-  // The same scans split into `partitions` fixed row ranges: sink(partition,
+  // Split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ16SupplierInput &)> &sink) = 0;
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ16PartInput &)> &sink) = 0;
-  virtual void ScanPartsuppPartitioned(
+  virtual void ScanPartsupp(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ16PartsuppInput &)> &sink) = 0;
 };
@@ -255,8 +249,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
