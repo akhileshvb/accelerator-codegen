@@ -16,7 +16,6 @@
 //
 
 #include <algorithm>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -41,7 +40,7 @@ namespace accelerator_codegen::aux_state::core {
 //   * Copy of the column = pointer copies; Set/Erase clone only the touched
 //     segment (O(segment bytes)); const reads never allocate.
 //   * ForEachMatch runs sql_like::MatchBlobBitmap per segment on a pool of
-//     worker threads (segments handed out in blocks), O(total string bytes)
+//     worker threads (each takes a contiguous share of the segments), O(total string bytes)
 //     / threads with SIMD substring search for `%x%` shapes.
 //   * AppendNew is the O(1) bulk-load path for keys known to be absent (loading
 //     a primary-keyed table); it writes in place into an unshared segment.
@@ -123,37 +122,28 @@ public:
       if (sp && sp->live)
         work.emplace_back(si, sp.get());
     });
+    // Callers keep per-worker state indexed by `worker`, and the pool does not
+    // say which thread runs a task, so a task is a worker's contiguous share of
+    // the segments (deterministic, no shared cursor).
     const std::size_t nseg = work.size();
-    constexpr std::size_t kBlock = 8;
-    unsigned workers = 1;
-    if (par.workers > 1 && size_ >= 8 * kSegKeys)
-      workers = std::min<unsigned>(static_cast<unsigned>(par.workers), static_cast<unsigned>((nseg + kBlock - 1) / kBlock));
-    if (workers == 0)
-      workers = 1;
-    std::atomic<std::size_t> next{0};
-    auto run = [&](unsigned worker) {
-      for (;;) {
-        const std::size_t lo = next.fetch_add(kBlock);
-        if (lo >= nseg)
-          return;
-        for (std::size_t wi = lo; wi < std::min(nseg, lo + kBlock); ++wi) {
-          const int64_t si = work[wi].first;
-          const Segment &s = *work[wi].second;
-          const std::size_t n = s.strings.size();
-          const auto bits = sql_like::MatchBlobBitmap(matcher, s.strings.offsets(), n,
-                                                      s.strings.data());
-          for (std::size_t w = 0; w < bits.size(); ++w) {
-            uint64_t b = bits[w];
-            while (b) {
-              const std::size_t id = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
-              b &= b - 1;
-              fn(worker, static_cast<int64_t>((static_cast<uint64_t>(si) << kSegShift) | s.key_slot[id]));
-            }
+    const unsigned workers = (par.workers > 1 && size_ >= 8 * kSegKeys)
+                                 ? static_cast<unsigned>(std::max<std::size_t>(1, std::min(par.workers, nseg)))
+                                 : 1;
+    par.For(workers, [&](std::size_t worker) {
+      for (std::size_t wi = nseg * worker / workers; wi < nseg * (worker + 1) / workers; ++wi) {
+        const int64_t si = work[wi].first;
+        const Segment &s = *work[wi].second;
+        const auto bits = sql_like::MatchBlobBitmap(matcher, s.strings.offsets(),
+                                                    s.strings.size(), s.strings.data());
+        for (std::size_t w = 0; w < bits.size(); ++w) {
+          for (uint64_t b = bits[w]; b; b &= b - 1) {
+            const std::size_t id = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
+            fn(static_cast<unsigned>(worker),
+               static_cast<int64_t>((static_cast<uint64_t>(si) << kSegShift) | s.key_slot[id]));
           }
         }
       }
-    };
-    par.For(workers, [&](std::size_t worker) { run(static_cast<unsigned>(worker)); });
+    });
     return workers;
   }
 
