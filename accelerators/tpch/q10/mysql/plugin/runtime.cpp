@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q10/mysql/aux/module.hpp"
 #include "tpch/q10/cost_model.hpp"
@@ -21,21 +22,32 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ10Customers(
-    const std::function<void(const query::TpchQ10CustomerInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, "
-      "c_phone, c_comment FROM customer",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ10CustomerInput{TypedInt(cols, 0),
-                                           TypedText(cols, 1),
-                                           TypedDecimalRaw(cols, 2),
-                                           static_cast<int32_t>(TypedInt(cols, 3)),
-                                           TypedText(cols, 4),
-                                           TypedText(cols, 5),
-                                           TypedText(cols, 6)};
-      },
-      [&](query::TpchQ10CustomerInput &&input) { consumer(input); });
+SplitTable CustomersTable() {
+  return {"c_custkey, c_name, c_acctbal, c_nationkey, c_address, c_phone, c_comment", "customer",
+          "", "c_custkey"};
+}
+
+query::TpchQ10CustomerInput DecodeCustomer(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1), TypedDecimalRaw(cols, 2),
+          static_cast<int32_t>(TypedInt(cols, 3)), TypedText(cols, 4), TypedText(cols, 5),
+          TypedText(cols, 6)};
+}
+
+SplitTable OrdersTable() {
+  return {"o_orderkey, o_custkey, o_orderdate", "orders", "", "o_orderkey"};
+}
+
+query::TpchQ10OrderInput DecodeOrder(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedDate(cols, 2)};
+}
+
+SplitTable LineitemsTable() {
+  return {"l_orderkey, l_extendedprice, l_discount, l_returnflag", "lineitem", "", "l_orderkey"};
+}
+
+query::TpchQ10LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedDecimalRaw(cols, 1), 2, TypedDecimalRaw(cols, 2), 2,
+          TypedText(cols, 3) == "R"};
 }
 
 void ScanTpchQ10Nations(
@@ -49,32 +61,6 @@ void ScanTpchQ10Nations(
       [&](query::TpchQ10NationInput &&input) { consumer(input); });
 }
 
-void ScanTpchQ10Orders(
-    const std::function<void(const query::TpchQ10OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_orderkey, o_custkey, o_orderdate FROM orders",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ10OrderInput{TypedInt(cols, 0),
-                                        TypedInt(cols, 1),
-                                        TypedDate(cols, 2)};
-      },
-      [&](query::TpchQ10OrderInput &&input) { consumer(input); });
-}
-
-void ScanTpchQ10Lineitems(
-    const std::function<void(const query::TpchQ10LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_orderkey, l_extendedprice, l_discount, l_returnflag "
-      "FROM lineitem",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ10LineitemInput{TypedInt(cols, 0),
-                                           TypedDecimalRaw(cols, 1), 2,
-                                           TypedDecimalRaw(cols, 2), 2,
-                                           TypedText(cols, 3) == "R"};
-      },
-      [&](query::TpchQ10LineitemInput &&input) { consumer(input); });
-}
-
 } // namespace scans
 
 class TpchQ10Scan final : public query::TpchQ10InitialScan {
@@ -82,7 +68,8 @@ public:
   void ScanCustomers(
       const std::function<void(const query::TpchQ10CustomerInput &)> &consumer)
       override {
-    scans::ScanTpchQ10Customers(consumer);
+    split_scan::Serial<query::TpchQ10CustomerInput>(scans::CustomersTable(),
+                                                    scans::DecodeCustomer, consumer);
   }
   void ScanNations(
       const std::function<void(const query::TpchQ10NationInput &)> &consumer)
@@ -92,12 +79,32 @@ public:
   void ScanOrders(
       const std::function<void(const query::TpchQ10OrderInput &)> &consumer)
       override {
-    scans::ScanTpchQ10Orders(consumer);
+    split_scan::Serial<query::TpchQ10OrderInput>(scans::OrdersTable(), scans::DecodeOrder,
+                                                 consumer);
   }
   void ScanLineitems(
       const std::function<void(const query::TpchQ10LineitemInput &)> &consumer)
       override {
-    scans::ScanTpchQ10Lineitems(consumer);
+    split_scan::Serial<query::TpchQ10LineitemInput>(scans::LineitemsTable(),
+                                                    scans::DecodeLineitem, consumer);
+  }
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ10CustomerInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ10CustomerInput>(
+        services, scans::CustomersTable(), partitions, scans::DecodeCustomer, sink);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ10OrderInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ10OrderInput>(services, scans::OrdersTable(), partitions,
+                                                      scans::DecodeOrder, sink);
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ10LineitemInput &)> &sink) override {
+    split_scan::Partitioned<query::TpchQ10LineitemInput>(
+        services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
   }
 };
 

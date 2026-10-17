@@ -91,6 +91,24 @@ public:
   virtual void ScanLineitems(const std::function<void(const TpchQ8LineitemInput &)> &) = 0;
   virtual void ScanNations(const std::function<void(const TpchQ8NationInput &)> &) = 0;
   virtual void ScanRegions(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
+  // The scans of the big tables split into `partitions` fixed row ranges:
+  // sink(partition, row) runs concurrently for different partitions, one
+  // thread per partition.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8PartInput &)> &sink) = 0;
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8SupplierInput &)> &sink) = 0;
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8CustomerInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8OrdersInput &)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ8LineitemInput &)> &sink) = 0;
 };
 
 // The years of the template (o_orderdate BETWEEN 1995-01-01 AND 1996-12-31)
@@ -225,7 +243,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ8State> BuildState() const;
+  std::shared_ptr<TpchQ8State> BuildState(const core::AuxEngineServices &) const;
   void EmitResult(const TpchQ8State &, const core::QueryArguments &,
                   core::AuxRowSink &) const;
 

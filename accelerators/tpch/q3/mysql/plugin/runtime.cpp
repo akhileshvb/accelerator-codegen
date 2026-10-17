@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q3/mysql/aux/module.hpp"
 #include "tpch/q3/cost_model.hpp"
@@ -45,6 +46,37 @@ void ScanTpchQ3OrderLines(
       [&](query::TpchQ3OrderLineInput &&input) { consumer(input); });
 }
 
+// The three tables of the join, scanned separately by the partitioned build
+// (inner joins: a NULL key joins nothing).
+SplitTable CustomersTable() {
+  return {"c_custkey, c_mktsegment", "customer",
+          "c_custkey IS NOT NULL AND c_mktsegment IS NOT NULL", "c_custkey"};
+}
+
+query::TpchQ3CustomerInput DecodeCustomer(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1)};
+}
+
+SplitTable OrdersTable() {
+  return {"o_orderkey, o_custkey, o_orderdate, o_shippriority", "orders",
+          "o_orderkey IS NOT NULL AND o_custkey IS NOT NULL", "o_orderkey"};
+}
+
+query::TpchQ3OrderInput DecodeOrder(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedDate(cols, 2),
+          static_cast<int32_t>(TypedInt(cols, 3))};
+}
+
+SplitTable LineitemsTable() {
+  return {"l_orderkey, l_shipdate, l_extendedprice, l_discount", "lineitem",
+          "l_orderkey IS NOT NULL", "l_orderkey"};
+}
+
+query::TpchQ3LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedDate(cols, 1), TypedDecimalRaw(cols, 2),
+          TypedDecimalRaw(cols, 3)};
+}
+
 std::string KeyList(const std::vector<int64_t> &keys) {
   std::string list = "(";
   for (std::size_t i = 0; i < keys.size(); ++i) {
@@ -63,6 +95,27 @@ public:
       const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer)
       override {
     scans::ScanTpchQ3OrderLines("", consumer);
+  }
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ3CustomerInput &)> &sink)
+      override {
+    split_scan::Partitioned<query::TpchQ3CustomerInput>(
+        services, scans::CustomersTable(), partitions, scans::DecodeCustomer, sink);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ3OrderInput &)> &sink)
+      override {
+    split_scan::Partitioned<query::TpchQ3OrderInput>(
+        services, scans::OrdersTable(), partitions, scans::DecodeOrder, sink);
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ3LineitemInput &)> &sink)
+      override {
+    split_scan::Partitioned<query::TpchQ3LineitemInput>(
+        services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
   }
   bool LookupOrderLines(
       const std::vector<int64_t> &orderkeys,

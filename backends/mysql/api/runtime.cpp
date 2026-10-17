@@ -14,6 +14,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <stdexcept>
 
 #if defined(ACCEL_MYSQL_HAVE_CLIENT)
@@ -355,17 +356,45 @@ void Exec(Conn &conn, const char *sql) {
   }
 }
 
-// The scan session of this thread (SnapshotScanSession), if any.
-thread_local Conn *t_session = nullptr;
-
 } // namespace
 
+struct SnapshotLane : Conn {};
+
 namespace {
+
+// The scan session of this thread (SnapshotScanSession), if any: its own
+// connection, and the extra lanes partitioned scans spread over.
+thread_local SnapshotLane *t_session = nullptr;
+thread_local std::vector<std::unique_ptr<SnapshotLane>> t_extra_lanes;
+
 bool CliForced() {
   const int forced = g_scan_mode_override.load();
   if (forced >= 0) return forced == 1;
   const char *v = std::getenv("ACCEL_MYSQL_SCAN");
   return v && std::strcmp(v, "cli") == 0;
+}
+
+// No lane waits forever for a metadata lock: a DDL queued behind another lane's
+// open transaction would otherwise stall the whole build.
+constexpr unsigned kLaneLockWaitSeconds = 300;
+// A lane that asks for a table after a DDL queued behind its sibling lanes
+// can only be granted it once they end; it gives up quickly instead.
+constexpr unsigned kProbeLockWaitSeconds = 2;
+
+void SetLockWait(Conn &conn, unsigned seconds) {
+  Exec(conn, ("SET SESSION lock_wait_timeout = " + std::to_string(seconds)).c_str());
+}
+
+// A connection holding one read view. (Never END it with a COMMIT/ROLLBACK
+// statement: the audit plugin reads those as transaction events of the
+// accelerators; closing the connection ends it.)
+std::unique_ptr<SnapshotLane> OpenSnapshotConnection() {
+  auto conn = std::make_unique<SnapshotLane>();
+  Connect(*conn);
+  Exec(*conn, "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+  Exec(*conn, "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY");
+  SetLockWait(*conn, kLaneLockWaitSeconds);
+  return conn;
 }
 } // namespace
 
@@ -373,21 +402,23 @@ bool SnapshotScansSupported() {
   return !CliForced() && LoadClientApi() != nullptr;
 }
 
-SnapshotScanSession::SnapshotScanSession() {
+// The views are opened back to back while the host admits no writer, so they
+// all show the same commits.
+SnapshotScanSession::SnapshotScanSession(std::size_t lanes) {
   if (t_session) throw std::logic_error("nested SnapshotScanSession");
-  auto conn = std::make_unique<Conn>();
-  Connect(*conn);
-  // One read view for every scan of the session. (Never END it with a
-  // COMMIT/ROLLBACK statement: the audit plugin reads those as transaction
-  // events of the accelerators; closing the connection ends it.)
-  Exec(*conn, "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ");
-  Exec(*conn, "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY");
-  t_session = conn.release();
+  auto session = OpenSnapshotConnection();
+  std::vector<std::unique_ptr<SnapshotLane>> extra;
+  for (std::size_t lane = 1; lane < lanes; ++lane) {
+    extra.push_back(OpenSnapshotConnection());
+  }
+  t_extra_lanes = std::move(extra);
+  t_session = session.release();
 }
 
 SnapshotScanSession::~SnapshotScanSession() { Close(); }
 
 void SnapshotScanSession::Close() {
+  t_extra_lanes.clear();
   if (t_session) {
     delete t_session;
     t_session = nullptr;
@@ -396,26 +427,22 @@ void SnapshotScanSession::Close() {
 
 namespace {
 
-void ScanViaClient(const std::string &sql,
-                   const std::function<void(const std::vector<std::string> &)> &callback) {
+// Streams `sql` over `conn` (any failure leaves the connection unusable and
+// closes it).
+void StreamQuery(Conn &conn, const std::string &sql,
+                 const std::function<void(const std::vector<std::string> &)> &callback) {
   const ClientApi &api = Api();
-  Conn own;
-  Conn *conn = t_session;
-  if (conn && !conn->m) {
+  if (!conn.m) {
     throw std::runtime_error("mysql scan: the snapshot session's connection is broken");
   }
-  if (!conn) {
-    Connect(own);
-    conn = &own;
-  }
-  if (api.real_query(conn->m, sql.data(), sql.size()) != 0) {
-    const std::string err = api.error(conn->m);
-    if (conn == t_session) conn->Close(); // keep no half-broken session
+  if (api.real_query(conn.m, sql.data(), sql.size()) != 0) {
+    const std::string err = api.error(conn.m);
+    conn.Close(); // keep no half-broken session
     throw std::runtime_error("mysql scan failed: " + err + ": " + sql);
   }
-  MYSQL_RES *res = api.use_result(conn->m); // streaming: rows are not buffered
+  MYSQL_RES *res = api.use_result(conn.m); // streaming: rows are not buffered
   if (!res) {
-    const std::string err = api.error(conn->m);
+    const std::string err = api.error(conn.m);
     throw std::runtime_error("mysql scan failed: " + err + ": " + sql);
   }
   const unsigned fields = api.num_fields(res);
@@ -436,29 +463,71 @@ void ScanViaClient(const std::string &sql,
       }
       callback(cols);
     }
-    if (api.err_no(conn->m) != 0) {
+    if (api.err_no(conn.m) != 0) {
       throw std::runtime_error(std::string("mysql scan failed mid-stream: ") +
-                               api.error(conn->m) + ": " + sql);
+                               api.error(conn.m) + ": " + sql);
     }
   } catch (...) {
     // The result is unfinished: the connection is unusable. Closing it frees
     // the result without draining the rest.
-    if (conn == t_session) {
-      conn->Close(); // the session stays, broken: later scans in it fail loudly
-    } else {
-      own.Close();
-    }
+    conn.Close();
     throw;
   }
   api.free_result(res);
 }
 
+void ScanViaClient(const std::string &sql,
+                   const std::function<void(const std::vector<std::string> &)> &callback) {
+  if (t_session) {
+    StreamQuery(*t_session, sql, callback);
+    return;
+  }
+  Conn own;
+  Connect(own);
+  StreamQuery(own, sql, callback);
+}
+
 } // namespace
+
+std::vector<SnapshotLane *> SnapshotLanes() {
+  std::vector<SnapshotLane *> lanes;
+  if (t_session) {
+    lanes.push_back(t_session);
+    for (const auto &lane : t_extra_lanes) lanes.push_back(lane.get());
+  }
+  return lanes;
+}
+
+void ScanOnSnapshotLane(SnapshotLane &lane, const std::string &sql,
+                        const std::function<void(const std::vector<std::string> &)> &callback) {
+  StreamQuery(lane, sql, callback);
+}
+
+bool HoldTables(SnapshotLane &lane, const std::string &from, LockWait wait) {
+  const bool probe = wait == LockWait::kProbe;
+  try {
+    if (probe) SetLockWait(lane, kProbeLockWaitSeconds);
+    StreamQuery(lane, "SELECT 1 FROM " + from + " LIMIT 0", [](const std::vector<std::string> &) {});
+    if (probe) SetLockWait(lane, kLaneLockWaitSeconds);
+    return true;
+  } catch (const std::exception &) {
+    if (!probe) throw;
+    lane.Close();
+    return false;
+  }
+}
 
 #else // !ACCEL_MYSQL_HAVE_CLIENT
 
 bool SnapshotScansSupported() { return false; }
-SnapshotScanSession::SnapshotScanSession() {
+struct SnapshotLane {};
+std::vector<SnapshotLane *> SnapshotLanes() { return {}; }
+void ScanOnSnapshotLane(SnapshotLane &, const std::string &,
+                        const std::function<void(const std::vector<std::string> &)> &) {
+  throw std::logic_error("snapshot scans need the MySQL client library (ACCEL_MYSQL_HAVE_CLIENT)");
+}
+bool HoldTables(SnapshotLane &, const std::string &, LockWait) { return false; }
+SnapshotScanSession::SnapshotScanSession(std::size_t) {
   throw std::logic_error("snapshot scans need the MySQL client library (ACCEL_MYSQL_HAVE_CLIENT)");
 }
 SnapshotScanSession::~SnapshotScanSession() {}
@@ -519,6 +588,113 @@ void ScanTypedTuples(const std::string &sql,
   }
 #endif
   ScanViaCli(sql, callback);
+}
+
+namespace {
+
+std::string SelectFromWhere(const SplitTable &table) {
+  std::string sql = "SELECT " + table.select + " FROM " + table.table;
+  if (!table.where.empty()) sql += " WHERE (" + table.where + ")";
+  return sql;
+}
+
+std::string GroupByClause(const SplitTable &table) {
+  return table.group_by.empty() ? "" : " GROUP BY " + table.group_by;
+}
+
+}  // namespace
+
+std::string SelectSql(const SplitTable &table) { return SelectFromWhere(table) + GroupByClause(table); }
+
+namespace {
+
+// The WHERE condition of partition `p` when the values [lo, hi] of the split
+// column are cut into `partitions` equal-width ranges; the first and last
+// ranges are open-ended (the first also takes NULLs), so the partitions
+// cover every row once whatever the bounds. nullopt: the range holds nothing.
+std::optional<std::string> PartitionCondition(const std::string &column, std::size_t partitions,
+                                              std::size_t p, int64_t lo, int64_t hi) {
+  const unsigned __int128 span = static_cast<unsigned __int128>(static_cast<__int128>(hi) - lo) + 1;
+  const unsigned __int128 width = (span + partitions - 1) / partitions;
+  const __int128 lower = static_cast<__int128>(lo) + static_cast<__int128>(width * p);
+  const __int128 upper = lower + static_cast<__int128>(width);
+  if (lower > hi) return std::nullopt;
+  const auto text = [](__int128 value) { return std::to_string(static_cast<long long>(value)); };
+  const bool first = p == 0, last = upper > hi;
+  if (first && last) return std::string("TRUE");
+  if (first) return "(" + column + " IS NULL OR " + column + " < " + text(upper) + ")";
+  if (last) return column + " >= " + text(lower);
+  return column + " >= " + text(lower) + " AND " + column + " < " + text(upper);
+}
+
+std::string SelectWhere(const SplitTable &table, const std::string &condition) {
+  return SelectFromWhere(table) + (table.where.empty() ? " WHERE " : " AND ") + "(" + condition + ")" +
+         GroupByClause(table);
+}
+
+// MIN and MAX of the split column; nullopt for an empty table.
+std::optional<std::pair<int64_t, int64_t>> SplitBounds(const SplitTable &table) {
+  std::optional<std::pair<int64_t, int64_t>> bounds;
+  ScanTypedTuples("SELECT MIN(" + table.split_column + "), MAX(" + table.split_column + ") FROM " +
+                      (table.bounds_from.empty() ? table.table : table.bounds_from),
+                  [&](const std::vector<std::string> &cols) {
+                    if (!TypedIsNull(cols, 0)) bounds.emplace(TypedInt(cols, 0), TypedInt(cols, 1));
+                  });
+  return bounds;
+}
+
+// The lanes of this thread's session, at most one per partition, that hold the
+// metadata locks on `from`. The thread's own connection takes them first, so
+// a DDL queued meanwhile waits on lanes that already have them; a later lane
+// that cannot get them in time is left out (nothing of ours would release
+// them), down to the one connection.
+std::vector<SnapshotLane *> LanesHolding(const std::string &from, std::size_t partitions) {
+  auto lanes = SnapshotLanes();
+  lanes.resize(std::min(lanes.size(), partitions));
+  if (lanes.empty()) return lanes;
+  HoldTables(*lanes[0], from, LockWait::kPatient);
+  std::size_t held = 1;
+  while (held < lanes.size() && HoldTables(*lanes[held], from, LockWait::kProbe)) ++held;
+  lanes.resize(held);
+  return lanes;
+}
+
+} // namespace
+
+void ScanTypedTuplesPartitioned(const core::AuxEngineServices &services, const SplitTable &table,
+                                std::size_t partitions, const PartitionedRowSink &sink) {
+  if (partitions <= 1) {
+    ScanTypedTuples(SelectWhere(table, "TRUE"),
+                    [&](const std::vector<std::string> &cols) { sink(0, cols); });
+    return;
+  }
+  // Outside a build's session the partitions share one view of their own.
+  std::optional<SnapshotScanSession> own_view;
+  if (SnapshotScansSupported() && SnapshotLanes().empty()) own_view.emplace();
+  const auto bounds = SplitBounds(table);
+  std::vector<std::string> statements(partitions);
+  for (std::size_t p = 0; p < partitions; ++p) {
+    const auto condition = bounds ? PartitionCondition(table.split_column, partitions, p,
+                                                       bounds->first, bounds->second)
+                                  : (p == 0 ? std::optional<std::string>("TRUE") : std::nullopt);
+    if (condition) statements[p] = SelectWhere(table, *condition);
+  }
+  auto lanes = LanesHolding(table.table, partitions);
+  if (lanes.empty()) {
+    for (std::size_t p = 0; p < partitions; ++p) {
+      if (statements[p].empty()) continue;
+      ScanTypedTuples(statements[p], [&](const std::vector<std::string> &cols) { sink(p, cols); });
+    }
+    return;
+  }
+  // Lane l runs partitions l, l + lanes, ... on its own connection.
+  services.ParallelFor(lanes.size(), [&](std::size_t lane) {
+    for (std::size_t p = lane; p < partitions; p += lanes.size()) {
+      if (statements[p].empty()) continue;
+      ScanOnSnapshotLane(*lanes[lane], statements[p],
+                         [&](const std::vector<std::string> &cols) { sink(p, cols); });
+    }
+  });
 }
 
 const std::string &Col(const std::vector<std::string> &cols, int attribute) {

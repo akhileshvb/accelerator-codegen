@@ -71,14 +71,20 @@ struct TpchQ20NationInput {
 class TpchQ20InitialScan {
 public:
   virtual ~TpchQ20InitialScan() = default;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ20LineitemInput &)> &) = 0;
-  virtual void ScanParts(
-      const std::function<void(const TpchQ20PartInput &)> &) = 0;
-  virtual void ScanPartsupps(
-      const std::function<void(const TpchQ20PartsuppInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ20SupplierInput &)> &) = 0;
+  // Split into `partitions` fixed row ranges: sink(partition, row) runs
+  // concurrently for different partitions, one thread per partition.
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ20LineitemInput &)> &sink) = 0;
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ20PartInput &)> &sink) = 0;
+  virtual void ScanPartsuppsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ20PartsuppInput &)> &sink) = 0;
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ20SupplierInput &)> &sink) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ20NationInput &)> &) = 0;
 };

@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "prims/decimal_text.hpp"
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q14/mysql/aux/module.hpp"
 #include "tpch/q14/cost_model.hpp"
@@ -24,38 +25,32 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ14Parts(
-    const std::function<void(const query::TpchQ14PartInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT p_partkey, p_type FROM part",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ14PartInput{TypedInt(cols, 0),
-                                       TypedText(cols, 1)};
-      },
-      [&](query::TpchQ14PartInput &&input) { consumer(input); });
+SplitTable PartsTable() { return {"p_partkey, p_type", "part", "", "p_partkey"}; }
+
+query::TpchQ14PartInput DecodePart(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1)};
 }
 
 // lineitem JOIN part GROUP BY shipdate in the engine: one row per day with the
 // exact revenue sums (decimal text, scale 4). `LIKE` follows the column's
-// collation, as in the reference query.
-void ScanTpchQ14DayAggregates(
-    const std::function<void(const query::TpchQ14DayAggregate &)> &consumer) {
+// collation, as in the reference query.  Partitions are ranges of l_orderkey
+// and each groups its own range: a day may come back once per partition.
+SplitTable DayAggregatesTable() {
+  return {"l_shipdate, sum(l_extendedprice * (1 - l_discount)), "
+          "sum(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * "
+          "(1 - l_discount) ELSE 0 END), count(*)",
+          "lineitem, part", "l_partkey = p_partkey", "l_orderkey", "l_shipdate", "lineitem"};
+}
+
+query::TpchQ14DayAggregate DecodeDayAggregate(const std::vector<std::string> &cols) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
-  ScanTypedTuplesDecoded(
-      "SELECT l_shipdate, sum(l_extendedprice * (1 - l_discount)), "
-      "sum(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * "
-      "(1 - l_discount) ELSE 0 END), count(*) "
-      "FROM lineitem, part WHERE l_partkey = p_partkey GROUP BY l_shipdate",
-      [](const std::vector<std::string> &cols) {
-        query::TpchQ14DayAggregate agg;
-        agg.shipdate_days = TypedDate(cols, 0);
-        if (!dec::Parse(TypedText(cols, 1), 4, agg.total_revenue_raw) ||
-            !dec::Parse(TypedText(cols, 2), 4, agg.promo_revenue_raw))
-          throw std::runtime_error("TPC-H Q14: unparsable decimal");
-        agg.count = TypedInt(cols, 3);
-        return agg;
-      },
-      [&](query::TpchQ14DayAggregate &&input) { consumer(input); });
+  query::TpchQ14DayAggregate agg;
+  agg.shipdate_days = TypedDate(cols, 0);
+  if (!dec::Parse(TypedText(cols, 1), 4, agg.total_revenue_raw) ||
+      !dec::Parse(TypedText(cols, 2), 4, agg.promo_revenue_raw))
+    throw std::runtime_error("TPC-H Q14: unparsable decimal");
+  agg.count = TypedInt(cols, 3);
+  return agg;
 }
 
 // Point re-aggregation of the given parts' lineitems (the schema has no
@@ -92,12 +87,27 @@ public:
   void ScanParts(
       const std::function<void(const query::TpchQ14PartInput &)> &consumer)
       override {
-    scans::ScanTpchQ14Parts(consumer);
+    split_scan::Serial<query::TpchQ14PartInput>(scans::PartsTable(), scans::DecodePart, consumer);
   }
   void ScanDayAggregates(
       const std::function<void(const query::TpchQ14DayAggregate &)> &consumer)
       override {
-    scans::ScanTpchQ14DayAggregates(consumer);
+    split_scan::Serial<query::TpchQ14DayAggregate>(
+        scans::DayAggregatesTable(), scans::DecodeDayAggregate, consumer);
+  }
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ14PartInput &)> &sink)
+      override {
+    split_scan::Partitioned<query::TpchQ14PartInput>(
+        services, scans::PartsTable(), partitions, scans::DecodePart, sink);
+  }
+  void ScanDayAggregatesPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ14DayAggregate &)> &sink)
+      override {
+    split_scan::Partitioned<query::TpchQ14DayAggregate>(
+        services, scans::DayAggregatesTable(), partitions, scans::DecodeDayAggregate, sink);
   }
   void ScanPartDayRevenue(
       const std::vector<int64_t> &partkeys,

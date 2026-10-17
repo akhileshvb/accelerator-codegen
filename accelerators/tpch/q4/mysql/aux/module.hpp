@@ -49,6 +49,14 @@ public:
       const std::function<void(const TpchQ4OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ4LineitemInput &)> &) = 0;
+  // The same scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ4OrderInput &)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ4LineitemInput &)> &sink) = 0;
 };
 
 // ---------------------------------------------------------------------------

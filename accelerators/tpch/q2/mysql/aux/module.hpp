@@ -76,6 +76,17 @@ public:
       const std::function<void(const TpchQ2NationInput &)> &) = 0;
   virtual void ScanRegions(
       const std::function<void(const TpchQ2RegionInput &)> &) = 0;
+  // The big tables' scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ2PartInput &)> &sink) = 0;
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ2SupplierInput &)> &sink) = 0;
+  virtual void ScanPartsuppsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ2PartsuppInput &)> &sink) = 0;
 };
 
 // ---------------------------------------------------------------------------
