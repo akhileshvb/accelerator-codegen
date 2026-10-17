@@ -112,29 +112,6 @@ using namespace scan;
 
 struct TpchQ3Scan : TpchQ3InitialScan {
   explicit TpchQ3Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanCustomers(
-      const std::function<void(const TpchQ3CustomerInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT c_custkey, c_mktsegment FROM customer",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ3CustomerInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     ChunkValue(chunk, 1, row).ToString()};
-        },
-        [&](const TpchQ3CustomerInput &input) { consumer(input); });
-  }
-  void ScanOrders(
-      const std::function<void(const TpchQ3OrderInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT o_orderkey, o_orderdate, o_custkey, o_shippriority FROM orders",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ3OrderInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                  DateDays(ChunkValue(chunk, 1, row)),
-                                  SafeInt64(ChunkValue(chunk, 2, row)),
-                                  SafeInt32(ChunkValue(chunk, 3, row))};
-        },
-        [&](const TpchQ3OrderInput &input) { consumer(input); });
-  }
   bool LookupOrderContext(int64_t orderkey, OrderContext &out) override {
     out = {};
     bool found = false;
@@ -154,19 +131,6 @@ struct TpchQ3Scan : TpchQ3InitialScan {
           found = out.segment != 0;
         });
     return found;
-  }
-  void ScanLineitems(
-      const std::function<void(const TpchQ3LineitemInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT l_orderkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ3LineitemInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     DecimalRaw(ChunkValue(chunk, 1, row)), 2,
-                                     DecimalRaw(ChunkValue(chunk, 2, row)), 2,
-                                     DateDays(ChunkValue(chunk, 3, row))};
-        },
-        [&](const TpchQ3LineitemInput &input) { consumer(input); });
   }
   bool ScanOrdersByCustomer(
       int64_t custkey,

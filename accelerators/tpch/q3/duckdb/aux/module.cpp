@@ -1757,16 +1757,23 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q3 requires a typed initial scan source");
 
-  CustBuilder custs;
-  initial_scan->ScanCustomers([&](const TpchQ3CustomerInput &input) {
-    const auto partition = TpchQ3PartitionFromMktsegment(input.mktsegment);
-    if (partition == 0 || input.key < 0)
-      return;
-    TpchQ3CustRec rec;
-    rec.key = static_cast<uint64_t>(input.key);
-    rec.segment = static_cast<uint8_t>(partition);
-    custs.Add(rec);
-  });
+  CustBuilder custs = core::PartitionedBuild<CustBuilder>(
+      services, [] { return CustBuilder{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanTable(
+            services, "customer",
+            {scan::IntColumn("c_custkey"), scan::TextColumn("c_mktsegment")}, parts, sink);
+      },
+      [](CustBuilder &into, const auto &row) {
+        const auto partition = TpchQ3PartitionFromMktsegment(row.Text(1));
+        if (partition == 0 || row.Int(0) < 0)
+          return;
+        TpchQ3CustRec rec;
+        rec.key = static_cast<uint64_t>(row.Int(0));
+        rec.segment = static_cast<uint8_t>(partition);
+        into.Add(rec);
+      },
+      [](CustBuilder &into, CustBuilder &&from) { into.Merge(std::move(from)); });
   custs.Sort();
 
   auto orders = ScanOrders(services, *initial_scan, custs);

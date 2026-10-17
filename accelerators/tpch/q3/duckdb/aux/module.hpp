@@ -27,11 +27,6 @@ struct TpchQ3Config {
   core::TableId lineitem_table = 0;
 };
 
-struct TpchQ3CustomerInput {
-  int64_t key = 0;
-  std::string mktsegment;
-};
-
 struct TpchQ3OrderInput {
   int64_t key = 0;
   int32_t orderdate_days = 0;
@@ -51,12 +46,6 @@ struct TpchQ3LineitemInput {
 class TpchQ3InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ3InitialScan() = default;
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ3CustomerInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ3OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ3LineitemInput &)> &) = 0;
 
   // orders ⨝ customer lookup for RF1 lineitems / orders Insert when the
   // dense order_segment side does not yet know orderkey.
