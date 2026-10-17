@@ -2,11 +2,8 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <functional>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -26,11 +23,6 @@ struct TpchQ13CustomerInput {
   int64_t key = 0;
 };
 
-struct TpchQ13OrderInput {
-  int64_t custkey = 0;
-  std::string comment;
-};
-
 class TpchQ13InitialScan {
 public:
   virtual ~TpchQ13InitialScan() = default;
@@ -42,22 +34,6 @@ public:
   virtual void ScanOrders(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, int64_t custkey, std::string_view comment)> &) = 0;
-  virtual bool LookupOrder(int64_t custkey, TpchQ13OrderInput &out) {
-    (void)custkey;
-    (void)out;
-    return false;
-  }
-};
-
-// Fast two-part LIKE matcher for "%a%b%" patterns.
-struct TpchQ13TwoPartLikeMatcher {
-  std::string part1;
-  std::string part2;
-  bool enabled = false;
-  TpchQ13TwoPartLikeMatcher() = default;
-  void Build(const std::string &pattern);
-  bool Matches(const std::string &text) const;
-  bool MatchesView(const char *data, std::size_t len) const;
 };
 
 // Exact SQL LIKE matcher ('%' any run, '_' one byte, no ESCAPE, bytewise),
