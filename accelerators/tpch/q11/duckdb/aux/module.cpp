@@ -1046,18 +1046,22 @@ TpchQ11Built TpchQ11Module::BuildState(
     state->nation_name_to_key[input.name] = input.nationkey;
   });
 
+  using scan::DecimalColumn;
+  using scan::IntColumn;
   std::unordered_map<int64_t, Q11SupplierEntry> all;
-  initial_scan->ScanSuppliers([&](const TpchQ11SupplierInput &input) {
+  for (const auto &input : CollectTable<TpchQ11SupplierInput>(
+           services, *initial_scan, "supplier", {IntColumn("s_suppkey"), IntColumn("s_nationkey")},
+           [](const auto &row) {
+             return TpchQ11SupplierInput{row.Int(0), static_cast<int32_t>(row.Int(1))};
+           })) {
     auto &entry = all[input.suppkey];
     entry.nationkey = input.nationkey;
     entry.has_supplier = true;
-  });
+  }
 
   // Partsupp rows are grouped by supplier per scan partition; the groups are
   // joined supplier by supplier (their order within a supplier is folded away
   // by the sort below).
-  using scan::DecimalColumn;
-  using scan::IntColumn;
   auto by_supplier = core::PartitionedBuild<std::unordered_map<int64_t, std::vector<Q11SupplierPart>>>(
       services, [] { return std::unordered_map<int64_t, std::vector<Q11SupplierPart>>{}; },
       [&](std::size_t parts, auto &&sink) {

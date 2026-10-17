@@ -104,29 +104,6 @@ using namespace scan;
 
 struct TpchQ11Scan : TpchQ11InitialScan {
   explicit TpchQ11Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanPartsupp(
-      const std::function<void(const TpchQ11PartsuppInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT ps_partkey, ps_suppkey, ps_availqty, ps_supplycost FROM partsupp",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ11PartsuppInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      SafeInt64(ChunkValue(chunk, 1, row)),
-                                      SafeInt64(ChunkValue(chunk, 2, row)),
-                                      DecimalRaw(ChunkValue(chunk, 3, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
-  void ScanSuppliers(
-      const std::function<void(const TpchQ11SupplierInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT s_suppkey, s_nationkey FROM supplier",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ11SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                      SafeInt32(ChunkValue(chunk, 1, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
   void ScanNations(
       const std::function<void(const TpchQ11NationInput &)> &consumer) override {
     ScanQuery(connection, "SELECT n_nationkey, n_name FROM nation",
