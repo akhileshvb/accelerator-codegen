@@ -4,6 +4,7 @@
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "substrate/aux/core/query_module_helpers.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -29,41 +30,6 @@ MakeStateImage(TpchQ12ImageKind kind, int32_t receipt_day,
   image->receipt_day = receipt_day;
   image->state = state;
   return image;
-}
-
-// For each requested partition the matching image of `found` (or nullptr).
-// Stores return found partitions in request order, but the interface does not
-// promise it: the in-order walk is the fast path, anything else is matched by
-// sorted lookup.
-void MatchSnapshot(const std::vector<core::PartitionId> &requested,
-                   const std::vector<core::StateImage> &found,
-                   std::vector<const core::StateImage *> &out) {
-  out.assign(requested.size(), nullptr);
-  std::size_t at = 0;
-  for (std::size_t slot = 0; slot < requested.size(); ++slot) {
-    if (at < found.size() && found[at].partition == requested[slot])
-      out[slot] = &found[at++];
-  }
-  if (at == found.size())
-    return;
-  std::vector<const core::StateImage *> sorted;
-  sorted.reserve(found.size());
-  for (const auto &image : found)
-    sorted.push_back(&image);
-  std::sort(sorted.begin(), sorted.end(),
-            [](const core::StateImage *l, const core::StateImage *r) {
-              return l->partition < r->partition;
-            });
-  for (std::size_t slot = 0; slot < requested.size(); ++slot) {
-    const auto it = std::lower_bound(
-        sorted.begin(), sorted.end(), requested[slot],
-        [](const core::StateImage *image, core::PartitionId id) {
-          return image->partition < id;
-        });
-    out[slot] = it != sorted.end() && (*it)->partition == requested[slot]
-                    ? *it
-                    : nullptr;
-  }
 }
 
 const TpchQ12StateImage *AsQ12Image(const core::StateImage &image,
@@ -286,11 +252,10 @@ public:
     // The lineitem deltas move leaf-to-root paths of the dyadic tree, so a
     // partition rebuild is not offered: it would need a diff against the old
     // leaf to fix the ancestors.
-    auto request = core::MaintenanceRequest::IncrementalPartitioned(
+    const auto request = core::MaintenanceRequest::IncrementalPartitionedNoPartitionRebuild(
         buffer.Deltas().size() + buffer.OrderDeltas().size() + changed_lines.size(),
         std::max<std::size_t>(1, CountTouchedDays() + (priorities_changed ? 1 : 0)),
         services.ExpectedQueriesBeforeNextWrite());
-    request.partition_rebuild_supported = false;
     const auto decision = services.ChooseMaintenance(request);
     if (decision.action != core::MaintenanceAction::ApplyDelta &&
         decision.action != core::MaintenanceAction::RebuildPartition) {
@@ -531,7 +496,7 @@ private:
       const auto snapshot =
           services.StateStore().ReadPartitions(visibility, partitions);
       std::vector<const core::StateImage *> matched;
-      MatchSnapshot(partitions, snapshot.partitions, matched);
+      core::MatchSnapshot(partitions, snapshot.partitions, matched);
       for (std::size_t slot = 0; slot < partitions.size(); ++slot) {
         auto image = NewNodeImage();
         if (matched[slot]) {

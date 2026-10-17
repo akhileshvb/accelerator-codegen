@@ -159,9 +159,8 @@ bool ReadPart(const core::AuxRow &row, int64_t &partkey, std::string &name) {
 
 // An int32 nation key in column 1.
 bool ReadNationKeyCell(const core::AuxRow &row, int64_t &nationkey) {
-  int64_t nk = 0;
-  if (!core::IntCell(row, 1, nk) || nk < std::numeric_limits<int32_t>::min() ||
-      nk > std::numeric_limits<int32_t>::max())
+  int32_t nk = 0;
+  if (!core::Int32Cell(row, 1, nk))
     return false;
   nationkey = nk;
   return true;

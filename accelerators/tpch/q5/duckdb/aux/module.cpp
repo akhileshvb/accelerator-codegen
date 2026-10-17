@@ -7,6 +7,7 @@
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "substrate/aux/core/query_module_helpers.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -44,28 +45,6 @@ constexpr uint32_t kQ5MaxStride = 64;
 // extendedprice * (1 - discount) at scale 4.
 int64_t ComputeRevenueRaw(int64_t extended_price_raw, int64_t discount_raw) {
   return extended_price_raw * (100 - discount_raw);
-}
-
-bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
-  int64_t value = 0;
-  if (!core::IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  out = static_cast<int32_t>(value);
-  return true;
-}
-
-uint32_t NextPowerOf2(uint32_t n) {
-  if (n == 0)
-    return 1;
-  n--;
-  n |= n >> 1;
-  n |= n >> 2;
-  n |= n >> 4;
-  n |= n >> 8;
-  n |= n >> 16;
-  return n + 1;
 }
 
 std::shared_ptr<const TpchQ5StateImage>
@@ -710,7 +689,7 @@ void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
     };
     auto read = [&](const core::AuxRow &row, int64_t &key,
                     int32_t &nation) -> bool {
-      return core::IntCell(row, 0, key) && Int32Cell(row, 1, nation);
+      return core::IntCell(row, 0, key) && core::Int32Cell(row, 1, nation);
     };
     using Kind = TpchQ5TxnBuffer::DimDelta::Kind;
     switch (mutation.kind) {
@@ -1093,7 +1072,7 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   int32_t num_days = meta.max_orderdate_days - meta.min_orderdate_days + 1;
   if (num_days < 1)
     num_days = 1;
-  meta.tree_size = NextPowerOf2(static_cast<uint32_t>(num_days));
+  meta.tree_size = core::NextPowerOf2(static_cast<uint32_t>(num_days));
   const uint32_t tree_size = meta.tree_size;
   orders.ForEach([&](TpchQ5ShardIndex<TpchQ5OrderRec>::Element &e) {
     e.value.ordinal = TpchQ5DateOrdinal(e.value.ordinal, meta.min_orderdate_days);

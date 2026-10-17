@@ -8,6 +8,7 @@
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "substrate/aux/core/query_module_helpers.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -33,18 +34,6 @@ constexpr std::size_t kSortShardGrain = 1024;
 constexpr std::size_t kLookupGrain = 2048;
 // Touched mid arrays per slice when publishing the eligibility index.
 constexpr std::size_t kFinishGrain = 16;
-
-uint32_t NextPowerOf2(uint32_t n) {
-  if (n == 0)
-    return 1;
-  n--;
-  n |= n >> 1;
-  n |= n >> 2;
-  n |= n >> 4;
-  n |= n >> 8;
-  n |= n >> 16;
-  return n + 1;
-}
 
 std::shared_ptr<const TpchQ4StateImage>
 MakeSideImage(const std::shared_ptr<const TpchQ4State> &state) {
@@ -742,7 +731,7 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   int32_t num_days = state.max_orderdate_days - state.min_orderdate_days + 1;
   if (num_days < 1)
     num_days = 1;
-  state.tree_size = NextPowerOf2(static_cast<uint32_t>(num_days));
+  state.tree_size = core::NextPowerOf2(static_cast<uint32_t>(num_days));
   const uint32_t num_p = static_cast<uint32_t>(state.priority_names.size());
   state.tree_stride = num_p;
   state.tree.assign(static_cast<std::size_t>(state.tree_size) * 2 * num_p, 0);
