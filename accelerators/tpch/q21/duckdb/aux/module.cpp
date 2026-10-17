@@ -1201,9 +1201,11 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
 
   // ── Supplier directory deltas ─────────────────────────────────────────────
   const auto numwait_changed = affected.size();
+  std::unordered_set<int64_t> added; // an update is a delete then an insert of one key
   for (const auto &delta : supplier_deltas) {
     if (!std::binary_search(affected.begin(), affected.begin() + numwait_changed,
-                            Affected{delta.suppkey}, by_suppkey)) {
+                            Affected{delta.suppkey}, by_suppkey) &&
+        added.insert(delta.suppkey).second) {
       const int64_t *cur = next_core->numwait.Find(delta.suppkey);
       affected.push_back({delta.suppkey, cur ? *cur : 0, cur ? *cur : 0});
     }

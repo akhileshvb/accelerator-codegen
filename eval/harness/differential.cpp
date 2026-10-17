@@ -43,10 +43,22 @@ void Require(bool condition, const std::string &message) {
   }
 }
 
+// ACCEL_LOG_MAINTENANCE_ACTIONS=1: what the policy chose for each commit.
+void LogMaintenanceAction(DuckdbRuntime &runtime, const std::string &what) {
+  if (!std::getenv("ACCEL_LOG_MAINTENANCE_ACTIONS")) {
+    return;
+  }
+  const auto entry = runtime.Stats().last_decision;
+  std::cerr << "maintenance_action="
+            << (entry ? maintenance::MaintenanceActionName(entry->staged_action) : "none")
+            << (what.empty() ? "" : " after " + what) << '\n';
+}
+
 void RequireForcedMaintenanceAction(DuckdbRuntime &runtime) {
   const char *force = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
   const std::string force_s = force ? force : "";
   if (force_s.empty()) {
+    LogMaintenanceAction(runtime, "");
     return;
   }
   core::SetForcedMaintenanceActionName(force_s);
@@ -60,6 +72,12 @@ void RequireForcedMaintenanceAction(DuckdbRuntime &runtime) {
               ")");
   const std::string action =
       maintenance::MaintenanceActionName(entry->staged_action);
+  if (force_s != "NoOp" && entry->staged_action == maintenance::MaintenanceAction::NoOp) {
+    // The module applies changes this small incrementally without asking the
+    // policy (it consults it for bulk changes only): nothing to force here.
+    std::cerr << "maintenance_action=not-consulted force=" << force_s << " (N/A)\n";
+    return;
+  }
   if (force_s == "ApplyDelta") {
     Require(action == "ApplyDelta",
             "expected ApplyDelta maintenance but got action=[" + action +
@@ -728,6 +746,7 @@ void RunSqlWritesDifferentialCheck(const std::string &db_path, const SharedQuery
   const auto writes = TpchSqlWrites(connection, entry, rounds);
   for (const auto &write : writes) {
     runtime.ApplyWrite(write.sql);
+    LogMaintenanceAction(runtime, write.name);
     try {
       RequireSharedMatchesBase(connection, runtime, entry);
     } catch (const std::exception &ex) {
