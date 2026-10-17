@@ -28,17 +28,9 @@ constexpr bool kCaseInsensitive = true;
 // Blocks per maintenance slice (a block of a few parts encodes in ~10 us).
 constexpr std::size_t kBlockGrain = 256;
 
+using core::Int32Cell;
 using core::IntCell;
 using core::StringCell;
-
-bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) || value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  out = static_cast<int32_t>(value);
-  return true;
-}
 
 // Quantity in hundredths (the engine hands columns over as scaled decimals).
 bool QuantityCell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
