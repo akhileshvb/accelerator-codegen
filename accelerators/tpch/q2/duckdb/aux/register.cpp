@@ -8,17 +8,9 @@
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
 #include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -30,6 +22,8 @@ namespace q2_catalog {
 namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
+
+constexpr query::TpchQ2Config kTables{1, 2, 3, 4, 5};
 
 SharedProbe BuildTpchQ2Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
@@ -44,7 +38,7 @@ SharedProbe BuildTpchQ2Probe(::duckdb::MaterializedQueryResult &result,
   const int64_t new_raw = min_raw - 1;
   const double new_cost = static_cast<double>(new_raw) / 100.0;
   SharedProbe probe;
-  probe.table = 3; // partsupp
+  probe.table = kTables.partsupp_table;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {2};
   probe.write_delta = new_cost - cost;
@@ -198,7 +192,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q2_aux",
     {::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR},
     [](::duckdb::Connection &connection) {
-      const TpchQ2Config c{1, 2, 3, 4, 5};
+      const TpchQ2Config c = q2_catalog::kTables;
       return MakeBinding<TpchQ2Scan, TpchQ2Module>(connection, CaptureTableList{{"part", c.part_table}, {"supplier", c.supplier_table}, {"partsupp", c.partsupp_table}, {"nation", c.nation_table}, {"region", c.region_table}}, c);
     }}};
 

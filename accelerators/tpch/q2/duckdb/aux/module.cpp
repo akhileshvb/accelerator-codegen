@@ -1,16 +1,13 @@
 #include "tpch/q2/duckdb/aux/module.hpp"
 #include "tpch/q2/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/parallel_stable_sort.hpp"
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -21,50 +18,29 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// ── Custom profiling (no-op unless ACCEL_AUX_CUSTOM_PROFILE is set) ─────────
-struct CustomTimer {
-  using Clock = std::chrono::high_resolution_clock;
-  Clock::time_point start;
-  bool active;
-  explicit CustomTimer(bool enabled) : start(Clock::now()), active(enabled) {}
-  double us() const {
-    return static_cast<double>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            Clock::now() - start)
-            .count()) /
-           1000.0;
-  }
-};
-
-static bool CustomProfilingEnabled() {
-  static const bool enabled = []() {
-    const char *v = std::getenv("ACCEL_AUX_CUSTOM_PROFILE");
-    return v && v[0] != '\0';
-  }();
-  return enabled;
-}
-
-static void EmitCustomProfile(const char *phase, double us_val, int64_t rows,
-                              int64_t groups, int64_t keys) {
-  if (!CustomProfilingEnabled())
-    return;
-  fprintf(stderr,
-          "ACCEL_CUSTOM_PROFILE {"
-          "\"phase\":\"%s\","
-          "\"us\":%.3f,"
-          "\"rows\":%ld,"
-          "\"groups\":%ld,"
-          "\"keys\":%ld"
-          "}\n",
-          phase, us_val, (long)rows, (long)groups, (long)keys);
-}
-
-
 using core::ByteReader;
 using core::ByteWriter;
 
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kStateMagic = 0x5132534d; // Q2SM
+
+// Ops per slice; a commit spanning several slices applies its ops as one batch.
+constexpr std::size_t kBatchOpGrain = 1024;
+// Parts per slice of the maintenance entry diff (~1500 us).
+constexpr std::size_t kEntryGrain = 512;
+// Entries per slice of the sorted maintenance diff.
+constexpr std::size_t kSortGrain = 16384;
+// Groups per slice of list edits.
+constexpr std::size_t kGroupGrain = 4;
+// Part slots per slice of the initial entry computation (~65000 us).
+constexpr std::size_t kPartGrain = 65536;
+// Candidate lists per slice of the initial list build (each list is sorted).
+constexpr std::size_t kListGrain = 1;
+
+// Entries per chunk of a candidate list when built, and the size that splits it.
+constexpr std::size_t kChunkTarget = 256;
+constexpr std::size_t kChunkMax = 512;
+constexpr int64_t kMaxFlatKey = 1'000'000;
 
 bool StringValue(const core::AuxValue &value, std::string &out) {
   if (value.is_null || !std::holds_alternative<std::string>(value.payload))
@@ -73,50 +49,11 @@ bool StringValue(const core::AuxValue &value, std::string &out) {
   return true;
 }
 
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
-
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, int64_t &suppkey,
                   int64_t &supplycost_raw) {
   int32_t scale = 0;
-  return IntCell(row, 0, partkey) && IntCell(row, 1, suppkey) &&
-         RawDecimalCell(row, 2, supplycost_raw, scale);
+  return core::IntCell(row, 0, partkey) && core::IntCell(row, 1, suppkey) &&
+         core::DecimalCell(row, 2, supplycost_raw, scale);
 }
 
 template <typename T>
@@ -136,8 +73,6 @@ bool AcceptDenseKey(int64_t key) {
   return true;
 }
 
-constexpr int64_t kMaxFlatKey = 1'000'000;
-
 bool AcceptFlatKey(int64_t key) {
   if (key < 0 || key > kMaxFlatKey)
     throw std::out_of_range("TPC-H Q2 nation/region key too large: " +
@@ -145,23 +80,6 @@ bool AcceptFlatKey(int64_t key) {
   return true;
 }
 
-
-bool StrCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size())
-    return false;
-  return StringValue(row.values[index], out);
-}
-
-// Maintenance batches: ops per slice before a commit applies its ops as one
-// batch, parts per slice of the entry diff (a few us of ComputeEntries each),
-// entries per sorted slice, groups per slice of list edits.
-constexpr std::size_t kBatchOpGrain = 1024;
-constexpr std::size_t kEntryGrain = 512;
-constexpr std::size_t kSortGrain = 16384;
-constexpr std::size_t kGroupGrain = 4;
-
-constexpr std::size_t kChunkTarget = 256;
-constexpr std::size_t kChunkMax = 512;
 
 // Total order of candidate entries = final ORDER BY of Q2, plus suppkey as a
 // last tie-break.  Supplier names are only consulted when the cheaper fields
@@ -297,7 +215,6 @@ void AddOfferRaw(TpchQ2State &st, int64_t partkey, int64_t suppkey,
 struct OffersPartial {
   TpchQ2Paged<std::vector<TpchQ2Offer>, 9> offers;
   TpchQ2Paged<std::vector<int32_t>, 6> supp_parts;
-  int64_t rows = 0;
 };
 
 // Appends every list of `from` to the list of the same key in `into`.
@@ -321,8 +238,6 @@ using GroupAcc = std::unordered_map<int64_t, std::vector<TpchQ2Entry>>;
 
 // Builds the sorted candidate lists from scratch (Build / Decode).
 void BuildGroups(core::AuxEngineServices &services, TpchQ2State &st) {
-  // ComputeEntries costs about a microsecond per part slot.
-  constexpr std::size_t kPartGrain = 1 << 16;
   GroupAcc acc;
   core::ParallelReduce(
       services, TpchQ2Capacity(*st.parts), kPartGrain, acc,
@@ -350,7 +265,7 @@ void BuildGroups(core::AuxEngineServices &services, TpchQ2State &st) {
     items.push_back(&kv);
   std::vector<std::shared_ptr<TpchQ2GroupList>> lists(items.size());
   const EntryLess less{&st};
-  services.ParallelFor(items.size(), [&](std::size_t i) {
+  core::ParallelEach(services, items.size(), kListGrain, [&](std::size_t i) {
     auto &v = items[i]->second;
     std::sort(v.begin(), v.end(), less);
     auto list = std::make_shared<TpchQ2GroupList>();
@@ -764,8 +679,8 @@ public:
           into.before.insert(into.before.end(), from.before.begin(), from.before.end());
           into.after.insert(into.after.end(), from.after.begin(), from.after.end());
         });
-    ParallelStableSort(services, entries.before, GroupEntryCanon, kSortGrain);
-    ParallelStableSort(services, entries.after, GroupEntryCanon, kSortGrain);
+    core::ParallelStableSort(services, entries.before, GroupEntryCanon, kSortGrain);
+    core::ParallelStableSort(services, entries.after, GroupEntryCanon, kSortGrain);
     std::vector<GroupEntry> rem, add;
     DiffEntries(entries.before, entries.after,
                 [&](int32_t suppkey) {
@@ -793,6 +708,201 @@ public:
     ok = consistent;
   }
 };
+
+// Partsupp: a row that cannot be parsed has a NULL join/aggregate column and
+// contributes nothing (neither joins nor feeds MIN), so it is skipped.
+void AccumulatePartsupp(const core::MutationBatch &mutation, TpchQ2TxnBuffer &buffer) {
+  auto add = [&](const core::AuxRow &row, int8_t sign) {
+    int64_t partkey = 0, suppkey = 0, cost = 0;
+    if (!ReadPartsupp(row, partkey, suppkey, cost))
+      return;
+    TpchQ2Op op;
+    op.kind = TpchQ2Op::Kind::Partsupp;
+    op.partsupp = {partkey, suppkey, cost, sign};
+    buffer.AddOp(std::move(op));
+  };
+  switch (mutation.kind) {
+  case core::MutationKind::Insert:
+    for (const auto &row : mutation.new_rows)
+      add(row, 1);
+    break;
+  case core::MutationKind::Delete:
+    for (const auto &row : mutation.old_rows)
+      add(row, -1);
+    break;
+  case core::MutationKind::Update:
+    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+      int64_t pk0, sk0, c0, pk1, sk1, c1;
+      const bool o = ReadPartsupp(mutation.old_rows[i], pk0, sk0, c0);
+      const bool n = ReadPartsupp(mutation.new_rows[i], pk1, sk1, c1);
+      if (o && n && pk0 == pk1 && sk0 == sk1 && c0 == c1)
+        continue; // no-op update
+      if (o)
+        add(mutation.old_rows[i], -1);
+      if (n)
+        add(mutation.new_rows[i], 1);
+    }
+    break;
+  }
+}
+
+// Inserts and updated-to rows go to set(row), deleted rows to erase(row); an
+// update that changes the key erases the old row first. An unreadable key
+// needs a rebuild.
+template <class Set, class Erase>
+void ForEachKeyedChange(const core::MutationBatch &mutation, TpchQ2TxnBuffer &buffer,
+                        Set &&set, Erase &&erase) {
+  switch (mutation.kind) {
+  case core::MutationKind::Insert:
+    for (const auto &row : mutation.new_rows)
+      set(row);
+    break;
+  case core::MutationKind::Delete:
+    for (const auto &row : mutation.old_rows)
+      erase(row);
+    break;
+  case core::MutationKind::Update:
+    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+      int64_t old_key = 0, new_key = 0;
+      if (!core::IntCell(mutation.old_rows[i], 0, old_key) ||
+          !core::IntCell(mutation.new_rows[i], 0, new_key)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (old_key != new_key)
+        erase(mutation.old_rows[i]);
+      set(mutation.new_rows[i]);
+    }
+    break;
+  }
+}
+
+void AddEraseOp(TpchQ2TxnBuffer &buffer, const core::AuxRow &row, TpchQ2Op::Kind kind) {
+  TpchQ2Op op;
+  op.kind = kind;
+  if (!core::IntCell(row, 0, op.key)) {
+    buffer.MarkRebuild();
+    return;
+  }
+  buffer.AddOp(std::move(op));
+}
+
+bool ParseSupplier(const core::AuxRow &row, int64_t &key, TpchQ2SupplierInfo &info) {
+  int64_t nationkey = 0;
+  int32_t scale = 0;
+  if (!core::IntCell(row, 0, key) || !core::StringCell(row, 1, info.name) ||
+      !core::StringCell(row, 2, info.address) || !core::IntCell(row, 3, nationkey) ||
+      !core::StringCell(row, 4, info.phone) ||
+      !core::DecimalCell(row, 5, info.acctbal_raw, scale) ||
+      !core::StringCell(row, 6, info.comment))
+    return false;
+  if (nationkey < std::numeric_limits<int32_t>::min() ||
+      nationkey > std::numeric_limits<int32_t>::max())
+    return false;
+  info.nationkey = static_cast<int32_t>(nationkey);
+  info.valid = true;
+  return true;
+}
+
+bool ParsePart(const core::AuxRow &row, TpchQ2Op &op) {
+  int64_t size = 0;
+  if (!core::IntCell(row, 0, op.key) || !core::StringCell(row, 1, op.part.mfgr) ||
+      !core::StringCell(row, 2, op.part.type) || !core::IntCell(row, 3, size))
+    return false;
+  if (size < std::numeric_limits<int32_t>::min() ||
+      size > std::numeric_limits<int32_t>::max())
+    return false;
+  op.part.key = op.key;
+  op.part.size = static_cast<int32_t>(size);
+  return true;
+}
+
+void AccumulateSuppliers(const core::MutationBatch &mutation, TpchQ2TxnBuffer &buffer) {
+  ForEachKeyedChange(
+      mutation, buffer,
+      [&](const core::AuxRow &row) {
+        TpchQ2Op op;
+        op.kind = TpchQ2Op::Kind::SupplierSet;
+        if (!ParseSupplier(row, op.key, op.supplier)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        buffer.AddOp(std::move(op));
+      },
+      [&](const core::AuxRow &row) {
+        AddEraseOp(buffer, row, TpchQ2Op::Kind::SupplierErase);
+      });
+}
+
+void AccumulateParts(const core::MutationBatch &mutation, TpchQ2TxnBuffer &buffer) {
+  ForEachKeyedChange(
+      mutation, buffer,
+      [&](const core::AuxRow &row) {
+        TpchQ2Op op;
+        op.kind = TpchQ2Op::Kind::PartSet;
+        if (!ParsePart(row, op)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        buffer.AddOp(std::move(op));
+      },
+      [&](const core::AuxRow &row) {
+        AddEraseOp(buffer, row, TpchQ2Op::Kind::PartErase);
+      });
+}
+
+struct PublishedState {
+  std::shared_ptr<const TpchQ2State> state;
+  core::Version version = 0;
+};
+
+// The published full image, or an empty state when it is absent or foreign.
+PublishedState LoadPublished(core::AuxEngineServices &services) {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {core::TpchQ2Layout::kFull});
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition != core::TpchQ2Layout::kFull)
+      continue;
+    const auto *typed = image.As<TpchQ2StateImage>();
+    if (!typed || typed->kind != TpchQ2ImageKind::Full || !typed->state)
+      return {};
+    return {typed->state, image.version};
+  }
+  return {};
+}
+
+// Applies `ops` to a copy-on-write working copy of `published` (pages, chunks
+// and lists are cloned only where an op writes; the published image is never
+// mutated). Fills `outcome` and returns true when the cost model keeps the
+// delta; false when the copy is inconsistent or a rebuild is chosen.
+bool TryApplyOps(core::AuxEngineServices &services, const std::vector<TpchQ2Op> &ops,
+                 const PublishedState &published, core::StagedMaintenanceOutcome &outcome) {
+  Maintainer work(*published.state);
+  if (core::SliceCount(services, ops.size(), kBatchOpGrain) > 1) {
+    work.ApplyBatch(services, ops, *published.state);
+  } else {
+    for (const auto &op : ops) {
+      work.Apply(op);
+      if (!work.ok)
+        break;
+    }
+  }
+  if (!work.ok)
+    return false;
+  const auto decision = services.ChooseMaintenance(
+      core::MaintenanceRequest::IncrementalSingleState(
+          ops.size(), services.ExpectedQueriesBeforeNextWrite()));
+  if (decision.action != core::MaintenanceAction::ApplyDelta)
+    return false;
+  auto image = std::make_shared<TpchQ2StateImage>();
+  image->kind = TpchQ2ImageKind::Full;
+  image->state = std::make_shared<const TpchQ2State>(std::move(work.st));
+  outcome.action = core::MaintenanceAction::ApplyDelta;
+  outcome.updates.push_back(core::StateImage::Make(
+      core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull, published.version,
+      std::shared_ptr<const TpchQ2StateImage>(std::move(image))));
+  return true;
+}
 
 } // namespace
 
@@ -1130,7 +1240,7 @@ TpchQ2Module::InterpretMutation(const core::MutationBatch &mutation) const {
   }
   if (mutation.table == config.nation_table ||
       mutation.table == config.region_table) {
-    return All();
+    return core::AllPartitionsPlan();
   }
   return {};
 }
@@ -1148,167 +1258,18 @@ void TpchQ2Module::AccumulateMutation(const core::MutationBatch &mutation,
       table != config.part_table)
     return;
 
-  // Insert -> new_rows, Delete -> old_rows, Update -> paired rows.
   if (mutation.kind == core::MutationKind::Update &&
       mutation.old_rows.size() != mutation.new_rows.size()) {
     buffer.MarkRebuild();
     return;
   }
 
-  if (table == config.partsupp_table) {
-    // A row that cannot be parsed has a NULL join/aggregate column and
-    // contributes nothing (neither joins nor feeds MIN), so it is skipped.
-    auto add = [&](const core::AuxRow &row, int8_t sign) {
-      int64_t partkey = 0, suppkey = 0, cost = 0;
-      if (!ReadPartsupp(row, partkey, suppkey, cost))
-        return;
-      TpchQ2Op op;
-      op.kind = TpchQ2Op::Kind::Partsupp;
-      op.partsupp = {partkey, suppkey, cost, sign};
-      buffer.AddOp(std::move(op));
-    };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        add(row, 1);
-      break;
-    case core::MutationKind::Delete:
-      for (const auto &row : mutation.old_rows)
-        add(row, -1);
-      break;
-    case core::MutationKind::Update:
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        int64_t pk0, sk0, c0, pk1, sk1, c1;
-        const bool o = ReadPartsupp(mutation.old_rows[i], pk0, sk0, c0);
-        const bool n = ReadPartsupp(mutation.new_rows[i], pk1, sk1, c1);
-        if (o && n && pk0 == pk1 && sk0 == sk1 && c0 == c1)
-          continue; // no-op update
-        if (o)
-          add(mutation.old_rows[i], -1);
-        if (n)
-          add(mutation.new_rows[i], 1);
-      }
-      break;
-    }
-    return;
-  }
-
-  if (table == config.supplier_table) {
-    auto parse = [&](const core::AuxRow &row, int64_t &key,
-                     TpchQ2SupplierInfo &info) {
-      int64_t nationkey = 0;
-      int32_t scale = 0;
-      if (!IntCell(row, 0, key) || !StrCell(row, 1, info.name) ||
-          !StrCell(row, 2, info.address) || !IntCell(row, 3, nationkey) ||
-          !StrCell(row, 4, info.phone) ||
-          !RawDecimalCell(row, 5, info.acctbal_raw, scale) ||
-          !StrCell(row, 6, info.comment))
-        return false;
-      if (nationkey < std::numeric_limits<int32_t>::min() ||
-          nationkey > std::numeric_limits<int32_t>::max())
-        return false;
-      info.nationkey = static_cast<int32_t>(nationkey);
-      info.valid = true;
-      return true;
-    };
-    auto set = [&](const core::AuxRow &row) {
-      TpchQ2Op op;
-      op.kind = TpchQ2Op::Kind::SupplierSet;
-      if (!parse(row, op.key, op.supplier)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      buffer.AddOp(std::move(op));
-    };
-    auto erase = [&](const core::AuxRow &row) {
-      TpchQ2Op op;
-      op.kind = TpchQ2Op::Kind::SupplierErase;
-      if (!IntCell(row, 0, op.key)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      buffer.AddOp(std::move(op));
-    };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        set(row);
-      break;
-    case core::MutationKind::Delete:
-      for (const auto &row : mutation.old_rows)
-        erase(row);
-      break;
-    case core::MutationKind::Update:
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        int64_t old_key = 0, new_key = 0;
-        if (!IntCell(mutation.old_rows[i], 0, old_key) ||
-            !IntCell(mutation.new_rows[i], 0, new_key)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (old_key != new_key)
-          erase(mutation.old_rows[i]);
-        set(mutation.new_rows[i]);
-      }
-      break;
-    }
-    return;
-  }
-
-  // part table
-  auto parse = [&](const core::AuxRow &row, TpchQ2Op &op) {
-    int64_t size = 0;
-    if (!IntCell(row, 0, op.key) || !StrCell(row, 1, op.part.mfgr) ||
-        !StrCell(row, 2, op.part.type) || !IntCell(row, 3, size))
-      return false;
-    if (size < std::numeric_limits<int32_t>::min() ||
-        size > std::numeric_limits<int32_t>::max())
-      return false;
-    op.part.key = op.key;
-    op.part.size = static_cast<int32_t>(size);
-    return true;
-  };
-  auto set = [&](const core::AuxRow &row) {
-    TpchQ2Op op;
-    op.kind = TpchQ2Op::Kind::PartSet;
-    if (!parse(row, op)) {
-      buffer.MarkRebuild();
-      return;
-    }
-    buffer.AddOp(std::move(op));
-  };
-  auto erase = [&](const core::AuxRow &row) {
-    TpchQ2Op op;
-    op.kind = TpchQ2Op::Kind::PartErase;
-    if (!IntCell(row, 0, op.key)) {
-      buffer.MarkRebuild();
-      return;
-    }
-    buffer.AddOp(std::move(op));
-  };
-  switch (mutation.kind) {
-  case core::MutationKind::Insert:
-    for (const auto &row : mutation.new_rows)
-      set(row);
-    break;
-  case core::MutationKind::Delete:
-    for (const auto &row : mutation.old_rows)
-      erase(row);
-    break;
-  case core::MutationKind::Update:
-    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-      int64_t old_key = 0, new_key = 0;
-      if (!IntCell(mutation.old_rows[i], 0, old_key) ||
-          !IntCell(mutation.new_rows[i], 0, new_key)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      if (old_key != new_key)
-        erase(mutation.old_rows[i]);
-      set(mutation.new_rows[i]);
-    }
-    break;
-  }
+  if (table == config.partsupp_table)
+    AccumulatePartsupp(mutation, buffer);
+  else if (table == config.supplier_table)
+    AccumulateSuppliers(mutation, buffer);
+  else
+    AccumulateParts(mutation, buffer);
 }
 
 core::StagedMaintenanceOutcome
@@ -1317,95 +1278,31 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
                                core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ2TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
-  if (!buffer.HasPendingChanges()) {
+  if (!buffer.HasPendingChanges())
     return outcome;
-  }
   if (!buffer.RequiresRebuild()) {
-    const auto &ops = buffer.Ops();
-    if (ops.empty()) {
+    if (buffer.Ops().empty()) {
       buffer.Clear();
       return outcome;
     }
-    const auto visibility = services.CurrentVisibility();
-    const auto snapshot = services.StateStore().ReadPartitions(
-        visibility, {core::TpchQ2Layout::kFull});
-    std::shared_ptr<const TpchQ2State> old_state;
-    core::Version old_version = 0;
-    for (const auto &image : snapshot.partitions) {
-      if (image.partition != core::TpchQ2Layout::kFull)
-        continue;
-      const auto *typed = image.As<TpchQ2StateImage>();
-      if (!typed || typed->kind != TpchQ2ImageKind::Full || !typed->state) {
-        buffer.Clear();
-        return outcome;
-      }
-      old_state = typed->state;
-      old_version = image.version;
-      break;
-    }
-    if (!old_state) {
+    const auto published = LoadPublished(services);
+    if (!published.state) {
       buffer.Clear();
       return outcome;
     }
-
-    // Copy-on-write working copy: a shallow copy of the state's shared_ptr
-    // members.  Pages / chunks / lists are cloned only where an op writes
-    // (the published image, kept alive by old_state, is never mutated).
-    bool profiling = CustomProfilingEnabled();
-    std::unique_ptr<CustomTimer> apply_timer;
-    if (profiling)
-      apply_timer = std::make_unique<CustomTimer>(true);
-    auto work = std::make_unique<Maintainer>(*old_state);
-    if (core::SliceCount(services, ops.size(), kBatchOpGrain) > 1) {
-      work->ApplyBatch(services, ops, *old_state);
-    } else {
-      for (const auto &op : ops) {
-        work->Apply(op);
-        if (!work->ok)
-          break;
-      }
+    if (TryApplyOps(services, buffer.Ops(), published, outcome)) {
+      buffer.Clear();
+      return outcome;
     }
-    if (profiling)
-      EmitCustomProfile("write_apply", apply_timer->us(),
-                        (int64_t)ops.size(), 0, 0);
-
-    if (work->ok) {
-      const auto decision = services.ChooseMaintenance(
-          {static_cast<uint64_t>(ops.size()), 1, true, false, true, false,
-           false, core::MaintenanceAction::NoOp,
-           services.ExpectedQueriesBeforeNextWrite()});
-      if (decision.action == core::MaintenanceAction::ApplyDelta) {
-        auto image = std::make_shared<TpchQ2StateImage>();
-        image->kind = TpchQ2ImageKind::Full;
-        image->state = std::make_shared<const TpchQ2State>(std::move(work->st));
-        const std::shared_ptr<const TpchQ2StateImage> const_image =
-            std::move(image);
-        outcome.action = core::MaintenanceAction::ApplyDelta;
-        outcome.updates.push_back(core::StateImage::Make(
-            core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull,
-            old_version, const_image));
-        buffer.Clear();
-        return outcome;
-      }
-      // Forced / cost-model rebuild: fall through with empty updates so
-      // PreCommit MaterializeSyncRebuild can run under an active snapshot.
-    }
+    // A rebuild chosen by the cost model or forced leaves the updates empty, so
+    // PreCommit MaterializeSyncRebuild can run under an active snapshot.
   }
 
-  // Full rebuild path (nation/region mutations, unparsable rows, or an
-  // inconsistent incremental application).
-  const auto decision = services.ChooseMaintenance(
-      {0, 0, false, false, true, true, false,
-       core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                       ? core::MaintenanceAction::RebuildAll
-                       : decision.action;
-  if (outcome.action == core::MaintenanceAction::RebuildPartition) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-  }
-  outcome.invalidations = All();
-  outcome.pending_rebuild = outcome.invalidations;
+  // Full rebuild: nation/region mutations, unparsable rows, or an inconsistent
+  // incremental application.
+  core::FinishRebuildAll(
+      outcome, services.ChooseMaintenance(core::MaintenanceRequest::RebuildOnly(
+                   services.ExpectedQueriesBeforeNextWrite())));
   buffer.Clear();
   return outcome;
 }
@@ -1459,17 +1356,7 @@ void TpchQ2Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  bool profiling = CustomProfilingEnabled();
-  std::unique_ptr<CustomTimer> emit_timer;
-  if (profiling) {
-    emit_timer = std::make_unique<CustomTimer>(true);
-  }
   EmitResult(*state, part_size, part_type_pattern, region_name, sink);
-  if (profiling) {
-    double dt = emit_timer->us();
-    int64_t part_count = (int64_t)(state->parts ? TpchQ2Capacity(*state->parts) : 0);
-    EmitCustomProfile("execute_emit", dt, part_count, 0, 0);
-  }
 }
 
 TpchQ2State
@@ -1532,13 +1419,6 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
     });
   }
 
-  // The state is intentionally not a final result cache: it stores the raw
-  // per-part offers plus per-(size, region) candidate lists in output order.
-  bool profiling = CustomProfilingEnabled();
-  std::unique_ptr<CustomTimer> partsupp_timer;
-  if (profiling) {
-    partsupp_timer = std::make_unique<CustomTimer>(true);
-  }
   // Partsupp rows go into per-partition offer lists, appended in partition
   // order (the order of the serial scan).
   using scan::DecimalColumn;
@@ -1557,39 +1437,22 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
         AcceptDenseKey(partkey);
         p.offers.Mutable(partkey).push_back({row.Decimal(2), static_cast<int32_t>(suppkey)});
         p.supp_parts.Mutable(suppkey).push_back(static_cast<int32_t>(partkey));
-        ++p.rows;
       },
       [](OffersPartial &into, OffersPartial &&from) {
         AppendLists(into.offers, from.offers);
         AppendLists(into.supp_parts, from.supp_parts);
-        into.rows += from.rows;
       });
-  const int64_t partsupp_rows = offers.rows;
   state.offers = std::make_shared<const TpchQ2Paged<std::vector<TpchQ2Offer>, 9>>(
       std::move(offers.offers));
   state.supp_parts = std::make_shared<const TpchQ2Paged<std::vector<int32_t>, 6>>(
       std::move(offers.supp_parts));
   BuildGroups(services, state);
-  if (profiling) {
-    EmitCustomProfile("build_partsupp_scan", partsupp_timer->us(),
-                      partsupp_rows, (int64_t)state.groups->size(), 0);
-  }
   return state;
 }
 
 std::shared_ptr<const TpchQ2State>
 TpchQ2Module::LoadState(core::AuxEngineServices &services) const {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {core::TpchQ2Layout::kFull});
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition != core::TpchQ2Layout::kFull)
-      continue;
-    const auto *typed = image.As<TpchQ2StateImage>();
-    if (!typed || typed->kind != TpchQ2ImageKind::Full || !typed->state)
-      return nullptr;
-    return typed->state;
-  }
-  return nullptr;
+  return LoadPublished(services).state;
 }
 
 void TpchQ2Module::EmitResult(const TpchQ2State &state, int32_t part_size,
