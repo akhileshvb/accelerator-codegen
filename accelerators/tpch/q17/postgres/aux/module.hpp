@@ -59,10 +59,12 @@ struct TpchQ17LineitemInput {
 class TpchQ17InitialScan {
 public:
   virtual ~TpchQ17InitialScan() = default;
+  // Every part and lineitem, split into `partitions` fixed row ranges:
+  // sink(partition, row) runs concurrently for different partitions, one
+  // thread per partition.
   virtual void ScanParts(
-      const std::function<void(const TpchQ17PartInput &)> &) = 0;
-  // Every lineitem, split into `partitions` fixed row ranges: sink(partition,
-  // row) runs concurrently for different partitions, one thread per partition.
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ17PartInput &)> &sink) = 0;
   virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ17LineitemInput &)> &sink) = 0;

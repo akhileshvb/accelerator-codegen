@@ -5,9 +5,11 @@
 #include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -354,6 +356,36 @@ std::vector<BuiltPart> FoldBucket(std::vector<PartRow> &rows) {
   return out;
 }
 
+// One partition's parts with the (brand, container) groups it met; a group
+// met by several partitions appears once per partition after the merge.
+struct PartGroups {
+  struct Row {
+    int64_t partkey;
+    uint32_t group; // index into `groups`
+  };
+  std::vector<std::pair<std::string, std::string>> groups;
+  std::unordered_map<std::string, uint32_t> local_ids;
+  std::vector<Row> rows;
+
+  void Add(const TpchQ17PartInput &input) {
+    const auto [it, fresh] = local_ids.try_emplace(
+        TpchQ17GroupDictionary::MakeKey(input.brand, input.container),
+        static_cast<uint32_t>(groups.size()));
+    if (fresh)
+      groups.emplace_back(input.brand, input.container);
+    rows.push_back({input.key, it->second});
+  }
+  void Merge(PartGroups &&from) {
+    const auto offset = static_cast<uint32_t>(groups.size());
+    groups.insert(groups.end(), std::make_move_iterator(from.groups.begin()),
+                  std::make_move_iterator(from.groups.end()));
+    for (auto row : from.rows) {
+      row.group += offset;
+      rows.push_back(row);
+    }
+  }
+};
+
 } // namespace
 
 void TpchQ17Module::Build(core::AuxEngineServices &services,
@@ -362,11 +394,25 @@ void TpchQ17Module::Build(core::AuxEngineServices &services,
     throw std::logic_error("TPC-H Q17 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ17State>();
 
+  const auto parts = core::PartitionedBuild<PartGroups>(
+      services, [] { return PartGroups{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        initial_scan->ScanParts(
+            services, partitions,
+            [&](std::size_t partition, const TpchQ17PartInput &input) {
+              sink(partition, core::SingleRowBatch<TpchQ17PartInput>{input});
+            });
+      },
+      [](PartGroups &into, const TpchQ17PartInput &input) { into.Add(input); },
+      [](PartGroups &into, PartGroups &&from) { into.Merge(std::move(from)); },
+      core::BuildPartitions(services));
   DictionaryEditor dictionary(*state);
-  initial_scan->ScanParts([&](const TpchQ17PartInput &input) {
-    state->part_group.Set(input.key, dictionary.Id(input.brand, input.container));
-  });
+  std::vector<uint32_t> group_ids;
+  for (const auto &[brand, container] : parts.groups)
+    group_ids.push_back(dictionary.Id(brand, container));
   dictionary.Finish();
+  for (const auto &row : parts.rows)
+    state->part_group.Set(row.partkey, group_ids[row.group]);
 
   // The scan only deals the rows out to buckets; the buckets are folded in
   // parallel slices and then merged into the state in bucket order.
