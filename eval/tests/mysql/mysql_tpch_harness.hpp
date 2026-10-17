@@ -369,6 +369,7 @@ inline void EnsureExtension(const Tools &tools) {
     }
   }
   EnsureUdf(tools, "mysql_accel_get_last_maintenance_action", "STRING");
+  EnsureUdf(tools, "mysql_accel_get_execute_counts", "STRING");
   for (int q = 1; q <= 22; ++q) {
     EnsureUdf(tools, "mysql_accel_tpch_q" + std::to_string(q) + "_aux", "STRING");
   }

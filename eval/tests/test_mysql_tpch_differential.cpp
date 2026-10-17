@@ -7,6 +7,8 @@
 // Env: TPCH_MYSQL_DB, ACCEL_MYSQL_DIFF_KIND=base|aux, ACCEL_WORKLOAD_KIND
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <initializer_list>
@@ -14,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "eval/tests/mysql/mysql_tpch_harness.hpp"
@@ -25,6 +28,29 @@ using accel::mysql::Tools;
 using namespace accel::mysql::tpch_harness;
 using accelerator_codegen::aux_state::engine::mysql::LookupMysqlQuery;
 using accelerator_codegen::aux_state::engine::mysql::MysqlSharedQueryCatalogEntry;
+
+// A reader answers from SQL while the state builds, when the cost model finds that cheaper than waiting,
+// and a write arriving mid-build is only queued for the catch-up (no maintenance decision yet).
+// Run the query until the accelerator serves it, so the write is maintained.
+void WarmUntilServed(const Tools &tools, const std::string &accel_sql) {
+  const auto hits = [&] {
+    long hit = 0;
+    auto counts = QuerySQL(tools, "SELECT mysql_accel_get_execute_counts()");
+    Require(counts.first, "execute counts failed");
+    std::sscanf(TrimLines(counts.second).c_str(), "hit=%ld", &hit);
+    return hit;
+  };
+  const long before = hits();
+  for (int attempt = 0; attempt < 240; ++attempt) {
+    auto warm = QuerySQL(tools, accel_sql);
+    Require(warm.first, "warm aux failed: " + accel_sql + "\n" + warm.second);
+    if (hits() > before) {
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  }
+  throw std::runtime_error("accelerator never served the warm query: " + accel_sql);
+}
 
 void RunReadDifferential(const Tools &tools, int query_num, bool prefer_aux) {
   const auto &entry = LookupMysqlQuery("tpch", query_num);
@@ -63,8 +89,7 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
                               SqlLiteral(force_action) + ")")
               .first,
           "set force maintenance failed");
-  auto warm = QuerySQL(tools, accel_sql);
-  Require(warm.first, "warm aux failed: " + accel_sql + "\n" + warm.second);
+  WarmUntilServed(tools, accel_sql);
 
   auto mut_before_q =
       QuerySQL(tools, "SELECT mysql_accel_observer_mutation_count()");
