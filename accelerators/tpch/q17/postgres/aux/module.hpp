@@ -27,9 +27,8 @@ namespace accelerator_codegen::aux_state::query {
 //
 // Memory: a histogram entry is 20 B (~one per distinct quantity of a part),
 // plus ~60 B of per-part overhead (shared_ptr, vector header, group id, chunk
-// directory): about 20 B per lineitem, ~12 GB at SF100 and ~120 GB at SF1000
-// (the previous state held ~800 B per part transiently and copied whole
-// 65,536-part chunks per write). Build buckets the lineitem scan by part (24 B
+// directory): about 20 B per lineitem, ~12 GB at SF100 and ~120 GB at SF1000.
+// Build buckets the lineitem scan by part (24 B
 // per lineitem transiently) and folds the buckets into histograms in parallel.
 // Write batch: O(touched parts * (histogram + 64-part chunk) + groups touched);
 // no table scan. Execute: O(1).
@@ -62,11 +61,9 @@ public:
   virtual ~TpchQ17InitialScan() = default;
   virtual void ScanParts(
       const std::function<void(const TpchQ17PartInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ17LineitemInput &)> &) = 0;
   // Every lineitem, split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ17LineitemInput &)> &sink) = 0;
 };
@@ -177,8 +174,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

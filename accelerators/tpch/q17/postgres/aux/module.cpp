@@ -1,16 +1,13 @@
 #include "tpch/q17/postgres/aux/module.hpp"
 #include "tpch/q17/calibration_writes.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <limits>
 #include <map>
-#include <set>
 #include <stdexcept>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -18,37 +15,10 @@ namespace {
 
 using Int128 = __int128;
 
-// Buckets of the build's lineitem rows (by part) and parts per maintenance slice.
-using core::kBuildBuckets;
+// Parts per maintenance slice.
 constexpr std::size_t kPartEditGrain = 256;
 
 // ── Row decoding ──────────────────────────────────────────────────────────
-
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
 
 // decimal(15,2) cell as an exact x100 integer.
 bool Scale2Cell(const core::AuxRow &row, std::size_t index, int64_t &out) {
@@ -80,7 +50,7 @@ RowStatus ReadLineitem(const core::AuxRow &row, TpchQ17LineitemInput &out) {
     return RowStatus::Bad;
   if (row.values[0].is_null || row.values[1].is_null)
     return RowStatus::Skip;
-  if (!IntCell(row, 0, out.partkey) || !Scale2Cell(row, 1, out.quantity_raw))
+  if (!core::IntCell(row, 0, out.partkey) || !Scale2Cell(row, 1, out.quantity_raw))
     return RowStatus::Bad;
   out.extendedprice_raw = 0;
   if (!row.values[2].is_null && !Scale2Cell(row, 2, out.extendedprice_raw))
@@ -231,13 +201,6 @@ void SetPartHistogram(TpchQ17State &state, int64_t partkey,
     state.parts.Set(partkey, std::move(hist));
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 core::InvalidationPlan StatePlan() {
   core::InvalidationPlan plan;
   plan.scope =
@@ -247,7 +210,7 @@ core::InvalidationPlan StatePlan() {
   return plan;
 }
 
-const TpchQ17State *ReadState(core::AuxEngineServices &services) {
+const TpchQ17State *LoadState(core::AuxEngineServices &services) {
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), {TpchQ17Layout::kStatePartition});
   for (const auto &image : snapshot.partitions) {
@@ -407,28 +370,25 @@ void TpchQ17Module::Build(core::AuxEngineServices &services,
 
   // The scan only deals the rows out to buckets; the buckets are folded in
   // parallel slices and then merged into the state in bucket order.
-  auto buckets = core::PartitionedBuild<Buckets<PartRow>>(
-      services, [] { return Buckets<PartRow>(kBuildBuckets); },
+  auto buckets = core::PartitionedBuild<core::Buckets<PartRow>>(
+      services, [] { return core::Buckets<PartRow>(core::kBuildBuckets); },
       [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, partitions,
             [&](std::size_t partition, const TpchQ17LineitemInput &input) {
-              sink(partition, OneRowBatch<TpchQ17LineitemInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ17LineitemInput>{input});
             });
       },
-      [](Buckets<PartRow> &into, const TpchQ17LineitemInput &input) {
-        into[static_cast<uint64_t>(input.partkey) % kBuildBuckets].push_back(
+      [](core::Buckets<PartRow> &into, const TpchQ17LineitemInput &input) {
+        into[static_cast<uint64_t>(input.partkey) % core::kBuildBuckets].push_back(
             {input.partkey, input.quantity_raw, input.extendedprice_raw});
       },
-      AppendBuckets<PartRow>, BuildPartitions(services));
-  std::vector<std::vector<BuiltPart>> folded(kBuildBuckets);
-  core::ParallelSlices(services, kBuildBuckets, 1,
-                       [&](std::size_t, std::size_t begin, std::size_t end) {
-                         for (std::size_t i = begin; i < end; ++i) {
-                           folded[i] = FoldBucket(buckets[i]);
-                           buckets[i] = {};
-                         }
-                       });
+      core::AppendBuckets<PartRow>, core::BuildPartitions(services));
+  std::vector<std::vector<BuiltPart>> folded(core::kBuildBuckets);
+  core::ParallelEach(services, core::kBuildBuckets, 1, [&](std::size_t i) {
+    folded[i] = FoldBucket(buckets[i]);
+    buckets[i] = {};
+  });
   for (auto &bucket : folded)
     for (auto &part : bucket)
       SetPartHistogram(*state, part.partkey,
@@ -457,20 +417,20 @@ void TpchQ17Module::AccumulateMutation(const core::MutationBatch &mutation,
     auto make = [&](const core::AuxRow *old_row, const core::AuxRow *new_row) {
       TpchQ17PartDelta delta;
       if (old_row) {
-        if (!IntCell(*old_row, 0, delta.old_partkey)) {
+        if (!core::IntCell(*old_row, 0, delta.old_partkey)) {
           buffer.MarkRebuild();
           return;
         }
         delta.has_old = true;
       }
       if (new_row) {
-        if (!IntCell(*new_row, 0, delta.new_partkey)) {
+        if (!core::IntCell(*new_row, 0, delta.new_partkey)) {
           buffer.MarkRebuild();
           return;
         }
         delta.has_new = true;
-        delta.new_has_group = StringCell(*new_row, 1, delta.new_brand) &&
-                              StringCell(*new_row, 2, delta.new_container);
+        delta.new_has_group = core::StringCell(*new_row, 1, delta.new_brand) &&
+                              core::StringCell(*new_row, 2, delta.new_container);
       }
       buffer.AddPartDelta(std::move(delta));
     };
@@ -549,26 +509,16 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
   if (buffer.LineitemDeltas().empty() && buffer.PartDeltas().empty())
     return outcome;
 
-  // Honor the cost model's (or a forced) choice: this state has no finer
-  // partitions, so anything but ApplyDelta is a whole-state rebuild.
-  {
-    const auto decision = services.ChooseMaintenance(
-        {static_cast<uint64_t>(buffer.LineitemDeltas().size() + buffer.PartDeltas().size()), 1, true, false, true, false, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    if (decision.action == core::MaintenanceAction::RebuildPartition) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
-    if (decision.action != core::MaintenanceAction::ApplyDelta) {
-      outcome.action = decision.action;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
+  // This state has no finer partitions: anything but ApplyDelta is a whole-state rebuild.
+  const auto decision = services.ChooseMaintenance(core::MaintenanceRequest::IncrementalSingleState(
+      buffer.LineitemDeltas().size() + buffer.PartDeltas().size(),
+      services.ExpectedQueriesBeforeNextWrite()));
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    core::FinishRebuildAll(outcome, decision);
+    return outcome;
   }
 
-  const TpchQ17State *current = ReadState(services);
+  const TpchQ17State *current = LoadState(services);
   if (!current) {
     core::FinishRebuildAll(outcome);
     return outcome;
@@ -604,14 +554,9 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
   };
   std::vector<Edit> edits(touched.size());
   const TpchQ17State &before = *state;
-  core::ParallelSlices(services, touched.size(), kPartEditGrain,
-                       [&](std::size_t, std::size_t begin, std::size_t end) {
-                         for (std::size_t i = begin; i < end; ++i) {
-                           edits[i].in_sync =
-                               EditHistogram(before, touched[i].first,
-                                             touched[i].second, edits[i].hist);
-                         }
-                       });
+  core::ParallelEach(services, touched.size(), kPartEditGrain, [&](std::size_t i) {
+    edits[i].in_sync = EditHistogram(before, touched[i].first, touched[i].second, edits[i].hist);
+  });
   for (std::size_t i = 0; i < touched.size(); ++i) {
     if (!edits[i].in_sync) {
       // The state does not contain a removed row: it is out of sync.
@@ -650,7 +595,7 @@ void TpchQ17Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  const TpchQ17State *state = ReadState(services);
+  const TpchQ17State *state = LoadState(services);
   if (!state) {
     ExecuteFallback(services, arguments, sink);
     return;
@@ -664,38 +609,6 @@ void TpchQ17Module::Execute(core::AuxEngineServices &services,
   const auto total = state->totals.Get(it->second);
   const Contribution result{total.price_sum_raw, total.row_count};
   EmitAverageYearly(sink, &result);
-}
-
-// Exact answer straight from the tables (own uncommitted writes): only the
-// matching parts' histograms are kept while streaming.
-void TpchQ17Module::ExecuteFallback(core::AuxEngineServices &,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  std::string brand, container;
-  if (!ReadArguments(arguments, brand, container)) {
-    EmitAverageYearly(sink, nullptr);
-    return;
-  }
-  if (!initial_scan)
-    throw std::logic_error("TPC-H Q17 requires a typed initial scan source");
-  std::unordered_set<int64_t> parts;
-  initial_scan->ScanParts([&](const TpchQ17PartInput &input) {
-    if (input.brand == brand && input.container == container)
-      parts.insert(input.key);
-  });
-  std::unordered_map<int64_t, TpchQ17PartHistogram> histograms;
-  initial_scan->ScanLineitems([&](const TpchQ17LineitemInput &input) {
-    if (parts.count(input.partkey))
-      AddEntry(histograms[input.partkey],
-               {input.quantity_raw, input.extendedprice_raw, 1});
-  });
-  Contribution total;
-  for (const auto &[partkey, hist] : histograms) {
-    const auto c = ContributionOf(&hist);
-    total.price_sum_raw += c.price_sum_raw;
-    total.row_count += c.row_count;
-  }
-  EmitAverageYearly(sink, &total);
 }
 
 std::vector<core::CalibrationWrite> TpchQ17Module::CalibrationWrites() const {
