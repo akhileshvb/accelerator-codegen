@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <atomic>
 #include <limits>
-#include <set>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
