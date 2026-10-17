@@ -60,8 +60,11 @@ struct TpchQ11NationInput {
 class TpchQ11InitialScan {
 public:
   virtual ~TpchQ11InitialScan() = default;
-  virtual void ScanPartsupp(
-      const std::function<void(const TpchQ11PartsuppInput &)> &) = 0;
+  // Every partsupp row, split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanPartsuppPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ11PartsuppInput &)> &sink) = 0;
   virtual void ScanSuppliers(
       const std::function<void(const TpchQ11SupplierInput &)> &) = 0;
   virtual void ScanNations(
@@ -158,6 +161,13 @@ struct TpchQ11PartValue {
   }
 };
 
+// One part's value change in one nation's group.
+struct TpchQ11GroupUpdate {
+  int64_t nationkey = 0;
+  int64_t partkey = 0;
+  TpchQ11PartValue before, after;
+};
+
 struct TpchQ11State {
   std::shared_ptr<const std::vector<TpchQ11NationRec>> nations =
       std::make_shared<const std::vector<TpchQ11NationRec>>();
@@ -182,7 +192,12 @@ struct TpchQ11State {
   void AddOffer(int64_t partkey, const TpchQ11Offer &offer);
   bool RemoveOffer(int64_t partkey, const TpchQ11Offer &offer);
   // sign > 0 adds the row, < 0 removes it; false if a removal finds no row.
-  bool ApplyPartsupp(int8_t sign, int64_t partkey, const TpchQ11Offer &offer);
+  // Edits the facts and appends the resulting group edits to `updates`.
+  bool ApplyPartsupp(int8_t sign, int64_t partkey, const TpchQ11Offer &offer,
+                     std::vector<TpchQ11GroupUpdate> &updates);
+  // Applies group edits in order within each nation; nations run in parallel.
+  void ApplyGroupUpdates(const core::AuxEngineServices &services,
+                         const std::vector<TpchQ11GroupUpdate> &updates);
   void SetSupplierNation(int64_t suppkey, int64_t nationkey); // kNoNation: absent
   // Re-group the parts of suppliers whose nation changed (old_map -> current).
   void RegroupSuppliers(
@@ -197,9 +212,6 @@ struct TpchQ11State {
   std::size_t MemoryBytes() const;
 
 private:
-  void UpdateEntry(int64_t nationkey, int64_t partkey,
-                   const TpchQ11PartValue &before,
-                   const TpchQ11PartValue &after);
   TpchQ11Group &MutableGroup(int64_t nationkey);
 };
 

@@ -223,7 +223,7 @@ void TpchQ2FinalizeAndEmit(const core::AuxEngineServices &services, const TpchQ2
   const auto &blob = state.types->blob();
   q.type_bits = core::sql_like::MatchBlobBitmap(
       matcher, blob.offsets(), state.types->size(), blob.data(),
-      state.types->size() > 1000000 ? std::min<std::size_t>(4, services.WorkerCount()) : 1);
+      state.types->size() > 1000000 ? core::Parallelism::OnPool(services) : core::Parallelism{});
   q.type_bits.push_back(0); // keep TypeMatches in range for an empty dictionary
 
   const auto better = [&q](const Q2Candidate &a, const Q2Candidate &b) {

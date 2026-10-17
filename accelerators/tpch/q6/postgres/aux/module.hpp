@@ -37,26 +37,14 @@ struct TpchQ6LineitemInput {
   int32_t extended_price_scale = 2;
 };
 
-// Pre-aggregated (shipdate, discount, quantity) cell for SQL-pushdown builds.
-struct TpchQ6CellAggregate {
-  int32_t shipdate_days = 0;
-  int64_t discount_raw = 0; // scale 2
-  int64_t quantity_raw = 0; // scale 2
-  int64_t count = 0;
-  ::accelerator_codegen::Q6AccT revenue_raw = 0; // sum(price * discount), scale 4
-};
-
 class TpchQ6InitialScan {
 public:
   virtual ~TpchQ6InitialScan() = default;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ6LineitemInput &)> &) = 0;
-
-  // GROUP BY (shipdate, discount, quantity) pushed into the engine. The
-  // default aggregates the row scan here; engines override it with one SQL
-  // aggregate (its output is bounded by days x discounts x quantities).
-  virtual void ScanCellAggregates(
-      const std::function<void(const TpchQ6CellAggregate &)> &consumer);
+  // Partitioned row scan: sink(partition, row) runs on pool threads, one
+  // thread per partition at a time.
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ6LineitemInput &)> &sink) = 0;
 };
 
 // The whole state is one image (partition 0).
@@ -117,7 +105,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  // Aggregate scan -> state (one SQL GROUP BY; no row scan).
+  // Partitioned row scan -> (day, discount, quantity) cells -> state.
   std::shared_ptr<::accelerator_codegen::Q6State>
   BuildState(core::AuxEngineServices &) const;
   void Answer(const ::accelerator_codegen::Q6State &, const core::QueryArguments &,

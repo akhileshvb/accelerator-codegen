@@ -23,6 +23,7 @@
 #include "prims/flat_hash_map.hpp"
 #include "prims/int128_acc.hpp"
 #include "prims/keyed_string_column.hpp"
+#include "prims/parallelism.hpp"
 #include "prims/pg_numeric_div.hpp"
 #include "prims/radix_range_tree.hpp"
 #include "prims/sharded_cow_map.hpp"
@@ -36,6 +37,17 @@
 using namespace accelerator_codegen::aux_state::core;
 namespace sd = accelerator_codegen::aux_state::core::sql_date;
 namespace sl = accelerator_codegen::aux_state::core::sql_like;
+
+// A test pool: one fresh thread per task.
+static Parallelism ThreadedPool(std::size_t workers) {
+  return {workers, [](std::size_t n, const Parallelism::Fn &fn) {
+            std::vector<std::thread> threads;
+            for (std::size_t i = 0; i < n; ++i)
+              threads.emplace_back(fn, i);
+            for (auto &t : threads)
+              t.join();
+          }};
+}
 
 #define CHECK(c)                                                                         \
   do {                                                                                   \
@@ -315,10 +327,10 @@ static void TestLike() {
     blob.Append(s);
   }
   auto m = sl::LikeMatcher::Compile("%special%req%");
-  auto bm1 = sl::MatchBlobBitmap(m, blob.offsets(), blob.size(), blob.data(), 1);
-  auto bm4 = sl::MatchBlobBitmap(m, blob.offsets(), blob.size(), blob.data(), 4);
+  auto bm1 = sl::MatchBlobBitmap(m, blob.offsets(), blob.size(), blob.data());
+  auto bm4 = sl::MatchBlobBitmap(m, blob.offsets(), blob.size(), blob.data(), ThreadedPool(4));
   CHECK(bm1 == bm4);
-  auto idx = sl::MatchBlobIndices(m, blob.offsets(), blob.size(), blob.data(), 4);
+  auto idx = sl::MatchBlobIndices(m, blob.offsets(), blob.size(), blob.data(), ThreadedPool(4));
   CHECK(idx.size() == (strs.size() + 4) / 5);
   for (auto i : idx) CHECK(i % 5 == 0);
 }
@@ -723,7 +735,7 @@ static void TestKeyedStringColumn() {
     const auto m = sl::LikeMatcher::Compile(pattern);
     for (unsigned threads : {1u, 4u}) {
       std::vector<std::vector<int64_t>> per(8);
-      c.ForEachMatch(m, threads, [&](unsigned w, int64_t k) { per[w].push_back(k); });
+      c.ForEachMatch(m, ThreadedPool(threads), [&](unsigned w, int64_t k) { per[w].push_back(k); });
       std::set<int64_t> got;
       for (auto &p : per) for (int64_t k : p) CHECK(got.insert(k).second);
       std::set<int64_t> want;
