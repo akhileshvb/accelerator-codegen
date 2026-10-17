@@ -67,7 +67,7 @@ public:
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ14DayAggregate &)> &sink) = 0;
   // lineitem WHERE l_partkey IN (partkeys) GROUP BY l_partkey, shipdate.
-  virtual void ScanPartDayRevenue(
+  virtual void ScanPartDayRevenueSerial(
       const std::vector<int64_t> &partkeys,
       const std::function<void(const TpchQ14PartDayRevenue &)> &) = 0;
 };

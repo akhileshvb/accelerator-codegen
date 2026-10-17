@@ -76,21 +76,21 @@ public:
   virtual ~TpchQ9InitialScan() = default;
   // Partitioned scans of the big tables: sink(partition, row), one thread per
   // partition at a time.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9PartInput &)> &) = 0;
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9SupplierInput &)> &) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ9NationInput &)> &) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9OrdersInput &)> &) = 0;
-  virtual void ScanPartsuppsPartitioned(
+  virtual void ScanPartsupps(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9PartsuppInput &)> &) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9LineitemInput &)> &) = 0;
 
@@ -122,8 +122,7 @@ public:
 //
 // Memory (TPC-H shapes): ~20 cells/part x 16 B + 4 partsupp rows x 16 B + ~25 B
 // block overhead + ~45 B name = ~450 B/part (~15 B per lineitem) + ~5 B/order
-// of year code: ~9 GB at SF100, ~90 GB at SF1000 (before: ~490 B/part in
-// node-based maps, ~10 GB at SF100, copied whole per touched shard).
+// of year code: ~9 GB at SF100, ~90 GB at SF1000.
 // Execute: O(parts) multithreaded name scan + O(matching cells); no state is
 // copied. Write batch: O(touched blocks + touched chunks).
 //

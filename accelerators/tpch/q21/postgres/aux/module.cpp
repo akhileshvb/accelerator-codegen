@@ -16,11 +16,11 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Orders or numwait entries per slice; an item is a shard-local hash write.
+// Orders or numwait entries per slice (untimed); an item is a shard-local hash write.
 constexpr std::size_t kRunGrain = 1024;
 // Nation index changes below which a commit patches its nations inline.
-constexpr std::size_t kNationOpThreshold = 1024;
-// Elements per sorted slice: a key compare each.
+constexpr std::size_t kNationOpThreshold = 4096;
+// Elements per sorted slice (untimed): a key compare each.
 constexpr std::size_t kSortGrain = 65536;
 
 using core::IntCell;
@@ -155,7 +155,7 @@ FulfilledContributions(TpchQ21InitialScan &scan,
   const auto fulfilled_keys = core::PartitionedBuild<std::vector<int64_t>>(
       services, [] { return std::vector<int64_t>{}; },
       [&](std::size_t parts, auto &&sink) {
-        scan.ScanFulfilledOrdersPartitioned(
+        scan.ScanFulfilledOrders(
             services, parts, [&](std::size_t partition, int64_t orderkey) {
               sink(partition, core::SingleRowBatch<int64_t>{orderkey});
             });
@@ -171,7 +171,7 @@ FulfilledContributions(TpchQ21InitialScan &scan,
   auto buckets = core::PartitionedBuild<core::Buckets<TpchQ21LineInput>>(
       services, [] { return core::Buckets<TpchQ21LineInput>(core::kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        scan.ScanLineitemsPartitioned(
+        scan.ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ21LineInput &line) {
               sink(partition, core::SingleRowBatch<TpchQ21LineInput>{line});
             });
@@ -752,7 +752,7 @@ TpchQ21State TpchQ21Module::BuildState(
     throw std::logic_error("TPC-H Q21 aux requires a typed initial scan source");
   TpchQ21State state;
 
-  initial_scan->ScanNations([&](const TpchQ21NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ21NationInput &input) {
     state.PutNation(input.nationkey, input.name);
   });
   for (const auto &input : core::CollectRows<TpchQ21SupplierInput>(

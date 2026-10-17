@@ -49,7 +49,7 @@ query::TpchQ2PartsuppInput DecodePartsupp(const std::vector<std::string> &cols) 
   return {TypedInt(cols, 0), TypedInt(cols, 1), TypedDecimalRaw(cols, 2)};
 }
 
-void ScanTpchQ2Nations(
+void ScanTpchQ2NationsSerial(
     const std::function<void(const query::TpchQ2NationInput &)> &consumer) {
   ScanTypedTuplesDecoded(
       "SELECT n_nationkey, n_name, n_regionkey FROM nation",
@@ -61,7 +61,7 @@ void ScanTpchQ2Nations(
       [&](query::TpchQ2NationInput &&input) { consumer(input); });
 }
 
-void ScanTpchQ2Regions(
+void ScanTpchQ2RegionsSerial(
     const std::function<void(const query::TpchQ2RegionInput &)> &consumer) {
   ScanTypedTuplesDecoded(
       "SELECT r_regionkey, r_name FROM region",
@@ -76,33 +76,33 @@ void ScanTpchQ2Regions(
 
 class TpchQ2Scan final : public query::TpchQ2InitialScan {
 public:
-  void ScanPartsPartitioned(
+  void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ2PartInput &)> &sink) override {
     split_scan::Partitioned<query::TpchQ2PartInput>(services, scans::PartsTable(), partitions,
                                                     scans::DecodePart, sink);
   }
-  void ScanSuppliersPartitioned(
+  void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ2SupplierInput &)> &sink) override {
     split_scan::Partitioned<query::TpchQ2SupplierInput>(
         services, scans::SuppliersTable(), partitions, scans::DecodeSupplier, sink);
   }
-  void ScanPartsuppsPartitioned(
+  void ScanPartsupps(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ2PartsuppInput &)> &sink) override {
     split_scan::Partitioned<query::TpchQ2PartsuppInput>(
         services, scans::PartsuppsTable(), partitions, scans::DecodePartsupp, sink);
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const query::TpchQ2NationInput &)> &consumer)
       override {
-    scans::ScanTpchQ2Nations(consumer);
+    scans::ScanTpchQ2NationsSerial(consumer);
   }
-  void ScanRegions(
+  void ScanRegionsSerial(
       const std::function<void(const query::TpchQ2RegionInput &)> &consumer)
       override {
-    scans::ScanTpchQ2Regions(consumer);
+    scans::ScanTpchQ2RegionsSerial(consumer);
   }
 };
 

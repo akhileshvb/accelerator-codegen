@@ -17,10 +17,10 @@ namespace {
 
 using Int128 = __int128;
 
-// Owner runs (customer-array directory pages) per maintenance slice: a page
-// clone plus ~10 key edits is ~5 us.
+// Owner runs (customer-array directory pages) per maintenance slice (~320 us: a page
+// clone plus ~10 key edits is ~5 us).
 constexpr std::size_t kRunGrain = 64;
-// Key events per sorted slice of the owner sort.
+// Key events per sorted slice of the owner sort (untimed).
 constexpr std::size_t kSortGrain = 65536;
 // Below this many balance ops a commit updates its prefixes inline.
 constexpr std::size_t kPrefixOpThreshold = 4096;
@@ -46,12 +46,6 @@ bool ToScale2(int64_t raw_in, int32_t scale, int64_t &out) {
     return false;
   out = static_cast<int64_t>(raw);
   return true;
-}
-
-bool Scale2Cell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  int64_t raw = 0;
-  int32_t scale = 0;
-  return core::DecimalCell(row, index, raw, scale) && ToScale2(raw, scale, out);
 }
 
 // substring(c_phone from 1 for 2): the first two CHARACTERS (UTF-8 aware); a
@@ -439,7 +433,7 @@ void TpchQ22Module::AccumulateMutation(const core::MutationBatch &mutation,
         }
         delta.new_balance = kTpchQ22NullBalance;
         if (new_row->values.size() > 2 && !new_row->values[2].is_null &&
-            !Scale2Cell(*new_row, 2, delta.new_balance)) {
+            !core::ExactDecimalCell(*new_row, 2, kBalanceScale, delta.new_balance)) {
           buffer.MarkRebuild();
           return;
         }

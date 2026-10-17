@@ -13,8 +13,6 @@
 #include "prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q19 layout ──────────────────────────────────────────────────────────────
 struct TpchQ19Layout {
   static constexpr const char *kAccelerator = "tpch_q19_aux";
   static constexpr core::PartitionId kAggregatePartition = 0;
@@ -24,9 +22,7 @@ struct TpchQ19Layout {
 //  * per-part code: 4 B per part, `(brand id + 1) << 2 | family` (0: the part
 //    can never qualify: absent, unknown container family, size outside its
 //    family's range). ChunkedCowArray<uint32_t>, 64 Ki-id chunks:
-//    80 MB at SF100 (2e7 parts), 800 MB at SF1000 (2e8). This replaces a
-//    node-based unordered_map of std::string dims (~100 B/part, +a transient
-//    second map in the build: ~4.5 GB at SF100).
+//    80 MB at SF100 (2e7 parts), 800 MB at SF1000 (2e8).
 //  * aggregates: per (brand, family) a sorted (quantity -> revenue, count)
 //    vector, shared copy-on-write: ~25 x 3 x 50 entries x 32 B = ~120 KB at
 //    any SF; fractional / off-spec quantities add entries, never drop rows.
@@ -35,13 +31,11 @@ struct TpchQ19Layout {
 // with one indexed point scan (WHERE l_partkey IN (...)) and moves their
 // contributions. Execute: 3 binary searches, independent of SF.
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ19Config {
   core::TableId lineitem_table = 0;
   core::TableId part_table = 0;
 };
 
-// ── Typed scan contract ─────────────────────────────────────────────────────
 struct TpchQ19PartInput {
   int64_t key = 0;
   std::string brand;
@@ -77,16 +71,15 @@ public:
       const std::function<void(std::size_t, const TpchQ19PartInput &)> &sink) = 0;
   // lineitem JOIN part, shipping predicate and family classification
   // (TpchQ19FamilySql) applied and grouped in the engine.
-  virtual void ScanGroupAggregates(
+  virtual void ScanGroupAggregatesSerial(
       const std::function<void(const TpchQ19GroupAggregate &)> &) = 0;
   // lineitem WHERE l_partkey IN (...) AND shipping predicate, grouped by
   // (l_partkey, l_quantity).
-  virtual void ScanPartQuantityRevenue(
+  virtual void ScanPartQuantityRevenueSerial(
       const std::vector<int64_t> &partkeys,
       const std::function<void(const TpchQ19PartQuantityRevenue &)> &) = 0;
 };
 
-// ── Template constants (the three OR branches of the query) ─────────────────
 enum class TpchQ19Family : uint8_t {
   None = 0,
   SM = 1,  // SM CASE, SM BOX, SM PACK, SM PKG ; p_size 1..5
@@ -102,7 +95,6 @@ std::string TpchQ19FamilySql();
 // l_shipinstruct = 'DELIVER IN PERSON'.
 std::string TpchQ19ShippingSql();
 
-// ── State ───────────────────────────────────────────────────────────────────
 struct TpchQ19State {
   struct QtyRev {
     int64_t qty = 0; // l_quantity raw (scale 2)
@@ -138,7 +130,6 @@ struct TpchQ19StateImage {
   std::shared_ptr<const TpchQ19State> state;
 };
 
-// ── Delta ───────────────────────────────────────────────────────────────────
 struct TpchQ19LineitemDelta {
   int64_t partkey = 0;
   int64_t quantity_raw = 0;
@@ -153,7 +144,6 @@ struct TpchQ19PartEvent {
   int64_t partkey = 0;
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ19TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -173,7 +163,6 @@ private:
   std::vector<TpchQ19PartEvent> part_events;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ19Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ19Layout::kAccelerator;

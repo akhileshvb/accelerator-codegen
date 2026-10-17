@@ -20,21 +20,17 @@
 #include "prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q16 layout ──────────────────────────────────────────────────────────────
 struct TpchQ16Layout {
   static constexpr const char *kAccelerator = "tpch_q16_aux";
   static constexpr core::PartitionId kState = 0;
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ16Config {
   core::TableId part_table = 0;
   core::TableId partsupp_table = 0;
   core::TableId supplier_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ16SupplierInput {
   int64_t suppkey = 0;
   std::string comment;
@@ -68,7 +64,6 @@ public:
       const std::function<void(std::size_t, const TpchQ16PartsuppInput &)> &sink) = 0;
 };
 
-// ---------------------------------------------------------------------------
 // State layout
 //
 // Q16 counts DISTINCT non-complaint suppliers per (p_brand, p_type, p_size)
@@ -91,7 +86,6 @@ public:
 //
 // Memory: ~55 B/part (SF100 20M parts: ~1.1 GB, SF1000: ~11 GB; was
 // ~12-15 GB at SF100).  Any int64 key works (AnyKeyCowArray).
-// ---------------------------------------------------------------------------
 constexpr uint32_t kTpchQ16NoGroup = 0xFFFFFFFFu;
 constexpr std::size_t kTpchQ16InlineSuppliers = 4;
 
@@ -141,7 +135,6 @@ struct TpchQ16State {
   int64_t SupplierAt(const TpchQ16Suppliers &slots, int64_t partkey,
                      uint32_t i) const;
 
-  // ── point edits (Build and incremental maintenance) ──
   // Each edit records the groups whose count may change in `dirty`.
   void SetPart(int64_t partkey, const TpchQ16PartInput &part);
   void ErasePart(int64_t partkey);
@@ -179,7 +172,6 @@ struct TpchQ16StateImage {
   std::shared_ptr<const TpchQ16State> state;
 };
 
-// ── Query arguments ─────────────────────────────────────────────────────────
 // std::nullopt = SQL NULL.  `sizes` are the IN-list items (NULL items drop out).
 struct TpchQ16Args {
   std::optional<std::string> brand;
@@ -190,7 +182,6 @@ struct TpchQ16Args {
 void TpchQ16FinalizeAndEmit(const TpchQ16State &state, const TpchQ16Args &args,
                             core::AuxRowSink &sink);
 
-// ── Captured row changes ────────────────────────────────────────────────────
 struct TpchQ16PartEvent {
   int8_t sign = 0;
   TpchQ16PartInput row;
@@ -205,7 +196,6 @@ struct TpchQ16SupplierEvent {
   bool complaint = false; // meaningful for sign > 0 (new image)
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ16TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -224,7 +214,6 @@ private:
   bool requires_rebuild = false;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ16Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ16Layout::kAccelerator;

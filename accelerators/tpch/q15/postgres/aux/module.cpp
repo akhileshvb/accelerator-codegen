@@ -18,7 +18,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 namespace sql_date = core::sql_date;
 using Int128 = __int128;
 
@@ -28,9 +27,9 @@ constexpr int64_t kMonthPartitionBias = 1000000;
 constexpr int32_t kRevenueScale = 4;
 // Dates this close to the int32 limits are PostgreSQL +/-infinity sentinels.
 constexpr int64_t kFiniteDateLimit = std::numeric_limits<int32_t>::max() - 1;
-// Supplier-array chunks per read slice (a chunk sums every whole month, ~50 us).
-constexpr std::size_t kSweepGrain = 8;
-// Months per build or maintenance slice (a month is ~70K lineitems at SF 1).
+// Supplier-array chunks per read slice (~1.6 ms: a chunk sums every whole month, ~100 us).
+constexpr std::size_t kSweepGrain = 16;
+// Months per build or maintenance slice (untimed; a month is ~70K lineitems at SF 1).
 constexpr std::size_t kMonthGrain = 1;
 
 core::PartitionId MonthPartition(int64_t month_index) {
@@ -45,8 +44,6 @@ int64_t MonthStartDays(int64_t month_index) {
   }
   return sql_date::DaysFromCivil(y, static_cast<int>(m) + 1, 1);
 }
-
-// ── Row decoding ──────────────────────────────────────────────────────────
 
 // A row is "readable" when every column is present and well typed. A row with
 // a NULL shipdate / suppkey / price / discount never contributes to any window
@@ -78,8 +75,6 @@ bool ReadSupplier(const core::AuxRow &row, TpchQ15SupplierInput &out) {
          core::StringCell(row, 2, out.address) && core::StringCell(row, 3, out.phone);
 }
 
-// ── Supplier directory packing ───────────────────────────────────────────
-
 void PackField(std::string &out, const std::string &s) {
   const uint32_t n = static_cast<uint32_t>(s.size());
   out.append(reinterpret_cast<const char *>(&n), sizeof(n));
@@ -108,8 +103,6 @@ void UnpackSupplier(const std::string &packed, std::string &name,
     pos += n;
   }
 }
-
-// ── Per-day lists and per-month columns ──────────────────────────────────
 
 struct DayPosition {
   int64_t month_index = 0;
@@ -221,8 +214,6 @@ void FoldIntoDay(TpchQ15DayList &list, std::vector<TpchQ15DayEntry> &&adds) {
     CompactDay(list);
 }
 
-// ── Time/revenue helpers ──────────────────────────────────────────────────
-
 int64_t Pow10(int32_t n) {
   int64_t v = 1;
   while (n-- > 0)
@@ -303,6 +294,38 @@ void EmitRow(core::AuxRowSink &sink, int64_t suppkey, const std::string &name,
                   core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal)}});
 }
 
+// One scanned lineitem's contribution to a month.
+struct MonthRow {
+  int64_t suppkey;
+  int64_t revenue;
+  int day_offset;
+};
+
+// Month columns are filled in place; the per-day lists accumulate in plain
+// vectors and are frozen (shrunk to size) at the end.
+std::shared_ptr<const TpchQ15MonthState>
+BuildMonth(const std::vector<MonthRow> &rows) {
+  auto month = std::make_shared<TpchQ15MonthState>();
+  std::array<std::vector<uint64_t>, 31> narrow;
+  std::array<std::vector<TpchQ15DayEntry>, 31> wide;
+  for (const auto &row : rows) {
+    AddToMonthColumns(*month, row.suppkey, row.revenue, 1);
+    if (FitsNarrow(row.suppkey, row.revenue, 1))
+      narrow[row.day_offset].push_back(PackNarrow(row.suppkey, row.revenue));
+    else
+      wide[row.day_offset].push_back({row.suppkey, row.revenue, 1});
+  }
+  for (int d = 0; d < 31; ++d) {
+    if (!narrow[d].empty())
+      month->days[d].narrow = std::make_shared<const std::vector<uint64_t>>(
+          narrow[d].begin(), narrow[d].end());
+    if (!wide[d].empty())
+      month->days[d].wide = std::make_shared<const std::vector<TpchQ15DayEntry>>(
+          std::move(wide[d]));
+  }
+  return month;
+}
+
 } // namespace
 
 int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
@@ -319,8 +342,6 @@ int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
     throw std::overflow_error("TPC-H Q15 lineitem revenue overflow");
   return static_cast<int64_t>(value);
 }
-
-// ── TxnBuffer ─────────────────────────────────────────────────────────────
 
 bool TpchQ15TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ15TxnBuffer::Clear() {
@@ -379,8 +400,6 @@ struct BestSupplier {
   }
 };
 
-// ── Module ────────────────────────────────────────────────────────────────
-
 core::AcceleratorId TpchQ15Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ15Module::Dependencies() const {
@@ -391,42 +410,6 @@ std::vector<core::TableDependency> TpchQ15Module::Dependencies() const {
 std::unique_ptr<core::AuxTxnBuffer> TpchQ15Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ15TxnBuffer>();
 }
-
-namespace {
-
-// One scanned lineitem's contribution to a month.
-struct MonthRow {
-  int64_t suppkey;
-  int64_t revenue;
-  int day_offset;
-};
-
-// Month columns are filled in place; the per-day lists accumulate in plain
-// vectors and are frozen (shrunk to size) at the end.
-std::shared_ptr<const TpchQ15MonthState>
-BuildMonth(const std::vector<MonthRow> &rows) {
-  auto month = std::make_shared<TpchQ15MonthState>();
-  std::array<std::vector<uint64_t>, 31> narrow;
-  std::array<std::vector<TpchQ15DayEntry>, 31> wide;
-  for (const auto &row : rows) {
-    AddToMonthColumns(*month, row.suppkey, row.revenue, 1);
-    if (FitsNarrow(row.suppkey, row.revenue, 1))
-      narrow[row.day_offset].push_back(PackNarrow(row.suppkey, row.revenue));
-    else
-      wide[row.day_offset].push_back({row.suppkey, row.revenue, 1});
-  }
-  for (int d = 0; d < 31; ++d) {
-    if (!narrow[d].empty())
-      month->days[d].narrow = std::make_shared<const std::vector<uint64_t>>(
-          narrow[d].begin(), narrow[d].end());
-    if (!wide[d].empty())
-      month->days[d].wide = std::make_shared<const std::vector<TpchQ15DayEntry>>(
-          std::move(wide[d]));
-  }
-  return month;
-}
-
-} // namespace
 
 void TpchQ15Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {

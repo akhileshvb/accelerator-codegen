@@ -15,8 +15,6 @@
 #include "prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q3 layout ───────────────────────────────────────────────────────────────
 struct TpchQ3Layout {
   static constexpr const char *kAccelerator = "tpch_q3";
   static constexpr core::PartitionId kState = 0;
@@ -32,7 +30,6 @@ struct TpchQ3Config {
   core::TableId lineitem_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 // One row per lineitem of customer ⨝ orders ⨝ lineitem. The rows of one order
 // are consecutive (ordered by orderkey).
 struct TpchQ3OrderLineInput {
@@ -71,13 +68,13 @@ public:
   // The three scans split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition,
   // and the partitions of a table cover ascending key ranges.
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3CustomerInput &)> &sink) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3OrderInput &)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ3LineitemInput &)> &sink) = 0;
   // The same rows for the given orders only, as the database holds them after
@@ -91,7 +88,6 @@ public:
                                        std::vector<int64_t> &orderkeys) = 0;
 };
 
-// ── State ───────────────────────────────────────────────────────────────────
 // An order that has a customer and at least one lineitem is one record:
 //   orderdate, shippriority and its lineitems as (shipdate, revenue) pairs,
 //   revenue = SUM(extendedprice * (1 - discount)) at scale 4 per shipdate.
@@ -102,8 +98,7 @@ public:
 //
 // Memory: ~12 B per lineitem (shipdate + revenue) + ~40 B per order (record
 // header, hash slot, locator).
-//   SF100: ~11 GB   SF1000: ~110 GB   (before: ~75 B/order + a dense
-//   order_segment array + a transient 45-50 GB node-map build at SF100)
+//   SF100: ~11 GB   SF1000: ~110 GB
 // Write cost: an order write clones one bin shard (~2K records at SF1000) and
 // one locator shard; the bin directory (~1K bins) is copied per batch.
 struct TpchQ3State {
@@ -169,7 +164,6 @@ struct TpchQ3OrderResult {
 // Largest revenue sum an order of bound-bin `bin` can have (see TpchQ3State).
 int64_t TpchQ3BinUpperBound(int32_t bin);
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ3TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;

@@ -22,6 +22,12 @@ using core::RadixRangeTree;
 
 using Cell = core::CellState;
 
+// Lineitem deltas per maintenance slice (~4 us).
+constexpr std::size_t kDeltaGrain = 4096;
+
+// Buckets per slice of the build fill (untimed): each fills a whole partial state.
+constexpr std::size_t kBucketGrain = 1;
+
 // A decimal value rescaled to cents (scale 2); false if that would lose digits.
 bool ScaleToCents(int64_t raw, int32_t scale, int64_t &cents) {
   if (scale == 2) {
@@ -163,10 +169,6 @@ void ApplyLineitem(const TpchQ5State &s, BucketCells &cells, const Tuple &t,
 // Build: key/value rows are dealt out to buckets by key; a bucket is filled
 // alone, so buckets run in parallel.
 using core::kBuildBuckets;
-// Lineitem deltas per slice of maintenance (~4 us).
-constexpr std::size_t kDeltaGrain = 4096;
-// Buckets per slice of the build fill (each fills a whole partial state).
-constexpr std::size_t kBucketGrain = 1;
 
 // Bucket of `key`: the keys of one 2^15-id chunk (of every column) share a
 // bucket, so per-bucket columns hold disjoint chunks.
@@ -826,10 +828,10 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   const auto partitions = core::BuildPartitions(services);
 
   // Regions and nations are a handful of rows: scanned serially.
-  initial_scan->ScanRegions([&](const TpchQ5RegionInput &input) {
+  initial_scan->ScanRegionsSerial([&](const TpchQ5RegionInput &input) {
     state.region_names[input.key] = input.name;
   });
-  initial_scan->ScanNations([&](const TpchQ5NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ5NationInput &input) {
     TpchQ5Nation nation;
     nation.name = input.name;
     nation.name_is_null = input.name_is_null;
@@ -841,7 +843,7 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   const auto customers = core::PartitionedBuild<core::Buckets<KeyNation>>(
       services, [] { return core::Buckets<KeyNation>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanCustomersPartitioned(
+        initial_scan->ScanCustomers(
             services, parts,
             [&](std::size_t partition, const TpchQ5CustomerInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ5CustomerInput>{input});
@@ -858,7 +860,7 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   const auto suppliers = core::PartitionedBuild<core::Buckets<KeyNation>>(
       services, [] { return core::Buckets<KeyNation>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanSuppliersPartitioned(
+        initial_scan->ScanSuppliers(
             services, parts,
             [&](std::size_t partition, const TpchQ5SupplierInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ5SupplierInput>{input});
@@ -877,7 +879,7 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   const auto orders = core::PartitionedBuild<core::Buckets<JoinedOrder>>(
       services, [] { return core::Buckets<JoinedOrder>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ5OrderInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ5OrderInput>{input});
             });
@@ -897,7 +899,7 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   const auto folded = core::PartitionedBuild<LineitemFold>(
       services, [] { return LineitemFold{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts,
             [&](std::size_t partition, const TpchQ5LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ5LineitemInput>{input});

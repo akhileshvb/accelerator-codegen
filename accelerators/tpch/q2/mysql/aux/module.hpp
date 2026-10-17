@@ -19,7 +19,6 @@
 #include "prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
 struct TpchQ2Config {
   core::TableId part_table = 0;
   core::TableId supplier_table = 0;
@@ -66,24 +65,23 @@ struct TpchQ2RegionInput {
 class TpchQ2InitialScan {
 public:
   virtual ~TpchQ2InitialScan() = default;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ2NationInput &)> &) = 0;
-  virtual void ScanRegions(
+  virtual void ScanRegionsSerial(
       const std::function<void(const TpchQ2RegionInput &)> &) = 0;
   // The big tables' scans split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ2PartInput &)> &sink) = 0;
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ2SupplierInput &)> &sink) = 0;
-  virtual void ScanPartsuppsPartitioned(
+  virtual void ScanPartsupps(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ2PartsuppInput &)> &sink) = 0;
 };
 
-// ---------------------------------------------------------------------------
 // State layout (columnar, copy-on-write, no cap on key values)
 //
 // Q2 answers "cheapest regional offer per qualifying part", so the state keeps
@@ -110,7 +108,6 @@ public:
 // at most a few supplier lookups: ~25 ms at SF100, ~0.1-0.2 s at SF1000.
 // Any int64 key works: keys in [-2^35, 2^35) are zigzag-mapped into the dense
 // chunks, the rest live in sharded hash maps (AnyKeyCowArray).
-// ---------------------------------------------------------------------------
 constexpr int32_t kTpchQ2NoSize = std::numeric_limits<int32_t>::min();
 constexpr uint32_t kTpchQ2NoId = 0xFFFFFFFFu;
 constexpr std::size_t kTpchQ2InlineOffers = 4;
@@ -177,7 +174,6 @@ struct TpchQ2State {
     nations = std::make_shared<const std::vector<TpchQ2NationRec>>();
   }
 
-  // --- point edits (used by Build and by incremental maintenance) ----------
   // A part with NULL p_size / p_type can never qualify, so it is simply absent.
   void SetPart(int64_t partkey, const TpchQ2PartInput &part);
   void ErasePart(int64_t partkey);

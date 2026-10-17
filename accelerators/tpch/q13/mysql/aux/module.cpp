@@ -20,19 +20,25 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 namespace like = core::sql_like;
 
-// LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; the
-// MySQL copy of this file sets this to true (default utf8mb4 collations are
-// case-insensitive). This is the only intentional difference between the
-// postgres/ and mysql/ copies. '_' matches one UTF-8 character in both.
+// LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; MySQL's
+// default utf8mb4 collations are case-insensitive. '_' matches one UTF-8
+// character in both.
 constexpr bool kLikeCaseInsensitive = true;
 
 constexpr std::size_t kSlotBits = 12; // log2(kTpchQ13SegmentRows)
 static_assert(kTpchQ13SegmentRows == (std::size_t{1} << kSlotBits));
 
-// ── Cell extraction helpers ─────────────────────────────────────────────────
+// Deltas per slice (untimed); a batch below one slice runs delta by delta.
+constexpr std::size_t kDeltaGrain = 4096;
+
+// Customer chunks per slice (~160 us: 4096 customers each, ~10 us a chunk).
+constexpr std::size_t kChunkGrain = 16;
+
+// Segments per slice (~1.6 ms: one holds thousands of comments, ~0.1 ms to match).
+constexpr std::size_t kSegmentGrain = 16;
+
 core::InvalidationPlan All() {
   core::InvalidationPlan plan;
   plan.scope = ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
@@ -70,9 +76,322 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
   return lhs.c_count > rhs.c_count;
 }
 
+// Parallel loading of orders, for the build and for large maintenance batches.
+// The state's index shards and count chunks are written by the slice that owns
+// them: a key belongs to owner (shard or chunk) % kOwners, so slices never share
+// a write. What a slice may not write itself waits in buckets sorted by owner.
+constexpr std::size_t kOwners = 64;
+
+using OrderIndex = decltype(TpchQ13State::order_row);
+using CountArray = decltype(TpchQ13State::order_count);
+
+// The state's index is default-built: kShards shards, so this is its shard.
+constexpr unsigned kIndexShardBits = static_cast<unsigned>(__builtin_ctzll(OrderIndex::kShards));
+
+std::size_t IndexOwner(int64_t orderkey) {
+  return OrderIndex::ShardOf(orderkey, kIndexShardBits) % kOwners;
+}
+std::size_t CountOwner(int64_t custkey) {
+  return static_cast<std::size_t>(custkey) / CountArray::kChunkSize % kOwners;
+}
+
+struct CountChange {
+  int64_t custkey;
+  int32_t delta;
+};
+
+struct IndexEntry {
+  int64_t orderkey;
+  uint64_t ref; // (segment << kSlotBits) | slot
+};
+
+// Count changes and index entries of orders placed in segments, by owner.
+struct Placed {
+  core::Buckets<IndexEntry> index;
+  core::Buckets<CountChange> counts;
+  std::vector<CountChange> sparse_counts; // keys outside the dense range
+  int64_t max_dense_custkey = -1;
+  uint64_t segment_base = 0; // added to the segment of every entry
+
+  Placed() : index(kOwners), counts(kOwners) {}
+
+  void AddCount(int64_t custkey, int32_t delta) {
+    if (!TpchQ13State::Dense(custkey)) {
+      sparse_counts.push_back({custkey, delta});
+      return;
+    }
+    counts[CountOwner(custkey)].push_back({custkey, delta});
+    max_dense_custkey = std::max(max_dense_custkey, custkey);
+  }
+  void AddOrder(int64_t orderkey, uint64_t ref, int64_t custkey) {
+    index[IndexOwner(orderkey)].push_back({orderkey, ref});
+    AddCount(custkey, 1);
+  }
+};
+
+template <class Row> void Release(std::vector<Row> &rows) { std::vector<Row>().swap(rows); }
+
+// Writes the index entries and count changes into the state, one slice per owner.
+void ApplyPlaced(const core::AuxEngineServices &services, TpchQ13State &state,
+                 std::vector<Placed> &placed) {
+  int64_t max_dense_custkey = -1;
+  for (const auto &p : placed)
+    max_dense_custkey = std::max(max_dense_custkey, p.max_dense_custkey);
+  // The count directory is sized up front: slices then only fill their own chunks.
+  if (max_dense_custkey >= 0)
+    state.order_count.Mutable(max_dense_custkey);
+  core::ParallelEach(services, kOwners, 1, [&](std::size_t owner) {
+    for (auto &p : placed) {
+      for (const auto &entry : p.index[owner])
+        state.order_row.Upsert(entry.orderkey, entry.ref + (p.segment_base << kSlotBits));
+      for (const auto &change : p.counts[owner])
+        state.order_count.Mutable(change.custkey) += change.delta;
+      Release(p.index[owner]);
+      Release(p.counts[owner]);
+    }
+  });
+  for (const auto &p : placed)
+    for (const auto &change : p.sparse_counts)
+      state.AddCount(change.custkey, change.delta);
+}
+
+// The orders of one scan partition: full segments of its own.
+struct OrderPartial {
+  std::vector<std::shared_ptr<TpchQ13OrderSegment>> segments;
+  Placed placed; // refs are relative to this partition's first segment
+
+  void Add(const TpchQ13OrderInput &order) {
+    if (segments.empty() || segments.back()->orderkey.size() >= kTpchQ13SegmentRows)
+      segments.push_back(NewOrderSegment());
+    auto &segment = *segments.back();
+    const uint64_t slot = segment.orderkey.size();
+    segment.orderkey.push_back(order.orderkey);
+    segment.custkey.push_back(order.custkey);
+    segment.alive.push_back(1);
+    segment.comment.Append(order.comment);
+    ++segment.live;
+    placed.AddOrder(order.orderkey, ((segments.size() - 1) << kSlotBits) | slot, order.custkey);
+  }
+};
+
+using OrderPartials = std::vector<OrderPartial>;
+
+// Moves the partitions' segments into the state in partition order, then indexes
+// and counts them. Order keys are unique (primary key), so no row replaces another.
+void LoadOrders(const core::AuxEngineServices &services, TpchQ13State &state,
+                OrderPartials &partials) {
+  std::vector<Placed> placed;
+  for (auto &partial : partials) {
+    partial.placed.segment_base = state.segments.size();
+    for (auto &segment : partial.segments) {
+      state.live_orders += segment->live;
+      state.segments.push_back(std::move(segment));
+    }
+    placed.push_back(std::move(partial.placed));
+  }
+  ApplyPlaced(services, state, placed);
+}
+
+constexpr uint64_t kNoRow = ~uint64_t{0};
+constexpr std::size_t kNoDelta = ~std::size_t{0};
+
+// What a batch does to one order key: any delta on it removes the row it had,
+// and the last delta, if an insert, is the new row.
+struct KeyNet {
+  uint64_t old_ref = kNoRow;
+  std::size_t insert = kNoDelta;
+};
+
+// The rows one owner of order keys removes and the inserts that stay, in delta order.
+struct Resolved {
+  std::vector<uint64_t> removed; // refs of the rows the keys had
+  std::vector<std::size_t> kept; // delta indexes
+};
+
+Resolved ResolveKeys(TpchQ13State &state, const std::vector<TpchQ13Delta> &deltas,
+                     const std::vector<std::size_t> &mine) {
+  std::unordered_map<int64_t, KeyNet> nets;
+  for (const std::size_t i : mine) {
+    const auto &delta = deltas[i];
+    const auto [net, fresh] = nets.try_emplace(delta.orderkey);
+    if (const uint64_t *ref = fresh ? state.order_row.Find(delta.orderkey) : nullptr) {
+      net->second.old_ref = *ref;
+      state.order_row.Erase(delta.orderkey);
+    }
+    net->second.insert = delta.sign > 0 ? i : kNoDelta;
+  }
+  Resolved out;
+  for (const std::size_t i : mine)
+    if (nets.find(deltas[i].orderkey)->second.insert == i)
+      out.kept.push_back(i);
+  for (const auto &[key, net] : nets)
+    if (net.old_ref != kNoRow)
+      out.removed.push_back(net.old_ref);
+  return out;
+}
+
+// Marks the removed rows dead, one slice per owner of their segments; returns
+// their customers' count changes.
+std::vector<Placed> KillRows(const core::AuxEngineServices &services, TpchQ13State &state,
+                             const std::vector<Resolved> &resolved) {
+  core::Buckets<uint64_t> by_segment(kOwners);
+  for (const auto &r : resolved)
+    for (const uint64_t ref : r.removed) {
+      by_segment[(ref >> kSlotBits) % kOwners].push_back(ref);
+      state.MarkTouched(static_cast<uint32_t>(ref >> kSlotBits));
+    }
+  std::vector<Placed> placed(kOwners);
+  core::ParallelEach(services, kOwners, 1, [&](std::size_t owner) {
+    for (const uint64_t ref : by_segment[owner]) {
+      auto &segment = *state.MutableSegment(static_cast<uint32_t>(ref >> kSlotBits));
+      const std::size_t slot = ref & (kTpchQ13SegmentRows - 1);
+      segment.alive[slot] = 0;
+      --segment.live;
+      placed[owner].AddCount(segment.custkey[slot], -1);
+    }
+  });
+  return placed;
+}
+
+// Appends the kept inserts to the open segment and to fresh ones, one slice per
+// target segment.
+std::vector<Placed> AppendRows(const core::AuxEngineServices &services, TpchQ13State &state,
+                               const std::vector<TpchQ13Delta> &deltas,
+                               const std::vector<std::size_t> &kept) {
+  std::vector<uint32_t> targets;
+  std::vector<std::size_t> first{0}; // kept[first[t] .. first[t + 1]) go to targets[t]
+  const auto target = [&](uint32_t id, std::size_t room) {
+    targets.push_back(id);
+    first.push_back(std::min(kept.size(), first.back() + room));
+  };
+  if (const std::size_t room = state.OpenSegmentRoom(); room > 0 && !kept.empty())
+    target(static_cast<uint32_t>(state.open_segment), room);
+  while (first.back() < kept.size())
+    target(state.OpenFreshSegment(), kTpchQ13SegmentRows);
+
+  std::vector<Placed> placed(targets.size());
+  core::ParallelEach(services, targets.size(), 1, [&](std::size_t t) {
+    auto &segment = *state.MutableSegment(targets[t]);
+    for (std::size_t k = first[t]; k < first[t + 1]; ++k) {
+      const auto &delta = deltas[kept[k]];
+      const uint64_t slot = segment.orderkey.size();
+      segment.orderkey.push_back(delta.orderkey);
+      segment.custkey.push_back(delta.custkey);
+      segment.alive.push_back(1);
+      segment.comment.Append(delta.comment);
+      ++segment.live;
+      placed[t].AddOrder(delta.orderkey, (uint64_t{targets[t]} << kSlotBits) | slot,
+                         delta.custkey);
+    }
+  });
+  return placed;
+}
+
+// The order deltas with the state AddOrder / RemoveOrder one by one would give
+// (rows may sit in other segment slots). The keys of a batch are resolved against
+// the index by shard owners, dead rows and appended rows are written by segment,
+// and the index and counts by owner.
+void ApplyOrderDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
+                      const std::vector<TpchQ13Delta> &deltas) {
+  core::Buckets<std::size_t> by_owner(kOwners);
+  for (std::size_t i = 0; i < deltas.size(); ++i)
+    if (deltas[i].table == TpchQ13Delta::Table::Order)
+      by_owner[IndexOwner(deltas[i].orderkey)].push_back(i);
+  std::vector<Resolved> resolved(kOwners);
+  core::ParallelEach(services, kOwners, 1, [&](std::size_t owner) {
+    resolved[owner] = ResolveKeys(state, deltas, by_owner[owner]);
+  });
+
+  std::size_t removed = 0;
+  std::vector<std::size_t> kept;
+  for (const auto &r : resolved) {
+    removed += r.removed.size();
+    kept.insert(kept.end(), r.kept.begin(), r.kept.end());
+  }
+  auto placed = KillRows(services, state, resolved);
+  auto appended = AppendRows(services, state, deltas, kept);
+  placed.insert(placed.end(), std::make_move_iterator(appended.begin()),
+                std::make_move_iterator(appended.end()));
+  state.live_orders += static_cast<int64_t>(kept.size()) - static_cast<int64_t>(removed);
+  ApplyPlaced(services, state, placed);
+}
+
+// Customers first, then orders: the two do not interact.
+void ApplyDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
+                 const std::vector<TpchQ13Delta> &deltas) {
+  const bool parallel = core::SliceCount(services, deltas.size(), kDeltaGrain) > 1;
+  for (const auto &delta : deltas) {
+    if (delta.table == TpchQ13Delta::Table::Customer) {
+      if (delta.sign > 0)
+        state.AddCustomer(delta.orderkey);
+      else
+        state.RemoveCustomer(delta.orderkey);
+    } else if (!parallel) {
+      if (delta.sign > 0)
+        state.AddOrder(delta.orderkey, delta.custkey, delta.comment);
+      else
+        state.RemoveOrder(delta.orderkey);
+    }
+  }
+  if (parallel)
+    ApplyOrderDeltas(services, state, deltas);
+}
+
+// excluded[custkey] = number of the customer's orders whose comment matches
+// `matcher`: a flat array when the custkey range is dense enough, otherwise
+// (and for negative / huge keys) a hash.
+struct Excluded {
+  std::vector<int32_t> flat;
+  std::unordered_map<int64_t, int32_t> hash;
+  void Add(int64_t key) {
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
+      ++flat[static_cast<std::size_t>(key)];
+    else
+      ++hash[key];
+  }
+  int32_t Get(int64_t key) const {
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
+      return flat[static_cast<std::size_t>(key)];
+    const auto it = hash.find(key);
+    return it == hash.end() ? 0 : it->second;
+  }
+};
+
+// Custkeys of the live orders matching `matcher`, one SIMD pass per segment;
+// slices collect their segments' keys, merged in slice order.
+std::vector<int64_t> MatchingCustkeys(const core::AuxEngineServices &services,
+                                      const TpchQ13State &state,
+                                      const like::LikeMatcher &matcher) {
+  std::vector<int64_t> matched;
+  core::ParallelReduce(
+      services, state.segments.size(), kSegmentGrain, matched,
+      [&](std::vector<int64_t> &part, std::size_t begin, std::size_t end) {
+        for (std::size_t s = begin; s < end; ++s) {
+          const auto *seg = state.segments[s].get();
+          if (!seg || seg->live == 0)
+            continue;
+          const std::size_t n = seg->orderkey.size();
+          const auto bits =
+              like::MatchBlobBitmap(matcher, seg->comment.offsets(), n, seg->comment.data());
+          for (std::size_t w = 0; w < bits.size(); ++w) {
+            uint64_t b = bits[w];
+            while (b) {
+              const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
+              b &= b - 1;
+              if (seg->alive[i])
+                part.push_back(seg->custkey[i]);
+            }
+          }
+        }
+      },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      });
+  return matched;
+}
+
 } // namespace
 
-// ── TpchQ13State implementation ─────────────────────────────────────────────
 int32_t TpchQ13State::Count(int64_t key) const {
   if (Dense(key))
     return order_count.Get(key);
@@ -218,7 +537,6 @@ void TpchQ13State::CompactTouched() {
   touched_.clear();
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ13TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ13TxnBuffer::Clear() {
   pending = false;
@@ -230,7 +548,6 @@ void TpchQ13TxnBuffer::AddDelta(TpchQ13Delta delta) {
   deltas.push_back(std::move(delta));
 }
 
-// ── TpchQ13Module ───────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ13Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
@@ -253,278 +570,6 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
       MakeStateImage(TpchQ13ImageKind::CustomerCounts, state)));
   builder.Finish();
 }
-
-namespace {
-
-// Parallel loading of orders, for the build and for large maintenance batches.
-// The state's index shards and count chunks are written by the slice that owns
-// them: a key belongs to owner (shard or chunk) % kOwners, so slices never share
-// a write. What a slice may not write itself waits in buckets sorted by owner.
-constexpr std::size_t kOwners = 64;
-
-using OrderIndex = decltype(TpchQ13State::order_row);
-using CountArray = decltype(TpchQ13State::order_count);
-
-// The state's index is default-built: kShards shards, so this is its shard.
-constexpr unsigned kIndexShardBits = static_cast<unsigned>(__builtin_ctzll(OrderIndex::kShards));
-
-std::size_t IndexOwner(int64_t orderkey) {
-  return OrderIndex::ShardOf(orderkey, kIndexShardBits) % kOwners;
-}
-std::size_t CountOwner(int64_t custkey) {
-  return static_cast<std::size_t>(custkey) / CountArray::kChunkSize % kOwners;
-}
-
-struct CountChange {
-  int64_t custkey;
-  int32_t delta;
-};
-
-struct IndexEntry {
-  int64_t orderkey;
-  uint64_t ref; // (segment << kSlotBits) | slot
-};
-
-// Count changes and index entries of orders placed in segments, by owner.
-struct Placed {
-  core::Buckets<IndexEntry> index;
-  core::Buckets<CountChange> counts;
-  std::vector<CountChange> sparse_counts; // keys outside the dense range
-  int64_t max_dense_custkey = -1;
-  uint64_t segment_base = 0; // added to the segment of every entry
-
-  Placed() : index(kOwners), counts(kOwners) {}
-
-  void AddCount(int64_t custkey, int32_t delta) {
-    if (!TpchQ13State::Dense(custkey)) {
-      sparse_counts.push_back({custkey, delta});
-      return;
-    }
-    counts[CountOwner(custkey)].push_back({custkey, delta});
-    max_dense_custkey = std::max(max_dense_custkey, custkey);
-  }
-  void AddOrder(int64_t orderkey, uint64_t ref, int64_t custkey) {
-    index[IndexOwner(orderkey)].push_back({orderkey, ref});
-    AddCount(custkey, 1);
-  }
-};
-
-template <class Row> void Release(std::vector<Row> &rows) { std::vector<Row>().swap(rows); }
-
-// Writes the index entries and count changes into the state, one slice per owner.
-void ApplyPlaced(const core::AuxEngineServices &services, TpchQ13State &state,
-                 std::vector<Placed> &placed) {
-  int64_t max_dense_custkey = -1;
-  for (const auto &p : placed)
-    max_dense_custkey = std::max(max_dense_custkey, p.max_dense_custkey);
-  // The count directory is sized up front: slices then only fill their own chunks.
-  if (max_dense_custkey >= 0)
-    state.order_count.Mutable(max_dense_custkey);
-  core::ParallelEach(services, kOwners, 1, [&](std::size_t owner) {
-    for (auto &p : placed) {
-      for (const auto &entry : p.index[owner])
-        state.order_row.Upsert(entry.orderkey, entry.ref + (p.segment_base << kSlotBits));
-      for (const auto &change : p.counts[owner])
-        state.order_count.Mutable(change.custkey) += change.delta;
-      Release(p.index[owner]);
-      Release(p.counts[owner]);
-    }
-  });
-  for (const auto &p : placed)
-    for (const auto &change : p.sparse_counts)
-      state.AddCount(change.custkey, change.delta);
-}
-
-// ── Build ──────────────────────────────────────────────────────────────────
-
-// The orders of one scan partition: full segments of its own.
-struct OrderPartial {
-  std::vector<std::shared_ptr<TpchQ13OrderSegment>> segments;
-  Placed placed; // refs are relative to this partition's first segment
-
-  void Add(const TpchQ13OrderInput &order) {
-    if (segments.empty() || segments.back()->orderkey.size() >= kTpchQ13SegmentRows)
-      segments.push_back(NewOrderSegment());
-    auto &segment = *segments.back();
-    const uint64_t slot = segment.orderkey.size();
-    segment.orderkey.push_back(order.orderkey);
-    segment.custkey.push_back(order.custkey);
-    segment.alive.push_back(1);
-    segment.comment.Append(order.comment);
-    ++segment.live;
-    placed.AddOrder(order.orderkey, ((segments.size() - 1) << kSlotBits) | slot, order.custkey);
-  }
-};
-
-using OrderPartials = std::vector<OrderPartial>;
-
-// Moves the partitions' segments into the state in partition order, then indexes
-// and counts them. Order keys are unique (primary key), so no row replaces another.
-void LoadOrders(const core::AuxEngineServices &services, TpchQ13State &state,
-                OrderPartials &partials) {
-  std::vector<Placed> placed;
-  for (auto &partial : partials) {
-    partial.placed.segment_base = state.segments.size();
-    for (auto &segment : partial.segments) {
-      state.live_orders += segment->live;
-      state.segments.push_back(std::move(segment));
-    }
-    placed.push_back(std::move(partial.placed));
-  }
-  ApplyPlaced(services, state, placed);
-}
-
-// ── Maintenance ────────────────────────────────────────────────────────────
-
-constexpr uint64_t kNoRow = ~uint64_t{0};
-constexpr std::size_t kNoDelta = ~std::size_t{0};
-
-// What a batch does to one order key: any delta on it removes the row it had,
-// and the last delta, if an insert, is the new row.
-struct KeyNet {
-  uint64_t old_ref = kNoRow;
-  std::size_t insert = kNoDelta;
-};
-
-// The rows one owner of order keys removes and the inserts that stay, in delta order.
-struct Resolved {
-  std::vector<uint64_t> removed; // refs of the rows the keys had
-  std::vector<std::size_t> kept; // delta indexes
-};
-
-Resolved ResolveKeys(TpchQ13State &state, const std::vector<TpchQ13Delta> &deltas,
-                     const std::vector<std::size_t> &mine) {
-  std::unordered_map<int64_t, KeyNet> nets;
-  for (const std::size_t i : mine) {
-    const auto &delta = deltas[i];
-    const auto [net, fresh] = nets.try_emplace(delta.orderkey);
-    if (const uint64_t *ref = fresh ? state.order_row.Find(delta.orderkey) : nullptr) {
-      net->second.old_ref = *ref;
-      state.order_row.Erase(delta.orderkey);
-    }
-    net->second.insert = delta.sign > 0 ? i : kNoDelta;
-  }
-  Resolved out;
-  for (const std::size_t i : mine)
-    if (nets.find(deltas[i].orderkey)->second.insert == i)
-      out.kept.push_back(i);
-  for (const auto &[key, net] : nets)
-    if (net.old_ref != kNoRow)
-      out.removed.push_back(net.old_ref);
-  return out;
-}
-
-// Marks the removed rows dead, one slice per owner of their segments; returns
-// their customers' count changes.
-std::vector<Placed> KillRows(const core::AuxEngineServices &services, TpchQ13State &state,
-                             const std::vector<Resolved> &resolved) {
-  core::Buckets<uint64_t> by_segment(kOwners);
-  for (const auto &r : resolved)
-    for (const uint64_t ref : r.removed) {
-      by_segment[(ref >> kSlotBits) % kOwners].push_back(ref);
-      state.MarkTouched(static_cast<uint32_t>(ref >> kSlotBits));
-    }
-  std::vector<Placed> placed(kOwners);
-  core::ParallelEach(services, kOwners, 1, [&](std::size_t owner) {
-    for (const uint64_t ref : by_segment[owner]) {
-      auto &segment = *state.MutableSegment(static_cast<uint32_t>(ref >> kSlotBits));
-      const std::size_t slot = ref & (kTpchQ13SegmentRows - 1);
-      segment.alive[slot] = 0;
-      --segment.live;
-      placed[owner].AddCount(segment.custkey[slot], -1);
-    }
-  });
-  return placed;
-}
-
-// Appends the kept inserts to the open segment and to fresh ones, one slice per
-// target segment.
-std::vector<Placed> AppendRows(const core::AuxEngineServices &services, TpchQ13State &state,
-                               const std::vector<TpchQ13Delta> &deltas,
-                               const std::vector<std::size_t> &kept) {
-  std::vector<uint32_t> targets;
-  std::vector<std::size_t> first{0}; // kept[first[t] .. first[t + 1]) go to targets[t]
-  const auto target = [&](uint32_t id, std::size_t room) {
-    targets.push_back(id);
-    first.push_back(std::min(kept.size(), first.back() + room));
-  };
-  if (const std::size_t room = state.OpenSegmentRoom(); room > 0 && !kept.empty())
-    target(static_cast<uint32_t>(state.open_segment), room);
-  while (first.back() < kept.size())
-    target(state.OpenFreshSegment(), kTpchQ13SegmentRows);
-
-  std::vector<Placed> placed(targets.size());
-  core::ParallelEach(services, targets.size(), 1, [&](std::size_t t) {
-    auto &segment = *state.MutableSegment(targets[t]);
-    for (std::size_t k = first[t]; k < first[t + 1]; ++k) {
-      const auto &delta = deltas[kept[k]];
-      const uint64_t slot = segment.orderkey.size();
-      segment.orderkey.push_back(delta.orderkey);
-      segment.custkey.push_back(delta.custkey);
-      segment.alive.push_back(1);
-      segment.comment.Append(delta.comment);
-      ++segment.live;
-      placed[t].AddOrder(delta.orderkey, (uint64_t{targets[t]} << kSlotBits) | slot,
-                         delta.custkey);
-    }
-  });
-  return placed;
-}
-
-// The order deltas with the state AddOrder / RemoveOrder one by one would give
-// (rows may sit in other segment slots). The keys of a batch are resolved against
-// the index by shard owners, dead rows and appended rows are written by segment,
-// and the index and counts by owner.
-void ApplyOrderDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
-                      const std::vector<TpchQ13Delta> &deltas) {
-  core::Buckets<std::size_t> by_owner(kOwners);
-  for (std::size_t i = 0; i < deltas.size(); ++i)
-    if (deltas[i].table == TpchQ13Delta::Table::Order)
-      by_owner[IndexOwner(deltas[i].orderkey)].push_back(i);
-  std::vector<Resolved> resolved(kOwners);
-  core::ParallelEach(services, kOwners, 1, [&](std::size_t owner) {
-    resolved[owner] = ResolveKeys(state, deltas, by_owner[owner]);
-  });
-
-  std::size_t removed = 0;
-  std::vector<std::size_t> kept;
-  for (const auto &r : resolved) {
-    removed += r.removed.size();
-    kept.insert(kept.end(), r.kept.begin(), r.kept.end());
-  }
-  auto placed = KillRows(services, state, resolved);
-  auto appended = AppendRows(services, state, deltas, kept);
-  placed.insert(placed.end(), std::make_move_iterator(appended.begin()),
-                std::make_move_iterator(appended.end()));
-  state.live_orders += static_cast<int64_t>(kept.size()) - static_cast<int64_t>(removed);
-  ApplyPlaced(services, state, placed);
-}
-
-// Customers first, then orders: the two do not interact. A batch too small to
-// split runs delta by delta.
-constexpr std::size_t kDeltaGrain = 4096;
-
-void ApplyDeltas(const core::AuxEngineServices &services, TpchQ13State &state,
-                 const std::vector<TpchQ13Delta> &deltas) {
-  const bool parallel = core::SliceCount(services, deltas.size(), kDeltaGrain) > 1;
-  for (const auto &delta : deltas) {
-    if (delta.table == TpchQ13Delta::Table::Customer) {
-      if (delta.sign > 0)
-        state.AddCustomer(delta.orderkey);
-      else
-        state.RemoveCustomer(delta.orderkey);
-    } else if (!parallel) {
-      if (delta.sign > 0)
-        state.AddOrder(delta.orderkey, delta.custkey, delta.comment);
-      else
-        state.RemoveOrder(delta.orderkey);
-    }
-  }
-  if (parallel)
-    ApplyOrderDeltas(services, state, deltas);
-}
-
-} // namespace
 
 std::shared_ptr<TpchQ13State>
 TpchQ13Module::BuildState(core::AuxEngineServices &services) const {
@@ -713,69 +758,6 @@ bool TpchQ13Module::LoadState(
   }
   return false;
 }
-
-namespace {
-
-// excluded[custkey] = number of the customer's orders whose comment matches
-// `matcher`: a flat array when the custkey range is dense enough, otherwise
-// (and for negative / huge keys) a hash.
-struct Excluded {
-  std::vector<int32_t> flat;
-  std::unordered_map<int64_t, int32_t> hash;
-  void Add(int64_t key) {
-    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
-      ++flat[static_cast<std::size_t>(key)];
-    else
-      ++hash[key];
-  }
-  int32_t Get(int64_t key) const {
-    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
-      return flat[static_cast<std::size_t>(key)];
-    const auto it = hash.find(key);
-    return it == hash.end() ? 0 : it->second;
-  }
-};
-
-// Customer chunks per slice: 4096 customers each, ~10 us a chunk.
-constexpr std::size_t kChunkGrain = 16;
-
-// Segments per slice: one holds thousands of comments (~0.1 ms to match).
-constexpr std::size_t kSegmentGrain = 16;
-
-// Custkeys of the live orders matching `matcher`, one SIMD pass per segment;
-// slices collect their segments' keys, merged in slice order.
-std::vector<int64_t> MatchingCustkeys(const core::AuxEngineServices &services,
-                                      const TpchQ13State &state,
-                                      const like::LikeMatcher &matcher) {
-  std::vector<int64_t> matched;
-  core::ParallelReduce(
-      services, state.segments.size(), kSegmentGrain, matched,
-      [&](std::vector<int64_t> &part, std::size_t begin, std::size_t end) {
-        for (std::size_t s = begin; s < end; ++s) {
-          const auto *seg = state.segments[s].get();
-          if (!seg || seg->live == 0)
-            continue;
-          const std::size_t n = seg->orderkey.size();
-          const auto bits =
-              like::MatchBlobBitmap(matcher, seg->comment.offsets(), n, seg->comment.data());
-          for (std::size_t w = 0; w < bits.size(); ++w) {
-            uint64_t b = bits[w];
-            while (b) {
-              const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
-              b &= b - 1;
-              if (seg->alive[i])
-                part.push_back(seg->custkey[i]);
-            }
-          }
-        }
-      },
-      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
-        into.insert(into.end(), from.begin(), from.end());
-      });
-  return matched;
-}
-
-} // namespace
 
 void TpchQ13Module::EmitResult(const core::AuxEngineServices &services,
                                const TpchQ13State &state,

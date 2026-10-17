@@ -15,7 +15,6 @@
 #include "prims/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
 struct TpchQ4Layout {
   static constexpr const char *kAccelerator = "tpch_q4";
   static constexpr core::PartitionId kSide = 0;
@@ -47,15 +46,14 @@ public:
   virtual ~TpchQ4InitialScan() = default;
   // Split into `partitions` fixed row ranges: sink(partition, row) runs
   // concurrently for different partitions, one thread per partition.
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ4OrderInput &)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ4LineitemInput &)> &sink) = 0;
 };
 
-// ---------------------------------------------------------------------------
 // State layout (all per-write copies are O(touched chunks), never O(state)).
 //
 //   kEligibility  per-order columns keyed by o_orderkey (AnyKeyCowArray):
@@ -63,8 +61,7 @@ public:
 //                 with commitdate < receiptdate (2 B)  => 8 B per key slot.
 //                 TPC-H keys are ~25% dense, so ~32 B/order incl. the gaps
 //                 (dense keys: 8 B/order).  SF100 (150M orders): ~4.8 GB,
-//                 SF1000: ~48 GB; the former unordered_map was ~56 B/order
-//                 (8.4 GB at SF100) plus a full map copy on every write.
+//                 SF1000: ~48 GB.
 //                 Keys outside [0, 2^36) live in a sharded COW hash map
 //                 (core/any_key_cow_array.hpp).
 //   kTreeBase     per priority, a radix-64 counting tree over the order date
@@ -77,7 +74,6 @@ public:
 //                 tree window (|days| > ~23000 years) go to a small ordered
 //                 outlier map in the side image.
 //   kSide         priority dictionary (+ NULL priority slot) and outliers.
-// ---------------------------------------------------------------------------
 
 constexpr uint32_t kTpchQ4NoOrder = 0xFFFFFFFFu;  // priority sentinel: no order row
 

@@ -20,7 +20,7 @@ using Vec = TpchQ19State::Vec;
 
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
-// Lineitem deltas per maintenance slice (~70 ns each: >= 250 us a slice).
+// Lineitem deltas per maintenance slice (~290 us: ~70 ns each).
 constexpr std::size_t kDeltaGrain = 4096;
 // l_quantity BETWEEN qty AND qty + kQuantityWindow.
 constexpr int64_t kQuantityWindow = 10;
@@ -376,7 +376,7 @@ TpchQ19Module::BuildState(core::AuxEngineServices &services) const {
       [](PartCodes &into, PartCodes &&from) { into.Merge(std::move(from)); });
   state->brands = std::make_shared<core::StringDict>(std::move(parts.brands));
   state->part_code = std::move(parts.codes);
-  initial_scan->ScanGroupAggregates([&](const TpchQ19GroupAggregate &agg) {
+  initial_scan->ScanGroupAggregatesSerial([&](const TpchQ19GroupAggregate &agg) {
     state->Add(TpchQ19State::Code(state->InternBrand(agg.brand),
                                   static_cast<TpchQ19Family>(agg.family)),
                agg.quantity_raw, agg.revenue_raw, agg.count);
@@ -444,7 +444,7 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
   std::map<std::pair<int64_t, int64_t>, QtyCell> moved; // (partkey, qty)
   const std::unordered_set<int64_t> is_affected(affected.begin(), affected.end());
   if (!affected.empty()) {
-    initial_scan->ScanPartQuantityRevenue(
+    initial_scan->ScanPartQuantityRevenueSerial(
         affected, [&](const TpchQ19PartQuantityRevenue &row) {
           auto &cell = moved[{row.partkey, row.quantity_raw}];
           cell.post += row.revenue_raw;

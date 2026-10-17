@@ -22,9 +22,9 @@ namespace {
 // Build: lineitem and order rows are dealt out to buckets by order key; a
 // bucket is built alone, so buckets run in parallel.
 using core::kBuildBuckets;
-// Touched order keys per slice of maintenance.
+// Touched order keys per maintenance slice (untimed).
 constexpr std::size_t kKeyGrain = 1024;
-// Buckets per slice of the build (each builds a whole partial state).
+// Buckets per slice of the build (untimed): each builds a whole partial state.
 constexpr std::size_t kBucketGrain = 1;
 // Months in the query's order-date window.
 constexpr int32_t kWindowMonths = 3;
@@ -590,7 +590,7 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   auto qualifying = core::PartitionedBuild<core::Buckets<int64_t>>(
       services, [] { return core::Buckets<int64_t>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts,
             [&](std::size_t partition, const TpchQ4LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ4LineitemInput>{input});
@@ -607,7 +607,7 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   const auto pieces = core::PartitionedBuild<OrderPieces>(
       services, [] { return OrderPieces(1); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts,
             [&](std::size_t partition, const TpchQ4OrderInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ4OrderInput>{input});

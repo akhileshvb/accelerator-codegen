@@ -44,7 +44,7 @@ void RunOrderLines(
        });
 }
 
-void ScanTpchQ3CustomersPartitioned(
+void ScanTpchQ3Customers(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ3CustomerInput &)> &sink) {
   ScanPartitioned(services, "customer", {IntColumn("c_custkey"), TextColumn("c_mktsegment")},
@@ -56,7 +56,7 @@ void ScanTpchQ3CustomersPartitioned(
                   });
 }
 
-void ScanTpchQ3OrdersPartitioned(
+void ScanTpchQ3Orders(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ3OrderInput &)> &sink) {
   ScanPartitioned(services, "orders",
@@ -71,7 +71,7 @@ void ScanTpchQ3OrdersPartitioned(
                   });
 }
 
-void ScanTpchQ3LineitemsPartitioned(
+void ScanTpchQ3Lineitems(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ3LineitemInput &)> &sink) {
   ScanPartitioned(services, "lineitem",
@@ -89,23 +89,23 @@ void ScanTpchQ3LineitemsPartitioned(
 
 class TpchQ3Scan final : public query::TpchQ3InitialScan {
 public:
-  void ScanCustomersPartitioned(
+  void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ3CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ3CustomersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ3Customers(services, partitions, sink);
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ3OrderInput &)> &sink)
       override {
-    scans::ScanTpchQ3OrdersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ3Orders(services, partitions, sink);
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ3LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ3LineitemsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ3Lineitems(services, partitions, sink);
   }
   bool LookupOrderLines(
       const std::vector<int64_t> &orderkeys,

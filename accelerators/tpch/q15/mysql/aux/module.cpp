@@ -18,7 +18,6 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 namespace sql_date = core::sql_date;
 using Int128 = __int128;
 
@@ -28,9 +27,9 @@ constexpr int64_t kMonthPartitionBias = 1000000;
 constexpr int32_t kRevenueScale = 4;
 // Dates this close to the int32 limits are PostgreSQL +/-infinity sentinels.
 constexpr int64_t kFiniteDateLimit = std::numeric_limits<int32_t>::max() - 1;
-// Supplier chunks per sweep slice: each sums every whole month's column (~100 us).
+// Supplier-array chunks per read slice (~1.6 ms: a chunk sums every whole month, ~100 us).
 constexpr std::size_t kSweepGrain = 16;
-// Months per build or maintenance slice (a month is ~70K lineitems at SF 1).
+// Months per build or maintenance slice (untimed; a month is ~70K lineitems at SF 1).
 constexpr std::size_t kMonthGrain = 1;
 
 core::PartitionId MonthPartition(int64_t month_index) {
@@ -45,8 +44,6 @@ int64_t MonthStartDays(int64_t month_index) {
   }
   return sql_date::DaysFromCivil(y, static_cast<int>(m) + 1, 1);
 }
-
-// ── Row decoding ──────────────────────────────────────────────────────────
 
 // A row is "readable" when every column is present and well typed. A row with
 // a NULL shipdate / suppkey / price / discount never contributes to any window
@@ -78,8 +75,6 @@ bool ReadSupplier(const core::AuxRow &row, TpchQ15SupplierInput &out) {
          core::StringCell(row, 2, out.address) && core::StringCell(row, 3, out.phone);
 }
 
-// ── Supplier directory packing ───────────────────────────────────────────
-
 void PackField(std::string &out, const std::string &s) {
   const uint32_t n = static_cast<uint32_t>(s.size());
   out.append(reinterpret_cast<const char *>(&n), sizeof(n));
@@ -108,8 +103,6 @@ void UnpackSupplier(const std::string &packed, std::string &name,
     pos += n;
   }
 }
-
-// ── Per-day lists and per-month columns ──────────────────────────────────
 
 struct DayPosition {
   int64_t month_index = 0;
@@ -221,8 +214,6 @@ void FoldIntoDay(TpchQ15DayList &list, std::vector<TpchQ15DayEntry> &&adds) {
     CompactDay(list);
 }
 
-// ── Time/revenue helpers ──────────────────────────────────────────────────
-
 int64_t Pow10(int32_t n) {
   int64_t v = 1;
   while (n-- > 0)
@@ -330,69 +321,6 @@ struct Leaders {
   }
 };
 
-} // namespace
-
-int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
-                          int64_t discount_raw, int32_t discount_scale) {
-  Int128 value = static_cast<Int128>(extended_price_raw) *
-                 (Pow10(discount_scale) - static_cast<Int128>(discount_raw));
-  int32_t scale = extended_scale + discount_scale;
-  if (scale > kRevenueScale)
-    throw std::logic_error("TPC-H Q15: revenue scale above 4 is unsupported");
-  for (; scale < kRevenueScale; ++scale)
-    value *= 10;
-  if (value > std::numeric_limits<int64_t>::max() ||
-      value <= std::numeric_limits<int64_t>::min())
-    throw std::overflow_error("TPC-H Q15 lineitem revenue overflow");
-  return static_cast<int64_t>(value);
-}
-
-// ── TxnBuffer ─────────────────────────────────────────────────────────────
-
-bool TpchQ15TxnBuffer::HasPendingChanges() const { return pending; }
-void TpchQ15TxnBuffer::Clear() {
-  pending = false;
-  requires_rebuild = false;
-  lineitem_deltas.clear();
-  supplier_deltas.clear();
-}
-bool TpchQ15TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-const std::vector<TpchQ15LineitemDelta> &TpchQ15TxnBuffer::LineitemDeltas() const {
-  return lineitem_deltas;
-}
-const std::vector<TpchQ15SupplierDelta> &TpchQ15TxnBuffer::SupplierDeltas() const {
-  return supplier_deltas;
-}
-void TpchQ15TxnBuffer::MarkRebuild() {
-  pending = true;
-  requires_rebuild = true;
-  lineitem_deltas.clear();
-  supplier_deltas.clear();
-}
-void TpchQ15TxnBuffer::AddLineitemDelta(TpchQ15LineitemDelta delta) {
-  pending = true;
-  lineitem_deltas.push_back(delta);
-}
-void TpchQ15TxnBuffer::AddSupplierDelta(TpchQ15SupplierDelta delta) {
-  pending = true;
-  supplier_deltas.push_back(std::move(delta));
-}
-
-// ── Module ────────────────────────────────────────────────────────────────
-
-core::AcceleratorId TpchQ15Module::Id() const { return kId; }
-
-std::vector<core::TableDependency> TpchQ15Module::Dependencies() const {
-  return {{config.lineitem_table, {0, 1, 2, 3}, {10, 2, 5, 6}},
-          {config.supplier_table, {0, 1, 2, 3}, {0, 1, 2, 4}}};
-}
-
-std::unique_ptr<core::AuxTxnBuffer> TpchQ15Module::CreateTxnBuffer() const {
-  return std::make_unique<TpchQ15TxnBuffer>();
-}
-
-namespace {
-
 // One scanned lineitem's contribution to a month.
 struct MonthRow {
   int64_t suppkey;
@@ -426,6 +354,61 @@ BuildMonth(const std::vector<MonthRow> &rows) {
 }
 
 } // namespace
+
+int64_t TpchQ15RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
+                          int64_t discount_raw, int32_t discount_scale) {
+  Int128 value = static_cast<Int128>(extended_price_raw) *
+                 (Pow10(discount_scale) - static_cast<Int128>(discount_raw));
+  int32_t scale = extended_scale + discount_scale;
+  if (scale > kRevenueScale)
+    throw std::logic_error("TPC-H Q15: revenue scale above 4 is unsupported");
+  for (; scale < kRevenueScale; ++scale)
+    value *= 10;
+  if (value > std::numeric_limits<int64_t>::max() ||
+      value <= std::numeric_limits<int64_t>::min())
+    throw std::overflow_error("TPC-H Q15 lineitem revenue overflow");
+  return static_cast<int64_t>(value);
+}
+
+bool TpchQ15TxnBuffer::HasPendingChanges() const { return pending; }
+void TpchQ15TxnBuffer::Clear() {
+  pending = false;
+  requires_rebuild = false;
+  lineitem_deltas.clear();
+  supplier_deltas.clear();
+}
+bool TpchQ15TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
+const std::vector<TpchQ15LineitemDelta> &TpchQ15TxnBuffer::LineitemDeltas() const {
+  return lineitem_deltas;
+}
+const std::vector<TpchQ15SupplierDelta> &TpchQ15TxnBuffer::SupplierDeltas() const {
+  return supplier_deltas;
+}
+void TpchQ15TxnBuffer::MarkRebuild() {
+  pending = true;
+  requires_rebuild = true;
+  lineitem_deltas.clear();
+  supplier_deltas.clear();
+}
+void TpchQ15TxnBuffer::AddLineitemDelta(TpchQ15LineitemDelta delta) {
+  pending = true;
+  lineitem_deltas.push_back(delta);
+}
+void TpchQ15TxnBuffer::AddSupplierDelta(TpchQ15SupplierDelta delta) {
+  pending = true;
+  supplier_deltas.push_back(std::move(delta));
+}
+
+core::AcceleratorId TpchQ15Module::Id() const { return kId; }
+
+std::vector<core::TableDependency> TpchQ15Module::Dependencies() const {
+  return {{config.lineitem_table, {0, 1, 2, 3}, {10, 2, 5, 6}},
+          {config.supplier_table, {0, 1, 2, 3}, {0, 1, 2, 4}}};
+}
+
+std::unique_ptr<core::AuxTxnBuffer> TpchQ15Module::CreateTxnBuffer() const {
+  return std::make_unique<TpchQ15TxnBuffer>();
+}
 
 void TpchQ15Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {

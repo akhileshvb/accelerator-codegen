@@ -23,20 +23,18 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 namespace like = core::sql_like;
 
-// LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; the
-// MySQL copy of this file sets this to true (default utf8mb4 collations are
-// case-insensitive). This is the only intentional difference between the
-// postgres/ and mysql/ copies. '_' matches one UTF-8 character in both.
+// LIKE semantics of the target DBMS. PostgreSQL LIKE is case-sensitive; MySQL's
+// default utf8mb4 collations are case-insensitive. '_' matches one UTF-8
+// character in both.
 constexpr bool kLikeCaseInsensitive = false;
 
-// Segments per parallel slice (a segment is 4096 orders, ~100 us of matching).
+// Segments per slice (~1.6 ms: a segment is 4096 orders, ~100 us of matching).
 constexpr std::size_t kSegmentGrain = 16;
-// Customer-key chunks per slice of the histogram build; added orders per slice
-// of the pattern-mask precompute (~1 us each).
+// Customer-key chunks per slice of the histogram build (untimed).
 constexpr std::size_t kChunkGrain = 4;
+// Added orders per slice of the pattern-mask precompute (~256 us: ~1 us each).
 constexpr std::size_t kMaskGrain = 256;
 constexpr std::size_t kSlotBits = 12; // log2(kTpchQ13SegmentRows)
 static_assert(kTpchQ13SegmentRows == (std::size_t{1} << kSlotBits));
@@ -69,36 +67,9 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
   return lhs.c_count > rhs.c_count;
 }
 
-} // namespace
-
-// ── Known patterns ─────────────────────────────────────────────────────────
-namespace {
 constexpr std::string_view kWord1[4] = {"special", "pending", "unusual", "express"};
 constexpr std::string_view kWord2[4] = {"packages", "requests", "accounts", "deposits"};
-} // namespace
 
-int TpchQ13State::PatternIndex(std::string_view pattern) {
-  // '%' w1 '%' w2 '%' exactly (no other wildcard / escape characters).
-  if (pattern.size() < 3 || pattern.front() != '%' || pattern.back() != '%')
-    return -1;
-  for (int i = 0; i < 4; ++i) {
-    const auto w1 = kWord1[i];
-    if (pattern.size() < w1.size() + 3 || pattern.substr(1, w1.size()) != w1 ||
-        pattern[1 + w1.size()] != '%')
-      continue;
-    const auto rest = pattern.substr(2 + w1.size(), pattern.size() - 3 - w1.size());
-    for (int j = 0; j < 4; ++j)
-      if (rest == kWord2[j])
-        return i * 4 + j;
-  }
-  return -1;
-}
-
-// s LIKE '%a%b%' iff some occurrence of a ends at or before the start of some
-// occurrence of b, i.e. (end of the first a) <= (start of the last b). Byte
-// comparison is exact for PostgreSQL's case-sensitive LIKE on UTF-8 / single
-// byte encodings (the words are ASCII).
-namespace {
 // First position >= from of `w` in buf[0, n), or -1. buf must be readable (and
 // hold no letters) for 32 bytes past n. SSE2: a 16-position block is a
 // candidate where both of w's first two bytes line up; candidates are checked
@@ -130,8 +101,109 @@ inline int64_t FindWord(const char *buf, std::size_t n, std::size_t from,
   return hit ? static_cast<const char *>(hit) - buf : -1;
 #endif
 }
+
+struct CustomerKeys {
+  std::vector<int64_t> keys;
+  int64_t max_key = -1;
+};
+
+// Orders packed into full segments, as AddOrder would fill them.
+struct SegmentRun {
+  std::vector<std::shared_ptr<TpchQ13OrderSegment>> segments;
+
+  void Add(const TpchQ13OrderInput &input) {
+    if (segments.empty() || segments.back()->orderkey.size() >= kTpchQ13SegmentRows) {
+      auto segment = std::make_shared<TpchQ13OrderSegment>();
+      segment->orderkey.reserve(kTpchQ13SegmentRows);
+      segment->custkey.reserve(kTpchQ13SegmentRows);
+      segment->alive.reserve(kTpchQ13SegmentRows);
+      segment->comment.Reserve(kTpchQ13SegmentRows, 0);
+      segments.push_back(std::move(segment));
+    }
+    auto &segment = *segments.back();
+    segment.orderkey.push_back(input.orderkey);
+    segment.custkey.push_back(input.custkey);
+    segment.alive.push_back(1);
+    segment.comment.Append(input.comment);
+    ++segment.live;
+  }
+};
+
+// excluded[custkey] = number of the customer's orders whose comment matches
+// `matcher`: a flat array when the custkey range is dense enough, otherwise
+// (and for negative / huge keys) a hash.
+struct Excluded {
+  std::vector<int32_t> flat;
+  std::unordered_map<int64_t, int32_t> hash;
+  void Add(int64_t key) {
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
+      ++flat[static_cast<std::size_t>(key)];
+    else
+      ++hash[key];
+  }
+  int32_t Get(int64_t key) const {
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
+      return flat[static_cast<std::size_t>(key)];
+    const auto it = hash.find(key);
+    return it == hash.end() ? 0 : it->second;
+  }
+};
+
+// Custkeys of the live orders matching `matcher`, one SIMD pass per segment;
+// slices collect their segments' keys, merged in slice order.
+std::vector<int64_t> MatchingCustkeys(const TpchQ13State &state, const like::LikeMatcher &matcher,
+                                      const core::AuxEngineServices &services) {
+  std::vector<int64_t> matched;
+  core::ParallelReduce(
+      services, state.segments.size(), kSegmentGrain, matched,
+      [&](std::vector<int64_t> &part, std::size_t begin, std::size_t end) {
+        for (std::size_t s = begin; s < end; ++s) {
+          const auto *seg = state.segments[s].get();
+          if (!seg || seg->live == 0)
+            continue;
+          const std::size_t n = seg->orderkey.size();
+          const auto bits =
+              like::MatchBlobBitmap(matcher, seg->comment.offsets(), n, seg->comment.data());
+          for (std::size_t w = 0; w < bits.size(); ++w) {
+            uint64_t b = bits[w];
+            while (b) {
+              const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
+              b &= b - 1;
+              if (seg->alive[i])
+                part.push_back(seg->custkey[i]);
+            }
+          }
+        }
+      },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      });
+  return matched;
+}
+
 } // namespace
 
+int TpchQ13State::PatternIndex(std::string_view pattern) {
+  // '%' w1 '%' w2 '%' exactly (no other wildcard / escape characters).
+  if (pattern.size() < 3 || pattern.front() != '%' || pattern.back() != '%')
+    return -1;
+  for (int i = 0; i < 4; ++i) {
+    const auto w1 = kWord1[i];
+    if (pattern.size() < w1.size() + 3 || pattern.substr(1, w1.size()) != w1 ||
+        pattern[1 + w1.size()] != '%')
+      continue;
+    const auto rest = pattern.substr(2 + w1.size(), pattern.size() - 3 - w1.size());
+    for (int j = 0; j < 4; ++j)
+      if (rest == kWord2[j])
+        return i * 4 + j;
+  }
+  return -1;
+}
+
+// s LIKE '%a%b%' iff some occurrence of a ends at or before the start of some
+// occurrence of b, i.e. (end of the first a) <= (start of the last b). Byte
+// comparison is exact for PostgreSQL's case-sensitive LIKE on UTF-8 / single
+// byte encodings (the words are ASCII).
 uint32_t TpchQ13State::PatternMask(std::string_view comment) {
   static_assert(!kLikeCaseInsensitive);
   // Most comments contain no word1: 4 short SIMD scans. For each word1 found,
@@ -312,7 +384,6 @@ void TpchQ13State::EnablePatternIndex(const core::AuxEngineServices &services) {
   patterns_ready = true;
 }
 
-// ── TpchQ13State implementation ─────────────────────────────────────────────
 int32_t TpchQ13State::Count(int64_t key) const {
   if (Dense(key))
     return order_count.Get(key);
@@ -485,7 +556,6 @@ void TpchQ13State::CompactTouched() {
   touched_.clear();
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ13TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ13TxnBuffer::Clear() {
   pending = false;
@@ -497,7 +567,6 @@ void TpchQ13TxnBuffer::AddDelta(TpchQ13Delta delta) {
   deltas.push_back(std::move(delta));
 }
 
-// ── TpchQ13Module ───────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ13Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
@@ -520,37 +589,6 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
       MakeStateImage(TpchQ13ImageKind::CustomerCounts, state)));
   builder.Finish();
 }
-
-namespace {
-
-struct CustomerKeys {
-  std::vector<int64_t> keys;
-  int64_t max_key = -1;
-};
-
-// Orders packed into full segments, as AddOrder would fill them.
-struct SegmentRun {
-  std::vector<std::shared_ptr<TpchQ13OrderSegment>> segments;
-
-  void Add(const TpchQ13OrderInput &input) {
-    if (segments.empty() || segments.back()->orderkey.size() >= kTpchQ13SegmentRows) {
-      auto segment = std::make_shared<TpchQ13OrderSegment>();
-      segment->orderkey.reserve(kTpchQ13SegmentRows);
-      segment->custkey.reserve(kTpchQ13SegmentRows);
-      segment->alive.reserve(kTpchQ13SegmentRows);
-      segment->comment.Reserve(kTpchQ13SegmentRows, 0);
-      segments.push_back(std::move(segment));
-    }
-    auto &segment = *segments.back();
-    segment.orderkey.push_back(input.orderkey);
-    segment.custkey.push_back(input.custkey);
-    segment.alive.push_back(1);
-    segment.comment.Append(input.comment);
-    ++segment.live;
-  }
-};
-
-} // namespace
 
 std::shared_ptr<TpchQ13State>
 TpchQ13Module::BuildState(core::AuxEngineServices &services) const {
@@ -764,62 +802,6 @@ bool TpchQ13Module::LoadState(
   }
   return false;
 }
-
-namespace {
-
-// excluded[custkey] = number of the customer's orders whose comment matches
-// `matcher`: a flat array when the custkey range is dense enough, otherwise
-// (and for negative / huge keys) a hash.
-struct Excluded {
-  std::vector<int32_t> flat;
-  std::unordered_map<int64_t, int32_t> hash;
-  void Add(int64_t key) {
-    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
-      ++flat[static_cast<std::size_t>(key)];
-    else
-      ++hash[key];
-  }
-  int32_t Get(int64_t key) const {
-    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
-      return flat[static_cast<std::size_t>(key)];
-    const auto it = hash.find(key);
-    return it == hash.end() ? 0 : it->second;
-  }
-};
-
-// Custkeys of the live orders matching `matcher`, one SIMD pass per segment;
-// slices collect their segments' keys, merged in slice order.
-std::vector<int64_t> MatchingCustkeys(const TpchQ13State &state, const like::LikeMatcher &matcher,
-                                      const core::AuxEngineServices &services) {
-  std::vector<int64_t> matched;
-  core::ParallelReduce(
-      services, state.segments.size(), kSegmentGrain, matched,
-      [&](std::vector<int64_t> &part, std::size_t begin, std::size_t end) {
-        for (std::size_t s = begin; s < end; ++s) {
-          const auto *seg = state.segments[s].get();
-          if (!seg || seg->live == 0)
-            continue;
-          const std::size_t n = seg->orderkey.size();
-          const auto bits =
-              like::MatchBlobBitmap(matcher, seg->comment.offsets(), n, seg->comment.data());
-          for (std::size_t w = 0; w < bits.size(); ++w) {
-            uint64_t b = bits[w];
-            while (b) {
-              const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
-              b &= b - 1;
-              if (seg->alive[i])
-                part.push_back(seg->custkey[i]);
-            }
-          }
-        }
-      },
-      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
-        into.insert(into.end(), from.begin(), from.end());
-      });
-  return matched;
-}
-
-} // namespace
 
 void TpchQ13Module::EmitResult(const TpchQ13State &state,
                                const core::QueryArguments &arguments,

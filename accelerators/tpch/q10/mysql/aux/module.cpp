@@ -355,14 +355,14 @@ TpchQ10Module::BuildState(const core::AuxEngineServices &services) const {
   auto state = std::make_shared<TpchQ10State>();
   TpchQ10State &s = *state;
 
-  initial_scan->ScanNations([&](const TpchQ10NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ10NationInput &input) {
     s.nations[input.key] = input.name;
   });
   // The scans run in parallel; the rows are applied in partition order.
   const std::size_t partitions = core::BuildPartitions(services);
   for (const auto &input : core::CollectRows<TpchQ10CustomerInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanCustomersPartitioned(services, parts, sink);
+             initial_scan->ScanCustomers(services, parts, sink);
            })) {
     CustomerRec c{input.acctbal_raw, input.name, input.address, input.phone,
                   input.comment};
@@ -376,7 +376,7 @@ TpchQ10Module::BuildState(const core::AuxEngineServices &services) const {
   uint64_t order_count = 0;
   for (const auto &input : core::CollectRows<TpchQ10OrderInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanOrdersPartitioned(services, parts, sink);
+             initial_scan->ScanOrders(services, parts, sink);
            })) {
     OrderEntry e;
     e.present = true;
@@ -393,7 +393,7 @@ TpchQ10Module::BuildState(const core::AuxEngineServices &services) const {
   const auto returned = core::PartitionedBuild<std::vector<ReturnedLine>>(
       services, [] { return std::vector<ReturnedLine>{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ10LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ10LineitemInput>{input});
             });

@@ -37,7 +37,7 @@ query::TpchQ11SupplierInput DecodeSupplier(const std::vector<std::string> &cols)
   return {TypedInt(cols, 0), TypedInt(cols, 1)};
 }
 
-void ScanTpchQ11Nations(
+void ScanTpchQ11NationsSerial(
     const std::function<void(const query::TpchQ11NationInput &)> &consumer) {
   ScanTypedTuplesDecoded(
       "SELECT n_nationkey, n_name FROM nation",
@@ -52,7 +52,7 @@ void ScanTpchQ11Nations(
 
 class TpchQ11Scan final : public query::TpchQ11InitialScan {
 public:
-  void ScanPartsuppPartitioned(
+  void ScanPartsupp(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ11PartsuppInput &)> &sink) override {
     split_scan::Partitioned<query::TpchQ11PartsuppInput>(
@@ -65,10 +65,10 @@ public:
     split_scan::Partitioned<query::TpchQ11SupplierInput>(
         services, scans::SuppliersTable(), partitions, scans::DecodeSupplier, sink);
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const query::TpchQ11NationInput &)> &consumer)
       override {
-    scans::ScanTpchQ11Nations(consumer);
+    scans::ScanTpchQ11NationsSerial(consumer);
   }
 };
 

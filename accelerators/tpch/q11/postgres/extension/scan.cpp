@@ -6,7 +6,6 @@
 #include "tpch/q11/postgres/aux/module.hpp"
 #include "tpch/q11/cost_model.hpp"
 
-
 #include "tpch/common/postgres_tpch_table_ids.hpp"
 #include "backends/postgres/api/engine_runtime.hpp"
 #include "backends/postgres/api/runtime.hpp"
@@ -23,12 +22,10 @@ extern "C" {
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
-
 namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables;
 
 namespace scans {
-
-void ScanTpchQ11PartsuppPartitioned(
+void ScanTpchQ11Partsupp(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ11PartsuppInput &)> &sink) {
   ScanPartitioned(services, "partsupp",
@@ -56,7 +53,7 @@ void ScanTpchQ11Suppliers(
                   });
 }
 
-void ScanTpchQ11Nations(
+void ScanTpchQ11NationsSerial(
     const std::function<void(const query::TpchQ11NationInput &)> &consumer) {
   ScanTypedTuples(
       "SELECT n_nationkey, n_name FROM nation",
@@ -70,11 +67,11 @@ void ScanTpchQ11Nations(
 
 class TpchQ11Scan final : public query::TpchQ11InitialScan {
 public:
-  void ScanPartsuppPartitioned(
+  void ScanPartsupp(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ11PartsuppInput &)> &sink)
       override {
-    scans::ScanTpchQ11PartsuppPartitioned(services, partitions, sink);
+    scans::ScanTpchQ11Partsupp(services, partitions, sink);
   }
   void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
@@ -82,10 +79,10 @@ public:
       override {
     scans::ScanTpchQ11Suppliers(services, partitions, sink);
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const query::TpchQ11NationInput &)> &consumer)
       override {
-    scans::ScanTpchQ11Nations(consumer);
+    scans::ScanTpchQ11NationsSerial(consumer);
   }
 };
 Runtime<query::TpchQ11Module, query::TpchQ11Config, TpchQ11Scan> &
@@ -104,10 +101,7 @@ Q11Runtime() {
 namespace core = accelerator_codegen::aux_state::core;
 
 namespace {
-
-// ── Q11 fallback result rows: direct numeric construction ───────────────────
 namespace q11wire {
-
 inline bool FitsInt64(query::Q11AccT v) {
   return v >= std::numeric_limits<int64_t>::min() &&
          v <= std::numeric_limits<int64_t>::max();

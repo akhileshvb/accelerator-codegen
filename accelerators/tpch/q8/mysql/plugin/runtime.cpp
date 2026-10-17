@@ -57,7 +57,7 @@ query::TpchQ8LineitemInput DecodeLineitem(const std::vector<std::string> &cols) 
           TypedDecimalRaw(cols, 4)};
 }
 
-void ScanTpchQ8Nations(
+void ScanTpchQ8NationsSerial(
     const std::function<void(const query::TpchQ8NationInput &)> &consumer) {
   ScanTypedTuplesDecoded(
       "SELECT n_nationkey, n_name, n_regionkey FROM nation",
@@ -69,7 +69,7 @@ void ScanTpchQ8Nations(
       [&](query::TpchQ8NationInput &&input) { consumer(input); });
 }
 
-void ScanTpchQ8Regions(
+void ScanTpchQ8RegionsSerial(
     const std::function<void(const query::TpchQ8RegionInput &)> &consumer) {
   ScanTypedTuplesDecoded(
       "SELECT r_regionkey, r_name FROM region",
@@ -84,41 +84,41 @@ void ScanTpchQ8Regions(
 
 class TpchQ8Scan final : public query::TpchQ8InitialScan {
 public:
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const query::TpchQ8NationInput &)> &consumer)
       override {
-    scans::ScanTpchQ8Nations(consumer);
+    scans::ScanTpchQ8NationsSerial(consumer);
   }
-  void ScanRegions(
+  void ScanRegionsSerial(
       const std::function<void(const query::TpchQ8RegionInput &)> &consumer)
       override {
-    scans::ScanTpchQ8Regions(consumer);
+    scans::ScanTpchQ8RegionsSerial(consumer);
   }
-  void ScanPartsPartitioned(
+  void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8PartInput &)> &sink)
       override {
     split_scan::Partitioned(services, scans::PartsTable(), partitions, scans::DecodePart, sink);
   }
-  void ScanSuppliersPartitioned(
+  void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8SupplierInput &)> &sink)
       override {
     split_scan::Partitioned(services, scans::SuppliersTable(), partitions, scans::DecodeSupplier, sink);
   }
-  void ScanCustomersPartitioned(
+  void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8CustomerInput &)> &sink)
       override {
     split_scan::Partitioned(services, scans::CustomersTable(), partitions, scans::DecodeCustomer, sink);
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8OrdersInput &)> &sink)
       override {
     split_scan::Partitioned(services, scans::OrdersTable(), partitions, scans::DecodeOrder, sink);
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8LineitemInput &)> &sink)
       override {

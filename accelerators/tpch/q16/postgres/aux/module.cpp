@@ -16,14 +16,12 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
-// Groups per parallel slice (a group is a pass over its parts' supplier lists).
+// Groups per slice (untimed): a group is a pass over its parts' supplier lists.
 constexpr std::size_t kGroupGrain = 64;
 
-// Supplier-list chunks (1024 parts) per slice: ~100 us each.
+// Supplier-list chunks (1024 parts) per slice (~400 us: ~100 us each).
 constexpr std::size_t kChunkGrain = 4;
 
-// ── Cell helpers ────────────────────────────────────────────────────────────
 bool NullCell(const core::AuxRow &row, std::size_t index) {
   return index >= row.values.size() || row.values[index].is_null;
 }
@@ -35,7 +33,6 @@ bool IsComplaintComment(std::string_view comment) {
   return matcher.Match(comment);
 }
 
-// ── Row readers (projected as in Dependencies()) ────────────────────────────
 // false: undecodable (forces a rebuild); `skip`: the row can never qualify
 // (a NULL brand / type / size / key), so a new image of it is ignored.
 bool ReadPart(const core::AuxRow &row, TpchQ16PartInput &out, bool &skip) {
@@ -71,7 +68,6 @@ uint32_t Intern(std::shared_ptr<core::StringDict> &dict,
 
 } // namespace
 
-// ── TpchQ16State ────────────────────────────────────────────────────────────
 int64_t TpchQ16State::SupplierAt(const TpchQ16Suppliers &slots,
                                  int64_t partkey, uint32_t i) const {
   if (i < kTpchQ16InlineSuppliers)
@@ -289,7 +285,6 @@ std::size_t TpchQ16State::MemoryBytes() const {
   return n;
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ16TxnBuffer::HasPendingChanges() const {
   return requires_rebuild || EventCount() != 0;
 }
@@ -300,7 +295,6 @@ void TpchQ16TxnBuffer::Clear() {
   suppliers.clear();
 }
 
-// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ16Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ16Module::Dependencies() const {

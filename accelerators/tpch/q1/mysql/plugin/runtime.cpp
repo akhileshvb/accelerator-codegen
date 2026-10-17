@@ -59,7 +59,7 @@ query::TpchQ1DayGroupAggregate DecodeDayGroupAggregate(const std::vector<std::st
 
 class TpchQ1Scan final : public query::TpchQ1InitialScan {
 public:
-  void ScanDayGroupAggregatesPartitioned(
+  void ScanDayGroupAggregates(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ1DayGroupAggregate &)> &sink)
       override {

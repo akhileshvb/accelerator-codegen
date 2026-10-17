@@ -22,7 +22,7 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ8PartsPartitioned(
+void ScanTpchQ8Parts(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ8PartInput &)> &sink) {
   ScanPartitioned(services, "part", {IntColumn("p_partkey"), TextColumn("p_type")}, partitions,
@@ -34,7 +34,7 @@ void ScanTpchQ8PartsPartitioned(
                   });
 }
 
-void ScanTpchQ8SuppliersPartitioned(
+void ScanTpchQ8Suppliers(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ8SupplierInput &)> &sink) {
   ScanPartitioned(services, "supplier", {IntColumn("s_suppkey"), IntColumn("s_nationkey")},
@@ -46,7 +46,7 @@ void ScanTpchQ8SuppliersPartitioned(
                   });
 }
 
-void ScanTpchQ8CustomersPartitioned(
+void ScanTpchQ8Customers(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ8CustomerInput &)> &sink) {
   ScanPartitioned(services, "customer", {IntColumn("c_custkey"), IntColumn("c_nationkey")},
@@ -58,7 +58,7 @@ void ScanTpchQ8CustomersPartitioned(
                   });
 }
 
-void ScanTpchQ8OrdersPartitioned(
+void ScanTpchQ8Orders(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ8OrdersInput &)> &sink) {
   ScanPartitioned(services, "orders",
@@ -71,7 +71,7 @@ void ScanTpchQ8OrdersPartitioned(
                   });
 }
 
-void ScanTpchQ8LineitemsPartitioned(
+void ScanTpchQ8Lineitems(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ8LineitemInput &)> &sink) {
   ScanPartitioned(services, "lineitem",
@@ -86,7 +86,7 @@ void ScanTpchQ8LineitemsPartitioned(
                   });
 }
 
-void ScanTpchQ8Nations(
+void ScanTpchQ8NationsSerial(
     const std::function<void(const query::TpchQ8NationInput &)> &consumer) {
   ScanTypedTuples(
       "SELECT n_nationkey, n_name, n_regionkey FROM nation",
@@ -97,7 +97,7 @@ void ScanTpchQ8Nations(
       });
 }
 
-void ScanTpchQ8Regions(
+void ScanTpchQ8RegionsSerial(
     const std::function<void(const query::TpchQ8RegionInput &)> &consumer) {
   ScanTypedTuples(
       "SELECT r_regionkey, r_name FROM region",
@@ -111,45 +111,45 @@ void ScanTpchQ8Regions(
 
 class TpchQ8Scan final : public query::TpchQ8InitialScan {
 public:
-  void ScanPartsPartitioned(
+  void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8PartInput &)> &sink)
       override {
-    scans::ScanTpchQ8PartsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ8Parts(services, partitions, sink);
   }
-  void ScanSuppliersPartitioned(
+  void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8SupplierInput &)> &sink)
       override {
-    scans::ScanTpchQ8SuppliersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ8Suppliers(services, partitions, sink);
   }
-  void ScanCustomersPartitioned(
+  void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ8CustomersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ8Customers(services, partitions, sink);
   }
-  void ScanOrdersPartitioned(
+  void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8OrdersInput &)> &sink)
       override {
-    scans::ScanTpchQ8OrdersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ8Orders(services, partitions, sink);
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ8LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ8LineitemsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ8Lineitems(services, partitions, sink);
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const query::TpchQ8NationInput &)> &consumer)
       override {
-    scans::ScanTpchQ8Nations(consumer);
+    scans::ScanTpchQ8NationsSerial(consumer);
   }
-  void ScanRegions(
+  void ScanRegionsSerial(
       const std::function<void(const query::TpchQ8RegionInput &)> &consumer)
       override {
-    scans::ScanTpchQ8Regions(consumer);
+    scans::ScanTpchQ8RegionsSerial(consumer);
   }
 };
 Runtime<query::TpchQ8Module, query::TpchQ8Config, TpchQ8Scan> &Q8Runtime() {

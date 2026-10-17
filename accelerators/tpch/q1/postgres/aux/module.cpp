@@ -15,7 +15,7 @@ namespace {
 
 using Q1FenwickState = ::accelerator_codegen::Q1FenwickState;
 
-// Deltas per slice (~4 us); below it maintenance folds them on the calling thread.
+// Deltas per slice (~4 us); a batch below one slice is folded on the calling thread.
 constexpr std::size_t kDeltaGrain = 4096;
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
@@ -301,7 +301,7 @@ TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
   const auto cells = core::PartitionedBuild<DayGroupCells>(
       services, [] { return DayGroupCells{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts,
             [&](std::size_t partition, const TpchQ1LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ1LineitemInput>{input});

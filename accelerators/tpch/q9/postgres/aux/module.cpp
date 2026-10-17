@@ -26,19 +26,19 @@ namespace {
 namespace like = core::sql_like;
 
 // String semantics of the target DBMS (LIKE and ORDER BY nation): PostgreSQL is
-// case-sensitive; the MySQL copy of this file sets this to true (default utf8mb4
-// collations are case-insensitive). This is the only intentional difference
-// between the postgres/ and mysql/ copies. '_' matches one UTF-8 character.
+// case-sensitive; MySQL's default utf8mb4 collations are case-insensitive.
+// '_' matches one UTF-8 character.
 constexpr bool kCaseInsensitive = false;
 
 constexpr std::size_t kParts = kTpchQ9BlockParts;
 
-// Part blocks per color-index slice: ~16 us per block of 16 parts.
+// Part blocks per color-index slice (~2 ms: ~16 us per block of 16 parts).
 constexpr std::size_t kColorBlockGrain = 128;
-// Blocks per slice: ~5 us to decode one, ~8 us to encode one and diff its colors.
+// Blocks per slice when decoding (~1.3 ms: ~5 us a block).
 constexpr std::size_t kDecodeBlockGrain = 256;
+// Blocks per slice when flushing (~1 ms: ~8 us to encode a block and diff its colors).
 constexpr std::size_t kFlushBlockGrain = 128;
-// Lineitems resolved per slice: ~0.3 us each (three lookups).
+// Lineitems per slice (~1.2 ms: ~0.3 us each, three lookups).
 constexpr std::size_t kResolveGrain = 4096;
 // Money / quantity columns as raw hundredths (decimal(15,2)).
 bool Decimal2Cell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
@@ -1079,7 +1079,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   auto state = std::make_shared<TpchQ9State>();
   const std::size_t partitions = core::BuildPartitions(services);
 
-  initial_scan->ScanNations([&](const TpchQ9NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ9NationInput &input) {
     state->nation_names[input.nationkey] = input.name;
   });
 
@@ -1088,7 +1088,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   const auto suppliers = core::PartitionedBuild<SupplierRows>(
       services, [] { return SupplierRows{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanSuppliersPartitioned(
+        initial_scan->ScanSuppliers(
             services, parts, [&](std::size_t partition, const TpchQ9SupplierInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9SupplierInput>{input});
             });
@@ -1108,7 +1108,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   const auto orders = core::PartitionedBuild<OrderRows>(
       services, [] { return OrderRows{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ9OrdersInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9OrdersInput>{input});
             });
@@ -1129,7 +1129,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   auto part_names = core::PartitionedBuild<KeyedNames>(
       services, [] { return KeyedNames{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsPartitioned(
+        initial_scan->ScanParts(
             services, parts, [&](std::size_t partition, const TpchQ9PartInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9PartInput>{input});
             });
@@ -1148,7 +1148,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   auto partsupps = core::PartitionedBuild<core::Buckets<PartsuppRow>>(
       services, [] { return core::Buckets<PartsuppRow>(kMaxOwners); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsuppsPartitioned(
+        initial_scan->ScanPartsupps(
             services, parts, [&](std::size_t partition, const TpchQ9PartsuppInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9PartsuppInput>{input});
             });
@@ -1173,7 +1173,7 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(core::AuxEngineServices &s
   auto lineitems = core::PartitionedBuild<core::Buckets<TpchQ9LineitemInput>>(
       services, [] { return core::Buckets<TpchQ9LineitemInput>(kMaxOwners); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ9LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ9LineitemInput>{input});
             });

@@ -15,8 +15,6 @@
 #include "prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q21 layout ──────────────────────────────────────────────────────────────
 struct TpchQ21Layout {
   static constexpr const char *kAccelerator = "tpch_q21_aux";
   static constexpr core::PartitionId kState = 0;
@@ -26,7 +24,6 @@ struct TpchQ21Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ21Config {
   core::TableId supplier_table = 0;
   core::TableId orders_table = 0;
@@ -34,7 +31,6 @@ struct TpchQ21Config {
   core::TableId nation_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ21SupplierInput {
   int64_t suppkey = 0;
   std::string name;
@@ -62,15 +58,15 @@ public:
   virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ21SupplierInput &)> &sink) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ21NationInput &)> &) = 0;
   // The orderkeys of the fulfilled orders ('F') and every lineitem (the module
   // joins them), each split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
-  virtual void ScanFulfilledOrdersPartitioned(
+  virtual void ScanFulfilledOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, int64_t)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ21LineInput &)> &sink) = 0;
   // The lineitems of the given fulfilled orders only, grouped by orderkey (all
@@ -82,7 +78,6 @@ public:
       const std::function<void(const TpchQ21LineInput &)> &) = 0;
 };
 
-// ── State ───────────────────────────────────────────────────────────────────
 // What an order adds to the answer: `count` rows for supplier `suppkey`. An
 // order contributes iff it is fulfilled, has lineitems of at least two
 // suppliers and exactly one supplier has late ones (that supplier, with its
@@ -116,7 +111,6 @@ struct TpchQ21NationEntry {
   TpchQ21Name name;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ21OutputRow {
   std::string name;
   int64_t numwait = 0;
@@ -124,7 +118,8 @@ struct TpchQ21OutputRow {
 
 // The answer per nation name, computed on the first read of a published state
 // version and kept with it (a state version is immutable). A copy (the next
-// version, made by maintenance) starts empty.
+// version, made by maintenance) starts empty. Worth its lock: removing it
+// slowed SF1 reads from ~0.22 to ~0.5 ms (8 threads).
 class TpchQ21AnswerCache {
 public:
   using Rows = std::shared_ptr<const std::vector<TpchQ21OutputRow>>;
@@ -203,8 +198,6 @@ struct TpchQ21StateImage {
   std::shared_ptr<const TpchQ21State> state;
 };
 
-// ── Deltas ──────────────────────────────────────────────────────────────────
-
 // A supplier or nation row change (insert: new only, delete: old only,
 // update: both).
 struct TpchQ21SupplierDelta {
@@ -221,7 +214,6 @@ struct TpchQ21NationDelta {
   TpchQ21NationInput new_row;
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ21TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -246,7 +238,6 @@ private:
   std::vector<TpchQ21NationDelta> nation_deltas;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ21Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ21Layout::kAccelerator;

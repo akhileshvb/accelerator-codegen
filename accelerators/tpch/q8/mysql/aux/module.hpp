@@ -80,24 +80,24 @@ struct TpchQ8RegionInput {
 class TpchQ8InitialScan {
 public:
   virtual ~TpchQ8InitialScan() = default;
-  virtual void ScanNations(const std::function<void(const TpchQ8NationInput &)> &) = 0;
-  virtual void ScanRegions(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
+  virtual void ScanNationsSerial(const std::function<void(const TpchQ8NationInput &)> &) = 0;
+  virtual void ScanRegionsSerial(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
   // The scans of the big tables split into `partitions` fixed row ranges:
   // sink(partition, row) runs concurrently for different partitions, one
   // thread per partition.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8PartInput &)> &sink) = 0;
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8SupplierInput &)> &sink) = 0;
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8CustomerInput &)> &sink) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8OrdersInput &)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ8LineitemInput &)> &sink) = 0;
 };
@@ -155,8 +155,7 @@ using TpchQ8TypeCube = std::vector<TpchQ8CubeCell>;
 // not retained.
 //
 // Memory: ~12 B/order + 13 B per in-window lineitem (30% of lineitems) + 20 B
-// per part + 12 B per supplier/customer ~= 5.5 GB at SF100, 55 GB at SF1000
-// (before: ~13 GB at SF100 + 2 GB transient, string per part).
+// per part + 12 B per supplier/customer ~= 5.5 GB at SF100, 55 GB at SF1000.
 // Write batch: O(touched chunks) (1 KB-40 KB each) + the small maps.
 struct TpchQ8State {
   static constexpr int32_t kAbsent = INT32_MIN;

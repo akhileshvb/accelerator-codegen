@@ -17,15 +17,13 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
 constexpr std::size_t kTopK = 10;
-// Elements per slice below which sorting stays on one thread.
+// Elements per sorted slice (untimed); below one slice sorting stays on one thread.
 constexpr std::size_t kSortGrain = 16384;
-// Order results per slice below which their records are encoded serially.
+// Order results per slice (untimed); below one slice their records are encoded serially.
 constexpr std::size_t kPrepareGrain = 1024;
-// Segment bins per slice of a read wave (each bin is scanned whole).
+// Segment bins per slice of a read wave (untimed): each bin is scanned whole.
 constexpr std::size_t kBinGrain = 1;
-
 
 std::shared_ptr<const TpchQ3StateImage>
 MakeStateImage(const std::shared_ptr<const TpchQ3State> &state) {
@@ -39,7 +37,6 @@ const TpchQ3StateImage *AsQ3Image(const core::StateImage &image) {
   return payload && payload->state ? payload : nullptr;
 }
 
-// ── Bound bins ──────────────────────────────────────────────────────────────
 // Bound values below 64 are their own bin; above, a bin is one value of the
 // top six bits (~3% wide), numbered in increasing order of the bound.
 int32_t BinOfBound(int64_t bound) {
@@ -51,7 +48,6 @@ int32_t BinOfBound(int64_t bound) {
   return static_cast<int32_t>(64 + (exponent - 6) * 32 + (top - 32));
 }
 
-// ── Order record encoding ───────────────────────────────────────────────────
 // [i32 orderdate][i32 shippriority][u32 n] n x ([i32 shipdate][i64 revenue])
 constexpr std::size_t kRecordHeader = 12;
 constexpr std::size_t kBucketBytes = 12;
@@ -203,7 +199,6 @@ private:
   std::vector<std::pair<int32_t, int64_t>> days;
 };
 
-// ── Query parameters ────────────────────────────────────────────────────────
 // false: a NULL parameter, for which the WHERE clause keeps nothing.
 bool ReadParameters(const core::QueryArguments &arguments, std::string &segment,
                     int32_t &cutoff_days) {
@@ -361,7 +356,6 @@ int64_t TpchQ3BinUpperBound(int32_t bin) {
              : static_cast<int64_t>(bound);
 }
 
-// ── State ───────────────────────────────────────────────────────────────────
 TpchQ3State::PreparedOrder TpchQ3State::Prepare(const OrderRecord &record) {
   int64_t bound = 0; // no answer can take more than the positive day sums
   for (const auto &bucket : record.buckets)
@@ -397,7 +391,6 @@ void TpchQ3State::RemoveOrder(int64_t orderkey) {
   locators.Erase(orderkey);
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ3TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ3TxnBuffer::Clear() {
   pending = false;
@@ -418,7 +411,6 @@ const std::vector<TpchQ3OrderResult> &TpchQ3TxnBuffer::OrderResults() const {
   return order_results;
 }
 
-// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ3Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ3Module::Dependencies() const {
@@ -666,7 +658,7 @@ TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   auto customers = core::PartitionedBuild<CustomerPartial>(
       services, [] { return CustomerPartial{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanCustomersPartitioned(
+        initial_scan->ScanCustomers(
             services, parts, [&](std::size_t partition, const TpchQ3CustomerInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ3CustomerInput>{input});
             });
@@ -684,7 +676,7 @@ TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   auto orders = core::PartitionedBuild<std::vector<JoinedOrder>>(
       services, [] { return std::vector<JoinedOrder>{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ3OrderInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ3OrderInput>{input});
             });
@@ -704,7 +696,7 @@ TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   auto chunks = core::PartitionedBuild<LineChunks>(
       services, [] { return LineChunks(1); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ3LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ3LineitemInput>{input});
             });

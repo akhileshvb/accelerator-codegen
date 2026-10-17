@@ -85,28 +85,28 @@ struct TpchQ9ProfitContribution {
 class TpchQ9InitialScan {
 public:
   virtual ~TpchQ9InitialScan() = default;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ9NationInput &)> &) = 0;
-  virtual void ScanLineitems(
+  virtual void ScanLineitemsSerial(
       const std::function<void(const TpchQ9LineitemInput &)> &) = 0;
 
   // The scans of the big tables split into `partitions` fixed row ranges:
   // sink(partition, row) runs concurrently for different partitions, one
   // thread per partition. The contributions of a part all come from the
   // partition holding its partkey.
-  virtual void ScanPartsPartitioned(
+  virtual void ScanParts(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9PartInput &)> &sink) = 0;
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9SupplierInput &)> &sink) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9OrdersInput &)> &sink) = 0;
-  virtual void ScanPartsuppsPartitioned(
+  virtual void ScanPartsupps(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9PartsuppInput &)> &sink) = 0;
-  virtual bool ScanProfitContributionsPartitioned(
+  virtual bool ScanProfitContributions(
       const core::AuxEngineServices &, std::size_t,
       const std::function<void(std::size_t, const TpchQ9ProfitContribution &)> &) {
     return false;
@@ -130,8 +130,7 @@ public:
 //
 // Memory (TPC-H shapes): ~20 cells/part x 16 B + 4 partsupp rows x 16 B + ~25 B
 // block overhead + ~45 B name = ~450 B/part (~15 B per lineitem) + ~5 B/order
-// of year code: ~9 GB at SF100, ~90 GB at SF1000 (before: ~490 B/part in
-// node-based maps, ~10 GB at SF100, copied whole per touched shard).
+// of year code: ~9 GB at SF100, ~90 GB at SF1000.
 // Execute: O(parts) multithreaded name scan + O(matching cells); no state is
 // copied. Write batch: O(touched blocks + touched chunks).
 //

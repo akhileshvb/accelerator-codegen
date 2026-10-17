@@ -20,7 +20,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 constexpr int64_t kModeBits = 24;  // cell key = day << 24 | shipmode id
-// Lineitem deltas per slice below which a commit's deltas are summed inline.
+// Lineitem deltas per slice (untimed); a commit below one slice sums its deltas inline.
 constexpr std::size_t kDeltaGrain = 4096;
 
 using Cell = core::CellState;
@@ -539,7 +539,7 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
   TpchQ12State state = core::PartitionedBuild<TpchQ12State>(
       services, [] { return TpchQ12State{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrdersPartitioned(
+        initial_scan->ScanOrders(
             services, parts, [&](std::size_t partition, const TpchQ12OrderInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ12OrderInput>{input});
             });
@@ -558,7 +558,7 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
   const auto joined = core::PartitionedBuild<PartialCells>(
       services, [] { return PartialCells{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ12LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ12LineitemInput>{input});
             });

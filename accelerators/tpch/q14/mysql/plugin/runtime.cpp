@@ -55,7 +55,7 @@ query::TpchQ14DayAggregate DecodeDayAggregate(const std::vector<std::string> &co
 
 // Point re-aggregation of the given parts' lineitems (the schema has no
 // l_partkey index: this is a table scan on MySQL).
-void ScanTpchQ14PartDayRevenue(
+void ScanTpchQ14PartDayRevenueSerial(
     const std::vector<int64_t> &partkeys,
     const std::function<void(const query::TpchQ14PartDayRevenue &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
@@ -98,11 +98,11 @@ public:
     split_scan::Partitioned<query::TpchQ14DayAggregate>(
         services, scans::DayAggregatesTable(), partitions, scans::DecodeDayAggregate, sink);
   }
-  void ScanPartDayRevenue(
+  void ScanPartDayRevenueSerial(
       const std::vector<int64_t> &partkeys,
       const std::function<void(const query::TpchQ14PartDayRevenue &)> &consumer)
       override {
-    scans::ScanTpchQ14PartDayRevenue(partkeys, consumer);
+    scans::ScanTpchQ14PartDayRevenueSerial(partkeys, consumer);
   }
 };
 

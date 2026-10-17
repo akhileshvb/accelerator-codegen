@@ -14,8 +14,6 @@
 #include "prims/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q17 layout ──────────────────────────────────────────────────────────────
 // One published partition holds the whole state, built from copy-on-write
 // chunks (a write batch copies pointers plus the chunks it touches):
 //   * per part: its lineitem quantity histogram, i.e. a small sorted list of
@@ -37,13 +35,11 @@ struct TpchQ17Layout {
   static constexpr core::PartitionId kStatePartition = 0;
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ17Config {
   core::TableId part_table = 0;
   core::TableId lineitem_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ17PartInput {
   int64_t key = 0;
   std::string brand;
@@ -70,7 +66,6 @@ public:
       const std::function<void(std::size_t, const TpchQ17LineitemInput &)> &sink) = 0;
 };
 
-// ── State ───────────────────────────────────────────────────────────────────
 #pragma pack(push, 1)
 // One distinct l_quantity of a part.
 struct TpchQ17QtyEntry {
@@ -111,7 +106,6 @@ struct TpchQ17StateImage {
   std::shared_ptr<const TpchQ17State> state;
 };
 
-// ── Delta ───────────────────────────────────────────────────────────────────
 struct TpchQ17LineitemDelta {
   int64_t partkey = 0;
   int64_t quantity_raw = 0;
@@ -131,7 +125,6 @@ struct TpchQ17PartDelta {
   std::string new_container;
 };
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ17TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -151,7 +144,6 @@ private:
   std::vector<TpchQ17PartDelta> part_deltas;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ17Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ17Layout::kAccelerator;

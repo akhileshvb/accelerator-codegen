@@ -21,7 +21,7 @@ using Q6State = ::accelerator_codegen::Q6State;
 
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
-// Deltas per slice (~4 us); below it a commit aggregates its deltas inline.
+// Deltas per slice (~4 us); a commit below one slice aggregates its deltas inline.
 constexpr std::size_t kDeltaGrain = 4096;
 
 std::shared_ptr<const TpchQ6StateImage>
@@ -358,7 +358,7 @@ TpchQ6Module::BuildState(core::AuxEngineServices &services) const {
   const auto table = core::PartitionedBuild<CellTable>(
       services, [] { return CellTable{}; },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ6LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ6LineitemInput>{input});
             });

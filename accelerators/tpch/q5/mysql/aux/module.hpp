@@ -16,8 +16,6 @@
 #include "tpch/q5/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ---------------------------------------------------------------------------
 // State layout.  Published as five images; a write batch copies directories /
 // small maps and clones only the chunks it touches (never O(state)).
 //
@@ -26,8 +24,7 @@ namespace accelerator_codegen::aux_state::query {
 //                  order_nation (4 B)  } when it has a date and its customer
 //                                        has a nation
 //                8 B per key slot (TPC-H keys are ~25% dense => ~32 B/order:
-//                4.8 GB at SF100, 48 GB at SF1000, vs ~86 B/order for the old
-//                four unordered_maps: 13 GB / 130 GB).  Dense keys: 8 B/order.
+//                4.8 GB at SF100, 48 GB at SF1000).  Dense keys: 8 B/order.
 //   kCustomers   custkey -> nationkey (4 B/slot)   ~0.06 GB SF100, 0.6 GB SF1000
 //   kSuppliers   suppkey -> nationkey (4 B/slot)   negligible
 //   kTree        per nationkey: two core::RadixRangeTree over the order date,
@@ -47,7 +44,6 @@ namespace accelerator_codegen::aux_state::query {
 //                        lineitems, found by index lookups.
 // Only a batch that mixes customer/supplier changes with orders/lineitem
 // changes is rebuilt (rare; exact).
-// ---------------------------------------------------------------------------
 struct TpchQ5Parts {
   static constexpr core::PartitionId kSide = core::TpchQ5Layout::kSide;
   static constexpr core::PartitionId kTree = core::TpchQ5Layout::kTreeBase;
@@ -111,22 +107,22 @@ struct TpchQ5LineitemInput {
 class TpchQ5InitialScan {
 public:
   virtual ~TpchQ5InitialScan() = default;
-  virtual void ScanRegions(
+  virtual void ScanRegionsSerial(
       const std::function<void(const TpchQ5RegionInput &)> &) = 0;
-  virtual void ScanNations(
+  virtual void ScanNationsSerial(
       const std::function<void(const TpchQ5NationInput &)> &) = 0;
   // Split into `partitions` fixed row ranges: sink(partition, row) runs
   // concurrently for different partitions, one thread per partition.
-  virtual void ScanCustomersPartitioned(
+  virtual void ScanCustomers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ5CustomerInput &)> &sink) = 0;
-  virtual void ScanSuppliersPartitioned(
+  virtual void ScanSuppliers(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ5SupplierInput &)> &sink) = 0;
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ5OrderInput &)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ5LineitemInput &)> &sink) = 0;
 

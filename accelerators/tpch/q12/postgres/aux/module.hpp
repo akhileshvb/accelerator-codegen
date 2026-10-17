@@ -15,8 +15,6 @@
 #include "tpch/q12/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ---------------------------------------------------------------------------
 // State layout (published as three images; a write batch copies directories /
 // shard pointers and clones only the chunks and shards it touches).
 //
@@ -30,7 +28,6 @@ namespace accelerator_codegen::aux_state::query {
 //                     independent of SF.
 //   kSide             shipmode dictionary.
 // Execute reads 2 x 366 cells: O(1) in the data size.
-// ---------------------------------------------------------------------------
 struct TpchQ12Parts {
   static constexpr core::PartitionId kOrderPriorities =
       core::TpchQ12Layout::kOrderPriorities;
@@ -63,16 +60,16 @@ struct TpchQ12LineitemInput {
 class TpchQ12InitialScan {
 public:
   virtual ~TpchQ12InitialScan() = default;
-  virtual void ScanOrders(
+  virtual void ScanOrdersSerial(
       const std::function<void(const TpchQ12OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
+  virtual void ScanLineitemsSerial(
       const std::function<void(const TpchQ12LineitemInput &)> &) = 0;
   // The same two scans split into `partitions` fixed row ranges: sink(partition,
   // row) runs concurrently for different partitions, one thread per partition.
-  virtual void ScanOrdersPartitioned(
+  virtual void ScanOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ12OrderInput &)> &sink) = 0;
-  virtual void ScanLineitemsPartitioned(
+  virtual void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ12LineitemInput &)> &sink) = 0;
   // Qualifying lineitems of the given orders, as the database stands now
@@ -84,7 +81,7 @@ public:
     if (orderkeys.empty())
       return;
     const std::set<int64_t> wanted(orderkeys.begin(), orderkeys.end());
-    ScanLineitems([&](const TpchQ12LineitemInput &input) {
+    ScanLineitemsSerial([&](const TpchQ12LineitemInput &input) {
       if (wanted.count(input.orderkey))
         consumer(input);
     });

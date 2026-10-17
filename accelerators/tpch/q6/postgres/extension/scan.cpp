@@ -22,7 +22,7 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ6LineitemsPartitioned(
+void ScanTpchQ6Lineitems(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ6LineitemInput &)> &sink) {
   ScanPartitioned(services, "lineitem",
@@ -42,11 +42,11 @@ void ScanTpchQ6LineitemsPartitioned(
 
 class TpchQ6Scan final : public query::TpchQ6InitialScan {
 public:
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ6LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ6LineitemsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ6Lineitems(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan> &Q6Runtime() {

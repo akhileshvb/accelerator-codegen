@@ -20,7 +20,7 @@ namespace {
 constexpr core::PartitionId kStatePartition = 0;
 // More affected parts than this per commit: rebuild instead of point scans.
 constexpr std::size_t kMaxPointParts = 50000;
-// Lineitem deltas per slice below which a commit's deltas are folded inline.
+// Lineitem deltas per slice (untimed); a commit below one slice folds its deltas inline.
 constexpr std::size_t kDeltaGrain = 4096;
 
 std::shared_ptr<const TpchQ14StateImage>
@@ -314,7 +314,7 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
   };
   std::map<std::pair<int64_t, int32_t>, DayRevenue> moved;
   if (!affected.empty()) {
-    initial_scan->ScanPartDayRevenue(
+    initial_scan->ScanPartDayRevenueSerial(
         affected, [&](const TpchQ14PartDayRevenue &row) {
           auto &cell = moved[{row.partkey, row.shipdate_days}];
           cell.post += row.revenue_raw;

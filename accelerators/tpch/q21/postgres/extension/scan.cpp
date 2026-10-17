@@ -33,7 +33,7 @@ void ScanTpchQ21Suppliers(
                   });
 }
 
-void ScanTpchQ21Nations(
+void ScanTpchQ21NationsSerial(
     const std::function<void(const query::TpchQ21NationInput &)> &consumer) {
   ScanTypedTuples(
       "SELECT n_nationkey, n_name FROM nation",
@@ -43,7 +43,7 @@ void ScanTpchQ21Nations(
       });
 }
 
-void ScanTpchQ21FulfilledOrdersPartitioned(
+void ScanTpchQ21FulfilledOrders(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, int64_t)> &sink) {
   ScanPartitioned(services, "orders", {IntColumn("o_orderkey"), TextColumn("o_orderstatus")},
@@ -56,7 +56,7 @@ void ScanTpchQ21FulfilledOrdersPartitioned(
                   });
 }
 
-void ScanTpchQ21LineitemsPartitioned(
+void ScanTpchQ21Lineitems(
     const core::AuxEngineServices &services, std::size_t partitions,
     const std::function<void(std::size_t, const query::TpchQ21LineInput &)> &sink) {
   ScanPartitioned(services, "lineitem",
@@ -100,21 +100,21 @@ public:
       override {
     scans::ScanTpchQ21Suppliers(services, partitions, sink);
   }
-  void ScanNations(
+  void ScanNationsSerial(
       const std::function<void(const query::TpchQ21NationInput &)> &consumer)
       override {
-    scans::ScanTpchQ21Nations(consumer);
+    scans::ScanTpchQ21NationsSerial(consumer);
   }
-  void ScanFulfilledOrdersPartitioned(
+  void ScanFulfilledOrders(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, int64_t)> &sink) override {
-    scans::ScanTpchQ21FulfilledOrdersPartitioned(services, partitions, sink);
+    scans::ScanTpchQ21FulfilledOrders(services, partitions, sink);
   }
-  void ScanLineitemsPartitioned(
+  void ScanLineitems(
       const core::AuxEngineServices &services, std::size_t partitions,
       const std::function<void(std::size_t, const query::TpchQ21LineInput &)> &sink)
       override {
-    scans::ScanTpchQ21LineitemsPartitioned(services, partitions, sink);
+    scans::ScanTpchQ21Lineitems(services, partitions, sink);
   }
   bool LookupFulfilledLineitems(
       const std::vector<int64_t> &orderkeys,

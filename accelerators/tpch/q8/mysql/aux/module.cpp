@@ -27,9 +27,9 @@ namespace sql_date = core::sql_date;
 using Int128 = ::accelerator_codegen::pg_numeric::Int128;
 
 constexpr core::PartitionId kStatePartition = TpchQ8Layout::kYear1995;
-// Order-map chunks (<= 1024 orders) per slice: ~0.3 us per decoded order.
+// Order-map chunks (<= 1024 orders) per slice (~600 us: ~0.3 us per decoded order).
 constexpr std::size_t kChunkGrain = 2;
-// Owner folds per slice (each folds the orders of one chunk group).
+// Owner folds per slice (untimed): each folds the orders of one chunk group.
 constexpr std::size_t kOwnerGrain = 1;
 // volume = price * (1 - discount): numeric(15,2) * numeric(15,2) -> scale 4.
 constexpr int32_t kVolumeScale = 4;
@@ -592,20 +592,20 @@ std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState(const core::AuxEngineServi
   TpchQ8State &s = *state;
   const std::size_t partitions = core::BuildPartitions(services);
 
-  initial_scan->ScanNations([&](const TpchQ8NationInput &input) {
+  initial_scan->ScanNationsSerial([&](const TpchQ8NationInput &input) {
     s.nations[input.key] = {input.name, input.regionkey};
   });
-  initial_scan->ScanRegions([&](const TpchQ8RegionInput &input) {
+  initial_scan->ScanRegionsSerial([&](const TpchQ8RegionInput &input) {
     s.regions[input.key] = input.name;
   });
   for (const auto &input : core::CollectRows<TpchQ8PartInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanPartsPartitioned(services, parts, sink);
+             initial_scan->ScanParts(services, parts, sink);
            }))
     s.part_type.Set(input.key, InternType(s, input.type));
   for (const auto &input : core::CollectRows<TpchQ8SupplierInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanSuppliersPartitioned(services, parts, sink);
+             initial_scan->ScanSuppliers(services, parts, sink);
            })) {
     if (input.nationkey == TpchQ8State::kAbsent)
       throw std::runtime_error("TPC-H Q8: unsupported supplier row");
@@ -613,7 +613,7 @@ std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState(const core::AuxEngineServi
   }
   for (const auto &input : core::CollectRows<TpchQ8CustomerInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanCustomersPartitioned(services, parts, sink);
+             initial_scan->ScanCustomers(services, parts, sink);
            })) {
     if (input.nationkey == TpchQ8State::kAbsent)
       throw std::runtime_error("TPC-H Q8: unsupported customer row");
@@ -621,7 +621,7 @@ std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState(const core::AuxEngineServi
   }
   for (const auto &input : core::CollectRows<TpchQ8OrdersInput>(
            services, [&](std::size_t parts, auto &&sink) {
-             initial_scan->ScanOrdersPartitioned(services, parts, sink);
+             initial_scan->ScanOrders(services, parts, sink);
            }))
     if (!ApplyOrder(s, input.key, input.custkey, input.orderdate_days, +1))
       throw std::runtime_error("TPC-H Q8: unsupported orders row");
@@ -630,7 +630,7 @@ std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState(const core::AuxEngineServi
   auto dealt = core::PartitionedBuild<LinePartial>(
       services, [&] { return LinePartial(owners); },
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitemsPartitioned(
+        initial_scan->ScanLineitems(
             services, parts, [&](std::size_t partition, const TpchQ8LineitemInput &input) {
               sink(partition, core::SingleRowBatch<TpchQ8LineitemInput>{input});
             });

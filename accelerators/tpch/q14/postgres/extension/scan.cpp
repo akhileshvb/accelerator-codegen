@@ -49,7 +49,7 @@ void ScanTpchQ14Lineitems(
 }
 
 // Point re-aggregation of the given parts' lineitems (l_partkey is indexed).
-void ScanTpchQ14PartDayRevenue(
+void ScanTpchQ14PartDayRevenueSerial(
     const std::vector<int64_t> &partkeys,
     const std::function<void(const query::TpchQ14PartDayRevenue &)> &consumer) {
   namespace dec = accelerator_codegen::aux_state::core::decimal_text;
@@ -85,11 +85,11 @@ public:
       override {
     scans::ScanTpchQ14Lineitems(services, partitions, sink);
   }
-  void ScanPartDayRevenue(
+  void ScanPartDayRevenueSerial(
       const std::vector<int64_t> &partkeys,
       const std::function<void(const query::TpchQ14PartDayRevenue &)> &consumer)
       override {
-    scans::ScanTpchQ14PartDayRevenue(partkeys, consumer);
+    scans::ScanTpchQ14PartDayRevenueSerial(partkeys, consumer);
   }
 };
 Runtime<query::TpchQ14Module, query::TpchQ14Config, TpchQ14Scan> &
