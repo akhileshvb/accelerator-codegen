@@ -123,45 +123,6 @@ using namespace scan;
 
 struct TpchQ2Scan : TpchQ2InitialScan {
   explicit TpchQ2Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanParts(
-      const std::function<void(const TpchQ2PartInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT p_partkey, p_mfgr, p_type, p_size FROM part",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ2PartInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                 ChunkValue(chunk, 1, row).ToString(),
-                                 ChunkValue(chunk, 2, row).ToString(),
-                                 SafeInt32(ChunkValue(chunk, 3, row))};
-        },
-        [&](const TpchQ2PartInput &input) { consumer(input); });
-  }
-  void ScanSuppliers(
-      const std::function<void(const TpchQ2SupplierInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection,
-        "SELECT s_suppkey, s_name, s_address, s_nationkey, s_phone, s_acctbal, s_comment FROM supplier",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ2SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     ChunkValue(chunk, 1, row).ToString(),
-                                     ChunkValue(chunk, 2, row).ToString(),
-                                     SafeInt32(ChunkValue(chunk, 3, row)),
-                                     ChunkValue(chunk, 4, row).ToString(),
-                                     DecimalRaw(ChunkValue(chunk, 5, row)),
-                                     ChunkValue(chunk, 6, row).ToString()};
-        },
-        [&](const TpchQ2SupplierInput &input) { consumer(input); });
-  }
-  void ScanPartsupps(
-      const std::function<void(const TpchQ2PartsuppInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ2PartsuppInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     SafeInt64(ChunkValue(chunk, 1, row)),
-                                     DecimalRaw(ChunkValue(chunk, 2, row))};
-        },
-        [&](const TpchQ2PartsuppInput &input) { consumer(input); });
-  }
   void ScanNations(
       const std::function<void(const TpchQ2NationInput &)> &consumer) override {
     ScanQuery(connection, "SELECT n_nationkey, n_name, n_regionkey FROM nation",

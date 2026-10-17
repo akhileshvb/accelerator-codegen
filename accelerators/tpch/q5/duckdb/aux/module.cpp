@@ -27,6 +27,28 @@ struct OrdersPartial {
   int32_t min_orderdate_days = std::numeric_limits<int32_t>::max();
   int32_t max_orderdate_days = std::numeric_limits<int32_t>::min();
 };
+
+// The sorted key -> {nationkey, 0} index of a dimension table.
+template <class Rec>
+typename TpchQ5ShardIndex<Rec>::Builder
+BuildDimension(core::AuxEngineServices &services, TpchQ5InitialScan &source, const char *table,
+               const char *key_column, const char *nation_column) {
+  using Builder = typename TpchQ5ShardIndex<Rec>::Builder;
+  using scan::IntColumn;
+  auto index = core::PartitionedBuild<Builder>(
+      services, [] { return Builder{}; },
+      [&](std::size_t parts, auto &&sink) {
+        source.ScanTable(services, table, {IntColumn(key_column), IntColumn(nation_column)},
+                         parts, sink);
+      },
+      [](Builder &into, const auto &row) {
+        into.Add({row.Int(0), Rec{static_cast<int32_t>(row.Int(1)), 0}});
+      },
+      [](Builder &into, Builder &&from) { into.Merge(std::move(from)); });
+  index.Sort();
+  return index;
+}
+
 struct LineitemPartial {
   std::vector<int64_t> flat; // tree leaves, then folded upward after the merge
   std::unordered_map<int64_t, int32_t> orphan_supp;
@@ -1018,17 +1040,10 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
 
   // Dimension and order lookups live in hash-sharded sorted vectors (no
   // 30M-entry node maps); they become the published persistent indexes.
-  TpchQ5ShardIndex<TpchQ5CustRec>::Builder custs;
-  initial_scan->ScanCustomers([&](const TpchQ5CustomerInput &input) {
-    custs.Add({input.custkey, TpchQ5CustRec{input.nationkey, 0}});
-  });
-  custs.Sort();
-
-  TpchQ5ShardIndex<TpchQ5SuppRec>::Builder supps;
-  initial_scan->ScanSuppliers([&](const TpchQ5SupplierInput &input) {
-    supps.Add({input.suppkey, TpchQ5SuppRec{input.nationkey, 0}});
-  });
-  supps.Sort();
+  auto custs = BuildDimension<TpchQ5CustRec>(services, *initial_scan, "customer",
+                                             "c_custkey", "c_nationkey");
+  auto supps = BuildDimension<TpchQ5SuppRec>(services, *initial_scan, "supplier",
+                                             "s_suppkey", "s_nationkey");
 
   // Orders: one builder per scan partition; each order counts toward its
   // customer (the customer index is sorted and fixed, so partitions add to the

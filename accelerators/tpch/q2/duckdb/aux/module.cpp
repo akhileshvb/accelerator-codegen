@@ -1391,22 +1391,40 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
 
   {
     auto &paged = TpchQ2MutOf(state.parts);
-    initial_scan->ScanParts([&](const TpchQ2PartInput &input) {
+    for (const auto &input : CollectTable<TpchQ2PartInput>(
+             services, *initial_scan, "part",
+             {scan::IntColumn("p_partkey"), scan::TextColumn("p_mfgr"),
+              scan::TextColumn("p_type"), scan::IntColumn("p_size")},
+             [](const auto &row) {
+               return TpchQ2PartInput{row.Int(0), row.Text(1), row.Text(2),
+                                      static_cast<int32_t>(row.Int(3))};
+             })) {
       if (!AcceptDenseKey(input.key))
-        return;
+        continue;
       auto &slot = paged.Mutable(input.key);
       slot.mfgr = input.mfgr;
       slot.type_id = static_cast<int32_t>(types.Intern(input.type));
       slot.size = input.size;
       slot.valid = true;
-    });
+    }
   }
   state.types = std::make_shared<const TpchQ2TypeDict>(std::move(types));
   {
     auto &paged = TpchQ2MutOf(state.suppliers);
-    initial_scan->ScanSuppliers([&](const TpchQ2SupplierInput &input) {
+    for (const auto &input : CollectTable<TpchQ2SupplierInput>(
+             services, *initial_scan, "supplier",
+             {scan::IntColumn("s_suppkey"), scan::TextColumn("s_name"),
+              scan::TextColumn("s_address"), scan::IntColumn("s_nationkey"),
+              scan::TextColumn("s_phone"), scan::DecimalColumn("s_acctbal", 2),
+              scan::TextColumn("s_comment")},
+             [](const auto &row) {
+               return TpchQ2SupplierInput{row.Int(0),  row.Text(1),
+                                          row.Text(2), static_cast<int32_t>(row.Int(3)),
+                                          row.Text(4), row.Decimal(5),
+                                          row.Text(6)};
+             })) {
       if (!AcceptDenseKey(input.key))
-        return;
+        continue;
       auto &slot = paged.Mutable(input.key);
       slot.name = input.name;
       slot.address = input.address;
@@ -1415,7 +1433,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
       slot.acctbal_raw = input.acctbal_raw;
       slot.comment = input.comment;
       slot.valid = true;
-    });
+    }
   }
 
   // Partsupp rows go into per-partition offer lists, appended in partition

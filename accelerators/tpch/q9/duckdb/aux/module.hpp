@@ -89,18 +89,22 @@ struct TpchQ9LineitemInput {
 class TpchQ9InitialScan {
 public:
   virtual ~TpchQ9InitialScan() = default;
+  // Partitioned scans for builds: rows of one partition arrive in table order
+  // on one thread; partitions run concurrently on the pool.
   virtual void ScanParts(
-      const std::function<void(const TpchQ9PartInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9PartInput &)> &) = 0;
   virtual void ScanSuppliers(
-      const std::function<void(const TpchQ9SupplierInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9SupplierInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ9NationInput &)> &) = 0;
   virtual void ScanOrders(
-      const std::function<void(const TpchQ9OrdersInput &)> &) = 0;
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9OrdersInput &)> &) = 0;
   virtual void ScanPartsupps(
-      const std::function<void(const TpchQ9PartsuppInput &)> &) = 0;
-  // Partitioned scan for builds: rows of one partition arrive in table order
-  // on one thread; partitions run concurrently on the pool.
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9PartsuppInput &)> &) = 0;
   virtual void ScanLineitems(
       const core::AuxEngineServices &, std::size_t partitions,
       const std::function<void(std::size_t, const TpchQ9LineitemInput &)> &) = 0;

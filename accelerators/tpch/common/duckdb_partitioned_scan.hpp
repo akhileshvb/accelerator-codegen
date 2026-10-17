@@ -9,6 +9,7 @@
 
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "substrate/aux/core/aux_types.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -32,5 +33,20 @@ public:
                          const std::vector<scan::BuildColumn> &columns,
                          std::size_t partitions, const Sink &sink) = 0;
 };
+
+// The rows of `table` decoded by `decode(row)` on the pool, in table order
+// whatever the thread count: partitions are contiguous and merge in order.
+template <class Row, class Decode>
+std::vector<Row> CollectTable(const core::AuxEngineServices &services,
+                              PartitionedTableScan &source, const std::string &table,
+                              const std::vector<scan::BuildColumn> &columns, Decode &&decode) {
+  return core::PartitionedBuild<std::vector<Row>>(
+      services, [] { return std::vector<Row>{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        source.ScanTable(services, table, columns, partitions, sink);
+      },
+      [&](std::vector<Row> &rows, const auto &row) { rows.push_back(decode(row)); },
+      core::AppendRows<Row>, core::BuildPartitions(services));
+}
 
 } // namespace accelerator_codegen::aux_state::query

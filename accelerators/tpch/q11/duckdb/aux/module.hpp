@@ -53,10 +53,6 @@ struct TpchQ11NationInput {
 class TpchQ11InitialScan : public PartitionedTableScan {
 public:
   virtual ~TpchQ11InitialScan() = default;
-  virtual void ScanPartsupp(
-      const std::function<void(const TpchQ11PartsuppInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ11SupplierInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ11NationInput &)> &) = 0;
 };
