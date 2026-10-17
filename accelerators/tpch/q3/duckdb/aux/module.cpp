@@ -200,9 +200,8 @@ public:
   }
 
   // Removes the entry; returns its per-shipdate revenue. False if absent.
-  static bool TakeIn(Bin &bin, uint16_t orderdate, int64_t bound,
+  static bool TakeIn(Bin &bin, int64_t bound,
                      uint64_t orderkey, std::map<int32_t, int64_t> &day_revenue) {
-    (void)orderdate;
     Materialize(bin);
     const std::size_t ci = ChunkFor(bin, bound, orderkey);
     if (ci >= bin.chunks.size())
@@ -279,7 +278,7 @@ public:
   bool Take(uint16_t orderdate, int64_t bound, uint64_t orderkey,
             std::map<int32_t, int64_t> &day_revenue) {
     Bin *bin = FindBin(BinOf(orderdate), false);
-    return bin && TakeIn(*bin, orderdate, bound, orderkey, day_revenue);
+    return bin && TakeIn(*bin, bound, orderkey, day_revenue);
   }
   void Insert(const TpchQ3Entry &entry,
               const std::vector<TpchQ3ShipdateBucket> &buckets) {
@@ -768,7 +767,7 @@ private:
     ForEachWorkByBin(
         [](OrderWork &w) { return w.take ? w.take_bin : nullptr; },
         [&](OrderWork &w) {
-          if (!Q3SegmentTxn::TakeIn(*w.take_bin, w.old_rec.orderdate, w.old_rec.bound,
+          if (!Q3SegmentTxn::TakeIn(*w.take_bin, w.old_rec.bound,
                                     w.key, w.day))
             inconsistent = true;
         });
@@ -1412,7 +1411,7 @@ bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &bytes,
     auto &stage = staging[BinOf(order.orderdate)];
     order.bucket_begin = static_cast<uint32_t>(stage.second.size());
     order.bucket_count = static_cast<uint16_t>(bucket_count);
-    int64_t bound = 0, prev_suffix = 0;
+    int64_t bound = 0;
     std::vector<TpchQ3ShipdateBucket> buckets;
     for (uint32_t b = 0; b < bucket_count; ++b) {
       int32_t shipdate = 0;
@@ -1430,7 +1429,6 @@ bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &bytes,
       if (day > 0)
         bound += day;
     }
-    (void)prev_suffix;
     order.bound = bound;
     stage.second.insert(stage.second.end(), buckets.begin(), buckets.end());
     stage.first.push_back(order);

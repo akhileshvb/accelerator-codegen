@@ -82,17 +82,11 @@ public:
   // Point lookups of the current (post-write, same connection) lineitems of
   // one supplier / a set of orders. Return false when unsupported.
   virtual bool ScanLineitemsBySupplier(
-      int64_t suppkey,
-      const std::function<void(const TpchQ5LineitemInput &)> &consumer) {
-    (void)suppkey;
-    (void)consumer;
+      int64_t, const std::function<void(const TpchQ5LineitemInput &)> &) {
     return false;
   }
   virtual bool ScanLineitemsByOrder(
-      int64_t orderkey,
-      const std::function<void(const TpchQ5LineitemInput &)> &consumer) {
-    (void)orderkey;
-    (void)consumer;
+      int64_t, const std::function<void(const TpchQ5LineitemInput &)> &) {
     return false;
   }
 };
