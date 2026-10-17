@@ -26,6 +26,10 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "backends/duckdb/api/duckdb_host.hpp"
 #include "duckdb/accelerator/snapshot_override.hpp"
 
 namespace accelerator_codegen::aux_state::engine {
@@ -276,6 +280,28 @@ void InferAuxSchema(::duckdb::Connection &connection, const SharedQueryCatalogEn
   }
 }
 
+// A transaction that wrote a table the accelerator depends on has changes no
+// published state holds, so the call is replaced by the query's SQL: planned
+// in the caller's own transaction, it sees those writes. (A statement bound
+// before the write keeps its plan.)
+::duckdb::unique_ptr<::duckdb::TableRef> AuxBindReplace(::duckdb::ClientContext &context,
+                                                         ::duckdb::TableFunctionBindInput &input) {
+  const auto &entry = input.info->Cast<AuxFunctionInfo>().entry;
+  const auto host = duckdb::DuckdbHost::Existing(*context.db);
+  if (!host || !host->TransactionWroteDependency(context, entry.accelerator_id ? entry.accelerator_id : "")) {
+    return nullptr;
+  }
+  const auto sql = FallbackSql(entry, BuildArguments(entry, input.inputs));
+  if (sql.empty()) {
+    return nullptr;
+  }
+  ::duckdb::Parser parser;
+  parser.ParseQuery(sql);
+  return ::duckdb::make_uniq<::duckdb::SubqueryRef>(
+      ::duckdb::unique_ptr_cast<::duckdb::SQLStatement, ::duckdb::SelectStatement>(
+          std::move(parser.statements.front())));
+}
+
 ::duckdb::unique_ptr<::duckdb::FunctionData>
 AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &input,
         ::duckdb::vector<::duckdb::LogicalType> &return_types,
@@ -504,6 +530,7 @@ void RegisterAuxFunction(::duckdb::Catalog &catalog, ::duckdb::ClientContext &co
   for (auto &signature : signatures) {
     ::duckdb::TableFunction function(function_name, std::move(signature), AuxExecute, AuxBind,
                                      AuxInitGlobal, AuxInitLocal);
+    function.bind_replace = AuxBindReplace;
     function.function_info = ::duckdb::make_shared_ptr<AuxFunctionInfo>(entry);
     set.AddFunction(std::move(function));
   }

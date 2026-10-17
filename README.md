@@ -53,7 +53,7 @@ are the repository root and `accelerators/` (for example
 
 ## Build
 
-DuckDB (the fork is found as a sibling checkout, `../accelerator-codegen-duckdb`):
+DuckDB (needs the capture fork, branch `skeleton/db-capture` with `DatabaseCaptureRegistry`, `OnCommitWithContext` and `ActiveWriterStarts`; found as the sibling checkout `../duckdb-dbcapture`, or set `ACCEL_DUCKDB_ROOT`):
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \

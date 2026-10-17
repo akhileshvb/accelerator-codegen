@@ -1,6 +1,6 @@
 # Collect generated accelerator sources from the per-engine layout:
-#   src/generated/{bench}/q{N}/{engine}/base|aux/...
-#   src/generated/catalog/{engine}/*.cpp
+#   accelerators/{bench}/q{N}/{engine}/base|aux/...
+#   backends/{engine}/api/catalog/*.cpp
 #
 # Set -DACCEL_CODEGEN_ENGINE=<engine> (required to pick catalog + query trees).
 # Empty engine or missing trees → no generated query sources (substrate-only).
@@ -28,7 +28,7 @@ function(accel_collect_generated_sources OUT_VAR)
         "accelerators/*/q*/${_engine}/aux/*.cpp"
     )
     # Engine-neutral per-query code shared by every engine's aux module
-    # (src/generated/{bench}/q{N}/common/*.cpp).
+    # (accelerators/{bench}/q{N}/common/*.cpp).
     list(APPEND _patterns
         "accelerators/*/q*/common/*.cpp")
     # Base kernels are optional; collect them when present for this engine.

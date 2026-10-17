@@ -1,6 +1,6 @@
 // GENERATED BACKEND — PostgreSQL query catalog registry.
 // Names no query: each query registers its entry from
-// src/generated/{bench}/q{N}/postgres/aux/catalog.cpp (PostgresQueryCatalogRegistrar).
+// accelerators/{bench}/q{N}/postgres/aux/catalog.cpp (PostgresQueryCatalogRegistrar).
 #pragma once
 
 #include <cstdint>

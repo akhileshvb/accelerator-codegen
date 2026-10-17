@@ -1,6 +1,6 @@
 // GENERATED BACKEND — MySQL query catalog.
 // MySQL query catalog.  The backend names no query: each query registers its own
-// entry from src/generated/{bench}/q{N}/mysql/aux/catalog.cpp through a static
+// entry from accelerators/{bench}/q{N}/mysql/aux/catalog.cpp through a static
 // MysqlQueryCatalogRegistrar.  Lookups iterate the registry, sorted by query id.
 #pragma once
 

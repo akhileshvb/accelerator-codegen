@@ -39,6 +39,8 @@ public:
 
   // The database's host, created on first use; it lives while someone holds it.
   static std::shared_ptr<DuckdbHost> Get(::duckdb::DatabaseInstance &db);
+  // The database's host if one exists (nullptr: nothing is captured on it).
+  static std::shared_ptr<DuckdbHost> Existing(::duckdb::DatabaseInstance &db);
   ~DuckdbHost();
   DuckdbHost(const DuckdbHost &) = delete;
   DuckdbHost &operator=(const DuckdbHost &) = delete;
@@ -47,6 +49,10 @@ public:
   Accelerator &Ensure(const SharedQueryCatalogEntry &entry);
   Accelerator *Find(const std::string &accelerator_id);
   runtime::RuntimeHost &Runtime();
+  // Whether `context`'s open transaction has written a table the accelerator
+  // depends on. Those uncommitted rows are in no published state, so such a
+  // reader must be answered from SQL on its own transaction.
+  bool TransactionWroteDependency(::duckdb::ClientContext &context, const std::string &accelerator_id);
   // Tests that hand-build every change (DuckdbRuntime::ApplyMutationBatch)
   // while also writing it with SQL: engine capture is ignored.
   void SetManualCapture(bool manual);

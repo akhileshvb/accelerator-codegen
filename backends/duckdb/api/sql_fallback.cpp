@@ -111,18 +111,25 @@ core::AuxRow RowOf(const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
 
 } // namespace
 
-bool AnswerFromFallbackSql(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
-                           const core::QueryArguments &arguments, core::AuxRowSink &sink) {
+std::string FallbackSql(const SharedQueryCatalogEntry &entry, const core::QueryArguments &arguments) {
   // No arguments: the defaults the base query bakes in.
   const char *query = arguments.values.empty() ? entry.base_sql : entry.fallback_sql;
   if (!query) {
-    return false;
+    return {};
   }
   ::duckdb::vector<::duckdb::Value> literals;
   for (const auto &argument : arguments.values) {
     literals.push_back(AuxValueToDuckdb(argument));
   }
-  const auto sql = WithLiterals(query, literals);
+  return WithLiterals(query, literals);
+}
+
+bool AnswerFromFallbackSql(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                           const core::QueryArguments &arguments, core::AuxRowSink &sink) {
+  const auto sql = FallbackSql(entry, arguments);
+  if (sql.empty()) {
+    return false;
+  }
   auto lock = duckdb::scan::LockScan(connection);
   duckdb::scan::StreamChunks(duckdb::scan::ScanConnection(connection), sql, [&](::duckdb::DataChunk &chunk) {
     for (::duckdb::idx_t row = 0; row < chunk.size(); ++row) {

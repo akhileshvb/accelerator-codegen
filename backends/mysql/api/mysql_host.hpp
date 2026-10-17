@@ -62,6 +62,10 @@ public:
   // with it; otherwise they were committed (or, if `failed`, rolled back).
   void OnStatementEnd(Session session, MysqlStatementKind kind, bool failed,
                       bool in_active_transaction);
+  // Whether `session`'s open transaction wrote a table the accelerator depends
+  // on (or lost track of its writes). Those uncommitted rows are in no state
+  // and invisible to the side connections that answer from SQL.
+  bool SessionWroteDependency(Session session, const runtime::AcceleratorRuntime &accelerator);
   // The connection closed: its open transaction is rolled back.
   void OnSessionEnd(Session session);
   // Every accelerator's state is rebuilt before it is read again.

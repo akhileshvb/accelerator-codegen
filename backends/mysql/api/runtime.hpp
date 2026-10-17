@@ -49,6 +49,7 @@
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "backends/mysql/api/catalog/query_catalog.hpp"
 #include "backends/mysql/api/mysql_host.hpp"
+#include "backends/mysql/engine/mysql_session.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
 
@@ -397,6 +398,13 @@ public:
   }
 
   void Execute(const core::QueryArguments &arguments, std::string &out) {
+    // The session's own uncommitted writes are in neither the state nor what
+    // the side connection reads: fail closed rather than answer without them.
+    if (MysqlHost::Get().SessionWroteDependency(CurrentMysqlSession(), accelerator)) {
+      throw std::runtime_error("accelerator " + module.Id() +
+                               " cannot answer inside a transaction that wrote its tables; "
+                               "run the query SQL directly");
+    }
     MysqlHost::Get().NoteRead(accelerator);
     TsvSink sink(out);
     runtime::ReadOptions options;

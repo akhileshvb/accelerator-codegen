@@ -37,7 +37,7 @@ LANGUAGE C STRICT;
 
 -- Per-query functions (accel_<bench>_qN, accel_<bench>_qN_aux, row types) are
 -- not listed here.  Each query carries its own CREATE FUNCTION text in
--- src/generated/<bench>/q<N>/postgres/extension/functions.cpp, registered in
+-- accelerators/<bench>/q<N>/postgres/extension/functions.cpp, registered in
 -- the module; this function runs all of them.
 CREATE FUNCTION accel_postgres_register_queries()
 RETURNS integer

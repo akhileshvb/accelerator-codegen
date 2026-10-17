@@ -671,6 +671,12 @@ add_executable(test_aux_snapshot_reads eval/tests/test_aux_snapshot_reads.cpp)
 target_link_libraries(test_aux_snapshot_reads PRIVATE accelerator_codegen duckdb_sibling)
 target_include_directories(test_aux_snapshot_reads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
 
+# Read-your-own-writes: a transaction that wrote a dependency table gets the
+# answer of its own SQL (eval/tests/test_aux_read_own_writes.cpp).
+add_executable(test_aux_read_own_writes eval/tests/test_aux_read_own_writes.cpp)
+target_link_libraries(test_aux_read_own_writes PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(test_aux_read_own_writes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
+
 foreach(_q IN LISTS ACCEL_TPCH_BENCH_QS)
     accel_add_duckdb_exe(benchmark_tpch_q${_q} accelerators/tpch/q${_q}/bench/benchmark_q${_q}.cpp)
 endforeach()
@@ -858,6 +864,12 @@ if(BUILD_TESTING)
     endforeach()
     set_tests_properties(test_aux_snapshot_reads_q14_private
         PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300)
+    foreach(_q 1 6)
+        add_test(NAME test_aux_read_own_writes_q${_q}
+                 COMMAND test_aux_read_own_writes "${_accel_tpch_test_db}" ${_q})
+        set_tests_properties(test_aux_read_own_writes_q${_q}
+            PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300)
+    endforeach()
     # Fixture: a fresh small SEC-EDGAR DB in the build dir, built from the SEC
     # benchmark DB (ACCEL_SEC_EDGAR_DB, default the shared SF3, read-only) with
     # workloads/sec_edgar/test_db_subset.sql. Exits 77 (skip) when the source is

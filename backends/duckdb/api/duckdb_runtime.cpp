@@ -189,6 +189,14 @@ void DuckdbRuntime::EnsureBuilt() {
 template <typename Sink>
 void DuckdbRuntime::Read(const core::QueryArguments &arguments, Sink &sink) {
   auto *reader = DuckDBAuxBackend::CurrentReader();
+  // The table function's bind swaps in the SQL for such a transaction; this
+  // is a statement bound before its first write. No state holds those rows,
+  // and a side connection cannot see them: refuse rather than answer wrongly.
+  if (reader && host_->TransactionWroteDependency(*reader, entry_.accelerator_id)) {
+    throw std::runtime_error(std::string("accelerator ") + entry_.accelerator_id +
+                             " cannot answer inside a transaction that wrote its tables; "
+                             "run the query SQL directly");
+  }
   runtime::ReadOptions options;
   const auto snapshot = reader ? DuckDBAuxBackend::SnapshotEpoch(*reader) : 0;
   if (snapshot != 0) { // 0: no transaction, the newest state

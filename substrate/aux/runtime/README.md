@@ -53,9 +53,11 @@ snapshot iff its epoch `<= b` (S5's contract).
    commit's epoch. Maintenance runs after the engine commit, while the
    accelerator's commit order is still held, so its lookups see the database
    exactly as this commit left it.
-   - Shipped placement (Postgres): the writer delivers `(seq, epoch, batches)`
-     to the worker and waits for the apply, bounded. The worker applies in
-     sequence order (`Pump`).
+   - Shipped placement (Postgres): once the commit is visible the writer only
+     enqueues `(seq, epoch, batches)` on the worker's commit ring (bounded
+     wait for ring space, no wait for the apply). The worker applies in
+     sequence order (`Pump`); a commit that cannot be queued becomes a gap and
+     the worker rebuilds. Readers wait for the apply (`require_applied_through`).
 4. Abort: the sequence number is released as an empty commit so the sequence
    stays dense.
 

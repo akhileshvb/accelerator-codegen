@@ -22,7 +22,7 @@ namespace accelerator_codegen::aux_state::engine {
 //   DuckDB:  runtime/duckdb/native_scan.hpp (host-private DataChunk helpers)
 //   Others:  runtime/{engine}/ helpers from engine_backend + accelerators
 // Aux modules stay engine-agnostic; kernels under
-// src/generated/{bench}/q{N}/{engine}/ do not.
+// accelerators/{bench}/q{N}/{engine}/ do not.
 class SharedQueryEngine {
 public:
   static bool HasSharedQuery(SharedWorkloadKind workload, int query_id);

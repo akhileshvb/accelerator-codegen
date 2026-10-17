@@ -348,6 +348,11 @@ void MysqlHost::OnStatementEnd(Session session, MysqlStatementKind kind, bool fa
   }
 }
 
+bool MysqlHost::SessionWroteDependency(Session session, const runtime::AcceleratorRuntime &accelerator) {
+  const auto *writer = impl->FindWriter(session);
+  return writer && (writer->poisoned || impl->runtime.TxnWroteDependency(session, accelerator));
+}
+
 void MysqlHost::OnSessionEnd(Session session) {
   if (impl->FindWriter(session)) {
     impl->Abort(session);

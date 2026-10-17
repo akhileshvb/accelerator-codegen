@@ -316,13 +316,13 @@ bool ForcedFallback() {
 }
 
 AcceleratorRuntime::ReadGuard AcceleratorRuntime::BeginRead(const ReadOptions &options) {
+  const Epoch epoch =
+      options.epoch == VersionedAuxStore::kNewestSnapshot ? kNever - 1 : options.epoch;
+  std::unique_lock<std::mutex> lock(impl->state_mutex);
   if (ForcedFallback()) {
     impl->stats.reads_fallback++;
     return ReadGuard(false, nullptr);
   }
-  const Epoch epoch =
-      options.epoch == VersionedAuxStore::kNewestSnapshot ? kNever - 1 : options.epoch;
-  std::unique_lock<std::mutex> lock(impl->state_mutex);
   if (Collapsed(epoch)) {
     impl->stats.reads_fallback++;
     return ReadGuard(false, nullptr);

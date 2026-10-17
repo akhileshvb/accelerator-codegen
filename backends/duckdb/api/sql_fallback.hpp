@@ -18,6 +18,10 @@ namespace accelerator_codegen::aux_state::engine {
 // (highest n first, so $1 never matches inside $10).
 std::string WithLiterals(const std::string &sql, const ::duckdb::vector<::duckdb::Value> &values);
 
+// The SQL that answers the query for these arguments (the base query when
+// there are none), empty if the entry has none.
+std::string FallbackSql(const SharedQueryCatalogEntry &entry, const core::QueryArguments &arguments);
+
 // False: the entry has no SQL for these arguments.
 bool AnswerFromFallbackSql(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
                            const core::QueryArguments &arguments, core::AuxRowSink &sink);

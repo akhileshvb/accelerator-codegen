@@ -252,6 +252,12 @@ std::shared_ptr<DuckdbHost> DuckdbHost::Get(::duckdb::DatabaseInstance &db) {
   return host;
 }
 
+std::shared_ptr<DuckdbHost> DuckdbHost::Existing(::duckdb::DatabaseInstance &db) {
+  std::lock_guard<std::mutex> lock(HostsMutex());
+  auto it = Hosts().find(&db);
+  return it == Hosts().end() ? nullptr : it->second.lock();
+}
+
 DuckdbHost::DuckdbHost(::duckdb::DatabaseInstance &db) : impl(std::make_unique<Impl>(db)) {}
 
 // Starts the engine's callbacks into the host (which must already be shared).
@@ -360,6 +366,13 @@ DuckdbHost::Accelerator *DuckdbHost::Find(const std::string &accelerator_id) {
 }
 
 runtime::RuntimeHost &DuckdbHost::Runtime() { return impl->runtime; }
+
+bool DuckdbHost::TransactionWroteDependency(::duckdb::ClientContext &context,
+                                            const std::string &accelerator_id) {
+  auto *accelerator = Find(accelerator_id);
+  return accelerator && impl->runtime.TxnWroteDependency(
+                            TxnId(::duckdb::MetaTransaction::Get(context)), *accelerator->runtime);
+}
 
 void DuckdbHost::SetManualCapture(bool manual) { impl->manual_capture = manual; }
 
