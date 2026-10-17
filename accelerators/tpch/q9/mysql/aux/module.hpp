@@ -110,6 +110,30 @@ public:
     (void)consumer;
     return false;
   }
+  // The scans of the big tables split into `partitions` fixed row ranges:
+  // sink(partition, row) runs concurrently for different partitions, one
+  // thread per partition. The contributions of a part all come from the
+  // partition holding its partkey.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9PartInput &)> &sink) = 0;
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9SupplierInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9OrdersInput &)> &sink) = 0;
+  virtual void ScanPartsuppsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9PartsuppInput &)> &sink) = 0;
+  virtual bool ScanProfitContributionsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ9ProfitContribution &)> &sink) {
+    (void)services;
+    (void)partitions;
+    (void)sink;
+    return false;
+  }
 };
 
 // ── State ───────────────────────────────────────────────────────────────────
@@ -179,6 +203,7 @@ struct TpchQ9State {
   const TpchQ9PartBlock *FindBlock(int64_t partkey) const {
     return blocks.Get(partkey >> 4).get(); // floor: exact for negative keys
   }
+  const uint32_t *FindGroup(int32_t nationkey, int32_t year) const;
   uint32_t GroupFor(int32_t nationkey, int32_t year);
   bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) const;
   bool LookupOrderYear(int64_t orderkey, int32_t &year) const;

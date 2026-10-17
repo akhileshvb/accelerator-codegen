@@ -2,8 +2,12 @@
 #include "tpch/q15/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
+#include <array>
+#include <iterator>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -27,6 +31,8 @@ constexpr int32_t kRevenueScale = 4;
 constexpr int64_t kFiniteDateLimit = std::numeric_limits<int32_t>::max() - 1;
 // Supplier chunks per sweep slice: each sums every whole month's column (~100 us).
 constexpr std::size_t kSweepChunksGrain = 16;
+// Months per build or maintenance slice (a month is ~70K lineitems at SF 1).
+constexpr std::size_t kMonthGrain = 1;
 
 core::PartitionId MonthPartition(int64_t month_index) {
   return static_cast<core::PartitionId>(month_index + kMonthPartitionBias);
@@ -441,7 +447,43 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ15Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ15TxnBuffer>();
 }
 
-void TpchQ15Module::Build(core::AuxEngineServices &,
+namespace {
+
+// One scanned lineitem's contribution to a month.
+struct MonthRow {
+  int64_t suppkey;
+  int64_t revenue;
+  int day_offset;
+};
+
+// Month columns are filled in place; the per-day lists accumulate in plain
+// vectors and are frozen (shrunk to size) at the end.
+std::shared_ptr<const TpchQ15MonthState>
+BuildMonth(const std::vector<MonthRow> &rows) {
+  auto month = std::make_shared<TpchQ15MonthState>();
+  std::array<std::vector<uint64_t>, 31> narrow;
+  std::array<std::vector<TpchQ15DayEntry>, 31> wide;
+  for (const auto &row : rows) {
+    AddToMonthColumns(*month, row.suppkey, row.revenue, 1);
+    if (FitsNarrow(row.suppkey, row.revenue, 1))
+      narrow[row.day_offset].push_back(PackNarrow(row.suppkey, row.revenue));
+    else
+      wide[row.day_offset].push_back({row.suppkey, row.revenue, 1});
+  }
+  for (int d = 0; d < 31; ++d) {
+    if (!narrow[d].empty())
+      month->days[d].narrow = std::make_shared<const std::vector<uint64_t>>(
+          narrow[d].begin(), narrow[d].end());
+    if (!wide[d].empty())
+      month->days[d].wide = std::make_shared<const std::vector<TpchQ15DayEntry>>(
+          std::move(wide[d]));
+  }
+  return month;
+}
+
+} // namespace
+
+void TpchQ15Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q15 requires a typed initial scan source");
@@ -453,43 +495,45 @@ void TpchQ15Module::Build(core::AuxEngineServices &,
   });
   builder.Write(MakeDirImage(std::move(directory)));
 
-  // Month columns are filled in place; the per-day lists accumulate in plain
-  // vectors and are frozen (shrunk to size) when the scan ends.
-  struct MonthBuild {
-    TpchQ15MonthState state;
-    std::array<std::vector<uint64_t>, 31> narrow;
-    std::array<std::vector<TpchQ15DayEntry>, 31> wide;
-  };
-  std::map<int64_t, MonthBuild> months;
-  initial_scan->ScanLineitems([&](const TpchQ15LineitemInput &input) {
-    const int64_t revenue = TpchQ15RevenueRaw(
-        input.extended_price_raw, input.extended_price_scale,
-        input.discount_raw, input.discount_scale);
-    const auto pos = PositionOf(input.shipdate_days);
-    auto &mb = months[pos.month_index];
-    AddToMonthColumns(mb.state, input.suppkey, revenue, 1);
-    if (FitsNarrow(input.suppkey, revenue, 1))
-      mb.narrow[pos.day_offset].push_back(PackNarrow(input.suppkey, revenue));
-    else
-      mb.wide[pos.day_offset].push_back({input.suppkey, revenue, 1});
-  });
-  for (auto it = months.begin(); it != months.end();) {
-    auto &mb = it->second;
-    for (int d = 0; d < 31; ++d) {
-      if (!mb.narrow[d].empty()) {
-        mb.state.days[d].narrow = std::make_shared<const std::vector<uint64_t>>(
-            mb.narrow[d].begin(), mb.narrow[d].end());
-        std::vector<uint64_t>().swap(mb.narrow[d]);
-      }
-      if (!mb.wide[d].empty())
-        mb.state.days[d].wide =
-            std::make_shared<const std::vector<TpchQ15DayEntry>>(
-                std::move(mb.wide[d]));
-    }
-    builder.Write(MakeMonthImage(
-        it->first, std::make_shared<const TpchQ15MonthState>(std::move(mb.state))));
-    it = months.erase(it);
-  }
+  // The scan only sorts rows into months; the months, which share nothing, are
+  // then built in parallel slices.
+  using MonthRows = std::map<int64_t, std::vector<MonthRow>>;
+  auto rows_by_month = core::PartitionedBuild<MonthRows>(
+      services, [] { return MonthRows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ15LineitemInput &input) {
+              sink(partition, OneRowBatch<TpchQ15LineitemInput>{input});
+            });
+      },
+      [](MonthRows &into, const TpchQ15LineitemInput &input) {
+        const int64_t revenue = TpchQ15RevenueRaw(
+            input.extended_price_raw, input.extended_price_scale,
+            input.discount_raw, input.discount_scale);
+        const auto pos = PositionOf(input.shipdate_days);
+        into[pos.month_index].push_back({input.suppkey, revenue, pos.day_offset});
+      },
+      [](MonthRows &into, MonthRows &&from) {
+        for (auto &[month, rows] : from) {
+          auto &dest = into[month];
+          dest.insert(dest.end(), rows.begin(), rows.end());
+        }
+      },
+      BuildPartitions(services));
+  std::vector<std::pair<int64_t, std::vector<MonthRow>>> months(
+      std::make_move_iterator(rows_by_month.begin()),
+      std::make_move_iterator(rows_by_month.end()));
+  rows_by_month.clear();
+  std::vector<std::shared_ptr<const TpchQ15MonthState>> built(months.size());
+  core::ParallelSlices(services, months.size(), kMonthGrain,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i) {
+                           built[i] = BuildMonth(months[i].second);
+                           months[i].second = {};
+                         }
+                       });
+  for (std::size_t i = 0; i < months.size(); ++i)
+    builder.Write(MakeMonthImage(months[i].first, std::move(built[i])));
   builder.Finish();
 }
 
@@ -680,22 +724,34 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
     outcome.updates.push_back(MakeDirImage(std::move(directory)));
   }
 
-  for (auto &[month_index, md] : by_month) {
-    // A copy shares every COW chunk and day list; only touched ones clone.
-    const auto old = old_months.find(month_index);
-    auto month = old != old_months.end() && old->second
-                     ? std::make_shared<TpchQ15MonthState>(*old->second)
-                     : std::make_shared<TpchQ15MonthState>();
-    for (const auto &[day, delta] : md.rows)
-      AddToMonthColumns(*month, delta->suppkey,
-                        static_cast<int64_t>(delta->sign) * delta->revenue_raw,
-                        delta->sign);
-    for (int d = 0; d < 31; ++d)
-      if (!md.days[d].empty())
-        FoldIntoDay(month->days[d], std::move(md.days[d]));
-    outcome.updates.push_back(MakeMonthImage(
-        month_index, std::shared_ptr<const TpchQ15MonthState>(std::move(month))));
-  }
+  // Months share nothing: each is rewritten in its own slice.
+  std::vector<std::pair<const int64_t, MonthDeltas> *> touched;
+  for (auto &entry : by_month)
+    touched.push_back(&entry);
+  std::vector<std::shared_ptr<const TpchQ15MonthState>> rewritten(touched.size());
+  core::ParallelSlices(
+      services, touched.size(), kMonthGrain,
+      [&](std::size_t, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          auto &[month_index, md] = *touched[i];
+          // A copy shares every COW chunk and day list; only touched ones clone.
+          const auto old = old_months.find(month_index);
+          auto month = old != old_months.end() && old->second
+                           ? std::make_shared<TpchQ15MonthState>(*old->second)
+                           : std::make_shared<TpchQ15MonthState>();
+          for (const auto &[day, delta] : md.rows)
+            AddToMonthColumns(*month, delta->suppkey,
+                              static_cast<int64_t>(delta->sign) * delta->revenue_raw,
+                              delta->sign);
+          for (int d = 0; d < 31; ++d)
+            if (!md.days[d].empty())
+              FoldIntoDay(month->days[d], std::move(md.days[d]));
+          rewritten[i] = std::move(month);
+        }
+      });
+  for (std::size_t i = 0; i < touched.size(); ++i)
+    outcome.updates.push_back(
+        MakeMonthImage(touched[i]->first, std::move(rewritten[i])));
   return outcome;
 }
 

@@ -2,7 +2,11 @@
 #include "tpch/q14/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -17,6 +21,8 @@ namespace {
 constexpr core::PartitionId kStatePartition = 0;
 // More affected parts than this per commit: rebuild instead of point scans.
 constexpr std::size_t kMaxPointParts = 50000;
+// Lineitem deltas per maintenance slice.
+constexpr std::size_t kDeltaGrain = 8192;
 
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -393,12 +399,41 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
     next->SetPromo(key, final_class.at(key));
 
   // Lineitems of unaffected parts: -old +new with the part's (unchanged) class.
-  for (const auto &delta : buffer.Deltas()) {
-    if (is_affected.count(delta.partkey))
-      continue;
-    next->AddRevenue(delta.shipdate_days, next->PromoOf(delta.partkey),
-                     delta.sign * delta.revenue_raw, delta.sign);
-  }
+  // Slices sum per day against the finished part classes; the days are applied after.
+  const auto &deltas = buffer.Deltas();
+  std::map<int32_t, TpchQ14DayTotals> per_day;
+  core::ParallelReduce(
+      services, deltas.size(), kDeltaGrain, per_day,
+      [&](std::map<int32_t, TpchQ14DayTotals> &acc, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto &delta = deltas[i];
+          if (is_affected.count(delta.partkey))
+            continue;
+          const auto promo = next->PromoOf(delta.partkey);
+          if (promo == TpchQ14PromoClass::Absent)
+            continue;
+          auto &cell = acc[delta.shipdate_days];
+          const __int128 revenue = delta.sign * delta.revenue_raw;
+          cell.total_revenue_raw += revenue;
+          if (promo == TpchQ14PromoClass::Promo)
+            cell.promo_revenue_raw += revenue;
+          cell.count += delta.sign;
+        }
+      },
+      [](std::map<int32_t, TpchQ14DayTotals> &into, std::map<int32_t, TpchQ14DayTotals> &&from) {
+        for (const auto &[day, cell] : from) {
+          auto &sum = into[day];
+          sum.total_revenue_raw += cell.total_revenue_raw;
+          sum.promo_revenue_raw += cell.promo_revenue_raw;
+          sum.count += cell.count;
+        }
+      });
+  for (const auto &[day, cell] : per_day)
+    next->days.Update(day, [&](TpchQ14DayTotals &into) {
+      into.total_revenue_raw += cell.total_revenue_raw;
+      into.promo_revenue_raw += cell.promo_revenue_raw;
+      into.count += cell.count;
+    });
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
@@ -438,20 +473,50 @@ void TpchQ14Module::ExecuteFallback(core::AuxEngineServices &services,
 
 std::shared_ptr<TpchQ14State>
 TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q14 requires a typed initial scan source");
   auto state = std::make_shared<TpchQ14State>();
-  initial_scan->ScanParts([&](const TpchQ14PartInput &input) {
-    state->SetPromo(input.key, ClassOfType(input.type));
-  });
-  initial_scan->ScanDayAggregates([&](const TpchQ14DayAggregate &agg) {
+  using PartClasses = core::AnyKeyCowArray<uint8_t, 16>;
+  state->part_class = core::PartitionedBuild<PartClasses>(
+      services, [] { return PartClasses{0}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanPartsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ14PartInput &input) {
+              sink(partition, OneRowBatch<TpchQ14PartInput>{input});
+            });
+      },
+      [](PartClasses &into, const TpchQ14PartInput &input) {
+        into.Set(input.key, static_cast<uint8_t>(ClassOfType(input.type)));
+      },
+      [](PartClasses &into, PartClasses &&from) {
+        into.MergeFrom(std::move(from), [](uint8_t mine, uint8_t theirs) {
+          return theirs ? theirs : mine; // the last part row of a key wins
+        });
+      },
+      BuildPartitions(services));
+  // Each partition joins its own range of lineitems with every part (the engine
+  // repeats the part side per partition), so there is one partition per worker.
+  const auto days = core::PartitionedBuild<std::vector<TpchQ14DayAggregate>>(
+      services, [] { return std::vector<TpchQ14DayAggregate>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanDayAggregatesPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ14DayAggregate &input) {
+              sink(partition, OneRowBatch<TpchQ14DayAggregate>{input});
+            });
+      },
+      [](std::vector<TpchQ14DayAggregate> &into, const TpchQ14DayAggregate &agg) {
+        into.push_back(agg);
+      },
+      [](std::vector<TpchQ14DayAggregate> &into, std::vector<TpchQ14DayAggregate> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      },
+      services.WorkerCount());
+  for (const auto &agg : days)
     state->days.Update(agg.shipdate_days, [&](TpchQ14DayTotals &cell) {
       cell.total_revenue_raw += agg.total_revenue_raw;
       cell.promo_revenue_raw += agg.promo_revenue_raw;
       cell.count += agg.count;
     });
-  });
   return state;
 }
 

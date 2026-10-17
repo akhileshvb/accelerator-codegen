@@ -72,6 +72,16 @@ public:
   virtual void ScanLineitems(
       const std::function<void(const TpchQ17LineitemInput &)> &) = 0;
 
+  // The same two scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  // The lineitem scan skips rows with a NULL partkey or quantity.
+  virtual void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ17PartInput &)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ17LineitemInput &)> &sink) = 0;
+
   // Optional SQL pre-aggregation: GROUP BY (partkey, quantity) with summed
   // price and row count, ORDER BY partkey, quantity. Returns false when the
   // engine does not implement it (the module then scans lineitems). Rows of one

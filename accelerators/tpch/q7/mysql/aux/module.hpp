@@ -67,6 +67,21 @@ public:
       const std::function<void(const TpchQ7OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ7LineitemInput &)> &) = 0;
+  // The scans of the big tables split into `partitions` fixed row ranges:
+  // sink(partition, row) runs concurrently for different partitions, one
+  // thread per partition.
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ7SupplierInput &)> &sink) = 0;
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ7CustomerInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ7OrderInput &)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ7LineitemInput &)> &sink) = 0;
 };
 
 // The shipping years of the template (l_shipdate BETWEEN 1995-01-01 AND
@@ -186,7 +201,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ7State> BuildState() const;
+  std::shared_ptr<TpchQ7State> BuildState(const core::AuxEngineServices &) const;
   void EmitResult(const TpchQ7State &, const core::QueryArguments &,
                   core::AuxRowSink &) const;
 

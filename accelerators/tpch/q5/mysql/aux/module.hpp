@@ -124,6 +124,20 @@ public:
       const std::function<void(const TpchQ5OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ5LineitemInput &)> &) = 0;
+  // The big tables' scans split into `partitions` fixed row ranges: sink(partition,
+  // row) runs concurrently for different partitions, one thread per partition.
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ5CustomerInput &)> &sink) = 0;
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ5SupplierInput &)> &sink) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ5OrderInput &)> &sink) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ5LineitemInput &)> &sink) = 0;
 
   // Point lookups against the database as the transaction leaves it (they run
   // while maintenance is staged at pre-commit).  Backends override them with

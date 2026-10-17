@@ -9,8 +9,8 @@
 // MEMORY     ~9 B/slot + sizeof(V), at most 7/8 full (about 10.3 B + 1.14*sizeof(V) per
 //            entry at max load, 2x right after a doubling).
 // COW/THREADS FlatHashMap: single writer, pointers invalidated by inserts.
-//            ShardedCowHashMap: mutate a private copy only; const reads of a published
-//            copy are safe.
+//            ShardedCowHashMap: mutate a private copy only (threads may write disjoint
+//            shards, see ShardOf); const reads of a published copy are safe.
 // USE WHEN   keys are arbitrary int64 with no useful locality, or you need a map of fat
 //            values. For int64-keyed columns use AnyKeyCowArray.
 //

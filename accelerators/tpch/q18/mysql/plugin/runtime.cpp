@@ -6,6 +6,7 @@
 
 #include "backends/mysql/api/runtime.hpp"
 
+#include "tpch/common/mysql_split_scan.hpp"
 #include "tpch/common/mysql_table_ids.hpp"
 #include "tpch/q18/mysql/aux/module.hpp"
 #include "tpch/q18/cost_model.hpp"
@@ -20,39 +21,28 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ18Lineitems(
-    const std::function<void(const query::TpchQ18LineitemInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT l_orderkey, l_quantity FROM lineitem",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ18LineitemInput{TypedInt(cols, 0),
-                                           TypedDecimalRaw(cols, 1)};
-      },
-      [&](query::TpchQ18LineitemInput &&input) { consumer(input); });
+SplitTable LineitemsTable() {
+  return {"l_orderkey, l_quantity", "lineitem", "", "l_orderkey"};
 }
 
-void ScanTpchQ18Orders(
-    const std::function<void(const query::TpchQ18OrderInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice FROM orders",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ18OrderInput{TypedInt(cols, 0),
-                                        TypedInt(cols, 1),
-                                        TypedDate(cols, 2),
-                                        TypedDecimalRaw(cols, 3)};
-      },
-      [&](query::TpchQ18OrderInput &&input) { consumer(input); });
+query::TpchQ18LineitemInput DecodeLineitem(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedDecimalRaw(cols, 1)};
 }
 
-void ScanTpchQ18Customers(
-    const std::function<void(const query::TpchQ18CustomerInput &)> &consumer) {
-  ScanTypedTuplesDecoded(
-      "SELECT c_custkey, c_name FROM customer",
-      [](const std::vector<std::string> &cols) {
-        return query::TpchQ18CustomerInput{TypedInt(cols, 0),
-                                           TypedText(cols, 1)};
-      },
-      [&](query::TpchQ18CustomerInput &&input) { consumer(input); });
+SplitTable OrdersTable() {
+  return {"o_orderkey, o_custkey, o_orderdate, o_totalprice", "orders", "", "o_orderkey"};
+}
+
+query::TpchQ18OrderInput DecodeOrder(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedInt(cols, 1), TypedDate(cols, 2), TypedDecimalRaw(cols, 3)};
+}
+
+SplitTable CustomersTable() {
+  return {"c_custkey, c_name", "customer", "", "c_custkey"};
+}
+
+query::TpchQ18CustomerInput DecodeCustomer(const std::vector<std::string> &cols) {
+  return {TypedInt(cols, 0), TypedText(cols, 1)};
 }
 
 // SUM(l_quantity) and COUNT(*) per order, computed by the database.
@@ -93,17 +83,41 @@ public:
   void ScanLineitems(
       const std::function<void(const query::TpchQ18LineitemInput &)> &consumer)
       override {
-    scans::ScanTpchQ18Lineitems(consumer);
+    split_scan::Serial<query::TpchQ18LineitemInput>(
+        scans::LineitemsTable(), scans::DecodeLineitem, consumer);
   }
   void ScanOrders(
       const std::function<void(const query::TpchQ18OrderInput &)> &consumer)
       override {
-    scans::ScanTpchQ18Orders(consumer);
+    split_scan::Serial<query::TpchQ18OrderInput>(
+        scans::OrdersTable(), scans::DecodeOrder, consumer);
   }
   void ScanCustomers(
       const std::function<void(const query::TpchQ18CustomerInput &)> &consumer)
       override {
-    scans::ScanTpchQ18Customers(consumer);
+    split_scan::Serial<query::TpchQ18CustomerInput>(
+        scans::CustomersTable(), scans::DecodeCustomer, consumer);
+  }
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ18LineitemInput &)> &sink)
+      override {
+    split_scan::Partitioned<query::TpchQ18LineitemInput>(
+        services, scans::LineitemsTable(), partitions, scans::DecodeLineitem, sink);
+  }
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ18OrderInput &)> &sink)
+      override {
+    split_scan::Partitioned<query::TpchQ18OrderInput>(
+        services, scans::OrdersTable(), partitions, scans::DecodeOrder, sink);
+  }
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ18CustomerInput &)> &sink)
+      override {
+    split_scan::Partitioned<query::TpchQ18CustomerInput>(
+        services, scans::CustomersTable(), partitions, scans::DecodeCustomer, sink);
   }
   bool ScanOrderQuantityAggregates(
       const std::function<void(const query::TpchQ18OrderQuantityAggregate &)>
