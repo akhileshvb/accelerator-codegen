@@ -1,3 +1,2 @@
-// Q10 read-side helpers (TpchQ10WindowTop / TpchQ10EmitRows) live in
-// module.cpp next to the window layout they depend on.
+// CMake registers the query's targets from the presence of this file.
 #include "tpch/q10/duckdb/aux/module.hpp"

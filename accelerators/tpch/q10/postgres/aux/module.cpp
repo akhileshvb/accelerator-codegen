@@ -13,8 +13,7 @@
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/parallel_stable_sort.hpp"
-#include "tpch/common/partitioned_rows.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "tpch/q10/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -26,15 +25,14 @@ using Int128 = ::accelerator_codegen::pg_numeric::Int128;
 
 constexpr core::PartitionId kStatePartition =
     core::TpchQ10Layout::kCustomerDimensions;
-constexpr uint32_t kMaxBuckets = 1u << 16;
+constexpr uint32_t kMaxBuckets = 65536;
 constexpr std::size_t kOrdersPerBucket = 20000;
-// Revenue lookups per read slice, ~0.2 us each.
-constexpr std::size_t kGetsGrain = 1 << 17;
-// Build rows per slice: order lookups / list rows sorted.
-constexpr std::size_t kResolveGrain = 1 << 14;
-constexpr std::size_t kSortGrain = 1 << 15;
-
-// ---- Row decoding (mutation capture rows) ---------------------------------
+// Revenue lookups per read slice (~0.2 us each).
+constexpr std::size_t kLookupGrain = 131072;
+// Build rows per slice when resolving order lookups.
+constexpr std::size_t kResolveGrain = 16384;
+// Build rows per slice when sorting them.
+constexpr std::size_t kSortGrain = 32768;
 // A cell is Ok, SQL NULL (the row cannot join / pass the filter), or of an
 // unexpected type (the state cannot follow the write: it is rebuilt).
 enum class Cell { Ok, Null, Bad };
@@ -114,7 +112,6 @@ bool VolumeRaw(int64_t price_raw, int32_t price_scale, int64_t discount_raw,
   return !__builtin_mul_overflow(price_raw, factor, &out);
 }
 
-// ---- Order entry: one blob per orderkey ------------------------------------
 struct OrderEntry {
   bool present = false; // an orders row (with a custkey and a date) exists
   int64_t custkey = 0;
@@ -175,7 +172,6 @@ bool StoreEntry(TpchQ10State &s, int64_t orderkey, const OrderEntry &e) {
   return s.orders.Set(orderkey, buf);
 }
 
-// ---- Revenue lists: (day, custkey bucket) -> [(custkey, rows, revenue)] -----
 struct RevRow {
   int64_t custkey = 0;
   int64_t rows = 0;
@@ -244,7 +240,6 @@ bool AdjustRevenue(TpchQ10State &s, int32_t day, int64_t custkey,
   return s.revenue.Set(key, buf);
 }
 
-// ---- Customer record --------------------------------------------------------
 struct CustomerRec {
   int64_t acctbal_raw = 0;
   std::string name, address, phone, comment;
@@ -254,6 +249,7 @@ void PutString(std::vector<uint8_t> &out, const std::string &s) {
   core::PutVarint(out, s.size());
   out.insert(out.end(), s.begin(), s.end());
 }
+
 bool GetString(const uint8_t *&p, const uint8_t *end, std::string &s) {
   uint64_t n = 0;
   if (!core::GetVarint(p, end, n) || static_cast<uint64_t>(end - p) < n)
@@ -300,7 +296,6 @@ bool LoadCustomer(const TpchQ10State &s, int64_t custkey, CustomerRec &c) {
          GetString(p, end, c.phone) && GetString(p, end, c.comment);
 }
 
-// ---- Incremental maintenance primitives ------------------------------------
 // Each returns false when the write cannot be applied exactly to this state;
 // the caller then rebuilds.
 
@@ -341,7 +336,6 @@ bool ApplyReturnedLineitem(TpchQ10State &s, int64_t orderkey, int64_t volume,
   return !e.present || AdjustRevenue(s, e.day, e.custkey, sign, sign * volume);
 }
 
-// ---- Initial build -----------------------------------------------------------
 // The scans only decode and encode rows on the build threads; the state's
 // blob maps are filled serially from the merged rows, in table order.
 
@@ -359,7 +353,7 @@ void BuildCustomers(core::AuxEngineServices &services, TpchQ10InitialScan &scan,
       [&](std::size_t parts, auto &&sink) {
         scan.ScanCustomersPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ10CustomerInput &input) {
-              sink(partition, OneRowBatch<TpchQ10CustomerInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ10CustomerInput>{input});
             });
       },
       [](Rows &into, const TpchQ10CustomerInput &input) {
@@ -368,7 +362,7 @@ void BuildCustomers(core::AuxEngineServices &services, TpchQ10InitialScan &scan,
                         input.comment},
                        into.back().bytes);
       },
-      AppendRows<EncodedCustomer>, BuildPartitions(services));
+      core::AppendRows<EncodedCustomer>, core::BuildPartitions(services));
   for (const auto &c : customers)
     if (!StoreEncodedCustomer(s, c.custkey, c.nationkey, c.bytes))
       throw std::runtime_error("TPC-H Q10: unsupported customer row");
@@ -387,7 +381,7 @@ std::vector<OrderRow> ScanOrderRows(core::AuxEngineServices &services,
       [&](std::size_t parts, auto &&sink) {
         scan.ScanOrdersPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ10OrderInput &input) {
-              sink(partition, OneRowBatch<TpchQ10OrderInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ10OrderInput>{input});
             });
       },
       [](Rows &into, const TpchQ10OrderInput &input) {
@@ -398,7 +392,7 @@ std::vector<OrderRow> ScanOrderRows(core::AuxEngineServices &services,
         row.entry.day = input.orderdate_days;
         into.push_back(row);
       },
-      AppendRows<OrderRow>, BuildPartitions(services));
+      core::AppendRows<OrderRow>, core::BuildPartitions(services));
 }
 
 // Returned lineitems summed per order, ascending by orderkey.
@@ -420,7 +414,7 @@ std::vector<OrderReturns> ScanReturns(core::AuxEngineServices &services,
       [&](std::size_t parts, auto &&sink) {
         scan.ScanLineitemsPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ10LineitemInput &input) {
-              sink(partition, OneRowBatch<TpchQ10LineitemInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ10LineitemInput>{input});
             });
       },
       [](Lines &into, const TpchQ10LineitemInput &input) {
@@ -432,8 +426,8 @@ std::vector<OrderReturns> ScanReturns(core::AuxEngineServices &services,
           throw std::runtime_error("TPC-H Q10: unsupported price / discount");
         into.push_back({input.orderkey, volume});
       },
-      AppendRows<Line>, BuildPartitions(services));
-  ParallelStableSort(
+      core::AppendRows<Line>, core::BuildPartitions(services));
+  core::ParallelStableSort(
       services, lines,
       [](const Line &l, const Line &r) { return l.orderkey < r.orderkey; }, kSortGrain);
   std::vector<OrderReturns> sums;
@@ -476,7 +470,7 @@ std::vector<RevItem> ResolveReturns(core::AuxEngineServices &services,
                          {order.entry.custkey, found->rows, found->volume}});
         }
       },
-      AppendRows<RevItem>);
+      core::AppendRows<RevItem>);
   return items;
 }
 
@@ -499,7 +493,7 @@ void StoreOrders(core::AuxEngineServices &services, TpchQ10State &s,
           if (!s.orders.Contains(returns[i].orderkey))
             acc.push_back(returns[i]);
       },
-      AppendRows<OrderReturns>);
+      core::AppendRows<OrderReturns>);
   for (const auto &orphan : orphans) {
     OrderEntry e;
     e.returned_rows = orphan.rows;
@@ -512,7 +506,7 @@ void StoreOrders(core::AuxEngineServices &services, TpchQ10State &s,
 // One list per (day, bucket): its customers' items summed, ascending by custkey.
 void StoreRevenueLists(core::AuxEngineServices &services, TpchQ10State &s,
                        std::vector<RevItem> &items) {
-  ParallelStableSort(
+  core::ParallelStableSort(
       services, items,
       [](const RevItem &l, const RevItem &r) {
         return std::tie(l.key, l.row.custkey) < std::tie(r.key, r.row.custkey);
@@ -533,6 +527,78 @@ void StoreRevenueLists(core::AuxEngineServices &services, TpchQ10State &s,
       PutRevRow(buf, sum);
     }
     s.revenue.Set(key, buf);
+  }
+}
+
+struct Candidate {
+  int64_t custkey = 0;
+  Int128 revenue = 0;
+};
+
+// ORDER BY revenue DESC, c_custkey.
+bool Better(const Candidate &a, const Candidate &b) {
+  if (a.revenue != b.revenue)
+    return a.revenue > b.revenue;
+  return a.custkey < b.custkey;
+}
+
+// Keeps the best `limit` candidates seen (heap top = the worst kept one).
+class TopK {
+public:
+  explicit TopK(std::size_t limit = kTpchQ10ResultLimit) : limit(limit) {}
+  void Offer(const Candidate &c) {
+    if (heap.size() < limit) {
+      heap.push_back(c);
+      std::push_heap(heap.begin(), heap.end(), Better);
+    } else if (limit > 0 && Better(c, heap.front())) {
+      std::pop_heap(heap.begin(), heap.end(), Better);
+      heap.back() = c;
+      std::push_heap(heap.begin(), heap.end(), Better);
+    }
+  }
+  std::vector<Candidate> Sorted() {
+    std::sort(heap.begin(), heap.end(), Better);
+    return std::move(heap);
+  }
+  const std::vector<Candidate> &Items() const { return heap; }
+
+private:
+  std::size_t limit;
+  std::vector<Candidate> heap;
+};
+
+// Customers of buckets [begin, end) with returned revenue on days
+// [first_day, last_day]: merged per bucket, joined to customer / nation.
+void ScanBuckets(const TpchQ10State &s, int64_t first_day, int64_t last_day,
+                 uint32_t begin, uint32_t end, TopK &top) {
+  std::vector<RevRow> rows;
+  for (uint32_t b = begin; b < end; ++b) {
+    rows.clear();
+    for (int64_t day = first_day; day <= last_day; ++day) {
+      std::string_view v;
+      if (s.revenue.Get(RevenueKey(s.buckets, static_cast<int32_t>(day), b), v))
+        DecodeRevRows(v, rows);
+    }
+    if (rows.empty())
+      continue;
+    std::sort(rows.begin(), rows.end(), [](const RevRow &l, const RevRow &r) {
+      return l.custkey < r.custkey;
+    });
+    for (std::size_t i = 0; i < rows.size();) {
+      const int64_t custkey = rows[i].custkey;
+      Int128 revenue = 0;
+      int64_t count = 0;
+      for (; i < rows.size() && rows[i].custkey == custkey; ++i) {
+        revenue += rows[i].revenue;
+        count += rows[i].rows;
+      }
+      if (count <= 0)
+        continue;
+      const int32_t nk = s.customer_nation.Get(custkey);
+      if (nk == TpchQ10State::kAbsent || s.nations.find(nk) == s.nations.end())
+        continue;
+      top.Offer({custkey, revenue});
+    }
   }
 }
 
@@ -765,20 +831,20 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
                                 core::AuxTxnBuffer &base_buffer) {
   core::StagedMaintenanceOutcome outcome;
   auto &buffer = dynamic_cast<TpchQ10TxnBuffer &>(base_buffer);
-  const auto rebuild = [&] {
+  if (buffer.RequiresRebuild()) {
     core::FinishRebuildAll(outcome);
     return outcome;
-  };
-  if (buffer.RequiresRebuild())
-    return rebuild();
+  }
   if (!buffer.HasPendingChanges() || !buffer.work)
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {std::max<uint64_t>(1, buffer.rows), 1, true, false, true, false, false,
-       core::MaintenanceAction::NoOp, services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action != core::MaintenanceAction::ApplyDelta)
-    return rebuild();
+      core::MaintenanceRequest::IncrementalSingleState(
+          std::max<uint64_t>(1, buffer.rows), services.ExpectedQueriesBeforeNextWrite()));
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
 
   auto image = std::make_shared<TpchQ10StateImage>();
   image->state = std::move(buffer.work);
@@ -818,89 +884,6 @@ void TpchQ10Module::Execute(core::AuxEngineServices &services,
   ExecuteFallback(services, arguments, sink);
 }
 
-void TpchQ10Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  const auto state = BuildState(services);
-  EmitResult(services, *state, arguments, sink);
-}
-
-namespace {
-
-struct Candidate {
-  int64_t custkey = 0;
-  Int128 revenue = 0;
-};
-
-// ORDER BY revenue DESC, c_custkey.
-bool Better(const Candidate &a, const Candidate &b) {
-  if (a.revenue != b.revenue)
-    return a.revenue > b.revenue;
-  return a.custkey < b.custkey;
-}
-
-// Keeps the best `limit` candidates seen (heap top = the worst kept one).
-class TopK {
-public:
-  explicit TopK(std::size_t limit = kTpchQ10ResultLimit) : limit(limit) {}
-  void Offer(const Candidate &c) {
-    if (heap.size() < limit) {
-      heap.push_back(c);
-      std::push_heap(heap.begin(), heap.end(), Better);
-    } else if (limit > 0 && Better(c, heap.front())) {
-      std::pop_heap(heap.begin(), heap.end(), Better);
-      heap.back() = c;
-      std::push_heap(heap.begin(), heap.end(), Better);
-    }
-  }
-  std::vector<Candidate> Sorted() {
-    std::sort(heap.begin(), heap.end(), Better);
-    return std::move(heap);
-  }
-  const std::vector<Candidate> &Items() const { return heap; }
-
-private:
-  std::size_t limit;
-  std::vector<Candidate> heap;
-};
-
-// Customers of buckets [begin, end) with returned revenue on days
-// [first_day, last_day]: merged per bucket, joined to customer / nation.
-void ScanBuckets(const TpchQ10State &s, int64_t first_day, int64_t last_day,
-                 uint32_t begin, uint32_t end, TopK &top) {
-  std::vector<RevRow> rows;
-  for (uint32_t b = begin; b < end; ++b) {
-    rows.clear();
-    for (int64_t day = first_day; day <= last_day; ++day) {
-      std::string_view v;
-      if (s.revenue.Get(RevenueKey(s.buckets, static_cast<int32_t>(day), b), v))
-        DecodeRevRows(v, rows);
-    }
-    if (rows.empty())
-      continue;
-    std::sort(rows.begin(), rows.end(), [](const RevRow &l, const RevRow &r) {
-      return l.custkey < r.custkey;
-    });
-    for (std::size_t i = 0; i < rows.size();) {
-      const int64_t custkey = rows[i].custkey;
-      Int128 revenue = 0;
-      int64_t count = 0;
-      for (; i < rows.size() && rows[i].custkey == custkey; ++i) {
-        revenue += rows[i].revenue;
-        count += rows[i].rows;
-      }
-      if (count <= 0)
-        continue;
-      const int32_t nk = s.customer_nation.Get(custkey);
-      if (nk == TpchQ10State::kAbsent || s.nations.find(nk) == s.nations.end())
-        continue;
-      top.Offer({custkey, revenue});
-    }
-  }
-}
-
-} // namespace
-
 void TpchQ10Module::EmitResult(const core::AuxEngineServices &services,
                                const TpchQ10State &s,
                                const core::QueryArguments &arguments,
@@ -936,7 +919,7 @@ void TpchQ10Module::EmitResult(const core::AuxEngineServices &services,
     if (first_day <= last_day) {
       // Buckets per slice: one bucket costs `days` revenue lookups.
       const std::size_t days = static_cast<std::size_t>(last_day - first_day + 1);
-      const std::size_t bucket_grain = std::max<std::size_t>(1, kGetsGrain / days);
+      const std::size_t bucket_grain = std::max<std::size_t>(1, kLookupGrain / days);
       TopK merged;
       core::ParallelReduce(
           services, s.buckets, bucket_grain, merged,

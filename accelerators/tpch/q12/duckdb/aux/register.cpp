@@ -9,16 +9,8 @@
 #include "backends/duckdb/engine/build_scan.hpp"
 #include "catalog/query_catalog.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
 #include <functional>
-#include <set>
-#include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
 #include <vector>
 
 #include "duckdb.hpp"
@@ -26,6 +18,9 @@
 
 namespace accelerator_codegen::aux_state::engine {
 namespace {
+
+constexpr accelerator_codegen::aux_state::query::TpchQ12Config kTables{1, 2};
+
 namespace q12_catalog {
 
 namespace core = accelerator_codegen::aux_state::core;
@@ -41,7 +36,7 @@ SharedProbe BuildTpchQ12Probe(::duckdb::MaterializedQueryResult &result,
   const std::string shipmode = result.GetValue(6, row).ToString();
   const std::string new_shipmode = (shipmode == "MAIL") ? "AIR" : "MAIL";
   SharedProbe probe;
-  probe.table = 2;
+  probe.table = kTables.lineitem_table;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {1}; // shipmode slot in aux lineitem row
   probe.write_delta = 1.0;
@@ -177,8 +172,11 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     "accel_tpch_q12_aux",
     {::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::DATE},
     [](::duckdb::Connection &connection) {
-      const TpchQ12Config c{1, 2};
-      return MakeBinding<TpchQ12Scan, TpchQ12Module>(connection, CaptureTableList{{"orders", c.orders_table}, {"lineitem", c.lineitem_table}}, c);
+      return MakeBinding<TpchQ12Scan, TpchQ12Module>(
+          connection,
+          CaptureTableList{{"orders", kTables.orders_table},
+                           {"lineitem", kTables.lineitem_table}},
+          kTables);
     }}};
 
 } // namespace

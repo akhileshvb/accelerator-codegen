@@ -95,12 +95,12 @@ struct TpchQ7CubeKey {
     return year < o.year;
   }
 };
+
 struct TpchQ7CubeCell {
   ::accelerator_codegen::pg_numeric::Int128 revenue = 0; // SUM(volume) at scale 4, exact
   int64_t rows = 0;                  // joined lineitems (group exists iff > 0)
 };
 
-// ---- State (immutable once published; copies share chunks) ----------------
 //
 // Everything the result depends on, in compact columnar form:
 //   supplier_nation[suppkey]  nation key (4 B/supplier)
@@ -118,7 +118,7 @@ struct TpchQ7CubeCell {
 // so nation / supplier / customer / orders / lineitem writes are all exact and
 // incremental. Memory (SF100 / SF1000, ~30% of lineitems are in the window,
 // 1.5e8 / 1.5e9 orders): ~(5+1.2*9)=~16 B per order + 8 B per supplier/
-// customer = about 2.5 GB / 25 GB; the old state was ~8 GB transient + maps.
+// customer = about 2.5 GB / 25 GB.
 // Per write batch: O(touched orders' chunks) (a chunk is ~10 KB), plus a copy
 // of the 3 small directories (O(#directory pages)).
 struct TpchQ7State {
@@ -187,8 +187,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

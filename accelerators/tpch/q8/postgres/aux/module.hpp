@@ -17,8 +17,6 @@
 #include "prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
-
-// ── Q8 layout ──────────────────────────────────────────────────────────────
 struct TpchQ8Layout {
   static constexpr const char *kAccelerator = "tpch_q8_aux";
   static constexpr core::PartitionId kYear1995 = 0;
@@ -29,7 +27,6 @@ struct TpchQ8Layout {
   }
 };
 
-// ── Config ──────────────────────────────────────────────────────────────────
 struct TpchQ8Config {
   core::TableId part_table = 0;
   core::TableId supplier_table = 0;
@@ -40,7 +37,6 @@ struct TpchQ8Config {
   core::TableId region_table = 0;
 };
 
-// ── Typed bulk-scan contract ────────────────────────────────────────────────
 struct TpchQ8PartInput {
   int64_t key = 0;
   std::string type;
@@ -125,11 +121,10 @@ struct TpchQ8CubeCell {
   ::accelerator_codegen::pg_numeric::Int128 volume = 0; // SUM(volume), scale 4
   int64_t rows = 0; // joined lineitems (a group exists iff > 0)
 };
+
 // Sorted by (year, customer_nationkey, supplier_nationkey); at most
 // 2 * #nations^2 cells (1250 for TPC-H).
 using TpchQ8TypeCube = std::vector<TpchQ8CubeCell>;
-
-// ---- State (immutable once published; copies share chunks) ----------------
 //
 // The cube answers any (nation, region, type) in O(#cells of one type),
 // independent of the scale factor. Everything needed to keep it exact under
@@ -207,7 +202,6 @@ public:
   uint64_t rows = 0;
 };
 
-// ── Module ──────────────────────────────────────────────────────────────────
 class TpchQ8Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = TpchQ8Layout::kAccelerator;
@@ -232,8 +226,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
