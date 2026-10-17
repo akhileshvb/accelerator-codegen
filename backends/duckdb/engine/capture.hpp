@@ -8,6 +8,7 @@
 // registered on the database (DatabaseCaptureRegistry): every connection's
 // writes and transactions reach the host.
 
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -61,14 +62,54 @@ AuxWatchedColumns &WatchedColumns(::duckdb::DatabaseInstance &db);
 runtime::ColumnarBatch ToColumnarBatch(const ::duckdb::TableMutationEvent &event,
                                        core::TableId table);
 
+// How the engine's callbacks reach a host that may die before they stop: a
+// connection keeps the capture objects past the host. The host closes the link
+// when it is destroyed and waits for the callbacks still inside it; a callback
+// never owns the host, so the host is never destroyed on a thread of its own
+// pool (a callback can run on one: builds commit queries there).
+class HostLink {
+public:
+  explicit HostLink(DuckdbHost &host_p) : host(&host_p) {}
+  template <typename Fn> void Call(Fn &&fn) {
+    DuckdbHost *entered;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (!host) {
+        return;
+      }
+      entered = host;
+      ++active;
+    }
+    struct Leave {
+      HostLink &link;
+      ~Leave() {
+        std::lock_guard<std::mutex> lock(link.mutex);
+        if (--link.active == 0) {
+          link.idle.notify_all();
+        }
+      }
+    } leave{*this};
+    fn(*entered);
+  }
+  void Close() {
+    std::unique_lock<std::mutex> lock(mutex);
+    host = nullptr;
+    idle.wait(lock, [&] { return active == 0; });
+  }
+
+private:
+  std::mutex mutex;
+  std::condition_variable idle;
+  DuckdbHost *host;
+  int active = 0;
+};
+
 // Forwards every connection's mutations and transaction lifecycle to a host.
 // (Commit ids come through CommitIds: both interfaces derive from
-// ClientContextState, so they are separate objects.) A connection keeps these
-// objects past the host, so they hold it weakly and hold it for each callback.
+// ClientContextState, so they are separate objects.)
 class DatabaseCapture final : public ::duckdb::MutationConsumer {
 public:
-  // Before the object is registered.
-  void Bind(std::weak_ptr<DuckdbHost> bound) { host = std::move(bound); }
+  explicit DatabaseCapture(std::shared_ptr<HostLink> link_p) : link(std::move(link_p)) {}
   void OnTableMutation(::duckdb::ClientContext &context,
                        const ::duckdb::TableMutationEvent &event) override;
   void TransactionPreCommit(::duckdb::MetaTransaction &transaction,
@@ -79,18 +120,18 @@ public:
                            ::duckdb::ClientContext &context) override;
 
 private:
-  std::weak_ptr<DuckdbHost> host;
+  std::shared_ptr<HostLink> link;
 };
 
 class CommitIds final : public ::duckdb::CommitObserver {
 public:
-  void Bind(std::weak_ptr<DuckdbHost> bound) { host = std::move(bound); }
+  explicit CommitIds(std::shared_ptr<HostLink> link_p) : link(std::move(link_p)) {}
   void OnCommit(::duckdb::AttachedDatabase &, ::duckdb::transaction_t) override {}
   void OnCommitWithContext(::duckdb::ClientContext &context, ::duckdb::AttachedDatabase &db,
                            ::duckdb::transaction_t commit_id) override;
 
 private:
-  std::weak_ptr<DuckdbHost> host;
+  std::shared_ptr<HostLink> link;
 };
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

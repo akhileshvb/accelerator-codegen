@@ -317,38 +317,28 @@ runtime::ColumnarBatch ToColumnarBatch(const ::duckdb::TableMutationEvent &event
 
 void DatabaseCapture::OnTableMutation(::duckdb::ClientContext &context,
                                       const ::duckdb::TableMutationEvent &event) {
-  if (const auto live = host.lock()) {
-    live->OnMutation(context, event);
-  }
+  link->Call([&](DuckdbHost &host) { host.OnMutation(context, event); });
 }
 
 void DatabaseCapture::TransactionPreCommit(::duckdb::MetaTransaction &transaction,
                                            ::duckdb::ClientContext &) {
-  if (const auto live = host.lock()) {
-    live->OnPreCommit(transaction);
-  }
+  link->Call([&](DuckdbHost &host) { host.OnPreCommit(transaction); });
 }
 
 void DatabaseCapture::TransactionCommit(::duckdb::MetaTransaction &transaction,
                                         ::duckdb::ClientContext &context) {
-  if (const auto live = host.lock()) {
-    live->OnCommit(transaction, context);
-  }
+  link->Call([&](DuckdbHost &host) { host.OnCommit(transaction, context); });
 }
 
 void DatabaseCapture::TransactionRollback(::duckdb::MetaTransaction &transaction,
                                           ::duckdb::ClientContext &) {
-  if (const auto live = host.lock()) {
-    live->OnRollback(transaction);
-  }
+  link->Call([&](DuckdbHost &host) { host.OnRollback(transaction); });
 }
 
 void CommitIds::OnCommitWithContext(::duckdb::ClientContext &context,
                                     ::duckdb::AttachedDatabase &db,
                                     ::duckdb::transaction_t commit_id) {
-  if (const auto live = host.lock()) {
-    live->OnCommitId(context, db, commit_id);
-  }
+  link->Call([&](DuckdbHost &host) { host.OnCommitId(context, db, commit_id); });
 }
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb
