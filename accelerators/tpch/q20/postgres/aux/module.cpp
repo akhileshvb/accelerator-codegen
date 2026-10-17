@@ -2,9 +2,9 @@
 #include "tpch/q20/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -29,36 +29,8 @@ constexpr bool kCaseInsensitive = false;
 // Blocks per maintenance slice (a block of a few parts encodes in ~10 us).
 constexpr std::size_t kBlockGrain = 256;
 
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
-  return false;
-}
+using core::IntCell;
+using core::StringCell;
 
 bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
   int64_t value = 0;
@@ -71,15 +43,13 @@ bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
 
 // Quantity in hundredths (the engine hands columns over as scaled decimals).
 bool QuantityCell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<core::ScaledDecimal>(row.values[index].payload))
+  int32_t scale = 0;
+  if (!core::DecimalCell(row, index, raw, scale))
     return false;
-  const auto decimal = std::get<core::ScaledDecimal>(row.values[index].payload);
-  raw = decimal.value;
-  for (int32_t s = decimal.scale; s < 2; ++s)
+  for (int32_t s = scale; s < 2; ++s)
     if (__builtin_mul_overflow(raw, int64_t{10}, &raw))
       throw std::overflow_error("Q20 quantity overflows int64");
-  for (int32_t s = decimal.scale; s > 2; --s) {
+  for (int32_t s = scale; s > 2; --s) {
     if (raw % 10 != 0)
       throw std::domain_error("Q20 quantity has more than 2 decimals");
     raw /= 10;
@@ -114,13 +84,6 @@ bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey, std::string &name,
 bool ReadNation(const core::AuxRow &row, int32_t &nationkey,
                 std::string &name) {
   return Int32Cell(row, 0, nationkey) && StringCell(row, 1, name);
-}
-
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
 }
 
 std::shared_ptr<const TpchQ20StateImage>
@@ -173,7 +136,6 @@ bool NameLess(const std::string &a, const std::string &b) {
   return a.size() < b.size();
 }
 
-// ── Small-value packing: any int64 stays exact ──────────────────────────────
 // Values in [-2^30, 2^30) are stored as is; others are stored in the block's
 // `wide` table and referenced as INT32_MIN + index (always < -2^30).
 constexpr int64_t kNarrowMin = -(int64_t{1} << 30);
@@ -196,7 +158,6 @@ int64_t UnpackValue(int32_t code, const std::vector<int64_t> &wide) {
                                              std::numeric_limits<int32_t>::min())];
 }
 
-// ── Editable form of a block ────────────────────────────────────────────────
 // Used for the bulk build and for write batches: a block is decoded, edited
 // (cheap appends / searches over a handful of pairs) and re-encoded once.
 struct RawPair {
@@ -471,7 +432,6 @@ void ApplyBlockDeltas(const core::AuxEngineServices &services,
 
 } // namespace
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ20TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ20TxnBuffer::Clear() {
   pending = false;
@@ -502,7 +462,6 @@ void TpchQ20TxnBuffer::AddNationDelta(TpchQ20NationDelta delta) {
   nation_deltas.push_back(std::move(delta));
 }
 
-// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ20Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ20Module::Dependencies() const {
@@ -611,17 +570,10 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {delta_count, 1, true, false, true, false, false,
-       core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+      core::MaintenanceRequest::IncrementalSingleState(
+          delta_count, services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
@@ -696,13 +648,6 @@ void TpchQ20Module::Execute(core::AuxEngineServices &services,
   EmitResult(*state, arguments, services, sink);
 }
 
-void TpchQ20Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  const auto state = BuildState(services);
-  EmitResult(*state, arguments, services, sink);
-}
-
 std::shared_ptr<TpchQ20State>
 TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
@@ -717,8 +662,8 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
     state->suppliers.Upsert(input.key, {input.name, input.address, input.nationkey});
   });
   // Names are decoded in partitions; the COW name column is filled serially.
-  const std::size_t partitions = BuildPartitions(services);
-  const auto parts = CollectRows<TpchQ20PartInput>(
+  const std::size_t partitions = core::BuildPartitions(services);
+  const auto parts = core::CollectRows<TpchQ20PartInput>(
       services, [&](std::size_t parts_count, auto &&sink) {
         initial_scan->ScanPartsPartitioned(services, parts_count, sink);
       });
@@ -727,30 +672,30 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
 
   // The scans only deal the rows out to buckets by block; the buckets are then
   // sorted into blocks, filled and encoded in parallel slices.
-  auto partsupps = core::PartitionedBuild<Buckets<TpchQ20PartsuppInput>>(
-      services, [] { return Buckets<TpchQ20PartsuppInput>(kBuildBuckets); },
+  auto partsupps = core::PartitionedBuild<core::Buckets<TpchQ20PartsuppInput>>(
+      services, [] { return core::Buckets<TpchQ20PartsuppInput>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanPartsuppsPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ20PartsuppInput &input) {
-              sink(partition, OneRowBatch<TpchQ20PartsuppInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ20PartsuppInput>{input});
             });
       },
-      [](Buckets<TpchQ20PartsuppInput> &into, const TpchQ20PartsuppInput &input) {
+      [](core::Buckets<TpchQ20PartsuppInput> &into, const TpchQ20PartsuppInput &input) {
         into[BucketOf(input.partkey)].push_back(input);
       },
-      AppendBuckets<TpchQ20PartsuppInput>, partitions);
-  auto lineitems = core::PartitionedBuild<Buckets<TpchQ20LineitemInput>>(
-      services, [] { return Buckets<TpchQ20LineitemInput>(kBuildBuckets); },
+      core::AppendBuckets<TpchQ20PartsuppInput>, partitions);
+  auto lineitems = core::PartitionedBuild<core::Buckets<TpchQ20LineitemInput>>(
+      services, [] { return core::Buckets<TpchQ20LineitemInput>(kBuildBuckets); },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanLineitemsPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ20LineitemInput &input) {
-              sink(partition, OneRowBatch<TpchQ20LineitemInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ20LineitemInput>{input});
             });
       },
-      [](Buckets<TpchQ20LineitemInput> &into, const TpchQ20LineitemInput &input) {
+      [](core::Buckets<TpchQ20LineitemInput> &into, const TpchQ20LineitemInput &input) {
         into[BucketOf(input.partkey)].push_back(input);
       },
-      AppendBuckets<TpchQ20LineitemInput>, partitions);
+      core::AppendBuckets<TpchQ20LineitemInput>, partitions);
   std::vector<BucketRows> buckets(kBuildBuckets);
   for (std::size_t b = 0; b < kBuildBuckets; ++b) {
     buckets[b].partsupps = std::move(partsupps[b]);

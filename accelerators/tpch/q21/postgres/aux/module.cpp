@@ -1,9 +1,10 @@
 #include "tpch/q21/postgres/aux/module.hpp"
 #include "tpch/q21/calibration_writes.hpp"
+#include "tpch/q21/top_rows.hpp"
+#include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "tpch/common/parallel_stable_sort.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -15,32 +16,19 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
+// Orders or numwait entries per slice; an item is a shard-local hash write.
+constexpr std::size_t kRunGrain = 1024;
+// Nation index changes below which a commit patches its nations inline.
+constexpr std::size_t kNationOpThreshold = 1024;
+// Elements per sorted slice: a key compare each.
+constexpr std::size_t kSortGrain = 65536;
 
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    out = std::get<int64_t>(cell.payload);
-    return true;
-  }
-  if (std::holds_alternative<uint64_t>(cell.payload)) {
-    const auto value = std::get<uint64_t>(cell.payload);
-    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return false;
-    out = static_cast<int64_t>(value);
-    return true;
-  }
-  return false;
-}
+using core::IntCell;
+using core::StringCell;
+
+// (shard, item) pairs in shard order: the unit of ownership of an apply task
+// is the run of items sharing a shard.
+using ShardedItems = std::vector<std::pair<std::size_t, std::size_t>>;
 
 bool ReadSupplier(const core::AuxRow &row, TpchQ21SupplierInput &out) {
   return IntCell(row, 0, out.suppkey) && StringCell(row, 1, out.name) &&
@@ -63,14 +51,6 @@ const TpchQ21StateImage *AsQ21Image(const core::StateImage &image) {
   return payload && payload->state ? payload : nullptr;
 }
 
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
-// ── Order contribution ──────────────────────────────────────────────────────
 // Reduces the two correlated subqueries of one fulfilled order. Candidate
 // l1 rows are the late lineitems; EXISTS needs a second supplier on the order
 // and NOT EXISTS forbids a late lineitem of any other supplier, so the order
@@ -127,62 +107,6 @@ private:
   std::vector<std::pair<int64_t, bool>> lines;
 };
 
-// ORDER BY numwait DESC, s_name (bytewise, the C collation the runtime
-// requires): true when (numwait, name) comes first.
-bool RanksBefore(int64_t lhs_numwait, std::string_view lhs_name,
-                 int64_t rhs_numwait, std::string_view rhs_name) {
-  if (lhs_numwait != rhs_numwait)
-    return lhs_numwait > rhs_numwait;
-  return lhs_name < rhs_name;
-}
-
-// The first kTpchQ21Limit groups in answer order, from (name, numwait) groups
-// with distinct names: a bounded heap whose top is the worst group kept.
-template <typename Name>
-std::vector<TpchQ21OutputRow>
-TopGroups(const std::vector<std::pair<Name, int64_t>> &groups) {
-  using Group = std::pair<Name, int64_t>;
-  const auto before = [](const Group &lhs, const Group &rhs) {
-    return RanksBefore(lhs.second, std::string_view(*lhs.first), rhs.second,
-                       std::string_view(*rhs.first));
-  };
-  std::vector<Group> heap;
-  heap.reserve(std::min(groups.size(), kTpchQ21Limit));
-  for (const auto &group : groups) {
-    if (heap.size() < kTpchQ21Limit) {
-      heap.push_back(group);
-      std::push_heap(heap.begin(), heap.end(), before);
-    } else if (before(group, heap.front())) {
-      std::pop_heap(heap.begin(), heap.end(), before);
-      heap.back() = group;
-      std::push_heap(heap.begin(), heap.end(), before);
-    }
-  }
-  std::sort_heap(heap.begin(), heap.end(), before);
-  std::vector<TpchQ21OutputRow> rows;
-  rows.reserve(heap.size());
-  for (const auto &group : heap)
-    rows.push_back({std::string(*group.first), group.second});
-  return rows;
-}
-
-// Q21 groups by s_name, not s_suppkey: suppliers that share a name form one
-// output group whose numwait is the sum of their counts. Then ORDER BY
-// numwait DESC, s_name LIMIT 100.
-std::vector<TpchQ21OutputRow>
-MergeByNameAndTop(const std::vector<std::pair<std::string_view, int64_t>> &rows) {
-  std::unordered_map<std::string_view, int64_t> by_name;
-  by_name.reserve(rows.size());
-  for (const auto &[name, numwait] : rows)
-    by_name[name] += numwait;
-  std::vector<std::pair<const std::string_view *, int64_t>> groups;
-  groups.reserve(by_name.size());
-  for (const auto &[name, numwait] : by_name)
-    if (numwait > 0)
-      groups.emplace_back(&name, numwait);
-  return TopGroups(groups);
-}
-
 bool NationParameter(const core::QueryArguments &arguments, std::string &name) {
   if (arguments.values.empty() || arguments.values[0].is_null ||
       !std::holds_alternative<std::string>(arguments.values[0].payload))
@@ -196,9 +120,80 @@ void EmitEmpty(core::AuxRowSink &sink) {
   sink.End();
 }
 
+
+struct OrderContribution {
+  int64_t orderkey;
+  TpchQ21Contribution contribution;
+};
+
+// The contributions of one bucket's lineitems, order by order.
+std::vector<OrderContribution> ContributionsOfBucket(
+    std::vector<TpchQ21LineInput> &lines) {
+  std::sort(lines.begin(), lines.end(),
+            [](const TpchQ21LineInput &a, const TpchQ21LineInput &b) {
+              return a.orderkey < b.orderkey;
+            });
+  std::vector<OrderContribution> found;
+  OrderGrouper grouper([&](int64_t orderkey, bool has,
+                           const TpchQ21Contribution &contribution) {
+    if (has)
+      found.push_back({orderkey, contribution});
+  });
+  for (const auto &line : lines)
+    grouper.Add(line);
+  grouper.Flush();
+  return found;
+}
+
+// The contribution of every fulfilled order that has one. The scans only join
+// (lineitems of fulfilled orders dealt out to buckets by order); the buckets
+// are then reduced in parallel slices.
+std::vector<std::vector<OrderContribution>>
+FulfilledContributions(TpchQ21InitialScan &scan,
+                       const core::AuxEngineServices &services) {
+  const std::size_t partitions = core::BuildPartitions(services);
+  const auto fulfilled_keys = core::PartitionedBuild<std::vector<int64_t>>(
+      services, [] { return std::vector<int64_t>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanFulfilledOrdersPartitioned(
+            services, parts, [&](std::size_t partition, int64_t orderkey) {
+              sink(partition, core::SingleRowBatch<int64_t>{orderkey});
+            });
+      },
+      [](std::vector<int64_t> &into, int64_t orderkey) { into.push_back(orderkey); },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      },
+      partitions);
+  core::FlatHashMap<uint8_t> fulfilled;
+  for (const int64_t orderkey : fulfilled_keys)
+    fulfilled.Upsert(orderkey, 1);
+  auto buckets = core::PartitionedBuild<core::Buckets<TpchQ21LineInput>>(
+      services, [] { return core::Buckets<TpchQ21LineInput>(core::kBuildBuckets); },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanLineitemsPartitioned(
+            services, parts, [&](std::size_t partition, const TpchQ21LineInput &line) {
+              sink(partition, core::SingleRowBatch<TpchQ21LineInput>{line});
+            });
+      },
+      [&](core::Buckets<TpchQ21LineInput> &into, const TpchQ21LineInput &line) {
+        if (fulfilled.Contains(line.orderkey))
+          into[static_cast<uint64_t>(line.orderkey) % core::kBuildBuckets].push_back(line);
+      },
+      core::AppendBuckets<TpchQ21LineInput>, partitions);
+  std::vector<std::vector<OrderContribution>> found(core::kBuildBuckets);
+  core::ParallelSlices(services, core::kBuildBuckets, 1,
+                       [&](std::size_t, std::size_t begin, std::size_t end) {
+                         for (std::size_t i = begin; i < end; ++i) {
+                           found[i] = ContributionsOfBucket(buckets[i]);
+                           buckets[i] = {};
+                         }
+                       });
+  return found;
+}
+
 } // namespace
 
-// ── State ───────────────────────────────────────────────────────────────────
 void TpchQ21State::SetContribution(int64_t orderkey, bool has,
                                    const TpchQ21Contribution &contribution) {
   const TpchQ21Contribution *found = contributions.Find(orderkey);
@@ -242,45 +237,20 @@ void TpchQ21State::AdjustNumwait(int64_t suppkey, int64_t delta) {
     nation_numwait.erase(it);
 }
 
-namespace {
-
-// Orders or numwait entries per task; an item is a shard-local hash write.
-constexpr std::size_t kApplyGrain = 1024;
-constexpr std::size_t kSortGrain = 65536;
-
-// (shard, item) pairs in shard order, and the [start, end) item range of each
-// shard present: the unit of ownership of an apply task.
-using ShardedItems = std::vector<std::pair<std::size_t, std::size_t>>;
-
-std::vector<std::size_t> ShardRuns(const ShardedItems &items) {
-  std::vector<std::size_t> starts;
-  for (std::size_t i = 0; i < items.size(); ++i)
-    if (i == 0 || items[i].first != items[i - 1].first)
-      starts.push_back(i);
-  starts.push_back(items.size());
-  return starts;
-}
-
-void SortByShard(const core::AuxEngineServices &services, ShardedItems &items) {
-  ParallelStableSort(
-      services, items, [](const auto &a, const auto &b) { return a.first < b.first; },
-      kSortGrain);
-}
-
-} // namespace
-
-void TpchQ21State::ApplyOrderResults(const core::AuxEngineServices &services,
+void TpchQ21State::ApplyOrderUpdates(const core::AuxEngineServices &services,
                                       const std::vector<TpchQ21OrderResult> &results) {
   ShardedItems items(results.size());
   for (std::size_t i = 0; i < results.size(); ++i)
     items[i] = {contributions.ShardOf(results[i].orderkey), i};
-  SortByShard(services, items);
-  const auto runs = ShardRuns(items);
+  core::ParallelStableSort(
+      services, items, [](const auto &a, const auto &b) { return a.first < b.first; },
+      kSortGrain);
+  const auto runs = core::RunStarts(items, [](const auto &item) { return item.first; });
 
   using Deltas = std::unordered_map<int64_t, int64_t>;
   Deltas numwait_delta;
   core::ParallelReduce(
-      services, runs.size() - 1, kApplyGrain, numwait_delta,
+      services, runs.size() - 1, kRunGrain, numwait_delta,
       [&](Deltas &deltas, std::size_t first, std::size_t last) {
         for (std::size_t k = runs[first]; k < runs[last]; ++k) {
           const auto &result = results[items[k].second];
@@ -303,12 +273,12 @@ void TpchQ21State::ApplyOrderResults(const core::AuxEngineServices &services,
         for (const auto &[suppkey, delta] : from)
           into[suppkey] += delta;
       });
-  AdjustNumwaits(services, numwait_delta);
+  ApplyNumwaitDeltas(services, numwait_delta);
 }
 
 // AdjustNumwait for many suppliers: numwait is written by shard-owning tasks,
 // then each nation's index by one task per nation.
-void TpchQ21State::AdjustNumwaits(const core::AuxEngineServices &services,
+void TpchQ21State::ApplyNumwaitDeltas(const core::AuxEngineServices &services,
                                   const std::unordered_map<int64_t, int64_t> &deltas) {
   struct Change {
     int64_t suppkey = 0;
@@ -324,15 +294,15 @@ void TpchQ21State::AdjustNumwaits(const core::AuxEngineServices &services,
     changes.push_back({suppkey, delta, 0});
   }
   // Shard, then suppkey: the same order at any thread count.
-  ParallelStableSort(
+  core::ParallelStableSort(
       services, items,
       [&](const auto &a, const auto &b) {
         return a.first != b.first ? a.first < b.first
                                   : changes[a.second].suppkey < changes[b.second].suppkey;
       },
       kSortGrain);
-  const auto runs = ShardRuns(items);
-  core::ParallelEach(services, runs.size() - 1, kApplyGrain, [&](std::size_t run) {
+  const auto runs = core::RunStarts(items, [](const auto &item) { return item.first; });
+  core::ParallelEach(services, runs.size() - 1, kRunGrain, [&](std::size_t run) {
     for (std::size_t k = runs[run]; k < runs[run + 1]; ++k) {
       auto &change = changes[items[k].second];
       const int64_t *current = numwait.Find(change.suppkey);
@@ -351,9 +321,8 @@ void TpchQ21State::AdjustNumwaits(const core::AuxEngineServices &services,
     TpchQ21Name name;
   };
   std::vector<NationChange> nation_changes;
-  for (const auto &[shard, index] : items) {
-    (void)shard;
-    const Change &change = changes[index];
+  for (const auto &item : items) {
+    const Change &change = changes[item.second];
     if (const TpchQ21Supplier *supplier = suppliers.Find(change.suppkey))
       nation_changes.push_back({supplier->nationkey, change.suppkey, change.value, supplier->name});
   }
@@ -363,18 +332,15 @@ void TpchQ21State::AdjustNumwaits(const core::AuxEngineServices &services,
                    });
   for (const auto &change : nation_changes)
     if (change.value != 0)
-      (void)nation_numwait[change.nationkey]; // its task needs the index to exist
-  std::vector<std::size_t> nation_runs;
-  for (std::size_t i = 0; i < nation_changes.size(); ++i)
-    if (i == 0 || nation_changes[i].nationkey != nation_changes[i - 1].nationkey)
-      nation_runs.push_back(i);
-  nation_runs.push_back(nation_changes.size());
+      nation_numwait.try_emplace(change.nationkey); // its task needs the index to exist
+  const auto nation_runs = core::RunStarts(
+      nation_changes, [](const NationChange &change) { return change.nationkey; });
   const auto run_nation = [&](std::size_t run) -> decltype(nation_numwait)::iterator {
     return nation_numwait.find(nation_changes[nation_runs[run]].nationkey);
   };
   const std::size_t nations = nation_runs.size() - 1;
-  core::ParallelEach(services, nations, nation_changes.size() < kApplyGrain ? nations : 1,
-                     [&](std::size_t run) {
+  core::ParallelEachWhen(services, nations, nation_changes.size(), kNationOpThreshold,
+                         [&](std::size_t run) {
     const auto index = run_nation(run);
     if (index == nation_numwait.end())
       return;
@@ -473,7 +439,7 @@ TpchQ21State::TopRows(const std::string &nation) const {
           groups.emplace_back(entry.name.get(), entry.numwait);
       });
     }
-    return TopGroups(groups);
+    return TpchQ21TopGroups<TpchQ21OutputRow>(groups);
   }
   std::vector<std::pair<std::string_view, int64_t>> rows;
   for (const int64_t nationkey : keys->second) {
@@ -484,7 +450,7 @@ TpchQ21State::TopRows(const std::string &nation) const {
       rows.emplace_back(*entry.name, entry.numwait);
     });
   }
-  return MergeByNameAndTop(rows);
+  return TpchQ21MergeByNameAndTop<TpchQ21OutputRow>(rows);
 }
 
 TpchQ21AnswerCache::Rows
@@ -501,7 +467,6 @@ void TpchQ21AnswerCache::Put(const std::string &nation, Rows rows) const {
   by_nation[nation] = std::move(rows);
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ21TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ21TxnBuffer::Clear() {
   pending = false;
@@ -543,7 +508,6 @@ uint64_t TpchQ21TxnBuffer::Size() const {
   return order_results.size() + supplier_deltas.size() + nation_deltas.size();
 }
 
-// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ21Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ21Module::Dependencies() const {
@@ -552,84 +516,6 @@ std::vector<core::TableDependency> TpchQ21Module::Dependencies() const {
           {config.lineitem_table, {0, 1, 2, 3}, {0, 2, 11, 12}},
           {config.nation_table, {0, 1}, {0, 1}}};
 }
-
-namespace {
-
-// Buckets of the build's fulfilled-order lineitems (by order).
-constexpr std::size_t kBuildBuckets = 64;
-
-struct OrderContribution {
-  int64_t orderkey;
-  TpchQ21Contribution contribution;
-};
-
-// The contributions of one bucket's lineitems, order by order.
-std::vector<OrderContribution> ContributionsOfBucket(
-    std::vector<TpchQ21LineInput> &lines) {
-  std::sort(lines.begin(), lines.end(),
-            [](const TpchQ21LineInput &a, const TpchQ21LineInput &b) {
-              return a.orderkey < b.orderkey;
-            });
-  std::vector<OrderContribution> found;
-  OrderGrouper grouper([&](int64_t orderkey, bool has,
-                           const TpchQ21Contribution &contribution) {
-    if (has)
-      found.push_back({orderkey, contribution});
-  });
-  for (const auto &line : lines)
-    grouper.Add(line);
-  grouper.Flush();
-  return found;
-}
-
-// The contribution of every fulfilled order that has one. The scans only join
-// (lineitems of fulfilled orders dealt out to buckets by order); the buckets
-// are then reduced in parallel slices.
-std::vector<std::vector<OrderContribution>>
-FulfilledContributions(TpchQ21InitialScan &scan,
-                       const core::AuxEngineServices &services) {
-  const std::size_t partitions = BuildPartitions(services);
-  const auto fulfilled_keys = core::PartitionedBuild<std::vector<int64_t>>(
-      services, [] { return std::vector<int64_t>{}; },
-      [&](std::size_t parts, auto &&sink) {
-        scan.ScanFulfilledOrdersPartitioned(
-            services, parts, [&](std::size_t partition, int64_t orderkey) {
-              sink(partition, OneRowBatch<int64_t>{orderkey});
-            });
-      },
-      [](std::vector<int64_t> &into, int64_t orderkey) { into.push_back(orderkey); },
-      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
-        into.insert(into.end(), from.begin(), from.end());
-      },
-      partitions);
-  core::FlatHashMap<uint8_t> fulfilled;
-  for (const int64_t orderkey : fulfilled_keys)
-    fulfilled.Upsert(orderkey, 1);
-  auto buckets = core::PartitionedBuild<Buckets<TpchQ21LineInput>>(
-      services, [] { return Buckets<TpchQ21LineInput>(kBuildBuckets); },
-      [&](std::size_t parts, auto &&sink) {
-        scan.ScanLineitemsPartitioned(
-            services, parts, [&](std::size_t partition, const TpchQ21LineInput &line) {
-              sink(partition, OneRowBatch<TpchQ21LineInput>{line});
-            });
-      },
-      [&](Buckets<TpchQ21LineInput> &into, const TpchQ21LineInput &line) {
-        if (fulfilled.Contains(line.orderkey))
-          into[static_cast<uint64_t>(line.orderkey) % kBuildBuckets].push_back(line);
-      },
-      AppendBuckets<TpchQ21LineInput>, partitions);
-  std::vector<std::vector<OrderContribution>> found(kBuildBuckets);
-  core::ParallelSlices(services, kBuildBuckets, 1,
-                       [&](std::size_t, std::size_t begin, std::size_t end) {
-                         for (std::size_t i = begin; i < end; ++i) {
-                           found[i] = ContributionsOfBucket(buckets[i]);
-                           buckets[i] = {};
-                         }
-                       });
-  return found;
-}
-
-} // namespace
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ21Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ21TxnBuffer>();
@@ -770,36 +656,23 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
 
   if (buffer.RequiresRebuild()) {
     const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+        core::MaintenanceRequest::RebuildOnly(services.ExpectedQueriesBeforeNextWrite()));
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
   if (buffer.Size() == 0)
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {buffer.Size(), 1, true, false, true, false, false,
-       core::MaintenanceAction::NoOp, services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
+      core::MaintenanceRequest::IncrementalSingleState(
+          buffer.Size(), services.ExpectedQueriesBeforeNextWrite()));
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+    core::FinishRebuildAll(outcome, decision);
     return outcome;
   }
 
-  std::shared_ptr<const TpchQ21State> current;
-  core::Version version = 0;
-  if (!LoadState(services, current, &version)) {
+  const auto current = LoadState(services);
+  if (!current) {
     core::FinishRebuildAll(outcome);
     return outcome;
   }
@@ -824,13 +697,13 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
       new_state->PutSupplier(delta.new_row.suppkey, delta.new_row.name,
                              delta.new_row.nationkey);
   }
-  new_state->ApplyOrderResults(services, buffer.OrderResults());
+  new_state->ApplyOrderUpdates(services, buffer.OrderResults());
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   const auto typed_state =
       std::static_pointer_cast<const TpchQ21State>(std::move(new_state));
   outcome.updates.push_back(core::StateImage::Make(
-      TpchQ21Layout::kAccelerator, TpchQ21Layout::kState, version,
+      TpchQ21Layout::kAccelerator, TpchQ21Layout::kState, 0,
       MakeStateImage(typed_state)));
   return outcome;
 }
@@ -855,10 +728,11 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
     EmitEmpty(sink);
     return;
   }
-  const auto visibility = services.CurrentVisibility();
-  std::shared_ptr<const TpchQ21State> state;
-  if (!services.StateStore().CheckValidity({Id(), {}}, visibility).IsValid() ||
-      !LoadState(services, state)) {
+  const auto state =
+      services.StateStore().CheckValidity({Id(), {}}, services.CurrentVisibility()).IsValid()
+          ? LoadState(services)
+          : nullptr;
+  if (!state) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
@@ -870,42 +744,6 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
     state->answers.Put(nation_name, rows);
   }
   EmitRows(*rows, sink);
-}
-
-// No usable state: stream the fulfilled lineitems once, keeping only the
-// suppliers of the requested nation(s).
-void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &services,
-                                    const core::QueryArguments &arguments,
-                                    core::AuxRowSink &sink) {
-  if (!initial_scan)
-    throw std::logic_error("TPC-H Q21 aux requires a typed initial scan source");
-  std::string nation_name;
-  if (!NationParameter(arguments, nation_name)) {
-    EmitEmpty(sink);
-    return;
-  }
-  std::vector<int64_t> nationkeys;
-  initial_scan->ScanNations([&](const TpchQ21NationInput &input) {
-    if (input.name == nation_name)
-      nationkeys.push_back(input.nationkey);
-  });
-  std::unordered_map<int64_t, std::string> suppliers; // suppkey -> s_name
-  initial_scan->ScanSuppliers([&](const TpchQ21SupplierInput &input) {
-    if (std::find(nationkeys.begin(), nationkeys.end(), input.nationkey) !=
-        nationkeys.end())
-      suppliers[input.suppkey] = input.name;
-  });
-  std::vector<std::pair<std::string_view, int64_t>> rows;
-  if (!suppliers.empty()) {
-    std::unordered_map<int64_t, int64_t> numwait;
-    for (const auto &bucket : FulfilledContributions(*initial_scan, services))
-      for (const auto &order : bucket)
-        if (suppliers.count(order.contribution.suppkey))
-          numwait[order.contribution.suppkey] += order.contribution.count;
-    for (const auto &[suppkey, count] : numwait)
-      rows.emplace_back(suppliers[suppkey], count);
-  }
-  EmitRows(MergeByNameAndTop(rows), sink);
 }
 
 TpchQ21State TpchQ21Module::BuildState(
@@ -935,23 +773,17 @@ TpchQ21State TpchQ21Module::BuildState(
   return state;
 }
 
-bool TpchQ21Module::LoadState(core::AuxEngineServices &services,
-                              std::shared_ptr<const TpchQ21State> &state,
-                              core::Version *version) const {
+std::shared_ptr<const TpchQ21State>
+TpchQ21Module::LoadState(core::AuxEngineServices &services) const {
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), {TpchQ21Layout::kState});
   for (const auto &image : snapshot.partitions) {
     if (image.partition != TpchQ21Layout::kState)
       continue;
     const auto *typed = AsQ21Image(image);
-    if (!typed)
-      return false;
-    state = typed->state;
-    if (version)
-      *version = image.version;
-    return true;
+    return typed ? typed->state : nullptr;
   }
-  return false;
+  return nullptr;
 }
 
 void TpchQ21Module::EmitRows(const std::vector<TpchQ21OutputRow> &rows,

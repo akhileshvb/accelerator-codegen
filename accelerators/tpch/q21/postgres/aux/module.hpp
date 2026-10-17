@@ -119,9 +119,6 @@ struct TpchQ21OutputRow {
   int64_t numwait = 0;
 };
 
-// TPC-H Q21: ORDER BY numwait DESC, s_name LIMIT 100.
-inline constexpr std::size_t kTpchQ21Limit = 100;
-
 // The answer per nation name, computed on the first read of a published state
 // version and kept with it (a state version is immutable). A copy (the next
 // version, made by maintenance) starts empty.
@@ -181,7 +178,7 @@ struct TpchQ21State {
   // SetContribution for many orders at once (per order, the last result wins),
   // then the net numwait change per supplier. Tasks on `services` own disjoint
   // shards, so the state is the one the serial loop reaches.
-  void ApplyOrderResults(const core::AuxEngineServices &services,
+  void ApplyOrderUpdates(const core::AuxEngineServices &services,
                          const std::vector<TpchQ21OrderResult> &results);
   void PutSupplier(int64_t suppkey, const std::string &name, int64_t nationkey);
   // false: no such supplier.
@@ -194,7 +191,7 @@ struct TpchQ21State {
   std::vector<TpchQ21OutputRow> TopRows(const std::string &nation) const;
 
 private:
-  void AdjustNumwaits(const core::AuxEngineServices &services,
+  void ApplyNumwaitDeltas(const core::AuxEngineServices &services,
                       const std::unordered_map<int64_t, int64_t> &deltas);
   void CountNameHash(const std::string &name, int64_t delta);
 };
@@ -271,15 +268,11 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
   TpchQ21State BuildState(const core::AuxEngineServices &services) const;
-  bool LoadState(core::AuxEngineServices &services,
-                 std::shared_ptr<const TpchQ21State> &state,
-                 core::Version *version = nullptr) const;
+  std::shared_ptr<const TpchQ21State> LoadState(core::AuxEngineServices &services) const;
   // Rows already in answer order (merged by name, sorted, limited).
   void EmitRows(const std::vector<TpchQ21OutputRow> &rows,
                 core::AuxRowSink &sink) const;
