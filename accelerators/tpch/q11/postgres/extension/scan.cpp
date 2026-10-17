@@ -44,13 +44,16 @@ void ScanTpchQ11PartsuppPartitioned(
 }
 
 void ScanTpchQ11Suppliers(
-    const std::function<void(const query::TpchQ11SupplierInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT s_suppkey, s_nationkey FROM supplier",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1)});
-      });
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ11SupplierInput &)> &sink) {
+  ScanPartitioned(services, "supplier",
+                  {IntColumn("s_suppkey"), IntColumn("s_nationkey")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1)});
+                    }
+                  });
 }
 
 void ScanTpchQ11Nations(
@@ -74,9 +77,10 @@ public:
     scans::ScanTpchQ11PartsuppPartitioned(services, partitions, sink);
   }
   void ScanSuppliers(
-      const std::function<void(const query::TpchQ11SupplierInput &)> &consumer)
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ11SupplierInput &)> &sink)
       override {
-    scans::ScanTpchQ11Suppliers(consumer);
+    scans::ScanTpchQ11Suppliers(services, partitions, sink);
   }
   void ScanNations(
       const std::function<void(const query::TpchQ11NationInput &)> &consumer)

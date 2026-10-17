@@ -615,9 +615,13 @@ TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const 
   TpchQ11State state;
   initial_scan->ScanNations(
       [&](const TpchQ11NationInput &input) { state.UpsertNation(input); });
-  initial_scan->ScanSuppliers([&](const TpchQ11SupplierInput &input) {
+  // The scans decode rows on pool threads; the state is filled serially, in
+  // partition order.
+  for (const auto &input : core::CollectRows<TpchQ11SupplierInput>(
+           services, [&](std::size_t parts, auto &&sink) {
+             initial_scan->ScanSuppliers(services, parts, sink);
+           }))
     state.SetSupplierNation(input.suppkey, input.nationkey);
-  });
   // The scan decodes rows on pool threads; the COW offer array is filled here,
   // serially, from the partitions in order.
   using Rows = std::vector<PartsuppRow>;
