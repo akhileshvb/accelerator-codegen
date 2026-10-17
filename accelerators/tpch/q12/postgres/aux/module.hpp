@@ -155,14 +155,13 @@ TpchQ12PriorityClass TpchQ12ClassifyPriority(const std::string &priority,
                                              bool is_null = false);
 bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
                               int32_t shipdate_days);
-int32_t TpchQ12DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int64_t TpchQ12AddMonths(int64_t days_since_epoch, int64_t months);
 
 // One result group: a shipmode with at least one joined qualifying lineitem.
 struct TpchQ12Group {
   std::string shipmode;
   TpchQ12Counts counts;
 };
+
 void TpchQ12FinalizeAndEmit(std::vector<TpchQ12Group> groups,
                             core::AuxRowSink &sink);
 
@@ -209,8 +208,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

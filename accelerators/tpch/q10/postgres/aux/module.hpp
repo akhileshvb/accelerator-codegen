@@ -77,8 +77,6 @@ public:
 constexpr std::size_t kTpchQ10ResultLimit = 20;
 // Revenue = price * (1 - discount): numeric(15,2) * numeric(15,2) -> scale 4.
 constexpr int32_t kTpchQ10RevenueScale = 4;
-
-// ---- State (immutable once published; copies share chunks) ----------------
 //
 // The result for ANY window [date, date + 3 months) is
 //   top 20 customers by (revenue DESC, c_custkey) of the returned-lineitem
@@ -106,8 +104,7 @@ constexpr int32_t kTpchQ10RevenueScale = 4;
 //
 // Memory: ~18 B per order (orders blob) + ~4 B per order (revenue lists; one
 // row of ~12 B per customer-day with returned revenue) + ~140 B per customer
-// = about 5.4 GB at SF100 and 54 GB at SF1000 (the old state: 6 GB customer
-// map + 8 GB order map + month maps at SF100). A write batch copies O(touched
+// = about 5.4 GB at SF100 and 54 GB at SF1000. A write batch copies O(touched
 // chunks) (one chunk is ~1024 keys, 5-40 KB). Customer / nation writes never
 // touch the revenue lists (the join with them is applied at query time).
 struct TpchQ10State {
@@ -173,8 +170,6 @@ public:
                      const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
-  void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
-                       core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:

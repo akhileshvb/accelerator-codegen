@@ -2,7 +2,6 @@
 #include "tpch/q8/calibration_writes.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <map>
 #include <limits>
 #include <set>
@@ -16,7 +15,6 @@
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
-#include "tpch/common/partitioned_rows.hpp"
 #include "prims/sql_date.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -31,8 +29,6 @@ constexpr core::PartitionId kStatePartition = TpchQ8Layout::kYear1995;
 constexpr int32_t kVolumeScale = 4;
 // Order-map chunks (<= 1024 orders) per slice: ~0.3 us per decoded order.
 constexpr std::size_t kChunkGrain = 2;
-
-// ---- Row decoding (mutation capture rows) ---------------------------------
 // A cell is Ok, SQL NULL (the row cannot join / pass a predicate), or of an
 // unexpected type (the state cannot follow the write: it is rebuilt).
 enum class Cell { Ok, Null, Bad };
@@ -133,7 +129,6 @@ bool InWindow(int32_t day) {
   return day >= first && day <= last;
 }
 
-// ---- Order entry: the one blob kept per orderkey ---------------------------
 struct LineRec {
   int64_t partkey = 0;
   int64_t suppkey = 0;
@@ -221,7 +216,6 @@ bool LoadEntry(const TpchQ8State &s, int64_t orderkey, OrderEntry &e) {
   return DecodeEntry(v, e);
 }
 
-// ---- Cube --------------------------------------------------------------------
 void ContributeSum(TpchQ8State &s, uint32_t type_id, int32_t year, int32_t cust_nk,
                    int32_t supp_nk, Int128 volume, int64_t rows) {
   auto &cube = s.cubes.Mutable(type_id);
@@ -285,7 +279,6 @@ void ContributeRec(const TpchQ8State &s, const OrderEntry &e, const LineRec &r, 
   cube.Add(type_id, sql_date::YearOf(e.day), cnk, snk, r.volume, sign);
 }
 
-// ---- Folding rows into order entries ---------------------------------------
 // Build and maintenance fold whole batches of rows at once. The rows are dealt
 // to owners by order-map chunk; each owner folds its orders against the
 // (read-only) state, in parallel slices, into the new entries and the net
@@ -466,7 +459,7 @@ std::size_t OwnerOf(int64_t orderkey, std::size_t owners) {
 // order. False (the state untouched) when a row cannot be applied exactly.
 template <class Row, class Fold>
 bool FoldAndInstall(const core::AuxEngineServices &services, TpchQ8State &s,
-                    Buckets<Row> &owners, Fold &&fold) {
+                    core::Buckets<Row> &owners, Fold &&fold) {
   std::vector<FoldedOrders> folded(owners.size());
   const TpchQ8State &before = s;
   core::ParallelEach(services, owners.size(), 1, [&](std::size_t owner) {
@@ -487,6 +480,7 @@ template <typename V> struct Change {
   V before;
   V after;
 };
+
 template <typename V> using Changes = std::map<int64_t, Change<V>>;
 
 // Calls fn(deltas, entry, record) for every record of every present in-window
@@ -502,25 +496,28 @@ void ForEachContributingRecord(const core::AuxEngineServices &services, TpchQ8St
     for (const auto &r : e.lines)
       fn(deltas, e, r);
   };
-  CubeDeltas deltas;
-  std::atomic<std::size_t> dense_orders{0};
+  struct Visit {
+    CubeDeltas deltas;
+    std::size_t orders = 0;
+  } dense;
   core::ParallelReduce(
-      services, orders.NumChunkSlots(), kChunkGrain, deltas,
-      [&](CubeDeltas &into, std::size_t begin, std::size_t end) {
-        std::size_t visited = 0;
+      services, orders.NumChunkSlots(), kChunkGrain, dense,
+      [&](Visit &into, std::size_t begin, std::size_t end) {
         for (std::size_t ci = begin; ci < end; ++ci)
           orders.ForEachInChunk(ci, [&](int64_t, std::string_view v) {
-            ++visited;
-            visit(into, v);
+            ++into.orders;
+            visit(into.deltas, v);
           });
-        dense_orders += visited;
       },
-      [](CubeDeltas &into, CubeDeltas &&from) { into.Merge(std::move(from)); });
-  if (dense_orders < orders.size()) { // some orders sit outside the chunked keys
-    deltas = CubeDeltas{};
-    orders.ForEach([&](int64_t, std::string_view v) { visit(deltas, v); });
+      [](Visit &into, Visit &&from) {
+        into.deltas.Merge(std::move(from.deltas));
+        into.orders += from.orders;
+      });
+  if (dense.orders < orders.size()) { // some orders sit outside the chunked keys
+    dense.deltas = CubeDeltas{};
+    orders.ForEach([&](int64_t, std::string_view v) { visit(dense.deltas, v); });
   }
-  deltas.ApplyTo(s);
+  dense.deltas.ApplyTo(s);
 }
 
 // Part types changed: move the contribution of the referenced parts' lineitems
@@ -666,7 +663,7 @@ void LoadNationColumn(const core::AuxEngineServices &services, const char *table
       services, [] { return Rows{}; },
       [&](std::size_t partitions, auto &&sink) {
         scan(partitions, [&](std::size_t partition, const Input &input) {
-          sink(partition, OneRowBatch<Input>{input});
+          sink(partition, core::SingleRowBatch<Input>{input});
         });
       },
       [&](Rows &into, const Input &input) {
@@ -675,7 +672,7 @@ void LoadNationColumn(const core::AuxEngineServices &services, const char *table
         into.emplace_back(input.key, input.nationkey);
       },
       [](Rows &into, Rows &&from) { into.insert(into.end(), from.begin(), from.end()); },
-      BuildPartitions(services));
+      core::BuildPartitions(services));
   for (const auto &[key, nationkey] : rows)
     column.Set(key, nationkey);
 }
@@ -723,12 +720,12 @@ std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState(const core::AuxEngineServi
       [&](std::size_t partitions, auto &&sink) {
         initial_scan->ScanPartsPartitioned(
             services, partitions, [&](std::size_t partition, const TpchQ8PartInput &input) {
-              sink(partition, OneRowBatch<TpchQ8PartInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ8PartInput>{input});
             });
       },
       [](PartTypes &into, const TpchQ8PartInput &input) { into.Add(input); },
       [](PartTypes &into, PartTypes &&from) { into.Merge(std::move(from)); },
-      BuildPartitions(services));
+      core::BuildPartitions(services));
   std::vector<uint32_t> type_ids;
   for (const std::string &name : parts.names)
     type_ids.push_back(InternType(s, name));
@@ -748,38 +745,38 @@ std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState(const core::AuxEngineServi
       s.customer_nation);
 
   // Orders first: the lineitems fold against them.
-  auto orders = core::PartitionedBuild<Buckets<OrderRow>>(
-      services, [] { return Buckets<OrderRow>(kMaxOwners); },
+  auto orders = core::PartitionedBuild<core::Buckets<OrderRow>>(
+      services, [] { return core::Buckets<OrderRow>(kMaxOwners); },
       [&](std::size_t partitions, auto &&sink) {
         initial_scan->ScanOrdersPartitioned(
             services, partitions, [&](std::size_t partition, const TpchQ8OrdersInput &input) {
-              sink(partition, OneRowBatch<TpchQ8OrdersInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ8OrdersInput>{input});
             });
       },
-      [](Buckets<OrderRow> &into, const TpchQ8OrdersInput &input) {
+      [](core::Buckets<OrderRow> &into, const TpchQ8OrdersInput &input) {
         into[OwnerOf(input.key, kMaxOwners)].push_back(
             {input.key, input.custkey, input.orderdate_days});
       },
-      AppendBuckets<OrderRow>, BuildPartitions(services));
+      core::AppendBuckets<OrderRow>, core::BuildPartitions(services));
   if (!FoldAndInstall(services, s, orders, FoldOrderRows))
     throw std::runtime_error("TPC-H Q8: unsupported orders row");
 
-  auto lines = core::PartitionedBuild<Buckets<LineRow>>(
-      services, [] { return Buckets<LineRow>(kMaxOwners); },
+  auto lines = core::PartitionedBuild<core::Buckets<LineRow>>(
+      services, [] { return core::Buckets<LineRow>(kMaxOwners); },
       [&](std::size_t partitions, auto &&sink) {
         initial_scan->ScanLineitemsPartitioned(
             services, partitions, [&](std::size_t partition, const TpchQ8LineitemInput &input) {
-              sink(partition, OneRowBatch<TpchQ8LineitemInput>{input});
+              sink(partition, core::SingleRowBatch<TpchQ8LineitemInput>{input});
             });
       },
-      [](Buckets<LineRow> &into, const TpchQ8LineitemInput &input) {
+      [](core::Buckets<LineRow> &into, const TpchQ8LineitemInput &input) {
         int64_t volume = 0;
         if (!VolumeRaw(input.extendedprice_raw, 2, input.discount_raw, 2, volume))
           throw std::runtime_error("TPC-H Q8: unsupported lineitem row");
         into[OwnerOf(input.orderkey, kMaxOwners)].push_back(
             {input.orderkey, {input.partkey, input.suppkey, volume}});
       },
-      AppendBuckets<LineRow>, BuildPartitions(services));
+      core::AppendBuckets<LineRow>, core::BuildPartitions(services));
   if (!FoldAndInstall(services, s, lines, FoldLines))
     throw std::runtime_error("TPC-H Q8: unsupported lineitem row");
   s.orders.Shrink();
@@ -956,7 +953,7 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
   } else if (mutation.table == config.orders_table) {
     const auto apply = [&](const std::vector<core::AuxRow> &rows, int sign) {
-      Buckets<OrderRow> owners(OwnerCount(rows.size()));
+      core::Buckets<OrderRow> owners(OwnerCount(rows.size()));
       for (const auto &row : rows) {
         int64_t orderkey = 0, custkey = 0;
         int32_t day = 0;
@@ -975,7 +972,7 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
     ok = apply(mutation.old_rows, -1) && apply(mutation.new_rows, +1);
   } else if (mutation.table == config.lineitem_table) {
     const auto apply = [&](const std::vector<core::AuxRow> &rows, int sign) {
-      Buckets<LineRow> owners(OwnerCount(rows.size()));
+      core::Buckets<LineRow> owners(OwnerCount(rows.size()));
       for (const auto &row : rows) {
         int64_t partkey = 0, orderkey = 0, suppkey = 0, price = 0, discount = 0;
         int32_t price_scale = 0, discount_scale = 0;
@@ -1012,20 +1009,20 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
                                core::AuxTxnBuffer &base_buffer) {
   core::StagedMaintenanceOutcome outcome;
   auto &buffer = dynamic_cast<TpchQ8TxnBuffer &>(base_buffer);
-  const auto rebuild = [&] {
+  if (buffer.RequiresRebuild()) {
     core::FinishRebuildAll(outcome);
     return outcome;
-  };
-  if (buffer.RequiresRebuild())
-    return rebuild();
+  }
   if (!buffer.HasPendingChanges() || !buffer.work)
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {std::max<uint64_t>(1, buffer.rows), 1, true, false, true, false, false,
-       core::MaintenanceAction::NoOp, services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action != core::MaintenanceAction::ApplyDelta)
-    return rebuild();
+      core::MaintenanceRequest::IncrementalSingleState(
+          std::max<uint64_t>(1, buffer.rows), services.ExpectedQueriesBeforeNextWrite()));
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
 
   auto image = std::make_shared<TpchQ8StateImage>();
   image->state = std::move(buffer.work);
@@ -1063,13 +1060,6 @@ void TpchQ8Module::Execute(core::AuxEngineServices &services,
     }
   }
   ExecuteFallback(services, arguments, sink);
-}
-
-void TpchQ8Module::ExecuteFallback(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   core::AuxRowSink &sink) {
-  const auto state = BuildState(services);
-  EmitResult(*state, arguments, sink);
 }
 
 void TpchQ8Module::EmitResult(const TpchQ8State &s,
