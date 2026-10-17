@@ -27,16 +27,6 @@ struct TpchQ7NationInput {
   std::string name;
 };
 
-struct TpchQ7SupplierInput {
-  int64_t key = 0;
-  int32_t nationkey = 0;
-};
-
-struct TpchQ7CustomerInput {
-  int64_t key = 0;
-  int32_t nationkey = 0;
-};
-
 struct TpchQ7OrderInput {
   int64_t key = 0;
   int64_t custkey = 0;
@@ -57,10 +47,6 @@ public:
   virtual ~TpchQ7InitialScan() = default;
   virtual void ScanNations(
       const std::function<void(const TpchQ7NationInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ7SupplierInput &)> &) = 0;
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ7CustomerInput &)> &) = 0;
   virtual void ScanOrders(
       const std::function<void(const TpchQ7OrderInput &)> &) = 0;
   virtual void ScanLineitems(

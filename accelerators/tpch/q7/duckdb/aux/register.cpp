@@ -134,26 +134,6 @@ struct TpchQ7Scan : TpchQ7InitialScan {
                     ChunkValue(chunk, 1, row).ToString()});
         });
   }
-  void ScanSuppliers(
-      const std::function<void(const TpchQ7SupplierInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT s_suppkey, s_nationkey FROM supplier",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ7SupplierInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     SafeInt32(ChunkValue(chunk, 1, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
-  void ScanCustomers(
-      const std::function<void(const TpchQ7CustomerInput &)> &consumer) override {
-    ScanQueryDecoded(
-        connection, "SELECT c_custkey, c_nationkey FROM customer",
-        [](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          return TpchQ7CustomerInput{SafeInt64(ChunkValue(chunk, 0, row)),
-                                     SafeInt32(ChunkValue(chunk, 1, row))};
-        },
-        [&](auto &&input) { consumer(input); });
-  }
   void ScanOrders(
       const std::function<void(const TpchQ7OrderInput &)> &consumer) override {
     ScanQueryDecoded(

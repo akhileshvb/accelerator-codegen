@@ -727,15 +727,20 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
   // Scan into a flat vector first so the page table is sized from the actual
   // row count (no hard-coded scale-factor constants).
   using NcEntry = TpchQ7Map<TpchQ7NationCount>::Element;
-  std::vector<NcEntry> supplier_rows, customer_rows;
-  initial_scan->ScanSuppliers([&](const TpchQ7SupplierInput &input) {
-    supplier_rows.push_back({input.key, {input.nationkey, 0}});
-    max_nk = std::max(max_nk, input.nationkey);
-  });
-  initial_scan->ScanCustomers([&](const TpchQ7CustomerInput &input) {
-    customer_rows.push_back({input.key, {input.nationkey, 0}});
-    max_nk = std::max(max_nk, input.nationkey);
-  });
+  using scan::IntColumn;
+  const auto collect_nations = [&](const char *table, const char *key_column,
+                                   const char *nation_column) {
+    auto rows = CollectTable<NcEntry>(
+        services, *initial_scan, table, {IntColumn(key_column), IntColumn(nation_column)},
+        [](const auto &row) {
+          return NcEntry{row.Int(0), {static_cast<int32_t>(row.Int(1)), 0}};
+        });
+    for (const auto &e : rows)
+      max_nk = std::max(max_nk, e.value.nation);
+    return rows;
+  };
+  auto supplier_rows = collect_nations("supplier", "s_suppkey", "s_nationkey");
+  auto customer_rows = collect_nations("customer", "c_custkey", "c_nationkey");
   // Dense nation grid wide enough for every nation key present; the revenue
   // image never aliases (supp_nk * slots + cust_nk) across rows.
   state.num_nation_slots = max_nk + 1;
@@ -755,7 +760,6 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
   std::vector<NcEntry>().swap(customer_rows);
   cust_b.Sort();
 
-  using scan::IntColumn;
   const int64_t expected = initial_scan->CountOrders();
   auto make_orders = [&] {
     return expected >= 0 ? TpchQ7Map<TpchQ7OrderCust>::Builder(static_cast<std::size_t>(expected))
