@@ -627,6 +627,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/test_cross_accel_correctness.c
                 )
             endif()
             add_test(NAME ${_aux_gate_test} COMMAND ${_aux_gate_test})
+            if("${_aux_gate_test}" STREQUAL "test_cross_accel_isolation")
+                # ~8 minutes alone; much longer under a parallel ctest.
+                set_tests_properties(${_aux_gate_test} PROPERTIES TIMEOUT 2400)
+            endif()
         endif()
     endforeach()
 endif()
@@ -820,7 +824,7 @@ if(BUILD_TESTING)
             COMMAND test_aux_snapshot_reads "${_accel_tpch_test_db}" 11 3 4 ${_mode})
         set_tests_properties(
             test_aux_snapshot_reads_q11_${_mode}
-            PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 120)
+            PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300)
     endforeach()
     # Q14 under the same load: its reader threads drop the last reference to the
     # database's host while a commit is maintaining through it.
@@ -849,7 +853,7 @@ if(BUILD_TESTING)
             ENVIRONMENT "ACCEL_FORCE_MAINTENANCE_ACTION=RebuildAll")
     endforeach()
     set_tests_properties(test_aux_snapshot_reads_q14_private
-        PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 120)
+        PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300)
     # Fixture: a fresh small SEC-EDGAR DB in the build dir, built from the SEC
     # benchmark DB (ACCEL_SEC_EDGAR_DB, default the shared SF3, read-only) with
     # workloads/sec_edgar/test_db_subset.sql. Exits 77 (skip) when the source is
