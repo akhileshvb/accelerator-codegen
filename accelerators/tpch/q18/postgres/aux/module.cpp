@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
@@ -20,7 +21,10 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 // Buckets of the build's lineitem rows (by order).
-constexpr std::size_t kBuildBuckets = 64;
+using core::kBuildBuckets;
+
+// Lineitem deltas per slice when netting a write batch by order.
+constexpr std::size_t kNetGrain = 16384;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -269,6 +273,34 @@ void EmitEmpty(core::AuxRowSink &sink) {
 // Customers of at most this many keys are fetched by key, more by one scan.
 constexpr std::size_t kMaxKeyedCustomerLookup = 4096;
 
+// Net effect of a write batch's lineitems on one order.
+struct LineitemNet {
+  int64_t sum_raw = 0;
+  int64_t lines = 0;
+};
+using LineitemNets = std::unordered_map<int64_t, LineitemNet>;
+
+LineitemNets NetLineitems(const core::AuxEngineServices &services,
+                          const std::vector<TpchQ18LineitemDelta> &deltas) {
+  LineitemNets nets;
+  core::ParallelReduce(
+      services, deltas.size(), kNetGrain, nets,
+      [&](LineitemNets &into, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          LineitemNet &net = into[deltas[i].orderkey];
+          net.sum_raw += deltas[i].sign * deltas[i].quantity_raw;
+          net.lines += deltas[i].sign;
+        }
+      },
+      [](LineitemNets &into, LineitemNets &&from) {
+        for (const auto &[orderkey, net] : from) {
+          into[orderkey].sum_raw += net.sum_raw;
+          into[orderkey].lines += net.lines;
+        }
+      });
+  return nets;
+}
+
 } // namespace
 
 void TpchQ18InitialScan::LookupCustomerNames(
@@ -299,20 +331,15 @@ void TpchQ18State::Reindex(int64_t orderkey) {
     hot.Erase(orderkey);
 }
 
-bool TpchQ18State::AddLineitem(int64_t orderkey, int64_t quantity_raw,
-                               int sign) {
+bool TpchQ18State::AddLineitems(int64_t orderkey, int64_t sum_delta_raw,
+                                int64_t lines_delta) {
   TpchQ18OrderRec &rec = MutableRec(orderkey);
-  if (sign < 0) {
-    if (rec.Lines() == 0)
-      return false;
-    rec.sum_raw -= quantity_raw;
-    --rec.flags_lines;
-  } else {
-    if (rec.Lines() == ~TpchQ18OrderRec::kHasOrder)
-      return false;
-    rec.sum_raw += quantity_raw;
-    ++rec.flags_lines;
-  }
+  const int64_t lines = static_cast<int64_t>(rec.Lines()) + lines_delta;
+  if (lines < 0 || lines > static_cast<int64_t>(~TpchQ18OrderRec::kHasOrder))
+    return false;
+  rec.sum_raw += sum_delta_raw;
+  rec.flags_lines = (rec.flags_lines & TpchQ18OrderRec::kHasOrder) |
+                    static_cast<uint32_t>(lines);
   return true;
 }
 
@@ -545,13 +572,16 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
     }
     new_state->Reindex(order.key);
   }
-  for (const auto &delta : buffer.Lineitems()) {
-    if (!new_state->AddLineitem(delta.orderkey, delta.quantity_raw,
-                                delta.sign)) {
+  // Lineitems are netted per order in parallel slices; the COW state is
+  // edited serially (a shard clone is the cost, and shards are not shareable).
+  for (const auto &[orderkey, net] : NetLineitems(services, buffer.Lineitems())) {
+    if (net.sum_raw == 0 && net.lines == 0)
+      continue;
+    if (!new_state->AddLineitems(orderkey, net.sum_raw, net.lines)) {
       core::FinishRebuildAll(outcome);
       return outcome;
     }
-    new_state->Reindex(delta.orderkey);
+    new_state->Reindex(orderkey);
   }
 
   // Customer names: every customer is kept, so a result never needs SQL.
@@ -782,9 +812,13 @@ TpchQ18State TpchQ18Module::BuildState(core::AuxEngineServices &services) const 
     for (const int64_t orderkey : bucket.hot)
       state.hot.Upsert(orderkey, 1);
   }
-  initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
-    state.customer_names.Upsert(input.key, input.name);
-  });
+  // Names are decoded in partitions; the COW name map is filled serially.
+  const auto customers = CollectRows<TpchQ18CustomerInput>(
+      services, [&](std::size_t parts, auto &&sink) {
+        initial_scan->ScanCustomersPartitioned(services, parts, sink);
+      });
+  for (const auto &customer : customers)
+    state.customer_names.Upsert(customer.key, customer.name);
   return state;
 }
 

@@ -77,8 +77,9 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
     // f: orderkey|linenumber|extendedprice
     Require(f.size() >= 3, "lineitem price probe needs 3 fields");
     WriteProbe p;
-    p.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + " +
-                   std::string(delta) + " WHERE l_orderkey = " + f[0] +
+    // At least the row's own value, so the bump survives a x3000 money scale.
+    p.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + "
+                   "GREATEST(" + std::string(delta) + ", l_extendedprice) WHERE l_orderkey = " + f[0] +
                    " AND l_linenumber = " + f[1];
     p.restore_sql = "UPDATE lineitem SET l_extendedprice = " + f[2] +
                     " WHERE l_orderkey = " + f[0] + " AND l_linenumber = " + f[1];
@@ -110,7 +111,7 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
         "LIMIT 1)");
     Require(f.size() >= 3, "Q2 probe fields");
     WriteProbe p;
-    p.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 1000 "
+    p.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + GREATEST(1000, ps_supplycost) "
                    "WHERE ps_partkey = " +
                    f[0] + " AND ps_suppkey = " + f[1];
     p.restore_sql = "UPDATE partsupp SET ps_supplycost = " + f[2] +
@@ -232,7 +233,7 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
         "AND n.n_name = 'ROMANIA' ORDER BY ps.ps_partkey, ps.ps_suppkey " + off + "LIMIT 1");
     Require(f.size() >= 3, "Q11 probe fields");
     WriteProbe p;
-    p.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 100 "
+    p.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + GREATEST(100, ps_supplycost) "
                    "WHERE ps_partkey = " +
                    f[0] + " AND ps_suppkey = " + f[1];
     p.restore_sql = "UPDATE partsupp SET ps_supplycost = " + f[2] +
@@ -419,7 +420,7 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
         "ORDER BY c_custkey " + off + "LIMIT 1");
     Require(f.size() >= 2, "Q22 probe fields");
     WriteProbe p;
-    p.update_sql = "UPDATE customer SET c_acctbal = c_acctbal + 100 "
+    p.update_sql = "UPDATE customer SET c_acctbal = c_acctbal + GREATEST(100, abs(c_acctbal)) "
                    "WHERE c_custkey = " +
                    f[0];
     p.restore_sql = "UPDATE customer SET c_acctbal = " + f[1] +

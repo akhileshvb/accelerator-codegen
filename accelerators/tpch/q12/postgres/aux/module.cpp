@@ -1,6 +1,7 @@
 #include "tpch/q12/postgres/aux/module.hpp"
 #include "tpch/q12/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/common/partitioned_rows.hpp"
 
@@ -19,6 +20,8 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 constexpr int64_t kModeBits = 24;  // cell key = day << 24 | shipmode id
+// Lineitem deltas per slice below which a commit's deltas are summed inline.
+constexpr std::size_t kDeltaGrain = 4096;
 
 // Cell readers distinguish SQL NULL from an unreadable payload.
 enum class Cell { Null, Ok, Bad };
@@ -128,6 +131,14 @@ void AddToCell(TpchQ12State &state, int32_t day, const std::string &mode,
     state.cells.Erase(key);
   else
     state.cells.Upsert(key, now);
+}
+
+// A commit's lineitem deltas summed per (receipt day, shipmode).
+using CellDeltas = std::map<std::pair<int32_t, std::string>, TpchQ12Counts>;
+
+void MergeCellDeltas(CellDeltas &into, CellDeltas &&from) {
+  for (const auto &[key, counts] : from)
+    into[key] += counts;
 }
 
 }  // namespace
@@ -421,13 +432,24 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
   // deletes were (but are missing from the lookup): in both cases the
   // correction is sign x old-class contribution.  For keys whose class did
   // not change this is simply the lineitem delta itself.
-  for (const auto &delta : buffer.Deltas()) {
-    const auto it = changes.find(delta.orderkey);
-    const auto before = it != changes.end() ? it->second.before
-                                            : work->PriorityOf(delta.orderkey);
-    AddToCell(*work, delta.receipt_day, delta.shipmode,
-              Contribution(before, delta.sign));
-  }
+  const auto &deltas = buffer.Deltas();
+  CellDeltas cell_deltas;
+  core::ParallelReduce(
+      services, deltas.size(), kDeltaGrain, cell_deltas,
+      [&](CellDeltas &acc, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const auto &delta = deltas[i];
+          const auto it = changes.find(delta.orderkey);
+          const auto before = it != changes.end()
+                                  ? it->second.before
+                                  : work->PriorityOf(delta.orderkey);
+          acc[{delta.receipt_day, delta.shipmode}] +=
+              Contribution(before, delta.sign);
+        }
+      },
+      MergeCellDeltas);
+  for (const auto &[key, counts] : cell_deltas)
+    AddToCell(*work, key.first, key.second, counts);
   for (const auto &[key, change] : changes)
     if (change.before != change.after)
       work->SetPriority(key, change.after);
@@ -552,11 +574,6 @@ void TpchQ12Module::ExecuteFallback(core::AuxEngineServices &services,
 
 namespace {
 
-struct OrderClass {
-  int64_t orderkey;
-  TpchQ12PriorityClass priority;
-};
-
 // Cell counts of one partition, with its own shipmode numbering.
 struct PartialCells {
   std::vector<std::string> modes;
@@ -585,26 +602,25 @@ struct PartialCells {
 TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q12 requires a typed initial scan source");
-  TpchQ12State state;
   const std::size_t partitions = BuildPartitions(services);
-  const auto priorities = core::PartitionedBuild<std::vector<OrderClass>>(
-      services, [] { return std::vector<OrderClass>{}; },
+  // Each partition fills its own class array; arrays merge chunk-wise.
+  TpchQ12State state = core::PartitionedBuild<TpchQ12State>(
+      services, [] { return TpchQ12State{}; },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanOrdersPartitioned(
             services, parts, [&](std::size_t partition, const TpchQ12OrderInput &input) {
               sink(partition, OneRowBatch<TpchQ12OrderInput>{input});
             });
       },
-      [](std::vector<OrderClass> &into, const TpchQ12OrderInput &input) {
-        into.push_back({input.key, TpchQ12ClassifyPriority(input.orderpriority,
-                                                           input.priority_is_null)});
+      [](TpchQ12State &into, const TpchQ12OrderInput &input) {
+        into.SetPriority(input.key, TpchQ12ClassifyPriority(input.orderpriority,
+                                                            input.priority_is_null));
       },
-      [](std::vector<OrderClass> &into, std::vector<OrderClass> &&from) {
-        into.insert(into.end(), from.begin(), from.end());
+      [](TpchQ12State &into, TpchQ12State &&from) {
+        into.order_class.MergeFrom(std::move(from.order_class),
+                                   [](uint8_t mine, uint8_t theirs) { return theirs ? theirs : mine; });
       },
       partitions);
-  for (const auto &order : priorities)
-    state.SetPriority(order.orderkey, order.priority);
 
   // Reads the finished priorities only; every partition adds into its own cells.
   const auto joined = core::PartitionedBuild<PartialCells>(

@@ -22,14 +22,16 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ14Parts(
-    const std::function<void(const query::TpchQ14PartInput &)> &consumer) {
-  ScanColumns("part",
-              {IntColumn("p_partkey"), TextColumn("p_type")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Text(1)});
-              });
+void ScanTpchQ14PartsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ14PartInput &)> &sink) {
+  ScanPartitioned(services, "part", {IntColumn("p_partkey"), TextColumn("p_type")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Text(1)});
+                    }
+                  });
 }
 
 void ScanTpchQ14LineitemsPartitioned(
@@ -71,10 +73,11 @@ void ScanTpchQ14PartDayRevenue(
 
 class TpchQ14Scan final : public query::TpchQ14InitialScan {
 public:
-  void ScanParts(
-      const std::function<void(const query::TpchQ14PartInput &)> &consumer)
+  void ScanPartsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ14PartInput &)> &sink)
       override {
-    scans::ScanTpchQ14Parts(consumer);
+    scans::ScanTpchQ14PartsPartitioned(services, partitions, sink);
   }
   void ScanLineitemsPartitioned(
       const core::AuxEngineServices &services, std::size_t partitions,

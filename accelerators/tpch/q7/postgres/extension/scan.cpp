@@ -33,49 +33,56 @@ void ScanTpchQ7Nations(
       });
 }
 
-void ScanTpchQ7Suppliers(
-    const std::function<void(const query::TpchQ7SupplierInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT s_suppkey, s_nationkey FROM supplier",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
-      });
+void ScanTpchQ7SuppliersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ7SupplierInput &)> &sink) {
+  ScanPartitioned(services, "supplier", {IntColumn("s_suppkey"), IntColumn("s_nationkey")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), static_cast<int32_t>(row.Int(1))});
+                    }
+                  });
 }
 
-void ScanTpchQ7Customers(
-    const std::function<void(const query::TpchQ7CustomerInput &)> &consumer) {
-  ScanColumns("customer",
-              {IntColumn("c_custkey"), IntColumn("c_nationkey")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          static_cast<int32_t>(row.Int(1))});
-              });
+void ScanTpchQ7CustomersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ7CustomerInput &)> &sink) {
+  ScanPartitioned(services, "customer", {IntColumn("c_custkey"), IntColumn("c_nationkey")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), static_cast<int32_t>(row.Int(1))});
+                    }
+                  });
 }
 
-void ScanTpchQ7Orders(
-    const std::function<void(const query::TpchQ7OrderInput &)> &consumer) {
-  ScanColumns("orders",
-              {IntColumn("o_orderkey"), IntColumn("o_custkey")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Int(1)});
-              });
+void ScanTpchQ7OrdersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ7OrderInput &)> &sink) {
+  ScanPartitioned(services, "orders", {IntColumn("o_orderkey"), IntColumn("o_custkey")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1)});
+                    }
+                  });
 }
 
-void ScanTpchQ7Lineitems(
-    const std::function<void(const query::TpchQ7LineitemInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
-               DecimalColumn("l_extendedprice", 2),
-               DecimalColumn("l_discount", 2), DateColumn("l_shipdate")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Int(1),
-                          row.Decimal(2), 2,
-                          row.Decimal(3), 2,
-                          row.Date(4)});
-              });
+void ScanTpchQ7LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ7LineitemInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {IntColumn("l_orderkey"), IntColumn("l_suppkey"),
+                   DecimalColumn("l_extendedprice", 2), DecimalColumn("l_discount", 2),
+                   DateColumn("l_shipdate")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1), row.Decimal(2), 2, row.Decimal(3),
+                                       2, row.Date(4)});
+                    }
+                  });
 }
 
 } // namespace scans
@@ -87,25 +94,29 @@ public:
       override {
     scans::ScanTpchQ7Nations(consumer);
   }
-  void ScanSuppliers(
-      const std::function<void(const query::TpchQ7SupplierInput &)> &consumer)
+  void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ7SupplierInput &)> &sink)
       override {
-    scans::ScanTpchQ7Suppliers(consumer);
+    scans::ScanTpchQ7SuppliersPartitioned(services, partitions, sink);
   }
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ7CustomerInput &)> &consumer)
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ7CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ7Customers(consumer);
+    scans::ScanTpchQ7CustomersPartitioned(services, partitions, sink);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ7OrderInput &)> &consumer)
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ7OrderInput &)> &sink)
       override {
-    scans::ScanTpchQ7Orders(consumer);
+    scans::ScanTpchQ7OrdersPartitioned(services, partitions, sink);
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ7LineitemInput &)> &consumer)
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ7LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ7Lineitems(consumer);
+    scans::ScanTpchQ7LineitemsPartitioned(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ7Module, query::TpchQ7Config, TpchQ7Scan> &Q7Runtime() {

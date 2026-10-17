@@ -20,39 +20,45 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ13Customers(
-    const std::function<void(const query::TpchQ13CustomerInput &)> &consumer) {
-  ScanColumns("customer",
-              {IntColumn("c_custkey")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0)});
-              });
+void ScanTpchQ13CustomersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ13CustomerInput &)> &sink) {
+  ScanPartitioned(services, "customer", {IntColumn("c_custkey")}, partitions,
+                  [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i)
+                      sink(partition, {batch.Row(i).Int(0)});
+                  });
 }
 
-void ScanTpchQ13Orders(
-    const std::function<void(const query::TpchQ13OrderInput &)> &consumer) {
-  ScanColumns("orders",
-              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
-               TextColumn("o_comment")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0), row.Int(1),
-                          row.Text(2)});
-              });
+void ScanTpchQ13OrdersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ13OrderInput &)> &sink) {
+  ScanPartitioned(services, "orders",
+                  {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+                   TextColumn("o_comment")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1), row.Text(2)});
+                    }
+                  });
 }
 
 } // namespace scans
 
 class TpchQ13Scan final : public query::TpchQ13InitialScan {
 public:
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ13CustomerInput &)> &consumer)
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ13CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ13Customers(consumer);
+    scans::ScanTpchQ13CustomersPartitioned(services, partitions, sink);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ13OrderInput &)> &consumer)
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ13OrderInput &)> &sink)
       override {
-    scans::ScanTpchQ13Orders(consumer);
+    scans::ScanTpchQ13OrdersPartitioned(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Scan> &

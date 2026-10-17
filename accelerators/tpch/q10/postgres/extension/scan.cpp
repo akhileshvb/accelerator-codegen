@@ -23,22 +23,22 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ10Customers(
-    const std::function<void(const query::TpchQ10CustomerInput &)> &consumer) {
-  ScanColumns("customer",
-              {IntColumn("c_custkey"), TextColumn("c_name"),
-               DecimalColumn("c_acctbal", 2), IntColumn("c_nationkey"),
-               TextColumn("c_address"), TextColumn("c_phone"),
-               TextColumn("c_comment")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Text(1),
-                          row.Decimal(2),
-                          static_cast<int32_t>(row.Int(3)),
-                          row.Text(4),
-                          row.Text(5),
-                          row.Text(6)});
-              });
+void ScanTpchQ10CustomersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ10CustomerInput &)> &sink) {
+  ScanPartitioned(services, "customer",
+                  {IntColumn("c_custkey"), TextColumn("c_name"),
+                   DecimalColumn("c_acctbal", 2), IntColumn("c_nationkey"),
+                   TextColumn("c_address"), TextColumn("c_phone"),
+                   TextColumn("c_comment")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Text(1), row.Decimal(2),
+                                       static_cast<int32_t>(row.Int(3)),
+                                       row.Text(4), row.Text(5), row.Text(6)});
+                    }
+                  });
 }
 
 void ScanTpchQ10Nations(
@@ -51,54 +51,61 @@ void ScanTpchQ10Nations(
       });
 }
 
-void ScanTpchQ10Orders(
-    const std::function<void(const query::TpchQ10OrderInput &)> &consumer) {
-  ScanColumns("orders",
-              {IntColumn("o_orderkey"), IntColumn("o_custkey"),
-               DateColumn("o_orderdate")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Int(1),
-                          row.Date(2)});
-              });
+void ScanTpchQ10OrdersPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ10OrderInput &)> &sink) {
+  ScanPartitioned(services, "orders",
+                  {IntColumn("o_orderkey"), IntColumn("o_custkey"),
+                   DateColumn("o_orderdate")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1), row.Date(2)});
+                    }
+                  });
 }
 
-void ScanTpchQ10Lineitems(
-    const std::function<void(const query::TpchQ10LineitemInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {IntColumn("l_orderkey"), DecimalColumn("l_extendedprice", 2),
-               DecimalColumn("l_discount", 2), TextColumn("l_returnflag")},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Decimal(1), 2,
-                          row.Decimal(2), 2,
-                          row.Text(3) == "R"});
-              });
+void ScanTpchQ10LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ10LineitemInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {IntColumn("l_orderkey"), DecimalColumn("l_extendedprice", 2),
+                   DecimalColumn("l_discount", 2), TextColumn("l_returnflag")},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Decimal(1), 2,
+                                       row.Decimal(2), 2, row.Text(3) == "R"});
+                    }
+                  });
 }
 
 } // namespace scans
 
 class TpchQ10Scan final : public query::TpchQ10InitialScan {
 public:
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ10CustomerInput &)> &consumer)
+  void ScanCustomersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ10CustomerInput &)> &sink)
       override {
-    scans::ScanTpchQ10Customers(consumer);
+    scans::ScanTpchQ10CustomersPartitioned(services, partitions, sink);
   }
   void ScanNations(
       const std::function<void(const query::TpchQ10NationInput &)> &consumer)
       override {
     scans::ScanTpchQ10Nations(consumer);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ10OrderInput &)> &consumer)
+  void ScanOrdersPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ10OrderInput &)> &sink)
       override {
-    scans::ScanTpchQ10Orders(consumer);
+    scans::ScanTpchQ10OrdersPartitioned(services, partitions, sink);
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ10LineitemInput &)> &consumer)
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ10LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ10Lineitems(consumer);
+    scans::ScanTpchQ10LineitemsPartitioned(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ10Module, query::TpchQ10Config, TpchQ10Scan> &

@@ -22,28 +22,31 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ6Lineitems(
-    const std::function<void(const query::TpchQ6LineitemInput &)> &consumer) {
-  ScanColumns("lineitem",
-              {DateColumn("l_shipdate"), DecimalColumn("l_discount", 2),
-               DecimalColumn("l_quantity", 2),
-               DecimalColumn("l_extendedprice", 2)},
-              [&](const BuildRow &row) {
-                consumer({row.Date(0),
-                          row.Decimal(1), 2,
-                          row.Decimal(2), 2,
-                          row.Decimal(3), 2});
-              });
+void ScanTpchQ6LineitemsPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ6LineitemInput &)> &sink) {
+  ScanPartitioned(services, "lineitem",
+                  {DateColumn("l_shipdate"), DecimalColumn("l_discount", 2),
+                   DecimalColumn("l_quantity", 2),
+                   DecimalColumn("l_extendedprice", 2)},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Date(0), row.Decimal(1), 2,
+                                       row.Decimal(2), 2, row.Decimal(3), 2});
+                    }
+                  });
 }
 
 } // namespace scans
 
 class TpchQ6Scan final : public query::TpchQ6InitialScan {
 public:
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ6LineitemInput &)> &consumer)
+  void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ6LineitemInput &)> &sink)
       override {
-    scans::ScanTpchQ6Lineitems(consumer);
+    scans::ScanTpchQ6LineitemsPartitioned(services, partitions, sink);
   }
 };
 Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan> &Q6Runtime() {

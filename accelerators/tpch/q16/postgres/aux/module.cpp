@@ -1,9 +1,12 @@
 #include "tpch/q16/postgres/aux/module.hpp"
 #include "tpch/q16/calibration_writes.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/partitioned_rows.hpp"
 
 #include <algorithm>
 #include <cstdlib>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
@@ -16,6 +19,9 @@ namespace {
 
 // Groups per parallel slice (a group is a pass over its parts' supplier lists).
 constexpr std::size_t kGroupGrain = 64;
+
+// Supplier-list chunks (1024 parts) per slice: ~100 us each.
+constexpr std::size_t kChunkGrain = 4;
 
 // ── Cell helpers ────────────────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -216,25 +222,38 @@ bool TpchQ16State::SetComplaint(int64_t suppkey, bool flag) {
 }
 
 void TpchQ16State::MarkGroupsOfSuppliers(
+    const core::AuxEngineServices &services,
     const core::FlatHashMap<uint8_t> &changed) {
   using Lists = core::AnyKeyCowArray<TpchQ16Suppliers, 10>;
-  const auto visit = [&](int64_t partkey, const TpchQ16Suppliers &slots) {
+  const auto visit = [&](std::vector<uint32_t> &out, int64_t partkey,
+                         const TpchQ16Suppliers &slots) {
     for (uint32_t i = 0; i < slots.count; ++i)
       if (changed.Contains(SupplierAt(slots, partkey, i))) {
         const uint32_t gid = part_group.Get(partkey);
         if (gid != kTpchQ16NoGroup)
-          dirty.push_back(gid);
+          out.push_back(gid);
         break;
       }
   };
-  for (std::size_t ci = 0; ci < suppliers_of.NumChunks(); ++ci) {
-    const auto *chunk = suppliers_of.ChunkAt(ci);
-    if (!chunk)
-      continue;
-    for (std::size_t slot = 0; slot < chunk->size(); ++slot)
-      visit(Lists::KeyAt(ci, slot), (*chunk)[slot]);
-  }
-  suppliers_of.ForEachSparse(visit);
+  // Marks are sorted and deduplicated by RecomputeDirty, so slice order is moot.
+  core::ParallelReduce(
+      services, suppliers_of.NumChunks(), kChunkGrain, dirty,
+      [&](std::vector<uint32_t> &out, std::size_t begin, std::size_t end) {
+        for (std::size_t ci = begin; ci < end; ++ci) {
+          const auto *chunk = suppliers_of.ChunkAt(ci);
+          if (!chunk)
+            continue;
+          for (std::size_t slot = 0; slot < chunk->size(); ++slot)
+            visit(out, Lists::KeyAt(ci, slot), (*chunk)[slot]);
+        }
+      },
+      [](std::vector<uint32_t> &into, std::vector<uint32_t> &&from) {
+        into.insert(into.end(), from.begin(), from.end());
+      });
+  suppliers_of.ForEachSparse(
+      [&](int64_t partkey, const TpchQ16Suppliers &slots) {
+        visit(dirty, partkey, slots);
+      });
 }
 
 // Distinct non-complaint suppliers over the parts of one group.
@@ -467,7 +486,7 @@ TpchQ16Module::StageMaintenance(core::AuxEngineServices &services,
         if (new_state->complaint.Get(suppkey) != before)
           flipped.Upsert(suppkey, 1);
       if (!flipped.empty())
-        new_state->MarkGroupsOfSuppliers(flipped);
+        new_state->MarkGroupsOfSuppliers(services, flipped);
       new_state->RecomputeDirty(services);
 
       const auto decision = services.ChooseMaintenance(
@@ -540,12 +559,17 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
   initial_scan->ScanSuppliers([&](const TpchQ16SupplierInput &input) {
     state.SetComplaint(input.suppkey, IsComplaintComment(input.comment));
   });
-  initial_scan->ScanParts([&](const TpchQ16PartInput &input) {
-    state.SetPart(input.partkey, input);
-  });
-  initial_scan->ScanPartsupp([&](const TpchQ16PartsuppInput &input) {
-    state.AddSupplier(input.partkey, input.suppkey);
-  });
+  // Group ids follow first appearance, so parts are applied in partition order.
+  for (const auto &part : CollectRows<TpchQ16PartInput>(
+           services, [&](std::size_t partitions, const auto &sink) {
+             initial_scan->ScanPartsPartitioned(services, partitions, sink);
+           }))
+    state.SetPart(part.partkey, part);
+  for (const auto &row : CollectRows<TpchQ16PartsuppInput>(
+           services, [&](std::size_t partitions, const auto &sink) {
+             initial_scan->ScanPartsuppPartitioned(services, partitions, sink);
+           }))
+    state.AddSupplier(row.partkey, row.suppkey);
   state.RecomputeAll(services);
   state.track_dirty = true;
   return state;

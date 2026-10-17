@@ -28,17 +28,19 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ11Partsupp(
-    const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer) {
-  ScanColumns("partsupp",
-              {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
-               IntColumn("ps_availqty"), DecimalColumn("ps_supplycost", 2)},
-              [&](const BuildRow &row) {
-                consumer({row.Int(0),
-                          row.Int(1),
-                          row.Int(2),
-                          row.Decimal(3), 2});
-              });
+void ScanTpchQ11PartsuppPartitioned(
+    const core::AuxEngineServices &services, std::size_t partitions,
+    const std::function<void(std::size_t, const query::TpchQ11PartsuppInput &)> &sink) {
+  ScanPartitioned(services, "partsupp",
+                  {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
+                   IntColumn("ps_availqty"), DecimalColumn("ps_supplycost", 2)},
+                  partitions, [&](std::size_t partition, const BuildBatch &batch) {
+                    for (std::size_t i = 0; i < batch.size(); ++i) {
+                      const auto row = batch.Row(i);
+                      sink(partition, {row.Int(0), row.Int(1), row.Int(2),
+                                       row.Decimal(3), 2});
+                    }
+                  });
 }
 
 void ScanTpchQ11Suppliers(
@@ -65,10 +67,11 @@ void ScanTpchQ11Nations(
 
 class TpchQ11Scan final : public query::TpchQ11InitialScan {
 public:
-  void ScanPartsupp(
-      const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer)
+  void ScanPartsuppPartitioned(
+      const core::AuxEngineServices &services, std::size_t partitions,
+      const std::function<void(std::size_t, const query::TpchQ11PartsuppInput &)> &sink)
       override {
-    scans::ScanTpchQ11Partsupp(consumer);
+    scans::ScanTpchQ11PartsuppPartitioned(services, partitions, sink);
   }
   void ScanSuppliers(
       const std::function<void(const query::TpchQ11SupplierInput &)> &consumer)

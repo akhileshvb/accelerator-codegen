@@ -59,14 +59,20 @@ public:
   virtual ~TpchQ7InitialScan() = default;
   virtual void ScanNations(
       const std::function<void(const TpchQ7NationInput &)> &) = 0;
-  virtual void ScanSuppliers(
-      const std::function<void(const TpchQ7SupplierInput &)> &) = 0;
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ7CustomerInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ7OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ7LineitemInput &)> &) = 0;
+  // Partitioned scans of the big tables: sink(partition, row), one thread per
+  // partition at a time.
+  virtual void ScanSuppliersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ7SupplierInput &)> &) = 0;
+  virtual void ScanCustomersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ7CustomerInput &)> &) = 0;
+  virtual void ScanOrdersPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ7OrderInput &)> &) = 0;
+  virtual void ScanLineitemsPartitioned(
+      const core::AuxEngineServices &, std::size_t partitions,
+      const std::function<void(std::size_t, const TpchQ7LineitemInput &)> &) = 0;
 };
 
 // The shipping years of the template (l_shipdate BETWEEN 1995-01-01 AND
