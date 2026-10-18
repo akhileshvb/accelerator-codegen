@@ -64,10 +64,7 @@ void RequireForcedMaintenanceAction(DuckdbRuntime &runtime) {
   }
   core::SetForcedMaintenanceActionName(force_s);
   // The commit's decision lives in the accelerator's stats: the commit logs on its own thread.
-  auto entry = runtime.Stats().last_decision;
-  if (!entry) {
-    entry = core::LastMaintenanceDecision();
-  }
+  const auto entry = runtime.Stats().last_decision;
   Require(entry && entry->valid,
           "expected staged maintenance decision after Apply (force=" + force_s +
               ")");

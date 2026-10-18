@@ -109,6 +109,9 @@ public:
   void ResetStoreDiagnosticsProfiling();
   uint64_t AuxStateFootprintBytes() const;
   runtime::AcceleratorStats Stats() const;
+  // The maintenance decision of the commits this runtime maintained since
+  // `before` was taken (none: no commit reached its state).
+  std::optional<core::MaintenanceDecisionLogEntry> DecisionSince(const runtime::AcceleratorStats &before) const;
 
   std::atomic<uint64_t> last_rows{0};
   // Reads answered by SQL instead of the state (scans redirected to the

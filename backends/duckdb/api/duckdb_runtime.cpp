@@ -134,15 +134,6 @@ runtime::Epoch CurrentEpoch(::duckdb::Connection &connection) {
   return epoch;
 }
 
-// A timed maintenance write: fresh decision log, wall time of `write` recorded
-// as the actual maintenance cost.
-template <typename Write> void TimedMaintenanceWrite(Write &&write) {
-  core::ClearMaintenanceDecisionLog();
-  const auto start = Clock::now();
-  write();
-  core::RecordMaintenanceActualCostUs(MicrosSince(start));
-}
-
 } // namespace
 
 DuckdbRuntime::DuckdbRuntime(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
@@ -309,10 +300,9 @@ void DuckdbRuntime::ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes,
   timing->engine_commit_us = MicrosSince(start);
   for (std::size_t i = 0; i < runtimes.size(); i++) {
     const auto after = runtimes[i]->Stats();
-    const bool applied = after.commits_applied > before[i].commits_applied;
     timing->pre_commit_us.push_back(after.apply_us - before[i].apply_us);
     timing->commit_us.push_back(0);
-    const auto &decision = applied ? after.last_decision : std::nullopt;
+    const auto decision = runtimes[i]->DecisionSince(before[i]);
     timing->action.push_back(decision ? maintenance::MaintenanceActionName(decision->staged_action)
                                       : "none");
     timing->decision.push_back(decision ? *decision : core::MaintenanceDecisionLogEntry{});
@@ -320,37 +310,31 @@ void DuckdbRuntime::ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes,
 }
 
 void DuckdbRuntime::Apply(SharedProbe &probe) {
-  TimedMaintenanceWrite([&] {
-    BeginWrite();
-    RunWriteQuery(connection_, ProbeWriteSql(probe));
-    CaptureByHand(BuildSharedMutation(entry_, probe));
-    CommitWrite();
-    AdvanceProbe(probe);
-  });
+  BeginWrite();
+  RunWriteQuery(connection_, ProbeWriteSql(probe));
+  CaptureByHand(BuildSharedMutation(entry_, probe));
+  CommitWrite();
+  AdvanceProbe(probe);
 }
 
 void DuckdbRuntime::ApplyBatch(std::vector<SharedProbe> &probes) {
   if (probes.empty()) {
     throw std::invalid_argument("ApplyBatch requires at least one probe");
   }
-  TimedMaintenanceWrite([&] {
-    BeginWrite();
-    for (auto &probe : probes) {
-      RunWriteQuery(connection_, ProbeWriteSql(probe));
-      CaptureByHand(BuildSharedMutation(entry_, probe));
-      AdvanceProbe(probe);
-    }
-    CommitWrite();
-  });
+  BeginWrite();
+  for (auto &probe : probes) {
+    RunWriteQuery(connection_, ProbeWriteSql(probe));
+    CaptureByHand(BuildSharedMutation(entry_, probe));
+    AdvanceProbe(probe);
+  }
+  CommitWrite();
 }
 
 void DuckdbRuntime::ApplyBatchWrite(const std::string &sql, const core::MutationBatch &mutation) {
-  TimedMaintenanceWrite([&] {
-    BeginWrite();
-    RunWriteQuery(connection_, sql);
-    CaptureByHand(mutation);
-    CommitWrite();
-  });
+  BeginWrite();
+  RunWriteQuery(connection_, sql);
+  CaptureByHand(mutation);
+  CommitWrite();
 }
 
 void DuckdbRuntime::SetExpectedQueriesBeforeNextWrite(double expected_queries_before_write) {
@@ -478,11 +462,19 @@ uint64_t DuckdbRuntime::AuxStateFootprintBytes() const {
 
 runtime::AcceleratorStats DuckdbRuntime::Stats() const { return accelerator_.runtime->Stats(); }
 
+std::optional<core::MaintenanceDecisionLogEntry>
+DuckdbRuntime::DecisionSince(const runtime::AcceleratorStats &before) const {
+  // an invalidating action leaves the commit stale (rebuilt on read): maintained all the same
+  const auto after = Stats();
+  const bool maintained = after.commits_applied + after.commits_stale > before.commits_applied + before.commits_stale;
+  return maintained ? after.last_decision : std::nullopt;
+}
+
 core::CalibrationEngine::Timed
 DuckdbCalibrationEngine::WriteThenRead(const std::string &sql,
                                        std::optional<maintenance::MaintenanceAction> forced) {
   core::SetForcedMaintenanceActionName(forced ? maintenance::MaintenanceActionName(*forced) : "");
-  core::ClearMaintenanceDecisionLog();
+  const auto before = runtime.Stats();
   Timed timed;
   const auto start = Clock::now();
   try {
@@ -496,7 +488,7 @@ DuckdbCalibrationEngine::WriteThenRead(const std::string &sql,
   }
   timed.us = MicrosSince(start);
   core::SetForcedMaintenanceActionName("");
-  timed.decision = core::LastMaintenanceDecision();
+  timed.decision = runtime.DecisionSince(before);
   return timed;
 }
 

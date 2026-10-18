@@ -206,10 +206,10 @@ int main(int argc, char **argv) {
         run(label, [&](const std::string &where, int delta, std::string &action) {
           const auto t = Clock::now();
           if (!where.empty()) {
-            core::ClearMaintenanceDecisionLog();
+            const auto before = runtime.Stats();
             runtime.ApplyWrite("UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(delta) +
                                ") WHERE " + where);
-            const auto log = core::LastMaintenanceDecision();
+            const auto log = runtime.DecisionSince(before);
             action = log && log->valid ? Name(log->selected) : "";
           }
           const auto r = Clock::now();
@@ -285,14 +285,14 @@ int main(int argc, char **argv) {
         double w = 0, rd = 0;
         std::string chosen;
         for (int i = 0; i < kWrites; ++i) {
-          core::ClearMaintenanceDecisionLog();
+          const auto before = runtime.Stats();
           const auto t = Clock::now();
           runtime.BeginWrite();
           Exec(c, "UPDATE lineitem SET l_quantity = l_quantity + (" + std::to_string(i % 2 ? -1 : 1) +
                       ") WHERE " + shape.where);
           runtime.CommitWrite();
           w += ms_since(t);
-          const auto log = core::LastMaintenanceDecision();
+          const auto log = runtime.DecisionSince(before);
           if (log && log->valid)
             chosen = Name(log->selected);
           for (int k = 0; k < kReadsPerWrite; ++k)
@@ -319,9 +319,9 @@ int main(int argc, char **argv) {
                 static_cast<long long>(days));
     for (const double rpw : reads_per_write) {
       runtime.SetExpectedQueriesBeforeNextWrite(rpw);
-      core::ClearMaintenanceDecisionLog();
+      const auto before = runtime.Stats();
       const double ms = Write(runtime, c, shape, +1);
-      const auto log = core::LastMaintenanceDecision();
+      const auto log = runtime.DecisionSince(before);
       Write(runtime, c, shape, -1);
       if (!log || !log->valid) {
         std::printf("   reads/write=%-5g no decision logged\n", rpw);

@@ -97,6 +97,7 @@
 namespace {
 namespace engine = accelerator_codegen::aux_state::engine;
 namespace core = accelerator_codegen::aux_state::core;
+namespace runtime = accelerator_codegen::aux_state::runtime;
 namespace kit = accelerator_codegen::verus_kit;
 using engine::duckdb::DuckdbRuntime;
 using Clock = std::chrono::steady_clock;
@@ -753,8 +754,8 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
           break;
       }
       const auto [kind, sql] = writes.Next();
+      const auto before = accel ? rt->Stats() : runtime::AcceleratorStats{};
       const auto t0 = Clock::now();
-      core::ClearMaintenanceDecisionLog();
       uint64_t rows = 0;
       try {
         if (accel) {
@@ -780,7 +781,7 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
       max_commit_us = std::max(max_commit_us, Us(t0, t1));
       write_kinds[kind]++;
       if (accel) {
-        const auto d = core::LastMaintenanceDecision();
+        const auto d = rt->DecisionSince(before);
         const std::string action =
             d ? accelerator_codegen::aux_state::maintenance::MaintenanceActionName(d->staged_action) : "none";
         maintenance[action]++;

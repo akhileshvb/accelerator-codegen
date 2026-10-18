@@ -161,7 +161,7 @@ core::MaintenanceDecisionLogEntry MakeRebuildLogEntry(double actual_us) {
   entry.staged_action = maintenance::MaintenanceAction::RebuildAll;
   entry.selected_predicted_cost_us = actual_us;
   entry.predicted_rebuild_all_us = actual_us;
-  entry.actual_maintenance_us = actual_us;
+  entry.maintenance_us = actual_us;
   entry.valid = true;
   return entry;
 }
@@ -287,7 +287,7 @@ int main() {
             predicted_rebuild_all = decision->predicted_rebuild_all_us;
             predicted_invalidate = decision->predicted_invalidate_us;
             predicted_selected = decision->selected_predicted_cost_us;
-            actual_maintenance = decision->actual_maintenance_us;
+            actual_maintenance = decision->maintenance_us;
             prediction_error = actual_maintenance - predicted_selected;
           }
           const double hit_rate =
@@ -375,6 +375,7 @@ int main() {
         std::optional<core::MaintenanceDecisionLogEntry> decision;
         if (ShouldWriteAtQueryIndex(phase_query_index, phase.queries_per_write)) {
           const auto write_start = Clock::now();
+          const auto before = runtime.Stats();
           const bool bulk = std::string(phase.kind) == "bulk_lineitem";
           if (bulk) {
             const int n =
@@ -394,9 +395,9 @@ int main() {
           write_latency_us = ElapsedUs(write_start, Clock::now());
           write_seq++;
           writes_in_phase++;
-          decision = core::LastMaintenanceDecision();
+          decision = runtime.DecisionSince(before);
           if (decision) {
-            cumulative_maintenance_us += decision->actual_maintenance_us;
+            cumulative_maintenance_us += decision->maintenance_us;
             // Thrash only after RebuildAll so always-ApplyDelta baselines are not
             // penalized, and always-RebuildAll baselines show a cold post-rebuild
             // query on every write (point or bulk).

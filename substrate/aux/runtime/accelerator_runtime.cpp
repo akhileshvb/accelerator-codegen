@@ -433,7 +433,9 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
   const PhaseScope maintaining(this, Phase::Maintenance);
   std::string reason = "the module left partitions invalid";
   try {
-    if (Publish(Stage(change.batches), change.epoch)) {
+    const auto outcome = Stage(change.batches);
+    core::RecordStagedMaintenanceAction(outcome.action); // also for modules that stage without asking the policy
+    if (Publish(outcome, change.epoch)) {
       reason.clear();
     }
   } catch (const std::exception &error) {

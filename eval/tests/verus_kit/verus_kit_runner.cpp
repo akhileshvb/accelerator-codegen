@@ -542,7 +542,7 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
   int write_errors = 0;
   std::string write_error_examples = "[";
   for (std::size_t i = 0; i < spec.txns.size(); ++i) {
-    core::ClearMaintenanceDecisionLog();
+    const auto before = rt.Stats();
     try {
       rt.ApplyWrite(spec.txns[i]);
     } catch (const std::exception &e) {
@@ -552,7 +552,7 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
                                 ",\"error\":" + Json(std::string(e.what()).substr(0, 600)) + "}";
       continue;
     }
-    const auto d = core::LastMaintenanceDecision();
+    const auto d = rt.DecisionSince(before);
     actions[d ? std::to_string(static_cast<int>(d->staged_action)) : "none"]++;
     const std::string where = "txn " + std::to_string(i);
     if (every > 0 && (i + 1) % static_cast<std::size_t>(every) == 0) {
