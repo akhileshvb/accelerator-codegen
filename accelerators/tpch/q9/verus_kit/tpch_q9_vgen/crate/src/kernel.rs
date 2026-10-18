@@ -295,12 +295,13 @@ pub fn apply(
     let ghost db = s.db();
     let pats_ref = &*s.pats;
     let ghost pv = pat_views_of(pats_ref@);
-    if nation_delta.len() > 0 { return Err(1); }
     let n = pats_ref.len();
     let mut mwork = match update_masks(&s.masks, part_delta, pats_ref, Ghost(db), Ghost(db2)) { Some(w) => w, None => return Err(2) };
     let masks2 = match publish_masks(&s.masks, &mut mwork, Ghost(db), Ghost(db2), Ghost(pv)) { Some(p) => p, None => return Err(3) };
     let mut swork = match update_suppliers(&s.suppliers, supplier_delta, Ghost(db), Ghost(db2)) { Some(w) => w, None => return Err(4) };
     let sups2 = match publish_suppliers(&s.suppliers, &mut swork, Ghost(db), Ghost(db2)) { Some(p) => p, None => return Err(5) };
+    let mut nwork = match update_nations(&s.names, nation_delta, Ghost(db), Ghost(db2)) { Some(w) => w, None => return Err(18) };
+    let names2 = match publish_nations(&s.names, &mut nwork, Ghost(db), Ghost(db2)) { Some(p) => p, None => return Err(19) };
     let pwork = match pairs_from_rescan(partsupp_for_parts_keys, partsupp_for_parts_rows) { Some(w) => w, None => return Err(6) };
     let pskk = collect_pskeys(partsupp_delta);
     if !covers(partsupp_for_parts_keys, &pskk) { return Err(7); }
@@ -353,10 +354,6 @@ pub fn apply(
     }
     proof {
         lemma_keys_fit_step(db, db2, supplier_delta@, nation_delta@);
-        assert forall|key: i64, name: Seq<u8>| #[trigger] name_page(s.names, key, name) == nation_count(db2, key as int, name) by {
-            lemma_nation_same(db, db2, nation_delta@, key as int, name);
-        }
-        assert(nation_pages_ready(s.names, db2));
         assert forall|c2: int, nk: int, y: int, f: int| 0 <= c2 < pv.len() && 0 <= f <= 1 implies #[trigger] cell_at((*rollup2@[c2])@, nk, y, f)
             == nation_total(filter_db(db2, pv[c2]), nk, y, f) by {
             lemma_rollup_step(db, db2, pv[c2], nk, y, f, lineitem_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@,
@@ -364,7 +361,7 @@ pub fn apply(
                 lines_for_suppliers_keys@, lines_for_suppliers_rows@);
         }
     }
-    Ok(State { db: Ghost(db2), pats: Arc::clone(&s.pats), masks: masks2, pairs: pairs2, suppliers: sups2, names: s.names.share(), rollup: rollup2 })
+    Ok(State { db: Ghost(db2), pats: Arc::clone(&s.pats), masks: masks2, pairs: pairs2, suppliers: sups2, names: names2, rollup: rollup2 })
 }
 
 }

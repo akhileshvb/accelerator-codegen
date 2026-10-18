@@ -72,16 +72,6 @@ pub proof fn lemma_keys_fit_step(db: Db, db2: Db, sup: Seq<SupplierDelta>, ndel:
     verus_prooflib::lemma_bag_step_preserves_predicate(db.nation, db2.nation, nation_delta_seq_view(ndel), nation_fit);
 }
 
-pub proof fn lemma_nation_same(db: Db, db2: Db, ndel: Seq<NationDelta>, key: int, name: Seq<u8>)
-    requires bag_step(db.nation, db2.nation, nation_delta_seq_view(ndel)), ndel.len() == 0,
-    ensures nation_count(db2, key, name) == nation_count(db, key, name),
-{
-    let w = |row: NationRow| if row.n_nationkey == key && row.n_name == name { 1int } else { 0int };
-    assert(sum(db2.nation, w) == sum(db.nation, w) + sum(nation_delta_seq_view(ndel), |d: (NationRow, int)| d.1 * w(d.0)));
-    assert(nation_delta_seq_view(ndel) =~= Seq::<(NationRow, int)>::empty());
-    lemma_sum_empty(nation_delta_seq_view(ndel), |d: (NationRow, int)| d.1 * w(d.0));
-}
-
 /// Every needed key is among the rescanned keys.
 pub fn covers(keys: &[i64], needed: &Vec<i64>) -> (r: bool)
     ensures r ==> forall|k: i64| needed@.contains(k) ==> #[trigger] keys@.contains(k),
