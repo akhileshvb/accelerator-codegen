@@ -2,9 +2,7 @@
 # Paths may use {engine} (sanitized engine_name). Do not hardcode a host engine here.
 
 write_paths:
-  - CMakeLists.txt
-  - cmake/**
-  # one glob owns the whole backend: state/ engine/ api/ tests/ bench/
+  # one glob owns the whole backend: backend.cmake state/ engine/ api/ tests/ bench/
   - backends/{engine}/**
   - pipeline/artifacts/engines/{engine}/**
 
@@ -102,8 +100,11 @@ default_target_paths:
   adversarial_test: backends/{engine}/tests/test_{engine}_adversarial.cpp
   adversarial_test_target: test_{engine}_adversarial
 
+# The build convention is cmake/Backend.cmake: the backend's one CMake entry file
+# (template: templates/engine_backend/backend.cmake.tpl), which the root
+# CMakeLists.txt includes when the profile's build.cmake_option is ON. No shared cmake is edited.
 default_cmake:
-  collect_fn: accel_collect_{engine}_sources
+  entry: backends/{engine}/backend.cmake
 
 # The engine_profile sections (schemas/engine_profile.schema.json) each stage sees. Hazards are
 # narrowed to the layer. `all` is every section. Layer ids also key their impl and critique stages.

@@ -1,23 +1,6 @@
-# CMake registration for engine ↔ substrate ADVERSARIAL tests ({{engine_name}})
+# CMake registration for engine <-> substrate ADVERSARIAL tests ({{engine_name}})
 #
-# Validation stage only — add near the contract target when the engine flag is on:
-#
-# if({{build_flag_condition}})
-#   add_executable(test_{{engine_name}}_adversarial
-#       backends/{{engine_name}}/tests/test_{{engine_name}}_adversarial.cpp
-#   )
-#   target_link_libraries(test_{{engine_name}}_adversarial
-#       PRIVATE
-#           accelerator_codegen
-#           # plus engine-specific libs as needed
-#   )
-#   target_include_directories(test_{{engine_name}}_adversarial
-#       PRIVATE
-#           ${CMAKE_CURRENT_SOURCE_DIR}   # include root
-#   )
-#   add_test(NAME engine_{{engine_name}}_adversarial COMMAND test_{{engine_name}}_adversarial)
-# endif()
-#
-# build_flag_condition examples:
-#   - TRUE
-#   - ACCELERATOR_CODEGEN_BUILD_{{ENGINE}}
+# Nothing to write: the glob in backends/{{engine_name}}/backend.cmake (backend.cmake.tpl)
+# registers backends/{{engine_name}}/tests/test_{{engine_name}}_adversarial.cpp as target
+# test_{{engine_name}}_adversarial and ctest engine_{{engine_name}}_adversarial, linked exactly
+# like the layer harnesses (same SDK path via accel_backend_{{engine_name}}).

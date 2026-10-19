@@ -9,7 +9,7 @@
 - Query **registries** + generic dispatch (`layer_contracts.md`, "Query registries"): the backend names no query; queries register from `accelerators/{benchmark}/q{N}/{engine}/`
 - **`backends/{engine}/tests/test_{engine}_{layer}.cpp`** — one harness per layer in `layers.md` (implementation-owned)
 - **`backends/{engine}/tests/test_{engine}_adversarial.cpp`** — validation-owned only
-- CMake collectors / `ACCELERATOR_CODEGEN_BUILD_{ENGINE}` flags
+- `backends/{engine}/backend.cmake` — the backend's one CMake entry (`cmake/Backend.cmake` interface); the shared `CMakeLists.txt` and `cmake/**` are not edited
 - Artifacts under `pipeline/artifacts/engines/{engine}/`
 
 `{engine}` is the workload `engine_name` (sanitized identifier).

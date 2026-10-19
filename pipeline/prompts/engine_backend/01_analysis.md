@@ -84,7 +84,7 @@ plan host-side `cmake -B build-release` as the bar.
 
 {{engine_generation_mode}}
 
-CMake collect `{{engine_cmake_collect_fn}}`, flag `{{engine_cmake_build_flag}}`.
+CMake entry `{{engine_cmake_entry}}` (template `backend.cmake.tpl`), flag `{{engine_cmake_build_flag}}`.
 
 {{engine_target_paths}}
 

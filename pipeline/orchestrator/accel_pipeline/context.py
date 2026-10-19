@@ -715,8 +715,8 @@ def build_prompt_context(
             if is_engine
             else ""
         ),
-        "engine_cmake_collect_fn": (
-            str((workload.get("cmake") or {}).get("collect_fn") or "")
+        "engine_cmake_entry": (
+            str((workload.get("cmake") or {}).get("entry") or "")
             if is_engine
             else ""
         ),

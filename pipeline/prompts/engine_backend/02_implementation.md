@@ -125,13 +125,13 @@ gate calls. Official pass/fail is still `request_gate`.
 ## Templates
 
 - Harness: `pipeline/templates/engine_backend/test_engine_layer.cpp.tpl` → `{{layer_harness}}`
-- CMake: `pipeline/templates/engine_backend/cmake_layer_test.cmake.tpl`
+- CMake: `pipeline/templates/engine_backend/backend.cmake.tpl` → `{{engine_cmake_entry}}`
 - Stubs as needed: `pipeline/templates/engine_backend/` (`host`, `capture`, `scan`)
 
-Wire collect `{{engine_cmake_collect_fn}}` / flag `{{engine_cmake_build_flag}}`.
-Use `cmake_layer_test.cmake.tpl` for the harness executable (gated by the
-engine build flag). Add backend `.cpp` files through the collect function —
-do not dump an unguarded `add_executable` at the bottom of `CMakeLists.txt`.
+Write `{{engine_cmake_entry}}` to `cmake/Backend.cmake`'s interface (see
+`backend.cmake.tpl`); the root includes it when `{{engine_cmake_build_flag}}` is ON.
+List new backend `.cpp` files there; harnesses `tests/test_{{engine_name}}_<layer>.cpp`
+register themselves through its glob. Do not edit `CMakeLists.txt` or `cmake/**`.
 
 {{layer_contracts}}
 

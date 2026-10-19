@@ -30,7 +30,7 @@ Facts and hazards of the engine (not instructions). Aim the adversarial cases at
 1. **Do not** weaken, delete, or dilute existing layer harnesses.
 2. **Do** author `backends/{{engine_name}}/tests/test_{{engine_name}}_adversarial.cpp` with
    ≥4 **new** cases after reading the implementation.
-3. Register CMake so `test_{{engine_name}}_adversarial` builds with the **same**
+3. Make `test_{{engine_name}}_adversarial` build (the `backend.cmake` glob registers it) with the **same**
    enabled native/SDK path as the layer suite.
 4. Mid-loop until green:
    - `request_gate` → each layer gate already in `post_validation_gates` (regression)

@@ -46,7 +46,7 @@ def test_load_engine_mysql_workload():
     assert w["target_paths"]["adversarial_test"] == (
         "backends/mysql/tests/test_mysql_adversarial.cpp"
     )
-    assert w["cmake"]["collect_fn"] == "accel_collect_mysql_sources"
+    assert w["cmake"]["entry"] == "backends/mysql/backend.cmake"
     assert w["cmake"]["build_flag"] == "ACCELERATOR_CODEGEN_BUILD_MYSQL"
     assert "backends/mysql/**" in w["write_paths"]
     assert not any(p.startswith(("substrate", "accelerators", "workloads")) for p in w["write_paths"])

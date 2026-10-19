@@ -128,7 +128,7 @@ custom per-accelerator storage.
 
 **Do not edit** a backend's registration code (duckdb: `backends/duckdb/api/register.cpp`, the catalog, the table-function file): scaffold writes the query's own `register.cpp`. For other `engine_name` values, register through that backend's registries from the query's directory — do not invent a parallel adapter tree.
 
-`CMakeLists.txt` is editable for CMake target registration when auto-discovery is insufficient; follow `cmake/AuxState.cmake` / `GeneratedSources.cmake` globs under `{engine}` and existing query blocks.
+`CMakeLists.txt` is editable for CMake target registration when auto-discovery is insufficient; follow `cmake/AuxState.cmake` and the globs in `backends/{engine}/backend.cmake` and existing query blocks.
 
 ## Aux-state files (agents generate)
 
