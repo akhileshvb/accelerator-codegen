@@ -17,8 +17,8 @@ from accel_pipeline.optimization_runtime import (
 def test_build_runtime_state_includes_profile_guidance():
     repo = Path(__file__).resolve().parents[3]
     art = repo / "pipeline" / "artifacts" / "sec_edgar" / "q1"
-    if not art.is_dir():
-        pytest.skip("sec_edgar q1 artifacts not present")
+    if not (art / "profile_summary.json").is_file():
+        pytest.skip("sec_edgar q1 profile artifacts not present")
     pipeline_config = load_pipeline_config(repo_root=repo)
     workload = load_workload("sec_edgar_q1", repo)
     state = build_runtime_state(pipeline_config, workload, 1, optimization_iter=3, episode=1)
@@ -75,7 +75,7 @@ def test_runtime_markdown_includes_structured_sections(tmp_path: Path):
         "playbook_techniques": json.loads(techniques.read_text())["techniques"],
         "optimization_workflow_compact": "# Workflow\ngrep then A/B.",
         "profile_guidance": ["- scan_amplification=3.3x (pre_rows / qualifying_rows)"],
-        "investigation_questions": ["grep_context the kernel for per-row loops"],
+        "investigation_questions": ["Read the kernel for per-row loops"],
         "bottleneck_evidence": {
             "tiers": [
                 {

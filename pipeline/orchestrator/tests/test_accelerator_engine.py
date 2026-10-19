@@ -20,8 +20,15 @@ from accel_pipeline.stages.implementation import _implementation_user_message
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _duckdb_workload(name: str) -> dict:
+    """A shipped workload (pinned to its own engine) re-targeted at the DuckDB host."""
+    workload = dict(load_workload(name, REPO_ROOT))
+    workload["engine_name"] = "duckdb"
+    return _normalize_accelerator_engine(workload)
+
+
 def test_accelerator_requires_explicit_engine_name():
-    w = load_workload("tpch_q6", REPO_ROOT)
+    w = _duckdb_workload("tpch_q6")
     assert w["engine_name"] == "duckdb"
     assert w["engine_host"]["smoke_ready"] is True
     assert w["engine_host"]["differential_binary"] == "test_tpch_shared_differential"
@@ -43,14 +50,9 @@ def test_tpch_q3_pins_postgres():
 
 
 def test_aux_requires_explicit_engine_name_duckdb():
-    w = load_workload("tpch_q6_aux", REPO_ROOT) if (REPO_ROOT / "pipeline/config/workloads/tpch_q6_aux.yaml").is_file() else None
-    if w is None:
-        w = load_workload("tpch_q14_aux", REPO_ROOT)
-        w = dict(w)
-        w["engine_name"] = "duckdb"
-        w = _normalize_accelerator_engine(w)
+    w = _duckdb_workload("tpch_q14_aux")
     assert w["engine_name"] == "duckdb"
-    assert w["engine_host"]["aux_register_path"].endswith("duckdb_aux_table_functions.cpp")
+    assert w["engine_host"]["aux_register_path"] == "accelerators/tpch/q14/duckdb/aux/register.cpp"
 
 
 def test_explicit_postgres_engine_name_preserved():
@@ -66,11 +68,8 @@ def test_explicit_postgres_engine_name_preserved():
 
 def test_gate_context_includes_engine_for_base_and_aux():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
-    base = load_workload("tpch_q6", REPO_ROOT)
-    aux = load_workload("tpch_q14_aux", REPO_ROOT)
-    aux = dict(aux)
-    aux["engine_name"] = "duckdb"
-    aux = _normalize_accelerator_engine(aux)
+    base = _duckdb_workload("tpch_q6")
+    aux = _duckdb_workload("tpch_q14_aux")
     base_ctx = build_gate_context(pc, base, 6)
     aux_ctx = build_gate_context(pc, aux, 14)
     assert base_ctx["engine_name"] == "duckdb"
@@ -109,7 +108,7 @@ def test_postgres_keeps_full_post_gates():
 
 def test_implementation_prompt_mentions_substrate_and_engine():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
-    w = load_workload("tpch_q6", REPO_ROOT)
+    w = _duckdb_workload("tpch_q6")
     text = render_prompt(pc, "02_implementation.md", w, 6, "implementation")
     assert "NativeScanSpec" in text or "substrate" in text.lower() or "engine_name" in text
     assert "duckdb" in text.lower()
@@ -147,7 +146,7 @@ def test_apply_workload_overrides_strips_duckdb_tf_for_postgres():
 def test_duckdb_correctness_gate_context_db_env():
     """Regression: duckdb correctness still exposes ACCEL_TPCH_DB + dataset_db."""
     pc = load_pipeline_config(repo_root=REPO_ROOT)
-    w = load_workload("tpch_q6", REPO_ROOT)
+    w = _duckdb_workload("tpch_q6")
     ctx = build_gate_context(pc, w, 6)
     assert ctx["engine_name"] == "duckdb"
     assert ctx["db_env_var"] == "ACCEL_TPCH_DB"

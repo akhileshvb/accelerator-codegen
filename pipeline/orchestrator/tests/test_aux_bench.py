@@ -123,8 +123,13 @@ def test_record_aux_bench_sweep_outcome_writes_experiment_log(tmp_path: Path):
     repo = tmp_path
     art = repo / "pipeline" / "artifacts" / "tpch" / "q18"
     art.mkdir(parents=True)
+    (repo / "pipeline" / "config").mkdir()
+    (repo / "pipeline" / "config" / "default.yaml").write_text(
+        (Path(__file__).resolve().parents[2] / "config" / "default.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     summary = summarize_sweep_rows(parse_sweep_csv_from_text(SAMPLE_CSV))
-    workload = {"artifact_namespace": "tpch", "workload_kind": "aux_state"}
+    workload = {"artifact_namespace": "tpch", "workload_kind": "aux_state", "engine_name": "duckdb"}
     state = record_aux_bench_sweep_outcome(
         repo,
         18,

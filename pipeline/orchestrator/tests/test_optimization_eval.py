@@ -56,9 +56,14 @@ def test_aux_optimization_score_prefers_read_only():
     assert score_metrics(metrics, is_aux=True, workload=workload) == pytest.approx(5.1)
 
 
-def test_aux_optimization_score_custom_metric():
+def test_aux_optimization_score_read_only_metric():
     from accel_pipeline.optimization_eval import aux_optimization_score
 
-    metrics = {"composite_query_speedup": 6.0, "read_only_query_speedup": 5.0}
-    workload = {"aux_bench_sweep_optimization": {"optimization_score_metric": "composite_query_speedup"}}
-    assert aux_optimization_score(metrics, workload) == pytest.approx(6.0)
+    metrics = {
+        "composite_query_speedup": 6.0,
+        "read_only_query_speedup": 5.0,
+        "write_mix_workload_speedup": 1.0,
+    }
+    workload = {"aux_bench_sweep_optimization": {"optimization_score_metric": "read_only_query_speedup"}}
+    assert aux_optimization_score(metrics, workload) == pytest.approx(5.0)
+    assert aux_optimization_score(metrics, None) == pytest.approx(5.0**0.75)

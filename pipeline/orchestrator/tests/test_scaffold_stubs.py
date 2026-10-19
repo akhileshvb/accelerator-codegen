@@ -54,6 +54,7 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
 
     workload = {
         "benchmark_name": "sec_edgar",
+        "engine_name": "duckdb",
         "query_number": 1,
         "artifact_namespace": "sec_edgar",
         "source_subdir": "sec_edgar/q1/base/single-threaded",

@@ -44,8 +44,8 @@ def test_bootstrap_includes_full_sources(tmp_path: Path) -> None:
 
     md, loaded = build_optimization_bootstrap(pc, workload, 99)
     assert loaded
-    assert "do not call read_file" in md.lower()
-    assert "Reference aux accelerators" in md
+    assert "do not re-read" in md.lower()
+    assert "Shared repo context pack" in md
     assert "module.hpp" in md
     rendered = format_bootstrap_markdown(loaded, max_chars=500_000)
     assert "struct Foo" in rendered

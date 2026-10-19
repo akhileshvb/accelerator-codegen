@@ -72,43 +72,6 @@ def format_bootstrap_markdown(
     return _truncate_chars("\n".join(parts), max_chars)
 
 
-def format_reference_aux_index(
-    repo_root: Path,
-    *,
-    benchmark: str = "tpch",
-    exclude_query: int | None = None,
-) -> str:
-    """List other aux modules the agent can explore with shell search."""
-    pattern = f"accelerators/{benchmark}/q*/*/aux/module.cpp"
-    paths = sorted(repo_root.glob(pattern))
-    lines = [
-        "## Reference aux accelerators (read-only — search them with `rg`, read snippets with `sed -n`)",
-        "",
-        "Explore patterns from other queries when redesigning aux-state layout, partitions, "
-        "encode/decode, or maintenance. **Ambitious structural changes are encouraged** when "
-        "evidence supports them (new partitions, dense layouts, alternate invalidation, etc.).",
-        "",
-    ]
-    count = 0
-    for path in paths:
-        rel = path.relative_to(repo_root)
-        parts = rel.parts
-        q_num = None
-        for part in parts:
-            if part.startswith("q") and part[1:].isdigit():
-                q_num = int(part[1:])
-                break
-        if exclude_query is not None and q_num == exclude_query:
-            continue
-        lines.append(f"- `{rel}` (Q{q_num})")
-        count += 1
-    if count == 0:
-        lines.append("(no other aux modules found)")
-    lines.append("")
-    lines.append("Example: `rg -n -C5 NationNamePartition accelerators/tpch/q18/duckdb/aux`")
-    return "\n".join(lines)
-
-
 def build_optimization_bootstrap(
     pipeline_config: PipelineConfig,
     workload: dict[str, Any],

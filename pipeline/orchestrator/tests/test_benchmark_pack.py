@@ -82,11 +82,8 @@ def test_aux_workload_allows_cmake_edits() -> None:
     workload = load_workload("tpch_q9_aux", REPO_ROOT)
     merged = apply_workload_overrides(pipeline_config, workload)
     assert "CMakeLists.txt" in merged.write_paths
-    assert any("calibrate_q*_aux_cost_model.cpp" in p for p in merged.write_paths)
+    assert "accelerators/tpch/q9/**" in merged.write_paths
     assert any("cross_accel_helpers.cpp" in p for p in merged.write_paths)
-    assert any(
-        "duckdb_aux_table_functions.cpp" in p for p in merged.write_paths
-    ), "agent must be able to register DuckDB SQL aux table functions"
 
 
 def test_aux_write_paths_register_from_query_dir_not_backend() -> None:

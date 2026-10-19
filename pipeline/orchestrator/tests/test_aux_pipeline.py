@@ -302,7 +302,7 @@ class TestWorkloadConfig:
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q1_aux"
         assert paths["cost_model_config"] == "accelerators/sec_edgar/q1/config/sec_edgar_q1_aux_cost_model.json"
         assert workload.get("post_implementation_gates", [])[0] == "aux_correctness"
-        assert "sec_edgar_q*_aux" in " ".join(workload.get("write_paths", []))
+        assert "accelerators/sec_edgar/q1/**" in workload.get("write_paths", [])
 
     def test_sec_edgar_q2_aux_workload_loads(self):
         from accel_pipeline.config import load_pipeline_config, load_workload, resolve_workload_paths
