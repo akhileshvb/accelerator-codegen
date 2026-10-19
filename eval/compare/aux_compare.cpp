@@ -319,14 +319,43 @@ bool DimAfterRf() {
   return v && *v && std::string(v) != "0";
 }
 
+// The point writes, by kind number (Writes::Next).
+constexpr const char *kPointWriteKinds[] = {"supplier update", "customer update", "part delete",
+                                            "part insert",     "supplier delete", "supplier insert",
+                                            "partsupp update", "lineitem update", "orders update"};
+
+// ACCEL_WRITE_KINDS="partsupp update,customer update": the write stream is those point writes only, in turn,
+// every one paced (no refreshes): commits per second, each touching only the accelerators that read its table.
+std::vector<int> PointWriteKinds() {
+  std::vector<int> kinds;
+  const char *v = std::getenv("ACCEL_WRITE_KINDS");
+  std::stringstream names(v ? v : "");
+  for (std::string name; std::getline(names, name, ',');) {
+    const auto *end = std::end(kPointWriteKinds);
+    const auto *it = std::find(std::begin(kPointWriteKinds), end, name);
+    Require(it != end, "ACCEL_WRITE_KINDS: unknown write kind '" + name + "'");
+    kinds.push_back(static_cast<int>(it - std::begin(kPointWriteKinds)));
+  }
+  return kinds;
+}
+
+// ACCEL_WRITE_BATCH=N (with ACCEL_WRITE_KINDS): every point update changes N rows (N keys) in one commit.
+std::size_t PointWriteBatch() {
+  const char *v = std::getenv("ACCEL_WRITE_BATCH");
+  return v && *v ? static_cast<std::size_t>(std::max<long>(1, std::strtol(v, nullptr, 10))) : 1;
+}
+
 // A deterministic TPC-H write stream (see the header).
 class Writes {
 public:
   // batch: orders per RF1 / RF2 commit (1: the mini-chunk).  Dimension point writes are always one row.
   Writes(duckdb::Connection &c, std::size_t max_writes, uint64_t seed, std::size_t batch = 1)
       : rng(seed), batch(std::max<std::size_t>(batch, 1)), rf_only(RfOnly()), dim_after_rf(DimAfterRf()),
-        use_sets(!RfDir().empty()), set_orders(RfSetOrders()) {
-    const auto n = std::to_string((max_writes + 16) * this->batch);
+        use_sets(!RfDir().empty()), set_orders(RfSetOrders()), point_kinds(PointWriteKinds()),
+        point_batch(PointWriteBatch()) {
+    Require(point_batch == 1 || std::all_of(point_kinds.begin(), point_kinds.end(), IsPointUpdate),
+            "ACCEL_WRITE_BATCH applies to the update kinds only");
+    const auto n = std::to_string((max_writes + 16) * std::max(this->batch, point_batch));
     low_orders = Keys(c, "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT " + n);
     template_orders = Keys(c, "SELECT o_orderkey FROM orders ORDER BY o_orderkey DESC LIMIT 1000");
     // large orders (TPC-H Q18's "large volume customer" orders): every fourth
@@ -336,7 +365,8 @@ public:
                              "ORDER BY l_orderkey DESC LIMIT 200");
     mid_orders = Keys(c, "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT " + n +
                              " OFFSET (SELECT count(*) // 2 FROM orders)");
-    const auto dims = std::to_string(dim_after_rf ? max_writes + 16 : max_writes / 5 + 16);
+    const auto dims = std::to_string(dim_after_rf || !point_kinds.empty() ? (max_writes + 16) * point_batch
+                                                                          : max_writes / 5 + 16);
     low_parts = Keys(c, "SELECT p_partkey FROM part ORDER BY p_partkey LIMIT " + dims);
     template_parts = Keys(c, "SELECT p_partkey FROM part ORDER BY p_partkey DESC LIMIT 500");
     low_supps = Keys(c, "SELECT s_suppkey FROM supplier ORDER BY s_suppkey LIMIT " + dims);
@@ -368,7 +398,9 @@ public:
   std::pair<std::string, std::string> Next() {
     const auto s = [](int64_t v) { return std::to_string(v); };
     int dim_kind = -1; // the point write to make, or -1: a refresh
-    if (dim_after_rf) {
+    if (!point_kinds.empty()) {
+      dim_kind = point_kinds[seq++ % point_kinds.size()];
+    } else if (dim_after_rf) {
       const auto pos = seq++ % (1 + sizeof(kRfDimKinds) / sizeof(kRfDimKinds[0]));
       if (pos > 0)
         dim_kind = kRfDimKinds[pos - 1];
@@ -411,15 +443,21 @@ public:
                         " ON o.o_orderkey = m.src; INSERT INTO lineitem SELECT l.* REPLACE (m.dst AS l_orderkey) FROM lineitem l JOIN " +
                         m + " ON l.l_orderkey = m.src"};
     }
+    const auto in = [&](const std::vector<int64_t> &pool, std::size_t &at) {
+      std::string keys = s(Take(pool, at));
+      for (std::size_t j = 1; j < point_batch; ++j)
+        keys += "," + s(Take(pool, at));
+      return " IN (" + keys + ")";
+    };
     static const char *segments[] = {"BUILDING", "AUTOMOBILE", "MACHINERY", "HOUSEHOLD", "FURNITURE"};
     static const char *priorities[] = {"1-URGENT", "2-HIGH", "3-MEDIUM", "4-NOT SPECIFIED", "5-LOW"};
     switch (dim_kind) {
     case 0:
       return {"supplier update", "UPDATE supplier SET s_acctbal = s_acctbal + 1, s_comment = s_comment || ' ' "
-                                 "WHERE s_suppkey = " + s(Take(mid_supps, mid_supp_at))};
+                                 "WHERE s_suppkey" + in(mid_supps, mid_supp_at)};
     case 1:
       return {"customer update", std::string("UPDATE customer SET c_acctbal = c_acctbal + 1, c_mktsegment = '") +
-                                     segments[rng() % 5] + "' WHERE c_custkey = " + s(Take(custs, cust_at))};
+                                     segments[rng() % 5] + "' WHERE c_custkey" + in(custs, cust_at)};
     case 2: {
       const auto k = s(Take(low_parts, low_part_at));
       return {"part delete", "DELETE FROM partsupp WHERE ps_partkey = " + k + "; DELETE FROM part WHERE p_partkey = " + k};
@@ -446,14 +484,14 @@ public:
     }
     case 6:
       return {"partsupp update", "UPDATE partsupp SET ps_supplycost = ps_supplycost + 1, ps_availqty = ps_availqty + 1 "
-                                 "WHERE ps_partkey = " + s(Take(mid_parts, mid_part_at))};
+                                 "WHERE ps_partkey" + in(mid_parts, mid_part_at)};
     case 7:
       return {"lineitem update", "UPDATE lineitem SET l_quantity = l_quantity + 1, l_discount = 0.04 "
-                                 "WHERE l_orderkey = " + s(Take(mid_orders, mid_order_at))};
+                                 "WHERE l_orderkey" + in(mid_orders, mid_order_at)};
     default:
       return {"orders update", std::string("UPDATE orders SET o_comment = o_comment || ' unusual accounts', "
                                            "o_orderpriority = '") + priorities[rng() % 5] +
-                                   "' WHERE o_orderkey = " + s(Take(mid_orders, mid_order_at))};
+                                   "' WHERE o_orderkey" + in(mid_orders, mid_order_at)};
     }
   }
 
@@ -524,6 +562,7 @@ private:
 
   // supplier update, part delete, part insert, supplier delete, supplier insert, partsupp update
   static constexpr int kRfDimKinds[] = {0, 2, 3, 4, 5, 6};
+  static bool IsPointUpdate(int kind) { return kind == 0 || kind == 1 || kind >= 6; }
   static std::vector<int64_t> Keys(duckdb::Connection &c, const std::string &sql) {
     auto r = c.Query(sql);
     Require(r && !r->HasError(), r ? r->GetError() : sql);
@@ -544,6 +583,8 @@ private:
   bool dim_after_rf;
   bool use_sets;
   std::size_t set_orders; // orders used from each update set (0: all)
+  std::vector<int> point_kinds; // ACCEL_WRITE_KINDS (empty: the refresh stream)
+  std::size_t point_batch;      // ACCEL_WRITE_BATCH: rows per point update
   std::size_t sets_loaded = 0, set_orders_total = 0;
   std::vector<int64_t> low_orders, template_orders, large_orders, mid_orders, low_parts, template_parts, low_supps, template_supps,
       mid_supps, custs, mid_parts;
@@ -903,8 +944,8 @@ double Mean(const std::vector<double> &v) {
   return v.empty() ? 0 : sum / v.size();
 }
 
-int Multi(const std::string &path, const std::string &phase, const std::string &spec_path, int readers,
-          double seconds, const std::vector<double> &rates, uint64_t seed, double warmup,
+int Multi(const std::string &path, const std::string &phase, const std::string &spec_path,
+          const std::vector<int> &reader_counts, double seconds, const std::vector<double> &rates, uint64_t seed, double warmup,
           const std::string &reader_mode) {
   Require(phase == "accel" || phase == "base" || phase == "stateless", "phase must be accel, base or stateless");
   Require(reader_mode == "rotate" || reader_mode == "pinned", "reader mode must be rotate or pinned");
@@ -948,10 +989,11 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
     auto r = qc.Query(std::string("SET memory_limit = '") + limit + "'");
     Require(r && !r->HasError(), r ? r->GetError() : "memory_limit");
   }
-  // one write stream across every rate; uncapped (< 0): key pools for up to 200 writes/s
+  // one write stream across every rate; uncapped (< 0): key pools for up to 200 writes/s (point writes: 5000)
+  const double uncapped = PointWriteKinds().empty() ? 200 : 5000;
   double pool_writes = 0;
   for (const double w : rates)
-    pool_writes += (w < 0 ? 200 : w) * (seconds + warmup) * 1.2 * reps;
+    pool_writes += (w < 0 ? uncapped : w) * (seconds + warmup) * 1.2 * reps * reader_counts.size();
   if (const char *mc = std::getenv("ACCEL_WRITE_MAX_COMMITS"); mc && *mc) // calibration: the run ends after N commits
     pool_writes = std::min(pool_writes, std::strtod(mc, nullptr));
   Writes writes(qc, static_cast<std::size_t>(pool_writes) + 32 * rates.size() * reps, seed, RfBatchOrders());
@@ -959,7 +1001,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
     double commits = 0;
     for (const double w : rates)
       if (w > 0)
-        commits += (w * (seconds + warmup) + 2) * reps;
+        commits += (w * (seconds + warmup) + 2) * reps * reader_counts.size();
     Require(2 * writes.SetsLoaded() >= commits, "the runs need about " + std::to_string(static_cast<long>(commits)) +
                                                     " RF commits but only " + std::to_string(writes.SetsLoaded()) +
                                                     " update sets (2 commits each) are available: generate more "
@@ -991,19 +1033,24 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   }
   builds += "}";
   build_rss += "}";
-  // the accelerators are built once; each (rate, repetition) is its own run
-  // (warmup, then the measured window) on the state the previous one left, with
-  // that repetition's parameter draw; one JSON line each, rate-major
+  // the accelerators are built once; each (readers, rate, repetition) is its own
+  // run (warmup, then the measured window) on the state the previous one left,
+  // with that repetition's parameter draw; one JSON line each, readers-major,
+  // then rate-major
+  for (const int readers : reader_counts) {
   for (const double writes_per_sec : rates) {
   for (std::size_t rep = 0; rep < reps; ++rep) {
   for (auto &m : specs)
     m.cases = m.rep_cases[rep];
   // whether the writes changed an answer: checked on each accelerator's first
   // case only (every case, around every window, costs minutes at SF20)
+  // (outside the measured window, at the build thread count)
   std::vector<std::vector<std::vector<std::string>>> before(specs.size());
+  ApplyDuckdbBuildThreads(qc);
   for (std::size_t q = 0; q < specs.size(); ++q)
     if (!specs[q].cases.empty())
       before[q].push_back(Canon(*RunBaseline(qc, specs[q].sql, specs[q].cases[0].base_args)));
+  ApplyDuckdbThreads(qc);
   if (stateless) // every kernel must answer every case of every repetition as the baseline does before it is timed
     for (auto &m : specs) {
       m.fn = StatelessFunctionFor(m.id);
@@ -1198,6 +1245,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   const auto counts = core::ReadAuxExecuteCounts();
   std::string per = "[";
   uint64_t reads = 0;
+  ApplyDuckdbBuildThreads(qc);
   for (std::size_t q = 0; q < specs.size(); ++q) {
     int changed = 0;
     for (std::size_t i = 0; i < before[q].size(); ++i)
@@ -1216,6 +1264,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
            ",\"store_wait_p99_us\":" + std::to_string(Percentile(waits[q], 0.99)) +
            ",\"store_wait_max_us\":" + std::to_string(Percentile(waits[q], 1.0)) +
            ",\"reads_waited_over_1ms\":" + std::to_string(waited) +
+           (accel ? ",\"stale_installs\":" + std::to_string(runtimes[q]->StaleInstallCount()) : std::string()) +
            (accel ? ",\"maintained_writes\":" + std::to_string(maintained[q]) +
                         ",\"maintained_by_kind\":" + KindsJson(maintained_by_kind[q]) +
                         ",\"actions\":" + ActionsJson(action_stats[q]) +
@@ -1265,6 +1314,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
             << ",\"write_kinds\":" << kjson << "}" << breakdown << ",\"write_log\":" << write_log << "]"
             << ",\"hits\":" << counts.hit << ",\"fallbacks\":" << counts.fallback << ",\"rep\":" << rep
             << ",\"per_accel\":" << per << "]}" << std::endl;
+  }
   }
   }
   return 0;
@@ -1732,12 +1782,16 @@ int main(int argc, char **argv) {
     if (mode == "multi") {
       Require(argc >= 8, "multi: <db> <phase> <spec.tsv> <readers> <seconds> <writes_per_sec> [seed] [warmup_sec] "
                          "[rotate|pinned]");
+      std::vector<int> reader_counts; // "32,64": one run per reader count (and rate), built once
+      std::stringstream counts(argv[5]);
+      for (std::string r; std::getline(counts, r, ',');)
+        reader_counts.push_back(std::stoi(r));
       std::vector<double> rates; // "5,10,-1": one run per rate, built once
       std::stringstream list(argv[7]);
       for (std::string w; std::getline(list, w, ',');)
         rates.push_back(std::stod(w));
       Require(!rates.empty(), "multi: no writes_per_sec");
-      return Multi(argv[2], argv[3], argv[4], std::stoi(argv[5]), std::stod(argv[6]), rates,
+      return Multi(argv[2], argv[3], argv[4], reader_counts, std::stod(argv[6]), rates,
                    argc > 8 ? std::stoull(argv[8]) : 1, argc > 9 ? std::stod(argv[9]) : 2,
                    argc > 10 ? argv[10] : "rotate");
     }

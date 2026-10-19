@@ -47,10 +47,12 @@ import argparse
 import json
 import math
 import os
+import queue
 import shutil
 import statistics
 import subprocess
 import sys
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -106,25 +108,57 @@ def env_for(system, q, sf=20):
     return env
 
 
-def run(cmd, env, log, timeout, lines=1):
+def run(cmd, env, log, timeout, lines=1, idle_timeout=None, on_result=None):
+    """Runs `cmd` (stderr to `log`) and returns its last `lines` JSON stdout lines (lines > 1: a list, the missing
+    ones replaced by the error).  Each JSON line goes to on_result(index, result) as it arrives, so the runs that
+    finished survive a later timeout or crash.  Killed after `timeout` seconds in all, or after `idle_timeout`
+    seconds in which neither stdout nor the log grew (a stuck build or run)."""
     t0 = time.time()
+    results, error = [], None
     with open(log, "a") as err:
         err.write("$ " + " ".join(cmd) + "\n")
         err.flush()
-        try:
-            p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=err, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return {"error": f"timeout after {timeout}s"}
-    if p.returncode != 0:
-        return {"error": f"exit {p.returncode} (see {log})"}
-    try:
-        rs = [json.loads(x) for x in p.stdout.strip().splitlines()[-lines:]]
-        assert len(rs) == lines
-    except (ValueError, AssertionError):
-        return {"error": f"no JSON output (see {log})"}
-    for r in rs:
-        r["wall_s"] = round(time.time() - t0, 1)
-    return rs[0] if lines == 1 else rs
+        p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=err, text=True)
+        out = queue.Queue()
+        threading.Thread(target=lambda: [out.put(x) for x in p.stdout] + [out.put(None)], daemon=True).start()
+        last, log_size = t0, os.path.getsize(log)
+        while True:
+            try:
+                x = out.get(timeout=5)
+            except queue.Empty:
+                x = ""
+            if x is None:
+                break
+            now = time.time()
+            if x.lstrip().startswith("{"):
+                try:
+                    r = json.loads(x)
+                except ValueError:
+                    r = None
+                if r is not None:
+                    r["wall_s"] = round(now - t0, 1)
+                    if on_result:
+                        on_result(len(results), r)
+                    results.append(r)
+                    last = now
+            if os.path.getsize(log) != log_size:
+                log_size, last = os.path.getsize(log), now
+            if now - t0 > timeout:
+                error = f"timeout after {timeout}s"
+            elif idle_timeout and now - last > idle_timeout:
+                error = f"stalled: no progress for {idle_timeout}s (see {log})"
+            if error:
+                p.kill()
+                break
+        p.wait()
+    if error is None and p.returncode != 0:
+        error = f"exit {p.returncode} (see {log})"
+    if error is None and len(results) < lines:
+        error = f"no JSON output (see {log})"
+    if lines == 1:
+        return {"error": error} if error else results[-1]
+    rs = results[-lines:] if not error else results[:lines]
+    return rs + [{"error": error}] * (lines - len(rs))
 
 
 def fresh_copy(db, work, name):
@@ -247,11 +281,20 @@ def multi_line(r):
         return "ERROR " + r["error"]
     return (f"qps {r['qps']:.0f}  writes {r['writes']} ({r['writes_per_sec']:.1f}/s of {r['writes_per_sec_target']:g}) "
             f"commit p50 {r['commit_p50_us'] / 1000:.1f}ms p99 {r['commit_p99_us'] / 1000:.1f}ms max "
-            f"{r['max_commit_us'] / 1000:.0f}ms  errors read {r['read_errors']} write {r['write_errors']}")
+            f"{r['max_commit_us'] / 1000:.0f}ms  errors read {r['read_errors']} write {r['write_errors']}"
+            + "".join(f"  {k.upper()} {v}" for k, v in multi_suspect(r).items()))
 
 
-def multi_dir(a, rates, w, k):
-    d = os.path.join(a.out, rate_name(w)) if len(rates) > 1 else a.out
+def multi_suspect(r):
+    """What makes an accelerator run's reads not the accelerators' alone: SQL fallbacks, stale installs."""
+    counts = {"fallbacks": r.get("fallbacks", 0),
+              "stale_installs": sum(p.get("stale_installs", 0) for p in r.get("per_accel", []))}
+    return {k: v for k, v in counts.items() if v}
+
+
+def multi_dir(a, rates, w, k, readers=None):
+    d = os.path.join(a.out, f"r{readers}") if readers is not None and len(a.readers) > 1 else a.out
+    d = os.path.join(d, rate_name(w)) if len(rates) > 1 else d
     return os.path.join(d, f"rep{k}") if a.repeats > 1 else d
 
 
@@ -397,25 +440,41 @@ def cmd_multi(a):
         print(f"multi {name} ({len(a.queries)} accelerators, {a.reader_mode} readers, rates "
               f"{' '.join(rate_name(w) for w in rates)}, {a.repeats} repetition(s)) {time.strftime('%T')}", flush=True)
         env = many_env(a, system)
-        n = len(rates) * a.repeats
-        rs = run([a.bin, "multi", db, phase, spec_path, str(a.readers), str(a.seconds), ",".join(f"{w:g}" for w in rates),
-                  str(reps[0][1]), str(a.warmup), a.reader_mode], env, log, a.timeout, lines=n)
-        drop(db)
-        rs = rs if isinstance(rs, list) else [rs] * n  # an error: every run failed
-        runs = [(w, k, seed) for w in rates for k, seed, _ in reps]  # the binary's order: rate-major
-        for (w, k, seed), r in zip(runs, rs):
+        runs = [(n_r, w, k, seed) for n_r in a.readers for w in rates for k, seed, _ in reps]  # the binary's order
+        suspect = []
+
+        def save(i, r):  # each run's result as it arrives
+            if i >= len(runs):
+                return
+            n_r, w, k, seed = runs[i]
             r = dict(r, system=name, queries=a.queries, rate=rate_name(w), rep=k, seed=seed)
-            d = multi_dir(a, rates, w, k)
+            d = multi_dir(a, rates, w, k, n_r)
             os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, f"multi_{name}.json"), "w") as f:
                 json.dump(r, f, indent=1)
-            if "build_ms" in r and w == rates[0] and k == 0:
+            if "build_ms" in r and i == 0:
                 print(f"  build {r['build_ms'] / 1000:.0f}s", flush=True)
-            print(f"  {rate_name(w):>9} rep {k}: " + multi_line(r), flush=True)
-    for w in rates:
-        d = os.path.join(a.out, rate_name(w)) if len(rates) > 1 else a.out
-        print(f"\n=== {rate_name(w)}")
-        summary(d)
+            if multi_suspect(r):
+                suspect.append(i)
+            print(f"  {n_r:>3} readers {rate_name(w):>9} rep {k}: " + multi_line(r), flush=True)
+
+        rs = run([a.bin, "multi", db, phase, spec_path, ",".join(map(str, a.readers)), str(a.seconds),
+                  ",".join(f"{w:g}" for w in rates),
+                  str(reps[0][1]), str(a.warmup), a.reader_mode], env, log, a.timeout, lines=len(runs),
+                 idle_timeout=a.idle_timeout, on_result=save)
+        drop(db)
+        rs = rs if isinstance(rs, list) else [rs] * len(runs)  # an error: every run failed
+        for i, r in enumerate(rs):
+            if "error" in r:
+                save(i, r)
+        if suspect:
+            print(f"  {name}: {len(suspect)}/{len(runs)} runs had SQL fallbacks or stale installs "
+                  "(not the accelerators' reads alone)", flush=True)
+    for n_r in a.readers:
+        for w in rates:
+            d = os.path.dirname(multi_dir(a, rates, w, 0, n_r)) if a.repeats > 1 else multi_dir(a, rates, w, 0, n_r)
+            print(f"\n=== {n_r} readers, {rate_name(w)}")
+            summary(d)
 
 
 def cmd_cycle(a):
@@ -644,6 +703,9 @@ def main():
                        help="repetitions, each with its own parameter draw (the same draw for every system)")
         p.add_argument("--sf", type=float, default=20, help="scale factor of --db (TPC-H Q11's fraction is 0.0001/SF)")
         p.add_argument("--timeout", type=int, default=4 * 3600, help="seconds per run")
+        p.add_argument("--idle-timeout", type=int, default=1200,
+                       help="multi: kill a run whose output and log have not grown for this long (a stuck build or "
+                            "cell; the longest SF20 build of one accelerator is ~11 min); 0: never")
     r = sub.choices["read"]
     r.add_argument("--reps", type=int, default=5)
     r.add_argument("--copy", action="store_true", help="run each on a fresh copy of the database")
@@ -661,7 +723,7 @@ def main():
     c.add_argument("--no-base", action="store_true",
                    help="skip the DuckDB baseline runs (pair with an earlier run's, same --seed and settings)")
     m = sub.choices["multi"]
-    m.add_argument("--readers", type=int, default=8)
+    m.add_argument("--readers", default="8", help="reader thread count(s): one or a list ('32 64'), one run each")
     m.add_argument("--seconds", type=float, default=120)
     m.add_argument("--wps", default="5", help="writer target(s), writes per second: one rate or a list "
                    "(\"5 10 20 40 -1\"; -1 uncapped); the accelerators are built once per system")
@@ -689,6 +751,11 @@ def main():
         w.add_argument("--dim-after-rf", action="store_true",
                        help="every RF commit is followed by one point write of each kind on part / partsupp / supplier / "
                             "nation / region (the tables RF leaves alone), unpaced; exported as ACCEL_DIM_AFTER_RF")
+        w.add_argument("--write-kinds", default=None,
+                       help="point writes only, these kinds in turn (comma-separated, e.g. 'partsupp update,customer "
+                            "update'), every one paced; exported as ACCEL_WRITE_KINDS")
+        w.add_argument("--write-batch", type=int, default=None,
+                       help="with --write-kinds: rows (keys) per point update, one commit; exported as ACCEL_WRITE_BATCH")
         w.add_argument("--max-write-commits", type=int, default=0,
                        help="end the run after this many commits (calibration; exported as ACCEL_WRITE_MAX_COMMITS)")
     y = sub.choices["cycle"]
@@ -730,12 +797,18 @@ def main():
         os.environ["ACCEL_DIM_AFTER_RF"] = "1"
     if getattr(a, "rf_only", False):
         os.environ["ACCEL_RF_ONLY"] = "1"
+    if getattr(a, "write_kinds", None):
+        os.environ["ACCEL_WRITE_KINDS"] = a.write_kinds
+    if getattr(a, "write_batch", None):
+        os.environ["ACCEL_WRITE_BATCH"] = str(a.write_batch)
     if getattr(a, "rf_dir", None):
         os.environ["ACCEL_RF_DIR"] = os.path.abspath(a.rf_dir)
     if getattr(a, "batch_orders", None):
         os.environ["ACCEL_RF_BATCH_ORDERS"] = str(a.batch_orders)
     a.queries = [int(x) for x in a.queries.replace(",", " ").split()]
     a.systems = a.systems.replace(",", " ").split()
+    if a.mode == "multi":
+        a.readers = [int(r) for r in str(a.readers).replace(",", " ").split()]
     assert all(s in SYSTEMS for s in a.systems), f"systems: {list(SYSTEMS)}"
     assert os.path.exists(a.bin), f"no {a.bin} (cmake --build build-verus-duckdb --target aux_compare)"
     assert os.path.exists(a.db), f"no database {a.db}"
