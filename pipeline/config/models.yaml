@@ -1,17 +1,10 @@
 # Codex exec for analysis + implementation + validation + optimization + audit + per-layer critique.
-# Requires: Codex CLI on PATH, OPENROUTER_API_KEY, pip install -e ".[codex]"
-#
-#   python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
-#     --models-config pipeline/config/models.yaml
-provider: openrouter
+# Requires: Codex CLI on PATH and OPENROUTER_API_KEY.
 api_key_env: OPENROUTER_API_KEY
-openrouter_base_url: https://openrouter.ai/api/v1
 
-codex_bin: /home/akhilvb/.local/bin/codex
+codex_bin: codex
 codex_config_path: pipeline/.codex/config.toml
 codex_timeout_sec: 7200
-codex_seed_max_chars: 120000
-codex_seed_preserve_recent_cycles: 2
 # Required for MCP tools under `codex exec` (otherwise: "user cancelled MCP tool call").
 codex_bypass_approvals_and_sandbox: true
 

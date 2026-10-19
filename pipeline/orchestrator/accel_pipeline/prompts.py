@@ -39,7 +39,8 @@ def render_prompt(
         key = match.group(1)
         return ctx.get(key, match.group(0))
 
-    rendered = re.sub(r"\{\{(\w+)\}\}", repl, template)
+    # twice: injected shared docs (hard_guidelines, ...) carry tokens of their own
+    rendered = re.sub(r"\{\{(\w+)\}\}", repl, re.sub(r"\{\{(\w+)\}\}", repl, template))
     # Concurrent pack workers: rewrite legacy build-release tokens so Codex native
     # shell (which bypasses run_pipeline_command rewrites) uses this worker's build dir.
     build_name = pipeline_config.build_dir.name

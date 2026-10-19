@@ -8,7 +8,7 @@ Four-stage pipeline for generating TPC-H query accelerators:
 
 - Python 3.11+
 - API keys in environment or repo-root `.env` (copy from `.env.example`)
-- `CURSOR_API_KEY` (default backend) or `OPENROUTER_API_KEY` / `OPENAI_API_KEY` per `config/models.yaml`
+- `OPENROUTER_API_KEY` and the [Codex CLI](https://github.com/openai/codex) on `PATH` (the only agent harness)
 - Release build at `build-release/` (for gate scripts)
 - DuckDB databases in `accelerator-codegen-duckdb`
 
@@ -25,29 +25,14 @@ cp .env.example .env
 
 ```bash
 cd pipeline/orchestrator
-pip install -e ".[cursor]"
-```
-
-For OpenAI-only (no Cursor SDK):
-
-```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 ## Run (full pipeline)
 
 ```bash
-export CURSOR_API_KEY=cursor_...
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3
-```
-
-### OpenRouter
-
-```bash
-pip install -e ".[openrouter]"
 export OPENROUTER_API_KEY=sk-or-...
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
-  --models-config pipeline/config/models.openrouter.yaml
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3
 ```
 
 ## Run a single stage
@@ -129,32 +114,20 @@ primary's copy into each worker worktree at stage start and after a publish; wor
 never copies `prims/`. Gate `prims_tests` (`pipeline/gates/run_prims_tests.sh`) builds and runs
 `test_prims`, checks the vocabulary and that the library only grew relative to HEAD.
 
-## Agent backends
+## Codex exec (the agent harness)
 
-Set `provider` in `config/models.yaml` (and optional per-stage overrides via `stage_providers`):
+Every agent step runs `codex exec` against OpenRouter, with Codex's native
+edit/search/shell plus an MCP server (`accel_pipeline`, `orchestrator/accel_pipeline/mcp_server.py`)
+for gates, profile digests, A/B trials and the other pipeline tools.
 
-| Provider | Key | Install |
-|----------|-----|---------|
-| `cursor` (default) | `CURSOR_API_KEY` | `pip install -e ".[cursor]"` |
-| `openai` | `OPENAI_API_KEY` | `pip install -e .` |
-| `openrouter` | `OPENROUTER_API_KEY` | `pip install -e ".[openrouter]"` |
-| `codex_exec` (via `stage_providers`) | `OPENROUTER_API_KEY` + Codex CLI | `pip install -e ".[codex]"` |
-
-### Codex exec (analysis + implementation + optimization)
-
-Uses Codex CLI native edit/search/shell plus an MCP server for gates/profile digests/A/B:
-
-```bash
-pip install -e ".[codex]"
-# install Codex CLI separately; ensure `codex` is on PATH
-export OPENROUTER_API_KEY=sk-or-...
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
-  --models-config pipeline/config/models.yaml
-```
-
-Config: [`config/models.yaml`](config/models.yaml) + [`pipeline/.codex/config.toml`](pipeline/.codex/config.toml) (OpenRouter model provider + `accel_pipeline` MCP). Hard guidelines live in `prompts/shared/hard_guidelines.md`.
-
-Analysis and audit stay on OpenRouter Agents when using `models.yaml`.
+- Stages, models and presets: [`config/models.yaml`](config/models.yaml) (`stage_providers` must name
+  every stage; an unlisted stage is an error). `--models-config` selects another file.
+- `CODEX_HOME` (`pipeline/.codex/`, gitignored; per-worker homes under `pipeline/.codex/workers/`)
+  holds the OpenRouter model provider and the MCP server definition. Missing, it is created from
+  [`codex/config.template.toml`](codex/config.template.toml); the MCP launcher is
+  [`codex/run_mcp_server.sh`](codex/run_mcp_server.sh).
+- Hard guidelines for agents: `prompts/shared/hard_guidelines.md`; Codex tooling guide:
+  `prompts/shared/codex_tooling.md`.
 
 ### Concurrent pack (shared tree, no stage barriers)
 
@@ -162,8 +135,7 @@ Run several query pipelines in parallel on one checkout. Isolation is **separate
 
 ```bash
 cd pipeline/orchestrator && source .venv/bin/activate
-accel-pipeline-pack --pack tpch_aux_parallel \
-  --models-config pipeline/config/models.yaml
+accel-pipeline-pack --pack tpch_aux_parallel
 # or: python -m accel_pipeline.run_pack --pack tpch_aux_parallel ...
 ```
 
@@ -172,36 +144,6 @@ Pack YAML examples:
 - [`config/packs/tpch_aux_remaining.yaml`](config/packs/tpch_aux_remaining.yaml) — Q4/Q7/Q8/Q13/Q15/Q19/Q20/Q22
 
 Shared path globs: `shared_paths` in [`config/default.yaml`](config/default.yaml). Logs/summary under `pipeline/artifacts/packs/`.
-
-Set `provider: openrouter` in `config/models.yaml` (see `config/models.openrouter.yaml` for a starter config). OpenRouter Agents uses the same custom pipeline tools as Cursor (`read_file`, `apply_patch`, `run_command`, A/B benchmark tools, etc.) via the OpenAI Agents SDK + LiteLLM.
-
-### Cursor SDK timeouts and bridge lifecycle
-
-The Cursor SDK's default client launches a **global** bridge subprocess with `os.getcwd()` as workspace and a **60s** unary HTTP timeout. The pipeline instead:
-
-- Launches a **dedicated owned bridge per stage** with workspace = repo root (`accelerator-codegen/`)
-- Uses **300s unary / 7200s stream** timeouts by default
-- Retries the stage on bridge failures (default 2 retries)
-
-Override if needed:
-
-```bash
-export ACCEL_PIPELINE_CURSOR_UNARY_TIMEOUT=600
-export ACCEL_PIPELINE_CURSOR_STREAM_TIMEOUT=14400
-export ACCEL_PIPELINE_CURSOR_BRIDGE_LAUNCH_TIMEOUT=180
-export ACCEL_PIPELINE_CURSOR_BRIDGE_RETRIES=4
-```
-
-For maximum stability, run a persistent external bridge (e.g. from Cursor CLI) and point the pipeline at it:
-
-```bash
-export CURSOR_SDK_BRIDGE_URL=http://127.0.0.1:PORT
-export CURSOR_SDK_BRIDGE_TOKEN=...
-```
-
-If you see `NetworkError: Connection refused`, retry with `--resume`. With the dedicated-bridge fix, this should be rare; if it persists, use an external bridge.
-
-If you see `Missing value for --tool-callback-auth-token`, that is an intermittent cursor-sdk bridge bug (~1/64 launches) when the generated callback token starts with `-`. The pipeline retries automatically; you can also `--resume` the failed stage or upgrade `cursor-sdk` (`pip install -U 'cursor-sdk>=1.0.26'` in `pipeline/orchestrator`).
 
 ## TPC-H scale factors
 
@@ -225,9 +167,8 @@ built from the query alone (no C++ accelerator or other Verus kernel is
 visible to the agents). Every agent step runs on codex exec.
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --mode verus \
-  --models-config pipeline/config/models.yaml
-accel-pipeline-pack --pack tpch_aux_parallel --mode verus --models-config pipeline/config/models.yaml
+python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --mode verus
+accel-pipeline-pack --pack tpch_aux_parallel --mode verus
 ```
 
 Stages (`accel_pipeline/verus/stages.py`): preflight → spec (frozen from the
@@ -325,11 +266,9 @@ from-scratch**: conventional paths come from `config/engine_backend.yaml`.
 Agents must **not** read or copy other engine trees.
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 0 --workload engine_postgres \
-  --models-config pipeline/config/models.yaml
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_postgres
 
-python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
-  --models-config pipeline/config/models.yaml
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql
 
 # Single layer (dry-run)
 python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
