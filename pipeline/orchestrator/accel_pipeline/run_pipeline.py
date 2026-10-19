@@ -225,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"worker isolation: {isolation_summary(pipeline_config)}", file=sys.stderr)
     repo_root = Path(pipeline_config.repo_root)
     model_config = load_model_config(args.models_config, repo_root=primary_root)
-    print(f"agent provider: {model_config.provider}", file=sys.stderr)
+    print(f"agent provider: {', '.join(sorted(set(model_config.stage_providers.values())))}", file=sys.stderr)
     query = args.query
     if workload.get("query_number") is not None and int(workload["query_number"]) != query:
         if workload.get("workload_kind") != "engine_backend":

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from accel_pipeline.config import ModelConfig, PipelineConfig
 
@@ -37,8 +36,8 @@ def _implementation_family(stage: str) -> bool:
 
 
 def resolve_stage_provider(stage: str, model_config: ModelConfig) -> str:
-    """Per-stage provider override, then parent fallback, then global provider."""
-    providers = model_config.stage_providers or {}
+    """Per-stage provider: the stage's own entry, else its family or parent stage's; unknown stages raise."""
+    providers = model_config.stage_providers
     if stage in providers:
         return providers[stage]
     if is_critique_stage(stage) and "layer_critique" in providers:
@@ -50,7 +49,7 @@ def resolve_stage_provider(stage: str, model_config: ModelConfig) -> str:
         return providers[parent]
     if stage in _OPTIMIZATION_STAGE_FALLBACKS and "optimization_unified" in providers:
         return providers["optimization_unified"]
-    return model_config.provider
+    raise KeyError(f"no provider configured for stage {stage!r} (stage_providers)")
 
 
 def resolve_preset(stage: str, model_config: ModelConfig, overrides: dict[str, str] | None = None) -> str:
@@ -93,45 +92,17 @@ def make_model_id(
 ) -> str:
     """Return the model id string for logging and dry-run display."""
     provider = resolve_stage_provider(stage, model_config)
-    model_id = resolve_preset(stage, model_config, overrides)
-
-    if provider in {"cursor", "openai", "openrouter", "codex_exec"}:
-        if provider != "cursor" or model_config.api_key_env:
-            _require_api_key(model_config)
-        return model_id
-
-    raise ValueError(f"unsupported provider: {provider!r}")
+    if provider != "codex_exec":
+        raise ValueError(f"unsupported provider: {provider!r}")
+    _require_api_key(model_config)
+    return resolve_preset(stage, model_config, overrides)
 
 
 def resolve_agent_model(
     stage: str,
-    pipeline_config: PipelineConfig,  # noqa: ARG001 — reserved for future provider options
+    pipeline_config: PipelineConfig,
     model_config: ModelConfig,
     overrides: dict[str, str] | None = None,
-) -> str | Any:
-    """Return the model object/string passed to the agent backend."""
-    provider = resolve_stage_provider(stage, model_config)
-    preset = resolve_preset(stage, model_config, overrides)
-
-    if provider == "cursor":
-        _require_api_key(model_config)
-        return preset
-
-    if provider == "openai":
-        _require_api_key(model_config)
-        return preset
-
-    if provider == "codex_exec":
-        _require_api_key(model_config)
-        return preset
-
-    if provider == "openrouter":
-        from accel_pipeline.backends.openai_agents import build_openrouter_model
-
-        return build_openrouter_model(
-            preset,
-            api_key_env=model_config.api_key_env,
-            base_url=model_config.openrouter_base_url,
-        )
-
-    raise ValueError(f"unsupported provider: {provider!r}")
+) -> str:
+    """Return the model passed to the agent backend."""
+    return make_model_id(stage, pipeline_config, model_config, overrides)

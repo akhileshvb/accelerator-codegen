@@ -15,17 +15,13 @@ from accel_pipeline.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
 
 @dataclass
 class ModelConfig:
-    provider: str
     api_key_env: str
     presets: dict[str, str]
     stages: dict[str, str]
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
     stage_providers: dict[str, str] = field(default_factory=dict)
     codex_bin: str = "codex"
     codex_config_path: str = "pipeline/.codex/config.toml"
     codex_timeout_sec: int = 7200
-    codex_seed_max_chars: int = 120_000
-    codex_seed_preserve_recent_cycles: int = 2
     # Headless codex exec cancels MCP tools without this (openai/codex#24135).
     codex_bypass_approvals_and_sandbox: bool = True
     # Per-stage reasoning effort passed to codex (model_reasoning_effort):
@@ -74,10 +70,6 @@ class PipelineConfig:
     optimization_persistent_worker: bool = True
     optimization_worker_max_turns_per_candidate: int = 0
     optimization_worker_safety_cap_turns: int = 80
-    optimization_openai_auto_previous_response_id: bool = True
-    optimization_openrouter_history_max_chars: int = 120_000
-    optimization_openrouter_preserve_recent_cycles: int = 2
-    optimization_openrouter_tool_output_summary_chars: int = 80
     optimization_hot_path_digest_max_chars: int = 25_000
     optimization_turn_delta_max_chars: int = 4_000
     optimization_checkpoint_file: str = "optimization_worker_checkpoint.json"
@@ -337,8 +329,6 @@ def load_pipeline_config(
     gates_rel = data.get("gates_dir", "pipeline/gates")
     opt = data.get("optimization", {})
     crash_debug = data.get("crash_debug", {})
-    continuation = dict(opt.get("continuation") or {})
-    openrouter_history = dict(opt.get("openrouter_history") or {})
     attempt_budgets = dict(opt.get("attempt_budgets") or {})
     patch_budgets = dict(opt.get("patch_budgets") or {})
     max_turns = dict(opt.get("max_turns") or {})
@@ -398,14 +388,6 @@ def load_pipeline_config(
         optimization_persistent_worker=bool(opt.get("persistent_worker", True)),
         optimization_worker_max_turns_per_candidate=int(opt.get("worker_max_turns_per_candidate", 0)),
         optimization_worker_safety_cap_turns=int(opt.get("worker_safety_cap_turns", 80)),
-        optimization_openai_auto_previous_response_id=bool(
-            continuation.get("openai_auto_previous_response_id", True)
-        ),
-        optimization_openrouter_history_max_chars=int(openrouter_history.get("max_chars", 120_000)),
-        optimization_openrouter_preserve_recent_cycles=int(openrouter_history.get("preserve_recent_cycles", 2)),
-        optimization_openrouter_tool_output_summary_chars=int(
-            openrouter_history.get("tool_output_summary_chars", 80)
-        ),
         optimization_hot_path_digest_max_chars=int(opt.get("hot_path_digest_max_chars", 25_000)),
         optimization_turn_delta_max_chars=int(opt.get("turn_delta_max_chars", 4_000)),
         optimization_checkpoint_file=str(opt.get("checkpoint_file", "optimization_worker_checkpoint.json")),
@@ -462,17 +444,13 @@ def load_model_config(path: Path | None = None, repo_root: Path | None = None) -
     cfg_path = _resolve_config_path(root, path or (pipeline_root(root) / "config" / "models.yaml"))
     data = _load_yaml(cfg_path)
     return ModelConfig(
-        provider=str(data.get("provider", "openai")),
-        api_key_env=str(data.get("api_key_env", "OPENAI_API_KEY")),
+        api_key_env=str(data.get("api_key_env", "OPENROUTER_API_KEY")),
         presets=dict(data.get("presets", {})),
         stages=dict(data.get("stages", {})),
-        openrouter_base_url=str(data.get("openrouter_base_url", "https://openrouter.ai/api/v1")),
         stage_providers={str(k): str(v) for k, v in dict(data.get("stage_providers") or {}).items()},
         codex_bin=str(data.get("codex_bin", "codex")),
         codex_config_path=str(data.get("codex_config_path", "pipeline/.codex/config.toml")),
         codex_timeout_sec=int(data.get("codex_timeout_sec", 7200)),
-        codex_seed_max_chars=int(data.get("codex_seed_max_chars", 120_000)),
-        codex_seed_preserve_recent_cycles=int(data.get("codex_seed_preserve_recent_cycles", 2)),
         codex_bypass_approvals_and_sandbox=bool(
             data.get("codex_bypass_approvals_and_sandbox", True)
         ),
@@ -829,8 +807,6 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
     if not opt:
         return pipeline_config
     max_turns = dict(opt.get("max_turns") or {})
-    continuation = dict(opt.get("continuation") or {})
-    openrouter_history = dict(opt.get("openrouter_history") or {})
     attempt_budgets = dict(pipeline_config.optimization_attempt_budgets)
     if opt.get("attempt_budgets"):
         attempt_budgets.update(dict(opt["attempt_budgets"]))
@@ -953,28 +929,6 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         ),
         optimization_worker_safety_cap_turns=int(
             opt.get("worker_safety_cap_turns", pipeline_config.optimization_worker_safety_cap_turns)
-        ),
-        optimization_openai_auto_previous_response_id=bool(
-            continuation.get(
-                "openai_auto_previous_response_id",
-                pipeline_config.optimization_openai_auto_previous_response_id,
-            )
-        ),
-        optimization_openrouter_history_max_chars=int(
-            openrouter_history.get(
-                "max_chars", pipeline_config.optimization_openrouter_history_max_chars
-            )
-        ),
-        optimization_openrouter_preserve_recent_cycles=int(
-            openrouter_history.get(
-                "preserve_recent_cycles", pipeline_config.optimization_openrouter_preserve_recent_cycles
-            )
-        ),
-        optimization_openrouter_tool_output_summary_chars=int(
-            openrouter_history.get(
-                "tool_output_summary_chars",
-                pipeline_config.optimization_openrouter_tool_output_summary_chars,
-            )
         ),
         optimization_hot_path_digest_max_chars=int(
             opt.get("hot_path_digest_max_chars", pipeline_config.optimization_hot_path_digest_max_chars)
@@ -1115,10 +1069,6 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         optimization_persistent_worker=pipeline_config.optimization_persistent_worker,
         optimization_worker_max_turns_per_candidate=pipeline_config.optimization_worker_max_turns_per_candidate,
         optimization_worker_safety_cap_turns=pipeline_config.optimization_worker_safety_cap_turns,
-        optimization_openai_auto_previous_response_id=pipeline_config.optimization_openai_auto_previous_response_id,
-        optimization_openrouter_history_max_chars=pipeline_config.optimization_openrouter_history_max_chars,
-        optimization_openrouter_preserve_recent_cycles=pipeline_config.optimization_openrouter_preserve_recent_cycles,
-        optimization_openrouter_tool_output_summary_chars=pipeline_config.optimization_openrouter_tool_output_summary_chars,
         optimization_hot_path_digest_max_chars=pipeline_config.optimization_hot_path_digest_max_chars,
         optimization_turn_delta_max_chars=pipeline_config.optimization_turn_delta_max_chars,
         optimization_checkpoint_file=pipeline_config.optimization_checkpoint_file,

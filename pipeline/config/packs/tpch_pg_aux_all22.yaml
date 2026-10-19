@@ -7,7 +7,7 @@ engine_name: postgres
 concurrency: 3
 stage: all
 resume: true
-models_config: pipeline/config/models.codex.yaml
+models_config: pipeline/config/models.yaml
 
 workload_template: "tpch_q{q}_aux"
 

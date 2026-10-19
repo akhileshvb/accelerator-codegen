@@ -48,6 +48,14 @@ def render_prompt(
     return rendered
 
 
+def with_codex_tooling(pipeline_config: PipelineConfig, prompt: str) -> str:
+    """Append the Codex tooling guide unless the prompt already points at it."""
+    if "codex_tooling.md" in prompt:
+        return prompt
+    guide = pipeline_config.pipeline_root / "prompts" / "shared" / "codex_tooling.md"
+    return f"{prompt.rstrip()}\n\n{guide.read_text(encoding='utf-8')}"
+
+
 def save_rendered_prompt(
     pipeline_config: PipelineConfig,
     query: int,

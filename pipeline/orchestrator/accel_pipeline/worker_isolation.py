@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.backends.codex_exec import ensure_codex_config
 from accel_pipeline.config import PipelineConfig
 
 
@@ -75,21 +76,13 @@ def prepare_codex_home(
     base = base_codex_home or (Path(repo_root) / "pipeline" / ".codex")
     dest = default_codex_home_for_worker(repo_root, worker_id)
     dest.mkdir(parents=True, exist_ok=True)
-    src_cfg = base / "config.toml"
+    src_cfg = ensure_codex_config(base / "config.toml")
     dst_cfg = dest / "config.toml"
-    if src_cfg.is_file() and not dst_cfg.exists():
+    if not dst_cfg.exists():
         try:
             dst_cfg.symlink_to(src_cfg.resolve())
         except OSError:
             shutil.copy2(src_cfg, dst_cfg)
-    for name in ("run_mcp_server.sh",):
-        src = base / name
-        dst = dest / name
-        if src.is_file() and not dst.exists():
-            try:
-                dst.symlink_to(src.resolve())
-            except OSError:
-                shutil.copy2(src, dst)
     return dest
 
 

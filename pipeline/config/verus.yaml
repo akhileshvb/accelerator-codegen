@@ -1,6 +1,6 @@
 # Verus accelerator pipeline (--mode verus) defaults.  A workload's `verus:`
 # section overrides any key.  Every agent step runs on codex exec
-# (stage_providers verus_* in models.codex.yaml).
+# (stage_providers verus_* in models.yaml).
 
 # Names (defaults derived from the benchmark and query):
 #   crate: tpch_q21_vgen          kernel crate accelerators/<bench>/q<N>/verus_kit/<crate>/crate, C ABI <crate>_verus.h

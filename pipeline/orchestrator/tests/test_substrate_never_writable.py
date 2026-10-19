@@ -25,7 +25,6 @@ from accel_pipeline.config import (
     load_workload,
     resolve_workload_paths,
 )
-from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES
 from accel_pipeline.write_ownership import shell_command_layer_write, write_allowed
 
 REPO = Path(__file__).resolve().parents[3]
@@ -46,8 +45,9 @@ EXTRA_STAGES = (
     "", "implementation", "analysis", "optimization", "optimization_worker", "optimization_unified",
     "optimization_unified_patch", "optimization_fix", "crash_debug", "host_bootstrap", "audit",
     "adversarial_tests", "engine_backend", "impl_capture", "impl_runtime", "impl_scan", "verus_kernel",
+    "optimization_unified_hypothesis", "architecture_audit", "layer_critique", "validation",
 )
-STAGES = sorted(set(STAGE_TOOL_NAMES) | set(EXTRA_STAGES))
+STAGES = sorted(EXTRA_STAGES)
 
 
 def _workload_names() -> list[str]:
@@ -112,31 +112,6 @@ def _tmp_pipeline_config(tmp_path: Path, **kw) -> PipelineConfig:
         repo_root=tmp_path, pipeline_root=tmp_path / "pipeline", build_dir=tmp_path / "build",
         tpch_db_sf1=tmp_path / "a.duckdb", tpch_db_sf10=tmp_path / "b.duckdb", **kw,
     )
-
-
-@pytest.mark.parametrize("kind,engine", [("aux_state", "duckdb"), ("", "postgres"), ("engine_backend", "mysql")])
-def test_repo_tools_refuse_substrate(tmp_path: Path, kind: str, engine: str):
-    from accel_pipeline.tools.repo_tools import ToolContext, make_repo_tools
-
-    target = tmp_path / "substrate/aux/core/aux_types.hpp"
-    target.parent.mkdir(parents=True)
-    target.write_text("// substrate\n", encoding="utf-8")
-    pc = _tmp_pipeline_config(tmp_path, write_paths=["**", "substrate/**"], workload_kind=kind,
-                              engine_name=engine, benchmark_name="tpch")
-    tools = {t.__name__: t for t in make_repo_tools(ToolContext(pc, 6, stage="implementation"))}
-    calls = {
-        "write_file": dict(path="substrate/aux/core/aux_types.hpp", content="x"),
-        "apply_patch": dict(path="substrate/aux/core/aux_types.hpp", old_string="// substrate", new_string="x"),
-        "insert_lines": dict(path="substrate/aux/core/aux_types.hpp", after_line=1, content="x"),
-        "delete_file": dict(path="substrate/aux/core/aux_types.hpp"),
-    }
-    for name, kwargs in calls.items():
-        with pytest.raises(PermissionError, match="substrate"):
-            tools[name](**kwargs)
-    with pytest.raises(PermissionError):
-        tools["write_file"](path="substrate/new.hpp", content="x")
-    assert target.read_text(encoding="utf-8") == "// substrate\n"
-    assert not (tmp_path / "substrate/new.hpp").exists()
 
 
 @pytest.mark.parametrize("cmd", [

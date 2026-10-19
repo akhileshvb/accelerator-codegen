@@ -24,7 +24,6 @@ from accel_pipeline.host_bootstrap import (
     write_host_bootstrap_status,
 )
 from accel_pipeline.stages.base import resolve_stage_max_turns
-from accel_pipeline.tools.tool_policy import tool_usage_instructions
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -148,12 +147,6 @@ def test_host_bootstrap_gate_feedback_empty_log_tail_still_has_signal():
     assert "SIGABRT" in text
     assert "docker exec aborted" in text
     assert "(empty)" not in text
-
-
-def test_critique_host_bootstrap_tool_usage():
-    usage = tool_usage_instructions("critique_host_bootstrap")
-    assert "Host bootstrap critique workflow" in usage
-    assert "host_bootstrap_critique.json" in usage
 
 
 def _patch_bootstrap_dirs(tmp_path, monkeypatch):

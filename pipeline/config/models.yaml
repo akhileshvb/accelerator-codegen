@@ -1,25 +1,106 @@
-# Default: Cursor SDK (bills to your Cursor plan via CURSOR_API_KEY).
-# For OpenRouter: --models-config pipeline/config/models.openrouter.yaml
-# For Codex exec (impl/opt): --models-config pipeline/config/models.codex.yaml
-# Install: pip install -e ".[openrouter]" or ".[codex]"
-provider: cursor
-api_key_env: CURSOR_API_KEY
+# Codex exec for analysis + implementation + validation + optimization + audit + per-layer critique.
+# Requires: Codex CLI on PATH, OPENROUTER_API_KEY, pip install -e ".[codex]"
+#
+#   python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
+#     --models-config pipeline/config/models.yaml
+provider: openrouter
+api_key_env: OPENROUTER_API_KEY
+openrouter_base_url: https://openrouter.ai/api/v1
+
+codex_bin: /home/akhilvb/.local/bin/codex
+codex_config_path: pipeline/.codex/config.toml
+codex_timeout_sec: 7200
+codex_seed_max_chars: 120000
+codex_seed_preserve_recent_cycles: 2
+# Required for MCP tools under `codex exec` (otherwise: "user cancelled MCP tool call").
+codex_bypass_approvals_and_sandbox: true
+
+stage_providers:
+  analysis: codex_exec
+  adversarial_tests: codex_exec
+  host_bootstrap: codex_exec
+  implementation: codex_exec
+  validation: codex_exec
+  optimization: codex_exec
+  optimization_unified: codex_exec
+  optimization_unified_hypothesis: codex_exec
+  optimization_unified_patch: codex_exec
+  optimization_worker: codex_exec
+  optimization_fix: codex_exec
+  crash_debug: codex_exec
+  audit: codex_exec
+  architecture_audit: codex_exec
+  # Cheap per-layer critic (deepseek-v4-flash via Codex exec + OpenRouter).
+  layer_critique: codex_exec
+  # Verus accelerator pipeline (--mode verus): every agent step on codex exec.
+  verus_spec_audit: codex_exec
+  verus_analysis: codex_exec
+  verus_critic: codex_exec
+  verus_obligations_audit: codex_exec
+  verus_tests: codex_exec
+  verus_glue: codex_exec
+  verus_glue_audit: codex_exec
+  verus_kernel: codex_exec
+  verus_kernel_fix: codex_exec
+  verus_kernel_proofs: codex_exec
+  verus_kernel_advisor: codex_exec
+  verus_prooflib_lift: codex_exec
+  verus_opt_worker: codex_exec
+  verus_audit: codex_exec
+
+# Reasoning effort per stage (codex model_reasoning_effort: minimal | low | medium | high);
+# unset stages use the model's default.  Reviews run Sonnet 5 at `low` (the critic at `medium`): their material is
+# inlined in the prompt, and they answer one question each.
+stage_reasoning_effort:
+  verus_spec_audit: low
+  verus_critic: medium   # judges scale (SF3000 estimates) before hours of kernel work
+  verus_obligations_audit: low
+  verus_glue_audit: low
+  verus_audit: low
 
 presets:
-  default: composer-2.5
-  fast: composer-2.5
-  strong: composer-2.5
-  code: composer-2.5
-  cheap_code: composer-2.5
+  cheap_code: deepseek/deepseek-v4-flash
+  code: deepseek/deepseek-v4-pro
+  reasoning: openai/gpt-5.6-terra-pro
+  debug: openai/gpt-5.6-terra-pro
+  reviewer: anthropic/claude-sonnet-5
+  default: deepseek/deepseek-v4-pro
+  # Verus pipeline only (the C++ pipeline keeps the presets above).
+  # Reviews: a different family from the builders (OpenAI, Xiaomi).
+  verus_reasoning: openai/gpt-6.1-sol   # analysis, kernel + proofs, kernel fix, optimization
+  verus_code: xiaomi/mimo-v2.6-pro      # tests, glue, optimization worker (gated by validation / the contract check / the benchmark)
+  verus_review: anthropic/claude-sonnet-5   # spec / obligations / glue audits, critic, final audit
+  verus_advisor: openai/gpt-6.1-sol    # second opinion when kernel fixes stall (fresh session, without the stuck context)
 
 stages:
-  analysis: fast
-  adversarial_tests: fast
-  implementation: strong
+  # Verus pipeline steps
+  verus_spec_audit: verus_review
+  verus_analysis: verus_reasoning
+  verus_critic: verus_review
+  verus_obligations_audit: verus_review
+  verus_tests: verus_code
+  verus_glue: verus_code
+  verus_glue_audit: verus_review
+  verus_kernel: verus_reasoning     # code first (Sol)
+  verus_kernel_proofs: verus_reasoning   # proofs, proof fix rounds, integration fixes (Sol), same session
+  verus_kernel_fix: verus_reasoning
+  verus_prooflib_lift: verus_reasoning   # lifts a proven structure into the shared proof library
+  verus_kernel_advisor: verus_advisor         # diagnoses a stalled kernel; its advice goes back to the kernel's session
+  verus_opt_worker: verus_code
+  verus_audit: verus_review
+  analysis: reasoning
+  adversarial_tests: code
+  host_bootstrap: code
+  implementation: code
+  validation: code
+  # Parent stage name used by run_pipeline / make_model_id("optimization", ...)
+  optimization: code
   optimization_unified: code
+  optimization_unified_hypothesis: reasoning
+  optimization_unified_patch: code
   optimization_worker: code
   optimization_fix: code
-  crash_debug: strong
-  audit: strong
-  architecture_audit: strong
+  crash_debug: debug
+  audit: code
+  architecture_audit: reviewer
   layer_critique: cheap_code

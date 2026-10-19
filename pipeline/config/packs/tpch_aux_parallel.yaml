@@ -7,7 +7,7 @@ display_name: TPC-H aux concurrent pack
 concurrency: 3
 stage: all
 resume: true
-models_config: pipeline/config/models.codex.yaml
+models_config: pipeline/config/models.yaml
 
 # Optional template if an entry is just a query number.
 workload_template: "tpch_q{q}_aux"

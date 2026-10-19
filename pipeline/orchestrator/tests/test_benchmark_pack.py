@@ -93,13 +93,20 @@ def test_aux_write_paths_register_from_query_dir_not_backend() -> None:
     """The query registers its table function from its own directory; the DuckDB
     backend's table-function file (backends/duckdb/**) is the engine_backend run's."""
     from accel_pipeline.config import apply_workload_overrides
-    from accel_pipeline.tools.repo_tools import ToolContext, _is_writable
+    from accel_pipeline.write_ownership import write_allowed
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("tpch_q2_aux", REPO_ROOT)
     merged = apply_workload_overrides(pipeline_config, workload)
-    ctx = ToolContext(pipeline_config=merged, query=2, stage="implementation")
+
+    def writable(path: Path) -> bool:
+        ok, _reason = write_allowed(
+            REPO_ROOT, path, query=2, stage="implementation", write_paths=list(merged.write_paths),
+            pipeline_config=merged,
+        )
+        return ok
+
     target = REPO_ROOT / "backends/duckdb/api/duckdb_aux_table_functions.cpp"
     assert target.is_file()
-    assert not _is_writable(ctx, target)
-    assert _is_writable(ctx, REPO_ROOT / "accelerators/tpch/q2/duckdb/aux/register.cpp")
+    assert not writable(target)
+    assert writable(REPO_ROOT / "accelerators/tpch/q2/duckdb/aux/register.cpp")

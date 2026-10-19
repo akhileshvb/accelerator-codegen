@@ -3,11 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 from accel_pipeline.backends.base import AgentBackend, StageRunRequest, StageRunResult
-from accel_pipeline.backends.cursor_sdk import CursorSDKBackend
-from accel_pipeline.backends.openai_agents import build_openai_agents_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
 from accel_pipeline.paths import query_artifacts_dir
-from accel_pipeline.tools.tool_policy import build_stage_tool_registry, stage_tool_names
+
+_ARTIFACT_STAGES = frozenset(
+    {
+        "implementation",
+        "optimization_unified",
+        "optimization_unified_hypothesis",
+        "optimization_unified_patch",
+        "optimization_worker",
+        "optimization_fix",
+        "crash_debug",
+        "audit",
+    }
+)
 
 
 def create_agent_backend(
@@ -19,74 +29,33 @@ def create_agent_backend(
     model_config: ModelConfig,
     workload_name: str = "",
     optimization_iter: int = 0,
-    budget_tracker: Any | None = None,
 ) -> AgentBackend:
     from accel_pipeline.models import resolve_stage_provider
 
     resolved = provider or resolve_stage_provider(stage, model_config)
-    registry = build_stage_tool_registry(
-        pipeline_config,
-        query,
-        stage=stage,
-        workload_name=workload_name,
-        optimization_iter=optimization_iter,
-    )
-    if budget_tracker is not None:
-        from accel_pipeline.optimization_budget import wrap_with_budget
+    if resolved != "codex_exec":
+        raise ValueError(f"unsupported provider: {resolved!r}")
 
-        registry = wrap_with_budget(registry, budget_tracker)
     art_dir = None
-    compress_outputs = stage in (
-        "implementation",
-        "optimization_unified",
-        "optimization_unified_hypothesis",
-        "optimization_unified_patch",
-        "optimization_worker",
-        "optimization_fix",
-        "crash_debug",
-        "audit",
-    )
-    if compress_outputs and workload_name:
+    if stage in _ARTIFACT_STAGES and workload_name:
         workload = load_workload(workload_name, pipeline_config.repo_root)
         art_dir = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
 
-    if resolved == "cursor":
-        return CursorSDKBackend(
-            repo_root=pipeline_config.repo_root,
-            api_key_env=model_config.api_key_env,
-            tool_registry=registry,
-            art_dir=art_dir,
-            compress_outputs=compress_outputs,
-        )
+    from accel_pipeline.backends.codex_exec import CodexExecBackend
 
-    if resolved in {"openai", "openrouter"}:
-        return build_openai_agents_backend(
-            provider=resolved,
-            tool_registry=registry,
-            stage_tool_names=stage_tool_names(stage),
-            art_dir=art_dir,
-            compress_outputs=compress_outputs,
-        )
-
-    if resolved == "codex_exec":
-        from accel_pipeline.backends.codex_exec import CodexExecBackend
-
-        return CodexExecBackend(
-            pipeline_config=pipeline_config,
-            model_config=model_config,
-            query=query,
-            stage=stage,
-            workload_name=workload_name,
-            optimization_iter=optimization_iter,
-            art_dir=art_dir,
-        )
-
-    raise ValueError(f"unsupported provider: {resolved!r}")
+    return CodexExecBackend(
+        pipeline_config=pipeline_config,
+        model_config=model_config,
+        query=query,
+        stage=stage,
+        workload_name=workload_name,
+        optimization_iter=optimization_iter,
+        art_dir=art_dir,
+    )
 
 
 __all__ = [
     "AgentBackend",
-    "CursorSDKBackend",
     "StageRunRequest",
     "StageRunResult",
     "create_agent_backend",

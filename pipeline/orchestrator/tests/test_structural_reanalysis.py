@@ -238,16 +238,6 @@ class TestPipelineStateBackwardCompat:
 
 
 class TestReanalysisToolPolicy:
-    def test_implementation_stage_has_tool(self):
-        from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES
-
-        assert "request_structural_reanalysis" in STAGE_TOOL_NAMES["implementation"]
-        assert "request_gate" in STAGE_TOOL_NAMES["implementation"]
-        assert "request_structural_reanalysis" in STAGE_TOOL_NAMES["optimization_worker"]
-        assert "request_structural_reanalysis" in STAGE_TOOL_NAMES["optimization_unified"]
-        assert "request_structural_reanalysis" not in STAGE_TOOL_NAMES["analysis"]
-        assert "request_structural_reanalysis" not in STAGE_TOOL_NAMES["adversarial_tests"]
-
     def test_request_tool_rejects_exhausted_budget(self, tmp_path, monkeypatch):
         from accel_pipeline.config import load_pipeline_config
         from accel_pipeline.state import PipelineState, state_path

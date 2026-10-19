@@ -11,8 +11,7 @@ from accel_pipeline.pipeline_log import (
     log_stage_start,
     usage_from_metadata,
 )
-from accel_pipeline.prompts import render_prompt, save_rendered_prompt
-from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES, stage_tool_names, tool_usage_instructions
+from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 
 _UNLIMITED_STAGE_TURNS = 10_000
 
@@ -120,22 +119,9 @@ def run_agent_stage(
         optimization_iter=optimization_iter,
     )
     max_turns = resolve_stage_max_turns(pipeline_config.stage_max_turns, stage)
-    instructions = prompt
-    if stage_provider not in {"cursor", "codex_exec"}:
-        instructions = f"{prompt.rstrip()}\n\n{tool_usage_instructions(stage)}"
-    elif stage_provider == "codex_exec":
-        from pathlib import Path
+    instructions = with_codex_tooling(pipeline_config, prompt)
 
-        codex_doc = pipeline_config.pipeline_root / "prompts" / "shared" / "codex_tooling.md"
-        if codex_doc.is_file() and "codex_tooling.md" not in instructions:
-            instructions = f"{prompt.rstrip()}\n\n{codex_doc.read_text(encoding='utf-8')}"
-
-    begin_agent_run(
-        stage,
-        max_turns=max_turns,
-        tools=stage_tool_names(stage),
-        prompt_chars=len(instructions),
-    )
+    begin_agent_run(stage, max_turns=max_turns, prompt_chars=len(instructions))
 
     request = StageRunRequest(
         stage=stage,

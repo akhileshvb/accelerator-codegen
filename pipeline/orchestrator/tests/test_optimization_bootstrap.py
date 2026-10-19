@@ -10,17 +10,6 @@ from accel_pipeline.optimization_bootstrap import (
     format_bootstrap_markdown,
     load_editable_sources,
 )
-from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES
-
-
-def test_optimization_unified_has_no_read_tools() -> None:
-    tools = STAGE_TOOL_NAMES["optimization_unified"]
-    assert "write_file" in tools
-    assert "apply_patch" in tools
-    assert "read_file" not in tools
-    assert "read_reference_files" not in tools
-    assert "rip_grep" in tools
-    assert "search_repo" not in tools
 
 
 def test_bootstrap_includes_full_sources(tmp_path: Path) -> None:

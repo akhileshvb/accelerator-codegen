@@ -22,6 +22,23 @@ def sidecar_env_line(key: str, value: Any) -> str:
     return f"{key}={shlex.quote(str(value))}"
 
 
+_CODEX_DIR = Path(__file__).resolve().parents[3] / "codex"
+
+
+def ensure_codex_config(path: Path) -> Path:
+    """Materialize a missing CODEX_HOME config from the committed template (atomically: homes are shared)."""
+    if path.is_file():
+        return path
+    codex_dir = _CODEX_DIR
+    launcher = codex_dir / "run_mcp_server.sh"
+    text = (codex_dir / "config.template.toml").read_text(encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(text.replace("{{mcp_launcher}}", str(launcher)), encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
 class CodexExecBackend:
     name = "codex_exec"
 
@@ -56,22 +73,15 @@ class CodexExecBackend:
         )
 
     def _config_path(self) -> Path:
-        # Prefer per-worker CODEX_HOME when pack isolation is active.
-        worker_home = getattr(self._pipeline_config, "codex_home", None)
-        env_home = os.environ.get("ACCEL_PIPELINE_CODEX_HOME")
-        if worker_home:
-            path = Path(worker_home) / "config.toml"
-            if path.is_file():
-                return path
-        if env_home:
-            path = Path(env_home) / "config.toml"
-            if path.is_file():
-                return path
-        raw = getattr(self._model_config, "codex_config_path", "pipeline/.codex/config.toml")
-        path = Path(raw)
-        if not path.is_absolute():
-            path = self._pipeline_config.repo_root / path
-        return path
+        """The CODEX_HOME config: per-worker home, else ACCEL_PIPELINE_CODEX_HOME, else the configured path."""
+        home = self._pipeline_config.codex_home or os.environ.get("ACCEL_PIPELINE_CODEX_HOME")
+        if home:
+            path = Path(home) / "config.toml"
+        else:
+            path = Path(self._model_config.codex_config_path)
+            if not path.is_absolute():
+                path = self._pipeline_config.repo_root / path
+        return ensure_codex_config(path)
 
     def _write_mcp_env_sidecar(self, codex_home: Path) -> Path:
         """Write ACCEL_* for the MCP launcher — Codex often sanitizes child env."""
@@ -173,13 +183,10 @@ class CodexExecBackend:
         if self._art_dir is not None:
             env["ACCEL_PIPELINE_ART_DIR"] = str(self._art_dir)
 
-        # Codex loads model_providers from $CODEX_HOME/config.toml (user-level).
-        # Project .codex/ configs ignore model_providers, so point CODEX_HOME at
-        # the directory that contains our openrouter provider definition.
-        if config_path.is_file():
-            codex_home = config_path.parent
-            env["CODEX_HOME"] = str(codex_home)
-            self._write_mcp_env_sidecar(codex_home)
+        # Codex loads model_providers from $CODEX_HOME/config.toml (user-level), not from project configs.
+        codex_home = config_path.parent
+        env["CODEX_HOME"] = str(codex_home)
+        self._write_mcp_env_sidecar(codex_home)
 
         # task_dir: where the task file goes when codex runs in a sandbox that
         # does not share the host's /tmp.

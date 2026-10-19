@@ -80,28 +80,3 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
     assert "SecEdgarQ1" in header.read_text(encoding="utf-8")
     assert "query.hpp" in result["created"][0]
 
-
-def test_log_tool_call(capsys):
-    from accel_pipeline.agent_progress import begin_agent_turn, log_agent_message, log_tool_call
-
-    begin_agent_turn("implementation", 2)
-    log_tool_call("run_command", {"command": "ctest -R smoke"})
-    captured = capsys.readouterr()
-    assert "tool_call turn=2" in captured.err
-    assert "run_command" in captured.err
-    assert "ctest" in captured.err
-
-    class Block:
-        type = "tool_use"
-        name = "read_file"
-
-    class Msg:
-        content = [Block()]
-
-    class Message:
-        type = "assistant"
-        message = Msg()
-
-    log_agent_message("implementation", Message())
-    captured = capsys.readouterr()
-    assert "agent requested read_file" in captured.err

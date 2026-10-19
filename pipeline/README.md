@@ -148,12 +148,12 @@ pip install -e ".[codex]"
 # install Codex CLI separately; ensure `codex` is on PATH
 export OPENROUTER_API_KEY=sk-or-...
 python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
-  --models-config pipeline/config/models.codex.yaml
+  --models-config pipeline/config/models.yaml
 ```
 
-Config: [`config/models.codex.yaml`](config/models.codex.yaml) + [`pipeline/.codex/config.toml`](pipeline/.codex/config.toml) (OpenRouter model provider + `accel_pipeline` MCP). Hard guidelines live in `prompts/shared/hard_guidelines.md`.
+Config: [`config/models.yaml`](config/models.yaml) + [`pipeline/.codex/config.toml`](pipeline/.codex/config.toml) (OpenRouter model provider + `accel_pipeline` MCP). Hard guidelines live in `prompts/shared/hard_guidelines.md`.
 
-Analysis and audit stay on OpenRouter Agents when using `models.codex.yaml`.
+Analysis and audit stay on OpenRouter Agents when using `models.yaml`.
 
 ### Concurrent pack (shared tree, no stage barriers)
 
@@ -162,7 +162,7 @@ Run several query pipelines in parallel on one checkout. Isolation is **separate
 ```bash
 cd pipeline/orchestrator && source .venv/bin/activate
 accel-pipeline-pack --pack tpch_aux_parallel \
-  --models-config pipeline/config/models.codex.yaml
+  --models-config pipeline/config/models.yaml
 # or: python -m accel_pipeline.run_pack --pack tpch_aux_parallel ...
 ```
 
@@ -225,8 +225,8 @@ visible to the agents). Every agent step runs on codex exec.
 
 ```bash
 python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --mode verus \
-  --models-config pipeline/config/models.codex.yaml
-accel-pipeline-pack --pack tpch_aux_parallel --mode verus --models-config pipeline/config/models.codex.yaml
+  --models-config pipeline/config/models.yaml
+accel-pipeline-pack --pack tpch_aux_parallel --mode verus --models-config pipeline/config/models.yaml
 ```
 
 Stages (`accel_pipeline/verus/stages.py`): preflight → spec (frozen from the
@@ -325,10 +325,10 @@ Agents must **not** read or copy other engine trees.
 
 ```bash
 python -m accel_pipeline.run_pipeline --query 0 --workload engine_postgres \
-  --models-config pipeline/config/models.codex.yaml
+  --models-config pipeline/config/models.yaml
 
 python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
-  --models-config pipeline/config/models.codex.yaml
+  --models-config pipeline/config/models.yaml
 
 # Single layer (dry-run)
 python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \

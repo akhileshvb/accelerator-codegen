@@ -177,7 +177,7 @@ def run_agent(
         raise RuntimeError(
             f"Verus pipeline step {stage} resolves to provider {provider!r}: every Verus agent step runs on "
             f"codex_exec (set stage_providers.{stage}: codex_exec, e.g. --models-config "
-            "pipeline/config/models.codex.yaml)")
+            "pipeline/config/models.yaml)")
     # codex works in the workspace; its CODEX_HOME (and MCP launcher) stay the pipeline's
     codex_home = getattr(pipeline_config, "codex_home", None) or Path(ctx.pipeline_root) / ".codex"
     ws_config = dataclasses.replace(pipeline_config, repo_root=ctx.ws, codex_home=Path(codex_home))

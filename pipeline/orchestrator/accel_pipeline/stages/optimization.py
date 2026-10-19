@@ -40,7 +40,7 @@ def run(
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
 
     worker: OptimizationWorker | None = None
-    if not dry_run and worker_enabled(pipeline_config, model_config):
+    if not dry_run and worker_enabled(pipeline_config):
         worker = OptimizationWorker.create(
             pipeline_config=pipeline_config,
             model_config=model_config,

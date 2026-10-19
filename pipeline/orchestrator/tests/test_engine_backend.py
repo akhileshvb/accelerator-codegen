@@ -564,20 +564,6 @@ def test_layer_critique_feedback_and_load(tmp_path):
     assert "Invalidate(PartitionSet)" in text
 
 
-def test_critique_tools_are_read_only_plus_artifact_write():
-    from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES, stage_tool_names, tool_usage_instructions
-
-    names = stage_tool_names("critique_capture")
-    assert names == STAGE_TOOL_NAMES["layer_critique"]
-    assert "write_file" in names
-    assert "apply_patch" not in names
-    assert "run_command" not in names
-    usage = tool_usage_instructions("critique_capture")
-    assert "Layer critique workflow" in usage
-    assert "layer_contracts.md" in usage
-    assert "cat >" in usage or "LAST action" in usage or "last action" in usage.lower()
-
-
 def test_layer_gate_feedback_includes_log_tail(tmp_path):
     from accel_pipeline.gates import GateResult
     from accel_pipeline.stages.engine_backend import format_layer_gate_feedback

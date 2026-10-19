@@ -75,12 +75,6 @@ optimization:
   persistent_worker: true
   worker_max_turns_per_candidate: 0
   worker_safety_cap_turns: 80
-  continuation:
-    openai_auto_previous_response_id: true
-  openrouter_history:
-    max_chars: 120000
-    preserve_recent_cycles: 2
-    tool_output_summary_chars: 80
   hot_path_digest_max_chars: 25000
   turn_delta_max_chars: 4000
   checkpoint_file: optimization_worker_checkpoint.json

@@ -388,14 +388,6 @@ def test_prims_are_shared_lease_paths(primary):
     assert f"{P}/**" in DEFAULT_SHARED_PATH_GLOBS
 
 
-def test_tool_registered_for_aux_stages():
-    from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES
-
-    for stage in ("implementation", "optimization_unified", "optimization_worker", "optimization_fix"):
-        assert "primitive_publish" in STAGE_TOOL_NAMES[stage]
-    assert "primitive_publish" not in STAGE_TOOL_NAMES["audit"]
-
-
 def test_real_prims_are_workload_agnostic():
     r = subprocess.run(["python3", str(REAL_ROOT / "scripts/check_backend_query_free.py"), "--prims-only"],
                        capture_output=True, text=True)

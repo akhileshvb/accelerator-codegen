@@ -13,9 +13,6 @@ class StageRunRequest:
     model_id: str
     agent_model: str | Any | None = None
     max_turns: int = 15
-    previous_response_id: str | None = None
-    auto_previous_response_id: bool = False
-    run_input: str | list[Any] | None = None
 
 
 @dataclass

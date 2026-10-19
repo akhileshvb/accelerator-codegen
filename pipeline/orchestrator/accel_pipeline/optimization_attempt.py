@@ -70,9 +70,8 @@ from accel_pipeline.optimization_worker import OptimizationWorker
 from accel_pipeline.optimization_worker_checkpoint import load_worker_checkpoint
 from accel_pipeline.pipeline_log import log_event, log_stage_complete, log_stage_start
 from accel_pipeline.playbook import append_experiment_log
-from accel_pipeline.prompts import render_prompt, save_rendered_prompt
+from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
 from accel_pipeline.stages.base import resolve_optimization_max_turns
-from accel_pipeline.tools.tool_policy import tool_usage_instructions
 
 HYPOTHESIS_COMPLETE = "HYPOTHESIS_COMPLETE"
 PATCH_COMPLETE = "HYPOTHESIS_PATCH_COMPLETE"
@@ -140,7 +139,6 @@ def _try_honor_saturation(
     )
     if worker is not None:
         worker.pending.push(reject_msg)
-        worker.compact_between_cycles()
         worker.save_checkpoint()
     _record_failure(
         art,
@@ -381,16 +379,9 @@ def _run_agent_substage(
         model_config=model_config,
         workload_name=workload_name,
         optimization_iter=optimization_iter,
-        budget_tracker=None,
     )
 
-    instructions = prompt
-    if stage_provider not in {"cursor", "codex_exec"}:
-        instructions = f"{prompt.rstrip()}\n\n{tool_usage_instructions(stage)}"
-    elif stage_provider == "codex_exec":
-        codex_doc = pipeline_config.pipeline_root / "prompts" / "shared" / "codex_tooling.md"
-        if codex_doc.is_file() and "codex_tooling.md" not in instructions:
-            instructions = f"{prompt.rstrip()}\n\n{codex_doc.read_text(encoding='utf-8')}"
+    instructions = with_codex_tooling(pipeline_config, prompt)
 
     request = StageRunRequest(
         stage=stage,
@@ -1076,7 +1067,6 @@ def run_optimization_iteration(
                     hypothesis=hypothesis,
                     reason=f"cannot_test: {cycle.reason}",
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 if consecutive_fails >= consecutive_fail_stop:
                     break
@@ -1097,7 +1087,6 @@ def run_optimization_iteration(
                     hypothesis=hypothesis,
                     reason=cycle.reason or "worker_candidate_failed",
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 if consecutive_fails >= consecutive_fail_stop:
                     break
@@ -1129,7 +1118,6 @@ def run_optimization_iteration(
                         reverted=True,
                     )
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 _record_failure(art, attempt=attempt, hypothesis=hypothesis, reason=reason)
                 if infra or consecutive_fails >= consecutive_fail_stop:
@@ -1158,7 +1146,6 @@ def run_optimization_iteration(
                         reverted=True,
                     )
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 _record_failure(
                     art,
@@ -1190,7 +1177,6 @@ def run_optimization_iteration(
                         reverted=True,
                     )
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 _record_failure(
                     art,
@@ -1223,7 +1209,6 @@ def run_optimization_iteration(
                         reverted=True,
                     )
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 _record_failure(art, attempt=attempt, hypothesis=hypothesis, reason="auth_benchmark_failed")
                 if consecutive_fails >= consecutive_fail_stop:
@@ -1272,7 +1257,6 @@ def run_optimization_iteration(
                     workload=workload,
                     verdict=outcome.verdict,
                 )
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 if consecutive_fails >= consecutive_fail_stop:
                     break
@@ -1290,7 +1274,6 @@ def run_optimization_iteration(
                         improvement_pct=outcome.improvement_pct,
                         candidate_metrics=candidate.median_metrics,
                     )
-                    worker.compact_between_cycles()
                     worker.save_checkpoint()
                     if consecutive_fails >= consecutive_fail_stop:
                         break
@@ -1327,7 +1310,6 @@ def run_optimization_iteration(
                     },
                 )
                 clear_attempt_checkpoint(art)
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 continue
 
@@ -1369,7 +1351,6 @@ def run_optimization_iteration(
                     },
                 )
                 clear_attempt_checkpoint(art)
-                worker.compact_between_cycles()
                 worker.save_checkpoint()
                 if consecutive_fails >= consecutive_fail_stop:
                     break
@@ -1412,7 +1393,6 @@ def run_optimization_iteration(
                     "reason": outcome.reason,
                 },
             )
-            worker.compact_between_cycles()
             worker.save_checkpoint()
             continue
 
@@ -1765,7 +1745,7 @@ def run_optimization_iteration(
         query,
         stage="optimization",
         model_id=make_model_id("optimization", pipeline_config, model_config, model_overrides),
-        backend=model_config.provider,
+        backend="codex_exec",
         duration_ms=None,
         usage=None,
         optimization_iter=optimization_iter,

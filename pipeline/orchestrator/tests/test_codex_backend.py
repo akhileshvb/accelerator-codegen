@@ -17,8 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_resolve_stage_provider_codex_overrides():
-    cfg = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.codex.yaml", repo_root=REPO_ROOT)
-    assert cfg.provider == "openrouter"
+    cfg = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.yaml", repo_root=REPO_ROOT)
     assert resolve_stage_provider("analysis", cfg) == "codex_exec"
     assert resolve_stage_provider("audit", cfg) == "codex_exec"
     assert resolve_stage_provider("implementation", cfg) == "codex_exec"
@@ -38,41 +37,26 @@ def test_resolve_stage_provider_codex_overrides():
     assert resolve_preset("critique_host_bootstrap", cfg) == "deepseek/deepseek-v4-flash"
 
 
-def test_worker_enabled_for_codex_exec():
-    model = ModelConfig(
-        provider="openrouter",
-        api_key_env="OPENROUTER_API_KEY",
-        presets={"code": "x"},
-        stages={"optimization_worker": "code"},
-        stage_providers={"optimization_worker": "codex_exec"},
-    )
-    pc = PipelineConfig(
+def test_unknown_stage_provider_raises():
+    cfg = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.yaml", repo_root=REPO_ROOT)
+    with pytest.raises(KeyError, match="no_such_stage"):
+        resolve_stage_provider("no_such_stage", cfg)
+
+
+def _pipeline_config(**overrides) -> PipelineConfig:
+    return PipelineConfig(
         repo_root=REPO_ROOT,
         pipeline_root=REPO_ROOT / "pipeline",
         build_dir=REPO_ROOT / "build-release",
         tpch_db_sf1=REPO_ROOT.parent / "accelerator-codegen-duckdb" / "tpch_sf1.duckdb",
         tpch_db_sf10=REPO_ROOT.parent / "accelerator-codegen-duckdb" / "tpch_sf10.duckdb",
-        optimization_persistent_worker=True,
+        **overrides,
     )
-    assert worker_enabled(pc, model) is True
 
 
-def test_worker_disabled_for_cursor():
-    model = ModelConfig(
-        provider="cursor",
-        api_key_env="CURSOR_API_KEY",
-        presets={"default": "x"},
-        stages={},
-    )
-    pc = PipelineConfig(
-        repo_root=REPO_ROOT,
-        pipeline_root=REPO_ROOT / "pipeline",
-        build_dir=REPO_ROOT / "build-release",
-        tpch_db_sf1=REPO_ROOT.parent / "accelerator-codegen-duckdb" / "tpch_sf1.duckdb",
-        tpch_db_sf10=REPO_ROOT.parent / "accelerator-codegen-duckdb" / "tpch_sf10.duckdb",
-        optimization_persistent_worker=True,
-    )
-    assert worker_enabled(pc, model) is False
+def test_worker_enabled_follows_persistent_worker_flag():
+    assert worker_enabled(_pipeline_config(optimization_persistent_worker=True)) is True
+    assert worker_enabled(_pipeline_config(optimization_persistent_worker=False)) is False
 
 
 def test_mcp_server_uses_modern_sdk():
@@ -94,13 +78,27 @@ def test_mcp_server_uses_modern_sdk():
     assert hasattr(mod, "main")
 
 
-def test_codex_mcp_launcher_exists():
-    launcher = REPO_ROOT / "pipeline" / ".codex" / "run_mcp_server.sh"
+def test_codex_config_template_and_launcher_are_committed():
+    launcher = REPO_ROOT / "pipeline" / "codex" / "run_mcp_server.sh"
     assert launcher.is_file()
     assert launcher.stat().st_mode & 0o111
-    cfg = (REPO_ROOT / "pipeline" / ".codex" / "config.toml").read_text(encoding="utf-8")
-    assert "run_mcp_server.sh" in cfg
-    assert "required = true" in cfg or "required=true" in cfg
+    template = (REPO_ROOT / "pipeline" / "codex" / "config.template.toml").read_text(encoding="utf-8")
+    assert 'model_provider = "openrouter"' in template
+    assert "{{mcp_launcher}}" in template
+    assert "required = true" in template
+
+
+def test_ensure_codex_config_materializes_template_once(tmp_path):
+    from accel_pipeline.backends.codex_exec import ensure_codex_config
+
+    config = tmp_path / "home" / "config.toml"
+    assert ensure_codex_config(config) == config
+    text = config.read_text(encoding="utf-8")
+    assert f'command = "{REPO_ROOT}/pipeline/codex/run_mcp_server.sh"' in text
+    assert "{{" not in text
+    config.write_text("custom", encoding="utf-8")
+    ensure_codex_config(config)
+    assert config.read_text(encoding="utf-8") == "custom"
 
 
 def test_mcp_tool_callables_include_profile_digest(tmp_path):
@@ -150,7 +148,7 @@ def test_codex_exec_sets_codex_home(monkeypatch, tmp_path):
     from accel_pipeline.config import load_pipeline_config, load_model_config
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-    model = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.codex.yaml", repo_root=REPO_ROOT)
+    model = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.yaml", repo_root=REPO_ROOT)
     backend = CodexExecBackend(
         pipeline_config=pipeline_config,
         model_config=model,
@@ -216,7 +214,7 @@ def test_mcp_env_sidecar_quotes_values_with_spaces(monkeypatch, tmp_path):
     assert "docker" in line
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-    model = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.codex.yaml", repo_root=REPO_ROOT)
+    model = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.yaml", repo_root=REPO_ROOT)
     backend = CodexExecBackend(
         pipeline_config=pipeline_config,
         model_config=model,
@@ -261,7 +259,7 @@ def test_codex_exec_whitelists_engine_impl_mcp_tools(monkeypatch):
     from accel_pipeline.config import load_pipeline_config, load_model_config
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-    model = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.codex.yaml", repo_root=REPO_ROOT)
+    model = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.yaml", repo_root=REPO_ROOT)
     backend = CodexExecBackend(
         pipeline_config=pipeline_config,
         model_config=model,
@@ -311,16 +309,14 @@ def test_codex_exec_whitelists_engine_impl_mcp_tools(monkeypatch):
 
 def test_impl_stage_tools_include_layer_gates():
     from accel_pipeline.tools.gate_tools import layer_gate_from_stage
-    from accel_pipeline.tools.tool_policy import stage_tool_names
+    from accel_pipeline.backends.codex_exec import CodexExecBackend
 
     assert layer_gate_from_stage("impl_epochs") == "engine_epochs"
     assert layer_gate_from_stage("impl_scan") == "engine_scan"
     assert layer_gate_from_stage("implementation") is None
-    names = stage_tool_names("impl_epochs")
-    assert "request_gate" in names
-    assert "run_engine_build" in names
-    assert "run_layer_gate" in names
-    assert "run_layer_gate" not in stage_tool_names("implementation")
+    names = CodexExecBackend._engine_impl_mcp_tools("impl_epochs")
+    assert {"request_gate", "run_engine_build", "run_layer_gate"} <= set(names)
+    assert CodexExecBackend._engine_impl_mcp_tools("implementation") is None
 
 
 def test_mcp_run_layer_gate_maps_impl_stage(monkeypatch, tmp_path):
