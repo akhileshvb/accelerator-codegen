@@ -68,13 +68,13 @@ def _implementation_user_message(
         "(see unit_test_contract.md / query_host_bootstrap.md / engine_host in gate context).\n"
         f"Register this query on every shared surface peer queries use (catalog / allowlists / "
         f"{engine} SQL entrypoint / helpers) — search a neighbor query to find sites.\n"
-        "Use only these allowlisted run_command patterns:\n"
+        "Build and test with these commands (this worker's build dir):\n"
         f"1. cmake --build {build} --target {test_target} {bench_target} {diff_bin} -j$(nproc)\n"
         f"2. ctest --test-dir {build} -R tpch_q{q}_aux --output-on-failure\n"
         f"{diff_step}"
         "   (or MCP run_correctness / request_gate aux_correctness — preferred)\n"
         f"{trailing}"
-        "Fix compile/test failures with minimal apply_patch on generated aux + shared registration appends. "
+        "Fix compile/test failures with minimal edits to the generated aux + shared registration appends. "
         "Do not weaken unit fixtures to hide kernel bugs."
     )
 

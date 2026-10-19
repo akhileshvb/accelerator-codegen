@@ -133,7 +133,7 @@ fairness:
 prompt_subdir: aux_state
 
 # Aux analysis reads taxonomy + reference modules and writes a large analysis.json;
-# OpenRouter/OpenAI Agents backends need more turns than base parallel queries.
+# Aux analysis needs more turns than base parallel queries.
 stage_max_turns:
   analysis: 24
   adversarial_tests: 8

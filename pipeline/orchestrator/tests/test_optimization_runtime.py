@@ -8,7 +8,6 @@ import pytest
 from accel_pipeline.config import load_pipeline_config, load_workload
 from accel_pipeline.optimization_runtime import (
     build_runtime_state,
-    compress_tool_output,
     format_runtime_markdown,
     load_episode_log,
     refresh_optimization_runtime,
@@ -39,15 +38,6 @@ def test_refresh_writes_runtime_files():
     assert path.is_file()
     art = repo / "pipeline" / "artifacts" / "sec_edgar" / "q1"
     assert (art / "optimization_runtime.json").is_file()
-
-
-def test_compress_tool_output_stores_long_command(tmp_path: Path):
-    art = tmp_path / "art"
-    art.mkdir()
-    long_output = "exit=0\n" + ("x" * 3000) + "\nlabel,reference_median_us,accelerator_median_us,speedup_median\nq1,1,2,1.5\n"
-    compressed = compress_tool_output(art, "run_command", long_output)
-    assert "compressed_command_output" in compressed
-    assert "speedup_median=1.5" in compressed
 
 
 def test_runtime_markdown_includes_structured_sections(tmp_path: Path):

@@ -265,7 +265,7 @@ def test_log_stage_complete_stderr(capsys, tmp_path):
         3,
         stage="analysis",
         model_id="composer-2.5",
-        backend="cursor",
+        backend="codex_exec",
         duration_ms=45000,
         usage={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
     )
@@ -296,7 +296,7 @@ def test_pipeline_summary_aggregates(tmp_path, capsys):
         1,
         stage="analysis",
         model_id="m",
-        backend="cursor",
+        backend="codex_exec",
         duration_ms=1,
         usage={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
     )
@@ -305,7 +305,7 @@ def test_pipeline_summary_aggregates(tmp_path, capsys):
         1,
         stage="implementation",
         model_id="m",
-        backend="cursor",
+        backend="codex_exec",
         duration_ms=1,
         usage={"input_tokens": 200, "output_tokens": 30, "total_tokens": 230},
     )

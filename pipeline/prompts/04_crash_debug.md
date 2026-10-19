@@ -8,7 +8,7 @@ A mandatory gate failed after your last edit (build error, segfault, correctness
 
 1. Read the log tail and identify the **root cause** (not symptoms).
 2. Patch the minimal set of files to fix it.
-3. `run_command`: rebuild and re-run the reproduce command from the report.
+3. Rebuild (this worker's build dir) and re-run the reproduce command from the report.
 4. Do **not** start unrelated optimizations — fix the crash/failure first.
 
 ## Engine host (critical)
