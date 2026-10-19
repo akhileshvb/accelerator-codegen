@@ -37,11 +37,11 @@ def test_load_engine_mysql_workload():
     assert capture["harness"] == "backends/mysql/tests/test_mysql_capture.cpp"
     assert capture["cmake_target"] == "test_mysql_capture"
     assert capture["gate"] == "engine_capture"
-    assert capture["rules"] == ["slot_capture"]
+    assert capture["rules"] == ["slot_capture", "commit_time_writes", "ddl_events"]
     epochs = next(layer for layer in w["implementation_layers"] if layer["id"] == "epochs")
-    assert epochs["rules"] == ["slot_epochs"]
+    assert epochs["rules"] == ["slot_epochs", "abort_paths"]
     runtime = next(layer for layer in w["implementation_layers"] if layer["id"] == "runtime")
-    assert runtime["rules"] == ["slot_runtime"]
+    assert runtime["rules"] == ["slot_runtime", "own_writes"]
     assert w["placement_candidates"] == ["in_process"]
     assert w["target_paths"]["adversarial_test"] == (
         "backends/mysql/tests/test_mysql_adversarial.cpp"
@@ -54,6 +54,7 @@ def test_load_engine_mysql_workload():
     assert "engine_adversarial" in w["post_validation_gates"]
     assert "slot_epoch_stress" in w["post_validation_gates"]
     assert "slot_differential" in w["post_validation_gates"]
+    assert {"slot_own_writes", "slot_ddl_events"} <= set(w["post_validation_gates"])
     assert "engine_adversarial" not in w["post_implementation_gates"]
     assert w.get("requires_in_process_host") is True
     assert w.get("host_runtime", {}).get("kind") == "docker"
@@ -69,14 +70,14 @@ def test_backend_stage_gates_are_wired():
     from accel_pipeline.gates import GATE_SCRIPTS
 
     gates_dir = REPO_ROOT / "pipeline" / "gates"
-    for engine in ("engine_mysql", "engine_postgres"):
+    for engine in ("engine_mysql", "engine_postgres", "engine_duckdb"):
         w = load_workload(engine, REPO_ROOT)
         wired = list(w["post_validation_gates"]) + [layer["gate"] for layer in w["implementation_layers"]]
         for gate in wired:
             assert gate in GATE_SCRIPTS, gate
             assert (gates_dir / GATE_SCRIPTS[gate]).is_file(), gate
     slot_gates = [g for g in GATE_SCRIPTS if g.startswith("slot_")]
-    assert len(slot_gates) == 7
+    assert len(slot_gates) == 9
     for adapter in ("duckdb", "postgres", "mysql"):
         assert (gates_dir / "slot_adapters" / f"{adapter}.sh").is_file()
 
@@ -326,6 +327,27 @@ def test_engine_pipeline_dry_run():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     mc = load_model_config(repo_root=REPO_ROOT)
     run_engine_pipeline(pc, mc, "engine_mysql", 0, {}, dry_run=True, stage="all", skip_gates=True)
+
+
+def test_slot_gate_scenarios_exist_in_the_generic_harness():
+    from accel_pipeline.gates import GATE_SCRIPTS
+
+    harness = (REPO_ROOT / "eval" / "harness" / "slot_gates.cpp").read_text()
+    for gate, script in GATE_SCRIPTS.items():
+        if script == "run_slot_gates.sh" and gate != "slot_differential":
+            assert f'"{gate[len("slot_"):]}"' in harness, gate
+
+
+def test_embedded_engine_needs_no_docker_host():
+    from accel_pipeline.stages.engine_backend import _layer_should_run
+
+    w = load_workload("engine_duckdb", REPO_ROOT)
+    assert w["host_runtime"]["kind"] == "host_cmake"
+    host_layer = next(layer for layer in implementation_layers(w) if layer["id"] == "host")
+    assert not _layer_should_run(w, host_layer)
+    pc = load_pipeline_config(repo_root=REPO_ROOT)
+    mc = load_model_config(repo_root=REPO_ROOT)
+    run_engine_pipeline(pc, mc, "engine_duckdb", 0, {}, dry_run=True, stage="all", skip_gates=True)
 
 
 def test_engine_pipeline_dry_run_impl_capture():

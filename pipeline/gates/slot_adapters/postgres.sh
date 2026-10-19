@@ -15,6 +15,12 @@
 #                       a read on another connection right after a slow commit
 #   differential        no RF-chunk differential; mode write_maint (writes, then
 #                       an exact rematch) stands in for it
+#   own_writes          not run (77): the suite has no read inside a writing
+#                       transaction (such a read must equal SQL with its rows)
+#   ddl_events          not run (77): truncate_rebuild covers TRUNCATE only; DROP /
+#                       RENAME / recreate of a tracked table and DDL during a build
+#                       (the lock cycle of a build's table locks against DDL) are
+#                       not exercised
 
 # shellcheck source=../aux_gate_common.sh
 source "${ROOT}/pipeline/gates/aux_gate_common.sh"
@@ -44,6 +50,9 @@ slot_adapter_run() { # scenario seconds
     read_after_commit) _pg_driver read_after_own_commit hit_across_connections ;;
     txn_edges)         _pg_driver abort_and_savepoint truncate_rebuild ;;
     restart)           _pg_driver restart_worker kill_backend ;;
+    own_writes | ddl_events)
+      echo "postgres: ${1} is not wired yet (needs a PostgresEngine driver for eval/harness/slot_gates.hpp)"
+      return 77 ;;
     differential)
       local script=scripts/run_postgres_tpch_diff_all22.sh rc=0
       [[ -f "${ROOT}/${script}" ]] || { echo "missing ${script}"; return 1; }

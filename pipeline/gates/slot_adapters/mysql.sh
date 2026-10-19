@@ -15,6 +15,12 @@
 #                       per-commit epoch removes)
 #   differential        read differential only; there is no RF differential
 #   restart             N/A: the plugin lives inside mysqld
+#   own_writes          not run (77): no harness reads inside a writing transaction
+#                       (the plugin refuses such a read; the gate wants a SQL answer
+#                       that includes the transaction's rows)
+#   ddl_events          not run (77): test_mysql_aux_build_ddl_race covers trigger
+#                       DDL racing a multi-lane build, not DROP / RENAME / recreate
+#                       of a tracked table
 
 _mysql_driver() { # binary args...
   local binary="$1"; shift
@@ -41,6 +47,9 @@ slot_adapter_run() { # scenario seconds
     read_after_commit) _mysql_driver test_mysql_aux_session_isolation ;;
     txn_edges)         _mysql_driver test_mysql_aux_session_isolation ;;
     restart)           echo "mysql has no separate accelerator process"; return 77 ;;
+    own_writes | ddl_events)
+      echo "mysql: ${1} is not wired yet (needs a MysqlEngine driver for eval/harness/slot_gates.hpp)"
+      return 77 ;;
     differential)
       local script=scripts/run_mysql_tpch_diff_all22.sh
       [[ -f "${ROOT}/${script}" ]] || { echo "missing ${script}"; return 1; }

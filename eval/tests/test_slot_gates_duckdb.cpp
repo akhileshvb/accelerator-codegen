@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -72,6 +74,20 @@ public:
   }
   void Exec(const std::string &sql) override { Run(connection, sql); }
   gates::Rows Query(const std::string &sql) override { return Canonical(*Run(connection, sql)); }
+  std::function<gates::Rows()> Prepare(const std::string &sql) override {
+    std::shared_ptr<duckdb::PreparedStatement> statement = connection.Prepare(sql);
+    if (statement->HasError()) {
+      throw std::runtime_error(sql.substr(0, 200) + ": " + statement->GetError());
+    }
+    return [statement] {
+      duckdb::vector<duckdb::Value> no_values;
+      auto result = statement->Execute(no_values, /*allow_stream_result=*/false);
+      if (result->HasError()) {
+        throw std::runtime_error("prepared statement: " + result->GetError());
+      }
+      return Canonical(result->Cast<duckdb::MaterializedQueryResult>());
+    };
+  }
 
 private:
   duckdb::Connection connection;
@@ -137,6 +153,17 @@ public:
   std::vector<std::string> TruncateAndRestore() override {
     return {"CREATE TEMP TABLE slot_gate_copy AS SELECT * FROM lineitem", "TRUNCATE lineitem",
             "INSERT INTO lineitem SELECT * FROM slot_gate_copy", "DROP TABLE slot_gate_copy"};
+  }
+  // lineitem replaced by a subset of its rows (the queries must follow the new table), then restored.
+  std::vector<gates::DdlCase> DdlCases() override {
+    const std::string subset = " AS SELECT * FROM slot_gate_orig WHERE l_orderkey % 5 <> 0";
+    return {{"DROP + CREATE TABLE AS + RENAME",
+             {"CREATE TABLE slot_gate_orig AS SELECT * FROM lineitem", "CREATE TABLE slot_gate_new" + subset,
+              "DROP TABLE lineitem", "ALTER TABLE slot_gate_new RENAME TO lineitem"},
+             {"DROP TABLE lineitem", "ALTER TABLE slot_gate_orig RENAME TO lineitem"}},
+            {"RENAME aside + CREATE TABLE AS",
+             {"ALTER TABLE lineitem RENAME TO slot_gate_orig", "CREATE TABLE lineitem" + subset},
+             {"DROP TABLE lineitem", "ALTER TABLE slot_gate_orig RENAME TO lineitem"}}};
   }
   bool SupportsSavepoints() const override { return false; }
   bool RestartAccelerators() override { return false; } // in-process: nothing separate to restart

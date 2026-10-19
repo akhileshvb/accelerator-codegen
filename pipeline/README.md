@@ -286,7 +286,8 @@ python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
 - Gates: `engine_capture`, `engine_epochs`, `engine_scan`, `engine_runtime`,
   `engine_host`, `engine_adversarial`, then the backend-generic `slot_*` gates
   (`slot_epoch_stress`, `slot_hits_under_writes`, `slot_read_after_commit`,
-  `slot_txn_edges`, `slot_restart`, `slot_differential`;
+  `slot_txn_edges`, `slot_restart`, `slot_own_writes`, `slot_ddl_events`,
+  `slot_differential`;
   `gates/README_runtime_gates.md`)
 - Workloads: `config/workloads/engine_*.yaml` (`engine_.template.yaml` to start one).
   An engine's only specific input is its **engine profile** (`engine_profile`,

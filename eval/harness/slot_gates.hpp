@@ -11,12 +11,19 @@
 //                      cost no rebuild (TRUNCATE is rebuilt)
 //   restart            accelerator workers / processes restarted under load:
 //                      answers stay exact and hits resume
+//   own_writes         a read inside a transaction that wrote a tracked table
+//                      includes its own uncommitted rows (also a statement
+//                      prepared before the write: exact or refused, never stale);
+//                      rollback leaves no trace
+//   ddl_events         replacing, renaming or reshaping a tracked table never
+//                      leaves an answer built from the old table
 //
 // A scenario the engine cannot express (no savepoints, nothing to restart)
 // reports `NotApplicable`, never a silent pass.
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <random>
 #include <string>
@@ -33,6 +40,8 @@ public:
   virtual ~Session() = default;
   virtual void Exec(const std::string &sql) = 0; // throws on error
   virtual Rows Query(const std::string &sql) = 0;
+  // A statement planned now and run later (after a write); empty: the engine has none.
+  virtual std::function<Rows()> Prepare(const std::string &) { return nullptr; }
 };
 
 // One accelerated read and the base SQL that defines its answer.
@@ -52,6 +61,14 @@ struct ReaderMode {
 // Cumulative accelerator-side counters of the workload's accelerators.
 struct ReadStats {
   uint64_t hits = 0, fallbacks = 0, builds = 0;
+};
+
+// Statements that replace, rename or reshape a tracked table while keeping it
+// queryable, with the statements that put the original back. The reference SQL
+// reads whatever table the statements leave.
+struct DdlCase {
+  std::string label;
+  std::vector<std::string> statements, restore;
 };
 
 // Statements of one write transaction on the tracked tables, from a private
@@ -77,6 +94,8 @@ public:
   // its rows (TRUNCATE is not incrementally maintainable).
   virtual std::vector<std::string> TruncateAndRestore() = 0;
   virtual bool SupportsSavepoints() const = 0;
+  // DDL on the tracked tables; empty: the engine's DDL scenarios are not expressed.
+  virtual std::vector<DdlCase> DdlCases() { return {}; }
   // Restarts every accelerator worker / process; false: the engine has none.
   virtual bool RestartAccelerators() = 0;
 };
@@ -101,6 +120,8 @@ Report HitsUnderWrites(Engine &engine, const Options &options);
 Report ReadAfterCommit(Engine &engine, const Options &options);
 Report TxnEdges(Engine &engine, const Options &options);
 Report Restart(Engine &engine, const Options &options);
+Report OwnWrites(Engine &engine, const Options &options);
+Report DdlEvents(Engine &engine, const Options &options);
 
 // Runs the named scenario ("all" runs every one), prints one line per
 // scenario, returns the process exit code: 0 pass, 1 fail, 77 not applicable.

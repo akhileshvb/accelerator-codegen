@@ -8,6 +8,8 @@
 #   slot_read_after_commit   another connection reading right after a commit sees it
 #   slot_txn_edges           aborts, savepoints, TRUNCATE
 #   slot_restart             accelerator workers / processes restarted under load
+#   slot_own_writes          reads inside a writing transaction include its own rows
+#   slot_ddl_events          replacing / renaming a tracked table never leaves a stale answer
 #   slot_differential        the 22-query differential and the RF differential
 #
 # An adapter (slot_adapters/<engine>.sh) defines slot_adapter_run <scenario> <seconds>

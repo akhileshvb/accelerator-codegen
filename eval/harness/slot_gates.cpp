@@ -376,11 +376,129 @@ Report Restart(Engine &engine, const Options &options) {
   return {Outcome::Pass, "restart mid-load: exact answers, hits resumed; " + r.Summary()};
 }
 
+Report OwnWrites(Engine &engine, const Options &options) {
+  const auto cases = engine.ReadCases();
+  auto writer = engine.Connect();
+  auto other = engine.Connect();
+  auto writes = engine.NewWriteSource(options.seed);
+  const auto builds_before = engine.Stats().builds;
+  constexpr int kRoundsPerMode = 6;
+  long rounds = 0, refused = 0;
+  try {
+    for (const auto &mode : engine.ReaderModes()) {
+      for (int round = 0; round < kRoundsPerMode; ++round) {
+        const bool commit = round % 2 == 1;
+        const std::string when = mode.label + " round " + std::to_string(round);
+        writer->Exec(mode.begin_sql);
+        // Planned (and run once) before the transaction's write.
+        std::vector<std::function<Rows()>> planned;
+        for (const auto &c : cases) {
+          planned.push_back(writer->Prepare(c.accel_sql));
+          writer->Query(c.accel_sql);
+        }
+        for (const auto &sql : writes->Next()) {
+          writer->Exec(sql);
+        }
+        std::vector<Rows> refs;
+        for (std::size_t i = 0; i < cases.size(); ++i) {
+          refs.push_back(writer->Query(cases[i].ref_sql));
+          if (const auto accel = writer->Query(cases[i].accel_sql); accel != refs[i]) {
+            return Fail(when + " [" + cases[i].label + "] read after its own write: " + Diff(accel, refs[i]));
+          }
+        }
+        // Uncommitted rows are invisible to everyone else.
+        if (auto e = CheckAll(*other, cases, when + ", other connection during the transaction"); !e.empty()) {
+          return Fail(e);
+        }
+        // A statement planned before the write: exact, or refused loudly (which aborts the
+        // transaction, so only in the rounds that roll back); a stale answer is the failure.
+        bool refused_here = false;
+        for (std::size_t i = 0; i < cases.size() && !refused_here; ++i) {
+          if (!planned[i] || commit) {
+            continue;
+          }
+          try {
+            if (const auto accel = planned[i](); accel != refs[i]) {
+              return Fail(when + " [" + cases[i].label + "] statement planned before the write: " + Diff(accel, refs[i]));
+            }
+          } catch (const std::exception &) {
+            refused_here = true;
+            ++refused;
+          }
+        }
+        writer->Exec(commit && !refused_here ? "COMMIT" : "ROLLBACK");
+        if (auto e = CheckAll(*other, cases, when + (commit ? " after commit" : " after rollback")); !e.empty()) {
+          return Fail(e);
+        }
+        if (auto e = CheckAll(*writer, cases, when + ", writer after the transaction"); !e.empty()) {
+          return Fail(e);
+        }
+        ++rounds;
+      }
+    }
+  } catch (const std::exception &e) {
+    return Fail(e.what());
+  }
+  if (engine.Stats().builds != builds_before) {
+    return Fail("a transaction's own reads or its rollback cost a rebuild");
+  }
+  return {Outcome::Pass, std::to_string(rounds) + " write-then-read transactions (rolled back and committed) exact; " +
+                             std::to_string(refused) + " statements planned before a write refused loudly"};
+}
+
+Report DdlEvents(Engine &engine, const Options &options) {
+  const auto ddl_cases = engine.DdlCases();
+  if (ddl_cases.empty()) {
+    return {Outcome::NotApplicable, "the engine driver expresses no DDL on the tracked tables"};
+  }
+  const auto cases = engine.ReadCases();
+  auto session = engine.Connect();
+  auto reader = engine.Connect();
+  auto writes = engine.NewWriteSource(options.seed);
+  try {
+    if (auto e = CheckAll(*session, cases, "baseline"); !e.empty()) {
+      return Fail(e);
+    }
+    for (const auto &ddl : ddl_cases) {
+      for (const auto &sql : ddl.statements) {
+        session->Exec(sql);
+      }
+      for (int i = 0; i < 3; ++i) {
+        for (auto *who : {session.get(), reader.get()}) {
+          if (auto e = CheckAll(*who, cases, "after " + ddl.label); !e.empty()) {
+            return Fail(e);
+          }
+        }
+      }
+      RunWriteTxn(*session, writes->Next());
+      if (auto e = CheckAll(*reader, cases, "a write after " + ddl.label); !e.empty()) {
+        return Fail(e);
+      }
+      for (const auto &sql : ddl.restore) {
+        session->Exec(sql);
+      }
+      for (auto *who : {session.get(), reader.get()}) {
+        if (auto e = CheckAll(*who, cases, "after restoring from " + ddl.label); !e.empty()) {
+          return Fail(e);
+        }
+      }
+    }
+  } catch (const std::exception &e) {
+    return Fail(e.what());
+  }
+  std::string names;
+  for (const auto &ddl : ddl_cases) {
+    names += (names.empty() ? "" : ", ") + ddl.label;
+  }
+  return {Outcome::Pass, "exact after, a write after, and restoring from: " + names};
+}
+
 int Run(Engine &engine, const std::string &scenario, const Options &options) {
   const std::vector<std::pair<std::string, Report (*)(Engine &, const Options &)>> scenarios = {
       {"epoch_stress", EpochStress},         {"hits_under_writes", HitsUnderWrites},
       {"read_after_commit", ReadAfterCommit}, {"txn_edges", TxnEdges},
-      {"restart", Restart}};
+      {"restart", Restart},                  {"own_writes", OwnWrites},
+      {"ddl_events", DdlEvents}};
   bool any = false, failed = false, applicable = false;
   for (const auto &[name, run] : scenarios) {
     if (scenario != "all" && scenario != name) {

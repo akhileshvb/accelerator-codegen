@@ -6,7 +6,7 @@ and `BUILD_DIR`). It defines
     slot_adapter_run <scenario> <seconds>
 
 for the scenarios `epoch_stress`, `hits_under_writes`, `read_after_commit`,
-`txn_edges`, `restart`, `differential` and exits 0 (pass), 1 (fail) or 77 (not
+`txn_edges`, `restart`, `own_writes`, `ddl_events`, `differential` and exits 0 (pass), 1 (fail) or 77 (not
 applicable to this engine: the gate is skipped). Output is the gate's log.
 
 Prefer the generic harness (`eval/harness/slot_gates.hpp`): implement

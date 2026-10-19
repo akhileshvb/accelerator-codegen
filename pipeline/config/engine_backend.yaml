@@ -34,13 +34,13 @@ implementation_layers:
     gate: engine_capture
     harness: backends/{engine}/tests/test_{engine}_capture.cpp
     cmake_target: test_{engine}_capture
-    rules: [slot_capture]
+    rules: [slot_capture, commit_time_writes, ddl_events]
   - id: epochs
     title: Commit epoch, reader epoch, version floor (S2-S4)
     gate: engine_epochs
     harness: backends/{engine}/tests/test_{engine}_epochs.cpp
     cmake_target: test_{engine}_epochs
-    rules: [slot_epochs]
+    rules: [slot_epochs, abort_paths]
   - id: scan
     title: Build snapshot and chunked scans (S5, S8)
     gate: engine_scan
@@ -52,7 +52,7 @@ implementation_layers:
     gate: engine_runtime
     harness: backends/{engine}/tests/test_{engine}_runtime.cpp
     cmake_target: test_{engine}_runtime
-    rules: [slot_runtime]
+    rules: [slot_runtime, own_writes]
   - id: host
     title: Entry points and packaging (S7)
     gate: engine_host
@@ -80,6 +80,8 @@ post_validation_gates:
   - slot_read_after_commit
   - slot_txn_edges
   - slot_restart
+  - slot_own_writes
+  - slot_ddl_events
   - slot_tsan
   - slot_differential
 

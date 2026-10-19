@@ -409,6 +409,8 @@ def run_validation(
             "slot_read_after_commit",
             "slot_txn_edges",
             "slot_restart",
+            "slot_own_writes",
+            "slot_ddl_events",
             "slot_tsan",
             "slot_differential",
         ]
