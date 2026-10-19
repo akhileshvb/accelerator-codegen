@@ -81,7 +81,8 @@ substrate is read-only to it.
 - `artifacts/` — per-query pipeline state and reports
 - `orchestrator/` — Python package (`accel_pipeline`)
 - `verus/` — shared Verus state: the playbook (`playbook/`) and provenance logs
-- `catalog/`, `schemas/`, `fixtures/` — catalog data, JSON schemas, test fixtures
+- `codex/` — committed Codex config template and MCP launcher (see Codex exec)
+- `catalog/`, `schemas/` — catalog data, JSON schemas
 
 ### Layers and who may write them
 
@@ -350,7 +351,3 @@ python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
   `gates/README_runtime_gates.md`)
 - Host connection is workload `host_runtime` (not hardcoded in shared gates)
 - Workloads: `config/workloads/engine_*.yaml`
-
-## TODO
-
-See [orchestrator/accel_pipeline/TODO.md](orchestrator/accel_pipeline/TODO.md) and inline `# TODO:` in source.

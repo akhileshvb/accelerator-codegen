@@ -19,6 +19,4 @@ Workload `engine_name` is **`{{engine_name}}`**. If it is not `duckdb`:
 - Fix the **{{engine_name}}** host path (SQL entrypoints, `test_{{engine_name}}_tpch_differential`, CMake). Re-run `host_bootstrap` surfaces if missing.
 - DuckDB package/`RegisterAcceleratorFunctions` is the wrong host for this workload.
 
-{{kernel_inspiration_section}}
-
 {{constraints}}

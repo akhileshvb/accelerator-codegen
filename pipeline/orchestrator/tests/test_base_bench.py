@@ -9,7 +9,6 @@ from accel_pipeline.base_bench import (
 )
 from accel_pipeline.crash_debug import extract_crash_highlights, format_gate_failure_diagnosis
 from accel_pipeline.gates import GateResult
-from accel_pipeline.kernel_inspiration import format_kernel_inspiration_section, load_kernel_inspiration_catalog
 
 
 def test_parse_benchmark_log_sec_edgar_summary():
@@ -77,22 +76,6 @@ def test_write_optimization_feedback(tmp_path: Path):
     assert diagnosis["after_iteration"] == 1
     assert (tmp_path / "optimization_feedback.md").is_file()
     assert "beat DuckDB" in (tmp_path / "optimization_feedback.md").read_text(encoding="utf-8")
-
-
-def test_kernel_inspiration_catalog_loads():
-    from accel_pipeline.paths import find_repo_root
-
-    categories = load_kernel_inspiration_catalog(find_repo_root())
-    assert categories
-    assert any("Fused scan" in str(c.get("name", "")) for c in categories)
-
-
-def test_format_kernel_inspiration_section_lists_paths():
-    from accel_pipeline.paths import find_repo_root
-
-    section = format_kernel_inspiration_section(find_repo_root(), stage="implementation")
-    assert "kernel.cpp" in section
-    assert "read_file" in section
 
 
 def test_crash_highlights_extract_sigsegv():

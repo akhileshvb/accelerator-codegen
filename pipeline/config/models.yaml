@@ -44,7 +44,6 @@ stage_providers:
   verus_kernel_fix: codex_exec
   verus_kernel_proofs: codex_exec
   verus_kernel_advisor: codex_exec
-  verus_prooflib_lift: codex_exec
   verus_opt_worker: codex_exec
   verus_audit: codex_exec
 
@@ -84,7 +83,6 @@ stages:
   verus_kernel: verus_reasoning     # code first (Sol)
   verus_kernel_proofs: verus_reasoning   # proofs, proof fix rounds, integration fixes (Sol), same session
   verus_kernel_fix: verus_reasoning
-  verus_prooflib_lift: verus_reasoning   # lifts a proven structure into the shared proof library
   verus_kernel_advisor: verus_advisor         # diagnoses a stalled kernel; its advice goes back to the kernel's session
   verus_opt_worker: verus_code
   verus_audit: verus_review

@@ -27,7 +27,6 @@ STAGE_TOOLS: dict[str, list[str]] = {
     "verus_kernel": ["verus_verify", "verus_test", "prooflib_verify", "prooflib_publish", "backend_addition_record", *COMMON],
     "verus_kernel_proofs": ["verus_verify", "verus_test", "prooflib_verify", "prooflib_publish", "backend_addition_record", *COMMON],
     "verus_kernel_advisor": ["verus_verify", "verus_test", *COMMON],  # diagnoses; changes are undone
-    "verus_prooflib_lift": ["prooflib_verify", "prooflib_publish", *COMMON],  # lifts a proven structure into the shared library
     "verus_kernel_fix": ["verus_verify", "verus_test", "prooflib_publish", *COMMON],
     "verus_opt_worker": ["verus_verify", "verus_test", "verus_bench", "verus_profile", "verus_check_inputs",
                          "prooflib_publish", "backend_addition_record", *COMMON],

@@ -15,6 +15,4 @@ Your hypothesis patch **built or passed smoke initially but failed validation** 
 3. Rebuild and re-run the reproduce command from the report (MCP `run_pipeline_command` or allowlisted shell).
 4. When the reproduce command passes, reply briefly — the orchestrator will re-validate automatically.
 
-{{kernel_inspiration_section}}
-
 {{constraints}}

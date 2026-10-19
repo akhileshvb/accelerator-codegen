@@ -1,5 +1,5 @@
 # Template for $CODEX_HOME/config.toml (pipeline/.codex/ by default, per-worker homes under it).
-# CodexExecBackend materializes it when missing; {{mcp_launcher}} becomes the absolute launcher path.
+# CodexExecBackend materializes it when missing, filling in the absolute path of the MCP launcher.
 # model_providers are only honored from the user-level CODEX_HOME config.
 
 model_provider = "openrouter"

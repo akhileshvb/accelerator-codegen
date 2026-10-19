@@ -2,7 +2,7 @@
 
 Aux accelerators run in a **multi-connection** environment: one connection may execute invalidating SQL while others read via aux table functions. The hand-written substrate provides txn isolation, per-accelerator epochs, and staged publication; generated `AuxQueryModule` code must cooperate.
 
-Read `substrate_contract.md` and `maintenance_framework.md` for substrate APIs. This doc states **agent obligations**.
+Read `maintenance_framework.md` and `engine_interfaces.md` for substrate APIs. This doc states **agent obligations**.
 
 ## Scope
 

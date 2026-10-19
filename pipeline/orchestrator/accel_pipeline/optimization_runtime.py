@@ -684,3 +684,24 @@ def runtime_path_for_prompt(
         return str(rel.relative_to(pipeline_config.repo_root))
     except ValueError:
         return str(rel)
+
+
+def record_ab_trial(
+    art: Path,
+    *,
+    trial_id: str,
+    hypothesis: str,
+    metrics: dict[str, Any],
+    kept: bool,
+) -> None:
+    trials = load_ab_trials(art)
+    trials.append(
+        {
+            "trial_id": trial_id,
+            "hypothesis": hypothesis,
+            "metrics": metrics,
+            "kept": kept,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    save_ab_trials(art, trials)

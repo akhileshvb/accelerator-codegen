@@ -36,8 +36,6 @@ Inspect these existing implementations (read on demand): {{reference_accelerator
 Prefer peers under the **same** `{{engine_name}}/` tree. Layout contract:
 `pipeline/prompts/shared/generated_layout.md`
 
-{{kernel_inspiration_section}}
-
 ## Performance goal
 
 Design for **faster than the baseline engine path** on the benchmark dataset (single-threaded where required). Front-load optimization opportunities for the later profile-guided loop.

@@ -67,7 +67,6 @@ def _link_shared_pipeline_dirs(primary: Path, dest: Path) -> None:
         "pipeline/gates",
         "pipeline/schemas",
         "pipeline/templates",
-        "pipeline/fixtures",
     ):
         src = primary / rel
         if not src.exists():

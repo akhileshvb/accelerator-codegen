@@ -15,6 +15,4 @@ Your hypothesis patch failed **build** or **quick smoke correctness** (`ctest -R
 3. `run_command`: `cmake --build build-release --target test_tpch_q{{query_number}}_aux` (and bench target if needed), then the `ctest` command from the report.
 4. Confirm reproduce passes before ending your turn.
 
-{{kernel_inspiration_section}}
-
 {{constraints}}

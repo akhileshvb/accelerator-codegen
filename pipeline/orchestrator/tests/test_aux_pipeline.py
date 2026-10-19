@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from accel_pipeline.analysis_quality import load_fixture_dir, score_analysis_against_fixture, _load_fixture
 from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis
 
 
@@ -258,22 +257,6 @@ class TestAuxAnalysisValidation:
         del analysis["correctness_facts"]["state_design"]["read_path_bottleneck_risk"]
         with pytest.raises(AuxAnalysisValidationError, match="read_path_bottleneck_risk"):
             validate_aux_analysis(analysis)
-
-
-class TestAnalysisQualityFixtures:
-    def test_q14_fixture_scores_golden_analysis(self):
-        fixture_path = REPO_ROOT / "pipeline" / "fixtures" / "analysis_quality" / "q14_strong.yaml"
-        fixture = _load_fixture(fixture_path)
-        scores = score_analysis_against_fixture(_sample_valid_analysis(), fixture)
-        assert scores["dependencies"] == 1.0
-        assert scores["fitness"] == 1.0
-        assert scores["state_design"] == 1.0
-        assert scores["base_path_decomposition"] == 1.0
-        assert scores["candidate_search"] == 1.0
-
-    def test_fixtures_exist(self):
-        paths = load_fixture_dir(REPO_ROOT)
-        assert len(paths) >= 3
 
 
 class TestWorkloadConfig:

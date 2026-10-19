@@ -27,7 +27,6 @@ from accel_pipeline.base_bench import (
 )
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
-from accel_pipeline.kernel_inspiration import format_kernel_inspiration_section
 from accel_pipeline.models import is_critique_stage, is_implementation_stage
 from accel_pipeline.optimization_runtime import runtime_path_for_prompt
 from accel_pipeline.paths import (
@@ -419,16 +418,6 @@ def build_prompt_context(
         "adversarial_tests",
         "audit",
     )
-    compact_inspiration = stage in ("optimization", "crash_debug", "implementation", "analysis")
-    kernel_inspiration_section = ""
-    if stage in ("implementation", "optimization", "crash_debug", "analysis"):
-        kernel_inspiration_section = format_kernel_inspiration_section(
-            repo,
-            workload_refs=refs,
-            stage=stage,
-            compact=compact_inspiration,
-        )
-
     profile_summary_path = art / "profile_summary.json"
     profile_data: dict[str, Any] = {}
     if profile_summary_path.is_file():
@@ -558,7 +547,6 @@ def build_prompt_context(
         "analysis_artifact_path": analysis_artifact_rel,
         "schema_reference_section": schema_reference_section,
         "benchmark_notes": benchmark_notes,
-        "kernel_inspiration_section": kernel_inspiration_section,
         "fused_scan_path": paths["fused_scan_path"],
         "fused_header_path": paths["fused_header_path"],
         "optimization_gate_suffix": optimization_gate_suffix,
@@ -657,16 +645,7 @@ def build_prompt_context(
         "retrieval_brief": retrieval_brief,
         "experiment_log_excerpt": _tail_lines(art / "experiment_log.md", 2 if lean_stage else 5),
         "experiment_summary": _tail_lines(art / "experiment_log.md", 2 if lean_stage else 8),
-        "handbook_excerpt": "",
         "optimization_iter": str(optimization_iter),
-        "aux_state_fitness": "",
-        "aux_state_design": "",
-        "mutation_coverage": "",
-        "substrate_contract": "",
-        "maintenance_framework": "",
-        "module_layout": "",
-        "registration_checklist": "",
-        "runtime_policy": "",
         "aux_bench_summary_json": compact_json(
             compact_bench_summary(bench_summary) if stage == "optimization" else bench_summary
         )
