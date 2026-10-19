@@ -20,6 +20,49 @@ around the substrate.
 `eval/tests/test_aux_runtime.cpp`, drop its fake slots) used by every layer
 harness.
 
+**Engine facts.** The engine profile (`engine_profile`, in your prompt) states how
+this engine does each mechanic below and lists its hazards; the requirements are
+the same for every engine.
+
+---
+
+## Requirements every backend meets
+
+Substrate owns commit order, epochs, versions, catch-up and builds; these are what
+the engine side must hold up. Each names its layer.
+
+- **Own writes** (`runtime`; entries in `host`). A read inside a transaction that
+  wrote a table the accelerator depends on is answered from SQL at that
+  transaction's own snapshot (`RuntimeHost::TxnWroteDependency`): its rows are in no
+  published state. It never returns an answer without them, whether the statement
+  was planned before or after the write, and whatever the isolation level.
+- **Writes are judged at commit** (`capture`, `epochs`). What a write did is decided
+  when its transaction commits, not when its statement ran: an aborted write is never
+  visible; a statement that was already running when an accelerator registered, or
+  a commit that lands after a build's snapshot without having been captured,
+  invalidates the state it would be missing (`InvalidateFrom`), never goes unseen.
+- **Lock discipline** (all layers). No engine call is made while holding a lock that an
+  engine callback of the same engine can take. No substrate lock is held across an
+  engine call. Every wait on an engine lock or on another thread inside a slot is
+  bounded; expiry fails the operation (a failed build: readers fall back, the next read
+  retries) and is never a hang. The engine locks that parallel scan lanes hold or
+  request (profile `locking`) cannot form a cycle with a concurrent DDL on the
+  scanned tables: a build ends as success or failure within its bound.
+- **DDL events** (`capture`, `runtime`). TRUNCATE, DROP, RENAME, replace or recreate of
+  a captured table, and a change of its columns, either reach the runtime as an
+  invalidating change or are detected before the next answer; the accelerator rebuilds
+  or answers from SQL. Where the engine delivers no event for one of them (profile
+  `capture.ddl_events`), the backend still never answers from state built for the old
+  table.
+- **Abort and crash paths** (`capture`, `epochs`, `runtime`). A rollback (also of a
+  subtransaction), an abort after pre-commit, a connection closed inside a
+  transaction, a commit whose outcome is unknown, and the death of a worker or session
+  leave no place held in commit order, no half-published epoch and no uncommitted row
+  in a state; an unknown outcome invalidates.
+- **Thread knobs** (`runtime`). Each phase cap is honoured through the mechanism the
+  profile names for `thread_knobs`, at startup and on every later change the engine
+  allows; `ACCEL_AUX_*_THREADS` override it.
+
 ---
 
 ## `capture` (S1)
@@ -54,7 +97,9 @@ decimal, a string) and `updated_attnums`; a 3-row INSERT is one batch;
 register a second accelerator watching more columns -> `CaptureVersion()`
 changes and later batches carry the union; ROLLBACK and ROLLBACK TO SAVEPOINT
 -> no change reaches the toy state after the commit; TRUNCATE (or the
-engine's non-row change) -> the state ends invalid / rebuilt.
+engine's non-row change) -> the state ends invalid / rebuilt; DROP / RENAME /
+recreate of a tracked table -> no read answers from the old table's state; a
+statement running at registration whose transaction commits later is not lost.
 
 ---
 
@@ -90,7 +135,8 @@ SQL reference decides), including snapshots opened while a commit is held
 between pre-commit and visibility (use a sync barrier); two open readers at
 different points -> `OldestReaderEpoch()` <= the older's epoch, and it
 advances after they close; `Abort` after `PreCommit` releases the place (the
-next commit proceeds); no deadlock with two writers on two accelerators.
+next commit proceeds); a connection closed inside a writing transaction releases
+it too; no deadlock with two writers on two accelerators.
 
 ---
 
@@ -120,7 +166,8 @@ dropping >=1 row; exact cell values incl. NULL; force >=2 chunk callbacks and
 assert their concatenation equals the golden set; `partitions = 1` and
 `partitions = N` return the same multiset, each partition's rows arrive in table order and the same partition holds the same rows on a repeated scan, partitions overlap in time (concurrency observed) with at most the build cap of threads, a writer commit between partition starts is invisible to every partition, a NULL in a non-`Nullable` column and an oversized decimal fail loudly; barrier: a writer that began
 earlier blocks `WaitForPreRegistrationWriters` until it commits, and a timeout
-returns false.
+returns false; a DDL on the scanned table issued while a multi-partition scan is
+under way ends the scan (success or failure) within its bound and never hangs.
 
 ---
 
@@ -149,7 +196,9 @@ Implements the host (`api/{engine}_host.*`): the `EngineSlots` object owning a
 read equals golden; DML + commit -> read equals the new golden; `Invalidate()`
 under a continuous writer loop -> synced within a bound while the writer keeps
 committing, final answer exact; a reader transaction older than the build
-reads its own snapshot's answer or gets `Fallback`, never a newer one; shipped
+reads its own snapshot's answer or gets `Fallback`, never a newer one; a read inside a
+transaction that wrote a dependency table equals the SQL answer that includes those
+rows; shipped
 placement: drop one commit message -> gap -> rebuild -> exact, kill the worker
 -> reads fall back exact, then hit again; `ThreadBudget::PeakThreads()` <= the
 configured budget; each phase cap set through the engine setting and through the env override is observed by `WorkerCount()` inside the toy module's `Build` / `Execute` / maintenance (e.g. a cap of 1 gives 1); `DataScaleRows()` equals the table's row count after a bulk insert (and `ChooseMaintenance` with a model whose `calibrated_scale_rows` is a tenth of it raises the ApplyDelta cap tenfold).
@@ -168,7 +217,9 @@ sources.
 
 **Harness:** load the host -> call the entry -> the `runtime` golden through
 SQL; NULL argument; a `Fallback` (invalid state) answered correctly through
-SQL; the entry named by the registry, not by a backend list.
+SQL; the entry named by the registry, not by a backend list; the same read inside a
+transaction that wrote a dependency table (own writes) equals SQL, also for a
+statement prepared before the write where the engine has prepared statements.
 
 **Test code stays out of the production MODULE.** Gate-test UDFs and toy
 bridges (test-table setup, state inspection, runtime-layer drivers, the toy

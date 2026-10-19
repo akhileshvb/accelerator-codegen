@@ -74,7 +74,8 @@ behaviour of the finished backend under concurrency.
 - Seed -> background build -> read; DML -> rematch; an invalidated state
   rebuilds **while writes continue** and becomes synced without a quiet
   window; an old reader gets its own epoch's answer or `Fallback`, never a
-  newer one; the three phase caps come from the engine's settings or the
+  newer one; the three phase caps come from the engine's settings (the mechanism the profile
+  names for `thread_knobs`, at startup and on every change the engine allows) or the
   `ACCEL_AUX_*_THREADS` overrides and are observed by `WorkerCount()`;
   `TableRows` feeds `DataScaleRows`; `CostModel` is resolved by engine and scale; shipped placement: gap -> rebuild, worker restart -> reads fall
   back exact then hit; peak threads <= the budget.
@@ -85,6 +86,43 @@ behaviour of the finished backend under concurrency.
   `AcceleratorRuntime::Read` at the S3 epoch, emits rows, answers `Fallback`
   through `ExecuteFallback`. Read parallelism is inside `Execute`, not an
   engine parallel source.
+
+### `own_writes` (layer `runtime`; entries in `host`)
+
+- A read inside a transaction that wrote a table the accelerator depends on is
+  answered from SQL at that transaction's snapshot (`TxnWroteDependency`), never from
+  published state: also when the statement was planned or prepared before the write.
+- Harness: write, then read in the same transaction, equals the SQL answer with the
+  transaction's rows; after rollback, the state is untouched.
+
+### `commit_time_writes` (layer `capture`)
+
+- A write's effect is decided at commit: an aborted write is never visible; a
+  statement in flight when an accelerator registered, or a commit landing after a build
+  snapshot without having been captured, invalidates the state it would be
+  missing. Harness: a writer straddling registration; rollback after captured rows.
+
+### `ddl_events` (layer `capture`; rebuild evidence in `runtime`)
+
+- TRUNCATE, DROP, RENAME, replace or recreate of a captured table and a column change
+  invalidate or are detected before the next answer; an engine with no event for one of
+  them still never answers from state built for the old table. Harness: each
+  statement the profile lists, then a read equal to SQL.
+
+### `lock_discipline` (global)
+
+- No engine call under a lock that an engine callback of that engine can take; no
+  substrate lock across an engine call; every wait inside a slot bounded, expiry
+  failing the operation (readers fall back), never hanging.
+- Engine locks held or requested by parallel scan lanes cannot cycle with a DDL on
+  the scanned tables. Harness: DDL during a multi-partition scan ends within the bound.
+
+### `abort_paths` (layer `epochs`; capture and runtime evidence)
+
+- A rollback, a subtransaction rollback, an abort after pre-commit, a connection
+  closed in a transaction, an unknown commit outcome and a worker or session death
+  leave no held place, no half-published epoch and no uncommitted row in a state;
+  an unknown outcome invalidates.
 
 ### `slots_only` (global)
 

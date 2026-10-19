@@ -52,7 +52,7 @@ epoch when the engine has no single clock.
 - `pipeline/prompts/engine_backend/acceptance_checklist.md`
 - `pipeline/prompts/engine_backend/native_scan_contract.md`
 - `substrate/aux/runtime/thread_budget.hpp`, `substrate/aux/core/parallel_slices.hpp`, `partitioned_build.hpp` (what modules will do on top of the slots)
-- `pipeline/prompts/engine_backend/layer_contracts.md`
+- `pipeline/prompts/engine_backend/layer_contracts.md` (incl. "Requirements every backend meets")
 - `pipeline/schemas/backend_analysis.schema.json`
 
 `harness_plan` **must** include the value asserts in `layer_contracts.md` for
@@ -61,7 +61,9 @@ union of watched columns, rollback; epochs: visibility order, exact reader
 epoch, pending window, floor vs readers; scan: snapshot epoch `b` vs a
 concurrent commit, barrier, typed chunks; runtime: rebuild under continuous
 writes, old readers, placement failure modes; host: SQL golden, NULL,
-`Fallback`).
+`Fallback`), plus the requirements of `layer_contracts.md` ("Requirements every
+backend meets") and one golden assert per profile hazard tagged for that layer: say in
+the layer's sketch which slot behaviour answers each hazard.
 
 ## Engine profile
 

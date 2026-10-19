@@ -39,6 +39,10 @@ On each violation, set `layer` to the owning layer id (`capture`, `epochs`,
 Global rules (`slots_only`, `scale_safe`, `query_registries`, `independence`,
 `fail_closed`) name the layer whose files hold the evidence.
 
+The rules include `own_writes`, `commit_time_writes`, `ddl_events`,
+`lock_discipline` and `abort_paths`. Use the engine profile's hazards as where to look
+for evidence; a hazard no rule covers is not a fail reason.
+
 Check especially `slots_only`: grep the backend for commit ordering, gap or
 catch-up handling, build scheduling, version management, reader/build locks,
 and thread pools; any is a violation.

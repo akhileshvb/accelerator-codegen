@@ -62,6 +62,10 @@ gate passed. Typical holes:
 - Snapshot that blocks writers or whose epoch `b` does not bound its contents
   (scan layer)
 - Server-only symbols in a host shared library (host / runtime)
+- A requirement of `layer_contracts.md` ("Requirements every backend meets") that this
+  layer owns and the harness never exercises (own writes, DDL on a tracked table,
+  abort and closed-connection paths, a bounded wait), or an engine call made under a
+  lock an engine callback can take (`lock_discipline`)
 
 `violations[].rule` must be this layer’s checklist id, or one of
 `contract`, `harness_gap`, `substrate_api`.

@@ -44,7 +44,8 @@ Facts and hazards of the engine (not instructions). Aim the adversarial cases at
 
 `engine_build`, every layer gate in `layers.md`, **`engine_adversarial`**, then the
 backend-generic slot gates (`slot_epoch_stress`, `slot_hits_under_writes`,
-`slot_read_after_commit`, `slot_txn_edges`, `slot_restart`, `slot_tsan`,
+`slot_read_after_commit`, `slot_txn_edges`, `slot_restart`, `slot_own_writes`,
+`slot_ddl_events`, `slot_tsan`,
 `slot_differential`;
 `pipeline/gates/README_runtime_gates.md`). A slot gate failure is a backend bug:
 fix the slot, not the gate. `slot_tsan` reruns the slot scenarios under ThreadSanitizer with
