@@ -43,9 +43,20 @@ _pg_driver() { # scenario...
   return "${rc}"
 }
 
+# The backend's own standalone tests (shared-memory ring, shard transport):
+# built by backends/postgres/backend.cmake, no server needed, run with epoch_stress.
+_pg_backend_unit_tests() {
+  local binary rc=0
+  for binary in test_shm_ring test_shard_segment; do
+    run_postgres_docker_harness "${binary}" "" || rc=1
+    echo "${PG_DOCKER_LOG}"
+  done
+  return "${rc}"
+}
+
 slot_adapter_run() { # scenario seconds
   case "$1" in
-    epoch_stress)      _pg_driver concurrent ;;
+    epoch_stress)      _pg_driver concurrent && _pg_backend_unit_tests ;;
     hits_under_writes) _pg_driver hits_under_writes ;;
     read_after_commit) _pg_driver read_after_own_commit hit_across_connections ;;
     txn_edges)         _pg_driver abort_and_savepoint truncate_rebuild ;;
