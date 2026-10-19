@@ -29,9 +29,8 @@ def ensure_codex_config(path: Path) -> Path:
     """Materialize a missing CODEX_HOME config from the committed template (atomically: homes are shared)."""
     if path.is_file():
         return path
-    codex_dir = _CODEX_DIR
-    launcher = codex_dir / "run_mcp_server.sh"
-    text = (codex_dir / "config.template.toml").read_text(encoding="utf-8")
+    launcher = _CODEX_DIR / "run_mcp_server.sh"
+    text = (_CODEX_DIR / "config.template.toml").read_text(encoding="utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(text.replace("{{mcp_launcher}}", str(launcher)), encoding="utf-8")
