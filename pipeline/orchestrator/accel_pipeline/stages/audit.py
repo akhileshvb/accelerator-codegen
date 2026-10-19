@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.stages.gate_plan import run_post_stage_gates, workload_post_audit_gates
 from accel_pipeline.stages.base import run_agent_stage
 
@@ -32,6 +32,6 @@ def run(
             pipeline_config,
             workload_name,
             query,
-            workload_post_audit_gates(load_workload(workload_name, pipeline_config.repo_root)),
+            workload_post_audit_gates(load_run_workload(pipeline_config, workload_name)),
         )
     return result

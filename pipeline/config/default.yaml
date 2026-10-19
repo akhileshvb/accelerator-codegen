@@ -54,14 +54,6 @@ optimization:
   accept_on_screen: true
   skip_confirmation: true
   smoke_runs: 2
-  attempt_budgets:
-    max_file_reads: 0  # 0 = unlimited
-    max_grep_calls: 0
-    max_tool_calls: 0
-  patch_budgets:
-    max_file_reads: 0
-    max_grep_calls: 0
-    max_tool_calls: 0
   max_turns:
     analysis: 0  # 0 = unlimited
     patch: 0

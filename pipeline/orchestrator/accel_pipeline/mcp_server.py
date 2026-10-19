@@ -35,7 +35,7 @@ def _build_context(args: argparse.Namespace):
     workload_name = args.workload or os.environ.get("ACCEL_PIPELINE_WORKLOAD") or "tpch_q3"
     stage = args.stage or os.environ.get("ACCEL_PIPELINE_STAGE") or "optimization_worker"
     optimization_iter = int(args.optimization_iter or _env_int("ACCEL_PIPELINE_OPT_ITER", 0))
-    workload = load_workload(workload_name, repo_root)
+    workload = load_workload(workload_name, repo_root, engine=os.environ.get("ACCEL_PIPELINE_ENGINE", ""))
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     art = query_artifacts_dir(repo_root, query, workload=workload)
     return pipeline_config, workload, workload_name, query, stage, optimization_iter, art
@@ -242,6 +242,7 @@ def build_mcp_tool_callables(
 
         entry = append_negative_memory(
             pipeline_config.repo_root,
+            pipeline_config.engine_name,
             trap=trap,
             when=when,
             evidence=evidence,

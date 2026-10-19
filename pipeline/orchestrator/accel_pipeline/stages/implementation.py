@@ -4,7 +4,7 @@ import json
 
 from accel_pipeline.aux_bench import initialize_optimization_state, process_aux_bench_after_gates
 from accel_pipeline.base_bench import process_base_bench_after_gates
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload, resolve_workload_paths
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
 from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
 from accel_pipeline.gates import run_gate
 from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
@@ -89,7 +89,7 @@ def run(
     *,
     skip_gates: bool = False,
 ):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     if workload.get("workload_kind") != "aux_state":
         run_gate(pipeline_config, "scaffold", query, workload=workload)
     else:
@@ -115,7 +115,7 @@ def run(
         dry_run=dry_run,
     )
     if not dry_run and not skip_gates:
-        workload = load_workload(workload_name, pipeline_config.repo_root)
+        workload = load_run_workload(pipeline_config, workload_name)
         analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
         if analysis_path.is_file() and workload.get("workload_kind") == "aux_state":
             analysis = json.loads(analysis_path.read_text(encoding="utf-8"))

@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.gates import GateFailure
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.stages.base import run_agent_stage
@@ -137,7 +137,7 @@ def run_layer_critique_agent(
     round_idx: int,
     extra_context: dict[str, str],
 ) -> Any:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     lid = str(layer.get("id") or "")
     engine = str(workload.get("engine_name") or "")
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)

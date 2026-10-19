@@ -88,6 +88,7 @@ class CodexExecBackend:
             sidecar_env_line("ACCEL_PIPELINE_QUERY", self._query),
             sidecar_env_line("ACCEL_PIPELINE_STAGE", self._stage),
             sidecar_env_line("ACCEL_PIPELINE_WORKLOAD", self._workload_name),
+            sidecar_env_line("ACCEL_PIPELINE_ENGINE", self._pipeline_config.engine_name),
             sidecar_env_line("ACCEL_PIPELINE_OPT_ITER", self._optimization_iter),
             sidecar_env_line("ACCEL_PIPELINE_REPO_ROOT", self._pipeline_config.repo_root),
             sidecar_env_line(
@@ -163,6 +164,7 @@ class CodexExecBackend:
         env["ACCEL_PIPELINE_QUERY"] = str(self._query)
         env["ACCEL_PIPELINE_STAGE"] = self._stage
         env["ACCEL_PIPELINE_WORKLOAD"] = self._workload_name
+        env["ACCEL_PIPELINE_ENGINE"] = self._pipeline_config.engine_name
         env["ACCEL_PIPELINE_OPT_ITER"] = str(self._optimization_iter)
         env["ACCEL_PIPELINE_REPO_ROOT"] = str(self._pipeline_config.repo_root)
         env["ACCEL_PIPELINE_BUILD_DIR"] = str(self._pipeline_config.build_dir)
@@ -202,6 +204,7 @@ class CodexExecBackend:
                 f'ACCEL_PIPELINE_QUERY="{self._query}"',
                 f'ACCEL_PIPELINE_STAGE="{self._stage}"',
                 f'ACCEL_PIPELINE_WORKLOAD="{self._workload_name}"',
+                f'ACCEL_PIPELINE_ENGINE="{self._pipeline_config.engine_name}"',
                 f'ACCEL_PIPELINE_OPT_ITER="{self._optimization_iter}"',
                 f'ACCEL_PIPELINE_REPO_ROOT="{self._pipeline_config.repo_root}"',
                 f'ACCEL_PIPELINE_BUILD_DIR="{self._pipeline_config.build_dir}"',

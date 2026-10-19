@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
-from accel_pipeline.config import ModelConfig, PipelineConfig, apply_workload_overrides, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, apply_workload_overrides, load_run_workload
 from accel_pipeline.models import make_model_id, resolve_agent_model
 from accel_pipeline.optimization_pending import PendingFeedback
 from accel_pipeline.optimization_saturation import (
@@ -128,7 +128,7 @@ class OptimizationWorker:
     ) -> OptimizationWorker:
         from accel_pipeline.models import resolve_stage_provider
 
-        workload = load_workload(workload_name, pipeline_config.repo_root)
+        workload = load_run_workload(pipeline_config, workload_name)
         pipeline_config = apply_workload_overrides(pipeline_config, workload)
         art_dir = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
         provider = resolve_stage_provider(_WORKER_STAGE, model_config)
@@ -170,9 +170,9 @@ class OptimizationWorker:
                 log_event(
                     pipeline_config.repo_root,
                     query,
+                    workload,
                     "optimization_worker_episode_resume",
                     reconstructed_from_artifacts=True,
-                    workload=workload.get("name", workload_name),
                 )
 
         worker = cls(
@@ -193,10 +193,10 @@ class OptimizationWorker:
         log_event(
             pipeline_config.repo_root,
             query,
+            workload,
             "optimization_worker_episode_start",
             provider=provider,
             seed_chars=len(worker.seed_message),
-            workload=workload.get("name", workload_name),
         )
         return worker
 
@@ -208,10 +208,10 @@ class OptimizationWorker:
         log_event(
             self.pipeline_config.repo_root,
             self.query,
+            self.workload,
             "optimization_worker_episode_start",
             seeded=True,
             seed_chars=len(self.seed_message),
-            workload=self.workload.get("name", self.workload_name),
         )
 
     def run_candidate_cycle(self, user_message: str) -> CandidateCycleResult:
@@ -222,11 +222,11 @@ class OptimizationWorker:
         log_event(
             self.pipeline_config.repo_root,
             self.query,
+            self.workload,
             "optimization_worker_candidate_start",
             iter=self.episode_meta.optimization_iter,
             attempt=self.episode_meta.attempt,
             pending_feedback_chars=len(self.pending.peek()),
-            workload=self.workload.get("name", self.workload_name),
         )
 
         request = StageRunRequest(
@@ -253,9 +253,9 @@ class OptimizationWorker:
             log_event(
                 self.pipeline_config.repo_root,
                 self.query,
+                self.workload,
                 "optimization_worker_yield_nudge",
                 attempt=self.episode_meta.attempt,
-                workload=self.workload.get("name", self.workload_name),
             )
             nudge = StageRunRequest(
                 stage=_WORKER_STAGE,
@@ -368,6 +368,7 @@ class OptimizationWorker:
         log_event(
             self.pipeline_config.repo_root,
             self.query,
+            self.workload,
             "optimization_worker_candidate_end",
             runner_invocation_idx=self.metrics.runner_invocations,
             tool_calls=tool_calls,
@@ -377,7 +378,6 @@ class OptimizationWorker:
             cache_read_tokens=(usage or {}).get("cache_read_tokens") if usage else None,
             marker=marker,
             failure_snip=fail_snip or None,
-            workload=self.workload.get("name", self.workload_name),
         )
         return cycle
 
@@ -399,9 +399,9 @@ class OptimizationWorker:
         log_event(
             self.pipeline_config.repo_root,
             self.query,
+            self.workload,
             "optimization_worker_checkpoint_saved",
             checkpoint_path=str(self.art_dir / ckpt_file),
-            workload=self.workload.get("name", self.workload_name),
         )
         return payload
 
@@ -410,12 +410,12 @@ class OptimizationWorker:
         log_event(
             self.pipeline_config.repo_root,
             self.query,
+            self.workload,
             "optimization_worker_episode_end",
             runner_invocations=self.metrics.runner_invocations,
             tool_calls=self.metrics.episode_tool_calls,
             input_tokens=self.metrics.input_tokens,
             cache_read_tokens=self.metrics.cache_read_tokens,
-            workload=self.workload.get("name", self.workload_name),
         )
 
 

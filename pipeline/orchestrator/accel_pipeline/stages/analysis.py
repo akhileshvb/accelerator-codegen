@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.paths import analysis_artifact_path, pipeline_root, query_artifacts_dir
 from accel_pipeline.pipeline_log import log_analysis_candidates
 from accel_pipeline.stages.base import run_agent_stage
@@ -70,7 +70,7 @@ def run(
     if dry_run:
         return result
 
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     if workload.get("workload_kind") != "aux_state":
         return result
 

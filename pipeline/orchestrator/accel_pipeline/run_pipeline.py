@@ -92,10 +92,11 @@ def _maybe_process_structural_reanalysis(
     new_count, next_idx = result
     state.structural_reanalysis_count = new_count
     state.stage = STAGES[next_idx]
-    state.save(state_path(pipeline_config.repo_root, query, workload_name))
+    state.save(state_path(pipeline_config.repo_root, query, workload_name, pipeline_config.engine_name))
     log_event(
         pipeline_config.repo_root,
         query,
+        workload,
         "structural_reanalysis_resume",
         rerun_number=new_count,
         resume_stage=STAGES[next_idx],
@@ -155,6 +156,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--query", type=int, required=True)
     parser.add_argument("--workload", type=str, default="tpch_q3")
     parser.add_argument(
+        "--engine",
+        default="",
+        help="Engine to build the accelerator for (duckdb, postgres, mysql); required when the "
+        "workload supports more than one. Each query x engine is an independent run.",
+    )
+    parser.add_argument(
         "--stage",
         choices=[
             *STAGES,
@@ -210,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             print(f"loaded env file: {dotenv_path}", file=sys.stderr)
     pipeline_config = load_pipeline_config(args.config, repo_root)
-    workload = load_workload(args.workload, primary_root)
+    workload = load_workload(args.workload, primary_root, engine=args.engine)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     # Concurrent pack workers: separate build dir + CODEX_HOME (+ optional worktree).
     if os.environ.get("ACCEL_PIPELINE_WORKER_ID") or os.environ.get("ACCEL_PIPELINE_BUILD_DIR"):
@@ -291,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
             print("pipeline complete", file=sys.stderr)
             return 0
 
-    state = load_or_create(repo_root, query, args.workload, resume=args.resume)
+    state = load_or_create(repo_root, query, args.workload, pipeline_config.engine_name, resume=args.resume)
 
     if workload.get("workload_kind") == "aux_state":
         ensure_base_accelerator_prerequisite(
@@ -317,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
         )
         state.stage = args.stage
-        state.save(state_path(repo_root, query, args.workload))
+        state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
         print("pipeline complete", file=sys.stderr)
         return 0
 
@@ -329,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"=== stage: {stage} ===", file=sys.stderr)
         if not args.dry_run:
             state.stage = stage
-            state.save(state_path(repo_root, query, args.workload))
+            state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
         _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run, skip_gates=args.skip_gates, resume=args.resume)
 
         if stage == "implementation":
@@ -371,13 +378,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         # Dry-run must not poison --resume (e.g. leave stage=audit with no sources).
         state.stage = initial_stage
-        state.save(state_path(repo_root, query, args.workload))
+        state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
         print("pipeline dry-run complete (state unchanged)", file=sys.stderr)
         return 0
 
     state.stage = STAGES[-1]
-    state.save(state_path(repo_root, query, args.workload))
-    log_pipeline_summary(repo_root, query)
+    state.save(state_path(repo_root, query, args.workload, pipeline_config.engine_name))
+    log_pipeline_summary(repo_root, query, workload)
     print("pipeline complete", file=sys.stderr)
     return 0
 

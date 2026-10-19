@@ -181,7 +181,6 @@ def run_gate(
         engine_name = str(workload.get("engine_name") or "").strip().lower()
         if engine_name:
             gate_env["ACCEL_ENGINE_NAME"] = engine_name
-            gate_env["ACCEL_WORKLOAD_ENGINE_NAME"] = engine_name
         from accel_pipeline.host_runtime import inject_host_runtime_into_gate_env
 
         inject_host_runtime_into_gate_env(gate_env, workload)
@@ -259,6 +258,7 @@ def run_gate(
         log_bench_sweep_results(
             pipeline_config.repo_root,
             query,
+            workload,
             gate_status=status,
             gate_data=data,
         )

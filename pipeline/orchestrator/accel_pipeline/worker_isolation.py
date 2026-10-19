@@ -21,11 +21,10 @@ from accel_pipeline.backends.codex_exec import ensure_codex_config
 from accel_pipeline.config import PipelineConfig
 
 
-def worker_id_for_query(query: int, workload_name: str = "") -> str:
-    if workload_name:
-        safe = re.sub(r"[^a-zA-Z0-9_.-]+", "_", workload_name.strip())
-        return safe or f"q{query}"
-    return f"q{query}"
+def worker_id_for_query(query: int, workload_name: str = "", engine: str = "") -> str:
+    """One worker per query x engine: its build dir, CODEX_HOME and worktree are keyed by this id."""
+    base = re.sub(r"[^a-zA-Z0-9_.-]+", "_", workload_name.strip()) if workload_name else ""
+    return "_".join(part for part in (base or f"q{query}", engine) if part)
 
 
 def default_build_dir_for_worker(repo_root: Path, worker_id: str) -> Path:
@@ -117,7 +116,7 @@ def apply_worker_isolation(
     set_environ: bool = True,
 ) -> PipelineConfig:
     """Return a PipelineConfig scoped to a concurrent pack worker."""
-    wid = worker_id or worker_id_for_query(query, workload_name)
+    wid = worker_id or worker_id_for_query(query, workload_name, pipeline_config.engine_name)
     # Prefer explicit worktree / pack repo root when set.
     env_repo = os.environ.get("ACCEL_PIPELINE_REPO_ROOT")
     repo = Path(env_repo).resolve() if env_repo else Path(pipeline_config.repo_root).resolve()

@@ -11,7 +11,7 @@ from accel_pipeline.base_bench import (
     build_optimization_diagnosis,
     load_base_optimization_state,
 )
-from accel_pipeline.config import PipelineConfig, load_workload, resolve_optimization_edit_paths, resolve_workload_paths
+from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
 from accel_pipeline.kernel_hot_path_review import (
     analyze_kernel_source,
     format_kernel_review_for_prompt,
@@ -367,8 +367,8 @@ def build_runtime_state(
             "ab_trials": load_ab_trials(art)[-5:],
             "episode_summaries": load_episode_log(art, limit=5),
             "playbook_techniques": load_playbook_techniques(art, limit=8),
-            "negative_memory": load_negative_memory(pipeline_config.repo_root, limit=8),
-            "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root),
+            "negative_memory": load_negative_memory(pipeline_config.repo_root, pipeline_config.engine_name, limit=8),
+            "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root, pipeline_config.engine_name),
             "optimization_workflow_compact": load_optimization_workflow_compact(
                 pipeline_config.repo_root
             ),
@@ -429,8 +429,8 @@ def build_runtime_state(
         "ab_trials": load_ab_trials(art)[-5:],
         "episode_summaries": load_episode_log(art, limit=5),
         "playbook_techniques": load_playbook_techniques(art, limit=8),
-        "negative_memory": load_negative_memory(pipeline_config.repo_root, limit=8),
-        "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root),
+        "negative_memory": load_negative_memory(pipeline_config.repo_root, pipeline_config.engine_name, limit=8),
+        "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root, pipeline_config.engine_name),
         "optimization_workflow_compact": load_optimization_workflow_compact(pipeline_config.repo_root),
         "kernel_paths": {
             "header": edit_paths["header"],

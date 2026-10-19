@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload, apply_workload_overrides
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, apply_workload_overrides
 from accel_pipeline.models import make_model_id, resolve_agent_model
 from accel_pipeline.agent_progress import begin_agent_run
 from accel_pipeline.pipeline_log import (
@@ -54,7 +54,7 @@ def run_agent_stage(
     analysis_revision_request: str = "",
     extra_context: dict[str, str] | None = None,
 ) -> Any:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     if not dry_run:
         # pick up primitives other workers published (no-op outside worker worktrees)
@@ -85,6 +85,7 @@ def run_agent_stage(
         log_stage_complete(
             pipeline_config.repo_root,
             query,
+            workload,
             stage=stage,
             model_id="(dry-run)",
             backend="dry-run",
@@ -101,6 +102,7 @@ def run_agent_stage(
     log_stage_start(
         pipeline_config.repo_root,
         query,
+        workload,
         stage=stage,
         model_id=model_id,
         optimization_iter=optimization_iter,
@@ -143,6 +145,7 @@ def run_agent_stage(
     log_stage_complete(
         pipeline_config.repo_root,
         query,
+        workload,
         stage=stage,
         model_id=model_id,
         backend=result.backend,

@@ -15,6 +15,7 @@ from accel_pipeline.config import (
     PipelineConfig,
     apply_workload_overrides,
     engine_host_conventions,
+    load_run_workload,
     load_workload,
     sanitize_engine_name,
 )
@@ -95,14 +96,14 @@ def write_host_bootstrap_status(
 
 def engines_needing_bootstrap_from_workloads(
     repo_root: Path,
-    workload_names: list[str],
+    runs: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    """Return unique (engine_name, representative_workload) needing bootstrap."""
+    """Return unique (engine_name, representative_workload) needing bootstrap, from (workload, engine) runs."""
     seen: set[str] = set()
     out: list[tuple[str, str]] = []
-    for name in workload_names:
+    for name, run_engine in runs:
         try:
-            w = load_workload(name, repo_root)
+            w = load_workload(name, repo_root, engine=run_engine)
         except FileNotFoundError:
             continue
         if not needs_host_bootstrap(w):
@@ -180,14 +181,7 @@ def run_host_bootstrap(
             "path": str(host_bootstrap_status_path(pipeline_config.repo_root, engine)),
         }
 
-    workload = load_workload(representative_workload, pipeline_config.repo_root)
-    # Ensure engine_name on the representative matches (pack may mix later).
-    if sanitize_engine_name(str(workload.get("engine_name") or "")) != engine:
-        workload = dict(workload)
-        workload["engine_name"] = engine
-        from accel_pipeline.config import _normalize_accelerator_engine
-
-        workload = _normalize_accelerator_engine(workload)
+    workload = load_workload(representative_workload, pipeline_config.repo_root, engine=engine)
 
     query = int(workload.get("query_number") or 0)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
@@ -365,7 +359,7 @@ def ensure_host_bootstrap_for_workload(
     skip_gates: bool = False,
 ) -> dict[str, Any] | None:
     """Single-query entry: bootstrap engine host if needed, else None."""
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     if not needs_host_bootstrap(workload):
         return None
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
@@ -392,15 +386,9 @@ def ensure_host_bootstrap_for_pack(
     skip_gates: bool = False,
 ) -> list[dict[str, Any]]:
     """Pack entry: bootstrap each distinct non-duckdb engine once before workers."""
-    workload_names = [str(getattr(q, "workload", q)) for q in queries]
-    # Optional pack-level engine_name override applied to all queries' bootstrap set.
-    pack_engine = pack.get("engine_name")
-    needed = engines_needing_bootstrap_from_workloads(repo_root, workload_names)
-    if pack_engine:
-        engine = sanitize_engine_name(str(pack_engine))
-        if engine != "duckdb" and not host_bootstrap_passed(repo_root, engine):
-            rep = workload_names[0] if workload_names else ""
-            needed = [(engine, rep)] if rep else needed
+    needed = engines_needing_bootstrap_from_workloads(
+        repo_root, [(str(q.workload), str(q.engine)) for q in queries]
+    )
 
     results: list[dict[str, Any]] = []
     for engine, rep in needed:

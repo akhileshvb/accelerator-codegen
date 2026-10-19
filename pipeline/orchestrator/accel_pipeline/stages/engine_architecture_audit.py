@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.gates import GateFailure
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
@@ -116,7 +116,7 @@ def run_architecture_audit_agent(
     round_idx: int,
     user_message: str = "",
 ) -> Any:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     json_path = art / "architecture_audit.json"
     engine = str(workload.get("engine_name") or "")
@@ -169,7 +169,7 @@ def run_architecture_audit_with_impl_retry(
     ``run_implementation_fn`` is injected to avoid circular imports
     (``stages.engine_backend.run_implementation``).
     """
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     art.mkdir(parents=True, exist_ok=True)
 

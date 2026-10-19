@@ -34,12 +34,12 @@ REQUIRED_FIELDS = (
 )
 
 
-def request_path(repo_root: Path, query: int) -> Path:
-    return query_artifacts_dir(repo_root, query) / REQUEST_FILENAME
+def request_path(repo_root: Path, query: int, workload: dict[str, Any]) -> Path:
+    return query_artifacts_dir(repo_root, query, workload=workload) / REQUEST_FILENAME
 
 
-def history_path(repo_root: Path, query: int) -> Path:
-    return query_artifacts_dir(repo_root, query) / HISTORY_FILENAME
+def history_path(repo_root: Path, query: int, workload: dict[str, Any]) -> Path:
+    return query_artifacts_dir(repo_root, query, workload=workload) / HISTORY_FILENAME
 
 
 def max_structural_reanalysis_count(workload: dict[str, Any]) -> int:
@@ -49,8 +49,8 @@ def max_structural_reanalysis_count(workload: dict[str, Any]) -> int:
     return int(value)
 
 
-def load_pending_request(repo_root: Path, query: int) -> dict[str, Any] | None:
-    path = request_path(repo_root, query)
+def load_pending_request(repo_root: Path, query: int, workload: dict[str, Any]) -> dict[str, Any] | None:
+    path = request_path(repo_root, query, workload)
     if not path.is_file():
         return None
     try:
@@ -82,6 +82,7 @@ def validate_request(data: dict[str, Any]) -> list[str]:
 def write_request(
     repo_root: Path,
     query: int,
+    workload: dict[str, Any],
     *,
     source_stage: str,
     source_iteration: int,
@@ -106,20 +107,20 @@ def write_request(
     errors = validate_request(payload)
     if errors:
         raise ValueError("; ".join(errors))
-    path = request_path(repo_root, query)
+    path = request_path(repo_root, query, workload)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
 
 
-def clear_request(repo_root: Path, query: int) -> None:
-    path = request_path(repo_root, query)
+def clear_request(repo_root: Path, query: int, workload: dict[str, Any]) -> None:
+    path = request_path(repo_root, query, workload)
     if path.is_file():
         path.unlink()
 
 
-def append_history(repo_root: Path, query: int, entry: dict[str, Any]) -> None:
-    path = history_path(repo_root, query)
+def append_history(repo_root: Path, query: int, workload: dict[str, Any], entry: dict[str, Any]) -> None:
+    path = history_path(repo_root, query, workload)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
@@ -194,7 +195,7 @@ def process_after_stage(
 
     Returns (new_structural_reanalysis_count, next_stage_index) or None if no reanalysis ran.
     """
-    request = load_pending_request(repo_root, query)
+    request = load_pending_request(repo_root, query, workload)
     if not request:
         return None
 
@@ -204,15 +205,16 @@ def process_after_stage(
 
         reason = "; ".join(errors)
         log_structural_reanalysis_skipped(
-            repo_root, query, triggered_after=triggered_after, reason=f"invalid request: {reason}"
+            repo_root, query, workload, triggered_after=triggered_after, reason=f"invalid request: {reason}"
         )
         append_experiment_log(
             repo_root,
             query,
             f"- structural_reanalysis: rejected invalid request after {triggered_after}: "
             + "; ".join(errors),
+            workload=workload,
         )
-        clear_request(repo_root, query)
+        clear_request(repo_root, query, workload)
         return None
 
     if not can_rerun_analysis(structural_reanalysis_count, workload):
@@ -223,15 +225,16 @@ def process_after_stage(
             f"{max_structural_reanalysis_count(workload)})"
         )
         log_structural_reanalysis_skipped(
-            repo_root, query, triggered_after=triggered_after, reason=reason
+            repo_root, query, workload, triggered_after=triggered_after, reason=reason
         )
         append_experiment_log(
             repo_root,
             query,
             f"- structural_reanalysis: budget exhausted ({structural_reanalysis_count}/"
             f"{max_structural_reanalysis_count(workload)}); ignoring request after {triggered_after}",
+            workload=workload,
         )
-        clear_request(repo_root, query)
+        clear_request(repo_root, query, workload)
         return None
 
     if dry_run:
@@ -242,6 +245,7 @@ def process_after_stage(
     log_structural_reanalysis_triggered(
         repo_root,
         query,
+        workload,
         rerun_number=rerun_number,
         triggered_after=triggered_after,
         bottleneck_type=str(request.get("bottleneck_type", "")),
@@ -250,6 +254,7 @@ def process_after_stage(
     append_history(
         repo_root,
         query,
+        workload,
         {
             "rerun_number": rerun_number,
             "triggered_after": triggered_after,
@@ -264,6 +269,7 @@ def process_after_stage(
         f"- structural_reanalysis #{rerun_number}: triggered after {triggered_after}; "
         f"bottleneck={request.get('bottleneck_type')}; "
         f"candidate={request.get('current_candidate_id')}",
+        workload=workload,
     )
 
     user_message = build_reanalysis_user_message(request, rerun_number=rerun_number)
@@ -273,7 +279,7 @@ def process_after_stage(
         max_reruns=max_structural_reanalysis_count(workload),
     )
 
-    clear_request(repo_root, query)
+    clear_request(repo_root, query, workload)
 
     run_analysis(user_message=user_message, analysis_revision_request=revision_request)
     if run_adversarial_tests is not None:

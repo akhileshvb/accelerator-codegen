@@ -11,12 +11,14 @@ from typing import Any
 from accel_pipeline.paths import query_artifacts_dir
 
 
-def events_path(repo_root: Path, query: int) -> Path:
-    return query_artifacts_dir(repo_root, query) / "pipeline_events.jsonl"
+def events_path(repo_root: Path, query: int, workload: dict[str, Any] | None) -> Path:
+    return query_artifacts_dir(repo_root, query, workload=workload) / "pipeline_events.jsonl"
 
 
-def _append_event(repo_root: Path, query: int, payload: dict[str, Any]) -> None:
-    path = events_path(repo_root, query)
+def _append_event(
+    repo_root: Path, query: int, workload: dict[str, Any] | None, payload: dict[str, Any]
+) -> None:
+    path = events_path(repo_root, query, workload)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
@@ -498,6 +500,7 @@ def log_base_bench_summary(
 def log_bench_sweep_results(
     repo_root: Path,
     query: int,
+    workload: dict[str, Any] | None,
     *,
     gate_status: str,
     gate_data: dict[str, Any],
@@ -528,6 +531,7 @@ def log_bench_sweep_results(
     _append_event(
         repo_root,
         query,
+        workload,
         {
             "ts": datetime.now(UTC).isoformat(),
             "event": "aux_bench_sweep",
@@ -542,14 +546,16 @@ def log_bench_sweep_results(
     )
 
 
-def log_event(repo_root: Path, query: int, event: str, **fields: Any) -> None:
+def log_event(
+    repo_root: Path, query: int, workload: dict[str, Any] | None, event: str, **fields: Any
+) -> None:
     payload: dict[str, Any] = {
         "ts": datetime.now(UTC).isoformat(),
         "event": event,
         **{k: v for k, v in fields.items() if v is not None},
     }
     print(_format_line(payload), file=sys.stderr)
-    _append_event(repo_root, query, payload)
+    _append_event(repo_root, query, workload, payload)
 
 
 def usage_from_metadata(metadata: dict[str, Any] | None) -> dict[str, int] | None:
@@ -592,6 +598,7 @@ def format_usage(usage: dict[str, int] | None) -> str:
 def log_stage_start(
     repo_root: Path,
     query: int,
+    workload: dict[str, Any] | None,
     *,
     stage: str,
     model_id: str,
@@ -601,6 +608,7 @@ def log_stage_start(
     log_event(
         repo_root,
         query,
+        workload,
         "stage_start",
         stage=stage,
         model=model_id,
@@ -612,6 +620,7 @@ def log_stage_start(
 def log_stage_complete(
     repo_root: Path,
     query: int,
+    workload: dict[str, Any] | None,
     *,
     stage: str,
     model_id: str,
@@ -626,6 +635,7 @@ def log_stage_complete(
     log_event(
         repo_root,
         query,
+        workload,
         "stage_complete",
         stage=stage,
         model=model_id,
@@ -642,6 +652,7 @@ def log_stage_complete(
 def log_structural_reanalysis_request(
     repo_root: Path,
     query: int,
+    workload: dict[str, Any] | None,
     *,
     status: str,
     source_stage: str,
@@ -653,6 +664,7 @@ def log_structural_reanalysis_request(
     log_event(
         repo_root,
         query,
+        workload,
         "structural_reanalysis_request",
         status=status,
         source_stage=source_stage,
@@ -666,6 +678,7 @@ def log_structural_reanalysis_request(
 def log_structural_reanalysis_triggered(
     repo_root: Path,
     query: int,
+    workload: dict[str, Any] | None,
     *,
     rerun_number: int,
     triggered_after: str,
@@ -675,6 +688,7 @@ def log_structural_reanalysis_triggered(
     log_event(
         repo_root,
         query,
+        workload,
         "structural_reanalysis_triggered",
         rerun_number=rerun_number,
         triggered_after=triggered_after,
@@ -686,6 +700,7 @@ def log_structural_reanalysis_triggered(
 def log_structural_reanalysis_skipped(
     repo_root: Path,
     query: int,
+    workload: dict[str, Any] | None,
     *,
     triggered_after: str,
     reason: str,
@@ -693,14 +708,15 @@ def log_structural_reanalysis_skipped(
     log_event(
         repo_root,
         query,
+        workload,
         "structural_reanalysis_skipped",
         triggered_after=triggered_after,
         reason=reason,
     )
 
 
-def log_pipeline_summary(repo_root: Path, query: int) -> None:
-    path = events_path(repo_root, query)
+def log_pipeline_summary(repo_root: Path, query: int, workload: dict[str, Any] | None) -> None:
+    path = events_path(repo_root, query, workload)
     if not path.is_file():
         return
 
@@ -733,6 +749,7 @@ def log_pipeline_summary(repo_root: Path, query: int) -> None:
     log_event(
         repo_root,
         query,
+        workload,
         "pipeline_summary",
         stages_completed=stage_completes,
         structural_requests_queued=structural_requests,

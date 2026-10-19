@@ -104,6 +104,7 @@ def _try_honor_saturation(
     log_event(
         pipeline_config.repo_root,
         query,
+        workload,
         "optimization_saturation_claim",
         honored=ok,
         detail=detail[:500],
@@ -344,7 +345,7 @@ def _run_agent_substage(
     optimization_iter: int,
     extra_context: dict[str, str] | None = None,
 ) -> Any:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     prompt = render_prompt(
         pipeline_config,
@@ -517,7 +518,7 @@ def _run_unified_optimization_attempt(
     model_overrides: dict[str, str] | None,
     experimental_summary: str = "",
 ) -> UnifiedAttemptResult:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     guidance = str(workload.get("optimization_guidance", "") or "").strip()
     if _two_phase_optimization_enabled(workload):
         hypo_message = build_optimization_user_message(
@@ -853,7 +854,7 @@ def run_optimization_iteration(
     deadline: float | None = None,
 ) -> Any:
     """One optimization iteration; no new attempt starts after `deadline` (time.time())."""
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     eval_config = eval_config_from_pipeline(pipeline_config)
@@ -870,6 +871,7 @@ def run_optimization_iteration(
     log_stage_start(
         pipeline_config.repo_root,
         query,
+        workload,
         stage="optimization",
         model_id=make_model_id("optimization", pipeline_config, model_config, model_overrides),
         optimization_iter=optimization_iter,
@@ -1226,6 +1228,7 @@ def run_optimization_iteration(
             log_event(
                 pipeline_config.repo_root,
                 query,
+                workload,
                 "optimization_worker_gate_verdict",
                 verdict=outcome.verdict,
                 improvement_pct=outcome.improvement_pct,
@@ -1743,6 +1746,7 @@ def run_optimization_iteration(
     log_stage_complete(
         pipeline_config.repo_root,
         query,
+        workload,
         stage="optimization",
         model_id=make_model_id("optimization", pipeline_config, model_config, model_overrides),
         backend="codex_exec",

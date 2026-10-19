@@ -30,6 +30,7 @@ def query_artifacts_dir(
     workload: dict[str, Any] | None = None,
     benchmark_name: str | None = None,
 ) -> Path:
+    """artifacts/<bench>/q<N>/<engine>/ for accelerator runs (one per query x engine)."""
     if workload and workload.get("workload_kind") == "engine_backend":
         engine = str(workload.get("engine_name") or workload.get("artifact_namespace") or "engine")
         path = pipeline_root(repo_root) / "artifacts" / "engines" / engine
@@ -37,15 +38,12 @@ def query_artifacts_dir(
         return path
 
     bench = benchmark_name or workload_benchmark_name(workload)
-    namespaced = pipeline_root(repo_root) / "artifacts" / bench / f"q{query_number}"
-    legacy = pipeline_root(repo_root) / "artifacts" / f"q{query_number}"
-
-    if bench == "tpch" and legacy.is_dir() and not namespaced.is_dir():
-        legacy.mkdir(parents=True, exist_ok=True)
-        return legacy
-
-    namespaced.mkdir(parents=True, exist_ok=True)
-    return namespaced
+    path = pipeline_root(repo_root) / "artifacts" / bench / f"q{query_number}"
+    engine = str((workload or {}).get("engine_name") or "")
+    if engine:
+        path = path / engine
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def engine_artifacts_dir(repo_root: Path, engine_name: str) -> Path:
@@ -76,28 +74,6 @@ def analysis_artifact_path(
     return art / analysis_artifact_name(workload)
 
 
-def resolve_analysis_artifact_path(
-    artifacts_dir: Path,
-    workload: dict[str, Any] | None,
-) -> Path:
-    """Return the analysis artifact path, with legacy fallback for base workloads."""
-    path = artifacts_dir / analysis_artifact_name(workload)
-    if path.is_file():
-        return path
-    if workload and workload.get("workload_kind") == "aux_state":
-        return path
-    legacy = artifacts_dir / "analysis.json"
-    if not legacy.is_file():
-        return path
-    try:
-        data = json.loads(legacy.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return path
-    if isinstance(data, dict) and "fitness_assessment" not in data:
-        return legacy
-    return path
-
-
 def load_query_analysis(
     repo_root: Path,
     query_number: int,
@@ -105,7 +81,7 @@ def load_query_analysis(
     workload: dict[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     art = query_artifacts_dir(repo_root, query_number, workload=workload)
-    path = resolve_analysis_artifact_path(art, workload)
+    path = art / analysis_artifact_name(workload)
     if not path.is_file():
         return path, {}
     try:

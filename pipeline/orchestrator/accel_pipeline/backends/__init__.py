@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from accel_pipeline.backends.base import AgentBackend, StageRunRequest, StageRunResult
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.paths import query_artifacts_dir
 
 _ARTIFACT_STAGES = frozenset(
@@ -38,7 +38,7 @@ def create_agent_backend(
 
     art_dir = None
     if stage in _ARTIFACT_STAGES and workload_name:
-        workload = load_workload(workload_name, pipeline_config.repo_root)
+        workload = load_run_workload(pipeline_config, workload_name)
         art_dir = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
 
     from accel_pipeline.backends.codex_exec import CodexExecBackend

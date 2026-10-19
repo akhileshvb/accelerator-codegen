@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload, resolve_workload_paths
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
 from accel_pipeline.paths import analysis_artifact_path, load_query_analysis
 
 
@@ -164,7 +164,7 @@ def ensure_base_accelerator_prerequisite(
     If aux workload requires a base accelerator, ensure it exists and passes correctness.
     Returns True if prerequisite was run, False if already satisfied or not required.
     """
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     if workload.get("workload_kind") != "aux_state":
         return False
     if not workload.get("requires_base_accelerator", False):
@@ -172,7 +172,7 @@ def ensure_base_accelerator_prerequisite(
 
     benchmark = str(workload.get("benchmark_name", "tpch"))
     prereq_name = workload.get("prerequisite_workload") or f"{benchmark}_q{query}"
-    prereq_workload = load_workload(str(prereq_name), pipeline_config.repo_root)
+    prereq_workload = load_run_workload(pipeline_config, str(prereq_name))
     repo = pipeline_config.repo_root
 
     # TEMPORARY: skip the slow multi-seed base smoke test before aux implementation when

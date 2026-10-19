@@ -53,9 +53,9 @@ def run_post_stage_gates_collect(
     change_kind: str = "",
     iteration: int = 0,
 ) -> tuple[list[GateResult], GateResult | None]:
-    from accel_pipeline.config import load_workload
+    from accel_pipeline.config import load_run_workload
 
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     from accel_pipeline.pipeline_log import log_gate_batch_start
 
     log_gate_batch_start(

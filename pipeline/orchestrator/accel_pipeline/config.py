@@ -61,8 +61,6 @@ class PipelineConfig:
     optimization_max_turns_analysis: int = 0
     optimization_max_turns_patch: int = 0
     optimization_max_turns_unified: int = 0
-    optimization_attempt_budgets: dict[str, int] = field(default_factory=dict)
-    optimization_patch_budgets: dict[str, int] = field(default_factory=dict)
     optimization_build_fix_max_rounds: int = 0
     optimization_correctness_fix_max_rounds: int = 0
     optimization_build_fix_safety_cap: int = 12
@@ -330,8 +328,6 @@ def load_pipeline_config(
     gates_rel = data.get("gates_dir", "pipeline/gates")
     opt = data.get("optimization", {})
     crash_debug = data.get("crash_debug", {})
-    attempt_budgets = dict(opt.get("attempt_budgets") or {})
-    patch_budgets = dict(opt.get("patch_budgets") or {})
     max_turns = dict(opt.get("max_turns") or {})
 
     datasets: dict[str, Path] = {}
@@ -379,8 +375,6 @@ def load_pipeline_config(
         optimization_max_turns_analysis=int(max_turns.get("analysis", 0)),
         optimization_max_turns_patch=int(max_turns.get("patch", 0)),
         optimization_max_turns_unified=int(max_turns.get("unified", 0)),
-        optimization_attempt_budgets=attempt_budgets,
-        optimization_patch_budgets=patch_budgets,
         optimization_build_fix_max_rounds=int(opt.get("build_fix_max_rounds", 0)),
         optimization_correctness_fix_max_rounds=int(opt.get("correctness_fix_max_rounds", 0)),
         optimization_build_fix_safety_cap=int(opt.get("build_fix_safety_cap", 12)),
@@ -603,17 +597,29 @@ def engine_host_conventions(engine_name: str, bench: str = "<bench>", query: Any
     return host
 
 
-def _normalize_accelerator_engine(data: dict[str, Any]) -> dict[str, Any]:
-    """Require explicit engine_name and attach host conventions for accelerators."""
-    env_engine = os.environ.get("ACCEL_WORKLOAD_ENGINE_NAME", "").strip()
-    raw = data.get("engine_name") or (env_engine or None)
-    if raw is None or str(raw).strip() == "":
+def workload_engines(workload: dict[str, Any]) -> list[str]:
+    """Engines a workload supports: its `engines:` list, else every engine with a backend."""
+    declared = workload.get("engines")
+    return [sanitize_engine_name(e) for e in (declared or QUERY_REGISTRATION)]
+
+
+def select_engine(workload: dict[str, Any], requested: str, name: str) -> str:
+    """The run's engine: `requested`, or the workload's only engine; else an error."""
+    supported = workload_engines(workload)
+    engine = sanitize_engine_name(requested) if requested else ""
+    if not engine and len(supported) == 1:
+        engine = supported[0]
+    if not engine:
         raise ValueError(
-            "accelerator workload requires explicit engine_name "
-            "(set in workload YAML or ACCEL_WORKLOAD_ENGINE_NAME). "
-            "No default to duckdb or postgres."
+            f"workload {name!r} supports engines {supported}: pick one (--engine / pack `engines:`)"
         )
-    engine = sanitize_engine_name(str(raw))
+    if engine not in supported:
+        raise ValueError(f"workload {name!r} does not support engine {engine!r} (supports {supported})")
+    return engine
+
+
+def _normalize_accelerator_engine(data: dict[str, Any], engine: str) -> dict[str, Any]:
+    """Pin the run's engine and attach host conventions for accelerators."""
     data["engine_name"] = engine
     # Generated query tree for this engine.
     bench = str(data.get("benchmark_name") or data.get("benchmark") or "tpch")
@@ -757,6 +763,14 @@ def load_benchmark_aux_state_defaults(
     return _load_yaml(path)
 
 
+def _pick_engine_search_paths(workload: dict[str, Any], engine: str) -> None:
+    """Resolve a per-engine `fairness.kernel_search_paths` mapping to the run's engine."""
+    fairness = workload.get("fairness")
+    paths = fairness.get("kernel_search_paths") if isinstance(fairness, dict) else None
+    if isinstance(paths, dict):
+        fairness["kernel_search_paths"] = list(paths.get(engine) or [])
+
+
 def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
     aux_defaults = load_aux_state_defaults(repo_root)
     benchmark = str(workload.get("benchmark_name", "tpch"))
@@ -816,12 +830,6 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
     if not opt:
         return pipeline_config
     max_turns = dict(opt.get("max_turns") or {})
-    attempt_budgets = dict(pipeline_config.optimization_attempt_budgets)
-    if opt.get("attempt_budgets"):
-        attempt_budgets.update(dict(opt["attempt_budgets"]))
-    patch_budgets = dict(pipeline_config.optimization_patch_budgets)
-    if opt.get("patch_budgets"):
-        patch_budgets.update(dict(opt["patch_budgets"]))
     return PipelineConfig(
         repo_root=pipeline_config.repo_root,
         pipeline_root=pipeline_config.pipeline_root,
@@ -907,8 +915,6 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         optimization_max_turns_unified=int(
             max_turns.get("unified", pipeline_config.optimization_max_turns_unified)
         ),
-        optimization_attempt_budgets=attempt_budgets,
-        optimization_patch_budgets=patch_budgets,
         optimization_build_fix_max_rounds=int(
             opt.get("build_fix_max_rounds", pipeline_config.optimization_build_fix_max_rounds)
         ),
@@ -1068,8 +1074,6 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         optimization_max_turns_analysis=pipeline_config.optimization_max_turns_analysis,
         optimization_max_turns_patch=pipeline_config.optimization_max_turns_patch,
         optimization_max_turns_unified=pipeline_config.optimization_max_turns_unified,
-        optimization_attempt_budgets=dict(pipeline_config.optimization_attempt_budgets),
-        optimization_patch_budgets=dict(pipeline_config.optimization_patch_budgets),
         optimization_build_fix_max_rounds=pipeline_config.optimization_build_fix_max_rounds,
         optimization_correctness_fix_max_rounds=pipeline_config.optimization_correctness_fix_max_rounds,
         optimization_build_fix_safety_cap=pipeline_config.optimization_build_fix_safety_cap,
@@ -1097,7 +1101,7 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
     return merged
 
 
-def load_workload(name: str, repo_root: Path | None = None) -> dict[str, Any]:
+def _read_workload_yaml(name: str, repo_root: Path | None) -> tuple[dict[str, Any], Path]:
     # Pack worktrees may not contain untracked workload YAMLs; prefer primary.
     primary = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
     root = Path(primary).resolve() if primary else (repo_root or find_repo_root())
@@ -1111,11 +1115,22 @@ def load_workload(name: str, repo_root: Path | None = None) -> dict[str, Any]:
             path = alt
         else:
             raise FileNotFoundError(f"workload not found: {path}")
-    data = _load_yaml(path)
+    return _load_yaml(path), root
+
+
+def workload_supported_engines(name: str, repo_root: Path | None = None) -> list[str]:
+    data, _ = _read_workload_yaml(name, repo_root)
+    return workload_engines(data)
+
+
+def load_workload(name: str, repo_root: Path | None = None, *, engine: str = "") -> dict[str, Any]:
+    """Load a workload; accelerator workloads are engine-neutral and need `engine` (see select_engine)."""
+    data, root = _read_workload_yaml(name, repo_root)
 
     if data.get("workload_kind") == "engine_backend":
         return _normalize_engine_backend_workload(data, root)
 
+    engine = select_engine(data, engine, name)
     benchmark_name = data.get("benchmark_name", "tpch")
     try:
         pack = load_benchmark_pack(benchmark_name, root)
@@ -1127,4 +1142,10 @@ def load_workload(name: str, repo_root: Path | None = None) -> dict[str, Any]:
 
     if data.get("workload_kind") == "aux_state":
         _merge_aux_defaults(data, root)
-    return _normalize_accelerator_engine(data)
+    _pick_engine_search_paths(data, engine)
+    return _normalize_accelerator_engine(data, engine)
+
+
+def load_run_workload(pipeline_config: PipelineConfig, name: str) -> dict[str, Any]:
+    """`name` loaded for the engine of the run `pipeline_config` belongs to."""
+    return load_workload(name, pipeline_config.repo_root, engine=pipeline_config.engine_name)

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
 from accel_pipeline.stages.base import run_agent_stage
 
@@ -15,8 +15,7 @@ STAGE = "adversarial_tests"
 PROMPT_FILE = "01b_adversarial_tests.md"
 
 
-def scenarios_path(repo_root: Path, query: int, *, workload_name: str) -> Path:
-    workload = load_workload(workload_name, repo_root)
+def scenarios_path(repo_root: Path, query: int, *, workload: dict) -> Path:
     return query_artifacts_dir(repo_root, query, workload=workload) / "adversarial_write_scenarios.json"
 
 
@@ -67,7 +66,7 @@ def run(
     model_overrides: dict[str, Any] | None = None,
     dry_run: bool = False,
 ) -> Any:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     if workload.get("workload_kind") != "aux_state":
         print(
             f"[pipeline] skipping {STAGE} — workload kind is not aux_state",

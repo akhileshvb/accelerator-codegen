@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.gate_capture import format_reloop_failure_sections
 from accel_pipeline.host_runtime import prepare_host_sdk_payload
@@ -172,7 +172,7 @@ def format_layer_gate_feedback(
 
 
 def run_analysis(pipeline_config, model_config, workload_name, query, model_overrides, dry_run):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     return run_agent_stage(
         stage="analysis",
         prompt_file="01_analysis.md",
@@ -198,7 +198,7 @@ def run_implementation_layer(
     skip_gates=False,
     extra_user_message: str = "",
 ):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     stage = layer_stage_name(str(layer.get("id") or "layer"))
     extra_context = _layer_extra_context(workload, layer)
     extra = extra_user_message
@@ -346,7 +346,7 @@ def run_implementation(
     only_layer_id: str | None = None,
     from_layer_id: str | None = None,
 ):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     known = {str(layer.get("id") or "") for layer in implementation_layers(workload)}
     if from_layer_id and from_layer_id not in known:
         from_layer_id = None
@@ -380,7 +380,7 @@ def run_implementation(
 def run_validation(
     pipeline_config, model_config, workload_name, query, model_overrides, dry_run, *, skip_gates=False
 ):
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     result = run_agent_stage(
         stage="validation",
         prompt_file="03_validation.md",
@@ -430,7 +430,7 @@ def run_engine_pipeline(
     stage: str = "all",
     skip_gates: bool = False,
 ) -> None:
-    workload = load_workload(workload_name, pipeline_config.repo_root)
+    workload = load_run_workload(pipeline_config, workload_name)
     _prepare_engine_host_sdk(pipeline_config, workload, query)
     qsession = None if dry_run else apply_foreign_engine_quarantine(
         pipeline_config.repo_root, workload

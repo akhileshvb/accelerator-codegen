@@ -128,26 +128,28 @@ def materialize_workload_stubs(
     }
 
 
-def materialize_from_gate(repo_root: Path, query: int, workload_name: str | None = None) -> dict[str, Any]:
+def materialize_from_gate(
+    repo_root: Path, query: int, engine: str, workload_name: str | None = None
+) -> dict[str, Any]:
     from accel_pipeline.config import load_pipeline_config
 
     pipeline_config = load_pipeline_config(repo_root=repo_root)
     if workload_name is None:
-        workload_name = _workload_name_from_gate(repo_root, query)
-    workload = load_workload(workload_name, repo_root)
+        workload_name = _workload_name_from_gate(repo_root, query, engine)
+    workload = load_workload(workload_name, repo_root, engine=engine)
     if workload.get("query_number") is None:
         workload = dict(workload)
         workload["query_number"] = query
     return materialize_workload_stubs(pipeline_config, workload, query)
 
 
-def _workload_name_from_gate(repo_root: Path, query: int) -> str:
+def _workload_name_from_gate(repo_root: Path, query: int, engine: str) -> str:
     import json
 
     artifacts = repo_root / "pipeline" / "artifacts"
-    candidates = sorted(artifacts.glob(f"*/q{query}/gates/_gate_context.json"))
+    candidates = sorted(artifacts.glob(f"*/q{query}/{engine}/gates/_gate_context.json"))
     if not candidates:
-        raise FileNotFoundError(f"gate context not found for query {query}")
+        raise FileNotFoundError(f"gate context not found for query {query} on {engine}")
     ctx = json.loads(candidates[-1].read_text(encoding="utf-8"))
     workload_name = ctx.get("workload_name")
     if workload_name:

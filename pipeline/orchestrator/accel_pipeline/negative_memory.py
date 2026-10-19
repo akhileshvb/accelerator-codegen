@@ -10,7 +10,7 @@ from typing import Any
 
 from accel_pipeline.paths import pipeline_root
 
-NEGATIVE_MEMORY_REL = "artifacts/shared/optimization_negative_memory.json"
+NEGATIVE_MEMORY_FILE = "optimization_negative_memory.json"
 MAX_ENTRIES = 24
 MAX_TRAP_CHARS = 160
 MAX_WHEN_CHARS = 120
@@ -48,8 +48,9 @@ _SEED_ENTRIES: list[dict[str, Any]] = [
 ]
 
 
-def negative_memory_path(repo_root: Path) -> Path:
-    return pipeline_root(repo_root) / NEGATIVE_MEMORY_REL
+def negative_memory_path(repo_root: Path, engine: str) -> Path:
+    """Per engine: one engine's learned traps never reach another engine's analysis."""
+    return pipeline_root(repo_root) / "artifacts" / "shared" / engine / NEGATIVE_MEMORY_FILE
 
 
 def _now() -> str:
@@ -78,9 +79,9 @@ def _default_store() -> dict[str, Any]:
     }
 
 
-def ensure_negative_memory(repo_root: Path) -> Path:
-    """Create the shared store with seed traps if missing."""
-    path = negative_memory_path(repo_root)
+def ensure_negative_memory(repo_root: Path, engine: str) -> Path:
+    """Create the engine's store with seed traps if missing."""
+    path = negative_memory_path(repo_root, engine)
     if path.is_file():
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,8 +102,8 @@ def ensure_negative_memory(repo_root: Path) -> Path:
     return path
 
 
-def load_negative_memory(repo_root: Path, *, limit: int = 12) -> list[dict[str, Any]]:
-    path = ensure_negative_memory(repo_root)
+def load_negative_memory(repo_root: Path, engine: str, *, limit: int = 12) -> list[dict[str, Any]]:
+    path = ensure_negative_memory(repo_root, engine)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
@@ -111,8 +112,8 @@ def load_negative_memory(repo_root: Path, *, limit: int = 12) -> list[dict[str, 
     return entries[-max(1, limit) :]
 
 
-def load_negative_memory_guidance(repo_root: Path) -> str:
-    path = ensure_negative_memory(repo_root)
+def load_negative_memory_guidance(repo_root: Path, engine: str) -> str:
+    path = ensure_negative_memory(repo_root, engine)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
@@ -147,6 +148,7 @@ def format_negative_memory_markdown(
 
 def append_negative_memory(
     repo_root: Path,
+    engine: str,
     *,
     trap: str,
     when: str = "",
@@ -160,7 +162,7 @@ def append_negative_memory(
     trap_text = _clip(trap, MAX_TRAP_CHARS)
     if len(trap_text) < 12:
         return None
-    path = ensure_negative_memory(repo_root)
+    path = ensure_negative_memory(repo_root, engine)
     try:
         store = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
@@ -218,6 +220,7 @@ def maybe_record_reject_trap(
         when += f"; Δ={improvement_pct:+.1f}%"
     return append_negative_memory(
         repo_root,
+        str((workload or {}).get("engine_name") or ""),
         trap=f"Avoid repeating failed approach: {trap}",
         when=when,
         evidence=_clip(why or reason, MAX_EVIDENCE_CHARS),
