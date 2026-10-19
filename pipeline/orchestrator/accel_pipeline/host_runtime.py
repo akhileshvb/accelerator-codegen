@@ -57,7 +57,7 @@ def discover_host_sdk_json(workload: dict[str, Any]) -> str:
             {
                 "engine": str(workload.get("engine_name") or ""),
                 "found": False,
-                "reason": "no host_runtime auto-discovery; follow engine_sdk_hints",
+                "reason": "no host_runtime auto-discovery; see the engine profile",
             },
             indent=2,
         )

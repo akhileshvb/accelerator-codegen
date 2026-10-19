@@ -91,7 +91,7 @@ def _user_message(
         "Primary context is the fixed substrate (aux/runtime skeleton: the flow is "
         "frozen, you implement its slots S1-S8). "
         "Treat this as from-scratch onboarding: implement only this engine's native "
-        "slot implementations using templates + SDK hints. Do not read or copy "
+        "slot implementations using templates + the engine profile. Do not read or copy "
         "any other engine tree. Follow pipeline/prompts/engine_backend/layers.md."
     )
     if layer:

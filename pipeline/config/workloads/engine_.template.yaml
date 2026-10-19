@@ -1,34 +1,110 @@
-# Copy to engine_<name>.yaml and set engine_name (plus optional SDK hints).
-# target_paths / cmake / write_paths / implementation_layers are filled from
+# Copy to engine_<name>.yaml and fill every leaf of engine_profile.
+# target_paths / cmake / write_paths / implementation_layers come from
 # pipeline/config/engine_backend.yaml unless overridden.
 #
-# From-scratch: do not assume any other engine adapter exists. Substrate +
-# templates + these SDK hints only.
+# engine_profile (schema: pipeline/schemas/engine_profile.schema.json) is the engine's input to the
+# pipeline: the same keys for every engine, FACTS AND HAZARDS ONLY (what the engine does, never what
+# the backend should do). A leaf is a value or `{na: "reason"}`: a blank is a decision, so an
+# unknown or inapplicable key is declared, not omitted. The orchestrator rejects a missing key.
 #
-# Outcome: the engine's slot implementations (S1-S8), built in the sequential
-# layers of prompts/engine_backend/layers.md, each with
-# backends/<engine>/tests/test_<engine>_<layer>.cpp. Validation adds unseen
-# adversarial tests and the backend-generic slot gates (gates/run_slot_gates.sh;
-# add gates/slot_adapters/<engine>.sh for a new engine).
+# From-scratch: do not assume any other engine backend exists. Substrate + templates + this profile.
 #
-# placement_candidates (S6): in_process | shipped_worker
+# Outcome: the engine's slot implementations (S1-S8), built in the sequential layers of
+# prompts/engine_backend/layers.md, each with backends/<engine>/tests/test_<engine>_<layer>.cpp.
+# Validation adds unseen adversarial tests and the backend-generic slot gates
+# (gates/run_slot_gates.sh; add gates/slot_adapters/<engine>.sh for a new engine).
 
 workload_kind: engine_backend
-engine_name: REPLACE_ME
-
-engine_sdk_hints:
-  - "Paths or docs for this engine's native storage / table / handler APIs"
-
-# Optional docker/in-process host. Omit for embedded engines that build on the host.
-# host_runtime:
-#   kind: docker          # or host_cmake
-#   discovery:            # optional plugin name (postgres_docker, mysql_docker)
-#   ensure_script: scripts/ensure_<engine>_host.sh
-#   build_script: scripts/build_<engine>_extension.sh
-#   ninja_targets_env: ACCEL_NINJA_TARGETS
-#   default_container: accel_<engine>_test
-#   binary_dir: /accel-build/accel
-
-# requires_in_process_host: true
-
+engine_name: replace_me
 allow_update_existing: false
+
+hide_foreign_engines: true
+agent_hidden_trees:
+  - backends/<other engine>
+  - accelerators/tpch
+  - accelerators/sec_edgar
+
+engine_profile:
+  identity:
+    name: replace_me                  # equals engine_name
+    display_name: REPLACE_ME
+    version: "REPLACE_ME: the version the backend targets"
+    sdk_headers: ["REPLACE_ME: headers / SDK roots"]
+    docs: ["REPLACE_ME: documentation to consult"]
+
+  packaging:
+    kind: embedded_lib                # embedded_lib | server_extension | server_plugin
+    placement_candidates: [in_process]    # in_process | shipped_worker
+    requires_in_process_host: false   # true: S7 entry points load inside the engine (layer host runs)
+    prod_target: "REPLACE_ME"
+    test_target: {na: "REPLACE_ME: why there is no separate test artifact"}
+    install_path: {na: "REPLACE_ME: why nothing is installed into the engine"}
+    test_only_code_rule: "REPLACE_ME: which artifact may hold test-only code"
+
+  host_runtime:
+    kind: host_cmake                  # host_cmake | docker
+    discovery: {na: "REPLACE_ME: named orchestrator discovery plugin, if any"}
+    ensure_script: {na: "REPLACE_ME: script that starts the engine host (docker)"}
+    build_script: {na: "REPLACE_ME: script that builds the backend for the host (docker)"}
+    ninja_targets_env: {na: "REPLACE_ME"}
+    container_env: {na: "REPLACE_ME"}
+    default_container: {na: "REPLACE_ME"}
+    binary_dir: {na: "REPLACE_ME"}
+    connect: "REPLACE_ME: how a client reaches the engine"
+    env: {na: "REPLACE_ME: environment the gates set"}
+
+  build:
+    cmake_option: ACCELERATOR_CODEGEN_BUILD_REPLACE_ME
+    extra_find_packages: {na: "REPLACE_ME: packages beyond the engine SDK"}
+
+  process_model:
+    connections: threads              # threads | processes | other
+    shared_memory_needed: {na: "REPLACE_ME: whether cross-connection state needs OS shared memory"}
+    engine_api_thread_safety: "REPLACE_ME"
+    calls_forbidden_off_main_thread: {na: "REPLACE_ME"}
+
+  capture:
+    hook_mechanism: "REPLACE_ME"
+    granularity: "REPLACE_ME"
+    ddl_events: {na: "REPLACE_ME: how truncate/drop/rename/replace become observable, or that they do not"}
+    abort_signal: "REPLACE_ME"
+    uncaptured_write_paths: {na: "REPLACE_ME: write paths that bypass the hook"}
+
+  transactions:
+    isolation_levels: ["REPLACE_ME"]
+    commit_hook: "REPLACE_ME"
+    commit_order_source: "REPLACE_ME"
+    own_writes_visibility: "REPLACE_ME"
+    snapshot_api: "REPLACE_ME"
+    subtransactions: {na: "REPLACE_ME"}
+
+  locking:
+    engine_locks_relevant: {na: "REPLACE_ME"}
+    locks_held_during_hooks: {na: "REPLACE_ME"}
+    wait_timeout_knob: {na: "REPLACE_ME"}
+
+  scan:
+    native_scan_api: "REPLACE_ME"
+    parallel_scan_api: "REPLACE_ME"
+    row_count_source: "REPLACE_ME"
+    type_quirks: {na: "REPLACE_ME"}
+    collation_quirks: {na: "REPLACE_ME"}
+
+  entry_points:
+    mechanism: "REPLACE_ME"
+    argument_passing: "REPLACE_ME"
+    result_return: "REPLACE_ME"
+
+  thread_knobs:
+    mechanism: "REPLACE_ME"
+    names: {na: "REPLACE_ME"}
+    reload_semantics: {na: "REPLACE_ME"}
+
+  oracle:
+    differential_db: "REPLACE_ME"
+    run_script: {na: "REPLACE_ME"}
+
+  hazards:                            # engine fact + symptom, never a fix
+    - symptom: "REPLACE_ME: what goes wrong"
+      engine_fact: "REPLACE_ME: the engine behaviour behind it"
+      layers: [capture]               # capture | epochs | scan | runtime | host

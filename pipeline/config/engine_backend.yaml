@@ -102,12 +102,18 @@ default_target_paths:
 
 default_cmake:
   collect_fn: accel_collect_{engine}_sources
-  build_flag: ACCELERATOR_CODEGEN_BUILD_{ENGINE}
 
-# S6 placement choices: where the runtime runs and how commits and reads reach it.
-placement_candidates:
-  - in_process
-  - shipped_worker
+# The engine_profile sections (schemas/engine_profile.schema.json) each stage sees. Hazards are
+# narrowed to the layer. `all` is every section. Layer ids also key their impl and critique stages.
+engine_profile_sections:
+  analysis: all
+  capture: [identity, process_model, capture, transactions, locking, hazards]
+  epochs: [identity, process_model, transactions, locking, capture, hazards]
+  scan: [identity, process_model, transactions, locking, scan, thread_knobs, hazards]
+  runtime: [identity, packaging, host_runtime, process_model, locking, thread_knobs, scan, hazards]
+  host: [identity, packaging, host_runtime, build, process_model, entry_points, thread_knobs, hazards]
+  validation: [identity, process_model, capture, transactions, locking, scan, oracle, hazards]
+  architecture_audit: [identity, packaging, process_model, capture, transactions, locking, scan, thread_knobs, hazards]
 
 stage_max_turns:
   analysis: 20
@@ -120,9 +126,6 @@ allow_update_existing: true
 
 # From-scratch fairness: physically move foreign host adapters out of the workspace.
 hide_foreign_engines: true
-
-# When true, the host layer is required (in-process MODULE/extension).
-requires_in_process_host: false
 
 architecture_audit_max_rounds: 3
 # Post-stage engine_build + layer gate: on fail, re-invoke that impl layer with

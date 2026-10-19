@@ -26,6 +26,7 @@ from accel_pipeline.base_bench import (
     load_base_optimization_state,
 )
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
+from accel_pipeline.engine_profile import render_engine_profile
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
 from accel_pipeline.models import is_critique_stage, is_implementation_stage
 from accel_pipeline.optimization_runtime import runtime_path_for_prompt
@@ -183,15 +184,19 @@ def _engine_host_discovery_block(workload: dict[str, Any]) -> str:
         )
 
         return format_agent_discovery_block(docker_host_from_env())
-    hints = workload.get("engine_sdk_hints") or []
-    hint_lines = "\n".join(f"- {h}" for h in hints) if hints else "- (none)"
     return (
         "### Host SDK discovery\n\n"
         "No auto-discovery plugin is configured for this engine "
         f"(host_runtime.kind=`{host.get('kind') or 'host_cmake'}`). "
-        "Follow `engine_sdk_hints`:\n\n"
-        f"{hint_lines}"
+        f"Connect: {host.get('connect') or 'see the engine profile'}"
     )
+
+
+def _engine_profile_for_stage(workload: dict[str, Any], stage: str) -> str:
+    """The engine profile sections this stage sees (impl_<layer> / critique_<layer> use the layer's)."""
+    layer = stage.split("_", 1)[1] if stage.startswith(("impl_", "critique_")) else None
+    sections = workload["engine_profile_sections"][layer or stage]
+    return render_engine_profile(workload["engine_profile"], sections, layer=layer)
 
 
 def build_prompt_context(
@@ -674,12 +679,7 @@ def build_prompt_context(
         "multi_conn_ctest_regex": str(engine_host.get("multi_conn_ctest_regex") or ""),
         "cross_accel_ctest_regex": str(engine_host.get("cross_accel_ctest_regex") or ""),
         "dataset_env": str(engine_host.get("dataset_env") or "ACCEL_TPCH_DB"),
-        "engine_sdk_hints": (
-            "\n".join(f"- {h}" for h in (workload.get("engine_sdk_hints") or []))
-            or "- (none provided — use engine-native storage docs externally)"
-            if is_engine
-            else ""
-        ),
+        "engine_profile": _engine_profile_for_stage(workload, stage) if is_engine else "",
         "engine_host_discovery": (
             _engine_host_discovery_block(workload)
             if is_engine

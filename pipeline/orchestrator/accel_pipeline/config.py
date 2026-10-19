@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from accel_pipeline.engine_profile import EngineProfileError, host_runtime_of, validate_engine_profile
 from accel_pipeline.layout import backend_glob, query_dir, query_glob
 from accel_pipeline.paths import find_repo_root, pipeline_root
 from accel_pipeline.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
@@ -669,15 +670,23 @@ def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) ->
     data["engine_name"] = engine
     data.setdefault("benchmark_name", "engine")
     data.setdefault("artifact_namespace", f"engines/{engine}")
-    data.setdefault("display_name", engine_pascal_name(engine))
     data.setdefault("prompt_subdir", str(defaults.get("prompt_subdir") or "engine_backend"))
     data.setdefault("query_number", 0)
     data.setdefault(
         "allow_update_existing",
         bool(defaults.get("allow_update_existing", True)),
     )
-    if "placement_candidates" not in data and defaults.get("placement_candidates"):
-        data["placement_candidates"] = list(defaults["placement_candidates"])
+
+    profile = data.get("engine_profile")
+    validate_engine_profile(profile, pipeline_root(repo_root), source=f"workload {engine}")
+    if profile["identity"]["name"] != engine:
+        raise EngineProfileError(
+            f"workload {engine}: engine_profile.identity.name is {profile['identity']['name']!r}"
+        )
+    data["display_name"] = profile["identity"]["display_name"]
+    data["host_runtime"] = host_runtime_of(profile)
+    data["requires_in_process_host"] = profile["packaging"]["requires_in_process_host"]
+    data["placement_candidates"] = list(profile["packaging"]["placement_candidates"])
 
     for key in (
         "post_implementation_gates",
@@ -685,12 +694,11 @@ def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) ->
         "stage_max_turns",
         "hide_foreign_engines",
         "agent_hidden_trees",
-        "requires_in_process_host",
+        "engine_profile_sections",
         "architecture_audit_max_rounds",
         "layer_critique_max_rounds",
         "layer_gate_max_rounds",
         "implementation_layers",
-        "host_runtime",
     ):
         if key not in data and key in defaults:
             data[key] = copy.deepcopy(defaults[key])
@@ -720,6 +728,7 @@ def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) ->
     }
     cmake = dict(default_cmake)
     cmake.update({str(k): str(v) for k, v in dict(data.get("cmake") or {}).items()})
+    cmake["build_flag"] = profile["build"]["cmake_option"]
     data["cmake"] = cmake
 
     expanded_writes = [
