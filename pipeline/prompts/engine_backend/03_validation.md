@@ -11,6 +11,11 @@ real bugs until those tests pass.
 
 {{engine_host_discovery}}
 
+## Engine profile
+
+Facts and hazards of the engine (not instructions). Aim the adversarial cases at them.
+
+{{engine_profile}}
 ## Inputs
 
 - Backend sources under target paths:

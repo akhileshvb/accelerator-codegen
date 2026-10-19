@@ -10,6 +10,11 @@ violate the hard constraints — do not rewrite the backend yourself.
 
 {{engine_host_discovery}}
 
+## Engine profile
+
+Facts and hazards of the engine, to judge whether the backend respects them.
+
+{{engine_profile}}
 ## Inputs (read these)
 
 - **Layer spec:** `pipeline/prompts/engine_backend/layers.md`

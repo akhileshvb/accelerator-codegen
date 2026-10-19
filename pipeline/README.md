@@ -288,5 +288,15 @@ python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
   (`slot_epoch_stress`, `slot_hits_under_writes`, `slot_read_after_commit`,
   `slot_txn_edges`, `slot_restart`, `slot_differential`;
   `gates/README_runtime_gates.md`)
-- Host connection is workload `host_runtime` (not hardcoded in shared gates)
-- Workloads: `config/workloads/engine_*.yaml`
+- Workloads: `config/workloads/engine_*.yaml` (`engine_.template.yaml` to start one).
+  An engine's only specific input is its **engine profile** (`engine_profile`,
+  schema `schemas/engine_profile.schema.json`): the same keys for every engine
+  (identity, packaging, host_runtime, build, process_model, capture,
+  transactions, locking, scan, entry_points, thread_knobs, oracle, hazards),
+  facts and hazards only, never a design. A leaf is a value or `{na: reason}`,
+  so a blank is a decision; a missing key fails the workload load. Each stage
+  sees the sections `engine_profile_sections` (`config/engine_backend.yaml`)
+  maps to it, hazards narrowed to the layer. `host_runtime`, packaging and the
+  CMake option come from the profile (not hardcoded in shared gates); an embedded
+  engine sets `host_runtime.kind: host_cmake` and `requires_in_process_host: false`
+  (`engine_duckdb.yaml`).

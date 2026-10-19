@@ -3,7 +3,7 @@
 Design the **slot implementations** (S1-S8) of **{{display_name}}**
 (`{{engine_name}}`) for the **fixed runtime skeleton**
 (`substrate/aux/runtime/`; the runtime flow is substrate and frozen).
-From-scratch: substrate + this engine's SDK hints +
+From-scratch: substrate + this engine's profile +
 `pipeline/templates/engine_backend/`. Do **not** read or copy any other
 `backends/{engine}/` tree. Do not implement code here.
 
@@ -63,9 +63,14 @@ concurrent commit, barrier, typed chunks; runtime: rebuild under continuous
 writes, old readers, placement failure modes; host: SQL golden, NULL,
 `Fallback`).
 
-## Engine SDK / host
+## Engine profile
 
-{{engine_sdk_hints}}
+Facts and hazards of the engine (the same keys for every engine; `n/a` is a decision with its
+reason). Map each onto the slots; the profile never says how.
+
+{{engine_profile}}
+
+## Engine host
 
 {{engine_host_discovery}}
 

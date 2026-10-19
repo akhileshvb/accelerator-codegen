@@ -22,6 +22,9 @@ disk.** After the reads below, write the two files (heredoc `cat > …`) and
 - **CMake target:** `{{layer_cmake_target}}`
 - Checklist rules owned here: `{{layer_rules}}`
 
+## Engine profile (this layer's sections)
+
+{{engine_profile}}
 ## Read (in order)
 
 1. `pipeline/prompts/engine_backend/layer_contracts.md` — section `{{layer_id}}`

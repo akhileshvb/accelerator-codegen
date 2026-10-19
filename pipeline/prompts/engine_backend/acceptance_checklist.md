@@ -2,7 +2,7 @@
 
 **Audience:** analysis, implementation, and architecture_audit.
 **Scope:** engine-agnostic. Do **not** invent engine-specific APIs here — map
-each item using this engine's SDK hints / analysis only.
+each item using this engine's profile / analysis only.
 
 This is the **single closed set of hard rules**. Implementation must satisfy
 every item before finishing. Architecture audit may **only** fail on these

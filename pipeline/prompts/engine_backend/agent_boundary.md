@@ -29,7 +29,7 @@ table or benchmark names); note the ones you decline, and why, in your report.
 - `accelerators/prims/` (read-only for this pipeline)
 - Per-query `accelerators/{benchmark}/q{N}/**` — layer tests must **not** depend on these, and backend files must not name a query (no per-query arrays, switches, function lists, includes)
 - **Any other engine's tree** (`backends/{other}/`). From-scratch: substrate
-  + templates + this engine's SDK hints only.
+  + templates + this engine's profile only.
 
 ## Forbidden reference policy (hard)
 

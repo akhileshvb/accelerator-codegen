@@ -24,6 +24,11 @@ Analysis sketch: `{{artifacts_path}}/backend_analysis.json` → `layers[id={{lay
 If the sketch contradicts `layer_contracts.md` or the checklist, **follow the
 contracts**.
 
+## Engine profile (this layer's sections)
+
+Facts and hazards of the engine, not instructions; `n/a` is a declared decision.
+
+{{engine_profile}}
 ## Required reads (before writing code)
 
 - `pipeline/prompts/engine_backend/layer_contracts.md` (section `{{layer_id}}`)

@@ -2,7 +2,7 @@
 
 // Engine-parameterized kernel scaffold for host `{{engine_name}}`.
 // Fill Consume / Finalize / Produce using THIS engine's native batch or row
-// types (from engine_backend SDK hints or backends/{{engine_name}}/engine/).
+// types (from the engine_backend engine profile or backends/{{engine_name}}/engine/).
 // Do NOT hard-code duckdb::DataChunk unless engine_name is duckdb and you
 // intentionally use backends/duckdb/engine/native_scan.hpp helpers.
 

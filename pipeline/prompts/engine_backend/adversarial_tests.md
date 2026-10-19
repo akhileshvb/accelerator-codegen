@@ -69,9 +69,9 @@ CMake hint: `pipeline/templates/engine_backend/cmake_adversarial_test.cmake.tpl`
 - Keep >=4 distinct adversarial cases; do not substitute hand-built batches
   for hook-driven paths.
 
-### Engine host tooling (from workload SDK hints)
+### Engine host tooling (engine profile `host_runtime`)
 
-If this engine's SDK hints name a Docker / attach helper, use it and fail
+If the engine profile's `host_runtime` names a Docker / attach helper, use it and fail
 closed if the orchestrated host is unreachable. Do **not** fall back to a
 host-local server SDK soft path.
 

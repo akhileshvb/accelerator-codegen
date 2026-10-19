@@ -18,7 +18,7 @@ build snapshot) and the layer harnesses. It is not a portable
 6. Emit **engine-local** typed chunks / slots / batches so `Build` and the harnesses can value-check rows. 64-bit row counts and offsets.
 7. Read **inside the build snapshot**: the scan sees exactly the commits with epoch <= `b`.
 
-Name and signature come from workload SDK hints / analysis (e.g. slot iterators, typed chunk consumers). Document the symbol in `backend_analysis.json` -> `scan_plan`.
+Name and signature come from the engine profile (`scan`) / analysis (e.g. slot iterators, typed chunk consumers). Document the symbol in `backend_analysis.json` -> `scan_plan`.
 
 ## Module-facing build scan: `ScanPartitioned`
 

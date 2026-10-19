@@ -48,5 +48,5 @@ gates (`pipeline/gates/README_runtime_gates.md`).
    registration and call the toy module through SQL.
 
 Host connection details come from the workload `host_runtime` /
-`engine_sdk_hints` block and `discover_host_sdk` — do not assume a particular
+engine profile and `discover_host_sdk` — do not assume a particular
 engine's layout.
