@@ -120,7 +120,7 @@ _ensure_ninja
 
 # Optional: a MySQL C client library for in-process table scans and snapshot
 # builds (backends/mysql/api/runtime.cpp). The plugin builds without it (CLI
-# scans); backends/mysql/engine/MySQLAdapter.cmake looks in /usr and /opt/accel-mysql-client.
+# scans); backends/mysql/backend.cmake looks in /usr and /opt/accel-mysql-client.
 # The server image has none, and its -devel RPM conflicts with the server
 # package, so on RPM systems unpack MariaDB Connector/C into /opt.
 _ensure_mysql_client() {

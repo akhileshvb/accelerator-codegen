@@ -19,7 +19,7 @@ SDK to build the optional `accelerator_codegen_pg` MODULE.
   `engine/extension_engine.cpp`) names no query. Per-query code lives in
   `accelerators/<bench>/q<N>/postgres/{aux/catalog.cpp,
   extension/scan.cpp, extension/functions.cpp, base/base.cpp}` and registers
-  through static registrars; `backends/postgres/engine/PostgresAdapter.cmake` globs
+  through static registrars; `backends/postgres/backend.cmake` globs
   each query's `postgres/extension/*.cpp` and `postgres/base/*.cpp` into the MODULE. SQL functions are
   created by `SELECT accel_postgres_register_queries();` from the
   registered per-query `CREATE FUNCTION` text (see

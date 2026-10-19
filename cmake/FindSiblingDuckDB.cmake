@@ -15,9 +15,9 @@ if(DEFINED ENV{ACCEL_PIPELINE_PRIMARY_REPO} AND NOT "$ENV{ACCEL_PIPELINE_PRIMARY
     list(APPEND _duckdb_root_candidates "$ENV{ACCEL_PIPELINE_PRIMARY_REPO}/../duckdb-dbcapture")
 endif()
 
-list(APPEND _duckdb_root_candidates "${CMAKE_CURRENT_LIST_DIR}/../../../../duckdb-dbcapture")
+list(APPEND _duckdb_root_candidates "${CMAKE_CURRENT_LIST_DIR}/../../duckdb-dbcapture")
 # Worktree depth: .../pipeline/worktrees/<worker>/cmake → four levels up to siblings.
-list(APPEND _duckdb_root_candidates "${CMAKE_CURRENT_LIST_DIR}/../../../../../../duckdb-dbcapture")
+list(APPEND _duckdb_root_candidates "${CMAKE_CURRENT_LIST_DIR}/../../../../duckdb-dbcapture")
 
 set(DUCKDB_ROOT "")
 foreach(candidate IN LISTS _duckdb_root_candidates)
