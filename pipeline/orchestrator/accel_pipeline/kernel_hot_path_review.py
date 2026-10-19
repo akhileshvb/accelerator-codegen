@@ -195,7 +195,7 @@ def format_kernel_review_for_prompt(review: dict[str, Any]) -> list[str]:
         lines.append("- No high-confidence hot-path structure smells detected in kernel source.")
         return lines
     lines.append(
-        "- **Static kernel review** (hints only — confirm with profile + `grep_context` before acting):"
+        "- **Static kernel review** (hints only — confirm with profile + a targeted read before acting):"
     )
     for smell in smells[:6]:
         sev = smell.get("severity", "info")

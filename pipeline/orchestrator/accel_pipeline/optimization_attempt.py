@@ -573,9 +573,9 @@ def _run_unified_optimization_attempt(
     )
     user_message = (
         user_message.replace(
-            "Hypothesis is locked — patch phase only. Use write_file/apply_patch; "
-            "no rip_grep/ast_grep/glob_files.\n",
-            "Hypothesize, implement with write_file/apply_patch, then end with "
+            "Hypothesis is locked — patch phase only. Edit the editable sources; "
+            "no repository exploration.\n",
+            "Hypothesize, implement, then end with "
             f"`{PATCH_COMPLETE}` in one short session.\n",
         )
     )
@@ -1412,7 +1412,7 @@ def run_optimization_iteration(
         save_optimization_bootstrap(art, bootstrap_markdown, bootstrap_sources)
         print(
             f"[pipeline] optimization bootstrap: {len(bootstrap_sources)} files, "
-            f"{len(bootstrap_markdown)} chars (read_file disabled for agent)",
+            f"{len(bootstrap_markdown)} chars (sources inlined in the agent message)",
             file=sys.stderr,
             flush=True,
         )

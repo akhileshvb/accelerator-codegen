@@ -340,8 +340,8 @@ def build_optimization_user_message(
         "No file edits in this phase.\n"
         if hypothesis_phase
         else (
-            "Hypothesis is locked — patch phase only. Use write_file/apply_patch; "
-            "no rip_grep/ast_grep/glob_files.\n"
+            "Hypothesis is locked — patch phase only. Edit the editable sources; "
+            "no repository exploration.\n"
         )
     )
     return (

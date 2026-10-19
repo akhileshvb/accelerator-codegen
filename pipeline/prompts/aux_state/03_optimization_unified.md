@@ -8,10 +8,10 @@
 
 ## Mindset
 
-Work like a **Cursor agent** doing performance engineering on **two equal axes**:
+Work like a performance engineer on **two equal axes**:
 
-1. **Editable sources are bootstrapped** in the user message (full files + line numbers). There is no `read_file`.
-2. **Explore other queries** with `rip_grep` / `ast_grep` on reference aux modules in the index — pull only the snippets you need.
+1. **Editable sources are bootstrapped** in the user message (full files + line numbers); do not re-read them.
+2. **Explore other queries** by searching the reference aux modules in the index (`rg`, `sed -n` in the shell) — pull only the snippets you need.
 3. **Ambitious redesigns are encouraged** — new partition layouts, alternate aux-state encodings, **maintenance strategies** (delta vs rebuild), dense structures, version bumps. If either read gains or write-mix health stall, **change the aux structure** given data shape/cardinality. Coordinate **all affected files** (header, module, finalize, tests, cost model). **Forbidden:** precomputed final query results as aux.
 4. **Dual optimization axes (both scored every attempt):**
    - **Read axis** — `read_only_query_speedup` at 0% writes (hit latency vs base).
@@ -24,7 +24,7 @@ Work like a **Cursor agent** doing performance engineering on **two equal axes**
 4a. **Primitives.** A new state layout is built from `prims/` (`prims/README.md`). If it needs a generic container no primitive covers, stage it (header + README row + randomized tests, full files under `pipeline/prims_staging/<repo-relative path>`) and **publish it with `primitive_publish` before using it**; prefer a new primitive over modifying an existing one. `prims/` is not directly writable. Never hand-roll a private COW container in the module or deep-copy the state per commit.
 4b. **Optimizations must not trade away generality** (`hard_guidelines.md` §4): no narrowing keys/offsets, enumerating parameter values, double arithmetic, per-row heap objects, or whole-state copies/rebuilds per write to win a benchmark. Nor may they break the large-scale failure classes (`scale_factor_contract.md`) or the parallel rules (`engine_interfaces.md`: results identical at any thread cap, no engine calls in slices). Re-run the param/off-spec differential, the magnitude-database differential and the 1-vs-N thread comparison after structural changes. Tools to reach for: `substrate_primitives.md`.
 5. **Honor measured A/B** — never keep/yield a change that regresses the dual-axis score vs `scoreboard.best_valid_score`. When read is already strong and write-mix workload is ≪1×, **prefer a maintenance hypothesis** over further ≤5% read micro-opts.
-6. **Few turns** — hypothesize, implement with `write_file` / `apply_patch`, then `HYPOTHESIS_PATCH_COMPLETE`.
+6. **Few turns** — hypothesize, implement, then `HYPOTHESIS_PATCH_COMPLETE`.
 7. **Custom profiling required for phase breakdown** — invent whatever timers/counts help; getenv(`ACCEL_AUX_CUSTOM_PROFILE`) + `ACCEL_CUSTOM_PROFILE {json}` with **phase + us + work counts**; no-op when unset. Remeasure after every accept/restore (`freshness.stale`). Own shell/scripts for ad-hoc profiling are fine.
 8. **Measure-first** — do not hypothesize from a stale digest; call `run_profile` on the CURRENT tree. Cite both 0% hit metrics **and** sampled write-mix metrics.
 
@@ -32,16 +32,11 @@ Work like a **Cursor agent** doing performance engineering on **two equal axes**
 
 {{optimization_edit_paths}}
 
-Do **not** edit `accelerators/tpch/q{{query_number}}/<engine>/base/**` (base kernel — reference only via search tools).
+Do **not** edit `accelerators/tpch/q{{query_number}}/<engine>/base/**` (base kernel — read-only reference).
 
-## Search tools (reference accelerators)
+## Searching reference accelerators
 
-| Tool | Use for |
-|------|---------|
-| `rip_grep` | Fast text search with context — patterns, symbols, comments across aux modules |
-| `ast_grep` | Structural C++ search — classes, functions, calls (`$VAR`, `$$$` metavariables) |
-| `glob_files` | Find aux paths under `accelerators/tpch/q*/<engine>/aux/` |
-| `grep_context` | Single-file snippet when you already know the path |
+Use the shell: `rg` for patterns, symbols and comments across `accelerators/tpch/q*/<engine>/aux/`, `sed -n` for a snippet once you know the path.
 
 ## Workflow
 
@@ -51,7 +46,7 @@ Measurements, evidence, full editable sources, and a **reference aux index** (ot
 
 ### 2. Optional: explore references
 
-Before or while designing, `rip_grep` / `ast_grep` on Q14/Q18/etc. aux modules for proven patterns.
+Before or while designing, search the Q14/Q18/etc. aux modules for proven patterns.
 
 ### 3. Hypothesis JSON
 
@@ -76,8 +71,7 @@ Retrieved precedents are **non-binding** — adapt, combine, or reject based on 
 
 ### 4. Implement
 
-- `write_file` per file for large/coordinated changes.
-- Large `apply_patch` hunks for localized edits.
+- Rewrite a whole file for large/coordinated changes; make targeted patches for localized edits.
 - Bump encode/decode version constants when aux blob layout changes.
 
 ### 5. Hand off

@@ -9,7 +9,7 @@
 ## Mindset
 
 1. **Editable sources are in the user message** when bootstrapped — prefer MCP digests over re-reading everything.
-2. Search references with available tools (`rip_grep` / `ast_grep` or Codex search).
+2. Search reference accelerators with the shell (`rg`, `sed -n`).
 3. **Ambitious structural changes allowed** when evidence supports them.
 4. Orchestrator runs **build → quick correctness → benchmark** after handoff. On failure, **optimization_fix** rounds debug until build/ctest pass.
 

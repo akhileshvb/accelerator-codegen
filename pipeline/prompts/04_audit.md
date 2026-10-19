@@ -12,7 +12,7 @@ Gate summaries on disk: `{{artifacts_path}}/gates/` — read `baseline.json`, `p
 
 ## Task
 
-1. Review kernel, package, tests, benchmark for fairness violations (`grep_context` preferred over full kernel reads).
+1. Review kernel, package, tests, benchmark for fairness violations (targeted `rg` / `sed -n` reads preferred over full kernel reads).
 2. Check hardcoded capacities, hidden work, production `getenv`, and iteration-scale-only assumptions (see `scale_factor_contract.md`).
 3. Confirm native base scans and no answer-caching disguised as aux state.
 4. Fused kernels: `pre_scan_us` may include aggregation unless `num_aggregate_us` is separate — check aggregation share before blaming scan.

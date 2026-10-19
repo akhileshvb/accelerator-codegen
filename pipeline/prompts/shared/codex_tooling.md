@@ -14,7 +14,7 @@ Concurrent pack workers use **per-query git worktrees** and private build dirs.
 ## Use Codex native tools for
 
 - Reading and searching code
-- Editing **owned** sources (prefer shell/`sed`/`python` edits when more reliable than `apply_patch`)
+- Editing **owned** sources (prefer shell/`sed`/`python` edits when more reliable than Codex's patch tool)
 - **Own shell commands and throwaway scripts** under `/tmp` or owned paths — inspect dumps, parse bench output, compare A/B CSVs, bisect hot paths, etc.
 - Ad-hoc local debug / rebuild / ctest when MCP is insufficient (**worker build dir only**)
 
@@ -131,7 +131,7 @@ Implementation is **sequential layers** (`layers.md`): `capture` → `epochs` �
 You are a **read-only critic**. Do **not** edit adapter, harness, or CMake sources
 (native Codex tools included). Write only
 `pipeline/artifacts/engines/<engine>/layer_critique_<layer>.json` and the
-matching `.md`. MCP `write_file` is allowed under `pipeline/artifacts/**`.
+matching `.md`; write them with a shell heredoc.
 A green layer gate is not enough — fail on untested contract paths.
 
 **Done = files on disk.** Last action: heredoc-write the JSON then the `.md`,

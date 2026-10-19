@@ -43,7 +43,7 @@ class PendingFeedback:
     ) -> str:
         parts = [
             f"Optimization iter {optimization_iter}, attempt {attempt}.",
-            "Use read_file/rip_grep to inspect, patch, build, test, and quick-benchmark "
+            "Inspect, patch, build, test, and quick-benchmark "
             "before signaling CANDIDATE_READY.",
         ]
         if self._delta.strip():

@@ -449,13 +449,13 @@ def build_prompt_context(
             base_kernel_optimization = ""
         else:
             base_kernel_optimization = (
-                "See `pipeline/prompts/shared/base_kernel_optimization.md` (read_file if needed)."
+                "See `pipeline/prompts/shared/base_kernel_optimization.md` (read it if needed)."
             )
         constraints_text = (
             "See `pipeline/prompts/shared/hard_guidelines.md`, `constraints.md`, "
-            "`generated_layout.md`, and `scale_factor_contract.md` (read_file if needed)."
+            "`generated_layout.md`, and `scale_factor_contract.md` (read it if needed)."
         )
-        profiling_text = "See `pipeline/prompts/shared/profiling_conventions.md` (read_file if needed)."
+        profiling_text = "See `pipeline/prompts/shared/profiling_conventions.md` (read it if needed)."
     else:
         base_kernel_optimization = _read_text(base_kernel_opt_path)
         constraints_text = _read_text(constraints_path)
@@ -582,17 +582,17 @@ def build_prompt_context(
         "cost_model_config": str(workload.get("cost_model_config", "")),
         "shared_docs_reference": shared_docs,
         "agent_boundary": (
-            "See `pipeline/prompts/aux_state/shared/agent_boundary.md` (read_file if needed)."
+            "See `pipeline/prompts/aux_state/shared/agent_boundary.md` (read it if needed)."
             if is_aux
             else ""
         ),
         "constraints": (
-            "See `pipeline/prompts/aux_state/shared/constraints.md` (read_file if needed)."
+            "See `pipeline/prompts/aux_state/shared/constraints.md` (read it if needed)."
             if is_aux
             else constraints_text
         ),
         "profiling_conventions": (
-            "See `pipeline/prompts/shared/profiling_conventions.md` (read_file if needed)."
+            "See `pipeline/prompts/shared/profiling_conventions.md` (read it if needed)."
             if is_aux or lean_stage
             else profiling_text
         ),

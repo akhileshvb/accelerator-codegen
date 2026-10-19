@@ -537,7 +537,7 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
     questions = state.get("investigation_questions") or []
     if questions:
         lines.append("")
-        lines.append("## Investigate (grep_context before editing)")
+        lines.append("## Investigate (read the code before editing)")
         for item in questions:
             lines.append(f"- {item}")
     kernel_guidance = state.get("kernel_hot_path_guidance") or []

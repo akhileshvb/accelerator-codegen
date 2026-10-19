@@ -7,7 +7,7 @@ Goal: **beat** DuckDB reference SQL on the benchmark dataset (`PRAGMA threads=1`
 1. Read profile counters and phase timings in `optimization_runtime.md`.
 2. Form a **hot-path hypothesis** from dominant phase + counter ratios.
 3. Pick a **coordinated bundle** (2–4 related changes) from the strategy palette — not isolated tweaks.
-4. **Verify** with `grep_context` on the production path (fused prescan → consume → aggregate).
+4. **Verify** by reading the production path (fused prescan → consume → aggregate).
 5. **A/B test** the bundle; keep only what improves `speedup_median` and relevant counters.
 
 When speedup is far below 1.0x, prioritize structural changes (scan order, filter pushdown, build-phase interning, vector fast paths) over micro-opts.

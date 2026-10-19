@@ -309,7 +309,7 @@ def build_profile_investigation(
         _add_unique(
             questions,
             "Where does the kernel fall back to UnifiedVectorFormat or a generic per-row loop? "
-            "grep_context for `UnifiedVectorFormat` and chunk dispatch.",
+            "Search the kernel for `UnifiedVectorFormat` and chunk dispatch.",
         )
 
     total_chunks = flat_chunks + dict_chunks + generic_chunks
@@ -350,7 +350,7 @@ def build_profile_investigation(
         signals.append(f"static_review: {msg}")
         _add_unique(
             questions,
-            "Static review flagged a smell — confirm with grep_context whether it is on the hot path "
+            "Static review flagged a smell — confirm by reading the code whether it is on the hot path "
             "(not build-only code).",
         )
 
@@ -358,7 +358,7 @@ def build_profile_investigation(
         _add_unique(
             questions,
             "Trace the production path (fused prescan → consume → aggregate); "
-            "identify the dominant per-row work and verify with grep_context before editing.",
+            "identify the dominant per-row work and verify by reading the code before editing.",
         )
 
     strategy_palette = _build_strategy_palette(

@@ -50,7 +50,7 @@ def build_repo_context_pack_markdown(repo_root: Path) -> str:
         "- **Registration lives in the query's own directory** (registrars); the engine backend",
         "  names no query. Shared files (backend, arg variants, cross-accel helpers, CMake) are",
         "  frozen during optimization. Do not edit them mid-opt.",
-        "- **Cross-query writes are denied.** Read peers with `rip_grep` / `ast_grep` only.",
+        "- **Cross-query writes are denied.** Read peers (search with `rg`) only.",
         "",
         "## Registration surfaces (discover via peer search; do not invent partial wiring)",
         "",
@@ -88,8 +88,7 @@ def build_repo_context_pack_markdown(repo_root: Path) -> str:
             "## Search examples",
             "",
             "```",
-            "rip_grep('NationNamePartition', path='accelerators/tpch/q18/duckdb/aux', context=5)",
-            "ast_grep('class $C { $$$ }', path='accelerators/tpch/q14/duckdb/aux', lang='cpp')",
+            "rg -n -C5 NationNamePartition accelerators/tpch/q18/duckdb/aux",
             "```",
             "",
         ]

@@ -302,7 +302,7 @@ def build_optimization_diagnosis(
     if strategy_palette:
         suggested_focus.append(f"Try coordinated bundle from palette: {strategy_palette[0]}")
     if dominant_phase:
-        suggested_focus.append(f"Dominant phase `{dominant_phase}` — verify inner loop with grep_context before editing")
+        suggested_focus.append(f"Dominant phase `{dominant_phase}` — verify the inner loop in the code before editing")
 
     return {
         "speedup_median": speedup,

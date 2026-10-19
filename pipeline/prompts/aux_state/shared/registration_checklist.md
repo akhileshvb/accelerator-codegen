@@ -7,7 +7,7 @@ Registration happens **from the query's own directory** through static registrar
 ## How to discover (preferred)
 
 1. Pick a neighboring query that already passes gates (e.g. a reference accelerator from the workload).
-2. `search_repo` / `grep` for that query id / `accel_*_q{N}_aux` / factory name across the tree.
+2. `rg` for that query id / `accel_*_q{N}_aux` / factory name across the tree.
 3. For **each** hit in the peer's own directory (registrars, `cost_model.hpp`, SQL-function fragment), add the same for **this** query in `accelerators/{bench}/q{N}/`. For hits in shared eval helpers (`eval/tests/test_support/cross_accel_helpers.*`, bench arg variants) append the same kind of entry (append-only; do not rewrite whole files). Hits under `backends/` are registries, not lists: never edit them.
 4. Rebuild, then verify with MCP `run_correctness` and `run_multi_connection` until both pass.
 

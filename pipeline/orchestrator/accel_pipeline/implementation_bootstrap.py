@@ -31,7 +31,7 @@ def build_implementation_bootstrap(
     q = f"q{query}"
     qdir = f"accelerators/{benchmark}/{q}"
     lines = [
-        "## Implementation bootstrap (authoritative — do not re-discover via list_dir/glob)",
+        "## Implementation bootstrap (authoritative — do not re-discover by listing directories)",
         "",
         "### Files to create (write these; `implementation_context_json` has semantics)",
         "",
@@ -44,7 +44,7 @@ def build_implementation_bootstrap(
         else:
             lines.append(f"- `{item}`")
 
-    lines.extend(["", "### Reference aux modules (read with `read_reference_files`, not chunked read_file)", ""])
+    lines.extend(["", "### Reference aux modules (read each once, in full)", ""])
     ref_paths: list[str] = []
     for ref in workload.get("reference_accelerators") or []:
         ref_str = str(ref)
@@ -93,11 +93,11 @@ def build_implementation_bootstrap(
         [
             "### Turn discipline",
             "",
-            "1. **One** `read_reference_files` call on the reference aux paths above (limit_per_file=500).",
-            "2. **Immediately** `write_file` `module.hpp`, then `module.cpp`, then other `files_to_create`.",
+            "1. Read the reference aux paths above once (they are the layout to mirror).",
+            "2. **Immediately** write `module.hpp`, then `module.cpp`, then other `files_to_create`.",
             "3. Unit tests: none to write (shared ModuleRuntime test); make the catalog probe/arguments follow `unit_test_contract.md` + the predicate checklist above.",
-            "4. Do **not** `list_dir` the repo root, re-read analysis.json, or glob for q14/q1 after step 1.",
-            "5. `grep_context` requires a **file** path (not a directory). Use `search_repo` for multi-file search.",
+            "4. Do **not** list the repo root, re-read analysis.json, or search for q14/q1 layouts after step 1.",
+            "5. Search several files with `rg`; read a single file with `sed -n`.",
             "6. Build/test only after all primary sources exist; **register everywhere** (mirror peer-query wiring); finish only after MCP `run_correctness` **and** `run_multi_connection` both pass.",
             "",
         ]
