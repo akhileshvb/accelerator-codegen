@@ -468,6 +468,12 @@ public:
     world.Begin(CurrentEpoch());
   }
 
+  // The world installs once per engine commit: every participant begins before any finishes.
+  bool JoinCommit(const core::AcceleratorId &accelerator) override {
+    BeginCommit(accelerator, {});
+    return true;
+  }
+
   void FinishCommit(const core::AcceleratorId &, const core::InvalidationPlan &invalidate,
                     const std::vector<core::StateImage> &updates, core::Version) override {
     bool set = false;

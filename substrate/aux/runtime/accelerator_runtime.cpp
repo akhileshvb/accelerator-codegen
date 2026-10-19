@@ -143,11 +143,13 @@ struct AcceleratorRuntime::Impl {
   std::mutex build_mutex;
   // commit_mutex: serialises writers of the store. Held from BeginCommit to
   // PublishCommit/AbortCommit, and around every store mutation (applies,
-  // installs); owns in_flight, next_seq, store_epoch and registration_checked.
+  // installs); owns in_flight, next_seq, store_epoch, store_commit_open and
+  // registration_checked.
   CommitLock commit_mutex;
   CommittedChange in_flight; // between BeginCommit and Publish/Abort
   Seq next_seq = 0;
   Epoch store_epoch = 0; // what the store's epoch provider returns
+  bool store_commit_open = false; // OpenStoreCommit ran; Publish / PublishCommit closes it
   bool registration_checked = false;
 
   // state_mutex: everything below; shared with readers, never held across
@@ -411,8 +413,11 @@ bool AcceleratorRuntime::Publish(const core::StagedMaintenanceOutcome &outcome, 
     invalidate = core::PartitionSetPlanFromImages(outcome.updates);
   }
   auto &store = *impl->store.store;
-  impl->store_epoch = epoch;
-  store.BeginCommit(id, invalidate);
+  if (!impl->store_commit_open) {
+    impl->store_epoch = epoch;
+    store.BeginCommit(id, invalidate);
+  }
+  impl->store_commit_open = false;
   store.FinishCommit(id, invalidate, outcome.updates, outcome.expected_version);
   return !LeavesInvalidPartitions(outcome);
 }
@@ -489,6 +494,11 @@ Seq AcceleratorRuntime::BeginCommit(uint64_t txn, std::vector<ColumnarBatchRef> 
   return impl->in_flight.seq;
 }
 
+void AcceleratorRuntime::OpenStoreCommit(Epoch epoch) {
+  impl->store_epoch = epoch;
+  impl->store_commit_open = impl->store.store->JoinCommit(id);
+}
+
 void AcceleratorRuntime::PublishCommit(Epoch epoch) {
   std::unique_lock<CommitLock> commit(impl->commit_mutex, std::adopt_lock);
   auto change = std::move(impl->in_flight);
@@ -500,6 +510,10 @@ void AcceleratorRuntime::PublishCommit(Epoch epoch) {
   }
   const auto start = Clock::now();
   const bool applied = synced && ApplyChange(change);
+  if (impl->store_commit_open) { // nothing published (empty, stale, or the module threw): took part, no change
+    impl->store_commit_open = false;
+    impl->store.store->FinishCommit(id, {}, {});
+  }
   bool stale;
   {
     std::lock_guard<std::mutex> lock(impl->state_mutex);

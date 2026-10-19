@@ -127,8 +127,13 @@ public:
   // another of its commits is between BeginCommit and Publish/Abort) and
   // marks readers that may see the commit as waiting.
   Seq BeginCommit(uint64_t txn, std::vector<ColumnarBatchRef> batches);
-  // The engine committed at `epoch`: maintain (lookups see the database as
-  // the commit left it) and publish; queued for catch-up if not synced.
+  // The engine committed at `epoch`: a store shared by several accelerators
+  // enrolls this one (AuxStateStore::JoinCommit). The host enrolls every
+  // staged accelerator before any publishes, so the store installs the engine
+  // commit once.
+  void OpenStoreCommit(Epoch epoch);
+  // Maintain (lookups see the database as the commit left it) and publish;
+  // queued for catch-up if not synced. Closes the store's commit either way.
   void PublishCommit(Epoch epoch);
   void AbortCommit(); // the engine rolled back
 

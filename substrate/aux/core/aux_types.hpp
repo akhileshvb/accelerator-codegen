@@ -376,6 +376,12 @@ public:
   // partitions the commit touches). Readers whose snapshot may include the
   // commit wait for FinishCommit; older snapshots keep reading theirs.
   virtual void BeginCommit(const AcceleratorId &, const InvalidationPlan &) {}
+  // JoinCommit: a store holding several accelerators' state (one install per
+  // engine commit) enrolls this one in the engine commit before any of them
+  // publishes, and returns true: BeginCommit has then happened, and
+  // FinishCommit (with no change if nothing is published) ends it. Stores of
+  // one accelerator return false and begin at publish.
+  virtual bool JoinCommit(const AcceleratorId &) { return false; }
   // FinishCommit: one new state, current from this commit on: `invalidate`
   // applied, then `updates` published, together. `expected_version` is the
   // module's (StagedMaintenanceOutcome::expected_version; 0: none) for stores

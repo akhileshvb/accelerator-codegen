@@ -224,6 +224,9 @@ void RuntimeHost::PreCommit(uint64_t txn) {
 
 void RuntimeHost::Commit(uint64_t txn, Epoch epoch) {
   const auto staged = impl->TakeTxn(txn).staged;
+  for (auto *runtime : staged) {
+    runtime->OpenStoreCommit(epoch);
+  }
   // Each accelerator maintains independently; fork-join over the maintenance cap
   // (1: in id order on this thread).
   impl->threads.ParallelFor(
