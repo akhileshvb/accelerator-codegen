@@ -7,7 +7,7 @@
  },
  "CMakeLists.txt": {
   "cmake": 1,
-  "engine": 100,
+  "engine": 101,
   "path": 74
  },
  "README.md": {
@@ -208,7 +208,6 @@
   "engine": 3
  },
  "pipeline/config/default.yaml": {
-  "engine": 7,
   "path": 8
  },
  "pipeline/config/packs/tpch_aux_pair.yaml": {
@@ -228,13 +227,14 @@
   "path": 3
  },
  "pipeline/config/verus.yaml": {
-  "engine": 5
+  "engine": 3
  },
  "pipeline/config/workloads/engine_.template.yaml": {
   "path": 2
  },
  "pipeline/config/workloads/engine_duckdb.yaml": {
-  "path": 6
+  "path": 6,
+  "symbol": 1
  },
  "pipeline/config/workloads/engine_mysql.yaml": {
   "path": 11,
@@ -245,8 +245,7 @@
   "target": 2
  },
  "pipeline/config/workloads/sec_edgar_q1.yaml": {
-  "engine": 7,
-  "path": 7
+  "engine": 1
  },
  "pipeline/config/workloads/sec_edgar_q1_aux.yaml": {
   "engine": 1
@@ -255,8 +254,7 @@
   "engine": 1
  },
  "pipeline/config/workloads/sec_edgar_q24.yaml": {
-  "engine": 6,
-  "path": 6
+  "engine": 1
  },
  "pipeline/config/workloads/sec_edgar_q24_aux.yaml": {
   "engine": 1
@@ -277,8 +275,7 @@
   "engine": 1
  },
  "pipeline/config/workloads/sec_edgar_q6.yaml": {
-  "engine": 5,
-  "path": 5
+  "engine": 1
  },
  "pipeline/config/workloads/sec_edgar_q6_aux.yaml": {
   "engine": 1
@@ -299,8 +296,7 @@
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q11_aux.yaml": {
-  "engine": 4,
-  "path": 3
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q12.yaml": {
   "engine": 1
@@ -312,8 +308,7 @@
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q13_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q14.yaml": {
   "engine": 1
@@ -325,36 +320,31 @@
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q15_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q16.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q16_aux.yaml": {
-  "engine": 4,
-  "path": 3
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q17.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q17_aux.yaml": {
-  "engine": 4,
-  "path": 3
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q18.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q18_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q19.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q19_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q1_aux.yaml": {
   "engine": 1
@@ -366,15 +356,13 @@
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q20_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q21.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q21_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q21_verus_smoke.yaml": {
   "engine": 2
@@ -383,32 +371,28 @@
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q22_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q2_aux.yaml": {
-  "engine": 4,
-  "path": 3
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q3.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q3_aux.yaml": {
-  "engine": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q4.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q4_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q5.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q5_aux.yaml": {
-  "engine": 4,
-  "path": 3
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q6.yaml": {
   "engine": 1
@@ -420,22 +404,19 @@
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q7_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q8.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q8_aux.yaml": {
-  "engine": 3,
-  "path": 2
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q9.yaml": {
   "engine": 1
  },
  "pipeline/config/workloads/tpch_q9_aux.yaml": {
-  "engine": 4,
-  "path": 3
+  "engine": 1
  },
  "pipeline/config/workloads/tpch_q_aux.template.yaml": {
   "engine": 1
@@ -594,14 +575,20 @@
  "pipeline/orchestrator/accel_pipeline/worker_isolation.py": {
   "engine": 11
  },
+ "pipeline/orchestrator/accel_pipeline/workload_facts.py": {
+  "engine": 8
+ },
  "pipeline/orchestrator/pyproject.toml": {
+  "engine": 1
+ },
+ "pipeline/orchestrator/requirements.txt": {
   "engine": 1
  },
  "pipeline/orchestrator/tests/test_ab_tools.py": {
   "engine": 3
  },
  "pipeline/orchestrator/tests/test_accelerator_engine.py": {
-  "engine": 71,
+  "engine": 72,
   "engine_branch": 2,
   "path": 6,
   "symbol": 1,
@@ -660,8 +647,8 @@
   "target": 6
  },
  "pipeline/orchestrator/tests/test_implementation_bootstrap.py": {
-  "engine": 5,
-  "path": 3
+  "engine": 4,
+  "path": 2
  },
  "pipeline/orchestrator/tests/test_kernel_hot_path_review.py": {
   "engine": 1
@@ -731,6 +718,10 @@
  },
  "pipeline/orchestrator/tests/test_worker_resume.py": {
   "engine": 1
+ },
+ "pipeline/orchestrator/tests/test_workload_inputs.py": {
+  "engine": 6,
+  "symbol": 2
  },
  "pipeline/prompts/aux_state/01b_adversarial_tests.md": {
   "symbol": 1
