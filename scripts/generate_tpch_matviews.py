@@ -1938,7 +1938,6 @@ requires_base_accelerator: false
 allow_poor_fitness: false
 
 reference_sql_path: {ref}
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
 
 parameters:
 {params}

@@ -237,7 +237,7 @@ Setup data and DuckDB (downloads ~5GB SEC quarterly filings):
 ```bash
 export SEC_EDGAR_USER_AGENT="accelerator-codegen your-name@example.com"
 bash scripts/setup_sec_edgar.sh
-export ACCEL_SEC_EDGAR_DB=/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb
+export ACCEL_SEC_EDGAR_DB=/path/to/sec_edgar_sf3.duckdb
 ```
 
 SEC.gov requires `SEC_EDGAR_USER_AGENT` with your contact email or downloads return HTTP 403.
