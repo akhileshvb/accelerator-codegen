@@ -441,94 +441,17 @@
   "engine": 1
  },
  "pipeline/gates/README_runtime_gates.md": {
-  "engine": 10,
-  "path": 6,
-  "target": 5
- },
- "pipeline/gates/aux_gate_common.sh": {
-  "engine": 22,
-  "engine_branch": 1,
-  "path": 3,
-  "target": 1
+  "engine": 5,
+  "path": 1
  },
  "pipeline/gates/run_aux_bench_sweep.sh": {
-  "engine": 17,
-  "engine_branch": 1,
-  "path": 2,
-  "target": 2
- },
- "pipeline/gates/run_aux_correctness.sh": {
-  "engine": 17,
-  "engine_branch": 2,
-  "path": 3,
-  "target": 1
- },
- "pipeline/gates/run_aux_cost_model_calibrate.sh": {
-  "engine": 2,
-  "engine_branch": 1,
-  "symbol": 2
- },
- "pipeline/gates/run_aux_cross_accel.sh": {
-  "engine": 5,
-  "engine_branch": 3,
-  "target": 1
- },
- "pipeline/gates/run_aux_multi_connection.sh": {
-  "engine": 5,
-  "engine_branch": 3,
-  "target": 1
- },
- "pipeline/gates/run_aux_tsan.sh": {
-  "engine": 5,
-  "engine_branch": 1,
-  "target": 1
- },
- "pipeline/gates/run_baseline.sh": {
-  "engine": 18,
-  "engine_branch": 2,
-  "path": 2
- },
- "pipeline/gates/run_correctness.sh": {
-  "engine": 18,
-  "engine_branch": 2,
-  "path": 2
- },
- "pipeline/gates/run_engine_adversarial.sh": {
-  "engine": 14,
-  "engine_branch": 2
- },
- "pipeline/gates/run_engine_build.sh": {
-  "engine": 3,
-  "engine_branch": 1
- },
- "pipeline/gates/run_engine_contract.sh": {
-  "engine": 15,
-  "engine_branch": 2,
-  "path": 2
+  "engine": 3
  },
  "pipeline/gates/run_engine_scan_conformance.sh": {
   "symbol": 1
  },
- "pipeline/gates/run_host_bootstrap.sh": {
-  "engine": 14,
-  "engine_branch": 3,
-  "path": 3
- },
- "pipeline/gates/run_profile.sh": {
-  "engine": 3,
-  "engine_branch": 1
- },
- "pipeline/gates/run_sf10.sh": {
-  "engine": 3,
-  "engine_branch": 1
- },
- "pipeline/gates/slot_adapters/README.md": {
-  "engine": 1,
-  "path": 1,
-  "target": 1
- },
- "pipeline/gates/tsan.supp": {
-  "engine": 2
+ "pipeline/gates/tests/test_gate_plumbing.py": {
+  "engine": 3
  },
  "pipeline/orchestrator/accel_pipeline/aux_bench.py": {
   "engine": 1
@@ -717,7 +640,7 @@
   "target": 1
  },
  "pipeline/orchestrator/tests/test_engine_backend.py": {
-  "engine": 106,
+  "engine": 105,
   "path": 19,
   "target": 3
  },
@@ -732,7 +655,7 @@
   "engine": 8
  },
  "pipeline/orchestrator/tests/test_host_bootstrap.py": {
-  "engine": 30,
+  "engine": 27,
   "path": 1,
   "target": 6
  },
