@@ -29,7 +29,6 @@ keep:
   - accelerators/README.md
   - pipeline/**
   # engine-neutral eval: substrate unit tests, test-database builders, shared test support
-  - eval/tests/test_aux_calibration.cpp
   - eval/tests/test_aux_runtime.cpp
   - eval/tests/test_aux_runtime_units.cpp
   - eval/tests/test_aux_wire.cpp
@@ -60,12 +59,9 @@ keep:
 generated:
   # engine backends, including api/, tests/ and the engine-exact numeric/collation helpers
   - backends/**
-  # per-query accelerators and their benchmark-level shared code
-  - accelerators/tpch/**
-  - accelerators/sec_edgar/**
-  # grown by primitive_publish / prooflib_publish from the skeleton
-  - accelerators/prims/**
-  - accelerators/prooflib/**
+  # per-query accelerators and their benchmark-level shared code; also prims/ and prooflib/, which are
+  # grown from the skeleton by primitive_publish / prooflib_publish
+  - accelerators/*/**
   - pipeline/verus/prooflib_provenance.jsonl
   - pipeline/verus/spec_audits.jsonl
   - pipeline/verus/playbook/**
@@ -80,6 +76,7 @@ generated:
   - eval/tests/verus_kit/**
   - eval/tests/test_*mysql*
   - eval/tests/test_*postgres*
+  - eval/tests/test_aux_calibration.cpp
   - eval/tests/test_aux_multi_connection_stress.cpp
   - eval/tests/test_aux_read_own_writes.cpp
   - eval/tests/test_aux_snapshot_reads.cpp
@@ -109,6 +106,8 @@ generated:
   - eval/bench/tpch/single-threaded/**
   - eval/bench/tpch/parallel/**
   - eval/bench/tpch/stateless_matrix.cpp
+  # slot adapters are backend-owned; the README stays
+  - pipeline/gates/slot_adapters/*.sh
   # engine-specific scripts: PostgreSQL / MySQL builds, servers, loaders, SQL, baselines, sweeps
   - scripts/build_accel_mysql_plugin.sh
   - scripts/build_accel_postgres_extension.sh
