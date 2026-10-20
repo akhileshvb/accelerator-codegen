@@ -21,7 +21,7 @@ from accel_pipeline.stages.engine_backend import _layer_extra_context, implement
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PIPELINE_ROOT = REPO_ROOT / "pipeline"
 ENGINES = ("postgres", "mysql", "duckdb")
-LAYERS = ("capture", "epochs", "scan", "runtime", "host")
+LAYERS = ("hostctl", "capture", "epochs", "scan", "runtime", "host", "api")
 
 
 def _profile(engine: str = "postgres") -> dict:
@@ -137,6 +137,23 @@ def test_render_narrows_hazards_to_the_layer():
     assert scan.count("Engine fact:") < len(profile["hazards"])
 
 
+def test_embedded_engine_sees_host_hazards_at_runtime():
+    profile = _profile("duckdb")
+    host_only = [h for h in profile["hazards"] if h["layers"] == ["host"]]
+    assert host_only
+    plain = render_engine_profile(profile, ["hazards"], layer="runtime")
+    folded = render_engine_profile(profile, ["hazards"], layer="runtime", host_layer_runs=False)
+    assert all(h["engine_fact"] not in plain and h["engine_fact"] in folded for h in host_only)
+
+
+def test_every_hazard_names_known_layers_and_each_tagged_layer_has_sections():
+    w = load_workload("engine_postgres", REPO_ROOT)
+    for engine in ENGINES:
+        for hazard in _profile(engine)["hazards"]:
+            assert set(hazard["layers"]) <= set(LAYERS), hazard
+    assert set(LAYERS) <= set(w["engine_profile_sections"])
+
+
 def test_hazards_state_facts_not_fixes():
     for engine in ENGINES:
         for hazard in _profile(engine)["hazards"]:
@@ -177,3 +194,34 @@ def test_layers_see_only_their_sections():
     assert "### entry_points" in host and "### capture" not in host
     assert "### oracle" not in capture + host
     assert "### oracle" in _render(w, "03_validation.md", "validation")
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_hostctl_prompt_is_the_host_script_prompt(engine):
+    w = load_workload(f"engine_{engine}", REPO_ROOT)
+    layers = {layer["id"]: layer for layer in implementation_layers(w)}
+    hostctl = layers["hostctl"]
+    assert hostctl["prompt"] == "impl_hostctl.md" and "prompt" not in layers["capture"]
+    text = _render(w, hostctl["prompt"], "impl_hostctl", hostctl)
+    contract = (PIPELINE_ROOT / "prompts" / "engine_backend" / "host_contract.md").read_text()
+    assert contract.strip() in text
+    assert "{{" not in text
+    for section in ("identity", "packaging", "host_runtime", "build", "process_model", "scan", "oracle"):
+        assert f"### {section}" in text
+    assert "### capture" not in text and "### entry_points" not in text
+    assert "backend.cmake" in text and "accel_backend_" in text
+
+
+def test_hostctl_sees_the_load_hazards_and_no_run_script_names():
+    w = load_workload("engine_postgres", REPO_ROOT)
+    text = _render(w, "impl_hostctl.md", "impl_hostctl", implementation_layers(w)[0])
+    assert "only the C collation compares bytes" in text
+    for engine in ENGINES:
+        assert "scripts/run_" not in str(_profile(engine)["oracle"])
+
+
+def test_layer_rules_are_checklist_ids():
+    checklist = (PIPELINE_ROOT / "prompts" / "engine_backend" / "acceptance_checklist.md").read_text()
+    ids = set(re.findall(r"^### `(\w+)`", checklist, re.M))
+    for layer in implementation_layers(load_workload("engine_postgres", REPO_ROOT)):
+        assert set(layer.get("rules") or []) <= ids, layer["id"]

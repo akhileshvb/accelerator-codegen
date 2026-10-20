@@ -123,7 +123,7 @@ engine_profile:
 
   oracle:
     differential_db: "TPC-H DuckDB database file (ACCEL_TPCH_DB; a private copy per test)."
-    run_script: scripts/run_duckdb_tpch_diff_all22.sh
+    sql_client: "The duckdb command-line shell on the database file (duckdb <file> < statements.sql), or any DuckDB client library; one process opens the file at a time for writing."
 
   hazards:
     - symptom: "The process hangs at 0% CPU, or ThreadSanitizer reports a lock-order cycle, when the backend takes its own mutex inside an engine callback."
@@ -155,4 +155,4 @@ engine_profile:
       layers: [capture, epochs]
     - symptom: "Wide decimals lose digits in capture or scan."
       engine_fact: "DECIMAL with more than 18 digits is a 128-bit hugeint in vectors."
-      layers: [capture, scan]
+      layers: [capture, scan, api]

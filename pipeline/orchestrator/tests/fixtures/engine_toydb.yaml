@@ -124,7 +124,7 @@ engine_profile:
 
   oracle:
     differential_db: "TPC-H ToyDB database file (ACCEL_TPCH_DB; a private copy per test)."
-    run_script: scripts/run_toydb_tpch_diff_all22.sh
+    sql_client: "The toydb command-line shell on the database file."
 
   hazards:
     - symptom: "The process hangs at 0% CPU, or ThreadSanitizer reports a lock-order cycle, when the backend takes its own mutex inside an engine callback."

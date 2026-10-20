@@ -163,7 +163,12 @@ def _engine_profile_for_stage(workload: dict[str, Any], stage: str) -> str:
     """The engine profile sections this stage sees (impl_<layer> / critique_<layer> use the layer's)."""
     layer = stage.split("_", 1)[1] if stage.startswith(("impl_", "critique_")) else None
     sections = workload["engine_profile_sections"][layer or stage]
-    return render_engine_profile(workload["engine_profile"], sections, layer=layer)
+    return render_engine_profile(
+        workload["engine_profile"],
+        sections,
+        layer=layer,
+        host_layer_runs=bool(workload.get("requires_in_process_host", False)),
+    )
 
 
 def build_prompt_context(

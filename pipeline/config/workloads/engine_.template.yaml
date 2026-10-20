@@ -105,9 +105,9 @@ engine_profile:
 
   oracle:
     differential_db: "REPLACE_ME"
-    run_script: {na: "REPLACE_ME"}
+    sql_client: "REPLACE_ME: the engine's own client for running SQL against the reference database"
 
   hazards:                            # engine fact + symptom, never a fix
     - symptom: "REPLACE_ME: what goes wrong"
       engine_fact: "REPLACE_ME: the engine behaviour behind it"
-      layers: [capture]               # capture | epochs | scan | runtime | host
+      layers: [capture]               # hostctl | capture | epochs | scan | runtime | host | api

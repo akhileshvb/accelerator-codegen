@@ -85,8 +85,13 @@ def render_engine_profile(
     sections: list[str] | str,
     *,
     layer: str | None = None,
+    host_layer_runs: bool = True,
 ) -> str:
-    """Markdown of the requested sections; hazards are narrowed to `layer` when given."""
+    """Markdown of the requested sections; hazards are narrowed to `layer` when given.
+
+    Without a host layer (embedded engines) the entry points are built in the runtime layer,
+    which then also sees the hazards tagged `host`.
+    """
     wanted = list(profile) if sections == ALL_SECTIONS else list(sections)
     out: list[str] = []
     for name in wanted:
@@ -96,7 +101,8 @@ def render_engine_profile(
         out.extend(f"- **{key}:** {_render_value(value)}" for key, value in profile[name].items())
         out.append("")
     if "hazards" in wanted:
-        hazards = [h for h in profile["hazards"] if layer is None or layer in h["layers"]]
+        shown = {layer, "host"} if layer == "runtime" and not host_layer_runs else {layer}
+        hazards = [h for h in profile["hazards"] if layer is None or shown & set(h["layers"])]
         out.append("### hazards (engine facts, not instructions)\n")
         out.extend(
             f"- *{', '.join(h['layers'])}* — **{h['symptom']}** Engine fact: {h['engine_fact']}" for h in hazards
