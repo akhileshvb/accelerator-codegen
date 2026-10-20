@@ -21,7 +21,9 @@ for home in "${ACCEL_PIPELINE_CODEX_HOME:-}" "${CODEX_HOME:-}"; do
   fi
 done
 
-if [[ -x "$ORCH/.venv/bin/python" ]]; then
+if [[ -x "${ACCEL_PIPELINE_PYTHON:-}" ]]; then
+  PY="${ACCEL_PIPELINE_PYTHON}"   # the orchestrator's interpreter
+elif [[ -x "$ORCH/.venv/bin/python" ]]; then
   PY="$ORCH/.venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
   PY="$(command -v python3)"

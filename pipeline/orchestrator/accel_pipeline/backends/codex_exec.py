@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import shlex
 import shutil
 import subprocess
@@ -101,6 +102,8 @@ class CodexExecBackend:
                 getattr(self._pipeline_config, "worker_id", "") or self._query,
             ),
             sidecar_env_line("ACCEL_PIPELINE_BUILD_DIR", self._pipeline_config.build_dir),
+            # The MCP server runs on the orchestrator's own interpreter (its venv).
+            sidecar_env_line("ACCEL_PIPELINE_PYTHON", sys.executable),
         ]
         if self._art_dir is not None:
             lines.append(sidecar_env_line("ACCEL_PIPELINE_ART_DIR", self._art_dir))
@@ -203,6 +206,7 @@ class CodexExecBackend:
                 f'ACCEL_PIPELINE_OPT_ITER="{self._optimization_iter}"',
                 f'ACCEL_PIPELINE_REPO_ROOT="{self._pipeline_config.repo_root}"',
                 f'ACCEL_PIPELINE_BUILD_DIR="{self._pipeline_config.build_dir}"',
+                f'ACCEL_PIPELINE_PYTHON="{sys.executable}"',
                 f'ACCEL_PIPELINE_WORKER_ID="{getattr(self._pipeline_config, "worker_id", "") or self._query}"',
             ]
             if self._art_dir is not None:
