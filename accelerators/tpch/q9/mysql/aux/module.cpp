@@ -935,7 +935,7 @@ void TpchQ9Module::EmitResult(const core::AuxEngineServices &services, const Tpc
           core::AuxType::ScaledDecimal, core::ScaledDecimal{static_cast<int64_t>(profit), 4}));
     else // beyond int64: exact numeric text
       out.values.push_back(core::AuxValue::Of(
-          core::AuxType::String, accelerator_codegen::pg_numeric::ToText(profit, 4)));
+          core::AuxType::String, accelerator_codegen::mysql_decimal::ToText(profit, 4)));
     sink.WriteRow(out);
   }
   sink.End();
