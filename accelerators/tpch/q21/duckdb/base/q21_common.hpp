@@ -26,6 +26,7 @@
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "tpch/q21/duckdb/base/query.hpp"
+#include "tpch/q21/top_rows.hpp"
 
 namespace accelerator_codegen {
 namespace q21 {
@@ -467,7 +468,9 @@ inline std::vector<OutputRow> BuildOutput(const SupplierIndex &suppliers, const 
 		row.numwait = wait[compact];
 		rows.push_back(std::move(row));
 	}
-	std::sort(rows.begin(), rows.end(), BetterOutputRow);
+	const size_t limit = std::min(rows.size(), aux_state::query::kTpchQ21Limit);
+	std::partial_sort(rows.begin(), rows.begin() + limit, rows.end(), BetterOutputRow);
+	rows.resize(limit);
 	return rows;
 }
 
