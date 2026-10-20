@@ -12,7 +12,7 @@
 #       ACCEL_BACKEND_MODULE names the module/plugin target harnesses need built first.
 #   accel_add_backend_exe(<engine> <name> [CLIENT] <sources...>)
 #       an executable against that interface; used by backend.cmake and by
-#       eval/harness/<engine>.cmake, which the root includes after backend.cmake.
+#       backends/<engine>/tests/harness.cmake, which the root includes after backend.cmake.
 #   accel_glob_sources(<out> <repo-relative globs...>)
 #       sorted sources, for module/plugin per-query code.
 #

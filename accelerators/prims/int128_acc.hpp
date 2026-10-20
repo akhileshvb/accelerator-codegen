@@ -14,14 +14,11 @@
 #include <stdexcept>
 #include <string>
 
-#include "prims/pg_numeric.hpp"
 
 namespace accelerator_codegen::aux_state::core::i128 {
 
-// Exact decimal text of a scaled int128 coefficient already lives in
-// pg_numeric::ToText(coeff, scale) (PostgreSQL numeric_out format); use that.
 // This header adds overflow-checked 128-bit accumulation for SUM-style state.
-using Int128 = pg_numeric::Int128;
+using Int128 = __int128;
 
 // acc += v; throws std::overflow_error instead of wrapping.
 inline void AddChecked(Int128 &acc, Int128 v) {
@@ -33,6 +30,15 @@ inline void AddChecked(Int128 &acc, Int128 v) {
 // a * b widened to int128 (int64 x int64 never overflows).
 inline Int128 Mul64(int64_t a, int64_t b) { return static_cast<Int128>(a) * b; }
 // Decimal text of an int128 integer (no scale).
-inline std::string ToString(Int128 v) { return pg_numeric::ToText(v, 0); }
+inline std::string ToString(Int128 v) {
+  const bool negative = v < 0;
+  unsigned __int128 magnitude = negative ? ~static_cast<unsigned __int128>(v) + 1 : static_cast<unsigned __int128>(v);
+  std::string digits;
+  do {
+    digits.insert(digits.begin(), static_cast<char>('0' + static_cast<int>(magnitude % 10)));
+    magnitude /= 10;
+  } while (magnitude != 0);
+  return negative ? "-" + digits : digits;
+}
 
 } // namespace accelerator_codegen::aux_state::core::i128

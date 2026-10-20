@@ -15,6 +15,9 @@ allowed_commands:
   - "^bash pipeline/gates/run_engine_build\\.sh$"
   - "^bash pipeline/gates/run_engine_layer\\.sh$"
   - "^bash pipeline/gates/run_engine_scan_conformance\\.sh$"
+  - "^bash pipeline/gates/run_engine_api_conformance\\.sh$"
+  - "^python3 pipeline/gates/check_api_manifest\\.py( .*)?$"
+  - "^python3 scripts/check_layer_includes\\.py( .*)?$"
   - "^bash pipeline/gates/run_engine_contract\\.sh$"
   - "^bash pipeline/gates/run_engine_adversarial\\.sh$"
   - "^bash pipeline/gates/run_engine_aux_smoke\\.sh$"
@@ -58,6 +61,12 @@ implementation_layers:
     cmake_target: test_{engine}_host
     rules: [slot_entry, host_glue]
     skip_unless: requires_in_process_host
+  - id: api
+    title: Accelerator-facing API and its manifest
+    gate: engine_api_conformance
+    harness: backends/{engine}/tests/test_{engine}_api.cpp
+    cmake_target: test_{engine}_api
+    rules: [api_surface, api_manifest]
 
 # Default post-layer gates (engine_build + this layer). Overridden per stage.
 post_implementation_gates:
@@ -72,6 +81,7 @@ post_validation_gates:
   - engine_scan
   - engine_runtime
   - engine_host
+  - engine_api_conformance
   - engine_adversarial
   - slot_epoch_stress
   - slot_hits_under_writes
@@ -115,6 +125,7 @@ engine_profile_sections:
   scan: [identity, process_model, transactions, locking, scan, thread_knobs, hazards]
   runtime: [identity, packaging, host_runtime, process_model, locking, thread_knobs, scan, hazards]
   host: [identity, packaging, host_runtime, build, process_model, entry_points, thread_knobs, hazards]
+  api: [identity, packaging, host_runtime, process_model, scan, entry_points, thread_knobs, oracle, hazards]
   validation: [identity, process_model, capture, transactions, locking, scan, oracle, hazards]
   architecture_audit: [identity, packaging, process_model, capture, transactions, locking, scan, thread_knobs, hazards]
 

@@ -20,7 +20,7 @@
 
 #include "eval/bench/driver/bench_cli.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 
 namespace {
@@ -49,11 +49,11 @@ public:
   Timed WriteThenRead(const std::string &sql, std::optional<mnt::MaintenanceAction> forced) override {
     const std::string action = forced ? mnt::MaintenanceActionName(*forced) : "";
     const std::string out = RunMysqlScript(
-        tools, "DO mysql_accel_set_force_maintenance_action(" + SqlLiteral(action) + ");\n"
+        tools, "DO accel_set_force_maintenance_action(" + SqlLiteral(action) + ");\n"
                "SET @t0 = NOW(6);\n" + sql + ";\nSET @t1 = NOW(6);\n" + accel_sql + ";\n"
                "SELECT TIMESTAMPDIFF(MICROSECOND, @t0, @t1), TIMESTAMPDIFF(MICROSECOND, @t1, NOW(6)), "
-               "mysql_accel_get_last_maintenance_decision();\n"
-               "DO mysql_accel_set_force_maintenance_action('');\n");
+               "accel_get_last_maintenance_decision();\n"
+               "DO accel_set_force_maintenance_action('');\n");
     std::string trimmed = TrimLines(out);
     while (!trimmed.empty() && trimmed.back() == '\n') trimmed.pop_back();
     const auto nl = trimmed.rfind('\n');

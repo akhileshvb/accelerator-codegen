@@ -2,7 +2,7 @@
 #include "tpch/q17/calibration_writes.hpp"
 
 #include <algorithm>
-#include "prims/mysql_collation.hpp"
+#include "backends/mysql/api/mysql_collation.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"

@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "tpch/q8/duckdb/base/query.hpp"
 
 namespace accelerator_codegen {

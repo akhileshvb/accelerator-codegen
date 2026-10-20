@@ -38,6 +38,7 @@ Facts and hazards of the engine, not instructions; `n/a` is a declared decision.
   `accelerator_runtime.hpp`, `columnar_batch.hpp` (and `wire.hpp`,
   `thread_budget.hpp` where the layer touches them)
 - Layer `scan`: `pipeline/prompts/engine_backend/native_scan_contract.md` (the `ScanPartitioned` surface modules call); layer `runtime`: `substrate/aux/runtime/thread_budget.hpp` (phase caps) and `AuxCostModelLookup` in `substrate/aux/core/aux_cost_model_path.hpp`
+- Layer `api`: `pipeline/prompts/engine_backend/api_contract.md` and `host_contract.md` (binding), and the toy under `pipeline/templates/engine_backend/api_conformance/`
 - `eval/tests/test_aux_runtime.cpp` — the toy `SumModule` to copy for the harness
 - Matching stub under `pipeline/templates/engine_backend/` — keep
   `aux_state::engine::{{engine_name}}`. Do not put backend types in `core::`.

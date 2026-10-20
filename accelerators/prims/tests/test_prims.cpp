@@ -24,7 +24,6 @@
 #include "prims/int128_acc.hpp"
 #include "prims/keyed_string_column.hpp"
 #include "prims/parallelism.hpp"
-#include "prims/pg_numeric_div.hpp"
 #include "prims/radix_range_tree.hpp"
 #include "prims/sharded_cow_map.hpp"
 #include "prims/sharded_cow_open_map.hpp"
@@ -361,7 +360,7 @@ static void TestStrings() {
 }
 
 static void TestInt128() {
-  using pg = accelerator_codegen::pg_numeric::Int128;
+  using pg = __int128;
   pg acc = 0;
   i128::AddChecked(acc, i128::Mul64(INT64_MAX, INT64_MAX));
   i128::AddChecked(acc, i128::Mul64(INT64_MAX, INT64_MAX));
@@ -371,7 +370,7 @@ static void TestInt128() {
   pg big = ~(pg(1) << 127);
   try { i128::AddChecked(big, 1); } catch (const std::overflow_error &) { threw = true; }
   CHECK(threw);
-  CHECK(accelerator_codegen::pg_numeric::ToText(-12345, 2) == "-123.45");
+  CHECK(i128::ToString(-12345) == "-12345");
 }
 
 // ---------------------------------------------------------------------------
@@ -965,25 +964,6 @@ static void TestDecimalText() {
   CHECK(!Parse("999999999999999999999999999999999999999", 0, v)); // > 127 bits
 }
 
-static void TestPgNumericDiv() {
-  using namespace accelerator_codegen::pg_numeric;
-  Decimal q = DivRound(6, 0, 3, 0);
-  CHECK(q.scale >= 0 && q.coeff == Int128(2) * [&] { Int128 p = 1; for (int i = 0; i < q.scale; ++i) p *= 10; return p; }());
-  q = DivRound(1, 0, 8, 0);   // 0.125 exactly
-  { Int128 p = 1; for (int i = 0; i < q.scale - 3; ++i) p *= 10; CHECK(q.scale >= 3 && q.coeff == 125 * p); }
-  q = DivRound(2, 0, 3, 0);   // 0.666..67, rounded half away from zero
-  CHECK(q.coeff % 10 == 7);
-  q = DivRound(-2, 0, 3, 0);
-  CHECK(q.coeff % 10 == -7 && q.coeff < 0);
-  q = DivRound(12345, 2, 5, 0); // 123.45 / 5 = 24.69
-  { Int128 p = 1; for (int i = 0; i < q.scale - 2; ++i) p *= 10; CHECK(q.scale >= 2 && q.coeff == 2469 * p); }
-  q = DivRound(0, 0, 7, 0);
-  CHECK(q.coeff == 0);
-  bool threw = false;
-  try { DivRound(1, 0, 0, 0); } catch (const std::domain_error &) { threw = true; }
-  CHECK(threw);
-}
-
 // Composite key with an explicit empty marker and a custom hash.
 struct OpenPairKey {
   uint32_t a = 0, b = 0;
@@ -1519,7 +1499,6 @@ int main() {
   TestRadixRangeTree();
   TestCowFenwick();
   TestDecimalText();
-  TestPgNumericDiv();
   TestShardedCowOpenMap();
   TestCowBox();
   TestShardedCowMap();

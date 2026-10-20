@@ -356,7 +356,7 @@ void TpchQ1Module::EmitResult(
                {"avg_price", core::AuxType::String, false},
                {"avg_disc", core::AuxType::String, false},
                {"count_order", core::AuxType::Int64, false}}});
-  namespace pgn = ::accelerator_codegen::pg_numeric;
+  namespace pgn = ::accelerator_codegen::mysql_decimal;
   const auto numeric = [](std::string text) {
     return core::AuxValue::Of(core::AuxType::String, std::move(text));
   };

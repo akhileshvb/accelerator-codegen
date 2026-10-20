@@ -60,12 +60,12 @@ void ExecutePostgresQuery(const char *workload, int query_id,
 
 extern "C" {
 
-// accel_postgres_register_queries() -> number of registered query SQL entries.
+// accel_register_queries() -> number of registered query SQL entries.
 // Runs every registered query's CREATE FUNCTION text (ordered by workload and
 // query id), so the SQL-visible functions are exactly those the loaded module
 // carries.
-PG_FUNCTION_INFO_V1(accel_postgres_register_queries);
-Datum accel_postgres_register_queries(PG_FUNCTION_ARGS) {
+PG_FUNCTION_INFO_V1(accel_register_queries);
+Datum accel_register_queries(PG_FUNCTION_ARGS) {
   using namespace accelerator_codegen::aux_state::engine::postgres;
   std::vector<PostgresQuerySql> entries(SqlEntries().begin(), SqlEntries().end());
   std::sort(entries.begin(), entries.end(),

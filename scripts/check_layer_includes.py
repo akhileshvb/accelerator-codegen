@@ -4,9 +4,17 @@
     substrate/   includes nothing from backends/ or accelerators/
     backends/    includes nothing from accelerators/ (prims included)
 
-Accelerators may include anything below them; eval/ is not checked.
+Accelerators may include anything below them; eval/ is not checked for layering.
 substrate/ or backends/ including eval/ (the cross-query evaluation harness) is
 reported as a warning (an error with --strict).
+
+A backend's `tests/harness/` and `bench/` hold the engine's workload harnesses
+(moved from eval/); they count as eval for layering.
+
+Backend boundary: a file outside backends/<engine>/ (the substrate, accelerators,
+eval/, pipeline templates, scripts, another backend) may include only
+backends/<engine>/api/ of that backend (pipeline/prompts/engine_backend/api_contract.md);
+engine/, state/, tests/ and the other directories are the backend's own.
 
 Includes are resolved the way the build does: relative to the including file,
 then against the include roots (the repo root and accelerators/).  The build
@@ -45,7 +53,16 @@ DISCOURAGED = {
 }
 
 
+BACKEND_DIR = re.compile(r"^backends/([^/]+)/([^/]+)/")
+SKIPPED_TOPS = {".git", "build", "build-release", "artifacts"}
+
+
+WORKLOAD_HARNESS = re.compile(r"^backends/[^/]+/(tests/harness|bench)/")
+
+
 def layer_of_rel(rel: str) -> str | None:
+    if WORKLOAD_HARNESS.match(rel):
+        return "eval"  # a backend's workload harnesses and benches are eval code it owns
     top = rel.split("/", 1)[0]
     if top in ("substrate", "backends", "accelerators", "eval", "workloads"):
         return top
@@ -111,7 +128,39 @@ def scan(root: Path = ROOT) -> tuple[list[dict], int]:
         for path in sorted(base.rglob("*")):
             if path.is_file() and path.suffix in SUFFIXES:
                 n += 1
-                hits += scan_file(root, path, accel_tops, top)
+                hits += scan_file(root, path, accel_tops)
+    return hits, n
+
+
+def backend_internal(rel: str) -> tuple[str, str] | None:
+    """(engine, directory) of a path inside a backend but outside its api/."""
+    m = BACKEND_DIR.match(rel)
+    return (m.group(1), m.group(2)) if m and m.group(2) != "api" else None
+
+
+def scan_backend_boundary(root: Path) -> tuple[list[dict], int]:
+    """Includes of a backend's non-api/ headers from outside that backend."""
+    accel_tops = _accel_tops(root)
+    hits: list[dict] = []
+    n = 0
+    for path in sorted(root.rglob("*")):
+        rel = str(path.relative_to(root))
+        top = rel.split("/", 1)[0]
+        if not path.is_file() or path.suffix not in SUFFIXES or top in SKIPPED_TOPS or top.startswith("build"):
+            continue
+        n += 1
+        own = BACKEND_DIR.match(rel)
+        for no, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            m = INCLUDE.match(line)
+            if not m:
+                continue
+            _, how = resolve(root, path, m.group(2), accel_tops)
+            target = how.split(": ", 1)[1] if ": " in how else m.group(2)
+            internal = backend_internal(target) if target.startswith("backends/") else None
+            if internal and not (own and own.group(1) == internal[0]):
+                hits.append({"file": rel, "line": no, "layer": layer_of_rel(rel), "include": m.group(2),
+                             "target_layer": f"backends/{internal[0]}/{internal[1]}", "resolved": how,
+                             "severity": "error"})
     return hits, n
 
 
@@ -130,6 +179,8 @@ def main() -> int:
         n = len(args.file)
     else:
         hits, n = scan(root)
+        boundary, _ = scan_backend_boundary(root)
+        hits += boundary
     errors = [h for h in hits if h["severity"] == "error" or args.strict]
     warnings = [h for h in hits if h not in errors]
     if args.json:

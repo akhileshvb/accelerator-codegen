@@ -24,7 +24,7 @@ Datum AcceleratorCodegenAuxSecEdgarQ3(PG_FUNCTION_ARGS) {
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace {
 
-// Executed by accel_postgres_register_queries().
+// Executed by accel_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
 DROP FUNCTION IF EXISTS accel_sec_edgar_q3_aux() CASCADE;
 DROP FUNCTION IF EXISTS accel_sec_edgar_q3_aux(bigint, text) CASCADE;

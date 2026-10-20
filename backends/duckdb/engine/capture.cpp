@@ -1,12 +1,12 @@
 // GENERATED BACKEND
 #include "backends/duckdb/engine/capture.hpp"
-#include "backends/duckdb/engine/decimal128.hpp"
+#include "backends/duckdb/api/decimal128.hpp"
 
 #include <algorithm>
 #include <limits>
 
 #include "backends/duckdb/api/duckdb_host.hpp"
-#include "backends/duckdb/engine/scan.hpp"
+#include "backends/duckdb/api/scan.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/main/database.hpp"
 

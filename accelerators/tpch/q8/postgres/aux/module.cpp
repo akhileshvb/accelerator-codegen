@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "prims/pg_numeric_div.hpp"
+#include "backends/postgres/api/pg_numeric_div.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"

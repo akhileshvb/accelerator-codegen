@@ -9,7 +9,7 @@ read medians + maintenance costs:
   aux     = touch UPDATE with mutation triggers (ApplyDelta on commit)
 
 Uses seed_1-compatible bindings (same as matview reference.sql / query.sql).
-IMMV is optional per query (see eval/bench/postgres/baselines/tpch/q*/immv/).
+IMMV is optional per query (see backends/postgres/bench/baselines/tpch/q*/immv/).
 """
 
 from __future__ import annotations
@@ -452,7 +452,7 @@ def install_tpch_mutation_triggers(cur) -> None:
 
 def last_maint_action(cur) -> str | None:
     try:
-        cur.execute("SELECT accel_postgres_get_last_maintenance_action()")
+        cur.execute("SELECT accel_get_last_maintenance_action()")
         row = cur.fetchone()
         return None if not row else row[0]
     except Exception:
@@ -461,7 +461,7 @@ def last_maint_action(cur) -> str | None:
 
 def set_force_apply_delta(cur) -> None:
     try:
-        cur.execute("SELECT accel_postgres_set_force_maintenance_action('ApplyDelta')")
+        cur.execute("SELECT accel_set_force_maintenance_action('ApplyDelta')")
         cur.fetchone()
     except Exception:
         pass

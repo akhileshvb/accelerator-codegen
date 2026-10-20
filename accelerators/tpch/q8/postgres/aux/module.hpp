@@ -13,7 +13,7 @@
 #include "prims/chunked_blob_map.hpp"
 #include "prims/chunked_cow_array.hpp"
 #include "prims/any_key_cow_array.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 #include "prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {

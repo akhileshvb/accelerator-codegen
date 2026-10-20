@@ -47,7 +47,7 @@ struct PostgresQueryExecutor {
 
 // DDL that creates the query's SQL-visible functions (and row types), as one
 // or more `;`-separated statements, each preceded by its own DROP ... IF
-// EXISTS.  Run by accel_postgres_register_queries().
+// EXISTS.  Run by accel_register_queries().
 struct PostgresQuerySql {
   const char *workload;
   int query_id;

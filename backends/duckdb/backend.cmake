@@ -2,10 +2,10 @@
 
 accel_backend_library(
     HOST
-        backends/duckdb/engine/duckdb_scan_adapter.cpp
-        backends/duckdb/engine/scan.cpp
+        backends/duckdb/api/duckdb_scan_adapter.cpp
+        backends/duckdb/api/scan.cpp
         backends/duckdb/engine/capture.cpp
-        backends/duckdb/engine/duckdb_aux_backend.cpp
+        backends/duckdb/api/duckdb_aux_backend.cpp
         backends/duckdb/api/query_runtime.cpp
         backends/duckdb/api/register.cpp
         backends/duckdb/api/duckdb_host.cpp

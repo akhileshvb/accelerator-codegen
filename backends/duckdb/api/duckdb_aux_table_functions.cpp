@@ -15,7 +15,7 @@
 
 #include "substrate/aux/core/aux_types.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
-#include "backends/duckdb/engine/decimal128.hpp"
+#include "backends/duckdb/api/decimal128.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "backends/duckdb/api/sql_fallback.hpp"
 #include "backends/duckdb/api/verus_host.hpp"

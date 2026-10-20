@@ -4,7 +4,7 @@
 #include <functional>
 #include <memory>
 
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "backends/duckdb/api/kernel.hpp"
 #include "backends/duckdb/api/query_runtime.hpp"
 #include "sec_edgar/q6/duckdb/aux/finalize.hpp"

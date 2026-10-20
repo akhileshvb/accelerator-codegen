@@ -1,6 +1,6 @@
 #include "tpch/q6/postgres/aux/module.hpp"
 #include "tpch/q6/calibration_writes.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 
 #include <algorithm>
 #include <map>

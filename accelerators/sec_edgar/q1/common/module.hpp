@@ -42,9 +42,10 @@ struct SecEdgarQ1Config {
   // line}, in the order of the compact mutation row. Empty (DuckDB): the engine
   // projects the compact row itself.
   std::vector<int32_t> pre_attnums;
-  // Postgres: AVG(line) is numeric (exact, at PostgreSQL's result scale);
-  // otherwise it is a double as DuckDB computes it.
-  bool numeric_avg = false;
+  // Set: AVG(line) is exact numeric text from this formatter (sum of line,
+  // count); null: a double as DuckDB computes it.
+  using AvgTextFn = std::string (*)(__int128 sum, int64_t count);
+  AvgTextFn avg_text = nullptr;
 };
 
 namespace q1 {
@@ -331,14 +332,15 @@ public:
   LoadState(core::AuxEngineServices &, core::Version *version = nullptr,
             const char *accelerator_id = nullptr) const;
   static void EmitOutput(const SecEdgarQ1State &, core::AuxRowSink &);
-  // Postgres flavour: AVG(line) as exact numeric text.
-  static void EmitOutputNumeric(const SecEdgarQ1State &, core::AuxRowSink &);
+  // AVG(line) as the numeric text `avg_text` gives.
+  static void EmitOutputNumeric(const SecEdgarQ1State &, core::AuxRowSink &,
+                                SecEdgarQ1Config::AvgTextFn avg_text);
 
   SecEdgarQ1State BuildState(core::AuxEngineServices &) const;
 
 private:
   void Emit(const SecEdgarQ1State &state, core::AuxRowSink &sink) const {
-    config.numeric_avg ? EmitOutputNumeric(state, sink) : EmitOutput(state, sink);
+    config.avg_text ? EmitOutputNumeric(state, sink, config.avg_text) : EmitOutput(state, sink);
   }
 
   SecEdgarQ1Config config;

@@ -8,8 +8,8 @@
 #include <unordered_set>
 
 #include "backends/duckdb/api/aux_query_registry.hpp"
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
-#include "backends/duckdb/engine/native_scan.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/native_scan.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"

@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "prims/flat_hash_map.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/mysql/api/mysql_decimal.hpp"
 
 namespace accelerator_codegen {
 
@@ -52,9 +52,9 @@ struct Q1OutputRow {
 	Q1AccT sum_base_price = 0;
 	Q1AccT sum_disc_price = 0;
 	Q1AccT sum_charge = 0;
-	pg_numeric::Decimal avg_qty {};
-	pg_numeric::Decimal avg_price {};
-	pg_numeric::Decimal avg_disc {};
+	mysql_decimal::Decimal avg_qty {};
+	mysql_decimal::Decimal avg_price {};
+	mysql_decimal::Decimal avg_disc {};
 	int64_t count_order = 0;
 };
 

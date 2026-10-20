@@ -8,7 +8,7 @@
 #include "sec_edgar/q1/duckdb/aux/parallel/module.hpp"
 #include "sec_edgar/q1/layout.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
-#include "backends/duckdb/engine/build_scan.hpp"
+#include "backends/duckdb/api/build_scan.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "catalog/query_catalog.hpp"
 

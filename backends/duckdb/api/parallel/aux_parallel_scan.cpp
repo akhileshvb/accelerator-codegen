@@ -2,9 +2,9 @@
 
 #include <algorithm>
 
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "backends/duckdb/api/parallel/parallel_runtime.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
+#include "backends/duckdb/api/duckdb_aux_backend.hpp"
 #include "duckdb/main/client_context.hpp"
 
 namespace accelerator_codegen {

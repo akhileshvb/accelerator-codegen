@@ -130,8 +130,8 @@ def main():
     x = Timed(db, "w-aux")
     x.ms(T.ACCEL_SQL)  # build
     writes(x, "aux maintained")
-    print("execute counts:", x.rows("SELECT accel_postgres_get_execute_counts()"))
-    print("last maintenance:", x.rows("SELECT accel_postgres_get_last_maintenance_action()"))
+    print("execute counts:", x.rows("SELECT accel_get_execute_counts()"))
+    print("last maintenance:", x.rows("SELECT accel_get_last_maintenance_action()"))
     # The maintained state must still equal a fresh build.
     fresh = Timed(db, "fresh")
     A = x.rows(T.ACCEL_SQL)

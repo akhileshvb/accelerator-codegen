@@ -9,8 +9,8 @@
 #include "sec_edgar/common/duckdb_probes.hpp"
 #include "backends/duckdb/api/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
-#include "backends/duckdb/engine/dictionary_id_cache.hpp"
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/dictionary_id_cache.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "sec_edgar/q24/duckdb/base/query.hpp"
 
 #include <algorithm>

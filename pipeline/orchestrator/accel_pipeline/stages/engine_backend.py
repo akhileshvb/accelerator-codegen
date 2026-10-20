@@ -405,6 +405,7 @@ def run_validation(
             "engine_scan",
             "engine_runtime",
             "engine_host",
+            "engine_api_conformance",
             "engine_adversarial",
             "slot_epoch_stress",
             "slot_hits_under_writes",

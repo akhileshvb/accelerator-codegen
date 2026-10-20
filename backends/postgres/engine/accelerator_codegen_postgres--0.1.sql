@@ -15,33 +15,33 @@ RETURNS trigger
 AS 'MODULE_PATHNAME', 'AcceleratorCodegenCaptureTransition'
 LANGUAGE C;
 
-CREATE FUNCTION accel_postgres_set_force_maintenance_action(text)
+CREATE FUNCTION accel_set_force_maintenance_action(text)
 RETURNS void
-AS 'MODULE_PATHNAME', 'accel_postgres_set_force_maintenance_action'
+AS 'MODULE_PATHNAME', 'accel_set_force_maintenance_action'
 LANGUAGE C;
 
-CREATE FUNCTION accel_postgres_get_last_maintenance_decision()
+CREATE FUNCTION accel_get_last_maintenance_decision()
 RETURNS text
-AS 'MODULE_PATHNAME', 'accel_postgres_get_last_maintenance_decision'
+AS 'MODULE_PATHNAME', 'accel_get_last_maintenance_decision'
 LANGUAGE C;
 
-CREATE FUNCTION accel_postgres_get_execute_counts()
+CREATE FUNCTION accel_get_execute_counts()
 RETURNS text
-AS 'MODULE_PATHNAME', 'accel_postgres_get_execute_counts'
+AS 'MODULE_PATHNAME', 'accel_get_execute_counts'
 LANGUAGE C STRICT;
 
-CREATE FUNCTION accel_postgres_get_last_maintenance_action()
+CREATE FUNCTION accel_get_last_maintenance_action()
 RETURNS text
-AS 'MODULE_PATHNAME', 'accel_postgres_get_last_maintenance_action'
+AS 'MODULE_PATHNAME', 'accel_get_last_maintenance_action'
 LANGUAGE C STRICT;
 
 -- Per-query functions (accel_<bench>_qN, accel_<bench>_qN_aux, row types) are
 -- not listed here.  Each query carries its own CREATE FUNCTION text in
 -- accelerators/<bench>/q<N>/postgres/extension/functions.cpp, registered in
 -- the module; this function runs all of them.
-CREATE FUNCTION accel_postgres_register_queries()
+CREATE FUNCTION accel_register_queries()
 RETURNS integer
-AS 'MODULE_PATHNAME', 'accel_postgres_register_queries'
+AS 'MODULE_PATHNAME', 'accel_register_queries'
 LANGUAGE C STRICT;
 
-SELECT accel_postgres_register_queries();
+SELECT accel_register_queries();

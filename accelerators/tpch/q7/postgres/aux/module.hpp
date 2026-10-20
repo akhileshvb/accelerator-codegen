@@ -11,7 +11,7 @@
 #include "substrate/aux/core/aux_query_module.hpp"
 #include "prims/chunked_blob_map.hpp"
 #include "prims/any_key_cow_array.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 #include "tpch/q7/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "backends/duckdb/engine/chunk_source.hpp"
+#include "backends/duckdb/api/chunk_source.hpp"
 #include "backends/duckdb/api/kernel.hpp"
 #include "backends/duckdb/api/query_runtime.hpp"
 #include "duckdb/common/common.hpp"

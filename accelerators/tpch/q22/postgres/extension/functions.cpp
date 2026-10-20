@@ -22,7 +22,7 @@ Datum AcceleratorCodegenAuxTpchQ22(PG_FUNCTION_ARGS) {
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace {
 
-// Executed by accel_postgres_register_queries().
+// Executed by accel_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
 DROP FUNCTION IF EXISTS accel_tpch_q22_aux CASCADE;
 CREATE FUNCTION accel_tpch_q22_aux(text, text, text, text, text, text, text)

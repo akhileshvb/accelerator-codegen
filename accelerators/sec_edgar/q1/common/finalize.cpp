@@ -2,8 +2,6 @@
 
 #include <algorithm>
 
-#include "prims/pg_numeric.hpp"
-
 // Finalize payload: turns the maintained state into ordered result rows.
 namespace accelerator_codegen::aux_state::query {
 namespace q1 {
@@ -72,9 +70,8 @@ void SecEdgarQ1Module::EmitOutput(const SecEdgarQ1State &state, core::AuxRowSink
 	sink.End();
 }
 
-// PostgreSQL: AVG(integer) is numeric, sum / count at PostgreSQL's result scale
-// (pg_numeric::AvgOfScaledSum), emitted as numeric text.
-void SecEdgarQ1Module::EmitOutputNumeric(const SecEdgarQ1State &state, core::AuxRowSink &sink) {
+void SecEdgarQ1Module::EmitOutputNumeric(const SecEdgarQ1State &state, core::AuxRowSink &sink,
+                                         SecEdgarQ1Config::AvgTextFn avg_text) {
 	sink.Begin({{{"stmt", core::AuxType::String, false},
 	             {"rfile", core::AuxType::String, true},
 	             {"cnt", core::AuxType::Int64, false},
@@ -91,9 +88,8 @@ void SecEdgarQ1Module::EmitOutputNumeric(const SecEdgarQ1State &state, core::Aux
 		if (row.avg_is_null) {
 			out.values.push_back(core::AuxValue::Null(core::AuxType::String));
 		} else {
-			const auto avg = ::accelerator_codegen::pg_numeric::AvgOfScaledSum(
-			    static_cast<::accelerator_codegen::pg_numeric::Int128>(row.line_sum), 0, row.line_cnt);
-			out.values.push_back(core::AuxValue::Of(core::AuxType::String, ::accelerator_codegen::pg_numeric::ToText(avg)));
+			out.values.push_back(core::AuxValue::Of(
+			    core::AuxType::String, avg_text(static_cast<__int128>(row.line_sum), row.line_cnt)));
 		}
 		sink.WriteRow(out);
 	}

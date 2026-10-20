@@ -22,7 +22,7 @@ Datum AcceleratorCodegenAuxTpchQ17(PG_FUNCTION_ARGS) {
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace {
 
-// Executed by accel_postgres_register_queries().
+// Executed by accel_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
 DROP TYPE IF EXISTS accel_tpch_q17_row CASCADE;
 CREATE TYPE accel_tpch_q17_row AS (avg_yearly double precision);

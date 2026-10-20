@@ -25,8 +25,8 @@
 #include <vector>
 
 #include "eval/bench/driver/bench_cli.hpp"
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
-#include "eval/tests/mysql/mysql_tpch_write_probes.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_write_probes.hpp"
 
 namespace {
 
@@ -119,7 +119,7 @@ double TimeWriteOnce(const Tools &tools, const std::string &sql) {
 }
 
 std::string LastAction(const Tools &tools) {
-  auto r = QuerySQL(tools, "SELECT mysql_accel_get_last_maintenance_action()");
+  auto r = QuerySQL(tools, "SELECT accel_get_last_maintenance_action()");
   return r.first ? TrimLines(r.second) : "error";
 }
 
@@ -252,10 +252,10 @@ int main(int argc, char **argv) {
       throw std::runtime_error("aux build failed:\n" + build.output);
     if (const char *force = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
         force && *force) {
-      QuerySQL(tools, "SELECT mysql_accel_set_force_maintenance_action(" +
+      QuerySQL(tools, "SELECT accel_set_force_maintenance_action(" +
                           SqlLiteral(force) + ")");
     } else {
-      QuerySQL(tools, "SELECT mysql_accel_set_force_maintenance_action('')");
+      QuerySQL(tools, "SELECT accel_set_force_maintenance_action('')");
     }
     const double expected_qpw =
         std::max(1.0, 100.0 / std::max(1, write_pct));

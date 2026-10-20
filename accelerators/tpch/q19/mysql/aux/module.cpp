@@ -3,7 +3,7 @@
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "prims/pg_numeric.hpp"
+#include "backends/mysql/api/mysql_decimal.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -568,7 +568,7 @@ void TpchQ19Module::EmitResult(__int128 revenue_raw, int64_t matches,
   sink.WriteRow({{core::AuxValue::Of(
       core::AuxType::String,
       matches == 0 ? std::string("0.0000")
-                   : ::accelerator_codegen::pg_numeric::ToText(revenue_raw, 4))}});
+                   : ::accelerator_codegen::mysql_decimal::ToText(revenue_raw, 4))}});
   sink.End();
 }
 

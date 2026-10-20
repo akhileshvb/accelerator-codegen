@@ -700,7 +700,7 @@ def main():
             edges_phase(sa, sb, chk, g)
             print("edges phase ok (compares=%d)" % chk.compares, flush=True)
             random_phase(sa, sb, chk, g, args.steps)
-        counts = sa.run("SELECT accel_postgres_get_execute_counts()")
+        counts = sa.run("SELECT accel_get_execute_counts()")
         print("execute counts [A]: %s" % counts)
         print("PASS: %d compares (%d parameterised, %d non-empty), max result rows %d, "
               "%d at LIMIT, %d empty" %

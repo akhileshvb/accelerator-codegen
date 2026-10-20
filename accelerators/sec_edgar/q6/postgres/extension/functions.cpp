@@ -25,7 +25,7 @@ Datum AcceleratorCodegenAuxSecEdgarQ6(PG_FUNCTION_ARGS) {
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace {
 
-// Executed by accel_postgres_register_queries().
+// Executed by accel_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
 DROP TYPE IF EXISTS accel_sec_edgar_q6_row CASCADE;
 CREATE TYPE accel_sec_edgar_q6_row AS (
