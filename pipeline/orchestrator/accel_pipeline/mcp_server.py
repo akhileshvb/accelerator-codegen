@@ -542,10 +542,13 @@ def main(argv: list[str] | None = None) -> int:
     def primitive_publish(files: list[str], rationale: str) -> str:
         """Publish staged primitives to the shared accelerators/prims/ library.
 
-        files: repo-relative paths (e.g. accelerators/prims/foo.hpp,
-        accelerators/prims/README.md, accelerators/prims/tests/test_prims.cpp),
-        each staged as a full file under pipeline/prims_staging/<same path>. Additions only,
-        generic only; builds and runs test_prims before publishing. rationale: one line.
+        files: repo-relative paths (a header accelerators/prims/foo.hpp and
+        accelerators/prims/tests/test_prims.cpp), each staged as a full file under
+        pipeline/prims_staging/<same path>. The header comment declares PURPOSE, KEY SPACE,
+        COMPLEXITY, MEMORY, COW/THREADS and USE WHEN; the README catalogue row is generated
+        from it. Rejected when its name or purpose duplicates a published primitive (reuse or
+        extend that one). Additions only, generic only; builds and runs test_prims before
+        publishing. rationale: one line.
         """
         return _call("primitive_publish", files, rationale)
 

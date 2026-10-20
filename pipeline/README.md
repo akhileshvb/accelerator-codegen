@@ -105,10 +105,11 @@ and `accelerators/`; headers sit next to their sources.
 Accelerator state is versioned copy-on-write and built from the generic, workload-agnostic
 primitives in `accelerators/prims` (catalogue: its `README.md`).
 The library grows through the `primitive_publish` tool (aux_state agents), the C++ analogue of
-the Verus `prooflib_publish`: the agent stages the new header, the updated README and
+the Verus `prooflib_publish`: the agent stages the new header and
 `accelerators/prims/tests/test_prims.cpp` under `pipeline/prims_staging/<repo path>`; under an exclusive
-lock (`pipeline/.locks/prims.lock`) the tool checks additions-only, header comment / README row /
-tests, and the workload-vocabulary check (`scripts/check_backend_query_free.py`), writes into the
+lock (`pipeline/.locks/prims.lock`) the tool checks additions-only, header comment / tests /
+no duplicate of a published primitive, and the workload-vocabulary check (`scripts/check_backend_query_free.py`), appends the
+catalogue row to the README itself, writes into the
 primary tree with a backup, builds and runs `test_prims` (and every target that includes a
 changed existing header), restores on failure, and appends `pipeline/prims_provenance.jsonl`.
 Direct writes to those paths are denied (`write_ownership.py`); `refresh_prims` mirrors the
