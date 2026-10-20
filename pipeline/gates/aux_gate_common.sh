@@ -8,7 +8,7 @@ load_aux_gate_context() {
 	local gates_dir
 	gates_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 	CTX="$(python3 "${gates_dir}/read_gate_context.py" "${root}" "${query}")"
-	ART_NS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifact_namespace'])" "${CTX}")"
+	GATE_ART="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifacts_dir'])" "${CTX}")"
 	BENCHMARK_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['benchmark_name'])" "${CTX}")"
 	ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('engine_name') or 'duckdb')" "${CTX}")"
 	DIFF_BINARY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_binary') or 'test_tpch_shared_differential')" "${CTX}")"
@@ -30,9 +30,8 @@ load_aux_gate_context() {
 	AUX_BENCH_SUITES="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_bench_suites','lineitem_only'))" "${CTX}")"
 	AUX_BENCH_WORK_DIR_SUFFIX="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_bench_work_dir_suffix',''))" "${CTX}")"
 	AUX_WRITE_FREQUENCIES_CTX="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_write_frequencies',''))" "${CTX}")"
-	GATE_OUT="${root}/pipeline/artifacts/${ART_NS}/q${query}/gates"
-	GATE_ART="${root}/pipeline/artifacts/${ART_NS}/q${query}"
-	export CTX ART_NS BENCHMARK_NAME ENGINE_NAME DIFF_BINARY DIFF_SOURCE
+	GATE_OUT="${GATE_ART}/gates"
+	export CTX BENCHMARK_NAME ENGINE_NAME DIFF_BINARY DIFF_SOURCE
 	export SMOKE_READY AGENT_BUILDS_HOST HOST_HINT MULTI_CONN_CTEST CROSS_ACCEL_CTEST WORK_DB_SUFFIX
 	export AUX_TEST_TARGET AUX_BENCH_TARGET AUX_CALIBRATE_TARGET
 	export AUX_CTEST_SMOKE_REGEX BENCH_TARGET DATASET_DB DB_ENV_VAR COST_MODEL_CONFIG

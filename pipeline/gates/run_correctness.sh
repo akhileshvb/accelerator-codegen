@@ -10,7 +10,7 @@ if [[ -z "${QUERY}" ]]; then
 fi
 
 CTX="$(python3 "$(dirname "${BASH_SOURCE[0]}")/read_gate_context.py" "${ROOT}" "${QUERY}")"
-ART_NS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifact_namespace'])" "${CTX}")"
+ART_DIR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifacts_dir'])" "${CTX}")"
 CTEST_REGEX="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['ctest_smoke_regex'])" "${CTX}")"
 TEST_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['test_target'])" "${CTX}")"
 DB="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['dataset_db'])" "${CTX}")"
@@ -21,7 +21,7 @@ DIFF_SOURCE="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engin
 AGENT_BUILDS_HOST="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print('1' if h.get('agent_builds_query_host') else '0')" "${CTX}")"
 HOST_HINT="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('query_host_ready_hint') or '')" "${CTX}")"
 
-OUT="${ROOT}/pipeline/artifacts/${ART_NS}/q${QUERY}/gates"
+OUT="${ART_DIR}/gates"
 mkdir -p "${OUT}"
 
 if [[ ! -d "${BUILD}" ]]; then

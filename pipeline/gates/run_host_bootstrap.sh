@@ -14,11 +14,11 @@ ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('e
 DIFF_BINARY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_binary') or '')" "${CTX}")"
 DIFF_SOURCE="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_source') or '')" "${CTX}")"
 REGISTER_PATH="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('register_path') or '')" "${CTX}")"
-ART_NS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('artifact_namespace') or 'tpch')" "${CTX}")"
+ART_DIR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifacts_dir'])" "${CTX}")"
 
 OUT="${ROOT}/pipeline/artifacts/engines/${ENGINE_NAME}/host_bootstrap"
 mkdir -p "${OUT}"
-QOUT="${ROOT}/pipeline/artifacts/${ART_NS}/q${QUERY}/gates"
+QOUT="${ART_DIR}/gates"
 mkdir -p "${QOUT}"
 
 write_result() {

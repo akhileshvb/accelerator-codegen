@@ -10,14 +10,14 @@ if [[ -z "${QUERY}" ]]; then
 fi
 
 CTX="$(python3 "$(dirname "${BASH_SOURCE[0]}")/read_gate_context.py" "${ROOT}" "${QUERY}")"
-ART_NS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifact_namespace'])" "${CTX}")"
+ART_DIR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifacts_dir'])" "${CTX}")"
 DB="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['dataset_db'])" "${CTX}")"
 DB_ENV="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['db_env_var'])" "${CTX}")"
 BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['bench_target'])" "${CTX}")"
 ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('engine_name') or 'duckdb')" "${CTX}")"
 WORKLOAD_KIND="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('workload_kind') or '')" "${CTX}")"
 
-OUT="${ROOT}/pipeline/artifacts/${ART_NS}/q${QUERY}/gates"
+OUT="${ART_DIR}/gates"
 mkdir -p "${OUT}"
 BIN="${BUILD}/${BENCH_TARGET}"
 

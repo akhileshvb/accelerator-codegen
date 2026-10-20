@@ -9,7 +9,7 @@ if [[ -z "${QUERY}" ]]; then
 fi
 
 CTX="$(python3 "$(dirname "${BASH_SOURCE[0]}")/read_gate_context.py" "${ROOT}" "${QUERY}")"
-ART_NS="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifact_namespace'])" "${CTX}")"
+ART_DIR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifacts_dir'])" "${CTX}")"
 CREATE_FN="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['create_fn'])" "${CTX}")"
 FUNCTION_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['function_name'])" "${CTX}")"
 SOURCE_SUBDIR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['source_subdir'])" "${CTX}")"
@@ -18,14 +18,14 @@ BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['benc
 BENCHMARK_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['benchmark_name'])" "${CTX}")"
 ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['engine_name'])" "${CTX}")"
 
-python3 - "${ROOT}" "${QUERY}" "${ART_NS}" "${CREATE_FN}" "${FUNCTION_NAME}" "${SOURCE_SUBDIR}" "${TEST_TARGET}" "${BENCH_TARGET}" "${BENCHMARK_NAME}" "${ENGINE_NAME}" <<'PY'
+python3 - "${ROOT}" "${QUERY}" "${ART_DIR}" "${CREATE_FN}" "${FUNCTION_NAME}" "${SOURCE_SUBDIR}" "${TEST_TARGET}" "${BENCH_TARGET}" "${BENCHMARK_NAME}" "${ENGINE_NAME}" <<'PY'
 import json
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
 query = sys.argv[2]
-art_ns = sys.argv[3]
+art_dir = pathlib.Path(sys.argv[3])
 create_fn = sys.argv[4]
 function_name = sys.argv[5]
 source_subdir = sys.argv[6]
@@ -35,7 +35,7 @@ benchmark_name = sys.argv[9]
 engine_name = sys.argv[10]
 
 pipeline = root / "pipeline"
-out = pipeline / "artifacts" / art_ns / f"q{query}" / engine_name / "scaffold"
+out = art_dir / "scaffold"
 out.mkdir(parents=True, exist_ok=True)
 
 reg_tpl = (pipeline / "templates/scaffold/register.cpp.tpl").read_text()
