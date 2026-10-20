@@ -75,6 +75,7 @@ def run_agent_stage(
     )
     save_rendered_prompt(
         pipeline_config,
+        workload,
         query,
         stage,
         prompt,

@@ -334,12 +334,8 @@ def build_prompt_context(
             for p in (prompt_header_path, prompt_kernel_path, prompt_package_path)
         )
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    if is_engine:
-        artifacts_rel = f"pipeline/artifacts/engines/{engine_name or 'engine'}"
-        analysis_artifact_rel = f"{artifacts_rel}/backend_analysis.json"
-    else:
-        artifacts_rel = f"pipeline/artifacts/{workload.get('artifact_namespace', benchmark)}/q{query}"
-        analysis_artifact_rel = f"{artifacts_rel}/{analysis_path.name}"
+    artifacts_rel = str(art.relative_to(repo))
+    analysis_artifact_rel = f"{artifacts_rel}/{'backend_analysis.json' if is_engine else analysis_path.name}"
 
     schema_ref = workload.get("schema_reference_path", "")
     if schema_ref and Path(schema_ref).is_file():
@@ -584,7 +580,7 @@ def build_prompt_context(
         "accelerator_id": str(workload.get("accelerator_id", "")),
         "base_function_name": str(workload.get("base_function_name", "")),
         "aux_function_name": str(workload.get("aux_function_name", "")),
-        "cost_model_config": str(workload.get("cost_model_config", "")),
+        "cost_model_config": paths.get("cost_model_config", ""),
         "shared_docs_reference": shared_docs,
         "agent_boundary": (
             "See `pipeline/prompts/aux_state/shared/agent_boundary.md` (read it if needed)."
@@ -663,7 +659,9 @@ def build_prompt_context(
         ),
         "analysis_revision_request": "",
         "implementation_bootstrap": (
-            build_implementation_bootstrap(repo, workload, query, analysis)
+            build_implementation_bootstrap(
+                repo, workload, query, analysis, cost_model_config=paths.get("cost_model_config", "")
+            )
             if is_aux and stage == "implementation" and analysis
             else ""
         ),

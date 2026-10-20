@@ -49,7 +49,7 @@ def _build_stub_values(
     bench_camel = "".join(part.title() for part in benchmark.split("_"))
     stem_prefix = "sec_edgar_" if benchmark == "sec_edgar" else ""
     cost_model_json = str(
-        paths.get("cost_model_config")
+        paths.get("cost_model_default")
         or f"accelerators/{benchmark}/q{query}/config/{stem_prefix}q{query}_aux_cost_model.json"
     )
     cost_model_dir, _, cost_model_file = cost_model_json.rpartition("/")

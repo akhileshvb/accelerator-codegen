@@ -4,7 +4,7 @@
 
 **Shared substrate is the aux module contract plus the runtime skeleton:** `AuxQueryModule`, `AuxRow`, maintenance, calibration, and `substrate/aux/runtime/` (commit ordering, versioned state, background builds, reads at an epoch, thread budget). Aux modules speak those contracts on every engine; base kernels do not.
 
-**`engine_name` is required** (CLI / `ACCEL_WORKLOAD_ENGINE_NAME` / workload YAML). There is no silent default to `duckdb` or `postgres`. Stage prompts inject an **Engine host** block for the selected engine only.
+**The run's `engine_name` is required** (`--engine` / the pack's `engines:`; implied only when the workload lists a single engine). There is no silent default to `duckdb` or `postgres`, and each query x engine is an independent run with its own analysis. Stage prompts inject an **Engine host** block for the selected engine only.
 
 DuckDB’s `DataChunk`-shaped helpers are **host-private** under `backends/duckdb/engine/native_scan.hpp` (and duckdb-targeted kernels). Other engines' `engine_backend` runs define their own typed scans under `backends/{engine}/engine/` (slot S8) — never a cross-engine chunk IR.
 

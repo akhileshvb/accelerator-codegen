@@ -6,7 +6,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
+from accel_pipeline.config import (
+    ModelConfig,
+    PipelineConfig,
+    load_run_workload,
+    resolve_workload_paths,
+    workload_supported_engines,
+)
 from accel_pipeline.paths import analysis_artifact_path, load_query_analysis
 
 
@@ -172,6 +178,15 @@ def ensure_base_accelerator_prerequisite(
 
     benchmark = str(workload.get("benchmark_name", "tpch"))
     prereq_name = workload.get("prerequisite_workload") or f"{benchmark}_q{query}"
+    engine = pipeline_config.engine_name
+    if engine not in workload_supported_engines(str(prereq_name), pipeline_config.repo_root):
+        print(
+            f"[pipeline] base workload {prereq_name!r} has no {engine} variant; "
+            "skipping the base prerequisite",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
     prereq_workload = load_run_workload(pipeline_config, str(prereq_name))
     repo = pipeline_config.repo_root
 

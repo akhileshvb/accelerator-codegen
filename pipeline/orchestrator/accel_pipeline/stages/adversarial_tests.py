@@ -81,9 +81,7 @@ def run(
     if not dry_run and not analysis_path.is_file():
         raise RuntimeError(f"{STAGE} requires analysis artifact: {analysis_path}")
 
-    out = scenarios_path(
-        pipeline_config.repo_root, query, workload_name=workload_name
-    )
+    out = scenarios_path(pipeline_config.repo_root, query, workload=workload)
     result = run_agent_stage(
         stage=STAGE,
         prompt_file=PROMPT_FILE,

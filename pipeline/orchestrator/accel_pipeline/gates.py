@@ -115,30 +115,11 @@ def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
     raise GateFailure(gate_failure_message(result))
 
 
-def _gate_output_json(
-    pipeline_config: PipelineConfig,
-    gate_name: str,
-    query: int,
-    workload: dict[str, Any] | None,
-) -> Path:
-    if workload:
-        art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-        return gates_dir_for_query(art) / f"{gate_name}.json"
-    return (
-        pipeline_config.repo_root
-        / "pipeline"
-        / "artifacts"
-        / f"q{query}"
-        / "gates"
-        / f"{gate_name}.json"
-    )
-
-
 def run_gate(
     pipeline_config: PipelineConfig,
     gate_name: str,
     query: int,
-    workload: dict | None = None,
+    workload: dict,
     *,
     raise_on_failure: bool = False,
     allow_skip: bool | None = None,
@@ -156,7 +137,8 @@ def run_gate(
 
     import os
 
-    out_json = _gate_output_json(pipeline_config, gate_name, query, workload)
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    out_json = gates_dir_for_query(art) / f"{gate_name}.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
 
     gate_env = os.environ.copy()
@@ -173,20 +155,19 @@ def run_gate(
     # _gate_context.json alone is not enough; scripts read ACCEL_GATE_*.
     gate_env["ACCEL_GATE_OUT"] = str(out_json)
     gate_env["ACCEL_GATE_NAME"] = gate_name
-    if workload:
-        ctx_path = write_gate_context(pipeline_config, workload, query)
-        gate_env["ACCEL_GATE_CONTEXT"] = str(ctx_path)
-        gate_env["ACCEL_AUX_BENCHMARK"] = str(workload.get("benchmark_name") or "tpch")
-        gate_env["ACCEL_PIPELINE_BENCHMARK"] = gate_env["ACCEL_AUX_BENCHMARK"]
-        engine_name = str(workload.get("engine_name") or "").strip().lower()
-        if engine_name:
-            gate_env["ACCEL_ENGINE_NAME"] = engine_name
-        from accel_pipeline.host_runtime import inject_host_runtime_into_gate_env
+    ctx_path = write_gate_context(pipeline_config, workload, query)
+    gate_env["ACCEL_GATE_CONTEXT"] = str(ctx_path)
+    gate_env["ACCEL_AUX_BENCHMARK"] = str(workload.get("benchmark_name") or "tpch")
+    gate_env["ACCEL_PIPELINE_BENCHMARK"] = gate_env["ACCEL_AUX_BENCHMARK"]
+    engine_name = str(workload.get("engine_name") or "").strip().lower()
+    if engine_name:
+        gate_env["ACCEL_ENGINE_NAME"] = engine_name
+    from accel_pipeline.host_runtime import inject_host_runtime_into_gate_env
 
-        inject_host_runtime_into_gate_env(gate_env, workload)
-        kind = str(workload.get("workload_kind") or "")
-        if kind:
-            gate_env["ACCEL_WORKLOAD_KIND"] = kind
+    inject_host_runtime_into_gate_env(gate_env, workload)
+    kind = str(workload.get("workload_kind") or "")
+    if kind:
+        gate_env["ACCEL_WORKLOAD_KIND"] = kind
 
     # Codex may never create the worker build dir; configure it before gates.
     from accel_pipeline.worker_isolation import ensure_worker_build_dir

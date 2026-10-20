@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import sys
 from pathlib import Path
 
 from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
+from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.env_loader import load_repo_dotenv
 from accel_pipeline.paths import find_repo_root
 from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
@@ -256,6 +258,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("pipeline complete", file=sys.stderr)
         return 0
+
+    # Worker worktrees are private, so the query's other engines can be hidden from the
+    # agent (a shared tree would hide them from the sibling runs too).
+    if repo_root != primary_root and not args.dry_run:
+        atexit.register(restore_quarantine, apply_foreign_engine_quarantine(repo_root, workload))
 
     # Verus mode: same front end, then the Verus pipeline's own stages.  It
     # runs on DuckDB (in-process; no host bootstrap) and skips the C++

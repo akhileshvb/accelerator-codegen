@@ -194,6 +194,15 @@ def resolve_workload_paths(
     test_prefix = str(workload.get("test_target_prefix", f"test_{benchmark}_q"))
     bench_prefix = str(workload.get("bench_target_prefix", f"benchmark_{benchmark}_q"))
     smoke_suffix = str(workload.get("ctest_smoke_suffix", "_smoke_test"))
+    # Engines with a shared, query-parameterised bench/calibrate harness (not per-query targets).
+    shared_harness = (
+        bool(engine)
+        and workload.get("workload_kind") != "engine_backend"
+        and not (workload.get("engine_host") or engine_host_conventions(engine))["query_scoped_harness"]
+    )
+    bench_target_default = (
+        f"benchmark_{engine}_{benchmark}_q{q}" if shared_harness else f"{bench_prefix}{q}"
+    )
 
     paths = {
         "source_subdir": source_subdir,
@@ -205,7 +214,7 @@ def resolve_workload_paths(
             )
         ),
         "test_target": str(workload.get("test_target", f"{test_prefix}{q}")),
-        "bench_target": str(workload.get("bench_target", f"{bench_prefix}{q}")),
+        "bench_target": str(workload.get("bench_target", bench_target_default)),
         "ctest_smoke_name": str(workload.get("ctest_smoke_name", f"{benchmark}_q{q}{smoke_suffix}")),
         "ctest_smoke_regex": str(
             workload.get("ctest_smoke_regex", f"^{benchmark}_q{q}{smoke_suffix}$")
@@ -232,18 +241,31 @@ def resolve_workload_paths(
     if workload.get("workload_kind") == "aux_state":
         aux_fn = str(workload.get("aux_function_name", f"{fn_prefix}{q}_aux"))
         aux_test = str(workload.get("aux_test_target", f"{test_prefix}{q}_aux"))
-        aux_bench = str(workload.get("aux_bench_target", f"{bench_prefix}{q}_aux"))
+        aux_bench = str(
+            workload.get(
+                "aux_bench_target",
+                f"benchmark_{engine}_{benchmark}_aux" if shared_harness else f"{bench_prefix}{q}_aux",
+            )
+        )
         aux_hybrid = str(workload.get("aux_hybrid_bench_target", f"benchmark_{benchmark}_q{q}_hybrid_eval"))
         calibrate = str(
-            workload.get("aux_calibrate_target", f"calibrate_{benchmark}_q{q}_aux_cost_model")
+            workload.get(
+                "aux_calibrate_target",
+                f"calibrate_{engine}_{benchmark}_aux_cost_model"
+                if shared_harness
+                else f"calibrate_{benchmark}_q{q}_aux_cost_model",
+            )
         )
         aux_state_subdir = f"{qdir}/{eng_seg}aux"
         aux_finalize = "finalize.cpp"
         if benchmark == "sec_edgar":
-            default_cost_model = f"{qdir}/config/sec_edgar_q{q}_aux_cost_model.json"
+            cost_model_stem = f"sec_edgar_q{q}_aux_cost_model"
         else:
-            default_cost_model = f"{qdir}/config/q{q}_aux_cost_model.json"
-        cost_model = str(workload.get("cost_model_config", default_cost_model))
+            cost_model_stem = f"q{q}_aux_cost_model"
+        # The query-wide default model (cost_model.hpp's location); an engine with its
+        # own calibration keeps it beside the default as <stem>_<engine>.json.
+        default_cost_model = f"{qdir}/config/{cost_model_stem}.json"
+        engine_cost_model = f"{qdir}/config/{cost_model_stem}_{engine}.json"
         bench_sweep = workload.get("aux_bench_sweep", {})
         if not isinstance(bench_sweep, dict):
             bench_sweep = {}
@@ -263,7 +285,8 @@ def resolve_workload_paths(
                 ),
                 "aux_state_subdir": aux_state_subdir,
                 "aux_finalize_path": f"{aux_state_subdir}/{aux_finalize}",
-                "cost_model_config": cost_model,
+                "cost_model_default": default_cost_model,
+                "cost_model_config": engine_cost_model if shared_harness else default_cost_model,
                 "aux_bench_work_dir_suffix": str(
                     workload.get("aux_bench_work_dir_suffix", bench_suffix)
                 ),
@@ -544,6 +567,7 @@ def engine_host_conventions(engine_name: str, bench: str = "<bench>", query: Any
         "registry": reg["registry"],
         "sql_entrypoint_convention": f"accel_* table function / SQL UDF on host {engine}",
         "dataset_env": "ACCEL_TPCH_DB",
+        "query_scoped_harness": True,
         "differential_binary": "test_tpch_shared_differential",
         "differential_command": "./build-release/test_tpch_shared_differential \"$ACCEL_TPCH_DB\" <query>",
         "differential_source": "eval/tests/test_tpch_shared_differential.cpp",
@@ -565,6 +589,7 @@ def engine_host_conventions(engine_name: str, bench: str = "<bench>", query: Any
         return host
 
     # Any non-duckdb engine: agent-buildable query host on the existing backend surface.
+    host["query_scoped_harness"] = False
     host["differential_binary"] = f"test_{engine}_tpch_differential"
     host["differential_source"] = f"eval/tests/test_{engine}_tpch_differential.cpp"
     host["differential_command"] = (
@@ -598,9 +623,11 @@ def engine_host_conventions(engine_name: str, bench: str = "<bench>", query: Any
 
 
 def workload_engines(workload: dict[str, Any]) -> list[str]:
-    """Engines a workload supports: its `engines:` list, else every engine with a backend."""
+    """Engines a workload supports: its `engines:` list."""
     declared = workload.get("engines")
-    return [sanitize_engine_name(e) for e in (declared or QUERY_REGISTRATION)]
+    if not declared:
+        raise ValueError(f"workload {workload.get('query_id', '?')!r} declares no `engines:`")
+    return [sanitize_engine_name(e) for e in declared]
 
 
 def select_engine(workload: dict[str, Any], requested: str, name: str) -> str:
@@ -792,7 +819,7 @@ def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
                 merged_fair.update(dict(aux_defaults["fairness"] or {}))
                 # Prefer aux_state search paths when provided.
                 if aux_defaults["fairness"].get("kernel_search_paths"):
-                    merged_fair["kernel_search_paths"] = list(
+                    merged_fair["kernel_search_paths"] = copy.deepcopy(
                         aux_defaults["fairness"]["kernel_search_paths"]
                     )
                 if "cardinality_constants" not in merged_fair and workload.get("fairness"):

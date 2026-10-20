@@ -141,7 +141,7 @@ class OptimizationWorker:
             _WORKER_STAGE,
             optimization_iter=1,
         )
-        save_rendered_prompt(pipeline_config, query, _WORKER_STAGE, prompt, optimization_iter=1)
+        save_rendered_prompt(pipeline_config, workload, query, _WORKER_STAGE, prompt, optimization_iter=1)
         instructions = with_codex_tooling(pipeline_config, prompt)
 
         backend = create_agent_backend(

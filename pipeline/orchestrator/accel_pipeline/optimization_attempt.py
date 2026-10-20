@@ -16,7 +16,7 @@ from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
     apply_workload_overrides,
-    load_workload,
+    load_run_workload,
     resolve_optimization_edit_paths,
     resolve_workload_paths,
 )
@@ -356,7 +356,7 @@ def _run_agent_substage(
         optimization_iter=optimization_iter,
         extra_context=extra_context,
     )
-    save_rendered_prompt(pipeline_config, query, stage, prompt, optimization_iter=optimization_iter)
+    save_rendered_prompt(pipeline_config, workload, query, stage, prompt, optimization_iter=optimization_iter)
 
     model_id = make_model_id(stage, pipeline_config, model_config, model_overrides)
     agent_model = resolve_agent_model(stage, pipeline_config, model_config, model_overrides)

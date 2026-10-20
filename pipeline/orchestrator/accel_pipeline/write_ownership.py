@@ -57,14 +57,11 @@ def is_optimization_stage(stage: str | None) -> bool:
     return (stage or "") in _OPTIMIZATION_STAGES
 
 
-def owned_path_globs(query: int, *, benchmark: str = "tpch") -> list[str]:
-    """What one query's run owns: its query directory (one glob) + its artifacts."""
+def owned_path_globs(query: int, *, benchmark: str = "tpch", engine: str = "") -> list[str]:
+    """What one query x engine run owns: the query directory (one glob) + its artifact tree."""
     q = int(query)
-    return [
-        layout.query_glob(benchmark, q),
-        f"pipeline/artifacts/{benchmark}/q{q}/**",
-        f"pipeline/artifacts/**/q{q}/**",
-    ]
+    artifacts = f"pipeline/artifacts/{benchmark}/q{q}" + (f"/{engine}" if engine else "")
+    return [layout.query_glob(benchmark, q), f"{artifacts}/**"]
 
 
 def _rel(repo_root: Path, path: Path | str) -> str | None:
@@ -90,11 +87,12 @@ def is_owned_path(
     *,
     query: int,
     benchmark: str = "tpch",
+    engine: str = "",
 ) -> bool:
     rel = _rel(repo_root, path)
     if rel is None:
         return False
-    for pat in owned_path_globs(query, benchmark=benchmark):
+    for pat in owned_path_globs(query, benchmark=benchmark, engine=engine):
         if fnmatch.fnmatch(rel, pat):
             return True
     # Also allow generic write_paths that are not query-scoped (handled by caller).
@@ -218,7 +216,7 @@ def write_allowed(
     if is_staging_path(rel):
         return True, "prims-staging"
 
-    if is_owned_path(repo_root, path, query=query, benchmark=benchmark):
+    if is_owned_path(repo_root, path, query=query, benchmark=benchmark, engine=engine):
         return True, "owned"
 
     globs = shared_path_globs(pipeline_config)

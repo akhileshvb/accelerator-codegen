@@ -29,6 +29,7 @@ from accel_pipeline.worker_isolation import (
 class PackQuery:
     workload: str
     query: int
+    engine: str = ""  # "" when the workload supports a single engine
     stage: str = "all"
     resume: bool = True
     mode: str = ""  # "" (workload default / cpp) or "verus"
@@ -58,37 +59,31 @@ def load_pack(name_or_path: str, repo_root: Path | None = None) -> dict[str, Any
 
 
 def parse_pack_queries(pack: dict[str, Any]) -> list[PackQuery]:
+    """One entry per query x engine; an entry's `engines:` overrides the pack's."""
     items = pack.get("queries") or []
     out: list[PackQuery] = []
     default_stage = str(pack.get("stage") or "all")
     default_resume = bool(pack.get("resume", True))
     default_mode = str(pack.get("mode") or "")
+    default_engines = list(pack.get("engines") or [])
+    default_template = str(pack.get("workload_template", "tpch_q{q}_aux"))
     for item in items:
         if isinstance(item, (int, str)) and str(item).isdigit():
-            q = int(item)
-            out.append(
-                PackQuery(
-                    workload=str(pack.get("workload_template", "tpch_q{q}_aux")).format(q=q),
-                    query=q,
-                    stage=default_stage,
-                    resume=default_resume,
-                    mode=default_mode,
-                )
-            )
-            continue
+            item = {"query": int(item)}
         if not isinstance(item, dict):
             raise ValueError(f"invalid pack query entry: {item!r}")
         q = int(item.get("query") or item.get("query_number"))
-        wl = str(item.get("workload") or pack.get("workload_template", "tpch_q{q}_aux")).format(q=q)
-        out.append(
-            PackQuery(
-                workload=wl,
-                query=q,
-                stage=str(item.get("stage") or default_stage),
-                resume=bool(item.get("resume", default_resume)),
-                mode=str(item.get("mode") or default_mode),
+        for engine in item.get("engines") or default_engines or [""]:
+            out.append(
+                PackQuery(
+                    workload=str(item.get("workload") or default_template).format(q=q),
+                    query=q,
+                    engine=str(engine),
+                    stage=str(item.get("stage") or default_stage),
+                    resume=bool(item.get("resume", default_resume)),
+                    mode=str(item.get("mode") or default_mode),
+                )
             )
-        )
     return out
 
 
@@ -109,11 +104,10 @@ def run_pack_query(
     extra_args: list[str] | None = None,
     isolation_mode: str = "worktree",
     pack_queries: list[int] | None = None,
-    pack_engine_name: str | None = None,
 ) -> dict[str, Any]:
     from accel_pipeline.worker_worktree import ensure_worker_worktree
 
-    worker_id = worker_id_for_query(entry.query, entry.workload)
+    worker_id = worker_id_for_query(entry.query, entry.workload, entry.engine)
     primary = Path(repo_root).resolve()
     # Build + Codex home always on primary (shared caches / sidecars).
     build_dir = default_build_dir_for_worker(primary, worker_id)
@@ -139,8 +133,6 @@ def run_pack_query(
     env["ACCEL_PIPELINE_REPO_ROOT"] = str(worker_repo)
     env["ACCEL_PIPELINE_PRIMARY_REPO"] = str(primary)
     env["ACCEL_PIPELINE_ISOLATION_MODE"] = isolation_mode
-    if pack_engine_name:
-        env["ACCEL_WORKLOAD_ENGINE_NAME"] = str(pack_engine_name)
     env.setdefault(
         "ACCEL_DUCKDB_ROOT",
         str(primary.parent / "accelerator-codegen-duckdb"),
@@ -160,6 +152,8 @@ def run_pack_query(
         "--stage",
         entry.stage,
     ]
+    if entry.engine:
+        cmd.extend(["--engine", entry.engine])
     if entry.resume:
         cmd.append("--resume")
     if entry.mode:
@@ -178,6 +172,7 @@ def run_pack_query(
     started = time.time()
     print(
         f"[pack] start worker={worker_id} query={entry.query} workload={entry.workload} "
+        f"engine={entry.engine or '-'} "
         f"build_dir={build_dir.name} repo={worker_repo.name if worker_repo != primary else 'primary'} "
         f"isolation={isolation_mode} stage={entry.stage}",
         file=sys.stderr,
@@ -204,6 +199,7 @@ def run_pack_query(
         "worker_id": worker_id,
         "query": entry.query,
         "workload": entry.workload,
+        "engine": entry.engine,
         "stage": entry.stage,
         "exit_code": proc.returncode,
         "duration_sec": round(duration, 2),
@@ -266,11 +262,6 @@ def run_pack(
         Path(models_cfg_path) if models_cfg_path else None,
         repo_root=repo_root,
     )
-    pack_engine = str(pack.get("engine_name") or "").strip() or None
-    if pack_engine:
-        # So engines_needing_bootstrap sees the pack override via env during load_workload.
-        os.environ["ACCEL_WORKLOAD_ENGINE_NAME"] = pack_engine
-
     hb_results = ensure_host_bootstrap_for_pack(
         pack,
         repo_root=repo_root,
@@ -296,7 +287,7 @@ def run_pack(
     # Legacy alias: shared_tree_separate_builds → upgrade to worktree isolation.
     if isolation_mode in {"shared_tree_separate_builds", "shared_tree"}:
         isolation_mode = "worktree"
-    pack_query_ids = [e.query for e in queries]
+    pack_query_ids = sorted({e.query for e in queries})
     print(
         f"[pack] isolation_mode={isolation_mode} workers={len(queries)} "
         f"queries={pack_query_ids}",
@@ -316,14 +307,13 @@ def run_pack(
                 extra_args=extra_args,
                 isolation_mode=isolation_mode,
                 pack_queries=pack_query_ids,
-                pack_engine_name=pack_engine,
             ): entry
             for entry in queries
         }
         for fut in as_completed(futures):
             results.append(fut.result())
 
-    results.sort(key=lambda r: (r["query"], r["workload"]))
+    results.sort(key=lambda r: (r["query"], r["workload"], r["engine"]))
     summary = {
         "pack_id": pack.get("pack_id") or pack.get("name") or "pack",
         "pack_path": pack.get("_pack_path"),

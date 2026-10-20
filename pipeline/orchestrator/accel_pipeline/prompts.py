@@ -5,6 +5,7 @@ from pathlib import Path
 
 from accel_pipeline.context import build_prompt_context
 from accel_pipeline.config import PipelineConfig
+from accel_pipeline.paths import query_artifacts_dir
 
 
 def resolve_prompt_path(pipeline_config: PipelineConfig, workload: dict, prompt_name: str) -> Path:
@@ -59,12 +60,13 @@ def with_codex_tooling(pipeline_config: PipelineConfig, prompt: str) -> str:
 
 def save_rendered_prompt(
     pipeline_config: PipelineConfig,
+    workload: dict,
     query: int,
     stage: str,
     content: str,
     optimization_iter: int = 0,
 ) -> Path:
-    prompts_dir = pipeline_config.pipeline_root / "artifacts" / f"q{query}" / "prompts"
+    prompts_dir = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload) / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
     suffix = f"_{optimization_iter}" if stage.startswith("optimization") else ""
     out = prompts_dir / f"{stage}{suffix}.md"

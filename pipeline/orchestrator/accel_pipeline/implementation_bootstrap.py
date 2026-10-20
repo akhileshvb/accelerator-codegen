@@ -25,6 +25,8 @@ def build_implementation_bootstrap(
     workload: dict[str, Any],
     query: int,
     analysis: dict[str, Any],
+    *,
+    cost_model_config: str,
 ) -> str:
     benchmark = str(workload.get("benchmark_name", "tpch"))
     engine = str(workload.get("engine_name") or "duckdb")
@@ -73,7 +75,7 @@ def build_implementation_bootstrap(
         f"{qdir}/tests/{q}_manifest.hpp",
         "eval/tests/test_tpch_module.cpp",
         f"accelerators/{benchmark}/q14/bench/benchmark_q14.cpp",
-        str(workload.get("cost_model_config") or f"{qdir}/config/{q}_aux_cost_model.json"),
+        cost_model_config,
         f"accelerators/{benchmark}/q14/cost_model.hpp",
         f"accelerators/{benchmark}/q14/layout.hpp",
         f"accelerators/{benchmark}/q14/duckdb/aux/register.cpp",

@@ -30,27 +30,29 @@ pip install -e ".[dev]"
 
 ## Run (full pipeline)
 
+A run is one query on one engine: the engine is a run parameter, and each query x engine has an independent analysis and its own artifact tree, `artifacts/<bench>/q<N>/<engine>/`. A workload lists the engines it supports (`engines:`); `--engine` picks one (optional only when the workload lists a single engine).
+
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine postgres
 ```
 
 ## Run a single stage
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --stage implementation
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine postgres --stage implementation
 ```
 
 ## Resume
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --resume
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine postgres --resume
 ```
 
 ## Dry run (orchestration only, no LLM calls)
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --dry-run
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --engine postgres --dry-run
 ```
 
 ## Layout
@@ -63,7 +65,7 @@ substrate is read-only to it.
 - `prompts/` — stage prompts and shared constraints
 - `gates/` — deterministic gate scripts (ctest, benchmarks, fairness); the backend slot gates (`run_slot_gates.sh`, per-engine adapters) in `gates/README_runtime_gates.md`
 - `templates/scaffold/` — per-query stubs (kernel, package, the query's `register.cpp`) and CMake snippet
-- `artifacts/` — per-query pipeline state and reports
+- `artifacts/` — per-run pipeline state and reports (`<bench>/q<N>/<engine>/`)
 - `orchestrator/` — Python package (`accel_pipeline`)
 - `verus/` — shared Verus state: the playbook (`playbook/`) and provenance logs
 - `codex/` — committed Codex config template and MCP launcher (see Codex exec)
@@ -139,9 +141,12 @@ accel-pipeline-pack --pack tpch_aux_parallel
 # or: python -m accel_pipeline.run_pack --pack tpch_aux_parallel ...
 ```
 
+A pack expands to one run per query x engine: `engines:` at the top of the pack, or on a single query entry, lists the engines (a workload with a single engine needs none). Each run gets its own worker (build dir, `CODEX_HOME`, worktree). In a worktree the query's other engines (their `accelerators/<bench>/q<N>/<engine>` and artifact trees) are moved out of the agent's view for the run.
+
 Pack YAML examples:
 - [`config/packs/tpch_aux_parallel.yaml`](config/packs/tpch_aux_parallel.yaml) — Q2/Q5/Q16
 - [`config/packs/tpch_aux_remaining.yaml`](config/packs/tpch_aux_remaining.yaml) — Q4/Q7/Q8/Q13/Q15/Q19/Q20/Q22
+- [`config/packs/tpch_pg_aux_all22.yaml`](config/packs/tpch_pg_aux_all22.yaml) — all 22 queries; set `engines:` for more than one engine
 
 Shared path globs: `shared_paths` in [`config/default.yaml`](config/default.yaml). Logs/summary under `pipeline/artifacts/packs/`.
 
@@ -167,7 +172,7 @@ built from the query alone (no C++ accelerator or other Verus kernel is
 visible to the agents). Every agent step runs on codex exec.
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --mode verus
+python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --engine duckdb --mode verus
 accel-pipeline-pack --pack tpch_aux_parallel --mode verus
 ```
 
@@ -211,7 +216,7 @@ files (`verus/agent.py`); `config/workloads/tpch_q21_verus_smoke.yaml` is a shor
 Use workloads with `workload_kind: aux_state` (e.g. `tpch_q14_aux`). Copy from `config/workloads/tpch_q_aux.template.yaml`.
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 14 --workload tpch_q14_aux --dry-run
+python -m accel_pipeline.run_pipeline --query 14 --workload tpch_q14_aux --engine duckdb --dry-run
 ```
 
 Aux workloads:
@@ -219,9 +224,9 @@ Aux workloads:
 - Prompts: `pipeline/prompts/aux_state/` (pattern library under `shared/`)
 - Config: `pipeline/config/aux_state.yaml` (write paths, gates, speedup thresholds)
 - Analysis schema: `pipeline/schemas/aux_state_analysis.schema.json`
-- Audit measurements: `pipeline/artifacts/{tpch|sec_edgar}/q{N}/audit_result.json` (separate from `analysis.json`)
+- Audit measurements: `pipeline/artifacts/{tpch|sec_edgar}/q{N}/<engine>/audit_result.json` (separate from `analysis.json`)
 - Gates: `aux_correctness`, `aux_unit`, `aux_mutation_scenarios`, `aux_speedup_verification`, `fairness`
-- Base accelerator prerequisite: functional `ctest -R tpch_q{N}` before aux stages (auto-runs `prerequisite_workload` if missing)
+- Base accelerator prerequisite: functional `ctest -R tpch_q{N}` before aux stages (auto-runs `prerequisite_workload` if missing; skipped for an engine the base workload does not support)
 
 Tests: `cd pipeline/orchestrator && pip install -e ".[dev]" && pytest tests/test_aux_pipeline.py`
 
@@ -247,7 +252,7 @@ python -m accel_pipeline.run_pipeline --query 24 --workload sec_edgar_q24 --dry-
 
 - Benchmark pack: `pipeline/config/benchmark_packs/sec_edgar.yaml`
 - Workloads: `pipeline/config/workloads/sec_edgar_q*.yaml`
-- Artifacts: `pipeline/artifacts/sec_edgar/q{N}/`
+- Artifacts: `pipeline/artifacts/sec_edgar/q{N}/duckdb/`
 - Gates: `correctness`, `baseline`, `profile`, `fairness` (no `sf10` — single scale factor)
 - Gates run automatically after each stage. **Implementation** and **each optimization iteration** require passing: `correctness` → `baseline` → `profile`. Failures abort the pipeline.
 - After gates, `optimization_feedback.md` is written for the next optimization iteration (dominant phase, gaps vs DuckDB, suggested fixes).

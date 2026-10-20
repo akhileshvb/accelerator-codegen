@@ -21,17 +21,13 @@ def build_gate_context(
     paths = resolve_workload_paths(pipeline_config, workload, query)
     benchmark = str(workload.get("benchmark_name", "tpch"))
     kind = str(workload.get("workload_kind", "base"))
-    # Accelerators default to duckdb; engine_backend always sets engine_name.
-    raw_engine = workload.get("engine_name")
-    if kind == "engine_backend":
-        engine = sanitize_engine_name(str(raw_engine or ""))
-    else:
-        engine = sanitize_engine_name(str(raw_engine) if raw_engine else "")
+    engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
     host = dict(workload.get("engine_host") or engine_host_conventions(engine))
     ctx: dict[str, Any] = {
         "query_number": query,
         "benchmark_name": benchmark,
         "artifact_namespace": str(workload.get("artifact_namespace", benchmark)),
+        "artifacts_dir": str(query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)),
         "display_name": str(workload.get("display_name", benchmark)),
         "workload_kind": kind,
         "engine_name": engine,
