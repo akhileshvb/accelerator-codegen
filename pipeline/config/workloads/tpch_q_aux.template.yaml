@@ -3,7 +3,7 @@
 workload_kind: aux_state
 benchmark_name: tpch
 query_number: 0          # set to query number
-engine_name: postgres
+engines: [duckdb, postgres, mysql]
 query_id: "0"
 accelerator_id: tpch_q0_aux
 base_function_name: accel_tpch_q0
@@ -26,7 +26,6 @@ partitioning: {}
 
 output_schema: []
 
-cost_model_config: accelerators/tpch/q0/config/q0_aux_cost_model.json
 
 speedup_verification:
   min_speedup_vs_base: 2.0

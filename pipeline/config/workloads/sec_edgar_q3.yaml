@@ -1,6 +1,6 @@
 benchmark_name: sec_edgar
 query_number: 3
-engine_name: duckdb
+engines: [duckdb]
 query_id: "3"
 reference_sql_path: workloads/sec_edgar/q3.sql
 parameters:   # spec: eval/bench/sec_edgar/params/q3.json (zero-arg function = defaults)

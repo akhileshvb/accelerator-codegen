@@ -1,7 +1,7 @@
 workload_kind: aux_state
 benchmark_name: sec_edgar
 query_number: 6
-engine_name: duckdb
+engines: [duckdb]
 query_id: "6"
 accelerator_id: sec_edgar_q6_aux
 base_function_name: accel_sec_edgar_q6
@@ -35,7 +35,6 @@ output_schema:
   - {name: cik, type: INTEGER}
   - {name: total_value, type: DOUBLE}
 
-cost_model_config: accelerators/sec_edgar/q6/config/sec_edgar_q6_aux_cost_model.json
 
 speedup_verification:
   min_speedup_vs_base: 2.0

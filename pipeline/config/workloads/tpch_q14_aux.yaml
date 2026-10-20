@@ -1,7 +1,7 @@
 workload_kind: aux_state
 benchmark_name: tpch
 query_number: 14
-engine_name: postgres
+engines: [duckdb, postgres, mysql]
 query_id: "14"
 accelerator_id: tpch_q14_aux
 base_function_name: accel_tpch_q14
@@ -36,7 +36,6 @@ output_schema:
   - name: promo_revenue
     type: DECIMAL
 
-cost_model_config: accelerators/tpch/q14/config/q14_aux_cost_model.json
 
 cmake:
   query_num: 14

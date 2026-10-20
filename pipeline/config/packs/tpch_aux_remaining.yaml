@@ -10,6 +10,7 @@ stage: optimization
 resume: false
 models_config: pipeline/config/models.yaml
 
+engines: [postgres]
 workload_template: "tpch_q{q}_aux"
 
 queries:

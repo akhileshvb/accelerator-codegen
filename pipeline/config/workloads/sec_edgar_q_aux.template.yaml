@@ -3,7 +3,7 @@
 workload_kind: aux_state
 benchmark_name: sec_edgar
 query_number: 0          # set to query number
-engine_name: duckdb
+engines: [duckdb]
 query_id: "0"
 accelerator_id: sec_edgar_q0_aux
 base_function_name: accel_sec_edgar_q0
@@ -25,7 +25,6 @@ partitioning: {}
 
 output_schema: []
 
-cost_model_config: accelerators/sec_edgar/q0/config/sec_edgar_q0_aux_cost_model.json
 
 speedup_verification:
   min_speedup_vs_base: 2.0

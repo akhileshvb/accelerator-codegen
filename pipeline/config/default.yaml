@@ -1,8 +1,7 @@
 repo_root: /home/akhilvb/accelerator-codegen
 duckdb_root: /home/akhilvb/accelerator-codegen-duckdb
 build_dir: build-release
-# Query-accelerator workloads require explicit engine_name (no duckdb/postgres default).
-# Set per workload YAML or ACCEL_WORKLOAD_ENGINE_NAME.
+# Query-accelerator workloads list their `engines:`; a run picks one (--engine / pack `engines:`).
 tpch_db_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
 tpch_db_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
 

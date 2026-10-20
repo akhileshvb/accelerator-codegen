@@ -1,7 +1,7 @@
 workload_kind: aux_state
 benchmark_name: tpch
 query_number: 21
-engine_name: postgres
+engines: [duckdb, postgres, mysql]
 query_id: "21"
 accelerator_id: tpch_q21_aux
 base_function_name: accel_tpch_q21
@@ -42,7 +42,6 @@ output_schema:
   - name: numwait
     type: BIGINT
 
-cost_model_config: accelerators/tpch/q21/config/q21_aux_cost_model.json
 
 optimization_guidance: |
   Q21 is **existence-heavy** (correlated EXISTS / NOT EXISTS over lineitem self-joins).

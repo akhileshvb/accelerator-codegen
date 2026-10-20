@@ -9,6 +9,8 @@ stage: all
 resume: true
 models_config: pipeline/config/models.yaml
 
+engines: [postgres]
+
 # Optional template if an entry is just a query number.
 workload_template: "tpch_q{q}_aux"
 

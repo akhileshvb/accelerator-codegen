@@ -123,12 +123,20 @@ post_audit_gates:
   - aux_tsan
   - aux_bench_sweep
 
-# Optional static fairness scan paths (agent may request_gate fairness; not a hard fail gate).
+# Optional static fairness scan paths per engine (agent may request_gate fairness; not a hard fail gate).
 fairness:
   kernel_search_paths:
-    - accelerators/tpch/q{N}/duckdb/aux/module.cpp
-    - accelerators/tpch/q{N}/duckdb/aux/finalize.cpp
-    - accelerators/tpch/q{N}/duckdb/base/single-threaded/kernel.cpp
+    duckdb:
+      - accelerators/tpch/q{N}/duckdb/aux/module.cpp
+      - accelerators/tpch/q{N}/duckdb/aux/finalize.cpp
+      - accelerators/tpch/q{N}/duckdb/base/single-threaded/kernel.cpp
+    postgres:
+      - accelerators/tpch/q{N}/postgres/aux/module.cpp
+      - accelerators/tpch/q{N}/postgres/aux/finalize.cpp
+      - accelerators/tpch/q{N}/postgres/base/single-threaded/kernel.cpp
+    mysql:
+      - accelerators/tpch/q{N}/mysql/aux/module.cpp
+      - accelerators/tpch/q{N}/mysql/aux/finalize.cpp
 
 prompt_subdir: aux_state
 

@@ -5,7 +5,7 @@ workload_kind: aux_state
 benchmark_name: tpch
 query_number: 21
 query_id: "21"
-engine_name: duckdb
+engines: [duckdb]
 mode: verus
 parameters:
   - name: nation_name

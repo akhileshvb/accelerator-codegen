@@ -45,5 +45,8 @@ fairness:
     - "600000"
     - "800000"
   kernel_search_paths:
-    - accelerators/tpch/q{N}/duckdb/base/single-threaded/kernel.cpp
-    - accelerators/tpch/q{N}/duckdb/base/single-threaded/fused_scan.cpp
+    duckdb:
+      - accelerators/tpch/q{N}/duckdb/base/single-threaded/kernel.cpp
+      - accelerators/tpch/q{N}/duckdb/base/single-threaded/fused_scan.cpp
+    postgres:
+      - accelerators/tpch/q{N}/postgres/base/single-threaded/kernel.cpp
