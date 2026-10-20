@@ -38,10 +38,6 @@ engine_profile:
 
   host_runtime:
     kind: host_cmake
-    ensure_script:
-      na: "no server to start; harnesses run in the build process"
-    build_script:
-      na: "built with the host CMake tree"
     ninja_targets_env:
       na: "host cmake builds the harness target directly"
     container_env:

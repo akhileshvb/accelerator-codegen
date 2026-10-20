@@ -58,8 +58,6 @@ def test_load_engine_mysql_workload():
     assert "engine_adversarial" not in w["post_implementation_gates"]
     assert w.get("requires_in_process_host") is True
     assert w.get("host_runtime", {}).get("kind") == "docker"
-    assert w.get("host_runtime", {}).get("ensure_script") == "scripts/ensure_accel_mysql_test.sh"
-    assert w.get("host_runtime", {}).get("build_script") == "scripts/build_accel_mysql_plugin.sh"
     assert w.get("host_runtime", {}).get("env", {}).get("ACCEL_MYSQL_ENSURE_BUILD") == "0"
     assert w["layer_critique_max_rounds"] == 2
     assert w["layer_gate_max_rounds"] == 3
@@ -258,14 +256,13 @@ def test_postgres_impl_prompt_uses_docker_gates():
             "layer_cmake_target": layer["cmake_target"],
             "prior_layers": "- (this is the first layer)",
             "host_runtime_kind": "docker",
-            "host_ensure_script": "scripts/ensure_accel_pg_test.sh",
-            "host_build_script": "scripts/build_accel_postgres_extension.sh",
+            "engine_name": "postgres",
         },
     )
     assert "docker" in text.lower()
     assert "request_gate" in text
     assert "engine_capture" in text
-    assert "ensure_accel_pg_test.sh" in text
+    assert "backends/postgres/host.sh up" in text
     assert "build-release" in text  # mentioned as what NOT to use as the bar
     assert "Do not" in text or "do not" in text.lower()
 

@@ -79,7 +79,7 @@ Or `request_gate` with `gate_name` `engine_build` / `{{layer_gate}}`.
 
 | When | Gate | What it does |
 |------|------|----------------|
-| After CMake / backend TUs that should link | `engine_build` | Host cmake **or** docker `ensure_script` (kind=`{{host_runtime_kind}}`) |
+| After CMake / backend TUs that should link | `engine_build` | `host.sh build` (kind=`{{host_runtime_kind}}`) |
 | After harness exists and should run | `{{layer_gate}}` | Builds **`{{layer_cmake_target}}`** and runs **`{{layer_harness}}`** |
 
 Suggested cadence:
@@ -99,12 +99,12 @@ layer. This applies to every `impl_*` stage.
 
 This workload builds **inside the container**. `request_gate` already:
 
-1. Runs `{{host_ensure_script}}` (starts/attaches the engine Docker host)
-2. Runs `{{host_build_script}}` with this layer's cmake target in the ninja-targets env
-3. `docker exec`s `{{layer_cmake_target}}` in the container
+1. Runs `backends/{{engine_name}}/host.sh up` (starts or attaches the engine host)
+2. Runs `backends/{{engine_name}}/host.sh build {{layer_cmake_target}}`
+3. Runs `backends/{{engine_name}}/host.sh run {{layer_cmake_target}}`
 
 **Do not** `cmake -B build-release` on the developer machine as the correctness bar.
-If you shell-debug, use the same ensure/build scripts; still finish via `request_gate`.
+If you shell-debug, use the same `host.sh` verbs; still finish via `request_gate`.
 
 ### Host cmake (`host_runtime.kind=host_cmake`)
 

@@ -35,8 +35,6 @@ engine_profile:
 
   host_runtime:
     kind: docker
-    ensure_script: scripts/ensure_accel_mysql_test.sh
-    build_script: scripts/build_accel_mysql_plugin.sh
     ninja_targets_env: ACCEL_MYSQL_NINJA_TARGETS
     container_env: ACCEL_MYSQL_CONTAINER
     default_container: accel_mysql_test
@@ -44,7 +42,7 @@ engine_profile:
     connect: "From the host MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3307 (user root, password mysql); inside the container MYSQL_TCP_PORT=3306. Sources are mounted at /accel-src; the build runs cmake/ninja inside the container; the layer harnesses need the test variant (--test)."
     env:
       ACCEL_MYSQL_DOCKER: "1"
-      # From-scratch: start the container only. Layer gates build via build_script;
+      # From-scratch: start the container only. Layer gates build via host.sh build;
       # do not fail closed on missing live adapter sources / a stale plugin .so.
       ACCEL_MYSQL_ENSURE_BUILD: "0"
       # Layer gates need the gate-test UDFs (backends/mysql/tests/), which only

@@ -23,7 +23,7 @@ SDK to build the optional `accelerator_codegen_pg` MODULE.
   each query's `postgres/extension/*.cpp` and `postgres/base/*.cpp` into the MODULE. SQL functions are
   created by `SELECT accel_register_queries();` from the
   registered per-query `CREATE FUNCTION` text (see
-  `scripts/postgres_register_tpch_all.sql`).
+  `backends/postgres/host/register.sql`).
 - **Mutations** go through statement-level transition triggers →
   `AcceleratorCodegenCaptureTransition` (`engine/transition_capture.cpp`), which
   reads the transition tables into one columnar batch per statement and table

@@ -302,7 +302,7 @@ inline void EnsureExtension(const Tools &tools) {
             "LOAD " + tools.extension_so + " failed");
   }
   const std::string register_sql =
-      RepoRootHint() + "/scripts/postgres_register_tpch_all.sql";
+      RepoRootHint() + "/backends/postgres/host/register.sql";
   // Re-create the per-query functions from the loaded module every time: a DB
   // restored from an older build may carry stale signatures (calling one with
   // the wrong argument types crashes the backend). Older DBs lack the

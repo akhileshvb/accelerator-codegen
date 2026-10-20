@@ -10,7 +10,7 @@
  },
  "README.md": {
   "engine": 9,
-  "path": 3,
+  "path": 1,
   "target": 1
  },
  "cmake/Backend.cmake": {
@@ -229,11 +229,11 @@
   "symbol": 1
  },
  "pipeline/config/workloads/engine_mysql.yaml": {
-  "path": 11,
+  "path": 7,
   "target": 3
  },
  "pipeline/config/workloads/engine_postgres.yaml": {
-  "path": 10,
+  "path": 7,
   "target": 2
  },
  "pipeline/config/workloads/sec_edgar_q1.yaml": {
@@ -565,8 +565,8 @@
   "target": 1
  },
  "pipeline/orchestrator/tests/test_engine_backend.py": {
-  "engine": 94,
-  "path": 20,
+  "engine": 91,
+  "path": 16,
   "target": 2
  },
  "pipeline/orchestrator/tests/test_engine_profile.py": {

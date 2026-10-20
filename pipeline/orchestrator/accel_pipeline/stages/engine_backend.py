@@ -133,8 +133,6 @@ def _layer_extra_context(workload: dict, layer: dict) -> dict[str, str]:
         "layer_cmake_target": str(layer.get("cmake_target") or ""),
         "prior_layers": "\n".join(prior) or "- (this is the first layer)",
         "host_runtime_kind": str(host.get("kind") or "host_cmake"),
-        "host_ensure_script": str(host.get("ensure_script") or ""),
-        "host_build_script": str(host.get("build_script") or ""),
         "layer_rules": ", ".join(str(r) for r in (layer.get("rules") or [])) or "(none)",
     }
 

@@ -169,8 +169,6 @@
       "description": "The environment the gates run the engine in.",
       "required": [
         "kind",
-        "ensure_script",
-        "build_script",
         "ninja_targets_env",
         "container_env",
         "default_container",
@@ -185,14 +183,6 @@
             "host_cmake",
             "docker"
           ]
-        },
-        "ensure_script": {
-          "description": "Script that starts or attaches the engine host.",
-          "$ref": "#/$defs/text"
-        },
-        "build_script": {
-          "description": "Script that builds the backend for this host.",
-          "$ref": "#/$defs/text"
         },
         "ninja_targets_env": {
           "description": "Env var carrying the ninja targets to the build script.",

@@ -114,7 +114,7 @@ def test_workload_derives_host_and_packaging_from_the_profile():
     assert pg["cmake"]["build_flag"] == "ACCELERATOR_CODEGEN_BUILD_POSTGRES"
     duck = load_workload("engine_duckdb", REPO_ROOT)
     assert duck["host_runtime"]["kind"] == "host_cmake"
-    assert "ensure_script" not in duck["host_runtime"]  # n/a leaves are dropped
+    assert "ninja_targets_env" not in duck["host_runtime"]  # n/a leaves are dropped
     assert duck["requires_in_process_host"] is False
     assert duck["display_name"] == "DuckDB"
 

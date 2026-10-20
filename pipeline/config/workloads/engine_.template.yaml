@@ -43,8 +43,6 @@ engine_profile:
 
   host_runtime:
     kind: host_cmake                  # host_cmake | docker
-    ensure_script: {na: "REPLACE_ME: script that starts the engine host (docker)"}
-    build_script: {na: "REPLACE_ME: script that builds the backend for the host (docker)"}
     ninja_targets_env: {na: "REPLACE_ME"}
     container_env: {na: "REPLACE_ME"}
     default_container: {na: "REPLACE_ME"}

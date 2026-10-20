@@ -694,15 +694,5 @@ def build_prompt_context(
             if is_engine
             else ""
         ),
-        "host_ensure_script": (
-            str((workload.get("host_runtime") or {}).get("ensure_script") or "")
-            if is_engine
-            else ""
-        ),
-        "host_build_script": (
-            str((workload.get("host_runtime") or {}).get("build_script") or "")
-            if is_engine
-            else ""
-        ),
     }
     return ctx

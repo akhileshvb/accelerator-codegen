@@ -35,8 +35,6 @@ engine_profile:
 
   host_runtime:
     kind: docker
-    ensure_script: scripts/ensure_accel_pg_test.sh
-    build_script: scripts/build_accel_postgres_extension.sh
     ninja_targets_env: ACCEL_PG_NINJA_TARGETS
     container_env: ACCEL_PG_CONTAINER
     default_container: accel_pg_test
@@ -44,7 +42,7 @@ engine_profile:
     connect: "From the host PGHOST=127.0.0.1 PGPORT=5434; inside the container PGHOST=127.0.0.1 PGPORT=5432. Sources are mounted at /accel-src in the container; the build runs cmake/ninja inside it."
     env:
       ACCEL_PG_DOCKER: "1"
-      # From-scratch: start the container only. Layer gates build via build_script;
+      # From-scratch: start the container only. Layer gates build via host.sh build;
       # do not fail closed on missing live adapter sources / a stale MODULE .so.
       ACCEL_PG_ENSURE_BUILD: "0"
       # Layer gates load the test-only MODULE (gate-test UDFs); build/install it too.
