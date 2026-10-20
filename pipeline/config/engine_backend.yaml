@@ -58,6 +58,12 @@ implementation_layers:
     cmake_target: test_{engine}_host
     rules: [slot_entry, host_glue]
     skip_unless: requires_in_process_host
+  - id: hostctl
+    title: Host script (host_contract.md verbs)
+    gate: engine_hostctl
+    harness: backends/{engine}/host.sh
+    cmake_target: ""
+    rules: [host_contract]
 
 # Default post-layer gates (engine_build + this layer). Overridden per stage.
 post_implementation_gates:
@@ -114,6 +120,7 @@ engine_profile_sections:
   epochs: [identity, process_model, transactions, locking, capture, hazards]
   scan: [identity, process_model, transactions, locking, scan, thread_knobs, hazards]
   runtime: [identity, packaging, host_runtime, process_model, locking, thread_knobs, scan, hazards]
+  hostctl: [identity, packaging, host_runtime, build, process_model, entry_points, hazards]
   host: [identity, packaging, host_runtime, build, process_model, entry_points, thread_knobs, hazards]
   validation: [identity, process_model, capture, transactions, locking, scan, oracle, hazards]
   architecture_audit: [identity, packaging, process_model, capture, transactions, locking, scan, thread_knobs, hazards]

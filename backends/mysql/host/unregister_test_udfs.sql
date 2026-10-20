@@ -1,4 +1,4 @@
--- Remove the gate-test UDFs (scripts/mysql_register_test_udfs.sql) for the
+-- Remove the gate-test UDFs (backends/mysql/host/register_test_udfs.sql) for the
 -- production plugin variant, which does not export them. Run after mysqld
 -- restarted on the production .so: the functions then failed to load, so
 -- DROP FUNCTION reports "does not exist" and leaves their mysql.func rows

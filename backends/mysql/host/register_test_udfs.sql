@@ -1,8 +1,8 @@
 -- Gate-test UDFs of the MySQL plugin TEST variant (built with
 -- -DACCEL_MYSQL_TEST_UDFS=ON; backends/mysql/tests/mysql_bridge_test_udfs.cpp).
 -- The production plugin does not export these: never register them against it.
--- scripts/build_accel_mysql_plugin.sh applies this file when
--- ACCEL_MYSQL_PLUGIN_VARIANT=test and scripts/mysql_unregister_test_udfs.sql
+-- host.sh build applies this file when
+-- ACCEL_MYSQL_PLUGIN_VARIANT=test and backends/mysql/host/unregister_test_udfs.sql
 -- otherwise.
 
 DROP FUNCTION IF EXISTS mysql_accel_txn_init;

@@ -1,6 +1,6 @@
 -- Register the backend (query-independent) MySQL UDFs and the plugin.
 -- Per-query UDFs are registered from accelerators/<bench>/q<N>/mysql/plugin/functions.sql;
--- scripts/mysql_register_functions.sh assembles base + fragments.
+-- backends/mysql/host.sh build assembles base + fragments.
 INSTALL PLUGIN accelerator_codegen_audit SONAME 'accelerator_codegen_mysql.so';
 
 DROP FUNCTION IF EXISTS mysql_accel_observer_mutation_count;
