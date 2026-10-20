@@ -76,6 +76,7 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
     }
     env.pop("ACCEL_ENGINE_INSTANCE", None)
     env.pop("ACCEL_ENGINE_STATE_DIR", None)
+    env.pop("ACCEL_CMAKE_ARGS", None)
     proc = subprocess.run(["bash", str(repo / "pipeline" / "gates" / script), *args], cwd=repo,
                           env=env, capture_output=True, text=True, timeout=120)
     calls = [l.split(" | ")[0] for l in log.read_text().splitlines()] if log.exists() else []

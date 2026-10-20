@@ -236,6 +236,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"worker isolation: {isolation_summary(pipeline_config)}", file=sys.stderr)
     repo_root = Path(pipeline_config.repo_root)
+    if pipeline_config.engine_name:
+        # The host-contract environment the gates use, so the agents' own host.sh calls
+        # (forwarded to their tools as ACCEL_*) configure and reach the same build and instance.
+        from accel_pipeline.engine_host import instance_env
+
+        for key, value in instance_env(repo_root, pipeline_config.engine_name, Path(pipeline_config.build_dir)).items():
+            os.environ.setdefault(key, value)
     model_config = load_model_config(args.models_config, repo_root=primary_root)
     print(f"agent provider: {', '.join(sorted(set(model_config.stage_providers.values())))}", file=sys.stderr)
     query = args.query
