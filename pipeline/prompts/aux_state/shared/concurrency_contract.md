@@ -62,7 +62,7 @@ In `correctness_facts.cross_accelerator_concurrency`, document:
 
 ## Harness wiring (required for new queries)
 
-`aux_cross_accel` / `aux_multi_connection` need this query present on **every** shared registration and helper surface that peer aux queries use (SQL helpers, invalidating writer cases, DuckDB TF registration, shared-query allowlists). Discover current files by searching a neighboring query id; append matching cases. Missing wiring fails with `unsupported …` / `Table Function … does not exist`.
+`aux_cross_accel` / `aux_multi_connection` need this query present on **every** shared registration and helper surface that peer aux queries use (SQL helpers, invalidating writer cases, SQL entry-point registration, shared-query allowlists). Discover current files by searching a neighboring query id; append matching cases. Missing wiring fails with `unsupported …` / a missing SQL function.
 
 ## Local verification
 

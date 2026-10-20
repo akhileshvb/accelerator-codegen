@@ -39,14 +39,13 @@ Fail if later per-query accelerators cannot register or differential-test on
 this host even though the binary built. Typical holes:
 
 - Differential is a stub that does not load this engine’s host / call a SQL
-  entrypoint (postgres: `LOAD` MODULE + UDF, not DuckDB `*.duckdb` as the scan
-  host)
-- CMake target name is not `{{differential_binary}}`, or postgres target is
-  only wired for host-make / `build-release` and not the Docker Ninja tree
+  entrypoint (loaded through the engine's own plugin/extension path, not another engine's
+  dataset as the scan host)
+- CMake target name is not `{{differential_binary}}`, or the target is
+  not built by `host.sh build`
 - Second adapter tree (duplicate store/aux/txn) instead of reusing
   `backends/{{engine_name}}/`
-- Server-only symbols in the host shared library (postgres: `postgres.h` in
-  `accelerator_codegen`, not the MODULE)
+- Server-only symbols in the host shared library where the engine profile says the plugin must hold them
 - Host or harness reimplements runtime flow (commit ordering, catch-up, builds, thread pools) instead of using `substrate/aux/runtime/` and the slots
 - Host sizes threads with `hardware_concurrency` or a fixed count instead of the backend thread budget
 - SQL entrypoints missing / named away from the conventional register surface
@@ -60,7 +59,7 @@ this host even though the binary built. Typical holes:
 - Phase 2 multi-conn / cross-accel / bench harnesses still missing when phase 1
   (differential **builds**) is real
 - Per-query TPC-H kernels not generated yet — bootstrap is shared host glue
-- Demanding DuckDB `RegisterAcceleratorFunctions` when `engine_name≠duckdb`
+- Demanding another engine's registration surface
 
 ## Output (mandatory — last action)
 

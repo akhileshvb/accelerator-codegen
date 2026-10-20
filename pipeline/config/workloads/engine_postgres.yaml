@@ -160,3 +160,6 @@ engine_profile:
     - symptom: "A worker's reads hang or a worker lingers after the server shuts down."
       engine_fact: "A background worker is terminated with SIGTERM; a worker blocked in a futex or condition wait without a timeout never sees it."
       layers: [runtime, host]
+    - symptom: "The host-side shared library fails to link or load, or conflicts with the server's own symbols, once it includes server headers."
+      engine_fact: "Server headers (postgres.h and the backend headers) are only valid in code compiled into the loadable module for the server; a library that also links into client or test binaries cannot contain them."
+      layers: [host, runtime]

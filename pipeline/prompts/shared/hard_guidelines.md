@@ -7,8 +7,7 @@ Non-negotiable for analysis (planning), implementation, optimization, and audit.
 Accelerators read **base tables** through **this engine’s** (`{{engine_name}}`) native storage/scan APIs. Consume engine-local batches, slots, or typed rebuild callbacks — **not** a shared portable chunk IR.
 
 - Do **not** bypass with SQL-over-client “scans” on the hot path when a native adapter exists.
-- Do **not** require `ScanNativeBaseTable` → portable `DataChunk` as a cross-engine contract.
-- DuckDB may use host-private helpers under `backends/duckdb/engine/native_scan.hpp`; other engines' backends define theirs under `backends/{engine}/engine/` (read-only to query runs).
+- An engine's native scan helpers are private to its backend (the **scan** role of the Backend API index; read-only to query runs).
 
 **Auxiliary state** may and should use **custom storage** (typed in-process images, engine-local aux tables, shared-memory blobs, etc.).
 
