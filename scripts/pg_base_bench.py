@@ -383,9 +383,10 @@ def sweep_body(args, cur, out, instances, results, planned, participants):
     for q, insts in sorted(instances.items()):
         first = insts[0]
         # Untimed warm-up of every variant on the first parametrization (plus plan choice).
-        participants(1)
-        costs[(q, 1)] = choose_plan(q, 1, first)
-        timed(accel_sql(args.schema, q, False, first["args"]), (q, "accel_st", 1))
+        if not args.skip_single:
+            participants(1)
+            costs[(q, 1)] = choose_plan(q, 1, first)
+            timed(accel_sql(args.schema, q, False, first["args"]), (q, "accel_st", 1))
         for t in args.threads_list:
             participants(t)
             costs[(q, t)] = choose_plan(q, t, first)
@@ -403,10 +404,11 @@ def sweep_body(args, cur, out, instances, results, planned, participants):
 
         for inst in insts:
             rows = []
-            participants(1)
-            rows.append(pg_row(1, inst))
-            rows.append(("accel_st", 1, timed(accel_sql(args.schema, q, False, inst["args"]), (q, "accel_st", 1)),
-                         None, ""))
+            if not args.skip_single:
+                participants(1)
+                rows.append(pg_row(1, inst))
+                rows.append(("accel_st", 1, timed(accel_sql(args.schema, q, False, inst["args"]), (q, "accel_st", 1)),
+                             None, ""))
             for t in args.threads_list:
                 participants(t)
                 rows.append(pg_row(t, inst))
@@ -425,8 +427,11 @@ def sweep_body(args, cur, out, instances, results, planned, participants):
         hdr += ",postgres@%d,accel_par@%d,par_speedup@%d,pg_workers_planned@%d,pg_plan@%d" % (t, t, t, t, t)
     out.write(hdr + "\n")
     for q in sorted(instances):
-        p1, s1 = med((q, "postgres", 1)), med((q, "accel_st", 1))
-        line = "#Q%d,%.3f,%.3f,%.3f,%s" % (q, p1, s1, p1 / s1, "/".join(costs[(q, 1)]))
+        if args.skip_single:
+            line = "#Q%d,,,," % q
+        else:
+            p1, s1 = med((q, "postgres", 1)), med((q, "accel_st", 1))
+            line = "#Q%d,%.3f,%.3f,%.3f,%s" % (q, p1, s1, p1 / s1, "/".join(costs[(q, 1)]))
         for t in args.threads_list:
             pt, at = med((q, "postgres", t)), med((q, "accel_par", t))
             wps = sorted(set(planned[(q, t)]))
@@ -444,6 +449,8 @@ def main():
     ap.add_argument("--mode", choices=["check", "sweep"], default="check")
     ap.add_argument("--queries", default=",".join(str(q) for q in range(1, 23)))
     ap.add_argument("--seeds", type=int, default=20, help="parametrizations per query")
+    ap.add_argument("--skip-single", action="store_true",
+                    help="sweep: only the --threads-list participant counts (no 1-participant PostgreSQL / accel_st runs)")
     ap.add_argument("--threads-list", default="4", help="participant counts for the parallel variants")
     ap.add_argument("--schema", default="public")
     ap.add_argument("--db", default=os.environ.get("TPCH_PG_DB", "accel_tpch_test"))

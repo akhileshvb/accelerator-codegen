@@ -7,8 +7,8 @@ for l in open(os.path.join(d, "qstats.jsonl")):
     r = json.loads(l); qs[r["query"]] = r
 def spread(xs, f="%.1f"):
     return "-" if not xs else (f + " [" + f + "-" + f + "]") % (statistics.median(xs), min(xs), max(xs))
-print("| Q | speedup x median [min-max] | base ms (median) | accel ms (median) | build s | mismatches | fallbacks | errors/timeouts | requests served |")
-print("|---|---|---|---|---|---|---|---|---|")
+print("| Q | speedup x median [min-max] | base ms (median) | accel ms (median) | build s | mismatches | fallbacks | errors/timeouts | requests served | PG plan (workers planned) |")
+print("|---|---|---|---|---|---|---|---|---|---|")
 for q in sorted({int(r["query"]) for r in rows}):
     rs = [r for r in rows if int(r["query"]) == q]
     per = {}
@@ -24,4 +24,4 @@ for q in sorted({int(r["query"]) for r in rows}):
     fb = (a.get("fallback", 0) - b.get("fallback", 0)) if a else "?"
     srv = f'{a.get("requests","?")} {a.get("served","?")}'
     bu = st.get("build_us")
-    print(f"| {q} | {spread(sp)} | {bm:.0f} | {am:.2f} | {bu/1e6 if bu else float('nan'):.1f} | {mm}/{len(rs)} | {fb} | {er} | {srv} |")
+    print(f"| {q} | {spread(sp)} | {bm:.0f} | {am:.2f} | {bu/1e6 if bu else float('nan'):.1f} | {mm}/{len(rs)} | {fb} | {er} | {srv} | {st.get("pg_plan") or "-"} ({",".join(map(str, st.get("pg_workers_planned") or [])) or "serial"}) |")
