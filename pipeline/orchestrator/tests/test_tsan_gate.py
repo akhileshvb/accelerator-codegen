@@ -20,13 +20,16 @@ def test_tsan_gates_map_to_the_script():
     assert GATE_SCRIPTS["aux_tsan"] == GATE_SCRIPTS["slot_tsan"] == "run_aux_tsan.sh"
     assert (REPO_ROOT / "pipeline/gates" / GATE_SCRIPTS["aux_tsan"]).is_file()
     assert {"aux_tsan", "slot_tsan"} <= GATES_ALLOW_SKIP
+    assert GATE_SCRIPTS["module_tsan"] == "run_module_tsan.sh" and "module_tsan" in GATES_ALLOW_SKIP
+    assert (REPO_ROOT / "pipeline/gates/run_module_tsan.sh").is_file()
 
 
 def test_aux_state_audit_runs_tsan():
     for name in ("tpch_q3_aux", "sec_edgar_q1_aux"):
         workload = load_workload(name, REPO_ROOT, engine="duckdb")
-        assert "aux_tsan" in workload_post_audit_gates(workload)
+        assert {"aux_tsan", "module_tsan"} <= set(workload_post_audit_gates(workload))
         assert _allowed(workload, "bash pipeline/gates/run_aux_tsan.sh 3")
+        assert _allowed(workload, "bash pipeline/gates/run_module_tsan.sh 3")
 
 
 def test_engine_backend_validation_runs_slot_tsan():

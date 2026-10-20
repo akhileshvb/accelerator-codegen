@@ -35,6 +35,7 @@ allowed_commands:
   - "^bash pipeline/gates/run_aux_cross_accel\\.sh \\d+$"
   - "^bash pipeline/gates/run_aux_multi_connection\\.sh \\d+$"
   - "^bash pipeline/gates/run_aux_tsan\\.sh \\d+$"
+  - "^bash pipeline/gates/run_module_tsan\\.sh \\d+$"
   - "^bash pipeline/gates/run_aux_cost_model_calibrate\\.sh \\d+$"
 
 aux_bench_sweep:
@@ -127,6 +128,7 @@ post_audit_gates:
   - prims_tests
   - aux_mutation_scenarios
   - aux_tsan
+  - module_tsan
   - aux_bench_sweep
 
 # Optional static fairness scan paths per engine (agent may request_gate fairness; not a hard fail gate).
