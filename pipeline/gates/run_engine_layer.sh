@@ -39,5 +39,5 @@ fi
 engine_run "${TARGET}"
 STATUS=pass
 [[ ${RC} -eq 0 ]] || STATUS=fail
-emit_result "${JSON}" "${GATE}" "${STATUS}" "" "${ENGINE_LOG}${LOG}" \
+emit_result "${JSON}" "${GATE}" "${STATUS}" "${RUN_REASON}" "${ENGINE_LOG}${LOG}" \
   "layer=${LAYER_ID}" "harness=${HARNESS}" "cmake_target=${TARGET}" "returncode:=${RC}"

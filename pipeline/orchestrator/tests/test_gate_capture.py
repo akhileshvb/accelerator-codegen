@@ -135,7 +135,10 @@ def test_run_gate_persists_enriched_fail_json(monkeypatch, tmp_path):
 
         return Proc()
 
-    monkeypatch.setattr("accel_pipeline.gates.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "accel_pipeline.gates._run_gate_script",
+        lambda script, query, cwd, env: fake_run(["bash", str(script), str(query)], cwd=cwd, env=env),
+    )
     monkeypatch.setattr(
         "accel_pipeline.worker_isolation.ensure_worker_build_dir",
         lambda *a, **k: None,

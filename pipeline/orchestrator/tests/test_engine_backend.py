@@ -450,7 +450,10 @@ def test_run_gate_sets_engine_context_and_out_env(monkeypatch):
     import subprocess as _sp
 
     real_run = _sp.run
-    monkeypatch.setattr("accel_pipeline.gates.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "accel_pipeline.gates._run_gate_script",
+        lambda script, query, cwd, env: fake_run(["bash", str(script), str(query)], cwd=cwd, env=env),
+    )
     monkeypatch.setattr(
         "accel_pipeline.worker_isolation.ensure_worker_build_dir",
         lambda *a, **k: None,

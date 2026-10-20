@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -116,6 +118,25 @@ def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
     raise GateFailure(gate_failure_message(result))
 
 
+GATE_TIMEOUT_S = float(os.environ.get("ACCEL_GATE_TIMEOUT", 7200))
+
+
+def _run_gate_script(script: Path, query: int, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run a gate script in its own process group; past GATE_TIMEOUT_S the whole group is
+    killed (a hung harness and its children) and the gate fails with the reason."""
+    proc = subprocess.Popen(
+        ["bash", str(script), str(query)], cwd=cwd, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=GATE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, err = proc.communicate()
+        out += "\n" + json.dumps({"status": "fail", "reason": f"gate did not finish within {GATE_TIMEOUT_S:.0f}s"})
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+
 def run_gate(
     pipeline_config: PipelineConfig,
     gate_name: str,
@@ -141,6 +162,7 @@ def run_gate(
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
     out_json = gates_dir_for_query(art) / f"{gate_name}.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
+    out_json.unlink(missing_ok=True)  # a gate that dies before writing never reads as its last result
 
     gate_env = os.environ.copy()
     if change_kind:
@@ -188,14 +210,7 @@ def run_gate(
         count=gate_count,
     )
     started = time.monotonic()
-    proc = subprocess.run(
-        ["bash", str(script), str(query)],
-        cwd=pipeline_config.repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=gate_env,
-    )
+    proc = _run_gate_script(script, query, pipeline_config.repo_root, gate_env)
     duration_ms = int((time.monotonic() - started) * 1000)
     data: dict[str, Any] = {}
     if out_json.is_file():

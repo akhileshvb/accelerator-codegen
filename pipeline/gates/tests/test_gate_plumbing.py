@@ -21,6 +21,7 @@ rc_var="FAKE_RC_${verb}"
 case "${verb}" in
   info) echo "{\"engine\": \"fake\", \"embedded\": ${FAKE_EMBEDDED:-false}, \"verbs\": []}" ;;
   run)
+    [[ -z "${FAKE_RUN_HANG:-}" ]] || sleep 30
     echo "${FAKE_RUN_OUT:-ran $*}"
     if [[ "$1" == "calibrator" ]]; then
       echo '{"interference_delta_per_query_us": 3, "interference_rebuild_per_query_us": 4}' > "${FAKE_COST_MODEL}"
@@ -116,6 +117,13 @@ def test_correctness_runs_up_load_build_run_with_contract_env(repo):
 def test_correctness_fails_when_run_fails(repo):
     proc, calls, _, gj, _ = run_gate(repo, "run_correctness.sh", "3", env_extra={"FAKE_RC_run": "1"})
     assert proc.returncode == 1
+    assert result(gj, "correctness")["status"] == "fail"
+
+
+def test_a_hung_harness_fails_the_gate_within_the_run_timeout(repo):
+    proc, _, _, gj, _ = run_gate(repo, "run_correctness.sh", "3",
+                                 env_extra={"FAKE_RUN_HANG": "1", "ACCEL_GATE_RUN_TIMEOUT": "1"})
+    assert proc.returncode != 0
     assert result(gj, "correctness")["status"] == "fail"
 
 

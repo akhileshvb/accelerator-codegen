@@ -91,8 +91,15 @@ engine_steps() {
 engine_ready() { engine_steps "up" "load ${SCHEMA_SQL}" "build $*"; }
 
 # Run a built target through the host; sets RC and LOG.
+# Run a built target through host.sh with a time limit (ACCEL_GATE_RUN_TIMEOUT seconds,
+# default 900), so a hung harness fails the gate instead of stalling the run. Sets LOG, RC and,
+# on a timeout, RUN_REASON.
 engine_run() {
-	LOG="$(engine_host run "$@" 2>&1)" && RC=0 || RC=$?
+	local limit="${ACCEL_GATE_RUN_TIMEOUT:-900}"
+	LOG="$(timeout --kill-after=15 "${limit}" "${ENGINE_HOST}" run "$@" 2>&1)" && RC=0 || RC=$?
+	RUN_REASON=""
+	[[ ${RC} -ne 124 && ${RC} -ne 137 ]] ||
+		RUN_REASON="$1 did not finish within ${limit}s: it hangs (a deadlock, or a wait that never ends)"
 }
 
 # write_result <json> <gate> <status> <reason> <log> [key=value ...]
