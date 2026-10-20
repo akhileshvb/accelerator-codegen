@@ -83,7 +83,7 @@ def test_aux_workload_allows_cmake_edits() -> None:
     merged = apply_workload_overrides(pipeline_config, workload)
     assert "CMakeLists.txt" in merged.write_paths
     assert "accelerators/tpch/q9/**" in merged.write_paths
-    assert any("cross_accel_helpers.cpp" in p for p in merged.write_paths)
+    assert "eval/tests/test_support/**" in merged.write_paths
 
 
 def test_aux_write_paths_register_from_query_dir_not_backend() -> None:

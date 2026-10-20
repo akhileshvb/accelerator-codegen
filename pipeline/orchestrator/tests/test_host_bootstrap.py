@@ -57,7 +57,7 @@ def test_host_bootstrap_status_roundtrip(tmp_path, monkeypatch):
     diff.write_text("// stub\n", encoding="utf-8")
     monkeypatch.setattr(
         "accel_pipeline.host_bootstrap.engine_host_conventions",
-        lambda _e: {
+        lambda _e, repo_root=None: {
             "agent_builds_query_host": True,
             "differential_source": str(diff.relative_to(tmp_path)),
         },
@@ -73,6 +73,10 @@ def test_stale_unit_marker_does_not_count_as_passed(tmp_path, monkeypatch):
         return path
 
     monkeypatch.setattr("accel_pipeline.host_bootstrap.host_bootstrap_dir", _fake_dir)
+    monkeypatch.setattr(
+        "accel_pipeline.host_bootstrap.engine_host_conventions",
+        lambda _e, repo_root=None: {"agent_builds_query_host": True, "differential_source": ""},
+    )
     write_host_bootstrap_status(tmp_path, "postgres", status="pass", reason="unit")
     assert host_bootstrap_passed(tmp_path, "postgres") is False
 

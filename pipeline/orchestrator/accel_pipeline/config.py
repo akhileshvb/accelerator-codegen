@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -187,7 +188,7 @@ def resolve_workload_paths(
     shared_harness = (
         bool(engine)
         and workload.get("workload_kind") != "engine_backend"
-        and not (workload.get("engine_host") or engine_host_conventions(engine))["query_scoped_harness"]
+        and not (workload.get("engine_host") or {}).get("query_scoped_harness", True)
     )
     bench_target = naming.benchmark_target(benchmark, q)
     test_target = naming.unit_test_target(benchmark, q)
@@ -473,120 +474,70 @@ def engine_pascal_name(engine_name: str) -> str:
     return "".join(part[:1].upper() + part[1:] for part in sanitize_engine_name(engine_name).split("_") if part)
 
 
-# Per-query registration (engine backends name no query): each query's
-# directory registers its catalog entry, SQL entry points and bindings with
-# static registrars against the backend's registries.  Paths use the query's
-# <bench>/q<N>; engine_host_conventions fills them when bench/query are known.
-QUERY_REGISTRATION: dict[str, dict[str, str]] = {
-    "duckdb": {
-        "register_path": "accelerators/{bench}/q{N}/duckdb/base/single-threaded/register.cpp",
-        "aux_register_path": "accelerators/{bench}/q{N}/duckdb/aux/register.cpp",
-        "registry": (
-            "base kernels: BaseFunctionSetRegistrar{&Create<Bench>Q<N>FunctionSet} "
-            "(backends/duckdb/api/register.hpp); aux: SharedQueryRegistrar "
-            "(catalog entry, backends/duckdb/api/catalog/query_catalog.hpp) + AuxQueryRegistrar (table function, argument "
-            "types, MakeBinding<Scan, Module>; backends/duckdb/api/"
-            "aux_query_registry.hpp, whose scan:: helpers the InitialScan uses); a query-owned "
-            "base scan path sets QueryPackage::create_fused_kernel / fused_scan"
-        ),
-    },
-    "postgres": {
-        "register_path": "accelerators/{bench}/q{N}/postgres/extension/",
-        "aux_register_path": "accelerators/{bench}/q{N}/postgres/",
-        "registry": (
-            "aux/catalog.cpp: PostgresQueryCatalogRegistrar (backends/postgres/api/catalog/query_catalog.hpp); "
-            "extension/scan.cpp: SPI scans + PostgresQueryExecutorRegistrar (variant aux); "
-            "extension/functions.cpp: PG_FUNCTION_INFO_V1 shims -> ExecutePostgresQuery and the query's "
-            "CREATE FUNCTION DDL via PostgresQuerySqlRegistrar (backends/postgres/api/runtime.hpp); "
-            "base/base.cpp: variant base; SELECT accel_postgres_register_queries() creates the functions"
-        ),
-    },
-    "mysql": {
-        "register_path": "accelerators/{bench}/q{N}/mysql/plugin/",
-        "aux_register_path": "accelerators/{bench}/q{N}/mysql/",
-        "registry": (
-            "aux/catalog.cpp: MysqlQueryCatalogRegistrar (backends/mysql/api/catalog/query_catalog.hpp); "
-            "plugin/runtime.cpp: scans + MysqlUdfRegistrar{MysqlUdfEntry{name, arg_types, execute}} "
-            "(backends/mysql/api/runtime.hpp); plugin/udf.cpp: ACCEL_MYSQL_QUERY_UDF(<name>) "
-            "(backends/mysql/api/udf_shim.hpp); plugin/functions.sql: the CREATE FUNCTION "
-            "(scripts/mysql_register_functions.sh assembles them)"
-        ),
-    },
-}
+def load_engine_profile(engine: str, repo_root: Path | None = None) -> dict[str, Any]:
+    """The engine's standardized profile (config/workloads/engine_<engine>.yaml), validated."""
+    root = repo_root or find_repo_root()
+    path = pipeline_root(root) / "config" / "workloads" / f"engine_{engine}.yaml"
+    if not path.is_file():
+        raise ValueError(f"engine {engine!r} has no profile at {path}")
+    profile = _load_yaml(path).get("engine_profile")
+    validate_engine_profile(profile, pipeline_root(root), source=f"engine {engine}")
+    return profile
 
 
-def query_registration_paths(engine: str, bench: str = "<bench>", query: Any = "<N>") -> dict[str, str]:
-    """The query's own registration files for an engine (see QUERY_REGISTRATION)."""
-    spec = QUERY_REGISTRATION.get(engine)
-    if spec is None:
-        base = f"accelerators/{bench}/q{query}/{engine}/"
-        return {"register_path": base, "aux_register_path": base,
-                "registry": f"the {engine} backend's per-query registrars (backends/{engine}/api/)"}
-    return {k: v.replace("{bench}", str(bench)).replace("{N}", str(query)) for k, v in spec.items()}
+def engine_host_conventions(
+    engine_name: str, bench: str = "<bench>", query: Any = "<N>", repo_root: Path | None = None
+) -> dict[str, Any]:
+    """Host registration / differential surfaces of an engine, derived from its profile.
 
-
-def engine_host_conventions(engine_name: str, bench: str = "<bench>", query: Any = "<N>") -> dict[str, Any]:
-    """Conventional host registration / differential surfaces for accelerator workloads."""
+    Each query registers from its own directory against the registrars listed in the
+    engine's api/README.md (engine backends name no query).
+    """
     engine = sanitize_engine_name(engine_name)
-    reg = query_registration_paths(engine, bench, query)
+    query_host = load_engine_profile(engine, repo_root)["query_host"]
+    scoped = bool(query_host["query_scoped_harness"])
+    register = f"accelerators/{bench}/q{query}/{engine}/register.cpp"
     host: dict[str, Any] = {
         "engine_name": engine,
-        "register_path": reg["register_path"],
-        "registry": reg["registry"],
-        "sql_entrypoint_convention": f"accel_* table function / SQL UDF on host {engine}",
-        "dataset_env": "ACCEL_TPCH_DB",
-        "query_scoped_harness": True,
-        "differential_binary": "test_tpch_shared_differential",
-        "differential_command": "./build-release/test_tpch_shared_differential \"$ACCEL_TPCH_DB\" <query>",
-        "differential_source": "eval/tests/test_tpch_shared_differential.cpp",
+        "register_path": register,
+        "aux_register_path": register,
+        "registry": f"the registration role of backends/{engine}/api/README.md",
+        "sql_entrypoint_convention": (
+            f"Host-native SQL entrypoints for {engine}, registered from the query's own directory "
+            f"accelerators/{bench}/q{query}/{engine}/ through the backend's registrars "
+            f"(backends/{engine}/api/README.md). Never edit the backend's shared files to add a query."
+        ),
+        "dataset_env": query_host["dataset_env"],
+        "work_db_suffix": query_host["work_db_suffix"],
+        "query_scoped_harness": scoped,
         "smoke_ready": True,
-        "agent_builds_query_host": False,
-        "aux_register_path": reg["aux_register_path"],
+        "agent_builds_query_host": not scoped,
         "query_host_ready_hint": "",
     }
-    if engine == "duckdb":
-        host["sql_entrypoint_convention"] = (
-            "DuckDB table functions registered from the query's directory: base kernels via "
-            "BaseFunctionSetRegistrar, aux accelerators via SharedQueryRegistrar + AuxQueryRegistrar; "
-            "RegisterAcceleratorFunctions (backends/duckdb/api/register.cpp) registers everything "
-            "registered.  Never edit the backend's shared files to add a query."
+    if scoped:
+        host.update(
+            differential_binary="test_tpch_shared_differential",
+            differential_command='./build-release/test_tpch_shared_differential "$ACCEL_TPCH_DB" <query>',
+            differential_source="eval/tests/test_tpch_shared_differential.cpp",
+            multi_conn_ctest_regex="test_aux_multi_connection_stress",
+            cross_accel_ctest_regex="test_cross_accel",
         )
-        host["multi_conn_ctest_regex"] = "test_aux_multi_connection_stress"
-        host["cross_accel_ctest_regex"] = "test_cross_accel"
-        host["work_db_suffix"] = ".duckdb"
         return host
-
-    # Any non-duckdb engine: agent-buildable query host on the existing backend surface.
-    host["query_scoped_harness"] = False
-    host["differential_binary"] = f"test_{engine}_tpch_differential"
-    host["differential_source"] = f"eval/tests/test_{engine}_tpch_differential.cpp"
-    host["differential_command"] = (
-        f"./build-release/test_{engine}_tpch_differential <query> "
-        "(create if missing during accelerator implementation)"
+    binary = f"test_{engine}_tpch_differential"
+    host.update(
+        differential_binary=binary,
+        differential_source=f"eval/tests/{binary}.cpp",
+        differential_command=f"./build-release/{binary} <query> (create if missing during accelerator implementation)",
+        multi_conn_ctest_regex=f"test_{engine}_aux_multi_connection_stress",
+        cross_accel_ctest_regex=f"test_{engine}_cross_accel",
+        query_host_ready_hint=(
+            f"Query host for {engine} is agent-buildable: if the backend lacks a generic surface "
+            f"(registry, SQL entry dispatch, {binary}, multi-conn / cross-accel / "
+            f"bench harnesses), that is the {engine} engine_backend run's job (backends/{engine}/** is "
+            f"owned by it): record it as a backend addition (no query names) and register this query "
+            f"from `{register}`. See pipeline/prompts/shared/query_host_bootstrap.md."
+        ),
     )
-    host["smoke_ready"] = True
-    host["agent_builds_query_host"] = True
-    host["multi_conn_ctest_regex"] = f"test_{engine}_aux_multi_connection_stress"
-    host["cross_accel_ctest_regex"] = f"test_{engine}_cross_accel"
-    host["work_db_suffix"] = f".{engine}_work"
-    host["query_host_ready_hint"] = (
-        f"Query host for {engine} is agent-buildable: if the backend lacks a generic surface "
-        f"(registry, SQL entry dispatch, {host['differential_binary']}, multi-conn / cross-accel / "
-        f"bench harnesses), that is the {engine} engine_backend run's job (backends/{engine}/** is "
-        f"owned by it): record it as a backend addition (no query names) and register this query "
-        f"from `{host['register_path']}`. "
-        "See pipeline/prompts/shared/query_host_bootstrap.md."
-    )
-    host["sql_entrypoint_convention"] = (
-        f"Host-native SQL entrypoints for {engine} (UDF / TF / SRF / extension), each query's "
-        f"registered from its own directory accelerators/{{bench}}/q{{N}}/{engine}/ through the "
-        f"backend's registries ({reg['registry']}).  Call AuxQueryModule via this engine's "
-        f"adapters (mutation/store). Do not require a shared DataChunk IR."
-    )
-    if engine == "postgres":
-        host["dataset_env"] = "PG_CONFIG"
-    elif engine == "mysql":
-        host["dataset_env"] = "ACCEL_MYSQL_DOCKER"
     return host
 
 
@@ -613,13 +564,13 @@ def select_engine(workload: dict[str, Any], requested: str, name: str) -> str:
     return engine
 
 
-def _normalize_accelerator_engine(data: dict[str, Any], engine: str) -> dict[str, Any]:
+def _normalize_accelerator_engine(data: dict[str, Any], engine: str, repo_root: Path) -> dict[str, Any]:
     """Pin the run's engine and attach host conventions for accelerators."""
     data["engine_name"] = engine
     # Generated query tree for this engine.
     bench = str(data.get("benchmark_name") or data.get("benchmark") or "tpch")
     qnum = data.get("query_number")
-    host = engine_host_conventions(engine, bench, qnum if qnum is not None else "<N>")
+    host = engine_host_conventions(engine, bench, qnum if qnum is not None else "<N>", repo_root)
     data["engine_host"] = host
     writes = list(data.get("write_paths") or [])
     # The query's run owns its directory (one glob); backends/<engine>/** belongs to
@@ -632,14 +583,8 @@ def _normalize_accelerator_engine(data: dict[str, Any], engine: str) -> dict[str
         if extra and extra not in writes:
             writes.append(extra)
 
-    if engine != "duckdb":
-        for extra in (
-            host.get("register_path") or "",
-            host.get("aux_register_path") or "",
-            host.get("differential_source") or "",
-        ):
-            if extra and extra not in writes:
-                writes.append(extra)
+    if host["agent_builds_query_host"] and host["differential_source"] not in writes:
+        writes.append(host["differential_source"])
     data["write_paths"] = _dedupe_preserve(writes)
     return data
 
@@ -780,12 +725,15 @@ def load_benchmark_aux_state_defaults(
     return _load_yaml(path)
 
 
-def _pick_engine_search_paths(workload: dict[str, Any], engine: str) -> None:
-    """Resolve a per-engine `fairness.kernel_search_paths` mapping to the run's engine."""
+def _expand_fairness_search_paths(workload: dict[str, Any], engine: str) -> None:
+    """Expand {bench}/{engine} in `fairness.kernel_search_paths` for the run."""
     fairness = workload.get("fairness")
     paths = fairness.get("kernel_search_paths") if isinstance(fairness, dict) else None
-    if isinstance(paths, dict):
-        fairness["kernel_search_paths"] = list(paths.get(engine) or [])
+    if paths:
+        bench = str(workload.get("benchmark_name", "tpch"))
+        fairness["kernel_search_paths"] = [
+            str(p).replace("{bench}", bench).replace("{engine}", engine) for p in paths
+        ]
 
 
 def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
@@ -1009,7 +957,7 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
     if workload.get("workload_kind") != "engine_backend" and not engine:
         raise ValueError(
             "accelerator workload requires explicit engine_name "
-            "(no default to duckdb or postgres)"
+            "(no default engine)"
         )
 
     if workload.get("workload_kind") == "aux_state":
@@ -1022,28 +970,19 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         if "optimization_max_turns_per_episode" in aux_defaults:
             optimization_max_turns_per_episode = int(aux_defaults["optimization_max_turns_per_episode"])
 
-    # Non-duckdb accelerators: the query's own registration + the engine's differential
-    # harness (backends/<engine>/** stays the engine_backend run's; see write_ownership).
-    if (
-        workload.get("workload_kind") != "engine_backend"
-        and engine
-        and engine != "duckdb"
-    ):
-        host = dict(workload.get("engine_host") or engine_host_conventions(engine))
-        for extra in (
-            host.get("register_path") or "",
-            host.get("aux_register_path") or "",
-            host.get("differential_source") or "",
-            "CMakeLists.txt",
-            "cmake/**",
-        ):
-            if extra and extra not in extra_write_paths:
+    # Engines whose harness the accelerator run builds: its differential source and targets
+    # (backends/<engine>/** stays the engine_backend run's; see write_ownership).
+    host = workload.get("engine_host") or {}
+    if workload.get("workload_kind") != "engine_backend" and host.get("agent_builds_query_host"):
+        for extra in (host["differential_source"], "CMakeLists.txt", "cmake/**"):
+            if extra not in extra_write_paths:
                 extra_write_paths.append(extra)
         extra_write_paths = _dedupe_preserve(extra_write_paths)
+        binary = re.escape(host["differential_binary"])
         extra_allowed = list(extra_allowed) + [
-            rf"^(\\.\\/)?build-release\\/test_{engine}_tpch_differential( .*)?$",
-            rf"^cmake --build build-release --target test_{engine}_tpch_differential( .*)?$",
-            rf"^ACCEL_[A-Z_]+=\\S+( ACCEL_[A-Z_]+=\\S+)* (\\.\\/)?build-release\\/test_{engine}_tpch_differential( .*)?$",
+            rf"^(\\.\\/)?build-release\\/{binary}( .*)?$",
+            rf"^cmake --build build-release --target {binary}( .*)?$",
+            rf"^ACCEL_[A-Z_]+=\\S+( ACCEL_[A-Z_]+=\\S+)* (\\.\\/)?build-release\\/{binary}( .*)?$",
         ]
 
     workload_stage_turns = workload.get("stage_max_turns")
@@ -1161,9 +1100,9 @@ def load_workload(name: str, repo_root: Path | None = None, *, engine: str = "")
 
     if data.get("workload_kind") == "aux_state":
         _merge_aux_defaults(data, root)
-    _pick_engine_search_paths(data, engine)
+    _expand_fairness_search_paths(data, engine)
     _derive_query_names(data, engine, root)
-    return _normalize_accelerator_engine(data, engine)
+    return _normalize_accelerator_engine(data, engine, root)
 
 
 def load_run_workload(pipeline_config: PipelineConfig, name: str) -> dict[str, Any]:

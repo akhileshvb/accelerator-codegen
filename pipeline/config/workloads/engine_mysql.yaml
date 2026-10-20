@@ -35,7 +35,6 @@ engine_profile:
 
   host_runtime:
     kind: docker
-    discovery: mysql_docker
     ensure_script: scripts/ensure_accel_mysql_test.sh
     build_script: scripts/build_accel_mysql_plugin.sh
     ninja_targets_env: ACCEL_MYSQL_NINJA_TARGETS
@@ -115,6 +114,11 @@ engine_profile:
     mechanism: "Plugin system variables (MYSQL_SYSVAR), settable with SET GLOBAL and a config file; the server prefixes each name with the plugin's name; an update callback runs on every SET GLOBAL."
     names: [threads, read_threads, build_threads, maint_threads]
     reload_semantics: "Applied at plugin init and by the update callback on SET GLOBAL; a client environment variable does not reach the server process."
+
+  query_host:
+    query_scoped_harness: false
+    dataset_env: ACCEL_MYSQL_DOCKER
+    work_db_suffix: ".mysql_work"
 
   oracle:
     differential_db: "TPC-H database in the mysql container (scripts/setup_accel_mysql_tpch_test_db.sh, schema with utf8mb4_0900_bin text columns)."

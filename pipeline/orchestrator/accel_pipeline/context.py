@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +26,7 @@ from accel_pipeline.base_bench import (
     load_base_optimization_state,
 )
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
+from accel_pipeline.engine_host import format_host_block
 from accel_pipeline.engine_profile import render_engine_profile
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
 from accel_pipeline.models import is_critique_stage, is_implementation_stage
@@ -107,13 +107,13 @@ def build_retrieval_brief(
     return "\n".join(lines)
 
 
-def _accelerator_engine_host_block(workload: dict[str, Any]) -> str:
+def _accelerator_engine_host_block(workload: dict[str, Any], repo_root: Path, build_dir: Path) -> str:
     """Host registration / differential conventions for query-accelerator workloads."""
     from accel_pipeline.config import engine_host_conventions, sanitize_engine_name
 
     raw = workload.get("engine_name")
     engine = sanitize_engine_name(str(raw) if raw else "")
-    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=repo_root))
     lines = [
         "### Engine host (query accelerator)",
         "",
@@ -151,47 +151,12 @@ def _accelerator_engine_host_block(workload: dict[str, Any]) -> str:
                 f"Expected differential source: `{host.get('differential_source', '')}`.",
             ]
         )
-    if engine == "postgres":
-        from accel_pipeline.postgres_docker import (
-            docker_host_from_env,
-            format_agent_discovery_block,
-        )
-
-        lines.extend(["", format_agent_discovery_block(docker_host_from_env())])
-    elif engine == "mysql":
-        from accel_pipeline.mysql_docker import (
-            docker_host_from_env as mysql_host_from_env,
-            format_agent_discovery_block as format_mysql_discovery_block,
-        )
-
-        lines.extend(["", format_mysql_discovery_block(mysql_host_from_env())])
+    lines.extend(["", format_host_block(workload, repo_root, build_dir)])
     return "\n".join(lines)
 
 
-def _engine_host_discovery_block(workload: dict[str, Any]) -> str:
-    """Resolved host SDK paths for engines that need an external install."""
-    host = dict(workload.get("host_runtime") or {})
-    discovery = str(host.get("discovery") or "")
-    if discovery == "postgres_docker":
-        from accel_pipeline.postgres_docker import (
-            docker_host_from_env,
-            format_agent_discovery_block,
-        )
-
-        return format_agent_discovery_block(docker_host_from_env())
-    if discovery == "mysql_docker":
-        from accel_pipeline.mysql_docker import (
-            docker_host_from_env,
-            format_agent_discovery_block,
-        )
-
-        return format_agent_discovery_block(docker_host_from_env())
-    return (
-        "### Host SDK discovery\n\n"
-        "No auto-discovery plugin is configured for this engine "
-        f"(host_runtime.kind=`{host.get('kind') or 'host_cmake'}`). "
-        f"Connect: {host.get('connect') or 'see the engine profile'}"
-    )
+def _engine_host_discovery_block(workload: dict[str, Any], repo_root: Path, build_dir: Path) -> str:
+    return format_host_block(workload, repo_root, build_dir)
 
 
 def _engine_profile_for_stage(workload: dict[str, Any], stage: str) -> str:
@@ -297,7 +262,7 @@ def build_prompt_context(
     engine_pascal = engine_pascal_name(engine_name) if engine_name else ""
     engine_host = dict(
         workload.get("engine_host")
-        or (engine_host_conventions(engine_name) if engine_name else {})
+        or (engine_host_conventions(engine_name, repo_root=repo) if engine_name else {})
     )
     opt_stages = (
         "optimization",
@@ -352,8 +317,8 @@ def build_prompt_context(
         )
         if is_aux:
             benchmark_notes += (
-                f"\n- SEC EDGAR aux state: `accelerators/sec_edgar/q{query}/{engine_name or 'duckdb'}/aux/module.hpp` "
-                f"(base API: `accelerators/sec_edgar/q{query}/{engine_name or 'duckdb'}/base/query.hpp`).\n"
+                f"\n- SEC EDGAR aux state: `accelerators/sec_edgar/q{query}/{engine_name}/aux/module.hpp` "
+                f"(base API: `accelerators/sec_edgar/q{query}/{engine_name}/base/query.hpp`).\n"
                 "- Write workload suite is **`filing_append`** / **`value_append`**, not TPC-H `lineitem` point updates.\n"
                 "- Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/prompts/sec_edgar/aux_state_notes.md`.\n"
                 "- Register with `accel_add_aux_state_query(BENCHMARK sec_edgar QUERY_NUM N ...)` in CMakeLists.txt.\n"
@@ -548,18 +513,6 @@ def build_prompt_context(
         "benchmark_template_path": str(workload.get("benchmark_template_path", "")),
         "repo_root": str(repo),
         "build_dir": pipeline_config.build_dir.name,
-        "duckdb_root": str(
-            Path(
-                os.environ.get("ACCEL_DUCKDB_ROOT")
-                or (
-                    Path(
-                        os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
-                        or pipeline_config.repo_root
-                    ).resolve().parent
-                    / "accelerator-codegen-duckdb"
-                )
-            ).resolve()
-        ),
         "reference_sql": reference_sql,
         "reference_sql_path": reference_sql_path,
         "workload_reference_section": workload_reference_section,
@@ -666,16 +619,16 @@ def build_prompt_context(
         "differential_command": str(engine_host.get("differential_command") or ""),
         "multi_conn_ctest_regex": str(engine_host.get("multi_conn_ctest_regex") or ""),
         "cross_accel_ctest_regex": str(engine_host.get("cross_accel_ctest_regex") or ""),
-        "dataset_env": str(engine_host.get("dataset_env") or "ACCEL_TPCH_DB"),
+        "dataset_env": str(engine_host.get("dataset_env") or ""),
         "engine_profile": _engine_profile_for_stage(workload, stage) if is_engine else "",
         "backend_api": "" if is_engine or not engine_name else render_backend_api(repo, engine_name),
         "accelerator_engine_profile": (
             "" if is_engine or not engine_name else render_accelerator_engine_profile(pipe, engine_name)
         ),
         "engine_host_discovery": (
-            _engine_host_discovery_block(workload)
+            _engine_host_discovery_block(workload, repo, pipeline_config.build_dir)
             if is_engine
-            else _accelerator_engine_host_block(workload)
+            else _accelerator_engine_host_block(workload, repo, pipeline_config.build_dir)
         ),
 
         "optional_examples_section": (

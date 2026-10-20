@@ -34,14 +34,12 @@ def _implementation_user_message(
     q = query
     build = pipeline_config.build_dir.name
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
-    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
-    diff_bin = str(host.get("differential_binary") or "test_tpch_shared_differential")
-    diff_cmd = str(
-        host.get("differential_command")
-        or f'./{build}/{diff_bin} "$ACCEL_TPCH_DB" {q}'
-    )
-    if engine == "duckdb":
-        diff_step = f'3. ./{build}/{diff_bin} "$ACCEL_TPCH_DB" {q}\n'
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=pipeline_config.repo_root))
+    diff_bin = str(host["differential_binary"])
+    dataset = f'"${host["dataset_env"]}"'
+    diff_cmd = str(host.get("differential_command") or f"./{build}/{diff_bin} {dataset} {q}")
+    if host["query_scoped_harness"]:
+        diff_step = f"3. ./{build}/{diff_bin} {dataset} {q}\n"
         trailing = (
             "4. MCP run_multi_connection (or request_gate aux_multi_connection) until status=pass\n"
             "Keep fixing and re-running steps 3–4 until both pass. "
@@ -56,7 +54,7 @@ def _implementation_user_message(
         )
         trailing = (
             f"4. MCP run_multi_connection until pass (ctest {multi}; "
-            f"replicate duckdb multi-conn/cross-accel/bench harnesses for {engine})\n"
+            f"replicate the shipped multi-conn/cross-accel/bench harnesses for {engine})\n"
             "Keep fixing and re-running steps 3–4 until both pass. "
         )
     return (

@@ -354,7 +354,7 @@ def test_repo_context_pack_roundtrip(tmp_path: Path):
     (tmp_path / "accelerators/tpch/q7/duckdb/aux/module.cpp").write_text("x\n", encoding="utf-8")
     out = ensure_repo_context_pack(tmp_path, force=True)
     assert out == pack_path(tmp_path)
-    assert "SharedQueries" in out.read_text(encoding="utf-8")
+    assert "Registration surfaces" in out.read_text(encoding="utf-8")
     ptr = format_seed_pointer(tmp_path)
     assert "repo_context_pack.md" in ptr
 

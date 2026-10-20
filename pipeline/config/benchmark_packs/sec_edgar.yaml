@@ -50,6 +50,5 @@ snapshot_paths:
 fairness:
   cardinality_constants: []
   kernel_search_paths:
-    duckdb:
-      - accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/kernel.cpp
-      - accelerators/sec_edgar/q{N}/duckdb/base/single-threaded/fused_scan.cpp
+    - accelerators/{bench}/q{N}/{engine}/base/single-threaded/kernel.cpp
+    - accelerators/{bench}/q{N}/{engine}/base/single-threaded/fused_scan.cpp

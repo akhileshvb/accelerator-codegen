@@ -1,7 +1,7 @@
 """One-shot query-host bootstrap (entrypoints + differential + shared registration).
 
 Runs once per engine before pack workers fan out (and before a single-query
-accelerator pipeline). DuckDB skips — host already exists.
+accelerator pipeline). Engines whose backend ships a query-scoped harness skip.
 """
 
 from __future__ import annotations
@@ -43,10 +43,8 @@ def needs_host_bootstrap(workload: dict[str, Any]) -> bool:
     if workload.get("workload_kind") == "engine_backend":
         return False
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
-    if engine == "duckdb":
-        return False
     host = dict(workload.get("engine_host") or engine_host_conventions(engine))
-    return bool(host.get("agent_builds_query_host", True))
+    return bool(host["agent_builds_query_host"])
 
 
 def host_bootstrap_passed(repo_root: Path, engine_name: str) -> bool:
@@ -61,7 +59,7 @@ def host_bootstrap_passed(repo_root: Path, engine_name: str) -> bool:
         return False
     # Reject stale/test markers: agent-buildable engines must have differential source on disk.
     engine = sanitize_engine_name(engine_name)
-    host = engine_host_conventions(engine)
+    host = engine_host_conventions(engine, repo_root=repo_root)
     if host.get("agent_builds_query_host"):
         src = str(host.get("differential_source") or "").strip()
         if src and not (Path(repo_root) / src).is_file():
@@ -140,8 +138,8 @@ def format_host_bootstrap_gate_feedback(
         [
             "",
             "Fix SQL entrypoints, the differential harness, and/or CMake so this "
-            "gate passes. Postgres: Docker (`request_gate` `host_bootstrap`) — "
-            "do not `cmake --build build-release` / host make. Mid-loop MCP "
+            "gate passes. Build through the engine's host.sh (`request_gate` "
+            "`host_bootstrap`), not a host cmake build. Mid-loop MCP "
             "`request_gate` `host_bootstrap` until green. Do not ignore this log.",
         ]
     )
@@ -164,12 +162,12 @@ def run_host_bootstrap(
     from accel_pipeline.stages.host_bootstrap import run as run_stage
 
     engine = sanitize_engine_name(engine_name)
-    if engine == "duckdb":
+    if not engine_host_conventions(engine, repo_root=pipeline_config.repo_root)["agent_builds_query_host"]:
         path = write_host_bootstrap_status(
             pipeline_config.repo_root,
             engine,
             status="pass",
-            reason="duckdb host already shipped; bootstrap skipped",
+            reason="query-scoped harness already shipped; bootstrap skipped",
         )
         return {"engine_name": engine, "status": "pass", "skipped": True, "path": str(path)}
 
@@ -385,7 +383,7 @@ def ensure_host_bootstrap_for_pack(
     dry_run: bool = False,
     skip_gates: bool = False,
 ) -> list[dict[str, Any]]:
-    """Pack entry: bootstrap each distinct non-duckdb engine once before workers."""
+    """Pack entry: bootstrap each distinct engine without a query-scoped harness once before workers."""
     needed = engines_needing_bootstrap_from_workloads(
         repo_root, [(str(q.workload), str(q.engine)) for q in queries]
     )

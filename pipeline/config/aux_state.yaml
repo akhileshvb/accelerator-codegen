@@ -10,11 +10,9 @@ write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
   # the query's own tree: module, layout, registrars (engine backends name no query)
-  - accelerators/tpch/q*/**
-  - eval/tests/test_support/cross_accel_helpers.cpp
-  - eval/tests/test_support/cross_accel_helpers.hpp
-  - eval/bench/tpch/single-threaded/tpch_arg_variants.cpp
-  - eval/bench/tpch/single-threaded/tpch_arg_variants.hpp
+  - accelerators/*/q*/**
+  - eval/tests/test_support/**
+  - eval/bench/**/*_arg_variants.*
 
 allowed_commands:
   # Build / test (gates and agent loop)
@@ -131,20 +129,12 @@ post_audit_gates:
   - module_tsan
   - aux_bench_sweep
 
-# Optional static fairness scan paths per engine (agent may request_gate fairness; not a hard fail gate).
+# Optional static fairness scan paths, {bench}/{engine} expanded for the run (agent may request_gate fairness; not a hard fail gate).
 fairness:
   kernel_search_paths:
-    duckdb:
-      - accelerators/tpch/q{N}/duckdb/aux/module.cpp
-      - accelerators/tpch/q{N}/duckdb/aux/finalize.cpp
-      - accelerators/tpch/q{N}/duckdb/base/single-threaded/kernel.cpp
-    postgres:
-      - accelerators/tpch/q{N}/postgres/aux/module.cpp
-      - accelerators/tpch/q{N}/postgres/aux/finalize.cpp
-      - accelerators/tpch/q{N}/postgres/base/single-threaded/kernel.cpp
-    mysql:
-      - accelerators/tpch/q{N}/mysql/aux/module.cpp
-      - accelerators/tpch/q{N}/mysql/aux/finalize.cpp
+    - accelerators/{bench}/q{N}/{engine}/aux/module.cpp
+    - accelerators/{bench}/q{N}/{engine}/aux/finalize.cpp
+    - accelerators/{bench}/q{N}/{engine}/base/single-threaded/kernel.cpp
 
 prompt_subdir: aux_state
 

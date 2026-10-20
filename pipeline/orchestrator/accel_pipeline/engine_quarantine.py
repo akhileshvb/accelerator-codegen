@@ -19,13 +19,6 @@ from accel_pipeline.config import workload_engines
 from accel_pipeline.layout import query_dir
 
 
-# Product host / sibling adapter layouts that must not be visible to the agent:
-# each engine backend is one tree, backends/<engine>/.
-_DEFAULT_FOREIGN_TREES = (
-    "backends/duckdb",
-)
-
-
 @dataclass
 class QuarantineSession:
     repo_root: Path
@@ -79,7 +72,7 @@ def foreign_trees_for_workload(workload: dict[str, Any]) -> list[str]:
     if isinstance(configured, list) and configured:
         trees = [str(p).strip().rstrip("/") for p in configured if str(p).strip()]
     else:
-        trees = list(_DEFAULT_FOREIGN_TREES)
+        trees = []
     # Never quarantine the engine being generated.
     if engine:
         trees = [
