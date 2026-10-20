@@ -3,6 +3,9 @@
 # ACCELERATOR_CODEGEN_BUILD_{{ENGINE}} is ON; only files under backends/{{engine_name}}/ are named here.
 # Helper .cmake / Find modules go in backends/{{engine_name}}/ and are included by path.
 
+# The hostctl layer writes only the interface target and the test glob below; the layers that
+# create sources add accel_backend_library and the module.
+#
 # Sources of libaccelerator_codegen: host, catalog, and the per-query kernels under
 # accelerators/*/q*/{{engine_name}}/ (AUX, BASE: globs relative to that directory).
 accel_backend_library(
@@ -24,7 +27,7 @@ add_library(accel_backend_{{engine_name}} INTERFACE)
 # In-process module/plugin (host layer): backend sources plus per-query module code.
 # accel_glob_sources(_{{engine_name}}_query_sources "accelerators/*/q*/{{engine_name}}/<module dir>/*.cpp")
 # add_library(accelerator_codegen_{{engine_name}} MODULE <backend sources> ${_{{engine_name}}_query_sources})
-# target_link_libraries(accelerator_codegen_{{engine_name}} PRIVATE accelerator_codegen duckdb_sibling)
+# target_link_libraries(accelerator_codegen_{{engine_name}} PRIVATE accelerator_codegen accel_backend_{{engine_name}})
 # set_target_properties(accel_backend_{{engine_name}} PROPERTIES ACCEL_BACKEND_MODULE accelerator_codegen_{{engine_name}})
 
 # Layer, contract and adversarial harnesses: every tests/test_{{engine_name}}_<layer>.cpp is

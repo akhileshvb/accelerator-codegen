@@ -6,5 +6,5 @@
 #
 # Native SDK libs and include dirs go on accel_backend_{{engine_name}} (INTERFACE target in
 # backend.cmake), which every harness links.
-# Postgres harnesses: #include "backends/postgres/tests/postgres_tooling.hpp"
-# and call accel::postgres::DiscoverTools() (fail closed if !ok).
+# A harness that needs a tool the engine provides discovers it through the backend's own test
+# helpers and fails closed if it is missing.

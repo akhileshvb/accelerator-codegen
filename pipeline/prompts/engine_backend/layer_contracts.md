@@ -98,7 +98,7 @@ Implements the engine's capture of writes (`engine/capture.*`).
   allocation** (no `std::string` / `shared_ptr` per row).
 - Subtransaction depth: `CommitSubtransaction` / `AbortSubtransaction`; a
   rolled-back (sub)transaction never reaches a commit.
-- A change not expressible as rows (Postgres TRUNCATE) invalidates the
+- A change not expressible as rows (TRUNCATE) invalidates the
   accelerators of its tables at commit (`AcceleratorRuntime::Invalidate()`;
   shipped placement: an invalidating `CommittedChange`). An engine that
   reports TRUNCATE as deletes needs nothing special.
@@ -201,8 +201,8 @@ Implements the host (`api/{engine}_host.*`): the `EngineSlots` object owning a
   cannot be delivered becomes a gap (the runtime rebuilds). Read threads call
   no engine API: no engine headers in their files, signals blocked. A worker
   restart is safe: the next build includes everything.
-- **Thread budget and phase caps.** One `ThreadBudget` from `ResolveThreadBudget(engine setting)`; the read, build and maintenance caps from `ResolveReadThreads` / `ResolveBuildThreads` / `ResolveMaintenanceThreads` with the engine's own settings when it has a settings mechanism (e.g. Postgres `accel.read_threads` / `build_threads` / `maint_threads`; `ACCEL_AUX_*_THREADS` always override), applied with `SetPhaseLimits`. A multi-process placement shares the budget across processes (`TokenSource`).
-- **Table sizes and cost model.** `TableRows(table)` returns the engine's cheap row estimate (64-bit; 0 only if unknown) so `DataScaleRows` scales the maintenance policy; `CostModel(accelerator)` comes from `core::ResolveAuxCostModelPath` with the engine name, the scale tag (DuckDB: `ACCEL_AUX_BENCH_DB_LABEL`) and the per-engine override env var.
+- **Thread budget and phase caps.** One `ThreadBudget` from `ResolveThreadBudget(engine setting)`; the read, build and maintenance caps from `ResolveReadThreads` / `ResolveBuildThreads` / `ResolveMaintenanceThreads` with the engine's own settings when it has a settings mechanism (the profile's `thread_knobs`, base names of `api_contract.md` §4; `ACCEL_AUX_*_THREADS` always override), applied with `SetPhaseLimits`. A multi-process placement shares the budget across processes (`TokenSource`).
+- **Table sizes and cost model.** `TableRows(table)` returns the engine's cheap row estimate (64-bit; 0 only if unknown) so `DataScaleRows` scales the maintenance policy; `CostModel(accelerator)` comes from `core::ResolveAuxCostModelPath` with the engine name, the scale tag (the profile names where it comes from) and the per-engine override env var.
 - No commit is dropped or skipped by the host; no thread pool, build
   scheduler, lock or version logic of its own.
 

@@ -53,7 +53,7 @@ def test_load_engine_mysql_workload():
     assert "engine_capture" in w["post_validation_gates"]
     assert "engine_adversarial" in w["post_validation_gates"]
     assert "slot_epoch_stress" in w["post_validation_gates"]
-    assert "slot_differential" in w["post_validation_gates"]
+    assert "slot_differential" not in w["post_validation_gates"]
     assert {"slot_own_writes", "slot_ddl_events"} <= set(w["post_validation_gates"])
     assert "engine_adversarial" not in w["post_implementation_gates"]
     assert w.get("requires_in_process_host") is True

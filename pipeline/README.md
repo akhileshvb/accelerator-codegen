@@ -281,19 +281,20 @@ python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
   --stage impl_capture --dry-run
 ```
 
-- Stages: analysis (sketches every layer) → `impl_capture` (S1) → `impl_epochs`
+- Stages: analysis (sketches every layer) → `impl_hostctl` (`host.sh`, its own
+  prompt `impl_hostctl.md`) → `impl_capture` (S1) → `impl_epochs`
   (S2-S4) → `impl_scan` (S5, S8) → `impl_runtime` (S6) → `impl_host` (S7; skipped
-  unless `requires_in_process_host`) → architecture_audit → validation
+  unless `requires_in_process_host`) → `impl_api` (accelerator-facing `api/`) →
+  architecture_audit → validation
   (adversarial tests, then the slot gates)
 - Layer spec: `prompts/engine_backend/layers.md`
 - Each impl layer loops `engine_build` + that layer’s gate until pass
 - Architecture audit is read-only; on fail it re-runs **only the named failing
   layers** (small impl fix-up) then re-audits (up to `architecture_audit_max_rounds`)
-- Gates: `engine_capture`, `engine_epochs`, `engine_scan`, `engine_runtime`,
-  `engine_host`, `engine_adversarial`, then the backend-generic `slot_*` gates
+- Gates: `engine_hostctl`, `engine_capture`, `engine_epochs`, `engine_scan`, `engine_runtime`,
+  `engine_host`, `engine_api_conformance`, `engine_adversarial`, then the backend-generic `slot_*` gates
   (`slot_epoch_stress`, `slot_hits_under_writes`, `slot_read_after_commit`,
-  `slot_txn_edges`, `slot_restart`, `slot_own_writes`, `slot_ddl_events`,
-  `slot_differential`;
+  `slot_txn_edges`, `slot_restart`, `slot_own_writes`, `slot_ddl_events`, `slot_tsan`;
   `gates/README_runtime_gates.md`)
 - Workloads: `config/workloads/engine_*.yaml` (`engine_.template.yaml` to start one).
   An engine's only specific input is its **engine profile** (`engine_profile`,

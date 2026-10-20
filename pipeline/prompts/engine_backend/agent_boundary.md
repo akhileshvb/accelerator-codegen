@@ -4,7 +4,7 @@
 
 - `backends/{engine}/engine/` — S1 capture, S5/S8 engine-local scans
 - `backends/{engine}/api/` — the host (`{engine}_host.*`, the `EngineSlots` implementation and placement), S7 entry points / extension glue (host layer), query registries
-- `backends/{engine}/state/` — shared state some engines need for S2-S4 (Postgres: commit gates, epoch ring, version horizon), shipped-worker transport (S6)
+- `backends/{engine}/state/` — shared state some engines need for S2-S4 (for example commit gates, an epoch ring, a version horizon), shipped-worker transport (S6)
 - `backends/{engine}/tests/` — gate-test UDFs and toy bridges (e.g. `extension_test_*.cpp`), built only into a test-only `<module>_test` MODULE/plugin that the layer harnesses load; never into the production MODULE/plugin
 - Query **registries** + generic dispatch (`layer_contracts.md`, "Query registries"): the backend names no query; queries register from `accelerators/{benchmark}/q{N}/{engine}/`
 - **`backends/{engine}/tests/test_{engine}_{layer}.cpp`** — one harness per layer in `layers.md` (implementation-owned)
