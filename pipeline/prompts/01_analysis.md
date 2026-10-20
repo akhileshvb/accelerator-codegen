@@ -11,10 +11,11 @@ shared portable `DataChunk` IR or a default host.
 ## Repositories
 
 - {{repo_root}}
-- {{duckdb_root}}
 
 {{schema_reference_section}}
 
+{{backend_api}}
+{{accelerator_engine_profile}}
 ## Query
 
 ```sql

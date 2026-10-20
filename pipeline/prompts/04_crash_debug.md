@@ -13,10 +13,8 @@ A mandatory gate failed after your last edit (build error, segfault, correctness
 
 ## Engine host (critical)
 
-Workload `engine_name` is **`{{engine_name}}`**. If it is not `duckdb`:
-
-- **Do not** “fix” correctness by switching to DuckDB registration, DuckDB smoke tests, or `*.duckdb` datasets.
+Workload `engine_name` is **`{{engine_name}}`**. 
+- **Do not** “fix” correctness by switching to another engine's registration, smoke tests or datasets.
 - Fix the **{{engine_name}}** host path (SQL entrypoints, `test_{{engine_name}}_tpch_differential`, CMake). Re-run `host_bootstrap` surfaces if missing.
-- DuckDB package/`RegisterAcceleratorFunctions` is the wrong host for this workload.
 
 {{constraints}}

@@ -20,6 +20,7 @@ from accel_pipeline.analysis_context import (
     stage_analysis_json,
 )
 from accel_pipeline.aux_bench import load_bench_summary, load_optimization_state
+from accel_pipeline.backend_api import render_accelerator_engine_profile, render_backend_api
 from accel_pipeline.base_bench import (
     compact_base_optimization_state,
     compact_summary_for_prompt,
@@ -678,6 +679,10 @@ def build_prompt_context(
         "cross_accel_ctest_regex": str(engine_host.get("cross_accel_ctest_regex") or ""),
         "dataset_env": str(engine_host.get("dataset_env") or "ACCEL_TPCH_DB"),
         "engine_profile": _engine_profile_for_stage(workload, stage) if is_engine else "",
+        "backend_api": "" if is_engine or not engine_name else render_backend_api(repo, engine_name),
+        "accelerator_engine_profile": (
+            "" if is_engine or not engine_name else render_accelerator_engine_profile(pipe, engine_name)
+        ),
         "engine_host_discovery": (
             _engine_host_discovery_block(workload)
             if is_engine

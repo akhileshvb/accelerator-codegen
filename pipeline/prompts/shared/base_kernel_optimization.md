@@ -1,6 +1,6 @@
 # Base single-threaded kernel optimization (no aux-state)
 
-Goal: **beat** DuckDB reference SQL on the benchmark dataset (`PRAGMA threads=1`, full result consumption).
+Goal: **beat** the engine's own reference SQL on the benchmark dataset (reference limited to one thread, full result consumption).
 
 ## Workflow
 
@@ -35,7 +35,7 @@ Cross-check reference SQL and `analysis.json` for join order, filters, and GROUP
 
 ## Anti-patterns
 
-- One-line tweaks when the gap to DuckDB is large (need coordinated bundles)
+- One-line tweaks when the gap to the reference is large (need coordinated bundles)
 - Optimizing aggregation because a phase label says "scan" without tracing the inner loop
 - Profiling a different path than production (chunk path vs fused scan)
 - `getenv` on hot paths; SF-hardcoded capacities

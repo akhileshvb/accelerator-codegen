@@ -12,9 +12,9 @@ The orchestrator scores aux-state work via `aux_bench_sweep` (`scripts/run_aux_b
 
 Write-frequency / write-interval points must exercise **query-specific maintenance**:
 
-1. Catalog `probe_select_sql` + `build_probe` must produce updates that **change DuckDB `base_sql`** for this query (same bar as incremental differential).
-2. The shared sweep (`aux_benchmark_sweep_session.cpp` / `RunConfiguredMultiSweep`) builds the write pool via `CollectInvalidatingSharedProbes` — candidates whose `update_sql` does not change the answer are dropped; **zero survivors fails the bench**.
-3. Do **not** hardcode a non-catalog SELECT of arbitrary rows, or bump columns this query ignores (e.g. `l_extendedprice` on Q4). Prefer `CollectInvalidatingSharedProbes(connection, entry)` for any local `PrecomputeWriteProbes`.
+1. Catalog `probe_select_sql` + `build_probe` must produce updates that **change the engine's `base_sql` result** for this query (same bar as incremental differential).
+2. The shared sweep builds the write pool from the catalog probes, keeping only invalidating ones — candidates whose `update_sql` does not change the answer are dropped; **zero survivors fails the bench**.
+3. Do **not** hardcode a non-catalog SELECT of arbitrary rows, or bump columns this query ignores (e.g. `l_extendedprice` on Q4). Use the shared invalidating-probe helper for any local precompute of write probes.
 4. Multi-connection “invalidating writer” SQL in helpers is a separate stress path; the **bench write pool** is the catalog probe path above.
 
 ## Sweep protocol
@@ -26,11 +26,11 @@ Each point sets `ACCEL_Q{{query_number}}_WRITE_FREQUENCY_PCT` and uses a fresh D
 
 | Variable | Purpose |
 |----------|---------|
-| `ACCEL_TPCH_DB` | Path to SF1 DuckDB copy for this point |
+| `ACCEL_TPCH_DB` | Path or connection string of the SF1 dataset copy for this point |
 | `ACCEL_Q{N}_WRITE_FREQUENCY_PCT` | 0, 1, 10, or 50 |
 | `ACCEL_Q{N}_BENCH_SUITE` | e.g. `lineitem_only` |
 | `ACCEL_Q{N}_WRITE_LOCALITY` | e.g. `single_month` / `single_segment` |
-| `ACCEL_BENCH_WARMUP` | Warmup queries before measured loop (DuckDB reference, base kernel, and aux) |
+| `ACCEL_BENCH_WARMUP` | Warmup queries before measured loop (engine reference, base kernel, and aux) |
 | `ACCEL_BENCH_QUERIES` | Measured queries per point (used for all timed paths) |
 | `ACCEL_BENCH_REF_SAMPLES` | Legacy; ignored when benchmarks use warmup + measured loop |
 | `ACCEL_BENCH_BASE_WRITE_SAMPLES` | Base-path write calibration samples |
@@ -46,18 +46,18 @@ Print **one header row** and **one data row** to stdout. The row must include at
 `blended_query_speedup`, `cold_start_accel_workload_us`, `setup_full_build_ms`,
 `accel_hit_rate`, `writes_executed`, `duckdb_workload_us`, `accel_workload_us`.
 
-Copy the column layout from `accelerators/tpch/q4/bench/benchmark_q4_aux.cpp` or `accelerators/tpch/q2/bench/benchmark_q2_aux.cpp`.
+Copy the column layout from a peer's `bench/benchmark_q*_aux.cpp`.
 
 Optional `speedup_gate ...` lines may follow the CSV row (for audit gates); the sweep parser ignores non-CSV lines.
 
 ## Measured workload
 
 1. Register accelerators, run `accel_q{N}_aux_build()` once.
-2. Warmup loop: `ACCEL_BENCH_WARMUP` untimed runs for DuckDB reference SQL, base kernel, and aux query.
-3. Measured loop: `ACCEL_BENCH_QUERIES` timed aux iterations with optional writes. DuckDB reference and base kernel use the same warmup + measured counts on separate connections.
+2. Warmup loop: `ACCEL_BENCH_WARMUP` untimed runs for the engine's reference SQL, base kernel, and aux query.
+3. Measured loop: `ACCEL_BENCH_QUERIES` timed aux iterations with optional writes. The engine reference and base kernel use the same warmup + measured counts on separate connections.
 4. Write scheduling: 1% → every 100th query; 10% → every 10th; 50% → every 2nd.
 
-**Performance:** precompute a small pool of **invalidating** write targets at startup via `CollectInvalidatingSharedProbes` (do not run expensive correlated subqueries per write). Keep write SQL cheap so the sweep finishes in minutes, not hours.
+**Performance:** precompute a small pool of **invalidating** write targets at startup from the catalog probes (do not run expensive correlated subqueries per write). Keep write SQL cheap so the sweep finishes in minutes, not hours.
 
 ## Composite score (optimization)
 

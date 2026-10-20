@@ -6,7 +6,7 @@
 - `InterpretMutation` relevance / column watches
 - Incremental accumulators in `CreateTxnBuffer` + `AccumulateMutation`
 - `StageMaintenance` action selection inputs and staged partition updates (rebuild must **resync**, not invalidate-only)
-- Initial `CostModelParams` coefficients in `accelerators/{bench}/q{N}/config/q{N}_aux_cost_model.json` (SEC-EDGAR: `sec_edgar_q{N}_aux_cost_model.json`), and `accelerators/{bench}/q{N}/cost_model.hpp` naming that directory (`AuxCostModelLocation`); every engine's registration passes it on (DuckDB `SharedQueryCatalogEntry::cost_model`, the Postgres / MySQL `Runtime`)
+- Initial `CostModelParams` coefficients in the query's `config/` JSON, and `accelerators/{bench}/q{N}/cost_model.hpp` naming that directory (`AuxCostModelLocation`); every engine's registration passes it on
 - `aux/module.{hpp,cpp}`, optional `aux/finalize.{hpp,cpp}`
 - Query-specific tests, benchmarks, and calibration binaries
 - **Registration from the query's own directory:** catalog entry, host SQL entry point and bindings for the workload `engine_name` through the backend's static registrars (mirror a peer query's registrar files); **append-only** entries in the shared eval helpers (cross-accel / multi-conn helper, bench-arg surface) that neighboring aux queries already use — discover paths by searching a peer query id; do not invent a partial wiring or a second adapter tree
@@ -42,7 +42,7 @@ Query runs **never write** `backends/{engine}/**` (it is denied): register this 
 
 ## Placement notes
 
-The runtime hosting your module is in-process or in a shipped worker (Postgres shard worker); the module is the same either way: typed `StateImage` payloads, no encoding of state. Only batches, arguments and result rows cross a process boundary, in substrate `wire.hpp`.
+The runtime hosting your module is in-process or in a shipped worker (the engine profile's `process_model` says which); the module is the same either way: typed `StateImage` payloads, no encoding of state. Only batches, arguments and result rows cross a process boundary, in substrate `wire.hpp`.
 
 See `pipeline/prompts/shared/engine_interfaces.md`, `generated_layout.md`, and `hard_guidelines.md`.
 
