@@ -84,7 +84,7 @@ For **implementation**, do **not** finish until these pass (keep iterating — a
 
 ### Query / aux accelerators
 
-1. Build the smoke / unit target for this query (and `test_tpch_shared_differential` for TPC-H aux).
+1. Build the smoke / unit target for this query (and the engine's `differential_binary` for TPC-H aux).
 2. Call MCP **`run_correctness`** (maps to `aux_correctness` for aux-state; else `correctness`).
 3. On fail: read `failure_summary`, fix implementation / registration, rebuild, re-run until `status=pass`.
 4. For **aux-state**, also call MCP **`run_multi_connection`** (or `request_gate` with `aux_multi_connection`). On fail (often missing TF / shared allowlist wiring), **register the query everywhere** peer queries are registered, rebuild, retry until pass.

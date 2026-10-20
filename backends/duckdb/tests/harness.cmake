@@ -72,7 +72,7 @@ accel_add_backend_exe(duckdb test_shared_incremental_differential eval/tests/tes
 add_executable(verus_kit_runner eval/tests/verus_kit/verus_kit_runner.cpp)
 target_link_libraries(verus_kit_runner PRIVATE accelerator_codegen duckdb_sibling)
 
-accel_add_backend_exe(duckdb test_tpch_shared_differential eval/tests/test_tpch_shared_differential.cpp)
+accel_add_backend_exe(duckdb test_duckdb_tpch_differential backends/duckdb/tests/harness/test_duckdb_tpch_differential.cpp)
 accel_add_backend_exe(duckdb test_shared_tpch_rf_differential eval/tests/test_shared_tpch_rf_differential.cpp)
 accel_add_backend_exe(duckdb test_fallback_state_agree eval/tests/test_fallback_state_agree.cpp)
 accel_add_backend_exe(duckdb time_fallback_read eval/tools/time_fallback_read.cpp)
@@ -177,34 +177,25 @@ if(ACCEL_AUX_CALIBRATION)
     endif()
 endif()
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/test_cross_accel_correctness.cpp")
-    foreach(_aux_gate_test IN ITEMS test_cross_accel_correctness test_cross_accel_isolation test_aux_multi_connection_stress)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/eval/tests/${_aux_gate_test}.cpp")
-            add_executable(${_aux_gate_test}
-                eval/tests/${_aux_gate_test}.cpp
-            )
-            target_link_libraries(${_aux_gate_test}
-                PRIVATE
-                    accelerator_codegen
-                    duckdb_sibling
-            )
-            target_include_directories(${_aux_gate_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
-            target_sources(${_aux_gate_test} PRIVATE
-                eval/tests/test_support/cross_accel_helpers.cpp
-            )
-            if("${_aux_gate_test}" STREQUAL "test_aux_multi_connection_stress")
-                target_sources(${_aux_gate_test} PRIVATE
-                    eval/tests/test_support/multi_connection_stress.cpp
-                )
-            endif()
-            add_test(NAME ${_aux_gate_test} COMMAND ${_aux_gate_test})
-            if("${_aux_gate_test}" STREQUAL "test_cross_accel_isolation")
-                # ~8 minutes alone; much longer under a parallel ctest.
-                set_tests_properties(${_aux_gate_test} PROPERTIES TIMEOUT 2400)
-            endif()
-        endif()
-    endforeach()
-endif()
+foreach(_aux_gate_test IN ITEMS test_duckdb_cross_accel test_cross_accel_isolation test_duckdb_aux_multi_connection_stress)
+    if(_aux_gate_test STREQUAL "test_cross_accel_isolation")
+        set(_aux_gate_source eval/tests/test_cross_accel_isolation.cpp)
+    else()
+        set(_aux_gate_source backends/duckdb/tests/harness/${_aux_gate_test}.cpp)
+    endif()
+    add_executable(${_aux_gate_test} ${_aux_gate_source})
+    target_link_libraries(${_aux_gate_test} PRIVATE accelerator_codegen duckdb_sibling)
+    target_include_directories(${_aux_gate_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
+    target_sources(${_aux_gate_test} PRIVATE eval/tests/test_support/cross_accel_helpers.cpp)
+    if(_aux_gate_test STREQUAL "test_duckdb_aux_multi_connection_stress")
+        target_sources(${_aux_gate_test} PRIVATE eval/tests/test_support/multi_connection_stress.cpp)
+    endif()
+    add_test(NAME ${_aux_gate_test} COMMAND ${_aux_gate_test})
+    if(_aux_gate_test STREQUAL "test_cross_accel_isolation")
+        # ~8 minutes alone; much longer under a parallel ctest.
+        set_tests_properties(${_aux_gate_test} PROPERTIES TIMEOUT 2400)
+    endif()
+endforeach()
 
 # Randomized differential fuzz of the TPC-H aux accelerators with engine
 # capture (eval/tests/test_tpch_aux_fuzz.cpp; run by hand, needs a DB).
@@ -371,22 +362,22 @@ if(BUILD_TESTING)
     # test returns or fails; teardown must not outlive the host's state, and a
     # fallback read must survive the build's snapshot on the same connection.
     add_test(
-        NAME test_tpch_shared_differential_q1_forced_rebuild_partition
-        COMMAND test_tpch_shared_differential "${_accel_tpch_test_db}" 1)
+        NAME test_duckdb_tpch_differential_q1_forced_rebuild_partition
+        COMMAND test_duckdb_tpch_differential 1)
     set_tests_properties(
-        test_tpch_shared_differential_q1_forced_rebuild_partition
+        test_duckdb_tpch_differential_q1_forced_rebuild_partition
         PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300
-        ENVIRONMENT "ACCEL_FORCE_MAINTENANCE_ACTION=RebuildPartition;ACCEL_AUX_READ_THREADS=8;ACCEL_AUX_BUILD_THREADS=8;ACCEL_AUX_MAINT_THREADS=8")
+        ENVIRONMENT "ACCEL_TPCH_DB=${_accel_tpch_test_db};ACCEL_FORCE_MAINTENANCE_ACTION=RebuildPartition;ACCEL_AUX_READ_THREADS=8;ACCEL_AUX_BUILD_THREADS=8;ACCEL_AUX_MAINT_THREADS=8")
     # A forced RebuildAll: the read right after the commit (the rebuild may
     # still run) and the one after it settles both match DuckDB.
     foreach(_q 2 7 13 18 21)
         add_test(
-            NAME test_tpch_shared_differential_q${_q}_forced_rebuild_all
-            COMMAND test_tpch_shared_differential "${_accel_tpch_test_db}" ${_q})
+            NAME test_duckdb_tpch_differential_q${_q}_forced_rebuild_all
+            COMMAND test_duckdb_tpch_differential ${_q})
         set_tests_properties(
-            test_tpch_shared_differential_q${_q}_forced_rebuild_all
+            test_duckdb_tpch_differential_q${_q}_forced_rebuild_all
             PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300
-            ENVIRONMENT "ACCEL_FORCE_MAINTENANCE_ACTION=RebuildAll")
+            ENVIRONMENT "ACCEL_TPCH_DB=${_accel_tpch_test_db};ACCEL_FORCE_MAINTENANCE_ACTION=RebuildAll")
     endforeach()
     set_tests_properties(test_aux_snapshot_reads_q14_private
         PROPERTIES FIXTURES_REQUIRED tpch_test_db TIMEOUT 300)

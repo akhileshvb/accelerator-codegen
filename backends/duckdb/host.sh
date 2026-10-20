@@ -80,7 +80,7 @@ cmd_slot() { # scenario seconds
     return
   fi
   for q in ${ACCEL_SLOT_DIFF_QUERIES:-$(seq 1 22)}; do
-    if cmd_run test_tpch_shared_differential '{db}' "${q}" >/dev/null 2>&1; then
+    if cmd_run test_duckdb_tpch_differential "${q}" >/dev/null 2>&1; then
       echo "PASS differential Q${q}"
     else
       echo "FAIL differential Q${q}"

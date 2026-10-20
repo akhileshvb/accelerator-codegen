@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${BUILD:-/tmp/accel_duckdb_build}"
-BIN="${BIN:-${BUILD}/test_tpch_shared_differential}"
+BIN="${BIN:-${BUILD}/test_duckdb_tpch_differential}"
 TPCH_DB="${ACCEL_TPCH_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf1.duckdb}"
 FORCE="${ACCEL_FORCE_MAINTENANCE_ACTION:-}"
 if [[ -n "${FORCE}" ]]; then
@@ -33,7 +33,7 @@ echo "force=${FORCE:-none} bin=${BIN} db=${TPCH_DB}" | tee -a "${OUT_DIR}/all22.
 for q in ${QUERIES}; do
   echo "=== Q${q} duckdb aux differential force=${FORCE:-none} ===" | tee -a "${OUT_DIR}/all22.log"
   set +e
-  out=$(ACCEL_FORCE_MAINTENANCE_ACTION="${FORCE}" "${BIN}" "${TPCH_DB}" "${q}" 2>&1)
+  out=$(ACCEL_TPCH_DB="${TPCH_DB}" ACCEL_FORCE_MAINTENANCE_ACTION="${FORCE}" "${BIN}" "${q}" 2>&1)
   rc=$?
   set -e
   printf '%s\n' "${out}" | tee -a "${OUT_DIR}/all22.log" | tail -12
