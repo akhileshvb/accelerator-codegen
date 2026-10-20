@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -91,12 +92,12 @@ def test_datasets_are_run_parameters(monkeypatch):
 
 def test_pipeline_and_workloads_name_no_home_path():
     offenders = []
-    for root in (REPO_ROOT / "pipeline", REPO_ROOT / "workloads"):
-        for path in root.rglob("*"):
-            if not path.is_file() or "artifacts" in path.parts or ".venv" in path.parts or path.suffix in {".pyc", ".db", ".duckdb"}:
-                continue
-            if path == Path(__file__).resolve():
-                continue
+    tracked = subprocess.run(
+        ["git", "ls-files", "pipeline", "workloads"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+    for path in (REPO_ROOT / rel for rel in tracked):  # local run state (.codex, artifacts) is not the tree's
+        if not path.is_file() or path.suffix in {".db", ".duckdb"} or path == Path(__file__).resolve():
+            continue
             try:
                 text = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
