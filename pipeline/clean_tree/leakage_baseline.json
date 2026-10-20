@@ -215,6 +215,9 @@
   "engine": 6,
   "path": 1
  },
+ "pipeline/config/packs/tpch_regen_all22.yaml": {
+  "engine": 1
+ },
  "pipeline/config/sec_edgar_aux_state.yaml": {
   "path": 3
  },
@@ -433,7 +436,6 @@
   "engine": 7
  },
  "pipeline/orchestrator/accel_pipeline/config.py": {
-  "path": 1,
   "target": 3
  },
  "pipeline/orchestrator/accel_pipeline/context.py": {

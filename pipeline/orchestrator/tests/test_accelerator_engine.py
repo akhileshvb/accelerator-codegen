@@ -143,7 +143,7 @@ def test_apply_workload_overrides_strips_duckdb_tf_for_postgres():
     merged = apply_workload_overrides(pc, _postgres_workload("tpch_q3_aux"))
     assert "backends/duckdb/api/duckdb_aux_table_functions.cpp" not in merged.write_paths
     assert not any(p.startswith("backends/") for p in merged.write_paths if "{engine}" not in p)
-    assert any("postgres" in p for p in merged.write_paths)
+    assert not any("postgres" in p for p in merged.write_paths)  # its harness is the backend's
 
 
 def test_duckdb_correctness_gate_context_db_env(monkeypatch):

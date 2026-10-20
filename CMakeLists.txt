@@ -56,6 +56,9 @@ include(VerusKits)
 
 # Engines: each backends/<engine>/backend.cmake (see cmake/Backend.cmake).
 # Generated trees: accelerators/<bench>/build.cmake, and the aux state of every query.
+# Fresh per-workload test databases (built by the <name>_test_db fixtures below); set
+# before the backends so their harnesses can name them.
+set(ACCEL_TEST_DB_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_dbs")
 accel_include_backends()
 accel_include_accelerators()
 accel_register_aux_state_queries(accelerator_codegen)
@@ -98,7 +101,6 @@ endif()
 # workload's source DB, so tests never depend on a shared database that may be stale
 # or modified by other runs. Exits 77 (skip) when the source is missing or empty;
 # tests needing the DB then skip too.
-set(ACCEL_TEST_DB_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_dbs")
 if(TARGET duckdb_sibling)
     file(GLOB _accel_test_db_subsets CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/workloads/*/test_db_subset.sql")
     foreach(_subset IN LISTS _accel_test_db_subsets)

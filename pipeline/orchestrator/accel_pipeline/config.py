@@ -513,7 +513,7 @@ def engine_host_conventions(
         host.update(
             differential_binary="test_tpch_shared_differential",
             differential_command='./build-release/test_tpch_shared_differential "$ACCEL_TPCH_DB" <query>',
-            differential_source="eval/tests/test_tpch_shared_differential.cpp",
+            differential_source=f"backends/{engine}/tests/harness/test_tpch_shared_differential.cpp",
             multi_conn_ctest_regex="test_aux_multi_connection_stress",
             cross_accel_ctest_regex="test_cross_accel",
         )
@@ -521,7 +521,7 @@ def engine_host_conventions(
     binary = f"test_{engine}_tpch_differential"
     host.update(
         differential_binary=binary,
-        differential_source=f"eval/tests/{binary}.cpp",
+        differential_source=f"backends/{engine}/tests/harness/{binary}.cpp",
         differential_command=f"./build-release/{binary} <query> (create if missing during accelerator implementation)",
         multi_conn_ctest_regex=f"test_{engine}_aux_multi_connection_stress",
         cross_accel_ctest_regex=f"test_{engine}_cross_accel",
@@ -573,9 +573,6 @@ def _normalize_accelerator_engine(data: dict[str, Any], engine: str, repo_root: 
     extra = query_glob(bench, qnum) if qnum is not None else ""
     if extra and extra not in writes:
         writes.append(extra)
-
-    if host["agent_builds_query_host"] and host["differential_source"] not in writes:
-        writes.append(host["differential_source"])
     data["write_paths"] = _dedupe_preserve(writes)
     return data
 
@@ -962,14 +959,10 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         if "optimization_max_turns_per_episode" in aux_defaults:
             optimization_max_turns_per_episode = int(aux_defaults["optimization_max_turns_per_episode"])
 
-    # Engines whose harness the accelerator run builds: its differential source and targets
-    # (backends/<engine>/** stays the engine_backend run's; see write_ownership).
+    # Engines whose harness the accelerator run builds and runs: its differential targets.
+    # The harness source is the backend's (backends/<engine>/** is the engine_backend run's).
     host = workload.get("engine_host") or {}
     if workload.get("workload_kind") != "engine_backend" and host.get("agent_builds_query_host"):
-        for extra in (host["differential_source"],):
-            if extra not in extra_write_paths:
-                extra_write_paths.append(extra)
-        extra_write_paths = _dedupe_preserve(extra_write_paths)
         binary = re.escape(host["differential_binary"])
         extra_allowed = list(extra_allowed) + [
             rf"^(\\.\\/)?build-release\\/{binary}( .*)?$",

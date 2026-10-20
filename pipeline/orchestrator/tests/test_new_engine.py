@@ -50,7 +50,7 @@ def test_toydb_aux_run_loads_with_engine_derived_host(repo: Path):
     assert host["work_db_suffix"] == ".toydb_work"
     assert all("/q{N}/toydb/" in p for p in w["fairness"]["kernel_search_paths"])
     merged = apply_workload_overrides(load_pipeline_config(repo_root=repo), w)
-    assert host["differential_source"] in merged.write_paths
+    assert host["differential_source"] not in merged.write_paths  # backends/<engine>/** is the backend run's
 
 
 def test_toydb_prompts_and_gate_context_render(repo: Path):
