@@ -14,7 +14,7 @@ foreach(_t IN ITEMS test_mysql_cross_accel test_mysql_aux_multi_connection_stres
     if(_t MATCHES "^(benchmark|calibrate)_")
         accel_add_backend_exe(mysql ${_t} backends/mysql/bench/${_t}.cpp)
     else()
-        accel_add_backend_exe(mysql ${_t} eval/tests/${_t}.cpp)
+        accel_add_backend_exe(mysql ${_t} backends/mysql/tests/harness/${_t}.cpp)
     endif()
 endforeach()
 find_package(Threads REQUIRED)
