@@ -31,6 +31,7 @@ keep:
   # engine-neutral eval: substrate unit tests, test-database builders, shared test support
   - eval/tests/test_aux_runtime.cpp
   - eval/tests/tsan_module_driver.cpp
+  - eval/tests/tpch_param_templates.hpp
   - eval/tests/test_aux_runtime_units.cpp
   - eval/tests/test_aux_wire.cpp
   - eval/tests/test_core_helpers.cpp

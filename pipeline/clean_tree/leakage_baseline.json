@@ -6,28 +6,18 @@
   "engine": 1
  },
  "CMakeLists.txt": {
-  "cmake": 1,
-  "engine": 100,
-  "path": 74
+  "engine": 10
  },
  "README.md": {
   "engine": 9,
   "path": 3,
   "target": 1
  },
- "cmake/AuxState.cmake": {
-  "engine": 4,
-  "path": 5
- },
  "cmake/Backend.cmake": {
-  "cmake": 1,
-  "engine": 5
+  "engine": 4
  },
  "cmake/BaseQuery.cmake": {
   "engine": 2
- },
- "cmake/FindSiblingDuckDB.cmake": {
-  "engine": 33
  },
  "docs/incremental-maintenance-audit.md": {
   "engine": 12,
@@ -540,6 +530,11 @@
  "pipeline/orchestrator/tests/test_analysis_paths.py": {
   "engine": 3
  },
+ "pipeline/orchestrator/tests/test_api_contract.py": {
+  "engine": 3,
+  "engine_branch": 1,
+  "path": 1
+ },
  "pipeline/orchestrator/tests/test_aux_bench.py": {
   "engine": 7
  },
@@ -582,7 +577,6 @@
  },
  "pipeline/orchestrator/tests/test_host_bootstrap.py": {
   "engine": 27,
-  "path": 1,
   "target": 6
  },
  "pipeline/orchestrator/tests/test_implementation_bootstrap.py": {
@@ -703,6 +697,9 @@
  "pipeline/prompts/engine_backend/native_scan_contract.md": {
   "engine": 1,
   "symbol": 1
+ },
+ "pipeline/prompts/sec_edgar/aux_state_notes.md": {
+  "path": 1
  },
  "pipeline/prompts/shared/codex_tooling.md": {
   "path": 1,
