@@ -15,6 +15,7 @@ container, plugin or data layout.
 | `ACCEL_ENGINE_STATE_DIR` | directory the instance owns (data, logs, `env`); delete it and the instance is gone |
 | `ACCEL_BUILD_DIR` | the CMake build directory |
 | `ACCEL_DATASET_DIR` | engine-neutral dataset: one `<table>.tbl` (`|`-separated, TPC-H dbgen format) per table |
+| `ACCEL_CMAKE_ARGS` | the arguments the build dir is configured with (generator, build type, this backend's switch, the engine's query sources) |
 
 ## Verbs
 
@@ -24,7 +25,7 @@ container, plugin or data layout.
 | `up` | | start the instance if absent (idempotent), with its empty database; write `$ACCEL_ENGINE_STATE_DIR/env` (`KEY=VALUE` lines the other verbs and harness binaries read). `build` works after `up` alone |
 | `down` | | stop the instance and remove everything it created |
 | `load` | `<schema.sql> [constraints.sql]` | create the schema and load `$ACCEL_DATASET_DIR`; idempotent (skip when already loaded from the same dataset) |
-| `build` | `[target...]` | build the backend and its registered accelerators, then install or load them into the instance |
+| `build` | `[target...]` | build the backend and its registered accelerators, then install or load them into the instance. The build dir is configured with `$ACCEL_CMAKE_ARGS` (plus the engine SDK's own options), and reconfigured when they differ from the cache; it is never configured any other way |
 | `sql` | `<file>` or `-` | run SQL against the instance; print the result of the last statement as CSV with a header |
 | `run` | `<target> [args...]` | run a built test or bench binary where it reaches the instance, with the `env` file applied |
 | `slot` | `<scenario> <seconds>` | run one slot-gate scenario (`epoch_stress`, `hits_under_writes`, `read_after_commit`, `txn_edges`, `restart`, `own_writes`, `ddl_events`, `differential`) |

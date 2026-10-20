@@ -20,11 +20,13 @@ another engine's `backends/` tree.
 - **Build.** `build` compiles the backend plus the named targets with the engine's toolchain (in the
   engine's own build environment when the profile says so), installs or loads the result, and
   registers the SQL-visible entry points and the capture hooks on every table of the schema.
+  It configures the build dir with `$ACCEL_CMAKE_ARGS` (reconfiguring when the cache differs);
+  nothing else configures it, and you never run `cmake -S/-B` on it yourself.
 - **Run.** `run <target> [args]` executes a built binary where it reaches the instance, with the
   `env` file applied; a target that is not a built file runs as a PATH command (for example `ctest`).
   Connection details come from `env`, never from arguments.
-- **Slot.** `slot <scenario> <seconds>` maps each scenario of the contract to the engine's tests.
-  State in a comment which part of a scenario a driver does not cover. Return 77 only for a mechanic the
-  profile declares n/a; a scenario with no driver fails closed with a reason.
+- **Slot.** No harness exists yet in this first layer, so `slot <scenario> <seconds>` exits 1 with
+  "not wired yet" for every scenario (77 only for a mechanic the profile declares n/a). The
+  validation stage wires each scenario to its driver.
 
 Keep the script small and readable: one function per verb, no per-query or per-workload names.

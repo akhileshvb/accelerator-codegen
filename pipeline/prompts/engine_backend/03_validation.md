@@ -38,7 +38,12 @@ Facts and hazards of the engine (not instructions). Aim the adversarial cases at
    - On fail: fix the **backend** (preferred) or correct a wrong test; never soft-assert away.
 5. Confirm scan uses **native** storage APIs; capture uses real hooks from every
    connection; no runtime flow in the backend; no generated query-accelerator dependency.
-6. Write `{{artifacts_path}}/validation_report.md`.
+6. **Wire `host.sh slot`.** Implement `slot_gates::Engine` for this engine
+   (`eval/harness/slot_gates.hpp`; the scenarios are written once there) in
+   `backends/{{engine_name}}/tests/test_{{engine_name}}_slot_gates.cpp`, and make
+   `slot <scenario> <seconds>` build and run it through `run`. Every scenario runs a driver; 77 only
+   where the profile declares the mechanic n/a (say which field), never for a missing driver.
+7. Write `{{artifacts_path}}/validation_report.md`.
 
 ## Gates the orchestrator will re-run
 

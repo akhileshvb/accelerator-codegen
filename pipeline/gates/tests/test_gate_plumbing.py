@@ -25,6 +25,13 @@ case "${verb}" in
     if [[ "$1" == "calibrator" ]]; then
       echo '{"interference_delta_per_query_us": 3, "interference_rebuild_per_query_us": 4}' > "${FAKE_COST_MODEL}"
     fi ;;
+  build)  # configures the build dir from ACCEL_CMAKE_ARGS, as the contract asks (unless told not to)
+    args="${FAKE_IGNORE_CMAKE_ARGS:+-G Ninja}${FAKE_IGNORE_CMAKE_ARGS:-${ACCEL_CMAKE_ARGS}}"
+    switch=OFF; [[ "${args}" == *-DACCELERATOR_CODEGEN_BUILD_FAKE=ON* ]] && switch=ON
+    type="$(sed -nE 's/.*-DCMAKE_BUILD_TYPE=([^ ]+).*/\1/p' <<<"${args}")"
+    printf 'ACCELERATOR_CODEGEN_BUILD_FAKE:BOOL=%s\nCMAKE_BUILD_TYPE:STRING=%s\n' "${switch}" "${type}" \
+      > "${ACCEL_BUILD_DIR}/CMakeCache.txt"
+    echo "build ok" ;;
   *) echo "${verb} ok" ;;
 esac
 exit "${!rc_var:-0}"
@@ -78,6 +85,20 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
 
 def result(path: Path, name: str) -> dict:
     return json.loads((path / f"{name}.json").read_text())
+
+
+def test_engine_build_passes_when_host_configures_with_the_cmake_args(repo):
+    proc, calls, _, _, out = run_gate(repo, "run_engine_build.sh", kind="engine_backend")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert calls == ["info", "up", "build"]
+    assert json.loads(out.read_text())["status"] == "pass"
+
+
+def test_engine_build_fails_when_the_backend_is_not_in_the_build(repo):
+    proc, _, _, _, out = run_gate(repo, "run_engine_build.sh", kind="engine_backend",
+                                  env_extra={"FAKE_IGNORE_CMAKE_ARGS": "1"})
+    assert proc.returncode != 0
+    assert "ACCEL_CMAKE_ARGS" in json.loads(out.read_text())["reason"]
 
 
 def test_correctness_runs_up_load_build_run_with_contract_env(repo):

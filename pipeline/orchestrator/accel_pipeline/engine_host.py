@@ -28,7 +28,17 @@ def instance_env(repo_root: Path, engine: str, build_dir: Path) -> dict[str, str
         "ACCEL_ENGINE_STATE_DIR": os.environ.get("ACCEL_ENGINE_STATE_DIR")
         or str(build_dir / "engine_state" / instance),
         "ACCEL_BUILD_DIR": str(build_dir),
+        "ACCEL_CMAKE_ARGS": os.environ.get("ACCEL_CMAKE_ARGS") or cmake_args(engine),
     }
+
+
+def cmake_args(engine: str) -> str:
+    """How `host.sh build` configures the build dir: the root CMake's backend switch
+    (cmake/Backend.cmake) and this engine's query sources. Same default as aux_gate_common.sh."""
+    return (
+        f"-G Ninja -DCMAKE_BUILD_TYPE=Release -DACCELERATOR_CODEGEN_BUILD_{engine.upper()}=ON "
+        f"-DACCEL_CODEGEN_ENGINE={engine}"
+    )
 
 
 def run_host_verb(

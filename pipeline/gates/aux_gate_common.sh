@@ -56,6 +56,10 @@ setup_engine_host() {
 	export ACCEL_ENGINE_STATE_DIR="${ACCEL_ENGINE_STATE_DIR:-/flash1/$(id -un)/engine_state/${ACCEL_ENGINE_INSTANCE}}"
 	export ACCEL_BUILD_DIR="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${root}/build-release}}"
 	export ACCEL_DATASET_DIR="${ACCEL_DATASET_DIR:-${DATASET_DIR:-}}"
+	# How the build dir is configured (host_contract.md): the root CMake's backend switch
+	# (cmake/Backend.cmake: ACCELERATOR_CODEGEN_BUILD_<ENGINE>) and this engine's query sources.
+	# Same default as engine_host.cmake_args.
+	export ACCEL_CMAKE_ARGS="${ACCEL_CMAKE_ARGS:--G Ninja -DCMAKE_BUILD_TYPE=Release -DACCELERATOR_CODEGEN_BUILD_${ENGINE_NAME^^}=ON -DACCEL_CODEGEN_ENGINE=${ENGINE_NAME}}"
 	mkdir -p "${ACCEL_ENGINE_STATE_DIR}"
 }
 
