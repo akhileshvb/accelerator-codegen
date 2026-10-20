@@ -2,140 +2,140 @@
 # Shared gate-context loader for aux-state gate scripts.
 # Usage: source aux_gate_common.sh; load_aux_gate_context "${ROOT}" "${QUERY}"
 
-load_aux_gate_context() {
+# Gate context only: CTX and ENGINE_NAME (gates that need no workload fields).
+load_engine_gate_context() {
 	local root="$1"
 	local query="$2"
 	local gates_dir
 	gates_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 	CTX="$(python3 "${gates_dir}/read_gate_context.py" "${root}" "${query}")"
+	ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['engine_name'])" "${CTX}")"
+	SCHEMA_SQL="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('schema_sql',''))" "${CTX}")"
+	DATASET_DIR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('dataset_dir',''))" "${CTX}")"
+	export CTX ENGINE_NAME SCHEMA_SQL DATASET_DIR ACCEL_ENGINE_NAME="${ENGINE_NAME}"
+	setup_engine_host "${root}"
+}
+
+load_aux_gate_context() {
+	local root="$1"
+	local query="$2"
+	load_engine_gate_context "${root}" "${query}"
 	GATE_ART="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['artifacts_dir'])" "${CTX}")"
 	BENCHMARK_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['benchmark_name'])" "${CTX}")"
-	ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('engine_name') or 'duckdb')" "${CTX}")"
-	DIFF_BINARY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_binary') or 'test_tpch_shared_differential')" "${CTX}")"
+	DIFF_BINARY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_binary') or '')" "${CTX}")"
 	DIFF_SOURCE="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_source') or '')" "${CTX}")"
 	SMOKE_READY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print('1' if h.get('smoke_ready', True) else '0')" "${CTX}")"
 	AGENT_BUILDS_HOST="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print('1' if h.get('agent_builds_query_host') else '0')" "${CTX}")"
 	HOST_HINT="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('query_host_ready_hint') or '')" "${CTX}")"
-	MULTI_CONN_CTEST="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('multi_conn_ctest_regex') or 'test_aux_multi_connection_stress')" "${CTX}")"
-	CROSS_ACCEL_CTEST="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('cross_accel_ctest_regex') or 'test_cross_accel')" "${CTX}")"
-	WORK_DB_SUFFIX="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('work_db_suffix') or '.duckdb')" "${CTX}")"
+	MULTI_CONN_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('multi_conn_ctest_regex') or '')" "${CTX}")"
+	CROSS_ACCEL_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('cross_accel_ctest_regex') or '')" "${CTX}")"
 	AUX_TEST_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_test_target',''))" "${CTX}")"
 	AUX_BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_bench_target',''))" "${CTX}")"
 	AUX_CALIBRATE_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_calibrate_target',''))" "${CTX}")"
 	AUX_CTEST_SMOKE_REGEX="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_ctest_smoke_regex',''))" "${CTX}")"
 	BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['bench_target'])" "${CTX}")"
-	DATASET_DB="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['dataset_db'])" "${CTX}")"
-	DB_ENV_VAR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['db_env_var'])" "${CTX}")"
 	COST_MODEL_CONFIG="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('cost_model_config',''))" "${CTX}")"
 	AUX_BENCH_SUITES="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_bench_suites','lineitem_only'))" "${CTX}")"
 	AUX_BENCH_WORK_DIR_SUFFIX="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_bench_work_dir_suffix',''))" "${CTX}")"
 	AUX_WRITE_FREQUENCIES_CTX="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_write_frequencies',''))" "${CTX}")"
 	GATE_OUT="${GATE_ART}/gates"
-	export CTX BENCHMARK_NAME ENGINE_NAME DIFF_BINARY DIFF_SOURCE
-	export SMOKE_READY AGENT_BUILDS_HOST HOST_HINT MULTI_CONN_CTEST CROSS_ACCEL_CTEST WORK_DB_SUFFIX
+	mkdir -p "${GATE_OUT}"
+	export BENCHMARK_NAME DIFF_BINARY DIFF_SOURCE
+	export SMOKE_READY AGENT_BUILDS_HOST HOST_HINT MULTI_CONN_TARGET CROSS_ACCEL_TARGET
 	export AUX_TEST_TARGET AUX_BENCH_TARGET AUX_CALIBRATE_TARGET
-	export AUX_CTEST_SMOKE_REGEX BENCH_TARGET DATASET_DB DB_ENV_VAR COST_MODEL_CONFIG
+	export BENCH_TARGET COST_MODEL_CONFIG AUX_CTEST_SMOKE_REGEX
 	export AUX_BENCH_SUITES AUX_BENCH_WORK_DIR_SUFFIX AUX_WRITE_FREQUENCIES_CTX GATE_OUT GATE_ART
-	export ACCEL_ENGINE_NAME="${ENGINE_NAME}"
 }
 
-# Prepare a per-gate work database/dir for the selected engine.
-# DuckDB: copy dataset .duckdb. Other engines: empty work dir (harness uses host SDK).
-# Sets WORK_DB and exports ACCEL_CROSS_ACCEL_WORK_DB / ACCEL_ENGINE_NAME.
-prepare_engine_work_db() {
-	local build="$1"
-	local stem="$2" # e.g. multi_conn_q3
-	local suffix="${WORK_DB_SUFFIX:-.duckdb}"
-	if [[ "${ENGINE_NAME:-duckdb}" == "duckdb" ]]; then
-		WORK_DB="${build}/${stem}${suffix}"
-		if [[ ! -f "${DATASET_DB}" ]]; then
-			echo "dataset db missing: ${DATASET_DB}" >&2
+# Point the gate at its engine's host.sh. One instance per run and engine, so
+# parallel runs never collide. Sets ENGINE_HOST; exports the host contract env.
+setup_engine_host() {
+	local root="$1"
+	ENGINE_HOST="${root}/backends/${ENGINE_NAME}/host.sh"
+	export ACCEL_ENGINE_INSTANCE="${ACCEL_ENGINE_INSTANCE:-${ACCEL_PIPELINE_WORKER_ID:-w0}-${ENGINE_NAME}}"
+	export ACCEL_ENGINE_STATE_DIR="${ACCEL_ENGINE_STATE_DIR:-/flash1/$(id -un)/engine_state/${ACCEL_ENGINE_INSTANCE}}"
+	export ACCEL_BUILD_DIR="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${root}/build-release}}"
+	export ACCEL_DATASET_DIR="${ACCEL_DATASET_DIR:-${DATASET_DIR:-}}"
+	mkdir -p "${ACCEL_ENGINE_STATE_DIR}"
+}
+
+engine_host() { "${ENGINE_HOST}" "$@"; }
+
+# Engine trait from `host.sh info` (never from the engine name), e.g. embedded.
+engine_trait() {
+	engine_host info 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ''))" "$1"
+}
+
+# Run host.sh steps in order (each argument is one "verb args" string). On failure
+# sets ENGINE_FAIL and returns 1; ENGINE_LOG collects every step's output.
+engine_steps() {
+	ENGINE_LOG=""
+	local step out rc
+	for step in "$@"; do
+		# shellcheck disable=SC2086
+		out="$(engine_host ${step} 2>&1)" && rc=0 || rc=$?
+		ENGINE_LOG+="[host.sh ${step}] rc=${rc}"$'\n'"${out}"$'\n'
+		if [[ ${rc} -ne 0 && ${rc} -ne 77 ]]; then
+			ENGINE_FAIL="host.sh ${step%% *} failed (exit ${rc})"
 			return 1
 		fi
-		cp "${DATASET_DB}" "${WORK_DB}"
-	else
-		WORK_DB="${build}/${stem}_${ENGINE_NAME}_work"
-		mkdir -p "${WORK_DB}"
-		# Optional: copy dataset path marker for harnesses that expect a file path.
-		if [[ -n "${DATASET_DB}" && -e "${DATASET_DB}" ]]; then
-			ln -sfn "${DATASET_DB}" "${WORK_DB}/dataset_source" || true
-		fi
-	fi
-	export WORK_DB
-	export ACCEL_CROSS_ACCEL_WORK_DB="${WORK_DB}"
-	export ACCEL_ENGINE_NAME="${ENGINE_NAME}"
-	export ACCEL_ENGINE_WORK_DB="${WORK_DB}"
+	done
 }
 
-# Run a postgres harness binary inside accel_pg_test. Prints the log to stdout,
-# returns the binary's exit code. Sets PG_DOCKER_LOG.
-run_postgres_docker_harness() {
-	local binary="$1"
-	local query="$2"
-	shift 2
-	local extra_env=("$@")
-	local container="${ACCEL_PG_CONTAINER:-accel_pg_test}"
-	local root
-	root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-	set +e
-	local ensure_log
-	ensure_log="$(bash "${root}/scripts/ensure_accel_pg_test.sh" 2>&1)"
-	local ensure_rc=$?
-	set -e
-	if [[ ${ensure_rc} -ne 0 ]]; then
-		PG_DOCKER_LOG="${ensure_log}"
-		return 1
-	fi
-	set +e
-	ensure_log="${ensure_log}"$'\n'"$(ACCEL_PG_ENSURE_TPCH=1 bash "${root}/scripts/ensure_accel_pg_test.sh" 2>&1 | tail -40)"
-	set -e
-	export ACCEL_PG_NINJA_TARGETS="${binary}"
-	set +e
-	local build_log
-	build_log="$(bash "${root}/scripts/build_accel_postgres_extension.sh" 2>&1)"
-	local build_rc=$?
-	set -e
-	if [[ ${build_rc} -ne 0 ]] || ! docker exec "${container}" test -x "/accel-build/accel/${binary}"; then
-		PG_DOCKER_LOG="${ensure_log}"$'\n'"${build_log}"
-		return 1
-	fi
-	set +e
-	PG_DOCKER_LOG="$(docker exec \
-		-e ACCEL_PG_DOCKER=1 -e PGHOST=127.0.0.1 -e PGPORT=5432 \
-		-e PGUSER="${PGUSER:-postgres}" -e PGPASSWORD="${PGPASSWORD:-postgres}" \
-		-e ACCEL_ENGINE_NAME=postgres \
-		-e ACCEL_WORKLOAD_KIND=aux_state \
-		-e ACCEL_PG_DIFF_KIND=aux \
-		-e TPCH_PG_DB="${TPCH_PG_DB:-accel_tpch_test}" \
-		-e ACCEL_SRC=/accel-src \
-		"${extra_env[@]}" \
-		"${container}" "/accel-build/accel/${binary}" "${query}" 2>&1)"
-	local rc=$?
-	set -e
-	return ${rc}
+# up + load + build for the targets.
+engine_ready() { engine_steps "up" "load ${SCHEMA_SQL}" "build $*"; }
+
+# Run a built target through the host; sets RC and LOG.
+engine_run() {
+	LOG="$(engine_host run "$@" 2>&1)" && RC=0 || RC=$?
 }
 
-# Fail with JSON when an engine-specific harness target/ctest is missing.
-# Usage: fail_missing_engine_harness "<out_json>" "<gate>" "<query>" "<what>"
-fail_missing_engine_harness() {
-	local out_json="$1"
-	local gate_name="$2"
-	local query="$3"
-	local what="$4"
-	local reason="missing ${what} for engine=${ENGINE_NAME}: replicate the duckdb harness for this backend (see query_host_bootstrap.md). ${HOST_HINT}"
-	python3 - <<PY
-import json, pathlib, sys
-path = pathlib.Path("""${out_json}""")
-payload = {
-    "gate": """${gate_name}""",
-    "query": int("""${query}"""),
-    "engine_name": """${ENGINE_NAME:-}""",
-    "status": "fail",
-    "reason": """${reason}""",
-}
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(payload, indent=2))
-print(path.read_text())
-sys.exit(1)
+# write_result <json> <gate> <status> <reason> <log> [key=value ...]
+# Writes and prints the gate result (extras: key=string, key:=json); returns 0
+# only for pass or skip.
+write_result() {
+	python3 - "$@" <<'PY'
+import json, sys, pathlib, os
+out, gate, status, reason, log, *extra = sys.argv[1:]
+payload = {"gate": gate, "status": status, "reason": reason, "log_tail": log[-6000:],
+           "engine_name": os.environ.get("ENGINE_NAME", "")}
+for kv in extra:
+    k, _, v = kv.partition("=")
+    if k.endswith(":"):
+        payload[k[:-1]] = json.loads(v)
+    else:
+        payload[k] = v
+p = pathlib.Path(out)
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps(payload, indent=2))
+print(p.read_text())
+sys.exit(0 if status in ("pass", "skip") else 1)
 PY
+}
+
+# Same, then leave the gate with that status.
+emit_result() { write_result "$@"; exit $?; }
+
+# Engine-backend gate: build one validation target through the host and run it.
+# Usage: engine_target_gate <gate> <result.json> <target_paths key> <target-name key>
+engine_target_gate() {
+	local gate="$1" json="$2" src_key="$3" target_key="$4" src target
+	src="$(python3 -c "import json,sys; print((json.loads(sys.argv[1]).get('target_paths') or {}).get(sys.argv[2], ''))" "${CTX}" "${src_key}")"
+	target="$(python3 -c "import json,sys; print((json.loads(sys.argv[1]).get('target_paths') or {}).get(sys.argv[2], ''))" "${CTX}" "${target_key}")"
+	if [[ -z "${target}" ]]; then
+		emit_result "${json}" "${gate}" fail "gate context target_paths has no ${target_key}" "" "engine=${ENGINE_NAME}"
+	fi
+	if [[ -n "${src}" && ! -f "${ROOT}/${src}" ]]; then
+		emit_result "${json}" "${gate}" fail "missing test source: ${src}" "" "engine=${ENGINE_NAME}"
+	fi
+	if ! engine_steps "up" "build ${target}"; then
+		emit_result "${json}" "${gate}" fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "engine=${ENGINE_NAME}" "cmake_target=${target}"
+	fi
+	engine_run "${target}"
+	if [[ ${RC} -ne 0 ]]; then
+		emit_result "${json}" "${gate}" fail "${target} failed (exit ${RC})" "${ENGINE_LOG}${LOG}" \
+			"engine=${ENGINE_NAME}" "cmake_target=${target}" "returncode:=${RC}"
+	fi
+	emit_result "${json}" "${gate}" pass "ran ${target}; exit 0" "${ENGINE_LOG}${LOG}" \
+		"engine=${ENGINE_NAME}" "cmake_target=${target}" "returncode:=0"
 }

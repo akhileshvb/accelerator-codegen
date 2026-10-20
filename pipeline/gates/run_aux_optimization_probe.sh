@@ -16,29 +16,16 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 
-# shellcheck source=cmake_ensure_target.sh
-source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
-
 if [[ ! -d "${BUILD}" ]]; then
   echo "{\"gate\":\"aux_optimization_probe\",\"query\":${QUERY},\"status\":\"skip\",\"reason\":\"build dir missing\"}" > "${OUT}/aux_optimization_probe.json"
   exit 0
 fi
 
-if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${AUX_TEST_TARGET}"; then
-  cmake --build "${BUILD}" --target "${AUX_TEST_TARGET}" -j"$(nproc)" >/dev/null 2>&1 || true
-fi
-
 PROBE_REGEX="${AUX_CTEST_SMOKE_REGEX}"
-if [[ -x "${BUILD}/ctest" ]]; then
-  CTEST="${BUILD}/ctest"
-else
-  CTEST="ctest"
+if ! engine_ready "${AUX_TEST_TARGET}"; then
+  emit_result "${OUT}/aux_optimization_probe.json" aux_optimization_probe fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
-
-set +e
-LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" "${CTEST}" -R "${PROBE_REGEX}" --output-on-failure 2>&1)"
-RC=$?
-set -e
+engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" -R "${PROBE_REGEX}" --output-on-failure
 
 STATUS="pass"
 if [[ ${RC} -ne 0 ]]; then
@@ -55,7 +42,7 @@ path.write_text(json.dumps({
     "status": "${STATUS}",
     "exit_code": int("${RC}"),
     "ctest_regex": "${PROBE_REGEX}",
-    "log_tail": """${LOG}"""[-4000:],
+    "log_tail": """${ENGINE_LOG}${LOG}"""[-4000:],
 }, indent=2))
 print(path.read_text())
 PY
