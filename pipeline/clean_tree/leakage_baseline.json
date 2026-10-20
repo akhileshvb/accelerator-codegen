@@ -706,6 +706,9 @@
   "path": 5,
   "symbol": 1
  },
+ "pipeline/orchestrator/tests/test_clean_tree.py": {
+  "path": 2
+ },
  "pipeline/orchestrator/tests/test_codex_backend.py": {
   "engine": 17,
   "target": 1
@@ -759,7 +762,7 @@
   "path": 4
  },
  "pipeline/orchestrator/tests/test_optimization_runtime.py": {
-  "engine": 1,
+  "engine": 2,
   "path": 1
  },
  "pipeline/orchestrator/tests/test_pipeline_log.py": {
@@ -912,7 +915,7 @@
  },
  "pipeline/prompts/shared/generated_layout.md": {
   "engine": 20,
-  "include": 2,
+  "include": 1,
   "path": 16,
   "symbol": 14
  },
@@ -931,9 +934,9 @@
   "target": 1
  },
  "pipeline/prompts/shared/substrate_primitives.md": {
-  "engine": 3,
-  "path": 5,
-  "symbol": 7
+  "engine": 2,
+  "path": 2,
+  "symbol": 4
  },
  "pipeline/prompts/verus/03_tests.md": {
   "engine": 1
