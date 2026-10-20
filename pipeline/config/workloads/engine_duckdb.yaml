@@ -18,7 +18,7 @@ engine_profile:
   identity:
     name: duckdb
     display_name: DuckDB
-    version: "DuckDB capture fork (sibling checkout ../duckdb-dbcapture, branch skeleton/db-capture, release build in build/release)"
+    version: "DuckDB capture fork (the checkout at $ACCEL_DUCKDB_ROOT, read-only: sources under src/, headers under src/include/, release build in build/release; branch skeleton/db-capture)"
     sdk_headers:
       - "duckdb.hpp and the engine's internal headers of the fork (duckdb/main/..., duckdb/transaction/..., duckdb/storage/...)"
       - "duckdb/accelerator/mutation_recorder.hpp (fork): MutationRecorder, MutationWatchProvider, DatabaseCaptureRegistry, CommitIds::OnCommitWithContext, ActiveWriterStarts"
