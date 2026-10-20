@@ -218,7 +218,14 @@ def api_repo(repo):
 def test_api_conformance_calls_every_required_hook_and_the_listed_optional_one(api_repo):
     proc, calls, *_ = run_gate(api_repo, "run_engine_api_conformance.sh", kind="engine_backend")
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert calls == ["up", "build api_conformance_fake", "build"] + ["sql -"] * 5
+    assert calls == ["up", "build api_conformance_fake", "build", "info"] + ["sql -"] * 5
+
+
+def test_api_conformance_skips_the_sql_hook_calls_on_an_embedded_engine(api_repo):
+    proc, calls, *_ = run_gate(api_repo, "run_engine_api_conformance.sh", kind="engine_backend",
+                               env_extra={"FAKE_EMBEDDED": "true"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "sql -" not in calls
 
 
 def test_api_conformance_fails_when_a_hook_errors(api_repo):
