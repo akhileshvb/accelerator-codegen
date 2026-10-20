@@ -1,0 +1,6 @@
+# Accepted references from kept files to generated material. One entry per accepted reference
+# pattern: file glob, kind (optional), a regex over the matched token, and the reason.
+- file: "**"
+  kind: symbol
+  match: '^(UDF_ARGS|lc_collate_is_c|CommitIds|OnCommitWithContext|OnCommitId)$'
+  reason: engine SDK API (MySQL UDF ABI, PostgreSQL collation call, the DuckDB capture fork's commit hook); the generated headers declare or mirror these, and engine profiles state facts about them
