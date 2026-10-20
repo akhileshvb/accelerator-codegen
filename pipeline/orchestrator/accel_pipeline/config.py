@@ -656,13 +656,9 @@ def _normalize_accelerator_engine(data: dict[str, Any], engine: str) -> dict[str
     writes = list(data.get("write_paths") or [])
     # The query's run owns its directory (one glob); backends/<engine>/** belongs to
     # the engine_backend run and substrate/** to nobody (write_ownership enforces both).
-    for extra in (
-        query_glob(bench, qnum) if qnum is not None else "",
-        "CMakeLists.txt",
-        "cmake/**",
-    ):
-        if extra and extra not in writes:
-            writes.append(extra)
+    extra = query_glob(bench, qnum) if qnum is not None else ""
+    if extra and extra not in writes:
+        writes.append(extra)
 
     if engine != "duckdb":
         for extra in (
@@ -1042,8 +1038,6 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
             host.get("register_path") or "",
             host.get("aux_register_path") or "",
             host.get("differential_source") or "",
-            "CMakeLists.txt",
-            "cmake/**",
         ):
             if extra and extra not in extra_write_paths:
                 extra_write_paths.append(extra)

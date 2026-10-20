@@ -52,8 +52,5 @@ optimization_guidance: |
   with shipmode/shipinstruct filters. Index parts by brand/container/size bands and
   maintain matching lineitem revenue; Prefer ApplyDelta on part/lineitem edits.
 
-cmake:
-  query_num: 19
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

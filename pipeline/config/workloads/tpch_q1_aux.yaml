@@ -36,8 +36,5 @@ output_schema:
   # ... other aggregate columns from Q1
 
 
-cmake:
-  query_num: 1
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

@@ -33,7 +33,7 @@ Do **not** hand-write timing loops or CSV output here; that belongs in `benchmar
 
 SEC EDGAR: replace `tpch` → `sec_edgar`, cost model → `accelerators/sec_edgar/q{{query_number}}/config/sec_edgar_q{{query_number}}_aux_cost_model.json` and location → `kSecEdgarQ{{query_number}}CostModel{"accelerators/sec_edgar/q{{query_number}}/config", "sec_edgar_q{{query_number}}_aux_cost_model"}`. See `pipeline/prompts/sec_edgar/aux_state_notes.md`.
 
-CMake: bench/calibrate targets are **auto-discovered** via `accel_register_tpch_aux_pipeline_targets()` in `CMakeLists.txt`. The module test target is created from `duckdb/aux/register.cpp` by `accel_register_tpch_aux_ctests()` in `cmake/AuxState.cmake`. Edit `CMakeLists.txt` only when auto-discovery is insufficient; follow patterns in `cmake/AuxState.cmake` and neighboring queries.
+CMake: the module is discovered from `<engine>/aux/finalize.cpp` (`accel_register_aux_state_queries`, `cmake/AuxState.cmake`); the engine backend discovers bench/calibrate/module-test targets from the query directory. Neither `CMakeLists.txt` nor `cmake/` is edited.
 
 The aux benchmark **must** implement the write-frequency sweep contract in `bench_sweep_contract.md` (not a read-only stub).
 

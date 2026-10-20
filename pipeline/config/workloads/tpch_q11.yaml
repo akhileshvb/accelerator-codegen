@@ -29,5 +29,3 @@ output_schema:
   - name: value
     type: DECIMAL
 
-cmake:
-  query_num: 11

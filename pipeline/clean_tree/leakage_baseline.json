@@ -6,28 +6,18 @@
   "engine": 1
  },
  "CMakeLists.txt": {
-  "cmake": 1,
-  "engine": 100,
-  "path": 74
+  "engine": 10
  },
  "README.md": {
   "engine": 9,
   "path": 3,
   "target": 1
  },
- "cmake/AuxState.cmake": {
-  "engine": 9,
-  "path": 17
- },
  "cmake/Backend.cmake": {
-  "cmake": 1,
-  "engine": 5
+  "engine": 4
  },
  "cmake/BaseQuery.cmake": {
   "engine": 2
- },
- "cmake/FindSiblingDuckDB.cmake": {
-  "engine": 33
  },
  "docs/incremental-maintenance-audit.md": {
   "engine": 12,
@@ -706,6 +696,9 @@
   "path": 5,
   "symbol": 1
  },
+ "pipeline/orchestrator/tests/test_clean_tree.py": {
+  "path": 2
+ },
  "pipeline/orchestrator/tests/test_codex_backend.py": {
   "engine": 17,
   "target": 1
@@ -847,7 +840,7 @@
   "path": 3
  },
  "pipeline/prompts/aux_state/shared/module_layout.md": {
-  "engine": 4,
+  "engine": 3,
   "path": 15,
   "symbol": 3,
   "target": 1
@@ -884,7 +877,7 @@
   "engine": 14,
   "path": 6,
   "symbol": 3,
-  "target": 2
+  "target": 1
  },
  "pipeline/prompts/host_bootstrap_critique.md": {
   "engine": 4,
@@ -892,7 +885,7 @@
  },
  "pipeline/prompts/sec_edgar/aux_state_notes.md": {
   "engine": 1,
-  "path": 11
+  "path": 12
  },
  "pipeline/prompts/shared/base_kernel_optimization.md": {
   "engine": 2

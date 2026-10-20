@@ -14,8 +14,6 @@ production_scale_targets: [10, 20]
 db_env_var: ACCEL_TPCH_DB
 
 write_paths:
-  - CMakeLists.txt
-  - cmake/AuxState.cmake
   - accelerators/tpch/**
   - eval/tests/test_support/cross_accel_helpers.cpp
   - eval/tests/test_support/cross_accel_helpers.hpp

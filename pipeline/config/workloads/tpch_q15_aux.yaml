@@ -50,8 +50,5 @@ optimization_guidance: |
   Maintain per-supplier revenue in the window (or top-k / max tracker); supplier attr
   join is small once winners are known.
 
-cmake:
-  query_num: 15
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

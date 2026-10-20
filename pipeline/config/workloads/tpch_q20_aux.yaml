@@ -54,8 +54,5 @@ optimization_guidance: |
   parts matching a name pattern. Materialize part-name filter sets and
   (part,supp) shipped aggregates; keep partsupp availability checks local.
 
-cmake:
-  query_num: 20
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

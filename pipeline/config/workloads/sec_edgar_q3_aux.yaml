@@ -46,9 +46,5 @@ aux_bench_sweep:
   bench_queries: 100
   bench_base_write_samples: 3
 
-cmake:
-  benchmark: sec_edgar
-  query_num: 3
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

@@ -65,8 +65,5 @@ optimization_guidance: |
   Full redesign is allowed (module.hpp + module.cpp + finalize.cpp + tests + cost model).
   Sources are bootstrapped; retrieved precedents are non-binding. End with `HYPOTHESIS_PATCH_COMPLETE`.
 
-cmake:
-  query_num: 9
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

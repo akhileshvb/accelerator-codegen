@@ -58,8 +58,5 @@ optimization_guidance: |
   positive acctbal and no orders. Maintain country-code filtered customer sets,
   average threshold, and order-existence flags; Prefer ApplyDelta on customer/orders.
 
-cmake:
-  query_num: 22
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

@@ -95,7 +95,7 @@ function(accel_add_aux_state_ctests)
         endif()
     endif()
     if(NOT AUX_BENCHMARK)
-        set(AUX_BENCHMARK "tpch")
+        message(FATAL_ERROR "accel_add_aux_state_ctests requires BENCHMARK")
     endif()
 
     set(_q ${AUX_QUERY_NUM})

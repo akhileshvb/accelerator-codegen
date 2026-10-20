@@ -37,9 +37,5 @@ speedup_verification:
   min_speedup_vs_base: 2.0
   min_work_reduction_pct: 50
 
-cmake:
-  benchmark: sec_edgar
-  query_num: 1
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

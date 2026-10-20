@@ -57,8 +57,5 @@ optimization_guidance: |
   Q8 computes yearly market share for a target nation within a region and part type.
   Pre-filter region customers / part type; maintain per-year (target volume, total volume).
 
-cmake:
-  query_num: 8
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

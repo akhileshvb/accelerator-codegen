@@ -75,13 +75,14 @@ def test_apply_workload_overrides_merges_aux_stage_max_turns() -> None:
     assert merged.optimization_context_max_chars == 80000
 
 
-def test_aux_workload_allows_cmake_edits() -> None:
+def test_aux_workload_never_edits_root_cmake() -> None:
     from accel_pipeline.config import apply_workload_overrides
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
     workload = load_workload("tpch_q9_aux", REPO_ROOT, engine="duckdb")
     merged = apply_workload_overrides(pipeline_config, workload)
-    assert "CMakeLists.txt" in merged.write_paths
+    assert "CMakeLists.txt" not in merged.write_paths
+    assert not any(p.startswith("cmake/") for p in merged.write_paths)
     assert "accelerators/tpch/q9/**" in merged.write_paths
     assert any("cross_accel_helpers.cpp" in p for p in merged.write_paths)
 

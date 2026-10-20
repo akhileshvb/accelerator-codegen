@@ -78,8 +78,5 @@ optimization_guidance: |
   Absolute speedups are query-dependent — be aggressive on both read-only and 10% write-mix;
   call OPTIMIZATION_SATURATED only when stuck.
 
-cmake:
-  query_num: 2
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

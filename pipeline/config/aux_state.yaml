@@ -1,8 +1,6 @@
 # Shared aux-state pipeline settings merged into PipelineConfig when workload_kind=aux_state.
 
 write_paths:
-  - CMakeLists.txt
-  - cmake/AuxState.cmake
   # the query's own tree: module, layout, registrars (engine backends name no query)
   - accelerators/tpch/q*/**
   - eval/tests/test_support/cross_accel_helpers.cpp

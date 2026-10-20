@@ -37,8 +37,5 @@ output_schema:
     type: DECIMAL
 
 
-cmake:
-  query_num: 6
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

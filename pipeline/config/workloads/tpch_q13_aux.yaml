@@ -44,8 +44,5 @@ optimization_guidance: |
   Maintain per-customer order counts (or histogram buckets) under comment-pattern
   filters; avoid full LEFT JOIN + regroup on every read.
 
-cmake:
-  query_num: 13
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

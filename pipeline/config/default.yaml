@@ -90,8 +90,6 @@ stage_max_turns:
   host_bootstrap: 0  # unlimited (query-host bootstrap; gate retries separately)
 
 write_paths:
-  - CMakeLists.txt
-  - cmake/AuxState.cmake
   # a query owns its whole directory: kernels, tests, benchmarks, cost models
   - accelerators/tpch/q*/**
   - accelerators/sec_edgar/q*/**

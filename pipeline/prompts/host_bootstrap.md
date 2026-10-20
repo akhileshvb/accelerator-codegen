@@ -37,7 +37,6 @@ Prefer these conventions. `backends/{{engine_name}}/**` is **read-only** to this
    - Skim duckdb reference surfaces only as templates (structure, not DataChunk IR):
      - `eval/tests/test_tpch_shared_differential.cpp`
      - `eval/tests/test_aux_multi_connection_stress.cpp` / `test_cross_accel_correctness.cpp` (phase 2)
-     - Nearby `add_executable(test_tpch_shared_differential …)` in root `CMakeLists.txt`
    - Reuse this engine’s `engine_backend` adapters for **mutation / txn / store / tooling** and any **engine-local** rebuild scan helper. Do **not** invent a parallel `backends/{{engine_name}}2/`. Do **not** require `ScanNativeBaseTable` → DataChunk.
 
 2. **SQL entrypoints (backend registries, read-only here)**
@@ -55,7 +54,7 @@ Prefer these conventions. `backends/{{engine_name}}/**` is **read-only** to this
    - Mirror duckdb differential semantics for **this** engine: load TPC-H into
      `{{engine_name}}`, run reference SQL vs accelerator SQL for a query id,
      assert ordered full-result match (or a documented minimal smoke).
-   - Wire CMake next to peer engine targets (`add_executable({{differential_binary}} …)`).
+   - Wire CMake in `backends/{{engine_name}}/backend.cmake` (`accel_add_backend_exe`, `cmake/Backend.cmake`); the root `CMakeLists.txt` is never edited.
    - **Build (postgres / Docker):**
      ```bash
      bash scripts/ensure_accel_pg_test.sh

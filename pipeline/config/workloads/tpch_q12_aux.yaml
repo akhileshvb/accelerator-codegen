@@ -43,8 +43,5 @@ output_schema:
     type: BIGINT
 
 
-cmake:
-  query_num: 12
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

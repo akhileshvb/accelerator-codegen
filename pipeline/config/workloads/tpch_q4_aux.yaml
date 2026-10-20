@@ -45,8 +45,5 @@ optimization_guidance: |
   Prefer precomputing late-order keys / priority histograms; keep maintenance
   local to orderdate and lineitem commit/receipt edits.
 
-cmake:
-  query_num: 4
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

@@ -56,8 +56,5 @@ optimization_guidance: |
   Full redesign is allowed (module.hpp + module.cpp + finalize.cpp + tests). Read each file once,
   then use `write_file` for coordinated edits. End with `HYPOTHESIS_PATCH_COMPLETE` when done.
 
-cmake:
-  query_num: 21
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

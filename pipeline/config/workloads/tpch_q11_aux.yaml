@@ -67,8 +67,5 @@ optimization_guidance: |
   - Precompute per-nation totals and per-(nation, partkey) sums to avoid rescanning partsupp.
   - Invalidate or incrementally update on deltas to watched columns only.
 
-cmake:
-  query_num: 11
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

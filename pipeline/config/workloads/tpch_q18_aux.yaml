@@ -68,8 +68,5 @@ optimization_guidance: |
   edits after one full read per file. End with `HYPOTHESIS_PATCH_COMPLETE` as soon as the hypothesis
   is fully implemented; do not keep patching after the edit is complete.
 
-cmake:
-  query_num: 18
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md

@@ -76,8 +76,5 @@ optimization_guidance: |
   `write_mix_workload_speedup` toward ≥1× (ideally much higher) while keeping
   `read_only_query_speedup` near the current best.
 
-cmake:
-  query_num: 5
-  aux_state_module: accel_add_aux_state_query
 
 agent_boundary: prompts/aux_state/shared/agent_boundary.md
