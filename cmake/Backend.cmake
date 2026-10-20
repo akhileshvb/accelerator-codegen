@@ -11,16 +11,17 @@
 #       the engine SDK's include dirs and client libraries; property
 #       ACCEL_BACKEND_MODULE names the module/plugin target harnesses need built first.
 #   accel_add_backend_exe(<engine> <name> [CLIENT] <sources...>)
-#       an executable against that interface; used by backend.cmake and by
-#       eval/harness/<engine>.cmake, which the root includes after backend.cmake.
+#       an executable against that interface; used by backend.cmake, its
+#       legacy_targets.cmake (included right after) and the accelerators' build.cmake.
 #   accel_glob_sources(<out> <repo-relative globs...>)
 #       sorted sources, for module/plugin per-query code.
 #
+# Generated accelerator trees contribute through accelerators/<bench>/build.cmake
+# (accel_include_accelerators) and the per-query sources below; no root edit adds a
+# backend, a benchmark or a query.
+#
 # Per-query sources live in accelerators/<bench>/q<N>/<engine>/ and
 # accelerators/<bench>/q<N>/common/.
-
-# Default: the engine of a plain build.
-set(ACCEL_DEFAULT_BACKEND duckdb)
 
 # Base kernels use SIMD intrinsics guarded by __AVX512F__ / __AVX2__ with scalar
 # fallbacks, so they need the target ISA enabled to take the vector paths.
@@ -59,24 +60,15 @@ function(accel_glob_sources OUT_VAR)
     set(${OUT_VAR} ${_sources} PARENT_SCOPE)
 endfunction()
 
-# The engine whose catalog is exposed: ACCEL_CODEGEN_ENGINE, else the default.
-function(accel_selected_engine OUT_VAR)
-    accel_codegen_engine_name(_engine)
-    if(_engine STREQUAL "")
-        set(_engine "${ACCEL_DEFAULT_BACKEND}")
-    endif()
-    set(${OUT_VAR} "${_engine}" PARENT_SCOPE)
-endfunction()
-
 # Declares ACCELERATOR_CODEGEN_BUILD_<ENGINE> for every backends/*/backend.cmake
-# (ON by default for the selected engine only) and includes the enabled ones.
+# (ON by default for ACCEL_CODEGEN_ENGINE only; with none set, no backend is built)
+# and includes the enabled ones, then the backend's legacy_targets.cmake if it has one.
 # Sets ACCEL_BACKENDS to the enabled engines.
 macro(accel_include_backends)
     accel_codegen_engine_name(_accel_query_engine)
     if(_accel_query_engine STREQUAL "")
         message(STATUS "accel: ACCEL_CODEGEN_ENGINE unset — skipping generated query sources")
     endif()
-    accel_selected_engine(_accel_selected)
     file(GLOB _accel_entries CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/backends/*/backend.cmake")
     list(SORT _accel_entries)
     set(ACCEL_BACKENDS "")
@@ -85,7 +77,7 @@ macro(accel_include_backends)
         get_filename_component(ACCEL_BACKEND_ENGINE "${_accel_dir}" NAME)
         string(TOUPPER "${ACCEL_BACKEND_ENGINE}" _accel_upper)
         set(_accel_default OFF)
-        if(ACCEL_BACKEND_ENGINE STREQUAL _accel_selected)
+        if(ACCEL_BACKEND_ENGINE STREQUAL _accel_query_engine)
             set(_accel_default ON)
         endif()
         option(ACCELERATOR_CODEGEN_BUILD_${_accel_upper}
@@ -93,6 +85,7 @@ macro(accel_include_backends)
         if(ACCELERATOR_CODEGEN_BUILD_${_accel_upper})
             list(APPEND ACCEL_BACKENDS "${ACCEL_BACKEND_ENGINE}")
             include("${_accel_entry}")
+            include("${_accel_dir}/legacy_targets.cmake" OPTIONAL)
         endif()
     endforeach()
 endmacro()
@@ -115,7 +108,7 @@ endfunction()
 
 # Attaches a backend to libaccelerator_codegen (ACCEL_BACKEND_ENGINE is the including backend).
 #   HOST     repo-relative host/runtime sources
-#   CATALOG  repo-relative dir of the engine's query catalog (selected engine only)
+#   CATALOG  repo-relative dir of the engine's query catalog (selected ACCEL_CODEGEN_ENGINE only)
 #   AUX      globs under accelerators/*/q*/<engine>/ for the aux modules  (selected ACCEL_CODEGEN_ENGINE only)
 #   BASE     globs under accelerators/*/q*/<engine>/ for the base kernels (selected ACCEL_CODEGEN_ENGINE only)
 # The engine-neutral accelerators/*/q*/common/ sources come with the selected engine.
@@ -123,12 +116,11 @@ function(accel_backend_library)
     cmake_parse_arguments(BL "" "CATALOG" "HOST;AUX;BASE" ${ARGN})
     target_sources(accelerator_codegen PRIVATE ${BL_HOST})
 
-    accel_selected_engine(_selected)
-    if(BL_CATALOG AND ACCEL_BACKEND_ENGINE STREQUAL _selected)
+    accel_codegen_engine_name(_engine)
+    if(BL_CATALOG AND ACCEL_BACKEND_ENGINE STREQUAL _engine)
         _accel_backend_catalog("${BL_CATALOG}")
     endif()
 
-    accel_codegen_engine_name(_engine)
     if(NOT ACCEL_BACKEND_ENGINE STREQUAL _engine)
         return()
     endif()
@@ -163,3 +155,12 @@ function(accel_add_backend_exe ENGINE NAME)
         add_dependencies(${NAME} ${_module})
     endif()
 endfunction()
+
+# Includes every accelerators/<bench>/build.cmake: the benchmark's tests, benchmarks and tools.
+macro(accel_include_accelerators)
+    file(GLOB _accel_builds CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/accelerators/*/build.cmake")
+    list(SORT _accel_builds)
+    foreach(_accel_build IN LISTS _accel_builds)
+        include("${_accel_build}")
+    endforeach()
+endmacro()

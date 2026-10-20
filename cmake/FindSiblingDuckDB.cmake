@@ -1,4 +1,10 @@
-# The DuckDB fork this code needs is the capture fork (branch skeleton/db-capture,
+# The sibling DuckDB is an optional third-party dependency: the substrate library does
+# not include or link it. Found, it becomes the imported target duckdb_sibling (and the
+# library links it, since generated query code includes its headers); absent, the build
+# carries on without it and accel_require_duckdb() is how a backend or tool that
+# needs it fails with the reason.
+#
+# The DuckDB fork the DuckDB backend needs is the capture fork (branch skeleton/db-capture,
 # checked out at ../duckdb-dbcapture): it adds DatabaseCaptureRegistry,
 # CommitIds::OnCommitWithContext and ActiveWriterStarts(), which the DuckDB
 # backend uses. A stock or older fork fails to compile. Set ACCEL_DUCKDB_ROOT to
@@ -28,36 +34,39 @@ foreach(candidate IN LISTS _duckdb_root_candidates)
     endif()
 endforeach()
 
+set(ACCEL_DUCKDB_MISSING "")
 if(DUCKDB_ROOT STREQUAL "")
-    message(FATAL_ERROR
+    set(ACCEL_DUCKDB_MISSING
         "Could not find sibling DuckDB checkout. Set ACCEL_DUCKDB_ROOT or place the capture fork at ../duckdb-dbcapture.")
-endif()
-
-set(_duckdb_shared_lib "${DUCKDB_ROOT}/build/release/src/libduckdb.so")
-set(_duckdb_static_lib "${DUCKDB_ROOT}/build/release/src/libduckdb_static.a")
-
-if(EXISTS "${_duckdb_shared_lib}")
-    set(DUCKDB_LIBRARY "${_duckdb_shared_lib}")
-elseif(EXISTS "${_duckdb_static_lib}")
-    set(DUCKDB_LIBRARY "${_duckdb_static_lib}")
 else()
-    message(FATAL_ERROR
-        "DuckDB library not found under ${DUCKDB_ROOT}/build/release/src. Build the sibling DuckDB checkout first.")
+    set(_duckdb_shared_lib "${DUCKDB_ROOT}/build/release/src/libduckdb.so")
+    set(_duckdb_static_lib "${DUCKDB_ROOT}/build/release/src/libduckdb_static.a")
+    if(EXISTS "${_duckdb_shared_lib}")
+        set(DUCKDB_LIBRARY "${_duckdb_shared_lib}")
+    elseif(EXISTS "${_duckdb_static_lib}")
+        set(DUCKDB_LIBRARY "${_duckdb_static_lib}")
+    else()
+        set(ACCEL_DUCKDB_MISSING
+            "DuckDB library not found under ${DUCKDB_ROOT}/build/release/src. Build the sibling DuckDB checkout first.")
+    endif()
 endif()
 
-get_filename_component(DUCKDB_LIBRARY_DIR "${DUCKDB_LIBRARY}" DIRECTORY)
-
-set(DUCKDB_INCLUDE_DIR "${DUCKDB_ROOT}/src/include")
-
-if(NOT EXISTS "${DUCKDB_INCLUDE_DIR}/duckdb.hpp")
-    message(FATAL_ERROR "DuckDB headers not found under ${DUCKDB_INCLUDE_DIR}.")
+if(ACCEL_DUCKDB_MISSING STREQUAL "")
+    get_filename_component(DUCKDB_LIBRARY_DIR "${DUCKDB_LIBRARY}" DIRECTORY)
+    set(DUCKDB_INCLUDE_DIR "${DUCKDB_ROOT}/src/include")
+    add_library(duckdb_sibling UNKNOWN IMPORTED)
+    set_target_properties(duckdb_sibling PROPERTIES
+        IMPORTED_LOCATION "${DUCKDB_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${DUCKDB_INCLUDE_DIR}"
+    )
+    message(STATUS "Using DuckDB checkout: ${DUCKDB_ROOT}")
+    message(STATUS "Using DuckDB library: ${DUCKDB_LIBRARY}")
+else()
+    message(STATUS "DuckDB not available (${ACCEL_DUCKDB_MISSING})")
 endif()
 
-add_library(duckdb_sibling UNKNOWN IMPORTED)
-set_target_properties(duckdb_sibling PROPERTIES
-    IMPORTED_LOCATION "${DUCKDB_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${DUCKDB_INCLUDE_DIR}"
-)
-
-message(STATUS "Using DuckDB checkout: ${DUCKDB_ROOT}")
-message(STATUS "Using DuckDB library: ${DUCKDB_LIBRARY}")
+macro(accel_require_duckdb)
+    if(NOT TARGET duckdb_sibling)
+        message(FATAL_ERROR "${ACCEL_DUCKDB_MISSING}")
+    endif()
+endmacro()

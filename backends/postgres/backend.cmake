@@ -4,6 +4,9 @@
 # the shared-memory unit tests live here too.
 
 # Unit tests of the shared-memory transport: pure C++/Linux, no Postgres deps.
+# The sibling DuckDB: harnesses and generated query code use it as the reference engine.
+accel_require_duckdb()
+
 find_package(Threads REQUIRED)
 add_executable(test_shm_ring
     backends/postgres/tests/test_shm_ring.cpp

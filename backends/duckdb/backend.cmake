@@ -1,5 +1,8 @@
 # DuckDB backend: the in-process host, compiled into libaccelerator_codegen.
 
+# The sibling DuckDB: the host embeds it.
+accel_require_duckdb()
+
 accel_backend_library(
     HOST
         backends/duckdb/engine/duckdb_scan_adapter.cpp

@@ -1,6 +1,6 @@
-# MySQL eval harnesses: TPC-H aux differential / parameter-generality / isolation /
+# MySQL eval harnesses (to be absorbed into backend.cmake): TPC-H aux differential / parameter-generality / isolation /
 # calibration drivers. They use the mysql CLI for SQL connections (no libmysqlclient
-# linking). Included by the root after backends/mysql/backend.cmake.
+# linking). Included by accel_include_backends after backend.cmake.
 
 accel_add_backend_exe(mysql test_mysql_tpch_fuzz eval/tests/test_mysql_tpch_fuzz.cpp)
 # all 22 queries; spec / off-spec / edge / NULL params; plain, data-perturb,
