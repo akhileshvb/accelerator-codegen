@@ -1,0 +1,24 @@
+# Clean-tree regeneration: all 22 TPC-H aux-state queries, one run per query x engine
+# (base accelerators run first as each aux run's prerequisite). Run each engine's
+# engine_backend workload before this pack. The first wave grows accelerators/prims/
+# from empty before the remaining runs fan out.
+
+pack_id: tpch_regen_all22
+display_name: TPC-H regeneration, all 22 queries
+engines: [duckdb, postgres, mysql]
+concurrency: 6
+first_wave: 3
+stage: all
+resume: true
+models_config: pipeline/config/models.yaml
+
+workload_template: "tpch_q{q}_aux"
+
+queries: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+
+isolation:
+  mode: shared_tree_separate_builds
+  build_dir_template: "build-release-{worker_id}"
+  codex_home_template: "pipeline/.codex/workers/{worker_id}"
+  shared_file_lease: true
+  stage_barriers: false
