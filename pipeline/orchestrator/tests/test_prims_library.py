@@ -20,6 +20,7 @@ EXISTING = """\
 //
 // Existing<T>
 // PURPOSE    A stand-in primitive.
+// KEY SPACE  none.
 // COMPLEXITY O(1).
 // MEMORY     8 B.
 // COW/THREADS Not COW.
@@ -28,17 +29,15 @@ EXISTING = """\
 namespace accelerator_codegen::aux_state::core { struct Existing {}; }
 """
 
-README = """\
-# Primitives
-
-| Header | Primitive | Notes |
-| --- | --- | --- |
-| `existing.hpp` | `Existing` | stand-in |
-
-### Which one to use
-
-- Nothing: `Existing`.
-"""
+README = (
+    "# Primitives\n\n" + pl.CATALOGUE_HEADING + "\n\n"
+    "| " + " | ".join(pl.CATALOGUE_COLUMNS) + " |\n"
+    "|" + " --- |" * len(pl.CATALOGUE_COLUMNS) + "\n"
+    "| `existing.hpp` | A stand-in primitive. | none. | 8 B. | Not COW. | never. |\n"
+    "\n### Which one to use\n\nNothing.\n"
+)
+ROW_RING = ("| `ring_buffer.hpp` | Fixed-capacity ring buffer. | dense positions [0, capacity). "
+            "| sizeof(T) per slot. | Not COW; single owner. | a bounded FIFO is needed. |")
 
 TESTS = """\
 #include "prims/existing.hpp"
@@ -56,6 +55,7 @@ def new_header(name: str = "ring_buffer", extra_comment: str = "") -> str:
 //
 // RingBuffer<T>
 // PURPOSE    Fixed-capacity ring buffer.{extra_comment}
+// KEY SPACE  dense positions [0, capacity).
 // COMPLEXITY O(1) push and pop.
 // MEMORY     sizeof(T) per slot.
 // COW/THREADS Not COW; single owner.
@@ -65,10 +65,7 @@ namespace accelerator_codegen::aux_state::core {{ struct {name} {{}}; }}
 """
 
 
-NEW_README = README.replace(
-    "| `existing.hpp` | `Existing` | stand-in |\n",
-    "| `existing.hpp` | `Existing` | stand-in |\n| `ring_buffer.hpp` | `RingBuffer<T>` | bounded FIFO |\n",
-).replace("- Nothing: `Existing`.\n", "- Nothing: `Existing`.\n- Bounded FIFO: `RingBuffer`.\n")
+NEW_README = README.replace("\n### Which one", ROW_RING + "\n\n### Which one", 1).replace("|\n\n" + ROW_RING, "|\n" + ROW_RING)
 
 NEW_TESTS = (
     '#include "prims/existing.hpp"\n'
@@ -131,14 +128,11 @@ def stage(root: Path, rel: str, text: str) -> None:
     p.write_text(text)
 
 
-def stage_new_primitive(root: Path, *, header=None, readme=NEW_README, tests=NEW_TESTS):
+def stage_new_primitive(root: Path, *, header=None, tests=NEW_TESTS):
     stage(root, f"{P}/ring_buffer.hpp", header if header is not None else new_header())
-    if readme is not None:
-        stage(root, pl.README_REL, readme)
     if tests is not None:
         stage(root, pl.TESTS_REL, tests)
-    return [f"{P}/ring_buffer.hpp"] + ([pl.README_REL] if readme is not None else []) + (
-        [pl.TESTS_REL] if tests is not None else [])
+    return [f"{P}/ring_buffer.hpp"] + ([pl.TESTS_REL] if tests is not None else [])
 
 
 RATIONALE = "bounded FIFO; nothing existing is a ring"
@@ -229,19 +223,57 @@ def test_rejects_missing_header_comment(primary, fake):
     assert not (primary / P / "ring_buffer.hpp").exists()
 
 
-def test_rejects_missing_readme_row(primary, fake):
-    res = publish(primary, stage_new_primitive(primary, readme=None))
-    assert not res["ok"]
-    assert any("no row" in p for p in res["problems"])
+def test_catalogue_row_is_appended_by_publish(primary, fake):
+    res = publish(primary, stage_new_primitive(primary))
+    assert res["ok"], res
+    lines = (primary / pl.README_REL).read_text().splitlines()
+    assert lines.count(ROW_RING) == 1
+    assert lines.index(ROW_RING) == lines.index(next(l for l in lines if "`existing.hpp`" in l)) + 1
 
 
-def test_rejects_missing_which_one_to_use(primary, fake):
-    row_only = README.replace(
-        "| `existing.hpp` | `Existing` | stand-in |\n",
-        "| `existing.hpp` | `Existing` | stand-in |\n| `ring_buffer.hpp` | `RingBuffer<T>` | bounded FIFO |\n")
-    res = publish(primary, stage_new_primitive(primary, readme=row_only))
-    assert not res["ok"]
-    assert any("Which one to use" in p for p in res["problems"])
+def test_readme_cannot_be_staged(primary, fake):
+    stage(primary, pl.README_REL, NEW_README)
+    res = publish(primary, [f"{P}/ring_buffer.hpp", pl.README_REL])
+    assert not res["ok"] and "not publishable" in res["error"]
+
+
+def test_publish_into_empty_skeleton(primary, fake):
+    for h in (primary / P).glob("*.hpp"):
+        h.unlink()
+    (primary / pl.README_REL).write_text("# Primitives\n\n" + pl.CATALOGUE_HEADING + "\n\n| "
+                                         + " | ".join(pl.CATALOGUE_COLUMNS) + " |\n|" + " --- |" * 6 + "\n")
+    (primary / pl.TESTS_REL).write_text("int main() {\n  return 0;\n}\n")
+    tests = NEW_TESTS.replace('#include "prims/existing.hpp"\n', "").replace("  TestExisting();\n", "") \
+        .replace("static void TestExisting() {}\n", "")
+    res = publish(primary, stage_new_primitive(primary, tests=tests))
+    assert res["ok"], res
+    readme = (primary / pl.README_REL).read_text()
+    assert readme.splitlines()[-1] == ROW_RING and readme.count("| Header |") == 1
+
+
+@pytest.mark.parametrize("name,purpose", [
+    ("ring_buffer2", "Something else entirely"),
+    ("fifo", "Fixed-capacity ring buffer."),
+    ("fifo", "A ring buffer with fixed capacity."),
+])
+def test_rejects_duplicate_of_published_primitive(primary, fake, name, purpose):
+    assert publish(primary, stage_new_primitive(primary))["ok"]
+    header = new_header().replace("Fixed-capacity ring buffer.", purpose)
+    stage(primary, f"{P}/{name}.hpp", header.replace("RingBuffer", "Other"))
+    stage(primary, pl.TESTS_REL, NEW_TESTS + f'// uses "prims/{name}.hpp"\n' + "".join(
+        f"// mt19937 line {i}\n" for i in range(20)))
+    res = publish(primary, [f"{P}/{name}.hpp", pl.TESTS_REL])
+    if name == "ring_buffer2":
+        assert res["ok"], res  # distinct name and purpose are accepted
+        return
+    assert not res["ok"] and any("duplicates the published ring_buffer.hpp" in p for p in res["problems"])
+    assert not (primary / P / f"{name}.hpp").exists()
+
+
+def test_rejects_missing_key_space_or_purpose(primary, fake):
+    bad = new_header().replace("// KEY SPACE  dense positions [0, capacity).\n", "")
+    res = publish(primary, stage_new_primitive(primary, header=bad))
+    assert not res["ok"] and any("KEY SPACE" in p for p in res["problems"])
 
 
 def test_rejects_missing_tests(primary, fake):
@@ -308,32 +340,51 @@ def test_requires_rationale_and_staged_file(primary, fake):
     assert not res["ok"] and "staged file missing" in res["error"]
 
 
-def test_concurrent_publish_is_rebased(primary, fake, tmp_path):
+def test_concurrent_publish_is_rebased(primary, fake, tmp_path, monkeypatch):
     """A worker whose copy is behind (another primitive landed) still publishes cleanly."""
     worker = tmp_path / "worker"
     shutil.copytree(primary, worker, ignore=shutil.ignore_patterns(".git"))
-    # worker stages against the OLD readme/tests
-    files = stage_new_primitive(worker)
-    # meanwhile another worker publishes `other.hpp`
-    other_readme = README.replace(
-        "| `existing.hpp` | `Existing` | stand-in |\n",
-        "| `existing.hpp` | `Existing` | stand-in |\n| `other.hpp` | `Other` | other |\n").replace(
-        "- Nothing: `Existing`.\n", "- Nothing: `Existing`.\n\n- Others: `Other`.\n")
-    (primary / pl.README_REL).write_text(other_readme)
-    (primary / P / "other.hpp").write_text(new_header().replace("RingBuffer", "Other"))
+    files = stage_new_primitive(worker)  # staged against the OLD tests file
+    (primary / P / "other.hpp").write_text(new_header().replace("RingBuffer", "Other")
+                                           .replace("Fixed-capacity ring buffer.", "Unrelated skip list."))
     (primary / pl.TESTS_REL).write_text(TESTS + "// other tests\n")
-    import os
-    os.environ["ACCEL_PIPELINE_PRIMARY_REPO"] = str(primary)
-    try:
-        res = pl.primitive_publish(worker, files, RATIONALE, 3)
-    finally:
-        del os.environ["ACCEL_PIPELINE_PRIMARY_REPO"]
+    monkeypatch.setenv("ACCEL_PIPELINE_PRIMARY_REPO", str(primary))
+    res = pl.primitive_publish(worker, files, RATIONALE, 3)
     assert res["ok"], res
-    readme = (primary / pl.README_REL).read_text()
-    assert "`other.hpp`" in readme and "`ring_buffer.hpp`" in readme
+    assert ROW_RING in (primary / pl.README_REL).read_text()
     assert "// other tests" in (primary / pl.TESTS_REL).read_text()
-    # and the worker's copy is refreshed to the primary
     assert (worker / P / "other.hpp").is_file() and (worker / P / "ring_buffer.hpp").is_file()
+
+
+def test_concurrent_publishers_serialise_on_readme_and_tests(primary, fake, tmp_path, monkeypatch):
+    import threading
+    monkeypatch.setenv("ACCEL_PIPELINE_PRIMARY_REPO", str(primary))
+    names = ["alpha_set", "beta_tree", "gamma_heap", "delta_ring"]
+    purposes = ["Ordered integer set.", "Balanced search tree.", "Binary min heap.", "Circular byte queue."]
+    workers = []
+    for name, purpose in zip(names, purposes):
+        wt = tmp_path / f"w_{name}"
+        shutil.copytree(primary, wt, ignore=shutil.ignore_patterns(".git"))
+        header = new_header().replace("Fixed-capacity ring buffer.", purpose).replace("RingBuffer", name)
+        tests = NEW_TESTS.replace("ring_buffer", name).replace("step", name)
+        stage(wt, f"{P}/{name}.hpp", header)
+        stage(wt, pl.TESTS_REL, tests)
+        workers.append((wt, [f"{P}/{name}.hpp", pl.TESTS_REL]))
+    results = [None] * len(workers)
+
+    def run(i):
+        results[i] = pl.primitive_publish(workers[i][0], workers[i][1], RATIONALE, i)
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(workers))]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert all(r and r["ok"] for r in results), results
+    readme = (primary / pl.README_REL).read_text()
+    tests = (primary / pl.TESTS_REL).read_text()
+    for name in names:
+        assert readme.count(f"| `{name}.hpp` |") == 1
+        assert f'prims/{name}.hpp' in tests
+    assert len((primary / pl.PROVENANCE_REL).read_text().splitlines()) == len(names)
 
 
 def test_refresh_prims_mirrors_primary(primary, tmp_path):

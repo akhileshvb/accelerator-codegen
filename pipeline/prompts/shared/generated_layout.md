@@ -17,7 +17,7 @@ The include roots are the repo root and `accelerators/`; use short includes:
 ```cpp
 #include "tpch/q16/{{engine_name}}/base/query.hpp"   // accelerators/ root
 #include "tpch/q1/{{engine_name}}/aux/module.hpp"
-#include "prims/sorted_count_sum.hpp"               // accelerators/prims/
+#include "prims/<header>.hpp"                        // accelerators/prims/ (published primitives)
 #include "substrate/aux/core/aux_types.hpp"         // repo root
 #include "catalog/query_catalog.hpp"  // cmake exposes backends/{{engine_name}}/api/catalog/
 ```

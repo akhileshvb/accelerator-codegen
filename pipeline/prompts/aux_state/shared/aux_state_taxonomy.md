@@ -18,7 +18,7 @@ Examples: daily revenue totals, counts by status, sums by region.
 
 **Best for:** SUM, COUNT, AVG; small group cardinality; range predicates on the partition key; rows mapping to one or a few partitions; read-heavy workloads.
 
-**Parameter generality:** a partition grain (month, bucket) is a *coarse index*, not the parameter domain. A query bound that does not fall on a partition boundary (mid-month day, Feb 29, month-end + interval, a date outside the populated range) must combine whole-partition summaries for the interior with an **exact** residual for the edge partitions (finer-grain summaries, e.g. day-level, or a bounded scan of the edge partition's rows). Never answer only grid-aligned bounds or round the bound to the grid. Statistics are exact integer/decimal accumulators (`int128_acc`), never `double`.
+**Parameter generality:** a partition grain (month, bucket) is a *coarse index*, not the parameter domain. A query bound that does not fall on a partition boundary (mid-month day, Feb 29, month-end + interval, a date outside the populated range) must combine whole-partition summaries for the interior with an **exact** residual for the edge partitions (finer-grain summaries, e.g. day-level, or a bounded scan of the edge partition's rows). Never answer only grid-aligned bounds or round the bound to the grid. Statistics are exact integer/decimal accumulators (128-bit), never `double`.
 
 **Advantages:** Compact; easy delta maintenance; exact; often eliminates scan, join, and aggregation.
 

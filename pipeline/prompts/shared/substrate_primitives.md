@@ -33,8 +33,8 @@ Everything below exists; use it before writing a private equivalent. Rules for *
 
 ## Value and state types (`aux_types.hpp`)
 
-- `ScaledDecimal128` / `AuxType::ScaledDecimal128` (DECIMAL(38, scale), `__int128`), `ScaledDecimal128ToString`; `ScaledDecimal` is 64-bit. Use the 128-bit type for any emitted or stored sum; `accelerators/prims/int128_acc.hpp` (`i128::*`, overflow-checked) for accumulation, `decimal_text.hpp`, `pg_numeric*.hpp`, `mysql_decimal.hpp` for engine-exact text and division.
-- `AuxDate` (days since 1970), `sql_date::*` (`DaysFromCivil`, `CivilFromDays`, `AddMonths`, `AddYears`, ...: no local civil-date code or epoch constants in a module), `sql_like::*` for LIKE.
+- `ScaledDecimal128` / `AuxType::ScaledDecimal128` (DECIMAL(38, scale), `__int128`), `ScaledDecimal128ToString`; `ScaledDecimal` is 64-bit. Use the 128-bit type for any emitted or stored sum, accumulated with overflow checks. Engine-exact numeric text and division come from the backend API (role "value semantics" in its `api/README.md` index), not from `prims/`.
+- `AuxDate` (days since 1970); civil-date arithmetic and LIKE/collation come from the backend API ("value semantics"): no local civil-date code or epoch constants in a module.
 - `PartitionId` (`uint64_t`) / `PartitionKey` (`int64_t`), `Version`, `kNewestVersion`: 64-bit identities; never narrow them.
 - `StateImage::Make<T>(accelerator, partition, version, shared_ptr<const T>)` / `As<T>()`: the typed immutable payload of a partition; `StateBuilder::Write` + `Finish` in `Build` (serial, calling thread).
 - `MutationBatch` (rows as `AuxValue`), `MutationRowCount` (`core/query_module_helpers.hpp`), `BasicAuxTxnBuffer` (`core/aux_txn_buffer.hpp`) as the base of a commit buffer; `ToMutationBatch` / `kOutsideProjection` (`runtime/columnar_batch.hpp`) define what a module sees of an update.
@@ -56,7 +56,7 @@ An `InitialScan` method that reads a whole table is named for the table: `Scan<T
 
 ## Containers (copy-on-write)
 
-All of `accelerators/prims/` (arrays, hash and sorted maps, blob / record stores, Fenwick / radix / sorted-block structures, string columns, SIMD helpers): catalogue and "Which one to use" in `accelerators/prims/README.md`; additions only through `primitive_publish`. Pick by key space (bounded and dense vs sparse, negative or far keys) and value size, never by SF1 shape: `AnyKeyCowArray` / `ShardedCow*` take any 64-bit key; `ChunkedCowArray` and `DenseIdArray` need bounded non-negative ids.
+All of `accelerators/prims/`: the catalogue is `accelerators/prims/README.md` (it may be empty); consult it before writing a helper, and publish reusable engine-neutral helpers with `primitive_publish` (additions only). Pick by key space (bounded and dense vs sparse, negative or far keys) and value size, never by SF1 shape: a structure for bounded non-negative ids must not be given sparse, negative or far keys.
 
 ## Calibration
 

@@ -9,7 +9,9 @@ library is shared by every worker, so it only changes through `primitive_publish
   path>`` (direct writes anywhere under accelerators/prims/ -- the headers, README.md
   and tests/test_prims.cpp -- are denied by ``write_ownership``);
 * publish takes an exclusive lock, checks the candidates are additions only,
-  structurally complete (header comment, README row, tests) and workload-agnostic,
+  structurally complete (header comment, tests), not a duplicate of a published
+  primitive, and workload-agnostic; appends the catalogue row to README.md itself
+  (generated from the header comment, so the README always matches the headers),
   writes them into the PRIMARY tree with a backup, builds and runs ``test_prims``
   (and every target that includes a changed existing header), restores the backup
   on any failure, and appends a provenance record on success;
@@ -45,8 +47,11 @@ LOCK_REL = "pipeline/.locks/prims.lock"
 CMAKE_SRC_REL = "pipeline/gates/prims_test"
 BUILD_DIR_NAME = "build-prims"
 
-HEADER_FIELDS = ("PURPOSE", "COMPLEXITY", "MEMORY", "COW/THREADS", "USE WHEN")
-WHICH_ONE_HEADING = "### Which one to use"
+HEADER_FIELDS = ("PURPOSE", "KEY SPACE", "COMPLEXITY", "MEMORY", "COW/THREADS", "USE WHEN")
+CATALOGUE_HEADING = "### Catalogue"
+CATALOGUE_COLUMNS = ("Header", "Purpose", "Key space", "Memory per element", "Thread-safety", "Use when")
+CATALOGUE_FIELDS = ("PURPOSE", "KEY SPACE", "MEMORY", "COW/THREADS", "USE WHEN")
+DUPLICATE_PURPOSE_SIMILARITY = 0.6
 _HEADER_SUFFIXES = (".hpp", ".h")
 _SOURCE_SUFFIXES = (".cpp", ".cc", ".hpp", ".h")
 _RANDOM_RE = re.compile(r"mt19937|minstd|std::rand|\brng\b|random", re.I)
@@ -224,10 +229,69 @@ def additions_only(old: str, new: str) -> bool:
     return _is_subsequence(old.splitlines(), new.splitlines())
 
 
+def header_fields(text: str) -> dict[str, str]:
+    """`// FIELD  value` lines of a header comment (continuation lines joined)."""
+    fields: dict[str, str] = {}
+    current = ""
+    for line in text.splitlines()[:40]:
+        if not line.lstrip().startswith("//"):
+            continue
+        body = line.lstrip()[2:].strip()
+        name = next((f for f in HEADER_FIELDS if re.match(rf"{re.escape(f)}\b", body)), "")
+        if name:
+            current, body = name, body[len(name):].strip()
+            fields[current] = body
+        elif current and body:
+            fields[current] += " " + body
+    return fields
+
+
 def check_header_comment(text: str) -> list[str]:
-    head = [l for l in text.splitlines()[:40] if l.lstrip().startswith("//")]
-    block = "\n".join(head)
-    return [f for f in HEADER_FIELDS if not re.search(rf"//\s*{re.escape(f)}\b", block)]
+    fields = header_fields(text)
+    return [f for f in HEADER_FIELDS if not fields.get(f)]
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2}
+
+
+def _stem(header_name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", Path(header_name).stem.lower())
+
+
+def duplicate_of(primary: Path, name: str, purpose: str) -> str | None:
+    """Name of a published header with the same name or a near-identical declared purpose."""
+    mine = _words(purpose)
+    for path in sorted((primary / PRIMS_REL).glob("*.hpp")) + sorted((primary / PRIMS_REL).glob("*.h")):
+        if path.name == name:
+            continue
+        theirs = _words(header_fields(_read(path) or "").get("PURPOSE", ""))
+        same_purpose = bool(mine and theirs) and \
+            len(mine & theirs) / len(mine | theirs) >= DUPLICATE_PURPOSE_SIMILARITY
+        if _stem(path.name) == _stem(name) or same_purpose:
+            return path.name
+    return None
+
+
+def catalogue_row(name: str, header_text: str) -> str:
+    fields = header_fields(header_text)
+    cells = [f"`{name}`", *(fields[f].replace("|", "/") for f in CATALOGUE_FIELDS)]
+    return "| " + " | ".join(cells) + " |"
+
+
+def with_catalogue_rows(readme: str, rows: list[str]) -> str:
+    """Append `rows` to the README's catalogue table (creating the table if absent)."""
+    lines = readme.rstrip("\n").splitlines() if readme.strip() else []
+    if CATALOGUE_HEADING not in lines:
+        lines += ["", CATALOGUE_HEADING, "", "| " + " | ".join(CATALOGUE_COLUMNS) + " |",
+                  "|" + " --- |" * len(CATALOGUE_COLUMNS)]
+    at = lines.index(CATALOGUE_HEADING) + 1
+    while at < len(lines) and not lines[at].startswith("|"):
+        at += 1
+    while at < len(lines) and lines[at].startswith("|"):
+        at += 1
+    lines[at:at] = rows
+    return "\n".join(lines) + "\n"
 
 
 def _merge3(candidate: str, base: str | None, primary: str) -> tuple[str | None, str]:
@@ -374,9 +438,9 @@ def primitive_publish(
     for f in files:
         rel = _norm_rel(f, repo_root)
         ok_header = rel.startswith(PRIMS_REL + "/") and rel.endswith(_HEADER_SUFFIXES) and "/" not in rel[len(PRIMS_REL) + 1:]
-        if not (ok_header or rel in (README_REL, TESTS_REL)):
-            return _fail(f"not publishable: {f} (allowed: a new/extended header directly under {PRIMS_REL}/, "
-                         f"{README_REL}, {TESTS_REL})")
+        if not (ok_header or rel == TESTS_REL):
+            return _fail(f"not publishable: {f} (allowed: a new/extended header directly under {PRIMS_REL}/ and "
+                         f"{TESTS_REL}; the {README_REL} catalogue row is added by primitive_publish)")
         if rel not in rels:
             rels.append(rel)
 
@@ -407,20 +471,18 @@ def primitive_publish(
         if not changed:
             return {"ok": True, "note": "no change"}
 
-        # -- structure: header comment, README row, tests
+        # -- structure: header comment, tests, no duplicate of a published primitive
         problems: list[str] = []
-        readme = final.get(README_REL, _read(primary / README_REL) or "")
         tests = final.get(TESTS_REL, _read(primary / TESTS_REL) or "")
         for rel in new_headers:
             name = Path(rel).name
             missing = check_header_comment(final[rel])
             if missing:
                 problems.append(f"{name}: header comment lacks {', '.join(missing)} (see any existing prims header)")
-            if not re.search(rf"^\|[^\n]*`[^`\n]*{re.escape(name)}[^`\n]*`", readme, re.M):
-                problems.append(f"{name}: no row in {README_REL} (add it to the right table)")
-            if README_REL not in final or (old[README_REL] or "").split(WHICH_ONE_HEADING)[-1] == \
-                    final[README_REL].split(WHICH_ONE_HEADING)[-1]:
-                problems.append(f"{name}: {README_REL} 'Which one to use' section must say when to pick it")
+            twin = None if missing else duplicate_of(primary, name, header_fields(final[rel])["PURPOSE"])
+            if twin:
+                problems.append(f"{name}: duplicates the published {twin} (same name or purpose); reuse it, or "
+                                "extend it by staging a version of it with added members")
             if TESTS_REL not in final or f"prims/{name}" not in tests:
                 problems.append(f"{name}: {TESTS_REL} must include it and test it")
         if new_headers and TESTS_REL in final:
@@ -438,6 +500,13 @@ def primitive_publish(
         if hits:
             return _fail("workload vocabulary in the primitives library (names must say what a structure is, "
                          "not who uses it); remove these words, including from comments", hits=hits[:30])
+
+        if new_headers:
+            readme_old = _read(primary / README_REL)
+            old[README_REL] = readme_old
+            final[README_REL] = with_catalogue_rows(
+                readme_old or "", [catalogue_row(Path(r).name, final[r]) for r in new_headers])
+            changed.append(README_REL)
 
         # -- write with backup, build, test
         backup: dict[str, str | None] = {r: old[r] for r in changed}

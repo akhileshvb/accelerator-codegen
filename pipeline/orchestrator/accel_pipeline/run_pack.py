@@ -231,6 +231,8 @@ def run_pack(
     skip_gates: bool = False,
     extra_args: list[str] | None = None,
 ) -> dict[str, Any]:
+    """`first_wave: N` in the pack runs its first N runs to completion before fanning out the
+    rest, so the primitives they publish exist before the mass of runs starts."""
     queries = parse_pack_queries(pack)
     if not queries:
         raise ValueError("pack has no queries")
@@ -294,24 +296,26 @@ def run_pack(
         flush=True,
     )
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(
-                run_pack_query,
-                repo_root=repo_root,
-                entry=entry,
-                models_config=models_config or pack.get("models_config"),
-                pipeline_config_path=pipeline_config_path or pack.get("pipeline_config"),
-                dry_run=dry_run,
-                skip_gates=skip_gates,
-                extra_args=extra_args,
-                isolation_mode=isolation_mode,
-                pack_queries=pack_query_ids,
-            ): entry
-            for entry in queries
-        }
-        for fut in as_completed(futures):
-            results.append(fut.result())
+    first_wave = int(pack.get("first_wave") or 0)
+    waves = [queries[:first_wave], queries[first_wave:]] if 0 < first_wave < len(queries) else [queries]
+    for wave in waves:
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(wave)))) as pool:
+            futures = [
+                pool.submit(
+                    run_pack_query,
+                    repo_root=repo_root,
+                    entry=entry,
+                    models_config=models_config or pack.get("models_config"),
+                    pipeline_config_path=pipeline_config_path or pack.get("pipeline_config"),
+                    dry_run=dry_run,
+                    skip_gates=skip_gates,
+                    extra_args=extra_args,
+                    isolation_mode=isolation_mode,
+                    pack_queries=pack_query_ids,
+                )
+                for entry in wave
+            ]
+            results.extend(fut.result() for fut in as_completed(futures))
 
     results.sort(key=lambda r: (r["query"], r["workload"], r["engine"]))
     summary = {
