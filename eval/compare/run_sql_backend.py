@@ -74,7 +74,11 @@ CHUNK = 5000  # rows per multi-row INSERT / keys per IN list
 def kit_sql(q):
     """The parameterized ($n) TPC-H text of query q: the one the Verus kits and the DuckDB harness
     use as their baseline (src/generated/tpch/qN/verus_kit/*/glue.cpp, kQuerySql)."""
-    f = glob.glob(os.path.join(ROOT, "src", "generated", "tpch", f"q{q}", "verus_kit", "*", "glue.cpp"))[0]
+    kits = glob.glob(os.path.join(ROOT, "src", "generated", "tpch", f"q{q}", "verus_kit", "*", "glue.cpp"))
+    if not kits:  # (after the reorg: the same $n text lives in workloads/tpch/qN.sql)
+        t = open(os.path.join(ROOT, "workloads", "tpch", f"q{q}.sql")).read()
+        return "\n".join(l for l in t.splitlines() if not l.lstrip().startswith("--")).strip().rstrip(";")
+    f = kits[0]
     t = open(f).read()
     pos = t.index("=", t.index("kQuerySql")) + 1
     tok = re.compile(r'\s*(?:R"(\w*)\((.*?)\)\1"|"((?:[^"\\]|\\.)*)")', re.S)
@@ -430,6 +434,11 @@ class Stream:
         self.rng = random.Random(seed)
         self.rf_dir = rf_dir          # TPC-H update sets (dbgen -U): RF1 / RF2 from them instead of cloning orders
         self.set_orders = set_orders  # orders used from each set (0: all)
+        # sets 1..n_sets (contiguous); with set_orders, pair p takes slice p // n_sets of set p % n_sets + 1, so
+        # the first n_sets pairs are each set's first slice (as before) and the later ones wrap to the next slices
+        self.n_sets = 0
+        while rf_dir and os.path.exists(os.path.join(rf_dir, f"orders.tbl.u{self.n_sets + 1}")):
+            self.n_sets += 1
         self.rf_orders_used = 0
         self._set = (None, None, None, None)
         self.rf_only = rf_only
@@ -518,7 +527,9 @@ class Stream:
         if self.rf_dir:  # the specification's order: RF1 of set K, then RF2 of set K
             idx = self.rf
             self.rf += 1
-            return self.rf1_set(db, idx // 2 + 1) if idx % 2 == 0 else self.rf2_set(db, idx // 2 + 1)
+            p = idx // 2
+            n, part = (p % self.n_sets + 1, p // self.n_sets) if self.set_orders and self.n_sets else (p + 1, 0)
+            return self.rf1_set(db, n, part) if idx % 2 == 0 else self.rf2_set(db, n, part)
         if self.rf % 2 == 0:
             self.rf += 1
             return self.rf2(db)
@@ -554,10 +565,11 @@ class Stream:
             self._set = (n, orders, lineitems, deletes)
         return self._set[1:]
 
-    def rf1_set(self, db, n):
+    def rf1_set(self, db, n, part=0):
         orders, lineitems, _ = self.load_set(n)
         if self.set_orders:
-            orders = orders[:self.set_orders]
+            orders = orders[part * self.set_orders:(part + 1) * self.set_orders]
+            assert len(orders) == self.set_orders, f"update set {n} has no slice {part} of {self.set_orders} orders (more sets needed)"
             keep = {r[0] for r in orders}
             lineitems = [r for r in lineitems if r[0] in keep]
         keys = [int(r[0]) for r in orders]
@@ -572,9 +584,10 @@ class Stream:
         self.written["lineitem"] += 1
         return "rf1", apply
 
-    def rf2_set(self, db, n):
+    def rf2_set(self, db, n, part=0):
         deletes = self.load_set(n)[2]
-        keys = deletes[:self.set_orders] if self.set_orders else deletes
+        keys = deletes[part * self.set_orders:(part + 1) * self.set_orders] if self.set_orders else deletes
+        assert keys, f"update set {n} has no delete slice {part}"
         self.rf_orders_used = len(keys)
         return self.rf2(db, keys)
 
@@ -693,6 +706,15 @@ class Stream:
                                          self.template_supps[self.rng.randrange(len(self.template_supps))], new)
 
     # --- undo ----------------------------------------------------------------------------
+    def mark(self):
+        """The undo lists' lengths before a write transaction (rollback_to drops what a rolled-back write added)."""
+        return len(self.reinsert), len(self.redelete), len(self.reupdate)
+
+    def rollback_to(self, mark):
+        """A write's transaction rolled back: its rows never changed, so restore() must not undo them (it would
+        delete rows the stream never inserted or re-insert rows it never deleted)."""
+        del self.reinsert[mark[0]:], self.redelete[mark[1]:], self.reupdate[mark[2]:]
+
     def restore(self, db):
         """Put the data back as it was before the stream (triggers, if on, maintain the accelerators).
         Updates are undone last: a row the stream updated and later deleted (a partsupp row of a deleted supplier)
@@ -871,15 +893,17 @@ def writer(a, system, rate, stream, ctr, t0, stop):
         else:
             sched = time.perf_counter()
         w0 = dict(stream.written)  # (prepare counts the tables a commit writes)
+        mark = stream.mark()  # (prepare already records the undo of what apply will change)
         try:
             kind, apply = stream.next(db)
         except Exception as e:  # noqa: BLE001  (a pool ran out, a query failed: the run is not valid)
+            stream.rollback_to(mark)
             print(f"  WRITER STOPPED: {type(e).__name__}: {e}", flush=True)
             with ctr.lock:
                 ctr.commits.append(("stream error", time.perf_counter() - t0[0], 0.0, 0.0, 0, "error: " + str(e)[:200]))
             break
         # mv: the plain views reading a written table are refreshed in the commit's transaction (timed with it)
-        refresh = mv_defs().refresh_for([t for t, n in stream.written.items() if n != w0.get(t)], kind) if system == "mv" else []
+        refresh = mv_defs().refresh_for([t for t, n in stream.written.items() if n != w0.get(t)], kind, a.queries) if system == "mv" else []
         ref_us = {}
         s = time.perf_counter()
         try:
@@ -895,6 +919,7 @@ def writer(a, system, rate, stream, ctr, t0, stop):
             st = "ok"
         except Exception as e:  # noqa: BLE001
             db.rollback()
+            stream.rollback_to(mark)
             rows, st = 0, "error: " + str(e)[:200]
             print(f"  writer {kind}: {st}", flush=True)
         us = (time.perf_counter() - s) * 1e6
@@ -1089,7 +1114,8 @@ def refresh_all(db):
     t = time.perf_counter()
     db.execute("SET enable_nestloop = off")  # (see mv_defs.REFRESH_SETTINGS)
     for name, _ in mv_defs().full_views():
-        db.execute(f"REFRESH MATERIALIZED VIEW {name}")
+        if db.query(f"SELECT to_regclass('{name}')")[0][0][0] is not None:  # (a subset run builds only its own)
+            db.execute(f"REFRESH MATERIALIZED VIEW {name}")
     db.execute("RESET enable_nestloop")
     return time.perf_counter() - t
 

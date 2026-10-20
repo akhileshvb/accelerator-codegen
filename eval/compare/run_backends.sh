@@ -27,7 +27,7 @@
 #             commits are measured per point.
 #
 # rf-fixed:   as rf, but at fixed wall-clock intervals between RF commits instead of calibrated multiples:
-#             FIXED_INTERVALS (default "60 30 15 10 5" s, the DuckDB schedule).  Every interval gets the same
+#             FIXED_INTERVALS (default "60 30 15 10 5" s, the DuckDB schedule; "uncapped": back to back).  Every interval gets the same
 #             window FIXED_WINDOW (180 s) and warmup FIXED_WARMUP (30 s), so the points differ only in the write
 #             rate; a window is extended (to MAX_WINDOW, 900 s) until every query has MIN_READS (3) reads in it.
 #             Repetitions are the outer loop and the interval order reverses every other repetition, so drift
@@ -57,6 +57,7 @@
 #              of mv_defs.py in schema MV_SCHEMA (default public)
 #   mysql:     MYSQL_TCP_PORT (3307)  MYSQL_DB (tpch_sf20)  MYSQL_USER / MYSQL_PWD
 #   postgres/mysql: QUERY_TIMEOUT (1800 s per baseline query; timeouts are reported, not fatal)
+#   RF_EXTRA (rf-fixed): more run_sql_backend.py writerate arguments, e.g. "--max-commits 15000" for uncapped points
 # Needs for postgres/mysql: pip install psycopg2-binary pymysql  (PYTHON=<venv python>).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -163,7 +164,9 @@ rf-fixed)
       for ((K = ${FIRST_REP:-0}; K < REPEATS; K++)); do   # FIRST_REP: resume a sweep at that repetition
       ORDER=$IVS; [ $((K % 2)) = 1 ] && ORDER=$(echo $IVS | tr ' ' '\n' | tac | tr '\n' ' ')
       for IV in $ORDER; do
-        RATE=$($PYTHON -c "print(round(1.0 / $IV, 6))")
+        # "uncapped": the writer commits back to back (its maximum rate under the read load)
+        # "0": no writer (the read-only point)
+        if [ "$IV" = uncapped ]; then RATE=-1; elif [ "$IV" = 0 ]; then RATE=0; else RATE=$($PYTHON -c "print(round(1.0 / $IV, 6))"); fi
         D=$OUT/$b/rf-fixed/interval${IV}s; mkdir -p "$D"; meta "$D" "$@"
         echo "pg_workers: $PG_WORKERS (per session, base and accel) seed: $SEED phases: $PHASES" >> "$D/meta/meta.txt"
         EXTRA=(--seed "$SEED")
@@ -184,7 +187,7 @@ rf-fixed)
           fi
         fi
         echo "=== rf-fixed $b ${SYS} rep $K interval=${IV}s window=${S}s (min reads ${MIN_READS:-3}, max ${MAX_WINDOW:-900}s) warmup=${W}s readers=$READERS seed=$SEED$([ "$b" = postgres ] && echo " pg_workers=$PG_WORKERS") $(date +%T)"
-        run_rf "$b" "$D" "$RATE" "$S" "$W" "$READERS" --dim-after-rf --repeats "$REPEATS" --sets 4 "${EXTRA[@]}" 2>&1 | tee -ia "$D/run.log"
+        run_rf "$b" "$D" "$RATE" "$S" "$W" "$READERS" --dim-after-rf --repeats "$REPEATS" --sets 4 "${EXTRA[@]}" ${RF_EXTRA:-} 2>&1 | tee -ia "$D/run.log"
       done
       [ "$b" = duckdb ] && break
       done

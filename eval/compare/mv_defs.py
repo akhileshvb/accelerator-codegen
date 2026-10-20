@@ -54,7 +54,8 @@ IMMV = {
     # grouped by the order is maintained by key lookups)
     4: {"mv_q4": ("""SELECT o_orderkey, o_orderpriority, o_orderdate, COUNT(*) AS late FROM orders, lineitem
                      WHERE l_orderkey = o_orderkey AND l_commitdate < l_receiptdate
-                     GROUP BY o_orderkey, o_orderpriority, o_orderdate""", [["o_orderdate"], ["o_orderkey"]])},
+                     GROUP BY o_orderkey, o_orderpriority, o_orderdate""",
+                  ["(o_orderdate) INCLUDE (o_orderpriority)", ["o_orderkey"]])},
     5: {"mv_q5": ("""SELECT n_name, r_name, o_orderdate, SUM(l_extendedprice * (1 - l_discount)) AS rev
                      FROM customer, orders, lineitem, supplier, nation, region
                      WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey AND l_suppkey = s_suppkey
@@ -125,7 +126,8 @@ IMMV = {
                        FROM partsupp, part, supplier
                        WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey
                          AND s_comment NOT LIKE '%Customer%Complaints%'
-                       GROUP BY p_brand, p_type, p_size, ps_suppkey""", [["p_size"], ["ps_suppkey"]])},
+                       GROUP BY p_brand, p_type, p_size, ps_suppkey""",
+                    ["(p_size) INCLUDE (p_brand, p_type, ps_suppkey)", ["ps_suppkey"]])},
     17: {"mv_q17": (f"""SELECT {PK('l_partkey', 'l_quantity')} AS k, l_partkey, p_brand, p_container, l_quantity,
                          SUM(l_extendedprice) AS sp, COUNT(*) AS cnt
                        FROM lineitem, part WHERE p_partkey = l_partkey
@@ -165,10 +167,11 @@ FULL = {
                                                AND l3.l_suppkey <> l1.l_suppkey AND l3.l_receiptdate > l3.l_commitdate)
                              GROUP BY l1.l_suppkey) w, supplier, nation
                        WHERE s_suppkey = w.l_suppkey AND s_nationkey = n_nationkey
-                       GROUP BY s_name, n_name""", [["n_name"]], {"supplier", "lineitem", "orders", "nation"})},
+                       GROUP BY s_name, n_name""", [["n_name"], "UNIQUE (s_name, n_name)"],
+                    {"supplier", "lineitem", "orders", "nation"})},
     22: {"mv_q22": ("""SELECT SUBSTRING(c_phone FROM 1 FOR 2) AS cntrycode, c_custkey, c_acctbal FROM customer
                        WHERE NOT EXISTS (SELECT 1 FROM orders WHERE o_custkey = c_custkey)""",
-                    [["cntrycode", "c_acctbal"]], {"customer", "orders"})},
+                    [["cntrycode", "c_acctbal"], "UNIQUE (c_custkey)"], {"customer", "orders"})},
 }
 
 # the reads: the kit's $n (verus) arguments
@@ -253,6 +256,78 @@ READ = {
 assert sorted(READ) == list(range(1, 23))
 assert all(q in IMMV or q in FULL for q in READ)
 
+# ---------------------------------------------------------------------------------------------
+# v2 designs (read-optimized; MV_DESIGN picks them: "v1" none, "v2" all, or a list of query numbers "3 10 15").
+# A window parameter becomes a row of a static helper table that the view joins, so the read is an index lookup
+# of one window instead of re-aggregating millions of rows; pg_ivm then maintains every window a row falls in.
+# ---------------------------------------------------------------------------------------------
+_MONTHS = [f"{1993 + m // 12}-{m % 12 + 1:02d}-01" for m in range(58)]  # 1993-01 .. 1997-10: every 3-month window start
+AUX_V2 = {
+    "mv_win3": ("ws date PRIMARY KEY, we date NOT NULL",
+                lambda: [(s, f"{int(s[:4]) + (int(s[5:7]) + 2) // 12}-{(int(s[5:7]) + 2) % 12 + 1:02d}-01") for s in _MONTHS]),
+    "mv_q3_days": ("d date PRIMARY KEY", lambda: [(f"1995-03-{i:02d}",) for i in range(1, 32)]),
+}
+IMMV_V2 = {
+    # Q2: the type's last word as a column (p_type LIKE '%' || word) and the region's minimum cost per part as
+    # its own view, so the read is index lookups instead of a correlated MIN per candidate
+    2: {"mv_q2t": ("""SELECT p_partkey, p_size, p_type, substring(p_type from '[^ ]+$') AS t3, p_mfgr, ps_partkey, ps_suppkey,
+                       ps_supplycost, s_suppkey, s_acctbal, s_name, s_address, s_phone, s_comment, n_nationkey, n_name,
+                       r_regionkey, r_name
+                     FROM part, partsupp, supplier, nation, region
+                     WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND s_nationkey = n_nationkey
+                       AND n_regionkey = r_regionkey""", [["r_name", "p_size", "t3"]]),
+        "mv_q2min": (f"""SELECT {PK('ps_partkey', 'r_name')} AS k, ps_partkey, r_name, MIN(ps_supplycost) AS mc
+                         FROM partsupp, supplier, nation, region
+                         WHERE s_suppkey = ps_suppkey AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
+                         GROUP BY {PK('ps_partkey', 'r_name')}, ps_partkey, r_name""", [["k"]])},
+    # Q3: one row per (day of March 1995, order) that the day splits (o_orderdate < day < l_shipdate)
+    3: {"mv_q3d": (f"""SELECT {PK("d.d - DATE '1970-01-01'", 'l_orderkey')} AS k, d.d, l_orderkey, o_orderdate, o_shippriority, c_mktsegment,
+                        SUM(l_extendedprice * (1 - l_discount)) AS rev
+                      FROM customer, orders, lineitem, mv_q3_days d
+                      WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey AND o_orderdate < d.d AND l_shipdate > d.d
+                      GROUP BY {PK("d.d - DATE '1970-01-01'", 'l_orderkey')}, d.d, l_orderkey, o_orderdate, o_shippriority, c_mktsegment""",
+                   [["k"], ["d", "c_mktsegment", "rev DESC", "o_orderdate"]])},
+    # Q10 / Q15: one row per (3-month window start, customer / supplier)
+    10: {"mv_q10w": (f"""SELECT {PK("w.ws - DATE '1970-01-01'", 'o_custkey')} AS k, w.ws, o_custkey, SUM(l_extendedprice * (1 - l_discount)) AS rev
+                        FROM orders, lineitem, mv_win3 w
+                        WHERE l_orderkey = o_orderkey AND l_returnflag = 'R' AND o_orderdate >= w.ws AND o_orderdate < w.we
+                          AND w.ws >= DATE '1993-02-01' AND w.ws <= DATE '1995-01-01'
+                        GROUP BY {PK("w.ws - DATE '1970-01-01'", 'o_custkey')}, w.ws, o_custkey""", [["k"], ["ws", "rev DESC", "o_custkey"]])},
+    15: {"mv_q15w": (f"""SELECT {PK("w.ws - DATE '1970-01-01'", 'l_suppkey')} AS k, w.ws, l_suppkey, SUM(l_extendedprice * (1 - l_discount)) AS rev
+                        FROM lineitem, mv_win3 w WHERE l_shipdate >= w.ws AND l_shipdate < w.we
+                        GROUP BY {PK("w.ws - DATE '1970-01-01'", 'l_suppkey')}, w.ws, l_suppkey""", [["k"], ["ws", "rev DESC"]])},
+}
+READ_V2 = {
+    2: """SELECT m.s_acctbal, m.s_name, m.n_name, m.p_partkey, m.p_mfgr, m.s_address, m.s_phone, m.s_comment
+          FROM mv_q2t m JOIN mv_q2min x ON x.k = ((m.p_partkey)::text || '|' || (m.r_name)::text) AND x.mc = m.ps_supplycost
+          WHERE m.r_name = $3 AND m.p_size = $1 AND m.t3 = btrim($2, '%') AND m.p_type LIKE $2
+          ORDER BY m.s_acctbal DESC, m.n_name, m.s_name, m.p_partkey LIMIT 100""",
+    3: """SELECT l_orderkey, rev AS revenue, o_orderdate, o_shippriority FROM mv_q3d
+          WHERE d = $2 AND c_mktsegment = $1 ORDER BY rev DESC, o_orderdate LIMIT 10""",
+    10: """WITH t AS (SELECT o_custkey, rev FROM mv_q10w WHERE ws = $1 ORDER BY rev DESC, o_custkey LIMIT 20)
+           SELECT c_custkey, c_name, t.rev AS revenue, c_acctbal, n_name, c_address, c_phone, c_comment
+           FROM t JOIN customer ON c_custkey = t.o_custkey JOIN nation ON c_nationkey = n_nationkey
+           ORDER BY t.rev DESC, c_custkey LIMIT 20""",
+    15: """SELECT s_suppkey, s_name, s_address, s_phone, w.rev AS total_revenue FROM mv_q15w w JOIN supplier ON s_suppkey = w.l_suppkey
+           WHERE w.ws = $1 AND w.rev = (SELECT MAX(rev) FROM mv_q15w WHERE ws = $1) ORDER BY s_suppkey""",
+}
+V2_QUERIES = sorted(IMMV_V2)
+
+
+def _apply_design(design):
+    qs = set(V2_QUERIES) if design == "v2" else set() if design in ("", "v1") else {int(x) for x in design.split()}
+    for q in sorted(qs):
+        IMMV[q] = IMMV_V2[q]
+        if q in READ_V2:
+            READ[q] = READ_V2[q]
+    for name, spec in AUX_V2.items():
+        if any(name in sql for q in qs for sql, _ in IMMV[q].values()):
+            AUX[name] = spec
+    return sorted(qs)
+
+
+DESIGN = _apply_design(os.environ.get("MV_DESIGN", "v1").strip())
+
 
 def mv_sql(q, verus_args):
     """The view read for query q with the kit's verus arguments (as base_sql substitutes them)."""
@@ -272,12 +347,24 @@ UNAFFECTED = {
 }
 # the plain views' plans: the planner estimates Q21's NOT EXISTS anti join at 1 row and nests 200k suppliers over
 # its millions of rows (30+ min); hash joins compute it in ~30 s.  SET LOCAL in the writer's transaction
-REFRESH_SETTINGS = ["SET LOCAL enable_nestloop = off"]
+# The writer's refreshes may use the whole machine's parallel workers (the accelerator's maintenance may use all 80
+# threads); they come from the server's shared pool (max_parallel_workers), so readers and refresh together stay within it.
+REFRESH_SETTINGS = ["SET LOCAL enable_nestloop = off",
+                    f"SET LOCAL max_parallel_workers_per_gather = {int(os.environ.get('MV_REFRESH_WORKERS', os.cpu_count()))}"]
 
 
-def refresh_for(tables, kind=None):
-    """REFRESH statements for the plain views reading any of tables (minus those commit `kind` cannot change)."""
-    return [f"REFRESH MATERIALIZED VIEW {n}" for n, deps in full_views()
+# CONCURRENTLY (default): readers keep reading the old contents while the writer's transaction refreshes (a plain
+# REFRESH holds an ACCESS EXCLUSIVE lock to commit, so every Q21 / Q22 read waits for the whole write); needs the
+# views' unique indexes.  MV_REFRESH=plain for the blocking form.
+REFRESH_MODE = os.environ.get("MV_REFRESH", "concurrent")
+
+
+def refresh_for(tables, kind=None, queries=None):
+    """REFRESH statements for the plain views reading any of tables (minus those commit `kind` cannot change), of the
+    queries being run (default all: a run over a subset needs only its own views fresh, and the others may not exist)."""
+    how = "" if REFRESH_MODE == "plain" else "CONCURRENTLY "
+    own = {n for q in FULL if queries is None or q in queries for n in FULL[q]}
+    return [f"REFRESH MATERIALIZED VIEW {how}{n}" for n, deps in full_views() if n in own
             if deps & set(tables) and kind not in UNAFFECTED.get(n, ())]
 
 
@@ -309,6 +396,8 @@ def connect(a, schema):
 
 
 def index_ddl(name, cols):
+    if isinstance(cols, str):  # raw, e.g. "(o_orderdate) INCLUDE (o_orderpriority)" or "UNIQUE (c_custkey)"
+        return f"CREATE UNIQUE INDEX ON {name} {cols[7:]}" if cols.startswith("UNIQUE ") else f"CREATE INDEX ON {name} {cols}"
     return f"CREATE INDEX ON {name} ({', '.join(cols)})"
 
 
@@ -348,7 +437,8 @@ def cmd_create(a):
     for name, (cols, rows) in AUX.items():
         if not exists(name):
             cur.execute(f"CREATE TABLE {name} ({cols})")
-            cur.executemany(f"INSERT INTO {name} VALUES (%s)", rows())
+            data = rows()
+            cur.executemany(f"INSERT INTO {name} VALUES ({', '.join(['%s'] * len(data[0]))})", data)
             cur.execute(f"ANALYZE {name}")
     jobs = [("immv", n, s, i) for q in qs for n, (s, i) in IMMV.get(q, {}).items()] + \
            [("full", n, s, i) for q in qs for n, (s, i, _) in FULL.get(q, {}).items()]
@@ -381,17 +471,54 @@ def cmd_drop(a):
     c.close()
 
 
+def edge_sets(q):
+    """Parameter sets at the ends of the substitution domain (gen_tpch_params.py), where a view's built-in
+    filters (date windows, discount / quantity ranges) are tightest: [{"params", "verus"}]."""
+    D = lambda s: f"DATE '{s}'"
+    m3 = lambda s: f"{int(s[:4]) + (int(s[5:7]) + 2) // 12}-{(int(s[5:7]) + 2) % 12 + 1:02d}-01"
+    m1 = lambda s: f"{int(s[:4]) + int(s[5:7]) // 12}-{int(s[5:7]) % 12 + 1:02d}-01"
+    y1 = lambda s: f"{int(s[:4]) + 1}{s[4:]}"
+    out = []
+    add = lambda p, v: out.append({"params": p, "verus": v})
+    if q == 1:
+        for x in (60, 120): add({"delta": x}, f"{x}")
+    elif q == 3:
+        for day in ("1995-03-01", "1995-03-31"):
+            for seg in ("AUTOMOBILE", "MACHINERY"): add({"segment": seg, "date": day}, f"'{seg}', {D(day)}")
+    elif q in (4, 10, 15):
+        lo, hi = {4: ("1993-01-01", "1997-10-01"), 10: ("1993-02-01", "1995-01-01"), 15: ("1993-01-01", "1997-10-01")}[q]
+        for day in (lo, hi): add({"date": day}, f"{D(day)}, {D(m3(day))}")
+    elif q == 5:
+        for day in ("1993-01-01", "1997-01-01"): add({"region": "ASIA", "date": day}, f"'ASIA', {D(day)}, {D(y1(day))}")
+    elif q == 6:
+        for day, disc, qty in (("1993-01-01", "0.02", 24), ("1997-01-01", "0.09", 25)):
+            add({"date": day, "discount": disc, "quantity": qty}, f"{D(day)}, {disc}, {qty}.00, {D(y1(day))}")
+    elif q == 12:
+        for day in ("1993-01-01", "1997-01-01"):
+            add({"shipmode1": "MAIL", "shipmode2": "SHIP", "date": day}, f"'MAIL', 'SHIP', {D(day)}, {D(y1(day))}")
+    elif q == 14:
+        for day in ("1993-01-01", "1997-12-01"): add({"date": day}, f"{D(day)}, {D(m1(day))}")
+    elif q == 18:
+        for x in (312, 315): add({"quantity": x}, f"{x}")
+    elif q == 20:
+        for day in ("1993-01-01", "1997-01-01"):
+            add({"date": day, "color": "forest", "nation": "CANADA"}, f"{D(day)}, 'forest%', 'CANADA', {D(y1(day))}")
+    return out
+
+
 def cmd_check(a):
-    """Every query's view answer vs the base query, for --sets parameter sets of the given seed's draw."""
+    """Every query's view answer vs the base query, for --sets parameter sets of the given seed's draw
+    (--edges: also the ends of each parameter domain)."""
     import types
     import run_sql_backend as R
+    import run_compare
     qs = [int(x) for x in a.queries.split()]
     d = types.SimpleNamespace(seed=a.seed, repeats=1, sets=a.sets, sf=a.sf, queries=qs, out=a.out)
-    _, _, spec = R.draws(d)[0]
+    _, _, spec = run_compare.draws(d)[0]
     c, cur = connect(a, a.schema)
     bad = 0
     for q in qs:
-        for s in spec[str(q)]["sets"]:
+        for s in spec[str(q)]["sets"] + (edge_sets(q) if a.edges else []):
             t = time.perf_counter(); cur.execute(R.base_sql(q, s["verus"], "postgres")); b = cur.fetchall(); tb = time.perf_counter() - t
             t = time.perf_counter(); cur.execute(mv_sql(q, s["verus"])); m = cur.fetchall(); tm = time.perf_counter() - t
             ok = R.same(R.canon("postgres", b, False), R.canon("postgres", m, False))
@@ -418,6 +545,7 @@ def main():
     ap.add_argument("--sf", type=float, default=20)
     ap.add_argument("--out", default="/tmp/mv_check_draws")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--edges", action="store_true", help="check: also the ends of each parameter domain")
     a = ap.parse_args()
     sys.exit({"create": cmd_create, "drop": cmd_drop, "check": cmd_check}[a.mode](a) and 1 or 0)
 
