@@ -33,12 +33,15 @@ allowed_commands:
 dataset_benchmark: tpch
 
 implementation_layers:
-  # First: every later layer's gate reaches the engine through host.sh.
+  # First: every later layer's gate reaches the engine through host.sh. A layer's `prompt`
+  # (default 02_implementation.md) is its implementation prompt; hostctl also writes the minimal
+  # backend.cmake, so engine_build (a post-gate of every layer) is real from here on.
   - id: hostctl
     title: Host script (host_contract.md verbs)
     gate: engine_hostctl
     harness: backends/{engine}/host.sh
     cmake_target: ""
+    prompt: impl_hostctl.md
     rules: [host_contract]
   - id: capture
     title: Capture (S1)
@@ -83,7 +86,8 @@ post_implementation_gates:
   - engine_build
 
 # Validation: every layer again, the unseen adversarial tests, then the
-# backend-generic slot gates (run_slot_gates.sh, per-engine adapters).
+# backend-generic slot gates (run_slot_gates.sh -> host.sh slot, over the backend's toy module;
+# no accelerator exists yet, so the differential slot gate belongs to the accelerator pipeline).
 post_validation_gates:
   - engine_build
   - engine_capture
@@ -101,7 +105,6 @@ post_validation_gates:
   - slot_own_writes
   - slot_ddl_events
   - slot_tsan
-  - slot_differential
 
 prompt_subdir: engine_backend
 
@@ -127,14 +130,16 @@ default_cmake:
   entry: backends/{engine}/backend.cmake
 
 # The engine_profile sections (schemas/engine_profile.schema.json) each stage sees. Hazards are
-# narrowed to the layer. `all` is every section. Layer ids also key their impl and critique stages.
+# narrowed to the layer (an embedded engine, whose host layer is skipped, sees the `host` hazards at
+# runtime). `query_host` is not rendered here: the per-query harness facts belong to the accelerator
+# side (host bootstrap). `all` is every section. Layer ids also key their impl and critique stages.
 engine_profile_sections:
   analysis: all
   capture: [identity, process_model, capture, transactions, locking, hazards]
   epochs: [identity, process_model, transactions, locking, capture, hazards]
   scan: [identity, process_model, transactions, locking, scan, thread_knobs, hazards]
   runtime: [identity, packaging, host_runtime, process_model, locking, thread_knobs, scan, hazards]
-  hostctl: [identity, packaging, host_runtime, build, process_model, entry_points, hazards]
+  hostctl: [identity, packaging, host_runtime, build, process_model, scan, oracle, hazards]
   host: [identity, packaging, host_runtime, build, process_model, entry_points, thread_knobs, hazards]
   api: [identity, packaging, host_runtime, process_model, scan, entry_points, thread_knobs, oracle, hazards]
   validation: [identity, process_model, capture, transactions, locking, scan, oracle, hazards]

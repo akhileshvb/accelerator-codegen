@@ -65,6 +65,20 @@ the engine side must hold up. Each names its layer.
 
 ---
 
+## `hostctl`
+
+Writes `backends/{engine}/host.sh` against `host_contract.md` (binding; the prompt carries
+it) and the minimal `backends/{engine}/backend.cmake` (the `accel_backend_{engine}`
+INTERFACE target and the test glob), so that `engine_build` configures and builds the
+backend from the first layer on. Later layers extend `build` and `backend.cmake`.
+
+**Harness:** none of its own; the gate `engine_hostctl` drives the script: `info` names
+the engine and all eight verbs, `up` writes `env`, `load` twice (the second a no-op),
+`sql -` returns a CSV with a header, `down` removes the instance state. `slot` fails
+closed ("not wired yet") until validation wires it.
+
+---
+
 ## `capture` (S1)
 
 Implements the engine's capture of writes (`engine/capture.*`).
@@ -84,7 +98,7 @@ Implements the engine's capture of writes (`engine/capture.*`).
   allocation** (no `std::string` / `shared_ptr` per row).
 - Subtransaction depth: `CommitSubtransaction` / `AbortSubtransaction`; a
   rolled-back (sub)transaction never reaches a commit.
-- A change not expressible as rows (Postgres TRUNCATE) invalidates the
+- A change not expressible as rows (TRUNCATE) invalidates the
   accelerators of its tables at commit (`AcceleratorRuntime::Invalidate()`;
   shipped placement: an invalidating `CommittedChange`). An engine that
   reports TRUNCATE as deletes needs nothing special.
@@ -187,8 +201,8 @@ Implements the host (`api/{engine}_host.*`): the `EngineSlots` object owning a
   cannot be delivered becomes a gap (the runtime rebuilds). Read threads call
   no engine API: no engine headers in their files, signals blocked. A worker
   restart is safe: the next build includes everything.
-- **Thread budget and phase caps.** One `ThreadBudget` from `ResolveThreadBudget(engine setting)`; the read, build and maintenance caps from `ResolveReadThreads` / `ResolveBuildThreads` / `ResolveMaintenanceThreads` with the engine's own settings when it has a settings mechanism (e.g. Postgres `accel.read_threads` / `build_threads` / `maint_threads`; `ACCEL_AUX_*_THREADS` always override), applied with `SetPhaseLimits`. A multi-process placement shares the budget across processes (`TokenSource`).
-- **Table sizes and cost model.** `TableRows(table)` returns the engine's cheap row estimate (64-bit; 0 only if unknown) so `DataScaleRows` scales the maintenance policy; `CostModel(accelerator)` comes from `core::ResolveAuxCostModelPath` with the engine name, the scale tag (DuckDB: `ACCEL_AUX_BENCH_DB_LABEL`) and the per-engine override env var.
+- **Thread budget and phase caps.** One `ThreadBudget` from `ResolveThreadBudget(engine setting)`; the read, build and maintenance caps from `ResolveReadThreads` / `ResolveBuildThreads` / `ResolveMaintenanceThreads` with the engine's own settings when it has a settings mechanism (the profile's `thread_knobs`, base names of `api_contract.md` §4; `ACCEL_AUX_*_THREADS` always override), applied with `SetPhaseLimits`. A multi-process placement shares the budget across processes (`TokenSource`).
+- **Table sizes and cost model.** `TableRows(table)` returns the engine's cheap row estimate (64-bit; 0 only if unknown) so `DataScaleRows` scales the maintenance policy; `CostModel(accelerator)` comes from `core::ResolveAuxCostModelPath` with the engine name, the scale tag (the profile names where it comes from) and the per-engine override env var.
 - No commit is dropped or skipped by the host; no thread pool, build
   scheduler, lock or version logic of its own.
 

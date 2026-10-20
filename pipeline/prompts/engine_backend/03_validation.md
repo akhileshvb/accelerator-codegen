@@ -41,8 +41,20 @@ Facts and hazards of the engine (not instructions). Aim the adversarial cases at
 6. **Wire `host.sh slot`.** Implement `slot_gates::Engine` for this engine
    (`eval/harness/slot_gates.hpp`; the scenarios are written once there) in
    `backends/{{engine_name}}/tests/test_{{engine_name}}_slot_gates.cpp`, and make
-   `slot <scenario> <seconds>` build and run it through `run`. Every scenario runs a driver; 77 only
-   where the profile declares the mechanic n/a (say which field), never for a missing driver.
+   `slot <scenario> <seconds>` build and run it through `run`. No accelerator exists during a backend
+   run: the driver uses only the backend's own toy module from `backends/{{engine_name}}/tests/` (the
+   one the `runtime` layer harness runs on a real `RuntimeHost`), never `accelerators/**`:
+   - `ReadCases()`: one case per toy read: `accel_sql` calls the toy module's SQL entry (the engine's
+     idiom: the test-only entry point the layer harnesses already use), `ref_sql` is the plain SQL
+     aggregate over the toy table with the same answer; return after the module is registered and
+     built (warm).
+   - `Stats()`: the toy module's counters (hits, fallbacks, builds) from the runtime handle.
+   - `NewWriteSource()`, `TruncateAndRestore()`, `DdlCases()`: statements on the toy table (its own
+     keys; replace, rename and reshape it, then restore it). `ReaderModes()`: the engine's isolation
+     levels. `RestartAccelerators()`: restart the toy module's worker where the profile's
+     `process_model` has one, else `false`.
+   Every scenario runs a driver; 77 only where the profile declares the mechanic n/a (say which field),
+   never for a missing driver. `own_writes` and `ddl_events` are never n/a.
 7. Write `{{artifacts_path}}/validation_report.md`.
 
 ## Gates the orchestrator will re-run
@@ -50,8 +62,7 @@ Facts and hazards of the engine (not instructions). Aim the adversarial cases at
 `engine_build`, every layer gate in `layers.md`, **`engine_adversarial`**, then the
 backend-generic slot gates (`slot_epoch_stress`, `slot_hits_under_writes`,
 `slot_read_after_commit`, `slot_txn_edges`, `slot_restart`, `slot_own_writes`,
-`slot_ddl_events`, `slot_tsan`,
-`slot_differential`;
+`slot_ddl_events`, `slot_tsan`;
 `pipeline/gates/README_runtime_gates.md`). A slot gate failure is a backend bug:
 fix the slot, not the gate. `slot_tsan` reruns the slot scenarios under ThreadSanitizer with
 forced tiny slice grains; any report with a frame in substrate/, backends/ or accelerators/

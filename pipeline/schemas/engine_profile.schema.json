@@ -461,7 +461,7 @@
       "description": "Reference for differential tests.",
       "required": [
         "differential_db",
-        "run_script"
+        "sql_client"
       ],
       "additionalProperties": false,
       "properties": {
@@ -469,8 +469,8 @@
           "description": "Database the differential runs against.",
           "$ref": "#/$defs/text"
         },
-        "run_script": {
-          "description": "Script running the engine's differential.",
+        "sql_client": {
+          "description": "The engine's own client for running SQL against the reference database (a fact, not a repository script).",
           "$ref": "#/$defs/text"
         }
       }
@@ -508,7 +508,9 @@
                 "epochs",
                 "scan",
                 "runtime",
-                "host"
+                "host",
+                "hostctl",
+                "api"
               ]
             }
           }

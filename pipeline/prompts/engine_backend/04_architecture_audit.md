@@ -34,8 +34,8 @@ Facts and hazards of the engine, to judge whether the backend respects them.
 Use **only** the fixed `rule` ids from `acceptance_checklist.md` (each is owned
 by a layer). Analysis extras beyond the checklist are **not** fail reasons.
 
-On each violation, set `layer` to the owning layer id (`capture`, `epochs`,
-`scan`, `runtime`, `host`) so implementation retry can re-run from that layer.
+On each violation, set `layer` to the owning layer id (`hostctl`, `capture`, `epochs`,
+`scan`, `runtime`, `host`, `api`) so implementation retry can re-run from that layer.
 Global rules (`slots_only`, `scale_safe`, `query_registries`, `independence`,
 `fail_closed`) name the layer whose files hold the evidence.
 

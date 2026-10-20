@@ -119,8 +119,8 @@ engine_profile:
     work_db_suffix: ".mysql_work"
 
   oracle:
-    differential_db: "TPC-H database in the mysql container (scripts/setup_accel_mysql_tpch_test_db.sh, schema with utf8mb4_0900_bin text columns)."
-    run_script: scripts/run_mysql_tpch_diff_all22.sh
+    differential_db: "TPC-H database in the mysql container, schema with utf8mb4_0900_bin text columns."
+    sql_client: "The mysql command-line client against the server (MYSQL_HOST/MYSQL_TCP_PORT, user root), from the host or inside the container."
 
   hazards:
     - symptom: "A build that scans in parallel hangs or times out, or DDL (DROP TRIGGER, TRUNCATE) hangs indefinitely, while an accelerator build is running."
@@ -152,16 +152,16 @@ engine_profile:
       layers: [epochs, host]
     - symptom: "Text keys group, compare or sort differently in the accelerator and in the SQL answer."
       engine_fact: "Default collations ignore case and accents, *_bin collations ignore trailing spaces (PAD SPACE); only utf8mb4_0900_bin compares bytes."
-      layers: [scan, host]
+      layers: [scan, host, hostctl, api]
     - symptom: "A decimal value is rounded, truncated or overflows between the engine and the accelerator."
       engine_fact: "DECIMAL reaches the plugin as text of up to 65 digits; floats print with shortest round-trip digits; an integer constant reaches a UDF as binary, a decimal constant as text."
-      layers: [capture, scan, host]
+      layers: [capture, scan, host, api]
     - symptom: "A query UDF that fails returns NULL silently."
       engine_fact: "Setting the UDF's error flag without raising an error through the server's my_error yields NULL to the client."
       layers: [host]
     - symptom: "Row counts are 0 or stale right after a bulk load."
       engine_fact: "information_schema statistics are cached (information_schema_stats_expiry) and InnoDB's table_rows is an estimate."
-      layers: [runtime]
+      layers: [runtime, hostctl]
 
 allowed_commands:
   - "^bash scripts/ensure_accel_mysql_test\\.sh( .*)?$"

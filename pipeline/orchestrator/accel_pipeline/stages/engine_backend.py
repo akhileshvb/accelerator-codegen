@@ -215,7 +215,7 @@ def run_implementation_layer(
     while True:
         result = run_agent_stage(
             stage=stage,
-            prompt_file="02_implementation.md",
+            prompt_file=str(layer.get("prompt") or "02_implementation.md"),
             pipeline_config=pipeline_config,
             model_config=model_config,
             workload_name=workload_name,

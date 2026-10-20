@@ -117,8 +117,8 @@ engine_profile:
     work_db_suffix: ".postgres_work"
 
   oracle:
-    differential_db: "TPC-H database loaded into the postgres container (scripts/setup_accel_postgres_tpch_test_db.sh); text columns in C collation (scripts/postgres_tpch_c_collation.sql)."
-    run_script: scripts/run_postgres_tpch_diff_all22.sh
+    differential_db: "TPC-H database loaded into the postgres container, text columns in C collation."
+    sql_client: "psql against the server (PGHOST/PGPORT/PGUSER/PGDATABASE), from the host or inside the container."
 
   hazards:
     - symptom: "A statement that writes and then reads in one transaction gets state that lacks its own rows, or a rebuild/maintenance runs on other sessions' data only."
@@ -144,13 +144,13 @@ engine_profile:
       layers: [runtime]
     - symptom: "Ordered results or key equality differ between the engine's SQL and the accelerator for non-ASCII or mixed-case text."
       engine_fact: "A locale collation compares text by collation rules; only the C collation compares bytes. Text columns carry a collation per column."
-      layers: [scan, host]
+      layers: [scan, host, hostctl, api]
     - symptom: "A function returning numeric crashes the backend or prints garbage when the accelerator emits a double or integer."
       engine_fact: "Datum representation follows the declared SQL type: numeric is a pointer to a varlena, float8 and int8 are by-value or by-reference scalars; a mismatch is undefined behaviour."
-      layers: [host]
+      layers: [host, api]
     - symptom: "A wide decimal (more than 64 bits unscaled) silently overflows in capture or scan."
       engine_fact: "Postgres numeric has no fixed width; a column declared numeric(p,s) can hold values beyond int64 at scale s."
-      layers: [capture, scan]
+      layers: [capture, scan, api]
     - symptom: "A table that is dropped and recreated, or rewritten, keeps serving state built for the old table."
       engine_fact: "A relation is identified by oid; DROP/CREATE gives a new oid, and triggers and the captured table identity are dropped with the old relation. TRUNCATE changes the relfilenode but keeps the oid and fires only a TRUNCATE trigger."
       layers: [capture, runtime]

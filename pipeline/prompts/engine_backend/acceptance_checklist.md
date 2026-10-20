@@ -19,6 +19,15 @@ behaviour of the finished backend under concurrency.
 
 ## Rules (fixed `rule` ids)
 
+### `host_contract` (layer `hostctl`)
+
+- `host.sh` implements every verb of `host_contract.md` with its exit statuses; kept code
+  reaches the engine only through it. Instance, container, port and database names derive from
+  `ACCEL_ENGINE_INSTANCE`, all state lives under `ACCEL_ENGINE_STATE_DIR`, and `down` removes it.
+- `build` configures the build dir only with `$ACCEL_CMAKE_ARGS`; `load` is idempotent;
+  `slot` fails closed for a scenario without a driver (`77` only for a profile-declared n/a).
+- `backends/{engine}/backend.cmake` declares the `accel_backend_{engine}` INTERFACE target.
+
 ### `slot_capture` (layer `capture`)
 
 - Capture delivers **one** `ColumnarBatch` per statement and table through the
@@ -86,6 +95,19 @@ behaviour of the finished backend under concurrency.
   `AcceleratorRuntime::Read` at the S3 epoch, emits rows, answers `Fallback`
   through `ExecuteFallback`. Read parallelism is inside `Execute`, not an
   engine parallel source.
+
+### `api_surface` (layer `api`)
+
+- Every role of `api_contract.md` §2 is provided through `backends/{engine}/api/` or declared
+  n/a with a reason; the fixed introspection hooks (§3) and thread knob names (§4) are exact;
+  engine-exact value helpers (§5) live in `api/`, not in the shared primitives.
+- Nothing outside the backend includes a non-`api/` header of it.
+
+### `api_manifest` (layer `api`)
+
+- `api/README.md` follows the format of `host_contract.md`: the nine roles once each, every
+  header under `api/` listed, every listed symbol declared in its row's headers
+  (`check_api_manifest.py`); each `api/` header compiles alone (`api_conformance_{engine}`).
 
 ### `own_writes` (layer `runtime`; entries in `host`)
 

@@ -228,15 +228,15 @@
   "path": 2
  },
  "pipeline/config/workloads/engine_duckdb.yaml": {
-  "path": 6,
+  "path": 5,
   "symbol": 1
  },
  "pipeline/config/workloads/engine_mysql.yaml": {
-  "path": 7,
+  "path": 6,
   "target": 3
  },
  "pipeline/config/workloads/engine_postgres.yaml": {
-  "path": 7,
+  "path": 5,
   "target": 2
  },
  "pipeline/config/workloads/sec_edgar_q1.yaml": {
@@ -571,7 +571,7 @@
   "target": 2
  },
  "pipeline/orchestrator/tests/test_engine_profile.py": {
-  "engine": 15
+  "engine": 19
  },
  "pipeline/orchestrator/tests/test_engine_runs.py": {
   "engine": 16,
@@ -693,14 +693,10 @@
  "pipeline/prompts/engine_backend/04_architecture_audit.md": {
   "symbol": 1
  },
- "pipeline/prompts/engine_backend/agent_boundary.md": {
-  "engine": 1
- },
  "pipeline/prompts/engine_backend/layer_contracts.md": {
-  "engine": 5
+  "engine": 2
  },
  "pipeline/prompts/engine_backend/native_scan_contract.md": {
-  "engine": 1,
   "symbol": 1
  },
  "pipeline/prompts/sec_edgar/aux_state_notes.md": {
@@ -724,16 +720,6 @@
   "engine": 1
  },
  "pipeline/prompts/verus/contracts/scale_principles.md": {
-  "engine": 1
- },
- "pipeline/templates/engine_backend/backend.cmake.tpl": {
-  "engine": 1
- },
- "pipeline/templates/engine_backend/cmake_contract_test.cmake.tpl": {
-  "engine": 2,
-  "include": 1
- },
- "pipeline/templates/engine_backend/cmake_layer_test.cmake.tpl": {
   "engine": 1
  },
  "pipeline/templates/engine_backend/scan.cpp.tpl": {

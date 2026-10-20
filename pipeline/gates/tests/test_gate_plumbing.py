@@ -201,6 +201,42 @@ def test_engine_contract_and_adversarial_use_target_paths(repo):
         (repo / "host.log").unlink()
 
 
+@pytest.fixture()
+def api_repo(repo):
+    (repo / "scripts" / "check_layer_includes.py").write_text("import sys; sys.exit(0)\n")
+    api = repo / "backends" / "fake" / "api"
+    api.mkdir()
+    (api / "hooks.hpp").write_text("// accel_get_execute_counts accel_invalidate_all\n")
+    rows = "\n".join(f"| {r} | | |" for r in ("registration", "runtime", "scan", "sql_fallback", "cost_model",
+                                              "maintenance", "thread_knobs", "value_semantics"))
+    (api / "README.md").write_text(
+        "## Contract roles\n\n| role | headers | symbols |\n|---|---|---|\n"
+        "| introspection | `api/hooks.hpp` | `accel_get_execute_counts`, `accel_invalidate_all` |\n" + rows + "\n")
+    return repo
+
+
+def test_api_conformance_calls_every_required_hook_and_the_listed_optional_one(api_repo):
+    proc, calls, *_ = run_gate(api_repo, "run_engine_api_conformance.sh", kind="engine_backend")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert calls == ["up", "build api_conformance_fake", "build"] + ["sql -"] * 5
+
+
+def test_api_conformance_fails_when_a_hook_errors(api_repo):
+    proc, _, _, _, out = run_gate(api_repo, "run_engine_api_conformance.sh", kind="engine_backend",
+                                  env_extra={"FAKE_RC_sql": "1"})
+    assert proc.returncode != 0
+    assert "accel_get_execute_counts()" in json.loads(out.read_text())["reason"]
+
+
+def test_adversarial_gate_rejects_template_stubs(repo):
+    src = repo / "adv.cpp"
+    src.write_text('void TestAdversarialCapture() { Fail("TestAdversarialCapture not implemented"); }\n')
+    ctx = {"target_paths": {"adversarial_test": "adv.cpp", "adversarial_test_target": "adv_bin"}}
+    proc, calls, _, _, out = run_gate(repo, "run_engine_adversarial.sh", kind="engine_backend", ctx_extra=ctx)
+    assert proc.returncode != 0 and "template stubs" in json.loads(out.read_text())["reason"]
+    assert "run adv_bin" not in calls
+
+
 def test_tsan_gate_skips_non_embedded_engine_by_host_info(repo):
     proc, calls, *_ , = run_gate(repo, "run_aux_tsan.sh", "5", env_extra={"FAKE_EMBEDDED": "false"})
     assert proc.returncode == 0

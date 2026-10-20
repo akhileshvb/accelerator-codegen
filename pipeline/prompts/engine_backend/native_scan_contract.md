@@ -31,7 +31,7 @@ Modules build in parallel through `core::PartitionedBuild` (`substrate/aux/core/
 - `partitions == 1` is the engine's serial scan on the calling thread. Partition counts above the number of natural ranges leave the extra partitions empty.
 - 64-bit row counts and offsets throughout.
 
-An engine with no partitioned scan yet (MySQL today) keeps a serial scan and says so in `scan_plan`; it must still expose the same names with `partitions` honoured as 1.
+An engine with no partitioned scan yet keeps a serial scan and says so in `scan_plan`; it must still expose the same names with `partitions` honoured as 1.
 
 ## Aux storage
 
