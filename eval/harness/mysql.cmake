@@ -9,13 +9,8 @@ accel_add_backend_exe(mysql test_mysql_tpch_params eval/tests/test_mysql_tpch_pa
 accel_add_backend_exe(mysql test_mysql_tpch_differential eval/tests/test_mysql_tpch_differential.cpp)
 foreach(_t IN ITEMS test_mysql_cross_accel test_mysql_aux_multi_connection_stress
                     test_mysql_aux_build_race test_mysql_aux_build_ddl_race test_mysql_aux_session_isolation
-                    test_mysql_aux_read_after_commit test_mysql_tpch_rf_differential
-                    benchmark_mysql_tpch_aux calibrate_mysql_tpch_aux_cost_model)
-    if(_t MATCHES "^(benchmark|calibrate)_")
-        accel_add_backend_exe(mysql ${_t} eval/bench/mysql/${_t}.cpp)
-    else()
-        accel_add_backend_exe(mysql ${_t} eval/tests/${_t}.cpp)
-    endif()
+                    test_mysql_aux_read_after_commit test_mysql_tpch_rf_differential)
+    accel_add_backend_exe(mysql ${_t} eval/tests/${_t}.cpp)
 endforeach()
 find_package(Threads REQUIRED)
 target_link_libraries(test_mysql_aux_multi_connection_stress PRIVATE Threads::Threads)

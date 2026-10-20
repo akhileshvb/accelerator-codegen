@@ -19,6 +19,8 @@ shared_paths:
 
 # Dataset databases are run parameters: each key names the environment variable
 # that holds the database path (unset: the dataset is unavailable to the run).
+shared_bench_harness: [tpch]   # backends/<engine>/bench/: benchmark_<engine>_<bench>_aux, calibrate_<engine>_<bench>_aux_cost_model
+
 datasets:
   tpch_sf1: ACCEL_TPCH_DB
   tpch_sf10: ACCEL_TPCH_SF10_DB

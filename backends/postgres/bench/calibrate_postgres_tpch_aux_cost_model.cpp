@@ -7,7 +7,7 @@
 // write transaction with the forced action, then one accelerator query, on
 // one backend). Runs on a copy of the TPC-H database, dropped at the end.
 //
-// Usage: calibrate_postgres_tpch_aux_cost_model <query> [out.json]
+// Usage: calibrate_postgres_tpch_aux_cost_model --query N [out.json]  (a leading positional query is accepted)
 // Env: TPCH_PG_DB (template database, default accel_tpch_test)
 #include <algorithm>
 #include <chrono>
@@ -18,6 +18,7 @@
 
 #include <libpq-fe.h>
 
+#include "eval/bench/driver/bench_cli.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "eval/tests/postgres/postgres_tpch_harness.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
@@ -130,16 +131,13 @@ double MedianUs(Conn &conn, const std::string &sql, int samples) {
 
 int main(int argc, char **argv) {
   try {
-    if (argc < 2) {
-      std::cerr << "usage: calibrate_postgres_tpch_aux_cost_model <query> [out.json]\n";
-      return 2;
-    }
-    const int q = std::stoi(argv[1]);
+    const accelerator_codegen::benchmarks::driver::Args args(argc, argv);
+    const int q = args.query;
     const std::string name = "q" + std::to_string(q) + "_aux_cost_model";
     const std::string config_dir = std::getenv("ACCEL_SRC") ? std::string(std::getenv("ACCEL_SRC")) + "/accelerators/tpch/q" +
                                                                    std::to_string(q) + "/config/"
                                                              : "accelerators/tpch/q" + std::to_string(q) + "/config/";
-    const std::string out = argc > 2 ? argv[2] : config_dir + name + "_postgres.json";
+    const std::string out = args.Positional(0, config_dir + name + "_postgres.json");
 
     auto tools = ConnectTpch();
     EnsureMutationTriggers(tools);

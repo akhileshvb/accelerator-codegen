@@ -162,8 +162,8 @@ def test_engine_targets_follow_the_engines_harness_convention():
     ddb = resolve_workload_paths(pc, _duckdb_workload("tpch_q6_aux"), 6)
     pg = resolve_workload_paths(pc, _postgres_workload("tpch_q6_aux"), 6)
     my = resolve_workload_paths(pc, load_workload("tpch_q6_aux", REPO_ROOT, engine="mysql"), 6)
-    assert ddb["aux_bench_target"] == "benchmark_tpch_q6_aux"
-    assert ddb["aux_calibrate_target"] == "calibrate_tpch_q6_aux_cost_model"
+    assert ddb["aux_bench_target"] == "benchmark_duckdb_tpch_aux"
+    assert ddb["aux_calibrate_target"] == "calibrate_duckdb_tpch_aux_cost_model"
     assert ddb["cost_model_config"] == "accelerators/tpch/q6/config/q6_aux_cost_model.json"
     assert pg["aux_bench_target"] == "benchmark_postgres_tpch_aux"
     assert pg["aux_calibrate_target"] == "calibrate_postgres_tpch_aux_cost_model"

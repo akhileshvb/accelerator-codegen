@@ -18,7 +18,7 @@ fi
 
 BENCHMARK="${ACCEL_AUX_BENCHMARK:-tpch}"
 BUILD_DIR="${ACCEL_BUILD_DIR:-${ROOT}/build-release}"
-BENCH_TARGET="${ACCEL_AUX_BENCH_TARGET:-benchmark_${BENCHMARK}_q${QUERY}_aux}"
+BENCH_TARGET="${ACCEL_AUX_BENCH_TARGET:-benchmark_duckdb_${BENCHMARK}_aux}"
 BENCH_BIN="${BUILD_DIR}/${BENCH_TARGET}"
 
 if [[ "${BENCHMARK}" == "sec_edgar" ]]; then
@@ -140,7 +140,7 @@ for suite in "${suite_list[@]}"; do
     else
       unset_args+=(-u ACCEL_AUX_WRITE_INTERVALS)
     fi
-    env "${unset_args[@]}" "${env_prefix[@]}" "${BENCH_BIN}"
+    env "${unset_args[@]}" "${env_prefix[@]}" "${BENCH_BIN}" --query "${QUERY}"
   }
 
   if [[ "${printed_header}" == false ]]; then

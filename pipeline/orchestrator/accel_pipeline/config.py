@@ -46,6 +46,8 @@ class PipelineConfig:
     tpch_db_sf1: Path
     tpch_db_sf10: Path
     datasets: dict[str, Path] = field(default_factory=dict)
+    # Benchmarks whose bench/calibrate harness is one query-parameterised target per engine.
+    shared_bench_harness: tuple[str, ...] = ()
     optimization_max_iterations: int = 3
     optimization_no_improvement_stop: int = 2
     # Wall-clock budget of the whole optimization stage (seconds; 0: none).
@@ -184,13 +186,14 @@ def resolve_workload_paths(
         )
     )
     generated_base = f"{qdir}/{eng_seg}base/single-threaded"
-    # Engines with a shared, query-parameterised bench/calibrate harness (not per-query targets).
+    # Every engine ships one query-parameterised bench/calibrate harness per benchmark that has one
+    # (backends/<engine>/bench/); the others keep per-query targets.
     shared_harness = (
         bool(engine)
         and workload.get("workload_kind") != "engine_backend"
-        and not (workload.get("engine_host") or {}).get("query_scoped_harness", True)
+        and benchmark in pipeline_config.shared_bench_harness
     )
-    bench_target = naming.benchmark_target(benchmark, q)
+    bench_target = f"benchmark_{engine}_{benchmark}_q{q}" if shared_harness else naming.benchmark_target(benchmark, q)
     test_target = naming.unit_test_target(benchmark, q)
 
     paths = {
@@ -237,6 +240,7 @@ def resolve_workload_paths(
         # own calibration keeps it beside the default as <stem>_<engine>.json.
         default_cost_model = f"{qdir}/config/{cost_model_stem}.json"
         engine_cost_model = f"{qdir}/config/{cost_model_stem}_{engine}.json"
+        engine_host = workload.get("engine_host") or engine_host_conventions(engine)
         bench_sweep = workload.get("aux_bench_sweep", {})
         if not isinstance(bench_sweep, dict):
             bench_sweep = {}
@@ -255,7 +259,7 @@ def resolve_workload_paths(
                 "aux_state_subdir": aux_state_subdir,
                 "aux_finalize_path": f"{aux_state_subdir}/{aux_finalize}",
                 "cost_model_default": default_cost_model,
-                "cost_model_config": engine_cost_model if shared_harness else default_cost_model,
+                "cost_model_config": engine_cost_model if engine_host["cost_model_suffixed"] else default_cost_model,
                 "aux_bench_work_dir_suffix": str(
                     workload.get("aux_bench_work_dir_suffix", bench_suffix)
                 ),
@@ -339,6 +343,7 @@ def load_pipeline_config(
         tpch_db_sf1=datasets.get("tpch_sf1", Path()),
         tpch_db_sf10=datasets.get("tpch_sf10", Path()),
         datasets=datasets,
+        shared_bench_harness=tuple(str(b) for b in data.get("shared_bench_harness") or ()),
         optimization_max_iterations=int(opt.get("max_iterations", 3)),
         optimization_no_improvement_stop=int(opt.get("no_improvement_stop", 2)),
         optimization_stage_budget_sec=float(opt.get("stage_budget_sec", 7200)),
@@ -501,6 +506,7 @@ def engine_host_conventions(
         "query_scoped_harness": scoped,
         "smoke_ready": True,
         "agent_builds_query_host": not scoped,
+        "cost_model_suffixed": not scoped,
         "query_host_ready_hint": "",
     }
     if scoped:
@@ -793,6 +799,7 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         tpch_db_sf1=pipeline_config.tpch_db_sf1,
         tpch_db_sf10=pipeline_config.tpch_db_sf10,
         datasets=dict(pipeline_config.datasets),
+        shared_bench_harness=pipeline_config.shared_bench_harness,
         optimization_max_iterations=int(
             opt.get("max_iterations", pipeline_config.optimization_max_iterations)
         ),
@@ -999,6 +1006,7 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
         tpch_db_sf1=pipeline_config.tpch_db_sf1,
         tpch_db_sf10=pipeline_config.tpch_db_sf10,
         datasets=dict(pipeline_config.datasets),
+        shared_bench_harness=pipeline_config.shared_bench_harness,
         optimization_max_iterations=pipeline_config.optimization_max_iterations,
         optimization_no_improvement_stop=pipeline_config.optimization_no_improvement_stop,
         optimization_stage_budget_sec=pipeline_config.optimization_stage_budget_sec,

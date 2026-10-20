@@ -9,7 +9,7 @@
 // module has no calibration writes keeps its configured maintenance costs.
 // The writes revert themselves (apply, then revert).
 //
-// Usage: calibrate_mysql_tpch_aux_cost_model [query_id=1] [out_json]
+// Usage: calibrate_mysql_tpch_aux_cost_model --query N [out_json]  (a leading positional query is accepted)
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "eval/bench/driver/bench_cli.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "eval/tests/mysql/mysql_tpch_harness.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
@@ -78,12 +79,13 @@ private:
 
 int main(int argc, char **argv) {
   try {
-    const int query_id = argc >= 2 ? std::stoi(argv[1]) : 1;
+    const accelerator_codegen::benchmarks::driver::Args args(argc, argv, 1);
+    const int query_id = args.query;
     const std::string name = "q" + std::to_string(query_id) + "_aux_cost_model";
     const std::string config_dir = std::getenv("ACCEL_SRC") ? std::string(std::getenv("ACCEL_SRC")) + "/accelerators/tpch/q" +
                                                                    std::to_string(query_id) + "/config/"
                                                              : "accelerators/tpch/q" + std::to_string(query_id) + "/config/";
-    const std::string out_path = argc >= 3 ? argv[2] : config_dir + name + "_mysql.json";
+    const std::string out_path = args.Positional(0, config_dir + name + "_mysql.json");
     auto tools = ConnectTpch();
     EnsureExtension(tools);
     EnsureMutationTriggers(tools);

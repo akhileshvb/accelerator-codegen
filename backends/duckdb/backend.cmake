@@ -54,6 +54,27 @@ if(ACCEL_ENABLE_PARALLEL_AUX)
     endif()
 endif()
 
+# Shared TPC-H aux bench and cost-model calibrator: one binary each, `--query N`.
+accel_add_backend_exe(duckdb benchmark_duckdb_tpch_aux
+    backends/duckdb/bench/benchmark_duckdb_tpch_aux.cpp
+    backends/duckdb/bench/aux_benchmark_sweep_session.cpp
+    eval/bench/tpch/single-threaded/tpch_arg_variants.cpp)
+accel_add_backend_exe(duckdb calibrate_duckdb_tpch_aux_cost_model
+    backends/duckdb/bench/calibrate_duckdb_tpch_aux_cost_model.cpp
+    eval/tests/test_support/cross_accel_helpers.cpp
+    eval/tests/test_support/multi_connection_stress.cpp)
+
+# The query-agnostic names of the per-query base benches (benchmark_tpch_q<N>).
+function(_accel_duckdb_alias_base_benches)
+    foreach(q RANGE 1 22)
+        if(TARGET benchmark_tpch_q${q})
+            add_custom_target(benchmark_duckdb_tpch_q${q})
+            add_dependencies(benchmark_duckdb_tpch_q${q} benchmark_tpch_q${q})
+        endif()
+    endforeach()
+endfunction()
+cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL _accel_duckdb_alias_base_benches)
+
 # Unit tests of the backend's own state.
 accel_add_backend_exe(duckdb test_shared_aux_state backends/duckdb/tests/test_shared_aux_state.cpp)
 accel_add_backend_exe(duckdb test_wide_types backends/duckdb/tests/test_wide_types.cpp)

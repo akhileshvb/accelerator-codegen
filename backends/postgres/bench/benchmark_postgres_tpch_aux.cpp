@@ -1,6 +1,6 @@
 // Shared Postgres TPC-H aux/base quick bench vs native Postgres SQL.
 // Builds: benchmark_postgres_tpch_aux
-// Usage: benchmark_postgres_tpch_aux <query_id> [write_pct]
+// Usage: benchmark_postgres_tpch_aux --query N [write_pct]  (a leading positional query is accepted)
 //
 // Uses one psql session +\timing so aux Runtime stays warm across iterations.
 
@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "eval/bench/driver/bench_cli.hpp"
 #include "backends/postgres/tests/postgres_tooling.hpp"
 #include "backends/postgres/api/catalog/query_catalog.hpp"
 
@@ -129,8 +130,9 @@ double TimeSQLSessionMs(const Tools &tools, const std::string &load_sql,
 
 int main(int argc, char **argv) {
   try {
-    int query = argc >= 2 ? std::stoi(argv[1]) : 3;
-    int write_pct = argc >= 3 ? std::stoi(argv[2]) : 0;
+    const accelerator_codegen::benchmarks::driver::Args args(argc, argv, 3);
+    const int query = args.query;
+    const int write_pct = std::stoi(args.Positional(0, "0"));
     auto tools = DiscoverTools();
     if (!tools.ok) {
       std::cerr << "postgres unavailable: " << tools.error << '\n';
