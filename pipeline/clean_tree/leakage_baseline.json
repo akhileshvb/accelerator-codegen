@@ -7,7 +7,7 @@
  },
  "CMakeLists.txt": {
   "cmake": 1,
-  "engine": 101,
+  "engine": 100,
   "path": 74
  },
  "README.md": {
@@ -16,8 +16,8 @@
   "target": 1
  },
  "cmake/AuxState.cmake": {
-  "engine": 9,
-  "path": 17
+  "engine": 4,
+  "path": 5
  },
  "cmake/Backend.cmake": {
   "cmake": 1,
@@ -527,11 +527,11 @@
   "engine": 3
  },
  "pipeline/orchestrator/tests/test_accelerator_engine.py": {
-  "engine": 71,
+  "engine": 73,
   "engine_branch": 3,
   "path": 6,
   "symbol": 1,
-  "target": 8
+  "target": 11
  },
  "pipeline/orchestrator/tests/test_analysis_context.py": {
   "engine": 4,
@@ -830,7 +830,7 @@
   "engine": 6
  },
  "scripts/run_aux_bench_sweep.sh": {
-  "engine": 8
+  "engine": 9
  },
  "scripts/run_parallel_22q_matrix.sh": {
   "engine": 4,

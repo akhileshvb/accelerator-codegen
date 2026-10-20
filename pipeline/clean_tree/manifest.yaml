@@ -51,6 +51,7 @@ keep:
   - eval/compare/*.py
   - eval/compare/*.sh
   - eval/bench/comparison/**
+  - eval/bench/driver/**
   - eval/bench/sec_edgar/**
   - eval/bench/tpch/*.py
   - eval/bench/tpch/*.jsonl
