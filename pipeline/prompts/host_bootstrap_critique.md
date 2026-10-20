@@ -1,12 +1,14 @@
 # Host bootstrap critique (read-only)
 
-You are a **separate critic** for the **query-facing host** of
-**{{display_name}}** (`{{engine_name}}`). Bootstrap just shipped SQL
-entrypoints + `{{differential_binary}}`, and the `host_bootstrap` gate may
-already be green. **A green build is not enough.**
+You are a **separate critic** for the **workload harnesses** of
+**{{display_name}}** (`{{engine_name}}`). The bootstrap stage wrote
+`backends/{{engine_name}}/tests/harness/**`, `backends/{{engine_name}}/bench/**` and
+`backends/{{engine_name}}/tests/harness.cmake`, and the `host_bootstrap` gate may
+already be green (it only builds the targets and smokes `--help` or one query).
+**A green build is not enough.**
 
-Do **not** rewrite adapter, harness, CMake, or SQL sources. Under Codex,
-native edit/shell must not touch those — only `pipeline/artifacts/**`.
+Do **not** rewrite harness, CMake or backend sources. Under Codex, native
+edit/shell must not touch those — only `pipeline/artifacts/**`.
 **The stage is not done until the JSON is on disk.** After the reads below,
 write the two files (heredoc `cat > …`) and **stop**.
 
@@ -18,37 +20,45 @@ write the two files (heredoc `cat > …`) and **stop**.
 
 ## Paths (must match `engine_host` conventions)
 
-- SQL / registration: `{{register_path}}`
-- Aux registration: `{{aux_register_path}}`
-- Differential source: `{{differential_source}}`
-- Differential CMake target: `{{differential_binary}}`
+- Differential: `{{differential_source}}` (target `{{differential_binary}}`)
+- Multi-connection: `{{multi_conn_target}}`; cross-accelerator: `{{cross_accel_target}}`
+- Bench: `{{harness_bench_target}}`; calibrate: `{{harness_calibrate_target}}`
+- Sources: `backends/{{engine_name}}/tests/harness/`, `backends/{{engine_name}}/bench/`; targets in `backends/{{engine_name}}/tests/harness.cmake`
 - Gate JSON: `{{bootstrap_artifacts_path}}/host_bootstrap.json`
 
 ## Read (in order)
 
 1. `pipeline/prompts/shared/query_host_bootstrap.md`
-2. `pipeline/prompts/host_bootstrap.md` (phase 1 only)
-3. Registration / extension sources at `{{register_path}}` and
-   `backends/{{engine_name}}/engine/` / `backends/{{engine_name}}/state/`
-4. `{{differential_source}}` and the CMake target for `{{differential_binary}}`
+2. `pipeline/prompts/host_bootstrap.md` (what each harness must do, its CLI)
+3. `backends/{{engine_name}}/api/README.md` and the registration role's headers
+4. Every harness source and `harness.cmake`
 5. Gate JSON if present
 
 ## What to fail
 
-Fail if later per-query accelerators cannot register or differential-test on
-this host even though the binary built. Typical holes:
+Fail if later per-query accelerators cannot be validated or measured with these
+harnesses even though everything built. Typical holes:
 
-- Differential is a stub that does not load this engine’s host / call a SQL
-  entrypoint (loaded through the engine's own plugin/extension path, not another engine's
-  dataset as the scan host)
-- CMake target name is not `{{differential_binary}}`, or the target is
-  not built by `host.sh build`
-- Second adapter tree (duplicate store/aux/txn) instead of reusing
-  `backends/{{engine_name}}/`
-- Server-only symbols in the host shared library where the engine profile says the plugin must hold them
-- Host or harness reimplements runtime flow (commit ordering, catch-up, builds, thread pools) instead of using `substrate/aux/runtime/` and the slots
-- Host sizes threads with `hardware_concurrency` or a fixed count instead of the backend thread budget
-- SQL entrypoints missing / named away from the conventional register surface
+- A harness is a stub: `--help` and an empty `main`, a comparison that cannot
+  fail, no writes in the differential, readers and the writer on one connection
+- The differential compares the accelerator with itself or with pinned results
+  instead of the engine's own reference SQL on the same snapshot
+- A harness names a query, switches on a query number, or includes a per-query
+  header (`accelerators/<bench>/q<N>/`)
+- Wrong CLI: not `<target> <query>` (differential, multi-conn, cross-accel),
+  `<query> <write_pct>` (bench), `--query N <config>` (calibrate); bench does not
+  print `read_only_query_speedup,<x>` / `write_mix_workload_speedup,<x>`; calibrate
+  writes no interference fields
+- It reaches the engine around `backends/{{engine_name}}/api/` and the `host.sh`
+  environment (hard-coded path/port/container, the server's own tools by name)
+- It reimplements runtime flow (commit ordering, catch-up, builds, thread pools)
+  instead of using `substrate/aux/runtime/`, or sizes threads with
+  `hardware_concurrency`
+- A second adapter tree (duplicate store/aux/txn) instead of the backend's api
+- Fixed parameters where the benchmark's generator and `ACCEL_BENCH_ARG_SEED`
+  should draw them
+- Target names differ from the table above, or they are not declared in
+  `tests/harness.cmake`
 
 `violations[].rule` must be one of `sql_entrypoints`, `differential`,
 `cmake_target`, `host_reuse`, `independence`, `contract`.
@@ -56,10 +66,8 @@ this host even though the binary built. Typical holes:
 ## What not to fail
 
 - Style, extra comments, unused includes
-- Phase 2 multi-conn / cross-accel / bench harnesses still missing when phase 1
-  (differential **builds**) is real
-- Per-query TPC-H kernels not generated yet — bootstrap is shared host glue
-- Demanding another engine's registration surface
+- Per-query accelerators or kernels not generated yet — harnesses are shared
+- Demanding another engine's surfaces
 
 ## Output (mandatory — last action)
 

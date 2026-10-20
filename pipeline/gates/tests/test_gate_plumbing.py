@@ -59,8 +59,8 @@ def run_gate(repo, script, *args, ctx_extra=None, env_extra=None, kind="aux_stat
         "workload_kind": kind, "bench_target": "bench_base", "schema_sql": "workloads/tpch/schema.sql",
         "dataset_dir": "/data/tbl", "aux_test_target": "aux_unit_bin", "aux_bench_target": "bench_aux",
         "aux_calibrate_target": "calibrator", "cost_model_config": "cost_model.json",
-        "engine_host": {"differential_binary": "diff_bin", "multi_conn_ctest_regex": "multi_bin",
-                        "cross_accel_ctest_regex": "cross_bin"},
+        "engine_host": {"differential_binary": "diff_bin", "multi_conn_target": "multi_bin",
+                        "cross_accel_target": "cross_bin"},
         "target_paths": {"contract_test_target": "contract_bin", "adversarial_test_target": "adv_bin"},
     }
     ctx.update(ctx_extra or {})
@@ -217,3 +217,55 @@ def test_gates_name_no_engine():
         if hits:
             offenders[path.name] = hits
     assert not offenders
+
+
+HARNESS_HOST = {
+    "differential_binary": "test_fake_tpch_differential", "multi_conn_target": "test_fake_aux_multi_connection_stress",
+    "cross_accel_target": "test_fake_cross_accel", "bench_target": "benchmark_fake_tpch_aux",
+    "calibrate_target": "calibrate_fake_tpch_aux_cost_model",
+    "differential_source": "backends/fake/tests/harness/test_fake_tpch_differential.cpp",
+}
+
+
+def host_bootstrap_repo(repo):
+    harness = repo / "backends" / "fake" / "tests" / "harness"
+    harness.mkdir(parents=True)
+    (harness / "test_fake_tpch_differential.cpp").write_text("// harness\n")
+    (repo / "backends" / "fake" / "tests" / "harness.cmake").write_text("# targets\n")
+
+
+def test_host_bootstrap_builds_every_harness_and_smokes_each(repo):
+    host_bootstrap_repo(repo)
+    proc, calls, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert calls[:3] == ["up", "load workloads/tpch/schema.sql", "build " + " ".join(
+        HARNESS_HOST[k] for k in ("differential_binary", "multi_conn_target", "cross_accel_target",
+                                  "bench_target", "calibrate_target"))]
+    assert calls[3:] == [f"run {t} --help" for t in (
+        "test_fake_tpch_differential", "test_fake_aux_multi_connection_stress", "test_fake_cross_accel",
+        "benchmark_fake_tpch_aux", "calibrate_fake_tpch_aux_cost_model")]
+    assert result(gj, "host_bootstrap")["status"] == "pass"
+
+
+def test_host_bootstrap_smokes_the_differential_on_a_registered_query(repo):
+    host_bootstrap_repo(repo)
+    register = repo / "accelerators" / "tpch" / "q6" / "fake"
+    register.mkdir(parents=True)
+    (register / "register.cpp").write_text("// q6\n")
+    proc, calls, _, _, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "run test_fake_tpch_differential 6" in calls
+
+
+def test_host_bootstrap_fails_without_the_harness_sources(repo):
+    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST})
+    assert proc.returncode == 1
+    assert "missing backends/fake/tests/harness" in result(gj, "host_bootstrap")["reason"]
+
+
+def test_host_bootstrap_fails_when_a_smoke_fails(repo):
+    host_bootstrap_repo(repo)
+    proc, _, _, gj, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST},
+                                 env_extra={"FAKE_RC_run": "1"})
+    assert proc.returncode == 1
+    assert "smoke failed" in result(gj, "host_bootstrap")["reason"]

@@ -1,8 +1,8 @@
-# Stage: Query host bootstrap (once per engine)
+# Stage: Workload harness bootstrap (once per engine)
 
-You are bootstrapping the **query-facing host** for **`{{engine_name}}`** so later per-query accelerator workstreams can register and differential-test without racing.
+You are building the **workload harnesses** of **`{{engine_name}}`**: the query-parameterised test and benchmark programs that every per-query accelerator run of this engine is validated and measured with. They run once per engine, after the `engine_backend` run produced the backend and before the query workers start.
 
-`engine_name` is **required**. Do not default to another engine or invent a portable chunk-based registration path.
+`engine_name` is **required**. Do not default to another engine.
 
 {{hard_guidelines}}
 
@@ -10,83 +10,59 @@ You are bootstrapping the **query-facing host** for **`{{engine_name}}`** so lat
 
 {{engine_host_discovery}}
 
-## Paths (from `engine_host` — do not invent alternate names)
+## What you may write
 
-| Role | Path / name |
-|------|-------------|
-| Engine id | `{{engine_name}}` |
-| SQL / registration surface | `{{register_path}}` |
-| Aux registration surface | `{{aux_register_path}}` |
-| Differential source | `{{differential_source}}` |
-| Differential CMake target / binary | `{{differential_binary}}` |
-| Multi-conn ctest (phase 2) | `{{multi_conn_ctest_regex}}` |
-| Cross-accel ctest (phase 2) | `{{cross_accel_ctest_regex}}` |
-| Build dir | `{{build_dir}}` |
-| Dataset / SDK env | `{{dataset_env}}` |
-| Query tree | `accelerators/{bench}/q*/{{engine_name}}/` |
-| Registries | the **registration** role of `backends/{{engine_name}}/api/README.md` (entries registered from each query's directory) |
+Only these paths. Everything else in `backends/{{engine_name}}/`, every other backend, `substrate/`, `workloads/` and `accelerators/` is read-only to this stage.
 
-Prefer these conventions. `backends/{{engine_name}}/**` is **read-only** to this stage (the `engine_backend` run owns it; query runs never write it). If the backend lacks a generic surface you need, append a request (`{"benchmark", "query", "helper", "reason"}`, no query names in `helper`) to `pipeline/artifacts/backend_additions/{{engine_name}}.jsonl` and report it; never create a parallel tree.
+- `backends/{{engine_name}}/tests/harness/**` (test sources and headers)
+- `backends/{{engine_name}}/bench/**` (bench and calibrate sources)
+- `backends/{{engine_name}}/tests/harness.cmake` (declares the targets; `cmake/Backend.cmake` includes it right after `backend.cmake`; use `accel_add_backend_exe({{engine_name}} <target> <sources>)`)
 
-## Ordered plan (minimize time-to-gate-pass)
+If the backend lacks something the harnesses need (a registry lookup, a thread knob, table rows), append a request `{"benchmark", "query", "helper", "reason"}` (no query names in `helper`) to `pipeline/artifacts/backend_additions/{{engine_name}}.jsonl`, say so in your report, and work around it only inside the harnesses.
 
-### Phase 1 — required for `host_bootstrap` gate (do this first)
+## Targets (one naming convention for every engine; the gates look these up)
 
-1. **Locate existing host**
-   - Read `{{register_path}}` (and sibling files under `backends/{{engine_name}}/api/`, `backends/{{engine_name}}/engine/`, `backends/{{engine_name}}/state/`).
-   - Read the backend's own harnesses (`backends/{{engine_name}}/tests/`) and `backends/{{engine_name}}/host.sh` (`info` lists the verbs) as the templates.
-   - Reuse this engine’s `engine_backend` adapters for **mutation / txn / store / tooling** and any **engine-local** rebuild scan helper. Do **not** invent a parallel `backends/{{engine_name}}2/`.
+| Target | Source | Run as (through `host.sh run`) |
+|---|---|---|
+| `{{differential_binary}}` | `{{differential_source}}` | `{{differential_binary}} <query>` |
+| `{{multi_conn_target}}` | `backends/{{engine_name}}/tests/harness/{{multi_conn_target}}.cpp` | `{{multi_conn_target}} <query>` |
+| `{{cross_accel_target}}` | `backends/{{engine_name}}/tests/harness/{{cross_accel_target}}.cpp` | `{{cross_accel_target}} <query>` |
+| `{{harness_bench_target}}` | `backends/{{engine_name}}/bench/{{harness_bench_target}}.cpp` | `{{harness_bench_target}} <query> <write_pct>` (also `--query N`) |
+| `{{harness_calibrate_target}}` | `backends/{{engine_name}}/bench/{{harness_calibrate_target}}.cpp` | `{{harness_calibrate_target}} --query <N> <cost_model.json>` |
 
-2. **SQL entrypoints (backend registries, read-only here)**
-   - The backend (`backends/{{engine_name}}/api/`) provides generic **registries** + dispatch so each query registers its base + aux call paths from its own directory (`{{register_path}}`) via static registrars, through **this host’s** native APIs + `AuxQueryModule`. Check they exist and link; the backend names no query and builds with every `accelerators/<bench>/q<N>/` removed. A missing registry is a backend-addition request for the `engine_backend` run, not an edit here.
-   - You do **not** need a full TPC-H Q{{query_number}} kernel here — registries + generic dispatch that **link and load** (with zero or one registered query) are enough for bootstrap.
-   - Never wire this host through another engine's registration or dataset format.
+Helper headers and extra sources go next to them. Every binary answers `--help` with its usage and exit 0 **without touching the database** (the gate smokes each of them that way).
 
-   The backend implements the slots S1-S8 (`engine_interfaces.md`, "Adapter responsibilities"); the runtime flow comes from `substrate/aux/runtime/`. Check that the slot implementations under `engine/` (S1, S5, S8), `state/` (S2-S4) and `api/` (S6, S7) link into the host. Missing slot behavior is a backend-addition request.
+## Workload-generic code
 
-3. **Differential harness**
-   - Create `{{differential_source}}` if missing.
-   - TPC-H lives in **`{{engine_name}}`'s native storage** (`host.sh up`, `host.sh load`);
-     another engine may be a reference oracle or loader source only — never the scan host.
-   - Differential semantics: load TPC-H into `{{engine_name}}`, run reference SQL vs accelerator SQL for a query id,
-     assert ordered full-result match (or a documented minimal smoke).
-   - Declare the target in `backends/{{engine_name}}/backend.cmake` (never the root `CMakeLists.txt`).
-   - **Build:** `backends/{{engine_name}}/host.sh build {{differential_binary}}`.
-   - CLI: {{differential_command}}
+One harness per kind. Each takes the **query number** (and, through the target name, the benchmark) as an argument and finds everything else itself:
 
-4. **Pass the gate**
-   - Call MCP `request_gate` with **`host_bootstrap`**.
-   - **Do not finish Phase 1 until it passes.** The gate only requires the differential target to **build**; fix link/CMake/register issues until it does.
+- query SQL: `workloads/<bench>/q<N>.sql`; schema: `workloads/<bench>/schema.sql`; seeded parameter instances: `workloads/<bench>/instances/`;
+- the accelerator: the **registration** role of `backends/{{engine_name}}/api/README.md` (look the query up in the registry; the queries register themselves from `accelerators/<bench>/q<N>/{{engine_name}}/`);
+- parameters: the benchmark's parameter generator with `ACCEL_BENCH_ARG_SEED` (see `eval/tests/tpch_param_templates.hpp`; fresh draws every run, never pinned values).
 
-### Phase 2 — after Phase 1 passes (same stage if turns remain)
+A harness never names a query, never switches on a query number, never includes a header of `accelerators/<bench>/q<N>/`. The gate runs `scripts/check_backend_query_free.py` on these files. It builds and runs with zero registered queries (then it has nothing to compare: print so, exit 0 for `--help` only).
 
-Gate surfaces under engine-native names (host `{{engine_name}}`, export `ACCEL_ENGINE_NAME={{engine_name}}`):
+## What each harness does
 
-- `eval/tests/test_{{engine_name}}_aux_multi_connection_stress.cpp` → ctest `{{multi_conn_ctest_regex}}`
-- `eval/tests/test_{{engine_name}}_cross_accel.cpp` (or peer naming) → ctest `{{cross_accel_ctest_regex}}`
-- Runtime gate harnesses named in `pipeline/gates/README_runtime_gates.md` (stale reads, capture completeness, rebuild under writes) belong to the backend's tests; do not stub them here.
-- Bench / calibrate hooks driven by `ACCEL_ENGINE_NAME` + host work dir when straightforward
+- **Differential** (`<query>`): provision nothing; the instance is up and loaded. (1) Read: for the query's parameters, the engine's reference SQL and the accelerated path return the same ordered rows (floats tie-aware, see `eval/harness/float_order_ties.hpp`, `eval/tests/test_support/result_compare.hpp`). (2) Write maintenance: apply writes of every kind the benchmark has (for TPC-H the RF1/RF2 refresh sets from `eval/tests/tpch_fuzz_writes.hpp`, plus point updates that invalidate the query) as plain SQL on a **separate connection**, compare after each, then undo; also a bulk write. Honour `ACCEL_ADV_MAX_PROBES`, `ACCEL_ADV_MIN_PROBES`, `ACCEL_ADV_MIN_CHUNKS`, `ACCEL_ADV_REQUIRE_BULK` (the aux gate sets them from the adversarial scenarios) and `ACCEL_FORCE_MAINTENANCE_ACTION` where the backend has the knob. This one binary is what the `aux_correctness` gate runs per query (the 22-query sweep and the RF differential are that gate over the pack's queries).
+- **Multi-connection stress** (`<query>`): a writer and several readers on separate connections for `ACCEL_MULTI_CONN_STRESS_SEC` seconds (`ACCEL_MULTI_CONN_TARGET_READERS`, `ACCEL_MULTI_CONN_BACKGROUND_READERS`, `ACCEL_MULTI_CONN_TEST_QUERIES`); every read equals the reference at its snapshot.
+- **Cross-accelerator** (`<query>`, `ACCEL_CROSS_ACCEL_TEST_QUERIES`): the query's accelerator next to the other registered accelerators of the engine: writes to one table invalidate exactly the accelerators that read it, answers stay exact, a failure of one does not take down the others. With a single registered query, run the isolation checks that make sense and pass.
+- **Bench** (`<query> <write_pct>`): read-only speedup of the accelerator vs the reference SQL, and a write mix at `write_pct`; print `read_only_query_speedup,<x>` and `write_mix_workload_speedup,<x>` lines (the baseline gate parses them). Environment: `ACCEL_BENCH_WARMUP`, `ACCEL_BENCH_QUERIES`, `ACCEL_BENCH_REF_SAMPLES`, `ACCEL_BENCH_BASE_WRITE_SAMPLES`, `ACCEL_AUX_WRITE_FREQUENCIES`, `ACCEL_AUX_WRITE_INTERVALS`, `ACCEL_Q<N>_WRITE_FREQUENCY_PCT`, `ACCEL_AUX_BENCHMARK`. Parse the command line with `eval/bench/driver/bench_cli.hpp`.
+- **Calibrate** (`--query <N> <cost_model.json>`): measure the query's maintenance and interference costs on this engine and write the cost model JSON (`substrate/aux/core/aux_calibration.hpp` is the calibration core; the file must have `interference_delta_per_query_us > 0` and `interference_rebuild_per_query_us > 0`). Environment: `ACCEL_INTERFERENCE_CALIB_SEC`, `ACCEL_INTERFERENCE_ISOLATED_SAMPLES`.
 
-If turns are short after Phase 1, prefer a clean gate pass over incomplete Phase 2 stubs. Per-query stages can finish missing harnesses, but shared CMake + registration helpers should already exist.
+## How the harnesses reach the engine
 
-## Do not
+Only through `backends/{{engine_name}}/api/` (index: `backends/{{engine_name}}/api/README.md`) and the environment `host.sh` provides: `host.sh up` wrote `$ACCEL_ENGINE_STATE_DIR/env` (`KEY=VALUE` lines: the database or connection settings), and `host.sh run <target> [args]` applies it, so the binary reads its connection from the environment. Never hard-code a path, port, container or tool of the server. SQL connections, mutation, the engine's SQL client and comparison helpers come from the api; do not reimplement runtime flow (commit ordering, catch-up, builds, thread pools): substrate owns it (`substrate/aux/runtime/`). Size threads from the backend's thread budget, never `hardware_concurrency`.
 
-- Implement a full per-query TPC-H kernel / optimizer work here.
-- Invent a parallel adapter tree, or reimplement runtime flow / thread pools (substrate owns them).
-- Use another engine's registration or dataset format as the host for `{{engine_name}}`.
-- Rename targets away from `{{differential_binary}}` / `{{differential_source}}` (gates look these up).
-- Require a portable chunk type as the registration contract.
+Engine-neutral pieces to reuse (they are in the clean tree): `eval/bench/driver/bench_cli.hpp` (CLI and env helpers of the drivers), `eval/tests/test_support/` (`db_paths.hpp`, `result_compare.hpp`, `benchmark_paired_timing.hpp`, `interference_calibration.hpp`, `toy_build_state.hpp`), `eval/harness/float_order_ties.hpp`, `eval/harness/slot_gates.hpp` (a model of an engine adapter for the generic scenarios), `eval/tests/tpch_param_templates.hpp`, `eval/tests/tpch_fuzz_writes.hpp`. The reference tree's engine-bound harness code (`eval/harness/differential.*`, `cost_calibration.*`, `tpch_rf.*`) is not in a clean tree; peer backends' `tests/harness/` and `bench/` show a finished set when they exist.
+
+## Ordered plan
+
+1. Read `backends/{{engine_name}}/api/README.md`, `host.sh` (`info`), the registration role's headers, and the files above. Check `backends/{{engine_name}}/backend.cmake` for the engine SDK interface target `accel_backend_{{engine_name}}`.
+2. Write `tests/harness.cmake` declaring all five targets, then the **differential** first, then the rest.
+3. `request_gate` **`host_bootstrap`** after the differential builds, and again as you add the other harnesses. Build only through `backends/{{engine_name}}/host.sh build <targets>` (never a bare cmake/make).
+4. Fix from the gate's `log_tail` until it passes.
 
 ## Exit criterion
 
-`request_gate` **`host_bootstrap`** → **pass** (differential binary built). Then stop or continue Phase 2.
-
-If you finish without a green gate, the orchestrator re-runs this stage with
-the gate `notes` + `log_tail`. Fix from that trace; do not ignore it.
-
-The pass bar is `host.sh build` of the differential target, not a bare local `cmake --build`.
-
-After this stage, a separate critic may fail a green *build* (stub harness,
-wrong target name, second adapter tree) and re-invoke this stage.
-
-After bootstrap, parallel per-query workers only append query-specific registration + kernels under `.../q*/{{engine_name}}/`.
+`request_gate` **`host_bootstrap`** passes: every target in the table above built through `host.sh build`, the differential ran on a registered query (or answered `--help` when none is registered yet), every other target answered `--help`, and the harness files name no query. A critic then reads the harnesses and may send you back for stubs.

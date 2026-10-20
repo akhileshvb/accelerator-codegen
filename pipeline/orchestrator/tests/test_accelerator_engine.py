@@ -34,7 +34,7 @@ def test_duckdb_run_gets_the_duckdb_host():
     w = _duckdb_workload("tpch_q6")
     assert w["engine_name"] == "duckdb"
     assert w["engine_host"]["smoke_ready"] is True
-    assert w["engine_host"]["differential_binary"] == "test_tpch_shared_differential"
+    assert w["engine_host"]["differential_binary"] == "test_duckdb_tpch_differential"
     assert "duckdb" in w["engine_host"]["register_path"]
 
 
@@ -61,7 +61,6 @@ def test_base_supports_duckdb_and_postgres_aux_adds_mysql():
 
 def test_postgres_run_gets_the_agent_buildable_host():
     w = _postgres_workload("tpch_q3")
-    assert w["engine_host"]["agent_builds_query_host"] is True
     assert w["engine_host"]["differential_binary"] == "test_postgres_tpch_differential"
     assert "duckdb_aux_table_functions.cpp" not in (w.get("write_paths") or [])
 
@@ -84,14 +83,13 @@ def test_gate_context_includes_engine_for_base_and_aux():
     assert base_ctx["engine_name"] == "duckdb"
     assert aux_ctx["engine_name"] == "duckdb"
     assert base_ctx["engine_host"]["dataset_env"] == "ACCEL_TPCH_DB"
-    assert aux_ctx["engine_host"]["differential_binary"] == "test_tpch_shared_differential"
+    assert aux_ctx["engine_host"]["differential_binary"] == "test_duckdb_tpch_differential"
 
 
 def test_gate_context_postgres():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     ctx = build_gate_context(pc, _postgres_workload("tpch_q3"), 3)
     assert ctx["engine_name"] == "postgres"
-    assert ctx["engine_host"]["agent_builds_query_host"] is True
     assert "postgres" in ctx["engine_host"]["differential_binary"]
 
 
@@ -111,7 +109,7 @@ def test_postgres_keeps_full_post_gates():
     assert "aux_correctness" in gates
     assert "aux_multi_connection" in gates
     assert "aux_bench_sweep" in gates
-    assert w["engine_host"]["multi_conn_ctest_regex"] == "test_postgres_aux_multi_connection_stress"
+    assert w["engine_host"]["multi_conn_target"] == "test_postgres_aux_multi_connection_stress"
 
 
 def test_implementation_prompt_mentions_substrate_and_engine():
@@ -135,7 +133,7 @@ def test_aux_implementation_resume_uses_engine_differential():
     module = pc.repo_root / paths["aux_state_subdir"] / "module.cpp"
     if module.is_file():
         msg_ddb = _implementation_user_message(pc, w_ddb, 3)
-        assert "test_tpch_shared_differential" in msg_ddb
+        assert "test_duckdb_tpch_differential" in msg_ddb
 
 
 def test_apply_workload_overrides_strips_duckdb_tf_for_postgres():
@@ -164,14 +162,14 @@ def test_engine_targets_follow_the_engines_harness_convention():
     my = resolve_workload_paths(pc, load_workload("tpch_q6_aux", REPO_ROOT, engine="mysql"), 6)
     assert ddb["aux_bench_target"] == "benchmark_duckdb_tpch_aux"
     assert ddb["aux_calibrate_target"] == "calibrate_duckdb_tpch_aux_cost_model"
-    assert ddb["cost_model_config"] == "accelerators/tpch/q6/config/q6_aux_cost_model.json"
+    assert ddb["cost_model_config"] == "accelerators/tpch/q6/config/q6_aux_cost_model_duckdb.json"
     assert pg["aux_bench_target"] == "benchmark_postgres_tpch_aux"
     assert pg["aux_calibrate_target"] == "calibrate_postgres_tpch_aux_cost_model"
     assert pg["cost_model_config"] == "accelerators/tpch/q6/config/q6_aux_cost_model_postgres.json"
     assert my["aux_bench_target"] == "benchmark_mysql_tpch_aux"
     assert my["cost_model_config"] == "accelerators/tpch/q6/config/q6_aux_cost_model_mysql.json"
     # cost_model.hpp names one query-wide location, whatever the engine.
-    assert pg["cost_model_default"] == ddb["cost_model_default"] == ddb["cost_model_config"]
+    assert pg["cost_model_default"] == ddb["cost_model_default"] == "accelerators/tpch/q6/config/q6_aux_cost_model.json"
 
 
 def test_registration_is_per_query():
@@ -225,3 +223,16 @@ def test_every_workload_loads_for_each_engine_it_lists():
     for name in names:
         for engine in workload_supported_engines(name, REPO_ROOT):
             assert load_workload(name, REPO_ROOT, engine=engine)["engine_name"] == engine
+
+
+def test_every_engine_follows_one_harness_naming_convention():
+    from accel_pipeline.config import engine_host_conventions
+
+    for engine in ("duckdb", "postgres", "mysql"):
+        host = engine_host_conventions(engine, "tpch", 7)
+        assert host["differential_binary"] == f"test_{engine}_tpch_differential"
+        assert host["differential_source"] == f"backends/{engine}/tests/harness/test_{engine}_tpch_differential.cpp"
+        assert host["multi_conn_target"] == f"test_{engine}_aux_multi_connection_stress"
+        assert host["cross_accel_target"] == f"test_{engine}_cross_accel"
+        assert host["bench_target"] == f"benchmark_{engine}_tpch_aux"
+        assert host["calibrate_target"] == f"calibrate_{engine}_tpch_aux_cost_model"

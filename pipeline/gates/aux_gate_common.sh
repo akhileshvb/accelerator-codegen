@@ -25,10 +25,9 @@ load_aux_gate_context() {
 	DIFF_BINARY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_binary') or '')" "${CTX}")"
 	DIFF_SOURCE="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('differential_source') or '')" "${CTX}")"
 	SMOKE_READY="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print('1' if h.get('smoke_ready', True) else '0')" "${CTX}")"
-	AGENT_BUILDS_HOST="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print('1' if h.get('agent_builds_query_host') else '0')" "${CTX}")"
 	HOST_HINT="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('query_host_ready_hint') or '')" "${CTX}")"
-	MULTI_CONN_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('multi_conn_ctest_regex') or '')" "${CTX}")"
-	CROSS_ACCEL_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('cross_accel_ctest_regex') or '')" "${CTX}")"
+	MULTI_CONN_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('multi_conn_target') or '')" "${CTX}")"
+	CROSS_ACCEL_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('cross_accel_target') or '')" "${CTX}")"
 	AUX_TEST_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_test_target',''))" "${CTX}")"
 	AUX_BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_bench_target',''))" "${CTX}")"
 	AUX_CALIBRATE_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('aux_calibrate_target',''))" "${CTX}")"
@@ -41,7 +40,9 @@ load_aux_gate_context() {
 	GATE_OUT="${GATE_ART}/gates"
 	mkdir -p "${GATE_OUT}"
 	export BENCHMARK_NAME DIFF_BINARY DIFF_SOURCE
-	export SMOKE_READY AGENT_BUILDS_HOST HOST_HINT MULTI_CONN_TARGET CROSS_ACCEL_TARGET
+	HARNESS_BENCH_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('bench_target') or '')" "${CTX}")"
+	HARNESS_CALIBRATE_TARGET="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('calibrate_target') or '')" "${CTX}")"
+	export SMOKE_READY HOST_HINT HARNESS_BENCH_TARGET HARNESS_CALIBRATE_TARGET MULTI_CONN_TARGET CROSS_ACCEL_TARGET
 	export AUX_TEST_TARGET AUX_BENCH_TARGET AUX_CALIBRATE_TARGET
 	export BENCH_TARGET COST_MODEL_CONFIG AUX_CTEST_SMOKE_REGEX
 	export AUX_BENCH_SUITES AUX_BENCH_WORK_DIR_SUFFIX AUX_WRITE_FREQUENCIES_CTX GATE_OUT GATE_ART

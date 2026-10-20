@@ -45,7 +45,6 @@ def test_toydb_aux_run_loads_with_engine_derived_host(repo: Path):
     host = w["engine_host"]
     assert w["engine_name"] == "toydb"
     assert host["register_path"] == "accelerators/tpch/q1/toydb/register.cpp"
-    assert host["agent_builds_query_host"] is True
     assert host["differential_binary"] == "test_toydb_tpch_differential"
     assert host["work_db_suffix"] == ".toydb_work"
     assert all("/q{N}/toydb/" in p for p in w["fairness"]["kernel_search_paths"])

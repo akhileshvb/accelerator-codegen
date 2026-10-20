@@ -1,7 +1,9 @@
-"""One-shot query-host bootstrap (entrypoints + differential + shared registration).
+"""One-shot workload-harness bootstrap, for every engine.
 
-Runs once per engine before pack workers fan out (and before a single-query
-accelerator pipeline). Engines whose backend ships a query-scoped harness skip.
+Builds backends/<engine>/tests/harness/, bench/ and tests/harness.cmake (the differential,
+multi-connection, cross-accelerator, bench and calibrate harnesses), once per engine before
+pack workers fan out (and before a single-query accelerator pipeline), after the engine's
+backend exists.
 """
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
     apply_workload_overrides,
-    engine_host_conventions,
     load_run_workload,
     load_workload,
     sanitize_engine_name,
@@ -39,15 +40,12 @@ def host_bootstrap_status_path(repo_root: Path, engine_name: str) -> Path:
 
 
 def needs_host_bootstrap(workload: dict[str, Any]) -> bool:
-    """True when this accelerator workload requires a one-shot host bootstrap."""
-    if workload.get("workload_kind") == "engine_backend":
-        return False
-    engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
-    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
-    return bool(host["agent_builds_query_host"])
+    """True for every accelerator workload: each engine's harnesses are made once."""
+    return workload.get("workload_kind") != "engine_backend"
 
 
 def host_bootstrap_passed(repo_root: Path, engine_name: str) -> bool:
+    """The last gate run passed (it built and smoked every harness) and the sources are still there."""
     path = host_bootstrap_status_path(repo_root, engine_name)
     if not path.is_file():
         return False
@@ -57,18 +55,13 @@ def host_bootstrap_passed(repo_root: Path, engine_name: str) -> bool:
         return False
     if str(data.get("status") or "") != "pass":
         return False
-    # Reject stale/test markers: agent-buildable engines must have differential source on disk.
+    # Markers written by unit tests / dry runs carry no gate result.
+    gate = data.get("gate_data") or {}
+    if gate.get("status") != "pass" or not gate.get("smokes"):
+        return False
     engine = sanitize_engine_name(engine_name)
-    host = engine_host_conventions(engine, repo_root=repo_root)
-    if host.get("agent_builds_query_host"):
-        src = str(host.get("differential_source") or "").strip()
-        if src and not (Path(repo_root) / src).is_file():
-            return False
-        # Ignore markers written by unit tests / incomplete runs.
-        reason = str(data.get("reason") or "").strip().lower()
-        if reason in {"unit", "dry_run", "skip_gates"}:
-            return False
-    return True
+    harness = Path(repo_root) / "backends" / engine / "tests" / "harness"
+    return any(harness.glob(f"test_{engine}_*_differential.cpp"))
 
 
 def write_host_bootstrap_status(
@@ -137,8 +130,8 @@ def format_host_bootstrap_gate_feedback(
     lines.extend(
         [
             "",
-            "Fix SQL entrypoints, the differential harness, and/or CMake so this "
-            "gate passes. Build through the engine's host.sh (`request_gate` "
+            "Fix the workload harnesses (backends/<engine>/tests/harness/, bench/) and/or "
+            "tests/harness.cmake so this gate passes. Build through the engine's host.sh (`request_gate` "
             "`host_bootstrap`), not a host cmake build. Mid-loop MCP "
             "`request_gate` `host_bootstrap` until green. Do not ignore this log.",
         ]
@@ -162,15 +155,6 @@ def run_host_bootstrap(
     from accel_pipeline.stages.host_bootstrap import run as run_stage
 
     engine = sanitize_engine_name(engine_name)
-    if not engine_host_conventions(engine, repo_root=pipeline_config.repo_root)["agent_builds_query_host"]:
-        path = write_host_bootstrap_status(
-            pipeline_config.repo_root,
-            engine,
-            status="pass",
-            reason="query-scoped harness already shipped; bootstrap skipped",
-        )
-        return {"engine_name": engine, "status": "pass", "skipped": True, "path": str(path)}
-
     if not force and host_bootstrap_passed(pipeline_config.repo_root, engine):
         return {
             "engine_name": engine,
@@ -178,6 +162,9 @@ def run_host_bootstrap(
             "skipped": True,
             "path": str(host_bootstrap_status_path(pipeline_config.repo_root, engine)),
         }
+
+    if not (dry_run or skip_gates) and not (pipeline_config.repo_root / f"backends/{engine}/host.sh").is_file():
+        raise GateFailure(f"host_bootstrap needs the {engine} backend first: run its engine_backend workload")
 
     workload = load_workload(representative_workload, pipeline_config.repo_root, engine=engine)
 
@@ -383,7 +370,7 @@ def ensure_host_bootstrap_for_pack(
     dry_run: bool = False,
     skip_gates: bool = False,
 ) -> list[dict[str, Any]]:
-    """Pack entry: bootstrap each distinct engine without a query-scoped harness once before workers."""
+    """Pack entry: bootstrap each distinct engine once before its workers."""
     needed = engines_needing_bootstrap_from_workloads(
         repo_root, [(str(q.workload), str(q.engine)) for q in queries]
     )
