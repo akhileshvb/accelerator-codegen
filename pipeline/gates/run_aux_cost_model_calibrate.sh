@@ -129,7 +129,7 @@ export "${DB_ENV_VAR}"="${CALIB_DB}"
 export ACCEL_ENGINE_WORK_DB="${CALIB_DB}"
 
 set +e
-LOG="$(env ACCEL_ENGINE_NAME="${ENGINE_NAME}" "${BUILD}/${TARGET}" "${CALIB_DB}" "${CONFIG}" 2>&1)"
+LOG="$(env ACCEL_ENGINE_NAME="${ENGINE_NAME}" "${BUILD}/${TARGET}" --query "${QUERY}" "${CALIB_DB}" "${CONFIG}" 2>&1)"
 RC=$?
 set -e
 

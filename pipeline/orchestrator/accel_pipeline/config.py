@@ -194,12 +194,9 @@ def resolve_workload_paths(
     test_prefix = str(workload.get("test_target_prefix", f"test_{benchmark}_q"))
     bench_prefix = str(workload.get("bench_target_prefix", f"benchmark_{benchmark}_q"))
     smoke_suffix = str(workload.get("ctest_smoke_suffix", "_smoke_test"))
-    # Engines with a shared, query-parameterised bench/calibrate harness (not per-query targets).
-    shared_harness = (
-        bool(engine)
-        and workload.get("workload_kind") != "engine_backend"
-        and not (workload.get("engine_host") or engine_host_conventions(engine))["query_scoped_harness"]
-    )
+    # Every engine ships one query-parameterised TPC-H bench/calibrate harness (backends/<engine>/bench/);
+    # the other benchmarks keep per-query targets.
+    shared_harness = bool(engine) and workload.get("workload_kind") != "engine_backend" and benchmark == "tpch"
     bench_target_default = (
         f"benchmark_{engine}_{benchmark}_q{q}" if shared_harness else f"{bench_prefix}{q}"
     )
@@ -266,6 +263,7 @@ def resolve_workload_paths(
         # own calibration keeps it beside the default as <stem>_<engine>.json.
         default_cost_model = f"{qdir}/config/{cost_model_stem}.json"
         engine_cost_model = f"{qdir}/config/{cost_model_stem}_{engine}.json"
+        engine_host = workload.get("engine_host") or engine_host_conventions(engine)
         bench_sweep = workload.get("aux_bench_sweep", {})
         if not isinstance(bench_sweep, dict):
             bench_sweep = {}
@@ -286,7 +284,7 @@ def resolve_workload_paths(
                 "aux_state_subdir": aux_state_subdir,
                 "aux_finalize_path": f"{aux_state_subdir}/{aux_finalize}",
                 "cost_model_default": default_cost_model,
-                "cost_model_config": engine_cost_model if shared_harness else default_cost_model,
+                "cost_model_config": engine_cost_model if engine_host["cost_model_suffixed"] else default_cost_model,
                 "aux_bench_work_dir_suffix": str(
                     workload.get("aux_bench_work_dir_suffix", bench_suffix)
                 ),
@@ -567,11 +565,11 @@ def engine_host_conventions(engine_name: str, bench: str = "<bench>", query: Any
         "registry": reg["registry"],
         "sql_entrypoint_convention": f"accel_* table function / SQL UDF on host {engine}",
         "dataset_env": "ACCEL_TPCH_DB",
-        "query_scoped_harness": True,
         "differential_binary": "test_tpch_shared_differential",
         "differential_command": "./build-release/test_tpch_shared_differential \"$ACCEL_TPCH_DB\" <query>",
         "differential_source": "eval/tests/test_tpch_shared_differential.cpp",
         "smoke_ready": True,
+        "cost_model_suffixed": True,
         "agent_builds_query_host": False,
         "aux_register_path": reg["aux_register_path"],
         "query_host_ready_hint": "",
@@ -586,10 +584,10 @@ def engine_host_conventions(engine_name: str, bench: str = "<bench>", query: Any
         host["multi_conn_ctest_regex"] = "test_aux_multi_connection_stress"
         host["cross_accel_ctest_regex"] = "test_cross_accel"
         host["work_db_suffix"] = ".duckdb"
+        host["cost_model_suffixed"] = False
         return host
 
     # Any non-duckdb engine: agent-buildable query host on the existing backend surface.
-    host["query_scoped_harness"] = False
     host["differential_binary"] = f"test_{engine}_tpch_differential"
     host["differential_source"] = f"eval/tests/test_{engine}_tpch_differential.cpp"
     host["differential_command"] = (

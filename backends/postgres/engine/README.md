@@ -111,5 +111,5 @@ falls back to the shared DuckDB JSON. Search order:
 
 1. per-query env var (for example `ACCELERATOR_CODEGEN_POSTGRES_Q6_COST_MODEL`)
 2. `accelerators/tpch/q<query>/config/q<query>_aux_cost_model_postgres.json` (from
-   `eval/bench/postgres/calibrate_postgres_tpch_aux_cost_model.cpp`)
+   `backends/postgres/bench/calibrate_postgres_tpch_aux_cost_model.cpp`)
 3. `accelerators/tpch/q<query>/config/q<query>_aux_cost_model.json`

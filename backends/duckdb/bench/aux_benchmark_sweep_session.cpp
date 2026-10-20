@@ -1,11 +1,12 @@
-#include "aux_benchmark_sweep_session.hpp"
+#include "backends/duckdb/bench/aux_benchmark_sweep_session.hpp"
+#include "eval/bench/driver/bench_cli.hpp"
 
 #include "eval/harness/tpch_rf.hpp"
 #include "backends/duckdb/api/duckdb_runtime.hpp"
 #include "backends/duckdb/api/register.hpp"
-#include "aux_benchmark_diagnostics.hpp"
+#include "backends/duckdb/bench/aux_benchmark_diagnostics.hpp"
 #include "catalog/query_catalog.hpp"
-#include "tpch_arg_variants.hpp"
+#include "eval/bench/tpch/single-threaded/tpch_arg_variants.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -31,7 +32,10 @@ namespace {
 namespace catalog_ns = accelerator_codegen::aux_state::engine;
 namespace bench_diag = accelerator_codegen::benchmarks;
 using catalog_ns::duckdb::DuckdbRuntime;
-using Clock = std::chrono::steady_clock;
+using driver::Clock;
+using driver::ElapsedUs;
+using driver::EnvDouble;
+using driver::EnvInt;
 
 void Require(bool condition, const std::string &message) {
   if (!condition) {
@@ -68,27 +72,6 @@ double ParseJsonProfileLatencyUs(const std::string &path) {
               seconds >= 0.0,
           "failed to parse profile latency");
   return seconds * 1e6;
-}
-
-struct TimingStats {
-  double median_us = 0.0;
-};
-
-TimingStats SummarizeSamples(std::vector<double> samples_us) {
-  TimingStats stats;
-  if (samples_us.empty()) {
-    return stats;
-  }
-  std::sort(samples_us.begin(), samples_us.end());
-  const auto middle = samples_us.size() / 2;
-  stats.median_us = samples_us.size() % 2 == 0
-                        ? (samples_us[middle - 1] + samples_us[middle]) / 2.0
-                        : samples_us[middle];
-  return stats;
-}
-
-double ElapsedUs(const Clock::time_point &start, const Clock::time_point &end) {
-  return std::chrono::duration<double, std::micro>(end - start).count();
 }
 
 double ExpectedQueriesBeforeWrite(int write_frequency_pct) {
@@ -243,7 +226,7 @@ double MeasureReaderQps(duckdb::Connection &connection,
         connection,
         arg_pool[static_cast<std::size_t>(i) % arg_pool.size()].aux_sql));
   }
-  const double median_us = SummarizeSamples(std::move(query_samples)).median_us;
+  const double median_us = driver::Median(std::move(query_samples));
   if (median_us <= 0.0) {
     return 1.0;
   }
@@ -310,7 +293,7 @@ double MeasureQueryMedianUs(duckdb::Connection &connection,
   }
   connection.Query("PRAGMA disable_profiling");
   std::remove(profile_path.c_str());
-  return SummarizeSamples(std::move(query_samples)).median_us;
+  return driver::Median(std::move(query_samples));
 }
 
 struct WorkloadTimings {
@@ -425,7 +408,7 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
   result.accel_hit_rate = 1.0;
   result.fallback_rate = 0.0;
   result.accel_hit_median_us = hit_samples.empty() ? 0.0
-                                                   : SummarizeSamples(hit_samples).median_us;
+                                                   : driver::Median(hit_samples);
   return result;
 }
 
@@ -469,7 +452,7 @@ WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime,
   result.accel_hit_rate = 1.0;
   result.fallback_rate = 0.0;
   result.accel_hit_median_us = hit_samples.empty() ? 0.0
-                                                   : SummarizeSamples(hit_samples).median_us;
+                                                   : driver::Median(hit_samples);
   return result;
 }
 
@@ -761,16 +744,6 @@ std::vector<double> ParseWriteIntervalList(const std::string &spec) {
   return result;
 }
 
-double GetEnvDouble(const char *name, double fallback) {
-  const char *value = std::getenv(name);
-  return value && *value ? std::stod(value) : fallback;
-}
-
-int GetEnvInt(const char *name, int fallback) {
-  const char *value = std::getenv(name);
-  return value && *value ? std::stoi(value) : fallback;
-}
-
 void RunMultiFrequencySweep(int query_num, const std::string &db_path,
                             const std::string &suite, const std::string &locality,
                             const std::vector<int> &write_frequencies,
@@ -821,8 +794,8 @@ void RunConfiguredMultiSweep(int query_num, const std::string &db_path,
     const auto interval_list = ParseWriteIntervalList(intervals);
     Require(!interval_list.empty(), "ACCEL_AUX_WRITE_INTERVALS is empty");
     const double duration_sec =
-        GetEnvDouble("ACCEL_AUX_BENCH_DURATION_SEC", 120.0);
-    const int min_writes = GetEnvInt("ACCEL_AUX_BENCH_MIN_WRITES", 30);
+        EnvDouble("ACCEL_AUX_BENCH_DURATION_SEC", 120.0);
+    const int min_writes = EnvInt("ACCEL_AUX_BENCH_MIN_WRITES", 30);
     RunMultiWriteIntervalSweep(query_num, db_path, suite, locality, interval_list,
                                warmup_queries, duration_sec, min_writes,
                                ref_samples, base_write_samples);

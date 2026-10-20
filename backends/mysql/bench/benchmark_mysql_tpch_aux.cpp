@@ -1,5 +1,5 @@
 // Warm MySQL TPC-H aux Execute vs native SQL.
-// Usage: benchmark_mysql_tpch_aux <query_id> [write_pct] [bulk_rows]
+// Usage: benchmark_mysql_tpch_aux --query N [write_pct] [bulk_rows]  (a leading positional query is accepted)
 // write_pct=0: read-only (default).
 // write_pct=10: 1 write per 10 queries.
 // bulk_rows=0 (default): differential point probe that changes this query's
@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "eval/bench/driver/bench_cli.hpp"
 #include "eval/tests/mysql/mysql_tpch_harness.hpp"
 #include "eval/tests/mysql/mysql_tpch_write_probes.hpp"
 
@@ -193,9 +194,10 @@ void OpenSweepOutput() {
 
 int main(int argc, char **argv) {
   try {
-    int query_id = argc >= 2 ? std::stoi(argv[1]) : 1;
-    int write_pct = argc >= 3 ? std::stoi(argv[2]) : 0;
-    int bulk_rows = argc >= 4 ? std::stoi(argv[3]) : 0;
+    const accelerator_codegen::benchmarks::driver::Args args(argc, argv, 1);
+    const int query_id = args.query;
+    const int write_pct = std::stoi(args.Positional(0, "0"));
+    const int bulk_rows = std::stoi(args.Positional(1, "0"));
     auto tools = ConnectTpch();
     EnsureExtension(tools);
     const auto &entry = LookupMysqlQuery("tpch", query_id);

@@ -135,9 +135,6 @@ accel_register_tpch_aux_finalize_queries(
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Register test/bench/calibrate targets for every DuckDB TPC-H aux module present.
-accel_register_tpch_aux_pipeline_targets()
-
 add_executable(test_registration
     eval/tests/test_registration.cpp
 )

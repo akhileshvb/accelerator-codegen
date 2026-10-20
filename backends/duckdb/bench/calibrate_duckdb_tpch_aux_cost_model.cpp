@@ -1,5 +1,5 @@
 #include "eval/tests/test_support/db_paths.hpp"
-#include "calibrate_aux_cost_model_common.hpp"
+#include "eval/bench/driver/bench_cli.hpp"
 
 #include "backends/duckdb/api/register.hpp"
 #include "eval/tests/test_support/interference_calibration.hpp"
@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "duckdb.hpp"
 #include "catalog/query_catalog.hpp"
@@ -46,11 +47,12 @@ void WriteCostModel(const std::string &out_path,
 
 } // namespace
 
-int CalibrateAndWriteCostModel(int query_num, int argc, char **argv) {
-	const std::string db_path = argc > 1 ? std::string(argv[1]) : accelerator_codegen::test_support::TpchDbPath();
+int CalibrateAndWriteCostModel(int query_num, const std::vector<std::string> &positional) {
+	const std::string db_path = !positional.empty() ? positional[0] : accelerator_codegen::test_support::TpchDbPath();
 	const std::string out_path =
-	    argc > 2 ? argv[2] : accelerator_codegen::aux_state::core::AuxCostModelDefaultPath(
-	                       accelerator_codegen::aux_state::engine::LookupSharedQuery("tpch", query_num).cost_model);
+	    positional.size() > 1 ? positional[1]
+	                          : accelerator_codegen::aux_state::core::AuxCostModelDefaultPath(
+	                                accelerator_codegen::aux_state::engine::LookupSharedQuery("tpch", query_num).cost_model);
 	duckdb::DuckDB database(db_path);
 	auto all_queries = test_support::MultiConnectionTestQueries();
 	if (std::find(all_queries.begin(), all_queries.end(), query_num) == all_queries.end()) {
@@ -58,8 +60,19 @@ int CalibrateAndWriteCostModel(int query_num, int argc, char **argv) {
 	}
 	const auto interference = test_support::CalibrateInterference(database, query_num, all_queries);
 	WriteCostModel(out_path, interference, 500.0, 50000.0, 60000.0, 250000.0);
-	std::cout << "calibrate_q" << query_num << "_aux_cost_model wrote " << out_path << std::endl;
+	std::cout << "calibrate_duckdb_tpch_aux_cost_model q" << query_num << " wrote " << out_path << std::endl;
 	return EXIT_SUCCESS;
 }
 
 } // namespace accelerator_codegen::calibration
+
+// Usage: calibrate_duckdb_tpch_aux_cost_model --query N [db_path] [out_json]
+int main(int argc, char **argv) {
+	try {
+		const accelerator_codegen::benchmarks::driver::Args args(argc, argv);
+		return accelerator_codegen::calibration::CalibrateAndWriteCostModel(args.query, args.positional);
+	} catch (const std::exception &ex) {
+		std::cerr << "calibrate_duckdb_tpch_aux_cost_model failed: " << ex.what() << std::endl;
+		return EXIT_FAILURE;
+	}
+}
