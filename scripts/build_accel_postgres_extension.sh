@@ -13,17 +13,11 @@ if ! docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
   exit 1
 fi
 
-# Require adapter sources on the host mount (fail closed — no stale-.so soft pass).
-for rel in \
-  backends/postgres/engine/extension_engine.cpp \
-  backends/postgres/state/shard_worker.cpp \
-  backends/postgres/state/shared.cpp
-do
-  if [[ ! -f "${ROOT}/$rel" ]]; then
-    echo "missing adapter source: ${ROOT}/${rel}" >&2
-    exit 1
-  fi
-done
+# Require the backend entry on the host mount (fail closed — no stale-.so soft pass).
+if [[ ! -f "${ROOT}/backends/postgres/backend.cmake" ]]; then
+  echo "missing backend entry: ${ROOT}/backends/postgres/backend.cmake" >&2
+  exit 1
+fi
 
 # Extra ninja targets (space-separated). Empty = extension only.
 # Gates set ACCEL_PG_NINJA_TARGETS and require those targets to exist and build.

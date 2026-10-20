@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Idempotent: ensure accel_mysql_test is running; optionally build/install the plugin.
 # ACCEL_MYSQL_ENSURE_BUILD=1 (default): build/install the plugin and fail closed if
-# live adapter sources are missing (no stale-.so soft pass).
+# the backend has no backend.cmake entry (no stale-.so soft pass).
 # engine_backend from-scratch sets ACCEL_MYSQL_ENSURE_BUILD=0 (container only).
 set -euo pipefail
 
@@ -12,10 +12,7 @@ BUILD="${ACCEL_MYSQL_ENSURE_BUILD:-1}"
 PASSWORD="${MYSQL_PWD:-${MYSQL_ROOT_PASSWORD:-mysql}}"
 SO_PATH="${ACCEL_MYSQL_SO:-/usr/lib/mysql/plugin/accelerator_codegen_mysql.so}"
 
-REQUIRED_SOURCES=(
-  "backends/mysql/api/mysql_host.cpp"
-  "backends/mysql/engine/mysql_statement_capture.cpp"
-)
+BACKEND_ENTRY="backends/mysql/backend.cmake"
 
 start_if_needed() {
   if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
@@ -28,20 +25,8 @@ start_if_needed() {
   bash "${ROOT}/scripts/start_accel_mysql_test.sh"
 }
 
-adapter_sources_present() {
-  local rel
-  for rel in "${REQUIRED_SOURCES[@]}"; do
-    if [[ ! -f "${ROOT}/${rel}" ]]; then
-      return 1
-    fi
-  done
-  return 0
-}
-
-if [[ "${BUILD}" == "1" ]] && ! adapter_sources_present; then
-  echo "[ensure] adapter sources missing — refusing to treat a stale plugin as success." >&2
-  echo "[ensure] Required under ${ROOT}:" >&2
-  printf '  - %s\n' "${REQUIRED_SOURCES[@]}" >&2
+if [[ "${BUILD}" == "1" && ! -f "${ROOT}/${BACKEND_ENTRY}" ]]; then
+  echo "[ensure] ${ROOT}/${BACKEND_ENTRY} missing — refusing to treat a stale plugin as success." >&2
   echo "[ensure] For from-scratch engine_backend, set ACCEL_MYSQL_ENSURE_BUILD=0 (container only)." >&2
   exit 1
 fi

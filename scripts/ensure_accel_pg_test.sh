@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Idempotent: ensure accel_pg_test is running; optionally build/install the extension.
 # ACCEL_PG_ENSURE_BUILD=1 (default): build/install the MODULE and fail closed if
-# live adapter sources are missing (no stale-.so soft pass).
+# the backend has no backend.cmake entry (no stale-.so soft pass).
 # engine_backend from-scratch sets ACCEL_PG_ENSURE_BUILD=0 (container only).
 set -euo pipefail
 
@@ -12,13 +12,7 @@ BUILD="${ACCEL_PG_ENSURE_BUILD:-1}"
 LOAD_TPCH="${ACCEL_PG_ENSURE_TPCH:-0}"
 SO_PATH="/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so"
 
-REQUIRED_SOURCES=(
-  "backends/postgres/api/extension_api.cpp"
-  "backends/postgres/api/runtime.cpp"
-  "backends/postgres/engine/transition_capture.cpp"
-  "backends/postgres/state/shard_worker.cpp"
-  "backends/postgres/engine/postgres_bridge.cpp"
-)
+BACKEND_ENTRY="backends/postgres/backend.cmake"
 
 start_if_needed() {
   if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
@@ -31,22 +25,9 @@ start_if_needed() {
   bash "${ROOT}/scripts/start_accel_pg_test.sh"
 }
 
-adapter_sources_present() {
-  local rel
-  for rel in "${REQUIRED_SOURCES[@]}"; do
-    if [[ ! -f "${ROOT}/${rel}" ]]; then
-      return 1
-    fi
-  done
-  return 0
-}
-
-# Fail closed on missing sources before touching Docker (avoids stale-.so soft pass).
-if [[ "${BUILD}" == "1" ]] && ! adapter_sources_present; then
-  echo "[ensure] adapter sources missing — refusing to treat a stale ${SO_PATH} as success." >&2
-  echo "[ensure] Required under ${ROOT}:" >&2
-  printf '  - %s\n' "${REQUIRED_SOURCES[@]}" >&2
-  echo "[ensure] Live postgres host sources are missing; restore them, then re-run." >&2
+# Fail closed on a missing backend before touching Docker (avoids stale-.so soft pass).
+if [[ "${BUILD}" == "1" && ! -f "${ROOT}/${BACKEND_ENTRY}" ]]; then
+  echo "[ensure] ${ROOT}/${BACKEND_ENTRY} missing — refusing to treat a stale ${SO_PATH} as success." >&2
   echo "[ensure] For from-scratch engine_backend, set ACCEL_PG_ENSURE_BUILD=0 (container only)." >&2
   exit 1
 fi
