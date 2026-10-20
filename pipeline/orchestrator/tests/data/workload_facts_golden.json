@@ -369,7 +369,7 @@
   "output_schema": [
    {
     "name": "c_custkey",
-    "type": "INTEGER"
+    "type": "BIGINT"
    },
    {
     "name": "c_name",
@@ -430,7 +430,7 @@
   "output_schema": [
    {
     "name": "ps_partkey",
-    "type": "INTEGER"
+    "type": "BIGINT"
    },
    {
     "name": "value",
@@ -551,7 +551,7 @@
   "output_schema": [
    {
     "name": "s_suppkey",
-    "type": "INTEGER"
+    "type": "BIGINT"
    },
    {
     "name": "s_name",
@@ -675,11 +675,11 @@
    },
    {
     "name": "c_custkey",
-    "type": "INTEGER"
+    "type": "BIGINT"
    },
    {
     "name": "o_orderkey",
-    "type": "INTEGER"
+    "type": "BIGINT"
    },
    {
     "name": "o_orderdate",
@@ -787,7 +787,7 @@
    },
    {
     "name": "p_partkey",
-    "type": "INTEGER"
+    "type": "BIGINT"
    },
    {
     "name": "p_mfgr",
@@ -969,7 +969,7 @@
   "output_schema": [
    {
     "name": "l_orderkey",
-    "type": "INTEGER"
+    "type": "BIGINT"
    },
    {
     "name": "revenue",
