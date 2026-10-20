@@ -29,6 +29,8 @@ contracts**.
 Facts and hazards of the engine, not instructions; `n/a` is a declared decision.
 
 {{engine_profile}}
+A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
+
 ## Required reads (before writing code)
 
 - `pipeline/prompts/engine_backend/layer_contracts.md` (section `{{layer_id}}`)

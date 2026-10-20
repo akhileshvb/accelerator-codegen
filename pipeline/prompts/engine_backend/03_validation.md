@@ -16,6 +16,8 @@ real bugs until those tests pass.
 Facts and hazards of the engine (not instructions). Aim the adversarial cases at them.
 
 {{engine_profile}}
+A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
+
 ## Inputs
 
 - Backend sources under target paths:

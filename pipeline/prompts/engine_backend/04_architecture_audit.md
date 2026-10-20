@@ -15,6 +15,8 @@ violate the hard constraints — do not rewrite the backend yourself.
 Facts and hazards of the engine, to judge whether the backend respects them.
 
 {{engine_profile}}
+A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
+
 ## Inputs (read these)
 
 - **Layer spec:** `pipeline/prompts/engine_backend/layers.md`
