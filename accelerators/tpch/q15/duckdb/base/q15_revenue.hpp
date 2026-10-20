@@ -64,6 +64,22 @@ public:
 		active_.reserve(4096);
 	}
 
+	//! Pre-size the dense key range (e.g. to the supplier count) so Add never regrows mid-scan.
+	void Reserve(size_t capacity) {
+		if (capacity > revenue_.size()) {
+			revenue_.resize(capacity, Acc {});
+			has_.resize(capacity, 0);
+		}
+	}
+
+	//! Prefetch the slots of a key ahead of Add (keys outside the current range are ignored).
+	void Prefetch(int64_t suppkey) const {
+		if (suppkey >= 0 && static_cast<uint64_t>(suppkey) < revenue_.size()) {
+			__builtin_prefetch(&revenue_[static_cast<size_t>(suppkey)], 1);
+			__builtin_prefetch(&has_[static_cast<size_t>(suppkey)], 1);
+		}
+	}
+
 	void Add(int64_t suppkey, int64_t price, int64_t discount) {
 		if (suppkey < 0) {
 			return;
@@ -103,6 +119,11 @@ public:
 
 	const std::vector<int64_t> &Active() const {
 		return active_;
+	}
+
+	//! Dense key range covered so far (keys >= Capacity() have no revenue).
+	size_t Capacity() const {
+		return has_.size();
 	}
 
 private:
@@ -150,6 +171,10 @@ public:
 			const auto *prices = duckdb::FlatVector::GetData<int64_t>(price_vec);
 			const auto *discs = duckdb::FlatVector::GetData<int64_t>(disc_vec);
 			const size_t m = simd::SelectBetweenI32(dates, n, p.start_date.days, p.end_date.days - 1, sel_.data());
+			// The store is larger than cache, so issue every slot's miss before the dependent adds.
+			for (size_t k = 0; k < m; k++) {
+				store_.Prefetch(supps[sel_[k]]);
+			}
 			for (size_t k = 0; k < m; k++) {
 				const uint32_t r = sel_[k];
 				store_.Add(supps[r], prices[r], discs[r]);

@@ -13,6 +13,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -85,7 +86,49 @@ void AddAccumulated(q3_acc_t &accumulator, const q3_acc_t &amount) {
 		throw duckdb::OutOfRangeException("Overflow while accumulating Q3 revenue");
 	}
 }
+
+//! No 128-bit CAS without __int128: striped locks keyed by slot address.
+inline void AtomicAddAccumulated(q3_acc_t *target, const q3_acc_t &delta) {
+	static std::mutex stripes[256];
+	std::lock_guard<std::mutex> lock(stripes[(reinterpret_cast<uintptr_t>(target) >> 4) & 255]);
+	AddAccumulated(*target, delta);
+}
 #endif
+
+//! Zero-initialised array from calloc: large blocks come from fresh zero pages, so there is no serial memset
+//! and the pages are faulted in (and zeroed) by whichever worker touches them first.
+template <class T>
+class ZeroedArray {
+public:
+	void Allocate(size_t count) {
+		data_.reset(static_cast<T *>(std::calloc(count == 0 ? 1 : count, sizeof(T))));
+		if (!data_) {
+			throw std::bad_alloc();
+		}
+		size_ = count;
+	}
+	T &operator[](size_t index) {
+		return data_.get()[index];
+	}
+	const T &operator[](size_t index) const {
+		return data_.get()[index];
+	}
+	T *data() {
+		return data_.get();
+	}
+	size_t size() const {
+		return size_;
+	}
+
+private:
+	struct Free {
+		void operator()(T *p) const {
+			std::free(p);
+		}
+	};
+	std::unique_ptr<T, Free> data_;
+	size_t size_ = 0;
+};
 
 inline bool TestAndSetBit(std::vector<uint64_t> &bits, size_t index) {
 	const auto word = index >> 6;
@@ -302,15 +345,8 @@ public:
 		}
 		rank_prefix[present_bits.size()] = running;
 		slot_count = running;
-		slots.reset(new SlotIdentity[running]); // every slot is written below (one per set bit)
-		// Order keys are unique in TPC-H (primary key); a duplicate key would map to the same slot.
-		run_tasks([&](size_t w) {
-			for (const auto &q : workers[w].value) {
-				if (IsDenseKey(q.orderkey) && q.orderkey < capacity) {
-					slots[Rank(q.orderkey)] = SlotIdentity {q.orderkey, q.orderdate, q.shippriority};
-				}
-			}
-		});
+		// No per-slot identity array: the caller keeps the order lists and resolves identities only for the
+		// top-k candidates (SlotOrderkey inverts the rank).
 	}
 
 	duckdb::idx_t SlotCount() const {
@@ -349,38 +385,29 @@ public:
 		return it == hash_map.end() ? nullptr : &it->second;
 	}
 
+	//! Orderkey of a dense slot (inverse of Rank): the word holding the slot-th set bit, then the bit in it.
 	int64_t SlotOrderkey(size_t slot) const {
-		return slots[slot].orderkey;
-	}
-
-	duckdb::date_t SlotOrderdate(size_t slot) const {
-		return slots[slot].orderdate;
-	}
-
-	int32_t SlotShippriority(size_t slot) const {
-		return slots[slot].shippriority;
+		const auto it = std::upper_bound(rank_prefix.begin(), rank_prefix.end(), static_cast<uint32_t>(slot));
+		const auto word = static_cast<size_t>(it - rank_prefix.begin()) - 1;
+		uint64_t bits = present_bits[word];
+		for (auto skip = slot - rank_prefix[word]; skip > 0; skip--) {
+			bits &= bits - 1;
+		}
+		return static_cast<int64_t>(word * 64 + static_cast<size_t>(__builtin_ctzll(bits)));
 	}
 
 private:
 	int64_t capacity = 0;
 	std::vector<uint64_t> present_bits;
 	std::vector<uint32_t> rank_prefix;
-	struct SlotIdentity {
-		int64_t orderkey;
-		duckdb::date_t orderdate;
-		int32_t shippriority;
-	};
 	size_t slot_count = 0;
-	std::unique_ptr<SlotIdentity[]> slots;
 	std::unordered_map<int64_t, OrderIdentity> hash_map;
 };
 
-// Per-worker lineitem accumulators: dense per-slot revenue (allocated by the worker on first use, so
-// the zeroing is parallel) merged without atomics after the scan.
+// Per-worker lineitem state: only the out-of-range (hash-map) orders.  Dense slots go straight into the shared
+// arrays: lineitem is clustered by orderkey and slots are orderkey ranks, so workers rarely share a slot and
+// the atomic adds are uncontended.
 struct WorkerRevenue {
-	std::vector<q3_acc_t> revenue;
-	std::vector<uint8_t> has;
-	std::vector<uint32_t> touched; // slots with has == 1, in first-touch order
 	std::unordered_map<int64_t, q3_acc_t> overflow;
 };
 
@@ -568,7 +595,7 @@ public:
 		}
 		// Freeze: customers is immutable for the orders build and lineitem probe.
 
-		std::vector<CacheLinePadded<std::vector<QualifyingOrder>>> order_workers(worker_count);
+		order_workers.assign(worker_count, {});
 		{
 			const auto orders_collect_t0 = clock::now();
 			RunParallelChunkScan(context, *bound_inputs[1], worker_count,
@@ -587,14 +614,14 @@ public:
 			profile.orders_fill_ns =
 			    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - orders_fill_t0).count();
 		}
-		// Drop collected order rows before allocating lineitem worker state (peak RSS).
-		order_workers.clear();
-		order_workers.shrink_to_fit();
+		// The collected order lists stay alive: they resolve the top-k candidates' identities after the scan.
 
 		const auto slot_count = orders.SlotCount();
 		profile.slot_count = static_cast<size_t>(slot_count);
 
 		std::vector<CacheLinePadded<WorkerRevenue>> workers(worker_count);
+		merged_revenues.Allocate(slot_count);
+		merged_has.Allocate(slot_count);
 
 		{
 			const auto lineitem_t0 = clock::now();
@@ -603,10 +630,6 @@ public:
 			RunParallelChunkScan(context, *bound_inputs[2], worker_count,
 			                     [&](duckdb::idx_t worker_id, duckdb::DataChunk &input) {
 				                     auto &local = workers[worker_id].value;
-				                     if (local.revenue.size() != slot_count) {
-					                     local.revenue.assign(slot_count, q3_acc_t {});
-					                     local.has.assign(slot_count, 0);
-				                     }
 				                     lineitem_rows[worker_id] += input.size();
 				                     lineitem_contribs[worker_id] += ConsumeLineitemChunk(local, input);
 			                     });
@@ -619,27 +642,27 @@ public:
 		}
 
 		{
-			// Merge the per-worker arrays (plain adds; no atomics were needed during the scan). The first
-			// worker that scanned anything donates its arrays; the others only add their touched slots.
+			// Dense slots are already summed in the shared arrays; collect the touched ones (8 flags per load)
+			// and merge the per-worker overflow maps.
 			const auto merge_t0 = clock::now();
-			bool have_base = false;
-			for (auto &w : workers) {
-				if (w.value.revenue.size() != slot_count) {
+			active_slots.clear();
+			const auto *flags = merged_has.data();
+			size_t slot = 0;
+			for (; slot + 8 <= slot_count; slot += 8) {
+				uint64_t word;
+				std::memcpy(&word, flags + slot, sizeof(word));
+				if (word == 0) {
 					continue;
 				}
-				if (!have_base) {
-					merged_revenues = std::move(w.value.revenue);
-					merged_has = std::move(w.value.has);
-					active_slots = std::move(w.value.touched);
-					have_base = true;
-				} else {
-					for (const auto slot : w.value.touched) {
-						if (!merged_has[slot]) {
-							merged_has[slot] = 1;
-							active_slots.push_back(slot);
-						}
-						AddAccumulated(merged_revenues[slot], w.value.revenue[slot]);
+				for (size_t j = 0; j < 8; j++) {
+					if (flags[slot + j]) {
+						active_slots.push_back(static_cast<uint32_t>(slot + j));
 					}
+				}
+			}
+			for (; slot < slot_count; slot++) {
+				if (flags[slot]) {
+					active_slots.push_back(static_cast<uint32_t>(slot));
 				}
 			}
 			for (const auto &w : workers) {
@@ -652,8 +675,99 @@ public:
 			    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - merge_t0).count();
 		}
 
+		SelectCandidates(context);
+
 		if (const char *env = std::getenv("ACCEL_PARALLEL_PROFILE"); env && env[0] == '1') {
 			PrintQ3ParallelProfile(profile);
+		}
+	}
+
+	//! Rows that can reach the top k: revenue >= the k-th largest revenue (ties on revenue are ordered by the
+	//! identity, so all of them are kept).  Identities are resolved only for these few dense slots.
+	void SelectCandidates(duckdb::ClientContext &context) {
+		candidate_rows.clear();
+		std::priority_queue<duckdb::hugeint_t, std::vector<duckdb::hugeint_t>, std::greater<duckdb::hugeint_t>>
+		    smallest_of_top;
+		auto track = [&](const duckdb::hugeint_t &revenue) {
+			if (smallest_of_top.size() < kTopK) {
+				smallest_of_top.push(revenue);
+			} else if (revenue > smallest_of_top.top()) {
+				smallest_of_top.pop();
+				smallest_of_top.push(revenue);
+			}
+		};
+		for (const auto slot : active_slots) {
+			track(FromAccumulator(merged_revenues[slot]));
+		}
+		for (const auto &entry : merged_overflow) {
+			if (orders.FindHash(entry.first)) {
+				track(FromAccumulator(entry.second));
+			}
+		}
+		if (smallest_of_top.empty()) {
+			return;
+		}
+		const bool full = smallest_of_top.size() == kTopK;
+		const auto threshold = smallest_of_top.top();
+		auto qualifies = [&](const duckdb::hugeint_t &revenue) {
+			return !full || revenue >= threshold;
+		};
+
+		std::vector<int64_t> keys;
+		std::vector<duckdb::hugeint_t> revenues;
+		for (const auto slot : active_slots) {
+			const auto revenue = FromAccumulator(merged_revenues[slot]);
+			if (qualifies(revenue)) {
+				keys.push_back(orders.SlotOrderkey(slot));
+				revenues.push_back(revenue);
+			}
+		}
+		// Resolve dense identities from the per-worker order lists (one task per list).
+		std::vector<size_t> by_key(keys.size());
+		for (size_t i = 0; i < by_key.size(); i++) {
+			by_key[i] = i;
+		}
+		std::sort(by_key.begin(), by_key.end(), [&](size_t a, size_t b) { return keys[a] < keys[b]; });
+		std::vector<int64_t> sorted_keys(keys.size());
+		for (size_t i = 0; i < by_key.size(); i++) {
+			sorted_keys[i] = keys[by_key[i]];
+		}
+		std::vector<QualifyingOrder> identities(keys.size(), QualifyingOrder {-1, duckdb::date_t(), 0});
+		if (!sorted_keys.empty()) {
+			const auto lo = sorted_keys.front(), hi = sorted_keys.back();
+			duckdb::TaskExecutor executor(context);
+			for (size_t w = 0; w < order_workers.size(); w++) {
+				executor.ScheduleTask(duckdb::make_uniq<LambdaExecutorTask>(executor, [&, w]() {
+					for (const auto &q : order_workers[w].value) {
+						if (q.orderkey < lo || q.orderkey > hi) {
+							continue;
+						}
+						const auto it = std::lower_bound(sorted_keys.begin(), sorted_keys.end(), q.orderkey);
+						if (it != sorted_keys.end() && *it == q.orderkey) {
+							identities[by_key[static_cast<size_t>(it - sorted_keys.begin())]] = q;
+						}
+					}
+				}));
+			}
+			executor.WorkOnTasks();
+			if (context.interrupted) {
+				throw duckdb::InterruptException();
+			}
+		}
+		for (size_t i = 0; i < keys.size(); i++) {
+			if (identities[i].orderkey != keys[i]) {
+				throw duckdb::InternalException("Q3 parallel: no qualifying order for a revenue slot");
+			}
+			candidate_rows.push_back(Q3OutputRow {keys[i], revenues[i], identities[i].orderdate,
+			                                      identities[i].shippriority});
+		}
+		for (const auto &entry : merged_overflow) {
+			const auto *identity = orders.FindHash(entry.first);
+			const auto revenue = FromAccumulator(entry.second);
+			if (identity && qualifies(revenue)) {
+				candidate_rows.push_back(
+				    Q3OutputRow {entry.first, revenue, identity->orderdate, identity->shippriority});
+			}
 		}
 	}
 
@@ -673,25 +787,7 @@ public:
 			}
 		};
 
-		for (const auto slot : active_slots) {
-			const size_t s = slot;
-			Q3OutputRow row;
-			row.orderkey = orders.SlotOrderkey(s);
-			row.revenue = FromAccumulator(merged_revenues[s]);
-			row.orderdate = orders.SlotOrderdate(s);
-			row.shippriority = orders.SlotShippriority(s);
-			consider(row);
-		}
-		for (const auto &entry : merged_overflow) {
-			const auto *identity = orders.FindHash(entry.first);
-			if (!identity) {
-				continue;
-			}
-			Q3OutputRow row;
-			row.orderkey = entry.first;
-			row.revenue = FromAccumulator(entry.second);
-			row.orderdate = identity->orderdate;
-			row.shippriority = identity->shippriority;
+		for (const auto &row : candidate_rows) {
 			consider(row);
 		}
 
@@ -723,8 +819,9 @@ public:
 		return true;
 	}
 
-	//! Accumulate one lineitem chunk into this worker's slot arrays; returns the number of qualifying rows.
-	size_t ConsumeLineitemChunk(WorkerRevenue &local, duckdb::DataChunk &input) const {
+	//! Accumulate one lineitem chunk into the shared slot arrays (out-of-range orders: this worker's overflow map);
+	//! returns the number of qualifying rows.
+	size_t ConsumeLineitemChunk(WorkerRevenue &local, duckdb::DataChunk &input) {
 		auto &shipdate_vector = input.data[Q3LineitemChunkLayout::SHIPDATE_INDEX];
 		auto &orderkey_vector = input.data[Q3LineitemChunkLayout::ORDERKEY_INDEX];
 		auto &extendedprice_vector = input.data[Q3LineitemChunkLayout::EXTENDEDPRICE_INDEX];
@@ -770,8 +867,18 @@ public:
 		}
 		if (batch) {
 			// SIMD probe of the (L2-resident) qualifying-order bitmap; only hits touch the revenue arrays.
+			// Lineitem is clustered by orderkey: sum each run of one slot locally, then one atomic add per run.
 			uint32_t hits[STANDARD_VECTOR_SIZE + simd::kSelSlack];
 			const auto hit_count = orders.SelectQualifying(orderkeys, sel, input.size(), hits);
+			size_t run_slot = 0;
+			q3_acc_t run_sum {};
+			bool in_run = false;
+			auto flush = [&]() {
+				if (in_run) {
+					AtomicAddAccumulated(&merged_revenues[run_slot], run_sum);
+					__atomic_store_n(&merged_has[run_slot], uint8_t(1), __ATOMIC_RELAXED);
+				}
+			};
 			for (size_t h = 0; h < hit_count; h++) {
 				const auto row = hits[h];
 				const auto idx = sel ? sel[row] : row;
@@ -779,13 +886,16 @@ public:
 					continue;
 				}
 				const auto slot = orders.Rank(orderkeys[idx]);
-				AddRevenue(local.revenue[slot], extendedprices[idx], discounts[idx]);
-				if (!local.has[slot]) {
-					local.has[slot] = 1;
-					local.touched.push_back(static_cast<uint32_t>(slot));
+				if (!in_run || slot != run_slot) {
+					flush();
+					run_slot = slot;
+					run_sum = q3_acc_t {};
+					in_run = true;
 				}
+				AddRevenue(run_sum, extendedprices[idx], discounts[idx]);
 				contributions++;
 			}
+			flush();
 			return contributions;
 		}
 
@@ -821,12 +931,10 @@ public:
 				continue;
 			}
 			if (slot >= 0) {
-				AddRevenue(local.revenue[static_cast<size_t>(slot)], g_extendedprices[extendedprice_index],
-				           g_discounts[discount_index]);
-				if (!local.has[static_cast<size_t>(slot)]) {
-					local.has[static_cast<size_t>(slot)] = 1;
-					local.touched.push_back(static_cast<uint32_t>(slot));
-				}
+				q3_acc_t delta {};
+				AddRevenue(delta, g_extendedprices[extendedprice_index], g_discounts[discount_index]);
+				AtomicAddAccumulated(&merged_revenues[static_cast<size_t>(slot)], delta);
+				__atomic_store_n(&merged_has[static_cast<size_t>(slot)], uint8_t(1), __ATOMIC_RELAXED);
 			} else {
 				AddRevenue(local.overflow[g_orderkeys[orderkey_index]], g_extendedprices[extendedprice_index],
 				           g_discounts[discount_index]);
@@ -839,10 +947,12 @@ public:
 private:
 	Q3Parameters params;
 	OrderStore orders;
-	std::vector<q3_acc_t> merged_revenues;
-	std::vector<uint8_t> merged_has;
+	ZeroedArray<q3_acc_t> merged_revenues;
+	ZeroedArray<uint8_t> merged_has;
 	std::vector<uint32_t> active_slots;
 	std::unordered_map<int64_t, q3_acc_t> merged_overflow;
+	std::vector<CacheLinePadded<std::vector<QualifyingOrder>>> order_workers;
+	std::vector<Q3OutputRow> candidate_rows;
 	std::vector<Q3OutputRow> ordered_rows;
 	duckdb::idx_t output_offset = 0;
 	bool finalized = false;

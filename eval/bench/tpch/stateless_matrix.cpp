@@ -364,6 +364,8 @@ double Median(std::vector<double> v) {
 //! accel_tpch_qN at 1 thread, and for each T in thread_list DuckDB at T threads
 //! and accel_tpch_qN_parallel at T threads.  Long-format CSV on stdout.
 int RunSweep(const std::vector<int> &queries, int seeds, const std::vector<int> &thread_list);
+//! --skip-st 1: leave out the 1-thread DuckDB / accel_tpch_qN pair (T-thread pairs only).
+bool g_skip_st = false;
 
 std::vector<int> ParseList(const std::string &s) {
 	std::vector<int> out;
@@ -407,6 +409,8 @@ int main(int argc, char **argv) {
 			thread_list = ParseList(value);
 		} else if (flag == "--scale-factor") {
 			g_scale_factor = std::stod(value);
+		} else if (flag == "--skip-st") {
+			g_skip_st = value != "0";
 		} else if (flag == "--emit-instances") {
 			emit_path = value;
 		} else {
@@ -545,9 +549,11 @@ int RunSweep(const std::vector<int> &queries, int seeds, const std::vector<int> 
 		auto st_sql = [&](const Instance &i) { return "SELECT * FROM " + fn + i.args; };
 		auto par_sql = [&](const Instance &i) { return "SELECT * FROM " + fn + "_parallel" + i.args; };
 		// Warm-up (untimed): every variant once on the first instance.
-		SetThreads(con, 1);
-		Run(con, instances[0].ref_sql);
-		Run(con, st_sql(instances[0]));
+		if (!g_skip_st) {
+			SetThreads(con, 1);
+			Run(con, instances[0].ref_sql);
+			Run(con, st_sql(instances[0]));
+		}
 		for (int t : thread_list) {
 			SetThreads(con, t);
 			Run(con, instances[0].ref_sql);
@@ -560,9 +566,11 @@ int RunSweep(const std::vector<int> &queries, int seeds, const std::vector<int> 
 		};
 		for (int i = 0; i < n; i++) {
 			const auto &inst = instances[i];
-			SetThreads(con, 1);
-			record(inst, "duckdb", 1, TimeOnceUs(con, inst.ref_sql));
-			record(inst, "accel_st", 1, TimeOnceUs(con, st_sql(inst)));
+			if (!g_skip_st) {
+				SetThreads(con, 1);
+				record(inst, "duckdb", 1, TimeOnceUs(con, inst.ref_sql));
+				record(inst, "accel_st", 1, TimeOnceUs(con, st_sql(inst)));
+			}
 			for (int t : thread_list) {
 				SetThreads(con, t);
 				record(inst, "duckdb", t, TimeOnceUs(con, inst.ref_sql));
