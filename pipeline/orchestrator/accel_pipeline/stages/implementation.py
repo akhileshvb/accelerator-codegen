@@ -36,27 +36,17 @@ def _implementation_user_message(
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
     host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=pipeline_config.repo_root))
     diff_bin = str(host["differential_binary"])
-    dataset = f'"${host["dataset_env"]}"'
-    diff_cmd = str(host.get("differential_command") or f"./{build}/{diff_bin} {dataset} {q}")
-    if host["query_scoped_harness"]:
-        diff_step = f"3. ./{build}/{diff_bin} {dataset} {q}\n"
-        trailing = (
-            "4. MCP run_multi_connection (or request_gate aux_multi_connection) until status=pass\n"
-            "Keep fixing and re-running steps 3–4 until both pass. "
-        )
-    else:
-        diff_src = str(host.get("differential_source") or "")
-        multi = str(host.get("multi_conn_ctest_regex") or f"test_{engine}_aux_multi_connection_stress")
-        diff_step = (
-            f"3. Bootstrap/extend {engine} query host if needed "
-            f"(see query_host_bootstrap.md), then ./{build}/{diff_bin} {q}\n"
-            f"   (create {diff_src} + CMake target if missing; {diff_cmd})\n"
-        )
-        trailing = (
-            f"4. MCP run_multi_connection until pass (ctest {multi}; "
-            f"replicate the shipped multi-conn/cross-accel/bench harnesses for {engine})\n"
-            "Keep fixing and re-running steps 3–4 until both pass. "
-        )
+    diff_cmd = str(host["differential_command"])
+    diff_src = str(host["differential_source"])
+    multi = str(host["multi_conn_target"])
+    diff_step = (
+        f"3. ./{build}/{diff_bin} {q}\n"
+        f"   (the harness {diff_src} is made by host_bootstrap; {diff_cmd})\n"
+    )
+    trailing = (
+        f"4. MCP run_multi_connection until pass ({multi})\n"
+        "Keep fixing and re-running steps 3–4 until both pass. "
+    )
     return (
         "RESUME partial aux implementation: sources already exist on disk from a prior run. "
         "Do NOT rewrite module.hpp/module.cpp from scratch or explore cmake/ (never edited).\n"

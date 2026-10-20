@@ -19,14 +19,14 @@ allowed_commands:
   - "^touch CMakeLists\\.txt && cmake -S \\. -B build-release$"
   - "^touch CMakeLists\\.txt && cmake --build build-release( .*)?$"
   - "^cmake --build build-release( .*)?$"
-  - "^ctest -R (q\\d+_|tpch_q\\d+_aux|test_cross_accel|test_aux_multi_connection).*"
+  - "^ctest -R (q\\d+_|tpch_q\\d+_aux|test_[a-z0-9]+_(cross_accel|aux_multi_connection)).*"
   - "^ctest --test-dir build-release( .*)?$"
   - "^ctest -N( .*)?$"
   # test / bench / calibrate binaries land in the build root (no tests/ or benchmarks/ subdir)
   - "^(\\./)?build-release/(test|benchmark|calibrate)_[A-Za-z0-9_]+( .*)?$"
-  - "^(\\.\\/)?build-release\\/test_tpch_shared_differential( .*)?$"
-  - "^ACCEL_TPCH_DB=.+ (\\.\\/)?build-release\\/test_tpch_shared_differential( .*)?$"
-  - "^ACCEL_ADV_[A-Z_]+=\\S+( ACCEL_ADV_[A-Z_]+=\\S+)* (\\.\\/)?build-release\\/test_tpch_shared_differential( .*)?$"
+  - "^(ACCEL_[A-Z_]+=\\S+ )+(\\.\\/)?build-release\\/(test|benchmark|calibrate)_[A-Za-z0-9_]+( .*)?$"
+  # the engine host: harness builds and runs (host_bootstrap and the gates reach the engine only through it)
+  - "^(\\./)?backends/[A-Za-z0-9_]+/host\\.sh (info|up|load|build|run|sql)( .*)?$"
   - "^bash scripts/run_aux_bench_sweep\\.sh \\d+$"
   - "^bash pipeline/gates/run_aux_cross_accel\\.sh \\d+$"
   - "^bash pipeline/gates/run_aux_multi_connection\\.sh \\d+$"

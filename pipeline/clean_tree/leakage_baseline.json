@@ -32,7 +32,7 @@
   "engine": 10,
   "path": 2,
   "symbol": 5,
-  "target": 13
+  "target": 11
  },
  "eval/bench/comparison/plot_gendb_bespoke_comparison.py": {
   "engine": 9
@@ -186,8 +186,7 @@
   "path": 7
  },
  "pipeline/config/aux_state.yaml": {
-  "engine": 4,
-  "target": 3
+  "engine": 4
  },
  "pipeline/config/benchmark_packs/sec_edgar.yaml": {
   "engine": 7,
@@ -435,9 +434,6 @@
  "pipeline/orchestrator/accel_pipeline/base_bench.py": {
   "engine": 7
  },
- "pipeline/orchestrator/accel_pipeline/config.py": {
-  "target": 3
- },
  "pipeline/orchestrator/accel_pipeline/context.py": {
   "path": 2
  },
@@ -523,9 +519,9 @@
   "engine": 3
  },
  "pipeline/orchestrator/tests/test_accelerator_engine.py": {
-  "engine": 73,
-  "engine_branch": 3,
-  "path": 6,
+  "engine": 78,
+  "engine_branch": 4,
+  "path": 7,
   "symbol": 1,
   "target": 11
  },
@@ -544,7 +540,7 @@
   "engine": 7
  },
  "pipeline/orchestrator/tests/test_aux_pipeline.py": {
-  "engine": 8,
+  "engine": 10,
   "path": 7
  },
  "pipeline/orchestrator/tests/test_backend_api.py": {
@@ -581,8 +577,9 @@
   "engine": 8
  },
  "pipeline/orchestrator/tests/test_host_bootstrap.py": {
-  "engine": 27,
-  "target": 6
+  "engine": 35,
+  "path": 10,
+  "target": 10
  },
  "pipeline/orchestrator/tests/test_implementation_bootstrap.py": {
   "engine": 4,
@@ -613,7 +610,7 @@
   "path": 2
  },
  "pipeline/orchestrator/tests/test_optimization_edit_paths.py": {
-  "engine": 3,
+  "engine": 4,
   "path": 4
  },
  "pipeline/orchestrator/tests/test_optimization_runtime.py": {
@@ -703,8 +700,7 @@
   "path": 1
  },
  "pipeline/prompts/shared/codex_tooling.md": {
-  "path": 1,
-  "target": 1
+  "path": 1
  },
  "pipeline/prompts/shared/generated_layout.md": {
   "path": 2

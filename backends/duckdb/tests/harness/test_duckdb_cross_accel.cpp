@@ -27,10 +27,10 @@ int main() {
 			    connection, query_num, "after_write_Q" + std::to_string(query_num));
 		}
 
-		std::cout << "test_cross_accel_correctness passed\n";
+		std::cout << "test_duckdb_cross_accel passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_cross_accel_correctness failed: " << ex.what() << std::endl;
+		std::cerr << "test_duckdb_cross_accel failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

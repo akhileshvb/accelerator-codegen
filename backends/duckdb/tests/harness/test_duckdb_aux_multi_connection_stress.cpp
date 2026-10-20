@@ -35,10 +35,10 @@ int main() {
 		const int duration_sec = duration_env ? std::stoi(duration_env) : 5;
 		accelerator_codegen::test_support::RunMultiConnectionStress(database, target_query, all_queries, duration_sec);
 
-		std::cout << "test_aux_multi_connection_stress passed for Q" << target_query << std::endl;
+		std::cout << "test_duckdb_aux_multi_connection_stress passed for Q" << target_query << std::endl;
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_aux_multi_connection_stress failed: " << ex.what() << std::endl;
+		std::cerr << "test_duckdb_aux_multi_connection_stress failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

@@ -16,7 +16,7 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/aux_cross_accel.json"
 if [[ -z "${CROSS_ACCEL_TARGET}" ]]; then
-  emit_result "${JSON}" aux_cross_accel fail "no cross-accel target in the gate context (engine_host.cross_accel_ctest_regex). ${HOST_HINT}" ""
+  emit_result "${JSON}" aux_cross_accel fail "no cross-accel target in the gate context (engine_host.cross_accel_target). ${HOST_HINT}" ""
 fi
 
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"

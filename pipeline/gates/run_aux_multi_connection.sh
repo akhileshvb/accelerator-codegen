@@ -16,7 +16,7 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 
 JSON="${GATE_OUT}/aux_multi_connection.json"
 if [[ -z "${MULTI_CONN_TARGET}" ]]; then
-  emit_result "${JSON}" aux_multi_connection fail "no multi-connection target in the gate context (engine_host.multi_conn_ctest_regex). ${HOST_HINT}" ""
+  emit_result "${JSON}" aux_multi_connection fail "no multi-connection target in the gate context (engine_host.multi_conn_target). ${HOST_HINT}" ""
 fi
 
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"

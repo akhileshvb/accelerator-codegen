@@ -38,7 +38,7 @@ want base && for q in $(seq 1 22); do
   [[ -x "${B}/test_tpch_q${q}" ]] && run "base_q${q}" env ACCEL_TPCH_DB="${SF1}" "${B}/test_tpch_q${q}"
 done
 want aux && for q in $(seq 1 22); do
-  run "aux_q${q}" "${B}/test_tpch_shared_differential" "${TPCH}" "${q}"
+  run "aux_q${q}" env ACCEL_TPCH_DB="${TPCH}" "${B}/test_duckdb_tpch_differential" "${q}"
 done
 want incremental && run incremental "${B}/test_shared_incremental_differential" "${TPCH}" "${SEC}"
 echo "summary pass=${pass} fail=${fail} ${failed[*]:-}"

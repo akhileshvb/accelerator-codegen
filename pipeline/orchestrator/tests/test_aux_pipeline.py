@@ -301,7 +301,7 @@ class TestWorkloadConfig:
         paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 1)
         assert paths["aux_state_subdir"] == "accelerators/sec_edgar/q1/duckdb/aux"
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q1_aux"
-        assert paths["cost_model_config"] == "accelerators/sec_edgar/q1/config/sec_edgar_q1_aux_cost_model.json"
+        assert paths["cost_model_config"] == "accelerators/sec_edgar/q1/config/sec_edgar_q1_aux_cost_model_duckdb.json"
         assert workload.get("post_implementation_gates", [])[0] == "aux_correctness"
         assert "accelerators/sec_edgar/q1/**" in workload.get("write_paths", [])
 
@@ -321,7 +321,7 @@ class TestWorkloadConfig:
         paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 2)
         assert paths["aux_state_subdir"] == "accelerators/sec_edgar/q2/duckdb/aux"
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q2_aux"
-        assert paths["cost_model_config"] == "accelerators/sec_edgar/q2/config/sec_edgar_q2_aux_cost_model.json"
+        assert paths["cost_model_config"] == "accelerators/sec_edgar/q2/config/sec_edgar_q2_aux_cost_model_duckdb.json"
         assert paths["aux_bench_suites"] == "value_append"
 
 

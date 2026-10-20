@@ -3,6 +3,8 @@
 * ``substrate/**`` is never writable by agents;
 * ``backends/<engine>/**`` is owned by that engine's ``engine_backend`` run (incl.
   its catalog, ``backends/<engine>/api/catalog/``); accelerator runs never write it;
+* the ``host_bootstrap`` stage writes only ``layout.harness_globs(engine)`` of its
+  engine's backend (the workload harnesses), nothing else in it and no other backend;
 * ``accelerators/<bench>/q<N>/**`` is owned by that query's run (kernels, aux
   module, registration, tests, bench, cost-model config, Verus kit);
   other queries' directories are never writable;
@@ -130,6 +132,18 @@ def _run_identity(pipeline_config: Any | None) -> tuple[str, str, str]:
     )
 
 
+def _host_bootstrap_verdict(rel: str, lay: layout.Layer, engine_name: str) -> tuple[bool, str]:
+    if lay.kind == "backend" and lay.engine == engine_name and any(
+        fnmatch.fnmatch(rel, g) for g in layout.harness_globs(engine_name)
+    ):
+        return True, "engine-harness"
+    return False, (
+        f"host_bootstrap write denied: {rel}. It writes only the {engine_name or '<engine>'} "
+        f"workload harnesses ({', '.join(layout.harness_globs(engine_name or '<engine>'))}); "
+        "the rest of the backend belongs to the engine_backend run, queries to their own runs"
+    )
+
+
 def layer_write_verdict(
     rel: str,
     *,
@@ -137,10 +151,13 @@ def layer_write_verdict(
     benchmark: str = "tpch",
     workload_kind: str = "",
     engine_name: str = "",
+    stage: str = "",
 ) -> tuple[bool, str] | None:
     """The layer rule for rel: (allowed, reason), or None when no layer rule applies."""
     lay = layout.classify(rel)
     engine_run = workload_kind == "engine_backend"
+    if stage == "host_bootstrap" and lay.kind in {"backend", "query"}:
+        return _host_bootstrap_verdict(rel, lay, engine_name)
     if lay.kind == "substrate":
         return False, f"direct write denied: {rel}. {SUBSTRATE_DENY}"
     if lay.kind == "workloads":
@@ -209,7 +226,7 @@ def write_allowed(
 
     # One rule per layer (substrate / backends / query dirs / prims / prooflib / workloads).
     verdict = layer_write_verdict(
-        rel, query=query, benchmark=benchmark, workload_kind=kind, engine_name=engine
+        rel, query=query, benchmark=benchmark, workload_kind=kind, engine_name=engine, stage=stage
     )
     if verdict is not None:
         return verdict

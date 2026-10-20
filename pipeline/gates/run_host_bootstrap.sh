@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Verify the query-host bootstrap: the engine host brings the instance up, loads the
-# dataset and builds the differential target.
+# Verify the engine's workload harnesses (made by host_bootstrap under backends/<engine>/tests/harness
+# and bench): build every target through the engine host, then smoke each of them. The differential
+# runs one registered query when the engine has an accelerator, else every harness answers --help.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -12,18 +13,62 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 
 ENGINE_JSON="${ROOT}/pipeline/artifacts/engines/${ENGINE_NAME}/host_bootstrap/host_bootstrap.json"
 QUERY_JSON="${GATE_OUT}/host_bootstrap.json"
+TARGETS=("${DIFF_BINARY}" "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" "${HARNESS_BENCH_TARGET}" "${HARNESS_CALIBRATE_TARGET}")
 
 finish() { # status reason log
-  local rc=0
-  write_result "${ENGINE_JSON}" host_bootstrap "$@" "query:=${QUERY}" "differential_binary=${DIFF_BINARY}" >/dev/null || rc=$?
-  write_result "${QUERY_JSON}" host_bootstrap "$@" "query:=${QUERY}" "differential_binary=${DIFF_BINARY}" || rc=$?
+  local rc=0 targets
+  targets="$(printf '%s\n' "${TARGETS[@]}" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read().split()))")"
+  write_result "${ENGINE_JSON}" host_bootstrap "$@" "query:=${QUERY}" "targets:=${targets}" "smokes:=${SMOKES:-[]}" >/dev/null || rc=$?
+  write_result "${QUERY_JSON}" host_bootstrap "$@" "query:=${QUERY}" "targets:=${targets}" "smokes:=${SMOKES:-[]}" || rc=$?
   exit "${rc}"
 }
 
-if [[ -z "${DIFF_BINARY}" ]]; then
-  finish fail "no differential target in the gate context. ${HOST_HINT}" ""
+for target in "${TARGETS[@]}"; do
+  [[ -n "${target}" ]] || finish fail "gate context lacks a harness target. ${HOST_HINT}" ""
+done
+for file in "${DIFF_SOURCE}" "backends/${ENGINE_NAME}/tests/harness.cmake"; do
+  [[ -f "${ROOT}/${file}" ]] || finish fail "missing ${file}. ${HOST_HINT}" ""
+done
+
+HARNESS_FILES=()
+while IFS= read -r file; do HARNESS_FILES+=("${file}"); done < <(cd "${ROOT}" &&
+  find "backends/${ENGINE_NAME}/tests/harness" "backends/${ENGINE_NAME}/bench" "backends/${ENGINE_NAME}/tests/harness.cmake" \
+    -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.cmake' \) 2>/dev/null | sort)
+FILE_ARGS=()
+for file in "${HARNESS_FILES[@]}"; do FILE_ARGS+=(--file "${file}"); done
+if ! QUERY_FREE_LOG="$(cd "${ROOT}" && python3 scripts/check_backend_query_free.py "${FILE_ARGS[@]}" 2>&1)"; then
+  finish fail "the harnesses must be workload-generic (no query names or query-number dispatch)" "${QUERY_FREE_LOG}"
 fi
-if ! engine_ready "${DIFF_BINARY}"; then
-  finish fail "${ENGINE_FAIL}: create ${DIFF_SOURCE} + CMake and the host SQL entrypoints" "${ENGINE_LOG}"
+
+if ! engine_ready "${TARGETS[@]}"; then
+  finish fail "${ENGINE_FAIL}: fix the harness sources / harness.cmake" "${ENGINE_LOG}"
 fi
-finish pass "${DIFF_BINARY} built" "${ENGINE_LOG}"
+
+REGISTERED_QUERY=""
+for register in "${ROOT}"/accelerators/"${BENCHMARK_NAME}"/q*/"${ENGINE_NAME}"/register.cpp; do
+  [[ -f "${register}" ]] || continue
+  REGISTERED_QUERY="$(sed -E 's#.*/q([0-9]+)/.*#\1#' <<<"${register}")"
+  break
+done
+
+SMOKE_LOG=""
+SMOKES="[]"
+smoke() { # target args...
+  local target="$1"
+  engine_run "$@"
+  SMOKE_LOG+="[smoke ${*}] rc=${RC}"$'\n'"${LOG}"$'\n'
+  SMOKES="$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); d.append({'target': sys.argv[2], 'args': sys.argv[4:], 'exit_code': int(sys.argv[3])}); print(json.dumps(d))" "${SMOKES}" "${target}" "${RC}" "${@:2}")"
+  if [[ ${RC} -ne 0 ]]; then
+    finish fail "smoke failed: ${target} ${*:2} (exit ${RC})" "${ENGINE_LOG}${SMOKE_LOG}"
+  fi
+}
+
+if [[ -n "${REGISTERED_QUERY}" ]]; then
+  smoke "${DIFF_BINARY}" "${REGISTERED_QUERY}"
+else
+  smoke "${DIFF_BINARY}" --help
+fi
+for target in "${MULTI_CONN_TARGET}" "${CROSS_ACCEL_TARGET}" "${HARNESS_BENCH_TARGET}" "${HARNESS_CALIBRATE_TARGET}"; do
+  smoke "${target}" --help
+done
+finish pass "built and smoked ${TARGETS[*]}" "${ENGINE_LOG}${SMOKE_LOG}"

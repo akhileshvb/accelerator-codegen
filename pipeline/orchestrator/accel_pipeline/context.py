@@ -141,16 +141,6 @@ def _accelerator_engine_host_block(workload: dict[str, Any], repo_root: Path, bu
     hint = str(host.get("query_host_ready_hint") or "").strip()
     if hint:
         lines.extend(["", f"**Host readiness:** {hint}"])
-    if host.get("agent_builds_query_host"):
-        lines.extend(
-            [
-                "",
-                "**Agent-buildable query host:** if SQL entrypoints or the differential binary "
-                "are missing, create/extend them during implementation "
-                "(`pipeline/prompts/shared/query_host_bootstrap.md`). "
-                f"Expected differential source: `{host.get('differential_source', '')}`.",
-            ]
-        )
     lines.extend(["", format_host_block(workload, repo_root, build_dir)])
     return "\n".join(lines)
 
@@ -622,8 +612,10 @@ def build_prompt_context(
         "differential_binary": str(engine_host.get("differential_binary") or ""),
         "differential_source": str(engine_host.get("differential_source") or ""),
         "differential_command": str(engine_host.get("differential_command") or ""),
-        "multi_conn_ctest_regex": str(engine_host.get("multi_conn_ctest_regex") or ""),
-        "cross_accel_ctest_regex": str(engine_host.get("cross_accel_ctest_regex") or ""),
+        "multi_conn_target": str(engine_host.get("multi_conn_target") or ""),
+        "cross_accel_target": str(engine_host.get("cross_accel_target") or ""),
+        "harness_bench_target": str(engine_host.get("bench_target") or ""),
+        "harness_calibrate_target": str(engine_host.get("calibrate_target") or ""),
         "dataset_env": str(engine_host.get("dataset_env") or ""),
         "engine_profile": _engine_profile_for_stage(workload, stage) if is_engine else "",
         "backend_api": "" if is_engine or not engine_name else render_backend_api(repo, engine_name),
