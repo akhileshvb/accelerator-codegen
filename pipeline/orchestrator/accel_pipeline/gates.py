@@ -52,7 +52,6 @@ GATE_SCRIPTS = {
     "slot_own_writes": "run_slot_gates.sh",
     "slot_ddl_events": "run_slot_gates.sh",
     "slot_tsan": "run_aux_tsan.sh",
-    "slot_differential": "run_slot_gates.sh",
 }
 
 

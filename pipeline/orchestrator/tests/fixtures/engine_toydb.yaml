@@ -118,7 +118,6 @@ engine_profile:
     reload_semantics: "SET threads changes the task scheduler's thread count for the instance immediately."
 
   query_host:
-    query_scoped_harness: false
     dataset_env: ACCEL_TPCH_DB
     work_db_suffix: ".toydb_work"
 

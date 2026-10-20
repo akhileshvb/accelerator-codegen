@@ -522,16 +522,11 @@
       "type": "object",
       "description": "How accelerator runs reach this engine's query host.",
       "required": [
-        "query_scoped_harness",
         "dataset_env",
         "work_db_suffix"
       ],
       "additionalProperties": false,
       "properties": {
-        "query_scoped_harness": {
-          "description": "True: the backend ships one differential/bench harness that takes the query as an argument. False: each accelerator run builds its own harness targets.",
-          "type": "boolean"
-        },
         "dataset_env": {
           "description": "Env var carrying the dataset location to harness binaries.",
           "$ref": "#/$defs/text"

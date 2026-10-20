@@ -114,7 +114,6 @@ engine_profile:
     reload_semantics: "Applied at plugin init and by the update callback on SET GLOBAL; a client environment variable does not reach the server process."
 
   query_host:
-    query_scoped_harness: false
     dataset_env: ACCEL_MYSQL_DOCKER
     work_db_suffix: ".mysql_work"
 

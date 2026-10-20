@@ -28,7 +28,7 @@ container, plugin or data layout.
 | `build` | `[target...]` | build the backend and its registered accelerators, then install or load them into the instance. The build dir is configured with `$ACCEL_CMAKE_ARGS` (plus the engine SDK's own options), and reconfigured when they differ from the cache; it is never configured any other way |
 | `sql` | `<file>` or `-` | run SQL against the instance; print the result of the last statement as CSV with a header |
 | `run` | `<target> [args...]` | run a built test or bench binary where it reaches the instance, with the `env` file applied |
-| `slot` | `<scenario> <seconds>` | run one slot-gate scenario (`epoch_stress`, `hits_under_writes`, `read_after_commit`, `txn_edges`, `restart`, `own_writes`, `ddl_events`; the accelerator pipeline adds `differential` once accelerators exist) |
+| `slot` | `<scenario> <seconds>` | run one slot-gate scenario (`epoch_stress`, `hits_under_writes`, `read_after_commit`, `txn_edges`, `restart`, `own_writes`, `ddl_events`) |
 
 Exit status: `0` pass, `1` fail, `2` usage, `77` not applicable. A verb returns `77` only
 when the engine profile states the mechanic is n/a: an embedded engine's `up`/`down`

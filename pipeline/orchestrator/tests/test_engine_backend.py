@@ -74,7 +74,7 @@ def test_backend_stage_gates_are_wired():
             assert gate in GATE_SCRIPTS, gate
             assert (gates_dir / GATE_SCRIPTS[gate]).is_file(), gate
     slot_gates = [g for g in GATE_SCRIPTS if g.startswith("slot_")]
-    assert len(slot_gates) == 9
+    assert len(slot_gates) == 8  # the differential runs in the accelerator pipeline (aux_correctness)
     assert not (gates_dir / "slot_adapters").exists()
 
 
@@ -319,7 +319,7 @@ def test_slot_gate_scenarios_exist_in_the_generic_harness():
 
     harness = (REPO_ROOT / "eval" / "harness" / "slot_gates.cpp").read_text()
     for gate, script in GATE_SCRIPTS.items():
-        if script == "run_slot_gates.sh" and gate != "slot_differential":
+        if script == "run_slot_gates.sh":
             assert f'"{gate[len("slot_"):]}"' in harness, gate
 
 

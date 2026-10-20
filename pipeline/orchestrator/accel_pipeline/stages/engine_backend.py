@@ -413,7 +413,6 @@ def run_validation(
             "slot_own_writes",
             "slot_ddl_events",
             "slot_tsan",
-            "slot_differential",
         ]
     )
     run_post_stage_gates(pipeline_config, workload_name, query, gates)

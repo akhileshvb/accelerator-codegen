@@ -10,7 +10,6 @@
 #   slot_restart             accelerator workers / processes restarted under load
 #   slot_own_writes          reads inside a writing transaction include its own rows
 #   slot_ddl_events          replacing / renaming a tracked table never leaves a stale answer
-#   slot_differential        the 22-query differential and the RF differential
 #
 # `host.sh slot <scenario> <seconds>` exits 0 (pass), 1 (fail) or 77 (the engine profile
 # declares the mechanic n/a: gate skipped; never for own_writes or ddl_events); see pipeline/prompts/engine_backend/host_contract.md.
@@ -23,7 +22,7 @@ GATE="${ACCEL_GATE_NAME:-slot_epoch_stress}"
 OUT_JSON="${ACCEL_GATE_OUT:-/tmp/${GATE}.json}"
 SCENARIO="${GATE#slot_}"
 SECONDS_PER_SCENARIO="${ACCEL_SLOT_GATE_SECONDS:-6}"
-[[ "${SCENARIO}" == "differential" ]] && DEFAULT_TIMEOUT=3600 || DEFAULT_TIMEOUT=900
+DEFAULT_TIMEOUT=900
 TIMEOUT_SECONDS="${ACCEL_SLOT_GATE_TIMEOUT:-${DEFAULT_TIMEOUT}}"
 
 # shellcheck source=aux_gate_common.sh

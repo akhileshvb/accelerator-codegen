@@ -112,7 +112,6 @@ engine_profile:
     reload_semantics: "GUC changes apply to a running background worker only if the worker re-reads them on SIGHUP; environment of the server process is read at process start."
 
   query_host:
-    query_scoped_harness: false
     dataset_env: PG_CONFIG
     work_db_suffix: ".postgres_work"
 

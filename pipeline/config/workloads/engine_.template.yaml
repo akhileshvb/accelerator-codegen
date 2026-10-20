@@ -99,7 +99,6 @@ engine_profile:
     reload_semantics: {na: "REPLACE_ME"}
 
   query_host:
-    query_scoped_harness: false       # true: the backend ships one harness that takes the query as an argument
     dataset_env: "REPLACE_ME: env var carrying the dataset location to harness binaries"
     work_db_suffix: ".REPLACE_ME_work"  # per-worker database copy suffix
 
