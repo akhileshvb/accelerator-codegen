@@ -44,6 +44,7 @@ lists.
 ## 3. Inside the sandbox
 
 ```bash
+cd "$ACCEL_TREE"                                   # the tree root (sandbox.sh exports it)
 python3 -m venv .venv && .venv/bin/pip install -q -r pipeline/orchestrator/requirements.txt
 export PY="$PWD/.venv/bin/python" PYTHONPATH="$PWD/pipeline/orchestrator"
 export ACCEL_DATASET_DIR=/flash1/akhilvb/datasets/tpch_sf1_tbl

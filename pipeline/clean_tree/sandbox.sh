@@ -37,5 +37,6 @@ exec bwrap --die-with-parent --unshare-pid --unshare-ipc --unshare-uts \
   --setenv TERM "${TERM:-xterm}" --setenv TMPDIR /tmp \
   --setenv OPENROUTER_API_KEY "${OPENROUTER_API_KEY:-}" \
   --setenv ACCEL_DUCKDB_ROOT "${ACCEL_DUCKDB_ROOT:-}" \
+  --setenv ACCEL_TREE "${TREE}" \
   --chdir "${TREE}" \
   "${@:-bash}"
