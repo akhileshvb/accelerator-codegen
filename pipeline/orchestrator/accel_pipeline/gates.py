@@ -162,9 +162,11 @@ def run_gate(
     engine_name = str(workload.get("engine_name") or "").strip().lower()
     if engine_name:
         gate_env["ACCEL_ENGINE_NAME"] = engine_name
-    from accel_pipeline.host_runtime import inject_host_runtime_into_gate_env
+    from accel_pipeline.engine_host import inject_host_runtime_into_gate_env
 
-    inject_host_runtime_into_gate_env(gate_env, workload)
+    inject_host_runtime_into_gate_env(
+        gate_env, workload, pipeline_config.repo_root, pipeline_config.build_dir
+    )
     kind = str(workload.get("workload_kind") or "")
     if kind:
         gate_env["ACCEL_WORKLOAD_KIND"] = kind

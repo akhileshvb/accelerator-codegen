@@ -1,13 +1,9 @@
-// GENERATED QUERY: registers this query's DuckDB base kernel table function.
-// The backend (backends/duckdb/api/register.cpp) registers every registered
-// function set; nothing outside this query's directory changes.
-#include "backends/duckdb/api/register.hpp"
-
-#include "duckdb/function/function_set.hpp"
+// GENERATED QUERY: registers {{benchmark_name}} Q{{query_number}} ({{function_name}}) with {{engine_name}}.
+// Only this query's directory changes; the backend names no query.
+{{api_includes}}
+// The engine's registrars:
+{{api_manifest}}
 
 namespace accelerator_codegen {
-duckdb::TableFunctionSet {{create_fn}}();
-namespace {
-const BaseFunctionSetRegistrar kRegistrar{&{{create_fn}}};
-} // namespace
+// TODO({{engine_name}}): register {{create_fn}} with the registrar for each role above.
 } // namespace accelerator_codegen

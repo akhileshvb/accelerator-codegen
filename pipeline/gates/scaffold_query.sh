@@ -38,7 +38,6 @@ pipeline = root / "pipeline"
 out = art_dir / "scaffold"
 out.mkdir(parents=True, exist_ok=True)
 
-reg_tpl = (pipeline / "templates/scaffold/register.cpp.tpl").read_text()
 cmake_tpl = (pipeline / "templates/scaffold/cmake_snippet.cmake.tpl").read_text()
 
 subs = {
@@ -52,10 +51,8 @@ subs = {
     "engine_name": engine_name,
 }
 for k, v in subs.items():
-    reg_tpl = reg_tpl.replace("{{" + k + "}}", v)
     cmake_tpl = cmake_tpl.replace("{{" + k + "}}", v)
 
-(out / "register.cpp").write_text(reg_tpl)  # reference copy; scaffold_stubs writes the query's own
 (out / "cmake_snippet.cmake").write_text(cmake_tpl)
 print(json.dumps({"gate": "scaffold", "query": int(query), "status": "pass", "out": str(out), "engine_name": engine_name}))
 PY

@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--engine",
         default="",
-        help="Engine to build the accelerator for (duckdb, postgres, mysql); required when the "
+        help="Engine to build the accelerator for; required when the "
         "workload supports more than one. Each query x engine is an independent run.",
     )
     parser.add_argument(
@@ -287,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"stage {args.stage!r} belongs to --mode verus", file=sys.stderr)
         return 2
 
-    # One-shot query-host bootstrap (non-duckdb) before per-query stages.
+    # One-shot query-host bootstrap (engines without a query-scoped harness) before per-query stages.
     if args.stage in {"all", "host_bootstrap"}:
         from accel_pipeline.host_bootstrap import ensure_host_bootstrap_for_workload
 

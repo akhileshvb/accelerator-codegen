@@ -11,7 +11,6 @@ shared portable `DataChunk` IR or a default host.
 ## Repositories
 
 - {{repo_root}}
-- {{duckdb_root}}
 
 {{schema_reference_section}}
 

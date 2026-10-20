@@ -117,7 +117,7 @@ def build_mcp_tool_callables(
         return _run_named_gate(name)
 
     def run_multi_connection() -> str:
-        """Run aux_multi_connection gate (DuckDB TF + multi-conn stress). Aux-state only."""
+        """Run aux_multi_connection gate (registered entry points + multi-conn stress). Aux-state only."""
         if workload.get("workload_kind") != "aux_state":
             return json.dumps(
                 {
@@ -297,10 +297,10 @@ def build_mcp_tool_callables(
         return publish_tool(pipeline_config, query, files, rationale)
 
     def discover_host_sdk() -> str:
-        """Locate this engine's host from workload host_runtime (not engine_name)."""
-        from accel_pipeline.host_runtime import discover_host_sdk_json
+        """Describe this engine's host.sh verbs and how to connect."""
+        from accel_pipeline.engine_host import discover_host_sdk_json
 
-        return discover_host_sdk_json(workload)
+        return discover_host_sdk_json(workload, pipeline_config.repo_root, pipeline_config.build_dir)
 
     return {
         "request_gate": request_gate,
@@ -455,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
 
     @_tool(annotations=_ro)
     def run_multi_connection() -> str:
-        """Run aux_multi_connection gate (DuckDB TF registration + multi-conn stress)."""
+        """Run aux_multi_connection gate (entry-point registration + multi-conn stress)."""
         return _call("run_multi_connection")
 
     @_tool(annotations=_ro)
@@ -551,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
 
     @_tool(annotations=_ro)
     def discover_host_sdk() -> str:
-        """Locate this engine's external server SDK (Postgres: pacman/apt/home-prefix)."""
+        """Describe this engine's host.sh verbs and how to connect."""
         return _call("discover_host_sdk")
 
     # ---- Verus pipeline (--mode verus); context from ACCEL_VERUS_CONTEXT ----
@@ -570,7 +570,7 @@ def main(argv: list[str] | None = None) -> int:
 
     @_tool(annotations=_ro)
     def verus_sql(query: str, max_rows: int = 50) -> str:
-        """Read-only SQL on the test database (DuckDB), to explore the data."""
+        """Read-only SQL on the test dataset database, to explore the data."""
         return _verus("verus_sql", query, max_rows)
 
     @_tool(annotations=_rw)

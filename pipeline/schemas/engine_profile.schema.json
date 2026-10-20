@@ -15,6 +15,7 @@
     "scan",
     "entry_points",
     "thread_knobs",
+    "query_host",
     "oracle",
     "hazards"
   ],
@@ -168,7 +169,6 @@
       "description": "The environment the gates run the engine in.",
       "required": [
         "kind",
-        "discovery",
         "ensure_script",
         "build_script",
         "ninja_targets_env",
@@ -185,10 +185,6 @@
             "host_cmake",
             "docker"
           ]
-        },
-        "discovery": {
-          "description": "Named discovery plugin of the orchestrator (host_runtime.py).",
-          "$ref": "#/$defs/text"
         },
         "ensure_script": {
           "description": "Script that starts or attaches the engine host.",
@@ -524,6 +520,30 @@
         }
       },
       "description": "Hard-won engine facts as symptom + cause."
+    },
+    "query_host": {
+      "type": "object",
+      "description": "How accelerator runs reach this engine's query host.",
+      "required": [
+        "query_scoped_harness",
+        "dataset_env",
+        "work_db_suffix"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "query_scoped_harness": {
+          "description": "True: the backend ships one differential/bench harness that takes the query as an argument. False: each accelerator run builds its own harness targets.",
+          "type": "boolean"
+        },
+        "dataset_env": {
+          "description": "Env var carrying the dataset location to harness binaries.",
+          "$ref": "#/$defs/text"
+        },
+        "work_db_suffix": {
+          "description": "Suffix of per-worker copies of the engine's database.",
+          "$ref": "#/$defs/text"
+        }
+      }
     }
   }
 }

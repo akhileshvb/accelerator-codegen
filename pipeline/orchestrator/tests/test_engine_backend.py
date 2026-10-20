@@ -58,7 +58,6 @@ def test_load_engine_mysql_workload():
     assert "engine_adversarial" not in w["post_implementation_gates"]
     assert w.get("requires_in_process_host") is True
     assert w.get("host_runtime", {}).get("kind") == "docker"
-    assert w.get("host_runtime", {}).get("discovery") == "mysql_docker"
     assert w.get("host_runtime", {}).get("ensure_script") == "scripts/ensure_accel_mysql_test.sh"
     assert w.get("host_runtime", {}).get("build_script") == "scripts/build_accel_mysql_plugin.sh"
     assert w.get("host_runtime", {}).get("env", {}).get("ACCEL_MYSQL_ENSURE_BUILD") == "0"
@@ -296,16 +295,6 @@ def test_mysql_prompt_includes_pipeline_discovered_sdk():
     assert "accel_pg_test" not in low
 
 
-def test_apply_mysql_docker_env_stamps_connection():
-    from accel_pipeline.mysql_docker import apply_mysql_docker_env
-
-    env: dict[str, str] = {}
-    host = apply_mysql_docker_env(env)
-    assert env["ACCEL_MYSQL_DOCKER"] == "1"
-    assert env["ACCEL_MYSQL_CONTAINER"] == host.container
-    assert env["MYSQL_HOST"] == "127.0.0.1"
-    assert env["MYSQL_TCP_PORT"] == "3307"
-    assert host.plugin_so.endswith("accelerator_codegen_mysql.so")
 
 
 def test_postgres_pipeline_writes_host_sdk_discovery(tmp_path, monkeypatch):
@@ -407,15 +396,13 @@ def test_audit_restarts_from_earliest_failing_layer():
     assert failing_layer_ids({"violations": [{"rule": "fail_closed"}]}, w) == []
 
 
-def test_discover_host_sdk_follows_workload_plugin_not_engine_name():
-    from accel_pipeline.host_runtime import discover_host_sdk_json
+def test_discover_host_sdk_reports_the_engine_host_sh(tmp_path):
+    from accel_pipeline.engine_host import discover_host_sdk_json
 
-    mysql = json.loads(discover_host_sdk_json(load_workload("engine_mysql", REPO_ROOT)))
-    assert mysql.get("kind") == "docker" or mysql.get("mode") == "docker"
-    assert mysql.get("found") is True
-    postgres = json.loads(discover_host_sdk_json(load_workload("engine_postgres", REPO_ROOT)))
-    assert postgres.get("kind") == "docker" or postgres.get("mode") == "docker"
-    none = json.loads(discover_host_sdk_json({"engine_name": "other"}))
+    mysql = json.loads(discover_host_sdk_json(load_workload("engine_mysql", REPO_ROOT), tmp_path, tmp_path))
+    assert mysql["kind"] == "docker"
+    assert mysql["found"] is False  # no backends/mysql/host.sh under tmp_path
+    none = json.loads(discover_host_sdk_json({"engine_name": "other"}, tmp_path, tmp_path))
     assert none["found"] is False
 
 

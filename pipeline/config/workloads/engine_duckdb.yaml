@@ -38,8 +38,6 @@ engine_profile:
 
   host_runtime:
     kind: host_cmake
-    discovery:
-      na: "the engine is a sibling checkout resolved by the backend's Find module (ACCEL_DUCKDB_ROOT)"
     ensure_script:
       na: "no server to start; harnesses run in the build process"
     build_script:
@@ -120,6 +118,11 @@ engine_profile:
     mechanism: "Database configuration (SET threads / PRAGMA threads, DBConfig options at open); per database instance."
     names: [threads]
     reload_semantics: "SET threads changes the task scheduler's thread count for the instance immediately."
+
+  query_host:
+    query_scoped_harness: true
+    dataset_env: ACCEL_TPCH_DB
+    work_db_suffix: ".duckdb"
 
   oracle:
     differential_db: "TPC-H DuckDB database file (ACCEL_TPCH_DB; a private copy per test)."

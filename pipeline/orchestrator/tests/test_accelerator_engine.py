@@ -68,12 +68,13 @@ def test_postgres_run_gets_the_agent_buildable_host():
 
 def test_aux_duckdb_registration_path():
     w = _duckdb_workload("tpch_q14_aux")
-    assert w["engine_host"]["aux_register_path"] == "accelerators/tpch/q14/duckdb/aux/register.cpp"
+    assert w["engine_host"]["aux_register_path"] == "accelerators/tpch/q14/duckdb/register.cpp"
 
 
 def test_per_engine_fairness_search_paths():
-    assert any("postgres" in p for p in _postgres_workload("tpch_q3")["fairness"]["kernel_search_paths"])
-    assert not any("postgres" in p for p in _duckdb_workload("tpch_q3")["fairness"]["kernel_search_paths"])
+    for engine in ("duckdb", "postgres"):
+        paths = load_workload("tpch_q3", REPO_ROOT, engine=engine)["fairness"]["kernel_search_paths"]
+        assert paths and all(f"/q{{N}}/{engine}/" in p for p in paths)
 
 
 def test_gate_context_includes_engine_for_base_and_aux():

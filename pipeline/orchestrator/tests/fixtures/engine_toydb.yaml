@@ -1,0 +1,162 @@
+# Test fixture: a synthetic fourth engine, to prove the pipelines need no code change for a new engine.
+# From-scratch ToyDB backend onboarding (embedded engine, built on the host).
+# Conventional paths/write_paths/cmake names come from pipeline/config/engine_backend.yaml.
+# Engine-specific input is the engine_profile below (schema: pipeline/schemas/engine_profile.schema.json):
+# facts and hazards of the engine, never a design. Shared prompts/gates stay engine-agnostic.
+
+workload_kind: engine_backend
+engine_name: toydb
+allow_update_existing: false
+
+hide_foreign_engines: true
+agent_hidden_trees:
+  - backends/postgres
+  - backends/mysql
+  - accelerators/tpch
+  - accelerators/sec_edgar
+
+engine_profile:
+  identity:
+    name: toydb
+    display_name: ToyDB
+    version: "ToyDB capture fork (sibling checkout ../toydb-dbcapture, branch skeleton/db-capture, release build in build/release)"
+    sdk_headers:
+      - "toydb.hpp and the engine's internal headers of the fork (toydb/main/..., toydb/transaction/..., toydb/storage/...)"
+      - "toydb/accelerator/mutation_recorder.hpp (fork): MutationRecorder, MutationWatchProvider, DatabaseCaptureRegistry, CommitIds::OnCommitWithContext, ActiveWriterStarts"
+    docs:
+      - "ToyDB C++ API and internals (table functions, ClientContext, transactions, storage)"
+
+  packaging:
+    kind: embedded_lib
+    placement_candidates: [in_process]
+    requires_in_process_host: false
+    prod_target: accelerator_codegen
+    test_target:
+      na: "harnesses are executables linking the backend library; there is no separate test artifact"
+    install_path:
+      na: "an embedded library is linked into the host process; nothing is installed into the engine"
+    test_only_code_rule: "Test code lives in backends/toydb/tests and eval harness executables; the backend library holds none."
+
+  host_runtime:
+    kind: host_cmake
+    ensure_script:
+      na: "no server to start; harnesses run in the build process"
+    build_script:
+      na: "built with the host CMake tree"
+    ninja_targets_env:
+      na: "host cmake builds the harness target directly"
+    container_env:
+      na: "no container"
+    default_container:
+      na: "no container"
+    binary_dir:
+      na: "binaries are in the host build directory"
+    connect: "In-process: toydb::ToyDB(path) and toydb::Connection; every client is a Connection of the one database instance."
+    env:
+      na: "no environment is needed to start the engine; datasets are passed by path (ACCEL_TPCH_DB)"
+
+  build:
+    cmake_option: ACCELERATOR_CODEGEN_BUILD_TOYDB
+    extra_find_packages:
+      na: "the engine library is the only dependency"
+
+  process_model:
+    connections: threads
+    shared_memory_needed: false
+    engine_api_thread_safety: "A Connection is used by one thread at a time; separate Connections of one database run concurrently. Engine callbacks (mutation, commit id, pre-commit) run on the thread of the transaction that triggers them, some with engine locks held."
+    calls_forbidden_off_main_thread:
+      - "a Connection or ClientContext used from two threads at once"
+      - "engine calls from inside a callback that the engine invokes with its transaction-manager lock held, other than the callback's own contract"
+
+  capture:
+    hook_mechanism: "The fork's MutationRecorder reports each insert, update and delete of a watched table to consumers registered on the database (DatabaseCaptureRegistry), with the columns a MutationWatchProvider asks for; commit ids and pre-commit are reported through the transaction manager."
+    granularity: "One event per statement and table with the rows' values in vectors; updates report the new values of the updated columns and the old values of the columns the provider requests."
+    ddl_events:
+      na: "the recorder reports row mutations only; DDL on a table (drop, rename, replace) is not a mutation event"
+    abort_signal: "A rollback callback of the transaction (OnRollback); a transaction that never reaches commit sends no commit id."
+    uncaptured_write_paths:
+      - "a table whose columns the watch provider did not request at the time the statement executed"
+      - "statements already running when a watcher registers (the decision is taken when the statement executes)"
+      - "appends through bulk paths that do not go through the recorder, such as COPY into an unwatched table or direct storage appends"
+
+  transactions:
+    isolation_levels: ["snapshot isolation (the only level), optimistic concurrency: a conflicting concurrent write aborts the later committer"]
+    commit_hook: "CommitIds::OnCommitWithContext(commit_id) is called from the transaction manager with its lock held; a pre-commit callback runs before; both run on the committing thread."
+    commit_order_source: "transaction_t commit ids assigned by the transaction manager in commit order; a transaction's snapshot is its start_time / transaction id, compared against commit ids."
+    own_writes_visibility: "A statement in a transaction sees its own uncommitted rows; a table function bound in that transaction sees them only through the engine's own scan of the table."
+    snapshot_api: "ClientContext / MetaTransaction start time and transaction id of the open transaction; a Connection without an open transaction has no snapshot of its own (a redirect can override the start time)."
+    subtransactions:
+      na: "ToyDB has no savepoints"
+
+  locking:
+    engine_locks_relevant:
+      - "the transaction manager's lock, held while commit ids are assigned and callbacks run"
+      - "a MetaTransaction's lock, taken by TryGetTransaction and snapshot queries on a context"
+      - "catalog writes (function registration, DDL) conflict with concurrent catalog writes"
+    locks_held_during_hooks:
+      - "OnCommitId runs with the transaction manager lock held"
+    wait_timeout_knob:
+      na: "ToyDB has no lock-wait timeout; conflicts abort instead of waiting"
+
+  scan:
+    native_scan_api: "Table scans through the storage layer (row groups, ColumnData, DataChunk of vectors) at a transaction's snapshot; vectors are 2048 rows by default, with dictionary, constant and flat layouts."
+    parallel_scan_api: "Row-group-parallel scans; a table's row groups can be partitioned among threads, each reading at the same transaction snapshot."
+    row_count_source: "TableCatalogEntry storage cardinality (exact for committed rows, includes uncommitted appends of the reader's own transaction)."
+    type_quirks:
+      - "DECIMAL(w,s) is stored as int16/int32/int64/hugeint by width; widths above 18 digits need 128-bit"
+      - "DATE is days since 1970-01-01, TIMESTAMP microseconds"
+      - "VARCHAR vectors can be dictionary-compressed or inlined strings (string_t, 12-byte inline)"
+      - "NULLs are validity masks per vector, not sentinel values"
+    collation_quirks:
+      - "VARCHAR compares bytewise (memcmp) by default; a COLLATE clause or the session's default collation changes it"
+
+  entry_points:
+    mechanism: "TableFunction objects (bind / init / function callbacks) registered in the system catalog of a Connection; a bind_replace callback can replace the call with a parsed query plan at bind time."
+    argument_passing: "Function arguments are Values in the bind input; NULL is a null Value; parameters of a prepared statement are bound at bind time."
+    result_return: "Rows are emitted as DataChunks of typed vectors; the declared return types fix the vector types."
+
+  thread_knobs:
+    mechanism: "Database configuration (SET threads / PRAGMA threads, DBConfig options at open); per database instance."
+    names: [threads]
+    reload_semantics: "SET threads changes the task scheduler's thread count for the instance immediately."
+
+  query_host:
+    query_scoped_harness: false
+    dataset_env: ACCEL_TPCH_DB
+    work_db_suffix: ".toydb_work"
+
+  oracle:
+    differential_db: "TPC-H ToyDB database file (ACCEL_TPCH_DB; a private copy per test)."
+    run_script: scripts/run_toydb_tpch_diff_all22.sh
+
+  hazards:
+    - symptom: "The process hangs at 0% CPU, or ThreadSanitizer reports a lock-order cycle, when the backend takes its own mutex inside an engine callback."
+      engine_fact: "ToyDB calls the commit-id callback with the transaction manager's lock held; engine calls such as TryGetTransaction or a snapshot query take a MetaTransaction or manager lock. A backend mutex acquired in a callback and held across such a call closes a cycle with every thread that takes them in the other order."
+      layers: [capture, epochs]
+    - symptom: "A write that straddles an accelerator's registration is neither captured nor waited for, so a state built before its commit silently lacks it."
+      engine_fact: "Capture decisions are taken when a statement executes; whether the transaction commits, and after what, is known only at commit. A transaction that began before a watcher registered reports nothing for its earlier statements, and the barrier of writers lists only transactions that already have changes."
+      layers: [capture, epochs, scan]
+    - symptom: "Reads inside a transaction that wrote a table the accelerator depends on return answers without the transaction's own rows."
+      engine_fact: "Uncommitted rows exist only in the writing transaction's own storage view; they are in no published state. A statement planned before a write keeps the decisions made when it was bound (bind_replace and a prepared statement's bind run once); the write does not rebind it."
+      layers: [epochs, runtime, host]
+    - symptom: "Partitioned scans after a fallback redirect read newer data than the reader's snapshot."
+      engine_fact: "A Connection used for a redirected read carries the reader's snapshot only as a start-time override with no open transaction; a snapshot query on that connection returns 0 (the newest)."
+      layers: [scan]
+    - symptom: "A scan on an accelerator's own connection stalls a build or a reader."
+      engine_fact: "A build's snapshot is a long-lived transaction on its connection; another scan on that connection takes the same transaction (and scan lock), and starting or ending it serialises against streaming reads."
+      layers: [scan, runtime]
+    - symptom: "Abort in the last owner thread: 'Resource deadlock avoided' when the host shuts down, or a use-after-free in a commit callback."
+      engine_fact: "Engine callbacks fire on arbitrary connection threads and can outlive the host object; an object whose last owner is a pool thread is destroyed there, and a destructor that joins that thread joins itself."
+      layers: [runtime, epochs]
+    - symptom: "Concurrent registration of functions on many connections fails with a catalog conflict."
+      engine_fact: "Registering a function writes the system catalog; concurrent catalog writes from different transactions conflict."
+      layers: [host]
+    - symptom: "A table that is truncated, dropped, recreated or renamed keeps answering from state built for the old table."
+      engine_fact: "TRUNCATE and DDL are not row mutation events; a table is identified by its catalog name, so a replacement table with the same name is a different storage object that was never captured."
+      layers: [capture, runtime]
+    - symptom: "A commit conflict aborts a writer the backend assumed would succeed."
+      engine_fact: "Optimistic concurrency detects write-write conflicts at commit; a transaction can fail at COMMIT after the capture saw its rows."
+      layers: [capture, epochs]
+    - symptom: "Wide decimals lose digits in capture or scan."
+      engine_fact: "DECIMAL with more than 18 digits is a 128-bit hugeint in vectors."
+      layers: [capture, scan]

@@ -8,7 +8,7 @@ from typing import Any
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
 from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.gate_capture import format_reloop_failure_sections
-from accel_pipeline.host_runtime import prepare_host_sdk_payload
+from accel_pipeline.engine_host import prepare_host_sdk_payload
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.gates import GateFailure, GateResult, gate_failure_message
@@ -46,7 +46,9 @@ def _prepare_engine_host_sdk(
     workload: dict,
     query: int,
 ) -> None:
-    payload = prepare_host_sdk_payload(workload)
+    payload = prepare_host_sdk_payload(
+        workload, pipeline_config.repo_root, pipeline_config.build_dir
+    )
     if payload is None:
         return
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)

@@ -17,6 +17,11 @@ from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig
 
 
+def _forwarded_to_mcp(key: str) -> bool:
+    """Engine, verus and mode settings reach the MCP server; the pipeline's own ACCEL_PIPELINE_* are set explicitly."""
+    return key == "ACCEL_PIPELINE_MODE" or (key.startswith("ACCEL_") and not key.startswith("ACCEL_PIPELINE_"))
+
+
 def sidecar_env_line(key: str, value: Any) -> str:
     """KEY=value line safe to `source` from bash (spaces, colons, etc.)."""
     return f"{key}={shlex.quote(str(value))}"
@@ -107,19 +112,11 @@ class CodexExecBackend:
             "ACCEL_PIPELINE_PRIMARY_REPO",
             "ACCEL_PIPELINE_PACK_QUERIES",
             "ACCEL_PIPELINE_ISOLATION_MODE",
-            "ACCEL_DUCKDB_ROOT",
-            "PG_CONFIG",
-            "ACCEL_PG_CONFIG",
-            "ACCEL_PG_BINDIR",
-            "ACCEL_PG_ROOT",
-            "ACCEL_PG_INCLUDEDIR_SERVER",
-            "ACCEL_PG_LIBDIR",
-            "ACCEL_PG_DISCOVERY",
         ):
             if os.environ.get(key):
                 lines.append(sidecar_env_line(key, os.environ[key]))
         for key, value in os.environ.items():
-            if key.startswith("ACCEL_VERUS_") or key == "ACCEL_PIPELINE_MODE":
+            if _forwarded_to_mcp(key):
                 lines.append(sidecar_env_line(key, value))
         path = codex_home / "accel_pipeline_mcp.env"
         # atomically: parallel pipelines share this CODEX_HOME, and a reader must never
@@ -179,8 +176,6 @@ class CodexExecBackend:
             env["ACCEL_PIPELINE_ISOLATION_MODE"] = os.environ["ACCEL_PIPELINE_ISOLATION_MODE"]
         if os.environ.get("ACCEL_PIPELINE_PACK_QUERIES"):
             env["ACCEL_PIPELINE_PACK_QUERIES"] = os.environ["ACCEL_PIPELINE_PACK_QUERIES"]
-        if os.environ.get("ACCEL_DUCKDB_ROOT"):
-            env["ACCEL_DUCKDB_ROOT"] = os.environ["ACCEL_DUCKDB_ROOT"]
         if self._art_dir is not None:
             env["ACCEL_PIPELINE_ART_DIR"] = str(self._art_dir)
 
@@ -224,22 +219,8 @@ class CodexExecBackend:
                 mcp_env_parts.append(
                     f'ACCEL_PIPELINE_PACK_QUERIES="{os.environ["ACCEL_PIPELINE_PACK_QUERIES"]}"'
                 )
-            if os.environ.get("ACCEL_DUCKDB_ROOT"):
-                mcp_env_parts.append(
-                    f'ACCEL_DUCKDB_ROOT="{os.environ["ACCEL_DUCKDB_ROOT"]}"'
-                )
-            for key in (
-                "PG_CONFIG",
-                "ACCEL_PG_CONFIG",
-                "ACCEL_PG_BINDIR",
-                "ACCEL_PG_ROOT",
-                "ACCEL_PG_INCLUDEDIR_SERVER",
-                "ACCEL_PG_LIBDIR",
-            ):
-                if os.environ.get(key):
-                    mcp_env_parts.append(f'{key}="{os.environ[key]}"')
             for key, value in os.environ.items():
-                if key.startswith("ACCEL_VERUS_") or key == "ACCEL_PIPELINE_MODE":
+                if _forwarded_to_mcp(key):
                     mcp_env_parts.append(f'{key}="{value}"')
             mcp_env_toml = "{" + ", ".join(mcp_env_parts) + "}"
             # resume_session_id: continue that codex session (its context kept)

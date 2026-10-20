@@ -1,5 +1,4 @@
 repo_root: /home/akhilvb/accelerator-codegen
-duckdb_root: /home/akhilvb/accelerator-codegen-duckdb
 build_dir: build-release
 # Query-accelerator workloads list their `engines:`; a run picks one (--engine / pack `engines:`).
 tpch_db_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
@@ -14,10 +13,8 @@ shared_paths:
   - backends/*/api/**
   - backends/*/engine/**
   - backends/*/state/**
-  - eval/tests/test_support/cross_accel_helpers.cpp
-  - eval/tests/test_support/cross_accel_helpers.hpp
-  - eval/bench/tpch/single-threaded/tpch_arg_variants.cpp
-  - eval/bench/tpch/single-threaded/tpch_arg_variants.hpp
+  - eval/tests/test_support/**
+  - eval/bench/**/*_arg_variants.*
   # Shared primitives library: changed only through primitive_publish.
   - accelerators/prims/**
   # Helpers shared by one benchmark's queries (frozen during concurrent optimization).
@@ -93,10 +90,9 @@ write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
   # a query owns its whole directory: kernels, tests, benchmarks, cost models
-  - accelerators/tpch/q*/**
+  - accelerators/*/q*/**
   - accelerators/sec_edgar/q*/**
-  - eval/tests/test_support/cross_accel_helpers.cpp
-  - eval/tests/test_support/cross_accel_helpers.hpp
+  - eval/tests/test_support/**
   - pipeline/artifacts/**
 
 allowed_commands:

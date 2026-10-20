@@ -22,7 +22,7 @@ def build_gate_context(
     benchmark = str(workload.get("benchmark_name", "tpch"))
     kind = str(workload.get("workload_kind", "base"))
     engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
-    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine, repo_root=pipeline_config.repo_root))
     ctx: dict[str, Any] = {
         "query_number": query,
         "benchmark_name": benchmark,

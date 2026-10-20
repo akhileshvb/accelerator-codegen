@@ -26,10 +26,8 @@ DEFAULT_SHARED_PATH_GLOBS = (
     # compile them take the lease).
     "backends/**",
     # Cross-query evaluation harnesses shared by every query.
-    "eval/tests/test_support/cross_accel_helpers.cpp",
-    "eval/tests/test_support/cross_accel_helpers.hpp",
-    "eval/bench/tpch/single-threaded/tpch_arg_variants.cpp",
-    "eval/bench/tpch/single-threaded/tpch_arg_variants.hpp",
+    "eval/tests/test_support/**",
+    "eval/bench/**/*_arg_variants.*",
     # Shared primitives library: changed only by primitive_publish; builds that
     # read it take the lease so a publish cannot land mid-compile.
     "accelerators/prims/**",

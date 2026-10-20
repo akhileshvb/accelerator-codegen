@@ -133,10 +133,6 @@ def run_pack_query(
     env["ACCEL_PIPELINE_REPO_ROOT"] = str(worker_repo)
     env["ACCEL_PIPELINE_PRIMARY_REPO"] = str(primary)
     env["ACCEL_PIPELINE_ISOLATION_MODE"] = isolation_mode
-    env.setdefault(
-        "ACCEL_DUCKDB_ROOT",
-        str(primary.parent / "accelerator-codegen-duckdb"),
-    )
     env["CODEX_HOME"] = str(codex_home)
     if pack_queries:
         env["ACCEL_PIPELINE_PACK_QUERIES"] = ",".join(str(q) for q in pack_queries)

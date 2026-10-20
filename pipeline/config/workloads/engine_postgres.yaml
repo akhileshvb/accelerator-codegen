@@ -35,7 +35,6 @@ engine_profile:
 
   host_runtime:
     kind: docker
-    discovery: postgres_docker
     ensure_script: scripts/ensure_accel_pg_test.sh
     build_script: scripts/build_accel_postgres_extension.sh
     ninja_targets_env: ACCEL_PG_NINJA_TARGETS
@@ -112,6 +111,11 @@ engine_profile:
     mechanism: "Custom GUCs (DefineCustomIntVariable) set by ALTER SYSTEM / postgresql.conf / SET and reloaded on SIGHUP; a client environment variable does not reach the server process."
     names: [accel.threads, accel.read_threads, accel.build_threads, accel.maint_threads, accel.shard_read_threads]
     reload_semantics: "GUC changes apply to a running background worker only if the worker re-reads them on SIGHUP; environment of the server process is read at process start."
+
+  query_host:
+    query_scoped_harness: false
+    dataset_env: PG_CONFIG
+    work_db_suffix: ".postgres_work"
 
   oracle:
     differential_db: "TPC-H database loaded into the postgres container (scripts/setup_accel_postgres_tpch_test_db.sh); text columns in C collation (scripts/postgres_tpch_c_collation.sql)."

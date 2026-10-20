@@ -85,26 +85,6 @@ def prepare_codex_home(
     return dest
 
 
-def resolve_duckdb_root(primary: Path | None = None) -> Path:
-    """Sibling DuckDB checkout relative to the *primary* accel repo.
-
-    Worktrees live under ``pipeline/worktrees/…``, so CMake's default
-    ``cmake/../../accelerator-codegen-duckdb`` resolve fails there. Always
-    anchor from the primary checkout (or ``ACCEL_DUCKDB_ROOT`` when set).
-    """
-    env = os.environ.get("ACCEL_DUCKDB_ROOT")
-    if env:
-        return Path(env).resolve()
-    if primary is None:
-        primary_env = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
-        primary = Path(primary_env).resolve() if primary_env else None
-    if primary is None:
-        from accel_pipeline.paths import find_repo_root
-
-        primary = find_repo_root().resolve()
-    return (Path(primary).resolve().parent / "accelerator-codegen-duckdb").resolve()
-
-
 def apply_worker_isolation(
     pipeline_config: PipelineConfig,
     *,
@@ -164,7 +144,6 @@ def apply_worker_isolation(
         os.environ["ACCEL_PIPELINE_QUERY"] = str(query)
         os.environ["ACCEL_PIPELINE_REPO_ROOT"] = str(repo)
         os.environ.setdefault("ACCEL_PIPELINE_PRIMARY_REPO", str(primary))
-        os.environ.setdefault("ACCEL_DUCKDB_ROOT", str(resolve_duckdb_root(primary)))
         if workload_name:
             os.environ["ACCEL_PIPELINE_WORKLOAD"] = workload_name
 
@@ -243,7 +222,7 @@ def ensure_worker_build_dir(
                 flush=True,
             )
             # CMake refuses in-place -S changes while CMakeCache.txt still names
-            # the old home directory. Wipe cache only — keep DuckDB copies etc.
+            # the old home directory. Wipe cache only — keep database copies etc.
             _wipe_cmake_configure_state(bdir)
             needs_configure = True
     if not needs_configure:
@@ -253,11 +232,7 @@ def ensure_worker_build_dir(
         file=sys.stderr,
         flush=True,
     )
-    primary = Path(
-        os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO") or src_root
-    ).resolve()
     cmake_env = os.environ.copy()
-    cmake_env.setdefault("ACCEL_DUCKDB_ROOT", str(resolve_duckdb_root(primary)))
     proc = subprocess.run(
         ["cmake", "-S", str(src_root), "-B", str(bdir)],
         cwd=str(src_root),

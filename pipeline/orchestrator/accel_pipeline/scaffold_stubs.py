@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +26,46 @@ def _type_prefix(create_fn: str) -> str:
     return name
 
 
+def read_api_manifest(repo_root: Path, engine: str) -> dict[str, dict[str, list[str]]]:
+    """Role -> {headers, symbols} from the first table under `## Contract roles` of the engine's api/README.md."""
+    readme = repo_root / "backends" / engine / "api" / "README.md"
+    if not readme.is_file():
+        return {}
+    roles: dict[str, dict[str, list[str]]] = {}
+    in_section = False
+    for line in readme.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            in_section = line.strip() == "## Contract roles"
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if not in_section or not line.startswith("|") or len(cells) != 3 or set(cells[0]) <= set("-: "):
+            continue
+        if cells[0] != "role":
+            roles[cells[0]] = {"headers": _backticked(cells[1]), "symbols": _backticked(cells[2])}
+    return roles
+
+
+def _backticked(cell: str) -> list[str]:
+    return re.findall(r"`([^`]+)`", cell)
+
+
+def _api_stub_values(manifest: dict[str, dict[str, list[str]]]) -> dict[str, str]:
+    headers = dict.fromkeys(h for role in manifest.values() for h in role["headers"])
+    return {
+        "api_includes": "".join(f'#include "{h}"\n' for h in headers),
+        "api_manifest": "\n".join(
+            f"//   {role}: {', '.join(spec['symbols'])} ({', '.join(spec['headers'])})"
+            for role, spec in manifest.items()
+        )
+        or "//   (backends/<engine>/api/README.md lists none)",
+    }
+
+
 def _build_stub_values(
     workload: dict[str, Any],
     paths: dict[str, str],
     query: int,
+    manifest: dict[str, dict[str, list[str]]] | None = None,
 ) -> dict[str, str]:
     benchmark = str(workload.get("benchmark_name", "tpch"))
     header_basename = str(
@@ -36,14 +73,7 @@ def _build_stub_values(
     )
     type_prefix = _type_prefix(paths["create_fn"])
     output_schema = list(workload.get("output_schema", []))
-    if output_schema:
-        schema_names = ", ".join(f'"{col["name"]}"' for col in output_schema)
-        schema_types = ",\n\t    ".join(
-            f"duckdb::LogicalType::{col['type']}" for col in output_schema
-        )
-    else:
-        schema_names = '"result"'
-        schema_types = "duckdb::LogicalType::BIGINT"
+    schema_names = ", ".join(f'"{col["name"]}"' for col in output_schema) or '"result"'
 
     # cost_model.hpp: AuxCostModelLocation{<config dir>, <file stem>} for every engine.
     bench_camel = "".join(part.title() for part in benchmark.split("_"))
@@ -56,6 +86,7 @@ def _build_stub_values(
 
     return {
         "query_number": str(query),
+        "engine_name": str(workload.get("engine_name") or ""),
         "cost_model_const": f"k{bench_camel}Q{query}CostModel",
         "cost_model_dir": cost_model_dir,
         "cost_model_stem": cost_model_file.removesuffix(".json"),
@@ -71,7 +102,7 @@ def _build_stub_values(
         "test_target": paths["test_target"],
         "bench_target": paths["bench_target"],
         "output_schema_names": schema_names,
-        "output_schema_types": schema_types,
+        **_api_stub_values(manifest or {}),
     }
 
 
@@ -93,7 +124,8 @@ def materialize_workload_stubs(
     pipe = pipeline_config.pipeline_root
     paths = resolve_workload_paths(pipeline_config, workload, query)
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    values = _build_stub_values(workload, paths, query)
+    engine = str(workload.get("engine_name") or "")
+    values = _build_stub_values(workload, paths, query, read_api_manifest(repo, engine))
 
     created: list[str] = []
     tpl_root = pipe / "templates" / "scaffold"
@@ -107,9 +139,10 @@ def materialize_workload_stubs(
         (tpl_root / "kernel.cpp.tpl", repo / paths["kernel_path"]),
         (tpl_root / "package.cpp.tpl", repo / paths["package_path"]),
     ]
-    if str(workload.get("engine_name") or "") == "duckdb":
-        # The query registers its table function from its own directory.
-        stub_specs.append((tpl_root / "register.cpp.tpl", (repo / paths["package_path"]).parent / "register.cpp"))
+    # The query registers itself from its own directory.
+    register_path = str((workload.get("engine_host") or {}).get("register_path") or "")
+    if register_path:
+        stub_specs.append((tpl_root / "register.cpp.tpl", repo / register_path))
     if (bench_tpl_root / "test_template.cpp").is_file():
         stub_specs.append((bench_tpl_root / "test_template.cpp", repo / paths["test_path"]))
     if (bench_tpl_root / "benchmark_template.cpp").is_file():

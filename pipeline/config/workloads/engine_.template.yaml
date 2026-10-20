@@ -43,7 +43,6 @@ engine_profile:
 
   host_runtime:
     kind: host_cmake                  # host_cmake | docker
-    discovery: {na: "REPLACE_ME: named orchestrator discovery plugin, if any"}
     ensure_script: {na: "REPLACE_ME: script that starts the engine host (docker)"}
     build_script: {na: "REPLACE_ME: script that builds the backend for the host (docker)"}
     ninja_targets_env: {na: "REPLACE_ME"}
@@ -99,6 +98,11 @@ engine_profile:
     mechanism: "REPLACE_ME"
     names: {na: "REPLACE_ME"}
     reload_semantics: {na: "REPLACE_ME"}
+
+  query_host:
+    query_scoped_harness: false       # true: the backend ships one harness that takes the query as an argument
+    dataset_env: "REPLACE_ME: env var carrying the dataset location to harness binaries"
+    work_db_suffix: ".REPLACE_ME_work"  # per-worker database copy suffix
 
   oracle:
     differential_db: "REPLACE_ME"
