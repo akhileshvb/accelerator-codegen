@@ -35,7 +35,7 @@ using accelerator_codegen::aux_state::engine::mysql::MysqlSharedQueryCatalogEntr
 void WarmUntilServed(const Tools &tools, const std::string &accel_sql) {
   const auto hits = [&] {
     long hit = 0;
-    auto counts = QuerySQL(tools, "SELECT mysql_accel_get_execute_counts()");
+    auto counts = QuerySQL(tools, "SELECT accel_get_execute_counts()");
     Require(counts.first, "execute counts failed");
     std::sscanf(TrimLines(counts.second).c_str(), "hit=%ld", &hit);
     return hit;
@@ -85,7 +85,7 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
   // is not reliable for fingerprint/observer sequencing.
   Require(QuerySQL(tools, "SELECT mysql_accel_reset_observer()").first,
           "reset observer failed");
-  Require(QuerySQL(tools, "SELECT mysql_accel_set_force_maintenance_action(" +
+  Require(QuerySQL(tools, "SELECT accel_set_force_maintenance_action(" +
                               SqlLiteral(force_action) + ")")
               .first,
           "set force maintenance failed");
@@ -103,14 +103,14 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
   Require(accel.first, "aux rematch query failed: " + accel_sql + "\n" +
                            accel.second);
   auto action_q =
-      QuerySQL(tools, "SELECT mysql_accel_get_last_maintenance_action()");
+      QuerySQL(tools, "SELECT accel_get_last_maintenance_action()");
   Require(action_q.first, "last maintenance action failed");
   auto ref = QuerySQL(tools, ref_sql);
   Require(ref.first, "reference rematch query failed: " + ref_sql + "\n" +
                          ref.second);
   Require(RunSQL(tools, probe.restore_sql),
           "write_maint restore failed: " + probe.restore_sql);
-  QuerySQL(tools, "SELECT mysql_accel_set_force_maintenance_action('')");
+  QuerySQL(tools, "SELECT accel_set_force_maintenance_action('')");
   RequireQueryMatch(tools, query_num, /*prefer_aux=*/true,
                     force_action.empty() ? "post_restore"
                                          : ("post_restore_" + force_action));

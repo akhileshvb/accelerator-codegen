@@ -10,7 +10,7 @@ Input: the server log of a run with accel.shared_state (e.g. `docker logs accel_
 logs one line per build and per applied commit (engine_runtime.hpp):
   accel rebuild tpch_q3: synced ms=175957.3
   accel apply tpch_q3: applied batches=31 rows=150222 ms=1518.8 action=ApplyDelta rows=60023 ...
-Best from a run with the action forced to ApplyDelta (accel_postgres_set_force_maintenance_action), so every
+Best from a run with the action forced to ApplyDelta (accel_set_force_maintenance_action), so every
 accelerator's delta cost is measured.  Per accelerator:
   full_rebuild_us (= partition_rebuild_us, first_query_blocking_us)  median build time
   apply_delta_overhead_us + apply_delta_per_row_us x rows             least-squares fit of the applies' wall

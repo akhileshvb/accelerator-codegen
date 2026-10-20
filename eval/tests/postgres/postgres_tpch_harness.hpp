@@ -308,10 +308,10 @@ inline void EnsureExtension(const Tools &tools) {
   // the wrong argument types crashes the backend). Older DBs lack the
   // registrar function itself; the full script installs it first.
   auto present = QuerySQL(
-      tools, "SELECT 1 FROM pg_proc WHERE proname = 'accel_postgres_register_queries'");
+      tools, "SELECT 1 FROM pg_proc WHERE proname = 'accel_register_queries'");
   if (present.first && TrimLines(present.second).find('1') != std::string::npos) {
-    Require(RunSQL(tools, "SELECT accel_postgres_register_queries()"),
-            "accel_postgres_register_queries() failed");
+    Require(RunSQL(tools, "SELECT accel_register_queries()"),
+            "accel_register_queries() failed");
   } else {
     Require(RunPsqlFile(tools, register_sql),
             "failed to register TPC-H SQL functions from " + register_sql);
@@ -328,35 +328,35 @@ inline void EnsureMutationTriggers(const Tools &tools) {
                      ", 'AcceleratorCodegenCaptureTransition' LANGUAGE C"),
           "install accel_aux_capture_transition failed");
   Require(RunSQL(tools,
-                 "CREATE OR REPLACE FUNCTION accel_postgres_set_force_maintenance_action(text) "
+                 "CREATE OR REPLACE FUNCTION accel_set_force_maintenance_action(text) "
                  "RETURNS void AS " +
                      SqlLiteral(so) +
-                     ", 'accel_postgres_set_force_maintenance_action' LANGUAGE C"),
+                     ", 'accel_set_force_maintenance_action' LANGUAGE C"),
           "install force-maintenance helper failed");
   Require(RunSQL(tools,
-                 "CREATE OR REPLACE FUNCTION accel_postgres_get_last_maintenance_decision() "
+                 "CREATE OR REPLACE FUNCTION accel_get_last_maintenance_decision() "
                  "RETURNS text AS " +
                      SqlLiteral(so) +
-                     ", 'accel_postgres_get_last_maintenance_decision' LANGUAGE C"),
+                     ", 'accel_get_last_maintenance_decision' LANGUAGE C"),
           "install last-decision helper failed");
   Require(RunSQL(tools,
-                 "CREATE OR REPLACE FUNCTION accel_postgres_get_execute_counts() "
+                 "CREATE OR REPLACE FUNCTION accel_get_execute_counts() "
                  "RETURNS text AS " +
                      SqlLiteral(so) +
-                     ", 'accel_postgres_get_execute_counts' LANGUAGE C STRICT"),
+                     ", 'accel_get_execute_counts' LANGUAGE C STRICT"),
           "install execute-counts helper failed");
   Require(RunSQL(tools,
-                 "CREATE OR REPLACE FUNCTION accel_postgres_get_last_maintenance_action() "
+                 "CREATE OR REPLACE FUNCTION accel_get_last_maintenance_action() "
                  "RETURNS text AS " +
                      SqlLiteral(so) +
-                     ", 'accel_postgres_get_last_maintenance_action' LANGUAGE C STRICT"),
+                     ", 'accel_get_last_maintenance_action' LANGUAGE C STRICT"),
           "install last-maintenance helper failed");
 
   // The workers scan the tables while they build: stop them (they restart on demand) so the
   // trigger DDL below cannot deadlock with a build.
   Require(RunSQL(tools,
-                 "DO $$ BEGIN IF to_regproc('accel_postgres_stop_shard_workers') IS NOT NULL THEN "
-                 "PERFORM accel_postgres_stop_shard_workers(); END IF; END $$"),
+                 "DO $$ BEGIN IF to_regproc('accel_stop_shard_workers') IS NOT NULL THEN "
+                 "PERFORM accel_stop_shard_workers(); END IF; END $$"),
           "stop shard workers failed");
 
   // One statement-level trigger set per TPC-H table.

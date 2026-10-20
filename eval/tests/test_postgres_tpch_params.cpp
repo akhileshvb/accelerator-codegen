@@ -313,7 +313,7 @@ struct Report {
 
 std::array<long, 3> Counts(Conn &c) {
   std::array<long, 3> out{0, 0, 0};
-  auto r = c.Try("SELECT accel_postgres_get_execute_counts()");
+  auto r = c.Try("SELECT accel_get_execute_counts()");
   if (r.ok) std::sscanf(r.text.c_str(), "hit=%ld rebuilt_on_read=%ld fallback=%ld", &out[0], &out[1], &out[2]);
   return out;
 }

@@ -165,7 +165,7 @@ Result FuzzQuery(const Tools &tools, const std::string &db, int q, int txns, uin
   // Each backend counts its own accelerator queries.
   auto add_counts = [&](Conn &c) {
     try {
-      const auto counts = ParseCounts(c.Text("SELECT accel_postgres_get_execute_counts()"));
+      const auto counts = ParseCounts(c.Text("SELECT accel_get_execute_counts()"));
       std::lock_guard<std::mutex> l(mu);
       for (int i = 0; i < 3; ++i)
         result.counts[i] += counts[i];
@@ -174,7 +174,7 @@ Result FuzzQuery(const Tools &tools, const std::string &db, int q, int txns, uin
   };
 
   Conn writer(tools, db), checker(tools, db);
-  writer.Exec("SELECT accel_postgres_set_force_maintenance_action('" + force + "')");
+  writer.Exec("SELECT accel_set_force_maintenance_action('" + force + "')");
   auto check = [&](Conn &c, const std::string &label) {
     try {
       const auto ref = c.Text(ref_sql);
@@ -259,7 +259,7 @@ Result FuzzQuery(const Tools &tools, const std::string &db, int q, int txns, uin
   for (auto &th : threads) {
     th.join();
   }
-  writer.Exec("SELECT accel_postgres_set_force_maintenance_action('')");
+  writer.Exec("SELECT accel_set_force_maintenance_action('')");
   add_counts(writer);
   add_counts(checker);
   result.reader_checks = reader_checks.load();

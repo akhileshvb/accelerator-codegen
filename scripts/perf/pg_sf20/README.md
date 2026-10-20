@@ -30,7 +30,7 @@ random parameter draws x `--sets 8` parameter sets; speedup is the geomean over 
   workers (cold build), first call builds (build = first call minus the median read), then per case one untimed result
   call (compared with the plain answer, rows canonicalized) and 5 timed calls (median). The OS cache is warm for both.
 - Baseline text: `workloads/tpch/qN.sql` with the draw's parameters; accelerator: `SELECT * FROM accel_tpch_qN_aux(args)`.
-- Fallbacks = delta of `accel_postgres_shard_stats()` `fallback` over the query; must be 0 with `requests == served`.
+- Fallbacks = delta of `accel_shard_stats()` `fallback` over the query; must be 0 with `requests == served`.
 
 ## Results and runtime
 

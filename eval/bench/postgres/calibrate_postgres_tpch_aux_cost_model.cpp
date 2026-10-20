@@ -86,7 +86,7 @@ public:
       : conn(conn_p), accel_sql(std::move(accel_sql_p)) {}
 
   Timed WriteThenRead(const std::string &sql, std::optional<mnt::MaintenanceAction> forced) override {
-    conn.Exec(std::string("SELECT accel_postgres_set_force_maintenance_action('") +
+    conn.Exec(std::string("SELECT accel_set_force_maintenance_action('") +
               (forced ? mnt::MaintenanceActionName(*forced) : "") + "')");
     Timed timed;
     const auto start = Clock::now();
@@ -98,8 +98,8 @@ public:
     timed.read_us = std::chrono::duration<double, std::micro>(Clock::now() - read_start).count();
     timed.us = std::chrono::duration<double, std::micro>(Clock::now() - start).count();
     // The decision first: setting the forced action clears the decision log.
-    const auto text = conn.Value("SELECT accel_postgres_get_last_maintenance_decision()");
-    conn.Exec("SELECT accel_postgres_set_force_maintenance_action('')");
+    const auto text = conn.Value("SELECT accel_get_last_maintenance_decision()");
+    conn.Exec("SELECT accel_set_force_maintenance_action('')");
     timed.decision = core::ParseMaintenanceDecision(text);
     if (!timed.decision) {
       warned = true;

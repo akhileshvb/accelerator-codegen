@@ -117,7 +117,7 @@ public:
   // This backend's own accelerator answers: "hit rebuilt fallback".
   std::array<long, 3> Counts() {
     std::array<long, 3> out{0, 0, 0};
-    std::sscanf(Text("SELECT accel_postgres_get_execute_counts()").c_str(),
+    std::sscanf(Text("SELECT accel_get_execute_counts()").c_str(),
                 "hit=%ld rebuilt_on_read=%ld fallback=%ld", &out[0], &out[1], &out[2]);
     return out;
   }
@@ -137,7 +137,7 @@ struct Stats {
 
 Stats ReadStats(Conn &c) {
   Stats s;
-  std::stringstream ss(TrimLines(c.Text("SELECT accel_postgres_shard_stats()")));
+  std::stringstream ss(TrimLines(c.Text("SELECT accel_shard_stats()")));
   std::string tok;
   while (ss >> tok) {
     const auto eq = tok.find('=');
@@ -235,7 +235,7 @@ std::string Check(Conn &c, const Q &q, const std::string &label) {
 // A fresh copy of the template database, the helper SQL functions installed.
 void MakeDb(const Tools &tools) {
   const std::string so = tools.extension_so.empty() ? "accelerator_codegen_pg" : tools.extension_so;
-  for (const char *fn : {"accel_postgres_shard_stats() RETURNS text", "accel_postgres_stop_shard_workers() RETURNS bool"}) {
+  for (const char *fn : {"accel_shard_stats() RETURNS text", "accel_stop_shard_workers() RETURNS bool"}) {
     const std::string name = std::string(fn).substr(0, std::string(fn).find('('));
     Require(RunSQL(tools, std::string("CREATE OR REPLACE FUNCTION ") + fn + " AS " + SqlLiteral(so) + ", '" + name +
                               "' LANGUAGE C"),

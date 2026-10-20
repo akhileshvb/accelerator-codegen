@@ -351,9 +351,9 @@ inline void EnsureExtension(const Tools &tools) {
   EnsureUdf(tools, "mysql_accel_capture_row", "STRING");
   EnsureUdf(tools, "mysql_accel_observer_mutation_count", "INTEGER");
   EnsureUdf(tools, "mysql_accel_reset_observer", "STRING");
-  EnsureUdf(tools, "mysql_accel_set_force_maintenance_action", "STRING");
-  EnsureUdf(tools, "mysql_accel_get_execute_counts", "STRING");
-  EnsureUdf(tools, "mysql_accel_get_last_maintenance_decision", "STRING");
+  EnsureUdf(tools, "accel_set_force_maintenance_action", "STRING");
+  EnsureUdf(tools, "accel_get_execute_counts", "STRING");
+  EnsureUdf(tools, "accel_get_last_maintenance_decision", "STRING");
   // Optional: SF=1's copied plugin may predate this UDF. Cost routing still
   // honors ACCEL_EXPECTED_QUERIES_BEFORE_WRITE / the default of 10.
   {
@@ -368,8 +368,8 @@ inline void EnsureExtension(const Tools &tools) {
                  SqlLiteral(tools.plugin_so));
     }
   }
-  EnsureUdf(tools, "mysql_accel_get_last_maintenance_action", "STRING");
-  EnsureUdf(tools, "mysql_accel_get_execute_counts", "STRING");
+  EnsureUdf(tools, "accel_get_last_maintenance_action", "STRING");
+  EnsureUdf(tools, "accel_get_execute_counts", "STRING");
   for (int q = 1; q <= 22; ++q) {
     EnsureUdf(tools, "mysql_accel_tpch_q" + std::to_string(q) + "_aux", "STRING");
   }

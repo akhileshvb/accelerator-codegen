@@ -530,7 +530,7 @@ QUERY_REGISTRATION: dict[str, dict[str, str]] = {
             "extension/scan.cpp: SPI scans + PostgresQueryExecutorRegistrar (variant aux); "
             "extension/functions.cpp: PG_FUNCTION_INFO_V1 shims -> ExecutePostgresQuery and the query's "
             "CREATE FUNCTION DDL via PostgresQuerySqlRegistrar (backends/postgres/api/runtime.hpp); "
-            "base/base.cpp: variant base; SELECT accel_postgres_register_queries() creates the functions"
+            "base/base.cpp: variant base; SELECT accel_register_queries() creates the functions"
         ),
     },
     "mysql": {

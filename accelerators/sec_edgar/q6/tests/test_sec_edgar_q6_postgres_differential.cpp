@@ -526,7 +526,7 @@ int RunSynthetic(uint64_t seed, int steps) {
   std::cerr << "PASS synthetic seed=" << seed << " steps=" << steps << " checks=" << chk.checks
             << " committed_txns=" << committed << " rolled_back=" << rolled
             << " savepoint_rollbacks=" << savepoints << "\n";
-  std::cerr << "execute counts: " << a.Scalar("SELECT accel_postgres_get_execute_counts()") << "\n";
+  std::cerr << "execute counts: " << a.Scalar("SELECT accel_get_execute_counts()") << "\n";
   return 0;
 }
 
@@ -611,7 +611,7 @@ int RunSf3(const std::string &db) {
   chk.Check(a, "final");
   chk.Check(b, "final (other connection)");
   std::cerr << "PASS sf3 checks=" << chk.checks << "\n";
-  std::cerr << "execute counts: " << a.Scalar("SELECT accel_postgres_get_execute_counts()") << "\n";
+  std::cerr << "execute counts: " << a.Scalar("SELECT accel_get_execute_counts()") << "\n";
   return 0;
 }
 
@@ -675,7 +675,7 @@ int RunSweep(const std::string &db, int percent) {
   std::cout << "PASS sweep checked=" << chk.checks << " nonempty=" << nonempty << " aux_p50_ms="
             << aux_ms[aux_ms.size() / 2] << " aux_max_ms=" << aux_ms.back()
             << " base_p50_ms=" << base_ms[base_ms.size() / 2] << "\n";
-  std::cout << "execute counts: " << a.Scalar("SELECT accel_postgres_get_execute_counts()") << "\n";
+  std::cout << "execute counts: " << a.Scalar("SELECT accel_get_execute_counts()") << "\n";
   return 0;
 }
 
@@ -770,7 +770,7 @@ int RunBench(const std::string &db) {
     std::cout << "write p50_ms: " << ops[o].label << ": plain=" << res[o].plain
               << " accel=" << res[o].accel << " overhead=" << (res[o].accel - res[o].plain)
               << " (read after: " << res[o].first << " ms)\n";
-  std::cout << "execute counts: " << a.Scalar("SELECT accel_postgres_get_execute_counts()") << "\n";
+  std::cout << "execute counts: " << a.Scalar("SELECT accel_get_execute_counts()") << "\n";
   return 0;
 }
 

@@ -21,7 +21,7 @@ SDK to build the optional `accelerator_codegen_pg` MODULE.
   extension/scan.cpp, extension/functions.cpp, base/base.cpp}` and registers
   through static registrars; `backends/postgres/backend.cmake` globs
   each query's `postgres/extension/*.cpp` and `postgres/base/*.cpp` into the MODULE. SQL functions are
-  created by `SELECT accel_postgres_register_queries();` from the
+  created by `SELECT accel_register_queries();` from the
   registered per-query `CREATE FUNCTION` text (see
   `scripts/postgres_register_tpch_all.sql`).
 - **Mutations** go through statement-level transition triggers →
@@ -83,10 +83,10 @@ idle (`accel.shard_idle_exit_s`), and the next use starts it again.
   maintenance pass of a worker may use of it (0: the budget, and 1 for
   maintenance; `ACCEL_AUX_{READ,BUILD,MAINT}_THREADS` in the server's
   environment override them).
-- **Diagnostics.** `SELECT accel_postgres_shard_stats()` (counters summed over
-  the running workers), `accel_postgres_stop_shard_workers()`,
-  `accel_postgres_get_last_maintenance_decision()`,
-  `accel_postgres_set_force_maintenance_action(text)`.
+- **Diagnostics.** `SELECT accel_shard_stats()` (counters summed over
+  the running workers), `accel_stop_shard_workers()`,
+  `accel_get_last_maintenance_decision()`,
+  `accel_set_force_maintenance_action(text)`.
 - **Known limits.** The workers run as the bootstrap superuser, so a backend
   without SELECT privilege on a dependency table can read aggregates the
   accelerator returns; a worker serves the state built under its own

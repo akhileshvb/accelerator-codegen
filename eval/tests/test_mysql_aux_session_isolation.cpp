@@ -45,17 +45,17 @@ int main(int argc, char **argv) {
 
     auto tools = ConnectTpch();
     EnsureMutationTriggers(tools);
-    EnsureUdf(tools, "mysql_accel_invalidate_all", "STRING");
+    EnsureUdf(tools, "accel_invalidate_all", "STRING");
     EnsureUdf(tools, "mysql_accel_set_scan_database", "STRING");
-    EnsureUdf(tools, "mysql_accel_set_force_maintenance_action", "STRING");
+    EnsureUdf(tools, "accel_set_force_maintenance_action", "STRING");
     Require(RunSQL(tools, std::string("SELECT mysql_accel_set_scan_database(") +
                               SqlLiteral(tools.database) + ")"),
             "set scan database failed");
-    Require(RunSQL(tools, "SELECT mysql_accel_invalidate_all()"), "invalidate failed");
+    Require(RunSQL(tools, "SELECT accel_invalidate_all()"), "invalidate failed");
     // Apply captured writes as deltas (never rebuild from the tables), so a
     // wrongly published or discarded write stays visible in the aux state.
     const char *action = std::getenv("ACCEL_SESSION_TEST_ACTION");
-    Require(RunSQL(tools, std::string("SELECT mysql_accel_set_force_maintenance_action('") +
+    Require(RunSQL(tools, std::string("SELECT accel_set_force_maintenance_action('") +
                               (action && *action ? action : "ApplyDelta") + "')"),
             "force maintenance action failed");
 

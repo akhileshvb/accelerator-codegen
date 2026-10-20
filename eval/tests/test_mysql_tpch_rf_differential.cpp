@@ -58,14 +58,14 @@ int main(int argc, char **argv) {
 
     auto tools = ConnectTpch();
     EnsureMutationTriggers(tools);
-    EnsureUdf(tools, "mysql_accel_invalidate_all", "STRING");
+    EnsureUdf(tools, "accel_invalidate_all", "STRING");
     EnsureUdf(tools, "mysql_accel_set_scan_database", "STRING");
-    EnsureUdf(tools, "mysql_accel_set_force_maintenance_action", "STRING");
+    EnsureUdf(tools, "accel_set_force_maintenance_action", "STRING");
     Require(RunSQL(tools, "SELECT mysql_accel_set_scan_database(" + SqlLiteral(tools.database) + ")"),
             "set scan database failed");
-    Require(RunSQL(tools, "SELECT mysql_accel_invalidate_all()"), "invalidate failed");
+    Require(RunSQL(tools, "SELECT accel_invalidate_all()"), "invalidate failed");
     const char *action = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
-    Require(RunSQL(tools, "SELECT mysql_accel_set_force_maintenance_action(" +
+    Require(RunSQL(tools, "SELECT accel_set_force_maintenance_action(" +
                               SqlLiteral(action ? action : "") + ")"),
             "force maintenance action failed");
 

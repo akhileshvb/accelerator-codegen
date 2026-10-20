@@ -359,7 +359,7 @@ int RunSynthetic(int seeds, int steps) {
         labels.push_back(pl);
       }
     }
-    script += Mark("counts") + "SELECT accel_postgres_get_execute_counts();\n";
+    script += Mark("counts") + "SELECT accel_get_execute_counts();\n";
     const auto out = RunScript(db, script);
     const auto blocks = Blocks(out);
     for (const auto &label : labels) {
@@ -587,7 +587,7 @@ int RunFile(int rounds) {
          fill("DELETE FROM num WHERE adsh = " + adsh + " AND uom = '%UM%' AND coreg = ''")},
         false);
   }
-  script += Mark("counts") + "SELECT accel_postgres_get_execute_counts();\n";
+  script += Mark("counts") + "SELECT accel_get_execute_counts();\n";
   const auto out = RunScript(db, script);
   const auto blocks = Blocks(out);
   for (const auto &label : labels) CheckLabel(blocks, label);

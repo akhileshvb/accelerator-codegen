@@ -35,9 +35,9 @@ int main(int argc, char **argv) {
     } else {
       EnsureMutationTriggers(tools);
     }
-    EnsureUdf(tools, "mysql_accel_invalidate_all", "STRING");
+    EnsureUdf(tools, "accel_invalidate_all", "STRING");
     EnsureUdf(tools, "mysql_accel_set_scan_database", "STRING");
-    EnsureUdf(tools, "mysql_accel_get_build_stats", "STRING");
+    EnsureUdf(tools, "accel_get_build_stats", "STRING");
     EnsureUdf(tools, "mysql_accel_set_scan_mode", "STRING");
     // ACCEL_RACE_SCAN_MODE=cli: the restart-on-write fallback scheme instead of snapshot builds.
     if (const char *mode = std::getenv("ACCEL_RACE_SCAN_MODE"); mode && *mode) {
@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
     if (const char *db = std::getenv("TPCH_MYSQL_DB"); db && *db) {
       Require(RunSQL(tools, std::string("SELECT mysql_accel_set_scan_database('") + db + "')"),
               "set scan database failed");
-      Require(RunSQL(tools, "SELECT mysql_accel_invalidate_all()"), "invalidate failed");
+      Require(RunSQL(tools, "SELECT accel_invalidate_all()"), "invalidate failed");
     }
     const auto &entry = LookupMysqlQuery("tpch", query);
     const std::string accel_sql = ConcreteAccelSql(query, entry, /*prefer_aux=*/true);
@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     RequireQueryMatch(tools, query, true, "warm");
     int failures = 0;
     for (int round = 0; round < rounds; ++round) {
-      Require(RunSQL(tools, "SELECT mysql_accel_invalidate_all()"), "invalidate failed");
+      Require(RunSQL(tools, "SELECT accel_invalidate_all()"), "invalidate failed");
       std::atomic<bool> stop{false};
       std::atomic<int> reads{0};
       std::vector<std::thread> threads;
@@ -101,7 +101,7 @@ int main(int argc, char **argv) {
       stop = true;
       for (auto &t : threads) t.join();
 
-      auto counts = QuerySQL(tools, "SELECT mysql_accel_get_build_stats()");
+      auto counts = QuerySQL(tools, "SELECT accel_get_build_stats()");
       try {
         RequireQueryMatch(tools, query, true, "round " + std::to_string(round));
         std::cout << "round " << round << " ok (" << reads.load() << " concurrent reads) "

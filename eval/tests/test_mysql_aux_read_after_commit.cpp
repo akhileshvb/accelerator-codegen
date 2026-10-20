@@ -56,7 +56,7 @@ struct ExecuteCounts {
 };
 
 ExecuteCounts ReadCounts(const Tools &tools) {
-  const auto counts = QuerySQL(tools, "SELECT mysql_accel_get_execute_counts()");
+  const auto counts = QuerySQL(tools, "SELECT accel_get_execute_counts()");
   Require(counts.first, "execute counts failed");
   ExecuteCounts out;
   const std::string text = counts.second;
@@ -66,7 +66,7 @@ ExecuteCounts ReadCounts(const Tools &tools) {
 }
 
 void ForceAction(const Tools &tools, const char *action) {
-  Require(RunSQL(tools, std::string("SELECT mysql_accel_set_force_maintenance_action('") + action + "')"),
+  Require(RunSQL(tools, std::string("SELECT accel_set_force_maintenance_action('") + action + "')"),
           "force maintenance action failed");
 }
 
@@ -82,13 +82,13 @@ int main(int argc, char **argv) {
 
     auto tools = ConnectTpch();
     EnsureMutationTriggers(tools);
-    EnsureUdf(tools, "mysql_accel_set_force_maintenance_action", "STRING");
-    EnsureUdf(tools, "mysql_accel_get_execute_counts", "STRING");
-    EnsureUdf(tools, "mysql_accel_invalidate_all", "STRING");
+    EnsureUdf(tools, "accel_set_force_maintenance_action", "STRING");
+    EnsureUdf(tools, "accel_get_execute_counts", "STRING");
+    EnsureUdf(tools, "accel_invalidate_all", "STRING");
     EnsureUdf(tools, "mysql_accel_set_scan_database", "STRING");
     Require(RunSQL(tools, "SELECT mysql_accel_set_scan_database(" + SqlLiteral(tools.database) + ")"),
             "set scan database failed");
-    Require(RunSQL(tools, "SELECT mysql_accel_invalidate_all()"), "invalidate failed");
+    Require(RunSQL(tools, "SELECT accel_invalidate_all()"), "invalidate failed");
     ForceAction(tools, "ApplyDelta");
 
     const auto &entry = LookupMysqlQuery("tpch", kQuery);

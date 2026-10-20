@@ -27,7 +27,7 @@
 //   --plain         also run plain when another mode is given.
 //
 // The copy lives in database accel_tpch_params; the plugin's scans are pointed
-// at it with mysql_accel_set_scan_database() + mysql_accel_invalidate_all(),
+// at it with mysql_accel_set_scan_database() + accel_invalidate_all(),
 // and back at the template database afterwards.
 //
 // Usage: test_mysql_tpch_params [queries|all] [draws_per_class=10] [seed=1]
@@ -300,7 +300,7 @@ struct Report {
 
 std::array<long, 3> Counts(const Tools &c) {
   std::array<long, 3> out{0, 0, 0};
-  auto r = Try(c, "SELECT mysql_accel_get_execute_counts()");
+  auto r = Try(c, "SELECT accel_get_execute_counts()");
   if (r.ok) std::sscanf(r.text.c_str(), "hit=%ld rebuilt_on_read=%ld fallback=%ld", &out[0], &out[1], &out[2]);
   return out;
 }
@@ -520,7 +520,7 @@ int main(int argc, char **argv) {
 
     auto PointAt = [&](const std::string &db) {
       Exec(tools, "SELECT mysql_accel_set_scan_database('" + db + "')");
-      Exec(tools, "SELECT mysql_accel_invalidate_all()");
+      Exec(tools, "SELECT accel_invalidate_all()");
     };
     // A fresh copy of the template tables (no capture triggers) that the
     // plugin scans from now on.

@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
 
     auto tools = ConnectTpch();
     EnsureMutationTriggers(tools);
-    EnsureUdf(tools, "mysql_accel_invalidate_all", "STRING");
+    EnsureUdf(tools, "accel_invalidate_all", "STRING");
     RunSQL(tools, std::string("DROP TRIGGER IF EXISTS ") + kProbeTrigger);
 
     std::atomic<bool> stop{false};
@@ -45,7 +45,7 @@ int main(int argc, char **argv) {
       }
     });
     for (int round = 0; round < rounds; ++round) {
-      Require(RunSQL(tools, "SELECT mysql_accel_invalidate_all()"), "invalidate failed");
+      Require(RunSQL(tools, "SELECT accel_invalidate_all()"), "invalidate failed");
       RequireQueryMatch(tools, query, true, "round " + std::to_string(round));
     }
     stop = true;

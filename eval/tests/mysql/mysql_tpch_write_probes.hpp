@@ -495,7 +495,7 @@ inline WriteProbe RequireInvalidatingAuxWrite(const Tools &tools, int query_num,
     auto after_aux = QuerySQL(tools, aux_sql);
     Require(after_aux.first, "probe after aux failed: " + after_aux.second);
     auto action_q =
-        QuerySQL(tools, "SELECT mysql_accel_get_last_maintenance_action()");
+        QuerySQL(tools, "SELECT accel_get_last_maintenance_action()");
     const std::string action =
         action_q.first ? TrimLines(action_q.second) : "error";
     RunSQL(tools, probe.restore_sql);

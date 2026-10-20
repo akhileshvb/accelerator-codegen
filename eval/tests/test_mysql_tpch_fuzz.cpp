@@ -118,7 +118,7 @@ void Restore(const Tools &tools) {
 // "hit=H rebuilt_on_read=R fallback=F" (server-wide) → {H, R, F}
 std::array<long, 3> ServerCounts(const Tools &tools) {
   std::array<long, 3> out {0, 0, 0};
-  auto r = QuerySQL(tools, "SELECT mysql_accel_get_execute_counts()");
+  auto r = QuerySQL(tools, "SELECT accel_get_execute_counts()");
   if (r.first)
     std::sscanf(TrimLines(r.second).c_str(), "hit=%ld rebuilt_on_read=%ld fallback=%ld", &out[0], &out[1],
                 &out[2]);
@@ -253,7 +253,7 @@ int main(int argc, char **argv) {
     auto tools = ConnectTpch();
     EnsureMutationTriggers(tools);
     if (const char *force = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION"); force && *force) {
-      RunSQL(tools, std::string("SELECT mysql_accel_set_force_maintenance_action(") + SqlLiteral(force) + ")");
+      RunSQL(tools, std::string("SELECT accel_set_force_maintenance_action(") + SqlLiteral(force) + ")");
     }
     Backup(tools);
     int failed = 0;
