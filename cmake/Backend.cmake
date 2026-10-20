@@ -183,7 +183,7 @@ function(accel_add_backend_exe ENGINE NAME)
     if(BE_CLIENT)
         return()
     endif()
-    target_link_libraries(${NAME} PRIVATE accelerator_codegen duckdb_sibling)
+    target_link_libraries(${NAME} PRIVATE accelerator_codegen)   # brings DuckDB along when it is present
     get_target_property(_module accel_backend_${ENGINE} ACCEL_BACKEND_MODULE)
     if(_module)
         add_dependencies(${NAME} ${_module})
