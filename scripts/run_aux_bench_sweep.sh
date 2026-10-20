@@ -22,11 +22,11 @@ BENCH_TARGET="${ACCEL_AUX_BENCH_TARGET:-benchmark_duckdb_${BENCHMARK}_aux}"
 BENCH_BIN="${BUILD_DIR}/${BENCH_TARGET}"
 
 if [[ "${BENCHMARK}" == "sec_edgar" ]]; then
-  SOURCE_DB="${ACCEL_SEC_EDGAR_DB:-/home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb}"
+  SOURCE_DB="${ACCEL_SEC_EDGAR_DB:?set ACCEL_SEC_EDGAR_DB}"
   DB_ENV_VAR="ACCEL_SEC_EDGAR_DB"
   DB_LABEL="sec_edgar_sf3"
 else
-  SOURCE_DB="${ACCEL_TPCH_DB:-/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb}"
+  SOURCE_DB="${ACCEL_TPCH_DB:?set ACCEL_TPCH_DB}"
   DB_ENV_VAR="ACCEL_TPCH_DB"
   DB_LABEL="${ACCEL_AUX_BENCH_DB_LABEL:-$(basename "${SOURCE_DB}" .duckdb)}"
 fi

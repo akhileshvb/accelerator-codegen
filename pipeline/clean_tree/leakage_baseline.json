@@ -172,6 +172,10 @@
  "eval/tests/tpch_fuzz_writes.hpp": {
   "engine": 13
  },
+ "eval/tests/tpch_param_templates.hpp": {
+  "engine": 3,
+  "target": 1
+ },
  "pipeline/README.md": {
   "engine": 21,
   "path": 2,
@@ -827,35 +831,7 @@
   "engine": 6
  },
  "scripts/run_aux_bench_sweep.sh": {
-  "engine": 9
- },
- "scripts/run_parallel_22q_matrix.sh": {
-  "engine": 4,
-  "target": 29
- },
- "scripts/run_parallel_scaling_matrix.sh": {
-  "path": 1
- },
- "scripts/run_q20_phased_bench.sh": {
-  "engine": 5,
-  "path": 1,
-  "target": 2
- },
- "scripts/run_q20_phased_sf20_baselines.sh": {
-  "engine": 3,
-  "path": 1,
-  "target": 1
- },
- "scripts/run_scale_proxy_suite.sh": {
-  "target": 1
- },
- "scripts/run_sf10_tpch_bench.sh": {
-  "engine": 8,
-  "target": 2
- },
- "scripts/run_sf1_scale_audit.sh": {
-  "engine": 1,
-  "target": 18
+  "engine": 7
  },
  "scripts/run_tpch_aux_sf20_sweep.sh": {
   "engine": 3,
