@@ -94,6 +94,9 @@ cmd_load() { # schema.sql [constraints.sql]
   done
   [[ -z "${constraints}" ]] || mysql_q "${DB}" <"${constraints}"
   echo "${ACCEL_DATASET_DIR}" >"${STATE}/loaded"
+  # A reload recreated the database: the plugin's functions and triggers go back in.
+  [[ ! -f "${STATE}/built" ]] || { registration_sql | mysql_q --force "${DB}" >/dev/null 2>&1 || true; }
+  install_capture_triggers
 }
 
 # UDF registration: the backend's base plus every accelerator's functions.sql fragment.
@@ -125,6 +128,14 @@ cmd_build() { # [target...]
   docker restart "${NAME}" >/dev/null
   wait_ready
   registration_sql | mysql_q --force "${DB}" 2>&1 | grep -v "already\|Using a password" || true
+  touch "${STATE}/built"
+  install_capture_triggers
+}
+
+# Capture triggers need the tables (load) and the plugin's UDFs (build): installed by
+# whichever of the two runs second.
+install_capture_triggers() {
+  [[ -f "${STATE}/built" && -f "${STATE}/loaded" ]] || return 0
   local ids=()
   mapfile -t ids < <(table_id_args)
   ACCEL_MYSQL_DOCKER=1 ACCEL_MYSQL_CONTAINER="${NAME}" MYSQL_PWD="${PASSWORD}" \
