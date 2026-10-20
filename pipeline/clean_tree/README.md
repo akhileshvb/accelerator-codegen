@@ -21,17 +21,18 @@ It has no remote and no link back to `$SRC`.
 ## 2. Enter the sandbox
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...
+cp /home/akhilvb/accelerator-codegen/.env "$DEST/.env"    # OPENROUTER_API_KEY etc.; the pipeline loads $DEST/.env
 export ACCEL_DUCKDB_ROOT=/home/akhilvb/duckdb-dbcapture
 export ACCEL_DUCKDB_SEED_DIRS=/home/akhilvb/.cache/accel_pg/build/duckdb:/home/akhilvb/.cache/accel_mysql/build/duckdb
-export ACCEL_SANDBOX_DATA=/flash1/akhilvb/datasets/tpch_sf1_tbl:/flash1/akhilvb/tpch_sf1.pristine_20261016.duckdb
+export ACCEL_SANDBOX_DATA=/flash1/akhilvb/datasets/tpch_sf1_tbl:/flash1/akhilvb/tpch_sf1.pristine_20261016.duckdb:/home/akhilvb/accelerator-codegen-duckdb
 "$DEST"/pipeline/clean_tree/sandbox.sh "$DEST"
 ```
 
 Inside the sandbox:
 
 - the tree is read-write;
-- the data, DuckDB and seed paths are read-only;
+- the data, DuckDB and seed paths are read-only (the `.env` dataset paths open read-only too;
+  step 3 points `ACCEL_TPCH_DB` at a writable copy, and exported values win over `.env`);
 - `/flash1/$USER/engine_state` is read-write;
 - the Docker socket is available;
 - the rest of `/home` and `/flash1` is hidden.
