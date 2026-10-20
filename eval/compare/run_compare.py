@@ -47,7 +47,6 @@ import argparse
 import json
 import math
 import os
-import shutil
 import statistics
 import subprocess
 import sys
@@ -128,11 +127,15 @@ def run(cmd, env, log, timeout, lines=1):
 
 
 def fresh_copy(db, work, name):
+    """A private copy of db: a reflink where the filesystem supports it (XFS), else a full copy.  It is read once, so
+    every run starts with the file in the page cache, as a database much smaller than RAM always does."""
     copy = os.path.join(work, name)
-    for p in (copy, copy + ".wal"):
-        if os.path.exists(p):
-            os.remove(p)
-    shutil.copyfile(db, copy)
+    drop(copy)
+    subprocess.run(["cp", "--reflink=auto", db, copy], check=True)
+    buf = bytearray(64 << 20)
+    with open(copy, "rb", buffering=0) as f:
+        while f.readinto(buf):
+            pass
     return copy
 
 
