@@ -32,7 +32,7 @@ def test_load_engine_mysql_workload():
     assert w["target_paths"]["host_header"].endswith("backends/mysql/api/mysql_host.hpp")
     assert w["target_paths"]["capture_source"].endswith("backends/mysql/engine/capture.cpp")
     ids = [layer["id"] for layer in w["implementation_layers"]]
-    assert ids == ["capture", "epochs", "scan", "runtime", "host", "api"]
+    assert ids == ["capture", "epochs", "scan", "runtime", "host", "hostctl", "api"]
     capture = w["implementation_layers"][0]
     assert capture["harness"] == "backends/mysql/tests/test_mysql_capture.cpp"
     assert capture["cmake_target"] == "test_mysql_capture"

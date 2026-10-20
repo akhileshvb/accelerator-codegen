@@ -61,6 +61,12 @@ implementation_layers:
     cmake_target: test_{engine}_host
     rules: [slot_entry, host_glue]
     skip_unless: requires_in_process_host
+  - id: hostctl
+    title: Host script (host_contract.md verbs)
+    gate: engine_hostctl
+    harness: backends/{engine}/host.sh
+    cmake_target: ""
+    rules: [host_contract]
   - id: api
     title: Accelerator-facing API and its manifest
     gate: engine_api_conformance
@@ -124,6 +130,7 @@ engine_profile_sections:
   epochs: [identity, process_model, transactions, locking, capture, hazards]
   scan: [identity, process_model, transactions, locking, scan, thread_knobs, hazards]
   runtime: [identity, packaging, host_runtime, process_model, locking, thread_knobs, scan, hazards]
+  hostctl: [identity, packaging, host_runtime, build, process_model, entry_points, hazards]
   host: [identity, packaging, host_runtime, build, process_model, entry_points, thread_knobs, hazards]
   api: [identity, packaging, host_runtime, process_model, scan, entry_points, thread_knobs, oracle, hazards]
   validation: [identity, process_model, capture, transactions, locking, scan, oracle, hazards]
