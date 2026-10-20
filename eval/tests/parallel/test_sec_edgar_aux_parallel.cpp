@@ -135,8 +135,8 @@ bool ValuesApproxEqual(const std::string &lhs, const std::string &rhs) {
   try {
     const long double a = std::stold(lhs);
     const long double b = std::stold(rhs);
-    const long double scale = std::max<long double>({1.0L, std::fabsl(a), std::fabsl(b)});
-    return std::fabsl(a - b) <= scale * 1e-6L;
+    const long double scale = std::max<long double>({1.0L, std::fabs(a), std::fabs(b)});
+    return std::fabs(a - b) <= scale * 1e-6L;
   } catch (...) {
     return false;
   }
