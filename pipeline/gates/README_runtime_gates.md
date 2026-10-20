@@ -16,7 +16,7 @@ scenario and an engine **adapter** runs it.
 | `slot_own_writes` | In a transaction (every reader mode): read, write, read again, also a statement planned before the write; then roll back or commit | The read after the write equals the base SQL with the transaction's own rows; other connections see none of them until commit; no rebuild |
 | `slot_ddl_events` | Replace a tracked table by a subset of its rows (drop + create + rename, rename aside + create), read, write, restore | Every answer equals the base SQL on the table as it then is: never state built for the old table |
 | `slot_tsan` | The four scenarios above under ThreadSanitizer (`run_aux_tsan.sh slots`) | No report with a frame in `substrate/`, `backends/` or `accelerators/` |
-| `slot_differential` | The 22-query differential and the RF differential | Every query matches the base SQL |
+| `slot_differential` | The 22-query differential and the RF differential (accelerator pipeline; a backend run has no accelerators) | Every query matches the base SQL |
 
 Capture completeness is part of every scenario: all writes come from plain
 connections, never from the connection that registered the accelerator, and
@@ -33,9 +33,10 @@ every answer is compared with the base SQL.
   77 (not applicable). `ACCEL_SLOT_GATE_SECONDS` sets the load duration.
 
 A backend gets full coverage by implementing the `Engine` driver for its
-engine and pointing its `slot` verb at it. A missing driver makes the verb fail
-closed. A scenario a backend does not wire yet exits 77 (gate `skip`, allowed for
-`slot_own_writes`, `slot_ddl_events` and `slot_restart`).
+engine over its own toy module (`backends/<engine>/tests/`, never generated accelerators)
+and pointing its `slot` verb at it. A missing driver makes the verb fail closed. 77 (gate
+`skip`) is returned only for a mechanic the engine profile declares n/a (for example
+`slot_restart` on an engine with no workers); `slot_own_writes` and `slot_ddl_events` never skip.
 
 Known limit of the DuckDB workload: the host maps a captured table to one
 `TableId`, so only queries that number a table identically can be registered
