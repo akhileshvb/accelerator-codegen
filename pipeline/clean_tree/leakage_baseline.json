@@ -192,23 +192,21 @@
   "path": 7
  },
  "pipeline/config/aux_state.yaml": {
-  "engine": 15,
-  "path": 13,
+  "engine": 4,
   "target": 3
  },
  "pipeline/config/benchmark_packs/sec_edgar.yaml": {
-  "engine": 10,
-  "path": 10
+  "engine": 7,
+  "path": 8
  },
  "pipeline/config/benchmark_packs/tpch.yaml": {
-  "engine": 5,
-  "path": 6
+  "path": 1
  },
  "pipeline/config/benchmark_packs/tpch_sf20_aux_sweep.yaml": {
   "engine": 3
  },
  "pipeline/config/default.yaml": {
-  "path": 8
+  "path": 1
  },
  "pipeline/config/packs/tpch_aux_pair.yaml": {
   "engine": 1
@@ -437,40 +435,20 @@
  "pipeline/orchestrator/accel_pipeline/aux_bench.py": {
   "engine": 1
  },
- "pipeline/orchestrator/accel_pipeline/backends/codex_exec.py": {
-  "engine": 18
- },
  "pipeline/orchestrator/accel_pipeline/base_bench.py": {
   "engine": 7
  },
  "pipeline/orchestrator/accel_pipeline/config.py": {
-  "engine": 33,
-  "engine_branch": 5,
-  "path": 11,
-  "symbol": 16,
+  "path": 1,
   "target": 3
  },
  "pipeline/orchestrator/accel_pipeline/context.py": {
-  "engine": 16,
-  "engine_branch": 2,
   "path": 2
  },
  "pipeline/orchestrator/accel_pipeline/data_shape.py": {
   "engine": 4
  },
- "pipeline/orchestrator/accel_pipeline/engine_quarantine.py": {
-  "engine": 1,
-  "path": 1
- },
- "pipeline/orchestrator/accel_pipeline/host_bootstrap.py": {
-  "engine": 6,
-  "engine_branch": 2
- },
- "pipeline/orchestrator/accel_pipeline/host_runtime.py": {
-  "engine": 20
- },
  "pipeline/orchestrator/accel_pipeline/implementation_bootstrap.py": {
-  "engine": 2,
   "path": 2,
   "symbol": 1
  },
@@ -479,13 +457,7 @@
   "symbol": 4
  },
  "pipeline/orchestrator/accel_pipeline/mcp_server.py": {
-  "engine": 4,
   "path": 1
- },
- "pipeline/orchestrator/accel_pipeline/mysql_docker.py": {
-  "engine": 51,
-  "path": 3,
-  "target": 1
  },
  "pipeline/orchestrator/accel_pipeline/optimization_eval.py": {
   "engine": 3
@@ -496,51 +468,14 @@
  "pipeline/orchestrator/accel_pipeline/pipeline_log.py": {
   "engine": 3
  },
- "pipeline/orchestrator/accel_pipeline/postgres_discovery.py": {
-  "engine": 40,
-  "engine_branch": 1
- },
- "pipeline/orchestrator/accel_pipeline/postgres_docker.py": {
-  "engine": 76,
-  "path": 7,
-  "target": 1
- },
- "pipeline/orchestrator/accel_pipeline/prerequisites.py": {
-  "engine": 4,
-  "engine_branch": 2
- },
  "pipeline/orchestrator/accel_pipeline/profile_investigation.py": {
   "symbol": 4
  },
- "pipeline/orchestrator/accel_pipeline/repo_context_pack.py": {
-  "engine": 5,
-  "path": 6,
-  "symbol": 4
- },
- "pipeline/orchestrator/accel_pipeline/run_pack.py": {
-  "engine": 2
- },
  "pipeline/orchestrator/accel_pipeline/run_pipeline.py": {
-  "engine": 3
- },
- "pipeline/orchestrator/accel_pipeline/scaffold_stubs.py": {
-  "engine": 3,
-  "engine_branch": 1,
-  "symbol": 1
- },
- "pipeline/orchestrator/accel_pipeline/shared_file_lease.py": {
-  "path": 4
- },
- "pipeline/orchestrator/accel_pipeline/stages/host_bootstrap.py": {
-  "engine": 3
- },
- "pipeline/orchestrator/accel_pipeline/stages/host_bootstrap_critique.py": {
   "engine": 1
  },
- "pipeline/orchestrator/accel_pipeline/stages/implementation.py": {
-  "engine": 2,
-  "engine_branch": 1,
-  "target": 1
+ "pipeline/orchestrator/accel_pipeline/scaffold_stubs.py": {
+  "symbol": 1
  },
  "pipeline/orchestrator/accel_pipeline/tools/ab_tools.py": {
   "engine": 1
@@ -573,7 +508,7 @@
   "engine": 1
  },
  "pipeline/orchestrator/accel_pipeline/worker_isolation.py": {
-  "engine": 11
+  "engine": 2
  },
  "pipeline/orchestrator/accel_pipeline/workload_facts.py": {
   "engine": 8
@@ -584,12 +519,16 @@
  "pipeline/orchestrator/requirements.txt": {
   "engine": 1
  },
+ "pipeline/orchestrator/tests/fixtures/engine_toydb.yaml": {
+  "engine": 2,
+  "path": 4
+ },
  "pipeline/orchestrator/tests/test_ab_tools.py": {
   "engine": 3
  },
  "pipeline/orchestrator/tests/test_accelerator_engine.py": {
-  "engine": 72,
-  "engine_branch": 2,
+  "engine": 71,
+  "engine_branch": 3,
   "path": 6,
   "symbol": 1,
   "target": 8
@@ -616,7 +555,7 @@
  },
  "pipeline/orchestrator/tests/test_benchmark_pack.py": {
   "engine": 9,
-  "path": 5,
+  "path": 4,
   "symbol": 1
  },
  "pipeline/orchestrator/tests/test_clean_tree.py": {
@@ -627,9 +566,9 @@
   "target": 1
  },
  "pipeline/orchestrator/tests/test_engine_backend.py": {
-  "engine": 105,
-  "path": 19,
-  "target": 3
+  "engine": 94,
+  "path": 20,
+  "target": 2
  },
  "pipeline/orchestrator/tests/test_engine_profile.py": {
   "engine": 15
@@ -666,6 +605,10 @@
  "pipeline/orchestrator/tests/test_negative_memory.py": {
   "engine": 10
  },
+ "pipeline/orchestrator/tests/test_new_engine.py": {
+  "engine": 2,
+  "path": 2
+ },
  "pipeline/orchestrator/tests/test_optimization_bootstrap.py": {
   "engine": 5,
   "path": 2
@@ -680,9 +623,6 @@
  },
  "pipeline/orchestrator/tests/test_pipeline_log.py": {
   "engine": 3
- },
- "pipeline/orchestrator/tests/test_postgres_discovery.py": {
-  "engine": 41
  },
  "pipeline/orchestrator/tests/test_prims_library.py": {
   "engine": 7,
@@ -799,32 +739,6 @@
  },
  "pipeline/templates/engine_backend/scan.hpp.tpl": {
   "symbol": 2
- },
- "pipeline/templates/scaffold/cost_model.hpp.tpl": {
-  "engine": 3,
-  "symbol": 1
- },
- "pipeline/templates/scaffold/header.hpp.tpl": {
-  "engine": 17,
-  "include": 3,
-  "symbol": 6
- },
- "pipeline/templates/scaffold/kernel.cpp.tpl": {
-  "engine": 3,
-  "engine_branch": 1,
-  "path": 1,
-  "symbol": 3
- },
- "pipeline/templates/scaffold/package.cpp.tpl": {
-  "engine": 5,
-  "include": 1,
-  "symbol": 10
- },
- "pipeline/templates/scaffold/register.cpp.tpl": {
-  "engine": 5,
-  "include": 1,
-  "path": 1,
-  "symbol": 1
  },
  "pipeline/templates/sec_edgar/benchmark_template.cpp": {
   "engine": 5,

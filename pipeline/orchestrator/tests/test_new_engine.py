@@ -29,6 +29,7 @@ def repo(tmp_path: Path) -> Path:
     pipeline = tmp_path / "pipeline"
     for sub in ("config", "schemas", "prompts", "templates"):
         shutil.copytree(REAL_PIPELINE / sub, pipeline / sub)
+    shutil.copytree(REAL_PIPELINE.parent / "workloads", tmp_path / "workloads")
     shutil.copy(FIXTURES / "engine_toydb.yaml", pipeline / "config" / "workloads")
     shutil.copytree(FIXTURES / "toydb" / "backends", tmp_path / "backends")
     workload = pipeline / "config" / "workloads" / f"{WORKLOAD}.yaml"

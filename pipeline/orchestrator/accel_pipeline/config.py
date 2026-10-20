@@ -474,17 +474,6 @@ def engine_pascal_name(engine_name: str) -> str:
     return "".join(part[:1].upper() + part[1:] for part in sanitize_engine_name(engine_name).split("_") if part)
 
 
-def load_engine_profile(engine: str, repo_root: Path | None = None) -> dict[str, Any]:
-    """The engine's standardized profile (config/workloads/engine_<engine>.yaml), validated."""
-    root = repo_root or find_repo_root()
-    path = pipeline_root(root) / "config" / "workloads" / f"engine_{engine}.yaml"
-    if not path.is_file():
-        raise ValueError(f"engine {engine!r} has no profile at {path}")
-    profile = _load_yaml(path).get("engine_profile")
-    validate_engine_profile(profile, pipeline_root(root), source=f"engine {engine}")
-    return profile
-
-
 def engine_host_conventions(
     engine_name: str, bench: str = "<bench>", query: Any = "<N>", repo_root: Path | None = None
 ) -> dict[str, Any]:
@@ -494,7 +483,7 @@ def engine_host_conventions(
     engine's api/README.md (engine backends name no query).
     """
     engine = sanitize_engine_name(engine_name)
-    query_host = load_engine_profile(engine, repo_root)["query_host"]
+    query_host = load_engine_profile(engine, pipeline_root(repo_root or find_repo_root()))["query_host"]
     scoped = bool(query_host["query_scoped_harness"])
     register = f"accelerators/{bench}/q{query}/{engine}/register.cpp"
     host: dict[str, Any] = {
