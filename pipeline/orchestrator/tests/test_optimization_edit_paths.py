@@ -13,7 +13,7 @@ from accel_pipeline.paths import find_repo_root
 
 def test_aux_optimization_edit_paths_point_at_aux_module():
     repo = find_repo_root()
-    workload = load_workload("tpch_q18_aux", repo)
+    workload = load_workload("tpch_q18_aux", repo, engine="duckdb")
     pc = PipelineConfig(
         repo_root=repo,
         pipeline_root=repo / "pipeline",

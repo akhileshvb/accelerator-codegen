@@ -121,7 +121,7 @@ def test_record_optimization_state(tmp_path: Path):
 
 def test_record_aux_bench_sweep_outcome_writes_experiment_log(tmp_path: Path):
     repo = tmp_path
-    art = repo / "pipeline" / "artifacts" / "tpch" / "q18"
+    art = repo / "pipeline" / "artifacts" / "tpch" / "q18" / "duckdb"
     art.mkdir(parents=True)
     (repo / "pipeline" / "config").mkdir()
     (repo / "pipeline" / "config" / "default.yaml").write_text(

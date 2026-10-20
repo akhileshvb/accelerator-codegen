@@ -9,7 +9,6 @@ import json
 import pytest
 
 from accel_pipeline.config import (
-    _normalize_accelerator_engine,
     load_model_config,
     load_pipeline_config,
     load_workload,
@@ -30,18 +29,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_duckdb_does_not_need_host_bootstrap():
-    w = load_workload("tpch_q3", REPO_ROOT)
-    # tpch_q3 may pin engine_name: postgres; duckdb check uses a normalized duckdb workload.
-    w = dict(w)
-    w["engine_name"] = "duckdb"
-    w = _normalize_accelerator_engine(w)
+    w = load_workload("tpch_q3", REPO_ROOT, engine="duckdb")
     assert needs_host_bootstrap(w) is False
 
 
 def test_postgres_needs_host_bootstrap():
-    w = load_workload("tpch_q3", REPO_ROOT)
-    w["engine_name"] = "postgres"
-    w = _normalize_accelerator_engine(w)
+    w = load_workload("tpch_q3", REPO_ROOT, engine="postgres")
     assert needs_host_bootstrap(w) is True
 
 
@@ -84,17 +77,17 @@ def test_stale_unit_marker_does_not_count_as_passed(tmp_path, monkeypatch):
     assert host_bootstrap_passed(tmp_path, "postgres") is False
 
 
-def test_engines_needing_bootstrap_respects_env(monkeypatch):
-    monkeypatch.setenv("ACCEL_WORKLOAD_ENGINE_NAME", "postgres")
-    needed = engines_needing_bootstrap_from_workloads(REPO_ROOT, ["tpch_q3_aux"])
-    assert isinstance(needed, list)
-    # With no real differential source, postgres should still be needed (or already listed).
+def test_engines_needing_bootstrap_per_run_engine():
+    runs = [("tpch_q3_aux", "duckdb"), ("tpch_q3_aux", "postgres"), ("tpch_q1_aux", "postgres")]
+    needed = engines_needing_bootstrap_from_workloads(REPO_ROOT, runs)
     engines = [e for e, _ in needed]
+    assert "duckdb" not in engines
+    assert engines.count("postgres") <= 1
     assert "postgres" in engines or host_bootstrap_passed(REPO_ROOT, "postgres")
 
 
 def test_aux_workload_merges_host_bootstrap_retry_config():
-    w = load_workload("tpch_q1_aux", REPO_ROOT)
+    w = load_workload("tpch_q1_aux", REPO_ROOT, engine="postgres")
     assert w["host_bootstrap_gate_max_rounds"] == 3
     assert w["host_bootstrap_critique_max_rounds"] == 2
     pc = load_pipeline_config(repo_root=REPO_ROOT)
@@ -171,8 +164,8 @@ def test_host_bootstrap_gate_fail_reinvokes(tmp_path, monkeypatch):
 
     real_load = load_workload
 
-    def fake_load(name, repo_root=None):
-        w = dict(real_load(name, repo_root))
+    def fake_load(name, repo_root=None, *, engine=""):
+        w = dict(real_load(name, repo_root, engine=engine))
         w["host_bootstrap_gate_max_rounds"] = 3
         w["host_bootstrap_critique_max_rounds"] = 2
         return w
@@ -250,8 +243,8 @@ def test_host_bootstrap_gate_exhausted_rounds_raises(tmp_path, monkeypatch):
 
     real_load = load_workload
 
-    def fake_load(name, repo_root=None):
-        w = dict(real_load(name, repo_root))
+    def fake_load(name, repo_root=None, *, engine=""):
+        w = dict(real_load(name, repo_root, engine=engine))
         w["host_bootstrap_gate_max_rounds"] = 1
         w["host_bootstrap_critique_max_rounds"] = 0
         return w
@@ -291,8 +284,8 @@ def test_host_bootstrap_critique_fail_reinvokes(tmp_path, monkeypatch):
 
     real_load = load_workload
 
-    def fake_load(name, repo_root=None):
-        w = dict(real_load(name, repo_root))
+    def fake_load(name, repo_root=None, *, engine=""):
+        w = dict(real_load(name, repo_root, engine=engine))
         w["host_bootstrap_gate_max_rounds"] = 3
         w["host_bootstrap_critique_max_rounds"] = 2
         return w

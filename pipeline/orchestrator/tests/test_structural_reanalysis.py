@@ -19,6 +19,7 @@ from accel_pipeline.structural_reanalysis import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+RUN = {"benchmark_name": "tpch", "engine_name": "duckdb"}
 
 
 def _valid_request(**overrides) -> dict:
@@ -61,7 +62,7 @@ class TestStructuralReanalysisBudget:
         assert max_structural_reanalysis_count({"max_structural_reanalysis": 1}) == 1
 
     def test_can_rerun_respects_budget(self):
-        workload = {"max_structural_reanalysis": 2}
+        workload = {**RUN, "max_structural_reanalysis": 2}
         assert can_rerun_analysis(0, workload)
         assert can_rerun_analysis(1, workload)
         assert not can_rerun_analysis(2, workload)
@@ -78,6 +79,7 @@ class TestStructuralReanalysisFlow:
         write_request(
             tmp_path,
             99,
+            RUN,
             source_stage="implementation",
             source_iteration=0,
             bottleneck_type="wrong_partition_grain",
@@ -85,16 +87,17 @@ class TestStructuralReanalysisFlow:
             proposed_direction="Repartition by shipdate month instead of segment only",
             current_candidate_id="c1",
         )
-        loaded = load_pending_request(tmp_path, 99)
+        loaded = load_pending_request(tmp_path, 99, RUN)
         assert loaded is not None
         assert loaded["bottleneck_type"] == "wrong_partition_grain"
-        clear_request(tmp_path, 99)
-        assert load_pending_request(tmp_path, 99) is None
+        clear_request(tmp_path, 99, RUN)
+        assert load_pending_request(tmp_path, 99, RUN) is None
 
     def test_process_after_stage_runs_stages(self, tmp_path):
         write_request(
             tmp_path,
             99,
+            RUN,
             source_stage="implementation",
             source_iteration=0,
             bottleneck_type="scan_for_scan",
@@ -106,7 +109,7 @@ class TestStructuralReanalysisFlow:
         run_adv = MagicMock()
         run_impl = MagicMock()
         run_opt = MagicMock()
-        workload = {"max_structural_reanalysis": 2}
+        workload = {**RUN, "max_structural_reanalysis": 2}
 
         result = process_after_stage(
             repo_root=tmp_path,
@@ -126,12 +129,13 @@ class TestStructuralReanalysisFlow:
         run_adv.assert_called_once()
         run_impl.assert_called_once()
         run_opt.assert_not_called()
-        assert load_pending_request(tmp_path, 99) is None
+        assert load_pending_request(tmp_path, 99, RUN) is None
 
     def test_process_after_optimization_runs_full_chain(self, tmp_path):
         write_request(
             tmp_path,
             99,
+            RUN,
             source_stage="optimization",
             source_iteration=2,
             bottleneck_type="maintenance_infeasible",
@@ -143,7 +147,7 @@ class TestStructuralReanalysisFlow:
         run_adv = MagicMock()
         run_impl = MagicMock()
         run_opt = MagicMock()
-        workload = {}
+        workload = dict(RUN)
 
         result = process_after_stage(
             repo_root=tmp_path,
@@ -168,6 +172,7 @@ class TestStructuralReanalysisFlow:
         write_request(
             tmp_path,
             99,
+            RUN,
             source_stage="implementation",
             source_iteration=0,
             bottleneck_type="scan_for_scan",
@@ -178,7 +183,7 @@ class TestStructuralReanalysisFlow:
         result = process_after_stage(
             repo_root=tmp_path,
             query=99,
-            workload={"max_structural_reanalysis": 2},
+            workload={**RUN, "max_structural_reanalysis": 2},
             triggered_after="implementation",
             structural_reanalysis_count=2,
             run_analysis=MagicMock(),
@@ -187,12 +192,13 @@ class TestStructuralReanalysisFlow:
             dry_run=False,
         )
         assert result is None
-        assert load_pending_request(tmp_path, 99) is None
+        assert load_pending_request(tmp_path, 99, RUN) is None
 
     def test_dry_run_skips_rerun(self, tmp_path):
         write_request(
             tmp_path,
             99,
+            RUN,
             source_stage="implementation",
             source_iteration=0,
             bottleneck_type="scan_for_scan",
@@ -203,7 +209,7 @@ class TestStructuralReanalysisFlow:
         result = process_after_stage(
             repo_root=tmp_path,
             query=99,
-            workload={},
+            workload=dict(RUN),
             triggered_after="implementation",
             structural_reanalysis_count=0,
             run_analysis=MagicMock(),
@@ -212,7 +218,7 @@ class TestStructuralReanalysisFlow:
             dry_run=True,
         )
         assert result is None
-        assert load_pending_request(tmp_path, 99) is not None
+        assert load_pending_request(tmp_path, 99, RUN) is not None
 
 
 class TestPipelineStateBackwardCompat:
@@ -225,6 +231,7 @@ class TestPipelineStateBackwardCompat:
                 {
                     "query": 3,
                     "workload": "tpch_q3_aux",
+                    "engine": "duckdb",
                     "stage": "implementation",
                     "structural_reanalysis_count": 1,
                     "future_field": "ignored",
@@ -243,20 +250,19 @@ class TestReanalysisToolPolicy:
         from accel_pipeline.state import PipelineState, state_path
         from accel_pipeline.tools.reanalysis_tools import ToolContext, make_reanalysis_tools
 
-        art = tmp_path / "pipeline" / "artifacts" / "q3"
-        art.mkdir(parents=True)
-        state = PipelineState(query=3, workload="tpch_q3_aux", structural_reanalysis_count=2)
-        state.save(state_path(tmp_path, 3, "tpch_q3_aux"))
+        monkeypatch.setenv("ACCEL_PIPELINE_PRIMARY_REPO", str(REPO_ROOT))
+        state = PipelineState(query=3, workload="tpch_q3_aux", engine="duckdb", structural_reanalysis_count=2)
+        state.save(state_path(tmp_path, 3, "tpch_q3_aux", "duckdb"))
 
         pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
         pipeline_config = type(pipeline_config)(
-            **{**pipeline_config.__dict__, "repo_root": tmp_path}
+            **{**pipeline_config.__dict__, "repo_root": tmp_path, "engine_name": "duckdb"}
         )
         ctx = ToolContext(pipeline_config, 3, "implementation", "tpch_q3_aux")
         tool = make_reanalysis_tools(ctx)
         monkeypatch.setattr(
-            "accel_pipeline.tools.reanalysis_tools.load_workload",
-            lambda name, root: {"max_structural_reanalysis": 2},
+            "accel_pipeline.tools.reanalysis_tools.load_run_workload",
+            lambda pc, name: {**RUN, "max_structural_reanalysis": 2},
         )
         out = json.loads(
             tool(

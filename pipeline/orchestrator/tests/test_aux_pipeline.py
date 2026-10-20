@@ -263,7 +263,7 @@ class TestWorkloadConfig:
     def test_q10_aux_workload_loads(self):
         from accel_pipeline.config import load_workload
 
-        workload = load_workload("tpch_q10_aux", REPO_ROOT)
+        workload = load_workload("tpch_q10_aux", REPO_ROOT, engine="duckdb")
         assert workload["query_number"] == 10
         assert workload["workload_kind"] == "aux_state"
         assert workload["aux_function_name"] == "accel_tpch_q10_aux"
@@ -275,7 +275,7 @@ class TestWorkloadConfig:
     def test_q12_aux_workload_loads(self):
         from accel_pipeline.config import load_workload
 
-        workload = load_workload("tpch_q12_aux", REPO_ROOT)
+        workload = load_workload("tpch_q12_aux", REPO_ROOT, engine="duckdb")
         assert workload["query_number"] == 12
         assert workload["workload_kind"] == "aux_state"
         assert workload["aux_function_name"] == "accel_tpch_q12_aux"
@@ -330,7 +330,7 @@ class TestPromptRendering:
         from accel_pipeline.prompts import render_prompt
 
         pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-        workload = load_workload("tpch_q14_aux", REPO_ROOT)
+        workload = load_workload("tpch_q14_aux", REPO_ROOT, engine="duckdb")
         pipeline_config = apply_workload_overrides(pipeline_config, workload)
         prompt = render_prompt(pipeline_config, "01_analysis.md", workload, 14, "analysis")
         lowered = prompt.lower()
@@ -370,7 +370,7 @@ class TestPromptRendering:
         from accel_pipeline.stages.base import run_agent_stage
 
         pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-        workload = load_workload("tpch_q14_aux", REPO_ROOT)
+        workload = load_workload("tpch_q14_aux", REPO_ROOT, engine="duckdb")
         pipeline_config = apply_workload_overrides(pipeline_config, workload)
         model_config = load_model_config(repo_root=REPO_ROOT)
         for stage, prompt in [

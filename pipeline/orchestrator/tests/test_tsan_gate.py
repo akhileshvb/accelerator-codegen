@@ -24,7 +24,7 @@ def test_tsan_gates_map_to_the_script():
 
 def test_aux_state_audit_runs_tsan():
     for name in ("tpch_q3_aux", "sec_edgar_q1_aux"):
-        workload = load_workload(name, REPO_ROOT)
+        workload = load_workload(name, REPO_ROOT, engine="duckdb")
         assert "aux_tsan" in workload_post_audit_gates(workload)
         assert _allowed(workload, "bash pipeline/gates/run_aux_tsan.sh 3")
 

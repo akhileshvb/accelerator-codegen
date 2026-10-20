@@ -22,6 +22,8 @@ from accel_pipeline.pipeline_log import (
     usage_from_metadata,
 )
 
+WORKLOAD = {"benchmark_name": "tpch", "engine_name": "duckdb"}
+
 
 def test_format_usage():
     assert format_usage(None) == "tokens=n/a"
@@ -108,7 +110,7 @@ def test_log_analysis_candidates(capsys, tmp_path):
             ]
         },
     }
-    log_analysis_candidates(tmp_path, 3, analysis)
+    log_analysis_candidates(tmp_path, 3, analysis, workload=WORKLOAD)
     captured = capsys.readouterr()
     assert "ANALYSIS: aux-state candidates (Q3)" in captured.err
     assert "SELECTED → c1" in captured.err
@@ -117,7 +119,7 @@ def test_log_analysis_candidates(capsys, tmp_path):
     assert "[2] c2  VIABLE" in captured.err
     assert "end candidate search (selected=c1)" in captured.err
 
-    events = events_path(tmp_path, 3).read_text(encoding="utf-8").strip().splitlines()
+    events = events_path(tmp_path, 3, WORKLOAD).read_text(encoding="utf-8").strip().splitlines()
     payload = json.loads(events[-1])
     assert payload["event"] == "analysis_candidates"
     assert payload["selected_id"] == "c1"
@@ -135,7 +137,7 @@ def test_log_analysis_candidates_not_recommended(capsys, tmp_path):
         },
         "state_candidate_search": {"candidates": []},
     }
-    log_analysis_candidates(tmp_path, 17, analysis)
+    log_analysis_candidates(tmp_path, 17, analysis, workload=WORKLOAD)
     captured = capsys.readouterr()
     assert "recommended=false" in captured.err
     assert "aux-state not pursued" in captured.err
@@ -169,6 +171,7 @@ def test_log_bench_sweep_results(capsys, tmp_path):
     log_bench_sweep_results(
         tmp_path,
         12,
+        WORKLOAD,
         gate_status="pass",
         gate_data={
             "composite_score": 20.483,
@@ -202,7 +205,7 @@ def test_log_bench_sweep_results(capsys, tmp_path):
     assert "50% writes" in captured.err
     assert "185.47x vs DuckDB" in captured.err
 
-    events = events_path(tmp_path, 12).read_text(encoding="utf-8").strip().splitlines()
+    events = events_path(tmp_path, 12, WORKLOAD).read_text(encoding="utf-8").strip().splitlines()
     payload = json.loads(events[-1])
     assert payload["event"] == "aux_bench_sweep"
     assert len(payload["lines"]) == 2
@@ -252,10 +255,10 @@ def test_log_base_bench_gate_profile(capsys, tmp_path):
 
 
 def test_log_event_writes_jsonl(tmp_path, capsys):
-    log_event(tmp_path, 7, "test_event", foo="bar")
+    log_event(tmp_path, 7, WORKLOAD, "test_event", foo="bar")
     captured = capsys.readouterr()
     assert "[pipeline] test_event: foo=bar" in captured.err
-    lines = events_path(tmp_path, 7).read_text(encoding="utf-8").strip().splitlines()
+    lines = events_path(tmp_path, 7, WORKLOAD).read_text(encoding="utf-8").strip().splitlines()
     assert json.loads(lines[0])["event"] == "test_event"
 
 
@@ -263,6 +266,7 @@ def test_log_stage_complete_stderr(capsys, tmp_path):
     log_stage_complete(
         tmp_path,
         3,
+        WORKLOAD,
         stage="analysis",
         model_id="composer-2.5",
         backend="codex_exec",
@@ -279,6 +283,7 @@ def test_structural_request_logging(capsys, tmp_path):
     log_structural_reanalysis_request(
         tmp_path,
         3,
+        WORKLOAD,
         status="queued",
         source_stage="optimization",
         source_iteration=2,
@@ -294,6 +299,7 @@ def test_pipeline_summary_aggregates(tmp_path, capsys):
     log_stage_complete(
         tmp_path,
         1,
+        WORKLOAD,
         stage="analysis",
         model_id="m",
         backend="codex_exec",
@@ -303,6 +309,7 @@ def test_pipeline_summary_aggregates(tmp_path, capsys):
     log_stage_complete(
         tmp_path,
         1,
+        WORKLOAD,
         stage="implementation",
         model_id="m",
         backend="codex_exec",
@@ -312,6 +319,7 @@ def test_pipeline_summary_aggregates(tmp_path, capsys):
     log_structural_reanalysis_request(
         tmp_path,
         1,
+        WORKLOAD,
         status="queued",
         source_stage="optimization",
         source_iteration=1,
@@ -319,7 +327,7 @@ def test_pipeline_summary_aggregates(tmp_path, capsys):
         current_candidate_id="c1",
     )
     capsys.readouterr()
-    log_pipeline_summary(tmp_path, 1)
+    log_pipeline_summary(tmp_path, 1, WORKLOAD)
     captured = capsys.readouterr()
     assert "summary: stages=2" in captured.err
     assert "total=350" in captured.err

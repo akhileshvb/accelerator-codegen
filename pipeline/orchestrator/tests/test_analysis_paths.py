@@ -6,7 +6,6 @@ from accel_pipeline.paths import (
     analysis_artifact_name,
     analysis_artifact_path,
     load_query_analysis,
-    resolve_analysis_artifact_path,
 )
 
 
@@ -17,9 +16,9 @@ def test_analysis_artifact_names_by_workload_kind():
 
 
 def test_base_and_aux_analysis_paths_do_not_collide(tmp_path):
-    workload_aux = {"workload_kind": "aux_state", "benchmark_name": "tpch"}
-    workload_base = {"benchmark_name": "tpch"}
-    art = tmp_path / "pipeline" / "artifacts" / "tpch" / "q18"
+    workload_aux = {"workload_kind": "aux_state", "benchmark_name": "tpch", "engine_name": "postgres"}
+    workload_base = {"benchmark_name": "tpch", "engine_name": "postgres"}
+    art = tmp_path / "pipeline" / "artifacts" / "tpch" / "q18" / "postgres"
     art.mkdir(parents=True)
 
     aux_path = art / "analysis.json"
@@ -36,11 +35,8 @@ def test_base_and_aux_analysis_paths_do_not_collide(tmp_path):
     assert analysis_artifact_path(tmp_path, 18, workload=workload_base) == base_path
 
 
-def test_legacy_base_analysis_fallback(tmp_path):
-    art = tmp_path / "pipeline" / "artifacts" / "tpch" / "q18"
-    art.mkdir(parents=True)
-    legacy = art / "analysis.json"
-    legacy.write_text(json.dumps({"logical_plan": {}, "scan_order": ["lineitem"]}), encoding="utf-8")
-
-    resolved = resolve_analysis_artifact_path(art, {"benchmark_name": "tpch"})
-    assert resolved == legacy
+def test_each_engine_has_its_own_artifact_tree(tmp_path):
+    workloads = {e: {"workload_kind": "aux_state", "benchmark_name": "tpch", "engine_name": e} for e in ("a", "b")}
+    paths = {e: analysis_artifact_path(tmp_path, 3, workload=w) for e, w in workloads.items()}
+    assert paths["a"].parent == tmp_path / "pipeline" / "artifacts" / "tpch" / "q3" / "a"
+    assert paths["a"].parent != paths["b"].parent

@@ -46,7 +46,7 @@ def test_sec_edgar_reference_sql_exists() -> None:
 def test_artifact_namespace() -> None:
     workload = load_workload("sec_edgar_q1", REPO_ROOT)
     art = query_artifacts_dir(REPO_ROOT, 1, workload=workload)
-    assert art == REPO_ROOT / "pipeline" / "artifacts" / "sec_edgar" / "q1"
+    assert art == REPO_ROOT / "pipeline" / "artifacts" / "sec_edgar" / "q1" / "duckdb"
 
 
 def test_apply_workload_overrides_merges_write_paths() -> None:
@@ -62,7 +62,7 @@ def test_apply_workload_overrides_merges_aux_stage_max_turns() -> None:
     from accel_pipeline.config import apply_workload_overrides
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-    workload = load_workload("tpch_q18_aux", REPO_ROOT)
+    workload = load_workload("tpch_q18_aux", REPO_ROOT, engine="duckdb")
     merged = apply_workload_overrides(pipeline_config, workload)
     assert merged.stage_max_turns["analysis"] == 24
     assert merged.stage_max_turns["implementation"] == 0
@@ -79,7 +79,7 @@ def test_aux_workload_allows_cmake_edits() -> None:
     from accel_pipeline.config import apply_workload_overrides
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-    workload = load_workload("tpch_q9_aux", REPO_ROOT)
+    workload = load_workload("tpch_q9_aux", REPO_ROOT, engine="duckdb")
     merged = apply_workload_overrides(pipeline_config, workload)
     assert "CMakeLists.txt" in merged.write_paths
     assert "accelerators/tpch/q9/**" in merged.write_paths
@@ -93,7 +93,7 @@ def test_aux_write_paths_register_from_query_dir_not_backend() -> None:
     from accel_pipeline.write_ownership import write_allowed
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-    workload = load_workload("tpch_q2_aux", REPO_ROOT)
+    workload = load_workload("tpch_q2_aux", REPO_ROOT, engine="duckdb")
     merged = apply_workload_overrides(pipeline_config, workload)
 
     def writable(path: Path) -> bool:

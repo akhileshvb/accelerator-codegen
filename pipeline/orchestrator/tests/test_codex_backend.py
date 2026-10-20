@@ -107,7 +107,7 @@ def test_mcp_tool_callables_include_profile_digest(tmp_path):
     from accel_pipeline.paths import query_artifacts_dir
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-    workload = load_workload("tpch_q3", REPO_ROOT)
+    workload = load_workload("tpch_q3", REPO_ROOT, engine="duckdb")
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     art = query_artifacts_dir(REPO_ROOT, 3, workload=workload)
     art.mkdir(parents=True, exist_ok=True)
@@ -129,7 +129,7 @@ def test_mcp_aux_tools_include_multi_connection(tmp_path):
     from accel_pipeline.paths import query_artifacts_dir
 
     pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
-    workload = load_workload("tpch_q14_aux", REPO_ROOT)
+    workload = load_workload("tpch_q14_aux", REPO_ROOT, engine="duckdb")
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     art = query_artifacts_dir(REPO_ROOT, 14, workload=workload)
     art.mkdir(parents=True, exist_ok=True)

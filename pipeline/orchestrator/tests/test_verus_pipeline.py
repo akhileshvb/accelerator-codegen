@@ -187,7 +187,7 @@ def test_front_end_routes_verus_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(vr, "run_verus_pipeline", fake_run)
     monkeypatch.setattr(rp, "load_repo_dotenv", lambda root: None)
     monkeypatch.setenv("OPENROUTER_API_KEY", "x")
-    rc = rp.main(["--query", "21", "--workload", "tpch_q21_aux", "--mode", "verus", "--stage", "spec",
+    rc = rp.main(["--query", "21", "--workload", "tpch_q21_aux", "--engine", "duckdb", "--mode", "verus", "--stage", "spec",
                   "--models-config", str(REPO / "pipeline" / "config" / "models.yaml")])
     assert rc == 0 and seen["workload_name"] == "tpch_q21_aux" and seen["stage"] == "spec"
 

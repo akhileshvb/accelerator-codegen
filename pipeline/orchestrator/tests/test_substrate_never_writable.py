@@ -24,6 +24,7 @@ from accel_pipeline.config import (
     load_pipeline_config,
     load_workload,
     resolve_workload_paths,
+    workload_supported_engines,
 )
 from accel_pipeline.write_ownership import shell_command_layer_write, write_allowed
 
@@ -59,7 +60,8 @@ def _loaded_workloads():
     out = []
     for name in _workload_names():
         try:
-            w = load_workload(name, REPO)
+            engine = "" if name.startswith("engine_") else workload_supported_engines(name, REPO)[0]
+            w = load_workload(name, REPO, engine=engine)
             merged = apply_workload_overrides(pc, w)
         except Exception:  # noqa: BLE001 - stale/partial workloads are other tests' concern
             continue
