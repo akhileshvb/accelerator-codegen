@@ -698,6 +698,9 @@
   "engine": 8,
   "path": 7
  },
+ "pipeline/orchestrator/tests/test_backend_api.py": {
+  "engine": 1
+ },
  "pipeline/orchestrator/tests/test_base_bench.py": {
   "engine": 3
  },
@@ -806,69 +809,33 @@
  "pipeline/orchestrator/tests/test_worker_resume.py": {
   "engine": 1
  },
- "pipeline/prompts/01_analysis.md": {
-  "engine": 1
- },
- "pipeline/prompts/02_implementation.md": {
-  "engine": 5,
-  "path": 1,
-  "symbol": 1
- },
- "pipeline/prompts/04_crash_debug.md": {
-  "engine": 3,
-  "symbol": 1
- },
  "pipeline/prompts/aux_state/01b_adversarial_tests.md": {
   "symbol": 1
- },
- "pipeline/prompts/aux_state/02_implementation.md": {
-  "engine": 6,
-  "path": 5,
-  "symbol": 5,
-  "target": 1
  },
  "pipeline/prompts/aux_state/03_optimization_unified.md": {
   "path": 2
  },
  "pipeline/prompts/aux_state/shared/agent_boundary.md": {
-  "engine": 2,
-  "symbol": 2
+  "symbol": 1
  },
  "pipeline/prompts/aux_state/shared/aux_state_taxonomy.md": {
   "symbol": 4
  },
  "pipeline/prompts/aux_state/shared/bench_sweep_contract.md": {
-  "engine": 6,
-  "path": 4,
-  "symbol": 4
+  "engine": 1,
+  "path": 1
  },
  "pipeline/prompts/aux_state/shared/concurrency_contract.md": {
-  "engine": 1,
   "path": 1
  },
  "pipeline/prompts/aux_state/shared/maintenance_framework.md": {
   "path": 3
  },
- "pipeline/prompts/aux_state/shared/module_layout.md": {
-  "engine": 4,
-  "path": 15,
-  "symbol": 3,
-  "target": 1
- },
  "pipeline/prompts/aux_state/shared/read_path_scaffold.md": {
-  "engine": 4,
-  "path": 5,
   "symbol": 2
  },
- "pipeline/prompts/aux_state/shared/registration_checklist.md": {
-  "engine": 4,
-  "symbol": 7
- },
  "pipeline/prompts/aux_state/shared/unit_test_contract.md": {
-  "engine": 4,
-  "path": 4,
-  "symbol": 4,
-  "target": 1
+  "symbol": 2
  },
  "pipeline/prompts/engine_backend/04_architecture_audit.md": {
   "symbol": 1
@@ -883,60 +850,19 @@
   "engine": 1,
   "symbol": 1
  },
- "pipeline/prompts/host_bootstrap.md": {
-  "engine": 14,
-  "path": 6,
-  "symbol": 3,
-  "target": 2
- },
- "pipeline/prompts/host_bootstrap_critique.md": {
-  "engine": 4,
-  "symbol": 1
- },
- "pipeline/prompts/sec_edgar/aux_state_notes.md": {
-  "engine": 1,
-  "path": 11
- },
- "pipeline/prompts/shared/base_kernel_optimization.md": {
-  "engine": 2
- },
  "pipeline/prompts/shared/codex_tooling.md": {
   "path": 1,
   "target": 1
  },
- "pipeline/prompts/shared/constraints.md": {
-  "engine": 1,
-  "symbol": 1
- },
- "pipeline/prompts/shared/engine_interfaces.md": {
-  "engine": 22,
-  "path": 4,
-  "symbol": 13
- },
  "pipeline/prompts/shared/generated_layout.md": {
-  "engine": 20,
-  "include": 1,
-  "path": 16,
-  "symbol": 14
- },
- "pipeline/prompts/shared/hard_guidelines.md": {
-  "engine": 1,
-  "path": 1,
-  "symbol": 1
- },
- "pipeline/prompts/shared/query_host_bootstrap.md": {
-  "engine": 11,
-  "symbol": 3
+  "path": 2
  },
  "pipeline/prompts/shared/scale_factor_contract.md": {
-  "engine": 3,
-  "symbol": 3,
-  "target": 1
+  "symbol": 3
  },
  "pipeline/prompts/shared/substrate_primitives.md": {
-  "engine": 2,
-  "path": 2,
-  "symbol": 4
+  "path": 1,
+  "symbol": 3
  },
  "pipeline/prompts/verus/03_tests.md": {
   "engine": 1
