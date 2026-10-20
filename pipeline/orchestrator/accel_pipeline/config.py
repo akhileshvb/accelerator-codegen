@@ -628,6 +628,8 @@ def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) ->
     data.setdefault("artifact_namespace", f"engines/{engine}")
     data.setdefault("prompt_subdir", str(defaults.get("prompt_subdir") or "engine_backend"))
     data.setdefault("query_number", 0)
+    # The benchmark whose schema and dataset the backend gates load (the backend names no query).
+    data.setdefault("dataset_benchmark", str(defaults.get("dataset_benchmark") or ""))
     data.setdefault(
         "allow_update_existing",
         bool(defaults.get("allow_update_existing", True)),

@@ -29,7 +29,17 @@ allowed_commands:
 # engine_slots.hpp); the runtime flow is substrate and frozen. Sequential
 # layers, one agent stage each; the orchestrator iterates until the layer's
 # gate passes. Analysis sketches every layer.
+# Schema and dataset (workloads/<bench>/schema.sql, ACCEL_DATASET_DIR) the backend gates load.
+dataset_benchmark: tpch
+
 implementation_layers:
+  # First: every later layer's gate reaches the engine through host.sh.
+  - id: hostctl
+    title: Host script (host_contract.md verbs)
+    gate: engine_hostctl
+    harness: backends/{engine}/host.sh
+    cmake_target: ""
+    rules: [host_contract]
   - id: capture
     title: Capture (S1)
     gate: engine_capture
@@ -61,12 +71,6 @@ implementation_layers:
     cmake_target: test_{engine}_host
     rules: [slot_entry, host_glue]
     skip_unless: requires_in_process_host
-  - id: hostctl
-    title: Host script (host_contract.md verbs)
-    gate: engine_hostctl
-    harness: backends/{engine}/host.sh
-    cmake_target: ""
-    rules: [host_contract]
   - id: api
     title: Accelerator-facing API and its manifest
     gate: engine_api_conformance

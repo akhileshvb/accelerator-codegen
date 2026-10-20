@@ -32,8 +32,8 @@ def test_load_engine_mysql_workload():
     assert w["target_paths"]["host_header"].endswith("backends/mysql/api/mysql_host.hpp")
     assert w["target_paths"]["capture_source"].endswith("backends/mysql/engine/capture.cpp")
     ids = [layer["id"] for layer in w["implementation_layers"]]
-    assert ids == ["capture", "epochs", "scan", "runtime", "host", "hostctl", "api"]
-    capture = w["implementation_layers"][0]
+    assert ids == ["hostctl", "capture", "epochs", "scan", "runtime", "host", "api"]
+    capture = next(layer for layer in w["implementation_layers"] if layer["id"] == "capture")
     assert capture["harness"] == "backends/mysql/tests/test_mysql_capture.cpp"
     assert capture["cmake_target"] == "test_mysql_capture"
     assert capture["gate"] == "engine_capture"
@@ -190,7 +190,7 @@ def test_render_engine_analysis_prompt():
 def test_render_impl_capture_prompt():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("engine_mysql", REPO_ROOT)
-    layer = implementation_layers(w)[0]
+    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
     text = render_prompt(
         pc,
         "02_implementation.md",
@@ -241,7 +241,7 @@ def test_impl_user_message_names_mcp_gate_calls():
 def test_postgres_impl_prompt_uses_docker_gates():
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     w = load_workload("engine_postgres", REPO_ROOT)
-    layer = implementation_layers(w)[0]
+    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
     text = render_prompt(
         pc,
         "02_implementation.md",
@@ -476,7 +476,7 @@ def test_render_layer_critique_prompt():
     w = load_workload("engine_postgres", REPO_ROOT)
     assert w["layer_critique_max_rounds"] == 2
     assert w["layer_gate_max_rounds"] == 3
-    layer = implementation_layers(w)[0]
+    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
     text = render_prompt(
         pc,
         "05_layer_critique.md",
@@ -626,7 +626,7 @@ def test_layer_gate_fail_reinvokes_impl(tmp_path, monkeypatch):
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     mc = load_model_config(repo_root=REPO_ROOT)
     w = load_workload("engine_mysql", REPO_ROOT)
-    layer = implementation_layers(w)[0]
+    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
     calls = {"impl": 0, "critique": 0, "gates": 0}
     user_messages: list[str] = []
 
@@ -704,7 +704,7 @@ def test_layer_gate_exhausted_rounds_raises(tmp_path, monkeypatch):
 
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     mc = load_model_config(repo_root=REPO_ROOT)
-    layer = implementation_layers(load_workload("engine_mysql", REPO_ROOT))[0]
+    layer = next(L for L in implementation_layers(load_workload("engine_mysql", REPO_ROOT)) if L["id"] == "capture")
     calls = {"impl": 0, "critique": 0}
 
     def fake_impl(**kwargs):
@@ -741,7 +741,7 @@ def test_layer_critique_fail_reinvokes_impl(tmp_path, monkeypatch):
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     mc = load_model_config(repo_root=REPO_ROOT)
     w = load_workload("engine_mysql", REPO_ROOT)
-    layer = implementation_layers(w)[0]
+    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
     calls = {"impl": 0, "critique": 0}
     user_messages: list[str] = []
 
@@ -807,7 +807,7 @@ def test_layer_critique_exhausted_rounds_raises(tmp_path, monkeypatch):
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     mc = load_model_config(repo_root=REPO_ROOT)
     w = load_workload("engine_mysql", REPO_ROOT)
-    layer = implementation_layers(w)[0]
+    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
 
     def fake_impl(**kwargs):
         return object()

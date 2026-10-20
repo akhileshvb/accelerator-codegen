@@ -44,7 +44,7 @@ def build_gate_context(
         "ctest_smoke_regex": paths["ctest_smoke_regex"],
         "dataset_db": str(paths["dataset_db"]),
         "dataset_dir": str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR", "")),
-        "schema_sql": workload_schema_sql(benchmark),
+        "schema_sql": workload_schema_sql(str(workload.get("dataset_benchmark") or benchmark)),
         "scale_dataset_dir": str(workload.get("scale_dataset_dir") or ""),
         "scale_db": str(paths.get("scale_db", "")),
         "db_env_var": paths["db_env_var"],

@@ -28,6 +28,7 @@ assert not missing, f"verbs missing: {sorted(missing)}"
 PY
 
 [[ -n "${SCHEMA_SQL}" && -n "${ACCEL_DATASET_DIR}" ]] || fail "gate context has no schema_sql / dataset_dir"
+[[ "${SCHEMA_SQL}" == /* ]] || SCHEMA_SQL="${ROOT}/${SCHEMA_SQL}"
 engine_steps "up" "load ${SCHEMA_SQL}" "load ${SCHEMA_SQL}" || fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
 [[ -s "${ACCEL_ENGINE_STATE_DIR}/env" ]] || fail "up wrote no ${ACCEL_ENGINE_STATE_DIR}/env" "${ENGINE_LOG}"
 OUT="$(echo "SELECT 1 AS one;" | engine_host sql -)" || fail "host.sh sql failed" "${OUT}"
