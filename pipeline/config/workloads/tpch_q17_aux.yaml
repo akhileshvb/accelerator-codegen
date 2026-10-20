@@ -2,43 +2,12 @@ workload_kind: aux_state
 benchmark_name: tpch
 query_number: 17
 engines: [duckdb, postgres, mysql]
-query_id: "17"
-accelerator_id: tpch_q17_aux
-base_function_name: accel_tpch_q17
-aux_function_name: accel_tpch_q17_aux
-
-requires_base_accelerator: true
-prerequisite_workload: tpch_q17
-prerequisite_min_stage: implementation
-reference_accelerators:
-  - accelerators/tpch/q14/duckdb/aux/module.cpp
-  - accelerators/tpch/q10/duckdb/aux/module.cpp
-  - accelerators/tpch/q18/duckdb/aux/module.cpp
-
-allow_poor_fitness: false
-allow_unsuccessful_design: false
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/17.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+reference_sql_path: workloads/tpch/instances/seed_1/17.sql
 parameters:
   - name: brand
     type: VARCHAR
   - name: container
     type: VARCHAR
-
-dependent_tables:
-  - name: lineitem
-    watched_columns: [l_partkey, l_quantity, l_extendedprice]
-  - name: part
-    watched_columns: [p_partkey, p_brand, p_container]
-
-partitioning: {}   # analysis stage will propose grain (e.g. partkey bands, brand+container)
-
-output_schema:
-  - name: avg_yearly
-    type: DECIMAL
-
 
 optimization_guidance: |
   Q17 is **part-grain aggregation + selective filter**:
@@ -53,9 +22,3 @@ optimization_guidance: |
 
   Full redesign is allowed (module.hpp + module.cpp + finalize.cpp + tests + cost model).
   Sources are bootstrapped; use `rip_grep` / `ast_grep` on reference aux modules. End with `HYPOTHESIS_PATCH_COMPLETE`.
-
-cmake:
-  query_num: 17
-  aux_state_module: accel_add_aux_state_query
-
-agent_boundary: prompts/aux_state/shared/agent_boundary.md

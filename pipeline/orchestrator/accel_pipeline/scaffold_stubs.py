@@ -7,6 +7,7 @@ from typing import Any
 
 from accel_pipeline.config import PipelineConfig, load_workload, resolve_workload_paths
 from accel_pipeline.paths import pipeline_root
+from accel_pipeline.workload_facts import with_facts
 
 
 def _substitute(template: str, values: dict[str, str]) -> str:
@@ -93,7 +94,7 @@ def materialize_workload_stubs(
     pipe = pipeline_config.pipeline_root
     paths = resolve_workload_paths(pipeline_config, workload, query)
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    values = _build_stub_values(workload, paths, query)
+    values = _build_stub_values(with_facts(repo, workload, query), paths, query)
 
     created: list[str] = []
     tpl_root = pipe / "templates" / "scaffold"
@@ -103,10 +104,13 @@ def materialize_workload_stubs(
         # Every query declares where its cost models live; each engine's
         # registration passes it on (catalog entry / Runtime).
         (tpl_root / "cost_model.hpp.tpl", repo / paths["cost_model_header_path"]),
-        (tpl_root / "header.hpp.tpl", repo / paths["header_path"]),
-        (tpl_root / "kernel.cpp.tpl", repo / paths["kernel_path"]),
-        (tpl_root / "package.cpp.tpl", repo / paths["package_path"]),
     ]
+    if paths["create_fn"]:  # the engine registers a per-query symbol (profile entry_points.registration_symbol)
+        stub_specs += [
+            (tpl_root / "header.hpp.tpl", repo / paths["header_path"]),
+            (tpl_root / "kernel.cpp.tpl", repo / paths["kernel_path"]),
+            (tpl_root / "package.cpp.tpl", repo / paths["package_path"]),
+        ]
     if str(workload.get("engine_name") or "") == "duckdb":
         # The query registers its table function from its own directory.
         stub_specs.append((tpl_root / "register.cpp.tpl", (repo / paths["package_path"]).parent / "register.cpp"))

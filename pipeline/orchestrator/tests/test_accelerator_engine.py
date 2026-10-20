@@ -145,8 +145,9 @@ def test_apply_workload_overrides_strips_duckdb_tf_for_postgres():
     assert any("postgres" in p for p in merged.write_paths)
 
 
-def test_duckdb_correctness_gate_context_db_env():
+def test_duckdb_correctness_gate_context_db_env(monkeypatch):
     """Regression: duckdb correctness still exposes ACCEL_TPCH_DB + dataset_db."""
+    monkeypatch.setenv("ACCEL_TPCH_DB", "/data/tpch_sf1.duckdb")
     pc = load_pipeline_config(repo_root=REPO_ROOT)
     ctx = build_gate_context(pc, _duckdb_workload("tpch_q6"), 6)
     assert ctx["engine_name"] == "duckdb"

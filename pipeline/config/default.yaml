@@ -1,9 +1,5 @@
-repo_root: /home/akhilvb/accelerator-codegen
-duckdb_root: /home/akhilvb/accelerator-codegen-duckdb
 build_dir: build-release
 # Query-accelerator workloads list their `engines:`; a run picks one (--engine / pack `engines:`).
-tpch_db_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
-tpch_db_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
 
 # Paths that require the shared-file lease under concurrent pack workers.
 shared_paths:
@@ -23,11 +19,14 @@ shared_paths:
   # Helpers shared by one benchmark's queries (frozen during concurrent optimization).
   - accelerators/*/common/**
 
+# Dataset databases are run parameters: each key names the environment variable
+# that holds the database path (unset: the dataset is unavailable to the run).
 datasets:
-  tpch_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
-  tpch_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
-  tpch_sf20: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf20.duckdb  # optional; manual production benchmark
-  sec_edgar_sf3: /home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb
+  tpch_sf1: ACCEL_TPCH_DB
+  tpch_sf10: ACCEL_TPCH_SF10_DB
+  tpch_sf20: ACCEL_TPCH_SF20_DB          # optional; manual production benchmark
+  tpch_test: ACCEL_TPCH_TEST_DB
+  sec_edgar_sf3: ACCEL_SEC_EDGAR_DB
 
 optimization:
   max_iterations: 3

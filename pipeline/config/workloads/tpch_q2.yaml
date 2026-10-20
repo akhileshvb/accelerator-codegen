@@ -1,13 +1,7 @@
 benchmark_name: tpch
 query_number: 2
 engines: [duckdb, postgres]
-query_id: "2"
-function_name: accel_tpch_q2
-create_fn: CreateTpchQ2FunctionSet
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/02.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+reference_sql_path: workloads/tpch/instances/seed_1/02.sql
 parameters:
   - name: part_size
     type: INTEGER
@@ -15,30 +9,3 @@ parameters:
     type: VARCHAR
   - name: region_name
     type: VARCHAR
-
-reference_accelerators: [11, 16, 17]
-
-output_schema:
-  - name: s_acctbal
-    type: DECIMAL
-  - name: s_name
-    type: VARCHAR
-  - name: n_name
-    type: VARCHAR
-  - name: p_partkey
-    type: BIGINT
-  - name: p_mfgr
-    type: VARCHAR
-  - name: s_address
-    type: VARCHAR
-  - name: s_phone
-    type: VARCHAR
-  - name: s_comment
-    type: VARCHAR
-
-tables:
-  - part
-  - supplier
-  - partsupp
-  - nation
-  - region

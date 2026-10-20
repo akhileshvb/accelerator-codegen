@@ -1,0 +1,1290 @@
+{
+ "sec_edgar_q1": {
+  "dependent_tables": [
+   {
+    "name": "pre",
+    "watched_columns": [
+     "adsh",
+     "line",
+     "stmt",
+     "rfile"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "stmt",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "rfile",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "cnt",
+    "type": "BIGINT"
+   },
+   {
+    "name": "num_filings",
+    "type": "BIGINT"
+   },
+   {
+    "name": "avg_line_num",
+    "type": "DOUBLE"
+   }
+  ]
+ },
+ "sec_edgar_q2": {
+  "dependent_tables": [
+   {
+    "name": "num",
+    "watched_columns": [
+     "adsh",
+     "tag",
+     "uom",
+     "value"
+    ]
+   },
+   {
+    "name": "sub",
+    "watched_columns": [
+     "adsh",
+     "name",
+     "fy"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "tag",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "value",
+    "type": "DOUBLE"
+   }
+  ]
+ },
+ "sec_edgar_q24": {
+  "dependent_tables": [
+   {
+    "name": "num",
+    "watched_columns": [
+     "adsh",
+     "tag",
+     "version",
+     "ddate",
+     "uom",
+     "value"
+    ]
+   },
+   {
+    "name": "pre",
+    "watched_columns": [
+     "adsh",
+     "tag",
+     "version"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "tag",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "version",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "cnt",
+    "type": "BIGINT"
+   },
+   {
+    "name": "total",
+    "type": "DOUBLE"
+   }
+  ]
+ },
+ "sec_edgar_q3": {
+  "dependent_tables": [
+   {
+    "name": "num",
+    "watched_columns": [
+     "adsh",
+     "uom",
+     "value"
+    ]
+   },
+   {
+    "name": "sub",
+    "watched_columns": [
+     "adsh",
+     "cik",
+     "name",
+     "fy"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "cik",
+    "type": "INTEGER"
+   },
+   {
+    "name": "total_value",
+    "type": "DOUBLE"
+   }
+  ]
+ },
+ "sec_edgar_q4": {
+  "dependent_tables": [
+   {
+    "name": "num",
+    "watched_columns": [
+     "adsh",
+     "tag",
+     "version",
+     "uom",
+     "value"
+    ]
+   },
+   {
+    "name": "sub",
+    "watched_columns": [
+     "adsh",
+     "cik",
+     "sic"
+    ]
+   },
+   {
+    "name": "tag",
+    "watched_columns": [
+     "tag",
+     "version",
+     "abstract",
+     "tlabel"
+    ]
+   },
+   {
+    "name": "pre",
+    "watched_columns": [
+     "adsh",
+     "stmt",
+     "tag",
+     "version"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "sic",
+    "type": "INTEGER"
+   },
+   {
+    "name": "tlabel",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "stmt",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "num_companies",
+    "type": "BIGINT"
+   },
+   {
+    "name": "total_value",
+    "type": "DOUBLE"
+   },
+   {
+    "name": "avg_value",
+    "type": "DOUBLE"
+   }
+  ]
+ },
+ "sec_edgar_q6": {
+  "dependent_tables": [
+   {
+    "name": "num",
+    "watched_columns": [
+     "adsh",
+     "tag",
+     "version",
+     "uom",
+     "value"
+    ]
+   },
+   {
+    "name": "sub",
+    "watched_columns": [
+     "adsh",
+     "name",
+     "fy"
+    ]
+   },
+   {
+    "name": "pre",
+    "watched_columns": [
+     "adsh",
+     "stmt",
+     "tag",
+     "version",
+     "plabel"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "stmt",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "tag",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "plabel",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "total_value",
+    "type": "DOUBLE"
+   },
+   {
+    "name": "cnt",
+    "type": "BIGINT"
+   }
+  ]
+ },
+ "tpch_q1": {
+  "dependent_tables": [
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_quantity",
+     "l_extendedprice",
+     "l_discount",
+     "l_tax",
+     "l_returnflag",
+     "l_linestatus",
+     "l_shipdate"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "l_returnflag",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "l_linestatus",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "sum_qty",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "sum_base_price",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "sum_disc_price",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "sum_charge",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "avg_qty",
+    "type": "DOUBLE"
+   },
+   {
+    "name": "avg_price",
+    "type": "DOUBLE"
+   },
+   {
+    "name": "avg_disc",
+    "type": "DOUBLE"
+   },
+   {
+    "name": "count_order",
+    "type": "BIGINT"
+   }
+  ]
+ },
+ "tpch_q10": {
+  "dependent_tables": [
+   {
+    "name": "customer",
+    "watched_columns": [
+     "c_custkey",
+     "c_name",
+     "c_address",
+     "c_nationkey",
+     "c_phone",
+     "c_acctbal",
+     "c_comment"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_custkey",
+     "o_orderdate"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_extendedprice",
+     "l_discount",
+     "l_returnflag"
+    ]
+   },
+   {
+    "name": "nation",
+    "watched_columns": [
+     "n_nationkey",
+     "n_name"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "c_custkey",
+    "type": "INTEGER"
+   },
+   {
+    "name": "c_name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "revenue",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "c_acctbal",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "n_name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "c_address",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "c_phone",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "c_comment",
+    "type": "VARCHAR"
+   }
+  ]
+ },
+ "tpch_q11": {
+  "dependent_tables": [
+   {
+    "name": "partsupp",
+    "watched_columns": [
+     "ps_partkey",
+     "ps_suppkey",
+     "ps_availqty",
+     "ps_supplycost"
+    ]
+   },
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_nationkey"
+    ]
+   },
+   {
+    "name": "nation",
+    "watched_columns": [
+     "n_nationkey",
+     "n_name"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "ps_partkey",
+    "type": "INTEGER"
+   },
+   {
+    "name": "value",
+    "type": "DECIMAL"
+   }
+  ]
+ },
+ "tpch_q12": {
+  "dependent_tables": [
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_orderpriority"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_shipdate",
+     "l_commitdate",
+     "l_receiptdate",
+     "l_shipmode"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "l_shipmode",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "high_line_count",
+    "type": "HUGEINT"
+   },
+   {
+    "name": "low_line_count",
+    "type": "HUGEINT"
+   }
+  ]
+ },
+ "tpch_q13": {
+  "dependent_tables": [
+   {
+    "name": "customer",
+    "watched_columns": [
+     "c_custkey"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_custkey",
+     "o_comment"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "c_count",
+    "type": "BIGINT"
+   },
+   {
+    "name": "custdist",
+    "type": "BIGINT"
+   }
+  ]
+ },
+ "tpch_q14": {
+  "dependent_tables": [
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_partkey",
+     "l_extendedprice",
+     "l_discount",
+     "l_shipdate"
+    ]
+   },
+   {
+    "name": "part",
+    "watched_columns": [
+     "p_partkey",
+     "p_type"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "promo_revenue",
+    "type": "DOUBLE"
+   }
+  ]
+ },
+ "tpch_q15": {
+  "dependent_tables": [
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_name",
+     "s_address",
+     "s_phone"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_suppkey",
+     "l_extendedprice",
+     "l_discount",
+     "l_shipdate"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "s_suppkey",
+    "type": "INTEGER"
+   },
+   {
+    "name": "s_name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "s_address",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "s_phone",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "total_revenue",
+    "type": "DECIMAL"
+   }
+  ]
+ },
+ "tpch_q16": {
+  "dependent_tables": [
+   {
+    "name": "partsupp",
+    "watched_columns": [
+     "ps_partkey",
+     "ps_suppkey"
+    ]
+   },
+   {
+    "name": "part",
+    "watched_columns": [
+     "p_partkey",
+     "p_brand",
+     "p_type",
+     "p_size"
+    ]
+   },
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_comment"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "p_brand",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "p_type",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "p_size",
+    "type": "INTEGER"
+   },
+   {
+    "name": "supplier_cnt",
+    "type": "BIGINT"
+   }
+  ]
+ },
+ "tpch_q17": {
+  "dependent_tables": [
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_partkey",
+     "l_quantity",
+     "l_extendedprice"
+    ]
+   },
+   {
+    "name": "part",
+    "watched_columns": [
+     "p_partkey",
+     "p_brand",
+     "p_container"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "avg_yearly",
+    "type": "DOUBLE"
+   }
+  ]
+ },
+ "tpch_q18": {
+  "dependent_tables": [
+   {
+    "name": "customer",
+    "watched_columns": [
+     "c_custkey",
+     "c_name"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_custkey",
+     "o_totalprice",
+     "o_orderdate"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_quantity"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "c_name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "c_custkey",
+    "type": "INTEGER"
+   },
+   {
+    "name": "o_orderkey",
+    "type": "INTEGER"
+   },
+   {
+    "name": "o_orderdate",
+    "type": "DATE"
+   },
+   {
+    "name": "o_totalprice",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "sum(l_quantity)",
+    "type": "DECIMAL"
+   }
+  ]
+ },
+ "tpch_q19": {
+  "dependent_tables": [
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_partkey",
+     "l_quantity",
+     "l_extendedprice",
+     "l_discount",
+     "l_shipinstruct",
+     "l_shipmode"
+    ]
+   },
+   {
+    "name": "part",
+    "watched_columns": [
+     "p_partkey",
+     "p_brand",
+     "p_size",
+     "p_container"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "revenue",
+    "type": "DECIMAL"
+   }
+  ]
+ },
+ "tpch_q2": {
+  "dependent_tables": [
+   {
+    "name": "part",
+    "watched_columns": [
+     "p_partkey",
+     "p_mfgr",
+     "p_type",
+     "p_size"
+    ]
+   },
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_name",
+     "s_address",
+     "s_nationkey",
+     "s_phone",
+     "s_acctbal",
+     "s_comment"
+    ]
+   },
+   {
+    "name": "partsupp",
+    "watched_columns": [
+     "ps_partkey",
+     "ps_suppkey",
+     "ps_supplycost"
+    ]
+   },
+   {
+    "name": "nation",
+    "watched_columns": [
+     "n_nationkey",
+     "n_name",
+     "n_regionkey"
+    ]
+   },
+   {
+    "name": "region",
+    "watched_columns": [
+     "r_regionkey",
+     "r_name"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "s_acctbal",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "s_name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "n_name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "p_partkey",
+    "type": "INTEGER"
+   },
+   {
+    "name": "p_mfgr",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "s_address",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "s_phone",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "s_comment",
+    "type": "VARCHAR"
+   }
+  ]
+ },
+ "tpch_q20": {
+  "dependent_tables": [
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_name",
+     "s_address",
+     "s_nationkey"
+    ]
+   },
+   {
+    "name": "nation",
+    "watched_columns": [
+     "n_nationkey",
+     "n_name"
+    ]
+   },
+   {
+    "name": "partsupp",
+    "watched_columns": [
+     "ps_partkey",
+     "ps_suppkey",
+     "ps_availqty"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_partkey",
+     "l_suppkey",
+     "l_quantity",
+     "l_shipdate"
+    ]
+   },
+   {
+    "name": "part",
+    "watched_columns": [
+     "p_partkey",
+     "p_name"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "s_name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "s_address",
+    "type": "VARCHAR"
+   }
+  ]
+ },
+ "tpch_q21": {
+  "dependent_tables": [
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_name",
+     "s_nationkey"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_suppkey",
+     "l_commitdate",
+     "l_receiptdate"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_orderstatus"
+    ]
+   },
+   {
+    "name": "nation",
+    "watched_columns": [
+     "n_nationkey",
+     "n_name"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "s_name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "numwait",
+    "type": "BIGINT"
+   }
+  ]
+ },
+ "tpch_q22": {
+  "dependent_tables": [
+   {
+    "name": "customer",
+    "watched_columns": [
+     "c_custkey",
+     "c_phone",
+     "c_acctbal"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_custkey"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "cntrycode",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "numcust",
+    "type": "BIGINT"
+   },
+   {
+    "name": "totacctbal",
+    "type": "DECIMAL"
+   }
+  ]
+ },
+ "tpch_q3": {
+  "dependent_tables": [
+   {
+    "name": "customer",
+    "watched_columns": [
+     "c_custkey",
+     "c_mktsegment"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_custkey",
+     "o_orderdate",
+     "o_shippriority"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_extendedprice",
+     "l_discount",
+     "l_shipdate"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "l_orderkey",
+    "type": "INTEGER"
+   },
+   {
+    "name": "revenue",
+    "type": "DECIMAL"
+   },
+   {
+    "name": "o_orderdate",
+    "type": "DATE"
+   },
+   {
+    "name": "o_shippriority",
+    "type": "INTEGER"
+   }
+  ]
+ },
+ "tpch_q4": {
+  "dependent_tables": [
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_orderdate",
+     "o_orderpriority"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_commitdate",
+     "l_receiptdate"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "o_orderpriority",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "order_count",
+    "type": "BIGINT"
+   }
+  ]
+ },
+ "tpch_q5": {
+  "dependent_tables": [
+   {
+    "name": "customer",
+    "watched_columns": [
+     "c_custkey",
+     "c_nationkey"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_custkey",
+     "o_orderdate"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_suppkey",
+     "l_extendedprice",
+     "l_discount"
+    ]
+   },
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_nationkey"
+    ]
+   },
+   {
+    "name": "nation",
+    "watched_columns": [
+     "n_nationkey",
+     "n_name",
+     "n_regionkey"
+    ]
+   },
+   {
+    "name": "region",
+    "watched_columns": [
+     "r_regionkey",
+     "r_name"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "n_name",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "revenue",
+    "type": "DECIMAL"
+   }
+  ]
+ },
+ "tpch_q6": {
+  "dependent_tables": [
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_quantity",
+     "l_extendedprice",
+     "l_discount",
+     "l_shipdate"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "revenue",
+    "type": "DECIMAL"
+   }
+  ]
+ },
+ "tpch_q7": {
+  "dependent_tables": [
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_nationkey"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_suppkey",
+     "l_extendedprice",
+     "l_discount",
+     "l_shipdate"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_custkey"
+    ]
+   },
+   {
+    "name": "customer",
+    "watched_columns": [
+     "c_custkey",
+     "c_nationkey"
+    ]
+   },
+   {
+    "name": "nation",
+    "watched_columns": [
+     "n_nationkey",
+     "n_name"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "supp_nation",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "cust_nation",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "l_year",
+    "type": "BIGINT"
+   },
+   {
+    "name": "revenue",
+    "type": "DECIMAL"
+   }
+  ]
+ },
+ "tpch_q8": {
+  "dependent_tables": [
+   {
+    "name": "part",
+    "watched_columns": [
+     "p_partkey",
+     "p_type"
+    ]
+   },
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_nationkey"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_partkey",
+     "l_suppkey",
+     "l_extendedprice",
+     "l_discount"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_custkey",
+     "o_orderdate"
+    ]
+   },
+   {
+    "name": "customer",
+    "watched_columns": [
+     "c_custkey",
+     "c_nationkey"
+    ]
+   },
+   {
+    "name": "nation",
+    "watched_columns": [
+     "n_nationkey",
+     "n_name",
+     "n_regionkey"
+    ]
+   },
+   {
+    "name": "region",
+    "watched_columns": [
+     "r_regionkey",
+     "r_name"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "o_year",
+    "type": "BIGINT"
+   },
+   {
+    "name": "mkt_share",
+    "type": "DOUBLE"
+   }
+  ]
+ },
+ "tpch_q9": {
+  "dependent_tables": [
+   {
+    "name": "part",
+    "watched_columns": [
+     "p_partkey",
+     "p_name"
+    ]
+   },
+   {
+    "name": "supplier",
+    "watched_columns": [
+     "s_suppkey",
+     "s_nationkey"
+    ]
+   },
+   {
+    "name": "lineitem",
+    "watched_columns": [
+     "l_orderkey",
+     "l_partkey",
+     "l_suppkey",
+     "l_quantity",
+     "l_extendedprice",
+     "l_discount"
+    ]
+   },
+   {
+    "name": "partsupp",
+    "watched_columns": [
+     "ps_partkey",
+     "ps_suppkey",
+     "ps_supplycost"
+    ]
+   },
+   {
+    "name": "orders",
+    "watched_columns": [
+     "o_orderkey",
+     "o_orderdate"
+    ]
+   },
+   {
+    "name": "nation",
+    "watched_columns": [
+     "n_nationkey",
+     "n_name"
+    ]
+   }
+  ],
+  "output_schema": [
+   {
+    "name": "nation",
+    "type": "VARCHAR"
+   },
+   {
+    "name": "o_year",
+    "type": "BIGINT"
+   },
+   {
+    "name": "sum_profit",
+    "type": "DECIMAL"
+   }
+  ]
+ }
+}

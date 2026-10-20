@@ -1,40 +1,7 @@
 benchmark_name: tpch
 query_number: 1
-query_id: "1"
 engines: [duckdb, postgres]
-function_name: accel_tpch_q1
-create_fn: CreateTpchQ1FunctionSet
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/01.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+reference_sql_path: workloads/tpch/instances/seed_1/01.sql
 parameters:
   - name: day_offset
     type: INTEGER
-
-reference_accelerators: []
-
-output_schema:
-  - name: l_returnflag
-    type: VARCHAR
-  - name: l_linestatus
-    type: VARCHAR
-  - name: sum_qty
-    type: DECIMAL
-  - name: sum_base_price
-    type: DECIMAL
-  - name: sum_disc_price
-    type: DECIMAL
-  - name: sum_charge
-    type: DECIMAL
-  - name: avg_qty
-    type: DECIMAL
-  - name: avg_price
-    type: DECIMAL
-  - name: avg_disc
-    type: DECIMAL
-  - name: count_order
-    type: BIGINT
-
-tables:
-  - lineitem

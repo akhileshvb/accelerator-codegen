@@ -107,6 +107,7 @@ engine_profile:
     mechanism: "C functions in the loaded MODULE declared with PG_FUNCTION_INFO_V1 and created by CREATE FUNCTION ... LANGUAGE C; set-returning functions return rows through the SRF protocol (value-per-call or materialize mode); the SQL that creates them is the extension script."
     argument_passing: "Datum arguments with a null flag (PG_ARGISNULL); STRICT functions are not called for NULL arguments; types come from the declared SQL signature."
     result_return: "Rows are returned as Datums per the declared output columns; the declared type decides the Datum representation (numeric vs float8 vs int8)."
+    registration_symbol: {na: "functions are named by CREATE FUNCTION DDL and PG_FUNCTION_INFO_V1 shims, not by a per-query registration symbol"}
 
   thread_knobs:
     mechanism: "Custom GUCs (DefineCustomIntVariable) set by ALTER SYSTEM / postgresql.conf / SET and reloaded on SIGHUP; a client environment variable does not reach the server process."

@@ -31,6 +31,7 @@ from accel_pipeline.engine_profile import render_engine_profile
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
 from accel_pipeline.models import is_critique_stage, is_implementation_stage
 from accel_pipeline.optimization_runtime import runtime_path_for_prompt
+from accel_pipeline.workload_facts import with_facts
 from accel_pipeline.paths import (
     load_query_analysis,
     pipeline_root,
@@ -211,6 +212,8 @@ def build_prompt_context(
     pipe = pipeline_config.pipeline_root
     art = query_artifacts_dir(repo, query, workload=workload)
     is_aux = workload.get("workload_kind") == "aux_state"
+    if workload.get("workload_kind") != "engine_backend":
+        workload = with_facts(repo, workload, query)
 
     reference_sql = ""
     reference_sql_path = ""
@@ -221,18 +224,6 @@ def build_prompt_context(
             reference_sql = Path(ref_path).read_text(encoding="utf-8")
 
     import yaml
-
-    refs = workload.get("reference_accelerators", [])
-    if refs:
-        optional_reference_accelerators = (
-            "## Optional reference accelerators\n\n"
-            f"Inspect if helpful (not required): {', '.join(str(x) for x in refs)}"
-        )
-    else:
-        optional_reference_accelerators = (
-            "## Reference accelerators\n\n"
-            "None configured. Design from SQL, workload YAML, and shared pattern docs only."
-        )
 
     constraints_path = (
         pipe / "prompts" / "aux_state" / "shared" / "constraints.md"
@@ -576,8 +567,6 @@ def build_prompt_context(
         "output_schema_yaml": yaml.safe_dump(workload.get("output_schema", [])) if stage == "analysis" else "",
         "dependent_tables_yaml": yaml.safe_dump(workload.get("dependent_tables", [])) if stage == "analysis" else "",
         "partitioning_yaml": yaml.safe_dump(workload.get("partitioning", {})) if stage == "analysis" else "",
-        "reference_accelerators": ", ".join(str(x) for x in refs),
-        "optional_reference_accelerators": optional_reference_accelerators,
         "accelerator_id": str(workload.get("accelerator_id", "")),
         "base_function_name": str(workload.get("base_function_name", "")),
         "aux_function_name": str(workload.get("aux_function_name", "")),

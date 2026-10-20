@@ -46,27 +46,6 @@ def build_implementation_bootstrap(
         else:
             lines.append(f"- `{item}`")
 
-    lines.extend(["", "### Reference aux modules (read each once, in full)", ""])
-    ref_paths: list[str] = []
-    for ref in workload.get("reference_accelerators") or []:
-        ref_str = str(ref)
-        if ref_str.endswith(".cpp") or ref_str.endswith(".hpp"):
-            if _existing(repo, ref_str):
-                ref_paths.append(ref_str)
-            continue
-        for suffix in ("aux/module.hpp", "aux/module.cpp", "aux/finalize.hpp", "aux/finalize.cpp"):
-            candidate = f"accelerators/{benchmark}/{ref_str}/{engine}/{suffix}"
-            if _existing(repo, candidate):
-                ref_paths.append(candidate)
-    if not ref_paths:
-        for fallback_q in (14, 10, 3, 1):
-            for suffix in ("aux/module.hpp", "aux/module.cpp"):
-                candidate = f"accelerators/{benchmark}/q{fallback_q}/{engine}/{suffix}"
-                if _existing(repo, candidate):
-                    ref_paths.append(candidate)
-    for path in ref_paths[:6]:
-        lines.append(f"- `{path}`")
-
     lines.extend(["", "### Templates & gates (only if needed after module.cpp exists)", ""])
     templates = [
         f"{qdir}/{engine}/base/single-threaded/kernel.cpp",

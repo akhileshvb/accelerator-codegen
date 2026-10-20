@@ -1,5 +1,11 @@
 # Shared aux-state pipeline settings merged into PipelineConfig when workload_kind=aux_state.
 
+# Run policy of an aux workload; a workload's own value wins.
+requires_base_accelerator: true
+prerequisite_min_stage: implementation
+allow_poor_fitness: false
+allow_unsuccessful_design: false
+
 write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake

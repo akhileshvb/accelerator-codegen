@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.20)
 
 project(accelerator_codegen LANGUAGES CXX)
 
+# TPC-H query instances (workloads/tpch/instances/seed_N/NN.sql) read by the accelerator tests and benchmarks.
+add_compile_definitions(ACCEL_TPCH_INSTANCES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/workloads/tpch/instances")
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

@@ -1,23 +1,8 @@
 benchmark_name: sec_edgar
 query_number: 6
 engines: [duckdb]
-query_id: "6"
 reference_sql_path: workloads/sec_edgar/q6.sql
 parameters:   # spec: eval/bench/sec_edgar/params/q6.json (zero-arg function = defaults)
   - {name: fy, type: BIGINT, default: 2023, domain: [2021, 2022, 2023, 2024]}
   - {name: stmt, type: VARCHAR, default: "IS", domain: ["BS", "IS", "CF", "EQ", "CI"]}
   - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
-output_schema:
-  - {name: name, type: VARCHAR}
-  - {name: stmt, type: VARCHAR}
-  - {name: tag, type: VARCHAR}
-  - {name: plabel, type: VARCHAR}
-  - {name: total_value, type: DOUBLE}
-  - {name: cnt, type: BIGINT}
-tables: [num, sub, pre]
-reference_accelerators:
-  - accelerators/sec_edgar/q4/duckdb/base/single-threaded/kernel.cpp
-  - accelerators/sec_edgar/q4/duckdb/base/query.hpp
-  - accelerators/sec_edgar/q3/duckdb/base/single-threaded/kernel.cpp
-  - accelerators/sec_edgar/q1/duckdb/base/single-threaded/package.cpp
-  - accelerators/sec_edgar/q4/bench/benchmark_q4.cpp

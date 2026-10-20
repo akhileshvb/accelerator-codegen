@@ -115,6 +115,7 @@ engine_profile:
     mechanism: "TableFunction objects (bind / init / function callbacks) registered in the system catalog of a Connection; a bind_replace callback can replace the call with a parsed query plan at bind time."
     argument_passing: "Function arguments are Values in the bind input; NULL is a null Value; parameters of a prepared statement are bound at bind time."
     result_return: "Rows are emitted as DataChunks of typed vectors; the declared return types fix the vector types."
+    registration_symbol: "Create{Bench}Q{N}FunctionSet"   # the TableFunctionSet factory each query registers with BaseFunctionSetRegistrar
 
   thread_knobs:
     mechanism: "Database configuration (SET threads / PRAGMA threads, DBConfig options at open); per database instance."

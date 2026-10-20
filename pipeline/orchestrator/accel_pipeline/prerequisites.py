@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from accel_pipeline import naming
 from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
@@ -17,12 +18,7 @@ from accel_pipeline.paths import analysis_artifact_path, load_query_analysis
 
 
 def base_smoke_test_ctest_regex(workload: dict, query: int) -> str:
-    benchmark = str(workload.get("benchmark_name", "tpch"))
-    smoke_suffix = str(workload.get("ctest_smoke_suffix", "_smoke_test"))
-    explicit = workload.get("ctest_smoke_regex")
-    if explicit:
-        return str(explicit)
-    return f"^{benchmark}_q{query}{smoke_suffix}$"
+    return f"^{naming.smoke_ctest_name(str(workload.get('benchmark_name', 'tpch')), query)}$"
 
 
 def base_accelerator_header_path(repo_root: Path, workload: dict, query: int) -> Path:
@@ -57,7 +53,7 @@ def base_accelerator_exists(repo_root: Path, workload: dict, query: int) -> bool
 
 
 def base_smoke_test_binary_path(build_dir: Path, workload: dict, query: int) -> Path:
-    test_target = str(workload.get("test_target", f"test_{workload.get('benchmark_name', 'tpch')}_q{query}"))
+    test_target = naming.unit_test_target(str(workload.get("benchmark_name", "tpch")), query)
     return build_dir / test_target
 
 
@@ -65,7 +61,7 @@ def ensure_smoke_test_binary(build_dir: Path, workload: dict, query: int) -> Pat
     binary = base_smoke_test_binary_path(build_dir, workload, query)
     if binary.is_file():
         return binary
-    target = str(workload.get("test_target", f"test_{workload.get('benchmark_name', 'tpch')}_q{query}"))
+    target = naming.unit_test_target(str(workload.get("benchmark_name", "tpch")), query)
     subprocess.run(
         ["cmake", "--build", str(build_dir), "--target", target],
         cwd=build_dir,
@@ -177,7 +173,7 @@ def ensure_base_accelerator_prerequisite(
         return False
 
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    prereq_name = workload.get("prerequisite_workload") or f"{benchmark}_q{query}"
+    prereq_name = naming.base_workload_name(benchmark, query)
     engine = pipeline_config.engine_name
     if engine not in workload_supported_engines(str(prereq_name), pipeline_config.repo_root):
         print(
