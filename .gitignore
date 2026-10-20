@@ -54,3 +54,8 @@ pipeline/orchestrator/.venv/
 
 # Primitive staging area (agents stage candidate prims files here; primitive_publish is the only way in)
 pipeline/prims_staging/
+
+# clean-tree sandbox (pipeline/clean_tree/sandbox.sh)
+.home/
+.data/
+.venv/
