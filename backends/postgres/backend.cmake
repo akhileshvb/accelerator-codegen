@@ -14,13 +14,15 @@ add_executable(test_shard_segment
     backends/postgres/state/shard_segment.cpp
     backends/postgres/state/shm_ring.cpp
 )
-foreach(_target IN ITEMS test_shm_ring test_shard_segment)
-    target_include_directories(${_target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_executable(test_pg_numeric backends/postgres/tests/test_pg_numeric.cpp)
+foreach(_target IN ITEMS test_shm_ring test_shard_segment test_pg_numeric)
+    target_include_directories(${_target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
     target_link_libraries(${_target} PRIVATE Threads::Threads)
 endforeach()
 if(BUILD_TESTING)
     add_test(NAME shm_ring_test COMMAND test_shm_ring)
     add_test(NAME shard_segment_test COMMAND test_shard_segment)
+    add_test(NAME pg_numeric_test COMMAND test_pg_numeric)
 endif()
 
 accel_backend_library(

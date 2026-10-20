@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #pragma once
 //
 // mysql_collation (FoldAscii, EqualsCi, LessCi)

@@ -33,7 +33,7 @@ Everything below exists; use it before writing a private equivalent. Rules for *
 
 ## Value and state types (`aux_types.hpp`)
 
-- `ScaledDecimal128` / `AuxType::ScaledDecimal128` (DECIMAL(38, scale), `__int128`), `ScaledDecimal128ToString`; `ScaledDecimal` is 64-bit. Use the 128-bit type for any emitted or stored sum; `accelerators/prims/int128_acc.hpp` (`i128::*`, overflow-checked) for accumulation, `decimal_text.hpp`, `pg_numeric*.hpp`, `mysql_decimal.hpp` for engine-exact text and division.
+- `ScaledDecimal128` / `AuxType::ScaledDecimal128` (DECIMAL(38, scale), `__int128`), `ScaledDecimal128ToString`; `ScaledDecimal` is 64-bit. Use the 128-bit type for any emitted or stored sum; `accelerators/prims/int128_acc.hpp` (`i128::*`, overflow-checked) for accumulation and `decimal_text.hpp` for decimal text in and out. Engine-exact division, AVG scale and collation are the backend's value-semantics headers, listed in its `api/README.md`.
 - `AuxDate` (days since 1970), `sql_date::*` (`DaysFromCivil`, `CivilFromDays`, `AddMonths`, `AddYears`, ...: no local civil-date code or epoch constants in a module), `sql_like::*` for LIKE.
 - `PartitionId` (`uint64_t`) / `PartitionKey` (`int64_t`), `Version`, `kNewestVersion`: 64-bit identities; never narrow them.
 - `StateImage::Make<T>(accelerator, partition, version, shared_ptr<const T>)` / `As<T>()`: the typed immutable payload of a partition; `StateBuilder::Write` + `Finish` in `Build` (serial, calling thread).

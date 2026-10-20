@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "prims/pg_numeric.hpp"
+#include "prims/decimal_text.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -115,7 +115,7 @@ core::AuxRow MakeRow(int64_t partkey, Q11AccT value) {
   } else {
     // Beyond int64: exact decimal text.
     row.values.push_back(core::AuxValue::Of(
-        core::AuxType::String, pg_numeric::ToText(value, 2)));
+        core::AuxType::String, core::decimal_text::ToText(value, 2)));
   }
   return row;
 }

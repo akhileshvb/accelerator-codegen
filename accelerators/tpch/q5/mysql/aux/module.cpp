@@ -1,7 +1,7 @@
 #include "tpch/q5/mysql/aux/module.hpp"
 #include "tpch/q5/calibration_writes.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
-#include "prims/mysql_collation.hpp"
+#include "backends/mysql/api/mysql_collation.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"

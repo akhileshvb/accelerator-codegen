@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "prims/pg_numeric.hpp"
+#include "prims/decimal_text.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -38,7 +38,7 @@ void TpchQ5FinalizeAndEmit(std::vector<TpchQ5Group> groups,
                      core::ScaledDecimal{static_cast<int64_t>(group.revenue), 4})
                : core::AuxValue::Of(
                      core::AuxType::String,
-                     pg_numeric::ToText(group.revenue, 4))}});
+                     core::decimal_text::ToText(group.revenue, 4))}});
   }
   sink.End();
 }

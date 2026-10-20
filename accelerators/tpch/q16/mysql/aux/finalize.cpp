@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "prims/mysql_collation.hpp"
+#include "backends/mysql/api/mysql_collation.hpp"
 #include "prims/sql_like.hpp"
 
 namespace accelerator_codegen::aux_state::query {

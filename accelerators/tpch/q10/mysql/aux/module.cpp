@@ -8,7 +8,7 @@
 #include <string_view>
 #include <utility>
 
-#include "prims/pg_numeric.hpp"
+#include "prims/decimal_text.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
@@ -20,7 +20,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 namespace sql_date = core::sql_date;
-using Int128 = ::accelerator_codegen::pg_numeric::Int128;
+using Int128 = ::accelerator_codegen::aux_state::core::decimal_text::Int128;
 
 constexpr core::PartitionId kStatePartition =
     core::TpchQ10Layout::kCustomerDimensions;
@@ -731,14 +731,14 @@ void TpchQ10Module::EmitResult(const TpchQ10State &s,
     const auto nation = s.nations.find(s.customer_nation.Get(c.custkey));
     if (nation == s.nations.end())
       continue;
-    namespace pgn = ::accelerator_codegen::pg_numeric;
+    namespace dec = ::accelerator_codegen::aux_state::core::decimal_text;
     sink.WriteRow(
         {{core::AuxValue::Of(core::AuxType::Int64, c.custkey),
           core::AuxValue::Of(core::AuxType::String, rec.name),
           core::AuxValue::Of(core::AuxType::String,
-                             pgn::ToText(c.revenue, kTpchQ10RevenueScale)),
+                             dec::ToText(c.revenue, kTpchQ10RevenueScale)),
           core::AuxValue::Of(core::AuxType::String,
-                             pgn::ToText(rec.acctbal_raw, 2)),
+                             dec::ToText(rec.acctbal_raw, 2)),
           core::AuxValue::Of(core::AuxType::String, nation->second),
           core::AuxValue::Of(core::AuxType::String, rec.address),
           core::AuxValue::Of(core::AuxType::String, rec.phone),

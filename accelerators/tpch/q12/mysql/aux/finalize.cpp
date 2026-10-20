@@ -1,5 +1,5 @@
 #include "tpch/q12/mysql/aux/module.hpp"
-#include "prims/mysql_collation.hpp"
+#include "backends/mysql/api/mysql_collation.hpp"
 
 #include <algorithm>
 #include <string>

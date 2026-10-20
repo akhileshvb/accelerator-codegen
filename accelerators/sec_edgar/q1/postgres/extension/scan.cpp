@@ -15,9 +15,11 @@
 #include <stdexcept>
 #include <string>
 
+#include "prims/decimal_text.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 
 #include "backends/postgres/api/engine_helpers.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 #include "backends/postgres/api/engine_runtime.hpp"
 #include "backends/postgres/api/runtime.hpp"
 
@@ -32,6 +34,11 @@ extern "C" {
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
+
+// AVG(integer) is numeric in PostgreSQL: sum / count at its result scale.
+std::string PostgresAvgText(__int128 sum, int64_t count) {
+  return core::decimal_text::ToText(pg_numeric::AvgOfScaledSum(sum, 0, count));
+}
 
 // Table id the capture trigger passes for `pre` (scripts/*sec_edgar*mutation_triggers.sql).
 constexpr core::TableId kPreTableId = 3;
@@ -186,7 +193,7 @@ Q1Runtime &SecEdgarQ1RuntimeInstance(const int (&attno)[4]) {
   if (!runtime) {
     query::SecEdgarQ1Config config;
     config.pre_table = kPreTableId;
-    config.numeric_avg = true;
+    config.avg_text = &PostgresAvgText;
     for (int a : attno) {
       config.pre_attnums.push_back(a - 1);
     }

@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "prims/mysql_collation.hpp"
+#include "backends/mysql/api/mysql_collation.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
@@ -24,7 +24,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 namespace sql_date = core::sql_date;
-using Int128 = ::accelerator_codegen::pg_numeric::Int128;
+using Int128 = ::accelerator_codegen::aux_state::core::decimal_text::Int128;
 
 constexpr core::PartitionId kStatePartition = core::TpchQ7Layout::kSidePartition;
 // Revenue = price * (1 - discount): both numeric(15,2) -> scale 4.
@@ -788,7 +788,7 @@ void TpchQ7Module::EmitResult(const TpchQ7State &state,
         core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(row.year)));
     out.values.push_back(core::AuxValue::Of(
         core::AuxType::String,
-        ::accelerator_codegen::pg_numeric::ToText(row.revenue, kRevenueScale)));
+        ::accelerator_codegen::aux_state::core::decimal_text::ToText(row.revenue, kRevenueScale)));
     sink.WriteRow(out);
   }
   sink.End();

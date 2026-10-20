@@ -1,6 +1,6 @@
 #include "tpch/q6/postgres/aux/module.hpp"
 #include "tpch/q6/calibration_writes.hpp"
-#include "prims/pg_numeric.hpp"
+#include "prims/decimal_text.hpp"
 
 #include <algorithm>
 #include <map>
@@ -422,7 +422,7 @@ void TpchQ6Module::EmitResult(const ::accelerator_codegen::Q6Result &result,
   else
     sink.WriteRow({{core::AuxValue::Of(
         core::AuxType::String,
-        ::accelerator_codegen::pg_numeric::ToText(result.revenue, 4))}});
+        ::accelerator_codegen::aux_state::core::decimal_text::ToText(result.revenue, 4))}});
   sink.End();
 }
 
