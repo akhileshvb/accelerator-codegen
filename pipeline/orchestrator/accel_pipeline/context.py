@@ -321,7 +321,7 @@ def build_prompt_context(
                 f"(base API: `accelerators/sec_edgar/q{query}/{engine_name}/base/query.hpp`).\n"
                 "- Write workload suite is **`filing_append`** / **`value_append`**, not TPC-H `lineitem` point updates.\n"
                 "- Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/prompts/sec_edgar/aux_state_notes.md`.\n"
-                "- Register with `accel_add_aux_state_query(BENCHMARK sec_edgar QUERY_NUM N ...)` in CMakeLists.txt.\n"
+                "- The aux state is discovered from `aux/finalize.cpp`; no CMake registration.\n"
                 "- Scale: SF3 is both iteration and production scale here — still size from `row_estimate`, not profile snapshots."
             )
         optimization_gate_suffix = " → profile"

@@ -59,7 +59,7 @@ def _implementation_user_message(
         )
     return (
         "RESUME partial aux implementation: sources already exist on disk from a prior run. "
-        "Do NOT rewrite module.hpp/module.cpp from scratch or explore AuxState.cmake unless fixing CMake registration.\n"
+        "Do NOT rewrite module.hpp/module.cpp from scratch or explore cmake/ (never edited).\n"
         f"Host engine: {engine}. Registered CMake targets: {test_target}, {bench_target}, "
         f"{calibrate_target}, {diff_bin}.\n"
         "Correctness requires SF1 SQL differential on the engine-selected host "

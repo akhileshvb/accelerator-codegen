@@ -25,7 +25,7 @@ Do **not** hand-write timing loops or CSV output here; that belongs in `benchmar
 
 See `pipeline/prompts/sec_edgar/aux_state_notes.md` for benchmark-specific naming.
 
-CMake: bench/calibrate targets are **auto-discovered**, and the module test target is created from the query's registration file. Edit `CMakeLists.txt` only when auto-discovery is insufficient; follow `cmake/AuxState.cmake` and neighboring queries.
+CMake: the module is discovered from `<engine>/aux/finalize.cpp` (`accel_register_aux_state_queries`, `cmake/AuxState.cmake`); bench/calibrate targets are the backend's shared harness. Neither `CMakeLists.txt` nor `cmake/` is edited.
 
 The aux benchmark **must** implement the write-frequency sweep contract in `bench_sweep_contract.md` (not a read-only stub).
 

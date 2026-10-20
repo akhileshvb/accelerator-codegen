@@ -570,13 +570,9 @@ def _normalize_accelerator_engine(data: dict[str, Any], engine: str, repo_root: 
     writes = list(data.get("write_paths") or [])
     # The query's run owns its directory (one glob); backends/<engine>/** belongs to
     # the engine_backend run and substrate/** to nobody (write_ownership enforces both).
-    for extra in (
-        query_glob(bench, qnum) if qnum is not None else "",
-        "CMakeLists.txt",
-        "cmake/**",
-    ):
-        if extra and extra not in writes:
-            writes.append(extra)
+    extra = query_glob(bench, qnum) if qnum is not None else ""
+    if extra and extra not in writes:
+        writes.append(extra)
 
     if host["agent_builds_query_host"] and host["differential_source"] not in writes:
         writes.append(host["differential_source"])
@@ -970,7 +966,7 @@ def _apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[st
     # (backends/<engine>/** stays the engine_backend run's; see write_ownership).
     host = workload.get("engine_host") or {}
     if workload.get("workload_kind") != "engine_backend" and host.get("agent_builds_query_host"):
-        for extra in (host["differential_source"], "CMakeLists.txt", "cmake/**"):
+        for extra in (host["differential_source"],):
             if extra not in extra_write_paths:
                 extra_write_paths.append(extra)
         extra_write_paths = _dedupe_preserve(extra_write_paths)

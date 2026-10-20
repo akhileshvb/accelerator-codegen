@@ -7,8 +7,6 @@ allow_poor_fitness: false
 allow_unsuccessful_design: false
 
 write_paths:
-  - CMakeLists.txt
-  - cmake/AuxState.cmake
   # the query's own tree: module, layout, registrars (engine backends name no query)
   - accelerators/*/q*/**
   - eval/tests/test_support/**

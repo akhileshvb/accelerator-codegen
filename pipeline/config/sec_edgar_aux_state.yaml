@@ -1,8 +1,6 @@
 # SEC EDGAR aux-state overrides merged when benchmark_name=sec_edgar and workload_kind=aux_state.
 
 write_paths:
-  - CMakeLists.txt
-  - cmake/AuxState.cmake
   # the query's own tree: module, layout, registrars (engine backends name no query)
   - accelerators/sec_edgar/q*/**
   - eval/tests/test_support/cross_accel_helpers.cpp

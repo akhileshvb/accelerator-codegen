@@ -16,12 +16,7 @@ Use these conventions when `benchmark_name: sec_edgar` (`{bench}`) and `workload
 | Tests | `accelerators/{bench}/q{N}/tests/test_sec_edgar_q{N}.cpp`, `test_sec_edgar_q{N}_*.cpp` |
 | Write-freq benchmark | `accelerators/{bench}/q{N}/bench/bench_sec_edgar_q{N}_aux.cpp` |
 
-CMake:
-
-```cmake
-accel_add_aux_state_query(BENCHMARK sec_edgar QUERY_NUM N ...)
-accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM N)
-```
+CMake: the aux state is discovered from `q{N}/<engine>/aux/finalize.cpp`. Test and bench targets are declared in `accelerators/sec_edgar/build.cmake` (`accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM N)` registers the ctests of targets named `test_sec_edgar_q{N}_*`). The root `CMakeLists.txt` and `cmake/` are never edited.
 
 ## Tables and mutations
 

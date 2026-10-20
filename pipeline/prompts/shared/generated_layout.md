@@ -125,7 +125,7 @@ aux state may live is in the engine profile.
 
 **Do not edit** a backend's registration code or registries: register through the index's registrars from the query's own directory — do not invent a parallel adapter tree.
 
-`CMakeLists.txt` is editable for CMake target registration when auto-discovery is insufficient; follow `cmake/AuxState.cmake` and the globs in `backends/{engine}/backend.cmake` and existing query blocks.
+The root `CMakeLists.txt` and `cmake/` are never edited. A benchmark's targets live in `accelerators/{benchmark}/build.cmake`, an engine's in `backends/{engine}/backend.cmake` (globs per `cmake/Backend.cmake`).
 
 ## Aux-state files (agents generate)
 
@@ -138,7 +138,7 @@ aux state may live is in the engine profile.
 | Cost-model location | `accelerators/{benchmark}/q{N}/cost_model.hpp` (passed to every engine's registration; see above) |
 | Tests / bench | the shared module test (no per-query file); `accelerators/{benchmark}/q{N}/bench/benchmark_q{N}_aux.cpp` |
 
-CMake: `accel_add_aux_state_query(BENCHMARK {benchmark} QUERY_NUM N ...)` in `cmake/AuxState.cmake` (engine-aware discovery).
+CMake: the aux state of every `accelerators/{benchmark}/qN/{engine}/aux/finalize.cpp` is discovered (`accel_register_aux_state_queries`, `cmake/AuxState.cmake`); nothing to register.
 
 ## Naming vs paths
 

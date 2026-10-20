@@ -2,6 +2,9 @@
 # the Docker pipeline inside accel_mysql_test (scripts/build_accel_mysql_plugin.sh).
 # The plugin SDK headers are optional: without them the store/aux layers and the
 # standalone harnesses still build.
+# The sibling DuckDB: harnesses and generated query code use it as the reference engine.
+accel_require_duckdb()
+
 option(ACCEL_MYSQL_TEST_UDFS
        "Build the gate-test MySQL plugin variant (adds backends/mysql/tests/mysql_bridge_test_udfs.cpp)" OFF)
 

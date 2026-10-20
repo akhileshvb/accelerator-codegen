@@ -50,7 +50,7 @@ Prefer these conventions. `backends/{{engine_name}}/**` is **read-only** to this
      another engine may be a reference oracle or loader source only — never the scan host.
    - Differential semantics: load TPC-H into `{{engine_name}}`, run reference SQL vs accelerator SQL for a query id,
      assert ordered full-result match (or a documented minimal smoke).
-   - Wire CMake next to peer engine targets (`add_executable({{differential_binary}} …)`).
+   - Declare the target in `backends/{{engine_name}}/backend.cmake` (never the root `CMakeLists.txt`).
    - **Build:** `backends/{{engine_name}}/host.sh build {{differential_binary}}`.
    - CLI: {{differential_command}}
 

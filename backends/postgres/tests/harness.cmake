@@ -1,4 +1,4 @@
-# PostgreSQL eval harnesses, included by the root after backends/postgres/backend.cmake.
+# PostgreSQL eval harnesses, included by accel_include_backends after backend.cmake .
 
 # SEC-EDGAR Q4 differential: psql client (no server SDK to build, a server with
 # the extension installed to run).
