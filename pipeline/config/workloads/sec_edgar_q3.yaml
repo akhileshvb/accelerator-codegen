@@ -1,14 +1,7 @@
 benchmark_name: sec_edgar
 query_number: 3
 engines: [duckdb]
-query_id: "3"
 reference_sql_path: workloads/sec_edgar/q3.sql
 parameters:   # spec: eval/bench/sec_edgar/params/q3.json (zero-arg function = defaults)
   - {name: fy, type: BIGINT, default: 2022, domain: [2021, 2022, 2023, 2024]}
   - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
-output_schema:
-  - {name: name, type: VARCHAR}
-  - {name: cik, type: INTEGER}
-  - {name: total_value, type: DOUBLE}
-tables: [num, sub]
-reference_accelerators: []

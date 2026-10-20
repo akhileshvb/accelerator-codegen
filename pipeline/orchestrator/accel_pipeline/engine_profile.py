@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
+import yaml
 
 SCHEMA_RELATIVE = Path("schemas") / "engine_profile.schema.json"
 ALL_SECTIONS = "all"
@@ -46,6 +47,22 @@ def _describe(error: jsonschema.ValidationError) -> str:
     if error.validator in ("oneOf", "anyOf"):
         return "needs a value or {na: reason}"
     return error.message.splitlines()[0][:160]
+
+
+def load_engine_profile(engine: str, pipeline_root: Path) -> dict[str, Any]:
+    """The validated profile of `engine` from its engine_backend workload."""
+    path = pipeline_root / "config" / "workloads" / f"engine_{engine}.yaml"
+    if not path.is_file():
+        raise EngineProfileError(f"no engine profile for {engine!r}: {path} is missing")
+    profile = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("engine_profile")
+    validate_engine_profile(profile, pipeline_root, source=str(path))
+    return profile
+
+
+def registration_symbol_pattern(profile: dict[str, Any]) -> str:
+    """The profile's per-query registration symbol pattern; empty when the engine has none."""
+    pattern = profile["entry_points"]["registration_symbol"]
+    return "" if _is_na(pattern) else pattern
 
 
 def host_runtime_of(profile: dict[str, Any]) -> dict[str, Any]:

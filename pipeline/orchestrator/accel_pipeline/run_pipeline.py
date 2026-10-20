@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from accel_pipeline.workload_facts import workload_facts
 from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
 from accel_pipeline.engine_quarantine import apply_foreign_engine_quarantine, restore_quarantine
 from accel_pipeline.env_loader import load_repo_dotenv
@@ -258,6 +259,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("pipeline complete", file=sys.stderr)
         return 0
+
+    facts = workload_facts(repo_root, workload, query)
+    print(
+        f"derived workload facts: {len(facts['output_schema'])} output columns, "
+        f"tables {[t['name'] for t in facts['dependent_tables']]}",
+        file=sys.stderr,
+    )
 
     # Worker worktrees are private, so the query's other engines can be hidden from the
     # agent (a shared tree would hide them from the sibling runs too).

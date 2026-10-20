@@ -109,6 +109,7 @@ engine_profile:
     mechanism: "User-defined functions (CREATE FUNCTION ... SONAME) with init / deinit / main callbacks; a UDF returns one scalar (string, integer, real) per call, so a multi-row result is one encoded value (bounded by max_allowed_packet and the declared result length)."
     argument_passing: "UDF_ARGS with per-argument type, NULL as a null pointer, and byte lengths; init may request a type coercion for each argument."
     result_return: "A scalar result buffer; an error is reported by the server's my_error (ER_UDF_ERROR), while returning NULL with the error flag set reads as plain NULL to clients."
+    registration_symbol: {na: "functions are named by CREATE FUNCTION DDL and UDF entry points, not by a per-query registration symbol"}
 
   thread_knobs:
     mechanism: "Plugin system variables (MYSQL_SYSVAR), settable with SET GLOBAL and a config file; the server prefixes each name with the plugin's name; an update callback runs on every SET GLOBAL."

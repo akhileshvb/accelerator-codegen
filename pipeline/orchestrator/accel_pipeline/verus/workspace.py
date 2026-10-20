@@ -28,6 +28,7 @@ from typing import Any
 
 from accel_pipeline.layout import PROOFLIB
 from accel_pipeline.verus.context import VerusContext
+from accel_pipeline.workload_facts import with_facts
 
 README = """# Verus accelerator workspace: {accel_id}
 
@@ -85,6 +86,7 @@ def create(ctx: VerusContext, workload: dict[str, Any]) -> Path:
         (ws / d).mkdir(parents=True, exist_ok=True)
     _copy(Path(ctx.query_sql), ws / "query" / "query.sql")
     _copy(Path(ctx.schema_sql), ws / "query" / "schema.sql")
+    workload = with_facts(ctx.root, workload, ctx.query)
     info = {
         "benchmark": ctx.benchmark,
         "query": ctx.query,

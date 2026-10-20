@@ -11,12 +11,13 @@ dependencies = [
   "mcp>=1.0.0",
   "PyYAML>=6.0",
   "jsonschema>=4.18",
+  "sqlglot>=25.0",
+  "duckdb>=1.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
-  "duckdb>=1.0.0",
 ]
 
 [project.scripts]

@@ -8,7 +8,14 @@ from typing import Any
 
 import yaml
 
-from accel_pipeline.engine_profile import EngineProfileError, host_runtime_of, validate_engine_profile
+from accel_pipeline import naming
+from accel_pipeline.engine_profile import (
+    EngineProfileError,
+    host_runtime_of,
+    load_engine_profile,
+    registration_symbol_pattern,
+    validate_engine_profile,
+)
 from accel_pipeline.layout import backend_glob, query_dir, query_glob
 from accel_pipeline.paths import find_repo_root, pipeline_root
 from accel_pipeline.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
@@ -126,23 +133,6 @@ def _merge_pack_into_workload(
     merged.setdefault("artifact_namespace", benchmark)
     merged.setdefault("display_name", benchmark)
 
-    query_num = merged.get("query_number")
-    if query_num is not None:
-        q = int(query_num)
-        header_prefix = str(merged.get("header_prefix", f"{benchmark}_q"))
-        fn_prefix = str(merged.get("function_prefix", f"accel_{benchmark}_q"))
-        create_prefix = str(merged.get("create_fn_prefix", f"Create{benchmark.title().replace('_', '')}Q"))
-        test_prefix = str(merged.get("test_target_prefix", f"test_{benchmark}_q"))
-        bench_prefix = str(merged.get("bench_target_prefix", f"benchmark_{benchmark}_q"))
-
-        merged.setdefault("function_name", f"{fn_prefix}{q}")
-        merged.setdefault("create_fn", f"{create_prefix}{q}FunctionSet")
-        merged.setdefault("test_target", f"{test_prefix}{q}")
-        merged.setdefault("bench_target", f"{bench_prefix}{q}")
-        merged.setdefault("ctest_smoke_name", f"{benchmark}_q{q}{merged.get('ctest_smoke_suffix', '_smoke_test')}")
-        merged.setdefault("ctest_smoke_regex", f"^{benchmark}_q{q}{merged.get('ctest_smoke_suffix', '_smoke_test')}$")
-        merged.setdefault("header_basename", f"{header_prefix}{q}")
-
     dataset_key = merged.get("dataset_key")
     if dataset_key and pipeline_config and dataset_key in pipeline_config.datasets:
         merged.setdefault("dataset_db", str(pipeline_config.datasets[dataset_key]))
@@ -162,6 +152,11 @@ def _merge_pack_into_workload(
             merged[key] = str(_resolve_path(repo_root, merged[key]))
 
     return merged
+
+
+def _dataset_path(path: str | Path) -> str:
+    """A dataset database path; empty when the run parameter is unset."""
+    return "" if Path(path) == Path() else str(path)
 
 
 def resolve_workload_paths(
@@ -188,39 +183,25 @@ def resolve_workload_paths(
         )
     )
     generated_base = f"{qdir}/{eng_seg}base/single-threaded"
-    header_prefix = str(workload.get("header_prefix", f"{benchmark}_q"))
-    header = str(workload.get("header_basename", f"{header_prefix}{q}"))
-    fn_prefix = str(workload.get("function_prefix", f"accel_{benchmark}_q"))
-    test_prefix = str(workload.get("test_target_prefix", f"test_{benchmark}_q"))
-    bench_prefix = str(workload.get("bench_target_prefix", f"benchmark_{benchmark}_q"))
-    smoke_suffix = str(workload.get("ctest_smoke_suffix", "_smoke_test"))
     # Engines with a shared, query-parameterised bench/calibrate harness (not per-query targets).
     shared_harness = (
         bool(engine)
         and workload.get("workload_kind") != "engine_backend"
         and not (workload.get("engine_host") or engine_host_conventions(engine))["query_scoped_harness"]
     )
-    bench_target_default = (
-        f"benchmark_{engine}_{benchmark}_q{q}" if shared_harness else f"{bench_prefix}{q}"
-    )
+    bench_target = naming.benchmark_target(benchmark, q)
+    test_target = naming.unit_test_target(benchmark, q)
 
     paths = {
         "source_subdir": source_subdir,
-        "function_name": str(workload.get("function_name", f"{fn_prefix}{q}")),
-        "create_fn": str(
-            workload.get(
-                "create_fn",
-                f"Create{benchmark.title().replace('_', '')}Q{q}FunctionSet",
-            )
-        ),
-        "test_target": str(workload.get("test_target", f"{test_prefix}{q}")),
-        "bench_target": str(workload.get("bench_target", bench_target_default)),
-        "ctest_smoke_name": str(workload.get("ctest_smoke_name", f"{benchmark}_q{q}{smoke_suffix}")),
-        "ctest_smoke_regex": str(
-            workload.get("ctest_smoke_regex", f"^{benchmark}_q{q}{smoke_suffix}$")
-        ),
-        "dataset_db": str(workload.get("dataset_db", pipeline_config.tpch_db_sf1)),
-        "scale_db": str(workload.get("scale_db", pipeline_config.tpch_db_sf10)),
+        "function_name": naming.base_function_name(benchmark, q),
+        "create_fn": str(workload.get("create_fn", "")),
+        "test_target": test_target,
+        "bench_target": bench_target,
+        "ctest_smoke_name": naming.smoke_ctest_name(benchmark, q),
+        "ctest_smoke_regex": f"^{naming.smoke_ctest_name(benchmark, q)}$",
+        "dataset_db": _dataset_path(workload.get("dataset_db", pipeline_config.tpch_db_sf1)),
+        "scale_db": _dataset_path(workload.get("scale_db", pipeline_config.tpch_db_sf10)),
         "db_env_var": str(workload.get("db_env_var", "ACCEL_TPCH_DB")),
         "header_path": f"{qdir}/{eng_seg}base/query.hpp",
         "kernel_path": f"{generated_base}/kernel.cpp",
@@ -233,28 +214,17 @@ def resolve_workload_paths(
         "catalog_path": f"backends/{engine}/api/catalog/query_catalog.hpp" if engine else "",
         # Where the query's cost models live (AuxCostModelLocation), for every engine.
         "cost_model_header_path": f"{qdir}/cost_model.hpp",
-        "test_path": f"{qdir}/tests/{workload.get('test_target', f'{test_prefix}{q}')}.cpp",
+        "test_path": f"{qdir}/tests/{test_target}.cpp",
         "benchmark_path": f"{qdir}/bench/benchmark_q{q}.cpp",
         "engine_name": engine,
     }
 
     if workload.get("workload_kind") == "aux_state":
-        aux_fn = str(workload.get("aux_function_name", f"{fn_prefix}{q}_aux"))
-        aux_test = str(workload.get("aux_test_target", f"{test_prefix}{q}_aux"))
-        aux_bench = str(
-            workload.get(
-                "aux_bench_target",
-                f"benchmark_{engine}_{benchmark}_aux" if shared_harness else f"{bench_prefix}{q}_aux",
-            )
-        )
-        aux_hybrid = str(workload.get("aux_hybrid_bench_target", f"benchmark_{benchmark}_q{q}_hybrid_eval"))
-        calibrate = str(
-            workload.get(
-                "aux_calibrate_target",
-                f"calibrate_{engine}_{benchmark}_aux_cost_model"
-                if shared_harness
-                else f"calibrate_{benchmark}_q{q}_aux_cost_model",
-            )
+        aux_bench = f"benchmark_{engine}_{benchmark}_aux" if shared_harness else f"{naming.benchmark_target(benchmark, q)}_aux"
+        calibrate = (
+            f"calibrate_{engine}_{benchmark}_aux_cost_model"
+            if shared_harness
+            else f"calibrate_{benchmark}_q{q}_aux_cost_model"
         )
         aux_state_subdir = f"{qdir}/{eng_seg}aux"
         aux_finalize = "finalize.cpp"
@@ -275,14 +245,12 @@ def resolve_workload_paths(
             bench_suffix = f"q{q}_aux_bench_sf1"
         paths.update(
             {
-                "aux_function_name": aux_fn,
-                "aux_test_target": aux_test,
+                "aux_function_name": naming.aux_function_name(benchmark, q),
+                "aux_test_target": f"{test_target}_aux",
                 "aux_bench_target": aux_bench,
-                "aux_hybrid_bench_target": aux_hybrid,
+                "aux_hybrid_bench_target": naming.hybrid_benchmark_target(benchmark, q),
                 "aux_calibrate_target": calibrate,
-                "aux_ctest_smoke_regex": str(
-                    workload.get("aux_ctest_smoke_regex", f"^{benchmark}_q{q}_aux_smoke_test$")
-                ),
+                "aux_ctest_smoke_regex": f"^{naming.aux_smoke_ctest_name(benchmark, q)}$",
                 "aux_state_subdir": aux_state_subdir,
                 "aux_finalize_path": f"{aux_state_subdir}/{aux_finalize}",
                 "cost_model_default": default_cost_model,
@@ -353,11 +321,11 @@ def load_pipeline_config(
     crash_debug = data.get("crash_debug", {})
     max_turns = dict(opt.get("max_turns") or {})
 
-    datasets: dict[str, Path] = {}
-    for key, value in dict(data.get("datasets", {})).items():
-        datasets[key] = Path(value)
-    datasets.setdefault("tpch_sf1", Path(data["tpch_db_sf1"]))
-    datasets.setdefault("tpch_sf10", Path(data["tpch_db_sf10"]))
+    datasets = {
+        key: Path(os.environ[env_var])
+        for key, env_var in dict(data.get("datasets", {})).items()
+        if os.environ.get(env_var)
+    }
 
     shared_paths = [str(x) for x in list(data.get("shared_paths") or [])]
     if not shared_paths:
@@ -367,8 +335,8 @@ def load_pipeline_config(
         repo_root=root,
         pipeline_root=pipe,
         build_dir=root / build_rel,
-        tpch_db_sf1=Path(data["tpch_db_sf1"]),
-        tpch_db_sf10=Path(data["tpch_db_sf10"]),
+        tpch_db_sf1=datasets.get("tpch_sf1", Path()),
+        tpch_db_sf10=datasets.get("tpch_sf10", Path()),
         datasets=datasets,
         optimization_max_iterations=int(opt.get("max_iterations", 3)),
         optimization_no_improvement_stop=int(opt.get("no_improvement_stop", 2)),
@@ -676,6 +644,28 @@ def _normalize_accelerator_engine(data: dict[str, Any], engine: str) -> dict[str
     return data
 
 
+def _derive_query_names(data: dict[str, Any], engine: str, root: Path) -> None:
+    """The query's names (naming.py), plus the engine profile's registration symbol."""
+    bench, q = str(data.get("benchmark_name", "tpch")), data.get("query_number")
+    if q is None:
+        return
+    pattern = registration_symbol_pattern(load_engine_profile(engine, pipeline_root(root)))
+    data.update(
+        function_name=naming.base_function_name(bench, q),
+        create_fn=naming.registration_symbol(pattern, bench, q) if pattern else "",
+        header_basename=naming.header_basename(bench, q),
+        test_target=naming.unit_test_target(bench, q),
+        ctest_smoke_regex=f"^{naming.smoke_ctest_name(bench, q)}$",
+    )
+    if data.get("workload_kind") == "aux_state":
+        data.update(
+            base_function_name=naming.base_function_name(bench, q),
+            aux_function_name=naming.aux_function_name(bench, q),
+            accelerator_id=naming.accelerator_id(bench, q),
+            prerequisite_workload=naming.base_workload_name(bench, q),
+        )
+
+
 def _expand_engine_placeholders(value: str, engine: str) -> str:
     return (
         str(value)
@@ -829,6 +819,8 @@ def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
                 workload["fairness"] = merged_fair
             else:
                 workload[key] = aux_defaults[key]
+    for key in ("requires_base_accelerator", "prerequisite_min_stage", "allow_poor_fitness", "allow_unsuccessful_design"):
+        workload.setdefault(key, aux_defaults[key])
     if "speedup_verification" in aux_defaults:
         workload.setdefault("speedup_verification", dict(aux_defaults["speedup_verification"]))
 
@@ -1170,6 +1162,7 @@ def load_workload(name: str, repo_root: Path | None = None, *, engine: str = "")
     if data.get("workload_kind") == "aux_state":
         _merge_aux_defaults(data, root)
     _pick_engine_search_paths(data, engine)
+    _derive_query_names(data, engine, root)
     return _normalize_accelerator_engine(data, engine)
 
 

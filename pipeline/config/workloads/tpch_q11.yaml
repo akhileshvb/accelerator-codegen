@@ -2,32 +2,9 @@ workload_kind: base
 benchmark_name: tpch
 query_number: 11
 engines: [duckdb, postgres]
-query_id: "11"
-accelerator_id: tpch_q11
-base_function_name: accel_tpch_q11
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/11.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+reference_sql_path: workloads/tpch/instances/seed_1/11.sql
 parameters:
   - name: nation_name
     type: VARCHAR
   - name: fraction
     type: DOUBLE
-
-dependent_tables:
-  - name: partsupp
-    watched_columns: [ps_partkey, ps_suppkey, ps_availqty, ps_supplycost]
-  - name: supplier
-    watched_columns: [s_suppkey, s_nationkey]
-  - name: nation
-    watched_columns: [n_nationkey, n_name]
-
-output_schema:
-  - name: ps_partkey
-    type: BIGINT
-  - name: value
-    type: DECIMAL
-
-cmake:
-  query_num: 11

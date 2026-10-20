@@ -9,7 +9,7 @@ Concurrent pack workers use **per-query git worktrees** and private build dirs.
 - **Edit only this query's owned files** (listed in the task). Never create/modify/delete another `qN` aux/module/test/cost-model — not even to "fix" a peer compile error.
 - Peer compile noise is not your bug under worktree isolation. Do **not** `git restore` / `cp` / Python-rewrite foreign `accelerators/tpch/q*/**`.
 - Always build/test against **this worker's build dir** (`build-release-<worker_id>` / `$ACCEL_PIPELINE_BUILD_DIR`). Never use shared `build-release/`.
-- Read-only inspection of **workload `reference_accelerators`** is OK. Broad grepping/editing of other pack queries is not.
+- Broad grepping/editing of other pack queries is not OK.
 
 ## Use Codex native tools for
 

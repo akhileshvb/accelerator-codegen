@@ -423,7 +423,8 @@
       "required": [
         "mechanism",
         "argument_passing",
-        "result_return"
+        "result_return",
+        "registration_symbol"
       ],
       "additionalProperties": false,
       "properties": {
@@ -437,6 +438,10 @@
         },
         "result_return": {
           "description": "How rows and types return to the engine.",
+          "$ref": "#/$defs/text"
+        },
+        "registration_symbol": {
+          "description": "Pattern of the per-query registration symbol the accelerators of this engine export ({Bench}: CamelCase benchmark, {N}: query number), or n/a when the engine has none.",
           "$ref": "#/$defs/text"
         }
       }

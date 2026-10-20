@@ -94,6 +94,7 @@ engine_profile:
     mechanism: "REPLACE_ME"
     argument_passing: "REPLACE_ME"
     result_return: "REPLACE_ME"
+    registration_symbol: {na: "REPLACE_ME: or the pattern, e.g. Create{Bench}Q{N}FunctionSet"}
 
   thread_knobs:
     mechanism: "REPLACE_ME"

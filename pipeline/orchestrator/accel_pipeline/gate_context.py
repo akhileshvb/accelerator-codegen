@@ -11,6 +11,7 @@ from accel_pipeline.config import (
     sanitize_engine_name,
 )
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
+from accel_pipeline.workload_facts import FACTS_FILE, workload_facts
 
 
 def build_gate_context(
@@ -74,6 +75,9 @@ def build_gate_context(
         opt_sweep = workload.get("aux_bench_sweep_optimization", {})
         if isinstance(opt_sweep, dict) and opt_sweep:
             ctx["aux_bench_sweep_optimization"] = opt_sweep
+    if kind != "engine_backend":
+        workload_facts(pipeline_config.repo_root, workload, query)
+        ctx["workload_facts_path"] = str(Path(ctx["artifacts_dir"]) / FACTS_FILE)
     if kind == "engine_backend":
         ctx.update(
             {

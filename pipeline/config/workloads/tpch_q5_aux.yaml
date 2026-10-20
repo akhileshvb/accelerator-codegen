@@ -2,55 +2,13 @@ workload_kind: aux_state
 benchmark_name: tpch
 query_number: 5
 engines: [duckdb, postgres, mysql]
-query_id: "5"
-accelerator_id: tpch_q5_aux
-base_function_name: accel_tpch_q5
-aux_function_name: accel_tpch_q5_aux
-
-requires_base_accelerator: true
-prerequisite_workload: tpch_q5
-prerequisite_min_stage: implementation
-reference_accelerators:
-  - accelerators/tpch/q10/duckdb/aux/module.cpp
-  - accelerators/tpch/q9/duckdb/aux/module.cpp
-  - accelerators/tpch/q3/duckdb/aux/module.cpp
-
-allow_poor_fitness: false
-allow_unsuccessful_design: false
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/05.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+reference_sql_path: workloads/tpch/instances/seed_1/05.sql
 parameters:
   - name: region_name
     type: VARCHAR
   - name: start_date
     type: DATE
 
-dependent_tables:
-  - name: customer
-    watched_columns: [c_custkey, c_nationkey]
-  - name: orders
-    watched_columns: [o_orderkey, o_custkey, o_orderdate]
-  - name: lineitem
-    watched_columns: [l_orderkey, l_suppkey, l_extendedprice, l_discount]
-  - name: supplier
-    watched_columns: [s_suppkey, s_nationkey]
-  - name: nation
-    watched_columns: [n_nationkey, n_name, n_regionkey]
-  - name: region
-    watched_columns: [r_regionkey, r_name]
-
-partitioning: {}   # analysis stage will propose grain (e.g. orderdate / region / nation)
-
-output_schema:
-  - name: n_name
-    type: VARCHAR
-  - name: revenue
-    type: DECIMAL
-
-
-# Injected into every optimization attempt (hypothesis + patch). Keep concrete.
 optimization_guidance: |
   **PRIORITY — dual axes (Q5):** read is already strong (~9k× read-only / ~8µs hit on
   the opt quick bench), but **10% write-mix workload_speedup is ~0.37×** (full-rebuild
@@ -75,9 +33,3 @@ optimization_guidance: |
   `read_only^0.75 * write_mix^0.25` improves vs best_valid — typically by raising 10%
   `write_mix_workload_speedup` toward ≥1× (ideally much higher) while keeping
   `read_only_query_speedup` near the current best.
-
-cmake:
-  query_num: 5
-  aux_state_module: accel_add_aux_state_query
-
-agent_boundary: prompts/aux_state/shared/agent_boundary.md

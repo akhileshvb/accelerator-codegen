@@ -12,8 +12,6 @@ Design an auxiliary-state accelerator for **{{display_name}}** **Q{{query_number
 
 {{workload_reference_section}}
 
-{{optional_reference_accelerators}}
-
 ## Shared docs (read on demand)
 
 {{shared_docs_reference}}

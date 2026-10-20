@@ -17,12 +17,11 @@ ANALYSIS = {
 }
 
 
-def test_implementation_bootstrap_lists_q18_files_and_references() -> None:
+def test_implementation_bootstrap_lists_q18_files() -> None:
     workload = load_workload("tpch_q18_aux", REPO_ROOT, engine="duckdb")
     text = build_implementation_bootstrap(REPO_ROOT, workload, 18, ANALYSIS, cost_model_config="")
     assert "module.hpp" in text
-    assert "Reference aux modules" in text
-    assert "accelerators/tpch/q10/duckdb/aux/module.cpp" in text or "q10" in text
+    assert "Reference aux modules" not in text
 
 
 def test_implementation_prompt_includes_bootstrap(monkeypatch) -> None:
@@ -37,6 +36,5 @@ def test_implementation_prompt_includes_bootstrap(monkeypatch) -> None:
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     prompt = render_prompt(pipeline_config, "02_implementation.md", workload, 18, "implementation")
     assert "Implementation bootstrap" in prompt
-    assert "Reference aux modules" in prompt
 
 

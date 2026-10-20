@@ -2,42 +2,7 @@ workload_kind: aux_state
 benchmark_name: tpch
 query_number: 1
 engines: [duckdb, postgres, mysql]
-query_id: "1"
-accelerator_id: tpch_q1_aux
-base_function_name: accel_tpch_q1
-aux_function_name: accel_tpch_q1_aux
-
-requires_base_accelerator: true
-prerequisite_workload: tpch_q1
-prerequisite_min_stage: implementation
-reference_accelerators: []
-
-allow_poor_fitness: false
-allow_unsuccessful_design: false
-
-reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/01.sql
-seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
-
+reference_sql_path: workloads/tpch/instances/seed_1/01.sql
 parameters:
   - name: day_offset
     type: INTEGER
-
-dependent_tables:
-  - name: lineitem
-    watched_columns: [l_shipdate, l_quantity, l_extendedprice, l_discount, l_tax, l_returnflag, l_linestatus]
-
-partitioning: {}   # analysis stage will propose grain (e.g. returnflag/linestatus)
-
-output_schema:
-  - name: l_returnflag
-    type: VARCHAR
-  - name: l_linestatus
-    type: VARCHAR
-  # ... other aggregate columns from Q1
-
-
-cmake:
-  query_num: 1
-  aux_state_module: accel_add_aux_state_query
-
-agent_boundary: prompts/aux_state/shared/agent_boundary.md
