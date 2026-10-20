@@ -259,3 +259,25 @@ The build must succeed with **every** `accelerators/<bench>/q<N>/` removed
 <engine>` must pass (the `engine_build` gate runs it).  Engine-level helpers a
 query needs (e.g. a key-list predicate, a collation-safe literal) belong in the
 backend, generic and documented; per-query code never does.
+
+---
+
+## `api`
+
+Writes `backends/{engine}/api/` and `api/README.md` against
+`pipeline/prompts/engine_backend/api_contract.md` (binding; read it in full) and the
+manifest format of `host_contract.md`. The slot layers built the engine side; this
+layer exposes it. Move what accelerators and harnesses must reach (registries, runtime
+handle, scan helpers, SQL fallback, cost-model path, thread settings, engine-exact value
+helpers) into `api/`, keep everything else (`engine/`, `state/`, `tests/`) private, and
+add the neutral surface `api/accelerator_api.hpp` and the introspection hooks.
+
+**Harness:** `backends/{engine}/tests/test_{engine}_api.cpp` builds the toy accelerator
+from `pipeline/templates/engine_backend/api_conformance/` (written against the neutral
+surface only; do not edit it) into the engine's loadable unit, registers it, and checks
+on this engine: the toy query equals its base SQL for several arguments, again after an
+`UPDATE`, `accel_get_execute_counts()` shows hits, and the hooks of the contract exist.
+Run engine-specific loading through `host.sh` (`host_contract.md`).
+
+The gate also runs `pipeline/gates/check_api_manifest.py` and
+`scripts/check_layer_includes.py`; fix their output as it names the file and line.

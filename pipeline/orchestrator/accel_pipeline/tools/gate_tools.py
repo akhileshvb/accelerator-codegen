@@ -14,17 +14,21 @@ ENGINE_LAYER_GATES = (
     "engine_scan",
     "engine_runtime",
     "engine_host",
+    "engine_api_conformance",
     "engine_adversarial",
 )
 
 
-def layer_gate_from_stage(stage: str) -> str | None:
-    """Map ``impl_epochs`` → ``engine_epochs``. None when this is not a layer impl stage."""
+def layer_gate_from_stage(stage: str, workload: dict[str, Any] | None = None) -> str | None:
+    """Map ``impl_epochs`` to the gate of that layer in the workload. None when this is not a layer impl stage."""
     if not str(stage or "").startswith("impl_"):
         return None
     lid = str(stage)[len("impl_") :].strip()
     if not lid:
         return None
+    for layer in (workload or {}).get("implementation_layers") or []:
+        if str(layer.get("id") or "") == lid:
+            return str(layer.get("gate") or "") or None
     return f"engine_{lid}"
 
 
@@ -90,7 +94,7 @@ def make_gate_tools(ctx: ToolContext):
 
     def run_layer_gate() -> str:
         """MCP TOOL. Official gate for this impl_* layer (e.g. impl_epochs → engine_epochs)."""
-        gate = layer_gate_from_stage(ctx.stage)
+        gate = layer_gate_from_stage(ctx.stage, ctx.workload)
         if not gate:
             return json.dumps(
                 {

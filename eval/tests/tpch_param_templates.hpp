@@ -30,7 +30,7 @@
 #include <utility>
 #include <vector>
 
-namespace accel::postgres::tpch_params {
+namespace accel::tpch_params {
 
 using Vec = std::vector<std::string>;
 inline const std::string kNull = "\x01NULL";
@@ -848,4 +848,4 @@ inline EdgeSet EdgeCases(int q) {
   return {};
 }
 
-} // namespace accel::postgres::tpch_params
+} // namespace accel::tpch_params

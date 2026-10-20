@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include "eval/tests/postgres/postgres_tpch_harness.hpp"
+#include "backends/postgres/tests/harness/postgres_tpch_harness.hpp"
 
 namespace {
 

@@ -1,7 +1,7 @@
 // Parameter-generality differential for the TPC-H aux accelerators on PostgreSQL.
 //
 // For every query, runs the reference SQL (spec template, tests/aux_state/
-// postgres_tpch_param_templates.hpp) and accel_tpch_qN_aux(...) on many
+// tpch_param_templates.hpp) and accel_tpch_qN_aux(...) on many
 // parameter vectors and compares the result sets. The accelerator must return
 // the exact SQL answer for ANY valid parameter value, not just spec values.
 //
@@ -42,14 +42,14 @@
 
 #include <libpq-fe.h>
 
-#include "postgres/postgres_tpch_harness.hpp"
-#include "postgres/postgres_tpch_param_templates.hpp"
+#include "backends/postgres/tests/harness/postgres_tpch_harness.hpp"
+#include "eval/tests/tpch_param_templates.hpp"
 
 namespace {
 
 using accel::postgres::Tools;
 using namespace accel::postgres::tpch_harness;
-namespace tp = accel::postgres::tpch_params;
+namespace tp = accel::tpch_params;
 
 struct Options {
   std::vector<int> queries;

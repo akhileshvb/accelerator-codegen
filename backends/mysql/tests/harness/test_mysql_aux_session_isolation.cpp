@@ -10,8 +10,8 @@
 // Usage: test_mysql_aux_session_isolation [stress_sessions=4] [txns_per_session=12] [seed=1]
 // Env:   TPCH_MYSQL_DB (default accel_mysql_test); ACCEL_SESSION_TEST_ACTION
 //        (forced maintenance action, default ApplyDelta)
-#include "eval/tests/mysql/mysql_session_client.hpp"
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_session_client.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 
 #include <atomic>
 #include <chrono>

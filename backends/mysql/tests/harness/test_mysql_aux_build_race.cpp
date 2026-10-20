@@ -9,7 +9,7 @@
 //
 // Usage: test_mysql_aux_build_race [query=1] [rounds=5] [writers=3] [writes_per_writer=30]
 // Env:   TPCH_MYSQL_DB (default accel_mysql_test)
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 
 #include <atomic>
 #include <chrono>

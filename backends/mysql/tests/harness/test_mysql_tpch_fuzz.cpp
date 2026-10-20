@@ -29,8 +29,8 @@
 #include <thread>
 #include <vector>
 
-#include "mysql/mysql_tpch_harness.hpp"
-#include "tpch_fuzz_writes.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
+#include "eval/tests/tpch_fuzz_writes.hpp"
 
 namespace {
 

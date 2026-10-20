@@ -2,7 +2,7 @@
 # readers at the newest epoch). Maps each scenario onto the MySQL harnesses run
 # inside accel_mysql_test. Sourced by run_slot_gates.sh.
 #
-# Needs (the skeleton port, branch skel/mysql): the eval/tests/test_mysql_*
+# Needs (the skeleton port, branch skel/mysql): the backends/mysql/tests/harness/test_mysql_*
 # harnesses, scripts/ensure_accel_mysql_test.sh, scripts/build_accel_mysql_plugin.sh
 # and scripts/run_mysql_tpch_diff_all22.sh. Without them the gate fails closed.
 #

@@ -8,7 +8,7 @@
 // Usage: test_mysql_aux_build_ddl_race [query=1] [rounds=5]
 // Env:   TPCH_MYSQL_DB (default accel_mysql_test); run with the server's
 //        accelerator build threads above 1 and ACCEL_AUX_TEST_GRAIN=1.
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 
 #include <atomic>
 #include <chrono>

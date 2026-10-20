@@ -1,6 +1,6 @@
 #pragma once
 
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 
 namespace accel::mysql::tpch_harness {
 

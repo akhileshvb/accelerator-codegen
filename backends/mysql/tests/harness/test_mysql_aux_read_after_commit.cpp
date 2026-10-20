@@ -18,8 +18,8 @@
 // Usage: test_mysql_aux_read_after_commit [sequential_rounds=100] [rebuild_rounds=2]
 //                                         [writers=2] [readers=3] [seconds=20]
 // Env:   TPCH_MYSQL_DB (default accel_mysql_test)
-#include "eval/tests/mysql/mysql_session_client.hpp"
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_session_client.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 
 #include <atomic>
 #include <chrono>

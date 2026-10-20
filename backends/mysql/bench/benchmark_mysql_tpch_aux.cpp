@@ -24,8 +24,8 @@
 #include <string>
 #include <vector>
 
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
-#include "eval/tests/mysql/mysql_tpch_write_probes.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_write_probes.hpp"
 
 namespace {
 

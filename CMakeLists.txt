@@ -44,10 +44,11 @@ target_link_libraries(accelerator_codegen
         duckdb_sibling
 )
 
-# Engines: each backends/<engine>/backend.cmake (see cmake/Backend.cmake), then its eval harnesses.
+# Engines: each backends/<engine>/backend.cmake (see cmake/Backend.cmake), then the
+# backend's own harnesses (backends/<engine>/tests/harness.cmake).
 accel_include_backends()
 foreach(_accel_engine IN LISTS ACCEL_BACKENDS)
-    include("${CMAKE_CURRENT_SOURCE_DIR}/eval/harness/${_accel_engine}.cmake" OPTIONAL)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/backends/${_accel_engine}/tests/harness.cmake" OPTIONAL)
 endforeach()
 
 accel_apply_aux_copts(substrate/aux/state/versioned_aux_store.cpp)

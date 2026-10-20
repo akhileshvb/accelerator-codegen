@@ -33,6 +33,7 @@ GATE_SCRIPTS = {
     "aux_optimization_probe": "run_aux_optimization_probe.sh",
     "engine_build": "run_engine_build.sh",
     "engine_scan_conformance": "run_engine_scan_conformance.sh",
+    "engine_api_conformance": "run_engine_api_conformance.sh",
     "engine_contract": "run_engine_contract.sh",
     "engine_adversarial": "run_engine_adversarial.sh",
     "engine_aux_smoke": "run_engine_aux_smoke.sh",

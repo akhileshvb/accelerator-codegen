@@ -1,7 +1,7 @@
 // Parameter-generality differential for the TPC-H aux accelerators on MySQL.
 //
 // MySQL port of test_postgres_tpch_params.cpp. For every query, runs the
-// reference SQL (the spec template of postgres_tpch_param_templates.hpp,
+// reference SQL (the spec template of tpch_param_templates.hpp,
 // rewritten to MySQL dialect below) and mysql_accel_tpch_qN_aux(...) on many
 // parameter vectors and compares the result sets. The reference SQL run by
 // MySQL itself is ground truth, including its semantics that differ from
@@ -49,14 +49,14 @@
 #include <string>
 #include <vector>
 
-#include "mysql/mysql_tpch_harness.hpp"
-#include "postgres/postgres_tpch_param_templates.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
+#include "eval/tests/tpch_param_templates.hpp"
 
 namespace {
 
 using accel::mysql::Tools;
 using namespace accel::mysql::tpch_harness;
-namespace tp = accel::postgres::tpch_params;
+namespace tp = accel::tpch_params;
 
 struct Options {
   std::vector<int> queries;

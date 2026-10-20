@@ -5,7 +5,7 @@
 //      ACCEL_MULTI_CONN_BACKGROUND_READERS, ACCEL_MULTI_CONN_STRESS_SEC,
 //      TPCH_PG_DB, ACCEL_PG_DOCKER=1
 
-#include "eval/tests/postgres/postgres_tpch_harness.hpp"
+#include "backends/postgres/tests/harness/postgres_tpch_harness.hpp"
 
 #include <atomic>
 #include <chrono>

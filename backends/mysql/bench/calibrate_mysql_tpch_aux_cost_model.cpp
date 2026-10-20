@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "substrate/aux/core/aux_calibration.hpp"
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 
 namespace {

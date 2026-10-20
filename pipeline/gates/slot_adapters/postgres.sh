@@ -1,6 +1,6 @@
 # Slot gate adapter: Postgres (process per connection: shard worker per
 # accelerator). Maps each scenario onto the shard-worker suite
-# eval/tests/test_postgres_shared_state.cpp, run inside accel_pg_test where the
+# backends/postgres/tests/harness/test_postgres_shared_state.cpp, run inside accel_pg_test where the
 # server's processes are visible. Sourced by run_slot_gates.sh.
 #
 # Needs (the skeleton port, branch skel/pg-worker): that suite, scripts/
@@ -26,7 +26,7 @@
 source "${ROOT}/pipeline/gates/aux_gate_common.sh"
 
 _pg_driver() { # scenario...
-  local suite=eval/tests/test_postgres_shared_state.cpp scenario rc=0
+  local suite=backends/postgres/tests/harness/test_postgres_shared_state.cpp scenario rc=0
   if [[ ! -f "${ROOT}/${suite}" ]]; then
     echo "missing ${suite}: merge the shard-worker port (skel/pg-worker)"
     return 1

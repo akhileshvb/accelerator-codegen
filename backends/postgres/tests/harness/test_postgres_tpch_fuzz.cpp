@@ -33,8 +33,8 @@
 
 #include <libpq-fe.h>
 
-#include "postgres/postgres_tpch_harness.hpp"
-#include "tpch_fuzz_writes.hpp"
+#include "backends/postgres/tests/harness/postgres_tpch_harness.hpp"
+#include "eval/tests/tpch_fuzz_writes.hpp"
 
 namespace {
 

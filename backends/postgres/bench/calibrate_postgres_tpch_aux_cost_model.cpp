@@ -19,7 +19,7 @@
 #include <libpq-fe.h>
 
 #include "substrate/aux/core/aux_calibration.hpp"
-#include "eval/tests/postgres/postgres_tpch_harness.hpp"
+#include "backends/postgres/tests/harness/postgres_tpch_harness.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 
 namespace {

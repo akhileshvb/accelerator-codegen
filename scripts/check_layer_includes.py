@@ -8,6 +8,9 @@ Accelerators may include anything below them; eval/ is not checked for layering.
 substrate/ or backends/ including eval/ (the cross-query evaluation harness) is
 reported as a warning (an error with --strict).
 
+A backend's `tests/harness/` and `bench/` hold the engine's workload harnesses
+(moved from eval/); they count as eval for layering.
+
 Backend boundary: a file outside backends/<engine>/ (the substrate, accelerators,
 eval/, pipeline templates, scripts, another backend) may include only
 backends/<engine>/api/ of that backend (pipeline/prompts/engine_backend/api_contract.md);
@@ -54,7 +57,12 @@ BACKEND_DIR = re.compile(r"^backends/([^/]+)/([^/]+)/")
 SKIPPED_TOPS = {".git", "build", "build-release", "artifacts"}
 
 
+WORKLOAD_HARNESS = re.compile(r"^backends/[^/]+/(tests/harness|bench)/")
+
+
 def layer_of_rel(rel: str) -> str | None:
+    if WORKLOAD_HARNESS.match(rel):
+        return "eval"  # a backend's workload harnesses and benches are eval code it owns
     top = rel.split("/", 1)[0]
     if top in ("substrate", "backends", "accelerators", "eval", "workloads"):
         return top
@@ -120,7 +128,7 @@ def scan(root: Path = ROOT) -> tuple[list[dict], int]:
         for path in sorted(base.rglob("*")):
             if path.is_file() and path.suffix in SUFFIXES:
                 n += 1
-                hits += scan_file(root, path, accel_tops, top)
+                hits += scan_file(root, path, accel_tops)
     return hits, n
 
 

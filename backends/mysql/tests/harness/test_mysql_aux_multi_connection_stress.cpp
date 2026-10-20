@@ -1,7 +1,7 @@
 // MySQL multi-connection aux stress: concurrent readers + a writer, then
 // SQL-vs-aux rematch. Builds: test_mysql_aux_multi_connection_stress
 
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 
 #include <atomic>
 #include <chrono>

@@ -8,8 +8,8 @@
 // Env:   TPCH_MYSQL_DB (default accel_mysql_test)
 //        ACCEL_MYSQL_RF_QUERIES (comma list; default 1..22)
 //        ACCEL_FORCE_MAINTENANCE_ACTION (default: the cost model chooses)
-#include "eval/tests/mysql/mysql_session_client.hpp"
-#include "eval/tests/mysql/mysql_tpch_harness.hpp"
+#include "backends/mysql/tests/harness/mysql_session_client.hpp"
+#include "backends/mysql/tests/harness/mysql_tpch_harness.hpp"
 
 #include <iostream>
 #include <string>
