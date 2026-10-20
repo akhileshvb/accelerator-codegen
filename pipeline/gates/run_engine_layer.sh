@@ -36,7 +36,7 @@ fi
 if ! engine_steps "up" "build ${TARGET}"; then
   emit_result "${JSON}" "${GATE}" fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "layer=${LAYER_ID}" "cmake_target=${TARGET}"
 fi
-engine_run "${TARGET}"
+ACCEL_GATE_RUN_TIMEOUT="${ACCEL_GATE_RUN_TIMEOUT:-300}" engine_run "${TARGET}"   # a toy-module harness runs in seconds
 STATUS=pass
 [[ ${RC} -eq 0 ]] || STATUS=fail
 emit_result "${JSON}" "${GATE}" "${STATUS}" "${RUN_REASON}" "${ENGINE_LOG}${LOG}" \
