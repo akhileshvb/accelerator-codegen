@@ -54,14 +54,17 @@ mkdir -p .data && cp /flash1/akhilvb/tpch_sf1.pristine_20261016.duckdb "$ACCEL_T
 # (~/.cache/accel_pg/build/duckdb for postgres, ~/.cache/accel_mysql/... for mysql; bind them via ACCEL_DUCKDB_SEED_DIRS).
 # export ACCEL_DUCKDB_SEED=...
 
-# Engine backends, one per engine (each writes backends/<engine>/, host.sh first):
-for e in duckdb postgres mysql; do
-  $PY -m accel_pipeline.run_pipeline --workload engine_$e --query 0 --stage all
-done
-
-# Accelerators: 22 queries x 3 engines, each base accelerator first. The first wave
-# grows prims/ before the rest fan out.
-$PY -m accel_pipeline.run_pack --pack tpch_regen_all22
+# Engine backends, one per engine (each writes backends/<engine>/, host.sh first),
+# then the accelerators (22 queries x 3 engines, each base accelerator first; the first
+# wave, Q1 on every engine, grows prims/ before the rest fan out). Stops at the first failure.
+regen() {
+  local e
+  for e in duckdb postgres mysql; do
+    $PY -m accel_pipeline.run_pipeline --workload engine_$e --query 0 --stage all || return
+  done
+  $PY -m accel_pipeline.run_pack --pack tpch_regen_all22
+}
+regen
 ```
 
 Add `--dry-run` to either command to render the prompts and gate contexts without
