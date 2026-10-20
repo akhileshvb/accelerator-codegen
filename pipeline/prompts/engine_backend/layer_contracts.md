@@ -65,6 +65,20 @@ the engine side must hold up. Each names its layer.
 
 ---
 
+## `hostctl`
+
+Writes `backends/{engine}/host.sh` against `host_contract.md` (binding; the prompt carries
+it) and the minimal `backends/{engine}/backend.cmake` (the `accel_backend_{engine}`
+INTERFACE target and the test glob), so that `engine_build` configures and builds the
+backend from the first layer on. Later layers extend `build` and `backend.cmake`.
+
+**Harness:** none of its own; the gate `engine_hostctl` drives the script: `info` names
+the engine and all eight verbs, `up` writes `env`, `load` twice (the second a no-op),
+`sql -` returns a CSV with a header, `down` removes the instance state. `slot` fails
+closed ("not wired yet") until validation wires it.
+
+---
+
 ## `capture` (S1)
 
 Implements the engine's capture of writes (`engine/capture.*`).

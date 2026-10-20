@@ -33,12 +33,15 @@ allowed_commands:
 dataset_benchmark: tpch
 
 implementation_layers:
-  # First: every later layer's gate reaches the engine through host.sh.
+  # First: every later layer's gate reaches the engine through host.sh. A layer's `prompt`
+  # (default 02_implementation.md) is its implementation prompt; hostctl also writes the minimal
+  # backend.cmake, so engine_build (a post-gate of every layer) is real from here on.
   - id: hostctl
     title: Host script (host_contract.md verbs)
     gate: engine_hostctl
     harness: backends/{engine}/host.sh
     cmake_target: ""
+    prompt: impl_hostctl.md
     rules: [host_contract]
   - id: capture
     title: Capture (S1)

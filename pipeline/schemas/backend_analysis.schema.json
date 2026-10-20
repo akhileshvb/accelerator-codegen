@@ -38,11 +38,13 @@
           "id": {
             "type": "string",
             "enum": [
+              "hostctl",
               "capture",
               "epochs",
               "scan",
               "runtime",
-              "host"
+              "host",
+              "api"
             ]
           },
           "gate": {

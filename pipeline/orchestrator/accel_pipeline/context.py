@@ -682,6 +682,11 @@ def build_prompt_context(
             if is_engine
             else ""
         ),
+        "host_contract": (
+            _read_text(pipe / "prompts" / "engine_backend" / "host_contract.md")
+            if is_engine
+            else ""
+        ),
         "layer_id": "",
         "layer_title": "",
         "layer_gate": "",

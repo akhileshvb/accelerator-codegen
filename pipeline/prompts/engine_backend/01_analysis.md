@@ -19,7 +19,7 @@ Your analysis is the **roadmap those agents follow** — concise, concrete, no e
 
 ## Sketch each layer (concrete, short)
 
-For **every** layer id (`capture`, `epochs`, `scan`, `runtime`, `host`) write
+For **every** layer id (`hostctl`, `capture`, `epochs`, `scan`, `runtime`, `host`, `api`) write
 one object. If `host` is not required, set `skipped: true` and leave files empty.
 
 Each object:
@@ -61,7 +61,7 @@ union of watched columns, rollback; epochs: visibility order, exact reader
 epoch, pending window, floor vs readers; scan: snapshot epoch `b` vs a
 concurrent commit, barrier, typed chunks; runtime: rebuild under continuous
 writes, old readers, placement failure modes; host: SQL golden, NULL,
-`Fallback`), plus the requirements of `layer_contracts.md` ("Requirements every
+`Fallback`; hostctl and api have no harness: say which verbs/roles and what the gate exercises), plus the requirements of `layer_contracts.md` ("Requirements every
 backend meets") and one golden assert per profile hazard tagged for that layer: say in
 the layer's sketch which slot behaviour answers each hazard.
 
