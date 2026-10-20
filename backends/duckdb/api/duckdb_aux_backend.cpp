@@ -1,5 +1,5 @@
 // GENERATED BACKEND
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
+#include "backends/duckdb/api/duckdb_aux_backend.hpp"
 
 #include <chrono>
 

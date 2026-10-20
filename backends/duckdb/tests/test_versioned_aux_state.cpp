@@ -36,7 +36,7 @@
 
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/core/aux_txn_buffer.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
+#include "backends/duckdb/api/duckdb_aux_backend.hpp"
 #include "substrate/aux/runtime/runtime_host.hpp"
 #include "substrate/aux/state/versioned_aux_store.hpp"
 #include "duckdb.hpp"

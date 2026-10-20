@@ -19,7 +19,7 @@
 #include "backends/duckdb/api/sql_fallback.hpp"
 #include "backends/duckdb/api/verus_host.hpp"
 #include "backends/duckdb/engine/capture.hpp"
-#include "backends/duckdb/engine/scan.hpp"
+#include "backends/duckdb/api/scan.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "duckdb/accelerator/capture_registry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"

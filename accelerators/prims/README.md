@@ -52,7 +52,7 @@ concurrent const reads of a published copy are safe.
 | `sql_date.hpp` | `sql_date::*` | days-since-1970 <-> civil date for any int32 day; month/year interval arithmetic with end-of-month clamping. |
 | `sql_like.hpp` | `sql_like::LikeMatcher`, `FindSubstring`, `MatchBlobBitmap/Indices` | LIKE (`%`, `_`, escape, case folding) compiled once, SIMD substring search, bulk match over offsets + blob. Byte-wise: the caller picks collation behavior. |
 | `int128_acc.hpp` | `i128::*` | overflow-checked int128 accumulation for exact SUM state. |
-| `decimal_text.hpp` | `decimal_text::Parse`, `ToText` | exact decimal text <-> int128 coefficient at a fixed scale (the plain fixed-scale text every engine prints). |
+| `decimal_text.hpp` | `decimal_text::Parse` | exact decimal text -> int128 coefficient at a fixed scale. |
 | `byte_stream.hpp` | little-endian readers/writers | serialized state images at a process boundary. |
 
 ### Which one to use
@@ -83,10 +83,10 @@ concurrent const reads of a published copy are safe.
   Range sums over a bounded integer domain: `RadixRangeTree`. Prefix aggregates
   of structured cells over int32 positions: `CowFenwick`.
 - **Arithmetic and text semantics.** Dates and intervals: `sql_date`. Patterns:
-  `sql_like`. Exact sums: `int128_acc`; decimal text in and out: `decimal_text`.
-  Engine-exact semantics (the result scale and rounding of division and AVG,
-  collation) are not here: each backend provides them in its `api/` (see its
-  `api/README.md`).
+  `sql_like`. Exact sums: `int128_acc`; decimal text input: `decimal_text`;
+  exact decimal text output: `ScaledDecimal128ToString` (substrate). Engine-exact
+  semantics (the result scale and rounding of division and AVG, collation) are
+  each backend's value-semantics headers, listed in its `api/README.md`.
 
 Scale guidance: prefer columnar arrays at ~1-16 B per key over node-based maps
 with per-row strings; use hash maps only when the key space has no locality; use

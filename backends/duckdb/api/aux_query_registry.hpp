@@ -28,8 +28,8 @@
 #include <vector>
 
 #include "backends/duckdb/api/duckdb_runtime.hpp"
-#include "backends/duckdb/engine/build_scan.hpp"
-#include "backends/duckdb/engine/scan.hpp"
+#include "backends/duckdb/api/build_scan.hpp"
+#include "backends/duckdb/api/scan.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 

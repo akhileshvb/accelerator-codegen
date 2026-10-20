@@ -40,7 +40,7 @@
 #include "backends/duckdb/api/register.hpp"
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_types.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
+#include "backends/duckdb/api/duckdb_aux_backend.hpp"
 #include "eval/tests/test_support/module_runtime.hpp"
 #include "substrate/aux/maintenance/cost_model.hpp"
 #include "catalog/query_catalog.hpp"

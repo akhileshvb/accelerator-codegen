@@ -360,7 +360,7 @@ static void TestStrings() {
 }
 
 static void TestInt128() {
-  using pg = decimal_text::Int128;
+  using pg = __int128;
   pg acc = 0;
   i128::AddChecked(acc, i128::Mul64(INT64_MAX, INT64_MAX));
   i128::AddChecked(acc, i128::Mul64(INT64_MAX, INT64_MAX));
@@ -370,10 +370,7 @@ static void TestInt128() {
   pg big = ~(pg(1) << 127);
   try { i128::AddChecked(big, 1); } catch (const std::overflow_error &) { threw = true; }
   CHECK(threw);
-  CHECK(decimal_text::ToText(-12345, 2) == "-123.45");
-  CHECK(decimal_text::ToText(5, 3) == "0.005");
-  CHECK(decimal_text::ToText(0, 2) == "0.00");
-  CHECK(decimal_text::ToText(-7, 0) == "-7");
+  CHECK(i128::ToString(-12345) == "-12345");
 }
 
 // ---------------------------------------------------------------------------

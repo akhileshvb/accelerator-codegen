@@ -1,5 +1,5 @@
 // Partitioned typed table scan offered by the DuckDB InitialScan of a query,
-// for parallel builds (core::PartitionedBuild, backends/duckdb/engine/build_scan.hpp).
+// for parallel builds (core::PartitionedBuild, backends/duckdb/api/build_scan.hpp).
 #pragma once
 
 #include <cstddef>
@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "backends/duckdb/engine/build_scan.hpp"
+#include "backends/duckdb/api/build_scan.hpp"
 #include "substrate/aux/core/aux_types.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 

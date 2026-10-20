@@ -88,9 +88,8 @@ void SecEdgarQ1Module::EmitOutputNumeric(const SecEdgarQ1State &state, core::Aux
 		if (row.avg_is_null) {
 			out.values.push_back(core::AuxValue::Null(core::AuxType::String));
 		} else {
-			const auto avg = ::accelerator_codegen::pg_numeric::AvgOfScaledSum(
-			    static_cast<::accelerator_codegen::aux_state::core::decimal_text::Int128>(row.line_sum), 0, row.line_cnt);
-			out.values.push_back(core::AuxValue::Of(core::AuxType::String, ::accelerator_codegen::aux_state::core::decimal_text::ToText(avg)));
+			out.values.push_back(core::AuxValue::Of(
+			    core::AuxType::String, avg_text(static_cast<__int128>(row.line_sum), row.line_cnt)));
 		}
 		sink.WriteRow(out);
 	}

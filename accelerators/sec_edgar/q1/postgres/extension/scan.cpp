@@ -15,7 +15,6 @@
 #include <stdexcept>
 #include <string>
 
-#include "prims/decimal_text.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 
 #include "backends/postgres/api/engine_helpers.hpp"
@@ -37,7 +36,7 @@ namespace {
 
 // AVG(integer) is numeric in PostgreSQL: sum / count at its result scale.
 std::string PostgresAvgText(__int128 sum, int64_t count) {
-  return core::decimal_text::ToText(pg_numeric::AvgOfScaledSum(sum, 0, count));
+  return pg_numeric::ToText(pg_numeric::AvgOfScaledSum(sum, 0, count));
 }
 
 // Table id the capture trigger passes for `pre` (scripts/*sec_edgar*mutation_triggers.sql).

@@ -9,7 +9,7 @@
 #include "tpch/common/postgres_tpch_table_ids.hpp"
 #include "backends/postgres/api/engine_runtime.hpp"
 #include "backends/postgres/api/runtime.hpp"
-#include "prims/decimal_text.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 
 #include <cstring>
 #include <limits>
@@ -194,7 +194,7 @@ void PutRow(ReturnSetInfo *rsinfo, int64_t partkey, query::Q11AccT value) {
     values[1] = NumericGetDatum(
         int64_div_fast_to_numeric(static_cast<int64_t>(value), 2));
   } else {
-    const std::string text = core::decimal_text::ToText(value, 2);
+    const std::string text = pg_numeric::ToText(value, 2);
     values[1] =
         DirectFunctionCall3(numeric_in, CStringGetDatum(text.c_str()),
                             ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));

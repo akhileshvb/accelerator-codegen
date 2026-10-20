@@ -4,7 +4,7 @@
 // Fill Consume / Finalize / Produce using THIS engine's native batch or row
 // types (from the engine_backend engine profile or backends/{{engine_name}}/engine/).
 // Do NOT hard-code duckdb::DataChunk unless engine_name is duckdb and you
-// intentionally use backends/duckdb/engine/native_scan.hpp helpers.
+// intentionally use backends/duckdb/api/native_scan.hpp helpers.
 
 namespace accelerator_codegen {
 namespace {

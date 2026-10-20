@@ -10,15 +10,15 @@ constexpr int64_t kFenwickDomain = int64_t{1} << 32; // day indexes 1 .. 2^32
 
 // avg(decimal(p, 2)) as MySQL evaluates it: the sum divided by the count at
 // scale 2 + div_precision_increment (4), rounded half away from zero.
-core::decimal_text::Decimal MysqlAvgOfScaledSum(Q1AccT sum, int64_t count) {
+mysql_decimal::Decimal MysqlAvgOfScaledSum(Q1AccT sum, int64_t count) {
 	constexpr int kDivPrecisionIncrement = 4;
-	core::decimal_text::Int128 scaled = sum;
+	mysql_decimal::Int128 scaled = sum;
 	for (int i = 0; i < kDivPrecisionIncrement; ++i)
 		scaled *= 10;
-	const core::decimal_text::Int128 n = count;
-	core::decimal_text::Int128 q = scaled / n;
-	const core::decimal_text::Int128 r = scaled % n;
-	const core::decimal_text::Int128 twice_r = (r < 0 ? -r : r) * 2;
+	const mysql_decimal::Int128 n = count;
+	mysql_decimal::Int128 q = scaled / n;
+	const mysql_decimal::Int128 r = scaled % n;
+	const mysql_decimal::Int128 twice_r = (r < 0 ? -r : r) * 2;
 	if (twice_r >= n)
 		q += scaled < 0 ? -1 : 1;
 	return {q, kDecimalScale2 + kDivPrecisionIncrement};

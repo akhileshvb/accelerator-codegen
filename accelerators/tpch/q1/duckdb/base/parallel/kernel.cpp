@@ -1,7 +1,7 @@
 //! Q1 parallel kernel: RunParallelChunkScan over the unfiltered lineitem scan, per-worker q1::Aggregator
 //! (SIMD shipdate predicate + aggregation), deterministic ordered merge.
 
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "backends/duckdb/api/parallel/parallel_kernel.hpp"
 #include "tpch/q1/duckdb/base/q1_agg.hpp"
 #include "tpch/q1/duckdb/base/query.hpp"

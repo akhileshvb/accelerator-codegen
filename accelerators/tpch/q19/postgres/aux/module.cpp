@@ -3,7 +3,7 @@
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
-#include "prims/decimal_text.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -560,7 +560,7 @@ void TpchQ19Module::EmitResult(__int128 revenue_raw, int64_t matches,
   sink.WriteRow({{core::AuxValue::Of(
       core::AuxType::String,
       matches == 0 ? std::string("0")
-                   : ::accelerator_codegen::aux_state::core::decimal_text::ToText(revenue_raw, 4))}});
+                   : ::accelerator_codegen::pg_numeric::ToText(revenue_raw, 4))}});
   sink.End();
 }
 

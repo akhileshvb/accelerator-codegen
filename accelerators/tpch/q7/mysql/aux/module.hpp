@@ -11,7 +11,7 @@
 #include "substrate/aux/core/aux_query_module.hpp"
 #include "prims/chunked_blob_map.hpp"
 #include "prims/any_key_cow_array.hpp"
-#include "prims/decimal_text.hpp"
+#include "backends/mysql/api/mysql_decimal.hpp"
 #include "tpch/q7/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -98,7 +98,7 @@ struct TpchQ7CubeKey {
 };
 
 struct TpchQ7CubeCell {
-  ::accelerator_codegen::aux_state::core::decimal_text::Int128 revenue = 0; // SUM(volume) at scale 4, exact
+  ::accelerator_codegen::mysql_decimal::Int128 revenue = 0; // SUM(volume) at scale 4, exact
   int64_t rows = 0;                  // joined lineitems (group exists iff > 0)
 };
 

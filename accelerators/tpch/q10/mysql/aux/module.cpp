@@ -8,7 +8,7 @@
 #include <string_view>
 #include <utility>
 
-#include "prims/decimal_text.hpp"
+#include "backends/mysql/api/mysql_decimal.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "substrate/aux/core/query_module_helpers.hpp"
@@ -20,7 +20,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 namespace sql_date = core::sql_date;
-using Int128 = ::accelerator_codegen::aux_state::core::decimal_text::Int128;
+using Int128 = ::accelerator_codegen::mysql_decimal::Int128;
 
 constexpr core::PartitionId kStatePartition =
     core::TpchQ10Layout::kCustomerDimensions;
@@ -731,14 +731,14 @@ void TpchQ10Module::EmitResult(const TpchQ10State &s,
     const auto nation = s.nations.find(s.customer_nation.Get(c.custkey));
     if (nation == s.nations.end())
       continue;
-    namespace dec = ::accelerator_codegen::aux_state::core::decimal_text;
+    namespace pgn = ::accelerator_codegen::mysql_decimal;
     sink.WriteRow(
         {{core::AuxValue::Of(core::AuxType::Int64, c.custkey),
           core::AuxValue::Of(core::AuxType::String, rec.name),
           core::AuxValue::Of(core::AuxType::String,
-                             dec::ToText(c.revenue, kTpchQ10RevenueScale)),
+                             pgn::ToText(c.revenue, kTpchQ10RevenueScale)),
           core::AuxValue::Of(core::AuxType::String,
-                             dec::ToText(rec.acctbal_raw, 2)),
+                             pgn::ToText(rec.acctbal_raw, 2)),
           core::AuxValue::Of(core::AuxType::String, nation->second),
           core::AuxValue::Of(core::AuxType::String, rec.address),
           core::AuxValue::Of(core::AuxType::String, rec.phone),

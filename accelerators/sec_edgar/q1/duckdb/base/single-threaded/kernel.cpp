@@ -1,4 +1,4 @@
-#include "backends/duckdb/engine/duckdb_scan_adapter.hpp"
+#include "backends/duckdb/api/duckdb_scan_adapter.hpp"
 #include "sec_edgar/q1/duckdb/base/query.hpp"
 #include "sec_edgar/q1/duckdb/base/fused.hpp"
 

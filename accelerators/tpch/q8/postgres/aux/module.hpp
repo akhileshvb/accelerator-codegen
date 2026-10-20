@@ -13,7 +13,7 @@
 #include "prims/chunked_blob_map.hpp"
 #include "prims/chunked_cow_array.hpp"
 #include "prims/any_key_cow_array.hpp"
-#include "prims/decimal_text.hpp"
+#include "backends/postgres/api/pg_numeric.hpp"
 #include "prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -118,7 +118,7 @@ struct TpchQ8CubeCell {
   int32_t year = 0;
   int32_t customer_nationkey = 0;
   int32_t supplier_nationkey = 0;
-  ::accelerator_codegen::aux_state::core::decimal_text::Int128 volume = 0; // SUM(volume), scale 4
+  ::accelerator_codegen::pg_numeric::Int128 volume = 0; // SUM(volume), scale 4
   int64_t rows = 0; // joined lineitems (a group exists iff > 0)
 };
 

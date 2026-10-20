@@ -11,7 +11,7 @@
 #include "substrate/aux/core/aux_calibration.hpp"
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
 #include "substrate/aux/core/aux_store_diagnostics.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
+#include "backends/duckdb/api/duckdb_aux_backend.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 

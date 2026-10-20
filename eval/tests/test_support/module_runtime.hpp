@@ -16,8 +16,8 @@
 
 #include "backends/duckdb/api/catalog/query_catalog.hpp"
 #include "backends/duckdb/api/sql_fallback.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
-#include "backends/duckdb/engine/scan.hpp"
+#include "backends/duckdb/api/duckdb_aux_backend.hpp"
+#include "backends/duckdb/api/scan.hpp"
 #include "substrate/aux/runtime/runtime_host.hpp"
 #include "duckdb.hpp"
 

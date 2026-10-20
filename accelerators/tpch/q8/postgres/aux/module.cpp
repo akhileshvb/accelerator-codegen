@@ -23,7 +23,7 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 namespace sql_date = core::sql_date;
-using Int128 = ::accelerator_codegen::aux_state::core::decimal_text::Int128;
+using Int128 = ::accelerator_codegen::pg_numeric::Int128;
 
 constexpr core::PartitionId kStatePartition = TpchQ8Layout::kYear1995;
 // volume = price * (1 - discount): numeric(15,2) * numeric(15,2) -> scale 4.
@@ -1052,7 +1052,6 @@ void TpchQ8Module::EmitResult(const TpchQ8State &s,
   }
 
   namespace pgn = ::accelerator_codegen::pg_numeric;
-  namespace dec = ::accelerator_codegen::aux_state::core::decimal_text;
   for (int y = 0; y < 2; ++y) {
     if (total_rows[y] <= 0)
       continue; // no row in this year's group
@@ -1063,7 +1062,7 @@ void TpchQ8Module::EmitResult(const TpchQ8State &s,
     sink.WriteRow(
         {{core::AuxValue::Of(core::AuxType::Int64,
                              static_cast<int64_t>(kTpchQ8MinYear + y)),
-          core::AuxValue::Of(core::AuxType::String, dec::ToText(share))}});
+          core::AuxValue::Of(core::AuxType::String, pgn::ToText(share))}});
   }
   sink.End();
 }

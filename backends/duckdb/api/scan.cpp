@@ -1,6 +1,6 @@
 // GENERATED BACKEND
-#include "backends/duckdb/engine/scan.hpp"
-#include "backends/duckdb/engine/duckdb_aux_backend.hpp"
+#include "backends/duckdb/api/scan.hpp"
+#include "backends/duckdb/api/duckdb_aux_backend.hpp"
 
 #include <cmath>
 #include <cstdio>

@@ -12,7 +12,7 @@
 // Compatibility include for legacy duckdb host code that still pulls this path.
  // Prefer including runtime/duckdb/native_scan.hpp directly in new duckdb code.
 #if defined(__has_include)
-#if __has_include("backends/duckdb/engine/native_scan.hpp")
-#include "backends/duckdb/engine/native_scan.hpp"
+#if __has_include("backends/duckdb/api/native_scan.hpp")
+#include "backends/duckdb/api/native_scan.hpp"
 #endif
 #endif

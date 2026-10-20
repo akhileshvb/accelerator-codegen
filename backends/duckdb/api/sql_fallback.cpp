@@ -4,8 +4,8 @@
 #include <cctype>
 #include <vector>
 
-#include "backends/duckdb/engine/decimal128.hpp"
-#include "backends/duckdb/engine/scan.hpp"
+#include "backends/duckdb/api/decimal128.hpp"
+#include "backends/duckdb/api/scan.hpp"
 
 namespace accelerator_codegen::aux_state::engine {
 

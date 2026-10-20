@@ -356,7 +356,7 @@ void TpchQ1Module::EmitResult(
                {"avg_price", core::AuxType::String, false},
                {"avg_disc", core::AuxType::String, false},
                {"count_order", core::AuxType::Int64, false}}});
-  namespace dec = ::accelerator_codegen::aux_state::core::decimal_text;
+  namespace pgn = ::accelerator_codegen::mysql_decimal;
   const auto numeric = [](std::string text) {
     return core::AuxValue::Of(core::AuxType::String, std::move(text));
   };
@@ -368,13 +368,13 @@ void TpchQ1Module::EmitResult(
           core::AuxValue::Of(
               core::AuxType::String,
               ::accelerator_codegen::UnpackQ1Linestatus(row.group_key)),
-          numeric(dec::ToText(row.sum_qty, 2)),
-          numeric(dec::ToText(row.sum_base_price, 2)),
-          numeric(dec::ToText(row.sum_disc_price, 4)),
-          numeric(dec::ToText(row.sum_charge, 6)),
-          numeric(dec::ToText(row.avg_qty)),
-          numeric(dec::ToText(row.avg_price)),
-          numeric(dec::ToText(row.avg_disc)),
+          numeric(pgn::ToText(row.sum_qty, 2)),
+          numeric(pgn::ToText(row.sum_base_price, 2)),
+          numeric(pgn::ToText(row.sum_disc_price, 4)),
+          numeric(pgn::ToText(row.sum_charge, 6)),
+          numeric(pgn::ToText(row.avg_qty)),
+          numeric(pgn::ToText(row.avg_price)),
+          numeric(pgn::ToText(row.avg_disc)),
           core::AuxValue::Of(core::AuxType::Int64, row.count_order)}});
   }
   sink.End();

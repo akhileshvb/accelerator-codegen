@@ -1,6 +1,6 @@
 #include "tpch/q9/mysql/aux/module.hpp"
 #include "tpch/q9/calibration_writes.hpp"
-#include "prims/decimal_text.hpp"
+#include "backends/mysql/api/mysql_decimal.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/sql_like.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
@@ -935,7 +935,7 @@ void TpchQ9Module::EmitResult(const core::AuxEngineServices &services, const Tpc
           core::AuxType::ScaledDecimal, core::ScaledDecimal{static_cast<int64_t>(profit), 4}));
     else // beyond int64: exact numeric text
       out.values.push_back(core::AuxValue::Of(
-          core::AuxType::String, core::decimal_text::ToText(profit, 4)));
+          core::AuxType::String, accelerator_codegen::pg_numeric::ToText(profit, 4)));
     sink.WriteRow(out);
   }
   sink.End();

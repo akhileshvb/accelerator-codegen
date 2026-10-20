@@ -11,26 +11,42 @@
 // MEMORY     Stateless.
 // COW/THREADS Pure functions; thread-safe.
 // USE WHEN   emitting a quotient / average whose text must equal what MySQL's
-//            DECIMAL arithmetic prints (the PostgreSQL backend's pg_numeric_div.hpp
-//            is the counterpart; the two scale rules differ). Text:
-//            core::decimal_text::ToText.
+//            DECIMAL arithmetic prints. ToText gives the result's text.
 //
 
 #include <cstdint>
 #include <stdexcept>
 
-#include "prims/decimal_text.hpp"
+#include <string>
+
+#include "substrate/aux/core/aux_types.hpp"
 
 namespace accelerator_codegen::mysql_decimal {
 
-namespace dt = aux_state::core::decimal_text;
+using Int128 = __int128;
+using UInt128 = unsigned __int128;
+
+// value = coeff / 10^scale.
+struct Decimal {
+  Int128 coeff = 0;
+  int scale = 0;
+};
+
+inline UInt128 Abs(Int128 v) {
+  return v < 0 ? static_cast<UInt128>(-(v + 1)) + 1 : static_cast<UInt128>(v);
+}
+
+inline std::string ToText(Int128 coeff, int scale) {
+  return aux_state::core::ScaledDecimal128ToString(coeff, scale);
+}
+inline std::string ToText(const Decimal &d) { return ToText(d.coeff, d.scale); }
 
 inline constexpr int kDivPrecisionIncrement = 4; // @@div_precision_increment default
 inline constexpr int kMaxScale = 30;             // DECIMAL_MAX_SCALE
 
 // (ca / 10^sa) / (cb / 10^sb) at scale min(sa + increment, 30). False when
 // cb == 0 (SQL NULL). Throws std::overflow_error beyond 127 bits.
-inline bool Div(dt::Int128 ca, int sa, dt::Int128 cb, int sb, dt::Decimal &out,
+inline bool Div(Int128 ca, int sa, Int128 cb, int sb, Decimal &out,
                 int increment = kDivPrecisionIncrement) {
   if (cb == 0)
     return false;
@@ -40,13 +56,13 @@ inline bool Div(dt::Int128 ca, int sa, dt::Int128 cb, int sb, dt::Decimal &out,
   const int shift = rscale - sa + sb; // |ca| * 10^shift / |cb|, shift >= 0 for sa <= 30
   if (shift < 0)
     throw std::overflow_error("mysql_decimal::Div: operand scale too large");
-  const dt::UInt128 num = dt::Abs(ca);
-  const dt::UInt128 den = dt::Abs(cb);
-  dt::UInt128 q = num / den;
-  dt::UInt128 r = num % den;
-  const dt::UInt128 limit = (~static_cast<dt::UInt128>(0) >> 1) / 10;
+  const UInt128 num = Abs(ca);
+  const UInt128 den = Abs(cb);
+  UInt128 q = num / den;
+  UInt128 r = num % den;
+  const UInt128 limit = (~static_cast<UInt128>(0) >> 1) / 10;
   for (int i = 0; i < shift; ++i) {
-    if (q > limit || r > (~static_cast<dt::UInt128>(0)) / 10)
+    if (q > limit || r > (~static_cast<UInt128>(0)) / 10)
       throw std::overflow_error("mysql_decimal::Div: coefficient exceeds 127 bits");
     r *= 10;
     q = q * 10 + r / den;
@@ -55,17 +71,17 @@ inline bool Div(dt::Int128 ca, int sa, dt::Int128 cb, int sb, dt::Decimal &out,
   if (r != 0 && r >= den - r)
     q += 1;
   const bool negative = (ca < 0) != (cb < 0);
-  out.coeff = negative ? -static_cast<dt::Int128>(q) : static_cast<dt::Int128>(q);
+  out.coeff = negative ? -static_cast<Int128>(q) : static_cast<Int128>(q);
   out.scale = rscale;
   return true;
 }
 
 // AVG over `n` decimal values with exact sum `sum` at scale s: sum / n at scale
 // min(s + increment, 30). False for n <= 0 (NULL).
-inline bool Avg(dt::Int128 sum, int s, int64_t n, dt::Decimal &out, int increment = kDivPrecisionIncrement) {
+inline bool Avg(Int128 sum, int s, int64_t n, Decimal &out, int increment = kDivPrecisionIncrement) {
   if (n <= 0)
     return false;
-  return Div(sum, s, static_cast<dt::Int128>(n), 0, out, increment);
+  return Div(sum, s, static_cast<Int128>(n), 0, out, increment);
 }
 
 } // namespace accelerator_codegen::mysql_decimal

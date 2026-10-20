@@ -1,62 +1,23 @@
 #pragma once
 //
-// decimal_text::Parse, ToText
+// decimal_text::Parse
 // PURPOSE    Exact parse of engine-printed NUMERIC/DECIMAL text into an int128
-//            coefficient at a fixed scale, and the inverse: the plain decimal
-//            text of a scaled coefficient (every engine prints a fixed-scale
-//            decimal this way).
+//            coefficient at a fixed scale.
 // COMPLEXITY O(length).
-// MEMORY     Stateless (ToText allocates the result string).
-// COW/THREADS Pure functions; thread-safe.
-// USE WHEN   reading decimal values as text from an engine API, or writing an
-//            exact decimal result as text. Engine-specific result scales and
-//            rounding (division, AVG) are not here: they are the backend's
-//            value-semantics headers.
+// MEMORY     Stateless (no allocation).
+// COW/THREADS Pure function; thread-safe.
+// USE WHEN   reading decimal values as text from an engine API. Output formatting lives
+//            in pg_numeric::ToText.
 //
 
 #include <cstddef>
 #include <cstdint>
-#include <string>
 #include <string_view>
 
 namespace accelerator_codegen::aux_state::core::decimal_text {
 
 #if defined(__SIZEOF_INT128__)
 using Int128 = __int128;
-using UInt128 = unsigned __int128;
-
-// value = coeff / 10^scale.
-struct Decimal {
-  Int128 coeff = 0;
-  int scale = 0;
-};
-
-inline UInt128 Abs(Int128 v) {
-  return v < 0 ? static_cast<UInt128>(-(v + 1)) + 1 : static_cast<UInt128>(v);
-}
-
-// The text of coeff / 10^scale with exactly `scale` fraction digits.
-inline std::string ToText(Int128 coeff, int scale) {
-  const bool negative = coeff < 0;
-  UInt128 a = Abs(coeff);
-  std::string digits;
-  do {
-    digits.insert(digits.begin(), static_cast<char>('0' + static_cast<int>(a % 10)));
-    a /= 10;
-  } while (a != 0);
-  if (scale > 0) {
-    if (static_cast<int>(digits.size()) <= scale) {
-      digits.insert(0, static_cast<size_t>(scale + 1 - static_cast<int>(digits.size())), '0');
-    }
-    digits.insert(digits.size() - static_cast<size_t>(scale), 1, '.');
-  }
-  if (negative && coeff != 0) {
-    digits.insert(digits.begin(), '-');
-  }
-  return digits;
-}
-
-inline std::string ToText(const Decimal &d) { return ToText(d.coeff, d.scale); }
 
 // Exact decimal text -> integer coefficient at a fixed scale (value =
 // coeff / 10^scale), as engines print NUMERIC / DECIMAL values: optional sign,

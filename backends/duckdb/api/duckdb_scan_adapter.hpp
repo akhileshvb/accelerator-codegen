@@ -6,8 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "backends/duckdb/engine/chunk_source.hpp"
-#include "backends/duckdb/engine/native_scan.hpp"
+#include "backends/duckdb/api/chunk_source.hpp"
+#include "backends/duckdb/api/native_scan.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/storage/storage_index.hpp"
 #include "duckdb/storage/table/filtered_scan_consumer.hpp"

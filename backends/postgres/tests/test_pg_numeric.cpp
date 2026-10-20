@@ -15,8 +15,6 @@
 
 static void TestDivRound() {
   using namespace accelerator_codegen::pg_numeric;
-  using accelerator_codegen::aux_state::core::decimal_text::Decimal;
-  using accelerator_codegen::aux_state::core::decimal_text::Int128;
   Decimal q = DivRound(6, 0, 3, 0);
   CHECK(q.scale >= 0 && q.coeff == Int128(2) * [&] { Int128 p = 1; for (int i = 0; i < q.scale; ++i) p *= 10; return p; }());
   q = DivRound(1, 0, 8, 0);   // 0.125 exactly
@@ -40,7 +38,8 @@ static void TestAvg() {
   // avg(1, 2) = 1.5: PostgreSQL gives a result of 16 fraction digits.
   const auto avg = AvgOfScaledSum(3, 0, 2);
   CHECK(avg.scale == 16);
-  CHECK(accelerator_codegen::aux_state::core::decimal_text::ToText(avg) == "1.5000000000000000");
+  CHECK(ToText(-12345, 2) == "-123.45");
+  CHECK(ToText(avg) == "1.5000000000000000");
 }
 
 int main() {
