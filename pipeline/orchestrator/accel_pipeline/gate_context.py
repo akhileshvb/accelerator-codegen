@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from accel_pipeline.config import (
     resolve_workload_paths,
     sanitize_engine_name,
 )
+from accel_pipeline.layout import workload_schema_sql
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 
 
@@ -40,6 +42,9 @@ def build_gate_context(
         "ctest_smoke_name": paths["ctest_smoke_name"],
         "ctest_smoke_regex": paths["ctest_smoke_regex"],
         "dataset_db": str(paths["dataset_db"]),
+        "dataset_dir": str(workload.get("dataset_dir") or os.environ.get("ACCEL_DATASET_DIR", "")),
+        "schema_sql": workload_schema_sql(benchmark),
+        "scale_dataset_dir": str(workload.get("scale_dataset_dir") or ""),
         "scale_db": str(paths.get("scale_db", "")),
         "db_env_var": paths["db_env_var"],
         "ctest_resource_lock": str(workload.get("ctest_resource_lock", f"{benchmark}_db")),

@@ -78,8 +78,7 @@ def test_backend_stage_gates_are_wired():
             assert (gates_dir / GATE_SCRIPTS[gate]).is_file(), gate
     slot_gates = [g for g in GATE_SCRIPTS if g.startswith("slot_")]
     assert len(slot_gates) == 9
-    for adapter in ("duckdb", "postgres", "mysql"):
-        assert (gates_dir / "slot_adapters" / f"{adapter}.sh").is_file()
+    assert not (gates_dir / "slot_adapters").exists()
 
 
 def test_engine_artifacts_dir():

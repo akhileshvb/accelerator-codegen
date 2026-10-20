@@ -22,27 +22,20 @@ Capture completeness is part of every scenario: all writes come from plain
 connections, never from the connection that registered the accelerator, and
 every answer is compared with the base SQL.
 
-## Harness and adapters
+## Harness and host verb
 
 - **Generic scenarios**: `eval/harness/slot_gates.{hpp,cpp}`, written once
   against `slot_gates::Engine` (connect, accelerated read cases with their
   reference SQL, reader modes, a write source, accelerator counters, truncate,
   savepoints, restart).
-- **Adapter per engine**: `slot_adapters/<engine>.sh` defines
-  `slot_adapter_run <scenario> <seconds>` and exits 0 (pass), 1 (fail) or
+- **One verb per engine**: `backends/<engine>/host.sh slot <scenario> <seconds>`
+  (see `prompts/engine_backend/host_contract.md`) exits 0 (pass), 1 (fail) or
   77 (not applicable). `ACCEL_SLOT_GATE_SECONDS` sets the load duration.
 
-| Engine | Adapter | State |
-|---|---|---|
-| DuckDB | `slot_adapters/duckdb.sh` -> `eval/tests/test_slot_gates_duckdb.cpp` (the DuckDB `Engine` driver; workload = TPC-H Q1 and Q6 over lineitem, writes from `tpch_fuzz_writes.hpp`) and `test_tpch_shared_differential` / `test_shared_tpch_rf_differential` | Runnable on the host. `slot_ddl_events` currently fails: after a table replace the host still answers from state built for the old table (open bug; the scenario is not in the ctest set) |
-| Postgres | `slot_adapters/postgres.sh` -> scenarios of `eval/tests/test_postgres_shared_state.cpp` and `scripts/run_postgres_tpch_diff_all22.sh`, run in `accel_pg_test` | Needs the shard-worker port (branch `skel/pg-worker`); lacks a READ COMMITTED hit gate, a cross-connection read-after-commit and an RF differential; `own_writes` and `ddl_events` skip (listed in the adapter) |
-| MySQL | `slot_adapters/mysql.sh` -> `test_mysql_aux_multi_connection_stress`, `_build_race`, `_session_isolation` and `scripts/run_mysql_tpch_diff_all22.sh`, run in `accel_mysql_test` | Needs the MySQL port (branch `skel/mysql`); lacks a hit rate, a read right after a slow commit (the stale-read case) and an RF differential; `own_writes` and `ddl_events` skip (listed in the adapter) |
-
 A backend gets full coverage by implementing the `Engine` driver for its
-engine (as `test_slot_gates_duckdb.cpp` does) and pointing its adapter at it.
-A missing driver or missing test source makes the adapter fail closed. A scenario
-an adapter does not wire yet exits 77 (gate `skip`, allowed for `slot_own_writes`,
-`slot_ddl_events` and `slot_restart`) and says so in the adapter's header.
+engine and pointing its `slot` verb at it. A missing driver makes the verb fail
+closed. A scenario a backend does not wire yet exits 77 (gate `skip`, allowed for
+`slot_own_writes`, `slot_ddl_events` and `slot_restart`).
 
 Known limit of the DuckDB workload: the host maps a captured table to one
 `TableId`, so only queries that number a table identically can be registered
@@ -61,8 +54,8 @@ run the query's smoke test and shared differential, or the slot scenarios, with
 commits split across threads. It fails on a mismatch or a report whose stack
 touches our code (the first frame of a racing access); reports inside the engine are counted in the logs and
 ignored (`tsan.supp` is for engine races that cross our frames, never for our
-code). Logs: `<artifacts>/gates/aux_tsan_logs/`. Only the in-process DuckDB host
-is run; other engines skip.
+code). Logs: `<artifacts>/gates/aux_tsan_logs/`. Only embedded (in-process) hosts, per `host.sh info`,
+are run; other engines skip.
 
 ## Not yet gates
 

@@ -16,9 +16,6 @@ load_aux_gate_context "${ROOT}" "${QUERY}"
 OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 
-# shellcheck source=cmake_ensure_target.sh
-source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
-
 MIN_SPEEDUP="${ACCEL_AUX_MIN_SPEEDUP:-2.0}"
 MIN_REDUCTION_PCT="${ACCEL_AUX_MIN_WORK_REDUCTION_PCT:-50}"
 
@@ -30,31 +27,17 @@ fi
 BENCH_AUX="${AUX_BENCH_TARGET}"
 BENCH_BASE="${BENCH_TARGET}"
 
-ensure_cmake_target "${ROOT}" "${BUILD}" "${BENCH_BASE}" || true
-ensure_cmake_target "${ROOT}" "${BUILD}" "${BENCH_AUX}" || true
-
-if [[ ! -x "${BUILD}/${BENCH_AUX}" ]] || [[ ! -x "${BUILD}/${BENCH_BASE}" ]]; then
-  python3 - <<PY
-import json, pathlib
-path = pathlib.Path("${OUT}/aux_speedup_verification.json")
-path.write_text(json.dumps({
-    "gate": "aux_speedup_verification",
-    "query": int("${QUERY}"),
-    "benchmark": "${BENCHMARK_NAME}",
-    "status": "skip",
-    "reason": "benchmark binaries missing; build benchmarks first",
-}, indent=2))
-print(path.read_text())
-PY
-  exit 0
+if ! engine_ready "${BENCH_BASE}" "${BENCH_AUX}"; then
+  emit_result "${OUT}/aux_speedup_verification.json" aux_speedup_verification skip \
+    "benchmark binaries missing; build benchmarks first (${ENGINE_FAIL})" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
 
-set +e
-BASE_LOG="$(env "${DB_ENV_VAR}"="${DATASET_DB}" "${BUILD}/${BENCH_BASE}" 2>&1)"
-BASE_RC=$?
-AUX_LOG="$(env "${DB_ENV_VAR}"="${DATASET_DB}" "${BUILD}/${BENCH_AUX}" 2>&1)"
-AUX_RC=$?
-set -e
+engine_run "${BENCH_BASE}"
+BASE_LOG="${LOG}"
+BASE_RC=${RC}
+engine_run "${BENCH_AUX}"
+AUX_LOG="${LOG}"
+AUX_RC=${RC}
 
 python3 - <<PY
 import json

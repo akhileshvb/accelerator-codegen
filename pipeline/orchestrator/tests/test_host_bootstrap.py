@@ -97,15 +97,12 @@ def test_aux_workload_merges_host_bootstrap_retry_config():
     assert resolve_stage_max_turns(merged.stage_max_turns, "host_bootstrap") == 10_000
 
 
-def test_postgres_host_bootstrap_gate_script_exits_docker_path():
+def test_host_bootstrap_gate_script_goes_through_the_engine_host():
     text = (REPO_ROOT / "pipeline" / "gates" / "run_host_bootstrap.sh").read_text(
         encoding="utf-8"
     )
-    assert "Do not fall through from docker" in text
-    postgres_block = text.split('ENGINE_NAME}" == "postgres"')[1]
-    host_fallback = postgres_block.split("Non-postgres")[0]
-    assert "exit 0" in host_fallback
-    assert "exit 1" in text
+    assert "engine_ready" in text
+    assert "docker" not in text.lower()
 
 
 def test_host_bootstrap_gate_feedback_includes_log_tail(tmp_path):

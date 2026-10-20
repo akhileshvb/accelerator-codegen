@@ -26,7 +26,7 @@ TIMEOUT_SECONDS="${ACCEL_TSAN_TIMEOUT:-3600}"
 # shellcheck source=aux_gate_common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
 if [[ "${TARGET}" == "slots" ]]; then
-  ENGINE_NAME="${ENGINE_ARG:-${ACCEL_ENGINE_NAME:-duckdb}}"
+  ENGINE_NAME="${ENGINE_ARG:-${ACCEL_ENGINE_NAME:-}}"
   OUT="$(dirname "${ACCEL_GATE_OUT:-${ROOT}/pipeline/artifacts/tsan/slot_tsan.json}")"
   NAME="slot_tsan"
 else
@@ -56,9 +56,17 @@ PY
   exit "${rc}"
 }
 
-if [[ "${ENGINE_NAME}" != "duckdb" ]]; then
+# Instrumented build, own instance and state: the sanitizer never shares the release build's.
+unset ACCEL_ENGINE_INSTANCE ACCEL_ENGINE_STATE_DIR
+export ACCEL_ENGINE_NAME="${ENGINE_NAME}"
+setup_engine_host "${ROOT}"
+export ACCEL_ENGINE_INSTANCE="${ACCEL_ENGINE_INSTANCE}-tsan"
+export ACCEL_ENGINE_STATE_DIR="${ACCEL_ENGINE_STATE_DIR}-tsan"
+export ACCEL_BUILD_DIR="${BUILD}"
+mkdir -p "${ACCEL_ENGINE_STATE_DIR}"
+if [[ "$(engine_trait embedded)" != "True" ]]; then
   STATUS="skip"
-  REASON="TSAN gate runs the in-process DuckDB host only"
+  REASON="TSAN gate runs the in-process host only (host.sh info: embedded=false)"
   finish
 fi
 
@@ -66,9 +74,8 @@ if [[ ! -f "${BUILD}/CMakeCache.txt" ]]; then
   gen=()
   command -v ninja >/dev/null && gen=(-G Ninja)
   cmake -S "${ROOT}" -B "${BUILD}" "${gen[@]}" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DACCEL_SANITIZE=thread -DACCEL_CODEGEN_ENGINE=duckdb >"${LOGDIR}/configure.log" 2>&1 || { STATUS="fail"; REASON="cmake configure failed"; finish; }
+    -DACCEL_SANITIZE=thread -DACCEL_CODEGEN_ENGINE=${ENGINE_NAME} >"${LOGDIR}/configure.log" 2>&1 || { STATUS="fail"; REASON="cmake configure failed"; finish; }
 fi
-build() { cmake --build "${BUILD}" --target "$@" -j"${ACCEL_TSAN_JOBS:-16}" >>"${LOGDIR}/build.log" 2>&1; }
 
 export ACCEL_AUX_READ_THREADS="${THREADS}" ACCEL_AUX_BUILD_THREADS="${THREADS}" ACCEL_AUX_MAINT_THREADS="${THREADS}"
 export ACCEL_AUX_TEST_GRAIN=1
@@ -82,19 +89,21 @@ run() { # label cmd...
 }
 
 if [[ "${TARGET}" == "slots" ]]; then
-  export ACCEL_TPCH_DB="${ACCEL_TPCH_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf1.duckdb}"
   for s in epoch_stress hits_under_writes read_after_commit txn_edges; do
     run "slot_${s}" env ACCEL_PIPELINE_BUILD_DIR="${BUILD}" ACCEL_ENGINE_NAME="${ENGINE_NAME}" ACCEL_GATE_NAME="slot_${s}" \
       ACCEL_GATE_OUT="${LOGDIR}/slot_${s}.json" bash "${ROOT}/pipeline/gates/run_slot_gates.sh"
   done
 else
-  DIFF_TARGET="${DIFF_BINARY:-test_tpch_shared_differential}"
-  FIXTURE_TARGET=""
-  [[ "${BENCHMARK_NAME}" == "tpch" ]] && FIXTURE_TARGET="make_tpch_test_db" # the smoke ctest's fixture
-  build "${AUX_TEST_TARGET}" "${DIFF_TARGET}" ${FIXTURE_TARGET} || { STATUS="fail"; REASON="TSAN build failed (${LOGDIR}/build.log)"; finish; }
-  run smoke env "${DB_ENV_VAR}=${DATASET_DB}" ctest --test-dir "${BUILD}" -R "${AUX_CTEST_SMOKE_REGEX}" --output-on-failure
+  if [[ -z "${AUX_TEST_TARGET}" || ( "${BENCHMARK_NAME}" == "tpch" && -z "${DIFF_BINARY}" ) ]]; then
+    STATUS="fail"; REASON="aux test / differential target missing from the gate context"; finish
+  fi
+  engine_ready "${AUX_TEST_TARGET}" ${DIFF_BINARY:+"${DIFF_BINARY}"} || {
+    printf '%s' "${ENGINE_LOG}" >"${LOGDIR}/build.log"
+    STATUS="fail"; REASON="TSAN build failed (${LOGDIR}/build.log)"; finish
+  }
+  run smoke "${ENGINE_HOST}" run "${AUX_TEST_TARGET}"
   if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
-    run differential env "${DB_ENV_VAR}=${DATASET_DB}" "${BUILD}/${DIFF_TARGET}" "${DATASET_DB}" "${TARGET}"
+    run differential "${ENGINE_HOST}" run "${DIFF_BINARY}" "${TARGET}"
   fi
 fi
 
