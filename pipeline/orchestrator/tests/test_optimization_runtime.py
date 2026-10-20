@@ -36,7 +36,7 @@ def test_refresh_writes_runtime_files():
     workload = load_workload("sec_edgar_q1", repo)
     path = refresh_optimization_runtime(pipeline_config, workload, 1, optimization_iter=2, episode=1)
     assert path.is_file()
-    art = repo / "pipeline" / "artifacts" / "sec_edgar" / "q1"
+    art = repo / "pipeline" / "artifacts" / "sec_edgar" / "q1" / "duckdb"
     assert (art / "optimization_runtime.json").is_file()
 
 
