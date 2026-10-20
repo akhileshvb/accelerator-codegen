@@ -29,6 +29,7 @@ GATE_SCRIPTS = {
     "aux_cross_accel": "run_aux_cross_accel.sh",
     "aux_multi_connection": "run_aux_multi_connection.sh",
     "aux_tsan": "run_aux_tsan.sh",
+    "module_tsan": "run_module_tsan.sh",
     "aux_cost_model_calibrate": "run_aux_cost_model_calibrate.sh",
     "aux_optimization_probe": "run_aux_optimization_probe.sh",
     "engine_build": "run_engine_build.sh",
@@ -79,6 +80,7 @@ GATES_ALLOW_SKIP = frozenset(
         "slot_own_writes",
         "slot_ddl_events",
         "aux_tsan",
+        "module_tsan",
         "slot_tsan",
     }
 )
