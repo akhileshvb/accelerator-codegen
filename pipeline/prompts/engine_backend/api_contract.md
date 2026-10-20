@@ -56,7 +56,9 @@ other functions). Names are exact; no engine prefix. All return text unless note
 | `accel_stop_shard_workers()` | Stops the engine's accelerator worker processes (boolean); they restart on demand. | only where the profile's `process_model` has workers; else `n/a` in the manifest |
 | `accel_shard_stats()` | Counters of the running workers (`key=value` pairs). | with workers |
 
-Harnesses call these by name and never test which engine they run on.
+Harnesses call these by name and never test which engine they run on. On a server engine they
+are callable from the engine's SQL client (`host.sh sql`; the conformance gate calls them there);
+on an embedded engine they exist on the backend's own connections.
 
 ## 4. Thread knobs
 
