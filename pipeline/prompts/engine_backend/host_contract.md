@@ -21,7 +21,7 @@ container, plugin or data layout.
 | verb | args | does |
 |---|---|---|
 | `info` | | print one JSON object: `{"engine", "embedded": bool, "verbs": [...]}` |
-| `up` | | start the instance if absent (idempotent); write `$ACCEL_ENGINE_STATE_DIR/env` (`KEY=VALUE` lines the other verbs and harness binaries read) |
+| `up` | | start the instance if absent (idempotent), with its empty database; write `$ACCEL_ENGINE_STATE_DIR/env` (`KEY=VALUE` lines the other verbs and harness binaries read). `build` works after `up` alone |
 | `down` | | stop the instance and remove everything it created |
 | `load` | `<schema.sql> [constraints.sql]` | create the schema and load `$ACCEL_DATASET_DIR`; idempotent (skip when already loaded from the same dataset) |
 | `build` | `[target...]` | build the backend and its registered accelerators, then install or load them into the instance |

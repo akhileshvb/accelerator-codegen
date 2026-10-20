@@ -86,9 +86,43 @@ macro(accel_include_backends)
             list(APPEND ACCEL_BACKENDS "${ACCEL_BACKEND_ENGINE}")
             include("${_accel_entry}")
             include("${_accel_dir}/tests/harness.cmake" OPTIONAL)
+            _accel_api_conformance("${ACCEL_BACKEND_ENGINE}" "${_accel_dir}")
         endif()
     endforeach()
 endmacro()
+
+# api_conformance_<engine>: every header under backends/<engine>/api/ compiled in a
+# translation unit of its own, with the flags of the code that includes it (the
+# backend's module when it has one, else libaccelerator_codegen plus the engine
+# interface). Proves api/ is self-contained and usable from outside the backend; the
+# engine_api_conformance gate builds it.
+function(_accel_api_conformance ENGINE DIR)
+    file(GLOB_RECURSE _headers CONFIGURE_DEPENDS "${DIR}/api/*.hpp" "${DIR}/api/*.h")
+    if(NOT _headers OR NOT TARGET accel_backend_${ENGINE})   # no headers, or the engine SDK is absent
+        return()
+    endif()
+    list(SORT _headers)
+    set(_tus "")
+    foreach(_header IN LISTS _headers)
+        file(RELATIVE_PATH _rel "${CMAKE_CURRENT_SOURCE_DIR}" "${_header}")
+        string(MAKE_C_IDENTIFIER "${_rel}" _id)
+        set(_tu "${CMAKE_CURRENT_BINARY_DIR}/api_conformance/${ENGINE}/${_id}.cpp")
+        file(CONFIGURE OUTPUT "${_tu}" CONTENT "#include \"${_rel}\"\n")
+        list(APPEND _tus "${_tu}")
+    endforeach()
+    set(_target api_conformance_${ENGINE})
+    add_library(${_target} OBJECT ${_tus})
+    target_include_directories(${_target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
+    get_target_property(_module accel_backend_${ENGINE} ACCEL_BACKEND_MODULE)
+    if(_module AND TARGET ${_module})
+        foreach(_prop INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS)
+            set_property(TARGET ${_target} APPEND PROPERTY ${_prop} "$<TARGET_PROPERTY:${_module},${_prop}>")
+        endforeach()
+        target_compile_features(${_target} PRIVATE cxx_std_17)
+    else()
+        target_link_libraries(${_target} PRIVATE accelerator_codegen accel_backend_${ENGINE})
+    endif()
+endfunction()
 
 # Exposes <dir>/query_catalog.hpp as "catalog/query_catalog.hpp" through a
 # build-tree prefix and compiles <dir>/*.cpp.

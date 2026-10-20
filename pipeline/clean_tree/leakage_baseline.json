@@ -538,8 +538,7 @@
  },
  "pipeline/orchestrator/tests/test_api_contract.py": {
   "engine": 3,
-  "engine_branch": 1,
-  "path": 1
+  "engine_branch": 1
  },
  "pipeline/orchestrator/tests/test_aux_bench.py": {
   "engine": 7

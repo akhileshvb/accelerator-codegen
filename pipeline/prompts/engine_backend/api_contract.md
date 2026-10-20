@@ -14,54 +14,13 @@ the facts (packaging, entry points, thread knobs, hazards); this file gives the
 interface. Operational verbs (provision, build, load data, run SQL) are the separate
 `host_contract.md`, which also fixes the manifest's table format.
 
-## 1. The neutral surface: `api/accelerator_api.hpp`
+## 1. Engine idiom, found through the manifest
 
-Engine-neutral code (the conformance toy accelerator, harnesses that must run on any
-engine) uses only the names in this header, namespace `accelerator_codegen::api`. All
-other API names are engine-specific and are found through the manifest.
-
-```cpp
-// Scan access: run `sql` where a module's build or fallback scan runs (the build
-// snapshot, or the reader's snapshot) and visit the rows. `types` gives the type of
-// each result column; cells are converted to core::AuxValue exactly (NULL as
-// AuxValue::Null). Supported: Int64, Double, String, Boolean, Date, ScaledDecimal128
-// (the decimal as the engine prints it, at its own scale). An unsupported type
-// throws; it never converts lossily.
-class RowScanner {
-public:
-  virtual ~RowScanner() = default;
-  virtual void Scan(const std::string &sql, const std::vector<core::AuxType> &types,
-                    const std::function<void(const core::AuxRow &)> &on_row) const = 0;
-};
-
-struct QueryColumn { std::string name; core::AuxType type; };
-
-// Query registration: one SQL-visible entry point answered by an accelerator.
-struct QuerySpec {
-  std::string function_name;                 // the SQL-visible name
-  std::vector<core::AuxType> argument_types; // SQL arguments, in order
-  std::vector<QueryColumn> result_columns;
-  std::string fallback_sql;                  // the query for any arguments; $n = n-th argument
-  std::vector<std::pair<std::string, core::TableId>> tables; // relation -> module table id
-  core::AuxCostModelLocation cost_model;
-  // The module, built once, over the engine's scan access.
-  std::function<std::shared_ptr<core::AuxQueryModule>(const RowScanner &)> make_module;
-};
-void RegisterQuery(QuerySpec spec);               // callable from static initializers
-struct QueryRegistrar { explicit QueryRegistrar(QuerySpec spec) { RegisterQuery(std::move(spec)); } };
-
-// Where the engine needs a per-function exported symbol (server plugins/extensions
-// resolve SQL functions by symbol name), the entry point of `function_name`;
-// expands to nothing where it does not.
-#define ACCEL_API_QUERY_ENTRY(function_name)
-```
-
-After registration (and the engine's load step) the SQL-visible call of a query is the
-engine's own function-call syntax; harnesses on an engine know it. Registration makes
-the engine capture the `tables`, build the module's state from `make_module`'s module
-through the substrate's runtime, answer reads from state when it can serve them and
-from `fallback_sql` otherwise (§3, `sql_fallback`), and report the execute path to
-`core::RecordAuxExecute`.
+There is no engine-neutral C++ surface. Accelerators for an engine use that engine's own
+idiom (table functions, SQL functions, UDFs, extension or plugin entry points) and find
+every name through the manifest (§6), which the accelerator pipeline renders into its
+prompts. Roles (§2) fix what must exist; the names are the backend's, except the fixed
+names of §3 and §4.
 
 ## 2. Roles
 
@@ -71,9 +30,9 @@ manifest.
 
 | role id | the backend provides | fixed names |
 |---|---|---|
-| `registration` | The static registrars through which accelerators plug in without the backend naming any query: the neutral surface of §1, plus the engine's own registries (catalog entry, SQL entry point, executor, table function or UDF shim). | §1 |
+| `registration` | The static registrars through which accelerators plug in without the backend naming any query: the engine's own registries (catalog entry, SQL entry point, executor, table function or UDF shim). | none |
 | `runtime` | The host/runtime handle accelerators and harnesses use: finding or creating the backend's runtime host for a database/server, registering an accelerator module, running a read, applying a write, forcing a build. | none |
-| `scan` | The engine-local typed scan helpers accelerator modules use in their initial scan: rows or batches of a table, a partitioned parallel scan, typed column decoding, inside the build snapshot. | `RowScanner` (§1) |
+| `scan` | The engine-local typed scan helpers accelerator modules use in their initial scan: rows or batches of a table, a partitioned parallel scan, typed column decoding, inside the build snapshot. | none |
 | `sql_fallback` | Answering a registered query from SQL in the reader's own transaction/snapshot (the query's `fallback_sql` with the call's arguments as parameters or literals), rows converted to `core::AuxRow`. | none |
 | `cost_model` | Resolving the maintenance cost-model file for a query's `core::AuxCostModelLocation` by engine and scale (the substrate's `AuxCostModelLookup`; the backend names the engine and the search directories, including mounts it runs in). | none |
 | `maintenance` | What the calibration and benchmark code needs from the runtime: the expected queries before the next write, calibration writes, rows in the accelerator's tables, forcing a maintenance action, invalidating all state. | none |
@@ -137,7 +96,7 @@ nine role ids of §2, each once, in any order:
 
 | role | headers | symbols |
 |---|---|---|
-| registration | `api/accelerator_api.hpp`, `api/...` | `RegisterQuery`, `QueryRegistrar` |
+| registration | `api/register.hpp`, `api/...` | `QueryRegistrar`, `...` |
 | value_semantics | | |
 ````
 
@@ -150,11 +109,10 @@ nine role ids of §2, each once, in any order:
 
 ## 7. Conformance
 
-The gate `engine_api_conformance` (layer `api`): the manifest matches `api/`; nothing
-outside the backend includes a non-`api/` header of it; the neutral toy accelerator
-(`pipeline/templates/engine_backend/api_conformance/`, written once against §1 only)
-builds against this backend's `api/` and answers a trivial parameterised query
-exactly as its SQL does, before and after a write, with `accel_get_execute_counts()`
-showing the accelerator served it. The backend's harness
-`backends/<engine>/tests/test_<engine>_api.cpp` (target `test_<engine>_api`) drives
-that; the gate builds and runs it through `host.sh build` and `host.sh run`.
+The gate `engine_api_conformance` (layer `api`): the manifest matches `api/`
+(`check_api_manifest.py`); nothing outside the backend includes a non-`api/` header of
+it (`scripts/check_layer_includes.py`); and every header under `api/` compiles in a
+translation unit of its own with the flags of the code that includes it (target
+`api_conformance_<engine>`, generated by `cmake/Backend.cmake`, built through
+`host.sh build`), so each header includes what it uses. The first accelerator runs on
+the backend exercise `api/` end to end.

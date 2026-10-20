@@ -21,10 +21,10 @@ It has no remote and no link back to `$SRC`.
 ## 2. Enter the sandbox
 
 ```bash
-cp /home/akhilvb/accelerator-codegen/.env "$DEST/.env"    # OPENROUTER_API_KEY etc.; the pipeline loads $DEST/.env
-export ACCEL_DUCKDB_ROOT=/home/akhilvb/duckdb-dbcapture
-export ACCEL_DUCKDB_SEED_DIRS=/home/akhilvb/.cache/accel_pg/build/duckdb:/home/akhilvb/.cache/accel_mysql/build/duckdb
-export ACCEL_SANDBOX_DATA=/flash1/akhilvb/datasets/tpch_sf1_tbl:/flash1/akhilvb/tpch_sf1.pristine_20261016.duckdb:/home/akhilvb/accelerator-codegen-duckdb
+cp $HOME/accelerator-codegen/.env "$DEST/.env"    # OPENROUTER_API_KEY etc.; the pipeline loads $DEST/.env
+export ACCEL_DUCKDB_ROOT=$HOME/duckdb-dbcapture
+export ACCEL_DUCKDB_SEED_DIRS=$HOME/.cache/accel_pg/build/duckdb:$HOME/.cache/accel_mysql/build/duckdb
+export ACCEL_SANDBOX_DATA=/flash1/akhilvb/datasets/tpch_sf1_tbl:/flash1/akhilvb/tpch_sf1.pristine_20261016.duckdb:$HOME/accelerator-codegen-duckdb
 "$DEST"/pipeline/clean_tree/sandbox.sh "$DEST"
 ```
 
@@ -50,7 +50,7 @@ export ACCEL_DATASET_DIR=/flash1/akhilvb/datasets/tpch_sf1_tbl
 export ACCEL_TPCH_DB=$PWD/.data/tpch_sf1.duckdb
 mkdir -p .data && cp /flash1/akhilvb/tpch_sf1.pristine_20261016.duckdb "$ACCEL_TPCH_DB"
 # Optional, faster container builds: a prebuilt in-container DuckDB for the engine being built
-# (/home/akhilvb/.cache/accel_pg/build/duckdb for postgres, .../accel_mysql/... for mysql).
+# (~/.cache/accel_pg/build/duckdb for postgres, ~/.cache/accel_mysql/... for mysql; bind them via ACCEL_DUCKDB_SEED_DIRS).
 # export ACCEL_DUCKDB_SEED=...
 
 # Engine backends, one per engine (each writes backends/<engine>/, host.sh first):

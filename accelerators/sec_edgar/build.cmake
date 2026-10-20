@@ -17,7 +17,8 @@ if(ACCEL_SEC_EDGAR_COPTS)
     endif()
 endif()
 
-if(NOT TARGET duckdb_sibling)
+# The tests, benchmarks and tools below are DuckDB harnesses.
+if(NOT TARGET accel_backend_duckdb)
     return()
 endif()
 

@@ -270,14 +270,12 @@ manifest format of `host_contract.md`. The slot layers built the engine side; th
 layer exposes it. Move what accelerators and harnesses must reach (registries, runtime
 handle, scan helpers, SQL fallback, cost-model path, thread settings, engine-exact value
 helpers) into `api/`, keep everything else (`engine/`, `state/`, `tests/`) private, and
-add the neutral surface `api/accelerator_api.hpp` and the introspection hooks.
+add the introspection hooks.
 
-**Harness:** `backends/{engine}/tests/test_{engine}_api.cpp` builds the toy accelerator
-from `pipeline/templates/engine_backend/api_conformance/` (written against the neutral
-surface only; do not edit it) into the engine's loadable unit, registers it, and checks
-on this engine: the toy query equals its base SQL for several arguments, again after an
-`UPDATE`, `accel_get_execute_counts()` shows hits, and the hooks of the contract exist.
-Run engine-specific loading through `host.sh` (`host_contract.md`).
+**Harness:** none of its own. The gate builds `api_conformance_{engine}` through
+`host.sh build`: each `api/` header compiled alone with the flags of the code that
+includes it, so an `api/` header that needs another include, or the engine SDK set up
+first, fails here and not in the first accelerator.
 
-The gate also runs `pipeline/gates/check_api_manifest.py` and
+Before that it runs `pipeline/gates/check_api_manifest.py` and
 `scripts/check_layer_includes.py`; fix their output as it names the file and line.

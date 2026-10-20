@@ -91,7 +91,7 @@ def test_api_is_the_last_layer_with_its_own_gate():
     workload = load_workload("engine_mysql", REPO_ROOT)
     layer = workload["implementation_layers"][-1]
     assert layer["id"] == "api" and layer["gate"] == "engine_api_conformance"
-    assert layer["harness"] == "backends/mysql/tests/test_mysql_api.cpp"
+    assert layer["cmake_target"] == "api_conformance_mysql"  # every api/ header compiled alone (cmake/Backend.cmake)
     assert layer_gate_from_stage("impl_api", workload) == "engine_api_conformance"
     assert layer_gate_from_stage("impl_epochs", workload) == "engine_epochs"
     assert "engine_api_conformance" in workload["post_validation_gates"]

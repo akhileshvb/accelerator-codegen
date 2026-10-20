@@ -34,6 +34,12 @@ cmd_info() {
   echo '{"engine": "postgres", "embedded": false, "verbs": ["info", "up", "down", "load", "build", "sql", "run", "slot"]}'
 }
 
+# The instance's database (empty until `load`): `build` registers the extension in it.
+ensure_db() {
+  psql_in -d postgres -tAc "select 1 from pg_database where datname = '${DB}'" | grep -q 1 ||
+    psql_in -d postgres -c "CREATE DATABASE \"${DB}\"" >/dev/null
+}
+
 cmd_up() {
   mkdir -p "${STATE}/data" "${STATE}/logs" "${ACCEL_BUILD_DIR:?}"
   if ! docker ps --format '{{.Names}}' | grep -qx "${NAME}"; then
@@ -59,7 +65,10 @@ cmd_up() {
   fi
   local _
   for _ in $(seq 1 90); do
-    ready && return 0
+    if ready; then
+      ensure_db
+      return
+    fi
     sleep 1
   done
   docker logs "${NAME}" 2>&1 | tail -40 >&2
@@ -78,9 +87,7 @@ cmd_down() {
 cmd_load() { # schema.sql [constraints.sql]
   local schema="$1" constraints="${2:-}" tbl table
   : "${ACCEL_DATASET_DIR:?}"
-  psql_in -d postgres -tAc "select 1 from pg_database where datname = '${DB}'" | grep -q 1 || {
-    psql_in -d postgres -c "CREATE DATABASE \"${DB}\""
-  }
+  ensure_db
   if [[ "$(cat "${STATE}/loaded" 2>/dev/null)" == "${ACCEL_DATASET_DIR}" ]]; then
     return 0
   fi

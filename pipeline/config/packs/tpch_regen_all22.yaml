@@ -1,6 +1,7 @@
 # Clean-tree regeneration: all 22 TPC-H aux-state queries, one run per query x engine
 # (base accelerators run first as each aux run's prerequisite). Run each engine's
-# engine_backend workload before this pack. The first wave grows accelerators/prims/
+# engine_backend workload before this pack. The first wave (Q1 on every engine) checks each
+# backend's api/ end to end and grows accelerators/prims/
 # from empty before the remaining runs fan out.
 
 pack_id: tpch_regen_all22

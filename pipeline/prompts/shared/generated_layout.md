@@ -81,9 +81,8 @@ array, a dispatch switch, or a function list; a tree with every
 
 The registrars, registries and entry-point shims are the **registration** role of the
 backend API index (`backends/{engine}/api/README.md`; rendered in your prompt as
-"Backend API"). The neutral surface (`RegisterQuery` / `QueryRegistrar`, `QuerySpec`)
-works on every engine; the index lists the engine's own registrars for base kernels,
-catalog entries and SQL entry points. Place the query's registration files under
+"Backend API"): the engine's own registrars for base kernels, catalog entries and SQL
+entry points. Place the query's registration files under
 `q{N}/{engine}/` (peers show the file split) and use only the index's registrars.
 A Verus accelerator registers through `substrate/verus/kit/verus_kit.hpp`
 (`kit::Registrar`) from `q{N}/verus_kit/<crate>/`.

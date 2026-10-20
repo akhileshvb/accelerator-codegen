@@ -74,8 +74,8 @@ implementation_layers:
   - id: api
     title: Accelerator-facing API and its manifest
     gate: engine_api_conformance
-    harness: backends/{engine}/tests/test_{engine}_api.cpp
-    cmake_target: test_{engine}_api
+    harness: backends/{engine}/api/README.md
+    cmake_target: api_conformance_{engine}
     rules: [api_surface, api_manifest]
 
 # Default post-layer gates (engine_build + this layer). Overridden per stage.
