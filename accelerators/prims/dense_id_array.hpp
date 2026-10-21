@@ -75,24 +75,6 @@ struct DenseIdArray {
     return true;
   }
 
-  // Allocates every leaf up to `max_key` (each filled with `fill`), so that threads
-  // may then Set distinct in-range keys concurrently. `parallel_for(n, fn)` must run
-  // fn(0..n-1), possibly on several threads; each call owns one leaf.
-  template <class ParallelFor>
-  void Allocate(int64_t max_key, ParallelFor &&parallel_for, T fill = T{}) {
-    if (!Fits(max_key))
-      return;
-    const auto last = static_cast<std::size_t>(max_key);
-    const std::size_t leaves = (last >> kShift) + 1;
-    if (chunks.size() < leaves)
-      chunks.resize(leaves);
-    parallel_for(leaves, [&](std::size_t leaf) {
-      const std::size_t size = leaf + 1 == leaves ? (last & kMask) + 1 : kSize;
-      if (chunks[leaf].size() < size)
-        chunks[leaf].resize(size, fill);
-    });
-  }
-
   T Get(int64_t key, T absent = T{}) const {
     if (!Fits(key))
       return absent;

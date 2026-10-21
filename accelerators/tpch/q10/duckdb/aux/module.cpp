@@ -135,16 +135,10 @@ CompactSideBase(const TpchQ10State &state) {
   auto base = std::make_shared<TpchQ10SideBase>(*state.side_base);
   if (state.customer_overlay) {
     for (const auto &[key, slot] : *state.customer_overlay) {
-      if (slot.present) {
-        base->SetCustomerRank(key, slot.customer.acctbal_raw,
-                              slot.customer.nationkey);
-        base->customers.Set(key, slot.customer);
-      } else {
-        if (base->ranks.Get(key).present != 0)
-          base->ranks.Set(key, TpchQ10CustomerRank{});
-        if (auto *customer = base->customers.Find(key))
-          *customer = TpchQ10Customer{};
-      }
+      if (slot.present)
+        base->SetCustomer(key, slot.customer);
+      else
+        base->EraseCustomer(key);
     }
   }
   return base;
@@ -1224,35 +1218,43 @@ struct CustomerRow {
   TpchQ10Customer customer;
 };
 
+using DenseRanks = core::DenseIdArray<TpchQ10CustomerRank>;
+
+// Customers are dealt by rank-array leaf, so a bucket owns whole leaves.
 DealtRows<CustomerRow> ScanCustomers(core::AuxEngineServices &services, TpchQ10InitialScan &source) {
   return DealTable<CustomerRow>(
       services, source, "customer",
       {IntColumn("c_custkey"), TextColumn("c_name"), DecimalColumn("c_acctbal", 2),
        IntColumn("c_nationkey"), TextColumn("c_address"), TextColumn("c_phone"),
        TextColumn("c_comment")},
-      1, [](DealtRows<CustomerRow> &rows, const auto &row) {
+      kDealBuckets, [](DealtRows<CustomerRow> &rows, const auto &row) {
         const int64_t key = row.Int(0);
-        if (!core::DenseIdArray<TpchQ10CustomerRank>::Fits(key))
+        if (!DenseRanks::Fits(key))
           return;
-        rows.Add(0, key,
+        rows.Add(static_cast<std::size_t>(key >> DenseRanks::kShift) % kDealBuckets, key,
                  {key,
                   {row.Text(1), row.Decimal(2), static_cast<int32_t>(row.Int(3)), row.Text(4),
                    row.Text(5), row.Text(6)}});
       });
 }
 
-// Keys are unique, so the runs write disjoint slots of the pre-allocated arrays.
+// Each bucket becomes one segment of strings and sets the ranks of its own leaves.
 void FillCustomerSide(core::AuxEngineServices &services, DealtRows<CustomerRow> &&rows,
                       TpchQ10SideBase &base) {
-  const auto parallel_for = [&](std::size_t n, const auto &fn) {
-    core::ParallelEach(services, n, 1, fn);
-  };
-  base.ranks.Allocate(rows.MaxKey(), parallel_for);
-  base.customers.Allocate(rows.MaxKey(), parallel_for);
-  core::ParallelEach(services, rows.RunCount(), 1, [&](std::size_t run) {
-    for (auto &row : rows.Rows(run, 0)) {
-      base.SetCustomerRank(row.key, row.customer.acctbal_raw, row.customer.nationkey);
-      base.customers.Set(row.key, std::move(row.customer));
+  if (rows.MaxKey() >= 0)
+    base.ranks.Ensure(rows.MaxKey()); // sizes the leaf directory
+  base.segments.resize(rows.BucketCount());
+  core::ParallelEach(services, rows.BucketCount(), 1, [&](std::size_t bucket) {
+    auto &segment = base.segments[bucket];
+    for (auto &row : rows.TakeBucket(bucket)) {
+      TpchQ10CustomerRank rank;
+      rank.acctbal_raw = row.customer.acctbal_raw;
+      rank.nationkey = row.customer.nationkey;
+      rank.index = static_cast<uint32_t>(segment.size());
+      rank.segment = static_cast<uint16_t>(bucket);
+      rank.present = 1;
+      base.ranks.Set(row.key, rank);
+      segment.push_back(std::move(row.customer));
     }
   });
 }
