@@ -178,4 +178,11 @@ pub proof fn lemma_rescan_blockers_len(db: Db, keys: Seq<i64>, rows: Seq<Blocker
     lemma_unit_sum(db.supplier, selected);
 }
 
+pub proof fn lemma_total_bound(db: Db, brand: Seq<u8>, kind: Seq<u8>, size: int)
+    ensures 0 <= total(db, brand, kind, size) <= database_suppliers(db).len(),
+{
+    crate::maintenance_semantics::lemma_supplier_partition(db, brand, kind, size);
+    lemma_unit_sum(database_suppliers(db), |supplier: int| crate::maintenance_semantics::qualifier(db, brand, kind, size, supplier));
+}
+
 }

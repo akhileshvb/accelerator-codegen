@@ -218,4 +218,57 @@ pub proof fn lemma_total_delta(db: Db, db2: Db, suppliers: Index<i64>,
             - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, group_key(brand, kind, size)));
 }
 
+pub open spec fn unaffected(db: Db, db2: Db, suppliers: Index<i64>) -> bool {
+    &&& forall|supplier: int, part: int| suppliers.at((supplier, Seq::<u8>::empty())).is_none() ==>
+        #[trigger] edge_count(db2, part, supplier) == edge_count(db, part, supplier)
+    &&& forall|supplier: int| suppliers.at((supplier, Seq::<u8>::empty())).is_none() ==>
+        #[trigger] blocker_count(db2, supplier) == blocker_count(db, supplier)
+    &&& forall|supplier: int, part: int, key: KeyView| #![trigger edge_count(db2, part, supplier), part_database_sum(db, part, key)]
+        suppliers.at((supplier, Seq::<u8>::empty())).is_none() && edge_count(db2, part, supplier) != 0
+            ==> part_database_sum(db2, part, key) == part_database_sum(db, part, key)
+}
+
+pub proof fn lemma_changes_are_totals(db: Db, db2: Db, suppliers: Index<i64>,
+    old_parts: Parts, old_edges: Edges, old_blockers: Index<i64>,
+    new_parts: Parts, new_edges: Edges, new_blockers: Index<i64>, group_changes: Counts,
+)
+    requires key_set(suppliers),
+        parts_keys_valid(old_parts), parts_keys_valid(new_parts), edges_keys_valid(old_edges), edges_keys_valid(new_edges),
+        scanned_parts(old_parts, db), scanned_edges(old_edges, db), scanned_blockers(old_blockers, db),
+        scanned_parts(new_parts, db2), scanned_edges(new_edges, db2), scanned_blockers(new_blockers, db2),
+        unaffected(db, db2, suppliers),
+        forall|key: KeyView| #[trigger] count_at(group_changes, key) == sum(suppliers.entries(), |row: (KeyView, i64)|
+            supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key)
+                - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key)),
+    ensures forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
+            total(db2, brand, kind, size) - total(db, brand, kind, size) == #[trigger] count_at(group_changes, group_key(brand, kind, size)),
+{
+    assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
+        total(db2, brand, kind, size) - total(db, brand, kind, size) == #[trigger] count_at(group_changes, group_key(brand, kind, size)) by {
+        let key = group_key(brand, kind, size);
+        assert forall|supplier: int| #[trigger] suppliers.at((supplier, Seq::<u8>::empty())).is_none() implies
+            qualifying_supplier(db, brand, kind, size, supplier) == qualifying_supplier(db2, brand, kind, size, supplier) by {
+            lemma_unaffected_supplier(db, db2, brand, kind, size, supplier);
+        }
+        assert forall|supplier: int| #[trigger] suppliers.at((supplier, Seq::<u8>::empty())).is_some() implies
+            supplier_contribution(old_parts, old_edges, old_blockers, supplier, key) == qualifier(db, brand, kind, size, supplier)
+                && supplier_contribution(new_parts, new_edges, new_blockers, supplier, key) == qualifier(db2, brand, kind, size, supplier) by {
+            lemma_local_contribution(old_parts, old_edges, old_blockers, db, supplier, brand, kind, size);
+            lemma_local_contribution(new_parts, new_edges, new_blockers, db2, supplier, brand, kind, size);
+        }
+        lemma_total_delta(db, db2, suppliers, old_parts, old_edges, old_blockers, new_parts, new_edges, new_blockers, brand, kind, size);
+    }
+}
+
+pub proof fn lemma_apply_correct(db: Db, db2: Db, before: Counts, after: Counts, group_changes: Counts, ranks: Ranks)
+    requires counts_valid(before, db), positive_counts(after), ranks_valid(ranks, after),
+        forall|key: KeyView| #[trigger] count_at(after, key) == count_at(before, key) + count_at(group_changes, key),
+        forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
+            total(db2, brand, kind, size) - total(db, brand, kind, size) == #[trigger] count_at(group_changes, group_key(brand, kind, size)),
+    ensures counts_valid(after, db2),
+{
+    assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
+        #[trigger] count_at(after, group_key(brand, kind, size)) == total(db2, brand, kind, size) by {}
+}
+
 }

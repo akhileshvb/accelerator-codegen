@@ -575,7 +575,8 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
 #[verifier::rlimit(60)]
 pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Counts, Ghost(fits): Ghost<bool>) -> (out: Result<(Counts, Ranks), u32>)
     requires cell_keys_valid(*source), cell_keys_valid(*group_changes),
-        fits ==> forall|key: KeyView| 0 <= #[trigger] count_at(*source, key) + count_at(*group_changes, key) <= i64::MAX as int,
+        fits ==> forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
+            0 <= count_at(*source, #[trigger] group_key(brand, kind, size)) + count_at(*group_changes, group_key(brand, kind, size)) <= i64::MAX as int,
     ensures out matches Ok(state) ==> cell_keys_valid(state.0),
         out matches Ok(state) ==> (positive_counts(*source) ==> positive_counts(state.0)),
         out matches Ok(state) ==> (ranks_valid(*base_ranks, *source) ==> ranks_valid(state.1, state.0)),
@@ -609,7 +610,8 @@ pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Coun
             preserve@ ==> ranks_valid(ranks, counts),
             0 <= processed@ <= group_changes.entries().len(),
             cursor.remaining() == group_changes.entries().skip(processed@),
-            fits ==> forall|key: KeyView| 0 <= #[trigger] count_at(source_counts@, key) + count_at(*group_changes, key) <= i64::MAX as int,
+            fits ==> forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
+                0 <= count_at(source_counts@, #[trigger] group_key(brand, kind, size)) + count_at(*group_changes, group_key(brand, kind, size)) <= i64::MAX as int,
             forall|position: int| 0 <= position < group_changes.entries().len() ==>
                 #[trigger] group_changes.at(group_changes.entries()[position].0) == Some(group_changes.entries()[position].1),
             forall|first: int, last: int| 0 <= first < last < group_changes.entries().len() ==>
@@ -657,6 +659,7 @@ pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Coun
             proof {
                 if fits {
                     assert(count_at(*group_changes, key.view()) == cell.count as int);
+                    assert(cell.group.key() == group_key((*cell.group.brand)@, (*cell.group.kind)@, cell.group.size as int));
                 }
             }
             return Err(4);
