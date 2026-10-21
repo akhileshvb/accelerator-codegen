@@ -1,5 +1,6 @@
 #include "tpch/q22/duckdb/aux/module.hpp"
 #include "tpch/q22/calibration_writes.hpp"
+#include "prims/bucketed_rows.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"
@@ -10,6 +11,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -224,59 +226,171 @@ std::set<std::string> CountryCodes(const core::QueryArguments &arguments) {
   return codes;
 }
 
-// The customers one build partition has seen. Prefix ids are local until the
-// partitions fold in table order, which assigns them in order of first
-// appearance, as in a serial scan.
-struct CustomerPartial {
-  struct PrefixTotals {
-    int64_t positive_count = 0;
-    Int128 positive_sum = 0;
-    std::map<int64_t, int64_t> zero_order; // balance -> customers without orders
-  };
+using CustomerArray = core::AnyKeyCowArray<TpchQ22CustomerRecord, 6>;
 
-  TpchQ22PrefixDictionary dictionary;
-  std::vector<PrefixTotals> totals; // by local prefix id
-  core::AnyKeyCowArray<TpchQ22CustomerRecord, 6> customers;
+// Rows are dealt by the directory-page owner of their custkey, so a bucket's
+// keys are written by one task and buckets write the one array concurrently.
+std::size_t OwnerBucket(int64_t custkey) {
+  return static_cast<std::size_t>(CustomerArray::OwnerOf(custkey) & (core::kRowBuckets - 1));
+}
 
-  uint32_t PrefixId(const std::string &prefix) {
-    const auto [it, added] = dictionary.ids.emplace(prefix, totals.size());
-    if (added)
-      totals.emplace_back();
-    return it->second;
+struct CustomerRow {
+  int64_t custkey;
+  int64_t balance_raw; // scale 2
+  uint64_t prefix_code;
+};
+
+// A phone prefix (at most two UTF-8 characters) packed big-endian.
+uint64_t PrefixCode(const std::string &prefix) {
+  uint64_t code = 0;
+  for (const unsigned char c : prefix)
+    code = code << 8 | c;
+  return code;
+}
+
+std::string PrefixOfCode(uint64_t code) {
+  std::string prefix;
+  for (; code != 0; code >>= 8)
+    prefix.insert(prefix.begin(), static_cast<char>(code & 0xff));
+  return prefix;
+}
+
+struct CustomerRows {
+  core::BucketedRows<CustomerRow> rows;
+  std::vector<uint64_t> prefix_order; // first appearance in this partition
+  std::set<uint64_t> seen;
+
+  void Add(const CustomerRow &row) {
+    if (seen.insert(row.prefix_code).second)
+      prefix_order.push_back(row.prefix_code);
+    rows.Add(OwnerBucket(row.custkey), row);
   }
-  void Add(int64_t custkey, const TpchQ22CustomerRecord &rec) {
-    customers.Set(custkey, rec);
-    if (!CountsInAverage(rec))
-      return;
-    auto &prefix = totals[rec.prefix_id];
-    ++prefix.positive_count;
-    prefix.positive_sum += rec.balance_raw;
-    if (rec.order_count == 0)
-      ++prefix.zero_order[rec.balance_raw];
-  }
-  void Merge(CustomerPartial &&from) {
-    std::vector<const std::string *> prefixes(from.totals.size());
-    for (const auto &[prefix, id] : from.dictionary.ids)
-      prefixes[id] = &prefix;
-    std::vector<uint32_t> remap(from.totals.size());
-    for (std::size_t id = 0; id < prefixes.size(); ++id)
-      remap[id] = PrefixId(*prefixes[id]);
-    from.customers.ForEach([&](int64_t custkey, TpchQ22CustomerRecord rec) {
-      if (rec.prefix_id == kTpchQ22NoCustomer)
-        return;
-      if (rec.prefix_id != kTpchQ22NullPhone)
-        rec.prefix_id = remap[rec.prefix_id];
-      customers.Set(custkey, rec);
-    });
-    for (std::size_t id = 0; id < from.totals.size(); ++id) {
-      auto &into = totals[remap[id]];
-      into.positive_count += from.totals[id].positive_count;
-      into.positive_sum += from.totals[id].positive_sum;
-      for (const auto &[balance, count] : from.totals[id].zero_order)
-        into.zero_order[balance] += count;
-    }
+  void Absorb(CustomerRows &&from) {
+    rows.Absorb(std::move(from.rows));
+    prefix_order.insert(prefix_order.end(), from.prefix_order.begin(), from.prefix_order.end());
   }
 };
+
+core::BucketedRows<int64_t> ScanOrderCustomers(core::AuxEngineServices &services,
+                                               TpchQ22InitialScan &scan) {
+  using Rows = core::BucketedRows<int64_t>;
+  return core::PartitionedBuild<Rows>(
+      services, [] { return Rows{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        scan.ScanOrders(services, partitions, [&](std::size_t p, const TpchQ22OrderInput &input) {
+          sink(p, core::SingleRowBatch<TpchQ22OrderInput>{input});
+        });
+      },
+      [](Rows &partial, const TpchQ22OrderInput &input) {
+        partial.Add(OwnerBucket(input.custkey), input.custkey);
+      },
+      [](Rows &into, Rows &&from) { into.Absorb(std::move(from)); });
+}
+
+CustomerRows ScanCustomerRows(core::AuxEngineServices &services, TpchQ22InitialScan &scan) {
+  return core::PartitionedBuild<CustomerRows>(
+      services, [] { return CustomerRows{}; },
+      [&](std::size_t partitions, auto &&sink) {
+        scan.ScanCustomers(services, partitions,
+                           [&](std::size_t p, const TpchQ22CustomerInput &input) {
+                             sink(p, core::SingleRowBatch<TpchQ22CustomerInput>{input});
+                           });
+      },
+      [](CustomerRows &partial, const TpchQ22CustomerInput &input) {
+        int64_t balance = 0;
+        if (!ToScale2(input.acctbal_raw, input.acctbal_scale, balance))
+          throw std::logic_error("TPC-H Q22: c_acctbal not representable at scale 2");
+        partial.Add({input.custkey, balance, PrefixCode(PhonePrefix(input.phone))});
+      },
+      [](CustomerRows &into, CustomerRows &&from) { into.Absorb(std::move(from)); });
+}
+
+// One bucket's customers and the number of orders of each custkey seen.
+struct CustomerBucket {
+  std::vector<CustomerRow> customers; // table order
+  std::vector<std::pair<int64_t, int64_t>> order_counts; // sorted by custkey
+  int64_t min_key = std::numeric_limits<int64_t>::max();
+  int64_t max_key = std::numeric_limits<int64_t>::min();
+};
+
+CustomerBucket GatherBucket(std::vector<CustomerRow> customers, std::vector<int64_t> order_keys) {
+  CustomerBucket bucket;
+  bucket.customers = std::move(customers);
+  std::sort(order_keys.begin(), order_keys.end());
+  for (const int64_t key : order_keys) {
+    if (bucket.order_counts.empty() || bucket.order_counts.back().first != key)
+      bucket.order_counts.emplace_back(key, 0);
+    ++bucket.order_counts.back().second;
+  }
+  const auto widen = [&](int64_t key) {
+    bucket.min_key = std::min(bucket.min_key, key);
+    bucket.max_key = std::max(bucket.max_key, key);
+  };
+  for (const auto &row : bucket.customers)
+    widen(row.custkey);
+  if (!order_keys.empty()) {
+    widen(order_keys.front());
+    widen(order_keys.back());
+  }
+  return bucket;
+}
+
+// The customers of one prefix: the balances of those that count in the
+// average, and of those among them with no orders.
+struct PrefixBalances {
+  std::vector<int64_t> positive;
+  std::vector<int64_t> zero_order;
+};
+
+// Writes one bucket's customers (and order-only custkeys) into the array; returns
+// the balances to total, by prefix id.
+std::vector<PrefixBalances>
+FillBucket(const CustomerBucket &bucket, const std::unordered_map<uint64_t, uint32_t> &prefix_ids,
+           CustomerArray &customers) {
+  std::vector<PrefixBalances> balances(prefix_ids.size());
+  const auto orders_of = [&](int64_t custkey) -> int64_t {
+    const auto it = std::lower_bound(bucket.order_counts.begin(), bucket.order_counts.end(),
+                                     std::make_pair(custkey, int64_t{0}));
+    return it != bucket.order_counts.end() && it->first == custkey ? it->second : 0;
+  };
+  const auto order_count = [](int64_t orders) {
+    if (orders > std::numeric_limits<int32_t>::max())
+      throw std::overflow_error("TPC-H Q22 order count overflow");
+    return static_cast<int32_t>(orders);
+  };
+  for (const auto &row : bucket.customers) {
+    const TpchQ22CustomerRecord rec{row.balance_raw, order_count(orders_of(row.custkey)),
+                                    prefix_ids.at(row.prefix_code)};
+    customers.Set(row.custkey, rec);
+    if (!CountsInAverage(rec))
+      continue;
+    balances[rec.prefix_id].positive.push_back(rec.balance_raw);
+    if (rec.order_count == 0)
+      balances[rec.prefix_id].zero_order.push_back(rec.balance_raw);
+  }
+  // Custkeys with orders but no customer row keep their order count.
+  for (const auto &[custkey, orders] : bucket.order_counts)
+    if (customers.Get(custkey).prefix_id == kTpchQ22NoCustomer)
+      customers.Set(custkey, {0, order_count(orders), kTpchQ22NoCustomer});
+  return balances;
+}
+
+std::shared_ptr<const TpchQ22PrefixEntry>
+TotalPrefix(const std::vector<std::vector<PrefixBalances>> &buckets, std::size_t id) {
+  auto entry = std::make_shared<TpchQ22PrefixEntry>();
+  std::map<int64_t, int64_t> zero_order; // balance -> customers without orders
+  for (const auto &bucket : buckets) {
+    for (const int64_t balance : bucket[id].positive) {
+      ++entry->positive_count;
+      entry->positive_sum_raw += balance;
+    }
+    for (const int64_t balance : bucket[id].zero_order)
+      ++zero_order[balance];
+  }
+  for (const auto &[balance, count] : zero_order)
+    entry->zero_order.Add(balance, count);
+  return entry;
+}
 
 } // namespace
 
@@ -316,64 +430,40 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q22 aux requires a typed initial scan source");
 
-  using OrderCounts = core::AnyKeyCowArray<int64_t, 12>;
-  const OrderCounts order_counts = core::PartitionedBuild<OrderCounts>(
-      services, [] { return OrderCounts{}; },
-      [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanOrders(services, partitions,
-                                 [&](std::size_t p, const TpchQ22OrderInput &input) {
-                                   sink(p, core::SingleRowBatch<TpchQ22OrderInput>{input});
-                                 });
-      },
-      [](OrderCounts &counts, const TpchQ22OrderInput &input) {
-        counts.Add(input.custkey, 1);
-      },
-      [](OrderCounts &into, OrderCounts &&from) {
-        into.MergeFrom(std::move(from),
-                       [](int64_t mine, int64_t theirs) { return mine + theirs; });
-      });
+  auto order_rows = ScanOrderCustomers(services, *initial_scan);
+  auto customer_rows = ScanCustomerRows(services, *initial_scan);
 
-  auto customers = core::PartitionedBuild<CustomerPartial>(
-      services, [] { return CustomerPartial{}; },
-      [&](std::size_t partitions, auto &&sink) {
-        initial_scan->ScanCustomers(services, partitions,
-                                    [&](std::size_t p, const TpchQ22CustomerInput &input) {
-                                      sink(p, core::SingleRowBatch<TpchQ22CustomerInput>{input});
-                                    });
-      },
-      [&](CustomerPartial &partial, const TpchQ22CustomerInput &input) {
-        int64_t balance = 0;
-        if (!ToScale2(input.acctbal_raw, input.acctbal_scale, balance))
-          throw std::logic_error("TPC-H Q22: c_acctbal not representable at scale 2");
-        const int64_t orders = order_counts.Get(input.custkey);
-        if (orders > std::numeric_limits<int32_t>::max())
-          throw std::overflow_error("TPC-H Q22 order count overflow");
-        partial.Add(input.custkey,
-                    {balance, static_cast<int32_t>(orders),
-                     partial.PrefixId(PhonePrefix(input.phone))});
-      },
-      [](CustomerPartial &into, CustomerPartial &&from) { into.Merge(std::move(from)); });
+  // Prefix ids in order of first appearance, as a serial scan numbers them.
+  std::unordered_map<uint64_t, uint32_t> prefix_ids;
+  auto dictionary = std::make_shared<TpchQ22PrefixDictionary>();
+  for (const uint64_t code : customer_rows.prefix_order)
+    if (prefix_ids.emplace(code, prefix_ids.size()).second)
+      dictionary->ids.emplace(PrefixOfCode(code), prefix_ids.at(code));
+
+  std::vector<CustomerBucket> buckets(core::kRowBuckets);
+  core::ParallelEach(services, core::kRowBuckets, 1, [&](std::size_t b) {
+    buckets[b] = GatherBucket(customer_rows.rows.Take(b), order_rows.Take(b));
+  });
+  int64_t min_key = std::numeric_limits<int64_t>::max(), max_key = std::numeric_limits<int64_t>::min();
+  for (const auto &bucket : buckets) {
+    min_key = std::min(min_key, bucket.min_key);
+    max_key = std::max(max_key, bucket.max_key);
+  }
 
   auto state = std::make_shared<TpchQ22State>();
-  state->customers = std::move(customers.customers);
-  // Custkeys with orders but no customer row keep their order count.
-  order_counts.ForEach([&](int64_t custkey, int64_t count) {
-    if (count == 0 || state->customers.Get(custkey).prefix_id != kTpchQ22NoCustomer)
-      return;
-    if (count > std::numeric_limits<int32_t>::max())
-      throw std::overflow_error("TPC-H Q22 order count overflow");
-    state->customers.Set(custkey, {0, static_cast<int32_t>(count), kTpchQ22NoCustomer});
+  if (min_key <= max_key) {
+    state->customers.Reserve(min_key);
+    state->customers.Reserve(max_key);
+  }
+  std::vector<std::vector<PrefixBalances>> balances(core::kRowBuckets);
+  core::ParallelEach(services, core::kRowBuckets, 1, [&](std::size_t b) {
+    balances[b] = FillBucket(buckets[b], prefix_ids, state->customers);
   });
-  state->dictionary =
-      std::make_shared<TpchQ22PrefixDictionary>(std::move(customers.dictionary));
-  state->prefixes.resize(customers.totals.size());
-  core::ParallelEach(services, customers.totals.size(), 1, [&](std::size_t id) {
-    auto entry = std::make_shared<TpchQ22PrefixEntry>();
-    entry->positive_count = customers.totals[id].positive_count;
-    entry->positive_sum_raw = customers.totals[id].positive_sum;
-    for (const auto &[balance, count] : customers.totals[id].zero_order)
-      entry->zero_order.Add(balance, count);
-    state->prefixes[id] = std::move(entry);
+
+  state->dictionary = std::move(dictionary);
+  state->prefixes.resize(prefix_ids.size());
+  core::ParallelEach(services, prefix_ids.size(), 1, [&](std::size_t id) {
+    state->prefixes[id] = TotalPrefix(balances, id);
   });
   return state;
 }
