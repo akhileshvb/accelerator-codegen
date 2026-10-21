@@ -36,3 +36,5 @@ pub mod wmap;
 pub mod log;
 pub mod ingest;
 pub mod linepass;
+pub mod groups;
+pub mod emitw;

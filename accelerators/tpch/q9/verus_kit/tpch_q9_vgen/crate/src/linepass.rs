@@ -131,7 +131,7 @@ fn add_dates(t: &mut WMap, srows: &Vec<Ent>, drows: &Vec<Ent>, k0: &Wide, k1: &W
 
 
 /// The bucket of key k1 (an empty one when absent).
-fn bucket<'a>(w: &'a WMap, k1: i64, empty: &'a Vec<Ent>) -> (r: &'a Vec<Ent>)
+pub fn bucket<'a>(w: &'a WMap, k1: i64, empty: &'a Vec<Ent>) -> (r: &'a Vec<Ent>)
     requires empty@.len() == 0,
     ensures forall|k2: int, f: int| #[trigger] ent_at(r@, k2, f) == wm_at(*w, k1, k2, f),
 {
