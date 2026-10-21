@@ -109,6 +109,11 @@ impl<D, S: AccelState<D>> Base<D, S> {
         self.timeline@
     }
 
+    /// The state, as a value.
+    pub closed spec fn state_spec(self) -> S {
+        *self.state
+    }
+
     pub fn version(&self) -> (e: u64)
         ensures
             e == self.epoch(),
@@ -124,6 +129,7 @@ impl<D, S: AccelState<D>> Base<D, S> {
     pub fn state(&self) -> (s: &S)
         ensures
             (*s).answers((self.timeline())(self.epoch() as nat)),
+            *s == self.state_spec(),
     {
         proof {
             use_type_invariant(self);

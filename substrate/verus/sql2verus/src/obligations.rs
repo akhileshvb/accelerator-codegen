@@ -35,8 +35,10 @@
 //   * A row type without text is #[repr(C)] + Copy and passed as a slice;
 //     one with text is passed as an owned Vec (build) or &Vec (apply).
 //   * The kernel provides crate::kernel::{State, build, execute, apply,
-//     rescan_<name>_keys} with State::db(); the host calls only the ob_*
-//     functions, whose contracts are fixed here.
+//     rescan_<name>_keys} with State::db(), and a spec fn rescan_<name>_wanted
+//     (State, delta views) -> Seq<key>: the keys it asks for.  The host passes
+//     back exactly those keys; it calls only the ob_* functions, whose
+//     contracts are fixed here.
 //   * `Model` describes the ob_* functions for the generated glue (glue.rs):
 //     the store adapter and the C ABI are derived from it, never written.
 use super::*;
@@ -233,6 +235,7 @@ pub(crate) struct P {
 pub(crate) const SDB: &str = "$SDB";
 pub(crate) const DB: &str = "$DB";
 pub(crate) const DB2: &str = "$DB2";
+pub(crate) const ST: &str = "$S";
 
 pub(crate) struct ObFn {
     pub(crate) doc: String,
@@ -299,8 +302,8 @@ pub(crate) struct Model {
 }
 
 /// `requires` with its database placeholders instantiated.
-pub(crate) fn inst(r: &str, sdb: &str, db: &str, db2: &str) -> String {
-    r.replace(SDB, sdb).replace(DB2, db2).replace(DB, db)
+pub(crate) fn inst(r: &str, st: &str, sdb: &str, db: &str, db2: &str) -> String {
+    r.replace(SDB, sdb).replace(DB2, db2).replace(DB, db).replace(ST, st)
 }
 
 impl ObFn {
@@ -315,13 +318,13 @@ impl ObFn {
         if !self.requires.is_empty() {
             writeln!(w, "    requires").unwrap();
             for r in &self.requires {
-                writeln!(w, "        {},", inst(r, "s.db()", "db", "db2")).unwrap();
+                writeln!(w, "        {},", inst(r, "*s", "s.db()", "db", "db2")).unwrap();
             }
         }
         if !self.ensures.is_empty() {
             writeln!(w, "    ensures").unwrap();
             for e in &self.ensures {
-                writeln!(w, "        {e},").unwrap();
+                writeln!(w, "        {},", inst(e, "*s", "s.db()", "db", "db2")).unwrap();
             }
         }
         w
@@ -979,16 +982,23 @@ pub(crate) async fn obligations(
             })
             .collect()
     };
+    let wanted = |s: &ScanOut| {
+        let views: Vec<String> = deltas.values().map(|d| format!("{}_delta@", table_field(&d.table))).collect();
+        format!("crate::kernel::rescan_{}_wanted({ST}, {})", s.name, views.join(", "))
+    };
+    let mut wanted_decls: Vec<String> = vec![];
     for s in scans.iter().filter(|s| s.rescan) {
+        let tys: Vec<String> = deltas.values().map(|d| format!("{}_delta: Seq<{}>", table_field(&d.table), d.elem)).collect();
+        wanted_decls.push(format!("/// The keys the kernel asks the host to rescan ({}); the host passes back exactly these.\npub open spec fn rescan_{}_wanted(s: State, {}) -> Seq<{}> {{\n    Seq::empty()\n}}\n", s.name, s.name, tys.join(", "), s.key_rt.unwrap()));
         let mut ps = vec![P { name: "s".into(), ty: "&State".into(), ghost: false, arg: Arg::State }];
         ps.extend(delta_params(&deltas));
         fns.push(ObFn {
-            doc: format!("The keys whose rows the host rescans (rescan {}) for apply.  No contract:\n/// apply's result does not depend on trusting them.", s.name),
+            doc: format!("The keys whose rows the host rescans (rescan {}) for apply: the kernel's\n/// requested keys, which the host passes back to apply.", s.name),
             name: format!("rescan_{}_keys", s.name),
             params: ps,
             ret: format!("(r: Vec<{}>)", s.key_rt.unwrap()),
             requires: vec![],
-            ensures: vec![],
+            ensures: vec![format!("r@ == {}", wanted(s))],
         });
     }
     {
@@ -1013,6 +1023,7 @@ pub(crate) async fn obligations(
         }
         req.push(format!("capture_ok({SDB}, {DB2}, {})", cap.join(", ")));
         for s in scans.iter().filter(|s| s.rescan) {
+            req.push(format!("{n}_keys@ == {}", wanted(s), n = s.name));
             req.push(format!("{}({DB2}, {n}_keys@, {n}_rows@)", s.contract, n = s.name));
         }
         ps.push(P { name: "db2".into(), ty: "Db".into(), ghost: true, arg: Arg::Ghost });
@@ -1099,6 +1110,9 @@ pub(crate) async fn obligations(
     writeln!(stub, "// gen_obligations.rs calls, with its contracts.  Replace the bodies (and State).").unwrap();
     writeln!(stub, "#![allow(unused_imports)]\nuse vstd::prelude::*;\nuse verus_common::rat::*;\nuse crate::gen_spec::*;\nuse crate::gen_obligations::*;\n\nverus! {{\n").unwrap();
     writeln!(stub, "pub struct State {{\n    db: Ghost<Db>,\n}}\n\nimpl State {{\n    pub closed spec fn db(self) -> Db {{\n        self.db@\n    }}\n}}\n").unwrap();
+    for d in &wanted_decls {
+        writeln!(stub, "{d}").unwrap();
+    }
     for f in &fns {
         writeln!(w, "/// {}", f.doc).unwrap();
         w.push_str(&f.sig("ob_"));

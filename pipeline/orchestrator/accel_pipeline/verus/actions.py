@@ -638,10 +638,10 @@ def correctness(ctx: VerusContext, *, store: str = "verus_global", snapshots_too
         ok = ok and s["ok"]
     rate = fallback_rate(d)
     res["fallback_rate"] = round(rate, 3)
-    if rate > float(ctx.setting("gates.max_fallback_rate", 0.25)):
+    if rate > float(ctx.setting("gates.max_fallback_rate", 0.0)):
         ok = False
-        res["fallback_error"] = (f"{rate:.0%} of accelerator queries were answered with SQL: the kernel declines "
-                                 "too often (execute returning None, or states missing)")
+        res["fallback_error"] = (f"{rate:.0%} of accelerator queries were answered with SQL: inside the envelope "
+                                 "the kernel may not decline, so a state went missing or execute returned None")
     res["ok"] = ok
     return res
 

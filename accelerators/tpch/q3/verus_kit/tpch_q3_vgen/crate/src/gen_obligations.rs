@@ -307,26 +307,30 @@ pub fn ob_execute(
     kernel::execute(s, p1, p2)
 }
 
-/// The keys whose rows the host rescans (rescan orders_by_key) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan orders_by_key) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_orders_by_key_keys(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
     lineitem_delta: &[ShipmentKeyDelta],
     orders_delta: &[OrderKeyDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_orders_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
 {
     kernel::rescan_orders_by_key_keys(s, customer_delta, lineitem_delta, orders_delta)
 }
 
-/// The keys whose rows the host rescans (rescan shipments_by_key) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan shipments_by_key) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_shipments_by_key_keys(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
     lineitem_delta: &[ShipmentKeyDelta],
     orders_delta: &[OrderKeyDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_shipments_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
 {
     kernel::rescan_shipments_by_key_keys(s, customer_delta, lineitem_delta, orders_delta)
 }
@@ -350,7 +354,9 @@ pub fn ob_apply(
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(s.db(), db2, customer_delta_seq_view(customer_delta@), lineitem_full, orders_full),
+        orders_by_key_keys@ == crate::kernel::rescan_orders_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
         rescan_orders_by_key_ok(db2, orders_by_key_keys@, orders_by_key_rows@),
+        shipments_by_key_keys@ == crate::kernel::rescan_shipments_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
         rescan_shipments_by_key_ok(db2, shipments_by_key_keys@, shipments_by_key_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,

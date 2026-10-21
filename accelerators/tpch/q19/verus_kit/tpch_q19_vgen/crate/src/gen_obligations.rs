@@ -229,9 +229,49 @@ pub open spec fn capture_ok(db: Db, db2: Db, lineitem: Seq<(LineitemRow, int)>, 
     &&& bag_step(db.part, db2.part, part)
 }
 
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table may hold.
+pub open spec fn max_rows() -> int {
+    1099511627776
+}
+
+/// Each value of lineitem lies in the range of its column's SQL type.
+pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
+    -2147483648 <= r.l_partkey <= 2147483647
+    && -999999999999999 <= r.l_quantity <= 999999999999999
+    && -999999999999999 <= r.l_extendedprice <= 999999999999999
+    && -999999999999999 <= r.l_discount <= 999999999999999
+}
+
+/// Each value of part lies in the range of its column's SQL type.
+pub open spec fn part_in_type(r: PartRow) -> bool {
+    -2147483648 <= r.p_partkey <= 2147483647
+    && -2147483648 <= r.p_size <= 2147483647
+}
+
+/// The databases the host can deliver: each table within max_rows(), each value
+/// within its column's SQL type (which the DBMS enforces).
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.lineitem.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.lineitem.len() ==> lineitem_in_type(#[trigger] db.lineitem[i])
+    &&& db.part.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.part.len() ==> part_in_type(#[trigger] db.part[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    match r.revenue { Some(v) => -170141183460469231731687303715884105728 <= v <= 170141183460469231731687303715884105727, None => true }
+}
+
+/// Every correct answer fits the result's runtime types.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
+}
+
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     qualifying_parts: Vec<PartInput>,
     qualifying_lines: &[LineInput],
@@ -242,11 +282,13 @@ pub fn ob_build(
         scan_qualifying_lines_ok(db, qualifying_lines@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        envelope(db) ==> r is Some,
 {
     kernel::build(qualifying_parts, qualifying_lines, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope or when a correct answer overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: &[u8],
@@ -258,22 +300,26 @@ pub fn ob_execute(
 ) -> (r: Option<Vec<Option<i128>>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2 as int, p3@, p4 as int, p5@, p6 as int), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1@, p2 as int, p3@, p4 as int, p5@, p6 as int)) ==> r is Some,
 {
     kernel::execute(s, p1, p2, p3, p4, p5, p6)
 }
 
-/// The keys whose rows the host rescans (rescan lines_for_parts) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan lines_for_parts) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_lines_for_parts_keys(
     s: &State,
     lineitem_delta: &[LineDelta],
     part_delta: &Vec<PartDelta>,
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_lines_for_parts_wanted(*s, lineitem_delta@, part_delta@),
 {
     kernel::rescan_lines_for_parts_keys(s, lineitem_delta, part_delta)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope.
 pub fn ob_apply(
     s: &State,
     lineitem_delta: &[LineDelta],
@@ -288,9 +334,11 @@ pub fn ob_apply(
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         part_delta_ok(part_delta@, part_full),
         capture_ok(s.db(), db2, lineitem_full, part_full),
+        lines_for_parts_keys@ == crate::kernel::rescan_lines_for_parts_wanted(*s, lineitem_delta@, part_delta@),
         rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
     kernel::apply(s, lineitem_delta, part_delta, lines_for_parts_keys, lines_for_parts_rows, Ghost(lineitem_full), Ghost(part_full), Ghost(db2))
 }

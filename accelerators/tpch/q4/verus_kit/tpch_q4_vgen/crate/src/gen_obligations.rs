@@ -207,9 +207,48 @@ pub open spec fn capture_ok(db: Db, db2: Db, lineitem: Seq<(LineitemRow, int)>, 
     &&& bag_step(db.orders, db2.orders, orders)
 }
 
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table may hold.
+pub open spec fn max_rows() -> int {
+    1099511627776
+}
+
+/// Each value of lineitem lies in the range of its column's SQL type.
+pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
+    -2147483648 <= r.l_orderkey <= 2147483647
+    && -2147483648 <= r.l_commitdate <= 2147483647
+    && -2147483648 <= r.l_receiptdate <= 2147483647
+}
+
+/// Each value of orders lies in the range of its column's SQL type.
+pub open spec fn orders_in_type(r: OrdersRow) -> bool {
+    -2147483648 <= r.o_orderkey <= 2147483647
+    && -2147483648 <= r.o_orderdate <= 2147483647
+}
+
+/// The databases the host can deliver: each table within max_rows(), each value
+/// within its column's SQL type (which the DBMS enforces).
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.lineitem.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.lineitem.len() ==> lineitem_in_type(#[trigger] db.lineitem[i])
+    &&& db.orders.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.orders.len() ==> orders_in_type(#[trigger] db.orders[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    -9223372036854775808 <= r.order_count <= 9223372036854775807
+}
+
+/// Every correct answer fits the result's runtime types.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
+}
+
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     qualifying_orders: Vec<DatePriorityInput>,
     Ghost(db): Ghost<Db>,
@@ -218,11 +257,13 @@ pub fn ob_build(
         scan_qualifying_orders_ok(db, qualifying_orders@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        envelope(db) ==> r is Some,
 {
     kernel::build(qualifying_orders, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope or when a correct answer overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: i32,
@@ -230,33 +271,39 @@ pub fn ob_execute(
 ) -> (r: Option<Vec<(Vec<u8>, i64)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1 as int, p2 as int), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1 as int, p2 as int)) ==> r is Some,
 {
     kernel::execute(s, p1, p2)
 }
 
-/// The keys whose rows the host rescans (rescan orders_for_line_changes) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan orders_for_line_changes) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_orders_for_line_changes_keys(
     s: &State,
     lineitem_delta: &[LineDelta],
     orders_delta: &Vec<OrderDelta>,
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_orders_for_line_changes_wanted(*s, lineitem_delta@, orders_delta@),
 {
     kernel::rescan_orders_for_line_changes_keys(s, lineitem_delta, orders_delta)
 }
 
-/// The keys whose rows the host rescans (rescan qualifying_lines_for_keys) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan qualifying_lines_for_keys) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_qualifying_lines_for_keys_keys(
     s: &State,
     lineitem_delta: &[LineDelta],
     orders_delta: &Vec<OrderDelta>,
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_qualifying_lines_for_keys_wanted(*s, lineitem_delta@, orders_delta@),
 {
     kernel::rescan_qualifying_lines_for_keys_keys(s, lineitem_delta, orders_delta)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope.
 pub fn ob_apply(
     s: &State,
     lineitem_delta: &[LineDelta],
@@ -269,10 +316,13 @@ pub fn ob_apply(
 ) -> (r: Result<State, u32>)
     requires
         capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), order_delta_seq_view(orders_delta@)),
+        orders_for_line_changes_keys@ == crate::kernel::rescan_orders_for_line_changes_wanted(*s, lineitem_delta@, orders_delta@),
         rescan_orders_for_line_changes_ok(db2, orders_for_line_changes_keys@, orders_for_line_changes_rows@),
+        qualifying_lines_for_keys_keys@ == crate::kernel::rescan_qualifying_lines_for_keys_wanted(*s, lineitem_delta@, orders_delta@),
         rescan_qualifying_lines_for_keys_ok(db2, qualifying_lines_for_keys_keys@, qualifying_lines_for_keys_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
     kernel::apply(s, lineitem_delta, orders_delta, orders_for_line_changes_keys, orders_for_line_changes_rows, qualifying_lines_for_keys_keys, qualifying_lines_for_keys_rows, Ghost(db2))
 }

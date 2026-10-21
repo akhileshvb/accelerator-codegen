@@ -48,7 +48,9 @@ pub fn prepare_apply(
     requires
         base.timeline() == store.timeline(),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), line_delta_seq_view(lineitem_delta@), order_delta_seq_view(orders_delta@)),
+        orders_for_line_changes_keys@ == crate::kernel::rescan_orders_for_line_changes_wanted(base.state_spec(), lineitem_delta@, orders_delta@),
         rescan_orders_for_line_changes_ok(store.db_at((base.epoch() + 1) as nat), orders_for_line_changes_keys@, orders_for_line_changes_rows@),
+        qualifying_lines_for_keys_keys@ == crate::kernel::rescan_qualifying_lines_for_keys_wanted(base.state_spec(), lineitem_delta@, orders_delta@),
         rescan_qualifying_lines_for_keys_ok(store.db_at((base.epoch() + 1) as nat), qualifying_lines_for_keys_keys@, qualifying_lines_for_keys_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),
