@@ -25,7 +25,7 @@ constexpr std::size_t kSlotGrain = 16;
 // Profit slots per slice when copying them or folding them into the cube (~80 us).
 constexpr std::size_t kSlotFoldGrain = 8;
 // Profit slots per slice when applying buffered pair aggregates at build (untimed).
-constexpr std::size_t kPairSlotGrain = 4;
+constexpr std::size_t kPairSlotGrain = 1;
 // Candidate parts per read slice (~800 us): a hash lookup, substring test and cells.
 constexpr std::size_t kCandidateGrain = 8192;
 // Affected pairs per snapshot chunk.
@@ -42,9 +42,9 @@ constexpr int32_t kDenseYearBase = Q9TokenCube::kYearBase;
 // One (part, supplier, order year) lineitem aggregate: rev = SUM(extendedprice_raw
 // * (100 - discount_raw)), qty = SUM(quantity_raw).
 struct PairAgg {
-  int64_t partkey, suppkey;
+  int64_t partkey, rev, qty;
+  int32_t suppkey; // fits (PairKeyFits)
   int32_t year;
-  int64_t rev, qty;
 };
 
 // Chunks of a ChunkedCowArray dealt round-robin to `buckets`: a bucket owns whole chunks,
@@ -1284,28 +1284,34 @@ void Q9TokenCube::Add(int32_t nation, int32_t year, int64_t delta) {
   sparse.push_back(Q9ProfitCell::Make(nation, year, delta));
 }
 
+Q9TokenCube &TpchQ9State::CubeOf(const std::string &token) {
+  auto &slot = cube[token];
+  if (!slot)
+    slot = std::make_shared<Q9TokenCube>();
+  else if (slot.use_count() > 1)
+    slot = std::make_shared<Q9TokenCube>(*slot);
+  return *slot;
+}
+
 void TpchQ9State::CubeAdd(const std::vector<std::string> &tokens,
                           int32_t nation, int32_t year, int64_t delta) {
   if (delta == 0)
     return;
-  for (const auto &token : tokens) {
-    auto &slot = cube[token];
-    if (!slot)
-      slot = std::make_shared<Q9TokenCube>();
-    else if (slot.use_count() > 1)
-      slot = std::make_shared<Q9TokenCube>(*slot);
-    slot->Add(nation, year, delta);
-  }
+  for (const auto &token : tokens)
+    CubeOf(token).Add(nation, year, delta);
 }
 
 void TpchQ9State::CubeApplyRecord(const Q9PartRecord &record, int sign) {
   if (record.cells.empty())
     return;
   const auto tokens = NameTokens(record.normalized_name);
-  if (tokens.empty())
-    return;
+  std::vector<Q9TokenCube *> cubes; // one lookup per token, not per cell
+  cubes.reserve(tokens.size());
+  for (const auto &token : tokens)
+    cubes.push_back(&CubeOf(token));
   for (const auto &cell : record.cells)
-    CubeAdd(tokens, cell.Nation(), cell.Year(), sign * cell.profit);
+    for (auto *token_cube : cubes)
+      token_cube->Add(cell.Nation(), cell.Year(), sign * cell.profit);
 }
 
 void TpchQ9State::BuildCube(const core::AuxEngineServices &services) {
@@ -1733,9 +1739,9 @@ DealtRows<PairAgg> ScanPairAggregates(const core::AuxEngineServices &services,
         if (!PairKeyFits(input.suppkey) || !state.LookupOrderYear(input.orderkey, year))
           return;
         dealt.Add(TpchQ9State::HashPartition(input.partkey, slots), input.partkey,
-                  {input.partkey, input.suppkey, year,
+                  {input.partkey,
                    input.extendedprice_raw * (static_cast<int64_t>(100) - input.discount_raw),
-                   input.quantity_raw});
+                   input.quantity_raw, static_cast<int32_t>(input.suppkey), year});
       });
 }
 
@@ -1869,6 +1875,8 @@ void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
 
   auto pairs = ScanPairAggregates(services, *initial_scan, state);
   BuildPartRecords(services, state, parts, pairs);
+  parts.Release(services);
+  pairs.Release(services);
 
   state.RebuildNationEmitOrder();
   state.BuildCellsFromPairs(services);

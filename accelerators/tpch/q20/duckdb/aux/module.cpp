@@ -16,8 +16,12 @@
 #include <unordered_set>
 #include <utility>
 
+#include <chrono>
+#include <cstdio>
 namespace accelerator_codegen::aux_state::query {
 namespace {
+static double TT(const char*w){static auto t0=std::chrono::steady_clock::now();static auto last=t0;auto n=std::chrono::steady_clock::now();fprintf(stderr,"Q20T %-14s +%.2f total %.2f\n",w,std::chrono::duration<double>(n-last).count(),std::chrono::duration<double>(n-t0).count());last=n;return 0;}
+
 
 // Base pairs per read slice (~3000 us): a cache-missing series lookup is ~100 ns.
 constexpr std::size_t kPairGrain = 32768;
@@ -1676,17 +1680,26 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
         "TPC-H Q20 aux requires a typed initial scan source");
 
   BaseBuilder builder(services);
-  builder.AdoptSeries(SortedSeries(services, *initial_scan));
+  TT("start");
+  auto ser = SortedSeries(services, *initial_scan);
+  TT("sortedseries");
+  builder.AdoptSeries(std::move(ser));
+  TT("adoptseries");
   builder.AdoptPartsupp(SortedPartsupps(services, *initial_scan));
+  TT("partsupp");
   const auto names = SortedNames(services, *initial_scan);
+  TT("names");
   builder.AdoptNames(names.rows);
+  TT("adoptnames");
   builder.AdoptSuppliers(SortedSuppliers(services, *initial_scan));
+  TT("suppliers");
   initial_scan->ScanNationsSerial([&](const TpchQ20NationInput &input) {
     builder.AddNation(input.key, input.name);
   });
 
   TpchQ20State state;
   state.base = builder.Finish();
+  TT("finish");
   return state;
 }
 

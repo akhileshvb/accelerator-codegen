@@ -321,6 +321,8 @@ struct TpchQ9State {
   std::unordered_map<std::string, std::shared_ptr<Q9TokenCube>> cube;
   bool cube_active = false;
 
+  // The token's cube for writing (created, or cloned if a published image shares it).
+  Q9TokenCube &CubeOf(const std::string &token);
   void CubeAdd(const std::vector<std::string> &tokens, int32_t nation,
                int32_t year, int64_t delta);
   // Add (sign=+1) / subtract (sign=-1) all cells of a record into the cube.

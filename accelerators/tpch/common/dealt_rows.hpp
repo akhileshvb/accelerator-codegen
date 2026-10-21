@@ -94,6 +94,13 @@ public:
     return out;
   }
 
+  // Frees the bucket tables of all partitions on the pool, for rows that were all taken: the
+  // tables hold one (empty) vector per partition and bucket, too many to free serially.
+  void Release(const core::AuxEngineServices &services) {
+    core::ParallelEach(services, runs_.size(), 1,
+                       [&](std::size_t run) { std::vector<std::vector<Row>>().swap(runs_[run]); });
+  }
+
 private:
   std::size_t buckets_;
   int64_t max_key_ = -1;
