@@ -40,6 +40,17 @@ products of two DECIMAL(15,2) values needs more than 128 bits), and prove
 returning `Err`. To decline on overflow, exhibit the correct answer (in `int`)
 that does not fit.
 
+* Exact integers: tables are bags with no unique keys, so a join group (and
+  its sums) is unbounded inside the envelope. Use the prooflib's exact
+  integer (`wide`: an `i128` fast path, unbounded limbs) if it exists;
+  otherwise write one (verified add, sub, mul, neg, compare, narrowing to
+  `i128`) and publish it.
+* Tracked parameter values: a design may precompute answers for chosen
+  values (e.g. the TPC-H colors) as a fast path, but every other value of the
+  parameter's type needs a total general path, compact and maintained
+  incrementally (no full-table copies, no rebuild per read). A fast-path
+  decline falls back to the general path without degrading the state.
+
 Libraries you can use (`ref/`): `verus_common` (the spec vocabulary: bags and
 sums over tables, byte order, rationals, SQL functions, sorting) and
 `verus_prooflib` (lemmas earlier runs proved; `prooflib/src/lib.rs`). Add a

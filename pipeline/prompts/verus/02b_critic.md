@@ -31,8 +31,8 @@ estimate breaks the check.
   whole table. Fails if a frequent write (inserts and deletes of the fact
   tables' rows, e.g. orders with their lineitems) needs a rescan keyed on a
   column the table is not clustered or indexed by, if any write's cost grows
-  with a table, or if apply can decline a valid write (a decline rebuilds
-  from scratch). Also fails if a refresh (0.1% of orders and lineitems, keys
+  with a table, or if apply can decline inside the envelope (the obligations
+  forbid it). Also fails if a refresh (0.1% of orders and lineitems, keys
   spread uniformly, so nearly every page is touched) copies a unit much
   larger than the changed rows (whole pages or per-key containers cloned on
   first touch), or if a rescan re-reads every row of each touched key when
@@ -48,11 +48,14 @@ estimate breaks the check.
   read or a write would touch many scattered entries (no locality), not for
   its size alone. Size never excuses a slower read or write: a compact
   design that breaks C2 or C7 still fails those.
-* **C4 values**: no overflow at SF3000; NULLs handled; every parameter value
-  of the TPC-H domain can be served (every substitution parameter, LIKE
-  patterns and fractions included, is a `$n` parameter). Fails if the design
-  is specialized to one parameter value (state only for parts of one color,
-  one pattern, one nation), or declines values inside the domain.
+* **C4 values**: totality inside the envelope (`verus_kernel.md`): every
+  sum or count over joined tuples is exact (the prooflib's exact integer `wide`;
+  bags have no unique keys, so join groups are unbounded), no narrow counter
+  can overflow, and every value of each parameter's type is answered (LIKE
+  patterns and fractions included). Fails if the design is specialized to
+  one parameter value (state only for parts of one color, one pattern, one
+  nation), or can decline inside the envelope for a reason other than a
+  correct answer overflowing the result types.
 * **C5 no answer cache**: the state is not a cache of final answers (unless
   the analysis justifies it convincingly).
 * **C7 fast reads at scale**: the read path's cost follows the answer, not
