@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
 #include <string>
 #include <utility>
@@ -102,8 +103,21 @@ inline std::string Describe(const char *types, const Vec &p) {
 // Templates
 // ---------------------------------------------------------------------------
 
+// The accelerator entry point a template's `call` names, rewritten to $ACCEL_SQL_ENTRY when the
+// gate sets it (a base kernel's own entry; unset, the aux entry the templates name).
+inline std::string WithSqlEntry(std::string call) {
+  const char *entry = std::getenv("ACCEL_SQL_ENTRY");
+  const auto from = call.find("FROM ");
+  const auto open = call.find('(', from);
+  if (entry == nullptr || *entry == '\0' || from == std::string::npos || open == std::string::npos) {
+    return call;
+  }
+  return call.replace(from + 5, open - from - 5, entry);
+}
+
 inline const std::vector<QueryTemplate> &Templates() {
-  static const std::vector<QueryTemplate> t = {
+  static const std::vector<QueryTemplate> t = [] {
+    std::vector<QueryTemplate> all = {
       {1, "i",
        "SELECT l_returnflag, l_linestatus, "
        "sum(l_quantity) AS sum_qty, sum(l_extendedprice) AS sum_base_price, "
@@ -372,7 +386,10 @@ inline const std::vector<QueryTemplate> &Templates() {
        "SELECT cntrycode, COUNT(*) AS numcust, SUM(c_acctbal) AS totacctbal "
        "FROM custsale GROUP BY cntrycode ORDER BY cntrycode",
        "SELECT * FROM accel_tpch_q22_aux({0}, {1}, {2}, {3}, {4}, {5}, {6})", false},
-  };
+    };
+    for (auto &entry : all) entry.call = WithSqlEntry(entry.call);
+    return all;
+  }();
   return t;
 }
 

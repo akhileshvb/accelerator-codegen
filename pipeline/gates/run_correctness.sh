@@ -26,6 +26,10 @@ fi
 if ! engine_ready "${DIFF_BINARY}"; then
   emit_result "${JSON}" correctness fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
+# The differential calls this workload's own SQL entry (a base kernel's, not the aux one the
+# templates name).
+ACCEL_SQL_ENTRY="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('function_name') or '')" "${CTX}")"
+export ACCEL_SQL_ENTRY
 engine_run "${DIFF_BINARY}" "${QUERY}"
 if [[ ${RC} -ne 0 ]]; then
   emit_result "${JSON}" correctness fail "${DIFF_BINARY} failed for query ${QUERY}" "${ENGINE_LOG}${LOG}" "query:=${QUERY}" "exit_code:=${RC}"
