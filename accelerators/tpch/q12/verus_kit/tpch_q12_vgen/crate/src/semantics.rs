@@ -287,6 +287,17 @@ pub proof fn lemma_execute_result(db: Db, parameters: Params, out: Seq<OutRow>)
     }
 }
 
+pub proof fn lemma_cell_count_nonneg(db: Db, mode: Seq<u8>, day: int, high: bool)
+    ensures cell_count(db, mode, day, high) >= 0,
+{
+    let weight = |order: OrdersRow| if high_priority(order) == high { line_count(db, order.o_orderkey, mode, day) } else { 0 };
+    assert forall|index: int| #![trigger db.orders[index]] 0 <= index < db.orders.len() implies weight(db.orders[index]) >= 0 by {
+        let key = db.orders[index].o_orderkey;
+        lemma_sum_nonneg(db.lineitem, |line: LineitemRow| if line.l_orderkey == key && line_selected(line, mode, day) { 1int } else { 0int });
+    }
+    lemma_sum_nonneg(db.orders, weight);
+}
+
 pub proof fn lemma_apply_result(db: Db, post: Db, mode: Seq<u8>, day: int, high: bool,
     before: int, change: int, after: int)
     requires before == cell_count(db, mode, day, high),
