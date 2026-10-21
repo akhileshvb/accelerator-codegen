@@ -6,6 +6,7 @@
 #include "tpch/q15/calibration_writes.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -16,8 +17,8 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Windows per slice (untimed): a rescan walks every supplier slot.
-constexpr std::size_t kWindowGrain = 8;
+// Windows per slice: a rescan walks every supplier slot, so one each.
+constexpr std::size_t kWindowGrain = 1;
 // Lineitem deltas below which a commit applies its month windows inline (untimed).
 constexpr std::size_t kDeltaOpThreshold = 4096;
 
@@ -165,6 +166,100 @@ void ApplyWindowDeltas(TpchQ15WindowState &ws,
   }
   if (rescan || ws.nonzero == 0)
     ws.Rescan();
+}
+
+
+// A lineitem's revenue contribution, bucketed by the dense chunk of its supplier
+// so one reduction task owns all the chunks of its bucket in every window.
+struct RevenueEntry {
+  int32_t month_key;
+  int64_t suppkey;
+  int64_t revenue;
+};
+
+constexpr std::size_t kRevenueBuckets = 1024;
+constexpr std::size_t kDenseChunkSize = decltype(TpchQ15RevArray::dense)::kChunkSize;
+
+std::size_t RevenueBucketOf(int64_t suppkey) {
+  if (suppkey < 0 || suppkey >= TpchQ15RevArray::kMaxDenseKey)
+    return 0; // the overflow map has a single owner
+  return static_cast<std::size_t>(suppkey) / kDenseChunkSize % kRevenueBuckets;
+}
+
+// What the scan keeps per partition: O(rows seen), never sized by the supplier
+// domain. Merging only collects the runs; the windows are summed afterwards.
+struct RevenueRuns {
+  using Bucketed = std::vector<std::vector<RevenueEntry>>;
+  std::vector<Bucketed> runs;
+  std::set<int32_t> months;
+  int64_t max_dense_key = -1;
+  int32_t last_days = std::numeric_limits<int32_t>::min();
+  int32_t last_month = 0;
+
+  RevenueRuns() : runs(1, Bucketed(kRevenueBuckets)) {}
+
+  // Shipdates arrive in runs, so the last date's month is remembered.
+  void Add(int32_t shipdate_days, int64_t suppkey, int64_t revenue) {
+    if (shipdate_days != last_days) {
+      last_days = shipdate_days;
+      last_month = MonthKey(shipdate_days);
+      months.insert(last_month);
+    }
+    runs.back()[RevenueBucketOf(suppkey)].push_back({last_month, suppkey, revenue});
+    if (suppkey < TpchQ15RevArray::kMaxDenseKey)
+      max_dense_key = std::max(max_dense_key, suppkey);
+  }
+  void MergeFrom(RevenueRuns &&from) {
+    runs.insert(runs.end(), std::make_move_iterator(from.runs.begin()),
+                std::make_move_iterator(from.runs.end()));
+    months.insert(from.months.begin(), from.months.end());
+    max_dense_key = std::max(max_dense_key, from.max_dense_key);
+  }
+};
+
+// Revenue per (window, supplier); each month feeds the three rolling windows
+// that contain it. Bucket tasks write disjoint chunks of the pre-sized windows.
+void AccumulateWindows(core::AuxEngineServices &services, TpchQ15InitialScan &scan,
+                       TpchQ15State &state) {
+  const auto collected = core::PartitionedBuild<RevenueRuns>(
+      services, [] { return RevenueRuns{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanLineitems(services, parts, [&](std::size_t p, const TpchQ15LineitemInput &input) {
+          sink(p, core::SingleRowBatch<TpchQ15LineitemInput>{input});
+        });
+      },
+      [](RevenueRuns &partial, const TpchQ15LineitemInput &input) {
+        partial.Add(input.shipdate_days, input.suppkey,
+                    TpchQ15RevenueRaw(input.extended_price_raw, input.extended_price_scale,
+                                      input.discount_raw, input.discount_scale));
+      },
+      [](RevenueRuns &into, RevenueRuns &&from) { into.MergeFrom(std::move(from)); });
+
+  std::unordered_map<int32_t, std::array<TpchQ15WindowState *, 3>> windows_of;
+  for (const auto month_key : collected.months) {
+    int32_t keys[3];
+    CoveringWindowKeysOfMonth(month_key, keys);
+    auto &targets = windows_of[month_key];
+    for (int i = 0; i < 3; ++i) {
+      auto &window = state.windows[keys[i]];
+      if (collected.max_dense_key >= 0)
+        window.rev.dense.Reserve(collected.max_dense_key);
+      targets[static_cast<std::size_t>(i)] = &window;
+    }
+  }
+  core::ParallelEach(services, kRevenueBuckets, 1, [&](std::size_t bucket) {
+    int32_t cached_month = 0;
+    const std::array<TpchQ15WindowState *, 3> *targets = nullptr;
+    for (const auto &run : collected.runs)
+      for (const auto &entry : run[bucket]) {
+        if (!targets || entry.month_key != cached_month) {
+          cached_month = entry.month_key;
+          targets = &windows_of.at(cached_month);
+        }
+        for (auto *window : *targets)
+          window->rev.Add(entry.suppkey, entry.revenue);
+      }
+  });
 }
 
 } // namespace
@@ -692,33 +787,7 @@ TpchQ15State TpchQ15Module::BuildState(
         into.MergeFrom(std::move(from));
       });
 
-  // Revenue per (month, supplier); each month feeds the three rolling windows
-  // that contain it.
-  using MonthRevenue = std::map<int32_t, TpchQ15RevArray>;
-  const auto months = core::PartitionedBuild<MonthRevenue>(
-      services, [] { return MonthRevenue{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitems(services, parts,
-                                    [&](std::size_t p, const TpchQ15LineitemInput &input) {
-                                      sink(p, core::SingleRowBatch<TpchQ15LineitemInput>{input});
-                                    });
-      },
-      [](MonthRevenue &revenue, const TpchQ15LineitemInput &input) {
-        revenue[MonthKey(input.shipdate_days)].Add(
-            input.suppkey,
-            TpchQ15RevenueRaw(input.extended_price_raw, input.extended_price_scale,
-                              input.discount_raw, input.discount_scale));
-      },
-      [](MonthRevenue &into, MonthRevenue &&from) {
-        for (const auto &[month, revenue] : from)
-          into[month].AddAll(revenue);
-      });
-  for (const auto &[month_key, revenue] : months) {
-    int32_t keys[3];
-    CoveringWindowKeysOfMonth(month_key, keys);
-    for (const auto key : keys)
-      state.windows[key].rev.AddAll(revenue);
-  }
+  AccumulateWindows(services, *initial_scan, state);
   std::vector<TpchQ15WindowState *> windows;
   for (auto &entry : state.windows)
     windows.push_back(&entry.second);

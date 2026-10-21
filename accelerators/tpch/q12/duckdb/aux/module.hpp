@@ -74,8 +74,6 @@ struct TpchQ12State {
   // Number of qualifying lineitems counted for each present order. An order
   // can be removed without moving contributions only when this is zero.
   core::AnyKeyCowArray<uint16_t, 12> line_counts{};
-  using DayMap = std::map<int32_t, std::unordered_map<std::string, TpchQ12DayShipmodeStats>>;
-  DayMap day_partitions;
 
   TpchQ12PriorityClass PriorityOf(int64_t orderkey) const {
     return static_cast<TpchQ12PriorityClass>(order_priorities.Get(orderkey));
@@ -109,6 +107,9 @@ struct alignas(64) TpchQ12Modes {
   void Add(int slot, const std::string &shipmode, int64_t h, int64_t l);
   bool Empty() const;
 };
+
+// Ship-mode counts per receipt day, as gathered by the build.
+using TpchQ12DayModes = std::map<int32_t, TpchQ12Modes>;
 
 // One partition of the dyadic tree over receipt days. Tree nodes (heap
 // numbering) use `modes`; the single overflow partition (days outside the tree
@@ -198,7 +199,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ12State BuildState(core::AuxEngineServices &) const;
+  TpchQ12State BuildState(core::AuxEngineServices &, TpchQ12DayModes &days) const;
 
   TpchQ12Config config;
   TpchQ12InitialScan *initial_scan = nullptr;
