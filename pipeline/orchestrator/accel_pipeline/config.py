@@ -497,13 +497,15 @@ def engine_host_conventions(
     """
     engine = sanitize_engine_name(engine_name)
     query_host = load_engine_profile(engine, pipeline_root(repo_root or find_repo_root()))["query_host"]
-    register = f"accelerators/{bench}/q{query}/{engine}/register.cpp"
+    # The layout's registrar files (generated_layout.md): the base kernel's and the aux module's.
+    register = f"accelerators/{bench}/q{query}/{engine}/base/single-threaded/register.cpp"
+    aux_register = f"accelerators/{bench}/q{query}/{engine}/aux/register.cpp"
     targets = harness_targets(engine, bench)
     diff = targets["differential_binary"]
     return {
         "engine_name": engine,
         "register_path": register,
-        "aux_register_path": register,
+        "aux_register_path": aux_register,
         "registry": f"the registration role of backends/{engine}/api/README.md",
         "sql_entrypoint_convention": (
             f"Host-native SQL entrypoints for {engine}, registered from the query's own directory "

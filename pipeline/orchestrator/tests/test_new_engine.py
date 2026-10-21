@@ -44,7 +44,7 @@ def test_toydb_aux_run_loads_with_engine_derived_host(repo: Path):
     w = load_workload(WORKLOAD, repo, engine="toydb")
     host = w["engine_host"]
     assert w["engine_name"] == "toydb"
-    assert host["register_path"] == "accelerators/tpch/q1/toydb/register.cpp"
+    assert host["register_path"] == "accelerators/tpch/q1/toydb/base/single-threaded/register.cpp"
     assert host["differential_binary"] == "test_toydb_tpch_differential"
     assert host["work_db_suffix"] == ".toydb_work"
     assert all("/q{N}/toydb/" in p for p in w["fairness"]["kernel_search_paths"])
@@ -72,7 +72,7 @@ def test_toydb_host_sh_and_scaffold_follow_the_backends_files(repo: Path):
 
     w = load_workload(WORKLOAD, repo, engine="toydb")
     created = materialize_workload_stubs(pc, w, 1)["created"]
-    register = repo / "accelerators/tpch/q1/toydb/register.cpp"
+    register = repo / "accelerators/tpch/q1/toydb/base/single-threaded/register.cpp"
     assert str(register.relative_to(repo)) in created
     text = register.read_text(encoding="utf-8")
     assert '#include "backends/toydb/api/register.hpp"' in text and "ToyQueryRegistrar" in text

@@ -67,7 +67,7 @@ def test_postgres_run_gets_the_agent_buildable_host():
 
 def test_aux_duckdb_registration_path():
     w = _duckdb_workload("tpch_q14_aux")
-    assert w["engine_host"]["aux_register_path"] == "accelerators/tpch/q14/duckdb/register.cpp"
+    assert w["engine_host"]["aux_register_path"] == "accelerators/tpch/q14/duckdb/aux/register.cpp"
 
 
 def test_per_engine_fairness_search_paths():
