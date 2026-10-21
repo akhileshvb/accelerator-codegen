@@ -67,16 +67,33 @@ pub fn execute(
 ) -> (r: Option<Vec<(i64, i128, i32, i64)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2 as int), out_view(out@)),
+        answer_fits(s.db(), params(p1@, p2 as int)) ==> r is Some,
 {
-    let rows = match crate::output::read(s, p1, p2) { Some(rows) => rows, None => return None };
+    let rows = crate::output::read(s, p1, p2);
     let mut out: Vec<(i64, i128, i32, i64)> = Vec::new();
     let mut index = 0;
     while index < rows.len()
-        invariant index <= rows.len(), out@.len() == index, out_view(out@) == wide_out(rows@.take(index as int)),
+        invariant index <= rows.len(), out@.len() == index,
+            query_result(s.db(), params(p1@, p2 as int), wide_out(rows@)), out_view(out@) == wide_out(rows@.take(index as int)),
         decreases rows.len() - index,
     {
         let row = &rows[index];
-        let revenue = match row.1.to_i128() { Some(value) => value, None => return None };
+        let revenue = match row.1.to_i128() {
+            Some(value) => value,
+            None => {
+                proof {
+                    let answer = wide_out(rows@);
+                    assert(answer.len() == rows@.len());
+                    assert(answer[index as int].revenue == rows@[index as int].1@);
+                    assert(!out_fits(answer[index as int]));
+                    assert(query_result(s.db(), params(p1@, p2 as int), answer));
+                    assert(!answer_fits(s.db(), params(p1@, p2 as int))) by {
+                        if answer_fits(s.db(), params(p1@, p2 as int)) { assert(out_fits(answer[index as int])); }
+                    }
+                }
+                return None;
+            },
+        };
         let ghost before = out@;
         out.push((row.0, revenue, row.2, row.3));
         proof {
