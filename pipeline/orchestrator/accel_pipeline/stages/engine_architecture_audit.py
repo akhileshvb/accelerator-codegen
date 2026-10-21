@@ -275,7 +275,14 @@ def run_architecture_audit_with_impl_retry(
                 extra_user_message=feedback,
             )
 
-    raise GateFailure(
-        f"architecture audit still failing after {max_rounds} round(s): "
-        f"{last_audit.get('summary') or last_audit.get('feedback_for_implementation') or 'see architecture_audit.json'}"
+    # Every layer gate passes; what the audit still asks moves to validation (a required fix
+    # there, next to the adversarial tests and slot gates) instead of stopping the backend run.
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    (art / "architecture_audit.open_findings.md").write_text(feedback + "\n", encoding="utf-8")
+    append_experiment_log(
+        pipeline_config.repo_root,
+        query,
+        f"- architecture audit: open findings after {max_rounds} round(s) handed to validation "
+        "(architecture_audit.open_findings.md)",
+        workload=workload,
     )

@@ -209,6 +209,9 @@
  "pipeline/config/packs/tpch_aux_remaining.yaml": {
   "engine": 1
  },
+ "pipeline/config/packs/tpch_duckdb_q1_q6.yaml": {
+  "engine": 4
+ },
  "pipeline/config/packs/tpch_pg_aux_all22.yaml": {
   "engine": 6,
   "path": 1

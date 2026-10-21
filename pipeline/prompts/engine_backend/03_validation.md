@@ -26,6 +26,8 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
   (see `layers.md`)
 - Spec: `pipeline/prompts/engine_backend/adversarial_tests.md`
 - Analysis (context only): `{{artifacts_path}}/backend_analysis.json`
+- Open audit findings, if present: `{{artifacts_path}}/architecture_audit.open_findings.md`. Each one
+  is a required fix of this stage, alongside the adversarial tests.
 
 ## Mandates
 
