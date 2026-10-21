@@ -30,13 +30,17 @@ use crate::yw::*;
 use crate::applyspec::*;
 use crate::applydiff::*;
 use crate::finish::*;
+use crate::raw::*;
+use crate::gapply::*;
+use crate::gans::*;
+use crate::pmap::*;
 use std::sync::Arc;
 
 verus! {
 
 broadcast use vstd::seq_lib::group_seq_properties;
 
-pub struct State {
+pub struct Fast {
     db: Ghost<Db>,
     pub pats: Arc<Vec<Vec<u8>>>,
     pub masks: Pages<Vec<MaskRow>>,
@@ -52,7 +56,7 @@ pub open spec fn rollup_ready(r: Seq<Arc<Vec<RCell>>>, pats: Seq<Seq<u8>>, db: D
             == nation_total(filter_db(db, pats[c]), nk, y, f)
 }
 
-impl State {
+impl Fast {
     pub closed spec fn db(self) -> Db {
         self.db@
     }
@@ -70,15 +74,15 @@ impl State {
 }
 
 #[verifier::spinoff_prover]
-pub fn build(
-    all_parts: Vec<PartIn>,
+pub fn build_fast(
+    all_parts: &Vec<PartIn>,
     all_orders: &[OrderIn],
     supplier_nations: &[SupplierIn],
-    nation_names: Vec<NationIn>,
+    nation_names: &Vec<NationIn>,
     all_partsupp: &[PartsuppIn],
     all_lines: &[LineIn],
     Ghost(db): Ghost<Db>,
-) -> (r: Option<State>)
+) -> (r: Option<Fast>)
     requires
         scan_all_parts_ok(db, all_parts@),
         scan_all_orders_ok(db, all_orders@),
@@ -91,10 +95,10 @@ pub fn build(
 {
     let pats = tracked_patterns();
     let ghost pv = pat_views(pats@);
-    let masks = build_masks(&all_parts, &pats, Ghost(db))?;
+    let masks = build_masks(all_parts, &pats, Ghost(db))?;
     let pairs = build_pairs(all_partsupp, Ghost(db))?;
     let suppliers = build_suppliers(supplier_nations, Ghost(db))?;
-    let names = build_names(&nation_names, Ghost(db))?;
+    let names = build_names(nation_names, Ghost(db))?;
     let dates_w = build_dates(all_orders, Ghost(db));
     let n = pats.len();
     let mut delta = build_rollup(all_lines, &dates_w, &masks, &pairs, &suppliers, n, Ghost(db), Ghost(pv))?;
@@ -131,13 +135,13 @@ pub fn build(
             assert(delta_view[c]@ == (*rollup@[c])@);
         }
     }
-    Some(State { db: Ghost(db), pats: Arc::new(pats), masks, pairs, suppliers, names, rollup })
+    Some(Fast { db: Ghost(db), pats: Arc::new(pats), masks, pairs, suppliers, names, rollup })
 }
 
 
 #[verifier::spinoff_prover]
-pub fn execute(
-    s: &State,
+pub fn execute_fast(
+    s: &Fast,
     p1: &[u8],
 ) -> (r: Option<Vec<(Vec<u8>, i64, i128)>>)
     ensures
@@ -232,37 +236,209 @@ pub fn execute(
     Some(out)
 }
 
+pub struct State {
+    db: Ghost<Db>,
+    gen: General,
+    fast: Option<Fast>,
+}
+
+impl State {
+    pub closed spec fn db(self) -> Db {
+        self.db@
+    }
+
+    #[verifier::type_invariant]
+    closed spec fn valid(self) -> bool {
+        general_of(self.gen, self.db@) && (self.fast matches Some(f) ==> f.db() == self.db@)
+    }
+}
+
+proof fn lemma_bag_refl<R>(t: Seq<R>)
+    ensures bag_step(t, t, Seq::<(R, int)>::empty()),
+{
+    assert forall|f: spec_fn(R) -> int| #[trigger] sum(t, f) == sum(t, f) + sum(Seq::<(R, int)>::empty(), |d: (R, int)| d.1 * f(d.0)) by {
+        lemma_sum_empty(Seq::<(R, int)>::empty(), |d: (R, int)| d.1 * f(d.0));
+    }
+}
+
+proof fn lemma_rescan_none(db: Db)
+    ensures rescan_lines_for_orders_ok(db, Seq::<i64>::empty(), Seq::<LineIn>::empty()),
+{
+    assert forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_in_seq_view(Seq::<LineIn>::empty()), f)
+        == sum(db.lineitem, |l: LineitemRow| if seq_view_i64(Seq::<i64>::empty()).contains(l.l_orderkey) { f(l) } else { 0 }) by {
+        assert(line_in_seq_view(Seq::<LineIn>::empty()) =~= Seq::<LineitemRow>::empty());
+        lemma_sum_empty(Seq::<LineitemRow>::empty(), f);
+        assert(forall|l: LineitemRow| !seq_view_i64(Seq::<i64>::empty()).contains(l.l_orderkey));
+        lemma_sum_zero(db.lineitem, |l: LineitemRow| if seq_view_i64(Seq::<i64>::empty()).contains(l.l_orderkey) { f(l) } else { 0 });
+    }
+}
+
+pub fn build(
+    all_parts: Vec<PartIn>,
+    all_orders: &[OrderIn],
+    supplier_nations: &[SupplierIn],
+    nation_names: Vec<NationIn>,
+    all_partsupp: &[PartsuppIn],
+    all_lines: &[LineIn],
+    Ghost(db): Ghost<Db>,
+) -> (r: Option<State>)
+    requires
+        scan_all_parts_ok(db, all_parts@),
+        scan_all_orders_ok(db, all_orders@),
+        scan_supplier_nations_ok(db, supplier_nations@),
+        scan_nation_names_ok(db, nation_names@),
+        scan_all_partsupp_ok(db, all_partsupp@),
+        scan_all_lines_ok(db, all_lines@),
+    ensures
+        r matches Some(s) ==> s.db() == db,
+        r is Some,
+{
+    let pe = part_events(&all_parts);
+    let ne = nation_events(&nation_names);
+    let oe = order_events(all_orders);
+    let se = supplier_events(supplier_nations);
+    let pse = partsupp_events(all_partsupp);
+    let le = line_events(all_lines);
+    let ghost db0 = db_empty();
+    let ghost db1 = Db { lineitem: Seq::empty(), ..db };
+    proof {
+        lemma_scan_built(db.part, part_in_seq_view(all_parts@), part_delta_seq_view(pe@));
+        lemma_scan_built(db.orders, order_in_seq_view(all_orders@), order_delta_seq_view(oe@));
+        lemma_scan_built(db.supplier, supplier_in_seq_view(supplier_nations@), supplier_delta_seq_view(se@));
+        lemma_scan_built(db.nation, nation_in_seq_view(nation_names@), nation_delta_seq_view(ne@));
+        lemma_scan_built(db.partsupp, partsupp_in_seq_view(all_partsupp@), partsupp_delta_seq_view(pse@));
+        lemma_scan_built(db.lineitem, line_in_seq_view(all_lines@), line_delta_seq_view(le@));
+    }
+    let g0 = general_empty();
+    let no_lines: Vec<LineDelta> = Vec::new();
+    let no_orders: Vec<OrderDelta> = Vec::new();
+    let no_suppliers: Vec<SupplierDelta> = Vec::new();
+    let no_partsupp: Vec<PartsuppDelta> = Vec::new();
+    let no_nations: Vec<NationDelta> = Vec::new();
+    let no_parts: Vec<PartDelta> = Vec::new();
+    let no_keys: Vec<i64> = Vec::new();
+    let no_rows: Vec<LineIn> = Vec::new();
+    let okeys = collect_okeys(oe.as_slice());
+    proof {
+        lemma_rescan_none(db1);
+        assert(db1.lineitem =~= Seq::<LineitemRow>::empty());
+        assert(line_delta_seq_view(no_lines@) =~= Seq::<(LineitemRow, int)>::empty());
+        lemma_bag_refl(Seq::<LineitemRow>::empty());
+        assert(rescan_lines_for_orders_ok(db1, okeys@, no_rows@)) by {
+            assert forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_in_seq_view(no_rows@), f)
+                == sum(db1.lineitem, |l: LineitemRow| if seq_view_i64(okeys@).contains(l.l_orderkey) { f(l) } else { 0 }) by {
+                assert(line_in_seq_view(no_rows@) =~= Seq::<LineitemRow>::empty());
+                lemma_sum_empty(Seq::<LineitemRow>::empty(), f);
+                lemma_sum_empty(db1.lineitem, |l: LineitemRow| if seq_view_i64(okeys@).contains(l.l_orderkey) { f(l) } else { 0 });
+            }
+        }
+    }
+    let g1 = general_apply(&g0, no_lines.as_slice(), &ne, oe.as_slice(), &pe, pse.as_slice(), se.as_slice(), okeys.as_slice(), no_rows.as_slice(), Ghost(db0), Ghost(db1));
+    proof {
+        lemma_bag_refl(db.part); lemma_bag_refl(db.orders); lemma_bag_refl(db.supplier);
+        lemma_bag_refl(db.nation); lemma_bag_refl(db.partsupp);
+        assert(order_delta_seq_view(no_orders@) =~= Seq::<(OrdersRow, int)>::empty());
+        assert(part_delta_seq_view(no_parts@) =~= Seq::<(PartRow, int)>::empty());
+        assert(supplier_delta_seq_view(no_suppliers@) =~= Seq::<(SupplierRow, int)>::empty());
+        assert(nation_delta_seq_view(no_nations@) =~= Seq::<(NationRow, int)>::empty());
+        assert(partsupp_delta_seq_view(no_partsupp@) =~= Seq::<(PartsuppRow, int)>::empty());
+        assert(okeys_of(no_orders@) =~= Seq::<i64>::empty());
+        lemma_rescan_none(db);
+    }
+    let g2 = general_apply(&g1, le.as_slice(), &no_nations, no_orders.as_slice(), &no_parts, no_partsupp.as_slice(), no_suppliers.as_slice(),
+        no_keys.as_slice(), no_rows.as_slice(), Ghost(db1), Ghost(db));
+    let fast = build_fast(&all_parts, all_orders, supplier_nations, &nation_names, all_partsupp, all_lines, Ghost(db));
+    Some(State { db: Ghost(db), gen: g2, fast })
+}
+
+pub fn execute(
+    s: &State,
+    p1: &[u8],
+) -> (r: Option<Vec<(Vec<u8>, i64, i128)>>)
+    ensures
+        r matches Some(out) ==> query_result(s.db(), params(p1@), out_view(out@)),
+        r is None ==> !answer_fits(s.db(), params(p1@)),
+{
+    proof { use_type_invariant(s); }
+    if let Some(f) = &s.fast {
+        let r = execute_fast(f, p1);
+        if r.is_some() { return r; }
+    }
+    general_answer(&s.gen, p1, Ghost(s.db()))
+}
+
+/// The lines of the changed orders (the host rescans them to move their lines between years).
+pub open spec fn rescan_lines_for_orders_wanted(s: State, lineitem_delta: Seq<LineDelta>, nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>,
+    part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    okeys_of(orders_delta)
+}
+
+pub open spec fn rescan_lines_for_parts_wanted(s: State, lineitem_delta: Seq<LineDelta>, nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>,
+    part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    part_keys_of(part_delta) + ps_keys_of(partsupp_delta)
+}
+
+pub open spec fn rescan_lines_for_suppliers_wanted(s: State, lineitem_delta: Seq<LineDelta>, nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>,
+    part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    if is_cancel(supplier_delta) { Seq::empty() } else { sup_keys_of(supplier_delta) }
+}
+
+pub open spec fn rescan_partsupp_for_parts_wanted(s: State, lineitem_delta: Seq<LineDelta>, nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>,
+    part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    ps_keys_of(partsupp_delta)
+}
+
+pub open spec fn delta_line_orders(deltas: Seq<LineDelta>) -> Seq<i64> {
+    deltas.map_values(|d: LineDelta| d.row.l_orderkey)
+}
+
+pub open spec fn rescan_orders_for_keys_wanted(s: State, lineitem_delta: Seq<LineDelta>, nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>,
+    part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    okeys_of(orders_delta) + delta_line_orders(lineitem_delta)
+}
+
 pub fn rescan_lines_for_orders_keys(s: &State, lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta],
     part_delta: &Vec<PartDelta>, partsupp_delta: &[PartsuppDelta], supplier_delta: &[SupplierDelta]) -> (r: Vec<i64>)
+    ensures r@ == rescan_lines_for_orders_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 { collect_okeys(orders_delta) }
 
 pub fn rescan_lines_for_parts_keys(s: &State, lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta],
     part_delta: &Vec<PartDelta>, partsupp_delta: &[PartsuppDelta], supplier_delta: &[SupplierDelta]) -> (r: Vec<i64>)
+    ensures r@ == rescan_lines_for_parts_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 { collect_pkeys(part_delta, partsupp_delta) }
 
 pub fn rescan_lines_for_suppliers_keys(s: &State, lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta],
     part_delta: &Vec<PartDelta>, partsupp_delta: &[PartsuppDelta], supplier_delta: &[SupplierDelta]) -> (r: Vec<i64>)
+    ensures r@ == rescan_lines_for_suppliers_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 { collect_skeys(supplier_delta) }
 
 pub fn rescan_partsupp_for_parts_keys(s: &State, lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta],
     part_delta: &Vec<PartDelta>, partsupp_delta: &[PartsuppDelta], supplier_delta: &[SupplierDelta]) -> (r: Vec<i64>)
+    ensures r@ == rescan_partsupp_for_parts_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 { collect_pskeys(partsupp_delta) }
 
 pub fn rescan_orders_for_keys_keys(s: &State, lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta],
     part_delta: &Vec<PartDelta>, partsupp_delta: &[PartsuppDelta], supplier_delta: &[SupplierDelta]) -> (r: Vec<i64>)
+    ensures r@ == rescan_orders_for_keys_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 {
     let mut keys = collect_okeys(orders_delta);
+    let ghost okeys = keys@;
     let mut i = 0;
     while i < lineitem_delta.len()
-        invariant i <= lineitem_delta.len(),
+        invariant i <= lineitem_delta.len(), keys@ == okeys + delta_line_orders(lineitem_delta@).take(i as int),
         decreases lineitem_delta.len() - i,
-    { keys.push(lineitem_delta[i].row.l_orderkey); i += 1; }
+    {
+        keys.push(lineitem_delta[i].row.l_orderkey);
+        proof { assert(keys@ =~= okeys + delta_line_orders(lineitem_delta@).take(i as int + 1)); }
+        i += 1;
+    }
+    proof { assert(delta_line_orders(lineitem_delta@).take(i as int) =~= delta_line_orders(lineitem_delta@)); }
     keys
 }
 
 #[verifier::spinoff_prover]
-pub fn apply(
-    s: &State,
+pub fn apply_fast(
+    s: &Fast,
     lineitem_delta: &[LineDelta],
     nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrderDelta],
@@ -280,7 +456,7 @@ pub fn apply(
     orders_for_keys_keys: &[i64],
     orders_for_keys_rows: &[OrderIn],
     Ghost(db2): Ghost<Db>,
-) -> (r: Result<State, u32>)
+) -> (r: Result<Fast, u32>)
     requires
         capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
         rescan_lines_for_orders_ok(db2, lines_for_orders_keys@, lines_for_orders_rows@),
@@ -364,7 +540,56 @@ pub fn apply(
                 lines_for_suppliers_keys@, lines_for_suppliers_rows@);
         }
     }
-    Ok(State { db: Ghost(db2), pats: Arc::clone(&s.pats), masks: masks2, pairs: pairs2, suppliers: sups2, names: s.names.share(), rollup: rollup2 })
+    Ok(Fast { db: Ghost(db2), pats: Arc::clone(&s.pats), masks: masks2, pairs: pairs2, suppliers: sups2, names: s.names.share(), rollup: rollup2 })
+}
+
+
+pub fn apply(
+    s: &State,
+    lineitem_delta: &[LineDelta],
+    nation_delta: &Vec<NationDelta>,
+    orders_delta: &[OrderDelta],
+    part_delta: &Vec<PartDelta>,
+    partsupp_delta: &[PartsuppDelta],
+    supplier_delta: &[SupplierDelta],
+    lines_for_orders_keys: &[i64],
+    lines_for_orders_rows: &[LineIn],
+    lines_for_parts_keys: &[i64],
+    lines_for_parts_rows: &[LineIn],
+    lines_for_suppliers_keys: &[i64],
+    lines_for_suppliers_rows: &[LineIn],
+    partsupp_for_parts_keys: &[i64],
+    partsupp_for_parts_rows: &[PartsuppIn],
+    orders_for_keys_keys: &[i64],
+    orders_for_keys_rows: &[OrderIn],
+    Ghost(db2): Ghost<Db>,
+) -> (r: Result<State, u32>)
+    requires
+        capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+        lines_for_orders_keys@ == rescan_lines_for_orders_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+        rescan_lines_for_orders_ok(db2, lines_for_orders_keys@, lines_for_orders_rows@),
+        lines_for_parts_keys@ == rescan_lines_for_parts_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+        rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
+        lines_for_suppliers_keys@ == rescan_lines_for_suppliers_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+        rescan_lines_for_suppliers_ok(db2, lines_for_suppliers_keys@, lines_for_suppliers_rows@),
+        partsupp_for_parts_keys@ == rescan_partsupp_for_parts_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+        rescan_partsupp_for_parts_ok(db2, partsupp_for_parts_keys@, partsupp_for_parts_rows@),
+        orders_for_keys_keys@ == rescan_orders_for_keys_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+        rescan_orders_for_keys_ok(db2, orders_for_keys_keys@, orders_for_keys_rows@),
+    ensures
+        r matches Ok(s2) ==> s2.db() == db2,
+        r is Ok,
+{
+    proof { use_type_invariant(s); }
+    let gen = general_apply(&s.gen, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta,
+        lines_for_orders_keys, lines_for_orders_rows, Ghost(s.db()), Ghost(db2));
+    let fast = match &s.fast {
+        Some(f) => match apply_fast(f, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta,
+            lines_for_orders_keys, lines_for_orders_rows, lines_for_parts_keys, lines_for_parts_rows, lines_for_suppliers_keys, lines_for_suppliers_rows,
+            partsupp_for_parts_keys, partsupp_for_parts_rows, orders_for_keys_keys, orders_for_keys_rows, Ghost(db2)) { Ok(f2) => Some(f2), Err(_) => None },
+        None => None,
+    };
+    Ok(State { db: Ghost(db2), gen, fast })
 }
 
 }
