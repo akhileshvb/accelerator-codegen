@@ -4,6 +4,7 @@ use verus_common::rel::flat;
 use verus_prooflib::ordered::{Index, Key, KeyView, key_lt};
 use crate::values::{rank_key, rank_view, sentinel_key, sentinel_view, lemma_rank_order, lemma_rank_sentinel};
 use verus_prooflib::lemma_flat_empty_at;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -921,15 +922,24 @@ pub fn remove(pages: &mut Pages, ranked: Ranked) -> (result: bool)
     true
 }
 
-pub fn qualifying_prefix(page: &Vec<Ranked>, cutoff: i128) -> (result: usize)
+pub open spec fn passes(value: int, limit: int) -> bool {
+    1000000000 * value > limit
+}
+
+pub fn passes_exec(value: i128, limit: &Wide) -> (result: bool)
+    ensures result == passes(value as int, limit@),
+{
+    let scaled = Wide::from_i128(value).mul(&Wide::from_i128(1000000000i128));
+    limit.lt(&scaled)
+}
+
+pub fn qualifying_prefix(page: &Vec<Ranked>, limit: &Wide) -> (result: usize)
     requires forall|left: int, right: int| 0 <= left < right < page.len() ==>
         before(#[trigger] page@[left], #[trigger] page@[right]),
     ensures result <= page.len(),
-        forall|position: int| 0 <= position < result ==> (#[trigger] page@[position]).value >= cutoff,
-        forall|position: int| result <= position < page.len() ==> (#[trigger] page@[position]).value < cutoff,
+        forall|position: int| 0 <= position < result ==> passes((#[trigger] page@[position]).value as int, limit@),
+        forall|position: int| result <= position < page.len() ==> !passes((#[trigger] page@[position]).value as int, limit@),
 {
-    if page.len() == 0 { return 0; }
-    if page[page.len() - 1].value >= cutoff { return page.len(); }
     let mut low: usize = 0;
     let mut high = page.len();
     while low < high
@@ -937,13 +947,26 @@ pub fn qualifying_prefix(page: &Vec<Ranked>, cutoff: i128) -> (result: usize)
             low <= high <= page.len(),
             forall|left: int, right: int| 0 <= left < right < page.len() ==>
                 before(#[trigger] page@[left], #[trigger] page@[right]),
-            forall|position: int| 0 <= position < low ==> (#[trigger] page@[position]).value >= cutoff,
-            forall|position: int| high <= position < page.len() ==> (#[trigger] page@[position]).value < cutoff,
+            forall|position: int| 0 <= position < low ==> passes((#[trigger] page@[position]).value as int, limit@),
+            forall|position: int| high <= position < page.len() ==> !passes((#[trigger] page@[position]).value as int, limit@),
         decreases high - low,
     {
         let middle = low + (high - low) / 2;
-        if page[middle].value >= cutoff { low = middle + 1; }
-        else { high = middle; }
+        if passes_exec(page[middle].value, limit) {
+            proof {
+                assert forall|position: int| 0 <= position < middle + 1 implies passes((#[trigger] page@[position]).value as int, limit@) by {
+                    if position < middle { assert(before(page@[position], page@[middle as int])); }
+                }
+            }
+            low = middle + 1;
+        } else {
+            proof {
+                assert forall|position: int| middle <= position < page.len() implies !passes((#[trigger] page@[position]).value as int, limit@) by {
+                    if position > middle { assert(before(page@[middle as int], page@[position])); }
+                }
+            }
+            high = middle;
+        }
     }
     low
 }

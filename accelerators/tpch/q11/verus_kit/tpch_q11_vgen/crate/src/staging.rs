@@ -1,12 +1,13 @@
 use crate::packed::{self, Packed, PackedCursor};
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::{sum, lemma_sum_take};
 use verus_prooflib::ordered::{Index, KeyView};
 use crate::construction::{moment_measure, link_count};
 use crate::inventory::moment_at;
 use crate::model::*;
 use crate::maintenance::profile_cell;
-use crate::values::{scale, Moment};
+use crate::values::{scale, Moment, Mom};
 
 verus! {
 
@@ -20,12 +21,12 @@ pub proof fn lemma_part_finish(groups: Packed, target: i64, nation: i64, part: i
     } else { verus_common::sums::lemma_sum_zero(groups.entries(), selected); }
 }
 
-pub fn weighted_parts(target: &mut Profiles, nation: i64, groups: &Packed, factor: i128) -> (result: bool)
+pub fn weighted_parts(target: &mut Profiles, nation: i64, groups: &Packed, factor: &Wide)
     requires profile_layout(*old(target)), crate::construction::profile_keys_ok(*groups),
     ensures profile_layout(*final(target)),
-        result ==> forall|query: i64, part: i64, value: bool| #[trigger] profile_cell(*final(target), query, part, value)
+        forall|query: i64, part: i64, value: bool| #[trigger] profile_cell(*final(target), query, part, value)
             == profile_cell(*old(target), query, part, value)
-                + if query == nation { moment_measure(moment_at(*groups, part as int), value) * factor as int } else { 0 },
+                + if query == nation { moment_measure(moment_at(*groups, part as int), value) * factor@ } else { 0 },
 {
     let ghost initial = *target;
     let mut processed = Ghost(0int);
@@ -35,7 +36,7 @@ pub fn weighted_parts(target: &mut Profiles, nation: i64, groups: &Packed, facto
             0 <= processed@ <= groups.entries().len(), cursor.remaining() == groups.entries().skip(processed@),
             forall|query: i64, part: i64, value: bool| #[trigger] profile_cell(*target, query, part, value)
                 == profile_cell(initial, query, part, value) + sum(groups.entries().take(processed@), |row: (KeyView, Moment)|
-                    if query == nation && row.0 == numeric_key(part as int) { moment_measure(row.1, value) * factor as int } else { 0 }),
+                    if query == nation && row.0 == numeric_key(part as int) { moment_measure(row.1, value) * factor@ } else { 0 }),
         decreases cursor.remaining().len(),
     {
         let (part, moment) = match cursor.next() {
@@ -45,29 +46,29 @@ pub fn weighted_parts(target: &mut Profiles, nation: i64, groups: &Packed, facto
                     assert(processed@ == groups.entries().len()); assert(groups.entries().take(processed@) =~= groups.entries());
                     assert forall|query: i64, part: i64, value: bool| #[trigger] profile_cell(*target, query, part, value)
                         == profile_cell(initial, query, part, value)
-                            + if query == nation { moment_measure(moment_at(*groups, part as int), value) * factor as int } else { 0 } by {
-                        let selected = |row: (KeyView, Moment)| if query == nation && row.0 == numeric_key(part as int) { moment_measure(row.1, value) * factor as int } else { 0 };
-                        lemma_part_finish(*groups, nation, query, part, value, factor as int, selected);
+                            + if query == nation { moment_measure(moment_at(*groups, part as int), value) * factor@ } else { 0 } by {
+                        let selected = |row: (KeyView, Moment)| if query == nation && row.0 == numeric_key(part as int) { moment_measure(row.1, value) * factor@ } else { 0 };
+                        lemma_part_finish(*groups, nation, query, part, value, factor@, selected);
                         assert(profile_cell(*target, query, part, value) == profile_cell(initial, query, part, value) + sum(groups.entries(), selected));
                     }
                 }
-                return true;
+                return;
             },
         };
         proof { groups.model(); assert(numeric(part.view())); }
-        let weighted = match scale(*moment, factor) { Some(weighted) => weighted, None => return false };
+        let weighted = scale(&*moment, factor);
         let ghost previous = *target;
-        if !add_profile(target, nation, part.number, weighted, true, 8) { return false; }
+        add_profile(target, nation, part.number, &weighted, 8);
         proof {
             assert forall|query: i64, selected_part: i64, value: bool| #[trigger] profile_cell(*target, query, selected_part, value)
                 == profile_cell(initial, query, selected_part, value) + sum(groups.entries().take(processed@ + 1), |row: (KeyView, Moment)|
-                    if query == nation && row.0 == numeric_key(selected_part as int) { moment_measure(row.1, value) * factor as int } else { 0 }) by {
-                let weight = |row: (KeyView, Moment)| if query == nation && row.0 == numeric_key(selected_part as int) { moment_measure(row.1, value) * factor as int } else { 0 };
+                    if query == nation && row.0 == numeric_key(selected_part as int) { moment_measure(row.1, value) * factor@ } else { 0 }) by {
+                let weight = |row: (KeyView, Moment)| if query == nation && row.0 == numeric_key(selected_part as int) { moment_measure(row.1, value) * factor@ } else { 0 };
                 lemma_sum_take(groups.entries(), processed@, weight);
-                assert(groups.entries()[processed@] == (part.view(), *moment));
+                assert(groups.entries()[processed@] == (part.view(), (*moment)@));
                 assert(profile_cell(previous, query, selected_part, value) == profile_cell(initial, query, selected_part, value) + sum(groups.entries().take(processed@), weight));
                 if query == nation && selected_part == part.number {
-                    assert(profile_cell(*target, query, selected_part, value) == profile_cell(previous, query, selected_part, value) + moment_measure(weighted, value));
+                    assert(profile_cell(*target, query, selected_part, value) == profile_cell(previous, query, selected_part, value) + moment_measure(weighted@, value));
                 } else { assert(profile_cell(*target, query, selected_part, value) == profile_cell(previous, query, selected_part, value)); }
             }
         }
@@ -75,21 +76,21 @@ pub fn weighted_parts(target: &mut Profiles, nation: i64, groups: &Packed, facto
     }
 }
 
-pub proof fn lemma_link_finish(links: Index<i128>, nation: i64, factor: int, selected: spec_fn((KeyView, i128)) -> int)
-    requires links.wf(), forall|row: (KeyView, i128)| #[trigger] selected(row)
-        == if row.0 == numeric_key(nation as int) { row.1 as int * factor } else { 0 },
+pub proof fn lemma_link_finish(links: Index<Wide>, nation: i64, factor: int, selected: spec_fn((KeyView, Wide)) -> int)
+    requires links.wf(), forall|row: (KeyView, Wide)| #[trigger] selected(row)
+        == if row.0 == numeric_key(nation as int) { row.1@ * factor } else { 0 },
     ensures sum(links.entries(), selected) == link_count(links, nation) * factor,
 {
-    verus_prooflib::lemma_ordered_selected_weight(&links, numeric_key(nation as int), |row: (KeyView, i128)| row.1 as int, factor, selected);
+    verus_prooflib::lemma_ordered_selected_weight(&links, numeric_key(nation as int), |row: (KeyView, Wide)| row.1@, factor, selected);
 }
 
-pub fn linked_part(target: &mut Profiles, part: i64, change: Moment, links: &Index<i128>) -> (result: bool)
+pub fn linked_part(target: &mut Profiles, part: i64, change: &Mom, links: &Index<Wide>)
     requires profile_layout(*old(target)), links.wf(),
         forall|key: KeyView| (#[trigger] links.at(key)).is_some() ==> numeric(key),
     ensures profile_layout(*final(target)),
-        result ==> forall|nation: i64, selected_part: i64, value: bool| #[trigger] profile_cell(*final(target), nation, selected_part, value)
+        forall|nation: i64, selected_part: i64, value: bool| #[trigger] profile_cell(*final(target), nation, selected_part, value)
             == profile_cell(*old(target), nation, selected_part, value)
-                + if selected_part == part { link_count(*links, nation) * moment_measure(change, value) } else { 0 },
+                + if selected_part == part { link_count(*links, nation) * moment_measure(change@, value) } else { 0 },
 {
     let ghost initial = *target;
     let mut processed = Ghost(0int);
@@ -99,8 +100,8 @@ pub fn linked_part(target: &mut Profiles, part: i64, change: Moment, links: &Ind
             forall|key: KeyView| (#[trigger] links.at(key)).is_some() ==> numeric(key),
             0 <= processed@ <= links.entries().len(), cursor.remaining() == links.entries().skip(processed@),
             forall|nation: i64, selected_part: i64, value: bool| #[trigger] profile_cell(*target, nation, selected_part, value)
-                == profile_cell(initial, nation, selected_part, value) + sum(links.entries().take(processed@), |row: (KeyView, i128)|
-                    if selected_part == part && row.0 == numeric_key(nation as int) { row.1 as int * moment_measure(change, value) } else { 0 }),
+                == profile_cell(initial, nation, selected_part, value) + sum(links.entries().take(processed@), |row: (KeyView, Wide)|
+                    if selected_part == part && row.0 == numeric_key(nation as int) { row.1@ * moment_measure(change@, value) } else { 0 }),
         decreases cursor.remaining().len(),
     {
         let (nation, multiplicity) = match cursor.next() {
@@ -110,31 +111,31 @@ pub fn linked_part(target: &mut Profiles, part: i64, change: Moment, links: &Ind
                     assert(processed@ == links.entries().len()); assert(links.entries().take(processed@) =~= links.entries());
                     assert forall|nation: i64, selected_part: i64, value: bool| #[trigger] profile_cell(*target, nation, selected_part, value)
                         == profile_cell(initial, nation, selected_part, value)
-                            + if selected_part == part { link_count(*links, nation) * moment_measure(change, value) } else { 0 } by {
-                        let selected = |row: (KeyView, i128)| if selected_part == part && row.0 == numeric_key(nation as int) { row.1 as int * moment_measure(change, value) } else { 0 };
-                        if selected_part == part { lemma_link_finish(*links, nation, moment_measure(change, value), selected); }
+                            + if selected_part == part { link_count(*links, nation) * moment_measure(change@, value) } else { 0 } by {
+                        let selected = |row: (KeyView, Wide)| if selected_part == part && row.0 == numeric_key(nation as int) { row.1@ * moment_measure(change@, value) } else { 0 };
+                        if selected_part == part { lemma_link_finish(*links, nation, moment_measure(change@, value), selected); }
                         else { verus_common::sums::lemma_sum_zero(links.entries(), selected); }
                         assert(profile_cell(*target, nation, selected_part, value) == profile_cell(initial, nation, selected_part, value) + sum(links.entries(), selected));
                     }
                 }
-                return true;
+                return;
             },
         };
         proof { links.model(); assert(numeric(nation.view())); }
-        let weighted = match scale(change, *multiplicity) { Some(weighted) => weighted, None => return false };
+        let weighted = scale(change, &*multiplicity);
         let ghost previous = *target;
-        if !add_profile(target, nation.number, part, weighted, true, 8) { return false; }
+        add_profile(target, nation.number, part, &weighted, 8);
         proof {
             assert forall|query: i64, selected_part: i64, value: bool| #[trigger] profile_cell(*target, query, selected_part, value)
-                == profile_cell(initial, query, selected_part, value) + sum(links.entries().take(processed@ + 1), |row: (KeyView, i128)|
-                    if selected_part == part && row.0 == numeric_key(query as int) { row.1 as int * moment_measure(change, value) } else { 0 }) by {
-                let weight = |row: (KeyView, i128)| if selected_part == part && row.0 == numeric_key(query as int) { row.1 as int * moment_measure(change, value) } else { 0 };
+                == profile_cell(initial, query, selected_part, value) + sum(links.entries().take(processed@ + 1), |row: (KeyView, Wide)|
+                    if selected_part == part && row.0 == numeric_key(query as int) { row.1@ * moment_measure(change@, value) } else { 0 }) by {
+                let weight = |row: (KeyView, Wide)| if selected_part == part && row.0 == numeric_key(query as int) { row.1@ * moment_measure(change@, value) } else { 0 };
                 lemma_sum_take(links.entries(), processed@, weight);
                 assert(links.entries()[processed@] == (nation.view(), *multiplicity));
                 assert(profile_cell(previous, query, selected_part, value) == profile_cell(initial, query, selected_part, value) + sum(links.entries().take(processed@), weight));
                 if query == nation.number && selected_part == part {
-                    assert(moment_measure(weighted, value) == *multiplicity as int * moment_measure(change, value)) by (nonlinear_arith)
-                        requires weighted.count as int == change.count as int * *multiplicity as int, weighted.value as int == change.value as int * *multiplicity as int;
+                    assert(moment_measure(weighted@, value) == (*multiplicity)@ * moment_measure(change@, value)) by (nonlinear_arith)
+                        requires weighted.count@ == change.count@ * (*multiplicity)@, weighted.value@ == change.value@ * (*multiplicity)@;
                 } else { assert(profile_cell(*target, query, selected_part, value) == profile_cell(previous, query, selected_part, value)); }
             }
         }
@@ -142,11 +143,11 @@ pub fn linked_part(target: &mut Profiles, part: i64, change: Moment, links: &Ind
     }
 }
 
-pub fn supplier_group(target: &mut Profiles, groups: &Packed, links: &Index<i128>) -> (result: bool)
+pub fn supplier_group(target: &mut Profiles, groups: &Packed, links: &Index<Wide>)
     requires profile_layout(*old(target)), crate::construction::profile_keys_ok(*groups), links.wf(),
         forall|key: KeyView| (#[trigger] links.at(key)).is_some() ==> numeric(key),
     ensures profile_layout(*final(target)),
-        result ==> forall|nation: i64, part: i64, value: bool| #[trigger] profile_cell(*final(target), nation, part, value)
+        forall|nation: i64, part: i64, value: bool| #[trigger] profile_cell(*final(target), nation, part, value)
             == profile_cell(*old(target), nation, part, value)
                 + moment_measure(moment_at(*groups, part as int), value) * link_count(*links, nation),
 {
@@ -158,8 +159,8 @@ pub fn supplier_group(target: &mut Profiles, groups: &Packed, links: &Index<i128
             forall|key: KeyView| (#[trigger] links.at(key)).is_some() ==> numeric(key),
             0 <= processed@ <= links.entries().len(), cursor.remaining() == links.entries().skip(processed@),
             forall|nation: i64, part: i64, value: bool| #[trigger] profile_cell(*target, nation, part, value)
-                == profile_cell(initial, nation, part, value) + sum(links.entries().take(processed@), |row: (KeyView, i128)|
-                    if row.0 == numeric_key(nation as int) { row.1 as int * moment_measure(moment_at(*groups, part as int), value) } else { 0 }),
+                == profile_cell(initial, nation, part, value) + sum(links.entries().take(processed@), |row: (KeyView, Wide)|
+                    if row.0 == numeric_key(nation as int) { row.1@ * moment_measure(moment_at(*groups, part as int), value) } else { 0 }),
         decreases cursor.remaining().len(),
     {
         let (nation, multiplicity) = match cursor.next() {
@@ -169,29 +170,29 @@ pub fn supplier_group(target: &mut Profiles, groups: &Packed, links: &Index<i128
                     assert(processed@ == links.entries().len()); assert(links.entries().take(processed@) =~= links.entries());
                     assert forall|nation: i64, part: i64, value: bool| #[trigger] profile_cell(*target, nation, part, value)
                         == profile_cell(initial, nation, part, value) + moment_measure(moment_at(*groups, part as int), value) * link_count(*links, nation) by {
-                        let selected = |row: (KeyView, i128)| if row.0 == numeric_key(nation as int) { row.1 as int * moment_measure(moment_at(*groups, part as int), value) } else { 0 };
+                        let selected = |row: (KeyView, Wide)| if row.0 == numeric_key(nation as int) { row.1@ * moment_measure(moment_at(*groups, part as int), value) } else { 0 };
                         let measure = moment_measure(moment_at(*groups, part as int), value);
                         lemma_link_finish(*links, nation, measure, selected);
                         assert(profile_cell(*target, nation, part, value) == profile_cell(initial, nation, part, value) + sum(links.entries(), selected));
                         assert(measure * link_count(*links, nation) == link_count(*links, nation) * measure) by (nonlinear_arith);
                     }
                 }
-                return true;
+                return;
             },
         };
         proof { links.model(); assert(numeric(nation.view())); }
         let ghost previous = *target;
-        if !weighted_parts(target, nation.number, groups, *multiplicity) { return false; }
+        weighted_parts(target, nation.number, groups, &*multiplicity);
         proof {
             assert forall|query: i64, part: i64, value: bool| #[trigger] profile_cell(*target, query, part, value)
-                == profile_cell(initial, query, part, value) + sum(links.entries().take(processed@ + 1), |row: (KeyView, i128)|
-                    if row.0 == numeric_key(query as int) { row.1 as int * moment_measure(moment_at(*groups, part as int), value) } else { 0 }) by {
+                == profile_cell(initial, query, part, value) + sum(links.entries().take(processed@ + 1), |row: (KeyView, Wide)|
+                    if row.0 == numeric_key(query as int) { row.1@ * moment_measure(moment_at(*groups, part as int), value) } else { 0 }) by {
                 let measure = moment_measure(moment_at(*groups, part as int), value);
-                let weight = |row: (KeyView, i128)| if row.0 == numeric_key(query as int) { row.1 as int * measure } else { 0 };
+                let weight = |row: (KeyView, Wide)| if row.0 == numeric_key(query as int) { row.1@ * measure } else { 0 };
                 lemma_sum_take(links.entries(), processed@, weight);
                 assert(links.entries()[processed@] == (nation.view(), *multiplicity));
                 assert(profile_cell(previous, query, part, value) == profile_cell(initial, query, part, value) + sum(links.entries().take(processed@), weight));
-                assert(measure * *multiplicity as int == *multiplicity as int * measure) by (nonlinear_arith);
+                assert(measure * (*multiplicity)@ == (*multiplicity)@ * measure) by (nonlinear_arith);
             }
         }
         processed = Ghost(processed@ + 1);

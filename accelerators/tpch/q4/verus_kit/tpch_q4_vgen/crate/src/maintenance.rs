@@ -4,6 +4,7 @@ use verus_common::sums::*;
 use crate::gen_obligations::*;
 use crate::gen_spec::*;
 use crate::rollup::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -17,8 +18,8 @@ pub open spec fn witness_delta(rows: Seq<LineDelta>, key: int) -> int {
     sum(rows, |delta: LineDelta| if delta.row.l_orderkey == key && delta.row.l_commitdate < delta.row.l_receiptdate { delta.sign as int } else { 0 })
 }
 
-pub open spec fn map_count(map: Map<i64, i128>, key: i64) -> int {
-    if map.contains_key(key) { map[key] as int } else { 0 }
+pub open spec fn map_count(map: Map<i64, Wide>, key: i64) -> int {
+    if map.contains_key(key) { map[key]@ } else { 0 }
 }
 
 pub open spec fn line_touched(lines: Seq<LineDelta>, key: int) -> bool {
@@ -53,7 +54,7 @@ pub open spec fn change_count(lines: Seq<LineDelta>, orders: Seq<OrderDelta>,
 }
 
 pub open spec fn maps_ready(lines: Seq<LineDelta>, orders: Seq<OrderDelta>, rows: Seq<QualifyingLineKeyInput>,
-    after: Map<i64, i128>, before: Map<i64, i128>, touched: Map<i64, bool>) -> bool {
+    after: Map<i64, Wide>, before: Map<i64, Wide>, touched: Map<i64, bool>) -> bool {
     &&& forall|key: i64| #[trigger] map_count(after, key) == post_witness(rows, key)
     &&& forall|key: i64| #[trigger] touched.contains_key(key) <==> line_touched(lines, key as int)
     &&& forall|index: int| #![trigger orders[index]] 0 <= index < orders.len() ==>
@@ -62,41 +63,132 @@ pub open spec fn maps_ready(lines: Seq<LineDelta>, orders: Seq<OrderDelta>, rows
         map_count(before, key) == previous_witness(lines, rows, key)
 }
 
-pub fn bump(map: &mut HashMap<i64, i128>, key: i64, amount: i128) -> (ok: bool)
-    ensures ok ==> forall|other: i64| #[trigger] map_count(final(map)@, other)
-        == map_count(old(map)@, other) + if other == key { amount as int } else { 0 },
+pub fn bump(map: &mut HashMap<i64, Wide>, key: i64, amount: &Wide)
+    ensures forall|other: i64| #[trigger] map_count(final(map)@, other)
+        == map_count(old(map)@, other) + if other == key { amount@ } else { 0 },
 {
-    let before = match map.get(&key) { Some(count) => *count, None => 0 };
-    match before.checked_add(amount) {
-        Some(after) => { map.insert(key, after); true },
-        None => false,
+    let before = get_count(map, key);
+    map.insert(key, before.add(amount));
+}
+
+pub fn get_count(map: &HashMap<i64, Wide>, key: i64) -> (out: Wide)
+    ensures out@ == map_count(map@, key),
+{
+    match map.get(&key) { Some(count) => count.dup(), None => Wide::zero() }
+}
+
+pub open spec fn qualifies(row: LineInput) -> bool {
+    row.l_commitdate < row.l_receiptdate
+}
+
+pub open spec fn add_key(keys: Seq<i64>, key: i64) -> Seq<i64> {
+    if keys.contains(key) { keys } else { keys.push(key) }
+}
+
+pub open spec fn line_pass(lines: Seq<LineDelta>, count: nat) -> Seq<i64>
+    decreases count,
+{
+    if count == 0 { Seq::empty() } else {
+        let keys = line_pass(lines, (count - 1) as nat);
+        let row = lines[count - 1].row;
+        if qualifies(row) { add_key(keys, row.l_orderkey) } else { keys }
     }
 }
 
-pub fn get_count(map: &HashMap<i64, i128>, key: i64) -> (out: i128)
-    ensures out as int == map_count(map@, key),
+pub open spec fn order_pass(orders: Seq<OrderDelta>, keys: Seq<i64>, count: nat) -> Seq<i64>
+    decreases count,
 {
-    match map.get(&key) { Some(count) => *count, None => 0 }
+    if count == 0 { keys } else { add_key(order_pass(orders, keys, (count - 1) as nat), orders[count - 1].row.o_orderkey) }
 }
 
-pub fn support(lines: &[LineDelta], orders: &Vec<OrderDelta>, include_orders: bool) -> (out: Vec<i64>)
-    ensures
-        forall|index: int| #![trigger lines@[index]] 0 <= index < lines@.len()
-            && lines@[index].row.l_commitdate < lines@[index].row.l_receiptdate ==>
-                out@.contains(lines@[index].row.l_orderkey),
-        include_orders ==> forall|index: int| #![trigger orders@[index]]
-            0 <= index < orders@.len() ==> out@.contains(orders@[index].row.o_orderkey),
+pub open spec fn line_support_keys(lines: Seq<LineDelta>) -> Seq<i64> {
+    line_pass(lines, lines.len())
+}
+
+pub open spec fn order_support_keys(lines: Seq<LineDelta>, orders: Seq<OrderDelta>) -> Seq<i64> {
+    order_pass(orders, line_support_keys(lines), orders.len())
+}
+
+pub proof fn lemma_add_key(keys: Seq<i64>, key: i64, other: i64)
+    ensures add_key(keys, key).contains(other) == (keys.contains(other) || other == key),
+{
+    if !keys.contains(key) {
+        assert(keys.push(key).contains(key));
+        if keys.contains(other) {
+            let position = choose|position: int| 0 <= position < keys.len() && keys[position] == other;
+            assert(keys.push(key)[position] == other);
+        }
+        if keys.push(key).contains(other) && other != key {
+            let position = choose|position: int| 0 <= position < keys.push(key).len() && keys.push(key)[position] == other;
+            assert(position < keys.len());
+        }
+    }
+}
+
+pub proof fn lemma_line_pass_covers(lines: Seq<LineDelta>, count: nat, index: int)
+    requires 0 <= index < count <= lines.len(), qualifies(lines[index].row),
+    ensures line_pass(lines, count).contains(lines[index].row.l_orderkey),
+    decreases count,
+{
+    let keys = line_pass(lines, (count - 1) as nat);
+    if index == count - 1 {
+        lemma_add_key(keys, lines[index].row.l_orderkey, lines[index].row.l_orderkey);
+    } else {
+        lemma_line_pass_covers(lines, (count - 1) as nat, index);
+        if qualifies(lines[count - 1].row) { lemma_add_key(keys, lines[count - 1].row.l_orderkey, lines[index].row.l_orderkey); }
+    }
+}
+
+pub proof fn lemma_order_pass_keeps(orders: Seq<OrderDelta>, keys: Seq<i64>, count: nat, key: i64)
+    requires count <= orders.len(), keys.contains(key),
+    ensures order_pass(orders, keys, count).contains(key),
+    decreases count,
+{
+    if count > 0 {
+        lemma_order_pass_keeps(orders, keys, (count - 1) as nat, key);
+        lemma_add_key(order_pass(orders, keys, (count - 1) as nat), orders[count - 1].row.o_orderkey, key);
+    }
+}
+
+pub proof fn lemma_order_pass_covers(orders: Seq<OrderDelta>, keys: Seq<i64>, count: nat, index: int)
+    requires 0 <= index < count <= orders.len(),
+    ensures order_pass(orders, keys, count).contains(orders[index].row.o_orderkey),
+    decreases count,
+{
+    let earlier = order_pass(orders, keys, (count - 1) as nat);
+    if index == count - 1 {
+        lemma_add_key(earlier, orders[index].row.o_orderkey, orders[index].row.o_orderkey);
+    } else {
+        lemma_order_pass_covers(orders, keys, (count - 1) as nat, index);
+        lemma_add_key(earlier, orders[count - 1].row.o_orderkey, orders[index].row.o_orderkey);
+    }
+}
+
+pub proof fn lemma_support_coverage(lines: Seq<LineDelta>, orders: Seq<OrderDelta>)
+    ensures coverage(lines, orders, line_support_keys(lines), order_support_keys(lines, orders)),
+{
+    assert forall|index: int| #![trigger lines[index]] 0 <= index < lines.len() && qualifies(lines[index].row) implies
+        line_support_keys(lines).contains(lines[index].row.l_orderkey)
+            && order_support_keys(lines, orders).contains(lines[index].row.l_orderkey) by {
+        lemma_line_pass_covers(lines, lines.len(), index);
+        lemma_order_pass_keeps(orders, line_support_keys(lines), orders.len(), lines[index].row.l_orderkey);
+    }
+    assert forall|index: int| #![trigger orders[index]] 0 <= index < orders.len() implies
+        order_support_keys(lines, orders).contains(orders[index].row.o_orderkey) by {
+        lemma_order_pass_covers(orders, line_support_keys(lines), orders.len(), index);
+    }
+}
+
+pub fn line_support(lines: &[LineDelta]) -> (out: Vec<i64>)
+    ensures out@ == line_support_keys(lines@),
 {
     let mut seen: HashMap<i64, bool> = HashMap::new();
     let mut out = Vec::new();
     let mut index = 0;
-    let mut frontier: Ghost<int> = Ghost(0);
     while index < lines.len()
-        invariant index <= lines.len(), frontier@ == index as int,
+        invariant index <= lines.len(),
             forall|key: i64| #[trigger] seen@.contains_key(key) <==> out@.contains(key),
-            forall|position: int| #![trigger lines@[position]] 0 <= position < index
-                && lines@[position].row.l_commitdate < lines@[position].row.l_receiptdate ==>
-                    out@.contains(lines@[position].row.l_orderkey),
+            out@ == line_pass(lines@, index as nat),
         decreases lines.len() - index,
     {
         let row = &lines[index].row;
@@ -105,26 +197,25 @@ pub fn support(lines: &[LineDelta], orders: &Vec<OrderDelta>, include_orders: bo
             out.push(row.l_orderkey);
         }
         index += 1;
-        frontier = Ghost(index as int);
     }
-    if include_orders {
-        index = 0;
-        frontier = Ghost(0);
-        while index < orders.len()
-            invariant index <= orders.len(), frontier@ == index as int,
-                forall|key: i64| #[trigger] seen@.contains_key(key) <==> out@.contains(key),
-                forall|position: int| #![trigger lines@[position]] 0 <= position < lines@.len()
-                    && lines@[position].row.l_commitdate < lines@[position].row.l_receiptdate ==>
-                        out@.contains(lines@[position].row.l_orderkey),
-                forall|position: int| #![trigger orders@[position]]
-                    0 <= position < index ==> out@.contains(orders@[position].row.o_orderkey),
-            decreases orders.len() - index,
-        {
-            let key = orders[index].row.o_orderkey;
-            if !seen.contains_key(&key) { seen.insert(key, true); out.push(key); }
-            index += 1;
-            frontier = Ghost(index as int);
-        }
+    out
+}
+
+pub fn order_support(lines: &[LineDelta], orders: &Vec<OrderDelta>) -> (out: Vec<i64>)
+    ensures out@ == order_support_keys(lines@, orders@),
+{
+    let mut out = line_support(lines);
+    let mut seen = key_set(&out);
+    let mut index = 0;
+    while index < orders.len()
+        invariant index <= orders.len(),
+            forall|key: i64| #[trigger] seen@.contains_key(key) <==> out@.contains(key),
+            out@ == order_pass(orders@, line_support_keys(lines@), index as nat),
+        decreases orders.len() - index,
+    {
+        let key = orders[index].row.o_orderkey;
+        if !seen.contains_key(&key) { seen.insert(key, true); out.push(key); }
+        index += 1;
     }
     out
 }
@@ -150,16 +241,14 @@ pub fn changes(
     lines: &[LineDelta], orders: &Vec<OrderDelta>,
     order_keys: &[i64], order_rows: &Vec<OrderInput>,
     line_keys: &[i64], line_rows: &[QualifyingLineKeyInput],
-) -> (out: Option<Patch>)
-    ensures out matches Some(patch) ==> patch_valid(patch)
-        && forall|key: Key, priority: Seq<u8>| #[trigger] patch_count(patch, key, priority)
+) -> (patch: Patch)
+    requires coverage(lines@, orders@, order_keys@, line_keys@),
+    ensures patch_valid(patch),
+        forall|key: Key, priority: Seq<u8>| #[trigger] patch_count(patch, key, priority)
             == change_count(lines@, orders@, order_rows@, line_rows@, key, priority),
-        out is Some ==> coverage(lines@, orders@, order_keys@, line_keys@),
 {
-    let order_set = key_set(order_keys);
-    let line_set = key_set(line_keys);
-    let mut deltas: HashMap<i64, i128> = HashMap::new();
-    let mut after: HashMap<i64, i128> = HashMap::new();
+    let mut deltas: HashMap<i64, Wide> = HashMap::new();
+    let mut after: HashMap<i64, Wide> = HashMap::new();
     let mut line_support: HashMap<i64, bool> = HashMap::new();
     let mut index = 0;
     let mut frontier: Ghost<int> = Ghost(0);
@@ -168,19 +257,13 @@ pub fn changes(
             forall|key: i64| #[trigger] map_count(deltas@, key)
                 == witness_delta(lines@.take(frontier@), key as int),
             forall|key: i64| #[trigger] line_support@.contains_key(key) <==> line_touched(lines@.take(frontier@), key as int),
-            forall|position: int| #![trigger lines@[position]] 0 <= position < index
-                && lines@[position].row.l_commitdate < lines@[position].row.l_receiptdate ==>
-                    order_keys@.contains(lines@[position].row.l_orderkey) && line_keys@.contains(lines@[position].row.l_orderkey),
-            forall|key: i64| #[trigger] line_set@.contains_key(key) <==> line_keys@.contains(key),
-            forall|key: i64| #[trigger] order_set@.contains_key(key) <==> order_keys@.contains(key),
         decreases lines.len() - index,
     {
         let delta = &lines[index];
         if delta.row.l_commitdate < delta.row.l_receiptdate {
             let key = delta.row.l_orderkey;
-            if !line_set.contains_key(&key) || !order_set.contains_key(&key) { return None; }
             line_support.insert(key, true);
-            if !bump(&mut deltas, key, delta.sign as i128) { return None; }
+            bump(&mut deltas, key, &Wide::from_i128(delta.sign as i128));
         }
         proof {
             assert forall|key: i64| #[trigger] map_count(deltas@, key)
@@ -222,14 +305,10 @@ pub fn changes(
                 == sum(line_rows@.take(frontier@), |row: QualifyingLineKeyInput| if row.l_orderkey == key { 1int } else { 0int }),
             forall|key: i64| #[trigger] map_count(deltas@, key) == witness_delta(lines@, key as int),
             forall|key: i64| #[trigger] line_support@.contains_key(key) <==> line_touched(lines@, key as int),
-            forall|position: int| #![trigger lines@[position]] 0 <= position < lines@.len()
-                && lines@[position].row.l_commitdate < lines@[position].row.l_receiptdate ==>
-                    order_keys@.contains(lines@[position].row.l_orderkey) && line_keys@.contains(lines@[position].row.l_orderkey),
-            forall|key: i64| #[trigger] line_set@.contains_key(key) <==> line_keys@.contains(key),
         decreases line_rows.len() - index,
     {
         let key = line_rows[index].l_orderkey;
-        if !line_set.contains_key(&key) || !bump(&mut after, key, 1) { return None; }
+        bump(&mut after, key, &Wide::from_i128(1));
         proof {
             assert forall|other: i64| #[trigger] map_count(after@, other)
                 == sum(line_rows@.take(index as int + 1), |row: QualifyingLineKeyInput| if row.l_orderkey == other { 1int } else { 0int }) by {
@@ -239,44 +318,32 @@ pub fn changes(
         index += 1;
         frontier = Ghost(index as int);
     }
-    let needed = support(lines, orders, true);
-    let mut before: HashMap<i64, i128> = HashMap::new();
+    let mut before: HashMap<i64, Wide> = HashMap::new();
     index = 0;
-    while index < needed.len()
-        invariant index <= needed.len(),
+    while index < line_keys.len()
+        invariant index <= line_keys.len(),
             forall|key: i64| #[trigger] map_count(deltas@, key) == witness_delta(lines@, key as int),
             forall|key: i64| #[trigger] map_count(after@, key) == post_witness(line_rows@, key),
             forall|key: i64| #[trigger] line_support@.contains_key(key) <==> line_touched(lines@, key as int),
-            forall|position: int| #![trigger lines@[position]] 0 <= position < lines@.len()
-                && lines@[position].row.l_commitdate < lines@[position].row.l_receiptdate ==>
-                    order_keys@.contains(lines@[position].row.l_orderkey) && line_keys@.contains(lines@[position].row.l_orderkey)
-                        && needed@.contains(lines@[position].row.l_orderkey),
-            forall|position: int| #![trigger orders@[position]] 0 <= position < orders@.len() ==> needed@.contains(orders@[position].row.o_orderkey),
-            forall|key: i64| #[trigger] line_set@.contains_key(key) <==> line_keys@.contains(key),
-            forall|key: i64| #[trigger] needed@.take(index as int).contains(key) ==>
-                map_count(before@, key) == previous_witness(lines@, line_rows@, key) && line_keys@.contains(key),
-        decreases needed.len() - index,
+            coverage(lines@, orders@, order_keys@, line_keys@),
+            forall|key: i64| #[trigger] line_keys@.take(index as int).contains(key) ==>
+                map_count(before@, key) == previous_witness(lines@, line_rows@, key),
+        decreases line_keys.len() - index,
     {
-        let key = needed[index];
-        if !line_set.contains_key(&key) { return None; }
-        let previous = match get_count(&after, key).checked_sub(get_count(&deltas, key)) {
-            Some(value) => value,
-            None => return None,
-        };
-        if previous < 0 { return None; }
+        let key = line_keys[index];
+        let previous = get_count(&after, key).sub(&get_count(&deltas, key));
         before.insert(key, previous);
-        proof { assert(needed@.take(index as int + 1) =~= needed@.take(index as int).push(key)); }
+        proof { assert(line_keys@.take(index as int + 1) =~= line_keys@.take(index as int).push(key)); }
         index += 1;
     }
     proof {
-        assert(needed@.take(needed@.len() as int) =~= needed@);
-        assert(coverage(lines@, orders@, order_keys@, line_keys@));
+        assert(line_keys@.take(line_keys@.len() as int) =~= line_keys@);
         assert(maps_ready(lines@, orders@, line_rows@, after@, before@, line_support@)) by {
             assert forall|key: i64| #[trigger] line_support@.contains_key(key) implies
                 map_count(before@, key) == previous_witness(lines@, line_rows@, key) by {
                 let source = choose|source: int| 0 <= source < lines@.len() && lines@[source].row.l_orderkey == key
                     && lines@[source].row.l_commitdate < lines@[source].row.l_receiptdate;
-                assert(needed@.contains(key));
+                assert(line_keys@.contains(key));
             }
         }
     }
@@ -295,8 +362,8 @@ pub fn changes(
         decreases orders.len() - index,
     {
         let delta = &orders[index];
-        if get_count(&before, delta.row.o_orderkey) > 0 {
-            if !add_order(&mut patch, delta.row.o_orderdate, &delta.row.o_orderpriority, delta.sign as i128) { return None; }
+        if get_count(&before, delta.row.o_orderkey).is_pos() {
+            add_order(&mut patch, delta.row.o_orderdate, &delta.row.o_orderpriority, &Wide::from_i128(delta.sign as i128));
         }
         proof {
             assert forall|key: Key, priority: Seq<u8>| #[trigger] patch_count(patch, key, priority)
@@ -335,12 +402,11 @@ pub fn changes(
         decreases order_rows.len() - index,
     {
         let row = &order_rows[index];
-        if !order_set.contains_key(&row.o_orderkey) { return None; }
         if line_support.contains_key(&row.o_orderkey) {
-            let was = get_count(&before, row.o_orderkey) > 0;
-            let now = get_count(&after, row.o_orderkey) > 0;
+            let was = get_count(&before, row.o_orderkey).is_pos();
+            let now = get_count(&after, row.o_orderkey).is_pos();
             let amount: i128 = if now && !was { 1 } else if was && !now { -1 } else { 0 };
-            if !add_order(&mut patch, row.o_orderdate, &row.o_orderpriority, amount) { return None; }
+            add_order(&mut patch, row.o_orderdate, &row.o_orderpriority, &Wide::from_i128(amount));
         }
         proof {
             assert forall|key: Key, priority: Seq<u8>| #[trigger] patch_count(patch, key, priority)
@@ -373,7 +439,7 @@ pub fn changes(
                 |row: OrderInput| line_change_weight(lines@, line_rows@, key, priority, row));
         }
     }
-    Some(patch)
+    patch
 }
 
 pub open spec fn coverage(lines: Seq<LineDelta>, orders: Seq<OrderDelta>, order_keys: Seq<i64>, line_keys: Seq<i64>) -> bool {

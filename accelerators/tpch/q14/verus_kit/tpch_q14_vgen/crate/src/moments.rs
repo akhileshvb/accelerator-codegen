@@ -5,25 +5,45 @@ use verus_common::sqlfns::like_match;
 use verus_common::rel::pow2;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
-#[derive(Clone, Copy)]
 pub struct Moments {
-    pub count: i128,
-    pub total: i128,
-    pub promo: i128,
+    pub count: Wide,
+    pub total: Wide,
+    pub promo: Wide,
 }
 
-pub open spec fn zero() -> Moments { Moments { count: 0, total: 0, promo: 0 } }
+pub struct MomentsView {
+    pub count: int,
+    pub total: int,
+    pub promo: int,
+}
 
-pub open spec fn same(left: Moments, right: Moments) -> bool {
-    left.count == right.count && left.total == right.total && left.promo == right.promo
+pub open spec fn zero() -> MomentsView { MomentsView { count: 0, total: 0, promo: 0 } }
+
+pub open spec fn moments_view(value: Moments) -> MomentsView {
+    MomentsView { count: value.count@, total: value.total@, promo: value.promo@ }
+}
+
+pub open spec fn is_zero(value: Moments) -> bool {
+    value.count@ == 0 && value.total@ == 0 && value.promo@ == 0
+}
+
+impl Moments {
+    pub fn dup(&self) -> (out: Moments)
+        ensures out == *self,
+    { Moments { count: self.count.dup(), total: self.total.dup(), promo: self.promo.dup() } }
+
+    pub fn is_empty(&self) -> (out: bool)
+        ensures out == is_zero(*self),
+    { self.count.is_zero() && self.total.is_zero() && self.promo.is_zero() }
 }
 
 pub fn empty() -> (out: Moments)
-    ensures same(out, zero()),
-{ Moments { count: 0, total: 0, promo: 0 } }
+    ensures moments_view(out) == zero(),
+{ Moments { count: Wide::zero(), total: Wide::zero(), promo: Wide::zero() } }
 
 pub open spec fn part_count(rows: Seq<PartRow>, key: int) -> int {
     sum(rows, |part: PartRow| if part.p_partkey == key { 1 } else { 0 })
@@ -85,8 +105,8 @@ pub open spec fn scanned_promo(parts: Seq<PartInput>, lines: Seq<LineInput>, id:
     block_promo(Db { part: part_input_seq_view(parts), lineitem: line_input_seq_view(lines) }, id)
 }
 
-pub open spec fn key_value(map: Map<i64, Moments>, key: i64) -> Moments {
-    if map.dom().contains(key) { map[key] } else { zero() }
+pub open spec fn key_value(map: Map<i64, Moments>, key: i64) -> MomentsView {
+    if map.dom().contains(key) { moments_view(map[key]) } else { zero() }
 }
 
 pub open spec fn date_key_spec(date: i32) -> int { date as int + 2147483648 }
@@ -172,71 +192,54 @@ pub open spec fn part_key_support(rows: Seq<PartDelta>, key: i64) -> bool {
     exists|index: int| 0 <= index < rows.len() && (#[trigger] rows[index]).p_partkey == key
 }
 
-pub open spec fn block_value(map: Map<u64, Moments>, key: u64) -> Moments {
-    if map.dom().contains(key) { map[key] } else { zero() }
+pub open spec fn block_value(map: Map<u64, Moments>, key: u64) -> MomentsView {
+    if map.dom().contains(key) { moments_view(map[key]) } else { zero() }
 }
 
 pub fn get_key(map: &HashMap<i64, Moments>, key: i64) -> (out: Moments)
-    ensures same(out, key_value(map@, key)),
-{ match map.get(&key) { Some(value) => *value, None => empty() } }
+    ensures moments_view(out) == key_value(map@, key),
+{ match map.get(&key) { Some(value) => value.dup(), None => empty() } }
 
 pub fn get_block(map: &HashMap<u64, Moments>, key: u64) -> (out: Moments)
-    ensures same(out, block_value(map@, key)),
-{ match map.get(&key) { Some(value) => *value, None => empty() } }
+    ensures moments_view(out) == block_value(map@, key),
+{ match map.get(&key) { Some(value) => value.dup(), None => empty() } }
 
-pub fn add(left: Moments, right: Moments) -> (out: Option<Moments>)
-    ensures out matches Some(value) ==> {
-        &&& value.count as int == left.count as int + right.count as int
-        &&& value.total as int == left.total as int + right.total as int
-        &&& value.promo as int == left.promo as int + right.promo as int
-    },
+pub fn add(left: &Moments, right: &Moments) -> (out: Moments)
+    ensures
+        out.count@ == left.count@ + right.count@,
+        out.total@ == left.total@ + right.total@,
+        out.promo@ == left.promo@ + right.promo@,
 {
-    let count = match left.count.checked_add(right.count) { Some(value) => value, None => return None };
-    let total = match left.total.checked_add(right.total) { Some(value) => value, None => return None };
-    let promo = match left.promo.checked_add(right.promo) { Some(value) => value, None => return None };
-    Some(Moments { count, total, promo })
+    Moments { count: left.count.add(&right.count), total: left.total.add(&right.total), promo: left.promo.add(&right.promo) }
 }
 
-pub fn subtract(left: Moments, right: Moments) -> (out: Option<Moments>)
-    ensures out matches Some(value) ==> {
-        &&& value.count as int == left.count as int - right.count as int
-        &&& value.total as int == left.total as int - right.total as int
-        &&& value.promo as int == left.promo as int - right.promo as int
-    },
+pub fn subtract(left: &Moments, right: &Moments) -> (out: Moments)
+    ensures
+        out.count@ == left.count@ - right.count@,
+        out.total@ == left.total@ - right.total@,
+        out.promo@ == left.promo@ - right.promo@,
 {
-    let count = match left.count.checked_sub(right.count) { Some(value) => value, None => return None };
-    let total = match left.total.checked_sub(right.total) { Some(value) => value, None => return None };
-    let promo = match left.promo.checked_sub(right.promo) { Some(value) => value, None => return None };
-    Some(Moments { count, total, promo })
+    Moments { count: left.count.sub(&right.count), total: left.total.sub(&right.total), promo: left.promo.sub(&right.promo) }
 }
 
-pub fn scale(value: Moments, factor: i128) -> (out: Option<Moments>)
-    ensures out matches Some(result) ==> {
-        &&& result.count as int == factor as int * value.count as int
-        &&& result.total as int == factor as int * value.total as int
-        &&& result.promo as int == factor as int * value.promo as int
-    },
+pub fn scale(value: &Moments, factor: i64) -> (out: Moments)
+    ensures
+        out.count@ == factor as int * value.count@,
+        out.total@ == factor as int * value.total@,
+        out.promo@ == factor as int * value.promo@,
 {
-    let count = match factor.checked_mul(value.count) { Some(value) => value, None => return None };
-    let total = match factor.checked_mul(value.total) { Some(value) => value, None => return None };
-    let promo = match factor.checked_mul(value.promo) { Some(value) => value, None => return None };
-    Some(Moments { count, total, promo })
+    let factor = Wide::from_i128(factor as i128);
+    Moments { count: factor.mul(&value.count), total: factor.mul(&value.total), promo: factor.mul(&value.promo) }
 }
 
-pub fn line_moments(counts: Moments, line: LineInput) -> (out: Option<Moments>)
-    ensures out matches Some(value) ==> {
-        &&& value.count == counts.count
-        &&& value.total as int == counts.count as int * weight(line_input_view(line))
-        &&& value.promo as int == counts.promo as int * weight(line_input_view(line))
-    },
+pub fn line_moments(counts: &Moments, line: LineInput) -> (out: Moments)
+    ensures
+        out.count@ == counts.count@,
+        out.total@ == counts.count@ * weight(line_input_view(line)),
+        out.promo@ == counts.promo@ * weight(line_input_view(line)),
 {
-    let discount = 100i128 - line.l_discount as i128;
-    let revenue = match (line.l_extendedprice as i128).checked_mul(discount) {
-        Some(value) => value, None => return None,
-    };
-    let total = match counts.count.checked_mul(revenue) { Some(value) => value, None => return None };
-    let promo = match counts.promo.checked_mul(revenue) { Some(value) => value, None => return None };
-    Some(Moments { count: counts.count, total, promo })
+    let revenue = Wide::from_i128(line.l_extendedprice as i128).mul(&Wide::from_i128(100i128 - line.l_discount as i128));
+    Moments { count: counts.count.dup(), total: counts.count.mul(&revenue), promo: counts.promo.mul(&revenue) }
 }
 
 pub fn is_promo(text: &Vec<u8>) -> (out: bool)

@@ -143,4 +143,111 @@ pub proof fn lemma_change_support(parts: Seq<PartDelta>, key: int)
     }
 }
 
+pub open spec fn line_keys(rows: Seq<LineDelta>) -> Seq<i64>
+    decreases rows.len(),
+{
+    if rows.len() == 0 { Seq::empty() } else {
+        let earlier = line_keys(rows.drop_last());
+        let key = rows.last().row.l_partkey;
+        if earlier.contains(key) { earlier } else { earlier.push(key) }
+    }
+}
+
+pub open spec fn part_keys(rows: Seq<PartDelta>) -> Seq<i64>
+    decreases rows.len(),
+{
+    if rows.len() == 0 { Seq::empty() } else {
+        let earlier = part_keys(rows.drop_last());
+        let key = rows.last().p_partkey;
+        if earlier.contains(key) { earlier } else { earlier.push(key) }
+    }
+}
+
+pub open spec fn has_change(parts: Seq<PartDelta>, key: i64) -> bool {
+    part_change(parts, key as int) != 0 || promo_change(parts, key as int) != 0
+}
+
+pub open spec fn changed_keys(parts: Seq<PartDelta>, keys: Seq<i64>) -> Seq<i64>
+    decreases keys.len(),
+{
+    if keys.len() == 0 { Seq::empty() } else {
+        let earlier = changed_keys(parts, keys.drop_last());
+        let key = keys.last();
+        if has_change(parts, key) { earlier.push(key) } else { earlier }
+    }
+}
+
+pub proof fn lemma_line_keys_contains(rows: Seq<LineDelta>, key: i64)
+    ensures line_keys(rows).contains(key) == line_key_support(rows, key),
+    decreases rows.len(),
+{
+    if rows.len() > 0 {
+        let last = rows.len() - 1;
+        let earlier = rows.drop_last();
+        lemma_line_keys_contains(earlier, key);
+        assert(rows.take(last) =~= earlier);
+        assert(rows.take(last + 1) =~= rows);
+        lemma_line_support_prefix(rows, last, key);
+        if !line_keys(earlier).contains(rows.last().row.l_partkey) {
+            lemma_push_contains(line_keys(earlier), rows.last().row.l_partkey, key);
+        }
+    }
+}
+
+pub proof fn lemma_part_keys_contains(rows: Seq<PartDelta>, key: i64)
+    ensures part_keys(rows).contains(key) == part_key_support(rows, key),
+    decreases rows.len(),
+{
+    if rows.len() > 0 {
+        let last = rows.len() - 1;
+        let earlier = rows.drop_last();
+        lemma_part_keys_contains(earlier, key);
+        assert(rows.take(last) =~= earlier);
+        assert(rows.take(last + 1) =~= rows);
+        lemma_part_support_prefix(rows, last, key);
+        if !part_keys(earlier).contains(rows.last().p_partkey) {
+            lemma_push_contains(part_keys(earlier), rows.last().p_partkey, key);
+        }
+    }
+}
+
+pub proof fn lemma_changed_keys_contains(parts: Seq<PartDelta>, keys: Seq<i64>, key: i64)
+    ensures changed_keys(parts, keys).contains(key) == (keys.contains(key) && has_change(parts, key)),
+    decreases keys.len(),
+{
+    if keys.len() > 0 {
+        let earlier = keys.drop_last();
+        lemma_changed_keys_contains(parts, earlier, key);
+        assert(keys =~= earlier.push(keys.last()));
+        lemma_push_contains(earlier, keys.last(), key);
+        if has_change(parts, keys.last()) {
+            lemma_push_contains(changed_keys(parts, earlier), keys.last(), key);
+        }
+    }
+}
+
+pub proof fn lemma_changed_keys_covered(parts: Seq<PartDelta>)
+    ensures covered(parts, changed_keys(parts, part_keys(parts))),
+{
+    let keys = changed_keys(parts, part_keys(parts));
+    assert forall|key: int| #[trigger] seq_view_i64(keys).contains(key) ||
+        (part_change(parts, key) == 0 && promo_change(parts, key) == 0) by {
+        if part_change(parts, key) != 0 || promo_change(parts, key) != 0 {
+            lemma_change_support(parts, key);
+            let runtime_key = key as i64;
+            lemma_part_keys_contains(parts, runtime_key);
+            lemma_changed_keys_contains(parts, part_keys(parts), runtime_key);
+            let position = choose|position: int| 0 <= position < keys.len() && #[trigger] keys[position] == runtime_key;
+            assert(seq_view_i64(keys)[position] == key);
+        }
+    }
+}
+
+pub proof fn lemma_line_delta_key(rows: Seq<LineDelta>, index: int)
+    requires 0 <= index < rows.len(),
+    ensures line_keys(rows).contains(rows[index].row.l_partkey),
+{
+    lemma_line_keys_contains(rows, rows[index].row.l_partkey);
+}
+
 }
