@@ -1,7 +1,6 @@
 use vstd::prelude::*;
 use crate::index::*;
 use crate::aggregates::*;
-use crate::aggregates::some_or_return;
 use crate::gen_spec::*;
 use crate::gen_obligations::{params, out_view, out_fits, answer_fits};
 use verus_prooflib::wide::Wide;
@@ -223,13 +222,16 @@ fn select(groups: &Counts, multiplier: &Wide) -> (result: Option<Vec<(Vec<u8>, i
         invariant
             position <= selected.len(), selected.len() <= 100,
             forall|index: int| 0 <= index < selected.len() ==> (#[trigger] selected@[index]).count@ > 0,
+            all_rows == group_rows(groups.entries(), multiplier@),
             candidate_rows(selected@) == limit_rows(sort_by(all_rows, ext_order()), 100),
             out_view(output@) == candidate_rows(selected@).take(position as int),
         decreases selected.len() - position,
     {
         let candidate = &selected[position];
-        let small = match candidate.count.to_i128() { Some(value) if value <= i64::MAX as i128 => value as i64, _ => {
+        let wide = candidate.count.to_i128();
+        let small = match wide { Some(value) if value <= i64::MAX as i128 => value as i64, _ => {
             proof {
+                assert(candidate.count@ > i64::MAX);
                 assert(candidate_rows(selected@)[position as int] == candidate.row());
                 assert(!out_fits(candidate.row()));
                 assert(!rows_fit(candidate_rows(selected@)));

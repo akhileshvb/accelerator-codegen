@@ -2,7 +2,6 @@ use vstd::prelude::*;
 use std::sync::Arc;
 use crate::index::*;
 use crate::aggregates::*;
-use crate::aggregates::some_or_return;
 use crate::gen_obligations::*;
 use verus_common::sums::*;
 use verus_prooflib::wide::Wide;
@@ -189,9 +188,7 @@ pub proof fn lemma_unique_keys(first: Seq<i64>, second: Seq<i64>)
     decreases first.len(),
 {
     if first.len() == 0 {
-        assert forall|index: int| 0 <= index < second.len() implies false by {
-            assert(second.contains(second[index]));
-        }
+        if second.len() > 0 { assert(second.contains(second[0])); assert(first.contains(second[0])); assert(false); }
         assert(second.len() == 0);
     } else {
         let top = first.last();
@@ -466,7 +463,7 @@ fn contribution(summary: &OrderSummary, Ghost(db): Ghost<Db>, Ghost(order): Ghos
             lemma_summary_row(summary, db, order, position as int);
             assert(summary.lines.entries()[position as int] == (key.view(), **counts));
         }
-        if counts.late@ > 0 {
+        if counts.late.is_pos() {
             if found {
                 proof {
                     summary.lines.model();
@@ -548,7 +545,7 @@ fn contribution(summary: &OrderSummary, Ghost(db): Ghost<Db>, Ghost(order): Ghos
         decreases rows.len() - position,
     {
         let (key, counts) = &rows[position];
-        if counts.total@ > 0 && key.number != late_key { other = true; }
+        if counts.total.is_pos() && key.number != late_key { other = true; }
         position += 1;
     }
     proof {
@@ -688,7 +685,7 @@ pub open spec fn nation_name_delta_weight(key: KeyView) -> spec_fn(NationDelta) 
 
 pub fn supplier_changes(deltas: &Vec<SupplierDelta>, names: &NamePool, previous: &NamePool) -> (changes: Slices)
     requires names_valid(*names), names_valid(*previous),
-    ensures forall|outer: KeyView, inner: KeyView| #![trigger nested_count(changes, outer, inner)]
+    ensures changes.wf(), forall|outer: KeyView, inner: KeyView| #![trigger nested_count(changes, outer, inner)]
         nested_count(changes, outer, inner) == verus_common::sums::sum(deltas@, supplier_delta_weight(outer, inner)),
 {
     hide(Tree::at);
@@ -698,7 +695,7 @@ pub fn supplier_changes(deltas: &Vec<SupplierDelta>, names: &NamePool, previous:
     let mut position = 0usize;
     while position < deltas.len()
         invariant
-            position <= deltas.len(), names_valid(*names), names_valid(*previous),
+            position <= deltas.len(), names_valid(*names), names_valid(*previous), changes.wf(),
             forall|outer: KeyView, inner: KeyView| #![trigger nested_count(changes, outer, inner)]
                 nested_count(changes, outer, inner) == verus_common::sums::sum(deltas@.take(position as int), supplier_delta_weight(outer, inner)),
         decreases deltas.len() - position,
@@ -721,7 +718,7 @@ pub fn supplier_changes(deltas: &Vec<SupplierDelta>, names: &NamePool, previous:
 
 pub fn nation_changes(deltas: &Vec<NationDelta>, names: &NamePool, previous: &NamePool) -> (changes: Slices)
     requires names_valid(*names), names_valid(*previous),
-    ensures forall|outer: KeyView, inner: KeyView| #![trigger nested_count(changes, outer, inner)]
+    ensures changes.wf(), forall|outer: KeyView, inner: KeyView| #![trigger nested_count(changes, outer, inner)]
         nested_count(changes, outer, inner) == verus_common::sums::sum(deltas@, nation_delta_weight(outer, inner)),
 {
     hide(Tree::at);
@@ -731,7 +728,7 @@ pub fn nation_changes(deltas: &Vec<NationDelta>, names: &NamePool, previous: &Na
     let mut position = 0usize;
     while position < deltas.len()
         invariant
-            position <= deltas.len(), names_valid(*names), names_valid(*previous),
+            position <= deltas.len(), names_valid(*names), names_valid(*previous), changes.wf(),
             forall|outer: KeyView, inner: KeyView| #![trigger nested_count(changes, outer, inner)]
                 nested_count(changes, outer, inner) == verus_common::sums::sum(deltas@.take(position as int), nation_delta_weight(outer, inner)),
         decreases deltas.len() - position,
@@ -752,7 +749,7 @@ pub fn nation_changes(deltas: &Vec<NationDelta>, names: &NamePool, previous: &Na
 }
 
 pub fn name_changes(suppliers: &Vec<SupplierDelta>, nations: &Vec<NationDelta>) -> (changes: Counts)
-    ensures forall|key: KeyView| #![trigger count(changes, key)] count(changes, key)
+    ensures changes.wf(), forall|key: KeyView| #![trigger count(changes, key)] count(changes, key)
         == verus_common::sums::sum(suppliers@, supplier_name_delta_weight(key)) + verus_common::sums::sum(nations@, nation_name_delta_weight(key)),
 {
     hide(Tree::at);
@@ -761,7 +758,7 @@ pub fn name_changes(suppliers: &Vec<SupplierDelta>, nations: &Vec<NationDelta>) 
     let mut changes = Counts::new();
     let mut position = 0usize;
     while position < suppliers.len()
-        invariant position <= suppliers.len(),
+        invariant position <= suppliers.len(), changes.wf(),
             forall|key: KeyView| #![trigger count(changes, key)] count(changes, key) == verus_common::sums::sum(suppliers@.take(position as int), supplier_name_delta_weight(key)),
         decreases suppliers.len() - position,
     {
@@ -777,7 +774,7 @@ pub fn name_changes(suppliers: &Vec<SupplierDelta>, nations: &Vec<NationDelta>) 
     proof { assert(suppliers@.take(position as int) =~= suppliers@); }
     position = 0;
     while position < nations.len()
-        invariant position <= nations.len(),
+        invariant position <= nations.len(), changes.wf(),
             forall|key: KeyView| #![trigger count(changes, key)] count(changes, key) == verus_common::sums::sum(suppliers@, supplier_name_delta_weight(key))
                 + verus_common::sums::sum(nations@.take(position as int), nation_name_delta_weight(key)),
         decreases nations.len() - position,

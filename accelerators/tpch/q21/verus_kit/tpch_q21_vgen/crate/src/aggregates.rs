@@ -5,13 +5,6 @@ use crate::gen_spec::*;
 use verus_common::sums::*;
 use verus_prooflib::wide::Wide;
 
-macro_rules! some_or_return {
-    ($expression:expr) => {
-        match $expression { Some(value) => value, None => return None }
-    };
-}
-pub(crate) use some_or_return;
-
 verus! {
 
 pub type Counts = Index<Wide>;
@@ -117,7 +110,7 @@ pub fn update_names(names: &mut NamePool, changes: &Counts)
         decreases rows.len() - position,
     {
         let (key, change) = &rows[position];
-        proof { lemma_prior_rows(rows@, *changes, position as int); }
+        proof { lemma_prior_rows(rows@, changes, position as int); }
         let interned = intern(names, key.share(), &**change);
         proof { assert(interned.is_some()); }
         let _ = interned;
@@ -199,11 +192,11 @@ pub proof fn lemma_count_sum(index: &Counts, key: KeyView)
     }
 }
 
-pub proof fn lemma_prior_rows(rows: Seq<(Key, Arc<Wide>)>, index: Counts, position: int)
+pub proof fn lemma_prior_rows(rows: Seq<(Key, Arc<Wide>)>, index: &Counts, position: int)
     requires index.wf(), rows.map_values(|row: (Key, Arc<Wide>)| (row.0.view(), *row.1)) == index.entries(),
         0 <= position < rows.len(),
     ensures sum(rows.take(position), count_row_weight(rows[position].0.view())) == 0,
-        count(index, rows[position].0.view()) == (*rows[position].1)@,
+        count(*index, rows[position].0.view()) == (*rows[position].1)@,
 {
     index.model();
     let key = rows[position].0.view();
@@ -217,11 +210,11 @@ pub proof fn lemma_prior_rows(rows: Seq<(Key, Arc<Wide>)>, index: Counts, positi
     assert(index.entries()[position].0 == key);
 }
 
-pub proof fn lemma_prior_slices(rows: Seq<(Key, Arc<Counts>)>, index: Slices, position: int, inner: KeyView)
+pub proof fn lemma_prior_slices(rows: Seq<(Key, Arc<Counts>)>, index: &Slices, position: int, inner: KeyView)
     requires index.wf(), rows.map_values(|row: (Key, Arc<Counts>)| (row.0.view(), *row.1)) == index.entries(),
         0 <= position < rows.len(),
     ensures sum(rows.take(position), slice_row_weight(rows[position].0.view(), inner)) == 0,
-        nested_count(index, rows[position].0.view(), inner) == count(*rows[position].1, inner),
+        nested_count(*index, rows[position].0.view(), inner) == count(*rows[position].1, inner),
 {
     index.model();
     let key = rows[position].0.view();
@@ -332,6 +325,7 @@ pub fn slice(index: &Slices, key: &Key) -> (result: Counts)
 
 pub fn adjust(index: &mut Counts, key: Key, delta: &Wide, nonnegative: bool) -> (result: Option<()>)
     ensures
+        result.is_some() ==> final(index).wf(),
         result.is_some() ==> forall|query: KeyView| #![trigger count(*final(index), query)]
             count(*final(index), query) == count(*old(index), query) + if query == key.view() { delta@ } else { 0 },
         result.is_some() && nonnegative && positive(*old(index)) ==> positive(*final(index)),
@@ -362,6 +356,7 @@ pub fn adjust(index: &mut Counts, key: Key, delta: &Wide, nonnegative: bool) -> 
 
 pub fn adjust_slice(index: &mut Slices, outer: Key, inner: Key, delta: &Wide, nonnegative: bool) -> (result: Option<()>)
     ensures
+        result.is_some() ==> final(index).wf(),
         result.is_some() ==> forall|query_outer: KeyView, query_inner: KeyView| #![trigger nested_count(*final(index), query_outer, query_inner)]
             nested_count(*final(index), query_outer, query_inner) == nested_count(*old(index), query_outer, query_inner)
                 + if query_outer == outer.view() && query_inner == inner.view() { delta@ } else { 0 },
@@ -456,7 +451,8 @@ pub fn some_of<T>(option: Option<T>) -> (value: T)
 }
 
 pub fn add_to(index: &mut Counts, key: Key, delta: &Wide)
-    ensures forall|query: KeyView| #![trigger count(*final(index), query)]
+    ensures final(index).wf(),
+        forall|query: KeyView| #![trigger count(*final(index), query)]
         count(*final(index), query) == count(*old(index), query) + if query == key.view() { delta@ } else { 0 },
 {
     let result = adjust(index, key, delta, false);
@@ -464,7 +460,8 @@ pub fn add_to(index: &mut Counts, key: Key, delta: &Wide)
 }
 
 pub fn add_to_slice(index: &mut Slices, outer: Key, inner: Key, delta: &Wide)
-    ensures forall|query_outer: KeyView, query_inner: KeyView| #![trigger nested_count(*final(index), query_outer, query_inner)]
+    ensures final(index).wf(),
+        forall|query_outer: KeyView, query_inner: KeyView| #![trigger nested_count(*final(index), query_outer, query_inner)]
         nested_count(*final(index), query_outer, query_inner) == nested_count(*old(index), query_outer, query_inner)
             + if query_outer == outer.view() && query_inner == inner.view() { delta@ } else { 0 },
 {
@@ -477,7 +474,8 @@ pub open spec fn variant_row_weight(outer: KeyView, inner: KeyView, delta: int) 
 }
 
 pub fn add_weighted_variants(target: &mut Slices, variants: &Counts, delta: &Wide)
-    ensures forall|outer: KeyView, inner: KeyView| #![trigger nested_count(*final(target), outer, inner)]
+    requires old(target).wf(),
+    ensures final(target).wf(), forall|outer: KeyView, inner: KeyView| #![trigger nested_count(*final(target), outer, inner)]
         nested_count(*final(target), outer, inner) == nested_count(*old(target), outer, inner)
             + if outer.1 == Seq::<u8>::empty() && inner.0 == 0 { delta@ * count(*variants, (outer.0, inner.1)) } else { 0 },
 {
@@ -489,7 +487,7 @@ pub fn add_weighted_variants(target: &mut Slices, variants: &Counts, delta: &Wid
     let mut position = 0usize;
     while position < rows.len()
         invariant
-            position <= rows.len(), variants.wf(),
+            position <= rows.len(), variants.wf(), target.wf(),
             rows@.map_values(|row: (Key, Arc<Wide>)| (row.0.view(), *row.1)) == variants.entries(),
             forall|outer: KeyView, inner: KeyView| #![trigger nested_count(*target, outer, inner)]
                 nested_count(*target, outer, inner) == nested_count(previous, outer, inner)
@@ -579,8 +577,8 @@ pub fn apply_slice_changes(target: &mut Slices, changes: &Slices)
         {
             let (inner, delta) = &inner_rows[inner_position];
             proof {
-                lemma_prior_rows(inner_rows@, **values, inner_position as int);
-                lemma_prior_slices(outer_rows@, *changes, outer_position as int, inner.view());
+                lemma_prior_rows(inner_rows@, &**values, inner_position as int);
+                lemma_prior_slices(outer_rows@, changes, outer_position as int, inner.view());
                 assert(nested_count(*changes, outer.view(), inner.view()) == count(**values, inner.view()));
                 assert(count(**values, inner.view()) == (**delta)@);
             }

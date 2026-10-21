@@ -2,7 +2,6 @@ use vstd::prelude::*;
 use verus_common::sums::*;
 use verus_prooflib::wide::Wide;
 use crate::aggregates::*;
-use crate::aggregates::some_or_return;
 use crate::gen_obligations::*;
 use crate::index::*;
 use crate::maintenance::*;
