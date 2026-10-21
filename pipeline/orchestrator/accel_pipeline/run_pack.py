@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -134,6 +135,9 @@ def run_pack_query(
     env["ACCEL_PIPELINE_PRIMARY_REPO"] = str(primary)
     env["ACCEL_PIPELINE_ISOLATION_MODE"] = isolation_mode
     env["CODEX_HOME"] = str(codex_home)
+    # One engine instance per worker (container names and ports derive from it).
+    base_instance = os.environ.get("ACCEL_ENGINE_INSTANCE") or f"accel_{entry.engine or 'engine'}"
+    env["ACCEL_ENGINE_INSTANCE"] = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{base_instance}_{worker_id}")
     if pack_queries:
         env["ACCEL_PIPELINE_PACK_QUERIES"] = ",".join(str(q) for q in pack_queries)
 

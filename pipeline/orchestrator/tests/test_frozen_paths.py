@@ -9,7 +9,7 @@ def test_edits_to_frozen_paths_are_reverted(tmp_path):
     gate = tmp_path / "pipeline/gates/run_x.sh"
     gate.parent.mkdir(parents=True)
     gate.write_text("original\n")
-    backend = tmp_path / "backends/duckdb/engine.cpp"
+    backend = tmp_path / "backends/anyengine/engine.cpp"
     backend.parent.mkdir(parents=True)
     backend.write_text("v1\n")
     before = frozen_paths.snapshot(tmp_path)
