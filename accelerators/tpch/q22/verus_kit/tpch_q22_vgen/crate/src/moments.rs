@@ -4,6 +4,7 @@ use verus_common::sqlfns::*;
 use crate::gen_spec::*;
 use crate::pages::*;
 use crate::algebra::*;
+use crate::gen_obligations::max_rows;
 
 verus! {
 
@@ -347,10 +348,35 @@ pub proof fn lemma_moment_ext(rows: Seq<CustomerRow>, first: spec_fn(CustomerRow
         |row: CustomerRow| if second(row) { row.c_acctbal } else { 0int });
 }
 
+pub open spec fn histogram_small(histogram: Pages) -> bool {
+    forall|code: u32, depth: u32, interval: u64| code <= 65792 && depth <= 50 && interval < (1u64 << depth) ==>
+        small(#[trigger] histogram.value(histogram_key(code, depth, interval)))
+}
+
+pub open spec fn histogram_bounded(histogram: Pages) -> bool {
+    forall|code: u32, depth: u32, interval: u64| code <= 65792 && depth <= 50 && interval < (1u64 << depth) ==>
+        bounded(#[trigger] histogram.value(histogram_key(code, depth, interval)))
+}
+
+pub proof fn lemma_ancestor_small(code: u32, balance: i64, sign: i128, key: u128, depths: int)
+    requires -1 <= sign <= 1, 0 < balance < LIMIT, 0 <= depths <= 51,
+    ensures -51 <= ancestor_moment(code, balance, sign, key, depths).0 <= 51,
+        -51 * LIMIT <= ancestor_moment(code, balance, sign, key, depths).1 <= 51 * LIMIT,
+{
+    let weight = |depth: int|
+        if histogram_key(code, depth as u32, (balance as u64) >> ((50 - depth) as u64)) == key { sign as int } else { 0int };
+    lemma_sum_between(rng(depths), weight, -1, 1);
+    let count = ancestor_moment(code, balance, sign, key, depths).0;
+    assert(-51 <= count <= 51);
+    assert(-51 * LIMIT <= count * balance <= 51 * LIMIT) by (nonlinear_arith)
+        requires -51 <= count <= 51, 0 < balance < LIMIT;
+}
+
 pub fn update_histogram(histogram: &mut Pages, code: u32, balance: i64, sign: i128) -> (result: bool)
     requires code <= 65792, 0 < balance < LIMIT, -1 <= sign <= 1,
     ensures result ==> forall|key: u128| key < KEY_LIMIT ==>
-        #[trigger] final(histogram).value(key) == plus(old(histogram).value(key), ancestor_moment(code, balance, sign, key, 51)),
+            #[trigger] final(histogram).value(key) == plus(old(histogram).value(key), ancestor_moment(code, balance, sign, key, 51)),
+        histogram_small(*old(histogram)) ==> result,
 {
     let initial = Ghost(*histogram);
     let mut depth = 0u32;
@@ -364,7 +390,19 @@ pub fn update_histogram(histogram: &mut Pages, code: u32, balance: i64, sign: i1
         proof { lemma_signed_balance(sign, balance); }
         let interval = (balance as u64) >> (50 - depth);
         let key = hkey(code, depth, interval);
-        if !histogram.add(key, Moment { count: sign, total: sign * balance as i128 }) { return false; }
+        proof {
+            if histogram_small(initial@) {
+                assert(small(initial@.value(histogram_key(code, depth, interval))));
+                lemma_ancestor_small(code, balance, sign, key, depth as int);
+                assert(histogram.value(key) == plus(initial@.value(key), ancestor_moment(code, balance, sign, key, depth as int)));
+                assert(-LIMIT <= sign * balance <= LIMIT) by (nonlinear_arith) requires -1 <= sign <= 1, 0 < balance < LIMIT;
+                assert(fits(histogram.value(key).0 + sign) && fits(histogram.value(key).1 + sign * balance as i128));
+            }
+        }
+        if !histogram.add(key, Moment { count: sign, total: sign * balance as i128 }) {
+            proof { assert(!histogram_small(initial@)); }
+            return false;
+        }
         proof {
             assert forall|other: u128| other < KEY_LIMIT implies #[trigger] histogram.value(other) ==
                 plus(initial@.value(other), ancestor_moment(code, balance, sign, other, depth as int + 1)) by {
@@ -379,6 +417,8 @@ pub fn update_histogram(histogram: &mut Pages, code: u32, balance: i64, sign: i1
 pub fn suffix(histogram: &Pages, code: u32, threshold: i128) -> (result: Option<Moment>)
     requires code <= 65792, threshold >= 0,
     ensures result matches Some(value) ==> value.model() == suffix_moment(*histogram, code, threshold, 50),
+        histogram_bounded(*histogram) ==> (result matches Some(value) &&
+            0 <= value.count <= 50 * max_rows() && 0 <= value.total <= 50 * max_total()),
 {
     let mut result = Moment::zero();
     if threshold >= (LIMIT - 1) as i128 { return Some(result); }
@@ -387,9 +427,23 @@ pub fn suffix(histogram: &Pages, code: u32, threshold: i128) -> (result: Option<
     while height < 50
         invariant height <= 50, code <= 65792, 0 <= threshold < LIMIT - 1, cutoff == threshold,
             result.model() == suffix_moment(*histogram, code, threshold, height as int),
+            histogram_bounded(*histogram) ==> (0 <= result.count <= height as int * max_rows() && 0 <= result.total <= height as int * max_total()),
         decreases 50 - height,
     {
-        proof { lemma_suffix_step(*histogram, code, threshold, height); }
+        proof {
+            lemma_suffix_step(*histogram, code, threshold, height);
+            if histogram_bounded(*histogram) {
+                let h = height as int;
+                assert(h * max_rows() + max_rows() == (h + 1) * max_rows()) by (nonlinear_arith);
+                assert(0 <= h * max_rows()) by (nonlinear_arith) requires h >= 0;
+                assert(h * max_total() + max_total() == (h + 1) * max_total()) by (nonlinear_arith);
+                assert(0 <= h * max_total()) by (nonlinear_arith) requires h >= 0;
+                assert(h * max_rows() <= (h + 1) * max_rows()) by (nonlinear_arith) requires h >= 0;
+                assert(h * max_total() <= (h + 1) * max_total()) by (nonlinear_arith) requires h >= 0;
+                assert((h + 1) * max_rows() <= 50 * max_rows()) by (nonlinear_arith) requires h < 50;
+                assert((h + 1) * max_total() <= 50 * max_total()) by (nonlinear_arith) requires h < 50;
+            }
+        }
         if ((cutoff >> height) & 1) == 0 {
             proof {
                 assert((cutoff >> height) + 1 < (1u64 << ((50 - height) as u32))) by (bit_vector)
@@ -397,7 +451,17 @@ pub fn suffix(histogram: &Pages, code: u32, threshold: i128) -> (result: Option<
             }
             let depth = 50 - height;
             let interval = (cutoff >> height) + 1;
-            result = match result.add(histogram.get(hkey(code, depth, interval))) { Some(value) => value, None => return None };
+            let page = histogram.get(hkey(code, depth, interval));
+            proof {
+                if histogram_bounded(*histogram) {
+                    assert(bounded(histogram.value(histogram_key(code, depth, interval))));
+                    assert(fits(result.count + page.count) && fits(result.total + page.total));
+                }
+            }
+            result = match result.add(page) { Some(value) => value, None => {
+                proof { assert(!histogram_bounded(*histogram)); }
+                return None;
+            } };
         }
         height += 1;
     }

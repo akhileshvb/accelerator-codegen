@@ -8,17 +8,16 @@ use crate::pages::*;
 use crate::moments::*;
 use crate::algebra::*;
 use crate::query_proofs::*;
+use crate::scratch::*;
+use crate::totality::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
 broadcast use { vstd::std_specs::hash::group_hash_axioms, vstd::seq_lib::group_seq_properties };
 
-pub open spec fn scratch_value(values: Map<u128, Moment>, key: u128) -> (int, int) {
-    if values.dom().contains(key) { values[key].model() } else { (0, 0) }
-}
-
-pub open spec fn order_change(values: Map<i64, i128>, key: i64) -> int {
-    if values.dom().contains(key) { values[key] as int } else { 0 }
+pub open spec fn order_change(values: Map<i64, Wide>, key: i64) -> int {
+    if values.dom().contains(key) { values[key]@ } else { 0 }
 }
 
 pub open spec fn order_delta_sum(rows: Seq<OrdersDelta>, key: i64) -> int {
@@ -36,6 +35,40 @@ pub open spec fn crossing_model(before: Pages, after: Pages, crossings: Map<i64,
 pub open spec fn order_delta_model(before: Pages, after: Pages, delta: Seq<OrdersDelta>) -> bool {
     forall|key: i64| #[trigger] after.value(key as u64 as u128) ==
         (before.value(key as u64 as u128).0 + order_delta_sum(delta, key), 0int)
+}
+
+spec fn order_count(state: State, key: i64) -> int {
+    state.orders.value(key as u64 as u128).0
+}
+
+spec fn order_keys(rows: Seq<OrdersDelta>) -> Seq<i64>
+    decreases rows.len(),
+{
+    if rows.len() == 0 { Seq::empty() } else {
+        let before = order_keys(rows.drop_last());
+        let key = rows.last().row.o_custkey;
+        if before.contains(key) { before } else { before.push(key) }
+    }
+}
+
+spec fn order_crossing(state: State, rows: Seq<OrdersDelta>, key: i64) -> bool {
+    (order_count(state, key) == 0) != (order_count(state, key) + order_delta_sum(rows, key) == 0)
+}
+
+spec fn crossing_keys(state: State, rows: Seq<OrdersDelta>, keys: Seq<i64>) -> Seq<i64>
+    decreases keys.len(),
+{
+    if keys.len() == 0 { Seq::empty() } else {
+        let before = crossing_keys(state, rows, keys.drop_last());
+        if order_crossing(state, rows, keys.last()) { before.push(keys.last()) } else { before }
+    }
+}
+
+/// The keys whose customer rows the host rescans: the order keys whose existence flips, in first-seen order.
+pub closed spec fn rescan_positive_customers_by_key_wanted(state: State, customer_delta: Seq<CustomerDelta>,
+    orders_delta: Seq<OrdersDelta>) -> Seq<i64>
+{
+    crossing_keys(state, orders_delta, order_keys(orders_delta))
 }
 
 pub struct State {
@@ -212,25 +245,125 @@ proof fn lemma_build_fact(db: Db, orders: Pages, positive: Pages, histogram: Pag
     }
 }
 
-proof fn lemma_apply_fact(state: State, db2: Db, orders: Pages, positive: Pages, histogram: Pages,
-    customer_delta: Seq<CustomerDelta>, orders_delta: Seq<OrdersDelta>, rescan_keys: Seq<i64>, rescan_rows: Seq<CustomerInput>)
+
+proof fn lemma_crossing_keys_push(state: State, rows: Seq<OrdersDelta>, keys: Seq<i64>, key: i64)
+    ensures crossing_keys(state, rows, keys.push(key)) ==
+        if order_crossing(state, rows, key) { crossing_keys(state, rows, keys).push(key) } else { crossing_keys(state, rows, keys) },
+{
+    assert(keys.push(key).drop_last() =~= keys);
+}
+
+proof fn lemma_crossing_keys_contains(state: State, rows: Seq<OrdersDelta>, keys: Seq<i64>, key: i64)
+    requires keys.contains(key), order_crossing(state, rows, key),
+    ensures crossing_keys(state, rows, keys).contains(key),
+    decreases keys.len(),
+{
+    let before = keys.drop_last();
+    if keys.last() != key {
+        let index = choose|index: int| 0 <= index < keys.len() && keys[index] == key;
+        assert(before[index] == key);
+        lemma_crossing_keys_contains(state, rows, before, key);
+    }
+}
+
+proof fn lemma_order_keys_step(rows: Seq<OrdersDelta>, index: int)
+    requires 0 <= index < rows.len(),
+    ensures order_keys(rows.take(index + 1)) ==
+        if order_keys(rows.take(index)).contains(rows[index].row.o_custkey) { order_keys(rows.take(index)) }
+        else { order_keys(rows.take(index)).push(rows[index].row.o_custkey) },
+{
+    assert(rows.take(index + 1).drop_last() =~= rows.take(index));
+}
+
+proof fn lemma_order_after(state: State, db2: Db, orders_delta: Seq<OrdersDelta>, key: i64)
+    requires state.valid(), bag_step(state.db().orders, db2.orders, orders_delta_seq_view(orders_delta)),
+    ensures order_count(state, key) + order_delta_sum(orders_delta, key) == orders_at(db2, key),
+{
+    let weight = |row: OrdersRow| ind(row.o_custkey == key);
+    assert(sum(db2.orders, weight) == sum(state.db().orders, weight) +
+        sum(orders_delta_seq_view(orders_delta), |entry: (OrdersRow, int)| entry.1 * weight(entry.0)));
+    lemma_sum_ext_all(orders_delta_seq_view(orders_delta), |entry: (OrdersRow, int)| entry.1 * weight(entry.0),
+        |entry: (OrdersRow, int)| entry.1 * ind(entry.0.o_custkey == key));
+    assert(order_count(state, key) == orders_at(state.db(), key));
+}
+
+proof fn lemma_orders_at_range(db: Db, key: i64)
+    ensures 0 <= orders_at(db, key), envelope(db) ==> orders_at(db, key) <= max_rows(),
+{
+    lemma_sum_between(db.orders, |row: OrdersRow| ind(row.o_custkey == key), 0, 1);
+}
+
+proof fn lemma_state_bounded(state: State)
+    requires state.valid(), envelope(state.db()),
+    ensures
+        forall|code: u32| code <= 65792 ==> bounded(#[trigger] state.positive.value(code as u128)),
+        histogram_bounded(state.histogram),
+{
+    lemma_database_bounded(state.db());
+}
+
+proof fn lemma_positive_total(rows: Seq<CustomerRow>, predicate: spec_fn(CustomerRow) -> bool)
+    requires forall|row: CustomerRow| predicate(row) ==> row.c_acctbal > 0,
+        moment_sum(rows, predicate).0 > 0,
+    ensures moment_sum(rows, predicate).1 > 0,
+{
+    let count = |row: CustomerRow| ind(predicate(row));
+    let total = |row: CustomerRow| if predicate(row) { row.c_acctbal } else { 0int };
+    lemma_sum_nonneg(rows, count);
+    let index = lemma_sum_nonzero_witness(rows, count);
+    lemma_sum_pos(rows, total, index);
+}
+
+proof fn lemma_build_rows(db: Db, order_rows: Seq<OrderInput>, customer_rows: Seq<CustomerInput>)
+    requires envelope(db), scan_order_customer_keys_ok(db, order_rows), scan_positive_customers_ok(db, customer_rows),
+    ensures order_rows.len() <= max_rows(), customer_rows.len() <= max_rows(),
+        forall|position: int| 0 <= position < customer_rows.len() ==>
+            (#[trigger] customer_rows[position]).c_acctbal <= 999999999999999,
+{
+    let view = customer_input_seq_view(customer_rows);
+    let filter = |row: CustomerRow| row.c_acctbal > 0;
+    assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] sum(view, weight) ==
+        sum(db.customer, |row: CustomerRow| if filter(row) { weight(row) } else { 0 }) by {
+        assert(sum(view, weight) == sum(db.customer, |row: CustomerRow| if row.c_acctbal > 0 { weight(row) } else { 0 }));
+        lemma_sum_ext_all(db.customer, |row: CustomerRow| if row.c_acctbal > 0 { weight(row) } else { 0 },
+            |row: CustomerRow| if filter(row) { weight(row) } else { 0 });
+    }
+    lemma_sum_exact_len(db.orders, order_input_seq_view(order_rows));
+    lemma_scan_len(db.customer, view, |row: CustomerRow| row.c_acctbal > 0);
+    lemma_scan_rows_good(db.customer, view, |row: CustomerRow| row.c_acctbal > 0,
+        |row: CustomerRow| row.c_acctbal <= 999999999999999);
+    assert forall|position: int| 0 <= position < customer_rows.len() implies
+        (#[trigger] customer_rows[position]).c_acctbal <= 999999999999999 by {
+        assert(view[position] == customer_input_view(customer_rows[position]));
+    }
+}
+
+proof fn lemma_apply_model(state: State, db2: Db, orders: Pages, customer_delta: Seq<CustomerDelta>, orders_delta: Seq<OrdersDelta>,
+    rescan_keys: Seq<i64>, rescan_rows: Seq<CustomerInput>)
     requires state.valid(),
         capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta), orders_delta_seq_view(orders_delta)),
         rescan_positive_customers_by_key_ok(db2, rescan_keys, rescan_rows),
-        forall|position: int| 0 <= position < customer_delta.len() ==> (#[trigger] customer_delta[position]).row.c_acctbal < LIMIT,
+        sum(customer_delta_seq_view(customer_delta), |entry: (CustomerRow, int)| outside_weight(entry)) == 0,
         order_delta_model(state.orders, orders, orders_delta),
         forall|key: i64| (state.orders.value(key as u64 as u128).0 == 0) != (orders.value(key as u64 as u128).0 == 0) ==>
             #[trigger] rescan_keys.contains(key),
-        forall|code: u32| code <= 65792 ==> #[trigger] positive.value(code as u128) ==
-            plus(state.positive.value(code as u128), signed_moment(customer_delta_seq_view(customer_delta), |row: CustomerRow| positive_weight(row, code))),
+    ensures
+        forall|key: i64| #[trigger] orders.value(key as u64 as u128) == (orders_at(db2, key), 0int),
+        forall|index: int| 0 <= index < db2.customer.len() ==> (#[trigger] db2.customer[index]).c_acctbal < LIMIT,
+        forall|index: int| 0 <= index < db2.customer.len() && (#[trigger] db2.customer[index]).c_acctbal > 0 ==>
+            i64::MIN <= db2.customer[index].c_custkey <= i64::MAX,
+        forall|index: int| 0 <= index < db2.orders.len() ==>
+            i64::MIN <= (#[trigger] db2.orders[index]).o_custkey <= i64::MAX,
+        forall|code: u32| code <= 65792 ==>
+            plus(state.positive.value(code as u128), signed_moment(customer_delta_seq_view(customer_delta),
+                |row: CustomerRow| positive_weight(row, code) && in_range(row))) == #[trigger] positive_moment(db2, code),
         forall|code: u32, depth: u32, interval: u64|
             code <= 65792 && depth <= 50 && interval < (1u64 << depth) ==>
-            #[trigger] histogram.value(histogram_key(code, depth, interval)) ==
-                plus(state.histogram.value(histogram_key(code, depth, interval)),
-                    plus(signed_moment(customer_delta_seq_view(customer_delta),
-                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row)),
-                        crossing_moment(customer_input_seq_view(rescan_rows), state.orders, orders, code, depth, interval))),
-    ensures (State { database: Ghost(db2), orders, positive, histogram }).valid(),
+            plus(state.histogram.value(histogram_key(code, depth, interval)),
+                plus(signed_moment(customer_delta_seq_view(customer_delta),
+                    |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)),
+                    crossing_moment(customer_input_seq_view(rescan_rows), state.orders, orders, code, depth, interval))) ==
+            #[trigger] histogram_moment(db2, code, depth, interval),
 {
     let before = state.db();
     let delta = customer_delta_seq_view(customer_delta);
@@ -243,18 +376,28 @@ proof fn lemma_apply_fact(state: State, db2: Db, orders: Pages, positive: Pages,
     }
     lemma_capture_property(before.orders, db2.orders, orders_delta_seq_view(orders_delta),
         |row: OrdersRow| i64::MIN <= row.o_custkey <= i64::MAX);
-    let good = |row: CustomerRow| row.c_acctbal < LIMIT &&
-        (row.c_acctbal > 0 ==> i64::MIN <= row.c_custkey <= i64::MAX);
+    lemma_after_in_range(before.customer, db2.customer, delta);
+    let good = |row: CustomerRow| row.c_acctbal > 0 ==> i64::MIN <= row.c_custkey <= i64::MAX;
     lemma_capture_property(before.customer, db2.customer, delta, good);
-    assert forall|code: u32| code <= 65792 implies #[trigger] positive.value(code as u128) == positive_moment(db2, code) by {
+    assert forall|code: u32| code <= 65792 implies
+        plus(state.positive.value(code as u128), signed_moment(delta, |row: CustomerRow| positive_weight(row, code) && in_range(row))) ==
+            #[trigger] positive_moment(db2, code) by {
         lemma_capture_moment(before.customer, db2.customer, delta, |row: CustomerRow| positive_weight(row, code));
+        lemma_signed_kept(before.customer, db2.customer, delta, |row: CustomerRow| positive_weight(row, code),
+            |row: CustomerRow| positive_weight(row, code) && in_range(row));
     }
     assert forall|code: u32, depth: u32, interval: u64|
         code <= 65792 && depth <= 50 && interval < (1u64 << depth) implies
-        #[trigger] histogram.value(histogram_key(code, depth, interval)) == histogram_moment(db2, code, depth, interval) by {
+        plus(state.histogram.value(histogram_key(code, depth, interval)),
+            plus(signed_moment(delta, |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)),
+                crossing_moment(customer_input_seq_view(rescan_rows), state.orders, orders, code, depth, interval))) ==
+        #[trigger] histogram_moment(db2, code, depth, interval) by {
         lemma_db_histogram(before, state.orders, code, depth, interval);
         lemma_db_histogram(db2, orders, code, depth, interval);
         lemma_capture_histogram(before.customer, db2.customer, delta, state.orders, orders, code, depth, interval);
+        lemma_signed_kept(before.customer, db2.customer, delta,
+            |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row),
+            |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row));
         let count = |row: CustomerRow| if interval_weight(row, code, depth, interval) {
             ind(eligible(orders, row)) - ind(eligible(state.orders, row))
         } else { 0int };
@@ -286,25 +429,65 @@ proof fn lemma_apply_fact(state: State, db2: Db, orders: Pages, positive: Pages,
     }
 }
 
+proof fn lemma_apply_fact(state: State, db2: Db, orders: Pages, positive: Pages, histogram: Pages,
+    customer_delta: Seq<CustomerDelta>, orders_delta: Seq<OrdersDelta>, rescan_keys: Seq<i64>, rescan_rows: Seq<CustomerInput>)
+    requires state.valid(),
+        capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta), orders_delta_seq_view(orders_delta)),
+        rescan_positive_customers_by_key_ok(db2, rescan_keys, rescan_rows),
+        sum(customer_delta_seq_view(customer_delta), |entry: (CustomerRow, int)| outside_weight(entry)) == 0,
+        order_delta_model(state.orders, orders, orders_delta),
+        forall|key: i64| (state.orders.value(key as u64 as u128).0 == 0) != (orders.value(key as u64 as u128).0 == 0) ==>
+            #[trigger] rescan_keys.contains(key),
+        forall|code: u32| code <= 65792 ==> #[trigger] positive.value(code as u128) ==
+            plus(state.positive.value(code as u128), signed_moment(customer_delta_seq_view(customer_delta),
+                |row: CustomerRow| positive_weight(row, code) && in_range(row))),
+        forall|code: u32, depth: u32, interval: u64|
+            code <= 65792 && depth <= 50 && interval < (1u64 << depth) ==>
+            #[trigger] histogram.value(histogram_key(code, depth, interval)) ==
+                plus(state.histogram.value(histogram_key(code, depth, interval)),
+                    plus(signed_moment(customer_delta_seq_view(customer_delta),
+                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)),
+                        crossing_moment(customer_input_seq_view(rescan_rows), state.orders, orders, code, depth, interval))),
+    ensures (State { database: Ghost(db2), orders, positive, histogram }).valid(),
+{
+    lemma_apply_model(state, db2, orders, customer_delta, orders_delta, rescan_keys, rescan_rows);
+}
+
 pub fn build(order_customer_keys: &[OrderInput], positive_customers: Vec<CustomerInput>, Ghost(db): Ghost<Db>)
     -> (result: Option<State>)
     requires scan_order_customer_keys_ok(db, order_customer_keys@), scan_positive_customers_ok(db, positive_customers@),
     ensures result matches Some(state) ==> state.db() == db,
+        envelope(db) ==> result is Some,
 {
     let mut orders = Pages::new();
     let mut positive = Pages::new();
     let mut histogram = Pages::new();
     let mut index = 0usize;
     let mut processed = Ghost(0int);
-    proof { reveal(State::valid); }
+    proof {
+        reveal(State::valid);
+        if envelope(db) { lemma_build_rows(db, order_customer_keys@, positive_customers@); }
+    }
     while index < order_customer_keys.len()
         invariant index <= order_customer_keys.len(), processed@ == index as int,
+            envelope(db) ==> order_customer_keys.len() <= max_rows(),
             forall|key: i64| #[trigger] orders.value(key as u64 as u128) ==
                 (sum(order_input_seq_view(order_customer_keys@.take(processed@)), |row: OrdersRow| ind(row.o_custkey == key)), 0int),
         decreases order_customer_keys.len() - index,
     {
         let previous = Ghost(orders);
-        if !orders.add(order_customer_keys[index].o_custkey as u64 as u128, Moment { count: 1, total: 0 }) { return None; }
+        let key = order_customer_keys[index].o_custkey;
+        proof {
+            if envelope(db) {
+                let rows = order_input_seq_view(order_customer_keys@.take(processed@));
+                lemma_sum_between(rows, |row: OrdersRow| ind(row.o_custkey == key), 0, 1);
+                assert(fits(orders.value(key as u64 as u128).0 + 1));
+            }
+        }
+        if !orders.add(key as u64 as u128, Moment { count: 1, total: 0 }) {
+            proof { assert(!envelope(db)); }
+            return None;
+        }
         proof {
             assert forall|key: i64| #[trigger] orders.value(key as u64 as u128) ==
                 (sum(order_input_seq_view(order_customer_keys@.take(processed@ + 1)), |row: OrdersRow| ind(row.o_custkey == key)), 0int) by {
@@ -323,6 +506,9 @@ pub fn build(order_customer_keys: &[OrderInput], positive_customers: Vec<Custome
     processed = Ghost(0int);
     while index < positive_customers.len()
         invariant index <= positive_customers.len(), processed@ == index as int,
+            envelope(db) ==> positive_customers.len() <= max_rows(),
+            envelope(db) ==> forall|position: int| 0 <= position < positive_customers.len() ==>
+                (#[trigger] positive_customers@[position]).c_acctbal <= 999999999999999,
             forall|position: int| 0 <= position < processed@ ==> (#[trigger] positive_customers@[position]).c_acctbal < LIMIT,
             forall|key: i64| #[trigger] orders.value(key as u64 as u128) ==
                 (sum(order_input_seq_view(order_customer_keys@), |row: OrdersRow| ind(row.o_custkey == key)), 0int),
@@ -338,12 +524,35 @@ pub fn build(order_customer_keys: &[OrderInput], positive_customers: Vec<Custome
         let previous_positive = Ghost(positive);
         let previous_histogram = Ghost(histogram);
         let row = &positive_customers[index];
+        proof {
+            if envelope(db) {
+                let prefix_rows = customer_input_seq_view(positive_customers@.take(processed@));
+                assert(prefix_rows.len() == processed@);
+                assert forall|code: u32| code <= 65792 implies bounded(#[trigger] positive.value(code as u128)) by {
+                    lemma_moment_bounded(prefix_rows, |row: CustomerRow| positive_weight(row, code));
+                }
+                assert forall|code: u32, depth: u32, interval: u64|
+                    code <= 65792 && depth <= 50 && interval < (1u64 << depth) implies
+                    small(#[trigger] histogram.value(histogram_key(code, depth, interval))) by {
+                    lemma_moment_bounded(prefix_rows, |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(orders, row));
+                }
+            }
+        }
         if row.c_acctbal > 0 {
-            if row.c_acctbal >= LIMIT { return None; }
+            if row.c_acctbal >= LIMIT {
+                proof { assert(!envelope(db)); }
+                return None;
+            }
             let code = prefix(&row.c_phone);
-            if !positive.add(code as u128, Moment { count: 1, total: row.c_acctbal as i128 }) { return None; }
+            if !positive.add(code as u128, Moment { count: 1, total: row.c_acctbal as i128 }) {
+                proof { assert(!envelope(db)); }
+                return None;
+            }
             if orders.get(row.c_custkey as u64 as u128).count == 0 {
-                if !update_histogram(&mut histogram, code, row.c_acctbal, 1) { return None; }
+                if !update_histogram(&mut histogram, code, row.c_acctbal, 1) {
+                    proof { assert(!envelope(db)); }
+                    return None;
+                }
             }
         }
         proof {
@@ -449,7 +658,7 @@ fn insert_output(output: &mut Vec<(Vec<u8>, i64, i128)>, row: (Vec<u8>, i64, i12
 fn add_parameter(codes: &mut Vec<u32>, parameter: &[u8])
     requires old(codes)@.no_duplicates(),
         forall|position: int| 0 <= position < old(codes)@.len() ==> (#[trigger] old(codes)@[position]) <= 65792,
-    ensures final(codes)@.no_duplicates(),
+    ensures final(codes)@.no_duplicates(), final(codes)@.len() <= old(codes)@.len() + 1,
         forall|position: int| 0 <= position < final(codes)@.len() ==> (#[trigger] final(codes)@[position]) <= 65792,
         forall|code: u32| #[trigger] final(codes)@.contains(code) <==> old(codes)@.contains(code) ||
             (parameter.len() <= 2 && code == prefix_spec(parameter@)),
@@ -471,11 +680,16 @@ fn add_parameter(codes: &mut Vec<u32>, parameter: &[u8])
     codes.push(code);
 }
 
+
 pub fn execute(state: &State, p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[u8], p6: &[u8], p7: &[u8])
     -> (result: Option<Vec<(Vec<u8>, i64, i128)>>)
     ensures result matches Some(out) ==> query_result(state.db(), params(p1@, p2@, p3@, p4@, p5@, p6@, p7@), out_view(out@)),
+        envelope(state.db()) ==> result is Some,
 {
-    proof { use_type_invariant(state); }
+    proof {
+        use_type_invariant(state);
+        if envelope(state.db()) { lemma_state_bounded(*state); }
+    }
     let parameters = Ghost(params(p1@, p2@, p3@, p4@, p5@, p6@, p7@));
     let mut codes = Vec::new();
     add_parameter(&mut codes, p1);
@@ -485,17 +699,32 @@ pub fn execute(state: &State, p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[
     add_parameter(&mut codes, p5);
     add_parameter(&mut codes, p6);
     add_parameter(&mut codes, p7);
-    proof { assert(codes_cover(codes@, parameters@)); }
+    proof { assert(codes_cover(codes@, parameters@)); assert(codes@.len() <= 7); }
     let mut population = Moment::zero();
     let mut index = 0usize;
     while index < codes.len()
         invariant index <= codes.len(), codes@.no_duplicates(), codes_cover(codes@, parameters@), state.valid(),
+            codes@.len() <= 7,
+            envelope(state.db()) ==> forall|code: u32| code <= 65792 ==> bounded(#[trigger] state.positive.value(code as u128)),
             parameters@ == params(p1@, p2@, p3@, p4@, p5@, p6@, p7@),
             population.model() == population_sums(state.positive, codes@.take(index as int)),
             forall|position: int| 0 <= position < codes.len() ==> (#[trigger] codes@[position]) <= 65792,
         decreases codes.len() - index,
     {
-        population = match population.add(state.positive.get(codes[index] as u128)) { Some(value) => value, None => return None };
+        let page = state.positive.get(codes[index] as u128);
+        proof {
+            if envelope(state.db()) {
+                lemma_sum_between(codes@.take(index as int), |code: u32| state.positive.value(code as u128).0, 0, max_rows());
+                lemma_sum_between(codes@.take(index as int), |code: u32| state.positive.value(code as u128).1, 0, max_total());
+                assert(bounded(state.positive.value(codes@[index as int] as u128)));
+                assert(codes@.take(index as int).len() == index);
+                assert(fits(population.count + page.count) && fits(population.total + page.total));
+            }
+        }
+        population = match population.add(page) { Some(value) => value, None => {
+            proof { assert(!envelope(state.db())); }
+            return None;
+        } };
         proof {
             lemma_sum_take(codes@, index as int, |code: u32| state.positive.value(code as u128).0);
             lemma_sum_take(codes@, index as int, |code: u32| state.positive.value(code as u128).1);
@@ -513,7 +742,12 @@ pub fn execute(state: &State, p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[
         proof { lemma_empty_result(state.db(), parameters@); }
         return Some(output);
     }
-    if population.count < 0 || population.total <= 0 { return None; }
+    proof {
+        lemma_population(state.db(), state.positive, codes@, parameters@);
+        lemma_scalar_moment(state.db(), parameters@);
+        lemma_positive_total(state.db().customer, |row: CustomerRow| scalar_1_where_clause(state.db(), parameters@, row));
+        assert(population.count > 0 && population.total > 0);
+    }
     proof {
         lemma_population(state.db(), state.positive, codes@, parameters@);
         assert(scalar_1_group_sum(state.db(), parameters@,
@@ -525,6 +759,7 @@ pub fn execute(state: &State, p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[
     while index < codes.len()
         invariant index <= codes.len(), codes@.no_duplicates(), codes_cover(codes@, parameters@),
             state.valid(),
+            envelope(state.db()) ==> histogram_bounded(state.histogram),
             threshold >= 0,
             threshold == scalar_1_group_sum(state.db(), parameters@,
                 |entry: Scalar1Tuple| entry.customer_2.c_acctbal) /
@@ -537,8 +772,15 @@ pub fn execute(state: &State, p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[
         decreases codes.len() - index,
     {
         let code = codes[index];
-        let value = match suffix(&state.histogram, code, threshold) { Some(value) => value, None => return None };
-        if value.count < 0 || value.count > i64::MAX as i128 { return None; }
+        let found = suffix(&state.histogram, code, threshold);
+        let value = match found { Some(value) => value, None => {
+            proof { assert(!envelope(state.db())); }
+            return None;
+        } };
+        if value.count < 0 || value.count > i64::MAX as i128 {
+            proof { assert(!envelope(state.db())); }
+            return None;
+        }
         if value.count > 0 {
             let text = decode(code);
             let old_rows = Ghost(output@);
@@ -602,29 +844,31 @@ pub fn execute(state: &State, p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[
     Some(output)
 }
 
-fn order_changes(rows: &[OrdersDelta]) -> (result: Option<(HashMap<i64, i128>, Vec<i64>)>)
-    ensures result matches Some((counts, keys)) ==> (
-        keys@.no_duplicates() && counts@.dom() == keys@.to_set() &&
-        forall|key: i64| #[trigger] order_change(counts@, key) == order_delta_sum(rows@, key)),
+
+fn order_changes(rows: &[OrdersDelta]) -> (result: (HashMap<i64, Wide>, Vec<i64>))
+    ensures
+        result.1@.no_duplicates() && result.0@.dom() == result.1@.to_set() && result.1@ == order_keys(rows@) &&
+        forall|key: i64| #[trigger] order_change(result.0@, key) == order_delta_sum(rows@, key),
 {
-    let mut counts: HashMap<i64, i128> = HashMap::new();
+    let mut counts: HashMap<i64, Wide> = HashMap::new();
     let mut keys = Vec::new();
     let mut index = 0usize;
     let mut processed = Ghost(0int);
     while index < rows.len()
         invariant index <= rows.len(), processed@ == index as int,
-            keys@.no_duplicates(), counts@.dom() == keys@.to_set(),
+            keys@.no_duplicates(), counts@.dom() == keys@.to_set(), keys@ == order_keys(rows@.take(processed@)),
             forall|key: i64| #[trigger] order_change(counts@, key) == order_delta_sum(rows@.take(processed@), key),
         decreases rows.len() - index,
     {
         let previous = Ghost(counts@);
         let previous_keys = Ghost(keys@);
         let key = rows[index].row.o_custkey;
-        let old_count = match counts.get(&key) { Some(value) => *value, None => { keys.push(key); 0 } };
-        let count = match old_count.checked_add(rows[index].sign as i128) { Some(value) => value, None => return None };
+        let old_count = match counts.get(&key) { Some(value) => value.dup(), None => { keys.push(key); Wide::zero() } };
+        let count = old_count.add(&Wide::from_i128(rows[index].sign as i128));
         counts.insert(key, count);
         proof {
             if !previous@.dom().contains(key) { lemma_push_set(previous_keys@, key); }
+            lemma_order_keys_step(rows@, processed@);
             assert forall|other: i64| #[trigger] order_change(counts@, other) == order_delta_sum(rows@.take(processed@ + 1), other) by {
                 assert(order_change(previous@, other) == order_delta_sum(rows@.take(processed@), other));
                 lemma_mapped_prefix(rows@, processed@, |delta: OrdersDelta| (order_input_view(delta.row), delta.sign as int),
@@ -635,164 +879,64 @@ fn order_changes(rows: &[OrdersDelta]) -> (result: Option<(HashMap<i64, i128>, V
         processed = Ghost(index as int);
     }
     proof { assert(rows@.take(processed@) =~= rows@); }
-    Some((counts, keys))
+    (counts, keys)
 }
 
 pub fn rescan_positive_customers_by_key_keys(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &[OrdersDelta])
     -> (result: Vec<i64>)
+    ensures result@ == rescan_positive_customers_by_key_wanted(*state, customer_delta@, orders_delta@),
 {
+    proof { use_type_invariant(state); }
     let mut result = Vec::new();
-    let (changes, keys) = match order_changes(orders_delta) { Some(value) => value, None => return result };
+    let (changes, keys) = order_changes(orders_delta);
     let mut index = 0usize;
     while index < keys.len()
-        invariant index <= keys.len(),
+        invariant index <= keys.len(), keys@.no_duplicates(), changes@.dom() == keys@.to_set(), keys@ == order_keys(orders_delta@),
+            forall|key: i64| #[trigger] order_change(changes@, key) == order_delta_sum(orders_delta@, key),
+            result@ == crossing_keys(*state, orders_delta@, keys@.take(index as int)),
         decreases keys.len() - index,
     {
         let key = keys[index];
         let before = state.orders.get(key as u64 as u128).count;
-        let change = match changes.get(&key) { Some(value) => *value, None => 0 };
-        if let Some(after) = before.checked_add(change) {
-            if after >= 0 && (before == 0) != (after == 0) { result.push(key); }
-        }
-        index += 1;
-    }
-    result
-}
-
-fn contains_key(keys: &[i64], key: i64) -> (result: bool)
-    ensures result == keys@.contains(key),
-{
-    let mut index = 0usize;
-    while index < keys.len()
-        invariant index <= keys.len(),
-            forall|position: int| 0 <= position < index ==> (#[trigger] keys@[position]) != key,
-        decreases keys.len() - index,
-    {
-        if keys[index] == key { return true; }
-        index += 1;
-    }
-    false
-}
-
-fn finish_changes(target: &mut Pages, changes: &HashMap<u128, Moment>, keys: &Vec<u128>) -> (result: bool)
-    requires keys@.no_duplicates(), changes@.dom() == keys@.to_set(),
-        forall|index: int| 0 <= index < keys.len() ==> (#[trigger] keys@[index]) < KEY_LIMIT,
-    ensures result ==> forall|key: u128| key < KEY_LIMIT ==>
-        #[trigger] final(target).value(key) == plus(old(target).value(key), scratch_value(changes@, key)),
-{
-    let initial = Ghost(*target);
-    let mut index = 0usize;
-    while index < keys.len()
-        invariant index <= keys.len(), initial@ == *old(target),
-            keys@.no_duplicates(), changes@.dom() == keys@.to_set(),
-            forall|position: int| 0 <= position < keys.len() ==> (#[trigger] keys@[position]) < KEY_LIMIT,
-            forall|key: u128| key < KEY_LIMIT ==> #[trigger] target.value(key) ==
-                if keys@.take(index as int).contains(key) { plus(initial@.value(key), scratch_value(changes@, key)) }
-                else { initial@.value(key) },
-        decreases keys.len() - index,
-    {
-        let key = keys[index];
-        proof { assert(!keys@.take(index as int).contains(key)); }
-        let change = match changes.get(&key) { Some(value) => *value, None => Moment::zero() };
-        let after = match target.get(key).add(change) { Some(value) => value, None => return false };
-        if after.count < 0 || after.total < 0 || (after.count == 0) != (after.total == 0) { return false; }
-        if change.count != 0 || change.total != 0 { target.set(key, after); }
+        let change = match changes.get(&key) { Some(value) => value.dup(), None => Wide::zero() };
+        let after = Wide::from_i128(before).add(&change);
         proof {
+            assert(keys@.to_set().contains(key));
+            assert(order_change(changes@, key) == order_delta_sum(orders_delta@, key));
+            assert(change@ == order_delta_sum(orders_delta@, key));
             assert(keys@.take(index as int + 1) =~= keys@.take(index as int).push(key));
-            assert forall|other: u128| other < KEY_LIMIT implies #[trigger] target.value(other) ==
-                if keys@.take(index as int + 1).contains(other) { plus(initial@.value(other), scratch_value(changes@, other)) }
-                else { initial@.value(other) } by {
-                if other == key { assert(scratch_value(changes@, other) == change.model()); }
-            }
+            lemma_crossing_keys_push(*state, orders_delta@, keys@.take(index as int), key);
         }
+        if (before == 0) != after.is_zero() { result.push(key); }
         index += 1;
     }
     proof { assert(keys@.take(index as int) =~= keys@); }
-    true
+    result
 }
 
-fn scratch_add(changes: &mut HashMap<u128, Moment>, keys: &mut Vec<u128>, key: u128, change: Moment) -> (result: bool)
-    requires old(keys)@.no_duplicates(), old(changes)@.dom() == old(keys)@.to_set(), key < KEY_LIMIT,
-        forall|position: int| 0 <= position < old(keys)@.len() ==> (#[trigger] old(keys)@[position]) < KEY_LIMIT,
-    ensures result ==> (
-        final(keys)@.no_duplicates() && final(changes)@.dom() == final(keys)@.to_set() &&
-        (forall|position: int| 0 <= position < final(keys)@.len() ==> (#[trigger] final(keys)@[position]) < KEY_LIMIT) &&
-        final(changes)@.dom() == old(changes)@.dom().insert(key) &&
-        forall|other: u128| #[trigger] scratch_value(final(changes)@, other) ==
-            if other == key { plus(scratch_value(old(changes)@, other), change.model()) }
-            else { scratch_value(old(changes)@, other) }),
-{
-    let original = Ghost(changes@);
-    let original_keys = Ghost(keys@);
-    let before = match changes.get(&key) { Some(value) => *value, None => { keys.push(key); Moment::zero() } };
-    match before.add(change) {
-        Some(value) => {
-            changes.insert(key, value);
-            proof {
-                if !original@.dom().contains(key) {
-                    lemma_push_set(original_keys@, key);
-                    assert(keys@.no_duplicates());
-                    assert(keys@.to_set() =~= original_keys@.to_set().insert(key));
-                }
-                assert forall|other: u128| #[trigger] scratch_value(changes@, other) ==
-                    if other == key { plus(scratch_value(original@, other), change.model()) }
-                    else { scratch_value(original@, other) } by { }
-            }
-            true
-        },
-        None => false,
-    }
-}
-
-fn scratch_histogram(changes: &mut HashMap<u128, Moment>, keys: &mut Vec<u128>, code: u32, balance: i64, sign: i128)
-    -> (result: bool)
-    requires code <= 65792, 0 < balance < LIMIT, -1 <= sign <= 1,
-        old(keys)@.no_duplicates(), old(changes)@.dom() == old(keys)@.to_set(),
-        forall|position: int| 0 <= position < old(keys)@.len() ==> (#[trigger] old(keys)@[position]) < KEY_LIMIT,
-    ensures result ==> (
-        final(keys)@.no_duplicates() && final(changes)@.dom() == final(keys)@.to_set() &&
-        (forall|position: int| 0 <= position < final(keys)@.len() ==> (#[trigger] final(keys)@[position]) < KEY_LIMIT) &&
-        forall|key: u128| #[trigger] scratch_value(final(changes)@, key) ==
-            plus(scratch_value(old(changes)@, key), ancestor_moment(code, balance, sign, key, 51))),
-{
-    let initial = Ghost(changes@);
-    let mut depth = 0u32;
-    while depth <= 50
-        invariant depth <= 51, keys@.no_duplicates(), changes@.dom() == keys@.to_set(),
-            initial@ == old(changes)@, code <= 65792, 0 < balance < LIMIT, -1 <= sign <= 1,
-            forall|position: int| 0 <= position < keys@.len() ==> (#[trigger] keys@[position]) < KEY_LIMIT,
-            forall|key: u128| #[trigger] scratch_value(changes@, key) ==
-                plus(scratch_value(initial@, key), ancestor_moment(code, balance, sign, key, depth as int)),
-        decreases 51 - depth,
-    {
-        proof { lemma_interval_bound(balance, depth); lemma_signed_balance(sign, balance); }
-        let key = hkey(code, depth, (balance as u64) >> (50 - depth));
-        if !scratch_add(changes, keys, key, Moment { count: sign, total: sign * balance as i128 }) { return false; }
-        proof {
-            assert forall|other: u128| #[trigger] scratch_value(changes@, other) ==
-                plus(scratch_value(initial@, other), ancestor_moment(code, balance, sign, other, depth as int + 1)) by {
-                lemma_ancestor_step(code, balance, sign, other, depth);
-            }
-        }
-        depth += 1;
-    }
-    true
+spec fn complete(state: State, db2: Db) -> bool {
+    envelope(state.db()) && envelope(db2)
 }
 
 pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &[OrdersDelta],
     positive_customers_by_key_keys: &[i64], positive_customers_by_key_rows: &Vec<CustomerInput>, Ghost(db2): Ghost<Db>)
     -> (result: Result<State, u32>)
     requires capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta@), orders_delta_seq_view(orders_delta@)),
+        positive_customers_by_key_keys@ == rescan_positive_customers_by_key_wanted(*state, customer_delta@, orders_delta@),
         rescan_positive_customers_by_key_ok(db2, positive_customers_by_key_keys@, positive_customers_by_key_rows@),
     ensures result matches Ok(next) ==> next.db() == db2,
+        envelope(state.db()) && envelope(db2) ==> result is Ok,
 {
     proof { use_type_invariant(state); }
-    let (changes, keys) = match order_changes(orders_delta) { Some(value) => value, None => return Err(1) };
+    let (changes, keys) = order_changes(orders_delta);
     let mut orders = state.orders.share();
     let mut crossings: HashMap<i64, i128> = HashMap::new();
     let mut index = 0usize;
     while index < keys.len()
-        invariant index <= keys.len(), keys@.no_duplicates(), changes@.dom() == keys@.to_set(), state.valid(),
+        invariant index <= keys.len(), keys@.no_duplicates(), changes@.dom() == keys@.to_set(), keys@ == order_keys(orders_delta@),
+            state.valid(),
+            capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta@), orders_delta_seq_view(orders_delta@)),
+            positive_customers_by_key_keys@ == rescan_positive_customers_by_key_wanted(*state, customer_delta@, orders_delta@),
             forall|key: i64| #[trigger] order_change(changes@, key) == order_delta_sum(orders_delta@, key),
             forall|key: i64| #[trigger] orders.value(key as u64 as u128) ==
                 (state.orders.value(key as u64 as u128).0 + if keys@.take(index as int).contains(key) { order_change(changes@, key) } else { 0int }, 0int),
@@ -806,16 +950,32 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
     {
         let previous = Ghost(orders);
         let key = keys[index];
-        proof { assert(!keys@.take(index as int).contains(key)); }
+        proof { assert(!keys@.take(index as int).contains(key)); assert(keys@.to_set().contains(key)); }
         let before = state.orders.get(key as u64 as u128).count;
-        let change = match changes.get(&key) { Some(value) => *value, None => 0 };
-        let after = match before.checked_add(change) { Some(value) => value, None => return Err(1) };
-        if after < 0 { return Err(2); }
+        let change = match changes.get(&key) { Some(value) => value.dup(), None => Wide::zero() };
+        let total = Wide::from_i128(before).add(&change);
+        proof {
+            lemma_order_after(*state, db2, orders_delta@, key);
+            lemma_orders_at_range(db2, key);
+            assert(order_change(changes@, key) == order_delta_sum(orders_delta@, key));
+            assert(change@ == order_delta_sum(orders_delta@, key));
+        }
+        let after = match total.to_i128() { Some(value) => value, None => {
+            proof { assert(!complete(*state, db2)); }
+            return Err(1);
+        } };
+        if after < 0 {
+            proof { assert(false); }
+            return Err(2);
+        }
         if (before == 0) != (after == 0) {
-            if !contains_key(positive_customers_by_key_keys, key) { return Err(3); }
+            proof {
+                assert(order_crossing(*state, orders_delta@, key));
+                lemma_crossing_keys_contains(*state, orders_delta@, keys@, key);
+            }
             crossings.insert(key, if after == 0 { 1 } else { -1 });
         }
-        if change != 0 { orders.set(key as u64 as u128, Moment { count: after, total: 0 }); }
+        if !change.is_zero() { orders.set(key as u64 as u128, Moment { count: after, total: 0 }); }
         proof {
             assert(keys@.take(index as int + 1) =~= keys@.take(index as int).push(key));
             assert forall|other: i64| #[trigger] orders.value(other as u64 as u128) ==
@@ -838,10 +998,11 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
             if !keys@.contains(key) { assert(!changes@.dom().contains(key)); }
         }
     }
-    let mut pchanges: HashMap<u128, Moment> = HashMap::new();
+    let mut pchanges: HashMap<u128, Change> = HashMap::new();
     let mut pkeys = Vec::new();
-    let mut hchanges: HashMap<u128, Moment> = HashMap::new();
+    let mut hchanges: HashMap<u128, Change> = HashMap::new();
     let mut hkeys = Vec::new();
+    let mut outside = Wide::zero();
     index = 0;
     let mut processed = Ghost(0int);
     while index < customer_delta.len()
@@ -851,59 +1012,64 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
             capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta@), orders_delta_seq_view(orders_delta@)),
             rescan_positive_customers_by_key_ok(db2, positive_customers_by_key_keys@, positive_customers_by_key_rows@),
             crossing_model(state.orders, orders, crossings@, positive_customers_by_key_keys@),
-            forall|position: int| 0 <= position < processed@ ==> (#[trigger] customer_delta@[position]).row.c_acctbal < LIMIT,
             pkeys@.no_duplicates(), pchanges@.dom() == pkeys@.to_set(),
             hkeys@.no_duplicates(), hchanges@.dom() == hkeys@.to_set(),
             forall|position: int| 0 <= position < pkeys@.len() ==> (#[trigger] pkeys@[position]) < KEY_LIMIT,
             forall|position: int| 0 <= position < hkeys@.len() ==> (#[trigger] hkeys@[position]) < KEY_LIMIT,
+            forall|key: u128| pchanges@.dom().contains(key) ==> key <= 65792,
+            forall|key: u128| hchanges@.dom().contains(key) ==> hist_key(key),
+            outside@ == sum(customer_delta_seq_view(customer_delta@.take(processed@)), |entry: (CustomerRow, int)| outside_weight(entry)),
             forall|code: u32| code <= 65792 ==> #[trigger] scratch_value(pchanges@, code as u128) ==
-                signed_moment(customer_delta_seq_view(customer_delta@.take(processed@)), |row: CustomerRow| positive_weight(row, code)),
+                signed_moment(customer_delta_seq_view(customer_delta@.take(processed@)),
+                    |row: CustomerRow| positive_weight(row, code) && in_range(row)),
             forall|code: u32, depth: u32, interval: u64|
                 code <= 65792 && depth <= 50 && interval < (1u64 << depth) ==>
                 #[trigger] scratch_value(hchanges@, histogram_key(code, depth, interval)) ==
                     signed_moment(customer_delta_seq_view(customer_delta@.take(processed@)),
-                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row)),
+                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)),
         decreases customer_delta.len() - index,
     {
         let previous_positive = Ghost(pchanges@);
         let previous_histogram = Ghost(hchanges@);
+        let previous_outside = Ghost(outside@);
         let delta = &customer_delta[index];
-        if delta.sign != -1 && delta.sign != 1 { return Err(4); }
         let row = &delta.row;
-        if row.c_acctbal > 0 {
-            if row.c_acctbal >= LIMIT { return Err(5); }
+        let sign = delta.sign as i128;
+        if row.c_acctbal >= LIMIT {
+            outside = outside.add(&Wide::from_i128(sign));
+        } else if row.c_acctbal > 0 {
             let code = prefix(&row.c_phone);
-            let sign = delta.sign as i128;
-            proof { lemma_signed_balance(sign, row.c_acctbal); }
-            if !scratch_add(&mut pchanges, &mut pkeys, code as u128,
-                Moment { count: sign, total: sign * row.c_acctbal as i128 }) { return Err(1); }
+            scratch_add(&mut pchanges, &mut pkeys, code as u128, Change::of(sign, row.c_acctbal));
             if state.orders.get(row.c_custkey as u64 as u128).count == 0 {
-                if !scratch_histogram(&mut hchanges, &mut hkeys, code, row.c_acctbal, sign) { return Err(1); }
+                scratch_histogram(&mut hchanges, &mut hkeys, code, row.c_acctbal, sign);
             }
         }
         proof {
+            let view = |entry: CustomerDelta| (customer_input_view(entry.row), entry.sign as int);
+            lemma_mapped_prefix(customer_delta@, processed@, view, |entry: (CustomerRow, int)| outside_weight(entry));
             assert forall|code: u32| code <= 65792 implies #[trigger] scratch_value(pchanges@, code as u128) ==
-                signed_moment(customer_delta_seq_view(customer_delta@.take(processed@ + 1)), |row: CustomerRow| positive_weight(row, code)) by {
+                signed_moment(customer_delta_seq_view(customer_delta@.take(processed@ + 1)),
+                    |row: CustomerRow| positive_weight(row, code) && in_range(row)) by {
                 assert(scratch_value(previous_positive@, code as u128) ==
-                    signed_moment(customer_delta_seq_view(customer_delta@.take(processed@)), |row: CustomerRow| positive_weight(row, code)));
-                if row.c_acctbal > 0 { lemma_country_injective(prefix_spec(row.c_phone@), code); }
-                lemma_delta_prefix(customer_delta@, processed@, |row: CustomerRow| positive_weight(row, code));
+                    signed_moment(customer_delta_seq_view(customer_delta@.take(processed@)),
+                        |row: CustomerRow| positive_weight(row, code) && in_range(row)));
+                if row.c_acctbal > 0 && row.c_acctbal < LIMIT { lemma_country_injective(prefix_spec(row.c_phone@), code); }
+                lemma_delta_prefix(customer_delta@, processed@, |row: CustomerRow| positive_weight(row, code) && in_range(row));
             }
             assert forall|code: u32, depth: u32, interval: u64|
                 code <= 65792 && depth <= 50 && interval < (1u64 << depth) implies
                 #[trigger] scratch_value(hchanges@, histogram_key(code, depth, interval)) ==
                     signed_moment(customer_delta_seq_view(customer_delta@.take(processed@ + 1)),
-                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row)) by {
+                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)) by {
                 assert(scratch_value(previous_histogram@, histogram_key(code, depth, interval)) ==
                     signed_moment(customer_delta_seq_view(customer_delta@.take(processed@)),
-                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row)));
-                if row.c_acctbal > 0 {
+                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)));
+                if row.c_acctbal > 0 && row.c_acctbal < LIMIT {
                     lemma_country_injective(prefix_spec(row.c_phone@), code);
                     lemma_ancestor_at(prefix_spec(row.c_phone@), row.c_acctbal, delta.sign as i128, code, depth, interval);
                 }
                 let input = customer_input_view(delta.row);
-                let predicate = |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row);
-                if row.c_acctbal > 0 && eligible(state.orders, input) {
+                if row.c_acctbal > 0 && row.c_acctbal < LIMIT && eligible(state.orders, input) {
                     assert(scratch_value(hchanges@, histogram_key(code, depth, interval)) ==
                         plus(scratch_value(previous_histogram@, histogram_key(code, depth, interval)),
                             ancestor_moment(prefix_spec(row.c_phone@), row.c_acctbal, delta.sign as i128, histogram_key(code, depth, interval), 51)));
@@ -911,33 +1077,47 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
                     assert(scratch_value(hchanges@, histogram_key(code, depth, interval)) == scratch_value(previous_histogram@, histogram_key(code, depth, interval)));
                 }
                 lemma_delta_prefix(customer_delta@, processed@,
-                    |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row));
+                    |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row));
             }
         }
         index += 1;
         processed = Ghost(index as int);
     }
     proof { assert(customer_delta@.take(processed@) =~= customer_delta@); }
+    if !outside.is_zero() {
+        proof {
+            if complete(*state, db2) {
+                lemma_outside_zero(state.db().customer, db2.customer, customer_delta_seq_view(customer_delta@));
+            }
+        }
+        return Err(5);
+    }
     index = 0;
     processed = Ghost(0int);
+    proof {
+        if envelope(db2) { lemma_rescan_rows_in_type(db2, positive_customers_by_key_keys@, positive_customers_by_key_rows@); }
+    }
     while index < positive_customers_by_key_rows.len()
         invariant index <= positive_customers_by_key_rows.len(), processed@ == index as int,
             state.valid(), order_delta_model(state.orders, orders, orders_delta@),
             capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta@), orders_delta_seq_view(orders_delta@)),
             rescan_positive_customers_by_key_ok(db2, positive_customers_by_key_keys@, positive_customers_by_key_rows@),
-            forall|position: int| 0 <= position < customer_delta@.len() ==> (#[trigger] customer_delta@[position]).row.c_acctbal < LIMIT,
+            envelope(db2) ==> forall|position: int| 0 <= position < positive_customers_by_key_rows@.len() ==>
+                (#[trigger] positive_customers_by_key_rows@[position]).c_acctbal <= 999999999999999,
             crossing_model(state.orders, orders, crossings@, positive_customers_by_key_keys@),
             hkeys@.no_duplicates(), hchanges@.dom() == hkeys@.to_set(),
             pkeys@.no_duplicates(), pchanges@.dom() == pkeys@.to_set(),
             forall|position: int| 0 <= position < pkeys@.len() ==> (#[trigger] pkeys@[position]) < KEY_LIMIT,
             forall|position: int| 0 <= position < hkeys@.len() ==> (#[trigger] hkeys@[position]) < KEY_LIMIT,
+            forall|key: u128| pchanges@.dom().contains(key) ==> key <= 65792,
+            forall|key: u128| hchanges@.dom().contains(key) ==> hist_key(key),
             forall|code: u32| code <= 65792 ==> #[trigger] scratch_value(pchanges@, code as u128) ==
-                signed_moment(customer_delta_seq_view(customer_delta@), |row: CustomerRow| positive_weight(row, code)),
+                signed_moment(customer_delta_seq_view(customer_delta@), |row: CustomerRow| positive_weight(row, code) && in_range(row)),
             forall|code: u32, depth: u32, interval: u64|
                 code <= 65792 && depth <= 50 && interval < (1u64 << depth) ==>
                 #[trigger] scratch_value(hchanges@, histogram_key(code, depth, interval)) ==
                     plus(signed_moment(customer_delta_seq_view(customer_delta@),
-                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row)),
+                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)),
                         crossing_moment(customer_input_seq_view(positive_customers_by_key_rows@.take(processed@)),
                             state.orders, orders, code, depth, interval)),
         decreases positive_customers_by_key_rows.len() - index,
@@ -945,11 +1125,14 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
         let previous = Ghost(hchanges@);
         let row = &positive_customers_by_key_rows[index];
         if row.c_acctbal > 0 {
-            if row.c_acctbal >= LIMIT { return Err(5); }
+            if row.c_acctbal >= LIMIT {
+                proof { assert(!envelope(db2)); }
+                return Err(5);
+            }
             if let Some(sign) = crossings.get(&row.c_custkey) {
                 proof { assert(-1 <= *sign <= 1); }
                 let code = prefix(&row.c_phone);
-                if !scratch_histogram(&mut hchanges, &mut hkeys, code, row.c_acctbal, *sign) { return Err(1); }
+                scratch_histogram(&mut hchanges, &mut hkeys, code, row.c_acctbal, *sign);
             }
         }
         proof {
@@ -957,13 +1140,13 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
                 code <= 65792 && depth <= 50 && interval < (1u64 << depth) implies
                 #[trigger] scratch_value(hchanges@, histogram_key(code, depth, interval)) ==
                     plus(signed_moment(customer_delta_seq_view(customer_delta@),
-                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row)),
+                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)),
                         crossing_moment(customer_input_seq_view(positive_customers_by_key_rows@.take(processed@ + 1)),
                             state.orders, orders, code, depth, interval)) by {
                 lemma_histogram_key_bound(code, depth, interval);
                 assert(scratch_value(previous@, histogram_key(code, depth, interval)) ==
                     plus(signed_moment(customer_delta_seq_view(customer_delta@),
-                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row)),
+                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)),
                         crossing_moment(customer_input_seq_view(positive_customers_by_key_rows@.take(processed@)),
                             state.orders, orders, code, depth, interval)));
                 if row.c_acctbal > 0 {
@@ -992,23 +1175,57 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
         processed = Ghost(index as int);
     }
     proof { assert(positive_customers_by_key_rows@.take(processed@) =~= positive_customers_by_key_rows@); }
+    proof {
+        assert forall|key: i64| (state.orders.value(key as u64 as u128).0 == 0) != (orders.value(key as u64 as u128).0 == 0) implies
+            #[trigger] positive_customers_by_key_keys@.contains(key) by {
+            assert(crossings@.dom().contains(key));
+        }
+        assert(outside@ == 0);
+        lemma_apply_model(*state, db2, orders, customer_delta@, orders_delta@,
+            positive_customers_by_key_keys@, positive_customers_by_key_rows@);
+        if complete(*state, db2) {
+            lemma_database_bounded(db2);
+            assert(finish_fits(state.positive, pchanges@)) by {
+                assert forall|key: u128| #[trigger] pchanges@.dom().contains(key) implies
+                    fits(state.positive.value(key).0 + pchanges@[key].count@) && fits(state.positive.value(key).1 + pchanges@[key].total@) by {
+                    let code = key as u32;
+                    assert(code as u128 == key);
+                    assert(scratch_value(pchanges@, key) == pchanges@[key].model());
+                }
+            }
+            assert(finish_fits(state.histogram, hchanges@)) by {
+                assert forall|key: u128| #[trigger] hchanges@.dom().contains(key) implies
+                    fits(state.histogram.value(key).0 + hchanges@[key].count@) && fits(state.histogram.value(key).1 + hchanges@[key].total@) by {
+                    let (code, depth, interval) = choose|code: u32, depth: u32, interval: u64|
+                        code <= 65792 && depth <= 50 && interval < (1u64 << depth) && key == #[trigger] histogram_key(code, depth, interval);
+                    assert(scratch_value(hchanges@, key) == hchanges@[key].model());
+                }
+            }
+        }
+    }
     let mut positive = state.positive.share();
     let mut histogram = state.histogram.share();
-    if !finish_changes(&mut positive, &pchanges, &pkeys) { return Err(6); }
-    if !finish_changes(&mut histogram, &hchanges, &hkeys) { return Err(6); }
+    if !finish_changes(&mut positive, &pchanges, &pkeys) {
+        proof {
+            assert(!complete(*state, db2));
+        }
+        return Err(6);
+    }
+    if !finish_changes(&mut histogram, &hchanges, &hkeys) {
+        proof {
+            assert(!complete(*state, db2));
+        }
+        return Err(6);
+    }
     proof {
         assert forall|code: u32, depth: u32, interval: u64|
             code <= 65792 && depth <= 50 && interval < (1u64 << depth) implies
             #[trigger] histogram.value(histogram_key(code, depth, interval)) ==
                 plus(state.histogram.value(histogram_key(code, depth, interval)),
                     plus(signed_moment(customer_delta_seq_view(customer_delta@),
-                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row)),
+                        |row: CustomerRow| interval_weight(row, code, depth, interval) && eligible(state.orders, row) && in_range(row)),
                         crossing_moment(customer_input_seq_view(positive_customers_by_key_rows@), state.orders, orders, code, depth, interval))) by {
             lemma_histogram_key_bound(code, depth, interval);
-        }
-        assert forall|key: i64| (state.orders.value(key as u64 as u128).0 == 0) != (orders.value(key as u64 as u128).0 == 0) implies
-            #[trigger] positive_customers_by_key_keys@.contains(key) by {
-            assert(crossings@.dom().contains(key));
         }
         lemma_apply_fact(*state, db2, orders, positive, histogram, customer_delta@, orders_delta@,
             positive_customers_by_key_keys@, positive_customers_by_key_rows@);
