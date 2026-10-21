@@ -1,8 +1,8 @@
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use crate::gen_obligations::*;
 use crate::storage::*;
 use crate::values::*;
-use crate::values::value;
 use crate::model::*;
 use crate::joins::*;
 use verus_common::sums::*;
@@ -18,8 +18,9 @@ pub open spec fn sparse_member(map: Sparse<Layers<i128>>, customer: i64, order: 
 }
 
 pub fn build_orders(relevant_orders: &[OrderInput])
-    -> (result: Option<(Sparse<Counts>, Sparse<Layers<i128>>)>)
-    ensures result matches Some((orders, reverse)) ==> {
+    -> (result: (Sparse<Counts>, Sparse<Layers<i128>>))
+    ensures ({
+        let (orders, reverse) = result;
         &&& orders.valid() && reverse.valid()
         &&& forall|key: i64, other: i64| #![trigger sparse_count(orders, key, other)]
             sparse_count(orders, key, other) == sum(relevant_orders@, |row: OrderInput|
@@ -32,7 +33,7 @@ pub fn build_orders(relevant_orders: &[OrderInput])
             orders.at(key) matches Some(bucket) ==> count_keys(bucket.rows@).no_duplicates()
         &&& forall|key: i64| #![trigger orders.at(key)]
             orders.at(key) matches Some(bucket) ==> counts_positive(bucket)
-    },
+    }),
 {
     let empty_counts = Layers::new(Sparse::new());
     let empty_members = Layers::new(Sparse::new());
@@ -63,8 +64,8 @@ pub fn build_orders(relevant_orders: &[OrderInput])
     {
         let ghost prefix_rows = order_rows;
         let ghost prefix_reverse = reverse_rows;
-        value!(count_patch(&empty_counts, &mut order_rows, relevant_orders[index].o_orderkey, relevant_orders[index].o_custkey, 1));
-        value!(membership_patch(&empty_members, &mut reverse_rows, relevant_orders[index].o_custkey, relevant_orders[index].o_orderkey, true));
+        count_patch(&empty_counts, &mut order_rows, relevant_orders[index].o_orderkey, relevant_orders[index].o_custkey, &Wide::from_i128(1));
+        membership_patch(&empty_members, &mut reverse_rows, relevant_orders[index].o_custkey, relevant_orders[index].o_orderkey, true);
         proof {
             assert forall|key: i64, other: i64| #![trigger sparse_count(order_rows, key, other)]
                 sparse_count(order_rows, key, other) >= 0
@@ -113,7 +114,7 @@ pub fn build_orders(relevant_orders: &[OrderInput])
                 == patched_member(empty_members, reverse_rows, customer, order));
         }
     }
-    Some((order_rows, reverse_rows))
+    (order_rows, reverse_rows)
 }
 
 pub proof fn lemma_reverse_install(rows: Sparse<Layers<i128>>, layers: Layers<Layers<i128>>, customer: i64, order: i64)
@@ -137,7 +138,6 @@ pub proof fn lemma_member_install(previous: Layers<Layers<i128>>, changes: Spars
 }
 
 pub fn clear_reverse_order(previous: &Layers<Layers<i128>>, changes: &mut Sparse<Layers<i128>>, rows: &Counts, order: i64)
-    -> (result: Option<()>)
     requires old(changes).valid(),
         forall|customer: i64| #![trigger patched_member(*previous, *old(changes), customer, order)]
             patched_member(*previous, *old(changes), customer, order) ==> count_at(rows.rows@, customer) > 0,
@@ -146,7 +146,7 @@ pub fn clear_reverse_order(previous: &Layers<Layers<i128>>, changes: &mut Sparse
     ensures final(changes).valid(),
         forall|customer: i64| #![trigger final(changes).at(customer)]
             final(changes).at(customer) matches Some(bucket) ==> bucket.valid(),
-        result.is_some() ==> forall|customer: i64, key: i64| #![trigger patched_member(*previous, *final(changes), customer, key)]
+        forall|customer: i64, key: i64| #![trigger patched_member(*previous, *final(changes), customer, key)]
             patched_member(*previous, *final(changes), customer, key) ==
                 (key != order && patched_member(*previous, *old(changes), customer, key)),
 {
@@ -163,7 +163,7 @@ pub fn clear_reverse_order(previous: &Layers<Layers<i128>>, changes: &mut Sparse
         decreases rows.rows@.len() - offset,
     {
         let customer = rows.rows[offset].0;
-        value!(membership_patch(previous, changes, customer, order, false));
+        membership_patch(previous, changes, customer, order, false);
         proof {
             assert(count_keys(rows.rows@.take(offset as int + 1)) =~= count_keys(rows.rows@.take(offset as int)).push(customer));
             verus_prooflib::lemma_contains_push(count_keys(rows.rows@.take(offset as int)), customer);
@@ -176,7 +176,7 @@ pub fn clear_reverse_order(previous: &Layers<Layers<i128>>, changes: &mut Sparse
             patched_member(*previous, *changes, customer, key) ==
                 (key != order && patched_member(*previous, initial, customer, key)) by {
             if key == order && patched_member(*previous, initial, customer, key) {
-                let weight = |entry: (i64, i128)| if entry.0 == customer { entry.1 as int } else { 0int };
+                let weight = |entry: (i64, Wide)| if entry.0 == customer { entry.1@ } else { 0int };
                 let position = lemma_sum_nonzero_witness(rows.rows@, weight);
                 assert(rows.rows@[position].0 == customer);
                 assert(count_keys(rows.rows@)[position] == customer);
@@ -184,7 +184,6 @@ pub fn clear_reverse_order(previous: &Layers<Layers<i128>>, changes: &mut Sparse
             }
         }
     }
-    Some(())
 }
 
 }

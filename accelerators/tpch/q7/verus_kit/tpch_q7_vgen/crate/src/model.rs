@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
@@ -50,11 +51,17 @@ pub open spec fn patched_count(old: Layers<Counts>, changes: Sparse<Counts>, key
         Some(bucket) => count_at(bucket.rows@, other), None => dimension_value(old, key, other),
     }
 }
+pub open spec fn counts_nonzero(bucket: Counts) -> bool {
+    forall|offset: int| #![trigger bucket.rows@[offset]] 0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].1@ != 0
+}
+pub open spec fn counts_unique(bucket: Counts) -> bool {
+    count_keys(bucket.rows@).no_duplicates() && counts_nonzero(bucket)
+}
 pub open spec fn patched_counts_unique(old: Layers<Counts>, changes: Sparse<Counts>, key: i64) -> bool {
     match changes.at(key) {
-        Some(bucket) => count_keys(bucket.rows@).no_duplicates(),
+        Some(bucket) => counts_unique(bucket),
         None => match old.at(key) {
-            Some(bucket) => count_keys(bucket.rows@).no_duplicates(), None => true,
+            Some(bucket) => counts_unique(bucket), None => true,
         },
     }
 }
@@ -64,11 +71,17 @@ pub open spec fn patched_counts_positive(old: Layers<Counts>, changes: Sparse<Co
         None => match old.at(key) { Some(bucket) => counts_positive(bucket), None => true },
     }
 }
+pub open spec fn names_nonzero(bucket: Names) -> bool {
+    forall|offset: int| #![trigger bucket.rows@[offset]] 0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].1@ != 0
+}
+pub open spec fn names_unique(bucket: Names) -> bool {
+    name_keys(bucket.rows@).no_duplicates() && names_nonzero(bucket)
+}
 pub open spec fn patched_names_unique(old: Layers<Names>, changes: Sparse<Names>, key: i64) -> bool {
     match changes.at(key) {
-        Some(bucket) => name_keys(bucket.rows@).no_duplicates(),
+        Some(bucket) => names_unique(bucket),
         None => match old.at(key) {
-            Some(bucket) => name_keys(bucket.rows@).no_duplicates(), None => true,
+            Some(bucket) => names_unique(bucket), None => true,
         },
     }
 }
@@ -106,8 +119,8 @@ pub open spec fn projected_contribution(suppliers: Layers<Counts>, customers: La
     if line_year != year { 0 } else {
         dimension_value(suppliers, supplier, first)
         * (match orders.at(order) {
-            Some(bucket) => sum(bucket.rows@, |row: (i64, i128)|
-                row.1 as int * dimension_value(customers, row.0, second)),
+            Some(bucket) => sum(bucket.rows@, |row: (i64, Wide)|
+                row.1@ * dimension_value(customers, row.0, second)),
             None => 0,
         }) * if revenue { volume } else { 1 }
     }
@@ -121,7 +134,7 @@ pub proof fn lemma_projected_absent(suppliers: Layers<Counts>, customers: Layers
     reveal(projected_contribution);
     let supplier_count = dimension_value(suppliers, supplier, first);
     let order_count = match orders.at(order) {
-        Some(bucket) => sum(bucket.rows@, |row: (i64, i128)| row.1 as int * dimension_value(customers, row.0, second)),
+        Some(bucket) => sum(bucket.rows@, |row: (i64, Wide)| row.1@ * dimension_value(customers, row.0, second)),
         None => 0int,
     };
     let measure = if revenue { volume } else { 1int };
@@ -132,21 +145,21 @@ pub proof fn lemma_projected_absent(suppliers: Layers<Counts>, customers: Layers
     assert(projected_contribution(suppliers, customers, orders, order, supplier, line_year, volume,
         first, second, year, revenue) == if line_year != year { 0int } else { supplier_count * order_count * measure });
 }
-pub open spec fn order_weight(rows: Seq<(i64, i128)>, customers: Layers<Counts>, second: i64) -> int {
-    sum(rows, |row: (i64, i128)| row.1 as int * dimension_value(customers, row.0, second))
+pub open spec fn order_weight(rows: Seq<(i64, Wide)>, customers: Layers<Counts>, second: i64) -> int {
+    sum(rows, |row: (i64, Wide)| row.1@ * dimension_value(customers, row.0, second))
 }
-pub open spec fn prefix_product(supplier_rows: Seq<(i64, i128)>, order_rows: Seq<(i64, i128)>, customers: Layers<Counts>,
+pub open spec fn prefix_product(supplier_rows: Seq<(i64, Wide)>, order_rows: Seq<(i64, Wide)>, customers: Layers<Counts>,
     first: i64, second: i64, year: i64, line_year: i64, volume: int, sign: int, revenue: bool) -> int
 {
     if year != line_year { 0 } else {
         count_at(supplier_rows, first) * (order_weight(order_rows, customers, second) * (sign * if revenue { volume } else { 1 }))
     }
 }
-pub open spec fn customer_piece(rows: Seq<(i64, i128)>, supplier: (i64, i128), order: (i64, i128),
+pub open spec fn customer_piece(rows: Seq<(i64, Wide)>, supplier: (i64, Wide), order: (i64, Wide),
     first: i64, second: i64, year: i64, line_year: i64, volume: int, sign: int, revenue: bool) -> int
 {
     if year != line_year || supplier.0 != first { 0 } else {
-        count_at(rows, second) * (supplier.1 as int * (order.1 as int * (sign * if revenue { volume } else { 1 })))
+        count_at(rows, second) * (supplier.1@ * (order.1@ * (sign * if revenue { volume } else { 1 })))
     }
 }
 #[verifier::opaque]
@@ -184,12 +197,12 @@ pub open spec fn patched_member(old: Layers<Layers<i128>>, changes: Sparse<Layer
         None => member_value(old, key, other),
     }
 }
-pub open spec fn expanded_prefix(first_rows: Seq<(Vec<u8>, i128)>, second_rows: Seq<(Vec<u8>, i128)>,
+pub open spec fn expanded_prefix(first_rows: Seq<(Vec<u8>, Wide)>, second_rows: Seq<(Vec<u8>, Wide)>,
     cell: Cell, sign: int, first: Seq<u8>, second: Seq<u8>, year: i64, revenue: bool) -> int
 {
     if cell.year != year { 0int } else {
         name_at(first_rows, first) * (name_at(second_rows, second)
-            * (sign * if revenue { cell.revenue as int } else { cell.count as int }))
+            * (sign * if revenue { cell.revenue@ } else { cell.count@ }))
     }
 }
 pub open spec fn cell_expansion(nations: Layers<Names>, key: i64, cell: Cell, sign: int,
@@ -197,7 +210,7 @@ pub open spec fn cell_expansion(nations: Layers<Names>, key: i64, cell: Cell, si
 {
     if cell.year != year { 0int } else {
         nation_value(nations, key, first) * (nation_value(nations, cell.other, second)
-            * (sign * if revenue { cell.revenue as int } else { cell.count as int }))
+            * (sign * if revenue { cell.revenue@ } else { cell.count@ }))
     }
 }
 pub open spec fn member_value(map: Layers<Layers<i128>>, key: i64, other: i64) -> bool {
@@ -209,7 +222,7 @@ pub open spec fn member_value(map: Layers<Layers<i128>>, key: i64, other: i64) -
 
 pub open spec fn counts_positive(bucket: Counts) -> bool {
     forall|offset: int| #![trigger bucket.rows@[offset]]
-        0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].1 > 0
+        0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].1@ > 0
 }
 pub open spec fn counts_valid(bucket: Counts) -> bool {
     &&& counts_positive(bucket)
@@ -217,7 +230,7 @@ pub open spec fn counts_valid(bucket: Counts) -> bool {
 }
 pub open spec fn groups_positive(bucket: Groups) -> bool {
     forall|offset: int| #![trigger bucket.rows@[offset]]
-        0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].count > 0
+        0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].count@ > 0
 }
 pub open spec fn groups_valid(bucket: Groups) -> bool {
     &&& groups_positive(bucket)
@@ -227,13 +240,15 @@ pub open spec fn groups_shape(bucket: Groups) -> bool {
     &&& forall|offset: int| #![trigger bucket.rows@[offset]]
         0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].year == 1995 || bucket.rows@[offset].year == 1996
     &&& group_keys(bucket.rows@).no_duplicates()
+    &&& forall|offset: int| #![trigger bucket.rows@[offset]]
+        0 <= offset < bucket.rows@.len() ==> !(bucket.rows@[offset].count@ == 0 && bucket.rows@[offset].revenue@ == 0)
 }
 pub open spec fn sparse_groups_shape(map: Sparse<Groups>) -> bool {
     forall|key: i64| #![trigger map.at(key)] map.at(key) matches Some(bucket) ==> groups_shape(bucket)
 }
 pub open spec fn names_positive(bucket: Names) -> bool {
     forall|offset: int| #![trigger bucket.rows@[offset]]
-        0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].1 > 0
+        0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].1@ > 0
 }
 pub open spec fn names_valid(bucket: Names) -> bool {
     &&& names_positive(bucket)
@@ -241,7 +256,7 @@ pub open spec fn names_valid(bucket: Names) -> bool {
 }
 pub open spec fn answers_positive(bucket: Answers) -> bool {
     forall|offset: int| #![trigger bucket.rows@[offset]]
-        0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].count > 0
+        0 <= offset < bucket.rows@.len() ==> bucket.rows@[offset].count@ > 0
 }
 pub open spec fn answers_valid(bucket: Answers, key: i64) -> bool {
     &&& answers_positive(bucket)
@@ -252,6 +267,8 @@ pub open spec fn answers_shape(bucket: Answers, key: i64) -> bool {
         0 <= offset < bucket.rows@.len() ==> (bucket.rows@[offset].year == 1995 || bucket.rows@[offset].year == 1996)
             && pair_hash_spec(bucket.rows@[offset].first@, bucket.rows@[offset].second@) == key
     &&& answer_keys(bucket.rows@).no_duplicates()
+    &&& forall|offset: int| #![trigger bucket.rows@[offset]]
+        0 <= offset < bucket.rows@.len() ==> !(bucket.rows@[offset].count@ == 0 && bucket.rows@[offset].revenue@ == 0)
 }
 pub open spec fn patched_answers_shape(previous: Layers<Answers>, changes: Sparse<Answers>) -> bool {
     forall|key: i64| #![trigger changes.at(key), previous.at(key)]

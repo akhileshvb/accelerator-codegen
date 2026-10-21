@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use verus_common::sums::*;
 use verus_prooflib::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 broadcast use vstd::seq_lib::group_seq_properties;
@@ -244,13 +245,13 @@ impl<Value: Bucket> Sparse<Value> {
 pub struct Layers<Value: Bucket> {
     base: Arc<Sparse<Value>>,
     tiers: Vec<Arc<Sparse<Value>>>,
-    live: usize,
+    live: Wide,
 }
 
 impl<Value: Bucket> Layers<Value> {
     pub closed spec fn base_model(self) -> Sparse<Value> { *self.base }
     pub closed spec fn patches(self) -> Seq<Arc<Sparse<Value>>> { self.tiers@ }
-    pub closed spec fn live_count(self) -> nat { self.live as nat }
+    pub closed spec fn live_count(self) -> nat { self.live@ as nat }
     pub closed spec fn prefix(self, length: nat, key: i64) -> Option<Value>
     {
         raw_prefix(*self.base, self.tiers@, length, key)
@@ -292,7 +293,7 @@ impl<Value: Bucket> Layers<Value> {
 
     #[verifier::type_invariant]
     pub closed spec fn valid(self) -> bool {
-        self.live as nat == self.support().len()
+        self.live@ == self.support().len() as int
         && self.support().finite()
         && self.base.valid()
         && forall|offset: int| #![trigger self.tiers@[offset]]
@@ -303,7 +304,7 @@ impl<Value: Bucket> Layers<Value> {
         requires base.valid(),
         ensures result.valid(), forall|key: i64| #![trigger result.at(key)] result.at(key) == normalize(base.at(key)),
     {
-        let mut live = 0;
+        let mut live: usize = 0;
         let mut offset = 0;
         while offset < base.entries.len()
             invariant offset <= base.entries@.len(), live <= offset, base.valid(),
@@ -318,6 +319,8 @@ impl<Value: Bucket> Layers<Value> {
         }
         let base = Arc::new(base);
         let tiers = Vec::new();
+        let live_count = live;
+        let live = Wide::from_i128(live_count as i128);
         proof {
             base.key_facts();
             let ghost source = *base;
@@ -377,7 +380,7 @@ impl<Value: Bucket> Layers<Value> {
             assert(candidate.support() =~= self.support());
             assert(candidate.valid());
         }
-        Self { base, tiers, live: self.live }
+        Self { base, tiers, live: self.live.dup() }
     }
 
     pub fn get(&self, key: i64) -> (result: Option<&Value>)
@@ -402,9 +405,9 @@ impl<Value: Bucket> Layers<Value> {
         }
     }
 
-    pub fn patch(&self, changes: Sparse<Value>) -> (result: Option<Self>)
+    pub fn patch(&self, changes: Sparse<Value>) -> (updated: Self)
         requires changes.valid(),
-        ensures result matches Some(updated) ==> updated.valid()
+        ensures updated.valid()
             && forall|key: i64| #![trigger updated.at(key)] updated.at(key) ==
                 if changes.at(key).is_some() { normalize(changes.at(key)) } else { self.at(key) },
     {
@@ -426,12 +429,12 @@ impl<Value: Bucket> Layers<Value> {
         let mut base = base;
         let mut tiers = tiers;
         let mut live = live;
-        if changes.entries.len() == 0 { return Some(Self { base, tiers, live }); }
+        if changes.entries.len() == 0 { return Self { base, tiers, live }; }
         let mut offset = 0;
         while offset < changes.entries.len()
             invariant offset <= changes.entries@.len(), changes.valid(), self.valid(),
                 *base == *self.base, tiers@ == self.tiers@,
-                live as int == self.live as int + sum(changes.entries@.take(offset as int),
+                live@ == self.live@ + sum(changes.entries@.take(offset as int),
                     |entry: (i64, Arc<Value>)|
                         (if entry.1.empty() { 0int } else { 1int })
                         - (if self.at(entry.0).is_some() { 1int } else { 0int })),
@@ -445,10 +448,10 @@ impl<Value: Bucket> Layers<Value> {
             let present = !changes.entries[offset].1.is_empty();
             let was_present = self.get(key).is_some();
             if present && !was_present {
-                live = match live.checked_add(1) { Some(count) => count, None => return None };
+                live = live.add(&Wide::from_i128(1));
             }
             if !present && was_present {
-                live = match live.checked_sub(1) { Some(count) => count, None => return None };
+                live = live.sub(&Wide::from_i128(1));
             }
             offset += 1;
         }
@@ -475,14 +478,14 @@ impl<Value: Bucket> Layers<Value> {
                     (if entry.1.empty() { 0int } else { 1int })
                     - (if self.at(entry.0).is_some() { 1int } else { 0int }));
             assert(changes.view().take(changes.view().len() as int) == changes.view());
-            assert(live as int == expected_support.len());
+            assert(live@ == expected_support.len() as int);
         }
         let mut merged = changes;
         let mut remaining = tiers.len();
         while remaining > 0
             invariant remaining <= self.tiers@.len(), tiers@ == self.tiers@.take(remaining as int),
                 *base == *self.base, self.valid(), merged.valid(),
-                live as int == expected_support.len(),
+                live@ == expected_support.len() as int,
                 forall|key: i64| #![trigger merged.at(key)]
                     normalize(if merged.at(key).is_some() { merged.at(key) }
                         else { self.prefix(remaining as nat, key) }) == expected(key),
@@ -532,10 +535,10 @@ impl<Value: Bucket> Layers<Value> {
             assert(candidate.base.valid());
             assert forall|position: int| #![trigger candidate.tiers@[position]]
                 0 <= position < candidate.tiers@.len() implies candidate.tiers@[position].valid() by {}
-            assert(candidate.live as int == candidate.support().len());
+            assert(candidate.live@ == candidate.support().len() as int);
             assert(candidate.valid());
         }
-        Some(Self { base, tiers, live })
+        Self { base, tiers, live }
     }
 
     pub fn keys(&self) -> (result: Vec<i64>)
@@ -597,10 +600,10 @@ impl<Value: Bucket> Layers<Value> {
 }
 
 impl<Value: Bucket> Bucket for Layers<Value> {
-    closed spec fn empty(self) -> bool { self.live == 0 }
+    closed spec fn empty(self) -> bool { self.live@ == 0 }
     fn is_empty(&self) -> (result: bool)
         ensures result == self.empty(),
-    { self.live == 0 }
+    { self.live.is_zero() }
 }
 
 }

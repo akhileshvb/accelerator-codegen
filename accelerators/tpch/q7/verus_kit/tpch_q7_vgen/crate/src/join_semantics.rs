@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::*;
 use verus_prooflib::*;
 use crate::gen_spec::*;
@@ -50,19 +51,19 @@ pub proof fn lemma_order_fold(db: Db, scanned: Seq<OrderInput>, orders: Layers<C
 {
     reveal(customer_count);
     let collapsed = match orders.at(key) { Some(bucket) => bucket.rows@, None => Seq::empty() };
-    let left_key = |row: (i64, i128)| row.0;
+    let left_key = |row: (i64, Wide)| row.0;
     let right_key = |row: OrderInput| row.o_custkey;
-    let left_count = |row: (i64, i128)| row.1 as int;
+    let left_count = |row: (i64, Wide)| row.1@;
     let right_count = |row: OrderInput| if row.o_orderkey == key { 1int } else { 0int };
     let value = |customer: i64| dimension_value(customers, customer, second);
     assert forall|customer: i64| #![trigger class_total(collapsed, left_key, left_count, customer)]
         class_total(collapsed, left_key, left_count, customer) == class_total(scanned, right_key, right_count, customer) by {
         if orders.at(key).is_none() {
-            lemma_sum_empty(collapsed, |row: (i64, i128)| if row.0 == customer { row.1 as int } else { 0int });
+            lemma_sum_empty(collapsed, |row: (i64, Wide)| if row.0 == customer { row.1@ } else { 0int });
         }
         lemma_sum_ext_all(collapsed,
-            |row: (i64, i128)| if left_key(row) == customer { left_count(row) } else { 0int },
-            |row: (i64, i128)| if row.0 == customer { row.1 as int } else { 0int });
+            |row: (i64, Wide)| if left_key(row) == customer { left_count(row) } else { 0int },
+            |row: (i64, Wide)| if row.0 == customer { row.1@ } else { 0int });
         assert(class_total(collapsed, left_key, left_count, customer) == dimension_value(orders, key, customer));
         lemma_sum_ext_all(scanned,
             |row: OrderInput| if right_key(row) == customer { right_count(row) } else { 0int },
@@ -86,10 +87,10 @@ pub proof fn lemma_order_fold(db: Db, scanned: Seq<OrderInput>, orders: Layers<C
     lemma_sum_ext_all(db.orders, relevant_weight, database_weight);
     assert(order_join_weight(db, key as int, second) == sum(db.orders, database_weight));
     if orders.at(key).is_none() {
-        lemma_sum_empty(collapsed, |row: (i64, i128)| left_count(row) * value(left_key(row)));
+        lemma_sum_empty(collapsed, |row: (i64, Wide)| left_count(row) * value(left_key(row)));
     }
-    lemma_sum_ext_all(collapsed, |row: (i64, i128)| left_count(row) * value(left_key(row)),
-        |row: (i64, i128)| row.1 as int * dimension_value(customers, row.0, second));
+    lemma_sum_ext_all(collapsed, |row: (i64, Wide)| left_count(row) * value(left_key(row)),
+        |row: (i64, Wide)| row.1@ * dimension_value(customers, row.0, second));
 }
 
 pub proof fn lemma_fact_factor(db: Db, line: LineitemRow, first: i64, second: i64, year: i64, revenue: bool)
@@ -205,7 +206,7 @@ pub proof fn lemma_group_install(previous: Layers<Groups>, changes: Sparse<Group
     if let Some(bucket) = changes.at(first) {
         if bucket.empty() {
             lemma_sum_empty(bucket.rows@, |entry: Cell| if entry.other == second && entry.year == year {
-                if revenue { entry.revenue as int } else { entry.count as int }
+                if revenue { entry.revenue@ } else { entry.count@ }
             } else { 0int });
         }
     }
@@ -239,6 +240,72 @@ pub proof fn lemma_group_layer_shape(rows: Sparse<Groups>, groups: Layers<Groups
 {
     assert forall|key: i64| #![trigger groups.at(key)] groups.at(key) matches Some(bucket) ==> groups_valid(bucket) by {
         if let Some(bucket) = rows.at(key) { assert(groups_shape(bucket)); assert(groups_positive(bucket)); }
+    }
+}
+
+
+pub proof fn lemma_numeric_group_support(db: Db, first: i64, second: i64, year: i64)
+    ensures numeric_group(db, first, second, year, false) >= 0,
+        numeric_group(db, first, second, year, false) == 0 ==> numeric_group(db, first, second, year, true) == 0,
+{
+    reveal(numeric_group);
+    let counts = |line: LineitemRow| fact_line(db, line, first, second, year, false);
+    let revenues = |line: LineitemRow| fact_line(db, line, first, second, year, true);
+    assert forall|line: LineitemRow| #[trigger] counts(line) >= 0 by {
+        lemma_fact_factor(db, line, first, second, year, false);
+        lemma_sum_nonneg(db.supplier, |row: SupplierRow| if row.s_suppkey == line.l_suppkey && row.s_nationkey == first { 1int } else { 0int });
+        lemma_order_join_nonneg(db, line.l_orderkey, second);
+        let supplier = sum(db.supplier, |row: SupplierRow| if row.s_suppkey == line.l_suppkey && row.s_nationkey == first { 1int } else { 0int });
+        let joined = order_join_weight(db, line.l_orderkey, second);
+        assert(supplier * (joined * 1) >= 0) by (nonlinear_arith) requires supplier >= 0, joined >= 0;
+    }
+    lemma_sum_nonneg(db.lineitem, counts);
+    if sum(db.lineitem, counts) == 0 {
+        assert forall|index: int| 0 <= index < db.lineitem.len() implies revenues(#[trigger] db.lineitem[index]) == 0 by {
+            let line = db.lineitem[index];
+            if counts(line) > 0 { lemma_sum_pos(db.lineitem, counts, index); }
+            assert(counts(line) == 0);
+            lemma_fact_factor(db, line, first, second, year, false);
+            lemma_fact_factor(db, line, first, second, year, true);
+            let supplier = sum(db.supplier, |row: SupplierRow| if row.s_suppkey == line.l_suppkey && row.s_nationkey == first { 1int } else { 0int });
+            let joined = order_join_weight(db, line.l_orderkey, second);
+            let volume = line.l_extendedprice * (100 - line.l_discount);
+            if 9131 <= line.l_shipdate <= 9861 && (if line.l_shipdate <= 9495 { 1995i64 } else { 1996i64 }) == year {
+                assert(supplier * (joined * 1) == 0);
+                assert(supplier * (joined * volume) == 0) by (nonlinear_arith) requires supplier * (joined * 1) == 0;
+            }
+        }
+        lemma_sum_zero(db.lineitem, revenues);
+    }
+}
+
+pub proof fn lemma_order_join_nonneg(db: Db, key: int, second: i64)
+    ensures order_join_weight(db, key, second) >= 0,
+{
+    let term = |row: OrdersRow| if row.o_orderkey == key { customer_weight(db, row.o_custkey, second) } else { 0int };
+    assert forall|index: int| 0 <= index < db.orders.len() implies term(#[trigger] db.orders[index]) >= 0 by {
+        lemma_sum_nonneg(db.customer, |row: CustomerRow| if row.c_custkey == db.orders[index].o_custkey && row.c_nationkey == second { 1int } else { 0int });
+    }
+    lemma_sum_nonneg(db.orders, term);
+}
+
+
+pub proof fn lemma_group_bucket_positive(db: Db, groups: Sparse<Groups>, first: i64)
+    requires sparse_groups_shape(groups),
+        forall|second: i64, year: i64, measure: bool| #![trigger sparse_group(groups, first, second, year, measure)]
+            sparse_group(groups, first, second, year, measure) == numeric_group(db, first, second, year, measure),
+    ensures groups.at(first) matches Some(bucket) ==> groups_valid(bucket),
+{
+    if let Some(bucket) = groups.at(first) {
+        assert(groups_shape(bucket));
+        assert forall|offset: int| 0 <= offset < bucket.rows@.len() implies (#[trigger] bucket.rows@[offset]).count@ > 0 by {
+            let cell = bucket.rows@[offset];
+            lemma_group_entry(bucket.rows@, offset, false);
+            lemma_group_entry(bucket.rows@, offset, true);
+            assert(sparse_group(groups, first, cell.other, cell.year, false) == group_at(bucket.rows@, cell.other, cell.year, false));
+            assert(sparse_group(groups, first, cell.other, cell.year, true) == group_at(bucket.rows@, cell.other, cell.year, true));
+            lemma_numeric_group_support(db, first, cell.other, cell.year);
+        }
     }
 }
 

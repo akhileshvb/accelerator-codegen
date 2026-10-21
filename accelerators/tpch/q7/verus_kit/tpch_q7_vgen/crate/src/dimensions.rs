@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::*;
 use verus_common::bag::*;
 use verus_prooflib::*;
@@ -183,7 +184,7 @@ pub proof fn lemma_count_install(previous: Layers<Counts>, changes: Sparse<Count
 {
     if let Some(bucket) = changes.at(key) {
         if bucket.empty() {
-            lemma_sum_empty(bucket.rows@, |row: (i64, i128)| if row.0 == other { row.1 as int } else { 0int });
+            lemma_sum_empty(bucket.rows@, |row: (i64, Wide)| if row.0 == other { row.1@ } else { 0int });
         }
     }
 }
@@ -194,7 +195,7 @@ pub proof fn lemma_name_install(previous: Layers<Names>, changes: Sparse<Names>,
 {
     if let Some(bucket) = changes.at(key) {
         if bucket.empty() {
-            lemma_sum_empty(bucket.rows@, |row: (Vec<u8>, i128)| if row.0@ == name { row.1 as int } else { 0int });
+            lemma_sum_empty(bucket.rows@, |row: (Vec<u8>, Wide)| if row.0@ == name { row.1@ } else { 0int });
         }
     }
 }
@@ -245,6 +246,18 @@ pub proof fn lemma_nation_capture(db: Db, db2: Db, rows: Seq<NationDelta>, key: 
     assert(nation_delta_count(rows, key, name) == sum(rows, projected));
     assert(nation_count(db, key, name) == sum(db.nation, weight));
     assert(nation_count(db2, key, name) == sum(db2.nation, weight));
+}
+
+
+pub proof fn lemma_dimension_nonnegative(db: Db, key: i64, other: i64, name: Seq<u8>)
+    ensures supplier_count(db, key, other) >= 0, customer_count(db, key, other) >= 0, nation_count(db, key, name) >= 0,
+{
+    reveal(supplier_count);
+    reveal(customer_count);
+    reveal(nation_count);
+    lemma_sum_nonneg(db.supplier, |row: SupplierRow| if row.s_suppkey == key && row.s_nationkey == other { 1int } else { 0int });
+    lemma_sum_nonneg(db.customer, |row: CustomerRow| if row.c_custkey == key && row.c_nationkey == other { 1int } else { 0int });
+    lemma_sum_nonneg(db.nation, |row: NationRow| if row.n_nationkey == key && row.n_name == name { 1int } else { 0int });
 }
 
 }

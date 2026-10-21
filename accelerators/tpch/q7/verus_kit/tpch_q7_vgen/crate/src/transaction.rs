@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::*;
 use verus_common::bag::*;
 use verus_prooflib::*;
@@ -38,17 +39,17 @@ pub proof fn lemma_snapshot_order(db: Db, orders: Layers<Counts>, customers: Lay
 {
     reveal(order_count); reveal(customer_count);
     let collapsed = match orders.at(key) { Some(bucket) => bucket.rows@, None => Seq::empty() };
-    let left_project = |row: (i64, i128)| row.0;
+    let left_project = |row: (i64, Wide)| row.0;
     let right_project = |row: OrdersRow| if key_range(row.o_custkey) { row.o_custkey as i64 } else { 0i64 };
-    let left_multiplicity = |row: (i64, i128)| row.1 as int;
+    let left_multiplicity = |row: (i64, Wide)| row.1@;
     let right_multiplicity = |row: OrdersRow| if row.o_orderkey == key && key_range(row.o_custkey) { 1int } else { 0int };
     let weight = |customer: i64| dimension_value(customers, customer, second);
     assert forall|customer: i64| #![trigger class_total(collapsed, left_project, left_multiplicity, customer)]
         class_total(collapsed, left_project, left_multiplicity, customer)
             == class_total(db.orders, right_project, right_multiplicity, customer) by {
-        let left = |row: (i64, i128)| if left_project(row) == customer { left_multiplicity(row) } else { 0int };
+        let left = |row: (i64, Wide)| if left_project(row) == customer { left_multiplicity(row) } else { 0int };
         let right = |row: OrdersRow| if right_project(row) == customer { right_multiplicity(row) } else { 0int };
-            lemma_sum_ext_all(collapsed, left, |row: (i64, i128)| if row.0 == customer { row.1 as int } else { 0int });
+            lemma_sum_ext_all(collapsed, left, |row: (i64, Wide)| if row.0 == customer { row.1@ } else { 0int });
             if orders.at(key).is_none() { lemma_sum_empty(collapsed, left); }
             assert(class_total(collapsed, left_project, left_multiplicity, customer) == dimension_value(orders, key, customer));
             let expected = |row: OrdersRow| if row.o_orderkey == key && row.o_custkey == customer && scan_relevant_orders_exists_1(db, row) { 1int } else { 0int };
@@ -60,9 +61,9 @@ pub proof fn lemma_snapshot_order(db: Db, orders: Layers<Counts>, customers: Lay
             lemma_sum_ext_all(db.orders, right, expected);
     }
     lemma_equal_classes(collapsed, db.orders, left_project, right_project, left_multiplicity, right_multiplicity, weight);
-    let left = |row: (i64, i128)| left_multiplicity(row) * weight(left_project(row));
-    let expected_left = |row: (i64, i128)| row.1 as int * dimension_value(customers, row.0, second);
-    assert forall|row: (i64, i128)| #[trigger] left(row) == expected_left(row) by {}
+    let left = |row: (i64, Wide)| left_multiplicity(row) * weight(left_project(row));
+    let expected_left = |row: (i64, Wide)| row.1@ * dimension_value(customers, row.0, second);
+    assert forall|row: (i64, Wide)| #[trigger] left(row) == expected_left(row) by {}
     lemma_sum_ext_all(collapsed, left, expected_left);
     if orders.at(key).is_none() { lemma_sum_empty(collapsed, expected_left); }
     let right = |row: OrdersRow| right_multiplicity(row) * weight(right_project(row));
@@ -188,12 +189,12 @@ pub proof fn lemma_order_cache_equal(before_orders: Layers<Counts>, after_orders
     reveal(count_at);
     let before = match before_orders.at(key) { Some(bucket) => bucket.rows@, None => Seq::empty() };
     let after = match after_orders.at(key) { Some(bucket) => bucket.rows@, None => Seq::empty() };
-    let project = |row: (i64, i128)| row.0;
-    let multiplicity = |row: (i64, i128)| row.1 as int;
+    let project = |row: (i64, Wide)| row.0;
+    let multiplicity = |row: (i64, Wide)| row.1@;
     let weight = |customer: i64| dimension_value(after_customers, customer, second);
     assert forall|customer: i64| #![trigger class_total(before, project, multiplicity, customer)]
         class_total(before, project, multiplicity, customer) == class_total(after, project, multiplicity, customer) by {
-        let part = |row: (i64, i128)| if project(row) == customer { multiplicity(row) } else { 0int };
+        let part = |row: (i64, Wide)| if project(row) == customer { multiplicity(row) } else { 0int };
         let count = count_weight(customer);
         lemma_sum_ext_all(before, part, count);
         lemma_sum_ext_all(after, part, count);
@@ -203,9 +204,9 @@ pub proof fn lemma_order_cache_equal(before_orders: Layers<Counts>, after_orders
         assert(class_total(after, project, multiplicity, customer) == dimension_value(after_orders, key, customer));
     }
     lemma_equal_classes(before, after, project, project, multiplicity, multiplicity, weight);
-    let weighted = |row: (i64, i128)| multiplicity(row) * weight(project(row));
-    let new_weight = |row: (i64, i128)| row.1 as int * dimension_value(after_customers, row.0, second);
-    let old_weight = |row: (i64, i128)| row.1 as int * dimension_value(before_customers, row.0, second);
+    let weighted = |row: (i64, Wide)| multiplicity(row) * weight(project(row));
+    let new_weight = |row: (i64, Wide)| row.1@ * dimension_value(after_customers, row.0, second);
+    let old_weight = |row: (i64, Wide)| row.1@ * dimension_value(before_customers, row.0, second);
     lemma_sum_ext_all(before, weighted, new_weight);
     lemma_sum_ext_all(after, weighted, new_weight);
     assert forall|position: int| 0 <= position < before.len() implies new_weight(#[trigger] before[position]) == old_weight(before[position]) by {
@@ -213,7 +214,7 @@ pub proof fn lemma_order_cache_equal(before_orders: Layers<Counts>, after_orders
         let count = count_weight(customer);
         assert forall|offset: int| 0 <= offset < before.len() implies count(#[trigger] before[offset]) >= 0 by {}
         lemma_sum_pos(before, count, position);
-        assert(count =~= (|entry: (i64, i128)| if entry.0 == customer { entry.1 as int } else { 0 }));
+        assert(count =~= (|entry: (i64, Wide)| if entry.0 == customer { entry.1@ } else { 0 }));
         assert(sum(before, count) == count_at(before, customer));
         assert(dimension_value(before_orders, key, customer) == count_at(before, customer));
         assert(dimension_value(before_orders, key, customer) > 0);
