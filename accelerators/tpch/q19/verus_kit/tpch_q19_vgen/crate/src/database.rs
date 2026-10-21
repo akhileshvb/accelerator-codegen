@@ -35,6 +35,33 @@ pub proof fn lemma_part_scan(db: Db, rows: Seq<PartInput>, key: int, class: u8, 
     lemma_sum_aligned(rows, part_input_seq_view(rows), |row: PartInput| part_scan_weight(row, key, class, brand), weight);
 }
 
+pub proof fn lemma_parts_classified(db: Db, rows: Seq<PartInput>)
+    requires scan_qualifying_parts_ok(db, rows),
+    ensures forall|i: int| #![trigger rows[i]] 0 <= i < rows.len() ==> classified(part_input_view(rows[i])),
+{
+    let outside = |part: PartRow| ind(!classified(part));
+    let raw = |part: PartRow| if (((part.p_size >= 1 && part.p_size <= 5)
+        && (((part.p_container == seq![b'S', b'M', b' ', b'C', b'A', b'S', b'E'] || part.p_container == seq![b'S', b'M', b' ', b'B', b'O', b'X'])
+            || part.p_container == seq![b'S', b'M', b' ', b'P', b'A', b'C', b'K']) || part.p_container == seq![b'S', b'M', b' ', b'P', b'K', b'G']))
+        || ((part.p_size >= 1 && part.p_size <= 10)
+        && (((part.p_container == seq![b'M', b'E', b'D', b' ', b'B', b'A', b'G'] || part.p_container == seq![b'M', b'E', b'D', b' ', b'B', b'O', b'X'])
+            || part.p_container == seq![b'M', b'E', b'D', b' ', b'P', b'K', b'G']) || part.p_container == seq![b'M', b'E', b'D', b' ', b'P', b'A', b'C', b'K'])))
+        || ((part.p_size >= 1 && part.p_size <= 15)
+        && (((part.p_container == seq![b'L', b'G', b' ', b'C', b'A', b'S', b'E'] || part.p_container == seq![b'L', b'G', b' ', b'B', b'O', b'X'])
+            || part.p_container == seq![b'L', b'G', b' ', b'P', b'A', b'C', b'K']) || part.p_container == seq![b'L', b'G', b' ', b'P', b'K', b'G'])) {
+        outside(part)
+    } else { 0 };
+    assert(sum(part_input_seq_view(rows), outside) == sum(db.part, raw));
+    assert forall|index: int| #![trigger db.part[index]] 0 <= index < db.part.len() implies raw(db.part[index]) == 0 by {}
+    lemma_sum_zero(db.part, raw);
+    assert forall|i: int| #![trigger rows[i]] 0 <= i < rows.len() implies classified(part_input_view(rows[i])) by {
+        let view = part_input_seq_view(rows);
+        assert forall|k: int| 0 <= k < view.len() implies outside(#[trigger] view[k]) >= 0 by {}
+        lemma_sum_ge_term(view, outside, i);
+        assert(view[i] == part_input_view(rows[i]));
+    }
+}
+
 pub proof fn lemma_hist_line(db: Db, class: u8, brand: Seq<u8>, quantity: int, revenue: bool)
     ensures hist_sum(db, class, brand, quantity, revenue) == sum(db.lineitem, |line: LineitemRow|
         if eligible(line) && line.l_quantity == quantity { part_sum(db, line.l_partkey, class, brand) * line_weight(line, revenue) } else { 0 }),

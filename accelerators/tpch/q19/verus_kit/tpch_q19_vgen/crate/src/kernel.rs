@@ -8,6 +8,7 @@ use crate::model::*;
 use crate::storage::*;
 use crate::values::*;
 use verus_prooflib::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -56,11 +57,15 @@ pub fn build(
         scan_qualifying_lines_ok(db, qualifying_lines@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        r is Some,
 {
+    proof { crate::database::lemma_parts_classified(db, qualifying_parts@); }
     let mut parts = Work::new();
     let mut index = 0usize;
     while index < qualifying_parts.len()
         invariant index <= qualifying_parts.len(), part_patch_valid(parts),
+            forall|row: int| #![trigger qualifying_parts@[row]] 0 <= row < qualifying_parts.len() ==>
+                classified(part_input_view(qualifying_parts@[row])),
             forall|key: int, class: u8, brand: Seq<u8>|
                 #![trigger part_work_value(parts, key, class, brand)]
                 part_work_value(parts, key, class, brand) == part_scan_prefix(qualifying_parts@, index as int, key, class, brand),
@@ -68,9 +73,9 @@ pub fn build(
     {
         let ghost processed = index as int;
         let row = &qualifying_parts[index];
-        let class = match input_class(row) { Some(class) => class, None => return None };
+        let class = input_class(row);
         let brand = Arc::new(copy_bytes(&row.p_brand));
-        if !patch_part(&mut parts, row.p_partkey, class, &brand, 1) { return None; }
+        patch_part(&mut parts, row.p_partkey, class, &brand, &Wide::from_i128(1));
         proof {
             assert forall|key: int, other_class: u8, other_brand: Seq<u8>|
                 #![trigger part_work_value(parts, key, other_class, other_brand)]
@@ -105,12 +110,12 @@ pub fn build(
     {
         let ghost processed = index as int;
         let row = &qualifying_lines[index];
-        let revenue = match amount(row.l_extendedprice, row.l_discount) { Some(value) => value, None => return None };
+        let revenue = amount(row.l_extendedprice, row.l_discount);
         match parts.get(row.l_partkey as u64) {
             Some(cells) => {
-                if !contribute(&mut histogram, &*cells, row.l_quantity, 1, revenue) { return None; }
+                contribute(&mut histogram, &*cells, row.l_quantity, 1, &revenue);
             },
-            None => return None,
+            None => {},
         }
         proof {
             assert forall|class: u8, brand: Seq<u8>, quantity: int, is_revenue: bool|
@@ -136,25 +141,25 @@ pub fn build(
     Some(State { db: Ghost(db), parts, histogram })
 }
 
-fn read_window(state: &State, class: u8, brand: &[u8], parameter: i64) -> (result: Option<(i128, i128)>)
+fn read_window(state: &State, class: u8, brand: &[u8], parameter: i64) -> (result: (Wide, Wide))
     requires class < 3,
-    ensures result matches Some(value) ==> value.0 as int == window_prefix(state.histogram, class, brand@, parameter as int, 1001, false)
-        && value.1 as int == window_prefix(state.histogram, class, brand@, parameter as int, 1001, true),
+    ensures result.0@ == window_prefix(state.histogram, class, brand@, parameter as int, 1001, false)
+        && result.1@ == window_prefix(state.histogram, class, brand@, parameter as int, 1001, true),
 {
     proof { use_type_invariant(state); }
-    let mut count = 0i128;
-    let mut revenue = 0i128;
+    let mut count = Wide::zero();
+    let mut revenue = Wide::zero();
     let mut offset = 0u64;
     let brand_hash = hash_brand(brand);
     while offset <= 1000
         invariant offset <= 1001, class < 3, state.valid(),
             brand_hash == fingerprint(brand@), brand_hash < 1000000007,
-            count as int == window_prefix(state.histogram, class, brand@, parameter as int, offset as int, false),
-            revenue as int == window_prefix(state.histogram, class, brand@, parameter as int, offset as int, true),
+            count@ == window_prefix(state.histogram, class, brand@, parameter as int, offset as int, false),
+            revenue@ == window_prefix(state.histogram, class, brand@, parameter as int, offset as int, true),
         decreases 1001 - offset,
     {
-        let ghost previous_count = count as int;
-        let ghost previous_revenue = revenue as int;
+        let ghost previous_count = count@;
+        let ghost previous_revenue = revenue@;
         let wide = parameter as i128 + offset as i128;
         if wide >= i64::MIN as i128 && wide <= i64::MAX as i128 {
             let quantity = wide as i64;
@@ -168,14 +173,14 @@ fn read_window(state: &State, class: u8, brand: &[u8], parameter: i64) -> (resul
                     while index < cells.len()
                         invariant index <= cells.len(),
                             (*cells)@ == state.histogram.lookup(key),
-                            count as int == previous_count + hist_cells_value((*cells)@.take(index as int), class, brand@, quantity as int, false),
-                            revenue as int == previous_revenue + hist_cells_value((*cells)@.take(index as int), class, brand@, quantity as int, true),
+                            count@ == previous_count + hist_cells_value((*cells)@.take(index as int), class, brand@, quantity as int, false),
+                            revenue@ == previous_revenue + hist_cells_value((*cells)@.take(index as int), class, brand@, quantity as int, true),
                         decreases cells.len() - index,
                     {
                         let cell = &cells[index];
                         if cell.class == class && cell.quantity == quantity && bytes_eq_exec(&*cell.brand, brand) {
-                            count = match count.checked_add(cell.count) { Some(value) => value, None => return None };
-                            revenue = match revenue.checked_add(cell.revenue) { Some(value) => value, None => return None };
+                            count = count.add(&cell.count);
+                            revenue = revenue.add(&cell.revenue);
                         }
                         proof {
                             lemma_sum_take((*cells)@, index as int, |entry: HistCell| hist_cell_weight(entry, class, brand@, quantity as int, false));
@@ -193,7 +198,7 @@ fn read_window(state: &State, class: u8, brand: &[u8], parameter: i64) -> (resul
         }
         offset += 1;
     }
-    Some((count, revenue))
+    (count, revenue)
 }
 
 pub fn execute(
@@ -207,25 +212,42 @@ pub fn execute(
 ) -> (r: Option<Vec<Option<i128>>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2 as int, p3@, p4 as int, p5@, p6 as int), out_view(out@)),
+        answer_fits(s.db(), params(p1@, p2 as int, p3@, p4 as int, p5@, p6 as int)) ==> r is Some,
 {
     proof { use_type_invariant(s); }
-    let first = match read_window(s, 0, p1, p2) { Some(value) => value, None => return None };
-    let second = match read_window(s, 1, p3, p4) { Some(value) => value, None => return None };
-    let third = match read_window(s, 2, p5, p6) { Some(value) => value, None => return None };
-    let count = match first.0.checked_add(second.0) { Some(value) => value, None => return None };
-    let count = match count.checked_add(third.0) { Some(value) => value, None => return None };
-    let revenue = match first.1.checked_add(second.1) { Some(value) => value, None => return None };
-    let revenue = match revenue.checked_add(third.1) { Some(value) => value, None => return None };
+    let first = read_window(s, 0, p1, p2);
+    let second = read_window(s, 1, p3, p4);
+    let third = read_window(s, 2, p5, p6);
+    let count = first.0.add(&second.0).add(&third.0);
+    let revenue = first.1.add(&second.1).add(&third.1);
     proof {
         crate::semantic::lemma_execute_result(s.db(), s.histogram,
-            params(p1@, p2 as int, p3@, p4 as int, p5@, p6 as int), count as int, revenue as int);
+            params(p1@, p2 as int, p3@, p4 as int, p5@, p6 as int), count@, revenue@);
     }
+    let present = !count.is_zero();
+    let value = if present {
+        match revenue.to_i128() {
+            Some(value) => Some(value),
+            None => {
+                proof {
+                    let model = seq![OutRow { revenue: Some(revenue@) }];
+                    assert(query_result(s.db(), params(p1@, p2 as int, p3@, p4 as int, p5@, p6 as int), model));
+                    assert(!out_fits(model[0]));
+                }
+                return None;
+            },
+        }
+    } else { None };
     let mut out = Vec::new();
-    out.push(if count == 0 { None } else { Some(revenue) });
+    out.push(value);
     proof {
-        assert(out_view(out@) =~= seq![OutRow { revenue: if count == 0 { None } else { Some(revenue as int) } }]);
+        assert(out_view(out@) =~= seq![OutRow { revenue: if count@ == 0 { None } else { Some(revenue@) } }]);
     }
     Some(out)
+}
+
+pub open spec fn rescan_lines_for_parts_wanted(s: State, lineitem_delta: Seq<LineDelta>, part_delta: Seq<PartDelta>) -> Seq<i64> {
+    wanted_keys(part_delta)
 }
 
 pub fn rescan_lines_for_parts_keys(
@@ -233,6 +255,7 @@ pub fn rescan_lines_for_parts_keys(
     lineitem_delta: &[LineDelta],
     part_delta: &Vec<PartDelta>,
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_lines_for_parts_wanted(*s, lineitem_delta@, part_delta@),
 {
     crate::maintenance::rescan_keys(part_delta)
 }
@@ -251,15 +274,15 @@ pub fn apply(
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         part_delta_ok(part_delta@, part_full),
         capture_ok(s.db(), db2, lineitem_full, part_full),
+        lines_for_parts_keys@ == rescan_lines_for_parts_wanted(*s, lineitem_delta@, part_delta@),
         rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        r is Ok,
 {
-    match crate::maintenance::update(s, lineitem_delta, part_delta, lines_for_parts_keys, lines_for_parts_rows,
-        Ghost(lineitem_full), Ghost(part_full), Ghost(db2)) {
-        Some((parts, histogram)) => Ok(State { db: Ghost(db2), parts, histogram }),
-        None => Err(1),
-    }
+    let (parts, histogram) = crate::maintenance::update(s, lineitem_delta, part_delta, lines_for_parts_keys, lines_for_parts_rows,
+        Ghost(lineitem_full), Ghost(part_full), Ghost(db2));
+    Ok(State { db: Ghost(db2), parts, histogram })
 }
 
 } // verus!
