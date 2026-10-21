@@ -71,7 +71,8 @@ constexpr int32_t kTpchQ7MaxYear = 1996;
 // shards under a two-level directory; a Txn copies the directory, the touched
 // mid arrays and the touched shards (a few hundred entries) and shares the
 // rest.  Builder(expected) sizes the shard count from the row count.
-template <class V> using TpchQ7Map = core::ShardedSortedKvMap<int64_t, V>;
+template <class V>
+using TpchQ7Map = core::ShardedSortedKvMap<int64_t, V, core::ShardedSortedMapHash<int64_t>, 26, 8>;
 // Find returns the {key, value} element; these yield the value (or nullptr).
 template <class E> inline const auto *TpchQ7Val(const E *e) {
   return e ? &e->value : nullptr;

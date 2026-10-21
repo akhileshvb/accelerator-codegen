@@ -2,6 +2,7 @@
 #include "tpch/q3/calibration_writes.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
@@ -27,6 +28,8 @@ constexpr std::size_t kBinGrain = 1;
 constexpr std::size_t kBucketGrain = 1;
 // Bins or shards per slice when publishing a commit's images (untimed).
 constexpr std::size_t kFinishGrain = 1;
+// Elements per sorted slice when sorting a commit's deltas (untimed).
+constexpr std::size_t kDeltaSortGrain = 1 << 16;
 // Deltas above which the cost model chooses between delta-apply and rebuild.
 constexpr std::size_t kBulkDeltaCount = 256;
 // Scale of the revenue sums: price (2) * (1 - discount) (2).
@@ -496,12 +499,7 @@ public:
       return false;
     BuildEntries();
     PutEntries();
-    for (auto &w : works_) {
-      if (w.exists)
-        otx_.Upsert(w.rec);
-      else if (w.had)
-        otx_.Erase(w.key);
-    }
+    ApplyOrderRecords();
     using CKind = TpchQ3CustomerDelta::Kind;
     for (const auto &c : buffer_.CustomerDeltas()) {
       if (!MoveCustomer(static_cast<uint64_t>(c.custkey), c.segment,
@@ -586,8 +584,8 @@ private:
     const auto by_key = [](const OrderDeltaRef &a, const OrderDeltaRef &b) {
       return a.first < b.first;
     };
-    std::stable_sort(inserts_.begin(), inserts_.end(), by_key);
-    std::stable_sort(deletes_.begin(), deletes_.end(), by_key);
+    core::ParallelStableSort(services_, inserts_, by_key, kDeltaSortGrain);
+    core::ParallelStableSort(services_, deletes_, by_key, kDeltaSortGrain);
     for (std::size_t i = 1; i < inserts_.size(); ++i)
       if (inserts_[i].first == inserts_[i - 1].first)
         return false;
@@ -607,7 +605,7 @@ private:
     if (!std::is_sorted(lines_.begin(), lines_.end(), line_less)) {
       const auto key_less = [](const NetLine &a, const NetLine &b) { return a.key < b.key; };
       if (!std::is_sorted(lines_.begin(), lines_.end(), key_less))
-        std::stable_sort(lines_.begin(), lines_.end(), key_less);
+        core::ParallelStableSort(services_, lines_, key_less, kDeltaSortGrain);
       const std::vector<std::size_t> starts =
           core::RunStarts(lines_, [](const NetLine &line) { return line.key; });
       for (std::size_t r = 0; r + 1 < starts.size(); ++r)
@@ -629,15 +627,25 @@ private:
   // Side-index lookups for every key, in parallel (the index is not written
   // until step C, so published leaves are stable).
   void LookUpSideRecords() {
-    all_keys_.reserve(inserts_.size() + deletes_.size() + lines_.size());
-    for (const auto &e : inserts_)
-      all_keys_.push_back(e.first);
-    for (const auto &e : deletes_)
-      all_keys_.push_back(e.first);
-    for (const auto &e : lines_)
-      all_keys_.push_back(e.key);
-    std::sort(all_keys_.begin(), all_keys_.end());
-    all_keys_.erase(std::unique(all_keys_.begin(), all_keys_.end()), all_keys_.end());
+    // The three lists are sorted by key: merge them instead of sorting the union.
+    const auto sorted_keys = [](const auto &list, auto key_of) {
+      std::vector<uint64_t> keys;
+      keys.reserve(list.size());
+      for (const auto &e : list)
+        if (keys.empty() || keys.back() != key_of(e))
+          keys.push_back(key_of(e));
+      return keys;
+    };
+    const auto merge_keys = [](const std::vector<uint64_t> &a, const std::vector<uint64_t> &b) {
+      std::vector<uint64_t> out;
+      out.reserve(a.size() + b.size());
+      std::set_union(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(out));
+      return out;
+    };
+    all_keys_ = merge_keys(
+        merge_keys(sorted_keys(inserts_, [](const OrderDeltaRef &e) { return e.first; }),
+                   sorted_keys(deletes_, [](const OrderDeltaRef &e) { return e.first; })),
+        sorted_keys(lines_, [](const NetLine &e) { return e.key; }));
     found_recs_.resize(all_keys_.size());
     core::ParallelEach(services_, all_keys_.size(), kLookupGrain, [&](std::size_t i) {
       found_recs_[i] = otx_.Find(all_keys_[i]);
@@ -804,6 +812,31 @@ private:
                      [](OrderWork &w) {
                        Q3SegmentTxn::InsertIn(*w.put_bin, w.entry, w.buckets);
                      });
+  }
+
+  // (C) The side index changes, one row per order whose record changes, in key
+  // order; groups of neighbouring shards are updated concurrently.
+  void ApplyOrderRecords() {
+    struct RecordChange {
+      uint64_t key;
+      bool exists;
+      TpchQ3OrderRec rec;
+    };
+    std::vector<std::vector<RecordChange>> pieces(1);
+    for (const auto &w : works_)
+      if (w.exists || w.had)
+        pieces.front().push_back({w.key, w.exists, w.rec});
+    otx_.ApplyGrouped(
+        pieces, [](const RecordChange &c) -> const uint64_t & { return c.key; },
+        [&](std::size_t n, const auto &fn) { core::ParallelEach(services_, n, 1, fn); },
+        [](std::size_t, auto &scope, std::vector<RecordChange> &rows) {
+          for (const auto &c : rows) {
+            if (c.exists)
+              scope.Upsert(c.rec);
+            else
+              scope.Erase(c.key);
+          }
+        });
   }
 
   bool ScanOrdersOf(uint64_t custkey, std::vector<TpchQ3OrderInput> &orders) {
@@ -1037,7 +1070,7 @@ OrderBuilder ScanOrders(core::AuxEngineServices &services, TpchQ3InitialScan &so
         for (const auto &[key, n] : from.orphan_custs)
           into.orphan_custs[key] += n;
       });
-  OrderBuilder orders;
+  OrderBuilder orders(core::PieceRows(scanned_orders.orders.pieces));
   orders.AddPieces(scanned_orders.orders.pieces, core::Parallelism::OnPool(services));
   SortShards(services, orders);
   if (!scanned_orders.orphan_custs.empty()) {
@@ -1583,7 +1616,7 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
         into.Add(rec);
       },
       core::RowPieces<TpchQ3CustRec>::Merge);
-  CustBuilder custs;
+  CustBuilder custs(core::PieceRows(scanned_custs.pieces));
   custs.AddPieces(scanned_custs.pieces, core::Parallelism::OnPool(services));
   SortShards(services, custs);
 

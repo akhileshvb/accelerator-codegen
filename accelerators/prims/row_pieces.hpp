@@ -39,6 +39,14 @@ template <class Row> struct RowPieces {
   }
 };
 
+// The rows in all the pieces.
+template <class Row> std::size_t PieceRows(const std::vector<std::vector<Row>> &pieces) {
+  std::size_t n = 0;
+  for (const auto &piece : pieces)
+    n += piece.size();
+  return n;
+}
+
 // RowPieces whose rows carry a small-integer id of a string, numbered per piece in
 // first-seen order. Unify renumbers them in piece order, which is the numbering
 // the serial scan would have produced.
