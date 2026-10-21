@@ -294,6 +294,7 @@ pub fn put_order_metadata(editor: &mut Editor<OrderData>, key: i128, value: Orde
         forall|other: i128| #[trigger] line_sum(final(editor).at(other)) == line_sum(old(editor).at(other)),
         forall|other: i128, customer: int, date: int, price: int| #[trigger] order_count(final(editor).at(other), customer, date, price) == order_count(old(editor).at(other), customer, date, price),
         forall|other: i128, quantity: i128| #[trigger] eligible_order(final(editor).at(other), quantity) == eligible_order(old(editor).at(other), quantity),
+        forall|other: i128| #[trigger] order_fit(final(editor).at(other)) == order_fit(old(editor).at(other)),
 {
     proof { assert(order_shape(editor.at(key))); }
     editor.put(key, Arc::new(value));
@@ -367,16 +368,17 @@ pub fn change_order(editor: &mut Editor<OrderData>, key: i64, customer: i64, dat
         }
         index += 1;
     }
+    let added = OrderVariant { customer, date, price, count: Wide::from_i128(sign as i128) };
     proof {
         assert forall|person: int, day: int, total: int| #[trigger] value.multiplicity(person, day, total) +
             (if person == customer && day == date && total == price { sign as int } else { 0 }) ==
-            sum(original.push(OrderVariant { customer, date, price, count: Wide::Small(sign as i128) }), |variant: OrderVariant|
+            sum(original.push(added), |variant: OrderVariant|
                 if variant.customer == person && variant.date == day && variant.price == total { variant.count@ } else { 0 }) by {
-            lemma_sum_push(original, OrderVariant { customer, date, price, count: Wide::Small(sign as i128) }, |variant: OrderVariant|
+            lemma_sum_push(original, added, |variant: OrderVariant|
                 if variant.customer == person && variant.date == day && variant.price == total { variant.count@ } else { 0 });
         }
     }
-    value.variants.push(OrderVariant { customer, date, price, count: Wide::Small(sign as i128) });
+    value.variants.push(added);
     let ghost installed = value;
     editor.put(key as i128, Arc::new(value));
     proof {
@@ -384,7 +386,7 @@ pub fn change_order(editor: &mut Editor<OrderData>, key: i64, customer: i64, dat
             order_count(old(editor).at(other), person, day, total) +
             (if other == key && person == customer && day == date && total == price { sign as int } else { 0 }) by {
             if other == key {
-                lemma_sum_push(original, OrderVariant { customer, date, price, count: Wide::Small(sign as i128) }, |variant: OrderVariant|
+                lemma_sum_push(original, added, |variant: OrderVariant|
                     if variant.customer == person && variant.date == day && variant.price == total { variant.count@ } else { 0 });
                 assert(editor.at(other) == Some(installed));
             }
@@ -452,7 +454,7 @@ pub fn change_customer(editor: &mut Editor<CustomerData>, key: i64, name: &Vec<u
         }
         index += 1;
     }
-    let added = NameVariant { name: Arc::new(copy_bytes(name)), count: Wide::Small(sign as i128) };
+    let added = NameVariant { name: Arc::new(copy_bytes(name)), count: Wide::from_i128(sign as i128) };
     proof {
         assert forall|bytes: Seq<u8>| #[trigger] value.multiplicity(bytes) +
             (if bytes == name@ { sign as int } else { 0 }) ==
@@ -480,6 +482,10 @@ pub open spec fn line_count(value: Option<OrderData>) -> int {
 
 pub open spec fn eligible_order(value: Option<OrderData>, quantity: i128) -> bool {
     match value { Some(row) => row.count@ > 0 && row.variants.len() > 0 && row.quantity@ == quantity as int, None => false }
+}
+
+pub open spec fn order_fit(value: Option<OrderData>) -> bool {
+    match value { Some(row) => row.count@ > 0 && row.variants.len() > 0 ==> i128::MIN <= row.quantity@ <= i128::MAX, None => true }
 }
 
 pub open spec fn order_shape(value: Option<OrderData>) -> bool {

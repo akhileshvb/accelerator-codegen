@@ -236,6 +236,10 @@ pub(super) proof fn unfit_slot_refutes(state: State, parameters: Params, positio
         && out[index].o_orderkey == row.o_orderkey && out[index].o_orderdate == row.o_orderdate && out[index].o_totalprice == row.o_totalprice;
     assert(row_ok(db, parameters, out[index]));
     assert(!out_fits(out[index]));
+    if answer_fits(db, parameters) {
+        assert(query_result(db, parameters, out));
+        assert(out_fits(out[index]));
+    }
 }
 
 }

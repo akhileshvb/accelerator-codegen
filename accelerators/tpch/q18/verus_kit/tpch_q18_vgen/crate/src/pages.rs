@@ -646,6 +646,7 @@ impl KeyBucket {
         self.chunks[index / 16384][index / 128 % 128][index % 128]
     }
 
+    #[verifier::rlimit(30)]
     pub fn push(&mut self, key: i64) -> (out: bool)
         requires old(self).wf(),
         ensures final(self).wf(), out ==> final(self).view() == old(self).view().push(key),

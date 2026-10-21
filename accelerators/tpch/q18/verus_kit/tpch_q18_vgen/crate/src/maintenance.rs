@@ -48,6 +48,8 @@ pub fn apply_lines(editor: &mut Editor<OrderData>, deltas: &[LineQuantityDelta],
         change_line(editor, delta.row.l_orderkey, delta.row.l_quantity, delta.sign);
         proof {
             assert forall|key: i128| #[trigger] line_count(editor.at(key)) == line_count(old(editor).at(key)) + sum(line_quantity_delta_seq_view(deltas@.take(index as int + 1)), dn(key as int)) by {
+                let item = (line_quantity_input_view(delta.row), delta.sign as int);
+                if key as int == delta.row.l_orderkey as int { assert(dn(key as int)(item) == delta.sign as int); } else { assert(dn(key as int)(item) == 0); }
                 projected_prefix(deltas@, index as int, |input: LineQuantityDelta| (line_quantity_input_view(input.row), input.sign as int), dn(key as int));
             }
             assert forall|key: i128| #[trigger] line_sum(editor.at(key)) == line_sum(old(editor).at(key)) + sum(line_quantity_delta_seq_view(deltas@.take(index as int + 1)), dq(key as int)) by {
@@ -97,6 +99,10 @@ pub fn apply_orders(editor: &mut Editor<OrderData>, deltas: &[OrderGroupDelta], 
         change_order(editor, delta.row.o_orderkey, delta.row.o_custkey, delta.row.o_orderdate, delta.row.o_totalprice, delta.sign);
         proof {
             assert forall|key: i128, customer: int, date: int, price: int| #[trigger] order_count(editor.at(key), customer, date, price) == order_count(old(editor).at(key), customer, date, price) + sum(order_group_delta_seq_view(deltas@.take(index as int + 1)), dorder(key as int, customer, date, price)) by {
+                let item = (order_group_input_view(delta.row), delta.sign as int);
+                if key as int == delta.row.o_orderkey as int && customer == delta.row.o_custkey as int && date == delta.row.o_orderdate as int && price == delta.row.o_totalprice as int {
+                    assert(dorder(key as int, customer, date, price)(item) == delta.sign as int);
+                } else { assert(dorder(key as int, customer, date, price)(item) == 0); }
                 projected_prefix(deltas@, index as int, |input: OrderGroupDelta| (order_group_input_view(input.row), input.sign as int), dorder(key as int, customer, date, price));
             }
         }
@@ -138,6 +144,8 @@ pub fn apply_customers(editor: &mut Editor<CustomerData>, deltas: &Vec<CustomerN
         change_customer(editor, delta.row.c_custkey, &delta.row.c_name, delta.sign);
         proof {
             assert forall|key: i128, name: Seq<u8>| #[trigger] customer_count(editor.at(key), name) == customer_count(old(editor).at(key), name) + sum(customer_name_delta_seq_view(deltas@.take(index as int + 1)), dcustomer(key as int, name)) by {
+                let item = (customer_name_input_view(delta.row), delta.sign as int);
+                if key as int == delta.row.c_custkey as int && name == delta.row.c_name@ { assert(dcustomer(key as int, name)(item) == delta.sign as int); } else { assert(dcustomer(key as int, name)(item) == 0); }
                 projected_prefix(deltas@, index as int, |input: CustomerNameDelta| (customer_name_input_view(input.row), input.sign as int), dcustomer(key as int, name));
             }
         }
