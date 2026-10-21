@@ -13,6 +13,7 @@ use crate::gidx::*;
 use crate::gnames::*;
 use crate::gagg::*;
 use crate::gstep::*;
+use crate::gproof::lines_fit;
 use crate::ingest::{signed, dates_w, sup_w, ps_w};
 use crate::applyspec::*;
 
@@ -36,10 +37,31 @@ pub open spec fn general_of(g: General, db: Db) -> bool {
     &&& agg_state(g.agg, db)
     &&& pnames_state(g.pnames, db)
     &&& nations_state((*g.nations)@, db)
+    &&& lines_fit(db)
 }
 
 pub open spec fn db_empty() -> Db {
     Db { lineitem: Seq::empty(), nation: Seq::empty(), orders: Seq::empty(), part: Seq::empty(), partsupp: Seq::empty(), supplier: Seq::empty() }
+}
+
+pub proof fn lemma_lines_fit_step(db: Db, db2: Db, delta: Seq<LineDelta>)
+    requires lines_fit(db), bag_step(db.lineitem, db2.lineitem, line_delta_seq_view(delta)),
+    ensures lines_fit(db2),
+{
+    let w = |l: LineitemRow| if i64::MIN <= l.l_partkey <= i64::MAX && i64::MIN <= l.l_suppkey <= i64::MAX { 0int } else { 1int };
+    assert forall|i: int| 0 <= i < db.lineitem.len() implies w(#[trigger] db.lineitem[i]) == 0 by {}
+    lemma_sum_zero(db.lineitem, w);
+    let dv = line_delta_seq_view(delta);
+    assert forall|i: int| 0 <= i < dv.len() implies signed(w)(#[trigger] dv[i]) == 0 by {
+        assert(dv[i].0 == line_in_view(delta[i].row));
+        assert(dv[i].1 * 0int == 0) by (nonlinear_arith);
+    }
+    lemma_sum_zero(dv, signed(w));
+    lemma_bag_w(db.lineitem, db2.lineitem, dv, w);
+    assert forall|i: int| 0 <= i < db2.lineitem.len() implies w(#[trigger] db2.lineitem[i]) == 0 by {
+        assert forall|j: int| 0 <= j < db2.lineitem.len() implies w(#[trigger] db2.lineitem[j]) >= 0 by {}
+        if w(db2.lineitem[i]) != 0 { lemma_sum_pos(db2.lineitem, w, i); }
+    }
 }
 
 pub fn general_empty() -> (g: General)
@@ -76,6 +98,7 @@ pub fn general_empty() -> (g: General)
             assert(n0.at(k).is_none());
             lemma_sum_empty(db.part, part_w(k as int, f));
         }
+        assert(lines_fit(db));
         assert forall|f: spec_fn((int, Seq<u8>)) -> int| #[trigger] ncell_sum((*g.nations)@, f) == sum(db.nation, nation_wt(f)) by {
             lemma_sum_empty(db.nation, nation_wt(f));
             lemma_sum_empty((*g.nations)@, ncell_w(f));
@@ -156,6 +179,7 @@ pub fn general_apply(g: &General, lineitem_delta: &[LineDelta], nation_delta: &V
                 |r: LineIn| if r.l_partkey == k as int && r.l_suppkey == s { (dates(db2, r.l_orderkey as int, y) - dates(db, r.l_orderkey as int, y)) * line_weight(line_in_view(r), f) } else { 0int });
         }
     }
+    proof { lemma_lines_fit_step(db, db2, lineitem_delta@); }
     let dates2 = publish(&g.dates, dov);
     let sup2 = publish(&g.sup, sov);
     let pairs2 = publish(&g.pairs, pov);
