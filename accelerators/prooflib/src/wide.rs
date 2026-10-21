@@ -1,4 +1,5 @@
-// Exact 256-bit signed integers (hi * 2^128 + lo), for sums that exceed i128 inside the envelope.
+// Exact 256-bit signed integers (hi * 2^128 + lo).  Use them for sums and products that can exceed
+// i128 (many rows times large per-row values); the view `int()` is the exact mathematical value.
 use vstd::prelude::*;
 
 verus! {
@@ -16,16 +17,18 @@ impl Wide {
         self.hi as int * (u128::MAX as int + 1) + self.lo as int
     }
 
-    /// The value is far inside the range the operations are proved for.
+    /// Use as the precondition of `add`/`sub`/`neg`: the value is at most 2^254 in magnitude, far inside the range the operations are proved for.
     pub open spec fn tame(self) -> bool {
         -wide_limit() <= self.int() <= wide_limit()
     }
 }
 
+/// The Wide holding the integer `x` (for 0 <= x < 2^128 or small negatives).
 pub open spec fn wide_of(x: int) -> Wide {
     Wide { hi: if x < 0 { -1i128 } else { 0i128 }, lo: (x % (u128::MAX as int + 1)) as u128 }
 }
 
+/// Use to lift a per-row i128 value into a Wide accumulator.
 pub fn from_i128(x: i128) -> (result: Wide)
     ensures result.int() == x as int,
 {
@@ -33,12 +36,14 @@ pub fn from_i128(x: i128) -> (result: Wide)
     else { Wide { hi: 0, lo: x as u128 } }
 }
 
+/// The empty sum.
 pub fn zero() -> (result: Wide)
     ensures result.int() == 0,
 {
     Wide { hi: 0, lo: 0 }
 }
 
+/// Exact sum; the caller proves the result stays within `wide_limit`.
 pub fn add(a: Wide, b: Wide) -> (result: Wide)
     requires -wide_limit() <= a.int() + b.int() <= wide_limit(),
     ensures result.int() == a.int() + b.int(),
@@ -50,18 +55,21 @@ pub fn add(a: Wide, b: Wide) -> (result: Wide)
     }
 }
 
+/// Exact comparison.
 pub fn lt(a: Wide, b: Wide) -> (result: bool)
     ensures result == (a.int() < b.int()),
 {
     a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo)
 }
 
+/// Exact equality.
 pub fn eq(a: Wide, b: Wide) -> (result: bool)
     ensures result == (a.int() == b.int()),
 {
     a.hi == b.hi && a.lo == b.lo
 }
 
+/// Narrow to i128 when the exact value fits; None says it does not.
 pub fn to_i128(a: Wide) -> (result: Option<i128>)
     ensures
         result matches Some(value) ==> value as int == a.int(),
@@ -84,7 +92,7 @@ proof fn lemma_mul_le(a: int, b: int, c: int, d: int)
     assert(c * b <= c * d) by (nonlinear_arith) requires 0 <= b <= d, 0 <= c;
 }
 
-/// x * y as a 256-bit pair, for y below 2^100.
+/// Building block of `mul`: x * y as a 256-bit pair, for y below 2^100.
 pub fn mul_wide(x: u128, y: u128) -> (result: (u128, u128))
     requires y < 0x10_0000_0000_0000_0000_0000_0000u128,
     ensures
@@ -138,7 +146,7 @@ pub fn mul_wide(x: u128, y: u128) -> (result: (u128, u128))
     (hi, lo)
 }
 
-/// a * w, for a with a high word within 2^21 in magnitude and w below 2^100.
+/// Exact product with a nonnegative multiplier w below 2^100, for a with a high word within 2^21 (|a| < 2^149).
 pub fn mul(a: Wide, w: u128) -> (result: Wide)
     requires
         -0x20_0000 <= a.hi <= 0x20_0000,
@@ -155,6 +163,50 @@ pub fn mul(a: Wide, w: u128) -> (result: Wide)
                 carry as int * (u128::MAX as int + 1) + lo as int == a.lo as int * v;
     }
     Wide { hi: a.hi * w as i128 + carry as i128, lo }
+}
+
+/// Exact negation.
+pub fn neg(a: Wide) -> (result: Wide)
+    requires -wide_limit() <= a.int() <= wide_limit(),
+    ensures result.int() == -a.int(),
+{
+    if a.lo == 0 { Wide { hi: -a.hi, lo: 0 } }
+    else { Wide { hi: -a.hi - 1, lo: u128::MAX - a.lo + 1 } }
+}
+
+/// Exact difference a - b; the caller proves the result stays within `wide_limit`.
+pub fn sub(a: Wide, b: Wide) -> (result: Wide)
+    requires -wide_limit() <= a.int() - b.int() <= wide_limit(),
+    ensures result.int() == a.int() - b.int(),
+{
+    if a.lo >= b.lo { Wide { hi: a.hi - b.hi, lo: a.lo - b.lo } }
+    else { Wide { hi: a.hi - b.hi - 1, lo: a.lo + (u128::MAX - b.lo) + 1 } }
+}
+
+/// Exact product with a signed multiplier of magnitude below 2^100, for a with a high word within 2^21.
+pub fn mul_signed(a: Wide, k: i128) -> (result: Wide)
+    requires
+        -0x20_0000 <= a.hi <= 0x20_0000,
+        -0x10_0000_0000_0000_0000_0000_0000i128 < k < 0x10_0000_0000_0000_0000_0000_0000i128,
+    ensures result.int() == a.int() * k as int,
+{
+    if k >= 0 { mul(a, k as u128) }
+    else {
+        let product = mul(a, (-k) as u128);
+        proof {
+            assert(((-k) as u128) as int == -(k as int));
+            let (h, v) = (a.hi as int, (-k) as int);
+            assert(-0x2000_0000_0000_0000_0000_0000_0000_0000int < h * v < 0x2000_0000_0000_0000_0000_0000_0000_0000int) by (nonlinear_arith)
+                requires -0x200000int <= h <= 0x200000int, 0 <= v < 0x10_0000_0000_0000_0000_0000_0000int;
+            assert(product.int() == a.int() * v);
+            assert(-(a.int() * v) == a.int() * (k as int)) by (nonlinear_arith) requires v == -(k as int);
+            assert(-wide_limit() <= product.int() <= wide_limit()) by (nonlinear_arith)
+                requires product.int() == a.int() * v, a.int() == h * (u128::MAX as int + 1) + a.lo as int,
+                    -0x200000int <= h <= 0x200000int, 0 <= v < 0x10_0000_0000_0000_0000_0000_0000int,
+                    0 <= (a.lo as int) < u128::MAX as int + 1, wide_limit() == (u128::MAX as int + 1) * (u128::MAX as int + 1) / 4;
+        }
+        neg(product)
+    }
 }
 
 } // verus!
