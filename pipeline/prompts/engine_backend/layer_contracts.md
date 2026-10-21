@@ -144,6 +144,15 @@ commit / abort lifecycle: `PreCommit(txn)` before the commit is visible,
   never exceed); `kNoFloor` only when readers always read the newest.
 - Two accelerators on one transaction take their places in accelerator-id
   order (the runtime does this; the slot must not add a lock order of its own).
+- **No hook before visibility.** If the engine reports a commit only once it is
+  visible (a statement-completion or audit event, no pre-commit callback), the
+  slots are still implementable: call `PreCommit` and `Commit` together when the
+  commit is observed, with an epoch from a counter the backend owns; have
+  `PendingEpochLowerBound` return 0 (every reader waits for an in-flight commit)
+  and readers read at the newest applied epoch (`OldestReaderEpoch` = `kNoFloor`).
+  The guarantee that remains, and that the harness proves: a read that starts
+  after a commit was observed includes it, and no read is torn. This is a valid
+  design, not a missing feature; never stop this layer for want of a pre-commit hook.
 
 **Harness:** concurrent writers on two toy accelerators over the real engine
 commit path; record `(epoch, visible-at-snapshot)` pairs and assert epochs
