@@ -1,4 +1,5 @@
 #include "tpch/q17/duckdb/aux/module.hpp"
+#include "prims/bucketed_rows.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/byte_stream.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
@@ -412,49 +413,13 @@ struct PartRow {
   uint64_t attr_hash;
 };
 
-// Page buckets: rows are dealt by page so one bucket holds whole pages and the
-// parallel pass builds them with no cross-bucket merge. A fixed count (a
-// function of the data layout, not of threads); 4096 keeps every worker busy.
-constexpr std::size_t kBucketBits = 12;
-constexpr std::size_t kBuckets = std::size_t{1} << kBucketBits;
-
+// Rows are dealt into buckets by page, so one bucket holds whole pages and the
+// parallel pass builds them with no cross-bucket merge.
 std::size_t BucketOf(int64_t partkey) {
   return static_cast<std::size_t>(
       (static_cast<uint64_t>(PageOf(partkey)) * 0x9E3779B97F4A7C15ULL) >>
-      (64 - kBucketBits));
+      (64 - core::kRowBucketBits));
 }
-
-// The rows of one scan's partitions, dealt into page buckets. Merging only
-// links the pieces (partition order); the parallel pass takes them bucket by
-// bucket and frees them there.
-template <class Row> class PageBucketedRows {
-public:
-  void Add(const Row &row) { mine[BucketOf(row.partkey)].push_back(row); }
-
-  void Absorb(PageBucketedRows &&from) {
-    absorbed.push_back(std::move(from.mine));
-    for (auto &pieces : from.absorbed)
-      absorbed.push_back(std::move(pieces));
-  }
-
-  std::vector<Row> TakeBucket(std::size_t bucket) {
-    std::size_t total = mine[bucket].size();
-    for (const auto &pieces : absorbed)
-      total += pieces[bucket].size();
-    std::vector<Row> rows = std::move(mine[bucket]);
-    rows.reserve(total);
-    for (auto &pieces : absorbed) {
-      rows.insert(rows.end(), pieces[bucket].begin(), pieces[bucket].end());
-      std::vector<Row>().swap(pieces[bucket]);
-    }
-    return rows;
-  }
-
-private:
-  using Buckets = core::Buckets<Row>;
-  Buckets mine = Buckets(kBuckets);
-  std::vector<Buckets> absorbed;
-};
 
 struct AttrName {
   std::string brand;
@@ -462,7 +427,7 @@ struct AttrName {
 };
 
 struct PartRows {
-  PageBucketedRows<PartRow> rows;
+  core::BucketedRows<PartRow> rows;
   std::unordered_map<uint64_t, AttrName> names;
 };
 
@@ -562,7 +527,7 @@ PartRows ScanPartRows(core::AuxEngineServices &services, TpchQ17InitialScan &sca
       [](PartRows &partial, const TpchQ17PartInput &input) {
         const uint64_t hash = AttrHash(input.brand, input.container);
         partial.names.try_emplace(hash, AttrName{input.brand, input.container});
-        partial.rows.Add({input.key, hash});
+        partial.rows.Add(BucketOf(input.key), {input.key, hash});
       },
       [](PartRows &into, PartRows &&from) {
         into.rows.Absorb(std::move(from.rows));
@@ -570,23 +535,24 @@ PartRows ScanPartRows(core::AuxEngineServices &services, TpchQ17InitialScan &sca
       });
 }
 
-PageBucketedRows<LineRow> ScanLineRows(core::AuxEngineServices &services,
+core::BucketedRows<LineRow> ScanLineRows(core::AuxEngineServices &services,
                                        TpchQ17InitialScan &scan) {
-  return core::PartitionedBuild<PageBucketedRows<LineRow>>(
-      services, [] { return PageBucketedRows<LineRow>{}; },
+  return core::PartitionedBuild<core::BucketedRows<LineRow>>(
+      services, [] { return core::BucketedRows<LineRow>{}; },
       [&](std::size_t parts, auto &&sink) {
         scan.ScanLineitems(services, parts,
                            [&](std::size_t p, const TpchQ17LineitemInput &input) {
                              sink(p, core::SingleRowBatch<TpchQ17LineitemInput>{input});
                            });
       },
-      [](PageBucketedRows<LineRow> &partial, const TpchQ17LineitemInput &input) {
+      [](core::BucketedRows<LineRow> &partial, const TpchQ17LineitemInput &input) {
         if (input.quantity_raw != static_cast<int32_t>(input.quantity_raw))
           throw std::runtime_error("TPC-H Q17: quantity exceeds 32 bits");
-        partial.Add({input.partkey, input.extendedprice_raw,
+        partial.Add(BucketOf(input.partkey),
+                    {input.partkey, input.extendedprice_raw,
                      static_cast<int32_t>(input.quantity_raw)});
       },
-      [](PageBucketedRows<LineRow> &into, PageBucketedRows<LineRow> &&from) {
+      [](core::BucketedRows<LineRow> &into, core::BucketedRows<LineRow> &&from) {
         into.Absorb(std::move(from));
       });
 }
@@ -599,9 +565,9 @@ BuiltPages BuildPages(core::AuxEngineServices &services,
   auto part_rows = ScanPartRows(services, *initial_scan);
   auto line_rows = ScanLineRows(services, *initial_scan);
 
-  std::vector<BuiltBucket> buckets(kBuckets);
-  core::ParallelEach(services, kBuckets, 1, [&](std::size_t b) {
-    buckets[b] = BuildBucket(line_rows.TakeBucket(b), part_rows.rows.TakeBucket(b));
+  std::vector<BuiltBucket> buckets(core::kRowBuckets);
+  core::ParallelEach(services, core::kRowBuckets, 1, [&](std::size_t b) {
+    buckets[b] = BuildBucket(line_rows.Take(b), part_rows.rows.Take(b));
   });
 
   BuiltPages built;

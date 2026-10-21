@@ -1,6 +1,7 @@
 #include "tpch/q20/duckdb/aux/module.hpp"
 #include "tpch/q20/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
+#include "prims/key_range_sort.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"
@@ -139,137 +140,9 @@ int64_t DenseLimit(std::size_t rows) {
 
 // ---- bulk build: rows dealt into key-range buckets, each sorted on its own ----
 
-constexpr std::size_t kSortBuckets = 4096;
-constexpr std::size_t kSamplesPerPiece = 64;
-
-template <class Row> using Pieces = std::vector<std::vector<Row>>;
-
-// The scan partials of one table in partition order: merging only links them.
-template <class Row> struct RowPieces {
-  std::vector<Row> rows;
-  Pieces<Row> merged;
-
-  void Absorb(RowPieces &&from) {
-    merged.push_back(std::move(from.rows));
-    for (auto &piece : from.merged)
-      merged.push_back(std::move(piece));
-  }
-  Pieces<Row> Take() && {
-    Pieces<Row> all;
-    all.push_back(std::move(rows));
-    for (auto &piece : merged)
-      all.push_back(std::move(piece));
-    return all;
-  }
-};
-
-// Splitters from a sample of the keys cut the rows into key-range buckets;
-// sorting each bucket on its own gives the globally sorted rows as the
-// concatenation of the buckets. Rows with equal keys keep table order.
-template <class Row, class Key, class Less>
-Pieces<Row> SortIntoBuckets(const core::AuxEngineServices &services, Pieces<Row> pieces,
-                            Key key, Less less) {
-  std::vector<uint64_t> sample;
-  for (const auto &piece : pieces) {
-    const std::size_t stride = std::max<std::size_t>(1, piece.size() / kSamplesPerPiece);
-    for (std::size_t i = 0; i < piece.size(); i += stride)
-      sample.push_back(key(piece[i]));
-  }
-  std::sort(sample.begin(), sample.end());
-  std::vector<uint64_t> splitters;
-  for (std::size_t b = 1; b < kSortBuckets && !sample.empty(); ++b)
-    splitters.push_back(sample[b * sample.size() / kSortBuckets]);
-  splitters.erase(std::unique(splitters.begin(), splitters.end()), splitters.end());
-  const std::size_t buckets = splitters.size() + 1;
-
-  struct Scattered {
-    std::vector<Row> rows;
-    std::vector<std::size_t> start; // bucket b is rows[start[b], start[b + 1])
-  };
-  std::vector<Scattered> scattered(pieces.size());
-  core::ParallelEach(services, pieces.size(), 1, [&](std::size_t p) {
-    auto &piece = pieces[p];
-    auto &out = scattered[p];
-    std::vector<uint16_t> bucket(piece.size());
-    out.start.assign(buckets + 1, 0);
-    for (std::size_t i = 0; i < piece.size(); ++i) {
-      bucket[i] = static_cast<uint16_t>(
-          std::upper_bound(splitters.begin(), splitters.end(), key(piece[i])) -
-          splitters.begin());
-      ++out.start[bucket[i] + 1];
-    }
-    for (std::size_t b = 0; b < buckets; ++b)
-      out.start[b + 1] += out.start[b];
-    std::vector<std::size_t> next(out.start.begin(), out.start.end() - 1);
-    out.rows.resize(piece.size());
-    for (std::size_t i = 0; i < piece.size(); ++i)
-      out.rows[next[bucket[i]]++] = std::move(piece[i]);
-    std::vector<Row>().swap(piece);
-  });
-
-  Pieces<Row> sorted(buckets);
-  core::ParallelEach(services, buckets, 1, [&](std::size_t b) {
-    auto &out = sorted[b];
-    for (auto &from : scattered)
-      out.insert(out.end(), std::make_move_iterator(from.rows.begin() + from.start[b]),
-                 std::make_move_iterator(from.rows.begin() + from.start[b + 1]));
-    std::stable_sort(out.begin(), out.end(), less);
-  });
-  return sorted;
-}
-
-// Start offset of every piece in the concatenation, then the total.
-template <class Row> std::vector<std::size_t> PieceOffsets(const Pieces<Row> &pieces) {
-  std::vector<std::size_t> at(pieces.size() + 1, 0);
-  for (std::size_t i = 0; i < pieces.size(); ++i)
-    at[i + 1] = at[i] + pieces[i].size();
-  return at;
-}
-
-// Strings sort by their first 8 bytes past the prefix every name shares
-// (the common prefix of the smallest and the largest), so numbered names
-// ("Supplier#000000042") still spread over the buckets.
-uint64_t NamePrefixKey(std::string_view name, std::size_t skip) {
-  uint64_t key = 0;
-  for (std::size_t i = 0; i < 8; ++i)
-    key = key << 8 | (skip + i < name.size() ? static_cast<unsigned char>(name[skip + i]) : 0);
-  return key;
-}
-
-template <class Row, class NameOf>
-std::size_t SharedPrefixLength(const core::AuxEngineServices &services,
-                               const Pieces<Row> &pieces, NameOf name_of) {
-  struct Extremes {
-    std::string_view lo, hi;
-    bool any = false;
-  };
-  std::vector<Extremes> per_piece(pieces.size());
-  core::ParallelEach(services, pieces.size(), 1, [&](std::size_t p) {
-    auto &e = per_piece[p];
-    for (const auto &row : pieces[p]) {
-      const std::string_view name = name_of(row);
-      if (!e.any || name < e.lo)
-        e.lo = name;
-      if (!e.any || name > e.hi)
-        e.hi = name;
-      e.any = true;
-    }
-  });
-  Extremes all;
-  for (const auto &e : per_piece) {
-    if (!e.any)
-      continue;
-    if (!all.any || e.lo < all.lo)
-      all.lo = e.lo;
-    if (!all.any || e.hi > all.hi)
-      all.hi = e.hi;
-    all.any = true;
-  }
-  std::size_t n = 0;
-  while (n < all.lo.size() && n < all.hi.size() && all.lo[n] == all.hi[n])
-    ++n;
-  return n;
-}
+using core::PartitionPieces;
+using core::PieceList;
+using core::PieceOffsets;
 
 // Lowers *slot to `value` (slices write the same slot only for repeated keys).
 void AtomicMin(uint32_t *slot, uint32_t value) {
@@ -339,7 +212,7 @@ public:
       : services(services), base(std::make_shared<TpchQ20Base>()) {}
 
   // Every Adopt takes the rows of one table, sorted (bucket by bucket).
-  void AdoptSeries(Pieces<SeriesRow> sorted) {
+  void AdoptSeries(PieceList<SeriesRow> sorted) {
     std::vector<SeriesBucket> groups(sorted.size());
     core::ParallelEach(services, sorted.size(), 1, [&](std::size_t b) {
       groups[b] = GroupSeries(sorted[b]);
@@ -367,7 +240,7 @@ public:
         base->series_wide[static_cast<uint32_t>(series_at[b] + local)] = std::move(run);
   }
 
-  void AdoptPartsupp(Pieces<TpchQ20PartsuppInput> sorted) {
+  void AdoptPartsupp(PieceList<TpchQ20PartsuppInput> sorted) {
     const auto at = PieceOffsets(sorted);
     ps.resize(at.back());
     core::ParallelEach(services, sorted.size(), 1, [&](std::size_t b) {
@@ -383,7 +256,7 @@ public:
   }
 
   // Part names sorted bytewise (and the ranks they give each part key).
-  void AdoptNames(const Pieces<NameRow> &sorted) {
+  void AdoptNames(const PieceList<NameRow> &sorted) {
     const auto at = PieceOffsets(sorted);
     const std::size_t n = at.back();
     std::vector<std::size_t> bytes_at(sorted.size() + 1, 0);
@@ -410,7 +283,7 @@ public:
     AssignRanks();
   }
 
-  void AdoptSuppliers(Pieces<SupplierRow> sorted) {
+  void AdoptSuppliers(PieceList<SupplierRow> sorted) {
     const auto at = PieceOffsets(sorted);
     auto &b = *base;
     b.supplier_keys.resize(at.back());
@@ -1642,16 +1515,17 @@ void TpchQ20Module::Execute(core::AuxEngineServices &services,
 namespace {
 
 template <class Row, class Scan, class Consume>
-Pieces<Row> ScanPieces(const core::AuxEngineServices &services, Scan &&scan, Consume &&consume) {
-  return core::PartitionedBuild<RowPieces<Row>>(
-             services, [] { return RowPieces<Row>{}; }, std::forward<Scan>(scan),
+PieceList<Row> ScanPieces(const core::AuxEngineServices &services, Scan &&scan, Consume &&consume) {
+  return core::PartitionedBuild<PartitionPieces<Row>>(
+             services, [] { return PartitionPieces<Row>{}; }, std::forward<Scan>(scan),
              std::forward<Consume>(consume),
-             [](RowPieces<Row> &into, RowPieces<Row> &&from) { into.Absorb(std::move(from)); })
+             [](PartitionPieces<Row> &into, PartitionPieces<Row> &&from) { into.Absorb(std::move(from)); })
       .Take();
 }
 
-Pieces<SeriesRow> SortedSeries(core::AuxEngineServices &services,
+PieceList<SeriesRow> SortedSeries(core::AuxEngineServices &services,
                                TpchQ20InitialScan &initial_scan) {
+  const auto pool = core::Parallelism::OnPool(services);
   auto pieces = ScanPieces<SeriesRow>(
       services,
       [&](std::size_t parts, auto &&sink) {
@@ -1660,20 +1534,21 @@ Pieces<SeriesRow> SortedSeries(core::AuxEngineServices &services,
                                       sink(p, core::SingleRowBatch<TpchQ20LineitemInput>{input});
                                     });
       },
-      [](RowPieces<SeriesRow> &partial, const TpchQ20LineitemInput &input) {
+      [](PartitionPieces<SeriesRow> &partial, const TpchQ20LineitemInput &input) {
         if (input.partkey < 0 || input.suppkey < 0)
           return;
         RequirePairKey(input.partkey, input.suppkey);
         partial.rows.push_back({MakePairKey(input.partkey, input.suppkey), input.shipdate_days,
                                 input.quantity_raw});
       });
-  return SortIntoBuckets(
-      services, std::move(pieces), [](const SeriesRow &r) { return r.key; },
+  return core::SortIntoKeyBuckets(
+      pool, std::move(pieces), [](const SeriesRow &r) { return r.key; },
       [](const SeriesRow &a, const SeriesRow &b) { return a.key < b.key; });
 }
 
-Pieces<TpchQ20PartsuppInput> SortedPartsupps(core::AuxEngineServices &services,
+PieceList<TpchQ20PartsuppInput> SortedPartsupps(core::AuxEngineServices &services,
                                              TpchQ20InitialScan &initial_scan) {
+  const auto pool = core::Parallelism::OnPool(services);
   auto pieces = ScanPieces<TpchQ20PartsuppInput>(
       services,
       [&](std::size_t parts, auto &&sink) {
@@ -1682,7 +1557,7 @@ Pieces<TpchQ20PartsuppInput> SortedPartsupps(core::AuxEngineServices &services,
                                       sink(p, core::SingleRowBatch<TpchQ20PartsuppInput>{input});
                                     });
       },
-      [](RowPieces<TpchQ20PartsuppInput> &partial, const TpchQ20PartsuppInput &input) {
+      [](PartitionPieces<TpchQ20PartsuppInput> &partial, const TpchQ20PartsuppInput &input) {
         if (input.partkey < 0 || input.suppkey < 0)
           return;
         RequirePairKey(input.partkey, input.suppkey);
@@ -1691,7 +1566,7 @@ Pieces<TpchQ20PartsuppInput> SortedPartsupps(core::AuxEngineServices &services,
   const auto pair_key = [](const TpchQ20PartsuppInput &r) {
     return MakePairKey(r.partkey, r.suppkey);
   };
-  return SortIntoBuckets(services, std::move(pieces), pair_key,
+  return core::SortIntoKeyBuckets(pool, std::move(pieces), pair_key,
                          [&](const TpchQ20PartsuppInput &a, const TpchQ20PartsuppInput &b) {
                            return pair_key(a) < pair_key(b);
                          });
@@ -1723,11 +1598,12 @@ struct NamePiece {
 // Part names sorted; the rows point into the scanned bytes, which `owner` keeps.
 struct SortedNameRows {
   std::unique_ptr<NamePiece> owner;
-  Pieces<NameRow> rows;
+  PieceList<NameRow> rows;
 };
 
 SortedNameRows SortedNames(core::AuxEngineServices &services,
                            TpchQ20InitialScan &initial_scan) {
+  const auto pool = core::Parallelism::OnPool(services);
   struct Name {
     int64_t key;
     std::string_view name;
@@ -1751,23 +1627,24 @@ SortedNameRows SortedNames(core::AuxEngineServices &services,
   std::vector<const NamePiece *> sources{scanned.get()};
   for (const auto &piece : scanned->merged)
     sources.push_back(piece.get());
-  Pieces<NameRow> pieces(sources.size());
+  PieceList<NameRow> pieces(sources.size());
   core::ParallelEach(services, sources.size(), 1, [&](std::size_t i) {
     pieces[i].reserve(sources[i]->refs.size());
     for (const auto &ref : sources[i]->refs)
       pieces[i].push_back({ref.key, sources[i]->bytes.data() + ref.off, ref.len});
   });
   const std::size_t skip =
-      SharedPrefixLength(services, pieces, [](const NameRow &r) { return r.View(); });
+      core::SharedPrefixLength(pool, pieces, [](const NameRow &r) { return r.View(); });
   return {std::move(scanned),
-          SortIntoBuckets(
-              services, std::move(pieces),
-              [&](const NameRow &r) { return NamePrefixKey(r.View(), skip); },
+          core::SortIntoKeyBuckets(
+              pool, std::move(pieces),
+              [&](const NameRow &r) { return core::StringPrefixKey(r.View(), skip); },
               [](const NameRow &a, const NameRow &b) { return a.View() < b.View(); })};
 }
 
-Pieces<SupplierRow> SortedSuppliers(core::AuxEngineServices &services,
+PieceList<SupplierRow> SortedSuppliers(core::AuxEngineServices &services,
                                     TpchQ20InitialScan &initial_scan) {
+  const auto pool = core::Parallelism::OnPool(services);
   auto pieces = ScanPieces<SupplierRow>(
       services,
       [&](std::size_t parts, auto &&sink) {
@@ -1776,15 +1653,15 @@ Pieces<SupplierRow> SortedSuppliers(core::AuxEngineServices &services,
                                       sink(p, core::SingleRowBatch<TpchQ20SupplierInput>{input});
                                     });
       },
-      [](RowPieces<SupplierRow> &partial, const TpchQ20SupplierInput &input) {
+      [](PartitionPieces<SupplierRow> &partial, const TpchQ20SupplierInput &input) {
         if (input.key >= 0)
           partial.rows.push_back({input.key, {input.name, input.address, input.nationkey}});
       });
-  const std::size_t skip = SharedPrefixLength(
-      services, pieces, [](const SupplierRow &r) { return std::string_view(r.record.name); });
-  return SortIntoBuckets(
-      services, std::move(pieces),
-      [&](const SupplierRow &r) { return NamePrefixKey(r.record.name, skip); },
+  const std::size_t skip = core::SharedPrefixLength(
+      pool, pieces, [](const SupplierRow &r) { return std::string_view(r.record.name); });
+  return core::SortIntoKeyBuckets(
+      pool, std::move(pieces),
+      [&](const SupplierRow &r) { return core::StringPrefixKey(r.record.name, skip); },
       [](const SupplierRow &a, const SupplierRow &b) {
         return a.record.name != b.record.name ? a.record.name < b.record.name : a.key < b.key;
       });
