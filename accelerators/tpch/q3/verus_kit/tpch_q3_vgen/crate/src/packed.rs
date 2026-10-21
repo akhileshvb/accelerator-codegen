@@ -1,13 +1,14 @@
 // Compact page storage.  A page keeps its order, shipment and group cells in parallel arrays of
 // narrow integers whose view is the wide cell sequence the proofs reason about; a key is stored
-// as the offset from the page's first key.  Packing a cell sequence that does not fit declines
-// (the build / apply then fails like any other overflow and the engine falls back).
+// as the offset from the page's first key.  A cell sequence that does not fit the narrow arrays
+// is kept as the cells themselves, so packing never fails.
 use std::sync::Arc;
 use vstd::prelude::*;
 use verus_common::bytes::*;
-use crate::model::{OrderCell, ShipCell, GroupCell, group_before_id};
+use crate::model::{OrderCell, ShipCell, GroupCell, group_before_id, group_lt};
+use verus_prooflib::wide::Wide;
+use crate::columns::{copy_orders, copy_ships, copy_groups};
 use crate::values::GroupId;
-use crate::rank_ent::id_fits;
 
 verus! {
 
@@ -30,7 +31,7 @@ pub open spec fn order_cell(number: int, low: u8, customer: u32, date: u16, prio
     OrderCell { key: page_key(number, low), customer: customer as i64, date: date as i32, priority: priority as i64, count: count as i64 }
 }
 
-pub struct PackedOrders {
+pub struct NarrowOrders {
     pub(crate) number: i64,
     pub(crate) lows: Vec<u8>,
     pub(crate) customers: Vec<u32>,
@@ -39,7 +40,7 @@ pub struct PackedOrders {
     pub(crate) counts: Vec<u8>,
 }
 
-impl View for PackedOrders {
+impl View for NarrowOrders {
     type V = Seq<OrderCell>;
     closed spec fn view(&self) -> Seq<OrderCell> {
         Seq::new(self.lows@.len(), |i: int| order_cell(self.number as int, self.lows@[i], self.customers@[i], self.dates@[i],
@@ -47,7 +48,7 @@ impl View for PackedOrders {
     }
 }
 
-impl PackedOrders {
+impl NarrowOrders {
     #[verifier::type_invariant]
     pub closed spec fn valid(self) -> bool {
         &&& number_ok(self.number as int)
@@ -86,7 +87,7 @@ impl PackedOrders {
         result
     }
 
-    pub fn pack(rows: &Vec<OrderCell>, number: i64) -> (result: Option<PackedOrders>)
+    pub fn pack(rows: &Vec<OrderCell>, number: i64) -> (result: Option<NarrowOrders>)
         ensures result matches Some(packed) ==> packed@ == rows@,
     {
         if number < -36028797018963968 || number > 36028797018963967 { return None; }
@@ -122,7 +123,7 @@ impl PackedOrders {
             }
             index += 1;
         }
-        let result = PackedOrders { number, lows, customers, dates, priorities, counts };
+        let result = NarrowOrders { number, lows, customers, dates, priorities, counts };
         proof { assert(result@ =~= rows@); }
         Some(result)
     }
@@ -144,12 +145,16 @@ pub open spec fn stored_revenue(word: u32, big: Seq<(u32, i64)>, index: int) -> 
     if word == u32::MAX { big_revenue(big, index) } else { word as i64 }
 }
 
-pub open spec fn ship_cell(number: int, low: u8, count: u8, date: u16, revenue: i64) -> ShipCell {
-    ShipCell { key: page_key(number, low), date: date as i32, count: count as i64,
-        revenue: revenue as i128, positive: revenue as i128 }
+pub open spec fn narrow_wide(revenue: i64) -> Wide {
+    Wide::Small(revenue as i128)
 }
 
-pub struct PackedShips {
+pub open spec fn ship_cell(number: int, low: u8, count: u8, date: u16, revenue: i64) -> ShipCell {
+    ShipCell { key: page_key(number, low), date: date as i32, count: count as i64,
+        revenue: narrow_wide(revenue), positive: narrow_wide(revenue) }
+}
+
+pub struct NarrowShips {
     pub(crate) number: i64,
     pub(crate) lows: Vec<u8>,
     pub(crate) counts: Vec<u8>,
@@ -158,7 +163,7 @@ pub struct PackedShips {
     pub(crate) big: Vec<(u32, i64)>,
 }
 
-impl View for PackedShips {
+impl View for NarrowShips {
     type V = Seq<ShipCell>;
     closed spec fn view(&self) -> Seq<ShipCell> {
         Seq::new(self.lows@.len(), |i: int| ship_cell(self.number as int, self.lows@[i], self.counts@[i], self.dates@[i],
@@ -191,7 +196,7 @@ pub fn lookup_big(big: &Vec<(u32, i64)>, index: usize) -> (result: i64)
     0
 }
 
-impl PackedShips {
+impl NarrowShips {
     #[verifier::type_invariant]
     pub closed spec fn valid(self) -> bool {
         &&& number_ok(self.number as int)
@@ -212,7 +217,7 @@ impl PackedShips {
         let word = self.words[index];
         let revenue: i64 = if word == u32::MAX { lookup_big(&self.big, index) } else { word as i64 };
         ShipCell { key: self.number * 256 + self.lows[index] as i64, date: self.dates[index] as i32,
-            count: self.counts[index] as i64, revenue: revenue as i128, positive: revenue as i128 }
+            count: self.counts[index] as i64, revenue: Wide::Small(revenue as i128), positive: Wide::Small(revenue as i128) }
     }
 
     pub fn to_vec(&self) -> (result: Vec<ShipCell>)
@@ -233,7 +238,7 @@ impl PackedShips {
         result
     }
 
-    pub fn pack(rows: &Vec<ShipCell>, number: i64) -> (result: Option<PackedShips>)
+    pub fn pack(rows: &Vec<ShipCell>, number: i64) -> (result: Option<NarrowShips>)
         ensures result matches Some(packed) ==> packed@ == rows@,
     {
         if number < -36028797018963968 || number > 36028797018963967 { return None; }
@@ -253,13 +258,17 @@ impl PackedShips {
                     ship_cell(number as int, lows@[position], counts@[position], dates@[position], stored_revenue(words@[position], big@, position)) == rows@[position],
             decreases rows.len() - index,
         {
-            let cell = rows[index];
+            let cell = &rows[index];
             let low = cell.key as i128 - base;
+            let (revenue, positive) = match (&cell.revenue, &cell.positive) {
+                (Wide::Small(revenue), Wide::Small(positive)) => (*revenue, *positive),
+                _ => return None,
+            };
             if low < 0 || low > 255 || cell.count < 0 || cell.count > 255 || cell.date < 0 || cell.date > 65535
-                || cell.revenue < 0 || cell.revenue > i64::MAX as i128 || cell.positive != cell.revenue { return None; }
+                || revenue < 0 || revenue > i64::MAX as i128 || positive != revenue { return None; }
             let ghost before_big = big@;
-            if cell.revenue >= u32::MAX as i128 {
-                big.push((index as u32, cell.revenue as i64));
+            if revenue >= u32::MAX as i128 {
+                big.push((index as u32, revenue as i64));
                 words.push(u32::MAX);
                 proof {
                     // earlier cells keep their value: their indices differ from the new entry's
@@ -270,18 +279,18 @@ impl PackedShips {
                     lemma_big_new(before_big, big@.last(), index as int);
                 }
             } else {
-                words.push(cell.revenue as u32);
+                words.push(revenue as u32);
             }
             lows.push(low as u8);
             counts.push(cell.count as u8);
             dates.push(cell.date as u16);
             proof {
                 assert(ship_cell(number as int, lows@[index as int], counts@[index as int], dates@[index as int],
-                    stored_revenue(words@[index as int], big@, index as int)) == cell);
+                    stored_revenue(words@[index as int], big@, index as int)) == *cell);
             }
             index += 1;
         }
-        let result = PackedShips { number, lows, counts, dates, words, big };
+        let result = NarrowShips { number, lows, counts, dates, words, big };
         proof { assert(result@ =~= rows@); }
         Some(result)
     }
@@ -341,11 +350,11 @@ pub open spec fn none_last() -> u16 { 65535 }
 
 pub open spec fn group_cell(number: int, segment: Arc<Vec<u8>>, low: u8, date: u16, priority: i8, weight: u32, bound: i64, last: u16) -> GroupCell {
     GroupCell { segment, id: GroupId { key: page_key(number, low), date: date as i32, priority: priority as i64 },
-        weight: weight as i128, bound: bound as i128,
+        weight: Wide::Small(weight as i128), bound,
         last_ship: if last == none_last() { None } else { Some(last as i32) } }
 }
 
-pub struct PackedGroups {
+pub struct NarrowGroups {
     pub(crate) number: i64,
     pub(crate) names: Vec<Arc<Vec<u8>>>,
     pub(crate) segments: Vec<u8>,
@@ -357,7 +366,7 @@ pub struct PackedGroups {
     pub(crate) lasts: Vec<u16>,
 }
 
-impl View for PackedGroups {
+impl View for NarrowGroups {
     type V = Seq<GroupCell>;
     closed spec fn view(&self) -> Seq<GroupCell> {
         Seq::new(self.lows@.len(), |i: int| group_cell(self.number as int, self.names@[self.segments@[i] as int], self.lows@[i],
@@ -365,7 +374,7 @@ impl View for PackedGroups {
     }
 }
 
-impl PackedGroups {
+impl NarrowGroups {
     #[verifier::type_invariant]
     pub closed spec fn valid(self) -> bool {
         &&& number_ok(self.number as int)
@@ -375,13 +384,6 @@ impl PackedGroups {
         &&& forall|i: int| #![trigger self.segments@[i]] 0 <= i < self.segments@.len() ==> (self.segments@[i] as int) < self.names@.len()
         &&& forall|i: int| #![trigger self.lows@[i]] 0 <= i < self.lows@.len() ==>
             key_in_range(self.number as int, self.lows@[i])
-    }
-
-    /// Every group's id fits a rank word.
-    pub fn fits(&self)
-        ensures forall|index: int| #![trigger self@[index]] 0 <= index < self@.len() ==> id_fits(self@[index].id),
-    {
-        proof { use_type_invariant(self); }
     }
 
     pub fn len(&self) -> (result: usize)
@@ -397,16 +399,8 @@ impl PackedGroups {
         GroupCell { segment: self.names[self.segments[index] as usize].clone(),
             id: GroupId { key: self.number * 256 + self.lows[index] as i64, date: self.dates[index] as i32,
                 priority: self.priorities[index] as i64 },
-            weight: self.weights[index] as i128, bound: self.bounds[index] as i128,
+            weight: Wide::Small(self.weights[index] as i128), bound: self.bounds[index],
             last_ship: if last == 65535 { None } else { Some(last as i32) } }
-    }
-
-    pub fn weight_at(&self, index: usize) -> (result: i128)
-        requires index < self@.len(),
-        ensures result == self@[index as int].weight,
-    {
-        proof { use_type_invariant(self); }
-        self.weights[index] as i128
     }
 
     /// The group at `index` sorts before (segment, id).
@@ -453,7 +447,7 @@ impl PackedGroups {
         result
     }
 
-    pub fn pack(rows: &Vec<GroupCell>, number: i64) -> (result: Option<PackedGroups>)
+    pub fn pack(rows: &Vec<GroupCell>, number: i64) -> (result: Option<NarrowGroups>)
         ensures result matches Some(packed) ==> groups_equiv(packed@, rows@),
     {
         if number < -36028797018963968 || number > 36028797018963967 { return None; }
@@ -484,7 +478,11 @@ impl PackedGroups {
             let low = cell.id.key as i128 - base;
             if low < 0 || low > 255 || cell.id.key < 0 || cell.id.key >= 1099511627776 || cell.id.date < 0 || cell.id.date > 65534
                 || cell.id.priority < i8::MIN as i64 || cell.id.priority > i8::MAX as i64
-                || cell.weight < 0 || cell.weight > u32::MAX as i128 || cell.bound < 0 || cell.bound > i64::MAX as i128 { return None; }
+                || cell.bound < 0 { return None; }
+            let weight: u32 = match &cell.weight {
+                Wide::Small(weight) if *weight >= 0 && *weight <= u32::MAX as i128 => *weight as u32,
+                _ => return None,
+            };
             let last: u16 = match cell.last_ship {
                 Some(value) => { if value < 0 || value > 65534 { return None; } value as u16 },
                 None => 65535,
@@ -504,8 +502,8 @@ impl PackedGroups {
             lows.push(low as u8);
             dates.push(cell.id.date as u16);
             priorities.push(cell.id.priority as i8);
-            weights.push(cell.weight as u32);
-            bounds.push(cell.bound as i64);
+            weights.push(weight as u32);
+            bounds.push(cell.bound);
             lasts.push(last);
             proof {
                 let built = group_cell(number as int, names@[segments@[index as int] as int], lows@[index as int], dates@[index as int],
@@ -513,15 +511,146 @@ impl PackedGroups {
                 assert((*built.segment)@ == (*cell.segment)@);
                 assert(built.id == cell.id);
                 assert(built.last_ship == cell.last_ship);
+                assert(built.weight == cell.weight);
                 assert(group_equiv(built, rows@[index as int]));
             }
             index += 1;
         }
-        let result = PackedGroups { number, names, segments, lows, dates, priorities, weights, bounds, lasts };
+        let result = NarrowGroups { number, names, segments, lows, dates, priorities, weights, bounds, lasts };
         proof {
             assert(groups_equiv(result@, rows@));
         }
         Some(result)
+    }
+}
+
+
+// ---- narrow or whole ---------------------------------------------------------------------
+
+pub enum PackedOrders { Narrow(NarrowOrders), Wide(Vec<OrderCell>) }
+
+impl View for PackedOrders {
+    type V = Seq<OrderCell>;
+    closed spec fn view(&self) -> Seq<OrderCell> {
+        match self { PackedOrders::Narrow(narrow) => narrow@, PackedOrders::Wide(rows) => rows@ }
+    }
+}
+
+impl PackedOrders {
+    pub fn len(&self) -> (result: usize)
+        ensures result == self@.len(),
+    { match self { PackedOrders::Narrow(narrow) => narrow.len(), PackedOrders::Wide(rows) => rows.len() } }
+
+    pub fn get(&self, index: usize) -> (result: OrderCell)
+        requires index < self@.len(),
+        ensures result == self@[index as int],
+    { match self { PackedOrders::Narrow(narrow) => narrow.get(index), PackedOrders::Wide(rows) => rows[index] } }
+
+    pub fn to_vec(&self) -> (result: Vec<OrderCell>)
+        ensures result@ == self@,
+    { match self { PackedOrders::Narrow(narrow) => narrow.to_vec(), PackedOrders::Wide(rows) => copy_orders(rows) } }
+
+    pub fn pack(rows: &Vec<OrderCell>, number: i64) -> (result: PackedOrders)
+        ensures result@ == rows@,
+    {
+        match NarrowOrders::pack(rows, number) {
+            Some(narrow) => PackedOrders::Narrow(narrow),
+            None => PackedOrders::Wide(copy_orders(rows)),
+        }
+    }
+}
+
+pub enum PackedShips { Narrow(NarrowShips), Wide(Vec<ShipCell>) }
+
+impl View for PackedShips {
+    type V = Seq<ShipCell>;
+    closed spec fn view(&self) -> Seq<ShipCell> {
+        match self { PackedShips::Narrow(narrow) => narrow@, PackedShips::Wide(rows) => rows@ }
+    }
+}
+
+impl PackedShips {
+    pub fn len(&self) -> (result: usize)
+        ensures result == self@.len(),
+    { match self { PackedShips::Narrow(narrow) => narrow.len(), PackedShips::Wide(rows) => rows.len() } }
+
+    pub fn get(&self, index: usize) -> (result: ShipCell)
+        requires index < self@.len(),
+        ensures result == self@[index as int],
+    { match self { PackedShips::Narrow(narrow) => narrow.get(index), PackedShips::Wide(rows) => rows[index].dup() } }
+
+    pub fn to_vec(&self) -> (result: Vec<ShipCell>)
+        ensures result@ == self@,
+    { match self { PackedShips::Narrow(narrow) => narrow.to_vec(), PackedShips::Wide(rows) => copy_ships(rows) } }
+
+    pub fn pack(rows: &Vec<ShipCell>, number: i64) -> (result: PackedShips)
+        ensures result@ == rows@,
+    {
+        match NarrowShips::pack(rows, number) {
+            Some(narrow) => PackedShips::Narrow(narrow),
+            None => PackedShips::Wide(copy_ships(rows)),
+        }
+    }
+}
+
+pub enum PackedGroups { Narrow(NarrowGroups), Wide(Vec<GroupCell>) }
+
+impl View for PackedGroups {
+    type V = Seq<GroupCell>;
+    closed spec fn view(&self) -> Seq<GroupCell> {
+        match self { PackedGroups::Narrow(narrow) => narrow@, PackedGroups::Wide(rows) => rows@ }
+    }
+}
+
+impl PackedGroups {
+    pub fn len(&self) -> (result: usize)
+        ensures result == self@.len(),
+    { match self { PackedGroups::Narrow(narrow) => narrow.len(), PackedGroups::Wide(rows) => rows.len() } }
+
+    pub fn get(&self, index: usize) -> (result: GroupCell)
+        requires index < self@.len(),
+        ensures result == self@[index as int],
+    {
+        match self {
+            PackedGroups::Narrow(narrow) => narrow.get(index),
+            PackedGroups::Wide(rows) => {
+                let group = &rows[index];
+                GroupCell { segment: group.segment.clone(), id: group.id, weight: group.weight.dup(), bound: group.bound, last_ship: group.last_ship }
+            },
+        }
+    }
+
+    /// The group at `index` sorts before (segment, id).
+    pub fn before_id(&self, index: usize, segment: &[u8], id: GroupId) -> (result: bool)
+        requires index < self@.len(),
+        ensures result == group_before_id(self@[index as int], segment@, id),
+    {
+        match self {
+            PackedGroups::Narrow(narrow) => narrow.before_id(index, segment, id),
+            PackedGroups::Wide(rows) => {
+                let group = &rows[index];
+                bytes_lt_exec(&group.segment, segment) || (bytes_eq_exec(&group.segment, segment)
+                    && (group.id.key < id.key || (group.id.key == id.key && (group.id.date < id.date
+                    || (group.id.date == id.date && group.id.priority < id.priority)))))
+            },
+        }
+    }
+
+    pub fn to_vec(&self) -> (result: Vec<GroupCell>)
+        ensures result@ == self@,
+    { match self { PackedGroups::Narrow(narrow) => narrow.to_vec(), PackedGroups::Wide(rows) => copy_groups(rows) } }
+
+    pub fn pack(rows: &Vec<GroupCell>, number: i64) -> (result: PackedGroups)
+        ensures groups_equiv(result@, rows@),
+    {
+        match NarrowGroups::pack(rows, number) {
+            Some(narrow) => PackedGroups::Narrow(narrow),
+            None => {
+                let copy = copy_groups(rows);
+                proof { assert(groups_equiv(copy@, rows@)); }
+                PackedGroups::Wide(copy)
+            },
+        }
     }
 }
 

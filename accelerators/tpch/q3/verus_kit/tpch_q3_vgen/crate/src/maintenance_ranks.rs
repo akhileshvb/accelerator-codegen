@@ -79,7 +79,7 @@ pub proof fn lemma_rank_exact(pages: Index<Page>, ranks: Index<Paged<RankEnt>>)
 
 pub fn remove_groups(ranks: &mut Index<Paged<RankEnt>>, groups: &Vec<GroupCell>)
     requires ranks_wf(*old(ranks)),
-        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> groups@[position].bound >= 0 && id_fits(groups@[position].id),
+        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> groups@[position].bound >= 0,
     ensures ranks_wf(*final(ranks)),
         forall|outer: KeyView, rank: KeyView| #![trigger rank_at(*final(ranks), outer, rank)]
             rank_at(*final(ranks), outer, rank) == (rank_at(*old(ranks), outer, rank) && !rank_present(groups@, outer, rank)),
@@ -88,7 +88,7 @@ pub fn remove_groups(ranks: &mut Index<Paged<RankEnt>>, groups: &Vec<GroupCell>)
     let mut position = 0;
     while position < groups.len()
         invariant position <= groups.len(), ranks_wf(*ranks),
-            forall|source: int| #![trigger groups@[source]] 0 <= source < groups@.len() ==> groups@[source].bound >= 0 && id_fits(groups@[source].id),
+            forall|source: int| #![trigger groups@[source]] 0 <= source < groups@.len() ==> groups@[source].bound >= 0,
             forall|outer: KeyView, rank: KeyView| #![trigger rank_at(*ranks, outer, rank)]
                 rank_at(*ranks, outer, rank) == (rank_at(original, outer, rank) && !rank_present(groups@.take(position as int), outer, rank)),
         decreases groups.len() - position,
@@ -188,11 +188,9 @@ pub fn publish_page(pages: &mut Index<Page>, ranks: &mut Index<Paged<RankEnt>>, 
     let ghost original_ranks = *ranks;
     let old_page = pages.get(&Key::number(key));
     if let Some(old_page) = old_page {
-        old_page.groups.fits();
         remove_groups(ranks, &old_page.groups.to_vec());
     }
     let ghost removed_ranks = *ranks;
-    page.groups.fits();
     crate::ranks::append_groups(ranks, &page.groups.to_vec());
     if page.orders.len() == 0 && page.ships.len() == 0 && page.groups.len() == 0 { pages.remove(&Key::number(key)); }
     else { pages.put(Key::number(key), Arc::new(page)); }

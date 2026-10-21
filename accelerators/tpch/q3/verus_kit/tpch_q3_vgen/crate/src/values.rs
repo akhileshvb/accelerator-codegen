@@ -44,10 +44,20 @@ pub fn mul(left: i128, right: i128) -> (result: Option<i128>)
     left.checked_mul(right)
 }
 
-pub fn revenue(price: i64, discount: i64) -> (result: Option<i128>)
-    ensures result matches Some(value) ==> value as int == price as int * (100 - discount as int),
+/// One shipment's price * (100 - discount); below 2^127 in magnitude for any i64 inputs.
+pub fn revenue(price: i64, discount: i64) -> (result: i128)
+    ensures result as int == price as int * (100 - discount as int),
+        -0x8000_0000_0000_0000_0000_0000_0000_0000int < (result as int) < 0x8000_0000_0000_0000_0000_0000_0000_0000int,
 {
-    mul(price as i128, 100i128 - discount as i128)
+    let factor = 100i128 - discount as i128;
+    proof {
+        let (p, q) = (price as int, factor as int);
+        let half = 0x8000_0000_0000_0000int;
+        assert(-half <= p <= half && -(half + 100) <= q <= half + 100);
+        assert(-0x8000_0000_0000_0000_0000_0000_0000_0000int < p * q < 0x8000_0000_0000_0000_0000_0000_0000_0000int) by (nonlinear_arith)
+            requires -half <= p <= half, -(half + 100) <= q <= half + 100, half == 0x8000_0000_0000_0000int;
+    }
+    price as i128 * factor
 }
 
 #[derive(Clone, Copy)]
@@ -63,8 +73,8 @@ pub open spec fn group_bytes(group: GroupId) -> Seq<u8> {
         + verus_prooflib::be_u64(group.priority as u64)
 }
 
-pub fn encode(group: GroupId) -> (result: Vec<u8>)
-    ensures result@ == group_bytes(group),
+pub fn encode(group: &GroupId) -> (result: Vec<u8>)
+    ensures result@ == group_bytes(*group),
 {
     let mut result = Vec::with_capacity(24);
     let key = group.key as u64;
@@ -98,7 +108,7 @@ pub fn encode(group: GroupId) -> (result: Vec<u8>)
         verus_prooflib::lemma_be_u64_literal(key);
         verus_prooflib::lemma_be_u64_literal(date);
         verus_prooflib::lemma_be_u64_literal(priority);
-        assert(result@ =~= group_bytes(group));
+        assert(result@ =~= group_bytes(*group));
     }
     result
 }

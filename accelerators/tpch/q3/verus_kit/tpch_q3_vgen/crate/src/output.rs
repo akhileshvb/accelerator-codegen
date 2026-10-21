@@ -6,20 +6,46 @@ use crate::paged::{Paged, PageCursor, entry_sorted, Ent};
 use crate::rank_ent::*;
 use verus_prooflib::IntegerTripleMap;
 use crate::kernel::State;
+use crate::custs::Custs;
 use crate::columns::*;
 use crate::model::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::{params, out_view};
 use crate::values::*;
-use crate::values::{add, mul};
+use verus_prooflib::wide::Wide;
 use crate::semantics::*;
 use crate::read_proofs::*;
 
 verus! {
 
+pub type WRow = (i64, Wide, i32, i64);
+
 pub struct Stream {
     cursor: PageCursor<RankEnt>,
     head: RankEnt,
+    index: Ghost<Paged<RankEnt>>,
+    outer: Ghost<KeyView>,
+}
+
+/// Every entry of the stream is an entry of the index it was opened on.
+spec fn stream_sound(stream: Stream) -> bool {
+    &&& stream.index@.at(stream.head.kv()).is_some()
+    &&& forall|position: int| #![trigger stream.cursor.remaining()[position]]
+        0 <= position < stream.cursor.remaining().len() ==> stream.index@.at(stream.cursor.remaining()[position].kv()).is_some()
+}
+
+/// The stream's index is the one the ranks hold for this segment.
+spec fn stream_from(stream: Stream, ranks: Index<Paged<RankEnt>>, segment: Seq<u8>) -> bool {
+    stream.outer@.1 == segment && ranks.at(stream.outer@) == Some(stream.index@)
+}
+
+/// The group a rank entry names exists in the pages.
+pub open spec fn has_group(pages: Index<Page>, segment: Seq<u8>, id: GroupId) -> bool {
+    exists|page_key: KeyView, position: int| #![trigger pages.at(page_key), (*pages.at(page_key).unwrap().groups)@[position]]
+        pages.at(page_key).is_some() && 0 <= position < (*pages.at(page_key).unwrap().groups)@.len() && {
+            let group = (*pages.at(page_key).unwrap().groups)@[position];
+            (*group.segment)@ == segment && group.id == id
+        }
 }
 
 spec fn stream_has(stream: Stream, rank: KeyView) -> bool {
@@ -36,6 +62,7 @@ spec fn stream_ordered(stream: Stream) -> bool {
     &&& entry_sorted(stream.cursor.remaining())
     &&& forall|position: int| #![trigger stream.cursor.remaining()[position]]
         0 <= position < stream.cursor.remaining().len() ==> key_lt(stream.head.kv(), stream.cursor.remaining()[position].kv())
+    &&& stream_sound(stream)
 }
 
 /// A stream's head holds the largest bound of what is still to come.
@@ -44,15 +71,15 @@ proof fn lemma_upper_of(entry: RankEnt, rank: KeyView)
     ensures -1 - entry.upper as int <= rank.0,
 {}
 
-fn open_stream(index: &Paged<RankEnt>) -> (result: Option<Stream>)
+fn open_stream(index: &Paged<RankEnt>, Ghost(outer): Ghost<KeyView>) -> (result: Option<Stream>)
     requires index.wf(),
-    ensures result matches Some(stream) ==> stream_ordered(stream),
+    ensures result matches Some(stream) ==> stream_ordered(stream) && stream.index@ == *index && stream.outer@ == outer,
         forall|rank: KeyView| #![trigger index.at(rank)] index.at(rank).is_some() ==> result.is_some() && stream_has(result.unwrap(), rank),
 {
     proof { index.model(); }
     let mut cursor = index.cursor();
     if let Some(head) = cursor.next() {
-        let stream = Stream { cursor, head };
+        let stream = Stream { cursor, head, index: Ghost(*index), outer: Ghost(outer) };
         proof {
             let rows = index.entries();
             assert(stream.cursor.remaining() == rows.skip(1));
@@ -65,6 +92,15 @@ fn open_stream(index: &Paged<RankEnt>) -> (result: Option<Stream>)
             assert forall|position: int| #![trigger stream.cursor.remaining()[position]]
                 0 <= position < stream.cursor.remaining().len() implies key_lt(stream.head.kv(), stream.cursor.remaining()[position].kv()) by {
                 assert(stream.cursor.remaining()[position] == rows[position + 1]);
+            }
+            assert(rows[0] == rows[0] && rows.contains(rows[0]));
+            assert(index.holds(rows[0]));
+            assert(index.has_key(rows[0].kv()));
+            assert forall|position: int| #![trigger stream.cursor.remaining()[position]]
+                0 <= position < stream.cursor.remaining().len() implies stream.index@.at(stream.cursor.remaining()[position].kv()).is_some() by {
+                assert(stream.cursor.remaining()[position] == rows[position + 1]);
+                assert(rows.contains(rows[position + 1]) && index.holds(rows[position + 1]));
+                assert(index.has_key(rows[position + 1].kv()));
             }
             assert forall|rank: KeyView| #![trigger index.at(rank)] index.at(rank).is_some() implies stream_has(stream, rank) by {
                 assert(index.has_key(rank));
@@ -92,7 +128,8 @@ fn open_stream(index: &Paged<RankEnt>) -> (result: Option<Stream>)
 fn advance(mut stream: Stream) -> (result: Option<Stream>)
     requires stream_ordered(stream),
     ensures result matches Some(next) ==> stream_ordered(next)
-        && next.cursor.remaining().len() + 1 == stream.cursor.remaining().len(),
+        && next.cursor.remaining().len() + 1 == stream.cursor.remaining().len()
+        && next.index@ == stream.index@ && next.outer@ == stream.outer@,
         forall|rank: KeyView| #![trigger stream_has(stream, rank)]
             stream_has(stream, rank) && rank != stream.head.kv() ==> result.is_some() && stream_has(result.unwrap(), rank),
 {
@@ -112,6 +149,11 @@ fn advance(mut stream: Stream) -> (result: Option<Stream>)
                 0 <= position < stream.cursor.remaining().len() implies key_lt(stream.head.kv(), stream.cursor.remaining()[position].kv()) by {
                 assert(stream.cursor.remaining()[position] == old_rows[position + 1]);
                 assert(key_lt(old_rows[0].kv(), old_rows[position + 1].kv()));
+            }
+            assert(original.index@.at(old_rows[0].kv()).is_some());
+            assert forall|position: int| #![trigger stream.cursor.remaining()[position]]
+                0 <= position < stream.cursor.remaining().len() implies stream.index@.at(stream.cursor.remaining()[position].kv()).is_some() by {
+                assert(stream.cursor.remaining()[position] == old_rows[position + 1]);
             }
             assert forall|rank: KeyView| #![trigger stream_has(original, rank)]
                 stream_has(original, rank) && rank != original.head.kv() implies stream_has(stream, rank) by {
@@ -161,40 +203,44 @@ closed spec fn remaining(streams: Seq<Stream>) -> int {
     sum(streams, |stream: Stream| stream.cursor.remaining().len() as int + 1)
 }
 
-pub fn before(left: (i64, i128, i32, i64), right: (i64, i128, i32, i64)) -> (result: bool)
-    ensures result == ext_lt(output_row(left), output_row(right)),
+pub fn before(left: &WRow, right: &WRow) -> (result: bool)
+    ensures result == ext_lt(output_row(*left), output_row(*right)),
 {
-    left.1 > right.1 || (left.1 == right.1 && (left.2 < right.2 || (left.2 == right.2
+    right.1.lt(&left.1) || (left.1.eq(&right.1) && (left.2 < right.2 || (left.2 == right.2
         && (left.0 < right.0 || (left.0 == right.0 && left.3 < right.3)))))
 }
 
-pub open spec fn output_row(row: (i64, i128, i32, i64)) -> OutRow {
-    OutRow { l_orderkey: row.0 as int, revenue: row.1 as int, o_orderdate: row.2 as int, o_shippriority: row.3 as int }
+pub open spec fn output_row(row: WRow) -> OutRow {
+    OutRow { l_orderkey: row.0 as int, revenue: row.1@, o_orderdate: row.2 as int, o_shippriority: row.3 as int }
 }
 
-pub open spec fn output_sorted(rows: Seq<(i64, i128, i32, i64)>) -> bool {
+pub open spec fn wide_out(rows: Seq<WRow>) -> Seq<OutRow> {
+    rows.map_values(|row: WRow| output_row(row))
+}
+
+pub open spec fn output_sorted(rows: Seq<WRow>) -> bool {
     forall|left: int, right: int| #![trigger rows[left], rows[right]] 0 <= left < right < rows.len() ==>
         !ext_lt(output_row(rows[right]), output_row(rows[left]))
 }
 
-pub open spec fn output_distinct(rows: Seq<(i64, i128, i32, i64)>) -> bool {
+pub open spec fn output_distinct(rows: Seq<WRow>) -> bool {
     forall|left: int, right: int| #![trigger rows[left], rows[right]] 0 <= left < right < rows.len() ==>
         !same_group(output_row(rows[left]), output_row(rows[right]))
 }
 
-pub open spec fn top_dominates(rows: Seq<(i64, i128, i32, i64)>, row: (i64, i128, i32, i64)) -> bool {
+pub open spec fn top_dominates(rows: Seq<WRow>, row: WRow) -> bool {
     rows.contains(row) || (rows.len() == 10 && !ext_lt(output_row(row), output_row(rows[9])))
 }
 
-pub open spec fn top_covers(rows: Seq<(i64, i128, i32, i64)>, row: OutRow) -> bool {
+pub open spec fn top_covers(rows: Seq<WRow>, row: OutRow) -> bool {
     (exists|position: int| #![trigger rows[position]] 0 <= position < rows.len() && output_row(rows[position]) == row)
         || (rows.len() == 10 && !ext_lt(row, output_row(rows[9])))
 }
 
-pub proof fn lemma_retention_cover(original: Seq<(i64, i128, i32, i64)>, result: Seq<(i64, i128, i32, i64)>)
+pub proof fn lemma_retention_cover(original: Seq<WRow>, result: Seq<WRow>)
     requires original.len() <= 10, result.len() <= 10,
         original.len() == 10 ==> result.len() == 10 && !ext_lt(output_row(original[9]), output_row(result[9])),
-        forall|candidate: (i64, i128, i32, i64)| #![trigger top_dominates(result, candidate)]
+        forall|candidate: WRow| #![trigger top_dominates(result, candidate)]
             top_dominates(original, candidate) ==> top_dominates(result, candidate),
     ensures forall|candidate: OutRow| #![trigger top_covers(result, candidate)] top_covers(original, candidate) ==> top_covers(result, candidate),
 {
@@ -213,8 +259,8 @@ pub proof fn lemma_retention_cover(original: Seq<(i64, i128, i32, i64)>, result:
     }
 }
 
-pub proof fn lemma_top_insert(original: Seq<(i64, i128, i32, i64)>, result: Seq<(i64, i128, i32, i64)>,
-    row: (i64, i128, i32, i64), position: int)
+pub proof fn lemma_top_insert(original: Seq<WRow>, result: Seq<WRow>,
+    row: WRow, position: int)
     requires original.len() <= 10, 0 <= position < 10, position <= original.len(),
         output_sorted(original), output_sorted(result),
         forall|source: int| #![trigger original[source]] position <= source < original.len() ==>
@@ -222,11 +268,11 @@ pub proof fn lemma_top_insert(original: Seq<(i64, i128, i32, i64)>, result: Seq<
         result == if original.len() < 10 { original.insert(position, row) } else { original.insert(position, row).take(10) },
     ensures top_dominates(result, row),
         original.len() == 10 ==> result.len() == 10 && !ext_lt(output_row(original[9]), output_row(result[9])),
-        forall|candidate: (i64, i128, i32, i64)| #![trigger top_dominates(result, candidate)]
+        forall|candidate: WRow| #![trigger top_dominates(result, candidate)]
             top_dominates(original, candidate) ==> top_dominates(result, candidate),
 {
-    let precedes = |left: (i64, i128, i32, i64), right: (i64, i128, i32, i64)| !ext_lt(output_row(right), output_row(left));
-    assert forall|left: (i64, i128, i32, i64), middle: (i64, i128, i32, i64), right: (i64, i128, i32, i64)|
+    let precedes = |left: WRow, right: WRow| !ext_lt(output_row(right), output_row(left));
+    assert forall|left: WRow, middle: WRow, right: WRow|
         #![trigger precedes(left, middle), precedes(middle, right)]
         precedes(left, middle) && precedes(middle, right) implies precedes(left, right) by {}
     verus_prooflib::lemma_top_prefix_insert(original, result, row, position, 10, precedes);
@@ -234,21 +280,21 @@ pub proof fn lemma_top_insert(original: Seq<(i64, i128, i32, i64)>, result: Seq<
         if position == 9 { assert(result[9] == row); }
         else { assert(result[9] == original[8]); }
     }
-    assert forall|candidate: (i64, i128, i32, i64)| #![trigger top_dominates(result, candidate)]
+    assert forall|candidate: WRow| #![trigger top_dominates(result, candidate)]
         top_dominates(original, candidate) implies top_dominates(result, candidate) by {
         assert(verus_prooflib::prefix_dominates(original, candidate, 10, precedes));
         assert(verus_prooflib::prefix_dominates(result, candidate, 10, precedes));
     }
 }
 
-pub fn retain(rows: &mut Vec<(i64, i128, i32, i64)>, row: (i64, i128, i32, i64))
+pub fn retain(rows: &mut Vec<WRow>, row: WRow)
     requires old(rows).len() <= 10,
     ensures final(rows).len() <= 10,
         output_sorted(old(rows)@) ==> top_covers(final(rows)@, output_row(row)),
         output_sorted(old(rows)@) ==> forall|candidate: OutRow| #![trigger top_covers(final(rows)@, candidate)]
             top_covers(old(rows)@, candidate) ==> top_covers(final(rows)@, candidate),
         output_sorted(old(rows)@) ==> top_dominates(final(rows)@, row),
-        output_sorted(old(rows)@) ==> forall|candidate: (i64, i128, i32, i64)| #![trigger top_dominates(final(rows)@, candidate)]
+        output_sorted(old(rows)@) ==> forall|candidate: WRow| #![trigger top_dominates(final(rows)@, candidate)]
             top_dominates(old(rows)@, candidate) ==> top_dominates(final(rows)@, candidate),
         forall|position: int| #![trigger final(rows)@[position]] 0 <= position < final(rows)@.len() ==>
             final(rows)@[position] == row || old(rows)@.contains(final(rows)@[position]),
@@ -266,7 +312,7 @@ pub fn retain(rows: &mut Vec<(i64, i128, i32, i64)>, row: (i64, i128, i32, i64))
         decreases high - low,
     {
         let middle = low + (high - low) / 2;
-        if before(rows[middle], row) {
+        if before(&rows[middle], &row) {
             proof {
                 if output_sorted(original) {
                     assert forall|position: int| #![trigger rows@[position]] 0 <= position <= middle implies ext_lt(output_row(rows@[position]), output_row(row)) by {
@@ -298,7 +344,7 @@ pub fn retain(rows: &mut Vec<(i64, i128, i32, i64)>, row: (i64, i128, i32, i64))
     let ghost previous = rows@;
     proof {
         if output_sorted(original) {
-            let less = |left: (i64, i128, i32, i64), right: (i64, i128, i32, i64)| !ext_lt(output_row(right), output_row(left));
+            let less = |left: WRow, right: WRow| !ext_lt(output_row(right), output_row(left));
             assert forall|position: int| #![trigger previous[position]] 0 <= position < low implies less(previous[position], row) by {}
             verus_prooflib::lemma_sorted_insert_at(previous, low as int, row, less);
         }
@@ -339,22 +385,70 @@ pub fn retain(rows: &mut Vec<(i64, i128, i32, i64)>, row: (i64, i128, i32, i64))
     }
 }
 
-pub fn evaluate(state: &State, segment: &[u8], date: i32, id: GroupId) -> (result: Option<Option<(i64, i128, i32, i64)>>)
-    requires id.date < date,
-    ensures result matches Some(Some(row)) ==> row_ok(state.db(), params(segment@, date as int), output_row(row)),
-        result matches Some(Some(row)) ==> row.0 == id.key && row.2 == id.date && row.3 == id.priority,
-        result matches Some(candidate) ==> candidate.is_some() == (group_count(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int) > 0),
+/// The group (segment, id) of a state is at the position a search for it finds.
+/// A rank entry of a stream opened on this state's ranks names a group of the pages.
+proof fn lemma_head_group(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>, db: Db, segment: Seq<u8>, stream: Stream)
+    requires state_ok(customers, pages, ranks, db), stream_ordered(stream), stream_from(stream, ranks, segment),
+    ensures has_group(pages, segment, stream.head.id),
+{
+    let outer = stream.outer@;
+    let inner = ranks.at(outer).unwrap();
+    assert(inner.at(stream.head.kv()).is_some());
+    let (page_key, position) = choose|page_key: KeyView, position: int|
+        #![trigger pages.at(page_key), (*pages.at(page_key).unwrap().groups)@[position]]
+        pages.at(page_key).is_some() && 0 <= position < (*pages.at(page_key).unwrap().groups)@.len() && {
+            let group = (*pages.at(page_key).unwrap().groups)@[position];
+            (*group.segment)@ == outer.1 && covers(group, outer.0) && stream.head.kv() == group_rank(group)
+        };
+    let group = (*pages.at(page_key).unwrap().groups)@[position];
+    assert(group_bytes(group.id) == group_bytes(stream.head.id));
+    lemma_group_identity(group.id, stream.head.id);
+    assert(group.id == stream.head.id);
+}
+
+proof fn lemma_group_position(groups: Seq<GroupCell>, segment: Seq<u8>, id: GroupId, found: int, result: int)
+    requires groups_sorted(groups), 0 <= found < groups.len(),
+        (*groups[found].segment)@ == segment && groups[found].id == id,
+        0 <= result <= groups.len(),
+        forall|index: int| #![trigger groups[index]] 0 <= index < result ==> group_before_id(groups[index], segment, id),
+        forall|index: int| #![trigger groups[index]] result <= index < groups.len() ==> !group_before_id(groups[index], segment, id),
+    ensures result == found,
+{
+    verus_common::bytes::lemma_bytes_lt_irrefl(segment);
+    if found < result { assert(group_before_id(groups[found], segment, id)); }
+    if result < found { assert(group_lt(groups[result], groups[found])); assert(group_before_id(groups[result], segment, id)); }
+}
+
+pub(crate) fn evaluate(state: &State, segment: &[u8], date: i32, id: GroupId) -> (result: Option<WRow>)
+    requires id.date < date, has_group(state.pages, segment@, id),
+    ensures result matches Some(row) ==> row_ok(state.db(), params(segment@, date as int), output_row(row)),
+        result matches Some(row) ==> output_row(row).l_orderkey == id.key as int && output_row(row).o_orderdate == id.date as int
+            && output_row(row).o_shippriority == id.priority as int,
+        result.is_some() == (group_count(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int) > 0),
 {
     state.facts();
-    let page = match state.pages.get(&Key::number(page_id(id.key))) { Some(page) => page, None => return None };
+    let ghost (page_key, found) = choose|page_key: KeyView, position: int| #![trigger state.pages.at(page_key), (*state.pages.at(page_key).unwrap().groups)@[position]]
+        state.pages.at(page_key).is_some() && 0 <= position < (*state.pages.at(page_key).unwrap().groups)@.len() && {
+            let group = (*state.pages.at(page_key).unwrap().groups)@[position];
+            (*group.segment)@ == segment@ && group.id == id
+        };
+    proof {
+        let located = (*state.pages.at(page_key).unwrap().groups)@[found];
+        assert(page_shape(state.pages.at(page_key).unwrap(), page_key.0, state.db()));
+        assert(page_key.0 == id.key as int / 256);
+        assert(page_key.1 =~= Seq::<u8>::empty());
+        assert(page_key == (id.key as int / 256, Seq::<u8>::empty()));
+    }
+    let page = match state.pages.get(&Key::number(page_id(id.key))) { Some(page) => page, None => { proof { assert(false); } return None; } };
     let position = group_start_packed(&page.groups, segment, id);
-    if position >= page.groups.len() { return None; }
+    proof {
+        lemma_group_position((*page.groups)@, segment@, id, found, position as int);
+        assert(page_shape(*page, id.key as int / 256, state.db()));
+    }
     let group_value = page.groups.get(position);
     let group = &group_value;
-    if group.id.key != id.key || group.id.date != id.date || group.id.priority != id.priority
-        || !bytes_eq_exec(segment, &group.segment) { return None; }
-    let mut count: i128 = 0;
-    let mut revenue: i128 = 0;
+    let mut count: Wide = Wide::zero();
+    let mut revenue: Wide = Wide::zero();
     let mut ship_index = ships_start_packed(&page.ships, id.key);
     proof {
         let prefix = (*page.ships)@.take(ship_index as int);
@@ -362,17 +456,19 @@ pub fn evaluate(state: &State, segment: &[u8], date: i32, id: GroupId) -> (resul
         lemma_sum_zero(prefix, shipment_weight(id.key as int, date as int, 1));
     }
     while ship_index < page.ships.len() && page.ships.get(ship_index).key == id.key
-        invariant ship_index <= (*page.ships)@.len(), ships_sorted((*page.ships)@), count >= 0,
-            forall|position: int| #![trigger (*page.ships)@[position]] 0 <= position < (*page.ships)@.len() ==> (*page.ships)@[position].count > 0,
-            count as int == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 0),
-            revenue as int == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 1),
+        invariant ship_index <= (*page.ships)@.len(), ships_sorted((*page.ships)@),
+            forall|position: int| #![trigger (*page.ships)@[position]] 0 <= position < (*page.ships)@.len() ==> ship_ok((*page.ships)@[position]),
+            count@ >= 0,
+            count@ == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 0),
+            revenue@ == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 1),
             forall|position: int| #![trigger (*page.ships)@[position]] ship_index <= position < (*page.ships)@.len() ==> (*page.ships)@[position].key >= id.key,
         decreases (*page.ships)@.len() - ship_index,
     {
         let ship = page.ships.get(ship_index);
+        proof { assert(ship_ok((*page.ships)@[ship_index as int])); }
         if ship.date > date {
-            count = match add(count, ship.count as i128) { Some(value) => value, None => return None };
-            revenue = match add(revenue, ship.revenue) { Some(value) => value, None => return None };
+            count = count.add(&Wide::from_i128(ship.count as i128));
+            revenue = revenue.add(&ship.revenue);
         }
         proof {
             lemma_sum_take((*page.ships)@, ship_index as int,
@@ -398,29 +494,29 @@ pub fn evaluate(state: &State, segment: &[u8], date: i32, id: GroupId) -> (resul
             lemma_shipment_suffix(state.customers, state.pages, state.ranks, state.db(), &*page, id.key as int / 256, id.key as int, date as int, 1);
             lemma_group_weight(state.customers, state.pages, state.ranks, state.db(), &*page, id.key as int / 256, position as int);
             lemma_sql_group(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int);
-            assert(group.weight > 0);
+            assert(group.weight@ > 0);
     }
-    if count > 0 {
-        let joined_count = match mul(group.weight, count) { Some(value) => value, None => return None };
-        let joined_revenue = match mul(group.weight, revenue) { Some(value) => value, None => return None };
+    if !count.is_zero() {
+        let joined_revenue = group.weight.mul(&revenue);
         proof {
-            assert(joined_count > 0) by (nonlinear_arith)
-                requires group.weight > 0, count > 0, joined_count as int == group.weight as int * count as int;
+            assert(count@ > 0);
+            assert(group.weight@ * count@ > 0) by (nonlinear_arith)
+                requires group.weight@ > 0, count@ > 0;
             assert(row_ok(state.db(), params(segment@, date as int), output_row((id.key, joined_revenue, id.date, id.priority))));
         }
-        Some(Some((id.key, joined_revenue, id.date, id.priority)))
+        Some((id.key, joined_revenue, id.date, id.priority))
     } else {
         proof {
-            assert(count == 0);
+            assert(count@ == 0);
             assert(group_count(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int) == 0) by (nonlinear_arith)
-                requires count == 0,
-                    group_count(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int) == group.weight as int * count as int;
+                requires count@ == 0,
+                    group_count(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int) == group.weight@ * count@;
         }
-        Some(None)
+        None
     }
 }
 
-spec fn rows_read_ok(db: Db, segment: Seq<u8>, date: int, rows: Seq<(i64, i128, i32, i64)>, visited: IMap<(i64, i64, i64), ()>) -> bool {
+spec fn rows_read_ok(db: Db, segment: Seq<u8>, date: int, rows: Seq<WRow>, visited: IMap<(i64, i64, i64), ()>) -> bool {
     &&& rows.len() <= 10 && output_sorted(rows) && output_distinct(rows)
     &&& forall|position: int| #![trigger rows[position]] 0 <= position < rows.len() ==>
         row_ok(db, params(segment, date), output_row(rows[position]))
@@ -429,20 +525,19 @@ spec fn rows_read_ok(db: Db, segment: Seq<u8>, date: int, rows: Seq<(i64, i128, 
         row_ok(db, params(segment, date), row) && visited.contains_key((row.l_orderkey as i64, row.o_orderdate as i64, row.o_shippriority as i64)) ==> top_covers(rows, row)
 }
 
-fn visit(state: &State, segment: &[u8], date: i32, id: GroupId, visited: &mut IntegerTripleMap<()>, rows: &mut Vec<(i64, i128, i32, i64)>) -> (result: bool)
+fn visit(state: &State, segment: &[u8], date: i32, id: GroupId, visited: &mut IntegerTripleMap<()>, rows: &mut Vec<WRow>)
     requires rows_read_ok(state.db(), segment@, date as int, old(rows)@, old(visited)@),
         !old(visited)@.contains_key((id.key, id.date as i64, id.priority)),
+        has_group(state.pages, segment@, id),
     ensures final(visited)@ == old(visited)@.insert((id.key, id.date as i64, id.priority), ()),
-        result ==> rows_read_ok(state.db(), segment@, date as int, final(rows)@, final(visited)@),
+        rows_read_ok(state.db(), segment@, date as int, final(rows)@, final(visited)@),
 {
     state.facts();
     let ghost previous_visited = visited@;
     let ghost original_rows = rows@;
     let visited_key = (id.key, id.date as i64, id.priority);
     visited.insert(visited_key, ());
-    let candidate = if id.date < date {
-        match evaluate(state, segment, date, id) { Some(candidate) => candidate, None => return false }
-    } else { None };
+    let candidate = if id.date < date { evaluate(state, segment, date, id) } else { None };
     if let Some(row) = candidate {
         proof {
             assert forall|position: int| #![trigger original_rows[position]] 0 <= position < original_rows.len() implies
@@ -482,11 +577,10 @@ fn visit(state: &State, segment: &[u8], date: i32, id: GroupId, visited: &mut In
             }
         }
     }
-    true
 }
 
-pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i64, i128, i32, i64)>>)
-    ensures result matches Some(rows) ==> query_result(state.db(), params(segment@, date as int), out_view(rows@)),
+pub fn read(state: &State, segment: &[u8], date: i32) -> (rows: Vec<WRow>)
+    ensures query_result(state.db(), params(segment@, date as int), wide_out(rows@)),
 {
     state.facts();
     let mut streams = Vec::new();
@@ -497,6 +591,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
             offset as int == ((date as int - i32::MIN as int) / 128) / pow2(level as int),
             state_ok(state.customers, state.pages, state.ranks, state.db()),
             forall|position: int| #![trigger streams@[position]] 0 <= position < streams@.len() ==> stream_ordered(streams@[position]),
+            forall|position: int| #![trigger streams@[position]] 0 <= position < streams@.len() ==> stream_from(streams@[position], state.ranks, segment@),
             forall|ancestor: int, rank: KeyView| #![trigger state.ranks.at((ancestor_node(date as int, ancestor), segment@)), pending(streams@, rank)]
                 0 <= ancestor < level && state.ranks.at((ancestor_node(date as int, ancestor), segment@)).is_some()
                     && state.ranks.at((ancestor_node(date as int, ancestor), segment@)).unwrap().at(rank).is_some() ==> pending(streams@, rank),
@@ -505,7 +600,8 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
         let ghost previous_streams = streams@;
         let key = Key::composite(level * 67108864 + offset, copy_bytes(segment));
         if let Some(index) = state.ranks.get(&key) {
-            if let Some(stream) = open_stream(&index) {
+            proof { assert(state.ranks.at(key.view()) == Some(*index)); }
+            if let Some(stream) = open_stream(&index, Ghost(key.view())) {
                 let ghost added = stream;
                 streams.push(stream);
                 proof {
@@ -524,7 +620,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
         level += 1;
     }
     let mut visited: IntegerTripleMap<()> = IntegerTripleMap::new();
-    let mut result: Vec<(i64, i128, i32, i64)> = Vec::new();
+    let mut result: Vec<WRow> = Vec::new();
     proof {
         lemma_sum_nonneg(streams@, |entry: Stream| entry.cursor.remaining().len() as int + 1);
         assert forall|row: OutRow| #![trigger row_ok(state.db(), params(segment@, date as int), row)]
@@ -540,6 +636,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
         invariant result.len() <= 10, remaining(streams@) >= 0, output_sorted(result@), output_distinct(result@),
             state_ok(state.customers, state.pages, state.ranks, state.db()),
             forall|position: int| #![trigger streams@[position]] 0 <= position < streams@.len() ==> stream_ordered(streams@[position]),
+            forall|position: int| #![trigger streams@[position]] 0 <= position < streams@.len() ==> stream_from(streams@[position], state.ranks, segment@),
             forall|row: OutRow| #![trigger row_ok(state.db(), params(segment@, date as int), row)]
                 row_ok(state.db(), params(segment@, date as int), row) && visited@.contains_key((row.l_orderkey as i64, row.o_orderdate as i64, row.o_shippriority as i64))
                     ==> top_covers(result@, row),
@@ -564,7 +661,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
             index += 1;
         }
         let bound = streams[best].head.upper as i128;
-        if result.len() == 10 && bound < i64::MAX as i128 && bound < result[9].1 {
+        if result.len() == 10 && bound < i64::MAX as i128 && Wide::from_i128(bound).lt(&result[9].1) {
             proof {
                 assert forall|row: OutRow| #![trigger row_ok(state.db(), params(segment@, date as int), row)]
                     row_ok(state.db(), params(segment@, date as int), row) implies top_covers(result@, row) by {
@@ -581,13 +678,13 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
                         }
                         lemma_upper_of(chosen.head, rank);
                         assert(streams@[best as int].head.upper >= chosen.head.upper);
-                        assert(rank.0 == -1 - (if group.bound >= i64::MAX { i64::MAX as int } else { group.bound as int }));
-                        assert(row.revenue < result@[9].1);
+                        assert(rank.0 == -1 - group.bound as int);
+                        assert(row.revenue < result@[9].1@);
                     }
                 }
                 lemma_top_result(state.db(), params(segment@, date as int), result@);
             }
-            return Some(result);
+            return result;
         }
         let stream = streams.remove(best);
         let ghost previous_stream = stream;
@@ -595,10 +692,11 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
         proof {
             lemma_sum_remove(previous_streams, best as int, |entry: Stream| entry.cursor.remaining().len() as int + 1);
         }
-        let id = decode_word(stream.head.word);
+        let id = stream.head.id;
         let visited_key = (id.key, id.date as i64, id.priority);
+        proof { lemma_head_group(state.customers, state.pages, state.ranks, state.db(), segment@, previous_stream); }
         if !visited.contains_key(&visited_key) {
-            if !visit(state, segment, date, id, &mut visited, &mut result) { return None; }
+            visit(state, segment, date, id, &mut visited, &mut result);
         }
         let advanced = advance(stream);
         let ghost next_stream = advanced;
@@ -643,7 +741,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
         }
         lemma_top_result(state.db(), params(segment@, date as int), result@);
     }
-    Some(result)
+    result
 }
 
 }
