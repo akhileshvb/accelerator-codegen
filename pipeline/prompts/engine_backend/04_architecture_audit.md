@@ -27,6 +27,10 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
 - Native scan (scan layer only): `pipeline/prompts/engine_backend/native_scan_contract.md`
 - Slot contracts: `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract")
 - Analysis: `{{artifacts_path}}/backend_analysis.json`
+- Not findings: `host.sh slot` failing closed with "not wired yet" (validation wires it, after this
+  audit); behaviour the frozen substrate or a contract defines as process-wide (the substrate's
+  execute counters, which the introspection hooks of `api_contract.md` §3 report). Judge the backend
+  against the contracts as written, never against a stricter design of your own.
 - Open layer findings: `{{artifacts_path}}/layer_*.open_findings.md` (a layer whose gates passed but whose
   last critique did not). Each one is a required fix of this audit: resolve it in the backend and its
   harness, or show in the report why it does not hold.
