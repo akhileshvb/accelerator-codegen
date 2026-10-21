@@ -9,6 +9,7 @@ use crate::dimensions::*;
 use crate::maintenance::*;
 use crate::model;
 use crate::num::Num;
+use crate::counting::*;
 use crate::contributions::line_contribution;
 
 verus! {
@@ -140,10 +141,9 @@ pub fn apply_parts(delta: &Vec<PartDelta>, before: &Table, initial: Dictionary) 
                 assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
                     lemma_known_text_extension(before_dictionary, dictionary, 0, part_delta_rows[offset].row.p_type@);
                 }
-                lemma_sum_ext(prefix, before_weight, weight);
                 let next = (part_input_view(part_delta_rows[index as int].row), part_delta_rows[index as int].sign as int);
                 assert(part_delta_seq_view(part_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, weight);
+                lemma_grown_prefix_step(prefix, next, before_weight, weight);
             }
         }
         index += 1;
@@ -185,10 +185,7 @@ pub fn apply_suppliers(delta: &[SupplierDelta], before: &Table, dictionary: &Dic
                 before.at((key, 0, 0), (nation, 0, 0), false)
                     + sum(supplier_delta_seq_view(supplier_delta_rows.take(index as int + 1)), |change: (SupplierRow, int)|
                         if change.0.s_suppkey == key as int && change.0.s_nationkey == nation as int { change.1 } else { 0 }) by {
-                let prefix = supplier_delta_seq_view(supplier_delta_rows.take(index as int));
-                let next = (supplier_input_view(supplier_delta_rows[index as int].row), supplier_delta_rows[index as int].sign as int);
-                assert(supplier_delta_seq_view(supplier_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |change: (SupplierRow, int)| if change.0.s_suppkey == key as int
+                lemma_mapped_prefix_step(supplier_delta_rows, |d: SupplierDelta| (supplier_input_view(d.row), d.sign as int), index as int, |change: (SupplierRow, int)| if change.0.s_suppkey == key as int
                     && change.0.s_nationkey == nation as int { change.1 } else { 0 });
             }
         }
@@ -226,10 +223,7 @@ pub fn apply_customers(delta: &[CustomerDelta], before: &Table, dictionary: &Dic
                 before.at((key, 0, 0), (nation, 0, 0), false)
                     + sum(customer_delta_seq_view(customer_delta_rows.take(index as int + 1)), |change: (CustomerRow, int)|
                         if change.0.c_custkey == key as int && change.0.c_nationkey == nation as int { change.1 } else { 0 }) by {
-                let prefix = customer_delta_seq_view(customer_delta_rows.take(index as int));
-                let next = (customer_input_view(customer_delta_rows[index as int].row), customer_delta_rows[index as int].sign as int);
-                assert(customer_delta_seq_view(customer_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |change: (CustomerRow, int)| if change.0.c_custkey == key as int
+                lemma_mapped_prefix_step(customer_delta_rows, |d: CustomerDelta| (customer_input_view(d.row), d.sign as int), index as int, |change: (CustomerRow, int)| if change.0.c_custkey == key as int
                     && change.0.c_nationkey == nation as int { change.1 } else { 0 });
             }
         }
@@ -363,10 +357,7 @@ pub fn apply_nations(delta: &Vec<NationDelta>, before: &Table, by_region_before:
                 by_region_before.at((region, 0, 0), (nation, 0, 0), false)
                     + sum(nation_delta_seq_view(nation_delta_rows.take(index as int + 1)), |change: (NationRow, int)|
                         if change.0.n_regionkey == region as int && change.0.n_nationkey == nation as int { change.1 } else { 0 }) by {
-                let prefix = nation_delta_seq_view(nation_delta_rows.take(index as int));
-                let next = (nation_input_view(nation_delta_rows[index as int].row), nation_delta_rows[index as int].sign as int);
-                assert(nation_delta_seq_view(nation_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |change: (NationRow, int)|
+                lemma_mapped_prefix_step(nation_delta_rows, |d: NationDelta| (nation_input_view(d.row), d.sign as int), index as int, |change: (NationRow, int)|
                     if change.0.n_regionkey == region as int && change.0.n_nationkey == nation as int { change.1 } else { 0 });
             }
             lemma_text_identifier(dictionary, 1, name, change.row.n_name@);
@@ -387,10 +378,9 @@ pub fn apply_nations(delta: &Vec<NationDelta>, before: &Table, by_region_before:
                 assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
                     lemma_known_text_extension(before_dictionary, dictionary, 1, nation_delta_rows[offset].row.n_name@);
                 }
-                lemma_sum_ext(prefix, before_weight, weight);
                 let next = (nation_input_view(nation_delta_rows[index as int].row), nation_delta_rows[index as int].sign as int);
                 assert(nation_delta_seq_view(nation_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, weight);
+                lemma_grown_prefix_step(prefix, next, before_weight, weight);
             }
         }
         index += 1;
@@ -473,10 +463,9 @@ pub fn apply_regions(delta: &Vec<RegionDelta>, before: &Table, nations_by_region
                 assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
                     lemma_known_text_extension(before_dictionary, dictionary, 2, region_delta_rows[offset].row.r_name@);
                 }
-                lemma_sum_ext(prefix, before_weight, weight);
                 let next = (region_input_view(region_delta_rows[index as int].row), region_delta_rows[index as int].sign as int);
                 assert(region_delta_seq_view(region_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, weight);
+                lemma_grown_prefix_step(prefix, next, before_weight, weight);
             }
         }
         include_region_nations(nations_by_region_before, change.row.r_regionkey, &mut changed_nations);
@@ -527,10 +516,7 @@ pub fn changed_lines_delta(before: &model::Data, parts: &Table, suppliers: &Tabl
             assert forall|key: Major, minor: Major, volume: bool| #[trigger] delta_base.at(key, minor, volume) ==
                 sum(line_delta_seq_view(line_changes.take(index as int + 1)), |change: (LineitemRow, int)|
                     crate::contributions::line_effect(before.parts, before.suppliers, before.customers, before.orders, change.0, key, minor, change.1, volume)) by {
-                let prefix = line_delta_seq_view(line_changes.take(index as int));
-                let next = (line_input_view(line_changes[index as int].row), line_changes[index as int].sign as int);
-                assert(line_delta_seq_view(line_changes.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |change: (LineitemRow, int)|
+                lemma_mapped_prefix_step(line_changes, |d: LineDelta| (line_input_view(d.row), d.sign as int), index as int, |change: (LineitemRow, int)|
                     crate::contributions::line_effect(before.parts, before.suppliers, before.customers, before.orders, change.0, key, minor, change.1, volume));
             }
         }

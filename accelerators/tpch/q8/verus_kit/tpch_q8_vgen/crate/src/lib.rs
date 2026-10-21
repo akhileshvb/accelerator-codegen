@@ -17,6 +17,7 @@ pub mod gen_spec;
 pub mod gen_obligations;
 pub mod kernel;
 pub mod table;
+pub mod counting;
 pub mod apply_proofs;
 pub mod deltas;
 pub mod scans;

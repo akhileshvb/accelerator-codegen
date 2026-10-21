@@ -8,6 +8,7 @@ use crate::dictionary::*;
 use crate::dimensions::*;
 use crate::model;
 use crate::num::Num;
+use crate::counting::*;
 use crate::maintenance::*;
 
 verus! {
@@ -62,9 +63,8 @@ pub fn scan_parts(parts: &[PartInput], initial: Dictionary) -> (result: (Table, 
                 assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
                     lemma_known_text_extension(before_dictionary, dictionary, 0, part_rows[offset].p_type@);
                 }
-                lemma_sum_ext(prefix, before_weight, weight);
                 assert(part_input_seq_view(part_rows.take(index as int + 1)) =~= prefix.push(part_input_view(part_rows[index as int])));
-                lemma_sum_push(prefix, part_input_view(part_rows[index as int]), weight);
+                lemma_grown_prefix_step(prefix, part_input_view(part_rows[index as int]), before_weight, weight);
             }
         }
         index += 1;
@@ -105,9 +105,7 @@ pub fn scan_suppliers(suppliers: &[SupplierInput], dictionary: &Dictionary) -> (
             assert forall|key: i64, nation: i64| #[trigger] supplier_work.at((key, 0, 0), (nation, 0, 0), false) ==
                 sum(supplier_input_seq_view(supplier_rows.take(index as int + 1)), |row: SupplierRow|
                     if row.s_suppkey == key as int && row.s_nationkey == nation as int { 1 } else { 0 }) by {
-                assert(supplier_input_seq_view(supplier_rows.take(index as int)) =~= supplier_input_seq_view(supplier_rows).take(index as int));
-                assert(supplier_input_seq_view(supplier_rows.take(index as int + 1)) =~= supplier_input_seq_view(supplier_rows).take(index as int + 1));
-                lemma_sum_take(supplier_input_seq_view(supplier_rows), index as int,
+                lemma_mapped_prefix_step(supplier_rows, |row: SupplierInput| supplier_input_view(row), index as int,
                     |row: SupplierRow| if row.s_suppkey == key as int && row.s_nationkey == nation as int { 1 } else { 0 });
             }
         }
@@ -144,9 +142,7 @@ pub fn scan_customers(customers: &[CustomerInput], dictionary: &Dictionary) -> (
             assert forall|key: i64, nation: i64| #[trigger] customer_work.at((key, 0, 0), (nation, 0, 0), false) ==
                 sum(customer_input_seq_view(customer_rows.take(index as int + 1)), |row: CustomerRow|
                     if row.c_custkey == key as int && row.c_nationkey == nation as int { 1 } else { 0 }) by {
-                assert(customer_input_seq_view(customer_rows.take(index as int)) =~= customer_input_seq_view(customer_rows).take(index as int));
-                assert(customer_input_seq_view(customer_rows.take(index as int + 1)) =~= customer_input_seq_view(customer_rows).take(index as int + 1));
-                lemma_sum_take(customer_input_seq_view(customer_rows), index as int,
+                lemma_mapped_prefix_step(customer_rows, |row: CustomerInput| customer_input_view(row), index as int,
                     |row: CustomerRow| if row.c_custkey == key as int && row.c_nationkey == nation as int { 1 } else { 0 });
             }
         }
@@ -201,9 +197,7 @@ pub fn scan_orders(window_orders: &[OrderInput], dictionary: &Dictionary, Ghost(
                 sum(order_input_seq_view(order_rows.take(index as int + 1)), |row: OrdersRow|
                     if row.o_orderkey == order as int && row.o_custkey == customer as int
                         && model::year_of(row.o_orderdate) != 0 { 1 } else { 0 }) by {
-                assert(order_input_seq_view(order_rows.take(index as int)) =~= order_input_seq_view(order_rows).take(index as int));
-                assert(order_input_seq_view(order_rows.take(index as int + 1)) =~= order_input_seq_view(order_rows).take(index as int + 1));
-                lemma_sum_take(order_input_seq_view(order_rows), index as int,
+                lemma_mapped_prefix_step(order_rows, |row: OrderInput| order_input_view(row), index as int,
                     |row: OrdersRow| if row.o_orderkey == order as int && row.o_custkey == customer as int
                         && model::year_of(row.o_orderdate) != 0 { 1 } else { 0 });
             }
@@ -211,9 +205,7 @@ pub fn scan_orders(window_orders: &[OrderInput], dictionary: &Dictionary, Ghost(
                 sum(order_input_seq_view(order_rows.take(index as int + 1)), |row: OrdersRow|
                     if row.o_orderkey == key as int && row.o_custkey == customer as int && selected != 0
                         && model::year_of(row.o_orderdate) == selected as int { 1 } else { 0 }) by {
-                assert(order_input_seq_view(order_rows.take(index as int)) =~= order_input_seq_view(order_rows).take(index as int));
-                assert(order_input_seq_view(order_rows.take(index as int + 1)) =~= order_input_seq_view(order_rows).take(index as int + 1));
-                lemma_sum_take(order_input_seq_view(order_rows), index as int,
+                lemma_mapped_prefix_step(order_rows, |row: OrderInput| order_input_view(row), index as int,
                     |row: OrdersRow| if row.o_orderkey == key as int && row.o_custkey == customer as int && selected != 0
                         && model::year_of(row.o_orderdate) == selected as int { 1 } else { 0 });
             }
@@ -276,9 +268,7 @@ pub fn scan_nations(nations: &[NationInput], initial: Dictionary) -> (result: (T
             assert forall|region: i64, nation: i64| #[trigger] reverse_nations.at((region, 0, 0), (nation, 0, 0), false) ==
                 sum(nation_input_seq_view(nation_rows.take(index as int + 1)), |row: NationRow|
                     if row.n_regionkey == region as int && row.n_nationkey == nation as int { 1 } else { 0 }) by {
-                assert(nation_input_seq_view(nation_rows.take(index as int)) =~= nation_input_seq_view(nation_rows).take(index as int));
-                assert(nation_input_seq_view(nation_rows.take(index as int + 1)) =~= nation_input_seq_view(nation_rows).take(index as int + 1));
-                lemma_sum_take(nation_input_seq_view(nation_rows), index as int,
+                lemma_mapped_prefix_step(nation_rows, |row: NationInput| nation_input_view(row), index as int,
                     |row: NationRow| if row.n_regionkey == region as int && row.n_nationkey == nation as int { 1 } else { 0 });
             }
             lemma_text_identifier(dictionary, 1, name, row.n_name@);
@@ -298,9 +288,8 @@ pub fn scan_nations(nations: &[NationInput], initial: Dictionary) -> (result: (T
                 assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
                     lemma_known_text_extension(before_dictionary, dictionary, 1, nation_rows[offset].n_name@);
                 }
-                lemma_sum_ext(prefix, before_weight, weight);
                 assert(nation_input_seq_view(nation_rows.take(index as int + 1)) =~= prefix.push(nation_input_view(nation_rows[index as int])));
-                lemma_sum_push(prefix, nation_input_view(nation_rows[index as int]), weight);
+                lemma_grown_prefix_step(prefix, nation_input_view(nation_rows[index as int]), before_weight, weight);
             }
         }
         index += 1;
@@ -366,9 +355,8 @@ pub fn scan_regions(regions: &[RegionInput], initial: Dictionary) -> (result: (T
                 assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
                     lemma_known_text_extension(before_dictionary, dictionary, 2, region_rows[offset].r_name@);
                 }
-                lemma_sum_ext(prefix, before_weight, weight);
                 assert(region_input_seq_view(region_rows.take(index as int + 1)) =~= prefix.push(region_input_view(region_rows[index as int])));
-                lemma_sum_push(prefix, region_input_view(region_rows[index as int]), weight);
+                lemma_grown_prefix_step(prefix, region_input_view(region_rows[index as int]), before_weight, weight);
             }
         }
         index += 1;
@@ -407,10 +395,7 @@ pub fn scan_lines(lines: &[LineInput], nation_count: usize, parts: &Table, suppl
             assert forall|key: Major, minor: Major, volume: bool| #[trigger] base_work.at(key, minor, volume) ==
                 sum(line_input_seq_view(line_rows.take(index as int + 1)), |line: LineitemRow|
                     crate::contributions::line_effect(*parts, *suppliers, *customers, *orders, line, key, minor, 1, volume)) by {
-                let prefix = line_input_seq_view(line_rows.take(index as int));
-                let next = line_input_view(line_rows[index as int]);
-                assert(line_input_seq_view(line_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |line: LineitemRow|
+                lemma_mapped_prefix_step(line_rows, |row: LineInput| line_input_view(row), index as int, |line: LineitemRow|
                     crate::contributions::line_effect(*parts, *suppliers, *customers, *orders, line, key, minor, 1, volume));
             }
         }
