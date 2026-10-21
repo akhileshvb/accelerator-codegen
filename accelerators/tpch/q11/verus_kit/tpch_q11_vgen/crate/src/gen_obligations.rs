@@ -186,9 +186,9 @@ pub open spec fn capture_ok(db: Db, db2: Db, nation: Seq<(NationRow, int)>, part
 
 // ── The envelope: where the kernel may not decline ──
 
-/// Most rows a table may hold.
+/// Most rows a table can hold (the DBMS's row ids are 64-bit).
 pub open spec fn max_rows() -> int {
-    1099511627776
+    9223372036854775808
 }
 
 /// Most changed rows a state may absorb after its build before apply may decline
@@ -216,8 +216,8 @@ pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
     && -2147483648 <= r.s_nationkey <= 2147483647
 }
 
-/// The databases the host can deliver: each table within max_rows(), each value
-/// within its column's SQL type (which the DBMS enforces).
+/// The databases the DBMS can represent: each table within its row-id space, each
+/// value within its column's SQL type.
 pub open spec fn envelope(db: Db) -> bool {
     &&& db.nation.len() <= max_rows()
     &&& forall|i: int| 0 <= i < db.nation.len() ==> nation_in_type(#[trigger] db.nation[i])

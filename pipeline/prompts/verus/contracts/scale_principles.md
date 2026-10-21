@@ -40,7 +40,7 @@ accelerator keeps its advantage as data grows:
   * **exact, small first**: sums and counts over joined tuples use
     the prooflib's exact integer `wide`, whose `i128` fast path holds their
     SF3000 magnitude without allocating; counts of one table's rows fit
-    `i64` (at most 2^40 rows); never narrow a stored value below what the
+    `i64` (at most 2^63 rows, the DBMS's row-id space), sums of counts need more; never narrow a stored value below what the
     envelope allows;
   * keep one copy of each fact: rank or secondary indexes hold small
     records (key + ranking value), not pointers to or copies of full rows.
@@ -138,7 +138,7 @@ accelerator keeps its advantage as data grows:
   temporaries stay small, and drop each temporary as soon as it is consumed.
 * **Magnitudes**: at SF3000 order keys exceed 2^31 and sums of decimal
   products exceed i64. Size every value for the envelope, not the data: keys
-  as their column type, row counts up to 2^40, sums over joins exact (the
+  as their column type, row counts up to 2^63 (the DBMS's row ids), sums over joins exact (the
   prooflib's `wide`).
   The only overflow decline left is a correct answer that does not fit the
   result types, proven with that answer as the witness.

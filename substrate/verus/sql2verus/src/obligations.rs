@@ -497,9 +497,8 @@ impl<'t, 'a> Ob<'t, 'a> {
     }
 }
 
-/// Rows a table may hold before the kernel may decline: above any target
-/// database (TPC-H SF3000 lineitem has about 2^34 rows).
-const MAX_ROWS: i128 = 1 << 40;
+/// Rows a table can hold: the DBMS numbers rows with 64-bit row ids.
+const MAX_ROWS: i128 = 1 << 63;
 
 /// Changed rows a state may absorb after its build before apply may decline.
 const MAX_HISTORY: i128 = 1 << 62;
@@ -1093,7 +1092,7 @@ pub(crate) async fn obligations(
     }
     writeln!(w, "}}\n").unwrap();
     writeln!(w, "// ── The envelope: where the kernel may not decline ──\n").unwrap();
-    writeln!(w, "/// Most rows a table may hold.\npub open spec fn max_rows() -> int {{\n    {MAX_ROWS}\n}}\n").unwrap();
+    writeln!(w, "/// Most rows a table can hold (the DBMS's row ids are 64-bit).\npub open spec fn max_rows() -> int {{\n    {MAX_ROWS}\n}}\n").unwrap();
     writeln!(w, "/// Most changed rows a state may absorb after its build before apply may decline\n/// (the host then rebuilds).\npub open spec fn max_history() -> int {{\n    {MAX_HISTORY}\n}}\n").unwrap();
     let mut env = vec![];
     for t in &tables {
@@ -1110,8 +1109,8 @@ pub(crate) async fn obligations(
             env.push(format!("forall|i: int| 0 <= i < db.{f}.len() ==> {f}_in_type(#[trigger] db.{f}[i])"));
         }
     }
-    writeln!(w, "/// The databases the host can deliver: each table within max_rows(), each value").unwrap();
-    writeln!(w, "/// within its column's SQL type (which the DBMS enforces).").unwrap();
+    writeln!(w, "/// The databases the DBMS can represent: each table within its row-id space, each").unwrap();
+    writeln!(w, "/// value within its column's SQL type.").unwrap();
     writeln!(w, "pub open spec fn envelope(db: Db) -> bool {{").unwrap();
     for e in &env {
         writeln!(w, "    &&& {e}").unwrap();

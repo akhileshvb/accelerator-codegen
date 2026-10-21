@@ -34,8 +34,9 @@ only outside the `envelope` (a table above `max_rows()` rows, or a value
 outside its column's SQL type), and `execute` also when `answer_fits` fails (a
 correct answer does not fit the result's runtime types). Inside the envelope,
 `build`, `apply` and `execute` must answer for every parameter value. So size
-accumulators for the envelope, not for the data you expect (a sum of 2^40
-products of two DECIMAL(15,2) values needs more than 128 bits), and prove
+accumulators for the envelope, not for the data you expect (a table may
+hold up to 2^63 rows, so a sum of its DECIMAL(15,2) products needs more than
+128 bits), and prove
 "impossible" maintenance branches unreachable from the invariant instead of
 returning `Err`. To decline on overflow, exhibit the correct answer (in `int`)
 that does not fit.
