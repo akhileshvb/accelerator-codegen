@@ -1441,10 +1441,10 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
     state.pages = std::move(cube.state->pages);
   }
 
-  dims.part_key_to_type = part_b.Finish();
-  dims.suppkey_to_nation = supp_b.Finish();
-  dims.custkey_to_nation = cust_b.Finish();
-  dims.order_info = order_b.Finish();
+  dims.part_key_to_type = part_b.Finish(parallel_shards);
+  dims.suppkey_to_nation = supp_b.Finish(parallel_shards);
+  dims.custkey_to_nation = cust_b.Finish(parallel_shards);
+  dims.order_info = order_b.Finish(parallel_shards);
 
   // Keep reverse maps published. PostgreSQL PreCommit cannot safely run SPI
   // InitialScan lookups, and RF inserts/deletes need order/part/supplier

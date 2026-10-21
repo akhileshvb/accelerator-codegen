@@ -885,7 +885,7 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
       },
       [](std::size_t, const TpchQ7Map<TpchQ7OrderCust>::Element &) {});
   orders.builder.Sort(sort_shards);
-  state.order_custkeys = orders.builder.Finish();
+  state.order_custkeys = orders.builder.Finish(sort_shards);
 
   const auto add_revenue = [&](int32_t supp_nk, int32_t cust_nk, int32_t year,
                                int64_t revenue) {
@@ -996,8 +996,8 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
     cust_b.Add({k, {-1, static_cast<int32_t>(n)}});
   supp_b.Sort(sort_shards);
   cust_b.Sort(sort_shards);
-  state.supplier_nations = supp_b.Finish();
-  state.customer_nations = cust_b.Finish();
+  state.supplier_nations = supp_b.Finish(sort_shards);
+  state.customer_nations = cust_b.Finish(sort_shards);
   return state;
 }
 
