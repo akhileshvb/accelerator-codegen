@@ -23,7 +23,7 @@ stage_providers:
   crash_debug: codex_exec
   audit: codex_exec
   architecture_audit: codex_exec
-  # Cheap per-layer critic (deepseek-v4-flash via Codex exec + OpenRouter).
+  # Cheap per-layer critic (cheap_code via Codex exec + OpenRouter).
   layer_critique: codex_exec
   # Verus accelerator pipeline (--mode verus): every agent step on codex exec.
   verus_spec_audit: codex_exec
@@ -51,12 +51,12 @@ stage_reasoning_effort:
   verus_audit: low
 
 presets:
-  cheap_code: deepseek/deepseek-v4-flash
-  code: deepseek/deepseek-v4-pro
+  cheap_code: openai/gpt-6-luna
+  code: openai/gpt-6-luna-pro
   reasoning: openai/gpt-5.6-terra-pro
   debug: openai/gpt-5.6-terra-pro
   reviewer: anthropic/claude-sonnet-5
-  default: deepseek/deepseek-v4-pro
+  default: openai/gpt-6-luna-pro
   # Verus pipeline only (the C++ pipeline keeps the presets above).
   # Reviews: a different family from the builders (OpenAI, Xiaomi).
   verus_reasoning: openai/gpt-6.1-sol   # analysis, kernel + proofs, kernel fix, optimization

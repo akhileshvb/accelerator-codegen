@@ -27,14 +27,14 @@ def test_resolve_stage_provider_codex_overrides():
     assert resolve_stage_provider("optimization_worker", cfg) == "codex_exec"
     assert resolve_stage_provider("optimization_unified_hypothesis", cfg) == "codex_exec"
     assert resolve_stage_provider("crash_debug", cfg) == "codex_exec"
-    assert resolve_preset("impl_capture", cfg) == "deepseek/deepseek-v4-pro"
-    assert resolve_preset("implementation", cfg) == "deepseek/deepseek-v4-pro"
+    assert resolve_preset("impl_capture", cfg) == "openai/gpt-6-luna-pro"
+    assert resolve_preset("implementation", cfg) == "openai/gpt-6-luna-pro"
     assert resolve_stage_provider("critique_store", cfg) == "codex_exec"
     assert resolve_stage_provider("layer_critique", cfg) == "codex_exec"
-    assert resolve_preset("critique_store", cfg) == "deepseek/deepseek-v4-flash"
-    assert resolve_preset("layer_critique", cfg) == "deepseek/deepseek-v4-flash"
+    assert resolve_preset("critique_store", cfg) == "openai/gpt-6-luna"
+    assert resolve_preset("layer_critique", cfg) == "openai/gpt-6-luna"
     assert resolve_stage_provider("critique_host_bootstrap", cfg) == "codex_exec"
-    assert resolve_preset("critique_host_bootstrap", cfg) == "deepseek/deepseek-v4-flash"
+    assert resolve_preset("critique_host_bootstrap", cfg) == "openai/gpt-6-luna"
 
 
 def test_unknown_stage_provider_raises():
