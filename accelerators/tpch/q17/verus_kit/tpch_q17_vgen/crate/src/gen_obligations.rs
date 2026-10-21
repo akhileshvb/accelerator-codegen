@@ -146,10 +146,17 @@ pub open spec fn part_delta_seq_view(s: Seq<PartDelta>) -> Seq<(PartRow, int)> {
     s.map_values(|d: PartDelta| (part_input_view(d.row), d.sign as int))
 }
 
+/// Each change is one row, inserted (+1) or deleted (-1).
+pub open spec fn unit_weights<A>(d: Seq<(A, int)>) -> bool {
+    forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1
+}
+
 /// One transaction's changes: every table of db2 is that of db plus its deltas (bags).
 pub open spec fn capture_ok(db: Db, db2: Db, lineitem: Seq<(LineitemRow, int)>, part: Seq<(PartRow, int)>) -> bool {
     &&& bag_step(db.lineitem, db2.lineitem, lineitem)
+    &&& unit_weights(lineitem)
     &&& bag_step(db.part, db2.part, part)
+    &&& unit_weights(part)
 }
 
 // ── The envelope: where the kernel may not decline ──

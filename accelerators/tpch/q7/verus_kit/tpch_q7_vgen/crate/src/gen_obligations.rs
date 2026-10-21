@@ -370,13 +370,23 @@ pub open spec fn lineitem_delta_ok(d: Seq<LineDelta>, full: Seq<(LineitemRow, in
     }
 }
 
+/// Each change is one row, inserted (+1) or deleted (-1).
+pub open spec fn unit_weights<A>(d: Seq<(A, int)>) -> bool {
+    forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1
+}
+
 /// One transaction's changes: every table of db2 is that of db plus its deltas (bags).
 pub open spec fn capture_ok(db: Db, db2: Db, customer: Seq<(CustomerRow, int)>, lineitem: Seq<(LineitemRow, int)>, nation: Seq<(NationRow, int)>, orders: Seq<(OrdersRow, int)>, supplier: Seq<(SupplierRow, int)>) -> bool {
     &&& bag_step(db.customer, db2.customer, customer)
+    &&& unit_weights(customer)
     &&& bag_step(db.lineitem, db2.lineitem, lineitem)
+    &&& unit_weights(lineitem)
     &&& bag_step(db.nation, db2.nation, nation)
+    &&& unit_weights(nation)
     &&& bag_step(db.orders, db2.orders, orders)
+    &&& unit_weights(orders)
     &&& bag_step(db.supplier, db2.supplier, supplier)
+    &&& unit_weights(supplier)
 }
 
 // ── The envelope: where the kernel may not decline ──

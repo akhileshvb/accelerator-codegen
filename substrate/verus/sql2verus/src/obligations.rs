@@ -1069,10 +1069,14 @@ pub(crate) async fn obligations(
         w.push_str(it);
     }
     let cps: Vec<String> = tables.iter().map(|t| format!("{}: Seq<({}, int)>", table_field(t), table_row(t))).collect();
+    writeln!(w, "/// Each change is one row, inserted (+1) or deleted (-1).").unwrap();
+    writeln!(w, "pub open spec fn unit_weights<A>(d: Seq<(A, int)>) -> bool {{").unwrap();
+    writeln!(w, "    forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1\n}}\n").unwrap();
     writeln!(w, "/// One transaction's changes: every table of db2 is that of db plus its deltas (bags).").unwrap();
     writeln!(w, "pub open spec fn capture_ok(db: Db, db2: Db, {}) -> bool {{", cps.join(", ")).unwrap();
     for t in &tables {
         writeln!(w, "    &&& bag_step(db.{f}, db2.{f}, {f})", f = table_field(t)).unwrap();
+        writeln!(w, "    &&& unit_weights({})", table_field(t)).unwrap();
     }
     writeln!(w, "}}\n").unwrap();
     writeln!(w, "// ── The envelope: where the kernel may not decline ──\n").unwrap();
