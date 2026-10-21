@@ -40,14 +40,14 @@ pub proof fn lemma_apply_moments(db: Db, db2: Db, lines: Seq<LineDelta>, parts: 
     lemma_apply_join(db, db2, lines, parts, full, keys, rescans, |line: LineitemRow| in_block(id, line.l_shipdate), true, true);
 }
 
-pub proof fn lemma_execute_result(db: Db, start: int, end: int, count: int, total: int, promo: int,
-    out: Seq<Option<(i128, i128)>>)
+pub open spec fn model_answer(count: int, total: int, promo: int) -> Seq<OutRow> {
+    seq![OutRow { promo_revenue: if count != 0 { Some(Rat { num: 100000000 * promo, den: 1000000 * total }) } else { None } }]
+}
+
+pub proof fn lemma_model_result(db: Db, start: int, end: int, count: int, total: int, promo: int)
     requires count == interval_count(db, start, end), total == interval_total(db, start, end),
-        promo == interval_promo(db, start, end), out.len() == 1,
-        count == 0 ==> out[0] is None,
-        count != 0 ==> total != 0 && out[0] is Some &&
-            out[0].unwrap().0 as int == 100000000 * promo && out[0].unwrap().1 as int == 1000000 * total,
-    ensures query_result(db, params(start, end), out_view(out)),
+        promo == interval_promo(db, start, end), count == 0 || total != 0,
+    ensures query_result(db, params(start, end), model_answer(count, total, promo)),
 {
     let parameters = params(start, end);
     lemma_query_join(db, parameters, false, false);
@@ -63,9 +63,21 @@ pub proof fn lemma_execute_result(db: Db, start: int, end: int, count: int, tota
         } else { 0 });
     assert(count == group_count(db, parameters));
     assert(count >= 0);
-    assert(out_view(out).len() == 1);
     assert(10000 * promo * 10000 == 100000000 * promo) by (nonlinear_arith);
-    assert(row_ok(db, parameters, out_view(out)[0]));
+    assert(row_ok(db, parameters, model_answer(count, total, promo)[0]));
+}
+
+pub proof fn lemma_execute_result(db: Db, start: int, end: int, count: int, total: int, promo: int,
+    out: Seq<Option<(i128, i128)>>)
+    requires count == interval_count(db, start, end), total == interval_total(db, start, end),
+        promo == interval_promo(db, start, end), out.len() == 1,
+        count == 0 ==> out[0] is None,
+        count != 0 ==> total != 0 && out[0] is Some &&
+            out[0].unwrap().0 as int == 100000000 * promo && out[0].unwrap().1 as int == 1000000 * total,
+    ensures query_result(db, params(start, end), out_view(out)),
+{
+    lemma_model_result(db, start, end, count, total, promo);
+    assert(out_view(out) =~= model_answer(count, total, promo));
 }
 
 pub proof fn lemma_catalog(parts: Seq<PartRow>, key: int, promotional: bool)
