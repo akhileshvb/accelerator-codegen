@@ -30,7 +30,7 @@ manifest.
 
 | role id | the backend provides | fixed names |
 |---|---|---|
-| `registration` | The static registrars through which accelerators plug in without the backend naming any query: the engine's own registries (catalog entry, SQL entry point, executor, table function or UDF shim). | none |
+| `registration` | The static registrars through which accelerators plug in without the backend naming any query: the engine's own registries (catalog entry, executor, table function or UDF shim), and always an **SQL entry-point registrar**: an accelerator declares its SQL-visible name, argument types, result columns and fallback SQL once, and the backend makes it callable on every connection, routing calls through the runtime read with the fallback. Accelerators never write engine function-registration code themselves. | none |
 | `runtime` | The host/runtime handle accelerators and harnesses use: finding or creating the backend's runtime host for a database/server, registering an accelerator module, running a read, applying a write, forcing a build. | none |
 | `scan` | The engine-local typed scan helpers accelerator modules use in their initial scan: rows or batches of a table, a partitioned parallel scan, typed column decoding, inside the build snapshot. | none |
 | `sql_fallback` | Answering a registered query from SQL in the reader's own transaction/snapshot (the query's `fallback_sql` with the call's arguments as parameters or literals), rows converted to `core::AuxRow`. | none |
