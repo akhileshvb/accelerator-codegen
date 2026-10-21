@@ -16,6 +16,9 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
+// Rows per ApplyGrouped group (the substrate test grain can lower it).
+constexpr std::size_t kRowsPerGroup = 2048;
+
 // Shards per slice when sorting or scanning the built order index (untimed).
 constexpr std::size_t kSortShardGrain = 16;
 // Order keys per slice of the side-index lookups (untimed).
@@ -836,7 +839,7 @@ private:
             else
               scope.Erase(c.key);
           }
-        });
+        }, core::CappedGrain(kRowsPerGroup));
   }
 
   bool ScanOrdersOf(uint64_t custkey, std::vector<TpchQ3OrderInput> &orders) {

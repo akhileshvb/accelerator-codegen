@@ -20,6 +20,9 @@ namespace accelerator_codegen::aux_state::query {
 
 namespace {
 
+// Rows per ApplyGrouped group (the substrate test grain can lower it).
+constexpr std::size_t kRowsPerGroup = 2048;
+
 namespace sql_date = core::sql_date;
 
 // Shards per slice when sorting a built index (untimed).
@@ -348,7 +351,7 @@ private:
               scope.Erase(c.key);
             }
           }
-        });
+        }, core::CappedGrain(kRowsPerGroup));
     KeyPairs run;
     for (auto &part : group_deleted)
       run.insert(run.end(), part.begin(), part.end());
@@ -389,7 +392,7 @@ private:
             else
               scope.Upsert({a.key, e});
           }
-        });
+        }, core::CappedGrain(kRowsPerGroup));
   }
 
   // Resolves one lineitem op of a run against the published dimensions into `out`. A +1

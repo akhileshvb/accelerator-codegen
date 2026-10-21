@@ -19,6 +19,9 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
+// Rows per ApplyGrouped group (the substrate test grain can lower it).
+constexpr std::size_t kRowsPerGroup = 2048;
+
 // Lineitem deltas per slice when resolving them against the dimensions (untimed).
 constexpr std::size_t kResolveGrain = 2048;
 // Touched mid arrays per slice when publishing a dimension map (untimed).
@@ -687,7 +690,7 @@ private:
             else
               scope.Erase(m.key);
           }
-        });
+        }, core::CappedGrain(kRowsPerGroup));
   }
 
   void DecideOrder(const NetOrder &net, OrderEffects &out) const {
@@ -911,7 +914,7 @@ private:
             if (e->lines < 0)
               e->lines = -1;
           }
-        });
+        }, core::CappedGrain(kRowsPerGroup));
   }
 
   void FinishDimensions() {
