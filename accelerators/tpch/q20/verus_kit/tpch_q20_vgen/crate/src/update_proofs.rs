@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::*;
 use verus_common::sqlfns::like_match;
 use verus_prooflib::*;
@@ -76,6 +77,37 @@ pub proof fn lemma_supplier_updated(before: Db, after: Db, original: Suppliers, 
         assert(supplier_count(original, nation, supplier, name, address) == sum(before.supplier, weight));
     }
 }
+pub proof fn lemma_supplier_ready(before: Db, after: Db, original: Suppliers, work: SupplierWork, deltas: Seq<SupplierDelta>)
+    requires supplier_correct(before, original), bag_step(before.supplier, after.supplier, supplier_delta_seq_view(deltas)),
+        forall|nation: i64, supplier: i64, name: Seq<u8>, address: Seq<u8>| #[trigger] work.count(original, nation, supplier, name, address)
+            == supplier_count(original, nation, supplier, name, address) + sum(deltas, supplier_delta_weight(nation, supplier, name, address)),
+    ensures work.ready(original),
+{
+    assert forall|nation: i64, supplier: i64, name: Seq<u8>, address: Seq<u8>| #[trigger] work.count(original, nation, supplier, name, address) >= 0 by {
+        let weight = |row: SupplierRow| if row.s_nationkey == nation && row.s_suppkey == supplier && row.s_name == name && row.s_address == address { 1int } else { 0int };
+        let signed = |entry: (SupplierRow, int)| entry.1 * weight(entry.0);
+        assert(sum(after.supplier, weight) == sum(before.supplier, weight) + sum(supplier_delta_seq_view(deltas), signed));
+        lemma_sum_map(deltas, |delta: SupplierDelta| (supplier_input_view(delta.row), delta.sign as int), signed, supplier_delta_weight(nation, supplier, name, address));
+        assert(supplier_count(original, nation, supplier, name, address) == sum(before.supplier, weight));
+        assert forall|index: int| 0 <= index < after.supplier.len() implies weight(#[trigger] after.supplier[index]) >= 0 by {}
+        lemma_sum_nonneg(after.supplier, weight);
+    }
+}
+pub proof fn lemma_nation_ready(before: Db, after: Db, original: Nations, work: NationWork, deltas: Seq<NationDelta>)
+    requires nation_correct(before, original), bag_step(before.nation, after.nation, nation_delta_seq_view(deltas)),
+        forall|name: Seq<u8>, key: i64| #[trigger] work.count(original, name, key) == nation_count(original, name, key) + sum(deltas, nation_delta_weight(name, key)),
+    ensures work.ready(original),
+{
+    assert forall|name: Seq<u8>, key: i64| #[trigger] work.count(original, name, key) >= 0 by {
+        let weight = |row: NationRow| if row.n_name == name && row.n_nationkey == key { 1int } else { 0int };
+        let signed = |entry: (NationRow, int)| entry.1 * weight(entry.0);
+        assert(sum(after.nation, weight) == sum(before.nation, weight) + sum(nation_delta_seq_view(deltas), signed));
+        lemma_sum_map(deltas, |delta: NationDelta| (nation_input_view(delta.row), delta.sign as int), signed, nation_delta_weight(name, key));
+        assert(nation_count(original, name, key) == sum(before.nation, weight));
+        assert forall|index: int| 0 <= index < after.nation.len() implies weight(#[trigger] after.nation[index]) >= 0 by {}
+        lemma_sum_nonneg(after.nation, weight);
+    }
+}
 pub proof fn lemma_nation_updated(before: Db, after: Db, original: Nations, updated: Nations, deltas: Seq<NationDelta>)
     requires nation_correct(before, original), nations_positive(updated), bag_step(before.nation, after.nation, nation_delta_seq_view(deltas)),
         forall|name: Seq<u8>, key: i64| #[trigger] nation_count(updated, name, key) == nation_count(original, name, key) + sum(deltas, nation_delta_weight(name, key)),
@@ -91,6 +123,21 @@ pub proof fn lemma_nation_updated(before: Db, after: Db, original: Nations, upda
 }
 pub open spec fn name_delta_weight(key: i64, name: Seq<u8>) -> spec_fn(PartDelta) -> int {
     |delta: PartDelta| if delta.row.p_partkey == key && delta.row.p_name@ == name { delta.sign as int } else { 0 }
+}
+pub proof fn lemma_names_ready(before: Db, after: Db, original: PartNames, work: NameWork, deltas: Seq<PartDelta>)
+    requires names_correct(before, original), bag_step(before.part, after.part, part_delta_seq_view(deltas)),
+        forall|key: i64, name: Seq<u8>| #[trigger] work.count(original, key, name) == name_count(original, key, name) + sum(deltas, name_delta_weight(key, name)),
+    ensures work.ready(original),
+{
+    assert forall|key: i64, name: Seq<u8>| #[trigger] work.count(original, key, name) >= 0 by {
+        let weight = |row: PartRow| if row.p_partkey == key && row.p_name == name { 1int } else { 0int };
+        let signed = |entry: (PartRow, int)| entry.1 * weight(entry.0);
+        assert(sum(after.part, weight) == sum(before.part, weight) + sum(part_delta_seq_view(deltas), signed));
+        lemma_sum_map(deltas, |delta: PartDelta| (part_input_view(delta.row), delta.sign as int), signed, name_delta_weight(key, name));
+        assert(name_count(original, key, name) == sum(before.part, weight));
+        assert forall|index: int| 0 <= index < after.part.len() implies weight(#[trigger] after.part[index]) >= 0 by {}
+        lemma_sum_nonneg(after.part, weight);
+    }
 }
 pub proof fn lemma_names_updated(before: Db, after: Db, original: PartNames, updated: PartNames, deltas: Seq<PartDelta>)
     requires names_correct(before, original), names_positive(updated), bag_step(before.part, after.part, part_delta_seq_view(deltas)),
@@ -118,7 +165,7 @@ pub struct FactUpdate {
     pub before: Db,
     pub after: Db,
     pub parts: Table<Part>,
-    pub counts: Map<i64, i128>,
+    pub counts: Map<i64, Wide>,
     pub activated: Map<i64, bool>,
     pub stocks: Seq<StockInput>,
     pub ships: Seq<ShipmentInput>,
@@ -270,9 +317,30 @@ impl FactUpdate {
             }
         }
     }
+    pub proof fn finish_ready_part(self, work: Map<i64, PartWork>, key: i64, source: PartWork)
+        requires self.valid(), work.contains_key(key), source == work[key], source.shape(), source.count@ > 0,
+            source.count@ == coalesced_part_count(self.parts, self.counts, key),
+            self.progress(work, self.stocks.len() as int, self.ships.len() as int, self.stock_delta.len() as int, self.ship_delta.len() as int),
+        ensures source.finish_ready(),
+    {
+        assert(coalesced_part_count(self.parts, self.counts, key) == eligible(self.after, key as int));
+        assert forall|supplier: i64, value: int| #[trigger] source.stock_for(supplier, value) >= 0 by {
+            self.final_stock(key, supplier, value);
+            assert(combined_stock(work, self.parts, key, supplier, value) == self.stock(key, supplier, value, self.stocks.len() as int, self.stock_delta.len() as int));
+            crate::ready_proofs::lemma_stock_nonneg(self.after, key as int, supplier as int, value);
+        }
+        assert forall|supplier: i64, date: int| #![trigger source.day_for(supplier, date, false)]
+            source.day_for(supplier, date, false) >= 0 && (source.day_for(supplier, date, false) == 0 ==> source.day_for(supplier, date, true) == 0) by {
+            self.final_day(key, supplier, date, false); self.final_day(key, supplier, date, true);
+            assert(combined_day(work, self.parts, key, supplier, date, false) == self.day(key, supplier, date, false, self.ships.len() as int, self.ship_delta.len() as int));
+            assert(combined_day(work, self.parts, key, supplier, date, true) == self.day(key, supplier, date, true, self.ships.len() as int, self.ship_delta.len() as int));
+            crate::ready_proofs::lemma_daily_nonneg(self.after, key as int, supplier as int, date);
+        }
+        crate::ready_proofs::lemma_part_finish_ready(source);
+    }
     pub proof fn finished_part(self, work: Map<i64, PartWork>, key: i64, source: PartWork, part: &Part)
-        requires self.valid(), work.contains_key(key), source == work[key], source.shape(), source.count > 0,
-            source.count == coalesced_part_count(self.parts, self.counts, key),
+        requires self.valid(), work.contains_key(key), source == work[key], source.shape(), source.count@ > 0,
+            source.count@ == coalesced_part_count(self.parts, self.counts, key),
             self.progress(work, self.stocks.len() as int, self.ships.len() as int, self.stock_delta.len() as int, self.ship_delta.len() as int),
             part_shape(*part), part.count == source.count,
             forall|supplier: i64, value: int| #[trigger] part_stock(part.pairs@, supplier, value) == source.stock_for(supplier, value),

@@ -20,3 +20,4 @@ pub mod state_proofs;
 pub mod predicate_proofs;
 pub mod read_proofs;
 pub mod update_proofs;
+pub mod ready_proofs;
