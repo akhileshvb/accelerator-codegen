@@ -44,9 +44,16 @@ def snapshot(repo_root: Path) -> dict[Path, bytes]:
     return {f: f.read_bytes() for f in _files(repo_root)}
 
 
-def _committed(repo_root: Path, f: Path) -> bytes | None:
-    rel = f.relative_to(repo_root).as_posix()
-    proc = subprocess.run(["git", "-C", str(repo_root), "show", f"HEAD:{rel}"], capture_output=True)
+def _committed(f: Path) -> bytes | None:
+    """The file's content at HEAD of the repository that holds it (a worker worktree links some
+    pipeline directories to the primary tree, whose commits are the ones that count)."""
+    real = f.resolve()
+    top = subprocess.run(["git", "-C", str(real.parent), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True)
+    if top.returncode != 0:
+        return None
+    rel = real.relative_to(Path(top.stdout.strip())).as_posix()
+    proc = subprocess.run(["git", "-C", top.stdout.strip(), "show", f"HEAD:{rel}"], capture_output=True)
     return proc.stdout if proc.returncode == 0 else None
 
 
@@ -56,14 +63,14 @@ def restore(repo_root: Path, before: dict[Path, bytes]) -> list[str]:
     changed: list[str] = []
     now = set(_files(repo_root))
     for f in sorted(now - before.keys()):
-        if _committed(repo_root, f) == f.read_bytes():
+        if _committed(f) == f.read_bytes():
             continue
         f.unlink()
         changed.append(f"added {f.relative_to(repo_root)}")
     for f, data in before.items():
         if f in now and f.read_bytes() == data:
             continue
-        if f in now and _committed(repo_root, f) == f.read_bytes():
+        if f in now and _committed(f) == f.read_bytes():
             continue
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(data)
