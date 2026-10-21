@@ -3,6 +3,7 @@
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/common/dealt_rows.hpp"
 
@@ -24,6 +25,9 @@ namespace sql_date = core::sql_date;
 
 // Lineitem deltas per slice when resolving them against the orders map (untimed).
 constexpr std::size_t kResolveGrain = 4096;
+// Order deltas per sorted slice, and shards per task, when applying order deltas.
+constexpr std::size_t kOrderSortGrain = 65536;
+constexpr std::size_t kShardRunGrain = 64;
 // Month or window images per slice when building or publishing (untimed).
 constexpr std::size_t kImageGrain = 1;
 // Month tables per slice when sorting them after the scan (untimed).
@@ -364,6 +368,27 @@ private:
            remaining.empty();
   }
 
+  // Runs op(delta) for the order deltas of `sign`, shards in parallel (a shard's
+  // deltas keep their arrival order). False when there was none.
+  template <class Op> bool ForOrderDeltasByShard(int sign, Op &&op) {
+    const auto &deltas = buffer.OrderDeltas();
+    const auto &orders = order_metadata->orders;
+    std::vector<std::pair<std::size_t, uint32_t>> by_shard; // (shard, delta index)
+    for (uint32_t i = 0; i < deltas.size(); ++i)
+      if ((deltas[i].sign > 0) == (sign > 0))
+        by_shard.emplace_back(orders.ShardOf(deltas[i].orderkey), i);
+    const auto shard_of = [](const auto &entry) { return entry.first; };
+    core::ParallelStableSort(
+        services, by_shard, [&](const auto &l, const auto &r) { return l.first < r.first; },
+        kOrderSortGrain);
+    const auto runs = core::RunStarts(by_shard, shard_of);
+    core::ParallelEach(services, runs.size() - 1, kShardRunGrain, [&](std::size_t run) {
+      for (std::size_t k = runs[run]; k < runs[run + 1]; ++k)
+        op(deltas[by_shard[k].second]);
+    });
+    return !by_shard.empty();
+  }
+
   // Loads a private copy of the Orders partition when the build kept one, and
   // applies the inserts to it. SQL-pushdown builds skip it and resolve via
   // LookupOrders; publishing a sparse RF-only map would break later lookups
@@ -381,15 +406,11 @@ private:
         break;
       }
     }
-    if (!buffer.OrderDeltas().empty() && order_metadata) {
-      for (const auto &delta : buffer.OrderDeltas()) {
-        if (delta.sign > 0) {
+    if (order_metadata && ForOrderDeltasByShard(+1, [&](const auto &delta) {
           order_metadata->orders.Upsert(
               delta.orderkey, TpchQ10Order{delta.custkey, delta.orderdate_days});
-          orders_changed = true;
-        }
-      }
-    }
+        }))
+      orders_changed = true;
     return order_metadata || buffer.Deltas().empty() || LookupTouchedOrders();
   }
 
@@ -566,13 +587,10 @@ private:
   void PublishOrders(core::Version version, bool erase_after_deltas) {
     if (!order_metadata)
       return;
-    for (const auto &delta : buffer.OrderDeltas()) {
-      if (delta.sign < 0) {
-        order_metadata->orders.Erase(delta.orderkey);
-        if (erase_after_deltas)
-          orders_changed = true;
-      }
-    }
+    const bool erased = ForOrderDeltasByShard(
+        -1, [&](const auto &delta) { order_metadata->orders.Erase(delta.orderkey); });
+    if (erased && erase_after_deltas)
+      orders_changed = true;
     if (!orders_changed)
       return;
     if (erase_after_deltas)
@@ -1267,7 +1285,8 @@ using OrderMap = decltype(TpchQ10State::orders);
 
 // Orders are dealt by the top bits of their shard, so each bucket owns whole shards.
 constexpr unsigned kOrderBucketBits = 10;
-constexpr std::size_t kOrdersPerShard = 4096;
+// Small shards bound what a touched shard copies.
+constexpr std::size_t kOrdersPerShard = 512;
 
 OrderMap ScanOrders(core::AuxEngineServices &services, TpchQ10InitialScan &source) {
   auto dealt = DealTable<OrderRow>(
