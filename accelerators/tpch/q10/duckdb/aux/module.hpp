@@ -98,12 +98,11 @@ public:
   }
 };
 
-using TpchQ10CustomerMap = std::unordered_map<int64_t, TpchQ10Customer>;
-
-// Immutable (once published) customer side: dense rank array + result strings.
+// Immutable (once published) customer side: dense rank array + result strings
+// (valid where the rank is present).
 struct TpchQ10SideBase {
   core::DenseIdArray<TpchQ10CustomerRank> ranks;
-  TpchQ10CustomerMap customers;
+  core::DenseIdArray<TpchQ10Customer> customers;
 
   void SetCustomerRank(int64_t custkey, int64_t acctbal_raw, int32_t nationkey) {
     TpchQ10CustomerRank rank;
@@ -316,8 +315,7 @@ struct TpchQ10State {
       if (it != customer_overlay->end())
         return it->second.present ? &it->second.customer : nullptr;
     }
-    const auto it = side_base->customers.find(custkey);
-    return it == side_base->customers.end() ? nullptr : &it->second;
+    return side_base->ranks.Get(custkey).present ? side_base->customers.Find(custkey) : nullptr;
   }
 };
 

@@ -98,6 +98,16 @@ public:
       return nullptr;
     return FindIn(mid->leaves[shard & (kMidSize - 1)].get(), key);
   }
+  // The shard of `key` in a map of 2^bits shards. The shards of a smaller map
+  // are unions of the shards of a larger one, so builders of any width may be
+  // fed in groups of keys of equal ShardOf(key, b) for b <= their width.
+  static uint32_t ShardOf(const K &key, uint32_t bits) {
+    if (bits == 0)
+      return 0;
+    return static_cast<uint32_t>(
+        (static_cast<uint64_t>(Hash{}(key)) * 0x9E3779B97F4A7C15ULL) >>
+        (64 - bits));
+  }
   std::size_t size() const { return size_; }
   bool empty() const { return size_ == 0; }
   uint32_t shard_bits() const { return bits_; }
@@ -130,13 +140,6 @@ public:
   }
 
 private:
-  static uint32_t ShardOf(const K &key, uint32_t bits) {
-    if (bits == 0)
-      return 0;
-    return static_cast<uint32_t>(
-        (static_cast<uint64_t>(Hash{}(key)) * 0x9E3779B97F4A7C15ULL) >>
-        (64 - bits));
-  }
   static std::size_t TopCount(uint32_t bits) {
     return bits > kMidBits ? std::size_t{1} << (bits - kMidBits) : 1;
   }
