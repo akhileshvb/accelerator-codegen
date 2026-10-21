@@ -71,7 +71,11 @@ the engine side must hold up. Each names its layer.
 - **Harness rigour** (all layers). A harness compares complete results with an expected
   set computed independently of the code under test (the engine's own SQL), never a
   filtered subset or the same code path; it forces races with barriers, never sleeps;
-  and it asserts each contract clause of its layer positively.
+  and it asserts each contract clause of its layer positively. It drives the slot
+  through the engine: real writes, commits, rollbacks and DDL from engine sessions reach
+  the backend's production hooks, and builds read real tables. A harness that hands a
+  slot hand-built rows or calls its lifecycle callbacks (commit, abort, capture)
+  directly tests a helper, not the slot, and does not count.
 - **Query registries** (`runtime` on an embedded engine, `host` on a server engine; the
   `api` layer exposes them). Every engine:
 
