@@ -32,7 +32,8 @@ pub proof fn lemma_quantity_fits(db: Db, key: int)
     }
     lemma_sum_bounded(db.lineitem, qw(key), 999999999999999);
     let n = db.lineitem.len() as int;
-    assert(n * 999999999999999 <= 1099511627776int * 999999999999999) by (nonlinear_arith) requires 0 <= n <= 1099511627776;
+    assert(n * 999999999999999 <= max_rows() * 999999999999999) by (nonlinear_arith) requires 0 <= n <= max_rows();
+    assert(max_rows() * 999999999999999 <= i128::MAX) by (compute);
 }
 
 }
