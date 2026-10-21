@@ -294,7 +294,7 @@ reads its own snapshot's answer or gets `Fallback`, never a newer one; a read in
 transaction that wrote a dependency table equals the SQL answer that includes those
 rows; shipped
 placement: drop one commit message -> gap -> rebuild -> exact, kill the worker
--> reads fall back exact, then hit again; `ThreadBudget::PeakThreads()` <= the
+-> reads fall back exact, then hit again; a build that is slow (the toy module holds its scan open across a barrier) while another connection commits a write to a captured table: the commit and the build both finish within a bound (no engine callback waits on the thread budget while it holds an engine lock); `ThreadBudget::PeakThreads()` <= the
 configured budget; each phase cap set through the engine setting and through the env override is observed by `WorkerCount()` inside the toy module's `Build` / `Execute` / maintenance (e.g. a cap of 1 gives 1); `DataScaleRows()` equals the table's row count after a bulk insert (and `ChooseMaintenance` with a model whose `calibrated_scale_rows` is a tenth of it raises the ApplyDelta cap tenfold).
 
 ---
