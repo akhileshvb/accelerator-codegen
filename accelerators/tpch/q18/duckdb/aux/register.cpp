@@ -224,6 +224,21 @@ struct TpchQ18Scan : TpchQ18InitialScan {
         });
     return found;
   }
+  void LookupCustomerNames(
+      const std::vector<int64_t> &custkeys,
+      const std::function<void(int64_t, const std::string &)> &consumer) override {
+    constexpr std::size_t kInList = 2000;
+    for (std::size_t first = 0; first < custkeys.size(); first += kInList) {
+      std::string in_list;
+      for (std::size_t i = first; i < std::min(custkeys.size(), first + kInList); ++i)
+        in_list += (i == first ? "" : ",") + std::to_string(custkeys[i]);
+      ScanQueryStreaming(
+          connection, "SELECT c_custkey, c_name FROM customer WHERE c_custkey IN (" + in_list + ")",
+          [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+            consumer(SafeInt64(ChunkValue(chunk, 0, row)), ChunkValue(chunk, 1, row).ToString());
+          });
+    }
+  }
   void ScanCustomersSerial(
       const std::function<void(const TpchQ18CustomerInput &)> &consumer) override {
     ScanQueryDecoded(

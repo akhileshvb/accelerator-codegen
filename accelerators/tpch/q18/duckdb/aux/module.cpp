@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <set>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -31,6 +32,20 @@ bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey,
   if (scale != 2)
     return false;
   quantity_raw = raw;
+  return true;
+}
+
+// Cells follow the captured projection: key, custkey, orderdate, totalprice.
+bool ReadOrder(const core::AuxRow &row, TpchQ18OrderInput &order) {
+  int64_t price = 0;
+  int32_t scale = 0;
+  if (!core::IntCell(row, 0, order.key) || !core::IntCell(row, 1, order.custkey) ||
+      row.values.size() < 4 || row.values[2].is_null ||
+      !std::holds_alternative<core::AuxDate>(row.values[2].payload) ||
+      !core::DecimalCell(row, 3, price, scale) || scale != 2)
+    return false;
+  order.orderdate_days = std::get<core::AuxDate>(row.values[2].payload).days_since_epoch;
+  order.totalprice_raw = price;
   return true;
 }
 
@@ -381,15 +396,16 @@ const std::vector<std::pair<int64_t, std::string>> &
 TpchQ18TxnBuffer::CustomerNames() const {
   return customer_names;
 }
-void TpchQ18TxnBuffer::NoteOrderInserted(int64_t orderkey) {
+void TpchQ18TxnBuffer::NoteOrderInserted(const TpchQ18OrderInput &order) {
   pending = true;
-  inserted_orders.insert(orderkey);
+  inserted_orders[order.key] = order;
 }
 void TpchQ18TxnBuffer::NoteOrderDeleted(int64_t orderkey) {
   pending = true;
   deleted_orders.insert(orderkey);
 }
-const std::unordered_set<int64_t> &TpchQ18TxnBuffer::InsertedOrders() const {
+const std::unordered_map<int64_t, TpchQ18OrderInput> &
+TpchQ18TxnBuffer::InsertedOrders() const {
   return inserted_orders;
 }
 const std::unordered_set<int64_t> &TpchQ18TxnBuffer::DeletedOrders() const {
@@ -482,9 +498,14 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
     int64_t key = 0;
     switch (mutation.kind) {
     case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        if (core::IntCell(row, 0, key))
-          buffer.NoteOrderInserted(key);
+      for (const auto &row : mutation.new_rows) {
+        TpchQ18OrderInput order;
+        if (!ReadOrder(row, order)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        buffer.NoteOrderInserted(order);
+      }
       break;
     case core::MutationKind::Delete:
       for (const auto &row : mutation.old_rows)
@@ -631,6 +652,7 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
       mut().customer_names.Upsert(custkey, name);
   }
 
+  std::set<int64_t> missing_names; // customers of new survivors, resolved in one batch
   for (const auto &[orderkey, net] : net_by_order) {
     if (net == 0)
       continue;
@@ -668,26 +690,35 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
     st.SetOrderQuantitySum(orderkey, after);
     if (!is_survivor) {
       TpchQ18OrderInput order;
-      if (!initial_scan || !initial_scan->LookupOrder(orderkey, order) ||
-          order.custkey <= 0) {
+      const auto inserted = buffer.InsertedOrders().find(orderkey);
+      if (inserted != buffer.InsertedOrders().end())
+        order = inserted->second;
+      else if (!initial_scan || !initial_scan->LookupOrder(orderkey, order))
+        order.custkey = 0;
+      if (order.custkey <= 0) {
         core::FinishRebuildAll(outcome);
         return outcome;
       }
       st.SetOrderMeta(order.key, order.custkey, order.orderdate_days,
                       order.totalprice_raw);
-      if (!st.customer_names.Contains(order.custkey)) {
-        std::string name;
-        if (initial_scan->LookupCustomerName(order.custkey, name))
-          st.customer_names.Upsert(order.custkey, std::move(name));
-        else
-          initial_scan->ScanCustomersSerial([&](const TpchQ18CustomerInput &input) {
-            if (input.key == order.custkey)
-              st.customer_names.Upsert(input.key, input.name);
-          });
-      }
+      if (!st.customer_names.Contains(order.custkey))
+        missing_names.insert(order.custkey);
     } else {
       st.SyncSurvivorQuantity(orderkey);
     }
+  }
+
+  if (!missing_names.empty()) {
+    const std::vector<int64_t> custkeys(missing_names.begin(), missing_names.end());
+    auto &st = mut();
+    initial_scan->LookupCustomerNames(custkeys, [&](int64_t custkey, const std::string &name) {
+      st.customer_names.Upsert(custkey, name);
+    });
+    for (const auto custkey : custkeys)
+      if (!st.customer_names.Contains(custkey)) {
+        core::FinishRebuildAll(outcome);
+        return outcome;
+      }
   }
 
   if (!new_state)
