@@ -67,13 +67,13 @@ public:
   }
 };
 
-// Persistent (copy-on-write) key -> record maps (core::ShardedSortedMap,
-// 2^17 shards: 1024 top slots x 128 leaves per mid).  A published image is
+// Persistent (copy-on-write) key -> record maps (core::ShardedSortedMap, up to
+// 2^26 shards of <= ~256 entries, 256 leaves per mid).  A published image is
 // never mutated: writes copy the top array, the touched mid arrays and the
 // touched leaves (a few hundred entries), everything else stays shared.
 template <typename V>
 using TpchQ5ShardIndex =
-    core::ShardedSortedKvMap<int64_t, V, core::ShardedSortedMapHash<int64_t>, 17, 7>;
+    core::ShardedSortedKvMap<int64_t, V, core::ShardedSortedMapHash<int64_t>, 26, 8>;
 
 // Records are stored as {key, value} elements; Find returns the element.
 template <typename E> inline const auto *TpchQ5Val(const E *e) {

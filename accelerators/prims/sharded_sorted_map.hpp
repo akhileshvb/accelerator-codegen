@@ -211,17 +211,19 @@ public:
   // writes only the shards of its group, so groups need no locks; do not use
   // the Txn itself while the batch runs. `parallel_for(n, fn)` must run
   // fn(0..n-1), possibly on several threads. Results do not depend on the
-  // thread count.
+  // thread count. A group gets at least `rows_per_group` rows when the batch
+  // is large enough to split.
   template <class Row, class RowKey, class ParallelFor, class Fn>
   void ApplyGrouped(std::vector<std::vector<Row>> &pieces, RowKey &&row_key,
-                    ParallelFor &&parallel_for, Fn &&fn) {
+                    ParallelFor &&parallel_for, Fn &&fn,
+                    std::size_t rows_per_group = kRowsPerGroup) {
     std::size_t total = 0;
     for (const auto &piece : pieces)
       total += piece.size();
     const unsigned top_bits = map_.bits_ > kMidBits ? map_.bits_ - kMidBits : 0;
     unsigned group_bits = 0;
     while (group_bits < std::min(top_bits, kMaxGroupBits) &&
-           (total >> (group_bits + 1)) >= kRowsPerGroup)
+           (total >> (group_bits + 1)) >= rows_per_group)
       ++group_bits;
     const unsigned shift = top_bits - group_bits;
     const std::size_t groups = std::size_t{1} << group_bits;

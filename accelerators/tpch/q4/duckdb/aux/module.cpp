@@ -37,6 +37,8 @@ constexpr std::size_t kLeafShardGrain = 256;
 constexpr std::size_t kTouchGrain = 4096;
 // Upper bound on the shard groups of one batch (TpchQ4EligIndex::Txn::ApplyGrouped).
 constexpr std::size_t kMaxGroups = 1024;
+// Rows per shard group when applying a batch.
+constexpr std::size_t kRowsPerGroup = 2048;
 // Touched mid arrays per slice when publishing the eligibility index (untimed).
 constexpr std::size_t kFinishGrain = 16;
 
@@ -319,7 +321,8 @@ LeafAdjustments ReplayOrderChanges(core::AuxEngineServices &services, const Tpch
           }
           run = next;
         }
-      });
+      },
+      core::CappedGrain(kRowsPerGroup));
   std::vector<LeafAdjustments> used;
   for (auto &p : partials)
     if (!p.empty())
