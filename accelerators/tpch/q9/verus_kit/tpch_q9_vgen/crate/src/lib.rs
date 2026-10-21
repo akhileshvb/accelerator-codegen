@@ -35,3 +35,4 @@ pub mod wide;
 pub mod wmap;
 pub mod log;
 pub mod ingest;
+pub mod linepass;
