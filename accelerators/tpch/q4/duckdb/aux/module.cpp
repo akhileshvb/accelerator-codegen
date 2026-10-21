@@ -11,6 +11,7 @@
 #include "substrate/aux/core/query_module_helpers.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <map>
 #include <optional>
@@ -32,8 +33,10 @@ constexpr std::size_t kBulkDeltaCount = 256;
 constexpr std::size_t kSortShardGrain = 16;
 // Shards per slice when counting the segment tree's leaves (untimed).
 constexpr std::size_t kLeafShardGrain = 256;
-// Touched orders per slice when reading their current info (untimed).
-constexpr std::size_t kLookupGrain = 2048;
+// Buffered changes per slice when turning them into order touches.
+constexpr std::size_t kTouchGrain = 4096;
+// Upper bound on the shard groups of one batch (TpchQ4EligIndex::Txn::ApplyGrouped).
+constexpr std::size_t kMaxGroups = 1024;
 // Touched mid arrays per slice when publishing the eligibility index (untimed).
 constexpr std::size_t kFinishGrain = 16;
 
@@ -168,21 +171,8 @@ void MergeOrders(OrdersPartial &into, OrdersPartial &&from) {
 
 using TreePages = std::vector<std::shared_ptr<const std::vector<int64_t>>>;
 
-// Tree deltas by leaf node (a leaf is touched by several orders, or by an order
-// whose date or priority changes along with its lineitems).
-using LeafAdjustments = std::map<uint32_t, std::vector<int64_t>>;
-
-void AdjustLeaf(const TpchQ4State &side, const TpchQ4OrderInfo &info, int64_t by,
-                LeafAdjustments &adjustments) {
-  const int32_t ord = info.orderdate_days - side.min_orderdate_days;
-  if (ord < 0 || ord >= static_cast<int32_t>(side.tree_size))
-    return;
-  auto &adj = adjustments[LeafNode(side.tree_size, ord)];
-  if (adj.size() < side.priority_names.size())
-    adj.resize(side.priority_names.size(), 0);
-  if (info.priority_idx >= 0 && info.priority_idx < static_cast<int32_t>(adj.size()))
-    adj[info.priority_idx] += by;
-}
+// Tree leaf deltas, dense: leaf ordinal * priorities + priority.
+using LeafAdjustments = std::vector<int64_t>;
 
 // The current tree image, or null when it is missing or does not match `side`.
 std::shared_ptr<const TpchQ4TreePayload>
@@ -201,69 +191,143 @@ LoadTreePayload(core::AuxEngineServices &services, const TpchQ4State &side) {
   return nullptr;
 }
 
-// Per order key: removes the order's old contribution (if it counted), replays
-// its order-row changes in sequence (delete, then insert for an update) keeping
-// its count of qualifying lineitems, adds the lineitem delta, and adds the new
-// contribution (if it counts now). New priorities extend `side`.
-void ReplayOrderChanges(core::AuxEngineServices &services, const TpchQ4TxnBuffer &buffer,
-                        TpchQ4State &side, TpchQ4EligIndex::Txn &elig,
-                        LeafAdjustments &adjustments) {
-  std::map<int64_t, int64_t> eligibility_delta;
-  for (const auto &delta : buffer.Deltas())
-    eligibility_delta[delta.orderkey] += delta.sign;
-  std::map<int64_t, std::vector<const TpchQ4OrderDelta *>> order_changes;
-  for (const auto &delta : buffer.OrderDeltas())
-    order_changes[delta.orderkey].push_back(&delta);
-  std::set<int64_t> touched_orders;
-  for (const auto &entry : eligibility_delta)
-    touched_orders.insert(entry.first);
-  for (const auto &entry : order_changes)
-    touched_orders.insert(entry.first);
+// One change to an order's eligibility: an order row (is_order: delete or insert,
+// with its date and priority) or a qualifying lineitem (sign only).
+struct OrderTouch {
+  int64_t orderkey = 0;
+  int32_t orderdate_days = 0;
+  int32_t priority_idx = 0;
+  int8_t sign = 0;
+  bool is_order = false;
+};
 
-  // The current info of every touched order, read before the loop writes.
-  const std::vector<int64_t> touched(touched_orders.begin(), touched_orders.end());
-  std::vector<std::optional<TpchQ4OrderInfo>> current(touched.size());
-  core::ParallelEach(services, touched.size(), kLookupGrain, [&](std::size_t i) {
-    if (const auto *found = elig.Find(touched[i]))
-      current[i] = found->value;
+// Registers the priorities of inserted orders in `side` (in delta order). New ones
+// are rare, so the pass that numbers them runs only when a parallel check finds one.
+void RegisterPriorities(core::AuxEngineServices &services, const TpchQ4TxnBuffer &buffer,
+                        TpchQ4State &side) {
+  const auto &orders = buffer.OrderDeltas();
+  std::atomic<bool> unknown{false};
+  core::ParallelEach(services, orders.size(), kTouchGrain, [&](std::size_t i) {
+    if (orders[i].sign > 0 && !side.priority_map.count(orders[i].orderpriority))
+      unknown = true;
   });
-  for (std::size_t t = 0; t < touched.size(); ++t) {
-    const auto orderkey = touched[t];
-    const bool existed = current[t].has_value();
-    bool exists = existed;
-    TpchQ4OrderInfo info;
-    if (current[t]) {
-      info = *current[t];
-      if (info.qualifying_count > 0)
-        AdjustLeaf(side, info, -1, adjustments);
+  if (!unknown)
+    return;
+  for (const auto &delta : orders)
+    if (delta.sign > 0)
+      TpchQ4PriorityIndex(delta.orderpriority, side.priority_names, side.priority_map);
+}
+
+// The buffered order and lineitem changes as pieces, order rows first, each piece
+// a slice of the buffer so piece order is delta order.
+std::vector<std::vector<OrderTouch>> TouchPieces(core::AuxEngineServices &services,
+                                                 const TpchQ4TxnBuffer &buffer,
+                                                 const TpchQ4State &side) {
+  const auto &orders = buffer.OrderDeltas();
+  const auto &lines = buffer.Deltas();
+  const std::size_t order_slices = core::SliceCount(services, orders.size(), kTouchGrain);
+  const std::size_t line_slices = core::SliceCount(services, lines.size(), kTouchGrain);
+  std::vector<std::vector<OrderTouch>> pieces(order_slices + line_slices);
+  core::RunSlices(services, order_slices, orders.size(),
+                  [&](std::size_t slice, std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      const auto &delta = orders[i];
+      const auto priority = delta.sign > 0 ? side.priority_map.at(delta.orderpriority) : 0;
+      pieces[slice].push_back({delta.orderkey, delta.orderdate_days, priority, delta.sign, true});
     }
-    auto changes = order_changes.find(orderkey);
-    if (changes != order_changes.end()) {
-      for (const auto *delta : changes->second) {
-        if (delta->sign < 0) {
-          exists = false;
-        } else if (delta->sign > 0) {
-          info.orderdate_days = delta->orderdate_days;
-          info.priority_idx = TpchQ4PriorityIndex(delta->orderpriority,
-                                                  side.priority_names, side.priority_map);
-          exists = true;
-        }
-      }
+  });
+  core::RunSlices(services, line_slices, lines.size(),
+                  [&](std::size_t slice, std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i)
+      pieces[order_slices + slice].push_back({lines[i].orderkey, 0, 0, lines[i].sign, false});
+  });
+  return pieces;
+}
+
+// One order's new info after its changes (order rows in sequence: delete, then
+// insert for an update; lineitem deltas summed), or nullopt when it no longer exists.
+std::optional<TpchQ4OrderInfo> ReplayOrder(const TpchQ4OrderInfo *current,
+                                           const OrderTouch *begin, const OrderTouch *end) {
+  TpchQ4OrderInfo info;
+  if (current)
+    info = *current;
+  bool exists = current != nullptr;
+  for (const auto *t = begin; t != end; ++t) {
+    if (!t->is_order) {
+      info.qualifying_count += t->sign;
+    } else if (t->sign < 0) {
+      exists = false;
+    } else if (t->sign > 0) {
+      info.orderdate_days = t->orderdate_days;
+      info.priority_idx = t->priority_idx;
+      exists = true;
     }
-    auto lines = eligibility_delta.find(orderkey);
-    if (lines != eligibility_delta.end())
-      info.qualifying_count += lines->second;
-    if (info.qualifying_count < 0)
-      info.qualifying_count = 0;
-    if (!exists) {
-      if (existed)
-        elig.Erase(orderkey);
-      continue;
-    }
-    elig.Upsert({orderkey, info});
-    if (info.qualifying_count > 0)
-      AdjustLeaf(side, info, +1, adjustments);
   }
+  if (info.qualifying_count < 0)
+    info.qualifying_count = 0;
+  return exists ? std::optional<TpchQ4OrderInfo>(info) : std::nullopt;
+}
+
+// Adds `by` to the leaf of `info` in a dense leaf-delta array.
+void AdjustLeaf(const TpchQ4State &side, const TpchQ4OrderInfo &info, int64_t by,
+                std::vector<int64_t> &adjustments) {
+  const int32_t ord = info.orderdate_days - side.min_orderdate_days;
+  const auto num_p = static_cast<int32_t>(side.priority_names.size());
+  if (ord < 0 || ord >= static_cast<int32_t>(side.tree_size) || info.priority_idx < 0 ||
+      info.priority_idx >= num_p)
+    return;
+  adjustments[static_cast<std::size_t>(ord) * num_p + info.priority_idx] += by;
+}
+
+// Per order key (the order's changes are contiguous after a stable sort by key):
+// removes the old contribution to the tree (if it counted), replays the changes,
+// writes or erases the order, adds the new contribution. Groups of shards run
+// concurrently, each with its own leaf deltas; the sum is returned.
+LeafAdjustments ReplayOrderChanges(core::AuxEngineServices &services, const TpchQ4TxnBuffer &buffer,
+                                   TpchQ4State &side, TpchQ4EligIndex::Txn &elig) {
+  RegisterPriorities(services, buffer, side);
+  auto pieces = TouchPieces(services, buffer, side);
+  const std::size_t leaf_cells = static_cast<std::size_t>(side.tree_size) * side.priority_names.size();
+  std::vector<LeafAdjustments> partials(kMaxGroups);
+  const auto parallel_for = [&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, 1, fn);
+  };
+  elig.ApplyGrouped(
+      pieces, [](const OrderTouch &t) -> const int64_t & { return t.orderkey; }, parallel_for,
+      [&](std::size_t group, TpchQ4EligIndex::Txn::Scope &scope, std::vector<OrderTouch> &rows) {
+        auto &adjustments = partials[group];
+        adjustments.assign(leaf_cells, 0);
+        std::stable_sort(rows.begin(), rows.end(), [](const OrderTouch &a, const OrderTouch &b) {
+          return a.orderkey < b.orderkey;
+        });
+        for (auto *run = rows.data(); run != rows.data() + rows.size();) {
+          auto *next = run;
+          while (next != rows.data() + rows.size() && next->orderkey == run->orderkey)
+            ++next;
+          const auto *found = scope.Find(run->orderkey);
+          const auto *current = found ? &found->value : nullptr;
+          if (current && current->qualifying_count > 0)
+            AdjustLeaf(side, *current, -1, adjustments);
+          const auto info = ReplayOrder(current, run, next);
+          if (!info) {
+            if (current)
+              scope.Erase(run->orderkey);
+          } else {
+            scope.Upsert({run->orderkey, *info});
+            if (info->qualifying_count > 0)
+              AdjustLeaf(side, *info, +1, adjustments);
+          }
+          run = next;
+        }
+      });
+  std::vector<LeafAdjustments> used;
+  for (auto &p : partials)
+    if (!p.empty())
+      used.push_back(std::move(p));
+  if (used.empty())
+    return LeafAdjustments(leaf_cells, 0);
+  core::SumInto(core::Parallelism::OnPool(services), used);
+  return std::move(used[0]);
 }
 
 // Adds each leaf's delta to the leaf and every ancestor (an ancestor is the sum
@@ -286,11 +350,12 @@ TreePages ApplyLeafAdjustments(const TpchQ4TreePayload &tree_in, const TpchQ4Sta
     stride = num_p;
   }
   std::vector<std::shared_ptr<std::vector<int64_t>>> dirty(pages.size());
-  for (const auto &[leaf, adj] : adjustments) {
-    if (leaf >= total_nodes)
+  for (uint32_t ord = 0; ord < side.tree_size; ++ord) {
+    const int64_t *adj = adjustments.data() + static_cast<std::size_t>(ord) * num_p;
+    if (std::all_of(adj, adj + num_p, [](int64_t v) { return v == 0; }))
       continue;
-    const std::size_t lim = std::min<std::size_t>(adj.size(), stride);
-    for (uint32_t node = leaf; node > 0; node >>= 1) {
+    const std::size_t lim = std::min<std::size_t>(num_p, stride);
+    for (uint32_t node = LeafNode(side.tree_size, static_cast<int32_t>(ord)); node > 0; node >>= 1) {
       const std::size_t pg = node / kTpchQ4PageNodes;
       if (!dirty[pg])
         dirty[pg] = std::make_shared<std::vector<int64_t>>(*pages[pg]);
@@ -539,8 +604,7 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   TpchQ4EligIndex::Txn elig(elig_payload->order_eligibility);
-  LeafAdjustments adjustments;
-  ReplayOrderChanges(services, buffer, side, elig, adjustments);
+  const auto adjustments = ReplayOrderChanges(services, buffer, side, elig);
   uint32_t stride = tree_in->tree_stride;
   auto pages = ApplyLeafAdjustments(*tree_in, side, adjustments, stride);
   PublishImages(services, std::move(side), elig, std::move(pages), stride, outcome);
@@ -691,7 +755,10 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
     state.min_orderdate_days = orders.min_orderdate_days;
     state.max_orderdate_days = orders.max_orderdate_days;
   }
-  TpchQ4EligIndex::Builder shards;
+  std::size_t order_count = 0;
+  for (const auto &piece : orders.rows.pieces)
+    order_count += piece.size();
+  TpchQ4EligIndex::Builder shards(order_count);
   shards.AddPieces(orders.rows.pieces, parallelism);
   shards.Sort([&](std::size_t n, const auto &fn) {
     core::ParallelEach(services, n, kSortShardGrain, fn);
