@@ -46,12 +46,12 @@ struct TpchQ4OrderInfo {
 };
 
 // Order eligibility index: a persistent (copy-on-write) orderkey -> order
-// info map (core::ShardedSortedMap, 2^16 shards = 256 x 256, key-sorted
-// leaves).  A published index is never mutated; a write copies the top array,
+// info map (core::ShardedSortedMap, <= 256 entries per shard at any scale, up to 2^26
+// shards, key-sorted leaves).  A published index is never mutated; a write copies the top array,
 // the touched mid arrays and the touched leaves (a few hundred entries each).
 using TpchQ4EligIndex =
     core::ShardedSortedKvMap<int64_t, TpchQ4OrderInfo,
-                             core::ShardedSortedMapHash<int64_t>, 16, 8>;
+                             core::ShardedSortedMapHash<int64_t>, 26, 8>;
 
 // Tree counts are stored flat: node n, priority p at tree[n * tree_stride + p]
 // (tree has 2 * tree_size nodes).

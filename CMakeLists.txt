@@ -485,6 +485,9 @@ target_link_libraries(test_prims PRIVATE Threads::Threads)
 if(BUILD_TESTING)
     add_test(NAME prims_unit_test COMMAND test_prims)
 endif()
+add_executable(bench_sharded_sorted_map eval/bench/aux_state/bench_sharded_sorted_map.cpp)
+target_include_directories(bench_sharded_sorted_map PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/accelerators)
+target_link_libraries(bench_sharded_sorted_map PRIVATE Threads::Threads)
 
 # Postgres backend's shared-memory message ring: pure C++/Linux, no Postgres deps.
 add_executable(test_shm_ring

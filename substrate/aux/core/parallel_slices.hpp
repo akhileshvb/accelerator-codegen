@@ -30,11 +30,15 @@ inline std::size_t TestGrainCap() {
   return cap;
 }
 
+// `grain`, lowered to the test cap when one is set.
+inline std::size_t CappedGrain(std::size_t grain) {
+  const std::size_t cap = TestGrainCap();
+  return cap != 0 ? std::min(grain, cap) : grain;
+}
+
 inline std::size_t SliceCount(const AuxEngineServices &services, std::size_t n,
                               std::size_t grain) {
-  if (const std::size_t cap = TestGrainCap(); cap != 0) {
-    grain = std::min(grain, cap);
-  }
+  grain = CappedGrain(grain);
   return std::max<std::size_t>(1, std::min(services.WorkerCount(), n / std::max<std::size_t>(1, grain)));
 }
 
