@@ -26,6 +26,25 @@ def layer_critique_path(art: Path, layer_id: str) -> Path:
     return art / f"layer_critique_{layer_id}.json"
 
 
+def report_problem(path: Path) -> str | None:
+    """Why `path` is not a usable report (missing, or not one JSON object); None when it is."""
+    if not path.is_file():
+        return "missing"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return f"not valid JSON: {exc}"
+    return None if isinstance(data, dict) else "not a JSON object"
+
+
+def unreadable_artifact_nudge(path: Path, problem: str) -> str:
+    return (
+        f"`{path}` is {problem}. Rewrite it now as exactly one JSON object (status "
+        "pass|fail, required fields) with nothing before or after it, then stop. "
+        "Do not read more sources or edit adapter sources."
+    )
+
+
 def missing_artifact_nudge(path: Path) -> str:
     return (
         f"STOP EXPLORING. You ended without writing `{path}`. "
@@ -46,14 +65,19 @@ def run_until_artifact(
     attempts: int = 2,
     dry_run: bool = False,
 ) -> Any:
-    """Run `invoke(extra_user_message)` until `artifact` exists (or attempts exhausted)."""
+    """Run `invoke(extra_user_message)` until `artifact` is one JSON object (or attempts run out)."""
     extra = ""
     result = None
     for attempt in range(1, max(1, attempts) + 1):
         result = invoke(extra)
-        if dry_run or artifact.is_file():
+        problem = None if dry_run else report_problem(artifact)
+        if problem is None:
             return result
-        extra = missing_artifact_nudge(artifact)
+        extra = (
+            missing_artifact_nudge(artifact)
+            if problem == "missing"
+            else unreadable_artifact_nudge(artifact, problem)
+        )
         if attempt >= attempts:
             break
     return result

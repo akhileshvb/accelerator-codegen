@@ -520,6 +520,23 @@ def test_run_until_artifact_retries_then_succeeds(tmp_path):
     assert path.is_file()
 
 
+def test_run_until_artifact_retries_on_invalid_json(tmp_path):
+    from accel_pipeline.stages.engine_layer_critique import run_until_artifact
+
+    path = tmp_path / "layer_critique_api.json"
+    calls: list[str] = []
+
+    def invoke(extra: str):
+        calls.append(extra)
+        path.write_text('{"status":"fail"}\n  }\n' if len(calls) == 1 else '{"status":"fail"}\n',
+                        encoding="utf-8")
+        return object()
+
+    run_until_artifact(artifact=path, invoke=invoke, attempts=2)
+    assert len(calls) == 2
+    assert "not valid JSON" in calls[1]
+
+
 def test_run_until_artifact_dry_run_does_not_retry(tmp_path):
     from accel_pipeline.stages.engine_layer_critique import run_until_artifact
 
