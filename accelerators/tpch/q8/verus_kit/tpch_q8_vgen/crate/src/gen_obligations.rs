@@ -415,6 +415,12 @@ pub open spec fn max_rows() -> int {
     1099511627776
 }
 
+/// Most changed rows a state may absorb after its build before apply may decline
+/// (the host then rebuilds).
+pub open spec fn max_history() -> int {
+    4611686018427387904
+}
+
 /// Each value of customer lies in the range of its column's SQL type.
 pub open spec fn customer_in_type(r: CustomerRow) -> bool {
     -2147483648 <= r.c_custkey <= 2147483647
@@ -516,6 +522,7 @@ pub fn ob_build(
         scan_regions_ok(db, regions@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        r matches Some(s) ==> crate::kernel::history(s) == 0,
         envelope(db) ==> r is Some,
 {
     kernel::build(parts, suppliers, customers, window_orders, lines, nations, regions, Ghost(db))
@@ -591,7 +598,7 @@ pub fn ob_rescan_lines_for_suppliers_keys(
 }
 
 /// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
-/// the envelope.
+/// the envelope or after max_history() changed rows since the build.
 pub fn ob_apply(
     s: &State,
     customer_delta: &[CustomerDelta],
@@ -621,7 +628,8 @@ pub fn ob_apply(
         rescan_lines_for_suppliers_ok(db2, lines_for_suppliers_keys@, lines_for_suppliers_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
-        envelope(s.db()) && envelope(db2) ==> r is Ok,
+        r matches Ok(s2) ==> crate::kernel::history(s2) <= crate::kernel::history(*s) + customer_delta@.len() + lineitem_delta@.len() + nation_delta@.len() + orders_delta@.len() + part_delta@.len() + region_delta@.len() + supplier_delta@.len(),
+        envelope(s.db()) && envelope(db2) && crate::kernel::history(*s) + customer_delta@.len() + lineitem_delta@.len() + nation_delta@.len() + orders_delta@.len() + part_delta@.len() + region_delta@.len() + supplier_delta@.len() <= max_history() ==> r is Ok,
 {
     kernel::apply(s, customer_delta, lineitem_delta, nation_delta, orders_delta, part_delta, region_delta, supplier_delta, lines_for_orders_keys, lines_for_orders_rows, lines_for_parts_keys, lines_for_parts_rows, lines_for_suppliers_keys, lines_for_suppliers_rows, Ghost(orders_full), Ghost(db2))
 }
