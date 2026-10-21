@@ -27,6 +27,8 @@ constexpr std::size_t kPartsuppGrain = 65536;
 // Series per maintenance slice (~16000 us): rebuilding one is ~1 us, so RF-sized commits stay
 // inline.
 constexpr std::size_t kSeriesGrain = 16384;
+// Lineitem deltas per slice when keying and sorting them by pair (~1000 us).
+constexpr std::size_t kSeriesSortGrain = 32768;
 // Rows per sorted slice of the build (~5000 us): a stable sort of 64K small rows.
 constexpr std::size_t kSortGrain = 65536;
 
@@ -1356,20 +1358,26 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
   // base) on first touch, collected into one new overlay layer.
   {
     const auto &deltas = buffer.LineitemDeltas();
-    // Deltas per (part, supplier) pair, in arrival order.
-    std::unordered_map<uint64_t, uint32_t> job_of;
+    // Deltas per (part, supplier) pair, in arrival order: a stable sort by pair key.
+    std::vector<std::pair<uint64_t, uint32_t>> by_pair(deltas.size());
+    core::ParallelSlices(services, deltas.size(), kSeriesSortGrain,
+                         [&](std::size_t, std::size_t first, std::size_t last) {
+                           for (std::size_t i = first; i < last; ++i)
+                             by_pair[i] = {MakePairKey(deltas[i].partkey, deltas[i].suppkey),
+                                           static_cast<uint32_t>(i)};
+                         });
+    core::ParallelStableSort(
+        services, by_pair,
+        [](const auto &a, const auto &b) { return a.first < b.first; }, kSeriesSortGrain);
     std::vector<uint64_t> keys;
-    std::vector<std::vector<uint32_t>> job_deltas;
-    job_of.reserve(deltas.size());
-    for (uint32_t i = 0; i < deltas.size(); ++i) {
-      const uint64_t pair_key = MakePairKey(deltas[i].partkey, deltas[i].suppkey);
-      const auto [it, inserted] = job_of.try_emplace(pair_key, keys.size());
-      if (inserted) {
-        keys.push_back(pair_key);
-        job_deltas.emplace_back();
+    std::vector<std::size_t> job_begin; // job j owns by_pair[job_begin[j], job_begin[j + 1])
+    for (std::size_t i = 0; i < by_pair.size(); ++i) {
+      if (i == 0 || by_pair[i].first != by_pair[i - 1].first) {
+        keys.push_back(by_pair[i].first);
+        job_begin.push_back(i);
       }
-      job_deltas[it->second].push_back(i);
     }
+    job_begin.push_back(by_pair.size());
     // Pairs are independent: each slice rebuilds the series of its own pairs.
     std::vector<std::vector<TpchQ20DateQuantity>> series(keys.size());
     core::ParallelSlices(
@@ -1385,8 +1393,8 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
               if (idx != TpchQ20Base::kNoSeries)
                 list = BaseSeriesCopy(base, idx);
             }
-            for (const auto i : job_deltas[job])
-              ApplySeriesDelta(list, deltas[i]);
+            for (std::size_t at = job_begin[job]; at < job_begin[job + 1]; ++at)
+              ApplySeriesDelta(list, deltas[by_pair[at].second]);
           }
         });
     if (!keys.empty()) {
