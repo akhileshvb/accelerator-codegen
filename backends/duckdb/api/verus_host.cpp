@@ -330,7 +330,9 @@ std::vector<VerusKitTableFunction> VerusKitTableFunctions() {
         types.push_back(::duckdb::LogicalType::DATE);
         break;
       case verus_kit::Kind::Dec:
-        types.push_back(::duckdb::LogicalType::DOUBLE);
+        // any type, so a DECIMAL argument keeps its digits (a DOUBLE parameter would round
+        // 9999999999999.99); the kit converts it exactly to the kernel's scale
+        types.push_back(::duckdb::LogicalType::ANY);
         break;
       case verus_kit::Kind::Bool:
         types.push_back(::duckdb::LogicalType::BOOLEAN);
