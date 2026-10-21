@@ -52,6 +52,21 @@ pub proof fn lemma_bucket_unfit(db: Db, p: Seq<u8>, bucket: int)
     }
 }
 
+/// A bucket whose customer count exceeds i64 makes every correct answer unfit.
+pub proof fn lemma_frequency_unfit(db: Db, p: Seq<u8>, bucket: int)
+    requires histogram_count(db, p, bucket) > i64::MAX,
+    ensures !answer_fits(db, params(p)),
+{
+    crate::join::lemma_query_count(db, p, bucket);
+    lemma_answer_ok(db, params(p));
+    let out = answer(db, params(p));
+    let index = choose|index: int| 0 <= index < out.len() && (#[trigger] out[index]).c_count == bucket;
+    if answer_fits(db, params(p)) {
+        assert(query_result(db, params(p), out));
+        assert(out_fits(out[index]));
+    }
+}
+
 /// The sorted answer rows of a histogram that matches the database.
 #[verifier::spinoff_prover]
 #[verifier::rlimit(100)]
@@ -96,8 +111,8 @@ pub fn rows_from_hist(entries: &Vec<HEntry>, pattern: &[u8], Ghost(db): Ghost<Db
             Some(value) if value >= 0 && value <= i64::MAX as i128 => value as i64,
             _ => {
                 proof {
-                    lemma_hist_le(db, pattern@, entry.bucket@);
-                    if envelope(db) { assert(false); }
+                    lemma_hist_nonneg_entry(db, pattern@, entry.bucket@);
+                    lemma_frequency_unfit(db, pattern@, entry.bucket@);
                 }
                 return None;
             }
