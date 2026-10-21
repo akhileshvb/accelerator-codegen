@@ -1,452 +1,400 @@
 use vstd::prelude::*;
 use std::sync::Arc;
-use verus_prooflib::ordered::{Index, Key};
+use verus_common::sums::*;
+use verus_prooflib::ordered::{Index, Key, KeyView};
 use crate::gen_obligations::*;
+use crate::gen_spec::*;
 use crate::model::*;
 use crate::counts::*;
-use crate::gen_spec::*;
-use verus_common::sums::*;
 use crate::input_proofs::*;
 use crate::maintenance_proofs::*;
 use crate::rank_proofs::*;
+use crate::bounds::*;
+use crate::contrib::*;
 use crate::maintenance_semantics::*;
 
 verus! {
 
-pub struct Changes {
-    parts: Parts,
-    edges: Edges,
-    blockers: Index<i64>,
+pub open spec fn key_seen(entries: Seq<(KeyView, i64)>, count: int, query: KeyView) -> bool {
+    exists|position: int| 0 <= position < count && (#[trigger] entries[position]).0 == query
 }
 
-impl Changes {
-    pub closed spec fn part_counts(self) -> Parts { self.parts }
-    pub closed spec fn edge_counts(self) -> Edges { self.edges }
-    pub closed spec fn blocker_counts(self) -> Index<i64> { self.blockers }
+pub proof fn lemma_key_seen_step(entries: Seq<(KeyView, i64)>, count: int, query: KeyView)
+    requires 0 <= count < entries.len(),
+    ensures key_seen(entries, count + 1, query) == (key_seen(entries, count, query) || entries[count].0 == query),
+{
+    if key_seen(entries, count + 1, query) && !key_seen(entries, count, query) {
+        let position = choose|position: int| 0 <= position < count + 1 && (#[trigger] entries[position]).0 == query;
+        assert(position == count);
+    }
+    if key_seen(entries, count, query) {
+        let position = choose|position: int| 0 <= position < count && (#[trigger] entries[position]).0 == query;
+        assert(0 <= position < count + 1 && entries[position].0 == query);
+    }
+    if entries[count].0 == query { assert(key_seen(entries, count + 1, query)); }
+}
 
-    #[verifier::type_invariant]
-    pub closed spec fn valid(self) -> bool {
-        parts_keys_valid(self.parts) && edges_keys_valid(self.edges) && integer_keys(self.blockers)
+/// Removes every key of a key set from a map.
+#[verifier::rlimit(60)]
+pub fn remove_keys<Value>(map: &mut Index<Value>, keys: &Index<i64>)
+    requires old(map).wf(), key_set(*keys),
+    ensures final(map).wf(),
+        forall|query: KeyView| #[trigger] final(map).at(query) == if keys.at(query).is_some() { None } else { old(map).at(query) },
+{
+    let initial = Ghost(*map);
+    proof { keys.model(); }
+    let mut cursor = keys.cursor();
+    let mut processed: Ghost<int> = Ghost(0);
+    loop
+        invariant map.wf(), key_set(*keys), initial@ == *old(map),
+            0 <= processed@ <= keys.entries().len(), cursor.remaining() == keys.entries().skip(processed@),
+            forall|position: int| 0 <= position < keys.entries().len() ==>
+                #[trigger] keys.at(keys.entries()[position].0) == Some(keys.entries()[position].1),
+            forall|query: KeyView| #[trigger] map.at(query) == if key_seen(keys.entries(), processed@, query) { None } else { initial@.at(query) },
+        decreases cursor.remaining().len(),
+    {
+        let (key, _) = match cursor.next() {
+            Some(row) => row,
+            None => {
+                proof {
+                    keys.model();
+                    assert(processed@ == keys.entries().len());
+                    assert forall|query: KeyView| #[trigger] map.at(query) == if keys.at(query).is_some() { None } else { initial@.at(query) } by {
+                        if key_seen(keys.entries(), processed@, query) {
+                            let position = choose|position: int| 0 <= position < processed@ && (#[trigger] keys.entries()[position]).0 == query;
+                            assert(keys.at(keys.entries()[position].0) == Some(keys.entries()[position].1));
+                        }
+                        if keys.at(query).is_some() {
+                            let position = choose|position: int| #![auto] 0 <= position < keys.entries().len() && keys.entries()[position].0 == query;
+                            assert(key_seen(keys.entries(), processed@, query));
+                        }
+                    }
+                }
+                return;
+            },
+        };
+        proof { assert(key.view() == keys.entries()[processed@].0); }
+        map.remove(&key);
+        proof {
+            assert forall|query: KeyView| #[trigger] map.at(query) == if key_seen(keys.entries(), processed@ + 1, query) { None } else { initial@.at(query) } by {
+                lemma_key_seen_step(keys.entries(), processed@, query);
+            }
+        }
+        processed = Ghost(processed@ + 1);
     }
 }
 
-pub fn changes(part: &Vec<PartDelta>, edge: &[EdgeDelta], supplier: &[SupplierDelta]) -> (out: Option<Changes>)
-    ensures out matches Some(delta) ==> (
-        (forall|part_key: int, group: verus_prooflib::ordered::KeyView|
-            #[trigger] part_at(delta.part_counts(), part_key, group) == sum(part_delta_seq_view(part@),
-                |row: (PartRow, int)| row.1 * part_weight(row.0, part_key, group)))
-        && (forall|supplier_key: int, part_key: int|
-            #[trigger] edge_at(delta.edge_counts(), supplier_key, part_key) == sum(edge_delta_seq_view(edge@),
-                |row: (PartsuppRow, int)| row.1 * edge_weight(row.0, supplier_key, part_key)))
-        && (forall|supplier_key: int| #[trigger] integer_at(delta.blocker_counts(), (supplier_key, Seq::empty()))
-            == sum(supplier@, |row: SupplierDelta| if row.s_suppkey == supplier_key && row.is_blocker != 0 { row.sign as int } else { 0 }))
-    ),
+#[verifier::rlimit(60)]
+pub fn replace_parts(parts: &Parts, changed: &Index<i64>, rows: &Vec<PartInput>, Ghost(fits): Ghost<bool>) -> (out: Option<Parts>)
+    requires parts_keys_valid(*parts), key_set(*changed),
+        fits ==> rows@.len() <= max_rows(),
+        fits ==> forall|part: int, key: KeyView| #[trigger] part_at(*parts, part, key) <= max_rows(),
+    ensures out matches Some(result) ==> parts_keys_valid(result)
+            && forall|part: int, key: KeyView| #[trigger] part_at(result, part, key)
+                == (if changed.at((part, Seq::<u8>::empty())).is_some() { 0int } else { part_at(*parts, part, key) })
+                    + part_input_sum(rows@, part, key),
+        out is None ==> !fits,
 {
+    let mut out = share_parts(parts);
+    remove_keys(&mut out, changed);
+    let base = Ghost(out);
+    proof {
+        assert forall|key: KeyView| #[trigger] out.at(key).is_some() implies key.1 == Seq::<u8>::empty() && cell_keys_valid(out.at(key).unwrap()) by {
+            assert(parts.at(key) == out.at(key));
+        }
+        assert forall|part: int, key: KeyView| #[trigger] part_at(base@, part, key)
+            == if changed.at((part, Seq::<u8>::empty())).is_some() { 0int } else { part_at(*parts, part, key) } by {
+            assert(changed.at((part, Seq::<u8>::empty())).is_some() ==> base@.at((part, Seq::<u8>::empty())).is_none());
+            if changed.at((part, Seq::<u8>::empty())).is_some() { assert(part_at(base@, part, key) == 0int); }
+        }
+    }
     let vocab = crate::vocab::new_vocab();
-    let mut parts = Index::new();
     let mut index = 0;
     let mut processed: Ghost<int> = Ghost(0);
-    while index < part.len()
-        invariant index <= part.len(), processed@ == index as int, parts_keys_valid(parts), vocab.ok(),
-            forall|part_key: int, group: verus_prooflib::ordered::KeyView|
-                #[trigger] part_at(parts, part_key, group) == part_delta_sum(part@.take(processed@), part_key, group),
-        decreases part.len() - index,
+    while index < rows.len()
+        invariant index <= rows.len(), processed@ == index as int, parts_keys_valid(out), vocab.ok(), parts_keys_valid(*parts),
+            key_set(*changed),
+            fits ==> rows@.len() <= max_rows(),
+            fits ==> forall|part: int, key: KeyView| #[trigger] part_at(*parts, part, key) <= max_rows(),
+            forall|part: int, key: KeyView| #[trigger] part_at(base@, part, key)
+                == if changed.at((part, Seq::<u8>::empty())).is_some() { 0int } else { part_at(*parts, part, key) },
+            forall|part: int, key: KeyView| #[trigger] part_at(out, part, key)
+                == part_at(base@, part, key) + part_input_sum(rows@.take(processed@), part, key),
+        decreases rows.len() - index,
     {
-        if !bump_part(&vocab, &mut parts, &part[index].row, part[index].sign) { return None; }
-        proof { lemma_part_delta_prefix(part@, processed@); }
+        if !bump_part(&vocab, &mut out, &rows[index], 1) {
+            proof {
+                if fits {
+                    let row = rows@[index as int];
+                    let key = group_key(row.p_brand@, row.p_type@, row.p_size as int);
+                    crate::bounds::lemma_part_input_bound(rows@.take(processed@), row.p_partkey as int, key);
+                    assert(max_rows() == 1099511627776int);
+                    assert(part_at(base@, row.p_partkey as int, key) <= max_rows());
+                }
+            }
+            return None;
+        }
+        proof { lemma_parts_prefix(rows@, processed@); }
         index += 1;
         processed = Ghost(index as int);
     }
-    let mut edges = Index::new();
-    proof { assert(part@.take(processed@) =~= part@); }
-    index = 0;
-    processed = Ghost(0);
-    while index < edge.len()
-        invariant index <= edge.len(), processed@ == index as int, edges_keys_valid(edges),
-            parts_keys_valid(parts),
-            forall|part_key: int, group: verus_prooflib::ordered::KeyView|
-                #[trigger] part_at(parts, part_key, group) == part_delta_sum(part@, part_key, group),
-            forall|supplier_key: int, part_key: int| #[trigger] edge_at(edges, supplier_key, part_key)
-                == edge_delta_sum(edge@.take(processed@), supplier_key, part_key),
-        decreases edge.len() - index,
+    proof { assert(rows@.take(processed@) =~= rows@); }
+    Some(out)
+}
+
+#[verifier::rlimit(60)]
+pub fn replace_edges(edges: &Edges, suppliers: &Index<i64>, rows: &[EdgeInput], Ghost(fits): Ghost<bool>) -> (out: Option<Edges>)
+    requires edges_keys_valid(*edges), key_set(*suppliers),
+        fits ==> rows@.len() <= max_rows(),
+        fits ==> forall|supplier: int, part: int| #[trigger] edge_at(*edges, supplier, part) <= max_rows(),
+    ensures out matches Some(result) ==> edges_keys_valid(result)
+            && forall|supplier: int, part: int| #[trigger] edge_at(result, supplier, part)
+                == (if suppliers.at((supplier, Seq::<u8>::empty())).is_some() { 0int } else { edge_at(*edges, supplier, part) })
+                    + edge_input_sum(rows@, supplier, part),
+        out is None ==> !fits,
+{
+    let mut out = share_edges(edges);
+    remove_keys(&mut out, suppliers);
+    let base = Ghost(out);
+    proof {
+        assert forall|key: KeyView| #[trigger] out.at(key).is_some() implies
+            key.1 == Seq::<u8>::empty() && out.at(key).unwrap().wf() && integer_keys(out.at(key).unwrap()) by {
+            assert(edges.at(key) == out.at(key));
+        }
+        assert forall|supplier: int, part: int| #[trigger] edge_at(base@, supplier, part)
+            == if suppliers.at((supplier, Seq::<u8>::empty())).is_some() { 0int } else { edge_at(*edges, supplier, part) } by {
+            if suppliers.at((supplier, Seq::<u8>::empty())).is_some() { assert(base@.at((supplier, Seq::<u8>::empty())).is_none()); }
+        }
+    }
+    let mut index = 0;
+    let mut processed: Ghost<int> = Ghost(0);
+    while index < rows.len()
+        invariant index <= rows.len(), processed@ == index as int, edges_keys_valid(out), edges_keys_valid(*edges),
+            key_set(*suppliers),
+            fits ==> rows@.len() <= max_rows(),
+            fits ==> forall|supplier: int, part: int| #[trigger] edge_at(*edges, supplier, part) <= max_rows(),
+            forall|supplier: int, part: int| #[trigger] edge_at(base@, supplier, part)
+                == if suppliers.at((supplier, Seq::<u8>::empty())).is_some() { 0int } else { edge_at(*edges, supplier, part) },
+            forall|supplier: int, part: int| #[trigger] edge_at(out, supplier, part)
+                == edge_at(base@, supplier, part) + edge_input_sum(rows@.take(processed@), supplier, part),
+        decreases rows.len() - index,
     {
-        let row = &edge[index];
-        if !bump_edge(&mut edges, row.row.ps_partkey, row.row.ps_suppkey, row.sign) { return None; }
-        proof { lemma_edge_delta_prefix(edge@, processed@); }
+        let row = &rows[index];
+        if !bump_edge(&mut out, row.ps_partkey, row.ps_suppkey, 1) {
+            proof {
+                if fits {
+                    crate::bounds::lemma_edge_input_bound(rows@.take(processed@), row.ps_suppkey as int, row.ps_partkey as int);
+                    assert(max_rows() == 1099511627776int);
+                    assert(edge_at(base@, row.ps_suppkey as int, row.ps_partkey as int) <= max_rows());
+                }
+            }
+            return None;
+        }
+        proof { lemma_edges_prefix(rows@, processed@); }
         index += 1;
         processed = Ghost(index as int);
     }
-    let mut blockers = Index::new();
-    proof { assert(edge@.take(processed@) =~= edge@); }
-    index = 0;
-    processed = Ghost(0);
-    while index < supplier.len()
-        invariant index <= supplier.len(), processed@ == index as int, integer_keys(blockers),
-            parts_keys_valid(parts), edges_keys_valid(edges),
-            forall|part_key: int, group: verus_prooflib::ordered::KeyView|
-                #[trigger] part_at(parts, part_key, group) == part_delta_sum(part@, part_key, group),
-            forall|supplier_key: int, part_key: int|
-                #[trigger] edge_at(edges, supplier_key, part_key) == edge_delta_sum(edge@, supplier_key, part_key),
-            forall|supplier_key: int| #[trigger] integer_at(blockers, (supplier_key, Seq::empty()))
-                == sum(supplier@.take(processed@), |row: SupplierDelta|
-                    if row.s_suppkey == supplier_key && row.is_blocker != 0 { row.sign as int } else { 0 }),
-        decreases supplier.len() - index,
-    {
-        let row = &supplier[index];
-        if row.is_blocker != 0 && !bump(&mut blockers, Key::number(row.s_suppkey), row.sign) { return None; }
-        proof {
-            assert forall|supplier_key: int| #[trigger] integer_at(blockers, (supplier_key, Seq::empty()))
-                == sum(supplier@.take(processed@ + 1), |row: SupplierDelta|
-                    if row.s_suppkey == supplier_key && row.is_blocker != 0 { row.sign as int } else { 0int }) by {
-                lemma_sum_take(supplier@, processed@, |row: SupplierDelta|
-                    if row.s_suppkey == supplier_key && row.is_blocker != 0 { row.sign as int } else { 0int });
-            }
+    proof { assert(rows@.take(processed@) =~= rows@); }
+    Some(out)
+}
+
+pub fn replace_blockers(blocked: &Index<i64>, suppliers: &Index<i64>, rows: &[BlockerInput], Ghost(fits): Ghost<bool>) -> (out: Option<Index<i64>>)
+    requires integer_keys(*blocked), key_set(*suppliers),
+        fits ==> rows@.len() <= max_rows(),
+        fits ==> forall|supplier: int| #[trigger] integer_at(*blocked, (supplier, Seq::empty())) <= max_rows(),
+    ensures out matches Some(result) ==> integer_keys(result)
+            && forall|supplier: int| #[trigger] integer_at(result, (supplier, Seq::empty()))
+                == (if suppliers.at((supplier, Seq::<u8>::empty())).is_some() { 0int } else { integer_at(*blocked, (supplier, Seq::empty())) })
+                    + blocker_input_sum(rows@, supplier),
+        out is None ==> !fits,
+{
+    let mut out = share_integers(blocked);
+    remove_keys(&mut out, suppliers);
+    let base = Ghost(out);
+    proof {
+        assert forall|key: KeyView| #[trigger] out.at(key).is_some() implies key.1 == Seq::<u8>::empty() by {
+            assert(blocked.at(key) == out.at(key));
         }
+        assert forall|supplier: int| #[trigger] integer_at(base@, (supplier, Seq::empty()))
+            == if suppliers.at((supplier, Seq::<u8>::empty())).is_some() { 0int } else { integer_at(*blocked, (supplier, Seq::empty())) } by {
+            if suppliers.at((supplier, Seq::<u8>::empty())).is_some() { assert(base@.at((supplier, Seq::<u8>::empty())).is_none()); }
+        }
+    }
+    let mut index = 0;
+    let mut processed: Ghost<int> = Ghost(0);
+    while index < rows.len()
+        invariant index <= rows.len(), processed@ == index as int, integer_keys(out), integer_keys(*blocked), key_set(*suppliers),
+            fits ==> rows@.len() <= max_rows(),
+            fits ==> forall|supplier: int| #[trigger] integer_at(*blocked, (supplier, Seq::empty())) <= max_rows(),
+            forall|supplier: int| #[trigger] integer_at(base@, (supplier, Seq::empty()))
+                == if suppliers.at((supplier, Seq::<u8>::empty())).is_some() { 0int } else { integer_at(*blocked, (supplier, Seq::empty())) },
+            forall|supplier: int| #[trigger] integer_at(out, (supplier, Seq::empty()))
+                == integer_at(base@, (supplier, Seq::empty())) + blocker_input_sum(rows@.take(processed@), supplier),
+        decreases rows.len() - index,
+    {
+        if !bump(&mut out, Key::number(rows[index].s_suppkey), 1) {
+            proof {
+                if fits {
+                    crate::bounds::lemma_blocker_input_bound(rows@.take(processed@), rows@[index as int].s_suppkey as int);
+                    assert(max_rows() == 1099511627776int);
+                    assert(integer_at(base@, (rows@[index as int].s_suppkey as int, Seq::<u8>::empty())) <= max_rows());
+                }
+            }
+            return None;
+        }
+        proof { lemma_blockers_prefix(rows@, processed@); }
         index += 1;
         processed = Ghost(index as int);
     }
-    proof { assert(supplier@.take(processed@) =~= supplier@); }
-    Some(Changes { parts, edges, blockers })
+    proof { assert(rows@.take(processed@) =~= rows@); }
+    Some(out)
 }
 
-pub fn part_support(changes: &Changes) -> (out: Index<i64>)
-    ensures key_set(out),
-        forall|part: int| #[trigger] integer_at(out, (part, Seq::<u8>::empty()))
-            == if changes.part_counts().at((part, Seq::<u8>::empty())).is_some() { 1int } else { 0int },
-{
-    proof { use_type_invariant(changes); }
-    let mut keys = Index::new();
-    let mut cursor = changes.parts.cursor();
-    let mut processed: Ghost<int> = Ghost(0);
-    loop
-        invariant key_set(keys), parts_keys_valid(changes.parts),
-            0 <= processed@ <= changes.parts.entries().len(),
-            cursor.remaining() == changes.parts.entries().skip(processed@),
-            forall|part: int| #[trigger] integer_at(keys, (part, Seq::<u8>::empty())) ==
-                if changes.parts.entries().take(processed@).map_values(
-                    |row: (verus_prooflib::ordered::KeyView, Counts)| row.0.0).contains(part) { 1int } else { 0int },
-        decreases cursor.remaining().len(),
-    {
-        let (key, _) = match cursor.next() {
-            Some(row) => row,
-            None => {
-                proof {
-                    assert(processed@ == changes.parts.entries().len());
-                    assert(changes.parts.entries().take(processed@) =~= changes.parts.entries());
-                    changes.parts.model();
-                    assert forall|part: int| #[trigger] integer_at(keys, (part, Seq::<u8>::empty()))
-                        == if changes.parts.at((part, Seq::<u8>::empty())).is_some() { 1int } else { 0int } by {
-                        let projected = changes.parts.entries().map_values(
-                            |row: (verus_prooflib::ordered::KeyView, Counts)| row.0.0);
-                        if projected.contains(part) {
-                            let position = choose|position: int| 0 <= position < projected.len() && #[trigger] projected[position] == part;
-                            assert(changes.parts.at(changes.parts.entries()[position].0).is_some());
-                        }
-                        if changes.parts.at((part, Seq::<u8>::empty())).is_some() {
-                            let position = choose|position: int| 0 <= position < changes.parts.entries().len()
-                                && (#[trigger] changes.parts.entries()[position]).0 == (part, Seq::<u8>::empty());
-                            assert(projected[position] == part);
-                        }
-                    }
-                }
-                return keys;
-            },
-        };
-        proof { assert(key.view() == changes.parts.entries()[processed@].0); }
-        insert_key(&mut keys, key.number);
-        proof {
-            let before = changes.parts.entries().take(processed@).map_values(
-                |row: (verus_prooflib::ordered::KeyView, Counts)| row.0.0);
-            assert(changes.parts.entries().take(processed@ + 1).map_values(
-                |row: (verus_prooflib::ordered::KeyView, Counts)| row.0.0) =~= before.push(key.number as int));
-            verus_prooflib::lemma_push_membership(before, key.number as int);
-        }
-        processed = Ghost(processed@ + 1);
+pub open spec fn edge_entry(edges: Edges, supplier: int, part: int) -> bool {
+    match edges.at((supplier, Seq::<u8>::empty())) {
+        Some(inner) => inner.at((part, Seq::<u8>::empty())).is_some(),
+        None => false,
     }
 }
 
-pub fn edge_supplier_support(changes: &Changes) -> (out: Index<i64>)
-    ensures key_set(out),
-        forall|supplier: int| #[trigger] integer_at(out, (supplier, Seq::<u8>::empty()))
-            == if changes.edge_counts().at((supplier, Seq::<u8>::empty())).is_some() { 1int } else { 0int },
+/// Zeroes the cell (outer, inner_key) of a two-level table.
+#[verifier::rlimit(60)]
+pub fn clear_edge(edges: &mut Edges, outer: i64, inner_key: i64)
+    requires edges_keys_valid(*old(edges)),
+    ensures edges_keys_valid(*final(edges)),
+        forall|query_outer: int, query_inner: int| #[trigger] edge_at(*final(edges), query_outer, query_inner)
+            == if query_outer == outer as int && query_inner == inner_key as int { 0int } else { edge_at(*old(edges), query_outer, query_inner) },
 {
-    proof { use_type_invariant(changes); }
-    let mut keys = Index::new();
-    let mut cursor = changes.edges.cursor();
-    let mut processed: Ghost<int> = Ghost(0);
-    loop
-        invariant key_set(keys), edges_keys_valid(changes.edges),
-            0 <= processed@ <= changes.edges.entries().len(),
-            cursor.remaining() == changes.edges.entries().skip(processed@),
-            forall|supplier: int| #[trigger] integer_at(keys, (supplier, Seq::<u8>::empty())) ==
-                if changes.edges.entries().take(processed@).map_values(
-                    |row: (verus_prooflib::ordered::KeyView, Index<i64>)| row.0.0).contains(supplier) { 1int } else { 0int },
-        decreases cursor.remaining().len(),
-    {
-        let (key, _) = match cursor.next() {
-            Some(row) => row,
-            None => {
-                proof {
-                    assert(processed@ == changes.edges.entries().len());
-                    assert(changes.edges.entries().take(processed@) =~= changes.edges.entries());
-                    changes.edges.model();
-                    assert forall|supplier: int| #[trigger] integer_at(keys, (supplier, Seq::<u8>::empty()))
-                        == if changes.edges.at((supplier, Seq::<u8>::empty())).is_some() { 1int } else { 0int } by {
-                        let projected = changes.edges.entries().map_values(
-                            |row: (verus_prooflib::ordered::KeyView, Index<i64>)| row.0.0);
-                        if projected.contains(supplier) {
-                            let position = choose|position: int| 0 <= position < projected.len() && #[trigger] projected[position] == supplier;
-                            assert(changes.edges.at(changes.edges.entries()[position].0).is_some());
+    let initial = Ghost(*edges);
+    let outer_key = Key::number(outer);
+    let found = edges.get(&outer_key);
+    match found {
+        None => {
+            proof {
+                assert(edges.at((outer as int, Seq::<u8>::empty())).is_none());
+                assert forall|query_outer: int, query_inner: int| #[trigger] edge_at(*edges, query_outer, query_inner)
+                    == if query_outer == outer as int && query_inner == inner_key as int { 0int } else { edge_at(initial@, query_outer, query_inner) } by {}
+            }
+        },
+        Some(value) => {
+            proof { assert(integer_keys(*value)); }
+            let mut inner = share_integers(&*value);
+            proof {
+                assert(edges.at((outer as int, Seq::<u8>::empty())) == Some(*value));
+                assert forall|query: int| #[trigger] integer_at(inner, (query, Seq::<u8>::empty())) == integer_at(*value, (query, Seq::<u8>::empty())) by {}
+            }
+            let before_inner = Ghost(inner);
+            inner.remove(&Key::number(inner_key));
+            let after_inner = Ghost(inner);
+            proof { inner.map_model(); }
+            if inner.is_empty() { edges.remove(&outer_key); }
+            else { edges.put(outer_key, Arc::new(inner)); }
+            proof {
+                assert forall|query_outer: int, query_inner: int| #[trigger] edge_at(*edges, query_outer, query_inner)
+                    == if query_outer == outer as int && query_inner == inner_key as int { 0int } else { edge_at(initial@, query_outer, query_inner) } by {
+                    if query_outer == outer as int {
+                        if after_inner@.entries().len() == 0 {
+                            assert(edges.at((query_outer, Seq::<u8>::empty())).is_none());
+                            assert(after_inner@.at((query_inner, Seq::<u8>::empty())).is_none());
+                        } else {
+                            assert(edges.at((query_outer, Seq::<u8>::empty())) == Some(after_inner@));
                         }
-                        if changes.edges.at((supplier, Seq::<u8>::empty())).is_some() {
-                            let position = choose|position: int| 0 <= position < changes.edges.entries().len()
-                                && (#[trigger] changes.edges.entries()[position]).0 == (supplier, Seq::<u8>::empty());
-                            assert(projected[position] == supplier);
-                        }
+                        assert(edge_at(initial@, query_outer, query_inner) == integer_at(before_inner@, (query_inner, Seq::<u8>::empty())));
+                    } else {
+                        assert(edges.at((query_outer, Seq::<u8>::empty())) == initial@.at((query_outer, Seq::<u8>::empty())));
                     }
                 }
-                return keys;
-            },
-        };
-        proof { assert(key.view() == changes.edges.entries()[processed@].0); }
-        insert_key(&mut keys, key.number);
-        proof {
-            let before = changes.edges.entries().take(processed@).map_values(
-                |row: (verus_prooflib::ordered::KeyView, Index<i64>)| row.0.0);
-            assert(changes.edges.entries().take(processed@ + 1).map_values(
-                |row: (verus_prooflib::ordered::KeyView, Index<i64>)| row.0.0) =~= before.push(key.number as int));
-            verus_prooflib::lemma_push_membership(before, key.number as int);
-        }
-        processed = Ghost(processed@ + 1);
+                assert forall|key: KeyView| #[trigger] edges.at(key).is_some() implies
+                    key.1 == Seq::<u8>::empty() && edges.at(key).unwrap().wf() && integer_keys(edges.at(key).unwrap()) by {
+                    if key == (outer as int, Seq::<u8>::empty()) {
+                        assert(edges.at(key) == Some(after_inner@));
+                    } else {
+                        assert(edges.at(key) == initial@.at(key));
+                    }
+                }
+            }
+        },
     }
 }
 
-pub fn supplier_support(changes: &Changes) -> (out: Index<i64>)
-    ensures key_set(out),
-        forall|supplier: int| #[trigger] integer_at(out, (supplier, Seq::<u8>::empty()))
-            == if changes.edge_counts().at((supplier, Seq::<u8>::empty())).is_some()
-                || changes.blocker_counts().at((supplier, Seq::<u8>::empty())).is_some() { 1int } else { 0int },
+/// Sets the cell (outer, inner_key) of a two-level table.
+pub fn put_edge(edges: &mut Edges, outer: i64, inner_key: i64, value: i64)
+    requires edges_keys_valid(*old(edges)),
+    ensures edges_keys_valid(*final(edges)),
+        forall|query_outer: int, query_inner: int| #[trigger] edge_at(*final(edges), query_outer, query_inner)
+            == if query_outer == outer as int && query_inner == inner_key as int { value as int } else { edge_at(*old(edges), query_outer, query_inner) },
 {
-    proof { use_type_invariant(changes); }
-    let mut keys = edge_supplier_support(changes);
-    let mut cursor = changes.blockers.cursor();
-    let mut processed: Ghost<int> = Ghost(0);
-    loop
-        invariant key_set(keys), integer_keys(changes.blockers),
-            0 <= processed@ <= changes.blockers.entries().len(),
-            cursor.remaining() == changes.blockers.entries().skip(processed@),
-            forall|supplier: int| #[trigger] integer_at(keys, (supplier, Seq::<u8>::empty())) ==
-                if changes.edges.at((supplier, Seq::<u8>::empty())).is_some()
-                    || changes.blockers.entries().take(processed@).map_values(
-                        |row: (verus_prooflib::ordered::KeyView, i64)| row.0.0).contains(supplier) { 1int } else { 0int },
-        decreases cursor.remaining().len(),
-    {
-        let (key, _) = match cursor.next() {
-            Some(row) => row,
-            None => {
-                proof {
-                    assert(processed@ == changes.blockers.entries().len());
-                    assert(changes.blockers.entries().take(processed@) =~= changes.blockers.entries());
-                    changes.blockers.model();
-                    assert forall|supplier: int| #[trigger] integer_at(keys, (supplier, Seq::<u8>::empty()))
-                        == if changes.edges.at((supplier, Seq::<u8>::empty())).is_some()
-                            || changes.blockers.at((supplier, Seq::<u8>::empty())).is_some() { 1int } else { 0int } by {
-                        let projected = changes.blockers.entries().map_values(
-                            |row: (verus_prooflib::ordered::KeyView, i64)| row.0.0);
-                        if projected.contains(supplier) {
-                            let position = choose|position: int| 0 <= position < projected.len() && #[trigger] projected[position] == supplier;
-                            assert(changes.blockers.at(changes.blockers.entries()[position].0).is_some());
-                        }
-                        if changes.blockers.at((supplier, Seq::<u8>::empty())).is_some() {
-                            let position = choose|position: int| 0 <= position < changes.blockers.entries().len()
-                                && (#[trigger] changes.blockers.entries()[position]).0 == (supplier, Seq::<u8>::empty());
-                            assert(projected[position] == supplier);
-                        }
-                    }
-                }
-                return keys;
-            },
-        };
-        proof { assert(key.view() == changes.blockers.entries()[processed@].0); }
-        insert_key(&mut keys, key.number);
-        proof {
-            let before = changes.blockers.entries().take(processed@).map_values(
-                |row: (verus_prooflib::ordered::KeyView, i64)| row.0.0);
-            assert(changes.blockers.entries().take(processed@ + 1).map_values(
-                |row: (verus_prooflib::ordered::KeyView, i64)| row.0.0) =~= before.push(key.number as int));
-            verus_prooflib::lemma_push_membership(before, key.number as int);
-        }
-        processed = Ghost(processed@ + 1);
+    clear_edge(edges, outer, inner_key);
+    let cleared = Ghost(*edges);
+    if value != 0 {
+        if !bump_edge(edges, inner_key, outer, value) { proof { assert(false); } return; }
     }
 }
 
-pub fn neighbor_support(changes: &Changes) -> (out: Index<i64>)
-    ensures key_set(out),
+/// Rewrites the cells of one supplier's column in a part-first table from its row in a supplier-first table.
+#[verifier::rlimit(60)]
+pub fn rewrite_column(links: &mut Edges, supplier: i64, inner: &Index<i64>, keep: bool)
+    requires edges_keys_valid(*old(links)), integer_keys(*inner),
+    ensures edges_keys_valid(*final(links)),
+        forall|part: int, query_supplier: int| #[trigger] edge_at(*final(links), part, query_supplier)
+            == if query_supplier == supplier as int && inner.at((part, Seq::<u8>::empty())).is_some() {
+                if keep { integer_at(*inner, (part, Seq::<u8>::empty())) } else { 0int }
+            } else { edge_at(*old(links), part, query_supplier) },
 {
-    let mut keys = part_support(changes);
-    let mut cursor = changes.edges.cursor();
-    loop
-        invariant key_set(keys),
-        decreases cursor.remaining().len(),
-    {
-        let (_, parts) = match cursor.next() { Some(row) => row, None => break };
-        let mut part_cursor = parts.cursor();
-        loop
-            invariant key_set(keys),
-            decreases part_cursor.remaining().len(),
-        {
-            let (part, _) = match part_cursor.next() { Some(row) => row, None => break };
-            insert_key(&mut keys, part.number);
-        }
-    }
-    keys
-}
-
-pub fn restore_parts(new: &Parts, changes: &Parts, neighbors: &Index<i64>) -> (out: Option<Parts>)
-    requires parts_keys_valid(*new), parts_keys_valid(*changes), neighbors.wf(),
-    ensures out matches Some(old) ==> parts_keys_valid(old)
-        && forall|part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(old, part, key)
-            == part_at(*new, part, key) -
-                if neighbors.at((part, Seq::<u8>::empty())).is_some() { part_at(*changes, part, key) } else { 0int },
-{
-    let mut old = share_parts(new);
-    proof { changes.map_model(); }
-    let mut cursor = changes.cursor();
+    let initial = Ghost(*links);
+    proof { inner.model(); }
+    let mut cursor = inner.cursor();
     let mut processed: Ghost<int> = Ghost(0);
     loop
-        invariant parts_keys_valid(old), parts_keys_valid(*changes), parts_keys_valid(*new), neighbors.wf(),
-            0 <= processed@ <= changes.entries().len(),
-            cursor.remaining() == changes.entries().skip(processed@),
-            forall|part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(old, part, key)
-                == part_at(*new, part, key) - sum(changes.entries().take(processed@),
-                    |row: (verus_prooflib::ordered::KeyView, Counts)|
-                        if row.0 == (part, Seq::<u8>::empty()) && neighbors.at(row.0).is_some() { count_at(row.1, key) } else { 0int }),
-            forall|row: (verus_prooflib::ordered::KeyView, Counts)| #[trigger] cursor.remaining().contains(row) ==>
-                row.0.1 == Seq::<u8>::empty() && cell_keys_valid(row.1),
+        invariant edges_keys_valid(*links), integer_keys(*inner), initial@ == *old(links),
+            0 <= processed@ <= inner.entries().len(), cursor.remaining() == inner.entries().skip(processed@),
+            forall|position: int| 0 <= position < inner.entries().len() ==>
+                #[trigger] inner.at(inner.entries()[position].0) == Some(inner.entries()[position].1),
+            forall|part: int, query_supplier: int| #[trigger] edge_at(*links, part, query_supplier)
+                == if query_supplier == supplier as int && key_seen(inner.entries(), processed@, (part, Seq::<u8>::empty())) {
+                    if keep { integer_at(*inner, (part, Seq::<u8>::empty())) } else { 0int }
+                } else { edge_at(initial@, part, query_supplier) },
         decreases cursor.remaining().len(),
     {
-        let remaining = Ghost(cursor.remaining());
-        let (part, delta) = match cursor.next() {
+        let (key, value) = match cursor.next() {
             Some(row) => row,
             None => {
                 proof {
-                    assert(processed@ == changes.entries().len());
-                    assert(changes.entries().take(processed@) =~= changes.entries());
-                    assert forall|part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(old, part, key)
-                        == part_at(*new, part, key) -
-                            if neighbors.at((part, Seq::<u8>::empty())).is_some() { part_at(*changes, part, key) } else { 0int } by {
-                        verus_prooflib::lemma_ordered_selected_weight(changes, (part, Seq::<u8>::empty()),
-                            |row: (verus_prooflib::ordered::KeyView, Counts)| count_at(row.1, key),
-                            if neighbors.at((part, Seq::<u8>::empty())).is_some() { 1int } else { 0int },
-                            |row: (verus_prooflib::ordered::KeyView, Counts)|
-                                if row.0 == (part, Seq::<u8>::empty()) && neighbors.at(row.0).is_some() { count_at(row.1, key) } else { 0int });
+                    inner.model();
+                    assert(processed@ == inner.entries().len());
+                    assert forall|part: int, query_supplier: int| #[trigger] edge_at(*links, part, query_supplier)
+                        == if query_supplier == supplier as int && inner.at((part, Seq::<u8>::empty())).is_some() {
+                            if keep { integer_at(*inner, (part, Seq::<u8>::empty())) } else { 0int }
+                        } else { edge_at(initial@, part, query_supplier) } by {
+                        if key_seen(inner.entries(), processed@, (part, Seq::<u8>::empty())) {
+                            let position = choose|position: int| 0 <= position < processed@ && (#[trigger] inner.entries()[position]).0 == (part, Seq::<u8>::empty());
+                            assert(inner.at(inner.entries()[position].0) == Some(inner.entries()[position].1));
+                        }
+                        if inner.at((part, Seq::<u8>::empty())).is_some() {
+                            let position = choose|position: int| #![auto] 0 <= position < inner.entries().len() && inner.entries()[position].0 == (part, Seq::<u8>::empty());
+                            assert(key_seen(inner.entries(), processed@, (part, Seq::<u8>::empty())));
+                        }
                     }
                 }
-                return Some(old);
+                return;
             },
         };
         proof {
-            assert(remaining@.contains((part.view(), *delta)));
-            assert((part.view(), *delta) == changes.entries()[processed@]);
-            lemma_parts_tail(remaining@);
+            assert((key.view(), *value) == inner.entries()[processed@]);
+            assert(inner.at(inner.entries()[processed@].0) == Some(inner.entries()[processed@].1));
+            assert(inner.at(key.view()).is_some());
+            assert(key.view() == (key.number as int, Seq::<u8>::empty()));
         }
-        if neighbors.get(&part).is_none() {
-            proof {
-                assert forall|query_part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(old, query_part, key)
-                    == part_at(*new, query_part, key) - sum(changes.entries().take(processed@ + 1),
-                        |row: (verus_prooflib::ordered::KeyView, Counts)|
-                            if row.0 == (query_part, Seq::<u8>::empty()) && neighbors.at(row.0).is_some() { count_at(row.1, key) } else { 0int }) by {
-                    lemma_sum_take(changes.entries(), processed@,
-                        |row: (verus_prooflib::ordered::KeyView, Counts)|
-                            if row.0 == (query_part, Seq::<u8>::empty()) && neighbors.at(row.0).is_some() { count_at(row.1, key) } else { 0int });
-                }
-            }
-            processed = Ghost(processed@ + 1);
-            continue;
-        }
-        let initial = Ghost(old);
-        let mut groups = match old.get(&part) { Some(value) => share_counts(&*value), None => Index::new() };
-        proof { delta.map_model(); }
-        let mut group_cursor = delta.cursor();
-        let mut group_processed: Ghost<int> = Ghost(0);
-        let mut completed = false;
-        while !completed
-            invariant cell_keys_valid(groups), parts_keys_valid(old),
-                old == initial@, cell_keys_valid(*delta),
-                part.view().1 == Seq::<u8>::empty(), neighbors.at(part.view()).is_some(),
-                (part.view(), *delta) == changes.entries()[processed@],
-                forall|query_part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(initial@, query_part, key)
-                    == part_at(*new, query_part, key) - sum(changes.entries().take(processed@),
-                        |row: (verus_prooflib::ordered::KeyView, Counts)|
-                            if row.0 == (query_part, Seq::<u8>::empty()) && neighbors.at(row.0).is_some() { count_at(row.1, key) } else { 0int }),
-                0 <= group_processed@ <= delta.entries().len(),
-                group_cursor.remaining() == delta.entries().skip(group_processed@),
-                forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, key)
-                    == part_at(initial@, part.number as int, key) - sum(delta.entries().take(group_processed@),
-                        |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == key { row.1.count as int } else { 0int }),
-                completed ==> forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, key)
-                    == part_at(initial@, part.number as int, key) - count_at(*delta, key),
-                cells_valid_rows(group_cursor.remaining()),
-            decreases group_cursor.remaining().len() + if completed { 0int } else { 1int },
-        {
-            let remaining = Ghost(group_cursor.remaining());
-            let (key, cell) = match group_cursor.next() {
-                Some(row) => row,
-                None => {
-                    proof {
-                        assert(group_processed@ == delta.entries().len());
-                        assert(delta.entries().take(group_processed@) =~= delta.entries());
-                        assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, key)
-                            == part_at(initial@, part.number as int, key) - count_at(*delta, key) by {
-                            verus_prooflib::lemma_ordered_selected_weight(&*delta, key,
-                                |row: (verus_prooflib::ordered::KeyView, Cell)| row.1.count as int, 1int,
-                                |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == key { row.1.count as int } else { 0int });
-                        }
-                    }
-                    completed = true;
-                    continue;
-                },
-            };
-            proof {
-                assert(remaining@.contains((key.view(), *cell)));
-                assert((key.view(), *cell) == delta.entries()[group_processed@]);
-                lemma_cells_tail(remaining@);
-            }
-            if cell.count == i64::MIN { return None; }
-            if !bump_group(&mut groups, cell.group.clone(), -cell.count) { return None; }
-            proof {
-                assert forall|query: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, query)
-                    == part_at(initial@, part.number as int, query) - sum(delta.entries().take(group_processed@ + 1),
-                        |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int }) by {
-                    lemma_sum_take(delta.entries(), group_processed@,
-                        |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int });
-                }
-            }
-            group_processed = Ghost(group_processed@ + 1);
-        }
-        let restored = Ghost(groups);
-        if groups.is_empty() {
-            proof {
-                groups.model();
-                assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, key) == 0 by {};
-            }
-            old.remove(&part);
-        } else { old.put(part, Arc::new(groups)); }
+        if keep { put_edge(links, key.number, supplier, *value); } else { clear_edge(links, key.number, supplier); }
         proof {
-            assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] part_at(old, part.number as int, key)
-                == count_at(restored@, key) by {};
-            assert forall|query_part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(old, query_part, key)
-                == if query_part == part.number as int { count_at(restored@, key) } else { part_at(initial@, query_part, key) } by {};
-            assert forall|query_part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(old, query_part, key)
-                == part_at(*new, query_part, key) - sum(changes.entries().take(processed@ + 1),
-                    |row: (verus_prooflib::ordered::KeyView, Counts)|
-                        if row.0 == (query_part, Seq::<u8>::empty()) && neighbors.at(row.0).is_some() { count_at(row.1, key) } else { 0int }) by {
-                lemma_sum_take(changes.entries(), processed@,
-                    |row: (verus_prooflib::ordered::KeyView, Counts)|
-                        if row.0 == (query_part, Seq::<u8>::empty()) && neighbors.at(row.0).is_some() { count_at(row.1, key) } else { 0int });
-                if query_part == part.number as int && old.at((query_part, Seq::<u8>::empty())).is_none() {
-                    restored@.model();
-                    assert(count_at(restored@, key) == 0);
+            assert forall|part: int, query_supplier: int| #[trigger] edge_at(*links, part, query_supplier)
+                == if query_supplier == supplier as int && key_seen(inner.entries(), processed@ + 1, (part, Seq::<u8>::empty())) {
+                    if keep { integer_at(*inner, (part, Seq::<u8>::empty())) } else { 0int }
+                } else { edge_at(initial@, part, query_supplier) } by {
+                lemma_key_seen_step(inner.entries(), processed@, (part, Seq::<u8>::empty()));
+                if part == key.number as int && query_supplier == supplier as int {
+                    assert(inner.entries()[processed@].0 == (part, Seq::<u8>::empty()));
+                    assert(integer_at(*inner, (part, Seq::<u8>::empty())) == *value as int);
                 }
             }
         }
@@ -454,211 +402,53 @@ pub fn restore_parts(new: &Parts, changes: &Parts, neighbors: &Index<i64>) -> (o
     }
 }
 
-pub fn restore_edges(new: &Edges, changes: &Edges) -> (out: Option<Edges>)
-    requires edges_keys_valid(*new), edges_keys_valid(*changes),
-    ensures out matches Some(old) ==> edges_keys_valid(old)
-        && forall|supplier: int, part: int| #[trigger] edge_at(old, supplier, part)
-            == edge_at(*new, supplier, part) - edge_at(*changes, supplier, part),
-{
-    let mut old = share_edges(new);
-    proof { changes.map_model(); }
-    let mut cursor = changes.cursor();
-    let mut processed: Ghost<int> = Ghost(0);
-    loop
-        invariant edges_keys_valid(old), edges_keys_valid(*new), edges_keys_valid(*changes),
-            0 <= processed@ <= changes.entries().len(),
-            cursor.remaining() == changes.entries().skip(processed@),
-            forall|supplier: int, part: int| #[trigger] edge_at(old, supplier, part)
-                == edge_at(*new, supplier, part) - sum(changes.entries().take(processed@),
-                    |row: (verus_prooflib::ordered::KeyView, Index<i64>)|
-                        if row.0 == (supplier, Seq::<u8>::empty()) { integer_at(row.1, (part, Seq::empty())) } else { 0int }),
-        decreases cursor.remaining().len(),
-    {
-        let (supplier, parts) = match cursor.next() {
-            Some(row) => row,
-            None => {
-                proof {
-                    assert(processed@ == changes.entries().len());
-                    assert(changes.entries().take(processed@) =~= changes.entries());
-                    assert forall|supplier: int, part: int| #[trigger] edge_at(old, supplier, part)
-                        == edge_at(*new, supplier, part) - edge_at(*changes, supplier, part) by {
-                        verus_prooflib::lemma_ordered_selected_weight(changes, (supplier, Seq::<u8>::empty()),
-                            |row: (verus_prooflib::ordered::KeyView, Index<i64>)| integer_at(row.1, (part, Seq::<u8>::empty())), 1int,
-                            |row: (verus_prooflib::ordered::KeyView, Index<i64>)|
-                                if row.0 == (supplier, Seq::<u8>::empty()) { integer_at(row.1, (part, Seq::<u8>::empty())) } else { 0int });
-                    }
-                }
-                return Some(old);
-            },
-        };
-        proof {
-            assert((supplier.view(), *parts) == changes.entries()[processed@]);
-            changes.model();
-            assert(changes.at(supplier.view()) == Some(*parts));
-            assert(integer_keys(*parts));
-            parts.map_model();
-        }
-        let initial = Ghost(old);
-        let mut part_cursor = parts.cursor();
-        let mut part_processed: Ghost<int> = Ghost(0);
-        let mut completed = false;
-        while !completed
-            invariant edges_keys_valid(old), integer_keys(*parts),
-                supplier.view().1 == Seq::<u8>::empty(),
-                (supplier.view(), *parts) == changes.entries()[processed@],
-                forall|query_supplier: int, query_part: int| #[trigger] edge_at(initial@, query_supplier, query_part)
-                    == edge_at(*new, query_supplier, query_part) - sum(changes.entries().take(processed@),
-                        |row: (verus_prooflib::ordered::KeyView, Index<i64>)|
-                            if row.0 == (query_supplier, Seq::<u8>::empty()) { integer_at(row.1, (query_part, Seq::<u8>::empty())) } else { 0int }),
-                completed ==> forall|query_supplier: int, query_part: int| #[trigger] edge_at(old, query_supplier, query_part)
-                    == edge_at(initial@, query_supplier, query_part) -
-                        if query_supplier == supplier.number as int { integer_at(*parts, (query_part, Seq::<u8>::empty())) } else { 0int },
-                0 <= part_processed@ <= parts.entries().len(),
-                part_cursor.remaining() == parts.entries().skip(part_processed@),
-                forall|query_supplier: int, query_part: int| #[trigger] edge_at(old, query_supplier, query_part)
-                    == edge_at(initial@, query_supplier, query_part) -
-                        if query_supplier == supplier.number as int {
-                            sum(parts.entries().take(part_processed@),
-                                |row: (verus_prooflib::ordered::KeyView, i64)|
-                                    if row.0 == (query_part, Seq::<u8>::empty()) { row.1 as int } else { 0int })
-                        } else { 0int },
-            decreases part_cursor.remaining().len() + if completed { 0int } else { 1int },
-        {
-            let (part, count) = match part_cursor.next() {
-                Some(row) => row,
-                None => {
-                    proof {
-                        assert(part_processed@ == parts.entries().len());
-                        assert(parts.entries().take(part_processed@) =~= parts.entries());
-                        assert forall|query_supplier: int, query_part: int| #[trigger] edge_at(old, query_supplier, query_part)
-                            == edge_at(initial@, query_supplier, query_part) -
-                                if query_supplier == supplier.number as int { integer_at(*parts, (query_part, Seq::<u8>::empty())) } else { 0int } by {
-                            verus_prooflib::lemma_ordered_selected_weight(&*parts, (query_part, Seq::<u8>::empty()),
-                                |row: (verus_prooflib::ordered::KeyView, i64)| row.1 as int, 1int,
-                                |row: (verus_prooflib::ordered::KeyView, i64)|
-                                    if row.0 == (query_part, Seq::<u8>::empty()) { row.1 as int } else { 0int });
-                        }
-                    }
-                    completed = true;
-                    continue;
-                },
-            };
-            proof {
-                assert((part.view(), *count) == parts.entries()[part_processed@]);
-                parts.model();
-                assert(parts.at(part.view()) == Some(*count));
-                assert(part.view().1 == Seq::<u8>::empty());
-            }
-            if *count == i64::MIN { return None; }
-            if !bump_edge(&mut old, part.number, supplier.number, -*count) { return None; }
-            proof {
-                assert forall|query_supplier: int, query_part: int| #[trigger] edge_at(old, query_supplier, query_part)
-                    == edge_at(initial@, query_supplier, query_part) -
-                        if query_supplier == supplier.number as int {
-                            sum(parts.entries().take(part_processed@ + 1),
-                                |row: (verus_prooflib::ordered::KeyView, i64)|
-                                    if row.0 == (query_part, Seq::<u8>::empty()) { row.1 as int } else { 0int })
-                        } else { 0int } by {
-                    lemma_sum_take(parts.entries(), part_processed@,
-                        |row: (verus_prooflib::ordered::KeyView, i64)|
-                            if row.0 == (query_part, Seq::<u8>::empty()) { row.1 as int } else { 0int });
-                }
-            }
-            part_processed = Ghost(part_processed@ + 1);
-        }
-        proof {
-            assert forall|query_supplier: int, query_part: int| #[trigger] edge_at(old, query_supplier, query_part)
-                == edge_at(*new, query_supplier, query_part) - sum(changes.entries().take(processed@ + 1),
-                    |row: (verus_prooflib::ordered::KeyView, Index<i64>)|
-                        if row.0 == (query_supplier, Seq::<u8>::empty()) { integer_at(row.1, (query_part, Seq::<u8>::empty())) } else { 0int }) by {
-                lemma_sum_take(changes.entries(), processed@,
-                    |row: (verus_prooflib::ordered::KeyView, Index<i64>)|
-                        if row.0 == (query_supplier, Seq::<u8>::empty()) { integer_at(row.1, (query_part, Seq::<u8>::empty())) } else { 0int });
-            }
-        }
-        processed = Ghost(processed@ + 1);
-    }
+pub open spec fn within(db: Db, db2: Db) -> bool {
+    envelope(db) && envelope(db2)
 }
 
-pub fn restore_blockers(new: &Index<i64>, changes: &Index<i64>) -> (out: Option<Index<i64>>)
-    requires integer_keys(*new), integer_keys(*changes),
-    ensures out matches Some(old) ==> integer_keys(old)
-        && forall|key: verus_prooflib::ordered::KeyView| #[trigger] integer_at(old, key)
-            == integer_at(*new, key) - integer_at(*changes, key),
-{
-    let mut old = share_integers(new);
-    proof { changes.map_model(); }
-    let mut cursor = changes.cursor();
-    let mut processed: Ghost<int> = Ghost(0);
-    loop
-        invariant integer_keys(old), integer_keys(*changes), integer_keys(*new),
-            0 <= processed@ <= changes.entries().len(),
-            cursor.remaining() == changes.entries().skip(processed@),
-            forall|key: verus_prooflib::ordered::KeyView| #[trigger] integer_at(old, key)
-                == integer_at(*new, key) - sum(changes.entries().take(processed@),
-                    |row: (verus_prooflib::ordered::KeyView, i64)| if row.0 == key { row.1 as int } else { 0int }),
-            forall|row: (verus_prooflib::ordered::KeyView, i64)| #[trigger] cursor.remaining().contains(row) ==> row.0.1 == Seq::<u8>::empty(),
-        decreases cursor.remaining().len(),
-    {
-        let remaining = Ghost(cursor.remaining());
-        let (supplier, count) = match cursor.next() {
-            Some(row) => row,
-            None => {
-                proof {
-                    assert(processed@ == changes.entries().len());
-                    assert(changes.entries().take(processed@) =~= changes.entries());
-                    assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] integer_at(old, key)
-                        == integer_at(*new, key) - integer_at(*changes, key) by {
-                        verus_prooflib::lemma_ordered_selected_weight(changes, key,
-                            |row: (verus_prooflib::ordered::KeyView, i64)| row.1 as int, 1int,
-                            |row: (verus_prooflib::ordered::KeyView, i64)| if row.0 == key { row.1 as int } else { 0int });
-                    }
-                }
-                return Some(old);
-            },
-        };
-        proof {
-            assert(remaining@.contains((supplier.view(), *count)));
-            assert((supplier.view(), *count) == changes.entries()[processed@]);
-            lemma_integer_tail(remaining@);
-            assert(supplier.view().1 == Seq::<u8>::empty());
-        }
-        if *count == i64::MIN { return None; }
-        if !bump(&mut old, supplier, -*count) { return None; }
-        proof {
-            assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] integer_at(old, key)
-                == integer_at(*new, key) - sum(changes.entries().take(processed@ + 1),
-                    |row: (verus_prooflib::ordered::KeyView, i64)| if row.0 == key { row.1 as int } else { 0int }) by {
-                lemma_sum_take(changes.entries(), processed@,
-                    |row: (verus_prooflib::ordered::KeyView, i64)| if row.0 == key { row.1 as int } else { 0int });
-            }
-        }
-        processed = Ghost(processed@ + 1);
-    }
-}
-
+#[verifier::rlimit(200)]
 pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Index<i64>,
     new_parts: &Parts, new_edges: &Edges, new_blockers: &Index<i64>, suppliers: &Index<i64>,
+    Ghost(db): Ghost<Db>, Ghost(db2): Ghost<Db>,
 ) -> (out: Result<Counts, u32>)
     requires parts_keys_valid(*old_parts), parts_keys_valid(*new_parts),
         edges_keys_valid(*old_edges), edges_keys_valid(*new_edges),
-        old_blockers.wf(), new_blockers.wf(), key_set(*suppliers),
+        integer_keys(*old_blockers), integer_keys(*new_blockers), key_set(*suppliers),
+        scanned_parts(*old_parts, db), scanned_edges(*old_edges, db), scanned_blockers(*old_blockers, db),
+        scanned_parts(*new_parts, db2), scanned_edges(*new_edges, db2), scanned_blockers(*new_blockers, db2),
     ensures out matches Ok(groups) ==> cell_keys_valid(groups)
-        && forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, key)
-            == sum(suppliers.entries(), |row: (verus_prooflib::ordered::KeyView, i64)|
+        && forall|key: KeyView| #[trigger] count_at(groups, key)
+            == sum(suppliers.entries(), |row: (KeyView, i64)|
                 supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
                     - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key)),
+        out is Err ==> !within(db, db2),
 {
+    let fits = Ghost(within(db, db2));
+    proof {
+        assert forall|part: int, key: KeyView| #[trigger] part_at(*old_parts, part, key) >= 0 by { lemma_part_sum_bound(db, part, key); }
+        assert forall|part: int, key: KeyView| #[trigger] part_at(*new_parts, part, key) >= 0 by { lemma_part_sum_bound(db2, part, key); }
+        suppliers.model();
+        lemma_database_suppliers_len(db);
+        lemma_database_suppliers_len(db2);
+    }
     let mut group_changes: Counts = Index::new();
     let mut cursor = suppliers.cursor();
     let mut processed: Ghost<int> = Ghost(0);
     loop
         invariant cell_keys_valid(group_changes), parts_keys_valid(*old_parts), parts_keys_valid(*new_parts),
             edges_keys_valid(*old_edges), edges_keys_valid(*new_edges), key_set(*suppliers),
+            integer_keys(*old_blockers), integer_keys(*new_blockers),
+            scanned_parts(*old_parts, db), scanned_edges(*old_edges, db), scanned_blockers(*old_blockers, db),
+            scanned_parts(*new_parts, db2), scanned_edges(*new_edges, db2), scanned_blockers(*new_blockers, db2),
+            nonneg_parts(*old_parts), nonneg_parts(*new_parts),
+            fits@ == within(db, db2),
+            database_suppliers(db).len() <= db.partsupp.len(), database_suppliers(db2).len() <= db2.partsupp.len(),
             0 <= processed@ <= suppliers.entries().len(),
             cursor.remaining() == suppliers.entries().skip(processed@),
-            forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(group_changes, key)
-                == sum(suppliers.entries().take(processed@), |row: (verus_prooflib::ordered::KeyView, i64)|
+            verus_prooflib::ordered::ordered_rows(suppliers.entries()),
+            forall|position: int| 0 <= position < suppliers.entries().len() ==> (#[trigger] suppliers.entries()[position]).0.1 == Seq::<u8>::empty(),
+            forall|key: KeyView| #[trigger] count_at(group_changes, key)
+                == sum(suppliers.entries().take(processed@), |row: (KeyView, i64)|
                     supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
                         - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key)),
         decreases cursor.remaining().len(),
@@ -678,33 +468,98 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
             assert(supplier.view() == suppliers.entries()[processed@].0);
             assert(suppliers.at(supplier.view()).is_some());
             assert(supplier.view().1 == Seq::<u8>::empty());
+            assert(supplier.view() == (supplier.number as int, Seq::<u8>::empty()));
         }
         let initial = Ghost(group_changes);
         let before = match old_blockers.get(&supplier) { Some(value) => *value, None => 0 };
         let after = match new_blockers.get(&supplier) { Some(value) => *value, None => 0 };
-        if before < 0 || after < 0 { return Err(6); }
+        proof {
+            assert(before as int == integer_at(*old_blockers, supplier.view()));
+            assert(after as int == integer_at(*new_blockers, supplier.view()));
+            lemma_blocker_count_bound(db, supplier.number as int);
+            lemma_blocker_count_bound(db2, supplier.number as int);
+        }
         if before == 0 {
-            if let Some(edges) = old_edges.get(&supplier) {
-                let groups = match join(old_parts, &*edges) { Some(value) => value, None => return Err(4) };
-                if !collect_contribution(&mut group_changes, &groups, -1) { return Err(4); }
+            if let Some(inner) = old_edges.get(&supplier) {
+                proof {
+                    inner.model();
+                    assert(old_edges.at(supplier.view()) == Some(*inner));
+                    assert forall|position: int| 0 <= position < inner.entries().len() implies (#[trigger] inner.entries()[position]).1 >= 0 by {
+                        let entry = inner.entries()[position];
+                        assert(inner.at(entry.0) == Some(entry.1));
+                        assert(edge_at(*old_edges, supplier.number as int, entry.0.0) == entry.1 as int);
+                        lemma_edge_count_bound(db, entry.0.0, supplier.number as int);
+                    }
+                }
+                let groups = join(old_parts, &*inner);
+                proof {
+                    assert forall|key: KeyView| contribution(groups, key, -1i64) == -supplier_contribution(*old_parts, *old_edges, *old_blockers, supplier.number as int, key) by {
+                        lemma_hit_joined(*old_parts, inner.entries(), key);
+                        assert(integer_at(*old_blockers, supplier.view()) == 0);
+                    }
+                    if within(db, db2) {
+                        assert forall|key: KeyView| !out_of_range(count_at(group_changes, key) + contribution(groups, key, -1i64)) by {
+                            lemma_old_call_fits(*old_parts, *old_edges, *old_blockers, *new_parts, *new_edges, *new_blockers, db, db2,
+                                suppliers.entries(), processed@, key);
+                        }
+                    }
+                }
+                if !collect_contribution(&mut group_changes, &groups, -1, fits) { return Err(4); }
             }
         }
         proof {
-            assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(group_changes, key)
-                == count_at(initial@, key) - supplier_contribution(*old_parts, *old_edges, *old_blockers, supplier.number as int, key) by {};
+            assert forall|key: KeyView| #[trigger] count_at(group_changes, key)
+                == count_at(initial@, key) - supplier_contribution(*old_parts, *old_edges, *old_blockers, supplier.number as int, key) by {
+                if before == 0 {
+                    if old_edges.at(supplier.view()).is_none() { assert(supplier_contribution(*old_parts, *old_edges, *old_blockers, supplier.number as int, key) == 0); }
+                } else {
+                    assert(supplier_contribution(*old_parts, *old_edges, *old_blockers, supplier.number as int, key) == 0);
+                }
+            }
         }
+        let middle = Ghost(group_changes);
         if after == 0 {
-            if let Some(edges) = new_edges.get(&supplier) {
-                let groups = match join(new_parts, &*edges) { Some(value) => value, None => return Err(4) };
-                if !collect_contribution(&mut group_changes, &groups, 1) { return Err(4); }
+            if let Some(inner) = new_edges.get(&supplier) {
+                proof {
+                    inner.model();
+                    assert(new_edges.at(supplier.view()) == Some(*inner));
+                    assert forall|position: int| 0 <= position < inner.entries().len() implies (#[trigger] inner.entries()[position]).1 >= 0 by {
+                        let entry = inner.entries()[position];
+                        assert(inner.at(entry.0) == Some(entry.1));
+                        assert(edge_at(*new_edges, supplier.number as int, entry.0.0) == entry.1 as int);
+                        lemma_edge_count_bound(db2, entry.0.0, supplier.number as int);
+                    }
+                }
+                let groups = join(new_parts, &*inner);
+                proof {
+                    assert forall|key: KeyView| contribution(groups, key, 1i64) == supplier_contribution(*new_parts, *new_edges, *new_blockers, supplier.number as int, key) by {
+                        lemma_hit_joined(*new_parts, inner.entries(), key);
+                        assert(integer_at(*new_blockers, supplier.view()) == 0);
+                    }
+                    if within(db, db2) {
+                        assert forall|key: KeyView| !out_of_range(count_at(group_changes, key) + contribution(groups, key, 1i64)) by {
+                            lemma_new_call_fits(*old_parts, *old_edges, *old_blockers, *new_parts, *new_edges, *new_blockers, db, db2,
+                                suppliers.entries(), processed@, key);
+                        }
+                    }
+                }
+                if !collect_contribution(&mut group_changes, &groups, 1, fits) { return Err(4); }
             }
         }
         proof {
-            assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(group_changes, key)
-                == sum(suppliers.entries().take(processed@ + 1), |row: (verus_prooflib::ordered::KeyView, i64)|
+            assert forall|key: KeyView| #[trigger] count_at(group_changes, key)
+                == count_at(middle@, key) + supplier_contribution(*new_parts, *new_edges, *new_blockers, supplier.number as int, key) by {
+                if after == 0 {
+                    if new_edges.at(supplier.view()).is_none() { assert(supplier_contribution(*new_parts, *new_edges, *new_blockers, supplier.number as int, key) == 0); }
+                } else {
+                    assert(supplier_contribution(*new_parts, *new_edges, *new_blockers, supplier.number as int, key) == 0);
+                }
+            }
+            assert forall|key: KeyView| #[trigger] count_at(group_changes, key)
+                == sum(suppliers.entries().take(processed@ + 1), |row: (KeyView, i64)|
                     supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
                         - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key)) by {
-                lemma_sum_take(suppliers.entries(), processed@, |row: (verus_prooflib::ordered::KeyView, i64)|
+                lemma_sum_take(suppliers.entries(), processed@, |row: (KeyView, i64)|
                     supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
                         - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key));
             }
@@ -713,14 +568,17 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
     }
 }
 
-#[verifier::rlimit(40)]
-pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Counts) -> (out: Result<(Counts, Ranks), u32>)
+#[verifier::rlimit(60)]
+pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Counts, Ghost(fits): Ghost<bool>) -> (out: Result<(Counts, Ranks), u32>)
     requires cell_keys_valid(*source), cell_keys_valid(*group_changes),
+        fits ==> forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
+            0 <= count_at(*source, #[trigger] group_key(brand, kind, size)) + count_at(*group_changes, group_key(brand, kind, size)) <= i64::MAX as int,
     ensures out matches Ok(state) ==> cell_keys_valid(state.0),
         out matches Ok(state) ==> (positive_counts(*source) ==> positive_counts(state.0)),
         out matches Ok(state) ==> (ranks_valid(*base_ranks, *source) ==> ranks_valid(state.1, state.0)),
-        out matches Ok(state) ==> forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(state.0, key)
+        out matches Ok(state) ==> forall|key: KeyView| #[trigger] count_at(state.0, key)
             == count_at(*source, key) + count_at(*group_changes, key),
+        out is Err ==> !fits,
 {
     let source_counts = Ghost(*source);
     let source_ranks = Ghost(*base_ranks);
@@ -729,6 +587,7 @@ pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Coun
     let mut ranks = base_ranks.share();
     proof {
         group_changes.model();
+        verus_prooflib::ordered::lemma_ordered_unique(group_changes.entries());
         if preserve@ {
             verus_prooflib::lemma_ordered_equal(&source_ranks@, &ranks);
             lemma_ranks_positive(source_ranks@, source_counts@);
@@ -747,9 +606,15 @@ pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Coun
             preserve@ ==> ranks_valid(ranks, counts),
             0 <= processed@ <= group_changes.entries().len(),
             cursor.remaining() == group_changes.entries().skip(processed@),
-            forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key)
+            fits ==> forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
+                0 <= count_at(source_counts@, #[trigger] group_key(brand, kind, size)) + count_at(*group_changes, group_key(brand, kind, size)) <= i64::MAX as int,
+            forall|position: int| 0 <= position < group_changes.entries().len() ==>
+                #[trigger] group_changes.at(group_changes.entries()[position].0) == Some(group_changes.entries()[position].1),
+            forall|first: int, last: int| 0 <= first < last < group_changes.entries().len() ==>
+                (#[trigger] group_changes.entries()[first]).0 != (#[trigger] group_changes.entries()[last]).0,
+            forall|key: KeyView| #[trigger] count_at(counts, key)
                 == count_at(source_counts@, key) + sum(group_changes.entries().take(processed@),
-                    |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == key { row.1.count as int } else { 0int }),
+                    |row: (KeyView, Cell)| if row.0 == key { row.1.count as int } else { 0int }),
         decreases cursor.remaining().len(),
     {
         let remaining = Ghost(cursor.remaining());
@@ -759,11 +624,11 @@ pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Coun
                 proof {
                     assert(processed@ == group_changes.entries().len());
                     assert(group_changes.entries().take(processed@) =~= group_changes.entries());
-                    assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key)
+                    assert forall|key: KeyView| #[trigger] count_at(counts, key)
                         == count_at(source_counts@, key) + count_at(*group_changes, key) by {
                         verus_prooflib::lemma_ordered_selected_weight(group_changes, key,
-                            |row: (verus_prooflib::ordered::KeyView, Cell)| row.1.count as int, 1int,
-                            |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == key { row.1.count as int } else { 0int });
+                            |row: (KeyView, Cell)| row.1.count as int, 1int,
+                            |row: (KeyView, Cell)| if row.0 == key { row.1.count as int } else { 0int });
                     }
                 }
                 return Ok((counts, ranks));
@@ -773,311 +638,246 @@ pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Coun
             assert(remaining@.contains((key.view(), *cell)));
             assert((key.view(), *cell) == group_changes.entries()[processed@]);
             lemma_cells_tail(remaining@);
+            assert(group_changes.at(group_changes.entries()[processed@].0) == Some(group_changes.entries()[processed@].1));
+            assert(cell.group.key() == key.view());
+            assert forall|query: KeyView| query == key.view() implies
+                #[trigger] count_at(counts, query) == count_at(source_counts@, query) by {
+                assert forall|position: int| 0 <= position < group_changes.entries().take(processed@).len() implies
+                    (|row: (KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int })(#[trigger] group_changes.entries().take(processed@)[position]) == 0 by {
+                    assert(group_changes.entries().take(processed@)[position] == group_changes.entries()[position]);
+                    assert(group_changes.entries()[position].0 != group_changes.entries()[processed@].0);
+                }
+                lemma_sum_zero(group_changes.entries().take(processed@),
+                    |row: (KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int });
+            }
         }
-        if !update_total(&mut counts, &mut ranks, cell.group.clone(), cell.count) { return Err(4); }
+        if !update_total(&mut counts, &mut ranks, cell.group.clone(), cell.count) {
+            proof {
+                if fits {
+                    assert(count_at(*group_changes, key.view()) == cell.count as int);
+                    assert(cell.group.key() == group_key((*cell.group.brand)@, (*cell.group.kind)@, cell.group.size as int));
+                }
+            }
+            return Err(4);
+        }
         proof {
-            assert forall|query: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, query)
+            assert forall|query: KeyView| #[trigger] count_at(counts, query)
                 == count_at(source_counts@, query) + sum(group_changes.entries().take(processed@ + 1),
-                    |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int }) by {
+                    |row: (KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int }) by {
                 lemma_sum_take(group_changes.entries(), processed@,
-                    |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int });
+                    |row: (KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int });
             }
         }
         processed = Ghost(processed@ + 1);
     }
 }
 
-pub fn check_edges_neighbors(edges: &Edges, neighbors: &Index<i64>) -> (ok: bool)
-    requires edges_keys_valid(*edges), neighbors.wf(),
-    ensures ok ==> neighbors_cover(*neighbors, *edges),
+#[verifier::rlimit(100)]
+pub fn rewrite_links(links: &mut Edges, source: &Edges, suppliers: &Index<i64>, keep: bool)
+    requires edges_keys_valid(*old(links)), edges_keys_valid(*source), key_set(*suppliers),
+    ensures edges_keys_valid(*final(links)),
+        forall|part: int, supplier: int| #[trigger] edge_at(*final(links), part, supplier)
+            == if suppliers.at((supplier, Seq::<u8>::empty())).is_some() && edge_entry(*source, supplier, part) {
+                if keep { edge_at(*source, supplier, part) } else { 0int }
+            } else { edge_at(*old(links), part, supplier) },
 {
-    let mut cursor = edges.cursor();
+    let initial = Ghost(*links);
+    proof { suppliers.model(); }
+    let mut cursor = suppliers.cursor();
     let mut processed: Ghost<int> = Ghost(0);
     loop
-        invariant edges_keys_valid(*edges), neighbors.wf(), 0 <= processed@ <= edges.entries().len(),
-            cursor.remaining() == edges.entries().skip(processed@),
-            forall|position: int, part: verus_prooflib::ordered::KeyView| 0 <= position < processed@
-                && #[trigger] edges.entries()[position].1.at(part).is_some() ==> neighbors.at(part).is_some(),
+        invariant edges_keys_valid(*links), edges_keys_valid(*source), key_set(*suppliers), initial@ == *old(links),
+            0 <= processed@ <= suppliers.entries().len(), cursor.remaining() == suppliers.entries().skip(processed@),
+            forall|position: int| 0 <= position < suppliers.entries().len() ==>
+                #[trigger] suppliers.at(suppliers.entries()[position].0) == Some(suppliers.entries()[position].1),
+            forall|part: int, supplier: int| #[trigger] edge_at(*links, part, supplier)
+                == if key_seen(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty())) && edge_entry(*source, supplier, part) {
+                    if keep { edge_at(*source, supplier, part) } else { 0int }
+                } else { edge_at(initial@, part, supplier) },
         decreases cursor.remaining().len(),
     {
-        let (supplier, parts) = match cursor.next() {
+        let (key, _) = match cursor.next() {
             Some(row) => row,
             None => {
                 proof {
-                    assert(processed@ == edges.entries().len());
-                    edges.model();
-                    assert forall|supplier: int, part: int| #[trigger] edge_at(*edges, supplier, part) != 0 implies
-                        neighbors.at((part, Seq::<u8>::empty())).is_some() by {
-                        let position = choose|position: int| 0 <= position < edges.entries().len()
-                            && (#[trigger] edges.entries()[position]).0 == (supplier, Seq::<u8>::empty());
-                        assert(edges.at((supplier, Seq::<u8>::empty())) == Some(edges.entries()[position].1));
+                    suppliers.model();
+                    assert(processed@ == suppliers.entries().len());
+                    assert forall|part: int, supplier: int| #[trigger] edge_at(*links, part, supplier)
+                        == if suppliers.at((supplier, Seq::<u8>::empty())).is_some() && edge_entry(*source, supplier, part) {
+                            if keep { edge_at(*source, supplier, part) } else { 0int }
+                        } else { edge_at(initial@, part, supplier) } by {
+                        if key_seen(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty())) {
+                            let position = choose|position: int| 0 <= position < processed@ && (#[trigger] suppliers.entries()[position]).0 == (supplier, Seq::<u8>::empty());
+                            assert(suppliers.at(suppliers.entries()[position].0) == Some(suppliers.entries()[position].1));
+                        }
+                        if suppliers.at((supplier, Seq::<u8>::empty())).is_some() {
+                            let position = choose|position: int| #![auto] 0 <= position < suppliers.entries().len() && suppliers.entries()[position].0 == (supplier, Seq::<u8>::empty());
+                            assert(key_seen(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty())));
+                        }
                     }
                 }
-                return true;
+                return;
             },
         };
         proof {
-            edges.model();
-            assert((supplier.view(), *parts) == edges.entries()[processed@]);
-            assert(edges.at(supplier.view()) == Some(*parts));
+            assert(key.view() == suppliers.entries()[processed@].0);
+            assert(suppliers.at(key.view()).is_some());
+            assert(key.view() == (key.number as int, Seq::<u8>::empty()));
         }
-        if !covered(&*parts, neighbors) { return false; }
+        let before = Ghost(*links);
+        match source.get(&key) {
+            Some(inner) => {
+                proof { assert(source.at(key.view()) == Some(*inner)); assert(integer_keys(*inner)); }
+                rewrite_column(links, key.number, &*inner, keep);
+                proof {
+                    assert forall|part: int, supplier: int| #[trigger] edge_at(*links, part, supplier)
+                        == if key_seen(suppliers.entries(), processed@ + 1, (supplier, Seq::<u8>::empty())) && edge_entry(*source, supplier, part) {
+                            if keep { edge_at(*source, supplier, part) } else { 0int }
+                        } else { edge_at(initial@, part, supplier) } by {
+                        lemma_key_seen_step(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty()));
+                        if supplier == key.number as int {
+                            assert(suppliers.entries()[processed@].0 == (supplier, Seq::<u8>::empty()));
+                            assert(edge_entry(*source, supplier, part) == inner.at((part, Seq::<u8>::empty())).is_some());
+                            assert(edge_at(*source, supplier, part) == integer_at(*inner, (part, Seq::<u8>::empty())));
+                        }
+                    }
+                }
+            },
+            None => {
+                proof {
+                    assert(source.at(key.view()).is_none());
+                    assert forall|part: int, supplier: int| #[trigger] edge_at(*links, part, supplier)
+                        == if key_seen(suppliers.entries(), processed@ + 1, (supplier, Seq::<u8>::empty())) && edge_entry(*source, supplier, part) {
+                            if keep { edge_at(*source, supplier, part) } else { 0int }
+                        } else { edge_at(initial@, part, supplier) } by {
+                        lemma_key_seen_step(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty()));
+                        if supplier == key.number as int { assert(!edge_entry(*source, supplier, part)); }
+                    }
+                }
+            },
+        }
         processed = Ghost(processed@ + 1);
     }
 }
 
-pub fn maintain(counts: &Counts, ranks: &Ranks, changes: &Changes,
-    edges_for_parts_keys: &[i64], edges_for_parts_rows: &[EdgeInput],
-    edges_for_suppliers_keys: &[i64], edges_for_suppliers_rows: &[EdgeInput],
-    parts_for_neighbors_keys: &[i64], parts_for_neighbors_rows: &Vec<PartInput>,
-    blockers_for_suppliers_keys: &[i64], blockers_for_suppliers_rows: &[BlockerInput],
-    Ghost(db): Ghost<Db>, Ghost(db2): Ghost<Db>,
-) -> (out: Result<(Counts, Ranks), u32>)
-    requires cell_keys_valid(*counts), counts_valid(*counts, db), ranks_valid(*ranks, *counts),
-        captured_counts(*changes, db, db2),
-        rescan_edges_for_parts_ok(db2, edges_for_parts_keys@, edges_for_parts_rows@),
-        rescan_edges_for_suppliers_ok(db2, edges_for_suppliers_keys@, edges_for_suppliers_rows@),
-        rescan_parts_for_neighbors_ok(db2, parts_for_neighbors_keys@, parts_for_neighbors_rows@),
-        rescan_blockers_for_suppliers_ok(db2, blockers_for_suppliers_keys@, blockers_for_suppliers_rows@),
-    ensures out matches Ok(state) ==> cell_keys_valid(state.0)
-        && (positive_counts(*counts) ==> positive_counts(state.0))
-        && (ranks_valid(*ranks, *counts) ==> ranks_valid(state.1, state.0))
-        && counts_valid(state.0, db2),
+pub open spec fn part_unchanged(db: Db, db2: Db, changed: Index<i64>) -> bool {
+    forall|part: int, key: KeyView| changed.at((part, Seq::<u8>::empty())).is_none() ==>
+        #[trigger] part_database_sum(db2, part, key) == part_database_sum(db, part, key)
+}
+
+pub proof fn lemma_no_entry_no_edge(edges: Edges, supplier: int, part: int)
+    requires !edge_entry(edges, supplier, part),
+    ensures edge_at(edges, supplier, part) == 0,
+{
+}
+
+#[verifier::rlimit(400)]
+pub fn maintain(counts: &Counts, ranks: &Ranks, parts: &Parts, edges: &Edges, blocked: &Index<i64>, links: &Edges,
+    suppliers: &Index<i64>, changed: &Index<i64>,
+    edge_rows: &[EdgeInput], block_rows: &[BlockerInput], part_rows: &Vec<PartInput>,
+    Ghost(db): Ghost<Db>, Ghost(db2): Ghost<Db>, Ghost(supplier_keys): Ghost<Seq<i64>>, Ghost(part_keys): Ghost<Seq<i64>>,
+) -> (out: Result<(Counts, Ranks, Parts, Edges, Index<i64>, Edges), u32>)
+    requires counts_valid(*counts, db), ranks_valid(*ranks, *counts), tables_valid(*parts, *edges, *blocked, *links, db),
+        key_set(*suppliers), key_set(*changed),
+        rescan_edges_for_suppliers_ok(db2, supplier_keys, edge_rows@),
+        rescan_blockers_for_suppliers_ok(db2, supplier_keys, block_rows@),
+        rescan_parts_for_neighbors_ok(db2, part_keys, part_rows@),
+        forall|key: int| seq_view_i64(supplier_keys).contains(key) <==> suppliers.at((key, Seq::<u8>::empty())).is_some(),
+        forall|key: int| seq_view_i64(part_keys).contains(key) <==> changed.at((key, Seq::<u8>::empty())).is_some(),
+        unaffected(db, db2, *suppliers), part_unchanged(db, db2, *changed),
+    ensures out matches Ok(state) ==> counts_valid(state.0, db2) && ranks_valid(state.1, state.0)
+            && tables_valid(state.2, state.3, state.4, state.5, db2),
+        out is Err ==> !within(db, db2),
 {
     hide(counts_valid);
     hide(ranks_valid);
-    hide(captured_counts);
-    hide(affected_valid);
-    hide(scoped_edges);
-    hide(scoped_parts);
-    hide(scoped_blockers);
-    hide(neighbors_cover);
-    proof { use_type_invariant(changes); }
-    let changed_parts = part_support(changes);
-    let supplied_parts = keys_from_slice(edges_for_parts_keys);
-    if !covered(&changed_parts, &supplied_parts) { return Err(1); }
+    let fits = Ghost(within(db, db2));
     proof {
-        assert forall|part: int| #[trigger] changed_parts.at((part, Seq::<u8>::empty())).is_some() implies
-            seq_view_i64(edges_for_parts_keys@).contains(part) by {
-            assert(integer_at(supplied_parts, (part, Seq::<u8>::empty())) > 0);
-        }
+        reveal(counts_valid);
+        reveal(ranks_valid);
+        lemma_rescan_parts_len(db2, part_keys, part_rows@);
+        lemma_rescan_edges_len(db2, supplier_keys, edge_rows@);
+        lemma_rescan_blockers_len(db2, supplier_keys, block_rows@);
+        assert forall|part: int, key: KeyView| #[trigger] part_at(*parts, part, key) <= db.part.len() by { lemma_part_sum_bound(db, part, key); }
+        assert forall|supplier: int, part: int| #[trigger] edge_at(*edges, supplier, part) <= db.partsupp.len() by { lemma_edge_count_bound(db, part, supplier); }
+        assert forall|supplier: int| #[trigger] integer_at(*blocked, (supplier, Seq::<u8>::empty())) <= db.supplier.len() by { lemma_blocker_count_bound(db, supplier); }
+        assert(max_rows() == 1099511627776int);
     }
-    let mut suppliers = supplier_support(changes);
-    let initial_suppliers = Ghost(suppliers);
-    let mut index = 0;
-    let mut processed: Ghost<int> = Ghost(0);
-    while index < edges_for_parts_rows.len()
-        invariant index <= edges_for_parts_rows.len(), processed@ == index as int,
-            key_set(suppliers), key_set(changed_parts), key_set(initial_suppliers@),
-            forall|part: int| #[trigger] changed_parts.at((part, Seq::<u8>::empty())).is_some() ==> seq_view_i64(edges_for_parts_keys@).contains(part),
-            forall|part: int| #[trigger] integer_at(changed_parts, (part, Seq::<u8>::empty()))
-                == if changes.part_counts().at((part, Seq::<u8>::empty())).is_some() { 1int } else { 0int },
-            forall|supplier: int| #[trigger] integer_at(initial_suppliers@, (supplier, Seq::<u8>::empty()))
-                == if changes.edge_counts().at((supplier, Seq::<u8>::empty())).is_some()
-                    || changes.blocker_counts().at((supplier, Seq::<u8>::empty())).is_some() { 1int } else { 0int },
-            forall|supplier: int| #[trigger] integer_at(suppliers, (supplier, Seq::empty())) ==
-                if integer_at(initial_suppliers@, (supplier, Seq::empty())) > 0
-                    || sum(edge_input_seq_view(edges_for_parts_rows@.take(processed@)), |row: PartsuppRow|
-                        if row.ps_suppkey == supplier
-                            && integer_at(changed_parts, (row.ps_partkey, Seq::empty())) > 0 { 1 } else { 0 }) > 0
-                { 1int } else { 0int },
-        decreases edges_for_parts_rows.len() - index,
-    {
-        let edge = &edges_for_parts_rows[index];
-        if changed_parts.get(&Key::number(edge.ps_partkey)).is_some() {
-            insert_key(&mut suppliers, edge.ps_suppkey);
-        }
-        proof {
-            assert forall|supplier: int| #[trigger] integer_at(suppliers, (supplier, Seq::<u8>::empty())) ==
-                if integer_at(initial_suppliers@, (supplier, Seq::<u8>::empty())) > 0
-                    || sum(edge_input_seq_view(edges_for_parts_rows@.take(processed@ + 1)), |row: PartsuppRow|
-                        if row.ps_suppkey == supplier && integer_at(changed_parts, (row.ps_partkey, Seq::<u8>::empty())) > 0 { 1int } else { 0int }) > 0
-                    { 1int } else { 0int } by {
-                let weight = |row: PartsuppRow| if row.ps_suppkey == supplier
-                    && integer_at(changed_parts, (row.ps_partkey, Seq::<u8>::empty())) > 0 { 1int } else { 0int };
-                verus_prooflib::lemma_sum_mapped_prefix(edges_for_parts_rows@, processed@,
-                    |row: EdgeInput| edge_input_view(row), weight);
-                lemma_sum_nonneg(edge_input_seq_view(edges_for_parts_rows@.take(processed@)), weight);
+    let new_parts = match replace_parts(parts, changed, part_rows, fits) { Some(value) => value, None => return Err(4) };
+    let new_edges = match replace_edges(edges, suppliers, edge_rows, fits) { Some(value) => value, None => return Err(4) };
+    let new_blocked = match replace_blockers(blocked, suppliers, block_rows, fits) { Some(value) => value, None => return Err(4) };
+    proof {
+        assert forall|part: int, key: KeyView| #[trigger] part_at(new_parts, part, key) == part_database_sum(db2, part, key) by {
+            if changed.at((part, Seq::<u8>::empty())).is_some() {
+                assert(seq_view_i64(part_keys).contains(part));
+                lemma_parts_rescan(db2, part_keys, part_rows@, part, key);
+            } else {
+                assert(!seq_view_i64(part_keys).contains(part));
+                lemma_parts_rescan_absent(db2, part_keys, part_rows@, part, key);
             }
         }
-        index += 1;
-        processed = Ghost(index as int);
-    }
-    proof {
-        assert(edges_for_parts_rows@.take(processed@) =~= edges_for_parts_rows@);
-        lemma_affected(changes, db2, suppliers, changed_parts, initial_suppliers@, edges_for_parts_keys@, edges_for_parts_rows@);
-    }
-    let supplied_suppliers = keys_from_slice(edges_for_suppliers_keys);
-    let supplied_blockers = keys_from_slice(blockers_for_suppliers_keys);
-    if !covered(&suppliers, &supplied_suppliers) { return Err(2); }
-    if !covered(&suppliers, &supplied_blockers) { return Err(3); }
-    proof {
-        assert forall|supplier: int| #[trigger] suppliers.at((supplier, Seq::<u8>::empty())).is_some() implies
-            seq_view_i64(edges_for_suppliers_keys@).contains(supplier) && seq_view_i64(blockers_for_suppliers_keys@).contains(supplier) by {
-            assert(integer_at(supplied_suppliers, (supplier, Seq::<u8>::empty())) > 0);
-            assert(integer_at(supplied_blockers, (supplier, Seq::<u8>::empty())) > 0);
-        }
-    }
-    let mut neighbors: Index<i64> = Index::new();
-    let mut new_edges: Edges = Index::new();
-    index = 0;
-    processed = Ghost(0);
-    while index < edges_for_suppliers_rows.len()
-        invariant index <= edges_for_suppliers_rows.len(), processed@ == index as int,
-            key_set(neighbors), key_set(suppliers), edges_keys_valid(new_edges),
-            affected_valid(*changes, db2, suppliers),
-            forall|supplier: int| #[trigger] suppliers.at((supplier, Seq::<u8>::empty())).is_some() ==>
-                seq_view_i64(edges_for_suppliers_keys@).contains(supplier) && seq_view_i64(blockers_for_suppliers_keys@).contains(supplier),
-            forall|part: int| #[trigger] integer_at(neighbors, (part, Seq::empty())) ==
-                if sum(edge_input_seq_view(edges_for_suppliers_rows@.take(processed@)), |row: PartsuppRow|
-                    if row.ps_partkey == part && integer_at(suppliers, (row.ps_suppkey, Seq::empty())) > 0
-                        { 1 } else { 0 }) > 0 { 1int } else { 0int },
-            forall|supplier: int, part: int| #[trigger] edge_at(new_edges, supplier, part)
-                == sum(edge_input_seq_view(edges_for_suppliers_rows@.take(processed@)), |row: PartsuppRow|
-                    if integer_at(suppliers, (supplier, Seq::empty())) > 0 { edge_weight(row, supplier, part) } else { 0 }),
-        decreases edges_for_suppliers_rows.len() - index,
-    {
-        let edge = &edges_for_suppliers_rows[index];
-        if suppliers.get(&Key::number(edge.ps_suppkey)).is_some() {
-            insert_key(&mut neighbors, edge.ps_partkey);
-            if !bump_edge(&mut new_edges, edge.ps_partkey, edge.ps_suppkey, 1) { return Err(4); }
-        }
-        proof {
-            assert forall|supplier: int, part: int| #[trigger] edge_at(new_edges, supplier, part)
-                == sum(edge_input_seq_view(edges_for_suppliers_rows@.take(processed@ + 1)), |row: PartsuppRow|
-                    if integer_at(suppliers, (supplier, Seq::<u8>::empty())) > 0 { edge_weight(row, supplier, part) } else { 0int }) by {
-                verus_prooflib::lemma_sum_mapped_prefix(edges_for_suppliers_rows@, processed@,
-                    |row: EdgeInput| edge_input_view(row), |row: PartsuppRow|
-                    if integer_at(suppliers, (supplier, Seq::<u8>::empty())) > 0 { edge_weight(row, supplier, part) } else { 0int });
-            }
-            assert forall|part: int| #[trigger] integer_at(neighbors, (part, Seq::<u8>::empty())) ==
-                if sum(edge_input_seq_view(edges_for_suppliers_rows@.take(processed@ + 1)), |row: PartsuppRow|
-                    if row.ps_partkey == part && integer_at(suppliers, (row.ps_suppkey, Seq::<u8>::empty())) > 0 { 1int } else { 0int }) > 0 { 1int } else { 0int } by {
-                let weight = |row: PartsuppRow| if row.ps_partkey == part
-                    && integer_at(suppliers, (row.ps_suppkey, Seq::<u8>::empty())) > 0 { 1int } else { 0int };
-                verus_prooflib::lemma_sum_mapped_prefix(edges_for_suppliers_rows@, processed@,
-                    |row: EdgeInput| edge_input_view(row), weight);
-                lemma_sum_nonneg(edge_input_seq_view(edges_for_suppliers_rows@.take(processed@)), weight);
+        assert forall|supplier: int, part: int| #[trigger] edge_at(new_edges, supplier, part) == edge_count(db2, part, supplier) by {
+            if suppliers.at((supplier, Seq::<u8>::empty())).is_some() {
+                assert(seq_view_i64(supplier_keys).contains(supplier));
+                lemma_edges_supplier_rescan(db2, supplier_keys, edge_rows@, supplier, part);
+            } else {
+                assert(!seq_view_i64(supplier_keys).contains(supplier));
+                lemma_edges_supplier_rescan_absent(db2, supplier_keys, edge_rows@, supplier, part);
             }
         }
-        index += 1;
-        processed = Ghost(index as int);
-    }
-    proof {
-        assert(edges_for_suppliers_rows@.take(processed@) =~= edges_for_suppliers_rows@);
-        lemma_post_edges(db2, suppliers, new_edges, edges_for_suppliers_keys@, edges_for_suppliers_rows@);
-    }
-    let mut cursor = changes.edges.cursor();
-    loop
-        invariant key_set(neighbors), affected_valid(*changes, db2, suppliers),
-            scoped_edges(new_edges, db2, suppliers),
-        decreases cursor.remaining().len(),
-    {
-        let (_, parts) = match cursor.next() { Some(row) => row, None => break };
-        let mut cursor = parts.cursor();
-        loop
-            invariant key_set(neighbors), affected_valid(*changes, db2, suppliers),
-                scoped_edges(new_edges, db2, suppliers),
-            decreases cursor.remaining().len(),
-        {
-            let (part, _) = match cursor.next() { Some(row) => row, None => break };
-            insert_key(&mut neighbors, part.number);
-        }
-    }
-    let supplied_neighbors = keys_from_slice(parts_for_neighbors_keys);
-    if !covered(&neighbors, &supplied_neighbors) { return Err(5); }
-    proof {
-        assert forall|part: int| #[trigger] neighbors.at((part, Seq::<u8>::empty())).is_some() implies
-            seq_view_i64(parts_for_neighbors_keys@).contains(part) by {
-            assert(integer_at(supplied_neighbors, (part, Seq::<u8>::empty())) > 0);
-        }
-    }
-    let vocab = crate::vocab::new_vocab();
-    let mut new_parts = Index::new();
-    index = 0;
-    processed = Ghost(0);
-    while index < parts_for_neighbors_rows.len()
-        invariant index <= parts_for_neighbors_rows.len(), processed@ == index as int,
-            parts_keys_valid(new_parts), vocab.ok(), key_set(neighbors),
-            affected_valid(*changes, db2, suppliers), scoped_edges(new_edges, db2, suppliers),
-            forall|part: int| #[trigger] neighbors.at((part, Seq::<u8>::empty())).is_some() ==> seq_view_i64(parts_for_neighbors_keys@).contains(part),
-            forall|part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(new_parts, part, key)
-                == sum(part_input_seq_view(parts_for_neighbors_rows@.take(processed@)), |row: PartRow|
-                    if integer_at(neighbors, (part, Seq::empty())) > 0 { part_weight(row, part, key) } else { 0 }),
-        decreases parts_for_neighbors_rows.len() - index,
-    {
-        let row = &parts_for_neighbors_rows[index];
-        if neighbors.get(&Key::number(row.p_partkey)).is_some() && !bump_part(&vocab, &mut new_parts, row, 1) { return Err(4); }
-        proof {
-            assert forall|part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(new_parts, part, key)
-                == sum(part_input_seq_view(parts_for_neighbors_rows@.take(processed@ + 1)), |row: PartRow|
-                    if integer_at(neighbors, (part, Seq::<u8>::empty())) > 0 { part_weight(row, part, key) } else { 0int }) by {
-                verus_prooflib::lemma_sum_mapped_prefix(parts_for_neighbors_rows@, processed@,
-                    |row: PartInput| part_input_view(row), |row: PartRow|
-                    if integer_at(neighbors, (part, Seq::<u8>::empty())) > 0 { part_weight(row, part, key) } else { 0int });
+        assert forall|supplier: int| #[trigger] integer_at(new_blocked, (supplier, Seq::<u8>::empty())) == blocker_count(db2, supplier) by {
+            if suppliers.at((supplier, Seq::<u8>::empty())).is_some() {
+                assert(seq_view_i64(supplier_keys).contains(supplier));
+                lemma_blockers_rescan(db2, supplier_keys, block_rows@, supplier);
+            } else {
+                assert(!seq_view_i64(supplier_keys).contains(supplier));
+                lemma_blockers_rescan_absent(db2, supplier_keys, block_rows@, supplier);
             }
         }
-        index += 1;
-        processed = Ghost(index as int);
     }
+    let mut new_links = share_edges(links);
+    rewrite_links(&mut new_links, edges, suppliers, false);
+    let cleared = Ghost(new_links);
+    rewrite_links(&mut new_links, &new_edges, suppliers, true);
     proof {
-        assert(parts_for_neighbors_rows@.take(processed@) =~= parts_for_neighbors_rows@);
-        lemma_post_parts(db2, neighbors, new_parts, parts_for_neighbors_keys@, parts_for_neighbors_rows@);
-    }
-    let mut new_blockers = Index::new();
-    index = 0;
-    processed = Ghost(0);
-    while index < blockers_for_suppliers_rows.len()
-        invariant index <= blockers_for_suppliers_rows.len(), processed@ == index as int,
-            integer_keys(new_blockers), key_set(suppliers),
-            affected_valid(*changes, db2, suppliers), scoped_edges(new_edges, db2, suppliers), scoped_parts(new_parts, db2, neighbors),
-            forall|supplier: int| #[trigger] suppliers.at((supplier, Seq::<u8>::empty())).is_some() ==> seq_view_i64(blockers_for_suppliers_keys@).contains(supplier),
-            forall|supplier: int| #[trigger] integer_at(new_blockers, (supplier, Seq::empty()))
-                == sum(blocker_input_seq_view(blockers_for_suppliers_rows@.take(processed@)), |key: int|
-                    if key == supplier && integer_at(suppliers, (supplier, Seq::empty())) > 0 { 1 } else { 0 }),
-        decreases blockers_for_suppliers_rows.len() - index,
-    {
-        let row = &blockers_for_suppliers_rows[index];
-        if suppliers.get(&Key::number(row.s_suppkey)).is_some() && !bump(&mut new_blockers, Key::number(row.s_suppkey), 1) { return Err(4); }
-        proof {
-            assert forall|supplier: int| #[trigger] integer_at(new_blockers, (supplier, Seq::<u8>::empty()))
-                == sum(blocker_input_seq_view(blockers_for_suppliers_rows@.take(processed@ + 1)), |key: int|
-                    if key == supplier && integer_at(suppliers, (supplier, Seq::<u8>::empty())) > 0 { 1int } else { 0int }) by {
-                verus_prooflib::lemma_sum_mapped_prefix(blockers_for_suppliers_rows@, processed@,
-                    |row: BlockerInput| blocker_input_view(row), |key: int|
-                    if key == supplier && integer_at(suppliers, (supplier, Seq::<u8>::empty())) > 0 { 1int } else { 0int });
+        assert forall|part: int, supplier: int| #[trigger] edge_at(new_links, part, supplier) == edge_count(db2, part, supplier) by {
+            assert(edge_at(*links, part, supplier) == edge_count(db, part, supplier));
+            assert(edge_at(*edges, supplier, part) == edge_count(db, part, supplier));
+            assert(edge_at(new_edges, supplier, part) == edge_count(db2, part, supplier));
+            if suppliers.at((supplier, Seq::<u8>::empty())).is_some() {
+                if !edge_entry(*edges, supplier, part) { lemma_no_entry_no_edge(*edges, supplier, part); }
+                if !edge_entry(new_edges, supplier, part) { lemma_no_entry_no_edge(new_edges, supplier, part); }
+                assert(edge_at(cleared@, part, supplier) == 0);
+            } else {
+                assert(edge_at(cleared@, part, supplier) == edge_at(*links, part, supplier));
+                assert(edge_count(db2, part, supplier) == edge_count(db, part, supplier));
             }
         }
-        index += 1;
-        processed = Ghost(index as int);
     }
-    proof {
-        assert(blockers_for_suppliers_rows@.take(processed@) =~= blockers_for_suppliers_rows@);
-        lemma_post_blockers(db2, suppliers, new_blockers, blockers_for_suppliers_keys@, blockers_for_suppliers_rows@);
-    }
-    let old_parts = match restore_parts(&new_parts, &changes.parts, &neighbors) { Some(value) => value, None => return Err(4) };
-    let old_edges = match restore_edges(&new_edges, &changes.edges) { Some(value) => value, None => return Err(4) };
-    let old_blockers = match restore_blockers(&new_blockers, &changes.blockers) { Some(value) => value, None => return Err(4) };
-    proof {
-        lemma_restore_scopes(db, db2, changes, suppliers, neighbors, old_parts, old_edges, old_blockers, new_parts, new_edges, new_blockers);
-    }
-    if !check_edges_neighbors(&old_edges, &neighbors) || !check_edges_neighbors(&new_edges, &neighbors) { return Err(5); }
-    let group_changes = match collect_changes(&old_parts, &old_edges, &old_blockers,
-        &new_parts, &new_edges, &new_blockers, &suppliers) {
-        Ok(groups) => groups,
-        Err(code) => return Err(code),
-    };
-    let state = match publish_changes(counts, ranks, &group_changes) {
-        Ok(state) => state,
+    let changes = match collect_changes(parts, edges, blocked, &new_parts, &new_edges, &new_blocked, suppliers, Ghost(db), Ghost(db2)) {
+        Ok(value) => value,
         Err(code) => return Err(code),
     };
     proof {
+        lemma_changes_are_totals(db, db2, *suppliers, *parts, *edges, *blocked, new_parts, new_edges, new_blocked, changes);
         lemma_ranks_positive(*ranks, *counts);
-        lemma_maintenance_result(db, db2, changes, suppliers, neighbors,
-            old_parts, old_edges, old_blockers, new_parts, new_edges, new_blockers,
-            *counts, state.0, group_changes, state.1);
+        assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int| fits@ implies
+            0 <= count_at(*counts, #[trigger] group_key(brand, kind, size)) + count_at(changes, group_key(brand, kind, size)) <= i64::MAX as int by {
+            if fits@ {
+                lemma_total_bound(db2, brand, kind, size);
+                lemma_database_suppliers_len(db2);
+                assert(max_rows() == 1099511627776int);
+            }
+        }
     }
-    Ok(state)
+    let state = match publish_changes(counts, ranks, &changes, fits) {
+        Ok(value) => value,
+        Err(code) => return Err(code),
+    };
+    proof {
+        lemma_apply_correct(db, db2, *counts, state.0, changes, state.1);
+    }
+    Ok((state.0, state.1, new_parts, new_edges, new_blocked, new_links))
 }
 
 }

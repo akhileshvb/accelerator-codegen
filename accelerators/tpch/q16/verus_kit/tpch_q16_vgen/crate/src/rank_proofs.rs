@@ -87,8 +87,7 @@ pub proof fn lemma_brands_equal(before: &Index<BrandRanks>, after: &Index<BrandR
 {
     assert forall|brand: KeyView| #[trigger] after.at(brand).is_some() implies
         brand.0 == 0 && stream_valid(after.at(brand).unwrap().rows, counts, size, Some(brand.1))
-        && after.at(brand).unwrap().groups == after.at(brand).unwrap().rows.entries().len()
-        && after.at(brand).unwrap().groups > 0 by { assert(before.at(brand).is_some()); }
+        && after.at(brand).unwrap().rows.entries().len() > 0 by { assert(before.at(brand).is_some()); }
     assert forall|key: KeyView| #[trigger] counts.at(key).is_some() && counts.at(key).unwrap().group.size == size implies
         after.at((0int, (*counts.at(key).unwrap().group.brand)@)).is_some() by {
         assert(before.at((0int, (*counts.at(key).unwrap().group.brand)@)).is_some());
@@ -120,8 +119,7 @@ pub proof fn lemma_size_counts_equal(rows: SizeRanks, before: Counts, after: Cou
     lemma_stream_counts_equal(rows.rows, before, after, size, None);
     assert forall|brand: KeyView| #[trigger] rows.brands.at(brand).is_some() implies
         brand.0 == 0 && stream_valid(rows.brands.at(brand).unwrap().rows, after, size, Some(brand.1))
-        && rows.brands.at(brand).unwrap().groups == rows.brands.at(brand).unwrap().rows.entries().len()
-        && rows.brands.at(brand).unwrap().groups > 0 by {
+        && rows.brands.at(brand).unwrap().rows.entries().len() > 0 by {
         lemma_stream_counts_equal(rows.brands.at(brand).unwrap().rows, before, after, size, Some(brand.1));
     }
     assert forall|key: KeyView| #[trigger] after.at(key).is_some() && after.at(key).unwrap().group.size == size implies
@@ -298,25 +296,24 @@ pub proof fn lemma_stream_unchanged(rows: Counts, old_counts: Counts, counts: Co
     }
 }
 
-pub open spec fn brand_step(before: Index<BrandRanks>, after: Index<BrandRanks>, group: Arc<Group>, stream: Counts, groups: i64) -> bool {
+pub open spec fn brand_step(before: Index<BrandRanks>, after: Index<BrandRanks>, group: Arc<Group>, stream: Counts) -> bool {
     forall|key: KeyView| #[trigger] after.at(key) == if key == (0int, (*group.brand)@) {
-        if stream.entries().len() > 0 { Some(BrandRanks { rows: stream, groups }) } else { None }
+        if stream.entries().len() > 0 { Some(BrandRanks { rows: stream }) } else { None }
     } else { before.at(key) }
 }
 
 pub proof fn lemma_brands_update(before: Index<BrandRanks>, after: Index<BrandRanks>, old_counts: Counts, counts: Counts,
-    group: Arc<Group>, next: i64, stream: Counts, groups: i64)
+    group: Arc<Group>, next: i64, stream: Counts)
     requires brands_valid(before, old_counts, group.size as int), positive_counts(old_counts), positive_counts(counts),
         group.valid(), next >= 0, count_step(old_counts, counts, group, next),
-        stream_valid(stream, counts, group.size as int, Some((*group.brand)@)), groups == stream.entries().len(),
-        after.wf(), brand_step(before, after, group, stream, groups),
+        stream_valid(stream, counts, group.size as int, Some((*group.brand)@)),
+        after.wf(), brand_step(before, after, group, stream),
     ensures brands_valid(after, counts, group.size as int),
 {
     stream.model();
     assert forall|brand: KeyView| #[trigger] after.at(brand).is_some() implies
         brand.0 == 0 && stream_valid(after.at(brand).unwrap().rows, counts, group.size as int, Some(brand.1))
-        && after.at(brand).unwrap().groups == after.at(brand).unwrap().rows.entries().len()
-        && after.at(brand).unwrap().groups > 0 by {
+        && after.at(brand).unwrap().rows.entries().len() > 0 by {
         if brand == (0int, (*group.brand)@) {
             assert(stream.entries().len() > 0);
         } else {
@@ -383,8 +380,7 @@ pub proof fn lemma_size_unchanged(rows: SizeRanks, old_counts: Counts, counts: C
     lemma_stream_unchanged(rows.rows, old_counts, counts, group, next, size, None);
     assert forall|brand: KeyView| #[trigger] rows.brands.at(brand).is_some() implies
         brand.0 == 0 && stream_valid(rows.brands.at(brand).unwrap().rows, counts, size, Some(brand.1))
-        && rows.brands.at(brand).unwrap().groups == rows.brands.at(brand).unwrap().rows.entries().len()
-        && rows.brands.at(brand).unwrap().groups > 0 by {
+        && rows.brands.at(brand).unwrap().rows.entries().len() > 0 by {
         lemma_stream_unchanged(rows.brands.at(brand).unwrap().rows, old_counts, counts, group, next, size, Some(brand.1));
     }
     assert forall|key: KeyView| #[trigger] counts.at(key).is_some() && counts.at(key).unwrap().group.size == size implies
@@ -414,7 +410,7 @@ pub proof fn lemma_ranks_update(before: Ranks, after: Ranks, old_counts: Counts,
         size.1 == Seq::<u8>::empty() && size_valid(after.at(size).unwrap(), counts, size.0) by {
         if size == (group.size as int, Seq::<u8>::empty()) {
             assert(rows.brands.entries().len() > 0);
-            assert(rows.groups > 0);
+            assert(rows.rows.entries().len() > 0);
         } else {
             assert(before.at(size).is_some());
             assert(size.1 == Seq::<u8>::empty());

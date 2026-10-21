@@ -50,9 +50,169 @@ pub open spec fn rows_ordered(rows: Seq<OutRow>) -> bool {
         !same_group(#[trigger] rows[first], #[trigger] rows[last]) && !row_lt(rows[last], rows[first])
 }
 
+pub open spec fn arc_row(cell: Arc<Cell>) -> OutRow {
+    cell_row(*cell)
+}
+
+pub open spec fn sourced(cells: Seq<Arc<Cell>>, cell: Arc<Cell>, bound: int) -> bool {
+    exists|k: int| 0 <= k < bound && *(#[trigger] cells[k]) == *cell
+}
+
+pub open spec fn row_at(cells: Seq<Arc<Cell>>, position: int) -> OutRow {
+    cell_row(*cells[position])
+}
+
+pub open spec fn cells_sorted(cells: Seq<Arc<Cell>>) -> bool {
+    forall|first: int, last: int| 0 <= first < last < cells.len() ==>
+        ext_order()(cell_row(*#[trigger] cells[first]), cell_row(*#[trigger] cells[last]))
+}
+
+proof fn lemma_unordered_same(left: Arc<Cell>, right: Arc<Cell>, counts: Counts)
+    requires source_cell(*left, counts), source_cell(*right, counts),
+        !ext_order()(cell_row(*left), cell_row(*right)), !ext_order()(cell_row(*right), cell_row(*left)),
+    ensures *left == *right,
+{
+    let a = arc_row(left);
+    let b = arc_row(right);
+    if a.p_brand != b.p_brand { lemma_bytes_lt_total(a.p_brand, b.p_brand); }
+    if a.p_type != b.p_type { lemma_bytes_lt_total(a.p_type, b.p_type); }
+    assert(left.group.key() == right.group.key());
+    assert(counts.at(left.group.key()) == Some(*left));
+    assert(counts.at(right.group.key()) == Some(*right));
+}
+
+/// Insertion by rank order: a total fallback for a merge whose output is not strictly ordered.
+pub fn sort_cells(vocab: &Vocab, cells: &Vec<Arc<Cell>>, Ghost(counts): Ghost<Counts>) -> (out: Vec<Arc<Cell>>)
+    requires vocab.ok(), cells_source(cells@, counts),
+    ensures cells_source(out@, counts), cells_sorted(out@),
+        forall|position: int| 0 <= position < out@.len() ==> cell_has(cells@, *#[trigger] out@[position]),
+        forall|cell: Cell| cell_has(cells@, cell) ==> cell_has(out@, cell),
+{
+    proof { lemma_ext_order(); }
+    let mut out: Vec<Arc<Cell>> = Vec::new();
+    let mut index = 0;
+    while index < cells.len()
+        invariant index <= cells.len(), vocab.ok(), cells_source(cells@, counts), cells_source(out@, counts),
+            cells_sorted(out@), strict_order(ext_order()),
+            forall|position: int| 0 <= position < out@.len() ==> sourced(cells@, #[trigger] out@[position], index as int),
+            forall|k: int| 0 <= k < index ==> cell_has(out@, *(#[trigger] cells@[k])),
+        decreases cells.len() - index,
+    {
+        let item = &cells[index];
+        let before = Ghost(out@);
+        let mut pos = 0;
+        let mut found = false;
+        let mut equal = false;
+        while pos < out.len() && !found && !equal
+            invariant pos <= out.len(), out@ == before@, vocab.ok(),
+                cells_source(out@, counts), source_cell(*cells@[index as int], counts),
+                *item == cells@[index as int],
+                found ==> pos < out.len() && ext_order()(cell_row(*cells@[index as int]), cell_row(*out@[pos as int])),
+                equal ==> pos < out.len() && !ext_order()(cell_row(*cells@[index as int]), cell_row(*out@[pos as int]))
+                    && !ext_order()(cell_row(*out@[pos as int]), cell_row(*cells@[index as int])),
+                forall|k: int| 0 <= k < pos ==> ext_order()(cell_row(*(#[trigger] out@[k])), cell_row(*cells@[index as int])),
+            decreases out.len() - pos + if found || equal { 0int } else { 1int },
+        {
+            if head_lt(vocab, &*item, &*out[pos]) { found = true; }
+            else if !head_lt(vocab, &*out[pos], &*item) { equal = true; }
+            else { pos += 1; }
+        }
+        if equal {
+            proof {
+                lemma_unordered_same(cells@[index as int], out@[pos as int], counts);
+                assert(cell_has(out@, *cells@[index as int]));
+            }
+        } else {
+            proof {
+                if found { assert(ext_order()(cell_row(*cells@[index as int]), cell_row(*out@[pos as int]))); }
+                before@.insert_ensures(pos as int, *item);
+            }
+            out.insert(pos, item.clone());
+            proof {
+                let x = cells@[index as int];
+                assert forall|first: int, last: int| 0 <= first < last < out@.len() implies
+                    ext_order()(cell_row(*#[trigger] out@[first]), cell_row(*#[trigger] out@[last])) by {
+                    if last < pos as int { assert(out@[first] == before@[first]); assert(out@[last] == before@[last]); }
+                    else if last == pos as int { assert(out@[first] == before@[first]); }
+                    else if first < pos as int {
+                        assert(out@[first] == before@[first]);
+                        assert(out@[last] == before@[last - 1]);
+                    } else if first == pos as int {
+                        assert(out@[last] == before@[last - 1]);
+                        assert(found);
+                        assert(ext_order()(cell_row(*x), cell_row(*before@[pos as int])));
+                        if last - 1 > pos as int {
+                            assert(ext_order()(cell_row(*before@[pos as int]), cell_row(*before@[last - 1])));
+                        }
+                    } else {
+                        assert(out@[first] == before@[first - 1]);
+                        assert(out@[last] == before@[last - 1]);
+                    }
+                }
+                assert forall|position: int| 0 <= position < out@.len() implies source_cell(*#[trigger] out@[position], counts) by {
+                    if position < pos as int { assert(out@[position] == before@[position]); }
+                    else if position > pos as int { assert(out@[position] == before@[position - 1]); }
+                }
+                assert forall|position: int| 0 <= position < out@.len() implies
+                    sourced(cells@, #[trigger] out@[position], index as int + 1) by {
+                    if position < pos as int {
+                        assert(out@[position] == before@[position]);
+                        let k = choose|k: int| 0 <= k < index && *cells@[k] == *before@[position];
+                    }
+                    else if position == pos as int { assert(*cells@[index as int] == *out@[position]); }
+                    else {
+                        assert(out@[position] == before@[position - 1]);
+                        let k = choose|k: int| 0 <= k < index && *cells@[k] == *before@[position - 1];
+                    }
+                }
+                assert forall|k: int| 0 <= k < index + 1 implies cell_has(out@, *(#[trigger] cells@[k])) by {
+                    if k < index as int {
+                        let p = choose|p: int| 0 <= p < before@.len() && *(#[trigger] before@[p]) == *cells@[k];
+                        if p < pos as int { assert(out@[p] == before@[p]); } else { assert(out@[p + 1] == before@[p]); }
+                    } else { assert(out@[pos as int] == item); }
+                }
+            }
+        }
+        proof {
+            if equal {
+                assert forall|k: int| 0 <= k < index + 1 implies cell_has(out@, *(#[trigger] cells@[k])) by {
+                    if k < index as int {} else { assert(cell_has(out@, *cells@[index as int])); }
+                }
+                assert forall|position: int| 0 <= position < out@.len() implies
+                    sourced(cells@, #[trigger] out@[position], index as int + 1) by {
+                    let k = choose|k: int| 0 <= k < index && *cells@[k] == *out@[position];
+                }
+            }
+        }
+        index += 1;
+    }
+    proof {
+        assert forall|position: int| 0 <= position < out@.len() implies cell_has(cells@, *#[trigger] out@[position]) by {
+            let k = choose|k: int| 0 <= k < index && *cells@[k] == *out@[position];
+            assert(*cells@[k] == *out@[position]);
+        }
+        assert forall|cell: Cell| cell_has(cells@, cell) implies cell_has(out@, cell) by {
+            let k = choose|k: int| 0 <= k < cells.len() && *(#[trigger] cells@[k]) == cell;
+        }
+    }
+    out
+}
+
+pub proof fn lemma_sorted_selected(cells: Seq<Arc<Cell>>, sorted: Seq<Arc<Cell>>, excluded: Seq<u8>, pattern: Seq<u8>, sizes: Seq<i64>)
+    requires cells_selected(cells, excluded, pattern, sizes),
+        forall|position: int| 0 <= position < sorted.len() ==> cell_has(cells, *#[trigger] sorted[position]),
+    ensures cells_selected(sorted, excluded, pattern, sizes),
+{
+    assert forall|position: int| 0 <= position < sorted.len() implies
+        cell_selected(*#[trigger] sorted[position], excluded, pattern, sizes) by {
+        let index = choose|index: int| 0 <= index < cells.len() && *(#[trigger] cells[index]) == *sorted[position];
+    }
+}
+
 pub fn materialize(vocab: &Vocab, cells: &Vec<Arc<Cell>>, Ghost(counts): Ghost<Counts>, Ghost(excluded): Ghost<Seq<u8>>, Ghost(pattern): Ghost<Seq<u8>>, Ghost(sizes): Ghost<Seq<i64>>) -> (result: Option<Vec<RuntimeRow>>)
     requires vocab.ok(), cells_source(cells@, counts), cells_selected(cells@, excluded, pattern, sizes),
-    ensures result matches Some(rows) ==> rows_source(out_view(rows@), counts)
+    ensures result is None ==> !cells_sorted(cells@),
+        result matches Some(rows) ==> rows_source(out_view(rows@), counts)
         && rows_selected(out_view(rows@), excluded, pattern, sizes) && rows_ordered(out_view(rows@))
         && rows.len() == cells.len()
         && forall|index: int| 0 <= index < rows.len() ==> (#[trigger] out_view(rows@)[index]) == cell_row(*cells@[index]),
@@ -74,7 +234,13 @@ pub fn materialize(vocab: &Vocab, cells: &Vec<Arc<Cell>>, Ghost(counts): Ghost<C
     {
         let cell = &*cells[position];
         let before = Ghost(rows@);
-        if position > 0 && !head_lt(vocab, &*cells[position - 1], cell) { return None; }
+        if position > 0 && !head_lt(vocab, &*cells[position - 1], cell) {
+            proof {
+                lemma_row_lt_ext(row_at(cells@, position as int - 1), row_at(cells@, position as int));
+                if cells_sorted(cells@) { assert(ext_order()(cell_row(*cells@[position as int - 1]), cell_row(*cells@[position as int]))); }
+            }
+            return None;
+        }
         proof { assert(source_cell(*cell, counts)); assert(cell.size == cell.group.size); }
         rows.push((copy_bytes(brand_bytes(vocab, cell)), copy_bytes(kind_bytes(vocab, cell)), cell.size, cell.count));
         proof {
