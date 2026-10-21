@@ -8,12 +8,14 @@ pub mod gen_obligations;
 pub mod kernel;
 pub mod gen_world;
 pub mod gen_ffi;
-pub mod aggregate;
 pub mod output;
 pub mod facts;
 pub mod join;
 pub mod bag_proofs;
-pub mod recs;
-pub mod dense;
-pub mod general;
+pub mod store;
+pub mod batch;
+pub mod core;
+pub mod merge;
+pub mod read;
+pub mod changes;
 

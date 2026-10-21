@@ -1,12 +1,17 @@
 use vstd::prelude::*;
 use verus_common::sums::sum;
 use verus_prooflib::ordered::{KeyView, Index};
+use verus_prooflib::wide::Wide;
 use crate::gen_spec::*;
 
 verus! {
-#[derive(Clone, Copy)]
-pub struct Day { pub revenue: i64, pub shipdate: i32, pub count: u32 }
-pub struct BucketProfile { pub count: u64, pub revenue: i128, pub days: Vec<Day> }
+pub struct Day { pub revenue: Wide, pub shipdate: i32, pub count: u64 }
+impl Day {
+    pub fn dup(&self) -> (out: Day) ensures out == *self {
+        Day { revenue: self.revenue.dup(), shipdate: self.shipdate, count: self.count }
+    }
+}
+pub struct BucketProfile { pub count: u64, pub revenue: Wide, pub days: Vec<Day> }
 pub struct Variant {
     pub name: Vec<u8>, pub address: Vec<u8>, pub phone: Vec<u8>, pub count: u64,
 }
@@ -34,7 +39,7 @@ pub open spec fn stored_count(facts: Facts, bin: int, supplier: int) -> int {
     match profile_at(facts, bin, supplier) { Some(profile) => profile.count as int, None => 0 }
 }
 pub open spec fn stored_revenue(facts: Facts, bin: int, supplier: int) -> int {
-    match profile_at(facts, bin, supplier) { Some(profile) => profile.revenue as int, None => 0 }
+    match profile_at(facts, bin, supplier) { Some(profile) => profile.revenue@, None => 0 }
 }
 pub open spec fn stored_day_count(facts: Facts, supplier: int, date: int) -> int {
     match profile_at(facts, bucket(date), supplier) {
@@ -52,7 +57,7 @@ pub open spec fn days_count(days: Seq<Day>, date: int) -> int {
     sum(days, |day: Day| if day.shipdate as int == date { day.count as int } else { 0int })
 }
 pub open spec fn days_revenue(days: Seq<Day>, date: int) -> int {
-    sum(days, |day: Day| if day.shipdate as int == date { day.revenue as int } else { 0int })
+    sum(days, |day: Day| if day.shipdate as int == date { day.revenue@ } else { 0int })
 }
 pub open spec fn days_shape(days: Seq<Day>, bin: int) -> bool {
     &&& days.len() <= 256
@@ -64,14 +69,14 @@ pub open spec fn profile_matches(profile: BucketProfile, rows: Seq<LineitemRow>,
     &&& 0 < profile.count
     &&& profile.days.len() <= 256
     &&& profile.count as int == bucket_count(rows, bin, supplier)
-    &&& profile.revenue as int == bucket_revenue(rows, bin, supplier)
+    &&& profile.revenue@ == bucket_revenue(rows, bin, supplier)
     &&& profile.count as int == sum(profile.days@, |day: Day| day.count as int)
-    &&& profile.revenue as int == sum(profile.days@, |day: Day| day.revenue as int)
+    &&& profile.revenue@ == sum(profile.days@, |day: Day| day.revenue@)
     &&& forall|position: int| 0 <= position < profile.days.len() ==> (
             #[trigger] profile.days@[position].count > 0 &&
             bucket(profile.days@[position].shipdate as int) == bin &&
             profile.days@[position].count as int == day_count(rows, supplier, profile.days@[position].shipdate as int) &&
-            profile.days@[position].revenue as int == day_revenue(rows, supplier, profile.days@[position].shipdate as int))
+            profile.days@[position].revenue@ == day_revenue(rows, supplier, profile.days@[position].shipdate as int))
     &&& forall|left: int, right: int| #![trigger profile.days@[left], profile.days@[right]]
         0 <= left < right < profile.days.len() ==> profile.days@[left].shipdate < profile.days@[right].shipdate
     &&& forall|date: int| #[trigger] day_count(rows, supplier, date) > 0 && bucket(date) == bin ==>
@@ -81,7 +86,7 @@ pub open spec fn profile_shape(profile: BucketProfile, bin: int) -> bool {
     &&& profile.count > 0
     &&& profile.days.len() <= 256
     &&& profile.count as int == sum(profile.days@, |day: Day| day.count as int)
-    &&& profile.revenue as int == sum(profile.days@, |day: Day| day.revenue as int)
+    &&& profile.revenue@ == sum(profile.days@, |day: Day| day.revenue@)
     &&& forall|position: int| 0 <= position < profile.days.len() ==>
         (#[trigger] profile.days@[position]).count > 0 && bucket(profile.days@[position].shipdate as int) == bin
     &&& forall|left: int, right: int| #![trigger profile.days@[left], profile.days@[right]]

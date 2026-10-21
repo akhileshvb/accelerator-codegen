@@ -5,7 +5,6 @@ use verus_common::order::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::kernel::*;
-use crate::aggregate::*;
 use verus_common::sqlfns::like_match;
 pub use crate::bag_proofs::*;
 
@@ -58,40 +57,6 @@ pub proof fn lemma_capture_counts(before: Db, after: Db, p: Seq<u8>, customers: 
     assert forall|index: int| 0 <= index < orders.len() implies
         projected(#[trigger] orders[index]) == actual(full[index]) by {}
     lemma_sum_aligned(orders, full, projected, actual);
-}
-
-pub proof fn lemma_build_facts(db: Db, p: Seq<u8>, customers: Sparse, orders: Sparse, histogram: Sparse)
-    requires customers.wf(), orders.wf(), histogram.wf(),
-        forall|key: int| #[trigger] customers.at(key) == customer_count(db, key),
-        forall|key: int| #[trigger] orders.at(key) == order_count(db, p, key),
-        forall|key: i128| #[trigger] customers.keys().contains(key) ==> customers.at(key as int) > 0,
-        forall|bucket: int| #[trigger] histogram.at(bucket)
-            == sum(customers.keys(), |key: i128| ind(customers.at(key as int) * orders.at(key as int) == bucket)),
-    ensures forall|bucket: int| #[trigger] histogram.at(bucket) == histogram_count(db, p, bucket),
-{
-    customers.lemma_keys();
-    lemma_cast_keys(customers.keys());
-    let keys = customers.keys().map_values(|key: i128| key as int);
-    lemma_dedup(db.customer.map_values(|row: CustomerRow| row.c_custkey));
-    assert forall|bucket: int| #[trigger] histogram.at(bucket) == histogram_count(db, p, bucket) by {
-        let weight = |key: int| contribution(db, p, key, bucket);
-        assert forall|key: int| #[trigger] weight(key) != 0 implies
-            keys.contains(key) && customer_keys(db).contains(key) by {
-            lemma_customer_support(db, key);
-            customers.lemma_support(key);
-        }
-        lemma_sum_support(keys, customer_keys(db), weight);
-        let mapped = |key: i128| weight(key as int);
-        lemma_sum_map(customers.keys(), |key: i128| key as int, weight, mapped);
-        assert forall|index: int| 0 <= index < customers.keys().len() implies
-            mapped(#[trigger] customers.keys()[index])
-                == ind(customers.at(customers.keys()[index] as int)
-                    * orders.at(customers.keys()[index] as int) == bucket) by {
-            assert(customers.keys().contains(customers.keys()[index]));
-        }
-        lemma_sum_ext(customers.keys(), mapped,
-            |key: i128| ind(customers.at(key as int) * orders.at(key as int) == bucket));
-    }
 }
 
 pub proof fn lemma_apply_facts(before: Db, after: Db, p: Seq<u8>, touched: Seq<i128>, bucket: int)
@@ -202,5 +167,33 @@ pub proof fn lemma_customer_support(db: Db, key: int)
         assert(keys.contains(key));
     }
 }
+
+
+pub open spec fn has_key(keys: Seq<i128>, key: int) -> bool {
+    i128::MIN <= key <= i128::MAX && keys.contains(key as i128)
+}
+
+/// The histogram is the sum over any duplicate-free list of exactly the keys with customers.
+pub proof fn lemma_seen_hist(db: Db, p: Seq<u8>, seen: Seq<i128>, bucket: int)
+    requires no_dups(seen),
+        forall|key: int| customer_count(db, key) > 0 <==> has_key(seen, key),
+    ensures histogram_count(db, p, bucket) == sum(seen, |key: i128| contribution(db, p, key as int, bucket)),
+{
+    lemma_cast_keys(seen);
+    lemma_dedup(db.customer.map_values(|row: CustomerRow| row.c_custkey));
+    let keys = cast_keys(seen);
+    let weight = |key: int| contribution(db, p, key, bucket);
+    assert forall|key: int| #[trigger] weight(key) != 0 implies
+        keys.contains(key) && customer_keys(db).contains(key) by {
+        lemma_customer_support(db, key);
+        assert(customer_count(db, key) > 0);
+        assert(has_key(seen, key));
+    }
+    lemma_sum_support(keys, customer_keys(db), weight);
+    let mapped = |key: i128| weight(key as int);
+    lemma_sum_map(seen, |key: i128| key as int, weight, mapped);
+    lemma_sum_ext(seen, mapped, |key: i128| contribution(db, p, key as int, bucket));
+}
+
 
 }
