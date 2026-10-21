@@ -3,7 +3,6 @@ use std::sync::Arc;
 use verus_common::sums::*;
 use crate::storage::*;
 use crate::values::*;
-use crate::values::value;
 use crate::model::*;
 use crate::joins::*;
 use crate::construction::*;
@@ -107,10 +106,10 @@ pub proof fn lemma_sparse_incident(rows: Sparse<Groups>, first: i64, second: i64
     }
 }
 
-pub fn build_incident(groups: &Sparse<Groups>) -> (result: Option<Layers<Layers<i128>>>)
+pub fn build_incident(groups: &Sparse<Groups>) -> (directory: Layers<Layers<i128>>)
     requires groups.valid(), forall|key: i64| #![trigger groups.at(key)]
         groups.at(key) matches Some(bucket) ==> groups_valid(bucket),
-    ensures result matches Some(directory) ==> {
+    ensures {
         &&& directory.valid()
         &&& forall|second: i64, first: i64| #![trigger member_value(directory, second, first)]
             member_value(directory, second, first)
@@ -147,7 +146,7 @@ pub fn build_incident(groups: &Sparse<Groups>) -> (result: Option<Layers<Layers<
             decreases bucket.rows@.len() - offset,
         {
             let ghost before = changes;
-            value!(membership_patch(&empty, &mut changes, bucket.rows[offset].other, first, true));
+            membership_patch(&empty, &mut changes, bucket.rows[offset].other, first, true);
             proof {
                 assert forall|second: i64, target: i64| #![trigger patched_member(empty, changes, second, target)]
                     patched_member(empty, changes, second, target)
@@ -183,7 +182,7 @@ pub fn build_incident(groups: &Sparse<Groups>) -> (result: Option<Layers<Layers<
             lemma_sparse_incident(*groups, first, second);
         }
     }
-    Some(directory)
+    directory
 }
 
 }

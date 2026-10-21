@@ -36,7 +36,7 @@ pub proof fn lemma_groups_result(db: Db, parameter: Params, groups: &Counts, mul
         assert(rows.contains(full[position]));
         let source = choose|source: int| #![auto] 0 <= source < rows.len() && rows[source] == full[position];
         let key = groups.entries()[source].0;
-        assert(count(*groups, key) == groups.entries()[source].1 as int);
+        assert(count(*groups, key) == groups.entries()[source].1@);
         assert(count(*groups, key) * multiplier == multiplier * count(*groups, key)) by(nonlinear_arith);
         assert(full[position].numwait == multiplier * count(*groups, key));
         assert(multiplier * count(*groups, key) > 0) by(nonlinear_arith)

@@ -152,4 +152,41 @@ pub proof fn lemma_name_scan(db: Db, suppliers: Seq<SupplierScan>, nations: Seq<
     }
 }
 
+/// A scanned waiting line belongs to a finished order, so the finished count of its order is positive.
+pub proof fn lemma_waiting_row_finished(db: Db, rows: Seq<WaitingLine>, finished_rows: Seq<FinishedOrder>, position: int)
+    requires scan_waiting_lines_ok(db, rows), scan_finished_orders_ok(db, finished_rows), 0 <= position < rows.len(),
+    ensures sum(finished_rows, finished_weight((rows[position].l_orderkey as int, Seq::<u8>::empty()))) > 0,
+{
+    let row = rows[position];
+    let target = (row.l_orderkey as int, row.l_suppkey as int);
+    let f = |pair: (int, int)| if pair == target { 1int } else { 0int };
+    let view = waiting_line_seq_view(rows);
+    assert(view[position] == target);
+    lemma_sum_ge_term(view, f, position);
+    let scanned = |line: LineitemRow| if line.l_receiptdate > line.l_commitdate && scan_waiting_lines_exists_1(db, line)
+        && scan_waiting_lines_exists_2(db, line) && !scan_waiting_lines_exists_3(db, line) { f((line.l_orderkey, line.l_suppkey)) } else { 0 };
+    assert(sum(view, f) == sum(db.lineitem, scanned));
+    assert(sum(db.lineitem, scanned) > 0);
+    let index = lemma_sum_nonzero_witness(db.lineitem, scanned);
+    let line = db.lineitem[index];
+    assert(line.l_receiptdate > line.l_commitdate && scan_waiting_lines_exists_1(db, line)
+        && scan_waiting_lines_exists_2(db, line) && !scan_waiting_lines_exists_3(db, line));
+    assert((line.l_orderkey, line.l_suppkey) == target);
+    let other = choose|other: int| #![trigger db.lineitem[other]] 0 <= other < db.lineitem.len() && scan_waiting_lines_exists_2_where(line, db.lineitem[other]);
+    assert(exists_1_where(line, db.lineitem[other]));
+    assert(exists_1(db, line));
+    assert(!exists_2(db, line)) by {
+        if exists_2(db, line) {
+            let third = choose|third: int| #![trigger db.lineitem[third]] 0 <= third < db.lineitem.len() && exists_2_where(line, db.lineitem[third]);
+            assert(scan_waiting_lines_exists_3_where(line, db.lineitem[third]));
+        }
+    }
+    lemma_finished_line(db, finished_rows, index);
+    let order_index = choose|order_index: int| #![trigger db.orders[order_index]] 0 <= order_index < db.orders.len() && scan_waiting_lines_exists_1_where(line, db.orders[order_index]);
+    let order_weight = |order: OrdersRow| if order.o_orderkey == line.l_orderkey && order.o_orderstatus == seq![b'F'] { 1int } else { 0int };
+    lemma_sum_nonneg(db.orders, order_weight);
+    lemma_sum_ge_term(db.orders, order_weight, order_index);
+    assert(finished(db, line.l_orderkey) >= 1);
+}
+
 }

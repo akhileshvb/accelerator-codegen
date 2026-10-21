@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::*;
 use verus_common::sqlfns::like_match;
 use verus_common::order::nondesc;
@@ -37,7 +38,7 @@ pub proof fn lemma_apply_part_count(before: Db, after: Db, rows: Seq<PartDelta>,
     assert(sum(after.part, weight) == sum(before.part, weight) + sum(part_delta_seq_view(rows), signed));
     lemma_sum_map(rows, |delta: PartDelta| (part_input_view(delta.row), delta.sign as int), signed, part_capture_weight(key));
 }
-pub proof fn lemma_coalesced_after(before: Db, after: Db, rows: Seq<PartDelta>, parts: Table<Part>, counts: Map<i64, i128>)
+pub proof fn lemma_coalesced_after(before: Db, after: Db, rows: Seq<PartDelta>, parts: Table<Part>, counts: Map<i64, Wide>)
     requires bag_step(before.part, after.part, part_delta_seq_view(rows)),
         forall|key: i64| #![trigger part_count(parts, key)] part_count(parts, key) == eligible(before, key as int),
         forall|key: i64| #![trigger coalesced_part_count(parts, counts, key)]
@@ -108,8 +109,8 @@ pub proof fn lemma_build_meaning(
             Some(pair) => pair_valid(pair) && eligible(db, part as int) > 0
                 && (pair.stocks@.len() > 0 || pair.ship@.len() > 0)
                 && (forall|index: int| #![trigger pair.ship@[index]] 0 <= index < pair.ship@.len() ==>
-                    pair.ship@[index].count == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
-                    && pair.ship@[index].quantity == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 }))
+                    pair.ship@[index].count@ == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
+                    && pair.ship@[index].quantity@ == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 }))
                 && (forall|value: int| #![trigger stored_stock(pair, value)] stored_stock(pair, value) == stock_count(db, part as int, supplier as int, value))
                 && (forall|date: int| #![trigger stored_day_count(pair, date)] stored_day_count(pair, date) == daily_count(db, part as int, supplier as int, date)
                     && stored_day_quantity(pair, date) == daily_quantity(db, part as int, supplier as int, date)),
@@ -135,8 +136,8 @@ pub proof fn lemma_build_meaning(
             }
             if let Some(pair) = pair_of(parts, part, supplier) {
                 assert forall|index: int| #![trigger pair.ship@[index]] 0 <= index < pair.ship@.len() implies
-                    pair.ship@[index].count == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
-                    && pair.ship@[index].quantity == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 }) by {
+                    pair.ship@[index].count@ == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
+                    && pair.ship@[index].quantity@ == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 }) by {
                     lemma_shipment_scan_weight(db, shipments, part as int, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 });
                     lemma_shipment_scan_weight(db, shipments, part as int, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 });
                 }
@@ -157,16 +158,16 @@ pub proof fn lemma_build_meaning(
     assert(parts.well_formed() && directory.well_formed() && suppliers.well_formed() && nations.well_formed() && names.well_formed());
     assert(forall|key: i64| #![trigger part_count(parts, key)] part_count(parts, key) == eligible(db, key as int));
     assert(forall|key: i64| #![trigger parts.lookup(key)] parts.lookup(key) matches Some(part) ==>
-        part.count > 0 && part.pairs@.map_values(|entry: (i64, crate::profiles::Pair)| entry.0).no_duplicates());
+        part.count@ > 0 && part.pairs@.map_values(|entry: (i64, crate::profiles::Pair)| entry.0).no_duplicates());
     assert(forall|nation: i64| #![trigger suppliers.lookup(nation)]
         suppliers.lookup(nation) matches Some(bucket) ==> bucket.well_formed()
             && forall|supplier: i64| #![trigger bucket.lookup(supplier)]
                 bucket.lookup(supplier) matches Some(rows) ==>
-                    forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() ==> rows@[index].count > 0);
+                    forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() ==> rows@[index].count@ > 0);
     assert(forall|hash: i64| #![trigger nations.lookup(hash)]
         nations.lookup(hash) matches Some(rows) ==>
             forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() ==>
-                rows@[index].count > 0 && crate::profiles::name_hash(rows@[index].name@) == hash);
+                rows@[index].count@ > 0 && crate::profiles::name_hash(rows@[index].name@) == hash);
 }
 
 pub proof fn lemma_meaning_equal_sums(
@@ -199,13 +200,13 @@ pub proof fn lemma_meaning_equal_sums(
     assert forall|part: i64, supplier: i64| #![trigger pair_of(parts, part, supplier)]
         pair_of(parts, part, supplier) matches Some(pair) ==>
             (forall|index: int| #![trigger pair.ship@[index]] 0 <= index < pair.ship@.len() ==>
-                pair.ship@[index].count == sum(after.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
-                && pair.ship@[index].quantity == sum(after.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 })) by {
+                pair.ship@[index].count@ == sum(after.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
+                && pair.ship@[index].quantity@ == sum(after.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 })) by {
         if let Some(pair) = pair_of(parts, part, supplier) {
             assert(stored_stock(pair, 0) == stock_count(before, part as int, supplier as int, 0));
             assert forall|index: int| #![trigger pair.ship@[index]] 0 <= index < pair.ship@.len() implies
-                pair.ship@[index].count == sum(after.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
-                && pair.ship@[index].quantity == sum(after.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 }) by {
+                pair.ship@[index].count@ == sum(after.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
+                && pair.ship@[index].quantity@ == sum(after.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 }) by {
                 let count = |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1int } else { 0int };
                 let quantity = |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0int };
                 assert(sum(after.lineitem, count) == sum(before.lineitem, count));

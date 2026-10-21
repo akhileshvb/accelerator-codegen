@@ -1,5 +1,6 @@
 use vstd::prelude::*;
 use verus_common::sums::*;
+use crate::gen_obligations::max_rows;
 
 verus! {
 
@@ -100,6 +101,36 @@ pub proof fn lemma_capture_property<A>(before: Seq<A>, after: Seq<A>, delta: Seq
     assert forall|index: int| 0 <= index < after.len() implies good(#[trigger] after[index]) by {
         if !good(after[index]) { lemma_sum_pos(after, bad, index); }
     }
+}
+
+
+pub open spec fn max_total() -> int { max_rows() * 1125899906842624int }
+
+/// Counts and totals of positive balances over at most max_rows() customers.
+pub open spec fn bounded(m: (int, int)) -> bool {
+    0 <= m.0 <= max_rows() && 0 <= m.1 <= max_total()
+}
+
+pub proof fn lemma_sum_between<A>(rows: Seq<A>, f: spec_fn(A) -> int, lo: int, hi: int)
+    requires forall|index: int| 0 <= index < rows.len() ==> lo <= f(#[trigger] rows[index]) <= hi,
+    ensures rows.len() * lo <= sum(rows, f) <= rows.len() * hi,
+    decreases rows.len(),
+{
+    if rows.len() > 0 {
+        let before = rows.drop_last();
+        assert forall|index: int| 0 <= index < before.len() implies lo <= f(#[trigger] before[index]) <= hi by {
+            assert(before[index] == rows[index]);
+        }
+        lemma_sum_between(before, f, lo, hi);
+        let n = rows.len() as int;
+        assert((n - 1) * lo + lo == n * lo) by (nonlinear_arith);
+        assert((n - 1) * hi + hi == n * hi) by (nonlinear_arith);
+    }
+}
+
+pub open spec fn small(m: (int, int)) -> bool {
+    -1267650600228229401496703205376 <= m.0 <= 1267650600228229401496703205376
+    && -1267650600228229401496703205376 <= m.1 <= 1267650600228229401496703205376
 }
 
 }

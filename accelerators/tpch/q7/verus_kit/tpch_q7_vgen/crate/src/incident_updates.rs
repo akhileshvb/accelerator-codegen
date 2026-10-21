@@ -2,7 +2,6 @@ use vstd::prelude::*;
 use verus_prooflib::*;
 use crate::storage::*;
 use crate::values::*;
-use crate::values::value;
 use crate::model::*;
 use crate::joins::*;
 use crate::construction::*;
@@ -36,14 +35,13 @@ pub proof fn lemma_replacement_has(previous: Layers<Groups>, changes: Sparse<Gro
 }
 
 pub fn clear_incident_first(previous: &Layers<Layers<i128>>, changes: &mut Sparse<Layers<i128>>, rows: &Groups, first: i64)
-    -> (result: Option<()>)
     requires old(changes).valid(),
         forall|second: i64| #![trigger patched_member(*previous, *old(changes), second, first)]
             patched_member(*previous, *old(changes), second, first) ==> cell_support(rows.rows@, second),
         forall|second: i64| #![trigger old(changes).at(second)] old(changes).at(second) matches Some(bucket) ==> bucket.valid(),
     ensures final(changes).valid(),
         forall|second: i64| #![trigger final(changes).at(second)] final(changes).at(second) matches Some(bucket) ==> bucket.valid(),
-        result.is_some() ==> forall|second: i64, key: i64| #![trigger patched_member(*previous, *final(changes), second, key)]
+        forall|second: i64, key: i64| #![trigger patched_member(*previous, *final(changes), second, key)]
             patched_member(*previous, *final(changes), second, key) ==
                 (key != first && patched_member(*previous, *old(changes), second, key)),
 {
@@ -57,7 +55,7 @@ pub fn clear_incident_first(previous: &Layers<Layers<i128>>, changes: &mut Spars
                     && !(key == first && cell_support(rows.rows@.take(offset as int), second))),
         decreases rows.rows@.len() - offset,
     {
-        value!(membership_patch(previous, changes, rows.rows[offset].other, first, false));
+        membership_patch(previous, changes, rows.rows[offset].other, first, false);
         proof {
             assert forall|second: i64| #![trigger cell_support(rows.rows@.take(offset as int + 1), second)]
                 cell_support(rows.rows@.take(offset as int + 1), second)
@@ -68,16 +66,15 @@ pub fn clear_incident_first(previous: &Layers<Layers<i128>>, changes: &mut Spars
         offset += 1;
     }
     proof { assert(rows.rows@.take(rows.rows@.len() as int) == rows.rows@); }
-    Some(())
 }
 
 pub fn update_incident(groups: &Layers<Groups>, previous: &Layers<Layers<i128>>, replacements: &Sparse<Groups>)
-    -> (result: Option<Layers<Layers<i128>>>)
+    -> (next: Layers<Layers<i128>>)
     requires replacements.valid(), previous.valid(),
         forall|second: i64| #![trigger previous.at(second)] previous.at(second) matches Some(bucket) ==> bucket.valid(),
         forall|second: i64, first: i64| #![trigger member_value(*previous, second, first)]
             member_value(*previous, second, first) == group_has(*groups, first, second),
-    ensures result matches Some(next) ==> {
+    ensures {
         &&& next.valid()
         &&& forall|second: i64| #![trigger next.at(second)] next.at(second) matches Some(bucket) ==> bucket.valid()
         &&& forall|second: i64, first: i64| #![trigger member_value(next, second, first)]
@@ -107,7 +104,7 @@ pub fn update_incident(groups: &Layers<Groups>, previous: &Layers<Layers<i128>>,
                 assert forall|second: i64| #![trigger patched_member(*previous, changes, second, first)]
                     patched_member(*previous, changes, second, first) ==> cell_support(bucket.rows@, second) by {}
             }
-            value!(clear_incident_first(previous, &mut changes, bucket, first));
+            clear_incident_first(previous, &mut changes, bucket, first);
         }
         proof {
             assert forall|second: i64, key: i64| #![trigger patched_member(*previous, changes, second, key)]
@@ -130,7 +127,7 @@ pub fn update_incident(groups: &Layers<Groups>, previous: &Layers<Layers<i128>>,
                         cell_support(bucket.rows@.take(offset as int), second) } else { patched_member(*previous, before, second, key) },
             decreases bucket.rows@.len() - offset,
         {
-            value!(membership_patch(previous, &mut changes, bucket.rows[offset].other, first, true));
+            membership_patch(previous, &mut changes, bucket.rows[offset].other, first, true);
             proof {
                 assert forall|second: i64| #![trigger cell_support(bucket.rows@.take(offset as int + 1), second)]
                     cell_support(bucket.rows@.take(offset as int + 1), second)
@@ -147,7 +144,8 @@ pub fn update_incident(groups: &Layers<Groups>, previous: &Layers<Layers<i128>>,
         }
         index += 1;
     }
-    let next = value!(previous.patch(changes));
+    let patched = previous.patch(changes);
+    let next = patched;
     proof {
         assert(keys.take(keys.len() as int) == keys);
         assert forall|second: i64, first: i64| #![trigger member_value(next, second, first)]
@@ -164,7 +162,7 @@ pub fn update_incident(groups: &Layers<Groups>, previous: &Layers<Layers<i128>>,
             if changes.at(second).is_none() { assert(next.at(second) == previous.at(second)); }
         }
     }
-    Some(next)
+    next
 }
 
 }

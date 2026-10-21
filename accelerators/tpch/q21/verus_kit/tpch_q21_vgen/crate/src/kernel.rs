@@ -4,7 +4,8 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::index::*;
 use crate::aggregates::*;
-use crate::aggregates::some_or_return;
+use verus_prooflib::wide::Wide;
+use crate::bounds::*;
 use crate::maintenance::*;
 use crate::build_proofs::*;
 use verus_common::sums::*;
@@ -13,6 +14,9 @@ use crate::neighborhood_proofs::*;
 use crate::aggregation_proofs::*;
 
 verus! {
+
+pub open spec fn history(s: State) -> nat { 0 }
+
 
 pub struct State {
     pub(crate) waiting: Counts,
@@ -36,6 +40,18 @@ impl State {
     }
 }
 
+pub closed spec fn rescan_order_lines_wanted(state: State, lineitem_delta: Seq<LineitemDelta>, nation_delta: Seq<NationDelta>,
+    orders_delta: Seq<OrdersDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64>
+{
+    wanted_keys(lineitem_delta, orders_delta)
+}
+
+pub closed spec fn rescan_order_finished_wanted(state: State, lineitem_delta: Seq<LineitemDelta>, nation_delta: Seq<NationDelta>,
+    orders_delta: Seq<OrdersDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64>
+{
+    wanted_keys(lineitem_delta, orders_delta)
+}
+
 #[verifier::rlimit(20)]
 pub fn build(
     waiting_lines: &[WaitingLine],
@@ -50,6 +66,7 @@ pub fn build(
         scan_suppliers_ok(db, suppliers@),
         scan_nations_ok(db, nations@),
     ensures result matches Some(state) ==> state.db() == db,
+        result.is_some(),
 {
     hide(Tree::at);
     hide(Tree::entries);
@@ -62,7 +79,7 @@ pub fn build(
             forall|key: KeyView| #![trigger count(finished, key)] count(finished, key) == sum(finished_orders@.take(position as int), finished_weight(key)),
         decreases finished_orders.len() - position,
     {
-        some_or_return!(adjust(&mut finished, Key::number(finished_orders[position].o_orderkey), 1, true));
+        add_nonneg(&mut finished, Key::number(finished_orders[position].o_orderkey), &Wide::from_i128(1));
         proof {
             assert forall|key: KeyView| #![trigger count(finished, key)] count(finished, key) == sum(finished_orders@.take(position as int + 1), finished_weight(key)) by {
                 lemma_sum_take(finished_orders@, position as int, finished_weight(key));
@@ -76,14 +93,18 @@ pub fn build(
     while position < waiting_lines.len()
         invariant
             position <= waiting_lines.len(), positive(waiting),
+            scan_waiting_lines_ok(db, waiting_lines@), scan_finished_orders_ok(db, finished_orders@),
             forall|key: KeyView| #![trigger count(finished, key)] count(finished, key) == sum(finished_orders@, finished_weight(key)),
             forall|key: KeyView| #![trigger count(waiting, key)] count(waiting, key) == sum(waiting_lines@.take(position as int), waiting_weight(finished, key)),
         decreases waiting_lines.len() - position,
     {
         let row = &waiting_lines[position];
         let multiplicity = amount(&finished, &Key::number(row.l_orderkey));
-        if multiplicity <= 0 { return None; }
-        some_or_return!(adjust(&mut waiting, Key::number(row.l_suppkey), multiplicity, true));
+        proof {
+            lemma_waiting_row_finished(db, waiting_lines@, finished_orders@, position as int);
+            assert(count(finished, (row.l_orderkey as int, Seq::<u8>::empty())) > 0);
+        }
+        add_nonneg(&mut waiting, Key::number(row.l_suppkey), &multiplicity);
         proof {
             assert forall|key: KeyView| #![trigger count(waiting, key)] count(waiting, key) == sum(waiting_lines@.take(position as int + 1), waiting_weight(finished, key)) by {
                 lemma_sum_take(waiting_lines@, position as int, waiting_weight(finished, key));
@@ -115,15 +136,18 @@ pub fn build(
         decreases supplier_rows.len(),
     {
         let ghost remaining = supplier_rows@;
-        let row = some_or_return!(supplier_rows.pop());
+        let row = some_of(supplier_rows.pop());
         let ghost item = supplier_scan_view(row);
         let supplier_key = Key::number(row.s_suppkey);
-        let interned = some_or_return!(intern(&mut names, Key::text(row.s_name), 1));
+        let one = Wide::from_i128(1);
+        proof { lemma_name_count_nonnegative(names, (0int, row.s_name@)); }
+        let interned = some_of(intern(&mut names, Key::text(row.s_name), &one));
         let name = interned.with_number(row.s_nationkey);
-        some_or_return!(adjust_slice(&mut supplier_bag, supplier_key.share(), name.share(), 1, true));
+        add_nonneg_slice(&mut supplier_bag, supplier_key.share(), name.share(), &one);
         let weight = amount(&waiting, &supplier_key);
-        if weight > 0 {
-            some_or_return!(adjust_slice(&mut buckets, Key::number(row.s_nationkey), name.with_number(0), weight, true));
+        proof { lemma_positive_at(&waiting, supplier_key.view()); }
+        if weight.is_pos() {
+            add_nonneg_slice(&mut buckets, Key::number(row.s_nationkey), name.with_number(0), &weight);
         }
         proof {
             assert(supplier_rows@ == remaining.drop_last());
@@ -134,7 +158,7 @@ pub fn build(
             assert forall|outer: KeyView, inner: KeyView| #![trigger nested_count(buckets, outer, inner)]
                 nested_count(buckets, outer, inner) + sum(supplier_rows@, bucket_weight(waiting, outer, inner)) == sum(all_suppliers, bucket_weight(waiting, outer, inner)) by {
                 lemma_positive_at(&waiting, (item.s_suppkey, Seq::<u8>::empty()));
-                assert(bucket_weight(waiting, outer, inner)(remaining.last()) == if outer == (item.s_nationkey, Seq::<u8>::empty()) && inner == (0int, item.s_name) { weight as int } else { 0 });
+                assert(bucket_weight(waiting, outer, inner)(remaining.last()) == if outer == (item.s_nationkey, Seq::<u8>::empty()) && inner == (0int, item.s_name) { weight@ } else { 0 });
             }
             assert forall|key: KeyView| #![trigger name_count(names, key)] name_count(names, key) + sum(supplier_rows@, supplier_name_weight(key)) == sum(all_suppliers, supplier_name_weight(key)) by {
                 assert(supplier_name_weight(key)(remaining.last()) == if key == (0int, item.s_name) { 1int } else { 0int });
@@ -157,10 +181,12 @@ pub fn build(
         decreases nation_rows.len(),
     {
         let ghost remaining = nation_rows@;
-        let row = some_or_return!(nation_rows.pop());
+        let row = some_of(nation_rows.pop());
         let ghost item = nation_scan_view(row);
-        let name = some_or_return!(intern(&mut names, Key::text(row.n_name), 1));
-        some_or_return!(adjust_slice(&mut nation_bag, name, Key::number(row.n_nationkey), 1, true));
+        let one = Wide::from_i128(1);
+        proof { lemma_name_count_nonnegative(names, (0int, row.n_name@)); }
+        let name = some_of(intern(&mut names, Key::text(row.n_name), &one));
+        add_nonneg_slice(&mut nation_bag, name, Key::number(row.n_nationkey), &one);
         proof {
             assert(nation_rows@ == remaining.drop_last());
             assert forall|outer: KeyView, inner: KeyView| #![trigger nested_count(nation_bag, outer, inner)]
@@ -194,6 +220,7 @@ pub fn build(
 
 pub fn execute(state: &State, parameter: &[u8]) -> (result: Option<Vec<(Vec<u8>, i64)>>)
     ensures result matches Some(out) ==> query_result(state.db(), params(parameter@), out_view(out@)),
+        result.is_none() ==> !answer_fits(state.db(), params(parameter@)),
 {
     hide(Tree::at);
     hide(Tree::entries);
@@ -203,23 +230,94 @@ pub fn execute(state: &State, parameter: &[u8]) -> (result: Option<Vec<(Vec<u8>,
 }
 
 pub fn rescan_order_lines_keys(
-    _state: &State,
+    state: &State,
     lineitem_delta: &[LineitemDelta],
-    _nation_delta: &Vec<NationDelta>,
+    nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrdersDelta],
-    _supplier_delta: &Vec<SupplierDelta>,
-) -> Vec<i64> {
-    key_rows(&touched(lineitem_delta, orders_delta))
+    supplier_delta: &Vec<SupplierDelta>,
+) -> (result: Vec<i64>)
+    ensures result@ == rescan_order_lines_wanted(*state, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
+{
+    touched_rows(lineitem_delta, orders_delta)
 }
 
 pub fn rescan_order_finished_keys(
-    _state: &State,
+    state: &State,
     lineitem_delta: &[LineitemDelta],
-    _nation_delta: &Vec<NationDelta>,
+    nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrdersDelta],
-    _supplier_delta: &Vec<SupplierDelta>,
-) -> Vec<i64> {
-    key_rows(&touched(lineitem_delta, orders_delta))
+    supplier_delta: &Vec<SupplierDelta>,
+) -> (result: Vec<i64>)
+    ensures result@ == rescan_order_finished_wanted(*state, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
+{
+    touched_rows(lineitem_delta, orders_delta)
+}
+
+fn touched_rows(lineitem_delta: &[LineitemDelta], orders_delta: &[OrdersDelta]) -> (result: Vec<i64>)
+    ensures result@ == wanted_keys(lineitem_delta@, orders_delta@),
+{
+    let keys = touched(lineitem_delta, orders_delta);
+    proof { keys.model(); lemma_touched_text(&keys, lineitem_delta@, orders_delta@); }
+    let rows = key_rows(&keys);
+    proof { lemma_wanted_is(rows@, &keys, lineitem_delta@, orders_delta@); }
+    rows
+}
+
+proof fn lemma_touched_text(keys: &Counts, lineitem: Seq<LineitemDelta>, orders: Seq<OrdersDelta>)
+    requires positive(*keys),
+        forall|key: KeyView| #![trigger count(*keys, key)] count(*keys, key) == if line_touch(lineitem, key) || order_touch(orders, key) { 1int } else { 0int },
+    ensures forall|position: int| 0 <= position < keys.entries().len() ==> (#[trigger] keys.entries()[position]).0.1 == Seq::<u8>::empty(),
+{
+    keys.model();
+    assert forall|position: int| 0 <= position < keys.entries().len() implies (#[trigger] keys.entries()[position]).0.1 == Seq::<u8>::empty() by {
+        let key = keys.entries()[position].0;
+        assert(keys.at(key).is_some());
+        assert(count(*keys, key) > 0);
+        assert(line_touch(lineitem, key) || order_touch(orders, key));
+    }
+}
+
+proof fn lemma_wanted_is(rows: Seq<i64>, keys: &Counts, lineitem: Seq<LineitemDelta>, orders: Seq<OrdersDelta>)
+    requires positive(*keys), strictly_increasing(rows),
+        forall|key: KeyView| #![trigger count(*keys, key)] count(*keys, key) == if line_touch(lineitem, key) || order_touch(orders, key) { 1int } else { 0int },
+        forall|key: i64| rows.contains(key) <==> keys.at((key as int, Seq::<u8>::empty())).is_some(),
+    ensures wanted_keys(lineitem, orders) == rows,
+        forall|key: i64| rows.contains(key) <==> touched_key(lineitem, orders, key),
+{
+    assert forall|key: i64| rows.contains(key) <==> touched_key(lineitem, orders, key) by {
+        lemma_positive_at(keys, (key as int, Seq::<u8>::empty()));
+        assert(keys.at((key as int, Seq::<u8>::empty())).is_some() <==> count(*keys, (key as int, Seq::<u8>::empty())) != 0);
+    }
+    let chosen = wanted_keys(lineitem, orders);
+    assert(strictly_increasing(chosen) && forall|key: i64| chosen.contains(key) <==> touched_key(lineitem, orders, key));
+    lemma_unique_keys(chosen, rows);
+}
+
+proof fn lemma_covered(keys: &Counts, rows: Seq<i64>, lineitem: Seq<LineitemDelta>, orders: Seq<OrdersDelta>)
+    requires positive(*keys),
+        forall|key: KeyView| #![trigger count(*keys, key)] count(*keys, key) == if line_touch(lineitem, key) || order_touch(orders, key) { 1int } else { 0int },
+        forall|key: i64| rows.contains(key) <==> touched_key(lineitem, orders, key),
+    ensures forall|key: KeyView| #![trigger keys.at(key)] keys.at(key).is_some() ==> key_list_contains(rows, key),
+{
+    assert forall|key: KeyView| #![trigger keys.at(key)] keys.at(key).is_some() implies key_list_contains(rows, key) by {
+        lemma_positive_at(keys, key);
+        assert(line_touch(lineitem, key) || order_touch(orders, key));
+        if line_touch(lineitem, key) {
+            let position = choose|position: int| #![trigger lineitem[position]] 0 <= position < lineitem.len() && key == (lineitem[position].row.l_orderkey as int, Seq::<u8>::empty());
+            let number = lineitem[position].row.l_orderkey;
+            assert(touched_key(lineitem, orders, number));
+            assert(rows.contains(number));
+            let source = choose|source: int| 0 <= source < rows.len() && rows[source] == number;
+            assert(key == (rows[source] as int, Seq::<u8>::empty()));
+        } else {
+            let position = choose|position: int| #![trigger orders[position]] 0 <= position < orders.len() && orders[position].is_finished != 0 && key == (orders[position].o_orderkey as int, Seq::<u8>::empty());
+            let number = orders[position].o_orderkey;
+            assert(touched_key(lineitem, orders, number));
+            assert(rows.contains(number));
+            let source = choose|source: int| 0 <= source < rows.len() && rows[source] == number;
+            assert(key == (rows[source] as int, Seq::<u8>::empty()));
+        }
+    }
 }
 
 fn update(
@@ -234,27 +332,30 @@ fn update(
     order_finished_rows: &[OrderFinished],
     Ghost(orders_full): Ghost<Seq<(OrdersRow, int)>>,
     Ghost(db2): Ghost<Db>,
-) -> (result: Option<State>)
+) -> (next: State)
     requires
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(state.db(), db2, lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), orders_full, supplier_delta_seq_view(supplier_delta@)),
+        order_lines_keys@ == wanted_keys(lineitem_delta@, orders_delta@),
+        order_finished_keys@ == wanted_keys(lineitem_delta@, orders_delta@),
         rescan_order_lines_ok(db2, order_lines_keys@, order_lines_rows@),
         rescan_order_finished_ok(db2, order_finished_keys@, order_finished_rows@),
-    ensures result matches Some(next) ==> next.db() == db2,
+    ensures next.db() == db2,
 {
     hide(Tree::at);
     hide(Tree::entries);
     hide(Tree::wf);
     proof { use_type_invariant(state); }
     let keys = touched(lineitem_delta, orders_delta);
-    if !covered(&keys, order_lines_keys, order_finished_keys) { return None; }
     proof {
         keys.model();
-        assert forall|position: int| 0 <= position < keys.entries().len() implies (#[trigger] keys.entries()[position]).0.1 == Seq::<u8>::empty() by {
-            let key = keys.entries()[position].0;
-            assert(count(keys, key) > 0);
-            assert(line_touch(lineitem_delta@, key) || order_touch(orders_delta@, key));
-        }
+        lemma_touched_text(&keys, lineitem_delta@, orders_delta@);
+    }
+    let own = key_rows(&keys);
+    proof {
+        lemma_wanted_is(own@, &keys, lineitem_delta@, orders_delta@);
+        lemma_covered(&keys, order_lines_keys@, lineitem_delta@, orders_delta@);
+        lemma_covered(&keys, order_finished_keys@, lineitem_delta@, orders_delta@);
         assert forall|position: int| 0 <= position < lineitem_delta.len() implies keys.at(((#[trigger] lineitem_delta@[position]).row.l_orderkey as int, Seq::<u8>::empty())).is_some() by {
             let key = (lineitem_delta@[position].row.l_orderkey as int, Seq::<u8>::empty());
             assert(line_touch(lineitem_delta@, key));
@@ -266,12 +367,21 @@ fn update(
             assert(count(keys, key) == 1);
         }
     }
-    let waiting_result = waiting_changes(&keys, lineitem_delta, orders_delta, order_lines_rows, order_finished_rows,
+    let waiting_delta = waiting_changes(&keys, lineitem_delta, orders_delta, order_lines_rows, order_finished_rows,
         Ghost(order_lines_keys@), Ghost(order_finished_keys@), Ghost(orders_full), Ghost(state.db()), Ghost(db2));
-    let waiting_delta = some_or_return!(waiting_result);
-    let name_delta = some_or_return!(name_changes(supplier_delta, nation_delta));
+    let name_delta = name_changes(supplier_delta, nation_delta);
     let mut names = state.names.share();
-    some_or_return!(update_names(&mut names, &name_delta));
+    proof {
+        assert forall|key: KeyView| #![trigger name_count(names, key)] name_count(names, key) + count(name_delta, key) >= 0 by {
+            lemma_name_delta_step(state.db(), db2, supplier_delta@, nation_delta@, key);
+            lemma_name_references_nonnegative(db2, key.1);
+            assert(count(name_delta, key) == sum(supplier_delta@, supplier_name_delta_weight(key)) + sum(nation_delta@, nation_name_delta_weight(key)));
+            assert(name_count(state.names, key) == if key.0 == 0 { name_references(state.db(), key.1) } else { 0 });
+            assert(name_count(names, key) == name_count(state.names, key));
+        }
+        assert(names_valid(names));
+    }
+    update_names(&mut names, &name_delta);
     proof {
         assert forall|key: KeyView| #![trigger name_count(names, key)] name_count(names, key) == if key.0 == 0 { name_references(db2, key.1) } else { 0 } by {
             lemma_name_delta_step(state.db(), db2, supplier_delta@, nation_delta@, key);
@@ -283,8 +393,8 @@ fn update(
     }
     let ghost supplier_updates = supplier_delta@;
     let ghost nation_updates = nation_delta@;
-    let supplier_delta = some_or_return!(supplier_changes(supplier_delta, &names, &state.names));
-    let nation_delta = some_or_return!(nation_changes(nation_delta, &names, &state.names));
+    let supplier_delta = supplier_changes(supplier_delta, &names, &state.names);
+    let nation_delta = nation_changes(nation_delta, &names, &state.names);
     proof {
         assert forall|outer: KeyView, inner: KeyView| #![trigger nested_count(supplier_delta, outer, inner)] nested_count(supplier_delta, outer, inner) == if outer.1 == Seq::<u8>::empty() {
             supplier_multiplicity(db2, outer.0, inner.0, inner.1) - supplier_multiplicity(state.db(), outer.0, inner.0, inner.1)
@@ -307,9 +417,9 @@ fn update(
     let mut position = 0usize;
     while position < changes.len()
         invariant
-            position <= changes.len(), state.wf(), positive(waiting), names_ok(names, db2),
+            position <= changes.len(), state.wf(), positive(waiting), names_ok(names, db2), bucket_delta.wf(),
             waiting_delta.wf(), waiting_change_for(waiting_delta, state.db(), db2),
-            changes@.map_values(|row: (Key, Arc<i128>)| (row.0.view(), *row.1)) == waiting_delta.entries(),
+            changes@.map_values(|row: (Key, Arc<Wide>)| (row.0.view(), *row.1)) == waiting_delta.entries(),
             forall|query: KeyView| #![trigger count(waiting, query)] count(waiting, query) == count(state.waiting, query)
                 + sum(changes@.take(position as int), count_row_weight(query)),
             forall|outer: KeyView, inner: KeyView| #![trigger nested_count(bucket_delta, outer, inner)] nested_count(bucket_delta, outer, inner)
@@ -320,8 +430,16 @@ fn update(
     {
         let (key, change) = &changes[position];
         let variants = slice(&suppliers, key);
-        some_or_return!(add_weighted_variants(&mut bucket_delta, &variants, **change));
-        some_or_return!(adjust(&mut waiting, key.share(), **change, true));
+        add_weighted_variants(&mut bucket_delta, &variants, &**change);
+        proof {
+            lemma_prior_rows(changes@, &waiting_delta, position as int);
+            lemma_waiting_nonnegative(db2, key.view().0);
+            assert(count(state.waiting, key.view()) == if key.view().1 == Seq::<u8>::empty() { crate::aggregates::waiting(state.db(), key.view().0) } else { 0 });
+            assert((**change)@ == count(waiting_delta, key.view()));
+            assert(count(waiting, key.view()) + (**change)@ >= 0);
+        }
+        let adjusted = adjust(&mut waiting, key.share(), &**change, true);
+        proof { assert(adjusted.is_some()); }
         proof {
             assert forall|query: KeyView| #![trigger count(waiting, query)] count(waiting, query) == count(state.waiting, query)
                 + sum(changes@.take(position as int + 1), count_row_weight(query)) by {
@@ -338,7 +456,7 @@ fn update(
         assert(changes@.take(position as int) =~= changes@);
         assert forall|query: KeyView| #![trigger count(waiting, query)] count(waiting, query) == count(state.waiting, query) + count(waiting_delta, query) by {
             lemma_count_sum(&waiting_delta, query);
-            lemma_sum_map(changes@, |row: (Key, Arc<i128>)| (row.0.view(), *row.1), entry_weight(query), count_row_weight(query));
+            lemma_sum_map(changes@, |row: (Key, Arc<Wide>)| (row.0.view(), *row.1), entry_weight(query), count_row_weight(query));
         }
         assert(waiting_for(waiting, db2));
     }
@@ -346,11 +464,11 @@ fn update(
     position = 0;
     while position < supplier_changes.len()
         invariant
-            position <= supplier_changes.len(), state.wf(), positive(waiting), names_ok(names, db2),
+            position <= supplier_changes.len(), state.wf(), positive(waiting), names_ok(names, db2), bucket_delta.wf(),
             waiting_for(waiting, db2), waiting_delta.wf(), supplier_delta.wf(),
             waiting_change_for(waiting_delta, state.db(), db2),
             forall|query: KeyView| #![trigger count(waiting, query)] count(waiting, query) == count(state.waiting, query) + count(waiting_delta, query),
-            changes@.map_values(|row: (Key, Arc<i128>)| (row.0.view(), *row.1)) == waiting_delta.entries(),
+            changes@.map_values(|row: (Key, Arc<Wide>)| (row.0.view(), *row.1)) == waiting_delta.entries(),
             supplier_changes@.map_values(|row: (Key, Arc<Counts>)| (row.0.view(), *row.1)) == supplier_delta.entries(),
             forall|outer: KeyView, inner: KeyView| #![trigger nested_count(bucket_delta, outer, inner)] nested_count(bucket_delta, outer, inner)
                 == sum(changes@, waiting_bucket_weight(state.suppliers, outer, inner))
@@ -361,7 +479,7 @@ fn update(
     {
         let (key, variants) = &supplier_changes[position];
         let weight = amount(&waiting, key);
-        some_or_return!(add_weighted_variants(&mut bucket_delta, variants, weight));
+        add_weighted_variants(&mut bucket_delta, variants, &weight);
         proof {
             assert forall|outer: KeyView, inner: KeyView| #![trigger nested_count(bucket_delta, outer, inner)] nested_count(bucket_delta, outer, inner)
                 == sum(changes@, waiting_bucket_weight(state.suppliers, outer, inner))
@@ -375,8 +493,22 @@ fn update(
     proof { assert(supplier_changes@.take(position as int) =~= supplier_changes@); }
     let ghost previous_nations = nations;
     proof { assert(positive_slices(suppliers)); assert(positive_slices(nations)); }
-    some_or_return!(apply_slice_changes(&mut suppliers, &supplier_delta));
-    some_or_return!(apply_slice_changes(&mut nations, &nation_delta));
+    proof {
+        assert forall|outer: KeyView, inner: KeyView| #![trigger nested_count(suppliers, outer, inner)] nested_count(suppliers, outer, inner) + nested_count(supplier_delta, outer, inner) >= 0 by {
+            lemma_supplier_multiplicity_nonnegative(db2, outer.0, inner.0, inner.1);
+            assert(nested_count(suppliers, outer, inner) == nested_count(state.suppliers, outer, inner));
+            assert(nested_count(state.suppliers, outer, inner) == if outer.1 == Seq::<u8>::empty() { supplier_multiplicity(state.db(), outer.0, inner.0, inner.1) } else { 0 });
+            assert(nested_count(supplier_delta, outer, inner) == if outer.1 == Seq::<u8>::empty() { supplier_multiplicity(db2, outer.0, inner.0, inner.1) - supplier_multiplicity(state.db(), outer.0, inner.0, inner.1) } else { 0 });
+        }
+        assert forall|outer: KeyView, inner: KeyView| #![trigger nested_count(nations, outer, inner)] nested_count(nations, outer, inner) + nested_count(nation_delta, outer, inner) >= 0 by {
+            lemma_nation_multiplicity_nonnegative(db2, inner.0, outer.1);
+            assert(nested_count(nations, outer, inner) == nested_count(state.nations, outer, inner));
+            assert(nested_count(state.nations, outer, inner) == if outer.0 == 0 && inner.1 == Seq::<u8>::empty() { nation_multiplicity(state.db(), inner.0, outer.1) } else { 0 });
+            assert(nested_count(nation_delta, outer, inner) == if outer.0 == 0 && inner.1 == Seq::<u8>::empty() { nation_multiplicity(db2, inner.0, outer.1) - nation_multiplicity(state.db(), inner.0, outer.1) } else { 0 });
+        }
+    }
+    apply_slice_changes(&mut suppliers, &supplier_delta);
+    apply_slice_changes(&mut nations, &nation_delta);
     proof {
         assert forall|outer: KeyView, inner: KeyView| #![trigger nested_count(suppliers, outer, inner)] nested_count(suppliers, outer, inner) == if outer.1 == Seq::<u8>::empty() { supplier_multiplicity(db2, outer.0, inner.0, inner.1) } else { 0 } by {
             assert(nested_count(suppliers, outer, inner) == nested_count(previous_suppliers, outer, inner) + nested_count(supplier_delta, outer, inner));
@@ -410,9 +542,15 @@ fn update(
             }
         }
     }
-    some_or_return!(apply_slice_changes(&mut buckets, &bucket_delta));
+    proof {
+        assert forall|outer: KeyView, inner: KeyView| #![trigger nested_count(previous_buckets, outer, inner)]
+            nested_count(previous_buckets, outer, inner) + nested_count(bucket_delta, outer, inner) >= 0 by {
+            lemma_bucket_nonnegative(db2, outer.0, inner.1);
+        }
+    }
+    apply_slice_changes(&mut buckets, &bucket_delta);
     proof { assert(buckets_for(buckets, db2)); }
-    Some(State { waiting, suppliers, nations, buckets, names, database: Ghost(db2) })
+    State { waiting, suppliers, nations, buckets, names, database: Ghost(db2) }
 }
 
 pub fn apply(
@@ -431,15 +569,15 @@ pub fn apply(
     requires
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(state.db(), db2, lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), orders_full, supplier_delta_seq_view(supplier_delta@)),
+        order_lines_keys@ == rescan_order_lines_wanted(*state, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_order_lines_ok(db2, order_lines_keys@, order_lines_rows@),
+        order_finished_keys@ == rescan_order_finished_wanted(*state, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_order_finished_ok(db2, order_finished_keys@, order_finished_rows@),
     ensures result matches Ok(next) ==> next.db() == db2,
+        result is Ok,
 {
-    match update(state, lineitem_delta, nation_delta, orders_delta, supplier_delta,
-        order_lines_keys, order_lines_rows, order_finished_keys, order_finished_rows, Ghost(orders_full), Ghost(db2)) {
-        Some(next) => Ok(next),
-        None => Err(1),
-    }
+    Ok(update(state, lineitem_delta, nation_delta, orders_delta, supplier_delta,
+        order_lines_keys, order_lines_rows, order_finished_keys, order_finished_rows, Ghost(orders_full), Ghost(db2)))
 }
 
 }

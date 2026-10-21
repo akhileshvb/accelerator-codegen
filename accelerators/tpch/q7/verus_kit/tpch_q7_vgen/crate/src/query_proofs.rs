@@ -263,4 +263,23 @@ pub proof fn lemma_group_support(db: Db, p: Params, first: Seq<u8>, second: Seq<
     lemma_window_year(shipping.lineitem.l_shipdate);
 }
 
+
+pub proof fn lemma_group_revenue_zero(db: Db, p: Params, first: Seq<u8>, second: Seq<u8>, year: int)
+    ensures group_count(db, p, first, second, year) >= 0,
+        group_count(db, p, first, second, year) == 0 ==> row_of(db, p, first, second, year).revenue == 0,
+{
+    let counts = |t: Tuple| if t.shipping.supp_nation == first && t.shipping.cust_nation == second && t.shipping.l_year == year { 1int } else { 0 };
+    let volume = |t: Tuple| t.shipping.volume;
+    let revenues = |t: Tuple| if t.shipping.supp_nation == first && t.shipping.cust_nation == second && t.shipping.l_year == year { volume(t) } else { 0 };
+    lemma_sum_nonneg(tuples(db, p), counts);
+    assert(group_count(db, p, first, second, year) == sum(tuples(db, p), counts));
+    assert(row_of(db, p, first, second, year).revenue == sum(tuples(db, p), revenues));
+    if sum(tuples(db, p), counts) == 0 {
+        assert forall|index: int| 0 <= index < tuples(db, p).len() implies revenues(#[trigger] tuples(db, p)[index]) == 0 by {
+            if counts(tuples(db, p)[index]) > 0 { lemma_sum_pos(tuples(db, p), counts, index); }
+        }
+        lemma_sum_zero(tuples(db, p), revenues);
+    }
+}
+
 }

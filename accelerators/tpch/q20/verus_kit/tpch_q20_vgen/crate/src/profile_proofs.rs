@@ -51,29 +51,29 @@ pub proof fn lemma_pair_push(rows: Seq<(i64, Pair)>, key: i64, pair: Pair)
     }
 }
 pub open spec fn stock_measure(stocks: Seq<StockCell>, value: int) -> int {
-    sum(stocks, |cell: StockCell| if cell.value == value { cell.count as int } else { 0 })
+    sum(stocks, |cell: StockCell| if cell.value == value { cell.count@ } else { 0 })
 }
 pub open spec fn ship_measure(ship: Seq<Prefix>, date: int, quantity: bool) -> int {
     sum(rng(ship.len() as int), |index: int| if ship[index].date == date {
-        (if quantity { ship[index].quantity as int } else { ship[index].count as int })
-            - if index == 0 { 0 } else if quantity { ship[index - 1].quantity as int } else { ship[index - 1].count as int }
+        (if quantity { ship[index].quantity@ } else { ship[index].count@ })
+            - if index == 0 { 0 } else if quantity { ship[index - 1].quantity@ } else { ship[index - 1].count@ }
     } else { 0 })
 }
 pub proof fn lemma_ship_push(ship: Seq<Prefix>, cell: Prefix, date: int, quantity: bool)
     ensures ship_measure(ship.push(cell), date, quantity) == ship_measure(ship, date, quantity)
         + if cell.date == date {
-            (if quantity { cell.quantity as int } else { cell.count as int })
-                - if ship.len() == 0 { 0 } else if quantity { ship.last().quantity as int } else { ship.last().count as int }
+            (if quantity { cell.quantity@ } else { cell.count@ })
+                - if ship.len() == 0 { 0 } else if quantity { ship.last().quantity@ } else { ship.last().count@ }
         } else { 0 },
 {
     let next = ship.push(cell);
     let after = |index: int| if next[index].date == date {
-        (if quantity { next[index].quantity as int } else { next[index].count as int })
-            - if index == 0 { 0 } else if quantity { next[index - 1].quantity as int } else { next[index - 1].count as int }
+        (if quantity { next[index].quantity@ } else { next[index].count@ })
+            - if index == 0 { 0 } else if quantity { next[index - 1].quantity@ } else { next[index - 1].count@ }
     } else { 0 };
     let before = |index: int| if ship[index].date == date {
-        (if quantity { ship[index].quantity as int } else { ship[index].count as int })
-            - if index == 0 { 0 } else if quantity { ship[index - 1].quantity as int } else { ship[index - 1].count as int }
+        (if quantity { ship[index].quantity@ } else { ship[index].count@ })
+            - if index == 0 { 0 } else if quantity { ship[index - 1].quantity@ } else { ship[index - 1].count@ }
     } else { 0 };
     verus_prooflib::lemma_range_step(ship.len() as int, after);
     assert forall|index: int| #![trigger after(index)] 0 <= index < ship.len() implies after(index) == before(index) by {
@@ -84,23 +84,23 @@ pub proof fn lemma_ship_push(ship: Seq<Prefix>, cell: Prefix, date: int, quantit
 }
 pub open spec fn day_measure(days: Map<i32, Daily>, date: int, quantity: bool) -> int {
     if i32::MIN as int <= date <= i32::MAX as int && days.contains_key(date as i32) {
-        if quantity { days[date as i32].quantity as int } else { days[date as i32].count as int }
+        if quantity { days[date as i32].quantity@ } else { days[date as i32].count@ }
     } else { 0 }
 }
 pub open spec fn day_weight(days: Map<i32, Daily>, date: int, quantity: bool) -> spec_fn(i32) -> int {
     |key: i32| if key == date && days.contains_key(key) {
-        if quantity { days[key].quantity as int } else { days[key].count as int }
+        if quantity { days[key].quantity@ } else { days[key].count@ }
     } else { 0 }
 }
 pub proof fn lemma_day_insert(days: Map<i32, Daily>, day: Daily, quantity: bool)
     requires !days.contains_key(day.date),
     ensures forall|date: int| #![trigger day_measure(days.insert(day.date, day), date, quantity)]
         day_measure(days.insert(day.date, day), date, quantity) == day_measure(days, date, quantity)
-            + if day.date == date { if quantity { day.quantity as int } else { day.count as int } } else { 0 },
+            + if day.date == date { if quantity { day.quantity@ } else { day.count@ } } else { 0 },
 {
     assert forall|date: int| #![trigger day_measure(days.insert(day.date, day), date, quantity)]
         day_measure(days.insert(day.date, day), date, quantity) == day_measure(days, date, quantity)
-            + if day.date == date { if quantity { day.quantity as int } else { day.count as int } } else { 0 } by {
+            + if day.date == date { if quantity { day.quantity@ } else { day.count@ } } else { 0 } by {
         if day.date == date { assert(date as i32 == day.date); }
         else if i32::MIN as int <= date <= i32::MAX as int { assert(date as i32 != day.date); }
     }
@@ -126,5 +126,18 @@ pub proof fn lemma_day_sum(days: Map<i32, Daily>, dates: Seq<i32>, date: int, qu
         }
         lemma_sum_zero(dates, weight);
     }
+}
+pub proof fn lemma_stock_cell_count(stocks: Seq<StockCell>, index: int)
+    requires verus_common::order::sorted_by(stocks, |left: StockCell, right: StockCell| left.value < right.value),
+        0 <= index < stocks.len(),
+    ensures stock_measure(stocks, stocks[index].value as int) == stocks[index].count@,
+{
+    let value = stocks[index].value as int;
+    let weight = |cell: StockCell| if cell.value == value { cell.count@ } else { 0 };
+    assert forall|other: int| #![trigger weight(stocks[other])] 0 <= other < stocks.len() && other != index implies weight(stocks[other]) == 0 by {
+        if other < index { assert(stocks[other].value < stocks[index].value); }
+        else { assert(stocks[index].value < stocks[other].value); }
+    }
+    lemma_sum_single_match(stocks, weight, index);
 }
 }

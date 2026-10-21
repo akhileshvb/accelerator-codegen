@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 verus! {
 
+pub open spec fn fits(x: int) -> bool { -170141183460469231731687303715884105728 <= x <= 170141183460469231731687303715884105727 }
+
 pub const KEY_LIMIT: u128 = 75557863725914323419136;
 
 #[derive(Clone, Copy)]
@@ -21,6 +23,7 @@ impl Moment {
     pub fn add(self, other: Self) -> (result: Option<Self>)
         ensures result matches Some(value) ==> value.model() ==
             (self.count + other.count, self.total + other.total),
+            fits(self.count + other.count) && fits(self.total + other.total) ==> result is Some,
     {
         let count = match self.count.checked_add(other.count) { Some(value) => value, None => return None };
         let total = match self.total.checked_add(other.total) { Some(value) => value, None => return None };
@@ -304,6 +307,7 @@ impl Pages {
             #[trigger] final(self).value(other) == if other == key {
                 (old(self).value(other).0 + change.count, old(self).value(other).1 + change.total)
             } else { old(self).value(other) },
+            fits(old(self).value(key).0 + change.count) && fits(old(self).value(key).1 + change.total) ==> result,
     {
         match self.get(key).add(change) { Some(value) => { self.set(key, value); true }, None => false }
     }

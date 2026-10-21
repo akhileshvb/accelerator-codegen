@@ -82,7 +82,7 @@ pub proof fn lemma_names_build(db: Db, state: PartNames, rows: Seq<PartInput>)
 }
 pub proof fn lemma_build_part(db: Db, key: i64, source: PartWork, part: &Part, stocks: Seq<StockInput>, shipments: Seq<ShipmentInput>)
     requires db.partsupp == stock_input_seq_view(stocks), db.lineitem == shipment_input_seq_view(shipments),
-        source.shape(), part_shape(*part), part.count == source.count, part.count > 0, source.count == eligible(db, key as int),
+        source.shape(), part_shape(*part), part.count == source.count, part.count@ > 0, source.count@ == eligible(db, key as int),
         forall|supplier: i64, value: int| #![trigger source.stock_for(supplier, value)] source.stock_for(supplier, value) ==
             sum(stocks, |row: StockInput| if row.ps_partkey == key && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }),
         forall|supplier: i64, date: int| #![trigger source.day_for(supplier, date, false)]
@@ -115,14 +115,14 @@ pub proof fn lemma_profile_prefix(db: Db, part: i64, supplier: i64, pair: &Pair,
     requires pair_valid(*pair), 0 <= bound < pair.ship@.len(),
         forall|date: int| #![trigger stored_day_count(*pair, date)] stored_day_count(*pair, date) == daily_count(db, part as int, supplier as int, date)
             && stored_day_quantity(*pair, date) == daily_quantity(db, part as int, supplier as int, date),
-    ensures (if quantity { pair.ship@[bound].quantity as int } else { pair.ship@[bound].count as int }) ==
+    ensures (if quantity { pair.ship@[bound].quantity@ } else { pair.ship@[bound].count@ }) ==
         database_prefix(db, part, supplier, pair.ship@[bound].date as int, quantity),
 {
     lemma_pair_order(pair);
     let positions = rng(pair.ship@.len() as int);
     let project = |index: int| pair.ship@[index].date as int;
-    let delta = |index: int| (if quantity { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int };
+    let delta = |index: int| (if quantity { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ };
     let date_of = |row: LineitemRow| row.l_shipdate;
     let selected = |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier { if quantity { row.l_quantity } else { 1int } } else { 0int };
     assert forall|date: int| #[trigger] class_total(positions, project, delta, date) == class_total(db.lineitem, date_of, selected, date) by {
@@ -130,8 +130,8 @@ pub proof fn lemma_profile_prefix(db: Db, part: i64, supplier: i64, pair: &Pair,
         assert(stored_day_quantity(*pair, date) == daily_quantity(db, part as int, supplier as int, date));
         lemma_sum_ext_all(positions, |index: int| if project(index) == date { delta(index) } else { 0 },
             |index: int| if pair.ship@[index].date == date {
-                (if quantity { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-                    - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int }
+                (if quantity { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+                    - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ }
             } else { 0 });
         assert(class_total(positions, project, delta, date) == ship_measure(pair.ship@, date, quantity));
         if quantity {
@@ -144,7 +144,7 @@ pub proof fn lemma_profile_prefix(db: Db, part: i64, supplier: i64, pair: &Pair,
     }
     let keep = |date: int| if date <= pair.ship@[bound].date { 1int } else { 0int };
     lemma_equal_classes(positions, db.lineitem, project, date_of, delta, selected, keep);
-    let values = pair.ship@.map_values(|cell: Prefix| if quantity { cell.quantity as int } else { cell.count as int });
+    let values = pair.ship@.map_values(|cell: Prefix| if quantity { cell.quantity@ } else { cell.count@ });
     let prefix = |index: int| pair.ship@[index].date <= pair.ship@[bound].date;
     assert forall|index: int| #![trigger prefix(index)] 0 <= index < pair.ship@.len() implies prefix(index) == (index < bound + 1) by {
         if index < bound { assert(pair.ship@[index].date < pair.ship@[bound].date); }
@@ -193,8 +193,8 @@ pub proof fn lemma_state_meaning(db: Db, parts: Table<Part>, directory: Table<Ve
         match pair_of(parts, part, supplier) {
             Some(pair) => pair_valid(pair) && eligible(db, part as int) > 0 && (pair.stocks@.len() > 0 || pair.ship@.len() > 0)
                 && (forall|index: int| #![trigger pair.ship@[index]] 0 <= index < pair.ship@.len() ==>
-                    pair.ship@[index].count == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
-                    && pair.ship@[index].quantity == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 }))
+                    pair.ship@[index].count@ == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { 1 } else { 0 })
+                    && pair.ship@[index].quantity@ == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[index].date { row.l_quantity } else { 0 }))
                 && (forall|value: int| #![trigger stored_stock(pair, value)] stored_stock(pair, value) == stock_count(db, part as int, supplier as int, value))
                 && (forall|date: int| #![trigger stored_day_count(pair, date)] stored_day_count(pair, date) == daily_count(db, part as int, supplier as int, date)
                     && stored_day_quantity(pair, date) == daily_quantity(db, part as int, supplier as int, date)),
@@ -215,12 +215,12 @@ pub proof fn lemma_state_meaning(db: Db, parts: Table<Part>, directory: Table<Ve
                     assert(part_day(data.pairs@, supplier, date, false) == daily_count(db, part as int, supplier as int, date));
                 }
                 assert forall|offset: int| #![trigger pair.ship@[offset]] 0 <= offset < pair.ship@.len() implies
-                    pair.ship@[offset].count == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[offset].date { 1 } else { 0 })
-                    && pair.ship@[offset].quantity == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[offset].date { row.l_quantity } else { 0 }) by {
+                    pair.ship@[offset].count@ == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[offset].date { 1 } else { 0 })
+                    && pair.ship@[offset].quantity@ == sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[offset].date { row.l_quantity } else { 0 }) by {
                     lemma_profile_prefix(db, part, supplier, &pair, offset, false);
                     lemma_profile_prefix(db, part, supplier, &pair, offset, true);
-                    assert(pair.ship@[offset].count as int == database_prefix(db, part, supplier, pair.ship@[offset].date as int, false));
-                    assert(pair.ship@[offset].quantity as int == database_prefix(db, part, supplier, pair.ship@[offset].date as int, true));
+                    assert(pair.ship@[offset].count@ == database_prefix(db, part, supplier, pair.ship@[offset].date as int, false));
+                    assert(pair.ship@[offset].quantity@ == database_prefix(db, part, supplier, pair.ship@[offset].date as int, true));
                     let date = pair.ship@[offset].date as int;
                     lemma_database_prefix_weight(db, part, supplier, date, false,
                         |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= pair.ship@[offset].date { 1int } else { 0int });

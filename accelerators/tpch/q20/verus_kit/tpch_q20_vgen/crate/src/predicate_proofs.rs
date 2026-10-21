@@ -107,19 +107,19 @@ pub proof fn lemma_aggregate_values(db: Db, parameters: Params, part: int, suppl
         |tuple: AggLineitemTuple| if tuple.lineitem.l_partkey == part && tuple.lineitem.l_suppkey == supplier { tuple.lineitem.l_quantity } else { 0int });
 }
 pub open spec fn profile_weight_sum(pair: Pair, quantity: bool, weight: spec_fn(int) -> int) -> int {
-    sum(rng(pair.ship@.len() as int), |index: int| ((if quantity { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int }) * weight(pair.ship@[index].date as int))
+    sum(rng(pair.ship@.len() as int), |index: int| ((if quantity { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ }) * weight(pair.ship@[index].date as int))
 }
 pub open spec fn database_weight_sum(db: Db, part: i64, supplier: i64, quantity: bool, weight: spec_fn(int) -> int) -> int {
     sum(db.lineitem, |row: LineitemRow| (if row.l_partkey == part && row.l_suppkey == supplier { if quantity { row.l_quantity } else { 1int } } else { 0int }) * weight(row.l_shipdate))
 }
 pub proof fn lemma_profile_weight_as_sum(pair: Pair, quantity: bool, weight: spec_fn(int) -> int, term: spec_fn(int) -> int)
-    requires forall|index: int| #[trigger] term(index) == ((if quantity { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int }) * weight(pair.ship@[index].date as int),
+    requires forall|index: int| #[trigger] term(index) == ((if quantity { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ }) * weight(pair.ship@[index].date as int),
     ensures profile_weight_sum(pair, quantity, weight) == sum(rng(pair.ship@.len() as int), term),
 {
-    lemma_sum_ext_all(rng(pair.ship@.len() as int), |index: int| ((if quantity { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int }) * weight(pair.ship@[index].date as int), term);
+    lemma_sum_ext_all(rng(pair.ship@.len() as int), |index: int| ((if quantity { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ }) * weight(pair.ship@[index].date as int), term);
 }
 pub proof fn lemma_database_weight_as_sum(db: Db, part: i64, supplier: i64, quantity: bool, weight: spec_fn(int) -> int, term: spec_fn(LineitemRow) -> int)
     requires forall|row: LineitemRow| #[trigger] term(row) == (if row.l_partkey == part && row.l_suppkey == supplier { if quantity { row.l_quantity } else { 1int } } else { 0int }) * weight(row.l_shipdate),
@@ -129,17 +129,17 @@ pub proof fn lemma_database_weight_as_sum(db: Db, part: i64, supplier: i64, quan
 }
 pub proof fn lemma_before_as_sum(pair: Pair, date: int, quantity: bool, term: spec_fn(int) -> int)
     requires forall|index: int| #[trigger] term(index) == if pair.ship@[index].date < date {
-        (if quantity { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-            - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int }
+        (if quantity { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+            - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ }
     } else { 0 },
     ensures (if quantity { stored_before_quantity(pair, date) } else { stored_before_count(pair, date) }) == sum(rng(pair.ship@.len() as int), term),
 {
     reveal(stored_before_count);
     reveal(stored_before_quantity);
     if quantity {
-        lemma_sum_ext_all(rng(pair.ship@.len() as int), |index: int| if pair.ship@[index].date < date { pair.ship@[index].quantity as int - if index == 0 { 0 } else { pair.ship@[index - 1].quantity as int } } else { 0 }, term);
+        lemma_sum_ext_all(rng(pair.ship@.len() as int), |index: int| if pair.ship@[index].date < date { pair.ship@[index].quantity@ - if index == 0 { 0 } else { pair.ship@[index - 1].quantity@ } } else { 0 }, term);
     } else {
-        lemma_sum_ext_all(rng(pair.ship@.len() as int), |index: int| if pair.ship@[index].date < date { pair.ship@[index].count as int - if index == 0 { 0 } else { pair.ship@[index - 1].count as int } } else { 0 }, term);
+        lemma_sum_ext_all(rng(pair.ship@.len() as int), |index: int| if pair.ship@[index].date < date { pair.ship@[index].count@ - if index == 0 { 0 } else { pair.ship@[index - 1].count@ } } else { 0 }, term);
     }
 }
 pub proof fn lemma_profile_weight(db: Db, part: i64, supplier: i64, pair: Pair, quantity: bool, weight: spec_fn(int) -> int)
@@ -149,16 +149,16 @@ pub proof fn lemma_profile_weight(db: Db, part: i64, supplier: i64, pair: Pair, 
 {
     let positions = rng(pair.ship@.len() as int);
     let project = |index: int| pair.ship@[index].date as int;
-    let delta = |index: int| (if quantity { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int };
+    let delta = |index: int| (if quantity { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+        - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ };
     let date_of = |row: LineitemRow| row.l_shipdate;
     let selected = |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier { if quantity { row.l_quantity } else { 1int } } else { 0int };
     assert forall|date: int| #[trigger] class_total(positions, project, delta, date) == class_total(db.lineitem, date_of, selected, date) by {
         assert(stored_day_count(pair, date) == daily_count(db, part as int, supplier as int, date));
         assert(stored_day_quantity(pair, date) == daily_quantity(db, part as int, supplier as int, date));
         lemma_sum_ext_all(positions, |index: int| if project(index) == date { delta(index) } else { 0 },
-            |index: int| if pair.ship@[index].date == date { (if quantity { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-                - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int } } else { 0 });
+            |index: int| if pair.ship@[index].date == date { (if quantity { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+                - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ } } else { 0 });
         if quantity {
             lemma_sum_ext_all(db.lineitem, |row: LineitemRow| if date_of(row) == date { selected(row) } else { 0 },
                 |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity } else { 0 });
@@ -169,8 +169,8 @@ pub proof fn lemma_profile_weight(db: Db, part: i64, supplier: i64, pair: Pair, 
     }
     lemma_equal_classes(positions, db.lineitem, project, date_of, delta, selected, weight);
     lemma_sum_ext_all(positions, |index: int| delta(index) * weight(project(index)),
-        |index: int| ((if quantity { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-            - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int }) * weight(pair.ship@[index].date as int));
+        |index: int| ((if quantity { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+            - if index == 0 { 0 } else if quantity { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ }) * weight(pair.ship@[index].date as int));
     lemma_sum_ext_all(db.lineitem, |row: LineitemRow| selected(row) * weight(date_of(row)),
         |row: LineitemRow| (if row.l_partkey == part && row.l_suppkey == supplier { if quantity { row.l_quantity } else { 1int } } else { 0int }) * weight(row.l_shipdate));
 }
@@ -187,10 +187,10 @@ pub proof fn lemma_pair_window(db: Db, parameters: Params, part: i64, supplier: 
     lemma_profile_weight(db, part, supplier, pair, false, keep);
     lemma_profile_weight(db, part, supplier, pair, true, keep);
     let positions = rng(pair.ship@.len() as int);
-    let start_count = |index: int| if pair.ship@[index].date < parameters.p1 { pair.ship@[index].count as int - if index == 0 { 0 } else { pair.ship@[index - 1].count as int } } else { 0 };
-    let end_count = |index: int| if pair.ship@[index].date < parameters.p4 { pair.ship@[index].count as int - if index == 0 { 0 } else { pair.ship@[index - 1].count as int } } else { 0 };
-    let start_quantity = |index: int| if pair.ship@[index].date < parameters.p1 { pair.ship@[index].quantity as int - if index == 0 { 0 } else { pair.ship@[index - 1].quantity as int } } else { 0 };
-    let end_quantity = |index: int| if pair.ship@[index].date < parameters.p4 { pair.ship@[index].quantity as int - if index == 0 { 0 } else { pair.ship@[index - 1].quantity as int } } else { 0 };
+    let start_count = |index: int| if pair.ship@[index].date < parameters.p1 { pair.ship@[index].count@ - if index == 0 { 0 } else { pair.ship@[index - 1].count@ } } else { 0 };
+    let end_count = |index: int| if pair.ship@[index].date < parameters.p4 { pair.ship@[index].count@ - if index == 0 { 0 } else { pair.ship@[index - 1].count@ } } else { 0 };
+    let start_quantity = |index: int| if pair.ship@[index].date < parameters.p1 { pair.ship@[index].quantity@ - if index == 0 { 0 } else { pair.ship@[index - 1].quantity@ } } else { 0 };
+    let end_quantity = |index: int| if pair.ship@[index].date < parameters.p4 { pair.ship@[index].quantity@ - if index == 0 { 0 } else { pair.ship@[index - 1].quantity@ } } else { 0 };
     let count = |index: int| end_count(index) - start_count(index);
     let quantity = |index: int| end_quantity(index) - start_quantity(index);
     lemma_before_as_sum(pair, parameters.p1, false, start_count);
@@ -205,10 +205,10 @@ pub proof fn lemma_pair_window(db: Db, parameters: Params, part: i64, supplier: 
         |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { row.l_quantity } else { 0int });
     lemma_sum_sub(positions, end_count, start_count, count);
     lemma_sum_sub(positions, end_quantity, start_quantity, quantity);
-    lemma_sum_ext_all(positions, count, |index: int| ((if false { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-        - if index == 0 { 0 } else if false { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int }) * keep(pair.ship@[index].date as int));
-    lemma_sum_ext_all(positions, quantity, |index: int| ((if true { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
-        - if index == 0 { 0 } else if true { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int }) * keep(pair.ship@[index].date as int));
+    lemma_sum_ext_all(positions, count, |index: int| ((if false { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+        - if index == 0 { 0 } else if false { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ }) * keep(pair.ship@[index].date as int));
+    lemma_sum_ext_all(positions, quantity, |index: int| ((if true { pair.ship@[index].quantity@ } else { pair.ship@[index].count@ })
+        - if index == 0 { 0 } else if true { pair.ship@[index - 1].quantity@ } else { pair.ship@[index - 1].count@ }) * keep(pair.ship@[index].date as int));
     lemma_sum_ext_all(db.lineitem,
         |row: LineitemRow| (if row.l_partkey == part && row.l_suppkey == supplier { if false { row.l_quantity } else { 1int } } else { 0int }) * keep(row.l_shipdate),
         |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { 1int } else { 0int });
@@ -318,7 +318,7 @@ pub proof fn lemma_cached_supplier(db: Db, parameters: Params, parts: Table<Part
         reveal(pair_valid);
         let last = pair.stocks@.len() as int - 1;
         let value = pair.stocks@[last].value as int;
-        let stock_weight = |cell: StockCell| if cell.value == value { cell.count as int } else { 0int };
+        let stock_weight = |cell: StockCell| if cell.value == value { cell.count@ } else { 0int };
         lemma_sum_pos(pair.stocks@, stock_weight, last);
         assert(stored_stock(pair, value) > 0);
         assert(stock_count(db, part as int, supplier as int, value) > 0);
@@ -340,7 +340,7 @@ pub proof fn lemma_cached_supplier(db: Db, parameters: Params, parts: Table<Part
         assert(stock_count(db, part as int, supplier as int, value) > 0);
         if let Some(pair) = pair_of(parts, part, supplier) {
             assert(stored_stock(pair, value) > 0);
-            let stock_weight = |cell: StockCell| if cell.value == value { cell.count as int } else { 0int };
+            let stock_weight = |cell: StockCell| if cell.value == value { cell.count@ } else { 0int };
             let selected = lemma_sum_nonzero_witness(pair.stocks@, stock_weight);
             assert(pair.stocks@[selected].value == value);
             crate::model::lemma_pair_order(&pair);

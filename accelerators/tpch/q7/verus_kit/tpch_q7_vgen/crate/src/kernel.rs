@@ -1,11 +1,12 @@
 #![allow(unused_imports)]
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::rat::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::storage::*;
+use crate::sorted::*;
 use crate::values::*;
-use crate::values::value;
 use crate::model::*;
 use crate::joins::*;
 use crate::output::*;
@@ -25,6 +26,9 @@ use crate::answer_transactions::*;
 use std::sync::Arc;
 
 verus! {
+
+pub open spec fn history(s: State) -> nat { 0 }
+
 broadcast use vstd::seq_lib::group_seq_properties;
 
 pub struct State {
@@ -98,6 +102,111 @@ impl State {
     }
 }
 
+pub open spec fn with_key(keys: Seq<i64>, key: i64) -> Seq<i64> {
+    if keys.contains(key) { keys } else { keys.push(key) }
+}
+
+pub open spec fn add_orders(keys: Seq<i64>, rows: Seq<OrderDelta>) -> Seq<i64>
+    decreases rows.len(),
+{
+    if rows.len() == 0 { keys } else { with_key(add_orders(keys, rows.drop_last()), rows.last().o_orderkey) }
+}
+
+pub open spec fn shipped(line: LineDelta) -> bool { line.ship_1995 != 0 || line.ship_1996 != 0 }
+
+pub open spec fn add_lines(keys: Seq<i64>, rows: Seq<LineDelta>) -> Seq<i64>
+    decreases rows.len(),
+{
+    if rows.len() == 0 { keys } else {
+        let before = add_lines(keys, rows.drop_last());
+        if shipped(rows.last()) { with_key(before, rows.last().l_orderkey) } else { before }
+    }
+}
+
+pub open spec fn touched_spec(lines: Seq<LineDelta>, orders: Seq<OrderDelta>) -> Seq<i64> {
+    add_lines(add_orders(Seq::empty(), orders), lines)
+}
+
+pub open spec fn add_suppliers(keys: Seq<i64>, rows: Seq<SupplierDelta>) -> Seq<i64>
+    decreases rows.len(),
+{
+    if rows.len() == 0 { keys } else { with_key(add_suppliers(keys, rows.drop_last()), rows.last().row.s_suppkey) }
+}
+
+pub open spec fn add_all(keys: Seq<i64>, extra: Seq<i64>) -> Seq<i64>
+    decreases extra.len(),
+{
+    if extra.len() == 0 { keys } else { with_key(add_all(keys, extra.drop_last()), extra.last()) }
+}
+
+/// The orders of a customer, in increasing order.
+pub open spec fn sorted_member_keys(reverse: Layers<Layers<i128>>, customer: i64) -> Seq<i64> {
+    choose|keys: Seq<i64>| strictly_increasing(keys) && forall|key: i64| keys.contains(key) <==> member_value(reverse, customer, key)
+}
+
+pub open spec fn add_customers(reverse: Layers<Layers<i128>>, keys: Seq<i64>, rows: Seq<CustomerDelta>) -> Seq<i64>
+    decreases rows.len(),
+{
+    if rows.len() == 0 { keys } else {
+        add_all(add_customers(reverse, keys, rows.drop_last()), sorted_member_keys(reverse, rows.last().row.c_custkey))
+    }
+}
+
+pub closed spec fn rescan_relevant_orders_for_keys_wanted(s: State, customer_delta: Seq<CustomerDelta>, lineitem_delta: Seq<LineDelta>,
+    nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64>
+{
+    touched_spec(lineitem_delta, orders_delta)
+}
+
+pub closed spec fn rescan_window_lines_for_orders_wanted(s: State, customer_delta: Seq<CustomerDelta>, lineitem_delta: Seq<LineDelta>,
+    nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64>
+{
+    add_customers(s.reverse, touched_spec(lineitem_delta, orders_delta), customer_delta)
+}
+
+pub closed spec fn rescan_window_lines_for_suppliers_wanted(s: State, customer_delta: Seq<CustomerDelta>, lineitem_delta: Seq<LineDelta>,
+    nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64>
+{
+    add_suppliers(Seq::empty(), supplier_delta)
+}
+
+proof fn lemma_add_orders_step(keys: Seq<i64>, rows: Seq<OrderDelta>, index: int)
+    requires 0 <= index < rows.len(),
+    ensures add_orders(keys, rows.take(index + 1)) == with_key(add_orders(keys, rows.take(index)), rows[index].o_orderkey),
+{
+    assert(rows.take(index + 1).drop_last() =~= rows.take(index));
+}
+
+proof fn lemma_add_lines_step(keys: Seq<i64>, rows: Seq<LineDelta>, index: int)
+    requires 0 <= index < rows.len(),
+    ensures add_lines(keys, rows.take(index + 1)) ==
+        if shipped(rows[index]) { with_key(add_lines(keys, rows.take(index)), rows[index].l_orderkey) } else { add_lines(keys, rows.take(index)) },
+{
+    assert(rows.take(index + 1).drop_last() =~= rows.take(index));
+}
+
+proof fn lemma_add_suppliers_step(keys: Seq<i64>, rows: Seq<SupplierDelta>, index: int)
+    requires 0 <= index < rows.len(),
+    ensures add_suppliers(keys, rows.take(index + 1)) == with_key(add_suppliers(keys, rows.take(index)), rows[index].row.s_suppkey),
+{
+    assert(rows.take(index + 1).drop_last() =~= rows.take(index));
+}
+
+proof fn lemma_add_customers_step(reverse: Layers<Layers<i128>>, keys: Seq<i64>, rows: Seq<CustomerDelta>, index: int)
+    requires 0 <= index < rows.len(),
+    ensures add_customers(reverse, keys, rows.take(index + 1)) ==
+        add_all(add_customers(reverse, keys, rows.take(index)), sorted_member_keys(reverse, rows[index].row.c_custkey)),
+{
+    assert(rows.take(index + 1).drop_last() =~= rows.take(index));
+}
+
+proof fn lemma_add_all_step(keys: Seq<i64>, extra: Seq<i64>, index: int)
+    requires 0 <= index < extra.len(),
+    ensures add_all(keys, extra.take(index + 1)) == with_key(add_all(keys, extra.take(index)), extra[index]),
+{
+    assert(extra.take(index + 1).drop_last() =~= extra.take(index));
+}
+
 pub fn build(
     suppliers: &[SupplierInput],
     customers: &[CustomerInput],
@@ -114,6 +223,7 @@ pub fn build(
         scan_window_lines_ok(db, window_lines@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        r is Some,
 {
     hide(group_count);
     hide(row_of);
@@ -144,7 +254,7 @@ pub fn build(
     {
         let ghost processed = index as int;
         let ghost prefix_rows = supplier_rows;
-        value!(count_patch(&empty_counts, &mut supplier_rows, suppliers[index].s_suppkey, suppliers[index].s_nationkey, 1));
+        count_patch(&empty_counts, &mut supplier_rows, suppliers[index].s_suppkey, suppliers[index].s_nationkey, &Wide::from_i128(1));
         proof {
             assert forall|key: i64, other: i64| #![trigger sparse_count(supplier_rows, key, other)]
                 sparse_count(supplier_rows, key, other) == verus_common::sums::sum(suppliers@.take(index as int + 1),
@@ -177,7 +287,7 @@ pub fn build(
     {
         let ghost processed = index as int;
         let ghost prefix_rows = customer_rows;
-        value!(count_patch(&empty_counts, &mut customer_rows, customers[index].c_custkey, customers[index].c_nationkey, 1));
+        count_patch(&empty_counts, &mut customer_rows, customers[index].c_custkey, customers[index].c_nationkey, &Wide::from_i128(1));
         proof {
             assert forall|key: i64, other: i64| #![trigger sparse_count(customer_rows, key, other)]
                 sparse_count(customer_rows, key, other) == verus_common::sums::sum(customers@.take(index as int + 1),
@@ -194,7 +304,7 @@ pub fn build(
         }
         index += 1;
     }
-    let (order_rows, reverse_rows) = value!(build_orders(relevant_orders));
+    let (order_rows, reverse_rows) = build_orders(relevant_orders);
     let mut index = 0;
     while index < nations.len()
         invariant index <= nations@.len(), nation_rows.valid(),
@@ -210,7 +320,7 @@ pub fn build(
     {
         let ghost processed = index as int;
         let ghost prefix_rows = nation_rows;
-        value!(name_patch(&empty_names, &mut nation_rows, nations[index].n_nationkey, &nations[index].n_name, 1));
+        name_patch(&empty_names, &mut nation_rows, nations[index].n_nationkey, &nations[index].n_name, &Wide::from_i128(1));
         proof {
             assert forall|key: i64, name: Seq<u8>| #![trigger sparse_name(nation_rows, key, name)]
                 sparse_name(nation_rows, key, name) == nation_rows_count(nations@.take(index as int + 1), key, name) by {
@@ -290,10 +400,10 @@ pub fn build(
         let ghost processed = index as int;
         let line = window_lines[index];
         let year = if line.l_shipdate <= 9495 { 1995 } else { 1996 };
-        let volume = value!((line.l_extendedprice as i128).checked_mul(100i128 - line.l_discount as i128));
+        let volume = Wide::from_i128(line.l_extendedprice as i128).mul(&Wide::from_i128(100i128 - line.l_discount as i128));
         let ghost prefix_groups = group_rows;
-        value!(line_contribution(&suppliers, &customers, &orders, &mut group_rows,
-            line.l_orderkey, line.l_suppkey, year, volume, 1));
+        line_contribution(&suppliers, &customers, &orders, &mut group_rows,
+            line.l_orderkey, line.l_suppkey, year, &volume, &Wide::from_i128(1));
         proof {
             reveal(line_weight);
             assert forall|first: i64, second: i64, target_year: i64, measure: bool|
@@ -310,8 +420,6 @@ pub fn build(
         }
         index += 1;
     }
-    if !positive_groups(&group_rows) { return None; }
-    let incident = value!(build_incident(&group_rows));
     proof {
         assert(window_lines@.take(window_lines@.len() as int) == window_lines@);
         assert forall|first: i64, second: i64, year: i64, revenue: bool|
@@ -319,8 +427,13 @@ pub fn build(
             sparse_group(group_rows, first, second, year, revenue) == numeric_group(db, first, second, year, revenue) by {
             lemma_build_groups(db, scanned_orders, window_lines@, suppliers, customers, orders, first, second, year, revenue);
         }
+        assert forall|key: i64| #![trigger group_rows.at(key)]
+            group_rows.at(key) matches Some(bucket) ==> groups_valid(bucket) by {
+            lemma_group_bucket_positive(db, group_rows, key);
+        }
     }
-    let answers = value!(build_answers(&group_rows, &nations));
+    let incident = build_incident(&group_rows);
+    let answers = build_answers(&group_rows, &nations);
     proof {
         assert forall|first: Seq<u8>, second: Seq<u8>, year: i64, revenue: bool|
             #![trigger answer_value(answers, first, second, year, revenue)]
@@ -360,16 +473,17 @@ pub fn execute(
 ) -> (r: Option<Vec<(Vec<u8>, Vec<u8>, i64, i128)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2@), out_view(out@)),
+        r.is_none() ==> !answer_fits(s.db(), params(p1@, p2@)),
 {
     hide(query_result);
     proof { use_type_invariant(s); }
     let mut out = Vec::new();
     if verus_common::bytes::bytes_lt_exec(p2, p1) {
-        emit_pair(&s.answers, p2, p1, &mut out);
-        emit_pair(&s.answers, p1, p2, &mut out);
+        if !emit_pair(&s.answers, p2, p1, &mut out) { proof { lemma_unfit(s.db(), s.answers, p1@, p2@, p2@, p1@); } return None; }
+        if !emit_pair(&s.answers, p1, p2, &mut out) { proof { lemma_unfit(s.db(), s.answers, p1@, p2@, p1@, p2@); } return None; }
     } else {
-        emit_pair(&s.answers, p1, p2, &mut out);
-        if !bytes_equal(p1, p2) { emit_pair(&s.answers, p2, p1, &mut out); }
+        if !emit_pair(&s.answers, p1, p2, &mut out) { proof { lemma_unfit(s.db(), s.answers, p1@, p2@, p1@, p2@); } return None; }
+        if !bytes_equal(p1, p2) { if !emit_pair(&s.answers, p2, p1, &mut out) { proof { lemma_unfit(s.db(), s.answers, p1@, p2@, p2@, p1@); } return None; } }
     }
     proof {
         reveal(ordered_output);
@@ -387,8 +501,46 @@ pub fn rescan_relevant_orders_for_keys_keys(
     orders_delta: &[OrderDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_relevant_orders_for_keys_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
 {
     touched_orders(lineitem_delta, orders_delta)
+}
+
+/// The orders of a customer with a positive entry, in increasing order.
+pub fn sorted_members(bucket: &Layers<i128>) -> (result: Vec<i64>)
+    ensures strictly_increasing(result@),
+        forall|key: i64| #![trigger result@.contains(key)] result@.contains(key) <==>
+            (bucket.at(key) matches Some(value) && value > 0),
+{
+    let all = bucket.keys();
+    let mut result: Vec<i64> = Vec::new();
+    let mut offset = 0;
+    while offset < all.len()
+        invariant offset <= all@.len(), strictly_increasing(result@),
+            forall|key: i64| #![trigger bucket.at(key)] bucket.at(key).is_some() <==> all@.contains(key),
+            forall|key: i64| #![trigger result@.contains(key)] result@.contains(key) <==>
+                (all@.take(offset as int).contains(key) && (bucket.at(key) matches Some(value) && value > 0)),
+        decreases all@.len() - offset,
+    {
+        let key = all[offset];
+        let ghost before = result@;
+        let member = match bucket.get(key) { Some(present) => *present > 0, None => false };
+        if member { insert_sorted(&mut result, key); }
+        proof {
+            assert(all@.take(offset as int + 1) =~= all@.take(offset as int).push(key));
+            verus_prooflib::lemma_contains_push(all@.take(offset as int), key);
+            assert(member == (bucket.at(key) matches Some(value) && value > 0));
+        }
+        offset += 1;
+    }
+    proof {
+        assert(all@.take(all@.len() as int) =~= all@);
+        assert forall|key: i64| #![trigger result@.contains(key)] result@.contains(key) <==>
+            (bucket.at(key) matches Some(value) && value > 0) by {
+            if bucket.at(key) matches Some(value) && value > 0 { assert(bucket.at(key).is_some()); assert(all@.contains(key)); }
+        }
+    }
+    result
 }
 
 pub fn rescan_window_lines_for_orders_keys(
@@ -399,7 +551,8 @@ pub fn rescan_window_lines_for_orders_keys(
     orders_delta: &[OrderDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
-    ensures r@.no_duplicates(),
+    ensures r@ == rescan_window_lines_for_orders_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
+        r@.no_duplicates(),
         forall|position: int| #![trigger orders_delta@[position]] 0 <= position < orders_delta@.len() ==>
             r@.contains(orders_delta@[position].o_orderkey),
         forall|position: int| #![trigger lineitem_delta@[position]] 0 <= position < lineitem_delta@.len()
@@ -412,9 +565,12 @@ pub fn rescan_window_lines_for_orders_keys(
 {
     proof { use_type_invariant(s); }
     let mut keys = touched_orders(lineitem_delta, orders_delta);
+    let ghost touched = keys@;
     let mut index = 0;
     while index < customer_delta.len()
-        invariant index <= customer_delta@.len(), keys@.no_duplicates(),
+        invariant index <= customer_delta@.len(),
+            keys@ == add_customers(s.reverse, touched, customer_delta@.take(index as int)),
+            keys@.no_duplicates(),
             forall|position: int| #![trigger orders_delta@[position]] 0 <= position < orders_delta@.len() ==>
                 keys@.contains(orders_delta@[position].o_orderkey),
             forall|position: int| #![trigger lineitem_delta@[position]] 0 <= position < lineitem_delta@.len()
@@ -426,17 +582,18 @@ pub fn rescan_window_lines_for_orders_keys(
                     ==> keys@.contains(order),
         decreases customer_delta@.len() - index,
     {
-        let ghost processed = index as int;
+        let ghost before = keys@;
         if let Some(bucket) = s.reverse.get(customer_delta[index].row.c_custkey) {
-            let order_keys = bucket.keys();
+            let sorted = sorted_members(bucket);
+            proof {
+                assert(s.reverse.at(customer_delta@[index as int].row.c_custkey) == Some(*bucket));
+                assert forall|key: i64| sorted@.contains(key) <==> member_value(s.reverse, customer_delta@[index as int].row.c_custkey, key) by {}
+                assert(exists|keys: Seq<i64>| strictly_increasing(keys) && forall|key: i64| keys.contains(key) <==> member_value(s.reverse, customer_delta@[index as int].row.c_custkey, key));
+                lemma_unique_keys(sorted@, sorted_member_keys(s.reverse, customer_delta@[index as int].row.c_custkey));
+            }
             let mut offset = 0;
-            while offset < order_keys.len()
-                invariant offset <= order_keys@.len(), index < customer_delta@.len(), keys@.no_duplicates(),
-                    s.reverse.at(customer_delta@[index as int].row.c_custkey) == Some(*bucket),
-                    forall|order: i64| #![trigger bucket.at(order)] bucket.at(order).is_some() == order_keys@.contains(order),
-                    forall|position: int| #![trigger order_keys@[position]] 0 <= position < offset
-                        && (bucket.at(order_keys@[position]) matches Some(value) && value > 0) ==>
-                            keys@.contains(order_keys@[position]),
+            while offset < sorted.len()
+                invariant offset <= sorted@.len(), keys@ == add_all(before, sorted@.take(offset as int)), keys@.no_duplicates(),
                     forall|position: int| #![trigger orders_delta@[position]] 0 <= position < orders_delta@.len() ==>
                         keys@.contains(orders_delta@[position].o_orderkey),
                     forall|position: int| #![trigger lineitem_delta@[position]] 0 <= position < lineitem_delta@.len()
@@ -446,28 +603,37 @@ pub fn rescan_window_lines_for_orders_keys(
                         #![trigger member_value(s.reverse, customer_delta@[position].row.c_custkey, order)]
                         0 <= position < index && member_value(s.reverse, customer_delta@[position].row.c_custkey, order)
                             ==> keys@.contains(order),
-                decreases order_keys@.len() - offset,
+                    forall|position: int| #![trigger sorted@[position]] 0 <= position < offset ==> keys@.contains(sorted@[position]),
+                decreases sorted@.len() - offset,
             {
-                let key = order_keys[offset];
-                if let Some(present) = bucket.get(key) { if *present > 0 { add_key(&mut keys, key); } }
+                add_key(&mut keys, sorted[offset]);
+                proof { lemma_add_all_step(before, sorted@, offset as int); }
                 offset += 1;
             }
             proof {
-                assert forall|order: i64|
-                    #![trigger member_value(s.reverse, customer_delta@[index as int].row.c_custkey, order)]
-                    member_value(s.reverse, customer_delta@[index as int].row.c_custkey, order)
-                        implies keys@.contains(order) by {
-                    assert(bucket.at(order).is_some());
-                    assert(order_keys@.contains(order));
-                    let position = choose|position: int| #![trigger order_keys@[position]]
-                        0 <= position < order_keys@.len() && order_keys@[position] == order;
-                    assert(bucket.at(order_keys@[position]) matches Some(value) && value > 0);
-                    assert(keys@.contains(order_keys@[position]));
+                assert(sorted@.take(sorted@.len() as int) =~= sorted@);
+                assert forall|order: i64| #![trigger member_value(s.reverse, customer_delta@[index as int].row.c_custkey, order)]
+                    member_value(s.reverse, customer_delta@[index as int].row.c_custkey, order) implies keys@.contains(order) by {
+                    assert(sorted@.contains(order));
+                    let position = choose|position: int| 0 <= position < sorted@.len() && sorted@[position] == order;
+                    assert(keys@.contains(sorted@[position]));
                 }
             }
+        } else {
+            proof {
+                let customer = customer_delta@[index as int].row.c_custkey;
+                assert(s.reverse.at(customer).is_none());
+                assert forall|key: i64| (Seq::<i64>::empty()).contains(key) <==> member_value(s.reverse, customer, key) by {}
+                assert(exists|keys: Seq<i64>| strictly_increasing(keys) && forall|key: i64| keys.contains(key) <==> member_value(s.reverse, customer, key)) by {
+                    assert(strictly_increasing(Seq::<i64>::empty()));
+                }
+                lemma_unique_keys(Seq::<i64>::empty(), sorted_member_keys(s.reverse, customer));
+            }
         }
+        proof { lemma_add_customers_step(s.reverse, touched, customer_delta@, index as int); }
         index += 1;
     }
+    proof { assert(customer_delta@.take(customer_delta@.len() as int) =~= customer_delta@); }
     keys
 }
 
@@ -479,7 +645,8 @@ pub fn rescan_window_lines_for_suppliers_keys(
     orders_delta: &[OrderDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
-    ensures r@.no_duplicates(),
+    ensures r@ == rescan_window_lines_for_suppliers_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
+        r@.no_duplicates(),
         forall|position: int| #![trigger supplier_delta@[position]] 0 <= position < supplier_delta@.len() ==>
             r@.contains(supplier_delta@[position].row.s_suppkey),
 {
@@ -489,12 +656,14 @@ pub fn rescan_window_lines_for_suppliers_keys(
         invariant index <= supplier_delta@.len(), keys@.no_duplicates(),
             forall|position: int| #![trigger supplier_delta@[position]] 0 <= position < index ==>
                 keys@.contains(supplier_delta@[position].row.s_suppkey),
+            keys@ == add_suppliers(Seq::empty(), supplier_delta@.take(index as int)),
         decreases supplier_delta@.len() - index,
     {
-        let ghost processed = index as int;
         add_key(&mut keys, supplier_delta[index].row.s_suppkey);
+        proof { lemma_add_suppliers_step(Seq::empty(), supplier_delta@, index as int); }
         index += 1;
     }
+    proof { assert(supplier_delta@.take(supplier_delta@.len() as int) =~= supplier_delta@); }
     keys
 }
 
@@ -519,23 +688,26 @@ pub fn apply(
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(s.db(), db2, customer_delta_seq_view(customer_delta@), lineitem_full, nation_delta_seq_view(nation_delta@), orders_full, supplier_delta_seq_view(supplier_delta@)),
+        relevant_orders_for_keys_keys@ == rescan_relevant_orders_for_keys_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_relevant_orders_for_keys_ok(db2, relevant_orders_for_keys_keys@, relevant_orders_for_keys_rows@),
+        window_lines_for_orders_keys@ == rescan_window_lines_for_orders_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_window_lines_for_orders_ok(db2, window_lines_for_orders_keys@, window_lines_for_orders_rows@),
+        window_lines_for_suppliers_keys@ == rescan_window_lines_for_suppliers_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_window_lines_for_suppliers_ok(db2, window_lines_for_suppliers_keys@, window_lines_for_suppliers_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        r is Ok,
 {
-    match maintain(s, customer_delta, lineitem_delta, nation_delta, orders_delta, supplier_delta,
+    Ok(maintain(s, customer_delta, lineitem_delta, nation_delta, orders_delta, supplier_delta,
         relevant_orders_for_keys_keys, relevant_orders_for_keys_rows,
         window_lines_for_orders_keys, window_lines_for_orders_rows,
         window_lines_for_suppliers_keys, window_lines_for_suppliers_rows,
-        Ghost(lineitem_full), Ghost(orders_full), Ghost(db2)) {
-        Some(state) => Ok(state), None => Err(1),
-    }
+        Ghost(lineitem_full), Ghost(orders_full), Ghost(db2)))
 }
 
 pub fn touched_orders(lines: &[LineDelta], orders: &[OrderDelta]) -> (result: Vec<i64>)
-    ensures result@.no_duplicates(),
+    ensures result@ == touched_spec(lines@, orders@),
+        result@.no_duplicates(),
         forall|position: int| #![trigger orders@[position]] 0 <= position < orders@.len() ==>
             result@.contains(orders@[position].o_orderkey),
         forall|position: int| #![trigger lines@[position]] 0 <= position < lines@.len()
@@ -545,18 +717,22 @@ pub fn touched_orders(lines: &[LineDelta], orders: &[OrderDelta]) -> (result: Ve
     let mut keys = Vec::new();
     let mut index = 0;
     while index < orders.len()
-        invariant index <= orders@.len(), keys@.no_duplicates(),
+        invariant index <= orders@.len(), keys@ == add_orders(Seq::empty(), orders@.take(index as int)), keys@.no_duplicates(),
             forall|position: int| #![trigger orders@[position]] 0 <= position < index ==>
                 keys@.contains(orders@[position].o_orderkey),
         decreases orders@.len() - index,
     {
         let ghost processed = index as int;
         add_key(&mut keys, orders[index].o_orderkey);
+        proof { lemma_add_orders_step(Seq::empty(), orders@, index as int); }
         index += 1;
     }
+    proof { assert(orders@.take(orders@.len() as int) =~= orders@); }
+    let ghost base = keys@;
     let mut index = 0;
     while index < lines.len()
-        invariant index <= lines@.len(), keys@.no_duplicates(),
+        invariant index <= lines@.len(), base == add_orders(Seq::empty(), orders@), keys@ == add_lines(base, lines@.take(index as int)),
+            keys@.no_duplicates(),
             forall|position: int| #![trigger orders@[position]] 0 <= position < orders@.len() ==>
                 keys@.contains(orders@[position].o_orderkey),
             forall|position: int| #![trigger lines@[position]] 0 <= position < index
@@ -566,8 +742,10 @@ pub fn touched_orders(lines: &[LineDelta], orders: &[OrderDelta]) -> (result: Ve
     {
         let ghost processed = index as int;
         if lines[index].ship_1995 != 0 || lines[index].ship_1996 != 0 { add_key(&mut keys, lines[index].l_orderkey); }
+        proof { lemma_add_lines_step(base, lines@, index as int); }
         index += 1;
     }
+    proof { assert(lines@.take(lines@.len() as int) =~= lines@); }
     keys
 }
 
@@ -606,7 +784,7 @@ pub fn mark_cell(affected: &mut Sparse<Groups>, first: i64, second: i64, year: i
         }
         offset += 1;
     }
-    bucket.rows.push(Cell { other: second, year, count: 1, revenue: 0 });
+    bucket.rows.push(Cell { other: second, year, count: Wide::from_i128(1), revenue: Wide::zero() });
     proof {
         assert(group_keys(bucket.rows@) =~= group_keys(before).push((second, year)));
         verus_prooflib::lemma_contains_push(group_keys(before), (second, year));
@@ -650,7 +828,7 @@ pub fn mark_bucket(groups: &Layers<Groups>, affected: &mut Sparse<Groups>, first
                         cell_marked(*affected, first, bucket.rows@[position].other, bucket.rows@[position].year),
             decreases bucket.rows@.len() - offset,
         {
-            let cell = bucket.rows[offset];
+            let cell = bucket.rows[offset].dup();
             if second.is_none() || second == Some(cell.other) { mark_cell(affected, first, cell.other, cell.year); }
             offset += 1;
         }
@@ -669,8 +847,8 @@ pub fn mark_bucket(groups: &Layers<Groups>, affected: &mut Sparse<Groups>, first
 pub fn find_cell(groups: &Layers<Groups>, first: i64, second: i64, year: i64) -> (result: Cell)
     ensures result.other == second, result.year == year,
         (groups.at(first) matches Some(bucket) ==> groups_shape(bucket)) ==> {
-            &&& result.count as int == group_value(*groups, first, second, year, false)
-            &&& result.revenue as int == group_value(*groups, first, second, year, true)
+            &&& result.count@ == group_value(*groups, first, second, year, false)
+            &&& result.revenue@ == group_value(*groups, first, second, year, true)
         },
 {
     if let Some(bucket) = groups.get(first) {
@@ -681,7 +859,7 @@ pub fn find_cell(groups: &Layers<Groups>, first: i64, second: i64, year: i64) ->
                     (bucket.rows@[position].other, bucket.rows@[position].year) != (second, year),
             decreases bucket.rows@.len() - offset,
         {
-            let cell = bucket.rows[offset];
+            let cell = bucket.rows[offset].dup();
             if cell.other == second && cell.year == year {
                 proof {
                     if groups_shape(*bucket) {
@@ -704,7 +882,7 @@ pub fn find_cell(groups: &Layers<Groups>, first: i64, second: i64, year: i64) ->
             verus_common::sums::lemma_sum_zero(bucket.rows@, group_weight(second, year, true));
         }
     }
-    Cell { other: second, year, count: 0, revenue: 0 }
+    Cell { other: second, year, count: Wide::zero(), revenue: Wide::zero() }
 }
 
 pub closed spec fn neighborhood_sum(state: State, suppliers: Layers<Counts>, customers: Layers<Counts>, orders: Layers<Counts>,
@@ -716,12 +894,12 @@ pub closed spec fn neighborhood_sum(state: State, suppliers: Layers<Counts>, cus
 
 #[verifier::auto_ext_equal(assert, assert_by, ensures)]
 pub fn merge_numeric_delta(previous: &Layers<Groups>, delta: &Sparse<Groups>, affected: &mut Sparse<Groups>)
-    -> (result: Option<Sparse<Groups>>)
+    -> (changes: Sparse<Groups>)
     requires old(affected).valid(), delta.valid(), sparse_groups_shape(*delta),
         forall|key: i64| #![trigger previous.at(key)] previous.at(key) matches Some(bucket) ==> groups_shape(bucket),
     ensures final(affected).valid(),
         sparse_groups_shape(*old(affected)) && sparse_groups_shape(*delta) ==> sparse_groups_shape(*final(affected)),
-        result matches Some(changes) ==> {
+        {
             &&& changes.valid()
             &&& sparse_groups_shape(*delta) ==> sparse_groups_shape(changes)
             &&& forall|first: i64, second: i64, year: i64, revenue: bool|
@@ -794,8 +972,8 @@ pub fn merge_numeric_delta(previous: &Layers<Groups>, delta: &Sparse<Groups>, af
             decreases cells.rows@.len() - offset,
         {
             let ghost before_bucket = bucket;
-            let cell = cells.rows[offset];
-            value!(adjust_group(&mut bucket, cell.other, cell.year, cell.count, cell.revenue));
+            let cell = cells.rows[offset].dup();
+            adjust_group(&mut bucket, cell.other, cell.year, &cell.count, &cell.revenue);
             mark_cell(affected, first, cell.other, cell.year);
             proof {
                 assert forall|second: i64, year: i64, revenue: bool| #![trigger group_at(bucket.rows@, second, year, revenue)]
@@ -852,7 +1030,7 @@ pub fn merge_numeric_delta(previous: &Layers<Groups>, delta: &Sparse<Groups>, af
             }
         }
     }
-    Some(changes)
+    changes
 }
 
 pub fn maintain(
@@ -868,16 +1046,19 @@ pub fn maintain(
     Ghost(lineitem_full): Ghost<Seq<(LineitemRow, int)>>,
     Ghost(orders_full): Ghost<Seq<(OrdersRow, int)>>,
     Ghost(db2): Ghost<Db>,
-) -> (result: Option<State>)
+) -> (result: State)
     requires
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta@), lineitem_full,
             nation_delta_seq_view(nation_delta@), orders_full, supplier_delta_seq_view(supplier_delta@)),
+        order_keys@ == rescan_relevant_orders_for_keys_wanted(*state, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_relevant_orders_for_keys_ok(db2, order_keys@, order_rows@),
+        line_order_keys@ == rescan_window_lines_for_orders_wanted(*state, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_window_lines_for_orders_ok(db2, line_order_keys@, line_order_rows@),
+        line_supplier_keys@ == rescan_window_lines_for_suppliers_wanted(*state, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_window_lines_for_suppliers_ok(db2, line_supplier_keys@, line_supplier_rows@),
-    ensures result matches Some(next) ==> next.db() == db2,
+    ensures result.db() == db2,
 {
     hide(group_count); hide(row_of);
     proof { use_type_invariant(state); }
@@ -886,8 +1067,7 @@ pub fn maintain(
     let touched = touched_orders(lineitem_delta, orders_delta);
     let needed_orders = rescan_window_lines_for_orders_keys(state, customer_delta, lineitem_delta, nation_delta, orders_delta, supplier_delta);
     let needed_suppliers = rescan_window_lines_for_suppliers_keys(state, customer_delta, lineitem_delta, nation_delta, orders_delta, supplier_delta);
-    if !covered(&touched, order_keys) || !covered(&needed_orders, line_order_keys)
-        || !covered(&needed_suppliers, line_supplier_keys) { return None; }
+    proof { assert(touched@ == order_keys@ && needed_orders@ == line_order_keys@ && needed_suppliers@ == line_supplier_keys@); }
 
     let mut supplier_changes = Sparse::new();
     let mut customer_changes = Sparse::new();
@@ -912,7 +1092,7 @@ pub fn maintain(
         let ghost processed = index as int;
         let change = supplier_delta[index];
         let ghost prefix_changes = supplier_changes;
-        value!(count_patch(&state.suppliers, &mut supplier_changes, change.row.s_suppkey, change.row.s_nationkey, change.sign as i128));
+        count_patch(&state.suppliers, &mut supplier_changes, change.row.s_suppkey, change.row.s_nationkey, &Wide::from_i128(change.sign as i128));
         proof {
             assert forall|key: i64, other: i64| #![trigger patched_count(state.suppliers, supplier_changes, key, other)]
                 patched_count(state.suppliers, supplier_changes, key, other)
@@ -943,7 +1123,7 @@ pub fn maintain(
         let ghost processed = index as int;
         let change = customer_delta[index];
         let ghost prefix_changes = customer_changes;
-        value!(count_patch(&state.customers, &mut customer_changes, change.row.c_custkey, change.row.c_nationkey, change.sign as i128));
+        count_patch(&state.customers, &mut customer_changes, change.row.c_custkey, change.row.c_nationkey, &Wide::from_i128(change.sign as i128));
         proof {
             assert forall|key: i64, other: i64| #![trigger patched_count(state.customers, customer_changes, key, other)]
                 patched_count(state.customers, customer_changes, key, other)
@@ -973,7 +1153,7 @@ pub fn maintain(
         let ghost processed = index as int;
         let change = &nation_delta[index];
         let ghost prefix_changes = nation_changes;
-        value!(name_patch(&state.nations, &mut nation_changes, change.row.n_nationkey, &change.row.n_name, change.sign as i128));
+        name_patch(&state.nations, &mut nation_changes, change.row.n_nationkey, &change.row.n_name, &Wide::from_i128(change.sign as i128));
         proof {
             assert forall|key: i64, name: Seq<u8>| #![trigger patched_name(state.nations, nation_changes, key, name)]
                 patched_name(state.nations, nation_changes, key, name)
@@ -987,10 +1167,53 @@ pub fn maintain(
         }
         index += 1;
     }
-    if !positive_counts(&supplier_changes) || !positive_counts(&customer_changes) || !positive_names(&nation_changes) { return None; }
-    let suppliers = value!(state.suppliers.patch(supplier_changes));
-    let customers = value!(state.customers.patch(customer_changes));
-    let nations = value!(state.nations.patch(nation_changes));
+    proof {
+        assert(supplier_delta@.take(supplier_delta@.len() as int) == supplier_delta@);
+        assert(customer_delta@.take(customer_delta@.len() as int) == customer_delta@);
+        assert(nation_delta@.take(nation_delta@.len() as int) == nation_delta@);
+        assert forall|key: i64| #![trigger supplier_changes.at(key)]
+            supplier_changes.at(key) matches Some(bucket) ==> counts_positive(bucket) by {
+            if let Some(bucket) = supplier_changes.at(key) {
+                assert(patched_counts_unique(state.suppliers, supplier_changes, key));
+                assert forall|other: i64| #![trigger count_at(bucket.rows@, other)] count_at(bucket.rows@, other) >= 0 by {
+                    lemma_supplier_capture(state.db(), db2, supplier_delta@, key, other);
+                    assert(dimension_value(state.suppliers, key, other) == supplier_count(state.db(), key, other));
+                    assert(patched_count(state.suppliers, supplier_changes, key, other) == count_at(bucket.rows@, other));
+                    lemma_dimension_nonnegative(db2, key, other, Seq::empty());
+                }
+                lemma_counts_positive(bucket);
+            }
+        }
+        assert forall|key: i64| #![trigger customer_changes.at(key)]
+            customer_changes.at(key) matches Some(bucket) ==> counts_positive(bucket) by {
+            if let Some(bucket) = customer_changes.at(key) {
+                assert(patched_counts_unique(state.customers, customer_changes, key));
+                assert forall|other: i64| #![trigger count_at(bucket.rows@, other)] count_at(bucket.rows@, other) >= 0 by {
+                    lemma_customer_capture(state.db(), db2, customer_delta@, key, other);
+                    assert(dimension_value(state.customers, key, other) == customer_count(state.db(), key, other));
+                    assert(patched_count(state.customers, customer_changes, key, other) == count_at(bucket.rows@, other));
+                    lemma_dimension_nonnegative(db2, key, other, Seq::empty());
+                }
+                lemma_counts_positive(bucket);
+            }
+        }
+        assert forall|key: i64| #![trigger nation_changes.at(key)]
+            nation_changes.at(key) matches Some(bucket) ==> names_positive(bucket) by {
+            if let Some(bucket) = nation_changes.at(key) {
+                assert(patched_names_unique(state.nations, nation_changes, key));
+                assert forall|name: Seq<u8>| #![trigger name_at(bucket.rows@, name)] name_at(bucket.rows@, name) >= 0 by {
+                    lemma_nation_capture(state.db(), db2, nation_delta@, key, name);
+                    assert(nation_value(state.nations, key, name) == nation_count(state.db(), key, name));
+                    assert(patched_name(state.nations, nation_changes, key, name) == name_at(bucket.rows@, name));
+                    lemma_dimension_nonnegative(db2, key, 0, name);
+                }
+                lemma_names_positive(bucket);
+            }
+        }
+    }
+    let suppliers = state.suppliers.patch(supplier_changes);
+    let customers = state.customers.patch(customer_changes);
+    let nations = state.nations.patch(nation_changes);
     proof {
         lemma_count_patch_shape(state.suppliers, supplier_changes, suppliers);
         lemma_count_patch_shape(state.customers, customer_changes, customers);
@@ -1078,7 +1301,7 @@ pub fn maintain(
                     assert(patched_count(state.orders, previous_changes, key, customer) == dimension_value(state.orders, key, customer));
                 }
             }
-            value!(clear_reverse_order(&state.reverse, &mut reverse_changes, old_bucket, key));
+            clear_reverse_order(&state.reverse, &mut reverse_changes, old_bucket, key);
         }
         proof {
             assert forall|customer: i64, order: i64| #![trigger patched_member(state.reverse, reverse_changes, customer, order)]
@@ -1123,8 +1346,8 @@ pub fn maintain(
         let ghost previous_reverse = reverse_changes;
         let row = order_rows[index];
         if has_key(&touched, row.o_orderkey) {
-            value!(count_patch(&state.orders, &mut order_changes, row.o_orderkey, row.o_custkey, 1));
-            value!(membership_patch(&state.reverse, &mut reverse_changes, row.o_custkey, row.o_orderkey, true));
+            count_patch(&state.orders, &mut order_changes, row.o_orderkey, row.o_custkey, &Wide::from_i128(1));
+            membership_patch(&state.reverse, &mut reverse_changes, row.o_custkey, row.o_orderkey, true);
         }
         proof {
             assert forall|customer: i64, order: i64| #![trigger patched_member(state.reverse, reverse_changes, customer, order)]
@@ -1157,8 +1380,8 @@ pub fn maintain(
         }
         index += 1;
     }
-    let orders = value!(state.orders.patch(order_changes));
-    let reverse = value!(state.reverse.patch(reverse_changes));
+    let orders = state.orders.patch(order_changes);
+    let reverse = state.reverse.patch(reverse_changes);
     proof {
         assert(order_rows@.take(order_rows@.len() as int) == order_rows@);
         assert forall|key: i64| #![trigger order_changes.at(key)]
@@ -1239,9 +1462,9 @@ pub fn maintain(
         let ghost prefix_groups = numeric_delta;
         let line = line_order_rows[index];
         let year = if line.l_shipdate <= 9495 { 1995 } else { 1996 };
-        let volume = value!((line.l_extendedprice as i128).checked_mul(100i128 - line.l_discount as i128));
-        value!(line_contribution(&suppliers, &customers, &orders, &mut numeric_delta, line.l_orderkey, line.l_suppkey, year, volume, 1));
-        value!(line_contribution(&state.suppliers, &state.customers, &state.orders, &mut numeric_delta, line.l_orderkey, line.l_suppkey, year, volume, -1));
+        let volume = Wide::from_i128(line.l_extendedprice as i128).mul(&Wide::from_i128(100i128 - line.l_discount as i128));
+        line_contribution(&suppliers, &customers, &orders, &mut numeric_delta, line.l_orderkey, line.l_suppkey, year, &volume, &Wide::from_i128(1));
+        line_contribution(&state.suppliers, &state.customers, &state.orders, &mut numeric_delta, line.l_orderkey, line.l_suppkey, year, &volume, &Wide::from_i128(-1));
         proof {
             reveal(line_weight);
             assert forall|first: i64, second: i64, year: i64, revenue: bool|
@@ -1286,10 +1509,10 @@ pub fn maintain(
         let line = line_supplier_rows[index];
         if !has_key(line_order_keys, line.l_orderkey) {
             let year = if line.l_shipdate <= 9495 { 1995 } else { 1996 };
-            let volume = value!((line.l_extendedprice as i128).checked_mul(100i128 - line.l_discount as i128));
-            value!(line_contribution(&suppliers, &customers, &orders, &mut numeric_delta, line.l_orderkey, line.l_suppkey, year, volume, 1));
+            let volume = Wide::from_i128(line.l_extendedprice as i128).mul(&Wide::from_i128(100i128 - line.l_discount as i128));
+            line_contribution(&suppliers, &customers, &orders, &mut numeric_delta, line.l_orderkey, line.l_suppkey, year, &volume, &Wide::from_i128(1));
             let ghost added_groups = numeric_delta;
-            value!(line_contribution(&state.suppliers, &state.customers, &state.orders, &mut numeric_delta, line.l_orderkey, line.l_suppkey, year, volume, -1));
+            line_contribution(&state.suppliers, &state.customers, &state.orders, &mut numeric_delta, line.l_orderkey, line.l_suppkey, year, &volume, &Wide::from_i128(-1));
             proof {
                 reveal(line_weight);
                 assert forall|first: i64, second: i64, target_year: i64, revenue: bool|
@@ -1339,11 +1562,10 @@ pub fn maintain(
         let ghost prefix_groups = numeric_delta;
         let line = lineitem_delta[index];
         if line.ship_1995 != 0 || line.ship_1996 != 0 {
-            if line.ship_1995 != 0 && line.ship_1996 != 0 { return None; }
             let year = if line.ship_1995 != 0 { 1995 } else { 1996 };
-            let volume = value!((line.l_extendedprice as i128).checked_mul(100i128 - line.l_discount as i128));
-            value!(line_contribution(&state.suppliers, &state.customers, &state.orders, &mut numeric_delta,
-                line.l_orderkey, line.l_suppkey, year, volume, line.sign as i128));
+            let volume = Wide::from_i128(line.l_extendedprice as i128).mul(&Wide::from_i128(100i128 - line.l_discount as i128));
+            line_contribution(&state.suppliers, &state.customers, &state.orders, &mut numeric_delta,
+                line.l_orderkey, line.l_suppkey, year, &volume, &Wide::from_i128(line.sign as i128));
         }
         proof {
             reveal(captured_weight);
@@ -1376,16 +1598,15 @@ pub fn maintain(
                 first, second, year, revenue);
         }
     }
-    let group_changes = value!(merge_numeric_delta(&state.groups, &numeric_delta, &mut affected));
-    if !positive_groups(&group_changes) { return None; }
+    let group_changes = merge_numeric_delta(&state.groups, &numeric_delta, &mut affected);
     proof {
         assert forall|second: i64, first: i64| #![trigger member_value(state.incident, second, first)]
             member_value(state.incident, second, first) == group_has(state.groups, first, second) by {
             lemma_group_has(state.groups, first, second);
         }
     }
-    let incident = value!(update_incident(&state.groups, &state.incident, &group_changes));
-    let groups = value!(state.groups.patch(group_changes));
+    let incident = update_incident(&state.groups, &state.incident, &group_changes);
+    let groups = state.groups.patch(group_changes);
     proof {
         assert forall|first: i64, second: i64, year: i64, revenue: bool|
             #![trigger group_value(groups, first, second, year, revenue)]
@@ -1395,6 +1616,11 @@ pub fn maintain(
         }
         assert forall|key: i64| #![trigger groups.at(key)] groups.at(key) matches Some(bucket) ==> groups_valid(bucket) by {
             if group_changes.at(key).is_some() {
+                assert forall|second: i64, year: i64, measure: bool| #![trigger sparse_group(group_changes, key, second, year, measure)]
+                    sparse_group(group_changes, key, second, year, measure) == numeric_group(db2, key, second, year, measure) by {
+                    assert(patched_group(state.groups, group_changes, key, second, year, measure) == sparse_group(group_changes, key, second, year, measure));
+                }
+                lemma_group_bucket_positive(db2, group_changes, key);
                 assert(group_changes.at(key) matches Some(bucket) && groups_shape(bucket) && groups_positive(bucket));
             } else { assert(groups.at(key) == state.groups.at(key)); }
         }
@@ -1429,7 +1655,25 @@ pub fn maintain(
             assert(!cell_marked(numeric_affected, first, second, year));
         }
     }
-    let answers = value!(update_answers(&state.nations, &nations, &state.groups, &groups, &state.answers, &affected));
+    proof {
+        assert forall|first: Seq<u8>, second: Seq<u8>, year: i64|
+            #![trigger answer_change(affected.view(), state.nations, nations, state.groups, groups, first, second, year, false)]
+            answer_value(state.answers, first, second, year, false)
+                + answer_change(affected.view(), state.nations, nations, state.groups, groups, first, second, year, false) >= 0
+            && (answer_value(state.answers, first, second, year, false)
+                + answer_change(affected.view(), state.nations, nations, state.groups, groups, first, second, year, false) == 0 ==>
+                answer_value(state.answers, first, second, year, true)
+                    + answer_change(affected.view(), state.nations, nations, state.groups, groups, first, second, year, true) == 0) by {
+            lemma_answer_transaction(state.db(), db2, affected, state.nations, nations, state.groups, groups, nation_delta@, first, second, year, false);
+            lemma_answer_transaction(state.db(), db2, affected, state.nations, nations, state.groups, groups, nation_delta@, first, second, year, true);
+            lemma_named_sql(state.db(), first, second, year, false);
+            lemma_named_sql(db2, first, second, year, false);
+            lemma_named_sql(state.db(), first, second, year, true);
+            lemma_named_sql(db2, first, second, year, true);
+            lemma_group_revenue_zero(db2, params(first, second), first, second, year as int);
+        }
+    }
+    let answers = update_answers(&state.nations, &nations, &state.groups, &groups, &state.answers, &affected);
     proof {
         assert forall|first: Seq<u8>, second: Seq<u8>, year: i64| #![trigger answer_value(answers, first, second, year, false)]
             answer_value(answers, first, second, year, false) == group_count(db2, params(first, second), first, second, year as int) by {
@@ -1444,8 +1688,8 @@ pub fn maintain(
             lemma_named_sql(db2, first, second, year, true);
         }
     }
-    Some(State { db: Ghost(db2), suppliers, customers, orders, nations, reverse, groups, incident,
-        answers })
+    State { db: Ghost(db2), suppliers, customers, orders, nations, reverse, groups, incident,
+        answers }
 }
 
 } // verus!

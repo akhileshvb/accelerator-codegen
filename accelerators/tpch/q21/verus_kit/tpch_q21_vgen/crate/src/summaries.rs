@@ -1,7 +1,7 @@
 use vstd::prelude::*;
 use verus_common::sums::*;
+use verus_prooflib::wide::Wide;
 use crate::aggregates::*;
-use crate::aggregates::some_or_return;
 use crate::gen_obligations::*;
 use crate::index::*;
 use crate::maintenance::*;
@@ -130,8 +130,8 @@ pub open spec fn summaries_scanned(index: Summaries, keys: Counts, lines: Seq<Or
     &&& forall|order: KeyView| #![trigger order_finished(index, order)] order_finished(index, order) == sum(finished, scanned_finished(keys, order))
 }
 
-pub fn summarize(keys: &Counts, lines: &[OrderLine], finished: &[OrderFinished]) -> (result: Option<Summaries>)
-    ensures result matches Some(index) ==> index.wf() && summaries_scanned(index, *keys, lines@, finished@),
+pub fn summarize(keys: &Counts, lines: &[OrderLine], finished: &[OrderFinished]) -> (index: Summaries)
+    ensures index.wf() && summaries_scanned(index, *keys, lines@, finished@),
 {
     hide(Tree::at);
     hide(Tree::entries);
@@ -149,8 +149,8 @@ pub fn summarize(keys: &Counts, lines: &[OrderLine], finished: &[OrderFinished])
     {
         let row = &lines[position];
         if keys.get(&Key::number(row.l_orderkey)).is_some() {
-            let late = if row.l_receiptdate > row.l_commitdate { 1i128 } else { 0i128 };
-            some_or_return!(add_line(&mut index, row.l_orderkey, row.l_suppkey, 1, late));
+            let late = if row.l_receiptdate > row.l_commitdate { Wide::from_i128(1) } else { Wide::zero() };
+            add_line(&mut index, row.l_orderkey, row.l_suppkey, &Wide::from_i128(1), &late);
         }
         proof {
             assert forall|order: KeyView, supplier: KeyView| #![trigger order_total(index, order, supplier)] #![trigger order_late(index, order, supplier)] {
@@ -176,7 +176,7 @@ pub fn summarize(keys: &Counts, lines: &[OrderLine], finished: &[OrderFinished])
     {
         let row = &finished[position];
         if keys.get(&Key::number(row.o_orderkey)).is_some() {
-            some_or_return!(add_finished(&mut index, row.o_orderkey, 1));
+            add_finished(&mut index, row.o_orderkey, &Wide::from_i128(1));
         }
         proof {
             assert forall|order: KeyView| #![trigger order_finished(index, order)] order_finished(index, order) == sum(finished@.take(position as int + 1), scanned_finished(*keys, order)) by {
@@ -186,7 +186,7 @@ pub fn summarize(keys: &Counts, lines: &[OrderLine], finished: &[OrderFinished])
         position += 1;
     }
     proof { assert(finished@.take(position as int) =~= finished@); }
-    Some(index)
+    index
 }
 
 pub open spec fn delta_total(order: KeyView, supplier: KeyView) -> spec_fn(LineitemDelta) -> int {
@@ -209,8 +209,9 @@ pub open spec fn summaries_reconstructed(before: Summaries, after: Summaries, li
     &&& forall|order: KeyView| #![trigger order_finished(before, order)] order_finished(before, order) == order_finished(after, order) - sum(orders, delta_finished(order))
 }
 
-pub fn reconstruct(after: &Summaries, lines: &[LineitemDelta], orders: &[OrdersDelta]) -> (result: Option<Summaries>)
-    ensures result matches Some(before) ==> before.wf() && summaries_reconstructed(before, *after, lines@, orders@),
+pub fn reconstruct(after: &Summaries, lines: &[LineitemDelta], orders: &[OrdersDelta]) -> (before: Summaries)
+    requires after.wf(),
+    ensures before.wf() && summaries_reconstructed(before, *after, lines@, orders@),
 {
     hide(Tree::at);
     hide(Tree::entries);
@@ -227,9 +228,9 @@ pub fn reconstruct(after: &Summaries, lines: &[LineitemDelta], orders: &[OrdersD
         decreases lines.len() - position,
     {
         let delta = &lines[position];
-        let change = -(delta.sign as i128);
-        let late = if delta.row.l_receiptdate > delta.row.l_commitdate { change } else { 0 };
-        some_or_return!(add_line(&mut before, delta.row.l_orderkey, delta.row.l_suppkey, change, late));
+        let change = Wide::from_i128(-(delta.sign as i128));
+        let late = if delta.row.l_receiptdate > delta.row.l_commitdate { change.dup() } else { Wide::zero() };
+        add_line(&mut before, delta.row.l_orderkey, delta.row.l_suppkey, &change, &late);
         proof {
             assert forall|order: KeyView, supplier: KeyView| #![trigger order_total(before, order, supplier)] #![trigger order_late(before, order, supplier)] {
                 &&& order_total(before, order, supplier) == order_total(*after, order, supplier) - sum(lines@.take(position as int + 1), delta_total(order, supplier))
@@ -253,7 +254,7 @@ pub fn reconstruct(after: &Summaries, lines: &[LineitemDelta], orders: &[OrdersD
         decreases orders.len() - position,
     {
         let delta = &orders[position];
-        if delta.is_finished != 0 { some_or_return!(add_finished(&mut before, delta.o_orderkey, -(delta.sign as i128))); }
+        if delta.is_finished != 0 { add_finished(&mut before, delta.o_orderkey, &Wide::from_i128(-(delta.sign as i128))); }
         proof {
             assert forall|order: KeyView| #![trigger order_finished(before, order)] order_finished(before, order) == order_finished(*after, order) - sum(orders@.take(position as int + 1), delta_finished(order)) by {
                 lemma_sum_take(orders@, position as int, delta_finished(order));
@@ -262,7 +263,7 @@ pub fn reconstruct(after: &Summaries, lines: &[LineitemDelta], orders: &[OrdersD
         position += 1;
     }
     proof { assert(orders@.take(position as int) =~= orders@); }
-    Some(before)
+    before
 }
 
 }
