@@ -8,7 +8,6 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use verus_prooflib::ordered::Index;
 use crate::model::*;
-use verus_prooflib::wide;
 use crate::output::wide_out;
 
 verus! {
@@ -75,8 +74,8 @@ pub fn execute(
         invariant index <= rows.len(), out@.len() == index, out_view(out@) == wide_out(rows@.take(index as int)),
         decreases rows.len() - index,
     {
-        let row = rows[index];
-        let revenue = match wide::to_i128(row.1) { Some(value) => value, None => return None };
+        let row = &rows[index];
+        let revenue = match row.1.to_i128() { Some(value) => value, None => return None };
         let ghost before = out@;
         out.push((row.0, revenue, row.2, row.3));
         proof {

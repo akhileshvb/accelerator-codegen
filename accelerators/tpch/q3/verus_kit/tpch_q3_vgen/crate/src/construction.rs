@@ -123,23 +123,22 @@ pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &V
     result
 }
 
-pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<GroupCell>>)
+pub fn make_groups(work: &PageWork, customers: &Custs) -> (groups: Vec<GroupCell>)
     requires customers.wf(), orders_sorted(work.orders@), ships_sorted(work.ships@),
         forall|position: int| #![trigger work.orders@[position]] 0 <= position < work.orders@.len() ==> work.orders@[position].count > 0,
         forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> ship_ok(work.ships@[position]),
         forall|target: verus_prooflib::ordered::KeyView| #![trigger customers.at(target)]
             customers.at(target).is_some() ==> customer_shape(customers.at(target).unwrap()),
-    ensures result matches Some(groups) ==> {
-        &&& groups_sorted(groups@)
-        &&& forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> {
+    ensures
+        groups_sorted(groups@),
+        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> {
             let group = groups@[position];
-            &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+            &&& group.weight@ > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
             &&& exists|source: int| #![trigger work.orders@[source]]
                 0 <= source < work.orders@.len() && work.orders@[source].key == group.id.key
-        }
-        &&& forall|target: Seq<u8>, key: int, date: int, priority: int| #![trigger column_weight(groups@, target, key, date, priority)]
-            column_weight(groups@, target, key, date, priority) == column_join(work.orders@, *customers, target, key, date, priority)
-    },
+        },
+        forall|target: Seq<u8>, key: int, date: int, priority: int| #![trigger column_weight(groups@, target, key, date, priority)]
+            column_weight(groups@, target, key, date, priority) == column_join(work.orders@, *customers, target, key, date, priority),
 {
     let mut groups = Vec::new();
     let mut order_index = 0;
@@ -160,7 +159,7 @@ pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<Gr
             forall|target: verus_prooflib::ordered::KeyView| #![trigger customers.at(target)] customers.at(target).is_some() ==> customer_shape(customers.at(target).unwrap()),
             forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> {
                 let group = groups@[position];
-                &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+                &&& group.weight@ > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
                 &&& group.id.key < next_order_key(work.orders@, order_index as int)
                 &&& exists|source: int| #![trigger work.orders@[source]]
                     0 <= source < work.orders@.len() && work.orders@[source].key == group.id.key
@@ -176,11 +175,11 @@ pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<Gr
         let ghost previous_index = order_index as int;
         let ghost previous_groups = groups@;
         let orderkey = work.orders[order_index].key;
-        if !compute_key(&mut groups, &work.orders, &work.ships, customers, orderkey) { return None; }
+        compute_key(&mut groups, &work.orders, &work.ships, customers, orderkey);
         proof {
             assert forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() implies {
                 let group = groups@[position];
-                &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+                &&& group.weight@ > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
                 &&& group.id.key <= orderkey
                 &&& exists|source: int| #![trigger work.orders@[source]]
                     0 <= source < work.orders@.len() && work.orders@[source].key == group.id.key
@@ -205,7 +204,7 @@ pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<Gr
                 groups_sorted(groups@),
                 forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> {
                     let group = groups@[position];
-                    &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+                    &&& group.weight@ > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
                     &&& group.id.key <= orderkey
                     &&& exists|source: int| #![trigger work.orders@[source]]
                         0 <= source < work.orders@.len() && work.orders@[source].key == group.id.key
@@ -244,7 +243,7 @@ pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<Gr
             }
         }
     }
-    Some(groups)
+    groups
 }
 
 pub open spec fn scan_lens_ok(db: Db, customers: Seq<CustomerInput>, orders: Seq<OrderInput>, shipments: Seq<ShipmentInput>) -> bool {
@@ -704,7 +703,7 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
             }
             let work = match pages_work.remove(&key) { Some(work) => work, None => { proof { assert(false); } return None; } };
             let ghost original_work = work;
-            let groups = match make_groups(&work, &customer_index) { Some(groups) => groups, None => return None };
+            let groups = make_groups(&work, &customer_index);
             let packed_orders = crate::packed::PackedOrders::pack(&work.orders, key);
             let packed_ships = crate::packed::PackedShips::pack(&work.ships, key);
             let packed_groups = crate::packed::PackedGroups::pack(&groups, key);

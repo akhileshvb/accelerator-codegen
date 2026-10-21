@@ -11,7 +11,7 @@ use crate::model::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::{params, out_view};
 use crate::values::*;
-use verus_prooflib::wide::{self, Wide};
+use verus_prooflib::wide::Wide;
 use crate::semantics::*;
 use crate::read_proofs::*;
 
@@ -163,15 +163,15 @@ closed spec fn remaining(streams: Seq<Stream>) -> int {
     sum(streams, |stream: Stream| stream.cursor.remaining().len() as int + 1)
 }
 
-pub fn before(left: WRow, right: WRow) -> (result: bool)
-    ensures result == ext_lt(output_row(left), output_row(right)),
+pub fn before(left: &WRow, right: &WRow) -> (result: bool)
+    ensures result == ext_lt(output_row(*left), output_row(*right)),
 {
-    wide::lt(right.1, left.1) || (wide::eq(left.1, right.1) && (left.2 < right.2 || (left.2 == right.2
+    right.1.lt(&left.1) || (left.1.eq(&right.1) && (left.2 < right.2 || (left.2 == right.2
         && (left.0 < right.0 || (left.0 == right.0 && left.3 < right.3)))))
 }
 
 pub open spec fn output_row(row: WRow) -> OutRow {
-    OutRow { l_orderkey: row.0 as int, revenue: row.1.int(), o_orderdate: row.2 as int, o_shippriority: row.3 as int }
+    OutRow { l_orderkey: row.0 as int, revenue: row.1@, o_orderdate: row.2 as int, o_shippriority: row.3 as int }
 }
 
 pub open spec fn wide_out(rows: Seq<WRow>) -> Seq<OutRow> {
@@ -272,7 +272,7 @@ pub fn retain(rows: &mut Vec<WRow>, row: WRow)
         decreases high - low,
     {
         let middle = low + (high - low) / 2;
-        if before(rows[middle], row) {
+        if before(&rows[middle], &row) {
             proof {
                 if output_sorted(original) {
                     assert forall|position: int| #![trigger rows@[position]] 0 <= position <= middle implies ext_lt(output_row(rows@[position]), output_row(row)) by {
@@ -359,8 +359,8 @@ pub fn evaluate(state: &State, segment: &[u8], date: i32, id: GroupId) -> (resul
     let group = &group_value;
     if group.id.key != id.key || group.id.date != id.date || group.id.priority != id.priority
         || !bytes_eq_exec(segment, &group.segment) { return None; }
-    let mut count: Wide = wide::zero();
-    let mut revenue: Wide = wide::zero();
+    let mut count: Wide = Wide::zero();
+    let mut revenue: Wide = Wide::zero();
     let mut ship_index = ships_start_packed(&page.ships, id.key);
     proof {
         let prefix = (*page.ships)@.take(ship_index as int);
@@ -370,19 +370,17 @@ pub fn evaluate(state: &State, segment: &[u8], date: i32, id: GroupId) -> (resul
     while ship_index < page.ships.len() && page.ships.get(ship_index).key == id.key
         invariant ship_index <= (*page.ships)@.len(), ships_sorted((*page.ships)@),
             forall|position: int| #![trigger (*page.ships)@[position]] 0 <= position < (*page.ships)@.len() ==> ship_ok((*page.ships)@[position]),
-            0 <= count.int() <= ship_index as int * 0x7FFF_FFFF_FFFF_FFFFint,
-            -(ship_index as int * (0x8000_0000_0000_0000int * 0x8000_0000_0000_0000_0000_0000_0000_0000int)) <= revenue.int(),
-            revenue.int() <= ship_index as int * (0x8000_0000_0000_0000int * 0x8000_0000_0000_0000_0000_0000_0000_0000int),
-            count.int() == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 0),
-            revenue.int() == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 1),
+            count@ >= 0,
+            count@ == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 0),
+            revenue@ == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 1),
             forall|position: int| #![trigger (*page.ships)@[position]] ship_index <= position < (*page.ships)@.len() ==> (*page.ships)@[position].key >= id.key,
         decreases (*page.ships)@.len() - ship_index,
     {
         let ship = page.ships.get(ship_index);
         proof { assert(ship_ok((*page.ships)@[ship_index as int])); }
         if ship.date > date {
-            count = wide::add(count, wide::from_i128(ship.count as i128));
-            revenue = wide::add(revenue, ship.revenue);
+            count = count.add(&Wide::from_i128(ship.count as i128));
+            revenue = revenue.add(&ship.revenue);
         }
         proof {
             lemma_sum_take((*page.ships)@, ship_index as int,
@@ -408,24 +406,23 @@ pub fn evaluate(state: &State, segment: &[u8], date: i32, id: GroupId) -> (resul
             lemma_shipment_suffix(state.customers, state.pages, state.ranks, state.db(), &*page, id.key as int / 256, id.key as int, date as int, 1);
             lemma_group_weight(state.customers, state.pages, state.ranks, state.db(), &*page, id.key as int / 256, position as int);
             lemma_sql_group(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int);
-            assert(group.weight > 0);
+            assert(group.weight@ > 0);
     }
-    if count.hi != 0 || count.lo != 0 {
-        if group.weight >= 0x10_0000_0000_0000_0000_0000_0000 || revenue.hi < -0x20_0000 || revenue.hi > 0x20_0000 { return None; }
-        let joined_revenue = wide::mul(revenue, group.weight as u128);
+    if !count.is_zero() {
+        let joined_revenue = group.weight.mul(&revenue);
         proof {
-            assert(count.int() > 0);
-            assert(group.weight as int * count.int() > 0) by (nonlinear_arith)
-                requires group.weight > 0, count.int() > 0;
+            assert(count@ > 0);
+            assert(group.weight@ * count@ > 0) by (nonlinear_arith)
+                requires group.weight@ > 0, count@ > 0;
             assert(row_ok(state.db(), params(segment@, date as int), output_row((id.key, joined_revenue, id.date, id.priority))));
         }
         Some(Some((id.key, joined_revenue, id.date, id.priority)))
     } else {
         proof {
-            assert(count.int() == 0);
+            assert(count@ == 0);
             assert(group_count(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int) == 0) by (nonlinear_arith)
-                requires count.int() == 0,
-                    group_count(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int) == group.weight as int * count.int();
+                requires count@ == 0,
+                    group_count(state.db(), params(segment@, date as int), id.key as int, id.date as int, id.priority as int) == group.weight@ * count@;
         }
         Some(None)
     }
@@ -575,7 +572,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<WRo
             index += 1;
         }
         let bound = streams[best].head.upper as i128;
-        if result.len() == 10 && bound < i64::MAX as i128 && wide::lt(wide::from_i128(bound), result[9].1) {
+        if result.len() == 10 && bound < i64::MAX as i128 && Wide::from_i128(bound).lt(&result[9].1) {
             proof {
                 assert forall|row: OutRow| #![trigger row_ok(state.db(), params(segment@, date as int), row)]
                     row_ok(state.db(), params(segment@, date as int), row) implies top_covers(result@, row) by {
@@ -593,7 +590,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<WRo
                         lemma_upper_of(chosen.head, rank);
                         assert(streams@[best as int].head.upper >= chosen.head.upper);
                         assert(rank.0 == -1 - group.bound as int);
-                        assert(row.revenue < result@[9].1.int());
+                        assert(row.revenue < result@[9].1@);
                     }
                 }
                 lemma_top_result(state.db(), params(segment@, date as int), result@);

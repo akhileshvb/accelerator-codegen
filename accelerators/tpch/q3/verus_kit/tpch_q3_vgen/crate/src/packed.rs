@@ -146,7 +146,7 @@ pub open spec fn stored_revenue(word: u32, big: Seq<(u32, i64)>, index: int) -> 
 }
 
 pub open spec fn narrow_wide(revenue: i64) -> Wide {
-    Wide { hi: 0, lo: revenue as u128 }
+    Wide::Small(revenue as i128)
 }
 
 pub open spec fn ship_cell(number: int, low: u8, count: u8, date: u16, revenue: i64) -> ShipCell {
@@ -217,7 +217,7 @@ impl NarrowShips {
         let word = self.words[index];
         let revenue: i64 = if word == u32::MAX { lookup_big(&self.big, index) } else { word as i64 };
         ShipCell { key: self.number * 256 + self.lows[index] as i64, date: self.dates[index] as i32,
-            count: self.counts[index] as i64, revenue: Wide { hi: 0, lo: revenue as u128 }, positive: Wide { hi: 0, lo: revenue as u128 } }
+            count: self.counts[index] as i64, revenue: Wide::Small(revenue as i128), positive: Wide::Small(revenue as i128) }
     }
 
     pub fn to_vec(&self) -> (result: Vec<ShipCell>)
@@ -258,13 +258,17 @@ impl NarrowShips {
                     ship_cell(number as int, lows@[position], counts@[position], dates@[position], stored_revenue(words@[position], big@, position)) == rows@[position],
             decreases rows.len() - index,
         {
-            let cell = rows[index];
+            let cell = &rows[index];
             let low = cell.key as i128 - base;
+            let (revenue, positive) = match (&cell.revenue, &cell.positive) {
+                (Wide::Small(revenue), Wide::Small(positive)) => (*revenue, *positive),
+                _ => return None,
+            };
             if low < 0 || low > 255 || cell.count < 0 || cell.count > 255 || cell.date < 0 || cell.date > 65535
-                || cell.revenue.hi != 0 || cell.revenue.lo > i64::MAX as u128 || cell.positive.hi != 0 || cell.positive.lo != cell.revenue.lo { return None; }
+                || revenue < 0 || revenue > i64::MAX as i128 || positive != revenue { return None; }
             let ghost before_big = big@;
-            if cell.revenue.lo >= u32::MAX as u128 {
-                big.push((index as u32, cell.revenue.lo as i64));
+            if revenue >= u32::MAX as i128 {
+                big.push((index as u32, revenue as i64));
                 words.push(u32::MAX);
                 proof {
                     // earlier cells keep their value: their indices differ from the new entry's
@@ -275,14 +279,14 @@ impl NarrowShips {
                     lemma_big_new(before_big, big@.last(), index as int);
                 }
             } else {
-                words.push(cell.revenue.lo as u32);
+                words.push(revenue as u32);
             }
             lows.push(low as u8);
             counts.push(cell.count as u8);
             dates.push(cell.date as u16);
             proof {
                 assert(ship_cell(number as int, lows@[index as int], counts@[index as int], dates@[index as int],
-                    stored_revenue(words@[index as int], big@, index as int)) == cell);
+                    stored_revenue(words@[index as int], big@, index as int)) == *cell);
             }
             index += 1;
         }
@@ -346,7 +350,7 @@ pub open spec fn none_last() -> u16 { 65535 }
 
 pub open spec fn group_cell(number: int, segment: Arc<Vec<u8>>, low: u8, date: u16, priority: i8, weight: u32, bound: i64, last: u16) -> GroupCell {
     GroupCell { segment, id: GroupId { key: page_key(number, low), date: date as i32, priority: priority as i64 },
-        weight: weight as i128, bound,
+        weight: Wide::Small(weight as i128), bound,
         last_ship: if last == none_last() { None } else { Some(last as i32) } }
 }
 
@@ -395,16 +399,8 @@ impl NarrowGroups {
         GroupCell { segment: self.names[self.segments[index] as usize].clone(),
             id: GroupId { key: self.number * 256 + self.lows[index] as i64, date: self.dates[index] as i32,
                 priority: self.priorities[index] as i64 },
-            weight: self.weights[index] as i128, bound: self.bounds[index],
+            weight: Wide::Small(self.weights[index] as i128), bound: self.bounds[index],
             last_ship: if last == 65535 { None } else { Some(last as i32) } }
-    }
-
-    pub fn weight_at(&self, index: usize) -> (result: i128)
-        requires index < self@.len(),
-        ensures result == self@[index as int].weight,
-    {
-        proof { use_type_invariant(self); }
-        self.weights[index] as i128
     }
 
     /// The group at `index` sorts before (segment, id).
@@ -482,7 +478,11 @@ impl NarrowGroups {
             let low = cell.id.key as i128 - base;
             if low < 0 || low > 255 || cell.id.key < 0 || cell.id.key >= 1099511627776 || cell.id.date < 0 || cell.id.date > 65534
                 || cell.id.priority < i8::MIN as i64 || cell.id.priority > i8::MAX as i64
-                || cell.weight < 0 || cell.weight > u32::MAX as i128 || cell.bound < 0 { return None; }
+                || cell.bound < 0 { return None; }
+            let weight: u32 = match &cell.weight {
+                Wide::Small(weight) if *weight >= 0 && *weight <= u32::MAX as i128 => *weight as u32,
+                _ => return None,
+            };
             let last: u16 = match cell.last_ship {
                 Some(value) => { if value < 0 || value > 65534 { return None; } value as u16 },
                 None => 65535,
@@ -502,7 +502,7 @@ impl NarrowGroups {
             lows.push(low as u8);
             dates.push(cell.id.date as u16);
             priorities.push(cell.id.priority as i8);
-            weights.push(cell.weight as u32);
+            weights.push(weight as u32);
             bounds.push(cell.bound);
             lasts.push(last);
             proof {
@@ -511,6 +511,7 @@ impl NarrowGroups {
                 assert((*built.segment)@ == (*cell.segment)@);
                 assert(built.id == cell.id);
                 assert(built.last_ship == cell.last_ship);
+                assert(built.weight == cell.weight);
                 assert(group_equiv(built, rows@[index as int]));
             }
             index += 1;
@@ -576,7 +577,7 @@ impl PackedShips {
     pub fn get(&self, index: usize) -> (result: ShipCell)
         requires index < self@.len(),
         ensures result == self@[index as int],
-    { match self { PackedShips::Narrow(narrow) => narrow.get(index), PackedShips::Wide(rows) => rows[index] } }
+    { match self { PackedShips::Narrow(narrow) => narrow.get(index), PackedShips::Wide(rows) => rows[index].dup() } }
 
     pub fn to_vec(&self) -> (result: Vec<ShipCell>)
         ensures result@ == self@,
@@ -614,15 +615,10 @@ impl PackedGroups {
             PackedGroups::Narrow(narrow) => narrow.get(index),
             PackedGroups::Wide(rows) => {
                 let group = &rows[index];
-                GroupCell { segment: group.segment.clone(), id: group.id, weight: group.weight, bound: group.bound, last_ship: group.last_ship }
+                GroupCell { segment: group.segment.clone(), id: group.id, weight: group.weight.dup(), bound: group.bound, last_ship: group.last_ship }
             },
         }
     }
-
-    pub fn weight_at(&self, index: usize) -> (result: i128)
-        requires index < self@.len(),
-        ensures result == self@[index as int].weight,
-    { match self { PackedGroups::Narrow(narrow) => narrow.weight_at(index), PackedGroups::Wide(rows) => rows[index].weight } }
 
     /// The group at `index` sorts before (segment, id).
     pub fn before_id(&self, index: usize, segment: &[u8], id: GroupId) -> (result: bool)

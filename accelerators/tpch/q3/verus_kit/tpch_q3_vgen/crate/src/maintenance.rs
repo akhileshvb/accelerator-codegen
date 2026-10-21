@@ -553,7 +553,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                         0 <= kind <= 2 implies ship_count(work.ships@, key as int, date as int, kind) ==
                             if fact_set@.dom().contains(key) { 0int } else { ship_count((*page.ships)@.take(processed + 1), key as int, date as int, kind) } by {
                         let weight = |entry: ShipCell| if entry.key == key as int && entry.date == date as int {
-                            if kind == 0 { entry.count as int } else if kind == 1 { entry.revenue.int() } else { entry.positive.int() }
+                            if kind == 0 { entry.count as int } else if kind == 1 { entry.revenue@ } else { entry.positive@ }
                         } else { 0int };
                         assert(ship_count(before_ships, key as int, date as int, kind) ==
                             if fact_set@.dom().contains(key) { 0int } else { ship_count((*page.ships)@.take(processed), key as int, date as int, kind) });
@@ -1054,7 +1054,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                     customer_delta_seq_view(customer_delta@), lineitem_full, orders_full);
             }
         }
-        let groups = match crate::construction::make_groups(&work, &customers) { Some(groups) => groups, None => return Err(2) };
+        let groups = crate::construction::make_groups(&work, &customers);
         let ghost completed_work = work;
         let packed_orders = crate::packed::PackedOrders::pack(&work.orders, key);
         let packed_ships = crate::packed::PackedShips::pack(&work.ships, key);

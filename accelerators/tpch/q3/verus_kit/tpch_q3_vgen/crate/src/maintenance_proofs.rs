@@ -127,7 +127,7 @@ pub proof fn lemma_partial_step(pages: Index<Page>, next: Index<Page>, before: D
             assert(ship_count((*page.ships)@, orderkey, date, kind) == ship_sum(after, orderkey, date, kind));
             if next.at((key as int, Seq::empty())).is_none() {
                 assert((*page.ships)@.len() == 0);
-                lemma_sum_zero((*page.ships)@, |row: ShipCell| if row.key == orderkey && row.date == date { if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() } } else { 0int });
+                lemma_sum_zero((*page.ships)@, |row: ShipCell| if row.key == orderkey && row.date == date { if kind == 0 { row.count as int } else if kind == 1 { row.revenue@ } else { row.positive@ } } else { 0int });
             }
         } else {
             assert(next.at((orderkey / 256, Seq::<u8>::empty())) == pages.at((orderkey / 256, Seq::<u8>::empty())));
@@ -297,7 +297,7 @@ pub proof fn lemma_state_work(customers: Custs, pages: Index<Page>, ranks: Index
     assert forall|key: int, date: int, kind: int| #![trigger ship_count(work.ships@, key, date, kind)]
         0 <= kind <= 2 implies ship_count(work.ships@, key, date, kind) == if key / 256 == number { ship_sum(db, key, date, kind) } else { 0int } by {
         if key / 256 == number { assert(ship_at(pages, key, date, kind) == ship_sum(db, key, date, kind)); }
-        else { lemma_sum_zero(work.ships@, |row: ShipCell| if row.key == key && row.date == date { if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() } } else { 0int }); }
+        else { lemma_sum_zero(work.ships@, |row: ShipCell| if row.key == key && row.date == date { if kind == 0 { row.count as int } else if kind == 1 { row.revenue@ } else { row.positive@ } } else { 0int }); }
     }
 }
 
@@ -329,7 +329,7 @@ pub proof fn lemma_state_page(customers: Custs, pages: Index<Page>, ranks: Index
     assert forall|key: int, date: int, kind: int| #![trigger ship_count((*page.ships)@, key, date, kind)]
         0 <= kind <= 2 implies ship_count((*page.ships)@, key, date, kind) == if key / 256 == number { ship_sum(db, key, date, kind) } else { 0int } by {
         if key / 256 == number { assert(ship_at(pages, key, date, kind) == ship_sum(db, key, date, kind)); }
-        else { lemma_sum_zero((*page.ships)@, |row: ShipCell| if row.key == key && row.date == date { if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() } } else { 0int }); }
+        else { lemma_sum_zero((*page.ships)@, |row: ShipCell| if row.key == key && row.date == date { if kind == 0 { row.count as int } else if kind == 1 { row.revenue@ } else { row.positive@ } } else { 0int }); }
     }
     assert forall|segment: Seq<u8>, key: int, date: int, priority: int| #![trigger column_weight((*page.groups)@, segment, key, date, priority)]
         column_weight((*page.groups)@, segment, key, date, priority) == if key / 256 == number { weight_sum(db, segment, key, date, priority) } else { 0int } by {
@@ -356,7 +356,7 @@ pub proof fn lemma_page_frame(page: Page, number: int, before: Db, after: Db, cu
     }
     assert forall|position: int| #![trigger (*page.groups)@[position]] 0 <= position < (*page.groups)@.len() implies {
         let group = (*page.groups)@[position];
-        &&& group.bound as int == capped(group.weight * positive_sum(after, group.id.key as int))
+        &&& group.bound as int == capped(group.weight@ * positive_sum(after, group.id.key as int))
         &&& database_last(after, group.id.key as int, group.last_ship)
     } by {
         let group = (*page.groups)@[position];
@@ -395,7 +395,7 @@ pub proof fn lemma_work_domains(work: PageWork, number: int, db: Db)
         0 <= kind <= 2 implies ship_count(work.ships@, key, date, kind) == if key / 256 == number { ship_sum(db, key, date, kind) } else { 0int } by {
         if key / 256 != number || key < i64::MIN || key > i64::MAX || date < i32::MIN || date > i32::MAX {
             lemma_sum_zero(work.ships@, |row: ShipCell| if row.key == key && row.date == date {
-                if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() }
+                if kind == 0 { row.count as int } else if kind == 1 { row.revenue@ } else { row.positive@ }
             } else { 0int });
             if key / 256 == number {
                 lemma_sum_zero(db.lineitem, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate == date {

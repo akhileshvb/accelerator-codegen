@@ -29,7 +29,6 @@ pub struct OrderCell {
     pub count: i64,
 }
 
-#[derive(Clone, Copy)]
 pub struct ShipCell {
     pub key: i64,
     pub date: i32,
@@ -41,7 +40,7 @@ pub struct ShipCell {
 pub struct GroupCell {
     pub segment: Arc<Vec<u8>>,
     pub id: GroupId,
-    pub weight: i128,
+    pub weight: Wide,
     pub bound: i64,
     pub last_ship: Option<i32>,
 }
@@ -148,16 +147,21 @@ pub open spec fn order_count(rows: Seq<OrderCell>, key: int, customer: int, date
 
 pub open spec fn ship_count(rows: Seq<ShipCell>, key: int, date: int, kind: int) -> int {
     sum(rows, |row: ShipCell| if row.key == key && row.date == date {
-        if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() }
+        if kind == 0 { row.count as int } else if kind == 1 { row.revenue@ } else { row.positive@ }
     } else { 0 })
 }
 
-/// A shipment cell: counted rows, and revenues within what that many rows (each below 2^127) can add up to.
+/// A shipment cell: counted rows and nonnegative positive revenue.
 pub open spec fn ship_ok(cell: ShipCell) -> bool {
-    &&& cell.count > 0
-    &&& 0 <= cell.positive.int() <= cell.count as int * 0x8000_0000_0000_0000_0000_0000_0000_0000int
-    &&& -(cell.count as int * 0x8000_0000_0000_0000_0000_0000_0000_0000int) <= cell.revenue.int()
-    &&& cell.revenue.int() <= cell.count as int * 0x8000_0000_0000_0000_0000_0000_0000_0000int
+    cell.count > 0 && cell.positive@ >= 0
+}
+
+impl ShipCell {
+    pub fn dup(&self) -> (result: ShipCell)
+        ensures result == *self,
+    {
+        ShipCell { key: self.key, date: self.date, count: self.count, revenue: self.revenue.dup(), positive: self.positive.dup() }
+    }
 }
 
 /// A group's weight times its shipments' positive revenue, capped to the largest rank bound.
@@ -166,7 +170,7 @@ pub open spec fn capped(value: int) -> int {
 }
 
 pub open spec fn ship_positive_weight(key: int) -> spec_fn(ShipCell) -> int {
-    |row: ShipCell| if row.key == key { row.positive.int() } else { 0int }
+    |row: ShipCell| if row.key == key { row.positive@ } else { 0int }
 }
 
 pub open spec fn ship_positive(rows: Seq<ShipCell>, key: int) -> int {
@@ -187,7 +191,7 @@ pub open spec fn ship_last_ok(rows: Seq<ShipCell>, key: int, last: Option<i32>) 
 }
 
 pub open spec fn group_ship_ok(group: GroupCell, ships: Seq<ShipCell>) -> bool {
-    group.bound as int == capped(group.weight * ship_positive(ships, group.id.key as int))
+    group.bound as int == capped(group.weight@ * ship_positive(ships, group.id.key as int))
         && ship_last_ok(ships, group.id.key as int, group.last_ship)
 }
 
@@ -201,7 +205,7 @@ pub open spec fn column_weight(rows: Seq<GroupCell>, segment: Seq<u8>, key: int,
 
 pub open spec fn column_measure(segment: Seq<u8>, key: int, date: int, priority: int) -> spec_fn(GroupCell) -> int {
     |row: GroupCell| if (*row.segment)@ == segment && row.id.key == key
-        && row.id.date == date && row.id.priority == priority { row.weight as int } else { 0 }
+        && row.id.date == date && row.id.priority == priority { row.weight@ } else { 0 }
 }
 
 pub open spec fn customer_sum(db: Db, customer: int, segment: Seq<u8>) -> int {
@@ -438,8 +442,8 @@ pub open spec fn page_shape(page: Page, number: int, db: Db) -> bool {
     &&& forall|index: int| #![trigger (*page.groups)@[index]] 0 <= index < (*page.groups)@.len() ==> {
         let group = (*page.groups)@[index];
         &&& group.id.key as int / 256 == number
-        &&& group.weight > 0
-        &&& group.bound as int == capped(group.weight * positive_sum(db, group.id.key as int))
+        &&& group.weight@ > 0
+        &&& group.bound as int == capped(group.weight@ * positive_sum(db, group.id.key as int))
         &&& match group.last_ship {
             None => forall|position: int| #![trigger db.lineitem[position]] 0 <= position < db.lineitem.len() ==> db.lineitem[position].l_orderkey != group.id.key,
             Some(last) => {

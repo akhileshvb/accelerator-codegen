@@ -130,7 +130,7 @@ pub proof fn lemma_candidate_info(customers: Custs, pages: Index<Page>, ranks: I
     ensures {
         let group = selected_group(pages, segment, row);
         &&& candidate_present(pages, segment, row, group)
-        &&& group.weight > 0 && group.bound >= 0 && (row.revenue <= group.bound as int || group.bound == i64::MAX)
+        &&& group.weight@ > 0 && group.bound >= 0 && (row.revenue <= group.bound as int || group.bound == i64::MAX)
         &&& group.last_ship.is_some() && group.id.date < date < group.last_ship.unwrap()
         &&& exists|level: int| #![trigger listed(ranks, ancestor_node(date as int, level), segment, group)]
             0 <= level <= 26 && listed(ranks, ancestor_node(date as int, level), segment, group)
@@ -174,9 +174,9 @@ pub proof fn lemma_candidate_info(customers: Custs, pages: Index<Page>, ranks: I
         lemma_sum_zero(db.lineitem, |entry: LineitemRow| if entry.l_orderkey == key && entry.l_shipdate > date { line_measure(entry, 0) } else { 0int });
     }
     lemma_suffix_bound(db, key, date as int);
-    assert(row.revenue <= group.weight as int * positive_sum(db, key)) by (nonlinear_arith)
+    assert(row.revenue <= group.weight@ * positive_sum(db, key)) by (nonlinear_arith)
         requires row.revenue == weight * line_suffix(db, key, date as int, 1),
-            group.weight as int == weight, weight > 0,
+            group.weight@ == weight, weight > 0,
             line_suffix(db, key, date as int, 1) <= positive_sum(db, key);
     lemma_group_ancestor(group, date);
     let level = choose|level: int| #![trigger covers(group, ancestor_node(date as int, level))]
