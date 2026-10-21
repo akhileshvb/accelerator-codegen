@@ -48,14 +48,13 @@ pub proof fn lemma_empty_range(db: Db, parameters: Params)
     assert(rows(db, parameters).len() == 0);
     assert(rows(db, parameters) =~= Seq::<OutRow>::empty());
 }
-pub proof fn lemma_scan_scratch(facts: Facts, scratch: Scratch, inputs: Seq<LineInput>)
-    requires facts_shape(facts), scratch.matches_lines(line_input_seq_view(inputs)),
-        forall|supplier: int, date: int| #[trigger] stored_day_count(facts, supplier, date) == scratch.count_int(supplier, date),
-        forall|supplier: int, date: int| #[trigger] stored_day_revenue(facts, supplier, date) == scratch.revenue_int(supplier, date),
-    ensures facts_match(facts, line_input_seq_view(inputs)),
+pub proof fn lemma_scratch_lines(scratch: Scratch, inputs: Seq<LineInput>)
+    requires scratch.matches_lines(line_input_seq_view(inputs)),
+    ensures forall|supplier: int, date: int| #[trigger] scratch.count_int(supplier, date) == day_count(line_input_seq_view(inputs), supplier, date),
+        forall|supplier: int, date: int| #[trigger] scratch.revenue_int(supplier, date) == day_revenue(line_input_seq_view(inputs), supplier, date),
 {
     let rows = line_input_seq_view(inputs);
-    assert forall|supplier: int, date: int| #[trigger] stored_day_count(facts, supplier, date) == day_count(rows, supplier, date) by {
+    assert forall|supplier: int, date: int| #[trigger] scratch.count_int(supplier, date) == day_count(rows, supplier, date) by {
         if i64::MIN <= supplier <= i64::MAX && i32::MIN <= date <= i32::MAX {
             assert(scratch.count(supplier as i64, date as i32) == day_count(rows, supplier, date));
         } else {
@@ -66,7 +65,7 @@ pub proof fn lemma_scan_scratch(facts: Facts, scratch: Scratch, inputs: Seq<Line
             lemma_sum_zero(rows, |row: LineitemRow| if row.l_shipdate == date && row.l_suppkey == supplier { 1int } else { 0int });
         }
     }
-    assert forall|supplier: int, date: int| #[trigger] stored_day_revenue(facts, supplier, date) == day_revenue(rows, supplier, date) by {
+    assert forall|supplier: int, date: int| #[trigger] scratch.revenue_int(supplier, date) == day_revenue(rows, supplier, date) by {
         if i64::MIN <= supplier <= i64::MAX && i32::MIN <= date <= i32::MAX {
             assert(scratch.revenue(supplier as i64, date as i32) == day_revenue(rows, supplier, date));
         } else {
@@ -78,14 +77,23 @@ pub proof fn lemma_scan_scratch(facts: Facts, scratch: Scratch, inputs: Seq<Line
         }
     }
 }
-pub proof fn lemma_delta_scratch(before: Facts, after: Facts, scratch: Scratch, inputs: Seq<LineDelta>)
-    requires facts_shape(after), scratch.matches_delta(line_delta_seq_view(inputs)),
-        forall|supplier: int, date: int| #[trigger] stored_day_count(after, supplier, date) == stored_day_count(before, supplier, date) + scratch.count_int(supplier, date),
-        forall|supplier: int, date: int| #[trigger] stored_day_revenue(after, supplier, date) == stored_day_revenue(before, supplier, date) + scratch.revenue_int(supplier, date),
-    ensures facts_after(before, after, line_delta_seq_view(inputs)),
+pub proof fn lemma_scan_scratch(facts: Facts, scratch: Scratch, inputs: Seq<LineInput>)
+    requires facts_shape(facts), scratch.matches_lines(line_input_seq_view(inputs)),
+        forall|supplier: int, date: int| #[trigger] stored_day_count(facts, supplier, date) == scratch.count_int(supplier, date),
+        forall|supplier: int, date: int| #[trigger] stored_day_revenue(facts, supplier, date) == scratch.revenue_int(supplier, date),
+    ensures facts_match(facts, line_input_seq_view(inputs)),
+{
+    lemma_scratch_lines(scratch, inputs);
+}
+pub proof fn lemma_scratch_deltas(scratch: Scratch, inputs: Seq<LineDelta>)
+    requires scratch.matches_delta(line_delta_seq_view(inputs)),
+    ensures forall|supplier: int, date: int| #[trigger] scratch.count_int(supplier, date) ==
+            sum(line_delta_seq_view(inputs), |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 } else { 0int }),
+        forall|supplier: int, date: int| #[trigger] scratch.revenue_int(supplier, date) ==
+            sum(line_delta_seq_view(inputs), |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 * weight(change.0) } else { 0int }),
 {
     let rows = line_delta_seq_view(inputs);
-    assert forall|supplier: int, date: int| #[trigger] stored_day_count(after, supplier, date) == stored_day_count(before, supplier, date) +
+    assert forall|supplier: int, date: int| #[trigger] scratch.count_int(supplier, date) ==
         sum(rows, |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 } else { 0int }) by {
         if i64::MIN <= supplier <= i64::MAX && i32::MIN <= date <= i32::MAX {
             assert(scratch.count(supplier as i64, date as i32) == sum(rows, |change: (LineitemRow, int)| if change.0.l_suppkey == supplier && change.0.l_shipdate == date { change.1 } else { 0int }));
@@ -99,7 +107,7 @@ pub proof fn lemma_delta_scratch(before: Facts, after: Facts, scratch: Scratch, 
             lemma_sum_zero(rows, |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 } else { 0int });
         }
     }
-    assert forall|supplier: int, date: int| #[trigger] stored_day_revenue(after, supplier, date) == stored_day_revenue(before, supplier, date) +
+    assert forall|supplier: int, date: int| #[trigger] scratch.revenue_int(supplier, date) ==
         sum(rows, |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 * weight(change.0) } else { 0int }) by {
         if i64::MIN <= supplier <= i64::MAX && i32::MIN <= date <= i32::MAX {
             assert(scratch.revenue(supplier as i64, date as i32) == sum(rows, |change: (LineitemRow, int)| if change.0.l_suppkey == supplier && change.0.l_shipdate == date { change.1 * weight(change.0) } else { 0int }));
@@ -113,6 +121,14 @@ pub proof fn lemma_delta_scratch(before: Facts, after: Facts, scratch: Scratch, 
             lemma_sum_zero(rows, |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 * weight(change.0) } else { 0int });
         }
     }
+}
+pub proof fn lemma_delta_scratch(before: Facts, after: Facts, scratch: Scratch, inputs: Seq<LineDelta>)
+    requires facts_shape(after), scratch.matches_delta(line_delta_seq_view(inputs)),
+        forall|supplier: int, date: int| #[trigger] stored_day_count(after, supplier, date) == stored_day_count(before, supplier, date) + scratch.count_int(supplier, date),
+        forall|supplier: int, date: int| #[trigger] stored_day_revenue(after, supplier, date) == stored_day_revenue(before, supplier, date) + scratch.revenue_int(supplier, date),
+    ensures facts_after(before, after, line_delta_seq_view(inputs)),
+{
+    lemma_scratch_deltas(scratch, inputs);
 }
 pub proof fn lemma_build_ok(facts: Facts, dimensions: Dimensions, lines: Seq<LineInput>, suppliers: Seq<SupplierInput>, db: Db)
     requires scan_lines_ok(db, lines), scan_suppliers_ok(db, suppliers),
@@ -163,6 +179,37 @@ pub proof fn lemma_apply_ok(before: Facts, after: Facts, before_dimensions: Dime
             |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 * weight(change.0) } else { 0int });
     }
     assert forall|supplier: int, key: verus_prooflib::ordered::KeyView| #[trigger] stored_supplier_count(after_dimensions, supplier, key) == supplier_count(db2.supplier, supplier, key) by {
+        let count = |row: SupplierRow| if row.s_suppkey == supplier && variant_key(row.s_name, row.s_address, row.s_phone) == key { 1int } else { 0int };
+        assert(sum(db2.supplier, count) == sum(db.supplier, count) + sum(suppliers, |change: (SupplierRow, int)| change.1 * count(change.0)));
+        lemma_sum_ext_all(suppliers, |change: (SupplierRow, int)| change.1 * count(change.0),
+            |change: (SupplierRow, int)| if change.0.s_suppkey == supplier && variant_key(change.0.s_name, change.0.s_address, change.0.s_phone) == key { change.1 } else { 0int });
+    }
+}
+pub proof fn lemma_delta_target(db: Db, db2: Db, lines: Seq<(LineitemRow, int)>, suppliers: Seq<(SupplierRow, int)>)
+    requires capture_ok(db, db2, lines, suppliers),
+    ensures forall|supplier: int, date: int| #[trigger] day_count(db2.lineitem, supplier, date) == day_count(db.lineitem, supplier, date) +
+            sum(lines, |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 } else { 0int }),
+        forall|supplier: int, date: int| #[trigger] day_revenue(db2.lineitem, supplier, date) == day_revenue(db.lineitem, supplier, date) +
+            sum(lines, |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 * weight(change.0) } else { 0int }),
+        forall|supplier: int, key: verus_prooflib::ordered::KeyView| #[trigger] supplier_count(db2.supplier, supplier, key) == supplier_count(db.supplier, supplier, key) +
+            sum(suppliers, |change: (SupplierRow, int)| if change.0.s_suppkey == supplier && variant_key(change.0.s_name, change.0.s_address, change.0.s_phone) == key { change.1 } else { 0int }),
+{
+    assert forall|supplier: int, date: int| #[trigger] day_count(db2.lineitem, supplier, date) == day_count(db.lineitem, supplier, date) +
+        sum(lines, |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 } else { 0int }) by {
+        let count = |row: LineitemRow| if row.l_shipdate == date && row.l_suppkey == supplier { 1int } else { 0int };
+        assert(sum(db2.lineitem, count) == sum(db.lineitem, count) + sum(lines, |change: (LineitemRow, int)| change.1 * count(change.0)));
+        lemma_sum_ext_all(lines, |change: (LineitemRow, int)| change.1 * count(change.0),
+            |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 } else { 0int });
+    }
+    assert forall|supplier: int, date: int| #[trigger] day_revenue(db2.lineitem, supplier, date) == day_revenue(db.lineitem, supplier, date) +
+        sum(lines, |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 * weight(change.0) } else { 0int }) by {
+        let revenue = |row: LineitemRow| if row.l_shipdate == date && row.l_suppkey == supplier { weight(row) } else { 0int };
+        assert(sum(db2.lineitem, revenue) == sum(db.lineitem, revenue) + sum(lines, |change: (LineitemRow, int)| change.1 * revenue(change.0)));
+        lemma_sum_ext_all(lines, |change: (LineitemRow, int)| change.1 * revenue(change.0),
+            |change: (LineitemRow, int)| if change.0.l_shipdate == date && change.0.l_suppkey == supplier { change.1 * weight(change.0) } else { 0int });
+    }
+    assert forall|supplier: int, key: verus_prooflib::ordered::KeyView| #[trigger] supplier_count(db2.supplier, supplier, key) == supplier_count(db.supplier, supplier, key) +
+        sum(suppliers, |change: (SupplierRow, int)| if change.0.s_suppkey == supplier && variant_key(change.0.s_name, change.0.s_address, change.0.s_phone) == key { change.1 } else { 0int }) by {
         let count = |row: SupplierRow| if row.s_suppkey == supplier && variant_key(row.s_name, row.s_address, row.s_phone) == key { 1int } else { 0int };
         assert(sum(db2.supplier, count) == sum(db.supplier, count) + sum(suppliers, |change: (SupplierRow, int)| change.1 * count(change.0)));
         lemma_sum_ext_all(suppliers, |change: (SupplierRow, int)| change.1 * count(change.0),
