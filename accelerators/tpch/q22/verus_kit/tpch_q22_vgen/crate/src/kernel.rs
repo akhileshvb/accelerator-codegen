@@ -1165,6 +1165,10 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
                 }
                 let input = customer_input_view(*row);
                 let difference = ind(eligible(orders, input)) - ind(eligible(state.orders, input));
+                if row.c_acctbal > 0 && crossings@.dom().contains(row.c_custkey) {
+                    assert(crossings@[row.c_custkey] == difference);
+                }
+                if row.c_acctbal > 0 && !crossings@.dom().contains(row.c_custkey) { assert(difference == 0); }
                 assert(scratch_value(hchanges@, histogram_key(code, depth, interval)) ==
                     plus(scratch_value(previous@, histogram_key(code, depth, interval)),
                         if interval_weight(input, code, depth, interval) { (difference, difference * row.c_acctbal) } else { (0int, 0int) }));
@@ -1190,7 +1194,10 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
                     fits(state.positive.value(key).0 + pchanges@[key].count@) && fits(state.positive.value(key).1 + pchanges@[key].total@) by {
                     let code = key as u32;
                     assert(code as u128 == key);
-                    assert(scratch_value(pchanges@, key) == pchanges@[key].model());
+                    assert(code <= 65792);
+                    assert(scratch_value(pchanges@, code as u128) == pchanges@[key].model());
+                    assert(bounded(positive_moment(db2, code)));
+                    assert(plus(state.positive.value(code as u128), scratch_value(pchanges@, code as u128)) == positive_moment(db2, code));
                 }
             }
             assert(finish_fits(state.histogram, hchanges@)) by {
@@ -1198,7 +1205,11 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, orders_delta: &
                     fits(state.histogram.value(key).0 + hchanges@[key].count@) && fits(state.histogram.value(key).1 + hchanges@[key].total@) by {
                     let (code, depth, interval) = choose|code: u32, depth: u32, interval: u64|
                         code <= 65792 && depth <= 50 && interval < (1u64 << depth) && key == #[trigger] histogram_key(code, depth, interval);
-                    assert(scratch_value(hchanges@, key) == hchanges@[key].model());
+                    assert(hist_key(key));
+                    assert(scratch_value(hchanges@, histogram_key(code, depth, interval)) == hchanges@[key].model());
+                    assert(bounded(histogram_moment(db2, code, depth, interval)));
+                    assert(plus(state.histogram.value(histogram_key(code, depth, interval)),
+                        scratch_value(hchanges@, histogram_key(code, depth, interval))) == histogram_moment(db2, code, depth, interval));
                 }
             }
         }
