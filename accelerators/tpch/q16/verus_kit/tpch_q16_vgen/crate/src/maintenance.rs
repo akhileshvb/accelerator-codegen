@@ -7,6 +7,8 @@ use crate::gen_spec::*;
 use crate::model::*;
 use crate::counts::*;
 use crate::input_proofs::*;
+use crate::maintenance_proofs::*;
+use crate::rank_proofs::*;
 use crate::bounds::*;
 use crate::contrib::*;
 use crate::maintenance_semantics::database_suppliers;
@@ -564,6 +566,107 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
                 lemma_sum_take(suppliers.entries(), processed@, |row: (KeyView, i64)|
                     supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
                         - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key));
+            }
+        }
+        processed = Ghost(processed@ + 1);
+    }
+}
+
+#[verifier::rlimit(60)]
+pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Counts, Ghost(fits): Ghost<bool>) -> (out: Result<(Counts, Ranks), u32>)
+    requires cell_keys_valid(*source), cell_keys_valid(*group_changes),
+        fits ==> forall|key: KeyView| 0 <= #[trigger] count_at(*source, key) + count_at(*group_changes, key) <= i64::MAX as int,
+    ensures out matches Ok(state) ==> cell_keys_valid(state.0),
+        out matches Ok(state) ==> (positive_counts(*source) ==> positive_counts(state.0)),
+        out matches Ok(state) ==> (ranks_valid(*base_ranks, *source) ==> ranks_valid(state.1, state.0)),
+        out matches Ok(state) ==> forall|key: KeyView| #[trigger] count_at(state.0, key)
+            == count_at(*source, key) + count_at(*group_changes, key),
+        out is Err ==> !fits,
+{
+    let source_counts = Ghost(*source);
+    let source_ranks = Ghost(*base_ranks);
+    let preserve = Ghost(ranks_valid(*base_ranks, *source));
+    let mut counts = share_counts(source);
+    let mut ranks = base_ranks.share();
+    proof {
+        group_changes.model();
+        verus_prooflib::ordered::lemma_ordered_unique(group_changes.entries());
+        if preserve@ {
+            verus_prooflib::lemma_ordered_equal(&source_ranks@, &ranks);
+            lemma_ranks_positive(source_ranks@, source_counts@);
+            assert(positive_counts(counts));
+            lemma_ranks_equal(&source_ranks@, &ranks, source_counts@, counts);
+        }
+    }
+    let mut cursor = group_changes.cursor();
+    let mut processed: Ghost<int> = Ghost(0);
+    loop
+        invariant cell_keys_valid(counts), cell_keys_valid(*group_changes),
+            source_counts@ == *source, source_ranks@ == *base_ranks,
+            preserve@ == ranks_valid(source_ranks@, source_counts@),
+            cells_valid_rows(cursor.remaining()),
+            positive_counts(source_counts@) ==> positive_counts(counts),
+            preserve@ ==> ranks_valid(ranks, counts),
+            0 <= processed@ <= group_changes.entries().len(),
+            cursor.remaining() == group_changes.entries().skip(processed@),
+            fits ==> forall|key: KeyView| 0 <= #[trigger] count_at(source_counts@, key) + count_at(*group_changes, key) <= i64::MAX as int,
+            forall|position: int| 0 <= position < group_changes.entries().len() ==>
+                #[trigger] group_changes.at(group_changes.entries()[position].0) == Some(group_changes.entries()[position].1),
+            forall|first: int, last: int| 0 <= first < last < group_changes.entries().len() ==>
+                (#[trigger] group_changes.entries()[first]).0 != (#[trigger] group_changes.entries()[last]).0,
+            forall|key: KeyView| #[trigger] count_at(counts, key)
+                == count_at(source_counts@, key) + sum(group_changes.entries().take(processed@),
+                    |row: (KeyView, Cell)| if row.0 == key { row.1.count as int } else { 0int }),
+        decreases cursor.remaining().len(),
+    {
+        let remaining = Ghost(cursor.remaining());
+        let (key, cell) = match cursor.next() {
+            Some(row) => row,
+            None => {
+                proof {
+                    assert(processed@ == group_changes.entries().len());
+                    assert(group_changes.entries().take(processed@) =~= group_changes.entries());
+                    assert forall|key: KeyView| #[trigger] count_at(counts, key)
+                        == count_at(source_counts@, key) + count_at(*group_changes, key) by {
+                        verus_prooflib::lemma_ordered_selected_weight(group_changes, key,
+                            |row: (KeyView, Cell)| row.1.count as int, 1int,
+                            |row: (KeyView, Cell)| if row.0 == key { row.1.count as int } else { 0int });
+                    }
+                }
+                return Ok((counts, ranks));
+            },
+        };
+        proof {
+            assert(remaining@.contains((key.view(), *cell)));
+            assert((key.view(), *cell) == group_changes.entries()[processed@]);
+            lemma_cells_tail(remaining@);
+            assert(group_changes.at(group_changes.entries()[processed@].0) == Some(group_changes.entries()[processed@].1));
+            assert(cell.group.key() == key.view());
+            assert forall|query: KeyView| query == key.view() implies
+                #[trigger] count_at(counts, query) == count_at(source_counts@, query) by {
+                assert forall|position: int| 0 <= position < group_changes.entries().take(processed@).len() implies
+                    (|row: (KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int })(#[trigger] group_changes.entries().take(processed@)[position]) == 0 by {
+                    assert(group_changes.entries().take(processed@)[position] == group_changes.entries()[position]);
+                    assert(group_changes.entries()[position].0 != group_changes.entries()[processed@].0);
+                }
+                lemma_sum_zero(group_changes.entries().take(processed@),
+                    |row: (KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int });
+            }
+        }
+        if !update_total(&mut counts, &mut ranks, cell.group.clone(), cell.count) {
+            proof {
+                if fits {
+                    assert(count_at(*group_changes, key.view()) == cell.count as int);
+                }
+            }
+            return Err(4);
+        }
+        proof {
+            assert forall|query: KeyView| #[trigger] count_at(counts, query)
+                == count_at(source_counts@, query) + sum(group_changes.entries().take(processed@ + 1),
+                    |row: (KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int }) by {
+                lemma_sum_take(group_changes.entries(), processed@,
+                    |row: (KeyView, Cell)| if row.0 == query { row.1.count as int } else { 0int });
             }
         }
         processed = Ghost(processed@ + 1);
