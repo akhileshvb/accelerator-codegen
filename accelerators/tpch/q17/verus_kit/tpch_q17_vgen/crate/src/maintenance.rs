@@ -10,12 +10,13 @@ use verus_common::sums::*;
 use crate::changes::*;
 use crate::variants::lemma_variant_prefix;
 use verus_prooflib::lemma_count_weight_add;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
 broadcast use vstd::seq_lib::group_seq_properties;
 
-pub struct Change { pub identity: Arc<Identity>, pub delta: i128 }
+pub struct Change { pub identity: Arc<Identity>, pub delta: Wide }
 
 pub struct Changes {
     pub rows: HashMap<i64, Vec<Change>>,
@@ -182,10 +183,10 @@ pub fn resolve_identity(groups: &Store<Vec<Group>>, pending: &mut HashMap<i64, V
 }
 
 #[verifier::rlimit(1)]
-pub fn add_change(changes: &mut Changes, groups: &Store<Vec<Group>>, row: &PartInput, sign: i64) -> (result: bool)
+pub fn add_change(changes: &mut Changes, groups: &Store<Vec<Group>>, row: &PartInput, sign: i64)
     requires group_store_wf(*groups), changes_wf(*old(changes)),
-    ensures result ==> final(changes).rows@.dom() == old(changes).rows@.dom().insert(row.p_partkey),
-        result ==> changes_wf(*final(changes))
+    ensures final(changes).rows@.dom() == old(changes).rows@.dom().insert(row.p_partkey),
+        changes_wf(*final(changes))
         && forall|key: i64, brand: Seq<u8>, container: Seq<u8>| #[trigger] change_at(*final(changes), key, brand, container)
             == change_at(*old(changes), key, brand, container) + if key == row.p_partkey && brand == row.p_brand@ && container == row.p_container@ {
                 sign as int
@@ -209,7 +210,7 @@ pub fn add_change(changes: &mut Changes, groups: &Store<Vec<Group>>, row: &PartI
         assert forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] change_total(before_bucket@, brand, container)
             == change_at(before@, row.p_partkey, brand, container) by {}
     }
-    if !merge_change(&mut bucket, identity, sign) { return false; }
+    merge_change(&mut bucket, identity, sign);
     let after_bucket = Ghost(bucket@);
     changes.rows.insert(row.p_partkey, bucket);
     proof {
@@ -230,15 +231,14 @@ pub fn add_change(changes: &mut Changes, groups: &Store<Vec<Group>>, row: &PartI
             }
         }
     }
-    true
 }
 
 #[verifier::rlimit(4)]
-pub fn build_changes(parts: &Vec<PartInput>, groups: &Store<Vec<Group>>) -> (result: Option<Changes>)
+pub fn build_changes(parts: &Vec<PartInput>, groups: &Store<Vec<Group>>) -> (changes: Changes)
     requires group_store_wf(*groups),
-    ensures result matches Some(changes) ==> changes_wf(changes),
-        result matches Some(changes) ==> forall|position: int| #![trigger parts@[position]] 0 <= position < parts.len() ==> changes.keys@.contains(parts@[position].p_partkey),
-        result matches Some(changes) ==> forall|key: i64, brand: Seq<u8>, container: Seq<u8>|
+    ensures changes_wf(changes),
+        forall|position: int| #![trigger parts@[position]] 0 <= position < parts.len() ==> changes.keys@.contains(parts@[position].p_partkey),
+        forall|key: i64, brand: Seq<u8>, container: Seq<u8>|
         #[trigger] change_at(changes, key, brand, container) == part_count(part_input_seq_view(parts@), key as int, brand, container),
 {
     let mut changes = new_changes();
@@ -257,7 +257,7 @@ pub fn build_changes(parts: &Vec<PartInput>, groups: &Store<Vec<Group>>) -> (res
         decreases parts.len() - index,
     {
         let before = Ghost(changes);
-        if !add_change(&mut changes, groups, &parts[index], 1) { return None; }
+        add_change(&mut changes, groups, &parts[index], 1);
         proof {
             assert forall|key: i64, brand: Seq<u8>, container: Seq<u8>| #[trigger] change_at(changes, key, brand, container)
                 == part_count(part_input_seq_view(parts@.take(index as int + 1)), key as int, brand, container) by {
@@ -272,15 +272,15 @@ pub fn build_changes(parts: &Vec<PartInput>, groups: &Store<Vec<Group>>) -> (res
         processed = Ghost(index as int);
     }
     proof { assert(parts@.take(parts@.len() as int) =~= parts@); }
-    Some(changes)
+    changes
 }
 
 #[verifier::rlimit(1)]
-pub fn delta_changes(parts: &Vec<PartDelta>, groups: &Store<Vec<Group>>) -> (result: Option<Changes>)
+pub fn delta_changes(parts: &Vec<PartDelta>, groups: &Store<Vec<Group>>) -> (changes: Changes)
     requires group_store_wf(*groups),
-    ensures result matches Some(changes) ==> changes_wf(changes),
-        result matches Some(changes) ==> forall|position: int| #![trigger parts@[position]] 0 <= position < parts.len() ==> changes.keys@.contains(parts@[position].row.p_partkey),
-        result matches Some(changes) ==> forall|key: i64, brand: Seq<u8>, container: Seq<u8>|
+    ensures changes_wf(changes),
+        forall|position: int| #![trigger parts@[position]] 0 <= position < parts.len() ==> changes.keys@.contains(parts@[position].row.p_partkey),
+        forall|key: i64, brand: Seq<u8>, container: Seq<u8>|
         #[trigger] change_at(changes, key, brand, container) == sum(part_delta_seq_view(parts@), |entry: (PartRow, int)|
             entry.1 * ind(entry.0.p_partkey == key as int && entry.0.p_brand == brand && entry.0.p_container == container)),
 {
@@ -300,7 +300,7 @@ pub fn delta_changes(parts: &Vec<PartDelta>, groups: &Store<Vec<Group>>) -> (res
         decreases parts.len() - index,
     {
         let before = Ghost(changes);
-        if !add_change(&mut changes, groups, &parts[index].row, parts[index].sign) { return None; }
+        add_change(&mut changes, groups, &parts[index].row, parts[index].sign);
         proof {
             assert forall|key: i64, brand: Seq<u8>, container: Seq<u8>| #[trigger] change_at(changes, key, brand, container)
                 == delta_part_count(parts@.take(index as int + 1), key, brand, container) by {
@@ -315,7 +315,7 @@ pub fn delta_changes(parts: &Vec<PartDelta>, groups: &Store<Vec<Group>>) -> (res
         processed = Ghost(index as int);
     }
     proof { assert(parts@.take(parts@.len() as int) =~= parts@); reveal(delta_part_count); }
-    Some(changes)
+    changes
 }
 
 pub fn read_moment(lines: &Store<Moment>, key: i64) -> (result: Moment)
@@ -323,46 +323,45 @@ pub fn read_moment(lines: &Store<Moment>, key: i64) -> (result: Moment)
     ensures result == moment_at(*lines, key),
 { match lines.get(key) { Some(value) => *value, None => zero() } }
 
-pub fn adjust_group(groups: &mut Store<Vec<Group>>, identity: &Arc<Identity>, references_delta: i128, count_delta: i128, price_delta: i128) -> (result: bool)
+pub fn adjust_group(groups: &mut Store<Vec<Group>>, identity: &Arc<Identity>, references_delta: &Wide, count_delta: &Wide, price_delta: &Wide)
     requires group_store_wf(*old(groups)), identity.fingerprint as int == pair_hash(identity.brand@, identity.container@),
     ensures group_store_wf(*final(groups)),
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*final(groups), brand, container)
-            == group_count_at(*old(groups), brand, container) + if same(**identity, brand, container) { count_delta as int } else { 0 },
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*final(groups), brand, container)
-            == group_price_at(*old(groups), brand, container) + if same(**identity, brand, container) { price_delta as int } else { 0 },
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*final(groups), brand, container)
-            == group_refs_at(*old(groups), brand, container) + if same(**identity, brand, container) { references_delta as int } else { 0 },
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*final(groups), brand, container)
+            == group_count_at(*old(groups), brand, container) + if same(**identity, brand, container) { count_delta@ } else { 0 },
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*final(groups), brand, container)
+            == group_price_at(*old(groups), brand, container) + if same(**identity, brand, container) { price_delta@ } else { 0 },
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*final(groups), brand, container)
+            == group_refs_at(*old(groups), brand, container) + if same(**identity, brand, container) { references_delta@ } else { 0 },
 {
-    let result = crate::group_updates::adjust_group(groups, identity, references_delta, count_delta, price_delta);
+    crate::group_updates::adjust_group(groups, identity, references_delta, count_delta, price_delta);
     proof { reveal(group_count_at); reveal(group_price_at); reveal(group_refs_at); }
-    result
 }
 
 #[verifier::rlimit(1)]
-pub fn replace_lines(lines: &mut Store<Moment>, parts: &Store<Vec<Variant>>, groups: &mut Store<Vec<Group>>, key: i64, new: Moment) -> (result: bool)
+pub fn replace_lines(lines: &mut Store<Moment>, parts: &Store<Vec<Variant>>, groups: &mut Store<Vec<Group>>, key: i64, new: Moment)
     requires old(lines).wf(), part_store_wf(*parts), group_store_wf(*old(groups)), new.count >= 0,
         new.count == 0 ==> new.price == 0,
     ensures final(lines).wf(), group_store_wf(*final(groups)),
-        result ==> forall|other: i64| #[trigger] final(lines).lookup(other) == if other == key {
+        forall|other: i64| #[trigger] final(lines).lookup(other) == if other == key {
             if new.count == 0 { None } else { Some(new) }
         } else { old(lines).lookup(other) },
-        result ==> forall|other: i64| #[trigger] moment_at(*final(lines), other)
+        forall|other: i64| #[trigger] moment_at(*final(lines), other)
             == if other == key { new } else { moment_at(*old(lines), other) },
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*final(groups), brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*final(groups), brand, container)
             == group_count_at(*old(groups), brand, container) + multiplicity(*parts, key, brand, container)
                 * (new.count as int - moment_at(*old(lines), key).count as int),
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*final(groups), brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*final(groups), brand, container)
             == group_price_at(*old(groups), brand, container) + multiplicity(*parts, key, brand, container)
                 * (new.price as int - moment_at(*old(lines), key).price as int),
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*final(groups), brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*final(groups), brand, container)
             == group_refs_at(*old(groups), brand, container),
 {
     let before_lines = Ghost(*lines);
     let before_groups = Ghost(*groups);
     let previous = read_moment(lines, key);
-    let count_delta = match new.count.checked_sub(previous.count) { Some(value) => value, None => return false };
-    let price_delta = match new.price.checked_sub(previous.price) { Some(value) => value, None => return false };
-    if count_delta != 0 || price_delta != 0 {
+    let count_delta = Wide::from_i128(new.count).sub(&Wide::from_i128(previous.count));
+    let price_delta = Wide::from_i128(new.price).sub(&Wide::from_i128(previous.price));
+    if !count_delta.is_zero() || !price_delta.is_zero() {
         if let Some(variants) = parts.get(key) {
             proof {
                 assert(variants_wf(variants_at(*parts, key)));
@@ -376,38 +375,38 @@ pub fn replace_lines(lines: &mut Store<Moment>, parts: &Store<Vec<Variant>>, gro
                 invariant index <= variants.len(), processed@ == index as int,
                     group_store_wf(*groups), lines.wf(), *lines == before_lines@,
                     previous == moment_at(before_lines@, key),
-                    count_delta as int == new.count as int - previous.count as int,
-                    price_delta as int == new.price as int - previous.price as int,
+                    count_delta@ == new.count as int - previous.count as int,
+                    price_delta@ == new.price as int - previous.price as int,
                     variants_wf(variants@), variants@ == variants_at(*parts, key),
                     forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*groups, brand, container)
-                        == group_count_at(before_groups@, brand, container) + variant_total(variants@.take(processed@), brand, container) * count_delta as int,
+                        == group_count_at(before_groups@, brand, container) + variant_total(variants@.take(processed@), brand, container) * count_delta@,
                     forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*groups, brand, container)
-                        == group_price_at(before_groups@, brand, container) + variant_total(variants@.take(processed@), brand, container) * price_delta as int,
+                        == group_price_at(before_groups@, brand, container) + variant_total(variants@.take(processed@), brand, container) * price_delta@,
                     forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*groups, brand, container) == group_refs_at(before_groups@, brand, container),
                 decreases variants.len() - index,
             {
                 let variant = &variants[index];
                 let old_groups = Ghost(*groups);
                 proof { lemma_variant_entry(variants@, index as int); }
-                let count = match variant.multiplicity.checked_mul(count_delta) { Some(value) => value, None => return false };
-                let price = match variant.multiplicity.checked_mul(price_delta) { Some(value) => value, None => return false };
-                if !adjust_group(groups, &variant.identity, 0, count, price) { return false; }
+                let count = variant.multiplicity.mul(&count_delta);
+                let price = variant.multiplicity.mul(&price_delta);
+                adjust_group(groups, &variant.identity, &Wide::zero(), &count, &price);
                 proof {
                     assert forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*groups, brand, container)
-                        == group_count_at(before_groups@, brand, container) + variant_total(variants@.take(index as int + 1), brand, container) * count_delta as int by {
+                        == group_count_at(before_groups@, brand, container) + variant_total(variants@.take(index as int + 1), brand, container) * count_delta@ by {
                         assert(group_count_at(old_groups@, brand, container) == group_count_at(before_groups@, brand, container)
-                            + variant_total(variants@.take(index as int), brand, container) * count_delta as int);
+                            + variant_total(variants@.take(index as int), brand, container) * count_delta@);
                         lemma_variant_prefix(variants@, index as int, brand, container);
                         lemma_count_weight_add(variant_total(variants@.take(index as int), brand, container),
-                            if same(*variant.identity, brand, container) { variant.multiplicity as int } else { 0int }, count_delta as int);
+                            if same(*variant.identity, brand, container) { variant.multiplicity@ } else { 0int }, count_delta@);
                     }
                     assert forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*groups, brand, container)
-                        == group_price_at(before_groups@, brand, container) + variant_total(variants@.take(index as int + 1), brand, container) * price_delta as int by {
+                        == group_price_at(before_groups@, brand, container) + variant_total(variants@.take(index as int + 1), brand, container) * price_delta@ by {
                         assert(group_price_at(old_groups@, brand, container) == group_price_at(before_groups@, brand, container)
-                            + variant_total(variants@.take(index as int), brand, container) * price_delta as int);
+                            + variant_total(variants@.take(index as int), brand, container) * price_delta@);
                         lemma_variant_prefix(variants@, index as int, brand, container);
                         lemma_count_weight_add(variant_total(variants@.take(index as int), brand, container),
-                            if same(*variant.identity, brand, container) { variant.multiplicity as int } else { 0int }, price_delta as int);
+                            if same(*variant.identity, brand, container) { variant.multiplicity@ } else { 0int }, price_delta@);
                     }
                 }
                 index += 1;
@@ -419,22 +418,21 @@ pub fn replace_lines(lines: &mut Store<Moment>, parts: &Store<Vec<Variant>>, gro
         }
     }
     if new.count == 0 { lines.put(key, None); } else { lines.put(key, Some(Arc::new(new))); }
-    true
 }
 
 #[verifier::rlimit(1)]
-pub fn apply_changes(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, groups: &mut Store<Vec<Group>>, changes: &Changes) -> (result: bool)
+pub fn apply_changes(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, groups: &mut Store<Vec<Group>>, changes: &Changes)
     requires part_store_wf(*old(parts)), lines.wf(), group_store_wf(*old(groups)), changes_wf(*changes),
     ensures part_store_wf(*final(parts)), group_store_wf(*final(groups)),
-        result ==> forall|key: i64, brand: Seq<u8>, container: Seq<u8>| #[trigger] multiplicity(*final(parts), key, brand, container)
+        forall|key: i64, brand: Seq<u8>, container: Seq<u8>| #[trigger] multiplicity(*final(parts), key, brand, container)
             == multiplicity(*old(parts), key, brand, container) + change_at(*changes, key, brand, container),
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*final(groups), brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*final(groups), brand, container)
             == group_count_at(*old(groups), brand, container) + sum(changes.keys@, |key: i64|
                 change_at(*changes, key, brand, container) * moment_at(*lines, key).count as int),
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*final(groups), brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*final(groups), brand, container)
             == group_price_at(*old(groups), brand, container) + sum(changes.keys@, |key: i64|
                 change_at(*changes, key, brand, container) * moment_at(*lines, key).price as int),
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*final(groups), brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*final(groups), brand, container)
             == group_refs_at(*old(groups), brand, container) + sum(changes.keys@, |key: i64| change_at(*changes, key, brand, container)),
 {
     proof { lemma_changes_fields(*changes); }
@@ -468,8 +466,9 @@ pub fn apply_changes(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, gro
             changes.keys@.to_set_ensures();
             verus_prooflib::lemma_prefix_fresh(changes.keys@, key_index as int);
         }
-        let patch = match changes.rows.get(&key) { Some(value) => value, None => return false };
-        if !crate::patches::apply_key_patch(parts, lines, groups, key, patch) { return false; }
+        proof { assert(changes.rows@.contains_key(key)); }
+        let patch = changes.rows.get(&key).unwrap();
+        crate::patches::apply_key_patch(parts, lines, groups, key, patch);
         proof {
             reveal(change_at);
             assert forall|other: i64, brand: Seq<u8>, container: Seq<u8>| #[trigger] multiplicity(*parts, other, brand, container)
@@ -505,11 +504,21 @@ pub fn apply_changes(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, gro
         processed = Ghost(key_index as int);
     }
     proof { assert(changes.keys@.take(changes.keys@.len() as int) =~= changes.keys@); reveal(change_at); changes.keys@.to_set_ensures(); }
-    true
+}
+
+pub open spec fn first_keys(delta: Seq<LineKeyDelta>, count: int) -> Seq<i64>
+    decreases count,
+{
+    if count <= 0 { Seq::empty() } else {
+        let earlier = first_keys(delta, count - 1);
+        let key = delta[count - 1].l_partkey;
+        if earlier.contains(key) { earlier } else { earlier.push(key) }
+    }
 }
 
 pub fn touched_keys(delta: &[LineKeyDelta]) -> (result: Vec<i64>)
-    ensures result@.no_duplicates(), forall|index: int| #![trigger delta@[index]]
+    ensures result@.no_duplicates(), result@ == first_keys(delta@, delta@.len() as int),
+        forall|index: int| #![trigger delta@[index]]
         0 <= index < delta@.len() ==> result@.contains(delta@[index].l_partkey),
 {
     let mut seen: HashMap<i64, bool> = HashMap::with_capacity(delta.len());
@@ -518,11 +527,12 @@ pub fn touched_keys(delta: &[LineKeyDelta]) -> (result: Vec<i64>)
     let mut processed = Ghost(0int);
     while index < delta.len()
         invariant index <= delta.len(), processed@ == index as int,
-            keys@.no_duplicates(), seen@.dom() == keys@.to_set(),
+            keys@.no_duplicates(), seen@.dom() == keys@.to_set(), keys@ == first_keys(delta@, processed@),
             forall|position: int| #![trigger delta@[position]] 0 <= position < processed@ ==> keys@.contains(delta@[position].l_partkey),
         decreases delta.len() - index,
     {
         let key = delta[index].l_partkey;
+        proof { keys@.to_set_ensures(); }
         if !seen.contains_key(&key) {
             proof { keys@.to_set_ensures(); verus_prooflib::lemma_unique_push(keys@, key); }
             seen.insert(key, true);

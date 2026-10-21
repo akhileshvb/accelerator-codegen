@@ -15,3 +15,7 @@ pub mod database_proofs;
 pub mod query_proofs;
 pub mod emission;
 pub mod result_proofs;
+pub mod log;
+pub mod sorting;
+pub mod exact;
+pub mod general;

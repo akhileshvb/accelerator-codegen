@@ -141,13 +141,52 @@ pub fn zero() -> (result: Moment)
     ensures result.count == 0, result.price == 0,
 { Moment { count: 0, price: 0 } }
 
-pub fn qualified(quantity: i64, total: Total) -> (result: Option<bool>)
-    requires total.count > 0,
-    ensures result matches Some(value) ==> value == (5 * (total.count as int) * (quantity as int) < total.quantity as int),
+#[verifier::inline]
+pub open spec fn value_bound() -> int { 999999999999999 }
+
+pub open spec fn rows_bounded(rows: Seq<LineInput>) -> bool {
+    &&& rows.len() <= max_rows()
+    &&& forall|index: int| #![trigger rows[index]] 0 <= index < rows.len() ==>
+        -value_bound() <= rows[index].l_quantity <= value_bound() && -value_bound() <= rows[index].l_extendedprice <= value_bound()
+}
+
+pub proof fn lemma_row_bounds(rows: Seq<LineInput>, index: int)
+    requires rows_bounded(rows), 0 <= index < rows.len(),
+    ensures -value_bound() <= rows[index].l_quantity <= value_bound(), -value_bound() <= rows[index].l_extendedprice <= value_bound(),
+{}
+
+pub fn rows_in_range(rows: &[LineInput]) -> (result: bool)
+    ensures result == rows_bounded(rows@),
 {
-    let factor = match total.count.checked_mul(5) { Some(value) => value, None => return None };
-    let left = match factor.checked_mul(quantity as i128) { Some(value) => value, None => return None };
-    Some(left < total.quantity)
+    if rows.len() > 1099511627776 { return false; }
+    let mut index = 0;
+    while index < rows.len()
+        invariant index <= rows.len(),
+            forall|position: int| #![trigger rows@[position]] 0 <= position < index ==>
+                -value_bound() <= rows@[position].l_quantity <= value_bound() && -value_bound() <= rows@[position].l_extendedprice <= value_bound(),
+        decreases rows.len() - index,
+    {
+        let row = &rows[index];
+        if row.l_quantity < -999999999999999 || row.l_quantity > 999999999999999
+            || row.l_extendedprice < -999999999999999 || row.l_extendedprice > 999999999999999 { return false; }
+        index += 1;
+    }
+    true
+}
+
+pub fn qualified(quantity: i64, total: Total) -> (result: bool)
+    requires 0 < total.count <= 1099511627776, -value_bound() <= quantity <= value_bound(),
+    ensures result == (5 * (total.count as int) * (quantity as int) < total.quantity as int),
+{
+    let factor = total.count * 5;
+    proof {
+        let f = factor as int;
+        let q = quantity as int;
+        assert(-(5 * 1099511627776int * value_bound()) <= f * q <= 5 * 1099511627776int * value_bound()) by (nonlinear_arith)
+            requires 0 < f <= 5 * 1099511627776int, -value_bound() <= q <= value_bound();
+    }
+    let left = factor * (quantity as i128);
+    left < total.quantity
 }
 
 pub open spec fn vtotal_at(index_of: Map<i64, usize>, totals: Seq<Total>, key: i64) -> Total {
@@ -161,15 +200,18 @@ pub open spec fn vaccum_at(index_of: Map<i64, usize>, moms: Seq<Moment>, key: i6
 /// Aggregates the rows per partkey with one hash lookup per row: pass one
 /// finds (or creates) each row's slot in dense vectors, pass two reuses the
 /// recorded slot, pass three exports the nonzero moments.
-pub fn summarize(rows: &[LineInput]) -> (result: Option<(HashMap<i64, Moment>, Vec<i64>)>)
-    ensures result matches Some((moments, keys)) ==> {
+#[verifier::rlimit(4)]
+pub fn summarize(rows: &[LineInput]) -> (result: (HashMap<i64, Moment>, Vec<i64>))
+    requires rows_bounded(rows@),
+    ensures ({ let (moments, keys) = result;
         &&& keys@.no_duplicates()
+        &&& keys@.len() <= rows@.len()
         &&& moments@.dom().subset_of(keys@.to_set())
         &&& forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() ==> keys@.contains(rows@[index].l_partkey)
         &&& forall|key: i64| #![trigger moments@[key]] moments@.contains_key(key) ==> moments@[key].count > 0
         &&& forall|key: i64| #[trigger] accumulated(moments@, key).count as int == line_count(line_input_seq_view(rows@), key as int)
         &&& forall|key: i64| #[trigger] accumulated(moments@, key).price as int == line_price(line_input_seq_view(rows@), key as int)
-    },
+    }),
 {
     let expected = rows.len() / 16 + 1;
     let mut index_of: HashMap<i64, usize> = HashMap::with_capacity(expected);
@@ -183,17 +225,19 @@ pub fn summarize(rows: &[LineInput]) -> (result: Option<(HashMap<i64, Moment>, V
         assert forall|key: i64| #[trigger] vtotal_at(index_of@, totals@, key).quantity as int == quantity(line_input_seq_view(rows@.take(0)), key as int) by { lemma_line_empty(rows@, key); }
     }
     while index < rows.len()
-        invariant index <= rows.len(), processed@ == index as int,
-            keys@.no_duplicates(), totals@.len() == keys@.len(), positions@.len() == index,
+        invariant index <= rows.len(), processed@ == index as int, rows_bounded(rows@),
+            keys@.no_duplicates(), totals@.len() == keys@.len(), positions@.len() == index, keys@.len() <= index,
             index_of@.dom() == keys@.to_set(),
             forall|key: i64| #![trigger index_of@[key]] index_of@.contains_key(key) ==> index_of@[key] < keys@.len() && keys@[index_of@[key] as int] == key,
-            forall|position: int| #![trigger totals@[position]] 0 <= position < totals@.len() ==> totals@[position].count > 0,
+            forall|position: int| #![trigger totals@[position]] 0 <= position < totals@.len() ==> 0 < totals@[position].count <= index as int
+                && -(index as int * value_bound()) <= totals@[position].quantity <= index as int * value_bound(),
             forall|row: int| #![trigger positions@[row]] 0 <= row < index ==> positions@[row] < keys@.len() && keys@[positions@[row] as int] == rows@[row].l_partkey,
             forall|key: i64| #[trigger] vtotal_at(index_of@, totals@, key).count as int == number(line_input_seq_view(rows@.take(processed@)), key as int),
             forall|key: i64| #[trigger] vtotal_at(index_of@, totals@, key).quantity as int == quantity(line_input_seq_view(rows@.take(processed@)), key as int),
         decreases rows.len() - index,
     {
         let row = &rows[index];
+        proof { lemma_row_bounds(rows@, index as int); }
         let ghost before_index = index_of@;
         let ghost before_totals = totals@;
         let ghost before_keys = keys@;
@@ -205,8 +249,13 @@ pub fn summarize(rows: &[LineInput]) -> (result: Option<(HashMap<i64, Moment>, V
                 proof {
                     assert(previous == vtotal_at(before_index, before_totals, row.l_partkey));
                 }
-                let count = match previous.count.checked_add(1) { Some(value) => value, None => return None };
-                let quantity_sum = match previous.quantity.checked_add(row.l_quantity as i128) { Some(value) => value, None => return None };
+                proof {
+                    assert(previous == before_totals[slot as int]);
+                    assert(0 < before_totals[slot as int].count <= index as int
+                        && -(index as int * value_bound()) <= before_totals[slot as int].quantity <= index as int * value_bound());
+                }
+                let count = previous.count + 1;
+                let quantity_sum = previous.quantity + row.l_quantity as i128;
                 totals.set(slot, Total { count, quantity: quantity_sum });
                 positions.push(slot);
                 proof {
@@ -217,6 +266,10 @@ pub fn summarize(rows: &[LineInput]) -> (result: Option<(HashMap<i64, Moment>, V
                     assert(before_keys[slot as int] == rk);
                     assert(totals@[slot as int].count == previous.count + 1);
                     assert(totals@[slot as int].quantity == previous.quantity + row.l_quantity as i128);
+                    assert forall|position: int| #![trigger totals@[position]] 0 <= position < totals@.len() implies 0 < totals@[position].count <= index as int + 1
+                        && -((index as int + 1) * value_bound()) <= totals@[position].quantity <= (index as int + 1) * value_bound() by {
+                        if position != slot as int { assert(totals@[position] == before_totals[position]); }
+                    }
                     assert forall|key: i64| #[trigger] vtotal_at(index_of@, totals@, key).count as int
                         == number(line_input_seq_view(rows@.take(index as int + 1)), key as int) by {
                         lemma_line_prefix(rows@, index as int, key);
@@ -247,6 +300,10 @@ pub fn summarize(rows: &[LineInput]) -> (result: Option<(HashMap<i64, Moment>, V
                     assert(!before_index.contains_key(rk));
                     assert(index_of@ == before_index.insert(rk, before_keys.len() as usize));
                     assert(totals@ == before_totals.push(Total { count: 1, quantity: row.l_quantity as i128 }));
+                    assert forall|position: int| #![trigger totals@[position]] 0 <= position < totals@.len() implies 0 < totals@[position].count <= index as int + 1
+                        && -((index as int + 1) * value_bound()) <= totals@[position].quantity <= (index as int + 1) * value_bound() by {
+                        if position < before_totals.len() { assert(totals@[position] == before_totals[position]); }
+                    }
                     assert forall|key: i64| #[trigger] vtotal_at(index_of@, totals@, key).count as int
                         == number(line_input_seq_view(rows@.take(index as int + 1)), key as int) by {
                         lemma_line_prefix(rows@, index as int, key);
@@ -295,20 +352,22 @@ pub fn summarize(rows: &[LineInput]) -> (result: Option<(HashMap<i64, Moment>, V
     index = 0;
     processed = Ghost(0int);
     while index < rows.len()
-        invariant index <= rows.len(), processed@ == index as int,
+        invariant index <= rows.len(), processed@ == index as int, rows_bounded(rows@),
             keys@.no_duplicates(), totals@.len() == keys@.len(), positions@.len() == rows@.len(), moms@.len() == keys@.len(),
             index_of@.dom() == keys@.to_set(),
             forall|key: i64| #![trigger index_of@[key]] index_of@.contains_key(key) ==> index_of@[key] < keys@.len() && keys@[index_of@[key] as int] == key,
-            forall|position: int| #![trigger totals@[position]] 0 <= position < totals@.len() ==> totals@[position].count > 0,
+            forall|position: int| #![trigger totals@[position]] 0 <= position < totals@.len() ==> 0 < totals@[position].count <= max_rows(),
             forall|row: int| #![trigger positions@[row]] 0 <= row < rows@.len() ==> positions@[row] < keys@.len() && keys@[positions@[row] as int] == rows@[row].l_partkey,
             forall|key: i64| #[trigger] vtotal_at(index_of@, totals@, key).count as int == number(line_input_seq_view(rows@), key as int),
             forall|key: i64| #[trigger] vtotal_at(index_of@, totals@, key).quantity as int == quantity(line_input_seq_view(rows@), key as int),
-            forall|position: int| #![trigger moms@[position]] 0 <= position < moms@.len() ==> moms@[position].count >= 0 && (moms@[position].count == 0 ==> moms@[position].price == 0),
+            forall|position: int| #![trigger moms@[position]] 0 <= position < moms@.len() ==> moms@[position].count >= 0 && (moms@[position].count == 0 ==> moms@[position].price == 0)
+                && moms@[position].count <= index as int && -(index as int * value_bound()) <= moms@[position].price <= index as int * value_bound(),
             forall|key: i64| #[trigger] vaccum_at(index_of@, moms@, key).count as int == prefix_count(rows@, processed@, key),
             forall|key: i64| #[trigger] vaccum_at(index_of@, moms@, key).price as int == prefix_price(rows@, processed@, key),
         decreases rows.len() - index,
     {
         let row = &rows[index];
+        proof { lemma_row_bounds(rows@, index as int); }
         let ghost before_moms = moms@;
         let slot = positions[index];
         proof {
@@ -325,12 +384,13 @@ pub fn summarize(rows: &[LineInput]) -> (result: Option<(HashMap<i64, Moment>, V
             assert(total.count as int == number(line_input_seq_view(rows@), row.l_partkey as int));
             assert(total.quantity as int == quantity(line_input_seq_view(rows@), row.l_partkey as int));
         }
-        let accepts = match qualified(row.l_quantity, total) { Some(value) => value, None => return None };
+        let accepts = qualified(row.l_quantity, total);
         proof { reveal(qualifies); assert(accepts == qualifies(line_input_seq_view(rows@), line_input_view(*row))); }
         if accepts {
             let previous = moms[slot];
-            let count = match previous.count.checked_add(1) { Some(value) => value, None => return None };
-            let price = match previous.price.checked_add(row.l_extendedprice as i128) { Some(value) => value, None => return None };
+            proof { assert(previous == before_moms[slot as int]); }
+            let count = previous.count + 1;
+            let price = previous.price + row.l_extendedprice as i128;
             moms.set(slot, Moment { count, price });
         }
         proof {
@@ -352,7 +412,8 @@ pub fn summarize(rows: &[LineInput]) -> (result: Option<(HashMap<i64, Moment>, V
                 if accepts { assert(moms@ == before_moms.update(slot as int, moms@[slot as int])); }
                 else { assert(moms@ == before_moms); }
             }
-            assert forall|position: int| #![trigger moms@[position]] 0 <= position < moms@.len() implies moms@[position].count >= 0 && (moms@[position].count == 0 ==> moms@[position].price == 0) by {
+            assert forall|position: int| #![trigger moms@[position]] 0 <= position < moms@.len() implies moms@[position].count >= 0 && (moms@[position].count == 0 ==> moms@[position].price == 0)
+                && moms@[position].count <= index as int + 1 && -((index as int + 1) * value_bound()) <= moms@[position].price <= (index as int + 1) * value_bound() by {
                 if accepts && position == slot as int { assert(moms@[position].count == before_moms[position].count + 1); }
                 else if accepts { assert(moms@[position] == before_moms[position]); }
             }
@@ -426,7 +487,7 @@ pub fn summarize(rows: &[LineInput]) -> (result: Option<(HashMap<i64, Moment>, V
             assert(vaccum_at(index_of@, moms@, key).price as int == prefix_price(rows@, rows@.len() as int, key));
         }
     }
-    Some((moments, keys))
+    (moments, keys)
 }
 
 }

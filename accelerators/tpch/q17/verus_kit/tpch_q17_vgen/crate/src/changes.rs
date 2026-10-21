@@ -4,6 +4,7 @@ use verus_common::sums::*;
 use crate::aggregation::*;
 use crate::model::*;
 use crate::maintenance::Change;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -17,7 +18,7 @@ pub open spec fn change_bucket_wf(rows: Seq<Change>) -> bool {
 
 #[verifier::opaque]
 pub open spec fn change_total(rows: Seq<Change>, brand: Seq<u8>, container: Seq<u8>) -> int {
-    sum(rows, |row: Change| if same(*row.identity, brand, container) { row.delta as int } else { 0 })
+    sum(rows, |row: Change| if same(*row.identity, brand, container) { row.delta@ } else { 0 })
 }
 
 pub proof fn lemma_change_replace(before: Seq<Change>, after: Seq<Change>, position: int, replacement: Change)
@@ -29,16 +30,16 @@ pub proof fn lemma_change_replace(before: Seq<Change>, after: Seq<Change>, posit
     ensures change_bucket_wf(after),
         forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] change_total(after, brand, container)
             == change_total(before, brand, container) + if same(*replacement.identity, brand, container) {
-                replacement.delta as int - if position < before.len() { before[position].delta as int } else { 0 }
+                replacement.delta@ - if position < before.len() { before[position].delta@ } else { 0 }
             } else { 0 },
 {
     reveal(change_bucket_wf);
     assert forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] change_total(after, brand, container)
         == change_total(before, brand, container) + if same(*replacement.identity, brand, container) {
-            replacement.delta as int - if position < before.len() { before[position].delta as int } else { 0 }
+            replacement.delta@ - if position < before.len() { before[position].delta@ } else { 0 }
         } else { 0 } by {
         reveal(change_total);
-        let weight = |row: Change| if same(*row.identity, brand, container) { row.delta as int } else { 0int };
+        let weight = |row: Change| if same(*row.identity, brand, container) { row.delta@ } else { 0int };
         if position < before.len() { lemma_sum_update(before, position, replacement, weight); }
         else { lemma_sum_push(before, replacement, weight); }
     }
@@ -51,10 +52,10 @@ pub proof fn lemma_change_replace(before: Seq<Change>, after: Seq<Change>, posit
 }
 
 #[verifier::rlimit(1)]
-pub fn merge_change(rows: &mut Vec<Change>, identity: Arc<Identity>, sign: i64) -> (result: bool)
+pub fn merge_change(rows: &mut Vec<Change>, identity: Arc<Identity>, sign: i64)
     requires change_bucket_wf(old(rows)@), identity.fingerprint as int == pair_hash(identity.brand@, identity.container@),
     ensures change_bucket_wf(final(rows)@),
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] change_total(final(rows)@, brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] change_total(final(rows)@, brand, container)
             == change_total(old(rows)@, brand, container) + if same(*identity, brand, container) { sign as int } else { 0 },
 {
     let before = Ghost(rows@);
@@ -69,8 +70,8 @@ pub fn merge_change(rows: &mut Vec<Change>, identity: Arc<Identity>, sign: i64) 
         if identity_matches(&rows[index].identity, &identity.brand, &identity.container) { found = true; }
         else { index += 1; }
     }
-    let previous = if index < rows.len() { rows[index].delta } else { 0 };
-    let delta = match previous.checked_add(sign as i128) { Some(value) => value, None => return false };
+    let step = Wide::from_i128(sign as i128);
+    let delta = if index < rows.len() { rows[index].delta.add(&step) } else { step };
     let replacement = Change { identity, delta };
     proof {
         reveal(change_bucket_wf);
@@ -83,17 +84,16 @@ pub fn merge_change(rows: &mut Vec<Change>, identity: Arc<Identity>, sign: i64) 
     }
     if index < rows.len() { rows.set(index, replacement); } else { rows.push(replacement); }
     proof { lemma_change_replace(before@, rows@, index as int, replacement); }
-    true
 }
 
 pub proof fn lemma_change_prefix(rows: Seq<Change>, index: int, brand: Seq<u8>, container: Seq<u8>)
     requires 0 <= index < rows.len(),
     ensures change_total(rows.take(index + 1), brand, container) == change_total(rows.take(index), brand, container)
-        + if same(*rows[index].identity, brand, container) { rows[index].delta as int } else { 0 },
+        + if same(*rows[index].identity, brand, container) { rows[index].delta@ } else { 0 },
 {
     reveal(change_total);
     assert(rows.take(index + 1) =~= rows.take(index).push(rows[index]));
-    lemma_sum_push(rows.take(index), rows[index], |row: Change| if same(*row.identity, brand, container) { row.delta as int } else { 0int });
+    lemma_sum_push(rows.take(index), rows[index], |row: Change| if same(*row.identity, brand, container) { row.delta@ } else { 0int });
 }
 
 pub proof fn lemma_change_entry(rows: Seq<Change>, index: int)
