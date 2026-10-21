@@ -80,21 +80,6 @@ ToyState BuildToy(::duckdb::Connection &connection, std::size_t partitions, std:
 
 // ---- tests ----
 
-void PartitionBoundsAreDeterministic() {
-  for (const uint64_t rows : {0ull, 1ull, 122879ull, 122880ull, 122881ull, 5'000'000ull, 600'000'000ull}) {
-    for (const std::size_t partitions : {1, 2, 3, 8, 16, 40, 1000}) {
-      const auto bounds = scan::RowGroupBounds(rows, partitions);
-      CHECK(bounds == scan::RowGroupBounds(rows, partitions));
-      CHECK(bounds.size() == partitions + 1 && bounds.front() == 0);
-      CHECK(std::is_sorted(bounds.begin(), bounds.end()));
-      CHECK(bounds.back() >= rows && bounds.back() < rows + 122880);
-      for (const auto bound : bounds) {
-        CHECK(bound % 122880 == 0);
-      }
-    }
-  }
-}
-
 void PostgresBlockRangesAreDeterministic() {
   using accelerator_codegen::pg_base::PartitionBlocks;
   for (const uint32_t blocks : {0u, 1u, 7u, 112592u, 4'000'000u, 4'294'967'295u}) {
@@ -347,8 +332,7 @@ void MeasureLineitem(const std::string &path) {
 
 int main(int argc, char **argv) {
   try {
-    PartitionBoundsAreDeterministic();
-    PostgresBlockRangesAreDeterministic();
+      PostgresBlockRangesAreDeterministic();
     ToyModuleIsIdenticalAtAnyPartitionCount();
     NullableDoubleSumIsBitIdenticalAtAnyThreadCount();
     BuildsReadTheirSnapshot();

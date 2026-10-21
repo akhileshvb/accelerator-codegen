@@ -141,7 +141,7 @@ void TestParallel() {
   CHECK((core::RunStarts(std::vector<int>{}, id) == std::vector<std::size_t>{0}));
   CHECK((core::RunStarts(std::vector<int>{5}, id) == std::vector<std::size_t>{0, 1}));
 
-  for (const std::size_t workers : {1, 3, 8}) {
+  for (const std::size_t workers : {1, 3, 5, 8, 16, 48}) {
     FakeServices sort_services(workers);
     std::vector<std::pair<int, int>> values;
     for (int i = 0; i < 5000; ++i) {
@@ -153,6 +153,37 @@ void TestParallel() {
     core::ParallelStableSort(sort_services, values,
                              [](const auto &a, const auto &b) { return a.first < b.first; }, 100);
     CHECK(values == expected);
+  }
+
+  // A bucket-parallel build gives the serial chain's result: per bucket, rows in partition order.
+  for (const std::size_t workers : {1, 4}) {
+    FakeServices bucket_services(workers);
+    constexpr std::size_t kBuckets = 4, kParts = 7;
+    using Partial = core::Buckets<int>;
+    const auto built = core::PartitionedBucketBuild<Partial>(
+        bucket_services, [] { return Partial(kBuckets); },
+        [&](std::size_t parts, auto &&sink) {
+          for (std::size_t p = 0; p < parts; ++p) {
+            for (int i = 0; i < 10; ++i) {
+              const int value = static_cast<int>(p) * 10 + i;
+              sink(p, core::SingleRowBatch<int>{value});
+            }
+          }
+        },
+        [](Partial &partial, int row) { partial[row % kBuckets].push_back(row); },
+        [](Partial &into, Partial &&from, std::size_t bucket) {
+          core::AppendRows(into[bucket], std::move(from[bucket]));
+        },
+        kBuckets, kParts);
+    for (std::size_t b = 0; b < kBuckets; ++b) {
+      std::vector<int> expected;
+      for (int v = 0; v < 70; ++v) {
+        if (v % kBuckets == b) {
+          expected.push_back(v);
+        }
+      }
+      CHECK(built[b] == expected);
+    }
   }
 }
 
