@@ -7,6 +7,9 @@ use crate::gen_spec::*;
 use crate::model::*;
 use crate::counts::*;
 use crate::input_proofs::*;
+use crate::bounds::*;
+use crate::contrib::*;
+use crate::maintenance_semantics::database_suppliers;
 
 verus! {
 
@@ -391,6 +394,176 @@ pub fn rewrite_column(links: &mut Edges, supplier: i64, inner: &Index<i64>, keep
                     assert(inner.entries()[processed@].0 == (part, Seq::<u8>::empty()));
                     assert(integer_at(*inner, (part, Seq::<u8>::empty())) == *value as int);
                 }
+            }
+        }
+        processed = Ghost(processed@ + 1);
+    }
+}
+
+pub open spec fn within(db: Db, db2: Db) -> bool {
+    envelope(db) && envelope(db2)
+}
+
+pub open spec fn contribution_row(parts: Parts, edges: Edges, blockers: Index<i64>, key: KeyView, row: (KeyView, i64)) -> int {
+    supplier_contribution(parts, edges, blockers, row.0.0, key)
+}
+
+#[verifier::rlimit(200)]
+pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Index<i64>,
+    new_parts: &Parts, new_edges: &Edges, new_blockers: &Index<i64>, suppliers: &Index<i64>,
+    Ghost(db): Ghost<Db>, Ghost(db2): Ghost<Db>,
+) -> (out: Result<Counts, u32>)
+    requires parts_keys_valid(*old_parts), parts_keys_valid(*new_parts),
+        edges_keys_valid(*old_edges), edges_keys_valid(*new_edges),
+        integer_keys(*old_blockers), integer_keys(*new_blockers), key_set(*suppliers),
+        scanned_parts(*old_parts, db), scanned_edges(*old_edges, db), scanned_blockers(*old_blockers, db),
+        scanned_parts(*new_parts, db2), scanned_edges(*new_edges, db2), scanned_blockers(*new_blockers, db2),
+    ensures out matches Ok(groups) ==> cell_keys_valid(groups)
+        && forall|key: KeyView| #[trigger] count_at(groups, key)
+            == sum(suppliers.entries(), |row: (KeyView, i64)|
+                supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
+                    - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key)),
+        out is Err ==> !within(db, db2),
+{
+    let fits = Ghost(within(db, db2));
+    proof {
+        assert forall|part: int, key: KeyView| #[trigger] part_at(*old_parts, part, key) >= 0 by { lemma_part_sum_bound(db, part, key); }
+        assert forall|part: int, key: KeyView| #[trigger] part_at(*new_parts, part, key) >= 0 by { lemma_part_sum_bound(db2, part, key); }
+        suppliers.model();
+        lemma_database_suppliers_len(db);
+        lemma_database_suppliers_len(db2);
+    }
+    let mut group_changes: Counts = Index::new();
+    let mut cursor = suppliers.cursor();
+    let mut processed: Ghost<int> = Ghost(0);
+    loop
+        invariant cell_keys_valid(group_changes), parts_keys_valid(*old_parts), parts_keys_valid(*new_parts),
+            edges_keys_valid(*old_edges), edges_keys_valid(*new_edges), key_set(*suppliers),
+            integer_keys(*old_blockers), integer_keys(*new_blockers),
+            scanned_parts(*old_parts, db), scanned_edges(*old_edges, db), scanned_blockers(*old_blockers, db),
+            scanned_parts(*new_parts, db2), scanned_edges(*new_edges, db2), scanned_blockers(*new_blockers, db2),
+            nonneg_parts(*old_parts), nonneg_parts(*new_parts),
+            fits@ == within(db, db2),
+            database_suppliers(db).len() <= db.partsupp.len(), database_suppliers(db2).len() <= db2.partsupp.len(),
+            0 <= processed@ <= suppliers.entries().len(),
+            cursor.remaining() == suppliers.entries().skip(processed@),
+            verus_prooflib::ordered::ordered_rows(suppliers.entries()),
+            forall|position: int| 0 <= position < suppliers.entries().len() ==> (#[trigger] suppliers.entries()[position]).0.1 == Seq::<u8>::empty(),
+            forall|key: KeyView| #[trigger] count_at(group_changes, key)
+                == sum(suppliers.entries().take(processed@), |row: (KeyView, i64)|
+                    supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
+                        - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key)),
+        decreases cursor.remaining().len(),
+    {
+        let (supplier, _) = match cursor.next() {
+            Some(row) => row,
+            None => {
+                proof {
+                    assert(processed@ == suppliers.entries().len());
+                    assert(suppliers.entries().take(processed@) =~= suppliers.entries());
+                }
+                return Ok(group_changes);
+            },
+        };
+        proof {
+            suppliers.model();
+            assert(supplier.view() == suppliers.entries()[processed@].0);
+            assert(suppliers.at(supplier.view()).is_some());
+            assert(supplier.view().1 == Seq::<u8>::empty());
+            assert(supplier.view() == (supplier.number as int, Seq::<u8>::empty()));
+        }
+        let initial = Ghost(group_changes);
+        let before = match old_blockers.get(&supplier) { Some(value) => *value, None => 0 };
+        let after = match new_blockers.get(&supplier) { Some(value) => *value, None => 0 };
+        proof {
+            assert(before as int == integer_at(*old_blockers, supplier.view()));
+            assert(after as int == integer_at(*new_blockers, supplier.view()));
+            lemma_blocker_count_bound(db, supplier.number as int);
+            lemma_blocker_count_bound(db2, supplier.number as int);
+        }
+        if before == 0 {
+            if let Some(inner) = old_edges.get(&supplier) {
+                proof {
+                    inner.model();
+                    assert(old_edges.at(supplier.view()) == Some(*inner));
+                    assert forall|position: int| 0 <= position < inner.entries().len() implies (#[trigger] inner.entries()[position]).1 >= 0 by {
+                        let entry = inner.entries()[position];
+                        assert(inner.at(entry.0) == Some(entry.1));
+                        assert(edge_at(*old_edges, supplier.number as int, entry.0.0) == entry.1 as int);
+                        lemma_edge_count_bound(db, entry.0.0, supplier.number as int);
+                    }
+                }
+                let groups = join(old_parts, &*inner);
+                proof {
+                    assert forall|key: KeyView| contribution(groups, key, -1i64) == -supplier_contribution(*old_parts, *old_edges, *old_blockers, supplier.number as int, key) by {
+                        lemma_hit_joined(*old_parts, inner.entries(), key);
+                        assert(integer_at(*old_blockers, supplier.view()) == 0);
+                    }
+                    if within(db, db2) {
+                        assert forall|key: KeyView| !out_of_range(count_at(group_changes, key) + contribution(groups, key, -1i64)) by {
+                            lemma_old_call_fits(*old_parts, *old_edges, *old_blockers, *new_parts, *new_edges, *new_blockers, db, db2,
+                                suppliers.entries(), processed@, key);
+                        }
+                    }
+                }
+                if !collect_contribution(&mut group_changes, &groups, -1, fits) { return Err(4); }
+            }
+        }
+        proof {
+            assert forall|key: KeyView| #[trigger] count_at(group_changes, key)
+                == count_at(initial@, key) - supplier_contribution(*old_parts, *old_edges, *old_blockers, supplier.number as int, key) by {
+                if before == 0 {
+                    if old_edges.at(supplier.view()).is_none() { assert(supplier_contribution(*old_parts, *old_edges, *old_blockers, supplier.number as int, key) == 0); }
+                } else {
+                    assert(supplier_contribution(*old_parts, *old_edges, *old_blockers, supplier.number as int, key) == 0);
+                }
+            }
+        }
+        let middle = Ghost(group_changes);
+        if after == 0 {
+            if let Some(inner) = new_edges.get(&supplier) {
+                proof {
+                    inner.model();
+                    assert(new_edges.at(supplier.view()) == Some(*inner));
+                    assert forall|position: int| 0 <= position < inner.entries().len() implies (#[trigger] inner.entries()[position]).1 >= 0 by {
+                        let entry = inner.entries()[position];
+                        assert(inner.at(entry.0) == Some(entry.1));
+                        assert(edge_at(*new_edges, supplier.number as int, entry.0.0) == entry.1 as int);
+                        lemma_edge_count_bound(db2, entry.0.0, supplier.number as int);
+                    }
+                }
+                let groups = join(new_parts, &*inner);
+                proof {
+                    assert forall|key: KeyView| contribution(groups, key, 1i64) == supplier_contribution(*new_parts, *new_edges, *new_blockers, supplier.number as int, key) by {
+                        lemma_hit_joined(*new_parts, inner.entries(), key);
+                        assert(integer_at(*new_blockers, supplier.view()) == 0);
+                    }
+                    if within(db, db2) {
+                        assert forall|key: KeyView| !out_of_range(count_at(group_changes, key) + contribution(groups, key, 1i64)) by {
+                            lemma_new_call_fits(*old_parts, *old_edges, *old_blockers, *new_parts, *new_edges, *new_blockers, db, db2,
+                                suppliers.entries(), processed@, key);
+                        }
+                    }
+                }
+                if !collect_contribution(&mut group_changes, &groups, 1, fits) { return Err(4); }
+            }
+        }
+        proof {
+            assert forall|key: KeyView| #[trigger] count_at(group_changes, key)
+                == count_at(middle@, key) + supplier_contribution(*new_parts, *new_edges, *new_blockers, supplier.number as int, key) by {
+                if after == 0 {
+                    if new_edges.at(supplier.view()).is_none() { assert(supplier_contribution(*new_parts, *new_edges, *new_blockers, supplier.number as int, key) == 0); }
+                } else {
+                    assert(supplier_contribution(*new_parts, *new_edges, *new_blockers, supplier.number as int, key) == 0);
+                }
+            }
+            assert forall|key: KeyView| #[trigger] count_at(group_changes, key)
+                == sum(suppliers.entries().take(processed@ + 1), |row: (KeyView, i64)|
+                    supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
+                        - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key)) by {
+                lemma_sum_take(suppliers.entries(), processed@, |row: (KeyView, i64)|
+                    supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
+                        - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key));
             }
         }
         processed = Ghost(processed@ + 1);
