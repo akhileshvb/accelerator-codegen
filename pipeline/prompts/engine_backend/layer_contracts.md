@@ -198,6 +198,15 @@ commit / abort lifecycle: `PreCommit(txn)` before the commit is visible,
   The guarantee that remains, and that the harness proves: a read that starts
   after a commit was observed includes it, and no read is torn. This is a valid
   design, not a missing feature; never stop this layer for want of a pre-commit hook.
+- **No snapshot identity.** If the engine cannot say which commits a reader's
+  snapshot holds, the reader epoch is the newest observed epoch at the moment the
+  snapshot was fixed. A statement whose snapshot is taken at its own start
+  (autocommit, statement-level isolation) reads at the newest observed epoch. A
+  transaction that fixed its snapshot earlier (first read under repeatable read,
+  or an explicit consistent snapshot: the profile says when) reads at the epoch
+  the backend recorded for its session at that moment. Only a reader whose
+  snapshot moment the backend could not observe answers from SQL. A reader epoch
+  that is "unknown" for every read is a backend that never serves, not a safe one.
 
 **Harness:** concurrent writers on two toy accelerators over the real engine
 commit path; record `(epoch, visible-at-snapshot)` pairs and assert epochs
