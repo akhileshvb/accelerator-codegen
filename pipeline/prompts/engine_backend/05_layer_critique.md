@@ -29,7 +29,7 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
 
 ## Read (in order)
 
-1. `pipeline/prompts/engine_backend/layer_contracts.md` — section `{{layer_id}}`
+1. `pipeline/prompts/engine_backend/layer_contracts.md` — section `{{layer_id}}` and the "Requirements every backend meets" that name this layer
 2. `pipeline/prompts/engine_backend/acceptance_checklist.md` — this layer’s rules
 3. `pipeline/prompts/engine_backend/layers.md` — this row only
 4. Backend + harness files for **this layer only** (paths in analysis

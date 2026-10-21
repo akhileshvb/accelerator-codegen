@@ -53,7 +53,9 @@ the engine side must hold up. Each names its layer.
   invalidating change or are detected before the next answer; the accelerator rebuilds
   or answers from SQL. Where the engine delivers no event for one of them (profile
   `capture.ddl_events`), the backend still never answers from state built for the old
-  table.
+  table: detection never waits for a later write; every read and build checks the
+  table's catalog identity (the engine's table id plus its column list or schema
+  version) against the state's, and a mismatch invalidates before answering.
 - **Abort and crash paths** (`capture`, `epochs`, `runtime`). A rollback (also of a
   subtransaction), an abort after pre-commit, a connection closed inside a
   transaction, a commit whose outcome is unknown, and the death of a worker or session
@@ -62,6 +64,45 @@ the engine side must hold up. Each names its layer.
 - **Thread knobs** (`runtime`). Each phase cap is honoured through the mechanism the
   profile names for `thread_knobs`, at startup and on every later change the engine
   allows; `ACCEL_AUX_*_THREADS` override it.
+- **No process-wide state** (all layers). Backend state lives in objects owned by the
+  per-database host: no namespace-scope or static mutable map, set or counter keyed by
+  engine ids (they leak across databases, hosts and tests). Registries are the only
+  static storage.
+- **Harness rigour** (all layers). A harness compares complete results with an expected
+  set computed independently of the code under test (the engine's own SQL), never a
+  filtered subset or the same code path; it forces races with barriers, never sleeps;
+  and it asserts each contract clause of its layer positively.
+- **Query registries** (`runtime` on an embedded engine, `host` on a server engine; the
+  `api` layer exposes them). Every engine:
+
+  The backend is generated once and must serve any number of queries without
+  being edited: it **names no query**.  Query pipelines add each query under
+  `accelerators/<bench>/q<N>/<engine>/` and plug it in with static registrars,
+  so the backend exposes registries plus generic dispatch over them:
+
+  - **catalog** (`backends/<engine>/api/catalog/query_catalog.{hpp,cpp}`):
+    `Register…(Entry)` + a `…Registrar` struct; lookups and query lists iterate
+    the registry (sorted by query id).
+  - **SQL entry points**: one generic implementation the host calls with the
+    query's registered entry.  Where the host resolves functions by symbol name
+    (UDFs, `PG_FUNCTION_INFO_V1`), the per-name symbol is a one-line shim in the
+    query's directory that forwards to the generic implementation.  The SQL that
+    creates the functions (extension script, `CREATE FUNCTION` list) is assembled
+    from per-query fragments at build/install time, never hand-listed.
+  - **runtime bindings / scans**: a registry from accelerator id to the query's
+    module + scan factory; the backend's scan helpers are exported in a header
+    for the queries' scan code.
+  - Registries are plain functions in a backend `.cpp` with function-local
+    static storage and stable entry addresses (not header-only template
+    singletons, which can duplicate across the host library and the MODULE).
+    Per-query MODULE-side code (scans using server APIs, symbol shims) is
+    globbed into the MODULE from the query directories.
+
+  The build must succeed with **every** `accelerators/<bench>/q<N>/` removed
+  (zero registered queries), and `scripts/check_backend_query_free.py --engine
+  <engine>` must pass (the `engine_build` gate runs it).  Engine-level helpers a
+  query needs (e.g. a key-list predicate, a collation-safe literal) belong in the
+  backend, generic and documented; per-query code never does.
 
 ---
 
@@ -262,37 +303,6 @@ separate test-only MODULE/plugin (`<module>_test`, e.g.
 `accelerator_codegen_pg_test`); the layer harnesses load that module
 themselves. The production MODULE/plugin holds only real entry points
 (capture hooks, query registries and their SQL entry points).
-
-### Query registries (every engine)
-
-The backend is generated once and must serve any number of queries without
-being edited: it **names no query**.  Query pipelines add each query under
-`accelerators/<bench>/q<N>/<engine>/` and plug it in with static registrars,
-so the backend exposes registries plus generic dispatch over them:
-
-- **catalog** (`backends/<engine>/api/catalog/query_catalog.{hpp,cpp}`):
-  `Register…(Entry)` + a `…Registrar` struct; lookups and query lists iterate
-  the registry (sorted by query id).
-- **SQL entry points**: one generic implementation the host calls with the
-  query's registered entry.  Where the host resolves functions by symbol name
-  (UDFs, `PG_FUNCTION_INFO_V1`), the per-name symbol is a one-line shim in the
-  query's directory that forwards to the generic implementation.  The SQL that
-  creates the functions (extension script, `CREATE FUNCTION` list) is assembled
-  from per-query fragments at build/install time, never hand-listed.
-- **runtime bindings / scans**: a registry from accelerator id to the query's
-  module + scan factory; the backend's scan helpers are exported in a header
-  for the queries' scan code.
-- Registries are plain functions in a backend `.cpp` with function-local
-  static storage and stable entry addresses (not header-only template
-  singletons, which can duplicate across the host library and the MODULE).
-  Per-query MODULE-side code (scans using server APIs, symbol shims) is
-  globbed into the MODULE from the query directories.
-
-The build must succeed with **every** `accelerators/<bench>/q<N>/` removed
-(zero registered queries), and `scripts/check_backend_query_free.py --engine
-<engine>` must pass (the `engine_build` gate runs it).  Engine-level helpers a
-query needs (e.g. a key-list predicate, a collation-safe literal) belong in the
-backend, generic and documented; per-query code never does.
 
 ---
 

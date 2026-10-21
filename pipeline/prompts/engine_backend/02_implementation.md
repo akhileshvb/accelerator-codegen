@@ -38,7 +38,7 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
 
 ## Required reads (before writing code)
 
-- `pipeline/prompts/engine_backend/layer_contracts.md` (section `{{layer_id}}`)
+- `pipeline/prompts/engine_backend/layer_contracts.md`: section `{{layer_id}}` and "Requirements every backend meets" (the requirements that name this layer, the registries included)
 - `pipeline/prompts/engine_backend/acceptance_checklist.md`
 - `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract": slot contracts)
 - `substrate/aux/runtime/README.md`, `engine_slots.hpp`, `runtime_host.hpp`,
