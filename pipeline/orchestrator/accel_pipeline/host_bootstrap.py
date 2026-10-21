@@ -44,8 +44,25 @@ def needs_host_bootstrap(workload: dict[str, Any]) -> bool:
     return workload.get("workload_kind") != "engine_backend"
 
 
+def backend_additions_path(repo_root: Path, engine_name: str) -> Path:
+    return pipeline_root(repo_root) / "artifacts" / "backend_additions" / f"{sanitize_engine_name(engine_name)}.jsonl"
+
+
+def pending_harness_requests(repo_root: Path, engine_name: str) -> str:
+    """Harness defects query runs recorded since the last bootstrap pass (query_host_bootstrap.md,
+    Ownership): a query run may not edit the harnesses, so the next bootstrap fixes them."""
+    requests = backend_additions_path(repo_root, engine_name)
+    status = host_bootstrap_status_path(repo_root, engine_name)
+    if not requests.is_file() or (status.is_file() and status.stat().st_mtime >= requests.stat().st_mtime):
+        return ""
+    return requests.read_text(encoding="utf-8").strip()
+
+
 def host_bootstrap_passed(repo_root: Path, engine_name: str) -> bool:
-    """The last gate run passed (it built and smoked every harness) and the sources are still there."""
+    """The last gate run passed (it built and smoked every harness), the sources are still there,
+    and no query run has recorded a harness defect since."""
+    if pending_harness_requests(repo_root, engine_name):
+        return False
     path = host_bootstrap_status_path(repo_root, engine_name)
     if not path.is_file():
         return False
@@ -210,7 +227,13 @@ def run_host_bootstrap(
         workload.get("host_bootstrap_critique_max_rounds") or _DEFAULT_CRITIQUE_MAX_ROUNDS
     )
     max_critique = max(0, configured_critique)
-    extra = ""
+    requests = pending_harness_requests(pipeline_config.repo_root, engine)
+    extra = (
+        f"Query runs recorded these harness defects in "
+        f"`pipeline/artifacts/backend_additions/{engine}.jsonl`; fix every one in the harnesses:\n\n{requests}"
+        if requests
+        else ""
+    )
     gate_fails = 0
     critique_round = 0
     last_gate: GateResult | None = None

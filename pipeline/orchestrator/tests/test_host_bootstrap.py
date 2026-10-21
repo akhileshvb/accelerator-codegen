@@ -396,3 +396,26 @@ def test_host_bootstrap_cannot_write_anything_else(path):
 
 def test_other_stages_still_cannot_write_a_backend_harness():
     assert _hb_write("backends/postgres/tests/harness/x.cpp", stage="implementation")[0] is False
+
+
+def test_a_recorded_harness_defect_reopens_the_bootstrap(tmp_path):
+    import os
+    import time
+
+    from accel_pipeline.host_bootstrap import (
+        backend_additions_path,
+        host_bootstrap_status_path,
+        pending_harness_requests,
+    )
+
+    status = host_bootstrap_status_path(tmp_path, "anyengine")
+    status.parent.mkdir(parents=True, exist_ok=True)
+    status.write_text('{"status": "pass"}')
+    assert pending_harness_requests(tmp_path, "anyengine") == ""
+
+    requests = backend_additions_path(tmp_path, "anyengine")
+    requests.parent.mkdir(parents=True, exist_ok=True)
+    requests.write_text('{"helper": "transaction-safe setup"}\n')
+    later = time.time() + 5
+    os.utime(requests, (later, later))
+    assert "transaction-safe setup" in pending_harness_requests(tmp_path, "anyengine")
