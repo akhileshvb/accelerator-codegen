@@ -113,10 +113,10 @@ pub proof fn lemma_unaffected_weight(before: Data, after: Data, db: Db, db2: Db,
     hide(sum);
     lemma_runtime_access(before);
     reveal(dimension_meaning);
-    let old_part = |row: PartRow| if row.p_partkey == line.l_partkey && text_matches(before.dictionary, kind, row.p_type) { 1int } else { 0int };
-    let new_part = |row: PartRow| if row.p_partkey == line.l_partkey && text_matches(after.dictionary, kind, row.p_type) { 1int } else { 0int };
+    let old_part = |row: PartRow| if row.p_partkey == line.l_partkey && text_matches(before.dictionary, 0, kind, row.p_type) { 1int } else { 0int };
+    let new_part = |row: PartRow| if row.p_partkey == line.l_partkey && text_matches(after.dictionary, 0, kind, row.p_type) { 1int } else { 0int };
     assert forall|index: int| 0 <= index < db.part.len() implies old_part(#[trigger] db.part[index]) == new_part(db.part[index]) by {
-        lemma_known_text_extension(before.dictionary, after.dictionary, db.part[index].p_type);
+        lemma_known_text_extension(before.dictionary, after.dictionary, 0, db.part[index].p_type);
     }
     lemma_sum_ext(db.part, old_part, new_part);
     let part_changes = part_delta_seq_view(parts);

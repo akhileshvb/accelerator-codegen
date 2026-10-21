@@ -4,6 +4,7 @@ use std::sync::Arc;
 use verus_common::sums::*;
 use verus_common::rel::*;
 use verus_prooflib::ordered::{Index, Key};
+use crate::num::Num;
 
 verus! {
 
@@ -11,13 +12,20 @@ broadcast use { vstd::std_specs::hash::group_hash_axioms, vstd::seq_lib::group_s
 
 pub type Major = (i64, i64, i64);
 
-#[derive(Clone, Copy)]
 pub struct Cell {
     pub first: i64,
     pub second: i64,
     pub third: i64,
-    pub count: i128,
-    pub volume: i128,
+    pub count: Num,
+    pub volume: Num,
+}
+
+impl Clone for Cell {
+    fn clone(&self) -> (result: Cell)
+        ensures result == *self,
+    {
+        Cell { first: self.first, second: self.second, third: self.third, count: self.count.dup(), volume: self.volume.dup() }
+    }
 }
 
 /// A bucket of a table: a few keys with their rows laid end to end in one flat cell vector
@@ -147,6 +155,16 @@ pub struct Table {
     pub pages: Arc<PageDirectory>,
 }
 
+/// A sizing hint for `Table::empty`: the product of two counts, capped.
+pub fn size_hint(left: usize, right: usize) -> (result: usize)
+    ensures result <= 67108864,
+{
+    match left.checked_mul(right) {
+        Some(product) => if product > 67108864 { 67108864 } else { product },
+        None => 67108864,
+    }
+}
+
 pub open spec fn slot(key: Major, slots: int) -> int {
     (1208925819614629174706176 + key.0 as int + key.1 as int * 65537 + key.2 as int * 4099) % slots
 }
@@ -169,70 +187,83 @@ pub open spec fn minor_of(cell: Cell) -> Major {
 }
 
 pub open spec fn cell_weight(cell: Cell, minor: Major, volume: bool) -> int {
-    if minor_of(cell) == minor { if volume { cell.volume as int } else { cell.count as int } } else { 0 }
+    if minor_of(cell) == minor { if volume { cell.volume@ } else { cell.count@ } } else { 0 }
 }
 
-fn add_cells(rows: Vec<Cell>, minor: Major, count: i128, volume: i128) -> (result: Option<Vec<Cell>>)
+fn add_cells(rows: Vec<Cell>, minor: Major, count: Num, volume: Num) -> (result: Vec<Cell>)
     requires rows_valid(rows@),
-    ensures result matches Some(after) ==> rows_valid(after@)
-        && forall|small: Major, measure: bool| #[trigger] cell_sum(after@, small, measure) == cell_sum(rows@, small, measure)
-            + if small == minor { if measure { volume as int } else { count as int } } else { 0 },
+    ensures rows_valid(result@)
+        && forall|small: Major, measure: bool| #[trigger] cell_sum(result@, small, measure) == cell_sum(rows@, small, measure)
+            + if small == minor { if measure { volume@ } else { count@ } } else { 0 },
 {
+    reveal(rows_valid);
+    let ghost count_v = count@;
+    let ghost volume_v = volume@;
     proof { reveal(cell_sum); }
     let ghost before = rows@;
     let mut current = rows;
     let mut index = 0;
     while index < current.len()
         invariant index <= current.len(), current@ == before, before == rows@, rows_valid(before),
+            count_v == count@, volume_v == volume@,
             forall|offset: int| 0 <= offset < index ==> minor_of(#[trigger] before[offset]) != minor,
         decreases current.len() - index,
     {
-        let cell = current[index];
-        if minor_of_exec(cell) == minor {
-            let new_count = cell.count.checked_add(count)?;
-            let new_volume = cell.volume.checked_add(volume)?;
-            if new_count == 0 && new_volume == 0 {
+        let cell = current[index].clone();
+        if minor_of_exec(&cell) == minor {
+            let new_count = cell.count.add(&count);
+            let new_volume = cell.volume.add(&volume);
+            if new_count.is_zero() && new_volume.is_zero() {
                 current.remove(index);
                 proof {
+                    assert(cell == before[index as int]);
+                    assert(count_v == count@);
+                    assert(new_count@ == cell.count@ + count@);
+                    assert(new_count@ == cell.count@ + count_v);
+                    assert(new_volume@ == cell.volume@ + volume_v);
+                    assert(current@ == before.remove(index as int));
                     lemma_rows_remove(before, index as int);
                     assert forall|small: Major, measure: bool| #[trigger] cell_sum(current@, small, measure) == cell_sum(before, small, measure)
-                    + if small == minor { if measure { volume as int } else { count as int } } else { 0 } by {
+                    + if small == minor { if measure { volume_v } else { count_v } } else { 0 } by {
                         reveal(cell_sum);
                         lemma_sum_remove(before, index as int, |entry: Cell| cell_weight(entry, small, measure));
                     }
                 }
             } else {
                 let replacement = Cell { first: minor.0, second: minor.1, third: minor.2, count: new_count, volume: new_volume };
+                let ghost replacement_spec = replacement;
                 current.set(index, replacement);
                 proof {
+                    let replacement = replacement_spec;
                     lemma_rows_update(before, index as int, replacement);
                     assert forall|small: Major, measure: bool| #[trigger] cell_sum(current@, small, measure) == cell_sum(before, small, measure)
-                    + if small == minor { if measure { volume as int } else { count as int } } else { 0 } by {
+                    + if small == minor { if measure { volume_v } else { count_v } } else { 0 } by {
                         reveal(cell_sum);
                         lemma_sum_update(before, index as int, replacement, |entry: Cell| cell_weight(entry, small, measure));
                     }
                 }
             }
-            return Some(current);
+            return current;
         }
         index += 1;
     }
+    if count.is_zero() && volume.is_zero() { return current; }
     let cell = Cell { first: minor.0, second: minor.1, third: minor.2, count, volume };
-    if count == 0 && volume == 0 { return Some(current); }
+    let ghost cell_spec = cell;
     current.push(cell);
     proof {
         assert(rows_valid(current@));
         assert forall|small: Major, measure: bool| #[trigger] cell_sum(current@, small, measure) == cell_sum(before, small, measure)
-            + if small == minor { if measure { volume as int } else { count as int } } else { 0 } by {
+            + if small == minor { if measure { volume_v } else { count_v } } else { 0 } by {
             reveal(cell_sum);
-            lemma_sum_push(before, cell, |entry: Cell| cell_weight(entry, small, measure));
+            lemma_sum_push(before, cell_spec, |entry: Cell| cell_weight(entry, small, measure));
         }
     }
-    Some(current)
+    current
 }
 
-fn minor_of_exec(cell: Cell) -> (result: Major)
-    ensures result == minor_of(cell),
+fn minor_of_exec(cell: &Cell) -> (result: Major)
+    ensures result == minor_of(*cell),
 {
     (cell.first, cell.second, cell.third)
 }
@@ -241,8 +272,9 @@ proof fn lemma_rows_remove(rows: Seq<Cell>, index: int)
     requires rows_valid(rows), 0 <= index < rows.len(),
     ensures rows_valid(rows.remove(index)),
 {
+    reveal(rows_valid);
     assert forall|offset: int| 0 <= offset < rows.remove(index).len() implies
-        (#[trigger] rows.remove(index)[offset]).count != 0 || rows.remove(index)[offset].volume != 0 by {
+        (#[trigger] rows.remove(index)[offset]).count@ != 0 || rows.remove(index)[offset].volume@ != 0 by {
         assert(rows.remove(index)[offset] == rows[if offset < index { offset } else { offset + 1 }]);
     }
     assert forall|left: int, right: int| 0 <= left < right < rows.remove(index).len() implies
@@ -253,18 +285,20 @@ proof fn lemma_rows_remove(rows: Seq<Cell>, index: int)
 }
 
 proof fn lemma_rows_update(rows: Seq<Cell>, index: int, cell: Cell)
-    requires rows_valid(rows), 0 <= index < rows.len(), minor_of(cell) == minor_of(rows[index]), cell.count != 0 || cell.volume != 0,
+    requires rows_valid(rows), 0 <= index < rows.len(), minor_of(cell) == minor_of(rows[index]), cell.count@ != 0 || cell.volume@ != 0,
     ensures rows_valid(rows.update(index, cell)),
 {
+    reveal(rows_valid);
     assert forall|offset: int| 0 <= offset < rows.update(index, cell).len() implies
-        (#[trigger] rows.update(index, cell)[offset]).count != 0 || rows.update(index, cell)[offset].volume != 0 by {}
+        (#[trigger] rows.update(index, cell)[offset]).count@ != 0 || rows.update(index, cell)[offset].volume@ != 0 by {}
     assert forall|left: int, right: int| 0 <= left < right < rows.update(index, cell).len() implies
         minor_of(#[trigger] rows.update(index, cell)[left]) != minor_of(#[trigger] rows.update(index, cell)[right]) by {}
 }
 
+#[verifier::opaque]
 pub open spec fn rows_valid(rows: Seq<Cell>) -> bool {
     &&& forall|index: int| 0 <= index < rows.len() ==>
-        (#[trigger] rows[index]).count != 0 || rows[index].volume != 0
+        (#[trigger] rows[index]).count@ != 0 || rows[index].volume@ != 0
     &&& forall|left: int, right: int| 0 <= left < right < rows.len() ==>
         minor_of(#[trigger] rows[left]) != minor_of(#[trigger] rows[right])
 }
@@ -355,6 +389,7 @@ pub proof fn lemma_flat_rows_valid(bucket: Flat, position: int, slots: int, key:
     ensures rows_valid(flat_rows(bucket, key)), flat_rows(bucket, key).len() > 0 <==> bucket.keys@.contains(key),
         bucket.keys@.contains(key) ==> slot(key, slots) == position,
 {
+    reveal(rows_valid);
     reveal(flat_valid);
     if bucket.keys@.contains(key) {
         let i = keyed_index(bucket.keys@, key);
@@ -408,7 +443,7 @@ pub fn copy_range(cells: &Vec<Cell>, start: usize, end: usize) -> (result: Vec<C
         invariant start <= offset <= end, end <= cells.len(), result@ == cells@.subrange(start as int, offset as int),
         decreases end - offset,
     {
-        result.push(cells[offset]);
+        result.push(cells[offset].clone());
         proof { assert(cells@.subrange(start as int, offset as int + 1) =~= cells@.subrange(start as int, offset as int).push(cells@[offset as int])); }
         offset += 1;
     }
@@ -499,7 +534,7 @@ pub fn flat_of(draft: &Draft, Ghost(position): Ghost<int>, Ghost(slots): Ghost<i
             invariant offset <= row.len(), cells@ == old_cells + row@.take(offset as int),
             decreases row.len() - offset,
         {
-            cells.push(row[offset]);
+            cells.push(row[offset].clone());
             proof { assert(row@.take(offset as int + 1) =~= row@.take(offset as int).push(row@[offset as int])); }
             offset += 1;
         }
@@ -628,6 +663,7 @@ pub fn draft_remove(draft: &mut Draft, key: Major, Ghost(position): Ghost<int>, 
         !final(draft).keys@.contains(key),
         forall|other: Major| other != key ==> #[trigger] draft_rows(*final(draft), other) == draft_rows(*old(draft), other),
 {
+    reveal(rows_valid);
     let ghost before = *draft;
     let mut i = 0;
     while i < draft.keys.len()
@@ -712,11 +748,12 @@ pub proof fn lemma_ends_mono(ends: Seq<usize>, a: int, b: int)
 #[verifier::rlimit(60)]
 pub proof fn lemma_flat_set(keys: Seq<Major>, ends: Seq<usize>, cells: Seq<Cell>, position: int, slots: int, i: int, p: int, cell: Cell)
     requires flat_valid(keys, ends, cells, position, slots), 0 <= i < ends.len(),
-        seq_start(ends, i) <= p < ends[i] as int, minor_of(cell) == minor_of(cells[p]), cell.count != 0 || cell.volume != 0,
+        seq_start(ends, i) <= p < ends[i] as int, minor_of(cell) == minor_of(cells[p]), cell.count@ != 0 || cell.volume@ != 0,
     ensures flat_valid(keys, ends, cells.update(p, cell), position, slots),
         seq_row(ends, cells.update(p, cell), i) == seq_row(ends, cells, i).update(p - seq_start(ends, i), cell),
         forall|j: int| 0 <= j < ends.len() && j != i ==> seq_row(ends, cells.update(p, cell), j) == seq_row(ends, cells, j),
 {
+    reveal(rows_valid);
     reveal(flat_valid);
     let cells2 = cells.update(p, cell);
     let st = seq_start(ends, i);
@@ -776,11 +813,12 @@ pub proof fn lemma_flat_insert(keys: Seq<Major>, ends: Seq<usize>, cells: Seq<Ce
 /// Append a new key with a one-cell row.
 pub proof fn lemma_flat_push(keys: Seq<Major>, ends: Seq<usize>, cells: Seq<Cell>, position: int, slots: int, key: Major, cell: Cell, end: usize)
     requires flat_valid(keys, ends, cells, position, slots), !keys.contains(key), slot(key, slots) == position,
-        cell.count != 0 || cell.volume != 0, end as int == cells.len() + 1,
+        cell.count@ != 0 || cell.volume@ != 0, end as int == cells.len() + 1,
     ensures flat_valid(keys.push(key), ends.push(end), cells.push(cell), position, slots),
         seq_row(ends.push(end), cells.push(cell), ends.len() as int) == seq![cell],
         forall|j: int| 0 <= j < ends.len() ==> seq_row(ends.push(end), cells.push(cell), j) == seq_row(ends, cells, j),
 {
+    reveal(rows_valid);
     reveal(flat_valid);
     let keys2 = keys.push(key);
     let ends2 = ends.push(end);
@@ -839,12 +877,13 @@ pub proof fn lemma_flat_update_row(orig: Flat, b: Flat, position: int, slots: in
 }
 
 pub proof fn lemma_rows_push(row: Seq<Cell>, cell: Cell)
-    requires rows_valid(row), cell.count != 0 || cell.volume != 0,
+    requires rows_valid(row), cell.count@ != 0 || cell.volume@ != 0,
         forall|q: int| 0 <= q < row.len() ==> minor_of(row[q]) != minor_of(cell),
     ensures rows_valid(row.push(cell)),
 {
+    reveal(rows_valid);
     let after = row.push(cell);
-    assert forall|index: int| 0 <= index < after.len() implies (#[trigger] after[index]).count != 0 || after[index].volume != 0 by {
+    assert forall|index: int| 0 <= index < after.len() implies (#[trigger] after[index]).count@ != 0 || after[index].volume@ != 0 by {
         if index < row.len() { assert(after[index] == row[index]); }
     }
     assert forall|left: int, right: int| 0 <= left < right < after.len() implies minor_of(#[trigger] after[left]) != minor_of(#[trigger] after[right]) by {
@@ -885,7 +924,7 @@ pub fn flat_copy_with(bucket: &Flat, spare: usize) -> (result: Flat)
         invariant i <= bucket.cells.len(), cells@ == bucket.cells@.take(i as int),
         decreases bucket.cells.len() - i,
     {
-        cells.push(bucket.cells[i]);
+        cells.push(bucket.cells[i].clone());
         proof { assert(bucket.cells@.take(i as int + 1) =~= bucket.cells@.take(i as int).push(bucket.cells@[i as int])); }
         i += 1;
     }
@@ -895,13 +934,15 @@ pub fn flat_copy_with(bucket: &Flat, spare: usize) -> (result: Flat)
 
 /// Add `count` and `volume` to the cell of `key` at `minor` in an owned bucket, in place when it can be.
 #[verifier::rlimit(60)]
-pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i128, Ghost(position): Ghost<int>, Ghost(slots): Ghost<int>) -> (result: Option<Flat>)
+pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: Num, volume: Num, Ghost(position): Ghost<int>, Ghost(slots): Ghost<int>) -> (result: Flat)
     requires flat_ok(bucket, position, slots), slot(key, slots) == position,
-    ensures result matches Some(after) ==> flat_ok(after, position, slots)
-        && (forall|other: Major| other != key ==> #[trigger] flat_rows(after, other) == flat_rows(bucket, other))
-        && (forall|small: Major, measure: bool| #[trigger] cell_sum(flat_rows(after, key), small, measure) == cell_sum(flat_rows(bucket, key), small, measure)
-            + if small == minor { if measure { volume as int } else { count as int } } else { 0 }),
+    ensures flat_ok(result, position, slots)
+        && (forall|other: Major| other != key ==> #[trigger] flat_rows(result, other) == flat_rows(bucket, other))
+        && (forall|small: Major, measure: bool| #[trigger] cell_sum(flat_rows(result, key), small, measure) == cell_sum(flat_rows(bucket, key), small, measure)
+            + if small == minor { if measure { volume@ } else { count@ } } else { 0 }),
 {
+    let ghost count_v = count@;
+    let ghost volume_v = volume@;
     let ghost orig = bucket;
     let mut b = bucket;
     proof { lemma_flat_facts(orig, position, slots); }
@@ -924,18 +965,19 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
             assert(flat_rows(orig, key) =~= Seq::<Cell>::empty());
             reveal(cell_sum);
         }
-        if count == 0 && volume == 0 { return Some(b); }
+        if count.is_zero() && volume.is_zero() { return b; }
         let cell = Cell { first: minor.0, second: minor.1, third: minor.2, count, volume };
+        let ghost cell_spec = cell;
         b.keys.push(key);
         b.cells.push(cell);
         let end = b.cells.len();
         b.ends.push(end);
         proof {
-            lemma_flat_push(orig.keys@, orig.ends@, orig.cells@, position, slots, key, cell, end);
+            lemma_flat_push(orig.keys@, orig.ends@, orig.cells@, position, slots, key, cell_spec, end);
             let last = orig.ends@.len() as int;
             assert(flat_ok(b, position, slots));
             lemma_keyed_index(b.keys@, last);
-            assert(flat_rows(b, key) == seq![cell]);
+            assert(flat_rows(b, key) == seq![cell_spec]);
             assert(b.keys@.len() == orig.keys@.len() + 1);
             assert forall|other: Major| other != key implies #[trigger] flat_rows(b, other) == flat_rows(orig, other) by {
                 if orig.keys@.contains(other) {
@@ -953,12 +995,12 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
             }
             reveal(cell_sum);
             assert forall|small: Major, measure: bool| #[trigger] cell_sum(flat_rows(b, key), small, measure) == cell_sum(flat_rows(orig, key), small, measure)
-                + if small == minor { if measure { volume as int } else { count as int } } else { 0 } by {
-                lemma_sum_push(Seq::<Cell>::empty(), cell, |entry: Cell| cell_weight(entry, small, measure));
-                assert(Seq::<Cell>::empty().push(cell) =~= seq![cell]);
+                + if small == minor { if measure { volume_v } else { count_v } } else { 0 } by {
+                lemma_sum_push(Seq::<Cell>::empty(), cell_spec, |entry: Cell| cell_weight(entry, small, measure));
+                assert(Seq::<Cell>::empty().push(cell_spec) =~= seq![cell_spec]);
             }
         }
-        return Some(b);
+        return b;
     }
     let start = row_start(&b.ends, i);
     let end = b.ends[i];
@@ -970,23 +1012,27 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
     }
     let mut p = start;
     while p < end
-        invariant orig == bucket, start <= p <= end, end <= b.cells.len(), b == orig, flat_ok(orig, position, slots), i < orig.keys@.len(), orig.keys@.len() == orig.ends@.len(), orig.keys@[i as int] == key, end == orig.ends@[i as int], start as int == seq_start(orig.ends@, i as int),
+        invariant orig == bucket, start <= p <= end, end <= b.cells.len(), count_v == count@, volume_v == volume@, b == orig, flat_ok(orig, position, slots), i < orig.keys@.len(), orig.keys@.len() == orig.ends@.len(), orig.keys@[i as int] == key, end == orig.ends@[i as int], start as int == seq_start(orig.ends@, i as int),
             forall|q: int| start <= q < p ==> minor_of(#[trigger] orig.cells@[q]) != minor,
         decreases end - p,
     {
-        let cell = b.cells[p];
+        let cell = b.cells[p].clone();
         proof { lemma_flat_facts(orig, position, slots); }
         if (cell.first, cell.second, cell.third) == minor {
-            let new_count = cell.count.checked_add(count)?;
-            let new_volume = cell.volume.checked_add(volume)?;
-            if new_count == 0 && new_volume == 0 { break; }
+            let new_count = cell.count.add(&count);
+            let new_volume = cell.volume.add(&volume);
+            let ghost new_count_v = new_count@;
+            let ghost new_volume_v = new_volume@;
+            if new_count.is_zero() && new_volume.is_zero() { break; }
             let replacement = Cell { first: minor.0, second: minor.1, third: minor.2, count: new_count, volume: new_volume };
+            let ghost replacement_spec = replacement;
             b.cells.set(p, replacement);
             proof {
+                let replacement = replacement_spec;
                 assert(orig.ends@.len() == orig.keys@.len());
                 assert(seq_start(orig.ends@, i as int) <= p as int && (p as int) < orig.ends@[i as int] as int);
                 assert(minor_of(replacement) == minor_of(orig.cells@[p as int]));
-                assert(replacement.count != 0 || replacement.volume != 0);
+                assert(replacement.count@ != 0 || replacement.volume@ != 0);
                 assert(flat_ok(orig, position, slots));
                 lemma_flat_set(orig.keys@, orig.ends@, orig.cells@, position, slots, i as int, p as int, replacement);
                 let row = seq_row(orig.ends@, orig.cells@, i as int);
@@ -999,20 +1045,20 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
                 reveal(cell_sum);
                 assert(row[p as int - start as int] == cell);
                 assert(minor_of(cell) == minor);
-                assert(new_count as int == cell.count as int + count as int && new_volume as int == cell.volume as int + volume as int);
+                assert(new_count_v == cell.count@ + count_v && new_volume_v == cell.volume@ + volume_v);
                 assert forall|small: Major, measure: bool| #[trigger] cell_sum(flat_rows(b, key), small, measure) == cell_sum(flat_rows(orig, key), small, measure)
-                    + if small == minor { if measure { volume as int } else { count as int } } else { 0 } by {
+                    + if small == minor { if measure { volume_v } else { count_v } } else { 0 } by {
                     lemma_sum_update(row, p as int - start as int, replacement, |entry: Cell| cell_weight(entry, small, measure));
                     assert(flat_rows(b, key) == row2);
                     assert(flat_rows(orig, key) == row);
-                    assert(cell_weight(cell, small, measure) == if small == minor { if measure { cell.volume as int } else { cell.count as int } } else { 0 });
-                    assert(cell_weight(replacement, small, measure) == if small == minor { if measure { new_volume as int } else { new_count as int } } else { 0 });
+                    assert(cell_weight(cell, small, measure) == if small == minor { if measure { cell.volume@ } else { cell.count@ } } else { 0 });
+                    assert(cell_weight(replacement, small, measure) == if small == minor { if measure { new_volume_v } else { new_count_v } } else { 0 });
                 }
                 assert(flat_ok(b, position, slots));
                 assert(orig == bucket);
                 assert forall|other: Major| other != key implies #[trigger] flat_rows(b, other) == flat_rows(bucket, other) by {}
             }
-            return Some(b);
+            return b;
         }
         proof { assert(minor_of(orig.cells@[p as int]) != minor); }
         p += 1;
@@ -1020,41 +1066,43 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
     // not in place: the minor is new in this row, or the cell cancels out
     let ghost slow = p < end;
     if p == end {
-        if count == 0 && volume == 0 { proof { reveal(cell_sum); } return Some(b); }
+        if count.is_zero() && volume.is_zero() { proof { reveal(cell_sum); } return b; }
         // append a new minor to the row
         let cell = Cell { first: minor.0, second: minor.1, third: minor.2, count, volume };
+        let ghost cell_spec = cell;
         b.cells.insert(end, cell);
         let mut j = i;
         let m = b.ends.len();
         while j < m
-            invariant orig == bucket, i <= j <= m, m == b.ends.len(), m == orig.ends@.len(), b.keys@ == orig.keys@, b.cells@ == orig.cells@.insert(end as int, cell),
+            invariant orig == bucket, i <= j <= m, m == b.ends.len(), count_v == count@, volume_v == volume@, m == orig.ends@.len(), b.keys@ == orig.keys@, b.cells@ == orig.cells@.insert(end as int, cell_spec),
                 flat_ok(orig, position, slots), i < orig.keys@.len(), orig.keys@.len() == orig.ends@.len(), orig.keys@[i as int] == key, end == orig.ends@[i as int],
                 forall|q: int| 0 <= q < i ==> b.ends@[q] == orig.ends@[q],
                 forall|q: int| i <= q < j ==> b.ends@[q] as int == orig.ends@[q] as int + 1,
                 forall|q: int| j <= q < m ==> b.ends@[q] == orig.ends@[q],
             decreases m - j,
         {
-            let e = b.ends[j].checked_add(1)?;
+            proof { lemma_flat_facts(orig, position, slots); assert(b.cells@.len() == orig.cells@.len() + 1); assert(b.cells.len() as int == b.cells@.len()); }
+            let e = b.ends[j] + 1;
             b.ends.set(j, e);
             j += 1;
         }
         proof {
             let row = seq_row(orig.ends@, orig.cells@, i as int);
-            assert forall|q: int| 0 <= q < row.len() implies minor_of(row[q]) != minor_of(cell) by {
+            assert forall|q: int| 0 <= q < row.len() implies minor_of(row[q]) != minor_of(cell_spec) by {
                 assert(row[q] == orig.cells@[start as int + q]);
             }
-            lemma_rows_push(row, cell);
-            lemma_flat_insert(orig.keys@, orig.ends@, orig.cells@, b.ends@, position, slots, i as int, cell);
+            lemma_rows_push(row, cell_spec);
+            lemma_flat_insert(orig.keys@, orig.ends@, orig.cells@, b.ends@, position, slots, i as int, cell_spec);
             assert(flat_ok(b, position, slots));
             assert forall|j: int| 0 <= j < orig.ends@.len() && j != i as int implies seq_row(b.ends@, b.cells@, j) == seq_row(orig.ends@, orig.cells@, j) by {}
             lemma_flat_update_row(orig, b, position, slots, key, i as int);
             reveal(cell_sum);
             assert forall|small: Major, measure: bool| #[trigger] cell_sum(flat_rows(b, key), small, measure) == cell_sum(flat_rows(orig, key), small, measure)
-                + if small == minor { if measure { volume as int } else { count as int } } else { 0 } by {
-                lemma_sum_push(row, cell, |entry: Cell| cell_weight(entry, small, measure));
+                + if small == minor { if measure { volume_v } else { count_v } } else { 0 } by {
+                lemma_sum_push(row, cell_spec, |entry: Cell| cell_weight(entry, small, measure));
             }
         }
-        return Some(b);
+        return b;
     }
     // the cell cancels out: rebuild this bucket
     let mut draft = draft_of(&b, Ghost(position), Ghost(slots));
@@ -1062,7 +1110,7 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
     proof { lemma_flat_facts(orig, position, slots); lemma_rows_agree(orig, d0); }
     let row = draft_remove(&mut draft, key, Ghost(position), Ghost(slots));
     let ghost d1 = draft;
-    let updated = add_cells(row, minor, count, volume)?;
+    let updated = add_cells(row, minor, count, volume);
     draft_insert(&mut draft, key, updated, Ghost(position), Ghost(slots));
     let result = flat_of(&draft, Ghost(position), Ghost(slots));
     proof {
@@ -1074,11 +1122,11 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
         assert(flat_rows(result, key) == updated@);
         assert(row@ == flat_rows(orig, key));
     }
-    Some(result)
+    result
 }
 
 pub open spec fn pair_cell(pair: Pair) -> Cell {
-    Cell { first: pair.first, second: pair.second, third: 0, count: 1, volume: 0 }
+    Cell { first: pair.first, second: pair.second, third: 0, count: Num::Small(1i128), volume: Num::Small(0i128) }
 }
 
 pub open spec fn bucket_cells(bucket: Bucket) -> Seq<Cell> {
@@ -1122,6 +1170,7 @@ pub proof fn lemma_bucket_rows_valid(bucket: Bucket, position: int, slots: int, 
     ensures rows_valid(bucket_rows(bucket, key)), bucket_rows(bucket, key).len() > 0 <==> bucket.keys@.contains(key),
         bucket.keys@.contains(key) ==> slot(key, slots) == position,
 {
+    reveal(rows_valid);
     reveal(flat_valid);
     if bucket.keys@.contains(key) {
         let i = keyed_index(bucket.keys@, key);
@@ -1163,7 +1212,7 @@ pub fn bucket_range(bucket: &Bucket, start: usize, end: usize) -> (result: Vec<C
             decreases end - offset,
         {
             let pair = bucket.pairs[offset];
-            result.push(Cell { first: pair.first, second: pair.second, third: 0, count: 1, volume: 0 });
+            result.push(Cell { first: pair.first, second: pair.second, third: 0, count: Num::Small(1), volume: Num::Small(0) });
             proof {
                 assert(bucket_cells(*bucket).subrange(start as int, offset as int + 1) =~= bucket_cells(*bucket).subrange(start as int, offset as int).push(bucket_cells(*bucket)[offset as int]));
                 assert(bucket_cells(*bucket)[offset as int] == pair_cell(bucket.pairs@[offset as int]));
@@ -1224,8 +1273,8 @@ pub fn bucket_pack(flat: &Flat) -> (result: Bucket)
             simple ==> forall|j: int| 0 <= j < index ==> pair_cell(Pair { first: flat.cells@[j].first, second: flat.cells@[j].second }) == flat.cells@[j],
         decreases n - index,
     {
-        let cell = flat.cells[index];
-        if !(cell.third == 0 && cell.count == 1 && cell.volume == 0) { simple = false; }
+        let cell = &flat.cells[index];
+        if !(cell.third == 0 && cell.count.is_small(1) && cell.volume.is_small(0)) { simple = false; }
         index += 1;
     }
     let keys = copy_keys(&flat.keys, 0);
@@ -1239,7 +1288,7 @@ pub fn bucket_pack(flat: &Flat) -> (result: Bucket)
                 forall|j: int| 0 <= j < offset ==> pairs@[j] == (Pair { first: flat.cells@[j].first, second: flat.cells@[j].second }),
             decreases n - offset,
         {
-            let cell = flat.cells[offset];
+            let cell = &flat.cells[offset];
             pairs.push(Pair { first: cell.first, second: cell.second });
             offset += 1;
         }
@@ -1275,7 +1324,7 @@ pub fn bucket_unpack(bucket: &Bucket, spare: usize) -> (result: Flat)
             decreases bucket.pairs.len() - index,
         {
             let pair = bucket.pairs[index];
-            cells.push(Cell { first: pair.first, second: pair.second, third: 0, count: 1, volume: 0 });
+            cells.push(Cell { first: pair.first, second: pair.second, third: 0, count: Num::Small(1), volume: Num::Small(0) });
             proof {
                 let mapped = bucket.pairs@.map_values(|pair: Pair| pair_cell(pair));
                 assert(mapped.take(index as int + 1) =~= mapped.take(index as int).push(mapped[index as int]));
@@ -1293,7 +1342,7 @@ pub fn bucket_unpack(bucket: &Bucket, spare: usize) -> (result: Flat)
             invariant !bucket.packed, index <= bucket.cells.len(), cells@ == bucket.cells@.take(index as int),
             decreases bucket.cells.len() - index,
         {
-            cells.push(bucket.cells[index]);
+            cells.push(bucket.cells[index].clone());
             proof { assert(bucket.cells@.take(index as int + 1) =~= bucket.cells@.take(index as int).push(bucket.cells@[index as int])); }
             index += 1;
         }
@@ -1340,12 +1389,7 @@ impl Table {
 
     pub open spec fn valid(self) -> bool {
         &&& self.shaped()
-        &&& forall|key: Major, index: int| 0 <= index < self.rows(key).len() ==>
-            (#[trigger] self.rows(key)[index]).count != 0 || self.rows(key)[index].volume != 0
-        &&& forall|key: Major, left: int, right: int| 0 <= left < right < self.rows(key).len() ==>
-            (#[trigger] self.rows(key)[left]).first != (#[trigger] self.rows(key)[right]).first
-            || self.rows(key)[left].second != self.rows(key)[right].second
-            || self.rows(key)[left].third != self.rows(key)[right].third
+        &&& forall|key: Major| rows_valid(#[trigger] self.rows(key))
     }
 
     pub open spec fn bucket_of_key(self, key: Major) -> Bucket {
@@ -1365,17 +1409,6 @@ impl Table {
             assert(0 <= position % 32 < 32);
             assert(position == (position / 32) * 32 + position % 32);
             lemma_bucket_rows_valid(*(*(*self.pages)@[position / 32]).buckets@[position % 32], position, slots, key);
-        }
-        assert forall|key: Major, index: int| 0 <= index < self.rows(key).len() implies
-            (#[trigger] self.rows(key)[index]).count != 0 || self.rows(key)[index].volume != 0 by {
-            assert(rows_valid(self.rows(key)));
-        }
-        assert forall|key: Major, left: int, right: int| 0 <= left < right < self.rows(key).len() implies
-            (#[trigger] self.rows(key)[left]).first != (#[trigger] self.rows(key)[right]).first
-            || self.rows(key)[left].second != self.rows(key)[right].second
-            || self.rows(key)[left].third != self.rows(key)[right].third by {
-            assert(rows_valid(self.rows(key)));
-            assert(minor_of(self.rows(key)[left]) != minor_of(self.rows(key)[right]));
         }
     }
 
@@ -1619,9 +1652,9 @@ impl Table {
         Arc::new(Vec::new())
     }
 
-    pub fn lookup(&self, key: Major, minor: Major) -> (result: (i128, i128))
+    pub fn lookup(&self, key: Major, minor: Major) -> (result: (Num, Num))
         requires self.valid(),
-        ensures result.0 as int == self.at(key, minor, false), result.1 as int == self.at(key, minor, true),
+        ensures result.0@ == self.at(key, minor, false), result.1@ == self.at(key, minor, true),
     {
         proof { reveal(Table::at); reveal(cell_sum); }
         let rows = self.get(key);
@@ -1631,10 +1664,10 @@ impl Table {
                 forall|offset: int| 0 <= offset < index ==> minor_of(#[trigger] (*rows)@[offset]) != minor,
             decreases rows.len() - index,
         {
-            let cell = rows[index];
+            let cell = &rows[index];
             if (cell.first, cell.second, cell.third) == minor {
                 proof { reveal(Table::at); lemma_cell_lookup((*rows)@, minor, index as int); }
-                return (cell.count, cell.volume);
+                return (cell.count.dup(), cell.volume.dup());
             }
             index += 1;
         }
@@ -1644,7 +1677,7 @@ impl Table {
             lemma_sum_zero((*rows)@, |cell: Cell| cell_weight(cell, minor, false));
             lemma_sum_zero((*rows)@, |cell: Cell| cell_weight(cell, minor, true));
         }
-        (0, 0)
+        (Num::zero(), Num::zero())
     }
 
     #[verifier::rlimit(100)]
@@ -1653,6 +1686,7 @@ impl Table {
         ensures result@ == self.keys_view(), result@.no_duplicates(),
             forall|key: Major| #[trigger] result@.contains(key) <==> self.rows(key).len() > 0,
     {
+        reveal(rows_valid);
         proof { reveal(Table::valid); }
         let mut result = Vec::new();
         let mut page_index = 0;
@@ -1843,8 +1877,9 @@ proof fn lemma_empty_directory(pages: Seq<Arc<Page>>)
 
 pub proof fn lemma_cell_lookup(rows: Seq<Cell>, minor: Major, index: int)
     requires rows_valid(rows), 0 <= index < rows.len(), minor_of(rows[index]) == minor,
-    ensures cell_sum(rows, minor, false) == rows[index].count as int, cell_sum(rows, minor, true) == rows[index].volume as int,
+    ensures cell_sum(rows, minor, false) == rows[index].count@, cell_sum(rows, minor, true) == rows[index].volume@,
 {
+    reveal(rows_valid);
     reveal(cell_sum);
     assert forall|offset: int| 0 <= offset < rows.len() && offset != index implies minor_of(#[trigger] rows[offset]) != minor by {
         if offset < index { assert(minor_of(rows[offset]) != minor_of(rows[index])); }
@@ -1869,7 +1904,7 @@ pub fn copy_cells(source: &Vec<Cell>) -> (result: Vec<Cell>)
         invariant index <= source.len(), result@ == source@.take(index as int),
         decreases source.len() - index,
     {
-        result.push(source[index]);
+        result.push(source[index].clone());
         index += 1;
     }
     result
@@ -1989,20 +2024,22 @@ impl Work {
         }
     }
 
-    pub fn add(&mut self, key: Major, minor: Major, count: i128, volume: i128) -> (result: Option<()>)
+    pub fn add(&mut self, key: Major, minor: Major, count: Num, volume: Num)
         requires old(self).valid(),
-        ensures result is Some ==> final(self).valid(),
-            result is Some ==> forall|other: Major, small: Major, measure: bool|
+        ensures final(self).valid(),
+            forall|other: Major, small: Major, measure: bool|
             #[trigger] final(self).at(other, small, measure) == old(self).at(other, small, measure)
-                + if other == key && small == minor { if measure { volume as int } else { count as int } } else { 0 },
+                + if other == key && small == minor { if measure { volume@ } else { count@ } } else { 0 },
     {
-        if count == 0 && volume == 0 {
+        let ghost count_v = count@;
+        let ghost volume_v = volume@;
+        if count.is_zero() && volume.is_zero() {
             proof {
                 reveal(Work::at);
                 assert forall|other: Major, small: Major, measure: bool| #[trigger] self.at(other, small, measure) == old(self).at(other, small, measure)
-                    + if other == key && small == minor { if measure { volume as int } else { count as int } } else { 0 } by {}
+                    + if other == key && small == minor { if measure { volume_v } else { count_v } } else { 0 } by {}
             }
-            return Some(());
+            return;
         }
         let ghost before = *self;
         let slots = self.base.pages.len() * 32;
@@ -2012,7 +2049,7 @@ impl Work {
         let draft = self.open_bucket(position);
         let ghost mid = *self;
         let ghost d0 = draft;
-        let draft = flat_add(draft, key, minor, count, volume, Ghost(position_int), Ghost(slots_int))?;
+        let draft = flat_add(draft, key, minor, count, volume, Ghost(position_int), Ghost(slots_int));
         let ghost d2 = draft;
         self.drafts.insert(position, draft);
         proof {
@@ -2030,7 +2067,7 @@ impl Work {
             }
             assert(self.valid());
             assert forall|other: Major, small: Major, measure: bool| #[trigger] self.at(other, small, measure) == before.at(other, small, measure)
-                + if other == key && small == minor { if measure { volume as int } else { count as int } } else { 0 } by {
+                + if other == key && small == minor { if measure { volume_v } else { count_v } } else { 0 } by {
                 let s = slot(other, slots_int);
                 if s == position_int {
                     assert(self.rows(other) == flat_rows(d2, other));
@@ -2040,7 +2077,6 @@ impl Work {
                 }
             }
         }
-        Some(())
     }
 
     pub fn finish(self) -> (result: Table)

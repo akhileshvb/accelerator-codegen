@@ -11,7 +11,7 @@ use crate::table::*;
 verus! {
 
 pub open spec fn base_support(key: Major, minor: Major, dictionary: Dictionary) -> bool {
-    key.2 == 0 && minor.2 == 0 && 0 <= minor.0 < dictionary.length && (minor.1 == 1995 || minor.1 == 1996)
+    key.2 == 0 && minor.2 == 0 && dictionary.types.known(minor.0) && (minor.1 == 1995 || minor.1 == 1996)
 }
 
 pub open spec fn order_years(orders: Table) -> bool {
@@ -28,7 +28,7 @@ pub proof fn lemma_table_count_nonneg(table: Table, key: Major, minor: Major)
     reveal(cell_sum);
     assert forall|index: int| 0 <= index < table.rows(key).len() implies
         cell_weight(#[trigger] table.rows(key)[index], minor, false) >= 0 by {
-        assert(table.rows(key)[index].count > 0);
+        assert(table.rows(key)[index].count@ > 0);
     }
     lemma_sum_nonneg(table.rows(key), |cell: Cell| cell_weight(cell, minor, false));
 }
@@ -82,7 +82,7 @@ pub proof fn lemma_base_count(data: Data, db: Db, customer: i64, supplier: i64, 
 
 pub proof fn lemma_line_support(parts: Table, suppliers: Table, customers: Table, orders: Table, dictionary: Dictionary,
     line: LineitemRow, key: Major, minor: Major, sign: int, measure: bool)
-    requires scalar(parts), scalar(suppliers), scalar(customers), text_domain(parts, dictionary), order_years(orders),
+    requires scalar(parts), scalar(suppliers), scalar(customers), text_domain(parts, dictionary, 0), order_years(orders),
         i64::MIN <= line.l_partkey <= i64::MAX, i64::MIN <= line.l_suppkey <= i64::MAX, i64::MIN <= line.l_orderkey <= i64::MAX,
         !base_support(key, minor, dictionary),
     ensures line_effect(parts, suppliers, customers, orders, line, key, minor, sign, measure) == 0,
@@ -93,10 +93,10 @@ pub proof fn lemma_line_support(parts: Table, suppliers: Table, customers: Table
     let supplier_count = suppliers.at((line.l_suppkey as i64, 0, 0), (key.1, 0, 0), false);
     let order_count = order_projection(orders.rows((line.l_orderkey as i64, 0, 0)), customers, key.0, minor.1);
     if key.2 == 0 && minor.2 == 0 {
-        if !(0 <= minor.0 < dictionary.length) {
+        if !(dictionary.types.known(minor.0)) {
             let rows = parts.rows((line.l_partkey as i64, 0, 0));
             assert forall|index: int| 0 <= index < rows.len() implies cell_weight(#[trigger] rows[index], (minor.0, 0, 0), false) == 0 by {
-                assert(0 <= rows[index].first < dictionary.length);
+                assert(dictionary.types.known(rows[index].first));
             }
             lemma_sum_zero(rows, |cell: Cell| cell_weight(cell, (minor.0, 0, 0), false));
             reveal(Table::at);
@@ -126,16 +126,16 @@ pub proof fn lemma_order_year_zero(rows: Seq<Cell>, customers: Table, customer: 
     hide(sum);
     reveal(order_projection);
     lemma_sum_zero(rows, |order: Cell| if order.second == year {
-        order.count as int * customers.at((order.first, 0, 0), (customer, 0, 0), false)
+        order.count@ * customers.at((order.first, 0, 0), (customer, 0, 0), false)
     } else { 0int });
 }
 
 pub proof fn lemma_build_base_cells(data: Data, db: Db, rows: Seq<LineInput>)
     requires base_meaning(data, db), data.base.valid(), scalar(data.parts), scalar(data.suppliers), scalar(data.customers),
-        positive(data.parts), positive(data.suppliers), positive(data.customers), text_domain(data.parts, data.dictionary), order_years(data.orders),
+        positive(data.parts), positive(data.suppliers), positive(data.customers), text_domain(data.parts, data.dictionary, 0), order_years(data.orders),
         forall|key: Major, minor: Major, measure: bool| #[trigger] data.base.at(key, minor, measure) ==
             sum(line_input_seq_view(rows), |line: LineitemRow| line_effect(data.parts, data.suppliers, data.customers, data.orders, line, key, minor, 1, measure)),
-    ensures positive(data.base), text_domain(data.base, data.dictionary),
+    ensures positive(data.base), text_domain(data.base, data.dictionary, 0),
         forall|key: Major, index: int| 0 <= index < data.base.rows(key).len() ==>
             base_support(key, minor_of(#[trigger] data.base.rows(key)[index]), data.dictionary),
 {
@@ -156,40 +156,41 @@ pub proof fn lemma_build_base_cells(data: Data, db: Db, rows: Seq<LineInput>)
 pub proof fn lemma_base_cells(data: Data, db: Db)
     requires data.base.valid(), base_meaning(data, db), positive(data.parts), positive(data.suppliers), positive(data.customers),
         forall|key: Major, minor: Major, measure: bool| !base_support(key, minor, data.dictionary) ==> #[trigger] data.base.at(key, minor, measure) == 0,
-    ensures positive(data.base), text_domain(data.base, data.dictionary),
+    ensures positive(data.base), text_domain(data.base, data.dictionary, 0),
         forall|key: Major, index: int| 0 <= index < data.base.rows(key).len() ==>
             base_support(key, minor_of(#[trigger] data.base.rows(key)[index]), data.dictionary),
 {
     hide(sum);
     assert forall|key: Major, index: int| 0 <= index < data.base.rows(key).len() implies
         base_support(key, minor_of(#[trigger] data.base.rows(key)[index]), data.dictionary)
-            && data.base.rows(key)[index].count > 0 by {
+            && data.base.rows(key)[index].count@ > 0 by {
         let cells = data.base.rows(key);
         let cell = cells[index];
         let minor = minor_of(cell);
+        reveal(rows_valid);
         assert(rows_valid(cells));
         lemma_cell_lookup(cells, minor, index);
         reveal(Table::at);
-        assert(data.base.at(key, minor, false) == cell.count as int);
-        assert(data.base.at(key, minor, true) == cell.volume as int);
+        assert(data.base.at(key, minor, false) == cell.count@);
+        assert(data.base.at(key, minor, true) == cell.volume@);
         if !base_support(key, minor, data.dictionary) {
-            assert(cell.count == 0 && cell.volume == 0);
+            assert(cell.count@ == 0 && cell.volume@ == 0);
         }
         lemma_base_count(data, db, key.0, key.1, minor.0, minor.1);
-        assert(cell.count >= 0);
-        if cell.count == 0 { assert(cell.volume == 0); }
+        assert(cell.count@ >= 0);
+        if cell.count@ == 0 { assert(cell.volume@ == 0); }
     }
 }
 
 pub open spec fn base_inputs_ready(data: Data) -> bool {
     scalar(data.parts) && scalar(data.suppliers) && scalar(data.customers)
-        && text_domain(data.parts, data.dictionary) && order_years(data.orders)
+        && text_domain(data.parts, data.dictionary, 0) && order_years(data.orders)
 }
 
 pub proof fn lemma_rescan_support(before: Data, data: Data, rows: Seq<LineInput>,
     required_orders: crate::maintenance::Keys, required_parts: crate::maintenance::Keys, required_suppliers: crate::maintenance::Keys,
     mode: int, key: Major, minor: Major, measure: bool)
-    requires base_inputs_ready(before), base_inputs_ready(data), before.dictionary.length <= data.dictionary.length,
+    requires base_inputs_ready(before), base_inputs_ready(data), extension(before.dictionary, data.dictionary),
         !base_support(key, minor, data.dictionary),
     ensures rescan_effect(rows, required_orders, required_parts, required_suppliers, mode,
         data.parts, data.suppliers, data.customers, data.orders, before, key, minor, measure) == 0,
@@ -209,7 +210,7 @@ pub proof fn lemma_rescan_support(before: Data, data: Data, rows: Seq<LineInput>
 pub proof fn lemma_delta_base_support(before: Data, data: Data, changes: Table, lines: Seq<LineDelta>,
     required_orders: crate::maintenance::Keys, required_parts: crate::maintenance::Keys, required_suppliers: crate::maintenance::Keys,
     order_rows: Seq<LineInput>, part_rows: Seq<LineInput>, supplier_rows: Seq<LineInput>)
-    requires base_inputs_ready(before), base_inputs_ready(data), before.dictionary.length <= data.dictionary.length,
+    requires base_inputs_ready(before), base_inputs_ready(data), extension(before.dictionary, data.dictionary),
         changes.valid(),
         forall|key: Major, minor: Major, measure: bool| #[trigger] changes.at(key, minor, measure) ==
             sum(line_delta_seq_view(lines), |change: (LineitemRow, int)| line_effect(before.parts, before.suppliers, before.customers, before.orders, change.0, key, minor, change.1, measure))
@@ -237,22 +238,23 @@ pub proof fn lemma_delta_base_support(before: Data, data: Data, changes: Table, 
         key.2 == 0 && (#[trigger] changes.rows(key)[index]).third == 0 by {
         let cells = changes.rows(key);
         let minor = minor_of(cells[index]);
+        reveal(rows_valid);
         lemma_cell_lookup(cells, minor, index);
         reveal(Table::at);
-        assert(changes.at(key, minor, false) == cells[index].count as int);
-        assert(changes.at(key, minor, true) == cells[index].volume as int);
+        assert(changes.at(key, minor, false) == cells[index].count@);
+        assert(changes.at(key, minor, true) == cells[index].volume@);
         if key.2 != 0 || minor.2 != 0 {
-            assert(cells[index].count == 0 && cells[index].volume == 0);
+            assert(cells[index].count@ == 0 && cells[index].volume@ == 0);
         }
     }
 }
 
 pub proof fn lemma_apply_base_cells(before: Data, data: Data, db: Db, changes: Table)
-    requires runtime_valid(before), data.base.valid(), base_meaning(data, db), before.dictionary.length <= data.dictionary.length,
+    requires runtime_valid(before), data.base.valid(), base_meaning(data, db), extension(before.dictionary, data.dictionary),
         positive(data.parts), positive(data.suppliers), positive(data.customers),
         forall|key: Major, minor: Major, measure: bool| #[trigger] data.base.at(key, minor, measure) == before.base.at(key, minor, measure) + changes.at(key, minor, measure),
         forall|key: Major, minor: Major, measure: bool| !base_support(key, minor, data.dictionary) ==> #[trigger] changes.at(key, minor, measure) == 0,
-    ensures positive(data.base), text_domain(data.base, data.dictionary),
+    ensures positive(data.base), text_domain(data.base, data.dictionary, 0),
         forall|key: Major, index: int| 0 <= index < data.base.rows(key).len() ==>
             base_support(key, minor_of(#[trigger] data.base.rows(key)[index]), data.dictionary),
 {

@@ -14,20 +14,20 @@ verus! {
 
 pub proof fn lemma_sql_statistics(data: Data, db: Db, region: i64, kind: i64, name: i64, year: i64, numerator: bool, volume: bool)
     requires dimension_meaning(data, db), line_domain(db), base_meaning(data, db), route_meaning(data, db), aggregate_ready(data),
-        0 <= region < data.dictionary.length, 0 <= kind < data.dictionary.length, numerator ==> 0 <= name < data.dictionary.length,
+        data.dictionary.regions.known(region), data.dictionary.types.known(kind), numerator ==> data.dictionary.names.known(name),
     ensures routed_effect(data.base.keys_view(), data.base, data.customer_routes, data.supplier_routes, 1,
         (region, kind, if numerator { name } else { 0 }), (year, 0, 0), numerator, volume) ==
-        group_sum(db, Params { p1: if numerator { data.dictionary.text(name) } else { Seq::empty() },
-            p2: data.dictionary.text(region), p3: data.dictionary.text(kind) }, year as int,
-            query_weight(Params { p1: if numerator { data.dictionary.text(name) } else { Seq::empty() },
-                p2: data.dictionary.text(region), p3: data.dictionary.text(kind) }, numerator, volume)),
+        group_sum(db, Params { p1: if numerator { data.dictionary.names.text(name) } else { Seq::empty() },
+            p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) }, year as int,
+            query_weight(Params { p1: if numerator { data.dictionary.names.text(name) } else { Seq::empty() },
+                p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) }, numerator, volume)),
 {
     hide(group_sum);
     if year == 1995 || year == 1996 {
         lemma_query_routing(data, db, region, kind, name, year, numerator, volume);
     } else {
-        let parameters = Params { p1: if numerator { data.dictionary.text(name) } else { Seq::empty() },
-            p2: data.dictionary.text(region), p3: data.dictionary.text(kind) };
+        let parameters = Params { p1: if numerator { data.dictionary.names.text(name) } else { Seq::empty() },
+            p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) };
         crate::sql_bridge::lemma_missing_group(data, db, parameters, year as int, query_weight(parameters, numerator, volume));
         crate::aggregate_cells::lemma_routed_support(data, data.base.keys_view(), (region, kind, if numerator { name } else { 0 }), (year, 0, 0), numerator, volume);
     }
@@ -42,13 +42,13 @@ pub proof fn lemma_aggregate_meaning(data: Data, db: Db)
     reveal(routed_meaning);
     reveal(aggregate_meaning);
     assert forall|region: i64, kind: i64, year: i64, volume: bool| #[trigger] data.totals.at((region, kind, 0), (year, 0, 0), volume) ==
-        if 0 <= region < data.dictionary.length && 0 <= kind < data.dictionary.length {
-            let parameters = Params { p1: Seq::empty(), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) };
+        if data.dictionary.regions.known(region) && data.dictionary.types.known(kind) {
+            let parameters = Params { p1: Seq::empty(), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) };
             if volume { group_sum(db, parameters, year as int, |tuple: Tuple| tuple.all_nations.volume) } else { group_count(db, parameters, year as int) }
         } else { 0int } by {
-        if 0 <= region < data.dictionary.length && 0 <= kind < data.dictionary.length {
+        if data.dictionary.regions.known(region) && data.dictionary.types.known(kind) {
             lemma_sql_statistics(data, db, region, kind, 0, year, false, volume);
-            let parameters = Params { p1: Seq::empty(), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) };
+            let parameters = Params { p1: Seq::empty(), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) };
             if volume {
                 crate::sql_bridge::lemma_group_weights(db, parameters, year as int, query_weight(parameters, false, volume), |tuple: Tuple| tuple.all_nations.volume);
             } else {
@@ -60,13 +60,13 @@ pub proof fn lemma_aggregate_meaning(data: Data, db: Db)
         }
     }
     assert forall|region: i64, kind: i64, name: i64, year: i64, volume: bool| #[trigger] data.numerators.at((region, kind, name), (year, 0, 0), volume) ==
-        if 0 <= region < data.dictionary.length && 0 <= kind < data.dictionary.length && 0 <= name < data.dictionary.length {
-            let parameters = Params { p1: data.dictionary.text(name), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) };
+        if data.dictionary.regions.known(region) && data.dictionary.types.known(kind) && data.dictionary.names.known(name) {
+            let parameters = Params { p1: data.dictionary.names.text(name), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) };
             group_sum(db, parameters, year as int, numerator_weight(parameters, volume))
         } else { 0int } by {
-        if 0 <= region < data.dictionary.length && 0 <= kind < data.dictionary.length && 0 <= name < data.dictionary.length {
+        if data.dictionary.regions.known(region) && data.dictionary.types.known(kind) && data.dictionary.names.known(name) {
             lemma_sql_statistics(data, db, region, kind, name, year, true, volume);
-            let parameters = Params { p1: data.dictionary.text(name), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) };
+            let parameters = Params { p1: data.dictionary.names.text(name), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) };
             crate::sql_bridge::lemma_group_weights(db, parameters, year as int, query_weight(parameters, true, volume), numerator_weight(parameters, volume));
         } else {
             crate::aggregate_cells::lemma_routed_support(data, data.base.keys_view(), (region, kind, name), (year, 0, 0), true, volume);
@@ -146,8 +146,8 @@ pub proof fn lemma_route_nation_count(db: Db, first: NationRow, pair: Major, par
 
 pub proof fn lemma_route_total_count(data: Data, db: Db, pair: Major, parameters: Params, region: i64, name: i64, numerator: bool)
     requires dimension_meaning(data, db), route_meaning(data, db), aggregate_ready(data),
-        0 <= region < data.dictionary.length, data.dictionary.text(region) == parameters.p2,
-        numerator ==> 0 <= name < data.dictionary.length && data.dictionary.text(name) == parameters.p1,
+        data.dictionary.regions.known(region), data.dictionary.regions.text(region) == parameters.p2,
+        numerator ==> data.dictionary.names.known(name) && data.dictionary.names.text(name) == parameters.p1,
     ensures route_sum_0(db, normalized_route_count(pair, parameters, numerator)) == route_coefficient(data, pair, region, name, numerator),
 {
     hide(sum);
@@ -165,12 +165,12 @@ pub proof fn lemma_route_total_count(data: Data, db: Db, pair: Major, parameters
     if pair.2 == 0 {
         reveal(route_meaning);
         let canonical = |first: NationRow| if first.n_nationkey == pair.0 as int {
-            sum(db.region, |other: RegionRow| if first.n_regionkey == other.r_regionkey && text_matches(data.dictionary, region, other.r_name) { 1int } else { 0int })
+            sum(db.region, |other: RegionRow| if first.n_regionkey == other.r_regionkey && text_matches(data.dictionary, 2, region, other.r_name) { 1int } else { 0int })
         } else { 0int };
         assert forall|first: NationRow| #[trigger] count(first) == canonical(first) by {
             lemma_sum_ext_all(db.region,
                 |other: RegionRow| if first.n_regionkey == other.r_regionkey && other.r_name == parameters.p2 { 1int } else { 0int },
-                |other: RegionRow| if first.n_regionkey == other.r_regionkey && text_matches(data.dictionary, region, other.r_name) { 1int } else { 0int });
+                |other: RegionRow| if first.n_regionkey == other.r_regionkey && text_matches(data.dictionary, 2, region, other.r_name) { 1int } else { 0int });
         }
         lemma_sum_ext_all(db.nation, count, canonical);
         assert(data.customer_routes.at((pair.0, 0, 0), (region, 0, 0), false) == sum(db.nation, canonical));
@@ -182,8 +182,8 @@ pub proof fn lemma_route_total_count(data: Data, db: Db, pair: Major, parameters
 
 pub proof fn lemma_route_class(data: Data, db: Db, pair: Major, parameters: Params, region: i64, name: i64, numerator: bool)
     requires dimension_meaning(data, db), route_meaning(data, db), aggregate_ready(data),
-        0 <= region < data.dictionary.length, data.dictionary.text(region) == parameters.p2,
-        numerator ==> 0 <= name < data.dictionary.length && data.dictionary.text(name) == parameters.p1,
+        data.dictionary.regions.known(region), data.dictionary.regions.text(region) == parameters.p2,
+        numerator ==> data.dictionary.names.known(name) && data.dictionary.names.text(name) == parameters.p1,
     ensures class_total(route_rows_0(db), |route: RouteTuple| route_project(route), route_multiplicity(parameters, numerator), pair) ==
         route_coefficient(data, pair, region, name, numerator),
 {
@@ -240,19 +240,19 @@ pub proof fn lemma_entry_routing(data: Data, region: i64, kind: i64, name: i64, 
 
 pub proof fn lemma_query_routing(data: Data, db: Db, region: i64, kind: i64, name: i64, year: i64, numerator: bool, volume: bool)
     requires dimension_meaning(data, db), line_domain(db), base_meaning(data, db), route_meaning(data, db), aggregate_ready(data),
-        0 <= region < data.dictionary.length, 0 <= kind < data.dictionary.length,
-        numerator ==> 0 <= name < data.dictionary.length, year == 1995 || year == 1996,
+        data.dictionary.regions.known(region), data.dictionary.types.known(kind),
+        numerator ==> data.dictionary.names.known(name), year == 1995 || year == 1996,
     ensures routed_effect(data.base.keys_view(), data.base, data.customer_routes, data.supplier_routes, 1,
         (region, kind, if numerator { name } else { 0 }), (year, 0, 0), numerator, volume) ==
-        group_sum(db, Params { p1: if numerator { data.dictionary.text(name) } else { Seq::empty() },
-            p2: data.dictionary.text(region), p3: data.dictionary.text(kind) }, year as int,
-            query_weight(Params { p1: if numerator { data.dictionary.text(name) } else { Seq::empty() },
-                p2: data.dictionary.text(region), p3: data.dictionary.text(kind) }, numerator, volume)),
+        group_sum(db, Params { p1: if numerator { data.dictionary.names.text(name) } else { Seq::empty() },
+            p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) }, year as int,
+            query_weight(Params { p1: if numerator { data.dictionary.names.text(name) } else { Seq::empty() },
+                p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) }, numerator, volume)),
 {
     hide(sum);
     hide(group_sum);
-    let parameters = Params { p1: if numerator { data.dictionary.text(name) } else { Seq::empty() },
-        p2: data.dictionary.text(region), p3: data.dictionary.text(kind) };
+    let parameters = Params { p1: if numerator { data.dictionary.names.text(name) } else { Seq::empty() },
+        p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) };
     let weight = query_weight(parameters, numerator, volume);
     lemma_group_product(db, parameters, year as int, weight);
     let rows = route_rows_0(db);
@@ -286,14 +286,14 @@ pub open spec fn aggregate_ready(data: Data) -> bool {
     data.dictionary.valid() && data.base.valid() && data.customer_routes.valid() && data.supplier_routes.valid()
         && positive(data.base) && positive(data.customer_routes) && positive(data.supplier_routes)
         && scalar(data.customer_routes) && scalar(data.supplier_routes)
-        && text_domain(data.customer_routes, data.dictionary) && text_domain(data.supplier_routes, data.dictionary)
+        && text_domain(data.customer_routes, data.dictionary, 2) && text_domain(data.supplier_routes, data.dictionary, 1)
         && forall|key: Major, index: int| 0 <= index < data.base.rows(key).len() ==>
             crate::base_proofs::base_support(key, minor_of(#[trigger] data.base.rows(key)[index]), data.dictionary)
 }
 
 pub open spec fn supplier_filter(data: Data, supplier: i64, name: i64, numerator: bool) -> int {
     if numerator { data.supplier_routes.at((supplier, 0, 0), (name, 0, 0), false) }
-    else { sum(data.supplier_routes.rows((supplier, 0, 0)), |cell: Cell| cell.count as int) }
+    else { sum(data.supplier_routes.rows((supplier, 0, 0)), |cell: Cell| cell.count@) }
 }
 
 pub open spec fn route_coefficient(data: Data, pair: Major, region: i64, name: i64, numerator: bool) -> int {
@@ -344,20 +344,20 @@ pub proof fn lemma_base_entry_class(base: Table, pair: Major, minor: Major, volu
 
 pub proof fn lemma_supplier_projection(data: Data, db: Db, supplier: i64, weight: spec_fn(i64) -> int)
     requires dimension_meaning(data, db), route_meaning(data, db), aggregate_ready(data),
-    ensures sum(data.supplier_routes.rows((supplier, 0, 0)), |cell: Cell| cell.count as int * weight(cell.first)) ==
-        sum(db.nation, |row: NationRow| if row.n_nationkey == supplier as int { weight(data.dictionary.text_code(row.n_name)) } else { 0int }),
+    ensures sum(data.supplier_routes.rows((supplier, 0, 0)), |cell: Cell| cell.count@ * weight(cell.first)) ==
+        sum(db.nation, |row: NationRow| if row.n_nationkey == supplier as int { weight(data.dictionary.names.text_code(row.n_name)) } else { 0int }),
 {
     hide(sum);
     reveal(dimension_meaning);
     reveal(route_meaning);
     let rows = data.supplier_routes.rows((supplier, 0, 0));
     let left_project = |cell: Cell| cell.first;
-    let right_project = |row: NationRow| data.dictionary.text_code(row.n_name);
-    let left_count = |cell: Cell| cell.count as int;
+    let right_project = |row: NationRow| data.dictionary.names.text_code(row.n_name);
+    let left_count = |cell: Cell| cell.count@;
     let right_count = |row: NationRow| if row.n_nationkey == supplier as int { 1int } else { 0int };
     assert forall|name: i64| #[trigger] class_total(rows, left_project, left_count, name) ==
         class_total(db.nation, right_project, right_count, name) by {
-        let left = |cell: Cell| if cell.first == name { cell.count as int } else { 0int };
+        let left = |cell: Cell| if cell.first == name { cell.count@ } else { 0int };
         let right = |row: NationRow| if right_project(row) == name { right_count(row) } else { 0int };
         lemma_class_total_weight(rows, left_project, left_count, name, left);
         lemma_class_total_weight(db.nation, right_project, right_count, name, right);
@@ -365,36 +365,36 @@ pub proof fn lemma_supplier_projection(data: Data, db: Db, supplier: i64, weight
         lemma_sum_ext(rows, left, |cell: Cell| cell_weight(cell, (name, 0, 0), false));
         reveal(Table::at);
         reveal(cell_sum);
-        let canonical = |row: NationRow| if row.n_nationkey == supplier as int && text_matches(data.dictionary, name, row.n_name) { 1int } else { 0int };
+        let canonical = |row: NationRow| if row.n_nationkey == supplier as int && text_matches(data.dictionary, 1, name, row.n_name) { 1int } else { 0int };
         assert forall|index: int| 0 <= index < db.nation.len() implies right(#[trigger] db.nation[index]) == canonical(db.nation[index]) by {
-            lemma_text_code(data.dictionary, db.nation[index].n_name);
+            lemma_text_code(data.dictionary, 1, db.nation[index].n_name);
         }
         lemma_sum_ext(db.nation, right, canonical);
         assert(data.supplier_routes.at((supplier, 0, 0), (name, 0, 0), false) == sum(db.nation, canonical));
     }
     lemma_equal_classes(rows, db.nation, left_project, right_project, left_count, right_count, weight);
-    lemma_sum_ext_all(rows, |cell: Cell| left_count(cell) * weight(left_project(cell)), |cell: Cell| cell.count as int * weight(cell.first));
+    lemma_sum_ext_all(rows, |cell: Cell| left_count(cell) * weight(left_project(cell)), |cell: Cell| cell.count@ * weight(cell.first));
     lemma_sum_ext_all(db.nation, |row: NationRow| right_count(row) * weight(right_project(row)),
-        |row: NationRow| if row.n_nationkey == supplier as int { weight(data.dictionary.text_code(row.n_name)) } else { 0int });
+        |row: NationRow| if row.n_nationkey == supplier as int { weight(data.dictionary.names.text_code(row.n_name)) } else { 0int });
 }
 
 pub proof fn lemma_supplier_filter(data: Data, db: Db, supplier: i64, parameters: Params, name: i64, numerator: bool)
     requires dimension_meaning(data, db), route_meaning(data, db), aggregate_ready(data),
-        numerator ==> 0 <= name < data.dictionary.length && data.dictionary.text(name) == parameters.p1,
+        numerator ==> data.dictionary.names.known(name) && data.dictionary.names.text(name) == parameters.p1,
     ensures supplier_filter(data, supplier, name, numerator) ==
         sum(db.nation, |row: NationRow| if row.n_nationkey == supplier as int && (!numerator || row.n_name == parameters.p1) { 1int } else { 0int }),
 {
     hide(sum);
     if numerator {
         reveal(route_meaning);
-        let raw = |row: NationRow| if row.n_nationkey == supplier as int && text_matches(data.dictionary, name, row.n_name) { 1int } else { 0int };
+        let raw = |row: NationRow| if row.n_nationkey == supplier as int && text_matches(data.dictionary, 1, name, row.n_name) { 1int } else { 0int };
         let target = |row: NationRow| if row.n_nationkey == supplier as int && (!numerator || row.n_name == parameters.p1) { 1int } else { 0int };
         lemma_sum_ext_all(db.nation, raw, target);
     } else {
         lemma_supplier_projection(data, db, supplier, |name: i64| 1int);
-        lemma_sum_ext_all(data.supplier_routes.rows((supplier, 0, 0)), |cell: Cell| cell.count as int * (|name: i64| 1int)(cell.first), |cell: Cell| cell.count as int);
+        lemma_sum_ext_all(data.supplier_routes.rows((supplier, 0, 0)), |cell: Cell| cell.count@ * (|name: i64| 1int)(cell.first), |cell: Cell| cell.count@);
         lemma_sum_ext_all(db.nation,
-            |row: NationRow| if row.n_nationkey == supplier as int { (|name: i64| 1int)(data.dictionary.text_code(row.n_name)) } else { 0int },
+            |row: NationRow| if row.n_nationkey == supplier as int { (|name: i64| 1int)(data.dictionary.names.text_code(row.n_name)) } else { 0int },
             |row: NationRow| if row.n_nationkey == supplier as int && (!numerator || row.n_name == parameters.p1) { 1int } else { 0int });
     }
 }
@@ -403,24 +403,24 @@ pub proof fn lemma_routed_nations(data: Data, pair: Major, group: Cell, region: 
     requires scalar(data.supplier_routes),
     ensures nation_pair_effect(data.supplier_routes.rows((pair.1, 0, 0)), group, region, 1, key, minor, numerator, volume) ==
         if key.0 == region.first && key.1 == group.first && (!numerator ==> key.2 == 0) && minor == (group.second, 0, 0) {
-            measure(group, volume) * region.count as int * supplier_filter(data, pair.1, key.2, numerator)
+            measure(group, volume) * region.count@ * supplier_filter(data, pair.1, key.2, numerator)
         } else { 0int },
 {
     hide(sum);
     reveal(nation_pair_effect);
     let rows = data.supplier_routes.rows((pair.1, 0, 0));
     let active = key.0 == region.first && key.1 == group.first && (!numerator ==> key.2 == 0) && minor == (group.second, 0, 0);
-    let count = |nation: Cell| if !numerator || nation.first == key.2 { nation.count as int } else { 0int };
-    let coefficient = if active { measure(group, volume) * region.count as int } else { 0int };
+    let count = |nation: Cell| if !numerator || nation.first == key.2 { nation.count@ } else { 0int };
+    let coefficient = if active { measure(group, volume) * region.count@ } else { 0int };
     let raw = |nation: Cell| pair_weight(nation, group, region, 1, key, minor, numerator, volume);
     let scaled = |nation: Cell| coefficient * count(nation);
     assert forall|nation: Cell| #[trigger] raw(nation) == scaled(nation) by {
         assert(raw(nation) == scaled(nation)) by (nonlinear_arith)
             requires raw(nation) == if key == (region.first, group.first, if numerator { nation.first } else { 0 }) && minor == (group.second, 0, 0) {
-                measure(group, volume) * (region.count as int * nation.count as int)
+                measure(group, volume) * (region.count@ * nation.count@)
             } else { 0int },
-                coefficient == if active { measure(group, volume) * region.count as int } else { 0int },
-                scaled(nation) == coefficient * count(nation), count(nation) == if !numerator || nation.first == key.2 { nation.count as int } else { 0int },
+                coefficient == if active { measure(group, volume) * region.count@ } else { 0int },
+                scaled(nation) == coefficient * count(nation), count(nation) == if !numerator || nation.first == key.2 { nation.count@ } else { 0int },
                 active == (key.0 == region.first && key.1 == group.first && (!numerator ==> key.2 == 0) && minor == (group.second, 0, 0));
     }
     lemma_sum_ext_all(rows, raw, scaled);
@@ -431,7 +431,7 @@ pub proof fn lemma_routed_nations(data: Data, pair: Major, group: Cell, region: 
         reveal(Table::at);
         reveal(cell_sum);
     } else {
-        lemma_sum_ext_all(rows, count, |cell: Cell| cell.count as int);
+        lemma_sum_ext_all(rows, count, |cell: Cell| cell.count@);
     }
 }
 
@@ -454,10 +454,10 @@ pub proof fn lemma_routed_regions(data: Data, pair: Major, group: Cell, key: Maj
         let region = rows[index];
         lemma_routed_nations(data, pair, group, region, key, minor, numerator, volume);
         assert(raw(region) == scaled(region)) by (nonlinear_arith)
-            requires raw(region) == if key.0 == region.first && active { measure(group, volume) * region.count as int * supplier_filter(data, pair.1, key.2, numerator) } else { 0int },
+            requires raw(region) == if key.0 == region.first && active { measure(group, volume) * region.count@ * supplier_filter(data, pair.1, key.2, numerator) } else { 0int },
                 coefficient == if active { measure(group, volume) * supplier_filter(data, pair.1, key.2, numerator) } else { 0int },
                 scaled(region) == coefficient * count(region),
-                count(region) == if region.first == key.0 { region.count as int } else { 0int };
+                count(region) == if region.first == key.0 { region.count@ } else { 0int };
     }
     lemma_sum_ext(rows, raw, scaled);
     lemma_sum_scale(rows, count, scaled, coefficient);

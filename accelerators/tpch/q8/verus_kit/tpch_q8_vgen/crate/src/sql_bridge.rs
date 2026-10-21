@@ -288,7 +288,7 @@ pub proof fn lemma_query_year(date: int)
 
 pub proof fn lemma_missing_group(data: Data, db: Db, parameters: Params, year: int, weight: spec_fn(Tuple) -> int)
     requires dimension_meaning(data, db),
-        data.dictionary.resolve_spec(parameters.p2) is None || data.dictionary.resolve_spec(parameters.p3) is None
+        data.dictionary.regions.resolve_spec(parameters.p2) is None || data.dictionary.types.resolve_spec(parameters.p3) is None
             || (year != 1995 && year != 1996),
     ensures group_sum(db, parameters, year, weight) == 0,
 {
@@ -300,13 +300,13 @@ pub proof fn lemma_missing_group(data: Data, db: Db, parameters: Params, year: i
         && all_nations_where_clause(db, parameters, tuple.part, tuple.supplier, tuple.lineitem, tuple.orders,
             tuple.customer, tuple.n1, tuple.n2, tuple.region) implies #[trigger] raw(tuple) == 0 by {
         lemma_query_year(tuple.orders.o_orderdate);
-        if data.dictionary.resolve_spec(parameters.p2) is None {
+        if data.dictionary.regions.resolve_spec(parameters.p2) is None {
             let index = choose|index: int| 0 <= index < db.region.len() && #[trigger] db.region[index] == tuple.region;
-            assert(text_present(data.dictionary, db.region[index].r_name));
+            assert(text_present(data.dictionary, 2, db.region[index].r_name));
         }
-        if data.dictionary.resolve_spec(parameters.p3) is None {
+        if data.dictionary.types.resolve_spec(parameters.p3) is None {
             let index = choose|index: int| 0 <= index < db.part.len() && #[trigger] db.part[index] == tuple.part;
-            assert(text_present(data.dictionary, db.part[index].p_type));
+            assert(text_present(data.dictionary, 0, db.part[index].p_type));
         }
     }
     lemma_sql_zero_0(db, parameters, raw);
@@ -314,7 +314,7 @@ pub proof fn lemma_missing_group(data: Data, db: Db, parameters: Params, year: i
 }
 
 pub proof fn lemma_missing_numerator(data: Data, db: Db, parameters: Params, year: int)
-    requires dimension_meaning(data, db), data.dictionary.resolve_spec(parameters.p1) is None,
+    requires dimension_meaning(data, db), data.dictionary.names.resolve_spec(parameters.p1) is None,
     ensures group_sum(db, parameters, year, |tuple: Tuple| if tuple.all_nations.nation == parameters.p1 { tuple.all_nations.volume } else { 0 }) == 0,
 {
     hide(sum);
@@ -326,7 +326,7 @@ pub proof fn lemma_missing_numerator(data: Data, db: Db, parameters: Params, yea
         && all_nations_where_clause(db, parameters, tuple.part, tuple.supplier, tuple.lineitem, tuple.orders,
             tuple.customer, tuple.n1, tuple.n2, tuple.region) implies #[trigger] raw(tuple) == 0 by {
         let index = choose|index: int| 0 <= index < db.nation.len() && #[trigger] db.nation[index] == tuple.n2;
-        assert(text_present(data.dictionary, db.nation[index].n_name));
+        assert(text_present(data.dictionary, 1, db.nation[index].n_name));
     }
     lemma_sql_zero_0(db, parameters, raw);
     lemma_group_sum(db, parameters, year, weight);
@@ -563,11 +563,11 @@ pub proof fn lemma_count_sum(db: Db, parameters: Params, year: int)
 }
 
 pub proof fn lemma_total_lookup(data: Data, db: Db, region: i64, kind: i64, year: i64, volume: bool)
-    requires aggregate_meaning(data, db), 0 <= region < data.dictionary.length, 0 <= kind < data.dictionary.length,
+    requires aggregate_meaning(data, db), data.dictionary.regions.known(region), data.dictionary.types.known(kind),
     ensures data.totals.at((region, kind, 0), (year, 0, 0), volume) ==
-        if volume { group_sum(db, Params { p1: Seq::empty(), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) },
+        if volume { group_sum(db, Params { p1: Seq::empty(), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) },
             year as int, |tuple: Tuple| tuple.all_nations.volume) }
-        else { group_count(db, Params { p1: Seq::empty(), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) }, year as int) },
+        else { group_count(db, Params { p1: Seq::empty(), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) }, year as int) },
 {
     hide(group_count);
     hide(group_sum);
@@ -575,11 +575,11 @@ pub proof fn lemma_total_lookup(data: Data, db: Db, region: i64, kind: i64, year
 }
 
 pub proof fn lemma_numerator_lookup(data: Data, db: Db, region: i64, kind: i64, name: i64, year: i64, volume: bool)
-    requires aggregate_meaning(data, db), 0 <= region < data.dictionary.length, 0 <= kind < data.dictionary.length,
-        0 <= name < data.dictionary.length,
+    requires aggregate_meaning(data, db), data.dictionary.regions.known(region), data.dictionary.types.known(kind),
+        data.dictionary.names.known(name),
     ensures data.numerators.at((region, kind, name), (year, 0, 0), volume) ==
-        group_sum(db, Params { p1: data.dictionary.text(name), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) },
-            year as int, numerator_weight(Params { p1: data.dictionary.text(name), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) }, volume)),
+        group_sum(db, Params { p1: data.dictionary.names.text(name), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) },
+            year as int, numerator_weight(Params { p1: data.dictionary.names.text(name), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) }, volume)),
 {
     hide(group_sum);
     reveal(aggregate_meaning);
@@ -593,19 +593,19 @@ pub proof fn lemma_read_total(data: Data, db: Db, parameters: Params, year: int,
 {
     hide(group_sum);
     hide(group_count);
-    hide(crate::dictionary::Dictionary::resolve_spec);
+    hide(crate::dictionary::Words::resolve_spec);
     hide(crate::reading::read_total);
-    if data.dictionary.resolve_spec(parameters.p2) is None || data.dictionary.resolve_spec(parameters.p3) is None
+    if data.dictionary.regions.resolve_spec(parameters.p2) is None || data.dictionary.types.resolve_spec(parameters.p3) is None
         || !(i64::MIN <= year <= i64::MAX) {
         lemma_missing_group(data, db, parameters, year, |tuple: Tuple| tuple.all_nations.volume);
         lemma_missing_group(data, db, parameters, year, |tuple: Tuple| 1int);
         lemma_count_sum(db, parameters, year);
     } else {
-        let region = data.dictionary.resolve_spec(parameters.p2).unwrap();
-        let kind = data.dictionary.resolve_spec(parameters.p3).unwrap();
-        crate::dictionary::lemma_resolved_text(data.dictionary, parameters.p2, region);
-        crate::dictionary::lemma_resolved_text(data.dictionary, parameters.p3, kind);
-        let canonical = Params { p1: Seq::empty(), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) };
+        let region = data.dictionary.regions.resolve_spec(parameters.p2).unwrap();
+        let kind = data.dictionary.types.resolve_spec(parameters.p3).unwrap();
+        crate::dictionary::lemma_resolved_words(data.dictionary.regions, parameters.p2, region);
+        crate::dictionary::lemma_resolved_words(data.dictionary.types, parameters.p3, kind);
+        let canonical = Params { p1: Seq::empty(), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) };
         lemma_group_parameters(db, parameters, canonical, year, |tuple: Tuple| tuple.all_nations.volume);
         lemma_group_parameters(db, parameters, canonical, year, |tuple: Tuple| 1int);
         lemma_total_lookup(data, db, region, kind, year as i64, volume);
@@ -621,26 +621,26 @@ pub proof fn lemma_read_numerator(data: Data, db: Db, parameters: Params, year: 
         group_sum(db, parameters, year, |tuple: Tuple| if tuple.all_nations.nation == parameters.p1 { tuple.all_nations.volume } else { 0 }),
 {
     hide(group_sum);
-    hide(crate::dictionary::Dictionary::resolve_spec);
+    hide(crate::dictionary::Words::resolve_spec);
     hide(crate::reading::read_numerator);
     let weight = |tuple: Tuple| if tuple.all_nations.nation == parameters.p1 { tuple.all_nations.volume } else { 0int };
-    if data.dictionary.resolve_spec(parameters.p2) is None || data.dictionary.resolve_spec(parameters.p3) is None
+    if data.dictionary.regions.resolve_spec(parameters.p2) is None || data.dictionary.types.resolve_spec(parameters.p3) is None
         || !(i64::MIN <= year <= i64::MAX) {
         lemma_missing_group(data, db, parameters, year, weight);
         assert(group_sum(db, parameters, year, weight) == 0);
-    } else if data.dictionary.resolve_spec(parameters.p1) is None {
+    } else if data.dictionary.names.resolve_spec(parameters.p1) is None {
         lemma_missing_numerator(data, db, parameters, year);
         lemma_group_weights(db, parameters, year,
             |tuple: Tuple| if tuple.all_nations.nation == parameters.p1 { tuple.all_nations.volume } else { 0 }, weight);
         assert(group_sum(db, parameters, year, weight) == 0);
     } else {
-        let name = data.dictionary.resolve_spec(parameters.p1).unwrap();
-        let region = data.dictionary.resolve_spec(parameters.p2).unwrap();
-        let kind = data.dictionary.resolve_spec(parameters.p3).unwrap();
-        crate::dictionary::lemma_resolved_text(data.dictionary, parameters.p1, name);
-        crate::dictionary::lemma_resolved_text(data.dictionary, parameters.p2, region);
-        crate::dictionary::lemma_resolved_text(data.dictionary, parameters.p3, kind);
-        let canonical = Params { p1: data.dictionary.text(name), p2: data.dictionary.text(region), p3: data.dictionary.text(kind) };
+        let name = data.dictionary.names.resolve_spec(parameters.p1).unwrap();
+        let region = data.dictionary.regions.resolve_spec(parameters.p2).unwrap();
+        let kind = data.dictionary.types.resolve_spec(parameters.p3).unwrap();
+        crate::dictionary::lemma_resolved_words(data.dictionary.names, parameters.p1, name);
+        crate::dictionary::lemma_resolved_words(data.dictionary.regions, parameters.p2, region);
+        crate::dictionary::lemma_resolved_words(data.dictionary.types, parameters.p3, kind);
+        let canonical = Params { p1: data.dictionary.names.text(name), p2: data.dictionary.regions.text(region), p3: data.dictionary.types.text(kind) };
         assert(canonical == parameters);
         let canonical_weight = numerator_weight(canonical, true);
         lemma_numerator_lookup(data, db, region, kind, name, year as i64, true);

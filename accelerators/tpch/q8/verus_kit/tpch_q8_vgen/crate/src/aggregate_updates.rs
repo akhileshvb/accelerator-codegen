@@ -18,8 +18,8 @@ pub proof fn lemma_nation_sign(rows: Seq<Cell>, group: Cell, region: Cell, sign:
     assert forall|nation: Cell| #[trigger] raw(nation) == sign * positive(nation) by {
         let active = key == (region.first, group.first, if numerator { nation.first } else { 0 }) && minor == (group.second, 0, 0);
         assert(raw(nation) == sign * positive(nation)) by (nonlinear_arith)
-            requires raw(nation) == if active { measure(group, volume) * (sign * region.count as int * nation.count as int) } else { 0int },
-                positive(nation) == if active { measure(group, volume) * (region.count as int * nation.count as int) } else { 0int };
+            requires raw(nation) == if active { measure(group, volume) * (sign * region.count@ * nation.count@) } else { 0int },
+                positive(nation) == if active { measure(group, volume) * (region.count@ * nation.count@) } else { 0int };
     }
     lemma_sum_scale(rows, positive, raw, sign);
 }
@@ -99,7 +99,7 @@ pub proof fn lemma_runtime_aggregate_ready(data: Data)
 
 pub open spec fn maintenance_ready(before: Data, after: Data, changes: Table, nations: Keys, pairs: Pairs) -> bool {
     &&& runtime_valid(before) && aggregate_ready(before) && aggregate_ready(after) && index_meaning(before)
-    &&& changes.valid() && nations.valid() && pairs.valid() && before.dictionary.length <= after.dictionary.length
+    &&& changes.valid() && nations.valid() && pairs.valid() && crate::dictionary::extension(before.dictionary, after.dictionary)
     &&& forall|key: Major, minor: Major, volume: bool| #[trigger] after.base.at(key, minor, volume) == before.base.at(key, minor, volume) + changes.at(key, minor, volume)
     &&& forall|index: int| 0 <= index < changes.keys_view().len() ==> pairs.has(#[trigger] changes.keys_view()[index])
     &&& reverse_pairs_covered(pairs, nations, before.base_by_customer, nations.values@.len() as int, false)
@@ -124,11 +124,11 @@ pub proof fn lemma_table_class(table: Table, key: Major, minor: Major, volume: b
 
 pub proof fn lemma_equal_table_counts(before: Table, after: Table, key: Major)
     requires forall|minor: Major| #[trigger] before.at(key, minor, false) == after.at(key, minor, false),
-    ensures sum(before.rows(key), |cell: Cell| cell.count as int) == sum(after.rows(key), |cell: Cell| cell.count as int),
+    ensures sum(before.rows(key), |cell: Cell| cell.count@) == sum(after.rows(key), |cell: Cell| cell.count@),
 {
     hide(sum);
     let project = |cell: Cell| minor_of(cell);
-    let count = |cell: Cell| cell.count as int;
+    let count = |cell: Cell| cell.count@;
     assert forall|minor: Major| #[trigger] class_total(before.rows(key), project, count, minor) == class_total(after.rows(key), project, count, minor) by {
         lemma_table_class(before, key, minor, false);
         lemma_table_class(after, key, minor, false);
@@ -192,19 +192,19 @@ pub proof fn lemma_marked_pair_empty(before: Data, after: Data, changes: Table, 
     reveal(Table::at);
     reveal(cell_sum);
     assert(reverse.at((nation, 0, 0), (neighbor, 0, 0), false) == 0);
-    assert(sum(before.base.rows(pair), |cell: Cell| cell.count as int) == 0);
+    assert(sum(before.base.rows(pair), |cell: Cell| cell.count@) == 0);
     if before.base.rows(pair).len() > 0 {
-        lemma_sum_pos(before.base.rows(pair), |cell: Cell| cell.count as int, 0);
+        lemma_sum_pos(before.base.rows(pair), |cell: Cell| cell.count@, 0);
     }
     if after.base.rows(pair).len() > 0 {
         let cells = after.base.rows(pair);
         let minor = minor_of(cells[0]);
         lemma_cell_lookup(cells, minor, 0);
-        assert(after.base.at(pair, minor, false) == cells[0].count as int);
+        assert(after.base.at(pair, minor, false) == cells[0].count@);
         lemma_sum_empty(before.base.rows(pair), |cell: Cell| cell_weight(cell, minor, false));
         assert(before.base.at(pair, minor, false) == 0);
         assert(after.base.at(pair, minor, false) == 0);
-        assert(cells[0].count > 0);
+        assert(cells[0].count@ > 0);
     }
 }
 
@@ -212,7 +212,7 @@ pub proof fn lemma_routes_unchanged(before: Data, after: Data, changes: Table, n
     requires maintenance_ready(before, after, changes, nations, pairs), !nations.has(nation),
     ensures forall|name: i64| #[trigger] after.customer_routes.at((nation, 0, 0), (name, 0, 0), false) == before.customer_routes.at((nation, 0, 0), (name, 0, 0), false),
         forall|name: i64| #[trigger] after.supplier_routes.at((nation, 0, 0), (name, 0, 0), false) == before.supplier_routes.at((nation, 0, 0), (name, 0, 0), false),
-        sum(after.supplier_routes.rows((nation, 0, 0)), |cell: Cell| cell.count as int) == sum(before.supplier_routes.rows((nation, 0, 0)), |cell: Cell| cell.count as int),
+        sum(after.supplier_routes.rows((nation, 0, 0)), |cell: Cell| cell.count@) == sum(before.supplier_routes.rows((nation, 0, 0)), |cell: Cell| cell.count@),
 {
     hide(sum);
     assert forall|name: i64| #[trigger] after.customer_routes.at((nation, 0, 0), (name, 0, 0), false) == before.customer_routes.at((nation, 0, 0), (name, 0, 0), false) by {
