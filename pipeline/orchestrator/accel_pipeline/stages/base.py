@@ -161,7 +161,14 @@ def run_agent_stage(
             f"- {stage}: reverted agent edits to frozen pipeline/substrate paths ({', '.join(reverted)})",
             workload=workload,
         )
-    if result.status != "finished":
+    if result.status != "finished" and result.metadata.get("timed_out"):
+        # The agent ran out of time, not into an error: what it wrote is judged by the gates like
+        # any other round, and the round limits bound the stage.
+        print(f"[pipeline] {stage}: {result.error}; the gates judge what it produced", flush=True)
+        append_experiment_log(
+            pipeline_config.repo_root, query, f"- {stage}: {result.error} (gates judge the work)", workload=workload
+        )
+    elif result.status != "finished":
         detail = (result.error or result.status or "").strip()
         final = (result.final_text or "").strip()
         if final and final not in detail:
