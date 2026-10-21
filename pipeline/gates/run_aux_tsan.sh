@@ -70,11 +70,15 @@ if [[ "$(engine_trait embedded)" != "True" ]]; then
   finish
 fi
 
-if [[ ! -f "${BUILD}/CMakeCache.txt" ]]; then
-  gen=()
-  command -v ninja >/dev/null && gen=(-G Ninja)
-  cmake -S "${ROOT}" -B "${BUILD}" "${gen[@]}" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DACCEL_SANITIZE=thread -DACCEL_CODEGEN_ENGINE=${ENGINE_NAME} >"${LOGDIR}/configure.log" 2>&1 || { STATUS="fail"; REASON="cmake configure failed"; finish; }
+# The TSAN build dir is configured with the backend on; host.sh build reconfigures with the same
+# arguments, so they are exported as ACCEL_CMAKE_ARGS (host contract).
+gen=()
+command -v ninja >/dev/null && gen=(-G Ninja)
+export ACCEL_CMAKE_ARGS="${gen[*]} -DCMAKE_BUILD_TYPE=RelWithDebInfo -DACCEL_SANITIZE=thread -DACCEL_CODEGEN_ENGINE=${ENGINE_NAME} -DACCELERATOR_CODEGEN_BUILD_${ENGINE_NAME^^}=ON"
+if ! grep -qs '^ACCEL_SANITIZE:STRING=thread$' "${BUILD}/CMakeCache.txt"; then
+  rm -rf "${BUILD}/CMakeCache.txt" "${BUILD}/CMakeFiles"
+  # shellcheck disable=SC2086
+  cmake -S "${ROOT}" -B "${BUILD}" ${ACCEL_CMAKE_ARGS} >"${LOGDIR}/configure.log" 2>&1 || { STATUS="fail"; REASON="cmake configure failed"; finish; }
 fi
 
 export ACCEL_AUX_READ_THREADS="${THREADS}" ACCEL_AUX_BUILD_THREADS="${THREADS}" ACCEL_AUX_MAINT_THREADS="${THREADS}"

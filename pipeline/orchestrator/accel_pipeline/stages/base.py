@@ -12,6 +12,8 @@ from accel_pipeline.pipeline_log import (
     usage_from_metadata,
 )
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt, with_codex_tooling
+from accel_pipeline.frozen_paths import restore as restore_frozen, snapshot as snapshot_frozen
+from accel_pipeline.playbook import append_experiment_log
 
 _UNLIMITED_STAGE_TURNS = 10_000
 
@@ -135,7 +137,17 @@ def run_agent_stage(
         agent_model=agent_model,
         max_turns=max_turns,
     )
+    frozen = snapshot_frozen(pipeline_config.repo_root)
     result = backend.run_stage(request)
+    reverted = restore_frozen(pipeline_config.repo_root, frozen)
+    if reverted:
+        print(f"[pipeline] {stage}: reverted agent edits to frozen paths: {', '.join(reverted)}", flush=True)
+        append_experiment_log(
+            pipeline_config.repo_root,
+            query,
+            f"- {stage}: reverted agent edits to frozen pipeline/substrate paths ({', '.join(reverted)})",
+            workload=workload,
+        )
     if result.status != "finished":
         detail = (result.error or result.status or "").strip()
         final = (result.final_text or "").strip()
