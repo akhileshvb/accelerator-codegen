@@ -1144,13 +1144,15 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
     SortShards(services, supps);
   }
 
-  // Tree leaves: slices of order shards sum into private trees, added in slice order.
-  std::vector<int64_t> flat(static_cast<std::size_t>(tree_size) * 2 * stride, 0);
-  core::ParallelReduce(
-      services, orders.shard_count(), kShardGrain, flat,
-      [&](std::vector<int64_t> &leaves, std::size_t begin, std::size_t end) {
-        if (leaves.empty())
-          leaves.assign(static_cast<std::size_t>(tree_size) * 2 * stride, 0);
+  // Tree leaves: slices of order shards sum into private trees, added in parallel.
+  const std::size_t tree_cells = static_cast<std::size_t>(tree_size) * 2 * stride;
+  std::vector<std::vector<int64_t>> trees(
+      core::SliceCount(services, orders.shard_count(), kShardGrain));
+  core::ParallelSlices(
+      services, orders.shard_count(), kShardGrain,
+      [&](std::size_t slice, std::size_t begin, std::size_t end) {
+        auto &leaves = trees[slice];
+        leaves.assign(tree_cells, 0);
         orders.ForEachInShards(begin, end, [&](const TpchQ5ShardIndex<TpchQ5OrderRec>::Element &e) {
           const auto &order = e.value;
           const int32_t col = meta.NationColumn(order.nationkey);
@@ -1160,11 +1162,9 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
           leaves[static_cast<std::size_t>(TpchQ5LeafNode(tree_size, order.ordinal)) * stride +
                  static_cast<uint32_t>(col)] += order.rev;
         });
-      },
-      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
-        for (std::size_t i = 0; i < from.size(); ++i)
-          into[i] += from[i];
       });
+  core::SumInto(core::Parallelism::OnPool(services), trees);
+  std::vector<int64_t> flat = std::move(trees[0]);
 
   for (uint32_t i = tree_size - 1; i > 0; i--)
     for (uint32_t c = 0; c < stride; ++c)

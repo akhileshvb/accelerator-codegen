@@ -730,12 +730,14 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   state.tree_stride = num_p;
   state.tree.assign(static_cast<std::size_t>(state.tree_size) * 2 * num_p, 0);
 
-  // Populate leaves: slices of shards count into private trees, summed in slice order.
-  core::ParallelReduce(
-      services, shards.shard_count(), kLeafShardGrain, state.tree,
-      [&](std::vector<int64_t> &tree, std::size_t begin, std::size_t end) {
-        if (tree.empty())
-          tree.assign(state.tree.size(), 0);
+  // Populate leaves: slices of shards count into private trees, summed in parallel.
+  std::vector<std::vector<int64_t>> trees(
+      core::SliceCount(services, shards.shard_count(), kLeafShardGrain));
+  core::ParallelSlices(
+      services, shards.shard_count(), kLeafShardGrain,
+      [&](std::size_t slice, std::size_t begin, std::size_t end) {
+        auto &tree = trees[slice];
+        tree.assign(state.tree.size(), 0);
         shards.ForEachInShards(begin, end, [&](const TpchQ4EligIndex::Element &entry) {
           const auto &info = entry.value;
           if (info.qualifying_count <= 0)
@@ -747,11 +749,9 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
           if (info.priority_idx >= 0 && info.priority_idx < static_cast<int32_t>(num_p))
             tree[static_cast<std::size_t>(leaf) * num_p + info.priority_idx] += 1;
         });
-      },
-      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
-        for (std::size_t i = 0; i < from.size(); ++i)
-          into[i] += from[i];
       });
+  core::SumInto(parallelism, trees);
+  state.tree = std::move(trees[0]);
 
   // Populate internal nodes
   for (uint32_t i = state.tree_size - 1; i > 0; i--)

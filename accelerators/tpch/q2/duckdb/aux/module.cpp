@@ -1267,7 +1267,8 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
         into.Add({row.Int(0), row.Int(1), row.Decimal(2)});
       },
       Rows::Merge);
-  auto by_supplier = partsupps.pieces;
+  decltype(partsupps.pieces) by_supplier(partsupps.pieces.size());
+  parallelism.For(by_supplier.size(), [&](std::size_t p) { by_supplier[p] = partsupps.pieces[p]; });
   TpchQ2Paged<std::vector<TpchQ2Offer>, 9> offers;
   core::FillChunks(
       parallelism, offers, partsupps.pieces, [](const PartsuppRow &row) { return row.partkey; },

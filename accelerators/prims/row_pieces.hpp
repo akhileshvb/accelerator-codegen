@@ -108,6 +108,19 @@ std::vector<GroupedPiece<Row>> GroupRows(const Parallelism &parallelism,
   return grouped;
 }
 
+// Adds the equally sized vectors of `parts` element-wise into parts[0], index ranges in
+// parallel (the merge of per-slice partial sums sized by a small constant).
+inline void SumInto(const Parallelism &parallelism, std::vector<std::vector<int64_t>> &parts) {
+  constexpr std::size_t kRange = 4096;
+  const std::size_t size = parts.empty() ? 0 : parts[0].size();
+  parallelism.For((size + kRange - 1) / kRange, [&](std::size_t r) {
+    const std::size_t end = std::min(size, (r + 1) * kRange);
+    for (std::size_t p = 1; p < parts.size(); ++p)
+      for (std::size_t i = r * kRange; i < end; ++i)
+        parts[0][i] += parts[p][i];
+  });
+}
+
 // Calls apply(array.Mutable(key_of(row)), row) for every row of `pieces` (keys >= 0),
 // rows of one chunk in piece order. Chunks are dealt to groups that run concurrently
 // on the pool, so `array` (a ChunkedCowArray) needs no lock. Empties `pieces`.
