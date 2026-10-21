@@ -155,17 +155,35 @@ void TestParallel() {
     CHECK(values == expected);
   }
 
-  // Adjacent pairwise merge keeps the order of an appending merge, at any part count.
-  for (const std::size_t parts : {1, 2, 3, 5, 8, 13}) {
-    FakeServices merge_services(4);
-    std::vector<std::vector<int>> pieces(parts);
-    std::vector<int> expected;
-    for (std::size_t p = 0; p < parts; ++p) {
-      pieces[p] = {static_cast<int>(p), static_cast<int>(p) + 100};
-      expected.insert(expected.end(), pieces[p].begin(), pieces[p].end());
+  // A bucket-parallel build gives the serial chain's result: per bucket, rows in partition order.
+  for (const std::size_t workers : {1, 4}) {
+    FakeServices bucket_services(workers);
+    constexpr std::size_t kBuckets = 4, kParts = 7;
+    using Partial = core::Buckets<int>;
+    const auto built = core::PartitionedBucketBuild<Partial>(
+        bucket_services, [] { return Partial(kBuckets); },
+        [&](std::size_t parts, auto &&sink) {
+          for (std::size_t p = 0; p < parts; ++p) {
+            for (int i = 0; i < 10; ++i) {
+              const int value = static_cast<int>(p) * 10 + i;
+              sink(p, core::SingleRowBatch<int>{value});
+            }
+          }
+        },
+        [](Partial &partial, int row) { partial[row % kBuckets].push_back(row); },
+        [](Partial &into, Partial &&from, std::size_t bucket) {
+          core::AppendRows(into[bucket], std::move(from[bucket]));
+        },
+        kBuckets, kParts);
+    for (std::size_t b = 0; b < kBuckets; ++b) {
+      std::vector<int> expected;
+      for (int v = 0; v < 70; ++v) {
+        if (v % kBuckets == b) {
+          expected.push_back(v);
+        }
+      }
+      CHECK(built[b] == expected);
     }
-    core::MergeAdjacent(merge_services, pieces, core::AppendRows<int>);
-    CHECK(pieces[0] == expected);
   }
 }
 
