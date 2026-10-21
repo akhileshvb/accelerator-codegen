@@ -70,7 +70,7 @@ pub open spec fn linked_seen(links: Edges, parts: Seq<PartDelta>, count: int, ke
     exists|i: int| 0 <= i < count && edge_at(links, (#[trigger] parts[i]).row.p_partkey as int, key) != 0
 }
 
-pub open spec fn entry_seen(entries: Seq<(KeyView, i64)>, count: int, key: int) -> bool {
+pub open spec fn entry_seen(entries: Seq<(KeyView, i128)>, count: int, key: int) -> bool {
     exists|position: int| 0 <= position < count && (#[trigger] entries[position]).0 == (key, Seq::<u8>::empty())
         && entries[position].1 != 0
 }
@@ -136,7 +136,7 @@ pub proof fn lemma_linked_seen_step(links: Edges, parts: Seq<PartDelta>, count: 
     if edge_at(links, parts[count].row.p_partkey as int, key) != 0 { assert(linked_seen(links, parts, count + 1, key)); }
 }
 
-pub proof fn lemma_entry_seen_step(entries: Seq<(KeyView, i64)>, count: int, key: int)
+pub proof fn lemma_entry_seen_step(entries: Seq<(KeyView, i128)>, count: int, key: int)
     requires 0 <= count < entries.len(),
     ensures entry_seen(entries, count + 1, key)
         == (entry_seen(entries, count, key) || (entries[count].0 == (key, Seq::<u8>::empty()) && entries[count].1 != 0)),
@@ -198,7 +198,7 @@ pub fn part_keys_wanted(parts: &Vec<PartDelta>) -> (out: Vec<i64>)
     out
 }
 
-pub fn add_edge_suppliers(keys: &mut Index<i64>, edges: &[EdgeDelta])
+pub fn add_edge_suppliers(keys: &mut Index<i128>, edges: &[EdgeDelta])
     requires key_set(*old(keys)),
     ensures key_set(*final(keys)),
         forall|key: int| (#[trigger] integer_at(*final(keys), (key, Seq::empty())) > 0) == (integer_at(*old(keys), (key, Seq::empty())) > 0
@@ -230,7 +230,7 @@ pub fn add_edge_suppliers(keys: &mut Index<i64>, edges: &[EdgeDelta])
     }
 }
 
-pub fn add_blocker_suppliers(keys: &mut Index<i64>, suppliers: &[SupplierDelta])
+pub fn add_blocker_suppliers(keys: &mut Index<i128>, suppliers: &[SupplierDelta])
     requires key_set(*old(keys)),
     ensures key_set(*final(keys)),
         forall|key: int| (#[trigger] integer_at(*final(keys), (key, Seq::empty())) > 0) == (integer_at(*old(keys), (key, Seq::empty())) > 0
@@ -262,7 +262,7 @@ pub fn add_blocker_suppliers(keys: &mut Index<i64>, suppliers: &[SupplierDelta])
     }
 }
 
-pub fn add_linked(keys: &mut Index<i64>, links: &Edges, part: i64)
+pub fn add_linked(keys: &mut Index<i128>, links: &Edges, part: i64)
     requires key_set(*old(keys)), edges_keys_valid(*links),
     ensures key_set(*final(keys)),
         forall|key: int| (#[trigger] integer_at(*final(keys), (key, Seq::empty())) > 0) == (integer_at(*old(keys), (key, Seq::empty())) > 0
@@ -338,12 +338,12 @@ pub fn add_linked(keys: &mut Index<i64>, links: &Edges, part: i64)
     }
 }
 
-pub fn supplier_set(links: &Edges, parts: &Vec<PartDelta>, edges: &[EdgeDelta], suppliers: &[SupplierDelta]) -> (out: Index<i64>)
+pub fn supplier_set(links: &Edges, parts: &Vec<PartDelta>, edges: &[EdgeDelta], suppliers: &[SupplierDelta]) -> (out: Index<i128>)
     requires edges_keys_valid(*links),
     ensures key_set(out),
         forall|key: int| (#[trigger] integer_at(out, (key, Seq::empty())) > 0) == supplier_wanted(*links, parts@, edges@, suppliers@, key),
 {
-    let mut keys: Index<i64> = Index::new();
+    let mut keys: Index<i128> = Index::new();
     add_edge_suppliers(&mut keys, edges);
     add_blocker_suppliers(&mut keys, suppliers);
     let initial = Ghost(keys);
@@ -372,11 +372,11 @@ pub fn supplier_set(links: &Edges, parts: &Vec<PartDelta>, edges: &[EdgeDelta], 
     keys
 }
 
-pub fn part_set(parts: &Vec<PartDelta>) -> (out: Index<i64>)
+pub fn part_set(parts: &Vec<PartDelta>) -> (out: Index<i128>)
     ensures key_set(out),
         forall|key: int| (#[trigger] integer_at(out, (key, Seq::empty())) > 0) == part_wanted(parts@, key),
 {
-    let mut keys: Index<i64> = Index::new();
+    let mut keys: Index<i128> = Index::new();
     let mut index = 0;
     while index < parts.len()
         invariant index <= parts.len(), key_set(keys),
@@ -400,7 +400,7 @@ pub fn part_set(parts: &Vec<PartDelta>) -> (out: Index<i64>)
     keys
 }
 
-pub fn keys_sorted(keys: &Index<i64>) -> (out: Vec<i64>)
+pub fn keys_sorted(keys: &Index<i128>) -> (out: Vec<i64>)
     requires integer_keys(*keys),
     ensures increasing(out@),
         forall|key: int| seq_view_i64(out@).contains(key) <==> keys.at((key, Seq::empty())).is_some(),
@@ -408,12 +408,12 @@ pub fn keys_sorted(keys: &Index<i64>) -> (out: Vec<i64>)
     let out = keys_vec(keys);
     proof {
         keys.model();
-        let projected = keys.entries().map_values(|row: (KeyView, i64)| row.0.0);
+        let projected = keys.entries().map_values(|row: (KeyView, i128)| row.0.0);
         assert(seq_view_i64(out@) == projected);
         assert forall|first: int, last: int| 0 <= first < last < out@.len() implies out@[first] < out@[last] by {
             assert(projected.len() == keys.entries().len());
-            assert(projected[first] == (|row: (KeyView, i64)| row.0.0)(keys.entries()[first]));
-            assert(projected[last] == (|row: (KeyView, i64)| row.0.0)(keys.entries()[last]));
+            assert(projected[first] == (|row: (KeyView, i128)| row.0.0)(keys.entries()[first]));
+            assert(projected[last] == (|row: (KeyView, i128)| row.0.0)(keys.entries()[last]));
             assert(seq_view_i64(out@)[first] == out@[first] as int);
             assert(seq_view_i64(out@)[last] == out@[last] as int);
             assert(key_lt(keys.entries()[first].0, keys.entries()[last].0));

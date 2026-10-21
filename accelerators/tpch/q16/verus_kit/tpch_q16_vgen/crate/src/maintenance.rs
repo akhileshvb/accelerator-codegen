@@ -15,11 +15,11 @@ use crate::maintenance_semantics::*;
 
 verus! {
 
-pub open spec fn key_seen(entries: Seq<(KeyView, i64)>, count: int, query: KeyView) -> bool {
+pub open spec fn key_seen(entries: Seq<(KeyView, i128)>, count: int, query: KeyView) -> bool {
     exists|position: int| 0 <= position < count && (#[trigger] entries[position]).0 == query
 }
 
-pub proof fn lemma_key_seen_step(entries: Seq<(KeyView, i64)>, count: int, query: KeyView)
+pub proof fn lemma_key_seen_step(entries: Seq<(KeyView, i128)>, count: int, query: KeyView)
     requires 0 <= count < entries.len(),
     ensures key_seen(entries, count + 1, query) == (key_seen(entries, count, query) || entries[count].0 == query),
 {
@@ -36,7 +36,7 @@ pub proof fn lemma_key_seen_step(entries: Seq<(KeyView, i64)>, count: int, query
 
 /// Removes every key of a key set from a map.
 #[verifier::rlimit(60)]
-pub fn remove_keys<Value>(map: &mut Index<Value>, keys: &Index<i64>)
+pub fn remove_keys<Value>(map: &mut Index<Value>, keys: &Index<i128>)
     requires old(map).wf(), key_set(*keys),
     ensures final(map).wf(),
         forall|query: KeyView| #[trigger] final(map).at(query) == if keys.at(query).is_some() { None } else { old(map).at(query) },
@@ -85,7 +85,7 @@ pub fn remove_keys<Value>(map: &mut Index<Value>, keys: &Index<i64>)
 }
 
 #[verifier::rlimit(60)]
-pub fn replace_parts(parts: &Parts, changed: &Index<i64>, rows: &Vec<PartInput>, Ghost(fits): Ghost<bool>) -> (out: Option<Parts>)
+pub fn replace_parts(parts: &Parts, changed: &Index<i128>, rows: &Vec<PartInput>, Ghost(fits): Ghost<bool>) -> (out: Option<Parts>)
     requires parts_keys_valid(*parts), key_set(*changed),
         fits ==> rows@.len() <= max_rows(),
         fits ==> forall|part: int, key: KeyView| #[trigger] part_at(*parts, part, key) <= max_rows(),
@@ -99,7 +99,7 @@ pub fn replace_parts(parts: &Parts, changed: &Index<i64>, rows: &Vec<PartInput>,
     remove_keys(&mut out, changed);
     let base = Ghost(out);
     proof {
-        assert forall|key: KeyView| #[trigger] out.at(key).is_some() implies key.1 == Seq::<u8>::empty() && cell_keys_valid(out.at(key).unwrap()) by {
+        assert forall|key: KeyView| #[trigger] out.at(key).is_some() implies key.1 == Seq::<u8>::empty() && part_groups_valid(out.at(key).unwrap()) by {
             assert(parts.at(key) == out.at(key));
         }
         assert forall|part: int, key: KeyView| #[trigger] part_at(base@, part, key)
@@ -128,7 +128,7 @@ pub fn replace_parts(parts: &Parts, changed: &Index<i64>, rows: &Vec<PartInput>,
                     let row = rows@[index as int];
                     let key = group_key(row.p_brand@, row.p_type@, row.p_size as int);
                     crate::bounds::lemma_part_input_bound(rows@.take(processed@), row.p_partkey as int, key);
-                    assert(max_rows() == 1099511627776int);
+                    assert(max_rows() == 9223372036854775808int);
                     assert(part_at(base@, row.p_partkey as int, key) <= max_rows());
                 }
             }
@@ -143,7 +143,7 @@ pub fn replace_parts(parts: &Parts, changed: &Index<i64>, rows: &Vec<PartInput>,
 }
 
 #[verifier::rlimit(60)]
-pub fn replace_edges(edges: &Edges, suppliers: &Index<i64>, rows: &[EdgeInput], Ghost(fits): Ghost<bool>) -> (out: Option<Edges>)
+pub fn replace_edges(edges: &Edges, suppliers: &Index<i128>, rows: &[EdgeInput], Ghost(fits): Ghost<bool>) -> (out: Option<Edges>)
     requires edges_keys_valid(*edges), key_set(*suppliers),
         fits ==> rows@.len() <= max_rows(),
         fits ==> forall|supplier: int, part: int| #[trigger] edge_at(*edges, supplier, part) <= max_rows(),
@@ -184,7 +184,7 @@ pub fn replace_edges(edges: &Edges, suppliers: &Index<i64>, rows: &[EdgeInput], 
             proof {
                 if fits {
                     crate::bounds::lemma_edge_input_bound(rows@.take(processed@), row.ps_suppkey as int, row.ps_partkey as int);
-                    assert(max_rows() == 1099511627776int);
+                    assert(max_rows() == 9223372036854775808int);
                     assert(edge_at(base@, row.ps_suppkey as int, row.ps_partkey as int) <= max_rows());
                 }
             }
@@ -198,7 +198,7 @@ pub fn replace_edges(edges: &Edges, suppliers: &Index<i64>, rows: &[EdgeInput], 
     Some(out)
 }
 
-pub fn replace_blockers(blocked: &Index<i64>, suppliers: &Index<i64>, rows: &[BlockerInput], Ghost(fits): Ghost<bool>) -> (out: Option<Index<i64>>)
+pub fn replace_blockers(blocked: &Index<i128>, suppliers: &Index<i128>, rows: &[BlockerInput], Ghost(fits): Ghost<bool>) -> (out: Option<Index<i128>>)
     requires integer_keys(*blocked), key_set(*suppliers),
         fits ==> rows@.len() <= max_rows(),
         fits ==> forall|supplier: int| #[trigger] integer_at(*blocked, (supplier, Seq::empty())) <= max_rows(),
@@ -236,7 +236,7 @@ pub fn replace_blockers(blocked: &Index<i64>, suppliers: &Index<i64>, rows: &[Bl
             proof {
                 if fits {
                     crate::bounds::lemma_blocker_input_bound(rows@.take(processed@), rows@[index as int].s_suppkey as int);
-                    assert(max_rows() == 1099511627776int);
+                    assert(max_rows() == 9223372036854775808int);
                     assert(integer_at(base@, (rows@[index as int].s_suppkey as int, Seq::<u8>::empty())) <= max_rows());
                 }
             }
@@ -318,7 +318,7 @@ pub fn clear_edge(edges: &mut Edges, outer: i64, inner_key: i64)
 }
 
 /// Sets the cell (outer, inner_key) of a two-level table.
-pub fn put_edge(edges: &mut Edges, outer: i64, inner_key: i64, value: i64)
+pub fn put_edge(edges: &mut Edges, outer: i64, inner_key: i64, value: i128)
     requires edges_keys_valid(*old(edges)),
     ensures edges_keys_valid(*final(edges)),
         forall|query_outer: int, query_inner: int| #[trigger] edge_at(*final(edges), query_outer, query_inner)
@@ -333,7 +333,7 @@ pub fn put_edge(edges: &mut Edges, outer: i64, inner_key: i64, value: i64)
 
 /// Rewrites the cells of one supplier's column in a part-first table from its row in a supplier-first table.
 #[verifier::rlimit(60)]
-pub fn rewrite_column(links: &mut Edges, supplier: i64, inner: &Index<i64>, keep: bool)
+pub fn rewrite_column(links: &mut Edges, supplier: i64, inner: &Index<i128>, keep: bool)
     requires edges_keys_valid(*old(links)), integer_keys(*inner),
     ensures edges_keys_valid(*final(links)),
         forall|part: int, query_supplier: int| #[trigger] edge_at(*final(links), part, query_supplier)
@@ -407,8 +407,8 @@ pub open spec fn within(db: Db, db2: Db) -> bool {
 }
 
 #[verifier::rlimit(200)]
-pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Index<i64>,
-    new_parts: &Parts, new_edges: &Edges, new_blockers: &Index<i64>, suppliers: &Index<i64>,
+pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Index<i128>,
+    new_parts: &Parts, new_edges: &Edges, new_blockers: &Index<i128>, suppliers: &Index<i128>,
     Ghost(db): Ghost<Db>, Ghost(db2): Ghost<Db>,
 ) -> (out: Result<Counts, u32>)
     requires parts_keys_valid(*old_parts), parts_keys_valid(*new_parts),
@@ -418,7 +418,7 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
         scanned_parts(*new_parts, db2), scanned_edges(*new_edges, db2), scanned_blockers(*new_blockers, db2),
     ensures out matches Ok(groups) ==> cell_keys_valid(groups)
         && forall|key: KeyView| #[trigger] count_at(groups, key)
-            == sum(suppliers.entries(), |row: (KeyView, i64)|
+            == sum(suppliers.entries(), |row: (KeyView, i128)|
                 supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
                     - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key)),
         out is Err ==> !within(db, db2),
@@ -448,7 +448,7 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
             verus_prooflib::ordered::ordered_rows(suppliers.entries()),
             forall|position: int| 0 <= position < suppliers.entries().len() ==> (#[trigger] suppliers.entries()[position]).0.1 == Seq::<u8>::empty(),
             forall|key: KeyView| #[trigger] count_at(group_changes, key)
-                == sum(suppliers.entries().take(processed@), |row: (KeyView, i64)|
+                == sum(suppliers.entries().take(processed@), |row: (KeyView, i128)|
                     supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
                         - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key)),
         decreases cursor.remaining().len(),
@@ -556,10 +556,10 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
                 }
             }
             assert forall|key: KeyView| #[trigger] count_at(group_changes, key)
-                == sum(suppliers.entries().take(processed@ + 1), |row: (KeyView, i64)|
+                == sum(suppliers.entries().take(processed@ + 1), |row: (KeyView, i128)|
                     supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
                         - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key)) by {
-                lemma_sum_take(suppliers.entries(), processed@, |row: (KeyView, i64)|
+                lemma_sum_take(suppliers.entries(), processed@, |row: (KeyView, i128)|
                     supplier_contribution(*new_parts, *new_edges, *new_blockers, row.0.0, key)
                         - supplier_contribution(*old_parts, *old_edges, *old_blockers, row.0.0, key));
             }
@@ -673,7 +673,7 @@ pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Coun
 }
 
 #[verifier::rlimit(100)]
-pub fn rewrite_links(links: &mut Edges, source: &Edges, suppliers: &Index<i64>, keep: bool)
+pub fn rewrite_links(links: &mut Edges, source: &Edges, suppliers: &Index<i128>, keep: bool)
     requires edges_keys_valid(*old(links)), edges_keys_valid(*source), key_set(*suppliers),
     ensures edges_keys_valid(*final(links)),
         forall|part: int, supplier: int| #[trigger] edge_at(*final(links), part, supplier)
@@ -760,7 +760,7 @@ pub fn rewrite_links(links: &mut Edges, source: &Edges, suppliers: &Index<i64>, 
     }
 }
 
-pub open spec fn part_unchanged(db: Db, db2: Db, changed: Index<i64>) -> bool {
+pub open spec fn part_unchanged(db: Db, db2: Db, changed: Index<i128>) -> bool {
     forall|part: int, key: KeyView| changed.at((part, Seq::<u8>::empty())).is_none() ==>
         #[trigger] part_database_sum(db2, part, key) == part_database_sum(db, part, key)
 }
@@ -772,11 +772,11 @@ pub proof fn lemma_no_entry_no_edge(edges: Edges, supplier: int, part: int)
 }
 
 #[verifier::rlimit(400)]
-pub fn maintain(counts: &Counts, ranks: &Ranks, parts: &Parts, edges: &Edges, blocked: &Index<i64>, links: &Edges,
-    suppliers: &Index<i64>, changed: &Index<i64>,
+pub fn maintain(counts: &Counts, ranks: &Ranks, parts: &Parts, edges: &Edges, blocked: &Index<i128>, links: &Edges,
+    suppliers: &Index<i128>, changed: &Index<i128>,
     edge_rows: &[EdgeInput], block_rows: &[BlockerInput], part_rows: &Vec<PartInput>,
     Ghost(db): Ghost<Db>, Ghost(db2): Ghost<Db>, Ghost(supplier_keys): Ghost<Seq<i64>>, Ghost(part_keys): Ghost<Seq<i64>>,
-) -> (out: Result<(Counts, Ranks, Parts, Edges, Index<i64>, Edges), u32>)
+) -> (out: Result<(Counts, Ranks, Parts, Edges, Index<i128>, Edges), u32>)
     requires counts_valid(*counts, db), ranks_valid(*ranks, *counts), tables_valid(*parts, *edges, *blocked, *links, db),
         key_set(*suppliers), key_set(*changed),
         rescan_edges_for_suppliers_ok(db2, supplier_keys, edge_rows@),
@@ -801,7 +801,6 @@ pub fn maintain(counts: &Counts, ranks: &Ranks, parts: &Parts, edges: &Edges, bl
         assert forall|part: int, key: KeyView| #[trigger] part_at(*parts, part, key) <= db.part.len() by { lemma_part_sum_bound(db, part, key); }
         assert forall|supplier: int, part: int| #[trigger] edge_at(*edges, supplier, part) <= db.partsupp.len() by { lemma_edge_count_bound(db, part, supplier); }
         assert forall|supplier: int| #[trigger] integer_at(*blocked, (supplier, Seq::<u8>::empty())) <= db.supplier.len() by { lemma_blocker_count_bound(db, supplier); }
-        assert(max_rows() == 1099511627776int);
     }
     let new_parts = match replace_parts(parts, changed, part_rows, fits) { Some(value) => value, None => return Err(4) };
     let new_edges = match replace_edges(edges, suppliers, edge_rows, fits) { Some(value) => value, None => return Err(4) };
@@ -865,8 +864,7 @@ pub fn maintain(counts: &Counts, ranks: &Ranks, parts: &Parts, edges: &Edges, bl
             0 <= count_at(*counts, #[trigger] group_key(brand, kind, size)) + count_at(changes, group_key(brand, kind, size)) <= i64::MAX as int by {
             if fits@ {
                 lemma_total_bound(db2, brand, kind, size);
-                lemma_database_suppliers_len(db2);
-                assert(max_rows() == 1099511627776int);
+                lemma_suppliers_in_type(db2);
             }
         }
     }

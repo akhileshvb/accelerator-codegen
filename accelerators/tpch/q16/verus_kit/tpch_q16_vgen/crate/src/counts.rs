@@ -125,7 +125,7 @@ pub fn share_parts(source: &Parts) -> (out: Parts)
     proof {
         verus_prooflib::lemma_ordered_equal(source, &out);
         assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] out.at(key).is_some() implies
-            key.1 == Seq::<u8>::empty() && cell_keys_valid(out.at(key).unwrap()) by {
+            key.1 == Seq::<u8>::empty() && part_groups_valid(out.at(key).unwrap()) by {
             assert(source.at(key) == out.at(key));
         }
     }
@@ -148,7 +148,7 @@ pub fn share_edges(source: &Edges) -> (out: Edges)
     out
 }
 
-pub fn share_integers(source: &Index<i64>) -> (out: Index<i64>)
+pub fn share_integers(source: &Index<i128>) -> (out: Index<i128>)
     requires integer_keys(*source),
     ensures integer_keys(out),
         forall|key: verus_prooflib::ordered::KeyView| #[trigger] out.at(key) == source.at(key),
@@ -166,6 +166,19 @@ pub open spec fn out_of_range(value: int) -> bool {
     value > i64::MAX as int || value < i64::MIN as int
 }
 
+pub open spec fn wide_out_of_range(value: int) -> bool {
+    value > i128::MAX as int || value < i128::MIN as int
+}
+
+pub fn add_wide(left: i128, right: i128) -> (out: Option<i128>)
+    ensures out matches Some(value) ==> value as int == left as int + right as int,
+        out is None ==> wide_out_of_range(left as int + right as int),
+{
+    if right >= 0 && left > i128::MAX - right { None }
+    else if right < 0 && left < i128::MIN - right { None }
+    else { Some(left + right) }
+}
+
 pub fn add(left: i64, right: i64) -> (out: Option<i64>)
     ensures out matches Some(value) ==> value as int == left as int + right as int,
         out is None ==> out_of_range(left as int + right as int),
@@ -175,7 +188,7 @@ pub fn add(left: i64, right: i64) -> (out: Option<i64>)
     else { Some(value as i64) }
 }
 
-pub fn bump(map: &mut Index<i64>, key: Key, change: i64) -> (ok: bool)
+pub fn bump(map: &mut Index<i128>, key: Key, change: i128) -> (ok: bool)
     requires map.wf(),
     ensures final(map).wf(),
         integer_keys(*old(map)) && key.view().1 == Seq::<u8>::empty() ==> integer_keys(*final(map)),
@@ -183,12 +196,12 @@ pub fn bump(map: &mut Index<i64>, key: Key, change: i64) -> (ok: bool)
         ok ==> forall|query: verus_prooflib::ordered::KeyView|
         #[trigger] integer_at(*final(map), query) == integer_at(*old(map), query)
             + if query == key.view() { change as int } else { 0 },
-        !ok ==> out_of_range(integer_at(*old(map), key.view()) + change as int),
+        !ok ==> wide_out_of_range(integer_at(*old(map), key.view()) + change as int),
 {
     let initial = Ghost(*map);
     let changed_key = Ghost(key.view());
     let before = match map.get(&key) { Some(value) => *value, None => 0 };
-    let after = match add(before, change) { Some(value) => value, None => return false };
+    let after = match add_wide(before, change) { Some(value) => value, None => return false };
     if after == 0 { map.remove(&key); }
     else { map.put(key, Arc::new(after)); }
     proof {
@@ -224,28 +237,45 @@ pub fn bump_group(map: &mut Counts, group: Arc<Group>, change: i64) -> (ok: bool
     true
 }
 
-pub fn bump_part(vocab: &Vocab, parts: &mut Parts, row: &PartInput, change: i64) -> (ok: bool)
+pub fn bump_part_group(map: &mut PartGroups, group: Arc<Group>, change: i128) -> (ok: bool)
+    requires group.valid(), part_groups_valid(*map),
+    ensures part_groups_valid(*final(map)),
+        ok ==> forall|query: verus_prooflib::ordered::KeyView|
+        #[trigger] part_count_at(*final(map), query) == part_count_at(*old(map), query)
+            + if query == group.key() { change as int } else { 0 },
+        !ok ==> wide_out_of_range(part_count_at(*old(map), group.key()) + change as int),
+{
+    let key = key_for(&*group);
+    let before = match map.get(&key) { Some(value) => value.count, None => 0 };
+    let after = match add_wide(before, change) { Some(value) => value, None => return false };
+    if after == 0 { map.remove(&key); }
+    else { map.put(key, Arc::new(PartCell { group, count: after })); }
+    true
+}
+
+#[verifier::rlimit(100)]
+pub fn bump_part(vocab: &Vocab, parts: &mut Parts, row: &PartInput, change: i128) -> (ok: bool)
     requires parts_keys_valid(*parts), vocab.ok(),
     ensures parts_keys_valid(*final(parts)),
         ok ==> forall|part: int, query: verus_prooflib::ordered::KeyView|
         #[trigger] part_at(*final(parts), part, query) == part_at(*old(parts), part, query)
             + part_weight(part_input_view(*row), part, query) * change as int,
-        !ok ==> out_of_range(part_at(*old(parts), row.p_partkey as int,
+        !ok ==> wide_out_of_range(part_at(*old(parts), row.p_partkey as int,
             group_key(row.p_brand@, row.p_type@, row.p_size as int)) + change as int),
 {
     let initial = Ghost(*parts);
     let part_key = Key::number(row.p_partkey);
     let mut groups = match parts.get(&part_key) {
         Some(value) => {
-            proof { assert(cell_keys_valid(*value)); }
+            proof { assert(part_groups_valid(*value)); }
             let copy = value.share();
             proof {
                 verus_prooflib::lemma_ordered_equal(&*value, &copy);
                 assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] copy.at(key).is_some() implies
-                    copy.at(key).unwrap().group.valid() && copy.at(key).unwrap().group.key() == key && copy.at(key).unwrap().consistent() by {
+                    copy.at(key).unwrap().group.valid() && copy.at(key).unwrap().group.key() == key by {
                     assert(value.at(key) == copy.at(key));
                 }
-                assert(cell_keys_valid(copy));
+                assert(part_groups_valid(copy));
             }
             copy
         },
@@ -253,32 +283,32 @@ pub fn bump_part(vocab: &Vocab, parts: &mut Parts, row: &PartInput, change: i64)
     };
     let before_groups = Ghost(groups);
     proof {
-        assert(cell_keys_valid(groups));
-        assert forall|query: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, query)
+        assert(part_groups_valid(groups));
+        assert forall|query: verus_prooflib::ordered::KeyView| #[trigger] part_count_at(groups, query)
             == part_at(initial@, row.p_partkey as int, query) by {}
     }
     let group = make_group(vocab, row);
-    if !bump_group(&mut groups, group, change) { return false; }
+    if !bump_part_group(&mut groups, group, change) { return false; }
     let updated = Ghost(groups);
     proof { groups.map_model(); }
     if groups.is_empty() { parts.remove(&part_key); }
     else { parts.put(part_key, Arc::new(groups)); }
     proof {
-        assert forall|query: verus_prooflib::ordered::KeyView| #[trigger] count_at(updated@, query)
-            == count_at(before_groups@, query)
+        assert forall|query: verus_prooflib::ordered::KeyView| #[trigger] part_count_at(updated@, query)
+            == part_count_at(before_groups@, query)
                 + if query == group_key(row.p_brand@, row.p_type@, row.p_size as int) { change as int } else { 0int } by {}
         assert forall|part: int, query: verus_prooflib::ordered::KeyView|
             #[trigger] part_at(*parts, part, query) == part_at(initial@, part, query)
                 + part_weight(part_input_view(*row), part, query) * change as int by {
             if part == row.p_partkey as int {
-                assert(part_at(initial@, part, query) == count_at(before_groups@, query));
+                assert(part_at(initial@, part, query) == part_count_at(before_groups@, query));
                 if updated@.entries().len() == 0 {
                     assert(updated@.at(query).is_none());
                     assert(parts.at((part, Seq::<u8>::empty())).is_none());
-                    assert(count_at(updated@, query) == 0);
+                    assert(part_count_at(updated@, query) == 0);
                 } else {
                     assert(parts.at((part, Seq::<u8>::empty())) == Some(updated@));
-                    assert(part_at(*parts, part, query) == count_at(updated@, query));
+                    assert(part_at(*parts, part, query) == part_count_at(updated@, query));
                 }
                 assert(part_weight(part_input_view(*row), part, query)
                     == if query == group_key(row.p_brand@, row.p_type@, row.p_size as int) { 1int } else { 0int });
@@ -292,13 +322,13 @@ pub fn bump_part(vocab: &Vocab, parts: &mut Parts, row: &PartInput, change: i64)
 }
 
 #[verifier::rlimit(100)]
-pub fn bump_edge(edges: &mut Edges, part: i64, supplier: i64, change: i64) -> (ok: bool)
+pub fn bump_edge(edges: &mut Edges, part: i64, supplier: i64, change: i128) -> (ok: bool)
     requires edges_keys_valid(*edges),
     ensures edges_keys_valid(*final(edges)),
         ok ==> forall|query_supplier: int, query_part: int|
         #[trigger] edge_at(*final(edges), query_supplier, query_part) == edge_at(*old(edges), query_supplier, query_part)
             + if query_supplier == supplier as int && query_part == part as int { change as int } else { 0 },
-        !ok ==> out_of_range(edge_at(*old(edges), supplier as int, part as int) + change as int),
+        !ok ==> wide_out_of_range(edge_at(*old(edges), supplier as int, part as int) + change as int),
 {
     let initial = Ghost(*edges);
     let supplier_key = Key::number(supplier);
@@ -354,7 +384,7 @@ pub fn bump_edge(edges: &mut Edges, part: i64, supplier: i64, change: i64) -> (o
     true
 }
 
-pub fn insert_key(keys: &mut Index<i64>, key: i64)
+pub fn insert_key(keys: &mut Index<i128>, key: i64)
     ensures integer_keys(*old(keys)) ==> integer_keys(*final(keys)),
         key_set(*old(keys)) ==> key_set(*final(keys)),
         forall|query: verus_prooflib::ordered::KeyView| #[trigger] integer_at(*final(keys), query)
@@ -363,9 +393,9 @@ pub fn insert_key(keys: &mut Index<i64>, key: i64)
     keys.put(Key::number(key), Arc::new(1));
 }
 
-pub fn keys_vec(keys: &Index<i64>) -> (out: Vec<i64>)
+pub fn keys_vec(keys: &Index<i128>) -> (out: Vec<i64>)
     requires keys.wf(),
-    ensures seq_view_i64(out@) == keys.entries().map_values(|row: (verus_prooflib::ordered::KeyView, i64)| row.0.0),
+    ensures seq_view_i64(out@) == keys.entries().map_values(|row: (verus_prooflib::ordered::KeyView, i128)| row.0.0),
         integer_keys(*keys) ==> forall|key: int| #[trigger] seq_view_i64(out@).contains(key)
             <==> keys.at((key, Seq::empty())).is_some(),
 {
@@ -377,7 +407,7 @@ pub fn keys_vec(keys: &Index<i64>) -> (out: Vec<i64>)
         invariant keys.wf(), 0 <= processed@ <= keys.entries().len(),
             cursor.remaining() == keys.entries().skip(processed@),
             seq_view_i64(out@) == keys.entries().take(processed@).map_values(
-                |row: (verus_prooflib::ordered::KeyView, i64)| row.0.0),
+                |row: (verus_prooflib::ordered::KeyView, i128)| row.0.0),
         decreases cursor.remaining().len(),
     {
         proof { keys.model(); }
@@ -391,7 +421,7 @@ pub fn keys_vec(keys: &Index<i64>) -> (out: Vec<i64>)
                     assert(keys.entries().take(processed@ + 1)
                         =~= keys.entries().take(processed@).push(keys.entries()[processed@]));
                     assert(seq_view_i64(out@) =~= keys.entries().take(processed@ + 1).map_values(
-                        |row: (verus_prooflib::ordered::KeyView, i64)| row.0.0));
+                        |row: (verus_prooflib::ordered::KeyView, i128)| row.0.0));
                 }
                 processed = Ghost(processed@ + 1);
             },
@@ -436,18 +466,18 @@ pub open spec fn unit_counts(counts: Counts) -> bool {
     forall|key: verus_prooflib::ordered::KeyView| 0 <= #[trigger] count_at(counts, key) <= 1
 }
 
-pub fn union_groups(target: &mut Counts, source: &Counts)
-    requires cell_keys_valid(*old(target)), cell_keys_valid(*source), unit_counts(*old(target)),
+pub fn union_groups(target: &mut Counts, source: &PartGroups)
+    requires cell_keys_valid(*old(target)), part_groups_valid(*source), unit_counts(*old(target)),
     ensures cell_keys_valid(*final(target)),
         forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*final(target), key)
-            == if count_at(*old(target), key) > 0 || count_at(*source, key) > 0 { 1int } else { 0int },
+            == if count_at(*old(target), key) > 0 || part_count_at(*source, key) > 0 { 1int } else { 0int },
 {
     let initial = Ghost(*target);
     proof { source.model(); }
     let mut cursor = source.cursor();
     let mut processed: Ghost<int> = Ghost(0);
     loop
-        invariant cell_keys_valid(*target), cell_keys_valid(*source), initial@ == *old(target), unit_counts(initial@),
+        invariant cell_keys_valid(*target), part_groups_valid(*source), initial@ == *old(target), unit_counts(initial@),
             0 <= processed@ <= source.entries().len(), cursor.remaining() == source.entries().skip(processed@),
             forall|position: int| 0 <= position < source.entries().len() ==>
                 #[trigger] source.at(source.entries()[position].0) == Some(source.entries()[position].1),
@@ -463,15 +493,15 @@ pub fn union_groups(target: &mut Counts, source: &Counts)
                     source.model();
                     assert(processed@ == source.entries().len());
                     assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*target, key)
-                        == if count_at(initial@, key) > 0 || count_at(*source, key) > 0 { 1int } else { 0int } by {
+                        == if count_at(initial@, key) > 0 || part_count_at(*source, key) > 0 { 1int } else { 0int } by {
                         if exists|position: int| 0 <= position < processed@
                             && (#[trigger] source.entries()[position]).0 == key && source.entries()[position].1.count > 0 {
                             let position = choose|position: int| 0 <= position < processed@
                                 && (#[trigger] source.entries()[position]).0 == key && source.entries()[position].1.count > 0;
                             assert(source.at(source.entries()[position].0) == Some(source.entries()[position].1));
-                            assert(count_at(*source, key) > 0);
+                            assert(part_count_at(*source, key) > 0);
                         }
-                        if count_at(*source, key) > 0 {
+                        if part_count_at(*source, key) > 0 {
                             assert(source.at(key).is_some());
                             let position = choose|position: int| #![auto] 0 <= position < source.entries().len()
                                 && source.entries()[position].0 == key;
@@ -511,7 +541,7 @@ pub fn union_groups(target: &mut Counts, source: &Counts)
 }
 
 /// Some neighbour part with a positive multiplicity holds a positive count of the group.
-pub open spec fn hit(parts: Parts, rows: Seq<(KeyView, i64)>, key: KeyView) -> bool {
+pub open spec fn hit(parts: Parts, rows: Seq<(KeyView, i128)>, key: KeyView) -> bool {
     exists|position: int| 0 <= position < rows.len() && (#[trigger] rows[position]).1 > 0
         && part_at(parts, rows[position].0.0, key) > 0
 }
@@ -520,11 +550,11 @@ pub open spec fn nonneg_parts(parts: Parts) -> bool {
     forall|part: int, key: KeyView| #[trigger] part_at(parts, part, key) >= 0
 }
 
-pub open spec fn nonneg_rows(rows: Seq<(KeyView, i64)>) -> bool {
+pub open spec fn nonneg_rows(rows: Seq<(KeyView, i128)>) -> bool {
     forall|position: int| 0 <= position < rows.len() ==> (#[trigger] rows[position]).1 >= 0
 }
 
-pub proof fn lemma_hit_extend(parts: Parts, rows: Seq<(KeyView, i64)>, position: int, key: KeyView)
+pub proof fn lemma_hit_extend(parts: Parts, rows: Seq<(KeyView, i128)>, position: int, key: KeyView)
     requires 0 <= position < rows.len(),
     ensures hit(parts, rows.take(position + 1), key)
         == (hit(parts, rows.take(position), key) || (rows[position].1 > 0 && part_at(parts, rows[position].0.0, key) > 0)),
@@ -543,11 +573,11 @@ pub proof fn lemma_hit_extend(parts: Parts, rows: Seq<(KeyView, i64)>, position:
     }
 }
 
-pub proof fn lemma_hit_joined(parts: Parts, rows: Seq<(KeyView, i64)>, key: KeyView)
+pub proof fn lemma_hit_joined(parts: Parts, rows: Seq<(KeyView, i128)>, key: KeyView)
     requires nonneg_parts(parts), nonneg_rows(rows),
-    ensures hit(parts, rows, key) == (sum(rows, |row: (KeyView, i64)| row.1 as int * part_at(parts, row.0.0, key)) > 0),
+    ensures hit(parts, rows, key) == (sum(rows, |row: (KeyView, i128)| row.1 as int * part_at(parts, row.0.0, key)) > 0),
 {
-    let weight = |row: (KeyView, i64)| row.1 as int * part_at(parts, row.0.0, key);
+    let weight = |row: (KeyView, i128)| row.1 as int * part_at(parts, row.0.0, key);
     assert forall|position: int| 0 <= position < rows.len() implies weight(#[trigger] rows[position]) >= 0 by {
         let row = rows[position];
         assert(row.1 as int * part_at(parts, row.0.0, key) >= 0) by (nonlinear_arith)
@@ -574,7 +604,7 @@ pub proof fn lemma_hit_joined(parts: Parts, rows: Seq<(KeyView, i64)>, key: KeyV
     }
 }
 
-pub fn join(parts: &Parts, edges: &Index<i64>) -> (out: Counts)
+pub fn join(parts: &Parts, edges: &Index<i128>) -> (out: Counts)
     requires parts_keys_valid(*parts), integer_keys(*edges), nonneg_rows(edges.entries()),
     ensures cell_keys_valid(out), unit_counts(out),
         forall|key: verus_prooflib::ordered::KeyView| (#[trigger] count_at(out, key) > 0) == hit(*parts, edges.entries(), key),
@@ -623,7 +653,7 @@ pub fn join(parts: &Parts, edges: &Index<i64>) -> (out: Counts)
             let number = part.number as int;
             assert(part.view() == (number, Seq::<u8>::empty()));
             assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] part_at(*parts, number, key)
-                == match found { Some(variants) => count_at(*variants, key), None => 0int } by {}
+                == match found { Some(variants) => part_count_at(*variants, key), None => 0int } by {}
             assert forall|key: verus_prooflib::ordered::KeyView| (#[trigger] count_at(groups, key) > 0)
                 == hit(*parts, edges.entries().take(processed@ + 1), key) by {
                 lemma_hit_extend(*parts, edges.entries(), processed@, key);

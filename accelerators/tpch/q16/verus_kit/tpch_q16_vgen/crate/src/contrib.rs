@@ -22,23 +22,23 @@ pub proof fn lemma_suppliers_distinct(db: Db)
     }
 }
 
-pub open spec fn contributes(parts: Parts, edges: Edges, blockers: Index<i64>, key: KeyView) -> spec_fn(int) -> int {
+pub open spec fn contributes(parts: Parts, edges: Edges, blockers: Index<i128>, key: KeyView) -> spec_fn(int) -> int {
     |supplier: int| supplier_contribution(parts, edges, blockers, supplier, key)
 }
 
-pub proof fn lemma_contribution_unit(parts: Parts, edges: Edges, blockers: Index<i64>, supplier: int, key: KeyView)
+pub proof fn lemma_contribution_unit(parts: Parts, edges: Edges, blockers: Index<i128>, supplier: int, key: KeyView)
     ensures 0 <= supplier_contribution(parts, edges, blockers, supplier, key) <= 1,
 {
 }
 
-pub proof fn lemma_contribution_listed(parts: Parts, edges: Edges, blockers: Index<i64>, db: Db, supplier: int, key: KeyView)
+pub proof fn lemma_contribution_listed(parts: Parts, edges: Edges, blockers: Index<i128>, db: Db, supplier: int, key: KeyView)
     requires nonneg_parts(parts), edges_keys_valid(edges), scanned_edges(edges, db),
     ensures supplier_contribution(parts, edges, blockers, supplier, key) != 0 ==> database_suppliers(db).contains(supplier),
 {
     if supplier_contribution(parts, edges, blockers, supplier, key) != 0 {
         let rows = edges.at((supplier, Seq::<u8>::empty())).unwrap();
         rows.model();
-        let weight = |row: (KeyView, i64)| row.1 as int * part_at(parts, row.0.0, key);
+        let weight = |row: (KeyView, i128)| row.1 as int * part_at(parts, row.0.0, key);
         assert(joined_count(parts, rows, key) > 0);
         let position = lemma_sum_nonzero_witness(rows.entries(), weight);
         let entry = rows.entries()[position];
@@ -52,7 +52,7 @@ pub proof fn lemma_contribution_listed(parts: Parts, edges: Edges, blockers: Ind
     }
 }
 
-pub proof fn lemma_contribution_bound(parts: Parts, edges: Edges, blockers: Index<i64>, db: Db, keys: Seq<int>, key: KeyView)
+pub proof fn lemma_contribution_bound(parts: Parts, edges: Edges, blockers: Index<i128>, db: Db, keys: Seq<int>, key: KeyView)
     requires nonneg_parts(parts), edges_keys_valid(edges), scanned_edges(edges, db), distinct(keys),
     ensures 0 <= sum(keys, contributes(parts, edges, blockers, key)) <= database_suppliers(db).len(),
 {
@@ -69,18 +69,18 @@ pub proof fn lemma_contribution_bound(parts: Parts, edges: Edges, blockers: Inde
     lemma_sum_nonneg(keys, weight);
 }
 
-pub proof fn lemma_edges_prefix_bound(parts: Parts, edges: Edges, blockers: Index<i64>, db: Db, count: int, key: KeyView)
+pub proof fn lemma_edges_prefix_bound(parts: Parts, edges: Edges, blockers: Index<i128>, db: Db, count: int, key: KeyView)
     requires nonneg_parts(parts), edges_keys_valid(edges), scanned_edges(edges, db), 0 <= count <= edges.entries().len(),
     ensures 0 <= sum(edges.entries().take(count),
-            |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, key)) <= database_suppliers(db).len(),
+            |row: (KeyView, Index<i128>)| supplier_weight(parts, blockers, row, key)) <= database_suppliers(db).len(),
 {
     edges.model();
     verus_prooflib::ordered::lemma_ordered_unique(edges.entries());
     let rows = edges.entries().take(count);
-    let project = |row: (KeyView, Index<i64>)| row.0.0;
+    let project = |row: (KeyView, Index<i128>)| row.0.0;
     let f = contributes(parts, edges, blockers, key);
-    let h = |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, key);
-    let h2 = |row: (KeyView, Index<i64>)| f(project(row));
+    let h = |row: (KeyView, Index<i128>)| supplier_weight(parts, blockers, row, key);
+    let h2 = |row: (KeyView, Index<i128>)| f(project(row));
     assert forall|position: int| 0 <= position < rows.len() implies h(#[trigger] rows[position]) == h2(rows[position]) by {
         let row = rows[position];
         assert(row == edges.entries()[position]);
@@ -104,19 +104,19 @@ pub proof fn lemma_edges_prefix_bound(parts: Parts, edges: Edges, blockers: Inde
     lemma_contribution_bound(parts, edges, blockers, db, keys, key);
 }
 
-pub open spec fn partial(parts: Parts, edges: Edges, blockers: Index<i64>, entries: Seq<(KeyView, i64)>, count: int, key: KeyView) -> int {
-    sum(entries.take(count), |row: (KeyView, i64)| supplier_contribution(parts, edges, blockers, row.0.0, key))
+pub open spec fn partial(parts: Parts, edges: Edges, blockers: Index<i128>, entries: Seq<(KeyView, i128)>, count: int, key: KeyView) -> int {
+    sum(entries.take(count), |row: (KeyView, i128)| supplier_contribution(parts, edges, blockers, row.0.0, key))
 }
 
-pub proof fn lemma_partial_step(parts: Parts, edges: Edges, blockers: Index<i64>, entries: Seq<(KeyView, i64)>, count: int, key: KeyView)
+pub proof fn lemma_partial_step(parts: Parts, edges: Edges, blockers: Index<i128>, entries: Seq<(KeyView, i128)>, count: int, key: KeyView)
     requires 0 <= count < entries.len(),
     ensures partial(parts, edges, blockers, entries, count + 1, key)
         == partial(parts, edges, blockers, entries, count, key) + supplier_contribution(parts, edges, blockers, entries[count].0.0, key),
 {
-    lemma_sum_take(entries, count, |row: (KeyView, i64)| supplier_contribution(parts, edges, blockers, row.0.0, key));
+    lemma_sum_take(entries, count, |row: (KeyView, i128)| supplier_contribution(parts, edges, blockers, row.0.0, key));
 }
 
-pub proof fn lemma_partial_bound(parts: Parts, edges: Edges, blockers: Index<i64>, db: Db, entries: Seq<(KeyView, i64)>, count: int, key: KeyView)
+pub proof fn lemma_partial_bound(parts: Parts, edges: Edges, blockers: Index<i128>, db: Db, entries: Seq<(KeyView, i128)>, count: int, key: KeyView)
     requires nonneg_parts(parts), edges_keys_valid(edges), scanned_edges(edges, db),
         verus_prooflib::ordered::ordered_rows(entries), forall|position: int| 0 <= position < entries.len() ==> (#[trigger] entries[position]).0.1 == Seq::<u8>::empty(),
         0 <= count <= entries.len(),
@@ -124,10 +124,10 @@ pub proof fn lemma_partial_bound(parts: Parts, edges: Edges, blockers: Index<i64
 {
     verus_prooflib::ordered::lemma_ordered_unique(entries);
     let rows = entries.take(count);
-    let project = |row: (KeyView, i64)| row.0.0;
+    let project = |row: (KeyView, i128)| row.0.0;
     let f = contributes(parts, edges, blockers, key);
-    let h = |row: (KeyView, i64)| supplier_contribution(parts, edges, blockers, row.0.0, key);
-    let h2 = |row: (KeyView, i64)| f(project(row));
+    let h = |row: (KeyView, i128)| supplier_contribution(parts, edges, blockers, row.0.0, key);
+    let h2 = |row: (KeyView, i128)| f(project(row));
     assert forall|position: int| 0 <= position < rows.len() implies h(#[trigger] rows[position]) == h2(rows[position]) by {}
     lemma_sum_ext(rows, h, h2);
     lemma_sum_map(rows, project, f, h2);
@@ -143,29 +143,29 @@ pub proof fn lemma_partial_bound(parts: Parts, edges: Edges, blockers: Index<i64
     lemma_contribution_bound(parts, edges, blockers, db, keys, key);
 }
 
-pub proof fn lemma_difference_split(old_parts: Parts, old_edges: Edges, old_blockers: Index<i64>,
-    new_parts: Parts, new_edges: Edges, new_blockers: Index<i64>, entries: Seq<(KeyView, i64)>, count: int, key: KeyView)
-    ensures sum(entries.take(count), |row: (KeyView, i64)|
+pub proof fn lemma_difference_split(old_parts: Parts, old_edges: Edges, old_blockers: Index<i128>,
+    new_parts: Parts, new_edges: Edges, new_blockers: Index<i128>, entries: Seq<(KeyView, i128)>, count: int, key: KeyView)
+    ensures sum(entries.take(count), |row: (KeyView, i128)|
             supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key)
                 - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key))
         == partial(new_parts, new_edges, new_blockers, entries, count, key) - partial(old_parts, old_edges, old_blockers, entries, count, key),
 {
     lemma_sum_sub(entries.take(count),
-        |row: (KeyView, i64)| supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key),
-        |row: (KeyView, i64)| supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key),
-        |row: (KeyView, i64)| supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key)
+        |row: (KeyView, i128)| supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key),
+        |row: (KeyView, i128)| supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key),
+        |row: (KeyView, i128)| supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key)
             - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key));
 }
 
-pub proof fn lemma_old_call_fits(old_parts: Parts, old_edges: Edges, old_blockers: Index<i64>,
-    new_parts: Parts, new_edges: Edges, new_blockers: Index<i64>, db: Db, db2: Db,
-    entries: Seq<(KeyView, i64)>, count: int, key: KeyView)
+pub proof fn lemma_old_call_fits(old_parts: Parts, old_edges: Edges, old_blockers: Index<i128>,
+    new_parts: Parts, new_edges: Edges, new_blockers: Index<i128>, db: Db, db2: Db,
+    entries: Seq<(KeyView, i128)>, count: int, key: KeyView)
     requires nonneg_parts(old_parts), nonneg_parts(new_parts), edges_keys_valid(old_edges), edges_keys_valid(new_edges),
         scanned_edges(old_edges, db), scanned_edges(new_edges, db2),
         verus_prooflib::ordered::ordered_rows(entries), forall|position: int| 0 <= position < entries.len() ==> (#[trigger] entries[position]).0.1 == Seq::<u8>::empty(),
         0 <= count < entries.len(), envelope(db), envelope(db2),
     ensures !crate::counts::out_of_range(
-        sum(entries.take(count), |row: (KeyView, i64)|
+        sum(entries.take(count), |row: (KeyView, i128)|
             supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key)
                 - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key))
         - supplier_contribution(old_parts, old_edges, old_blockers, entries[count].0.0, key)),
@@ -174,20 +174,19 @@ pub proof fn lemma_old_call_fits(old_parts: Parts, old_edges: Edges, old_blocker
     lemma_partial_bound(new_parts, new_edges, new_blockers, db2, entries, count, key);
     lemma_partial_bound(old_parts, old_edges, old_blockers, db, entries, count + 1, key);
     lemma_partial_step(old_parts, old_edges, old_blockers, entries, count, key);
-    lemma_database_suppliers_len(db);
-    lemma_database_suppliers_len(db2);
-    assert(max_rows() == 1099511627776int);
+    lemma_suppliers_in_type(db);
+    lemma_suppliers_in_type(db2);
 }
 
-pub proof fn lemma_new_call_fits(old_parts: Parts, old_edges: Edges, old_blockers: Index<i64>,
-    new_parts: Parts, new_edges: Edges, new_blockers: Index<i64>, db: Db, db2: Db,
-    entries: Seq<(KeyView, i64)>, count: int, key: KeyView)
+pub proof fn lemma_new_call_fits(old_parts: Parts, old_edges: Edges, old_blockers: Index<i128>,
+    new_parts: Parts, new_edges: Edges, new_blockers: Index<i128>, db: Db, db2: Db,
+    entries: Seq<(KeyView, i128)>, count: int, key: KeyView)
     requires nonneg_parts(old_parts), nonneg_parts(new_parts), edges_keys_valid(old_edges), edges_keys_valid(new_edges),
         scanned_edges(old_edges, db), scanned_edges(new_edges, db2),
         verus_prooflib::ordered::ordered_rows(entries), forall|position: int| 0 <= position < entries.len() ==> (#[trigger] entries[position]).0.1 == Seq::<u8>::empty(),
         0 <= count < entries.len(), envelope(db), envelope(db2),
     ensures !crate::counts::out_of_range(
-        sum(entries.take(count), |row: (KeyView, i64)|
+        sum(entries.take(count), |row: (KeyView, i128)|
             supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key)
                 - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key))
         - supplier_contribution(old_parts, old_edges, old_blockers, entries[count].0.0, key)
@@ -198,9 +197,8 @@ pub proof fn lemma_new_call_fits(old_parts: Parts, old_edges: Edges, old_blocker
     lemma_partial_bound(old_parts, old_edges, old_blockers, db, entries, count + 1, key);
     lemma_partial_step(old_parts, old_edges, old_blockers, entries, count, key);
     lemma_partial_step(new_parts, new_edges, new_blockers, entries, count, key);
-    lemma_database_suppliers_len(db);
-    lemma_database_suppliers_len(db2);
-    assert(max_rows() == 1099511627776int);
+    lemma_suppliers_in_type(db);
+    lemma_suppliers_in_type(db2);
 }
 
 }

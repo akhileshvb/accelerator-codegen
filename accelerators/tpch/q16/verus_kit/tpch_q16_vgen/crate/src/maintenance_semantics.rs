@@ -76,7 +76,7 @@ pub proof fn lemma_unaffected_supplier(db: Db, db2: Db, brand: Seq<u8>, kind: Se
         |part: int| part_support_by_key(db2, supplier, part, group_key(brand, kind, size)));
 }
 
-pub proof fn lemma_local_contribution(parts: Parts, edges: Edges, blockers: Index<i64>, db: Db,
+pub proof fn lemma_local_contribution(parts: Parts, edges: Edges, blockers: Index<i128>, db: Db,
     supplier: int, brand: Seq<u8>, kind: Seq<u8>, size: int,
 )
     requires parts_keys_valid(parts), edges_keys_valid(edges),
@@ -147,9 +147,9 @@ pub proof fn lemma_supplier_partition(db: Db, brand: Seq<u8>, kind: Seq<u8>, siz
     }
 }
 
-pub proof fn lemma_total_delta(db: Db, db2: Db, suppliers: Index<i64>,
-    old_parts: Parts, old_edges: Edges, old_blockers: Index<i64>,
-    new_parts: Parts, new_edges: Edges, new_blockers: Index<i64>,
+pub proof fn lemma_total_delta(db: Db, db2: Db, suppliers: Index<i128>,
+    old_parts: Parts, old_edges: Edges, old_blockers: Index<i128>,
+    new_parts: Parts, new_edges: Edges, new_blockers: Index<i128>,
     brand: Seq<u8>, kind: Seq<u8>, size: int,
 )
     requires key_set(suppliers),
@@ -161,13 +161,13 @@ pub proof fn lemma_total_delta(db: Db, db2: Db, suppliers: Index<i64>,
             && supplier_contribution(new_parts, new_edges, new_blockers, supplier, group_key(brand, kind, size))
                 == qualifier(db2, brand, kind, size, supplier),
     ensures total(db2, brand, kind, size) - total(db, brand, kind, size)
-        == sum(suppliers.entries(), |row: (KeyView, i64)|
+        == sum(suppliers.entries(), |row: (KeyView, i128)|
             supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, group_key(brand, kind, size))
                 - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, group_key(brand, kind, size))),
 {
     suppliers.model();
     verus_prooflib::ordered::lemma_ordered_unique(suppliers.entries());
-    let project = |row: (KeyView, i64)| row.0.0;
+    let project = |row: (KeyView, i128)| row.0.0;
     let affected = suppliers.entries().map_values(project);
     assert(affected.no_duplicates()) by {
         assert forall|first: int, last: int| 0 <= first < last < affected.len() implies
@@ -204,7 +204,7 @@ pub proof fn lemma_total_delta(db: Db, db2: Db, suppliers: Index<i64>,
     verus_prooflib::lemma_sparse_partition_delta(database_suppliers(db), database_suppliers(db2), affected,
         identity, before, after, before, after);
     let difference = |supplier: int| after(supplier) - before(supplier);
-    let projected = |row: (KeyView, i64)| difference(project(row));
+    let projected = |row: (KeyView, i128)| difference(project(row));
     lemma_sum_map(suppliers.entries(), project, difference, projected);
     lemma_sum_ext_all(affected, |supplier: int| after(supplier) - before(supplier), difference);
     assert forall|position: int| 0 <= position < suppliers.entries().len() implies
@@ -213,12 +213,12 @@ pub proof fn lemma_total_delta(db: Db, db2: Db, suppliers: Index<i64>,
                 - supplier_contribution(old_parts, old_edges, old_blockers, suppliers.entries()[position].0.0, group_key(brand, kind, size)) by {
         assert(suppliers.at(suppliers.entries()[position].0).is_some());
     }
-    lemma_sum_ext(suppliers.entries(), projected, |row: (KeyView, i64)|
+    lemma_sum_ext(suppliers.entries(), projected, |row: (KeyView, i128)|
         supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, group_key(brand, kind, size))
             - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, group_key(brand, kind, size)));
 }
 
-pub open spec fn unaffected(db: Db, db2: Db, suppliers: Index<i64>) -> bool {
+pub open spec fn unaffected(db: Db, db2: Db, suppliers: Index<i128>) -> bool {
     &&& forall|supplier: int, part: int| suppliers.at((supplier, Seq::<u8>::empty())).is_none() ==>
         #[trigger] edge_count(db2, part, supplier) == edge_count(db, part, supplier)
     &&& forall|supplier: int| suppliers.at((supplier, Seq::<u8>::empty())).is_none() ==>
@@ -228,16 +228,16 @@ pub open spec fn unaffected(db: Db, db2: Db, suppliers: Index<i64>) -> bool {
             ==> part_database_sum(db2, part, key) == part_database_sum(db, part, key)
 }
 
-pub proof fn lemma_changes_are_totals(db: Db, db2: Db, suppliers: Index<i64>,
-    old_parts: Parts, old_edges: Edges, old_blockers: Index<i64>,
-    new_parts: Parts, new_edges: Edges, new_blockers: Index<i64>, group_changes: Counts,
+pub proof fn lemma_changes_are_totals(db: Db, db2: Db, suppliers: Index<i128>,
+    old_parts: Parts, old_edges: Edges, old_blockers: Index<i128>,
+    new_parts: Parts, new_edges: Edges, new_blockers: Index<i128>, group_changes: Counts,
 )
     requires key_set(suppliers),
         parts_keys_valid(old_parts), parts_keys_valid(new_parts), edges_keys_valid(old_edges), edges_keys_valid(new_edges),
         scanned_parts(old_parts, db), scanned_edges(old_edges, db), scanned_blockers(old_blockers, db),
         scanned_parts(new_parts, db2), scanned_edges(new_edges, db2), scanned_blockers(new_blockers, db2),
         unaffected(db, db2, suppliers),
-        forall|key: KeyView| #[trigger] count_at(group_changes, key) == sum(suppliers.entries(), |row: (KeyView, i64)|
+        forall|key: KeyView| #[trigger] count_at(group_changes, key) == sum(suppliers.entries(), |row: (KeyView, i128)|
             supplier_contribution(new_parts, new_edges, new_blockers, row.0.0, key)
                 - supplier_contribution(old_parts, old_edges, old_blockers, row.0.0, key)),
     ensures forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
