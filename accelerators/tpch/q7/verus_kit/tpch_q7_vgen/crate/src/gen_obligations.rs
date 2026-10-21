@@ -379,9 +379,74 @@ pub open spec fn capture_ok(db: Db, db2: Db, customer: Seq<(CustomerRow, int)>, 
     &&& bag_step(db.supplier, db2.supplier, supplier)
 }
 
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table may hold.
+pub open spec fn max_rows() -> int {
+    1099511627776
+}
+
+/// Each value of customer lies in the range of its column's SQL type.
+pub open spec fn customer_in_type(r: CustomerRow) -> bool {
+    -2147483648 <= r.c_custkey <= 2147483647
+    && -2147483648 <= r.c_nationkey <= 2147483647
+}
+
+/// Each value of lineitem lies in the range of its column's SQL type.
+pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
+    -2147483648 <= r.l_orderkey <= 2147483647
+    && -2147483648 <= r.l_suppkey <= 2147483647
+    && -999999999999999 <= r.l_extendedprice <= 999999999999999
+    && -999999999999999 <= r.l_discount <= 999999999999999
+    && -2147483648 <= r.l_shipdate <= 2147483647
+}
+
+/// Each value of nation lies in the range of its column's SQL type.
+pub open spec fn nation_in_type(r: NationRow) -> bool {
+    -2147483648 <= r.n_nationkey <= 2147483647
+}
+
+/// Each value of orders lies in the range of its column's SQL type.
+pub open spec fn orders_in_type(r: OrdersRow) -> bool {
+    -2147483648 <= r.o_orderkey <= 2147483647
+    && -2147483648 <= r.o_custkey <= 2147483647
+}
+
+/// Each value of supplier lies in the range of its column's SQL type.
+pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
+    -2147483648 <= r.s_suppkey <= 2147483647
+    && -2147483648 <= r.s_nationkey <= 2147483647
+}
+
+/// The databases the host can deliver: each table within max_rows(), each value
+/// within its column's SQL type (which the DBMS enforces).
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.customer.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.customer.len() ==> customer_in_type(#[trigger] db.customer[i])
+    &&& db.lineitem.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.lineitem.len() ==> lineitem_in_type(#[trigger] db.lineitem[i])
+    &&& db.nation.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.nation.len() ==> nation_in_type(#[trigger] db.nation[i])
+    &&& db.orders.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.orders.len() ==> orders_in_type(#[trigger] db.orders[i])
+    &&& db.supplier.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.supplier.len() ==> supplier_in_type(#[trigger] db.supplier[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    -9223372036854775808 <= r.l_year <= 9223372036854775807
+    && -170141183460469231731687303715884105728 <= r.revenue <= 170141183460469231731687303715884105727
+}
+
+/// Every correct answer fits the result's runtime types.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
+}
+
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     suppliers: &[SupplierInput],
     customers: &[CustomerInput],
@@ -398,11 +463,13 @@ pub fn ob_build(
         scan_window_lines_ok(db, window_lines@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        envelope(db) ==> r is Some,
 {
     kernel::build(suppliers, customers, nations, relevant_orders, window_lines, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope or when a correct answer overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: &[u8],
@@ -410,12 +477,13 @@ pub fn ob_execute(
 ) -> (r: Option<Vec<(Vec<u8>, Vec<u8>, i64, i128)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2@), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1@, p2@)) ==> r is Some,
 {
     kernel::execute(s, p1, p2)
 }
 
-/// The keys whose rows the host rescans (rescan relevant_orders_for_keys) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan relevant_orders_for_keys) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_relevant_orders_for_keys_keys(
     s: &State,
     customer_delta: &[CustomerDelta],
@@ -424,12 +492,14 @@ pub fn ob_rescan_relevant_orders_for_keys_keys(
     orders_delta: &[OrderDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_relevant_orders_for_keys_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
 {
     kernel::rescan_relevant_orders_for_keys_keys(s, customer_delta, lineitem_delta, nation_delta, orders_delta, supplier_delta)
 }
 
-/// The keys whose rows the host rescans (rescan window_lines_for_orders) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan window_lines_for_orders) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_window_lines_for_orders_keys(
     s: &State,
     customer_delta: &[CustomerDelta],
@@ -438,12 +508,14 @@ pub fn ob_rescan_window_lines_for_orders_keys(
     orders_delta: &[OrderDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_window_lines_for_orders_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
 {
     kernel::rescan_window_lines_for_orders_keys(s, customer_delta, lineitem_delta, nation_delta, orders_delta, supplier_delta)
 }
 
-/// The keys whose rows the host rescans (rescan window_lines_for_suppliers) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan window_lines_for_suppliers) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_window_lines_for_suppliers_keys(
     s: &State,
     customer_delta: &[CustomerDelta],
@@ -452,11 +524,14 @@ pub fn ob_rescan_window_lines_for_suppliers_keys(
     orders_delta: &[OrderDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_window_lines_for_suppliers_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
 {
     kernel::rescan_window_lines_for_suppliers_keys(s, customer_delta, lineitem_delta, nation_delta, orders_delta, supplier_delta)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope.
 pub fn ob_apply(
     s: &State,
     customer_delta: &[CustomerDelta],
@@ -478,11 +553,15 @@ pub fn ob_apply(
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(s.db(), db2, customer_delta_seq_view(customer_delta@), lineitem_full, nation_delta_seq_view(nation_delta@), orders_full, supplier_delta_seq_view(supplier_delta@)),
+        relevant_orders_for_keys_keys@ == crate::kernel::rescan_relevant_orders_for_keys_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_relevant_orders_for_keys_ok(db2, relevant_orders_for_keys_keys@, relevant_orders_for_keys_rows@),
+        window_lines_for_orders_keys@ == crate::kernel::rescan_window_lines_for_orders_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_window_lines_for_orders_ok(db2, window_lines_for_orders_keys@, window_lines_for_orders_rows@),
+        window_lines_for_suppliers_keys@ == crate::kernel::rescan_window_lines_for_suppliers_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_window_lines_for_suppliers_ok(db2, window_lines_for_suppliers_keys@, window_lines_for_suppliers_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
     kernel::apply(s, customer_delta, lineitem_delta, nation_delta, orders_delta, supplier_delta, relevant_orders_for_keys_keys, relevant_orders_for_keys_rows, window_lines_for_orders_keys, window_lines_for_orders_rows, window_lines_for_suppliers_keys, window_lines_for_suppliers_rows, Ghost(lineitem_full), Ghost(orders_full), Ghost(db2))
 }

@@ -148,9 +148,47 @@ pub open spec fn capture_ok(db: Db, db2: Db, customer: Seq<(CustomerRow, int)>, 
     &&& bag_step(db.orders, db2.orders, orders)
 }
 
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table may hold.
+pub open spec fn max_rows() -> int {
+    1099511627776
+}
+
+/// Each value of customer lies in the range of its column's SQL type.
+pub open spec fn customer_in_type(r: CustomerRow) -> bool {
+    -2147483648 <= r.c_custkey <= 2147483647
+    && -999999999999999 <= r.c_acctbal <= 999999999999999
+}
+
+/// Each value of orders lies in the range of its column's SQL type.
+pub open spec fn orders_in_type(r: OrdersRow) -> bool {
+    -2147483648 <= r.o_custkey <= 2147483647
+}
+
+/// The databases the host can deliver: each table within max_rows(), each value
+/// within its column's SQL type (which the DBMS enforces).
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.customer.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.customer.len() ==> customer_in_type(#[trigger] db.customer[i])
+    &&& db.orders.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.orders.len() ==> orders_in_type(#[trigger] db.orders[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    -9223372036854775808 <= r.numcust <= 9223372036854775807
+    && -170141183460469231731687303715884105728 <= r.totacctbal <= 170141183460469231731687303715884105727
+}
+
+/// Every correct answer fits the result's runtime types.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
+}
+
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     order_customer_keys: &[OrderInput],
     positive_customers: Vec<CustomerInput>,
@@ -161,11 +199,13 @@ pub fn ob_build(
         scan_positive_customers_ok(db, positive_customers@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        envelope(db) ==> r is Some,
 {
     kernel::build(order_customer_keys, positive_customers, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope or when a correct answer overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: &[u8],
@@ -178,22 +218,26 @@ pub fn ob_execute(
 ) -> (r: Option<Vec<(Vec<u8>, i64, i128)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2@, p3@, p4@, p5@, p6@, p7@), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1@, p2@, p3@, p4@, p5@, p6@, p7@)) ==> r is Some,
 {
     kernel::execute(s, p1, p2, p3, p4, p5, p6, p7)
 }
 
-/// The keys whose rows the host rescans (rescan positive_customers_by_key) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan positive_customers_by_key) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_positive_customers_by_key_keys(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
     orders_delta: &[OrdersDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_positive_customers_by_key_wanted(*s, customer_delta@, orders_delta@),
 {
     kernel::rescan_positive_customers_by_key_keys(s, customer_delta, orders_delta)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope.
 pub fn ob_apply(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
@@ -204,9 +248,11 @@ pub fn ob_apply(
 ) -> (r: Result<State, u32>)
     requires
         capture_ok(s.db(), db2, customer_delta_seq_view(customer_delta@), orders_delta_seq_view(orders_delta@)),
+        positive_customers_by_key_keys@ == crate::kernel::rescan_positive_customers_by_key_wanted(*s, customer_delta@, orders_delta@),
         rescan_positive_customers_by_key_ok(db2, positive_customers_by_key_keys@, positive_customers_by_key_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
     kernel::apply(s, customer_delta, orders_delta, positive_customers_by_key_keys, positive_customers_by_key_rows, Ghost(db2))
 }

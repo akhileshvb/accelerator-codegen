@@ -241,9 +241,60 @@ pub open spec fn capture_ok(db: Db, db2: Db, customer: Seq<(CustomerRow, int)>, 
     &&& bag_step(db.orders, db2.orders, orders)
 }
 
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table may hold.
+pub open spec fn max_rows() -> int {
+    1099511627776
+}
+
+/// Each value of customer lies in the range of its column's SQL type.
+pub open spec fn customer_in_type(r: CustomerRow) -> bool {
+    -2147483648 <= r.c_custkey <= 2147483647
+}
+
+/// Each value of lineitem lies in the range of its column's SQL type.
+pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
+    -2147483648 <= r.l_orderkey <= 2147483647
+    && -999999999999999 <= r.l_quantity <= 999999999999999
+}
+
+/// Each value of orders lies in the range of its column's SQL type.
+pub open spec fn orders_in_type(r: OrdersRow) -> bool {
+    -2147483648 <= r.o_orderkey <= 2147483647
+    && -2147483648 <= r.o_custkey <= 2147483647
+    && -999999999999999 <= r.o_totalprice <= 999999999999999
+    && -2147483648 <= r.o_orderdate <= 2147483647
+}
+
+/// The databases the host can deliver: each table within max_rows(), each value
+/// within its column's SQL type (which the DBMS enforces).
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.customer.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.customer.len() ==> customer_in_type(#[trigger] db.customer[i])
+    &&& db.lineitem.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.lineitem.len() ==> lineitem_in_type(#[trigger] db.lineitem[i])
+    &&& db.orders.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.orders.len() ==> orders_in_type(#[trigger] db.orders[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    -9223372036854775808 <= r.c_custkey <= 9223372036854775807
+    && -9223372036854775808 <= r.o_orderkey <= 9223372036854775807
+    && -2147483648 <= r.o_orderdate <= 2147483647
+    && -170141183460469231731687303715884105728 <= r.o_totalprice <= 170141183460469231731687303715884105727
+    && -170141183460469231731687303715884105728 <= r.sum_qty <= 170141183460469231731687303715884105727
+}
+
+/// Every correct answer fits the result's runtime types.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
+}
+
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     line_quantities: &[LineQuantityScan],
     order_groups: &[OrderGroupScan],
@@ -256,22 +307,26 @@ pub fn ob_build(
         scan_customer_names_ok(db, customer_names@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        envelope(db) ==> r is Some,
 {
     kernel::build(line_quantities, order_groups, customer_names, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope or when a correct answer overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: i64,
 ) -> (r: Option<Vec<(Vec<u8>, i64, i64, i32, i128, i128)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1 as int), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1 as int)) ==> r is Some,
 {
     kernel::execute(s, p1)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope.
 pub fn ob_apply(
     s: &State,
     customer_delta: &Vec<CustomerNameDelta>,
@@ -283,6 +338,7 @@ pub fn ob_apply(
         capture_ok(s.db(), db2, customer_name_delta_seq_view(customer_delta@), line_quantity_delta_seq_view(lineitem_delta@), order_group_delta_seq_view(orders_delta@)),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
     kernel::apply(s, customer_delta, lineitem_delta, orders_delta, Ghost(db2))
 }

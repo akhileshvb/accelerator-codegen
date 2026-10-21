@@ -176,9 +176,57 @@ pub open spec fn capture_ok(db: Db, db2: Db, nation: Seq<(NationRow, int)>, part
     &&& bag_step(db.supplier, db2.supplier, supplier)
 }
 
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table may hold.
+pub open spec fn max_rows() -> int {
+    1099511627776
+}
+
+/// Each value of nation lies in the range of its column's SQL type.
+pub open spec fn nation_in_type(r: NationRow) -> bool {
+    -2147483648 <= r.n_nationkey <= 2147483647
+}
+
+/// Each value of partsupp lies in the range of its column's SQL type.
+pub open spec fn partsupp_in_type(r: PartsuppRow) -> bool {
+    -2147483648 <= r.ps_partkey <= 2147483647
+    && -2147483648 <= r.ps_suppkey <= 2147483647
+    && -2147483648 <= r.ps_availqty <= 2147483647
+    && -999999999999999 <= r.ps_supplycost <= 999999999999999
+}
+
+/// Each value of supplier lies in the range of its column's SQL type.
+pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
+    -2147483648 <= r.s_suppkey <= 2147483647
+    && -2147483648 <= r.s_nationkey <= 2147483647
+}
+
+/// The databases the host can deliver: each table within max_rows(), each value
+/// within its column's SQL type (which the DBMS enforces).
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.nation.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.nation.len() ==> nation_in_type(#[trigger] db.nation[i])
+    &&& db.partsupp.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.partsupp.len() ==> partsupp_in_type(#[trigger] db.partsupp[i])
+    &&& db.supplier.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.supplier.len() ==> supplier_in_type(#[trigger] db.supplier[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    -9223372036854775808 <= r.ps_partkey <= 9223372036854775807
+    && -170141183460469231731687303715884105728 <= r.value <= 170141183460469231731687303715884105727
+}
+
+/// Every correct answer fits the result's runtime types.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
+}
+
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     partsupp_profiles: &[PartsuppInput],
     supplier_links: &[SupplierInput],
@@ -191,11 +239,13 @@ pub fn ob_build(
         scan_nation_names_ok(db, nation_names@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        envelope(db) ==> r is Some,
 {
     kernel::build(partsupp_profiles, supplier_links, nation_names, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope or when a correct answer overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: &[u8],
@@ -203,11 +253,13 @@ pub fn ob_execute(
 ) -> (r: Option<Vec<(i64, i128)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2 as int), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1@, p2 as int)) ==> r is Some,
 {
     kernel::execute(s, p1, p2)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope.
 pub fn ob_apply(
     s: &State,
     nation_delta: &Vec<NationDelta>,
@@ -219,6 +271,7 @@ pub fn ob_apply(
         capture_ok(s.db(), db2, nation_delta_seq_view(nation_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
     kernel::apply(s, nation_delta, partsupp_delta, supplier_delta, Ghost(db2))
 }
