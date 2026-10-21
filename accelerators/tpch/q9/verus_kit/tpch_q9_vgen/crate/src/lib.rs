@@ -40,3 +40,4 @@ pub mod groups;
 pub mod emitw;
 pub mod raw;
 pub mod slow;
+pub mod pmap;
