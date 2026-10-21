@@ -162,8 +162,13 @@ pub fn share_integers(source: &Index<i64>) -> (out: Index<i64>)
     out
 }
 
+pub open spec fn out_of_range(value: int) -> bool {
+    value > i64::MAX as int || value < i64::MIN as int
+}
+
 pub fn add(left: i64, right: i64) -> (out: Option<i64>)
     ensures out matches Some(value) ==> value as int == left as int + right as int,
+        out is None ==> out_of_range(left as int + right as int),
 {
     let value = left as i128 + right as i128;
     if value < i64::MIN as i128 || value > i64::MAX as i128 { None }
@@ -178,6 +183,7 @@ pub fn bump(map: &mut Index<i64>, key: Key, change: i64) -> (ok: bool)
         ok ==> forall|query: verus_prooflib::ordered::KeyView|
         #[trigger] integer_at(*final(map), query) == integer_at(*old(map), query)
             + if query == key.view() { change as int } else { 0 },
+        !ok ==> out_of_range(integer_at(*old(map), key.view()) + change as int),
 {
     let initial = Ghost(*map);
     let changed_key = Ghost(key.view());
@@ -208,6 +214,7 @@ pub fn bump_group(map: &mut Counts, group: Arc<Group>, change: i64) -> (ok: bool
         ok ==> forall|query: verus_prooflib::ordered::KeyView|
         #[trigger] count_at(*final(map), query) == count_at(*old(map), query)
             + if query == group.key() { change as int } else { 0 },
+        !ok ==> out_of_range(count_at(*old(map), group.key()) + change as int),
 {
     let key = key_for(&*group);
     let before = match map.get(&key) { Some(value) => value.count, None => 0 };
@@ -223,6 +230,8 @@ pub fn bump_part(vocab: &Vocab, parts: &mut Parts, row: &PartInput, change: i64)
         ok ==> forall|part: int, query: verus_prooflib::ordered::KeyView|
         #[trigger] part_at(*final(parts), part, query) == part_at(*old(parts), part, query)
             + part_weight(part_input_view(*row), part, query) * change as int,
+        !ok ==> out_of_range(part_at(*old(parts), row.p_partkey as int,
+            group_key(row.p_brand@, row.p_type@, row.p_size as int)) + change as int),
 {
     let initial = Ghost(*parts);
     let part_key = Key::number(row.p_partkey);
@@ -289,6 +298,7 @@ pub fn bump_edge(edges: &mut Edges, part: i64, supplier: i64, change: i64) -> (o
         ok ==> forall|query_supplier: int, query_part: int|
         #[trigger] edge_at(*final(edges), query_supplier, query_part) == edge_at(*old(edges), query_supplier, query_part)
             + if query_supplier == supplier as int && query_part == part as int { change as int } else { 0 },
+        !ok ==> out_of_range(edge_at(*old(edges), supplier as int, part as int) + change as int),
 {
     let initial = Ghost(*edges);
     let supplier_key = Key::number(supplier);
@@ -783,6 +793,8 @@ pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, c
         ok && ranks_valid(*old(ranks), *old(counts)) ==> ranks_valid(*final(ranks), *final(counts)),
         ok ==> forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*final(counts), key)
             == count_at(*old(counts), key) + if key == group.key() { change as int } else { 0int },
+        !ok ==> out_of_range(count_at(*old(counts), group.key()) + change as int)
+            || count_at(*old(counts), group.key()) + (change as int) < 0,
 {
     hide(stream_valid);
     hide(brands_valid);
@@ -877,51 +889,57 @@ pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, c
     true
 }
 
-pub fn collect_contribution(counts: &mut Counts, groups: &Counts, sign: i64) -> (ok: bool)
-    requires cell_keys_valid(*groups), cell_keys_valid(*counts),
+pub open spec fn contribution(groups: Counts, key: KeyView, sign: i64) -> int {
+    if count_at(groups, key) > 0 { sign as int } else { 0int }
+}
+
+pub fn collect_contribution(counts: &mut Counts, groups: &Counts, sign: i64, Ghost(fits): Ghost<bool>) -> (ok: bool)
+    requires cell_keys_valid(*groups), cell_keys_valid(*old(counts)),
+        fits ==> forall|key: KeyView| !out_of_range(count_at(*old(counts), key) + contribution(*groups, key, sign)),
     ensures cell_keys_valid(*final(counts)),
-        positive_counts(*old(counts)) && sign >= 0 ==> positive_counts(*final(counts)),
-        ok ==> forall|key: verus_prooflib::ordered::KeyView|
-        #[trigger] count_at(*final(counts), key) == count_at(*old(counts), key)
-            + if count_at(*groups, key) > 0 { sign as int } else { 0 },
+        !ok ==> !fits,
+        ok ==> (positive_counts(*old(counts)) && sign >= 0 ==> positive_counts(*final(counts))),
+        ok ==> forall|key: KeyView| #[trigger] count_at(*final(counts), key)
+            == count_at(*old(counts), key) + contribution(*groups, key, sign),
 {
     let initial = Ghost(*counts);
-    proof { groups.model(); }
+    proof { groups.model(); verus_prooflib::ordered::lemma_ordered_unique(groups.entries()); }
     let mut cursor = groups.cursor();
     let mut processed: Ghost<int> = Ghost(0);
     loop
-        invariant 0 <= processed@ <= groups.entries().len(), cell_keys_valid(*groups), cell_keys_valid(*counts),
-            initial@ == *old(counts),
+        invariant cell_keys_valid(*groups), cell_keys_valid(*counts), initial@ == *old(counts),
+            fits ==> forall|key: KeyView| !out_of_range(count_at(initial@, key) + contribution(*groups, key, sign)),
             positive_counts(initial@) && sign >= 0 ==> positive_counts(*counts),
+            0 <= processed@ <= groups.entries().len(), cursor.remaining() == groups.entries().skip(processed@),
             forall|position: int| 0 <= position < groups.entries().len() ==>
                 #[trigger] groups.at(groups.entries()[position].0) == Some(groups.entries()[position].1),
-            cursor.remaining() == groups.entries().skip(processed@),
-            forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*counts, key)
-                == count_at(initial@, key) + sum(groups.entries().take(processed@),
-                    |row: (verus_prooflib::ordered::KeyView, Cell)|
-                        if row.0 == key && row.1.count > 0 { sign as int } else { 0 }),
+            forall|first: int, last: int| 0 <= first < last < groups.entries().len() ==>
+                (#[trigger] groups.entries()[first]).0 != (#[trigger] groups.entries()[last]).0,
+            forall|key: KeyView| #[trigger] count_at(*counts, key) == count_at(initial@, key)
+                + if exists|position: int| 0 <= position < processed@
+                    && (#[trigger] groups.entries()[position]).0 == key && groups.entries()[position].1.count > 0 { sign as int } else { 0int },
         decreases cursor.remaining().len(),
     {
-        let remaining = Ghost(cursor.remaining());
         let (key, cell) = match cursor.next() {
             Some(row) => row,
             None => {
                 proof {
-                    assert(remaining@.len() == 0);
+                    groups.model();
                     assert(processed@ == groups.entries().len());
-                    assert(groups.entries().take(processed@) =~= groups.entries());
-                    assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*counts, key)
-                        == count_at(initial@, key) + if count_at(*groups, key) > 0 { sign as int } else { 0int } by {
-                        verus_prooflib::lemma_ordered_selected_weight(groups, key,
-                            |row: (verus_prooflib::ordered::KeyView, Cell)| if row.1.count > 0 { 1int } else { 0int }, sign as int,
-                            |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == key && row.1.count > 0 { sign as int } else { 0int });
-                        match groups.at(key) {
-                            Some(cell) => {
-                                assert(verus_prooflib::ordered_weight_at(*groups, key,
-                                    |row: (verus_prooflib::ordered::KeyView, Cell)| if row.1.count > 0 { 1int } else { 0int })
-                                    == if cell.count > 0 { 1int } else { 0int });
-                            },
-                            None => {},
+                    assert forall|key: KeyView| #[trigger] count_at(*counts, key)
+                        == count_at(initial@, key) + contribution(*groups, key, sign) by {
+                        if exists|position: int| 0 <= position < processed@
+                            && (#[trigger] groups.entries()[position]).0 == key && groups.entries()[position].1.count > 0 {
+                            let position = choose|position: int| 0 <= position < processed@
+                                && (#[trigger] groups.entries()[position]).0 == key && groups.entries()[position].1.count > 0;
+                            assert(groups.at(groups.entries()[position].0) == Some(groups.entries()[position].1));
+                        }
+                        if count_at(*groups, key) > 0 {
+                            assert(groups.at(key).is_some());
+                            let position = choose|position: int| #![auto] 0 <= position < groups.entries().len()
+                                && groups.entries()[position].0 == key;
+                            assert(groups.at(groups.entries()[position].0) == Some(groups.entries()[position].1));
+                            assert(0 <= position < processed@ && groups.entries()[position].0 == key && groups.entries()[position].1.count > 0);
                         }
                     }
                 }
@@ -932,16 +950,28 @@ pub fn collect_contribution(counts: &mut Counts, groups: &Counts, sign: i64) -> 
             assert((key.view(), *cell) == groups.entries()[processed@]);
             assert(groups.at(groups.entries()[processed@].0) == Some(groups.entries()[processed@].1));
             assert(groups.at(key.view()) == Some(*cell));
-            assert(groups.at(key.view()).is_some());
             assert(groups.at(key.view()).unwrap().group.valid());
+            assert(cell.group.key() == key.view());
+            assert(!(exists|position: int| 0 <= position < processed@
+                && (#[trigger] groups.entries()[position]).0 == key.view() && groups.entries()[position].1.count > 0));
         }
-        if cell.count > 0 && !bump_group(counts, cell.group.clone(), sign) { return false; }
+        let before = Ghost(*counts);
+        if cell.count > 0 {
+            if !bump_group(counts, cell.group.clone(), sign) { proof { if fits { assert(false); } } return false; }
+        }
         proof {
-            assert forall|query: verus_prooflib::ordered::KeyView| #[trigger] count_at(*counts, query)
-                == count_at(initial@, query) + sum(groups.entries().take(processed@ + 1),
-                    |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == query && row.1.count > 0 { sign as int } else { 0int }) by {
-                lemma_sum_take(groups.entries(), processed@,
-                    |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == query && row.1.count > 0 { sign as int } else { 0int });
+            assert forall|query: KeyView| #[trigger] count_at(*counts, query) == count_at(initial@, query)
+                + if exists|position: int| 0 <= position < processed@ + 1
+                    && (#[trigger] groups.entries()[position]).0 == query && groups.entries()[position].1.count > 0 { sign as int } else { 0int } by {
+                if cell.count > 0 {
+                    if query == key.view() { assert(groups.entries()[processed@].0 == query); }
+                }
+                if exists|position: int| 0 <= position < processed@ + 1
+                    && (#[trigger] groups.entries()[position]).0 == query && groups.entries()[position].1.count > 0 {
+                    let position = choose|position: int| 0 <= position < processed@ + 1
+                        && (#[trigger] groups.entries()[position]).0 == query && groups.entries()[position].1.count > 0;
+                    if position == processed@ { assert(cell.count > 0); }
+                }
             }
         }
         processed = Ghost(processed@ + 1);

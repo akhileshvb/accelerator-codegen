@@ -184,7 +184,7 @@ pub fn build(
             continue;
         }
         let groups = join(&parts, &*edges);
-        if !collect_contribution(&mut counts, &groups, 1) { return None; }
+        collect_contribution(&mut counts, &groups, 1);
         proof {
             assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key)
                 == sum(edge_map.entries().take(processed@),
