@@ -771,10 +771,23 @@ private:
                              missed[k] = !ResolveOrderYear(*join_side, nullptr, deltas[k].orderkey,
                                                            years[k], year_overlay);
                          });
+    std::vector<int64_t> missing;
     for (std::size_t k = 0; k < deltas.size(); ++k)
-      if (missed[k] && !ResolveOrderYear(*join_side, initial_scan, deltas[k].orderkey, years[k],
-                                         year_overlay))
+      if (missed[k])
+        missing.push_back(deltas[k].orderkey);
+    std::sort(missing.begin(), missing.end());
+    missing.erase(std::unique(missing.begin(), missing.end()), missing.end());
+    std::unordered_map<int64_t, int32_t> fetched;
+    if (!missing.empty() && initial_scan)
+      initial_scan->LookupOrderYears(missing, fetched);
+    for (std::size_t k = 0; k < deltas.size(); ++k) {
+      if (!missed[k])
+        continue;
+      const auto it = fetched.find(deltas[k].orderkey);
+      if (it == fetched.end())
         return false;
+      years[k] = it->second;
+    }
     std::vector<std::vector<uint32_t>> by_slot(slot_count);
     for (uint32_t k = 0; k < deltas.size(); ++k)
       by_slot[TpchQ9State::HashPartition(deltas[k].partkey, slot_count)].push_back(k);

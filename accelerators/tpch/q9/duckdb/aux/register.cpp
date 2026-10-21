@@ -193,6 +193,22 @@ struct TpchQ9Scan : TpchQ9InitialScan {
         });
     return found;
   }
+  void LookupOrderYears(const std::vector<int64_t> &keys,
+                        std::unordered_map<int64_t, int32_t> &years) override {
+    constexpr std::size_t kKeysPerQuery = 8192;
+    for (std::size_t begin = 0; begin < keys.size(); begin += kKeysPerQuery) {
+      std::string list;
+      for (std::size_t i = begin; i < std::min(keys.size(), begin + kKeysPerQuery); ++i)
+        list += (list.empty() ? "" : ",") + std::to_string(keys[i]);
+      ScanQueryStreaming(
+          connection,
+          "SELECT o_orderkey, year(o_orderdate) FROM orders WHERE o_orderkey IN (" + list + ")",
+          [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+            years[ChunkValue(chunk, 0, row).GetValue<int64_t>()] =
+                SafeInt32(ChunkValue(chunk, 1, row));
+          });
+    }
+  }
   ::duckdb::Connection &connection;
 };
 

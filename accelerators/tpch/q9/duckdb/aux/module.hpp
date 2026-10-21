@@ -112,6 +112,13 @@ public:
 
   // Point lookup of an order's year; false when unsupported or absent.
   virtual bool LookupOrderYear(int64_t, int32_t &) { return false; }
+  // The years of the orders `keys` that exist, in one engine round trip.
+  virtual void LookupOrderYears(const std::vector<int64_t> &keys,
+                                std::unordered_map<int64_t, int32_t> &years) {
+    for (const auto key : keys)
+      if (int32_t year = 0; LookupOrderYear(key, year))
+        years[key] = year;
+  }
 };
 
 struct Q9CellKey {

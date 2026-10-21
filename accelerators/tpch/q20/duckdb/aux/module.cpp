@@ -2,7 +2,6 @@
 #include "tpch/q20/calibration_writes.hpp"
 #include "prims/sql_date.hpp"
 #include "prims/key_range_sort.hpp"
-#include "tpch/common/dealt_rows.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"
@@ -324,9 +323,6 @@ public:
     base->nations[key] = name;
     base->nation_name_index[name].push_back(key);
   }
-
-  // The largest part key of the base names (-1 when there are none).
-  int64_t MaxPartkey() const { return MaxKeyBelow(base->name_partkey, std::numeric_limits<int64_t>::max()); }
 
   std::shared_ptr<const TpchQ20Base> Finish() {
     ResolveSeriesIndexes();
@@ -1535,36 +1531,27 @@ PieceList<Row> ScanPieces(const core::AuxEngineServices &services, Scan &&scan, 
       .Take();
 }
 
-// The lineitems as series rows sorted by pair key. They are dealt to key-range buckets while
-// the scan decodes them (parts are numbered densely, so equal partkey ranges hold about equal
-// row counts) and each bucket is then sorted on its own; equal keys keep table order.
 PieceList<SeriesRow> SortedSeries(core::AuxEngineServices &services,
-                                  TpchQ20InitialScan &initial_scan, int64_t max_partkey) {
-  constexpr std::size_t kBuckets = core::kSortBuckets;
-  const int64_t width = max_partkey / static_cast<int64_t>(kBuckets) + 1;
-  auto dealt = DealScan<SeriesRow, TpchQ20LineitemInput>(
-      services, kBuckets,
-      [&](std::size_t partitions, const auto &sink) {
-        initial_scan.ScanLineitems(services, partitions, sink);
+                               TpchQ20InitialScan &initial_scan) {
+  const auto pool = core::Parallelism::OnPool(services);
+  auto pieces = ScanPieces<SeriesRow>(
+      services,
+      [&](std::size_t parts, auto &&sink) {
+        initial_scan.ScanLineitems(services, parts,
+                                    [&](std::size_t p, const TpchQ20LineitemInput &input) {
+                                      sink(p, core::SingleRowBatch<TpchQ20LineitemInput>{input});
+                                    });
       },
-      [&](auto &rows, const TpchQ20LineitemInput &input) {
+      [](PartitionPieces<SeriesRow> &partial, const TpchQ20LineitemInput &input) {
         if (input.partkey < 0 || input.suppkey < 0)
           return;
         RequirePairKey(input.partkey, input.suppkey);
-        const auto bucket = std::min<std::size_t>(
-            kBuckets - 1, static_cast<std::size_t>(input.partkey / width));
-        rows.Add(bucket, input.partkey,
-                 {MakePairKey(input.partkey, input.suppkey), input.shipdate_days,
-                  input.quantity_raw});
+        partial.rows.push_back({MakePairKey(input.partkey, input.suppkey), input.shipdate_days,
+                                input.quantity_raw});
       });
-  PieceList<SeriesRow> sorted(kBuckets);
-  core::ParallelEach(services, kBuckets, 1, [&](std::size_t bucket) {
-    sorted[bucket] = dealt.TakeBucket(bucket);
-    std::stable_sort(sorted[bucket].begin(), sorted[bucket].end(),
-                     [](const SeriesRow &a, const SeriesRow &b) { return a.key < b.key; });
-  });
-  dealt.Release(services);
-  return sorted;
+  return core::SortIntoKeyBuckets(
+      pool, std::move(pieces), [](const SeriesRow &r) { return r.key; },
+      [](const SeriesRow &a, const SeriesRow &b) { return a.key < b.key; });
 }
 
 PieceList<TpchQ20PartsuppInput> SortedPartsupps(core::AuxEngineServices &services,
@@ -1697,10 +1684,10 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
         "TPC-H Q20 aux requires a typed initial scan source");
 
   BaseBuilder builder(services);
+  builder.AdoptSeries(SortedSeries(services, *initial_scan));
+  builder.AdoptPartsupp(SortedPartsupps(services, *initial_scan));
   const auto names = SortedNames(services, *initial_scan);
   builder.AdoptNames(names.rows);
-  builder.AdoptSeries(SortedSeries(services, *initial_scan, builder.MaxPartkey()));
-  builder.AdoptPartsupp(SortedPartsupps(services, *initial_scan));
   builder.AdoptSuppliers(SortedSuppliers(services, *initial_scan));
   initial_scan->ScanNationsSerial([&](const TpchQ20NationInput &input) {
     builder.AddNation(input.key, input.name);
