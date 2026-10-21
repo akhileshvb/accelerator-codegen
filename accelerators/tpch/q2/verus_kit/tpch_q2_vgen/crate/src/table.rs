@@ -10,6 +10,15 @@ broadcast use { vstd::std_specs::hash::group_hash_axioms, vstd::seq_lib::group_s
 
 pub type Major = (i64, i64, i64);
 
+pub open spec fn fits_i128(value: int) -> bool {
+    -170141183460469231731687303715884105728 <= value <= 170141183460469231731687303715884105727
+}
+
+/// What stops an addition to a minor: its total count or volume would leave the i128 range.
+pub open spec fn add_overflows(count_total: int, volume_total: int, count: i128, volume: i128) -> bool {
+    !(fits_i128(count_total + count as int) && fits_i128(volume_total + volume as int))
+}
+
 #[derive(Clone, Copy)]
 pub struct Cell {
     pub first: i64,
@@ -149,7 +158,8 @@ pub open spec fn cell_weight(cell: Cell, minor: Major, volume: bool) -> int {
 
 fn add_cells(rows: Vec<Cell>, minor: Major, count: i128, volume: i128) -> (result: Option<Vec<Cell>>)
     requires rows_valid(rows@),
-    ensures result matches Some(after) ==> rows_valid(after@)
+    ensures result is None ==> add_overflows(cell_sum(rows@, minor, false), cell_sum(rows@, minor, true), count, volume),
+        result matches Some(after) ==> rows_valid(after@)
         && forall|small: Major, measure: bool| #[trigger] cell_sum(after@, small, measure) == cell_sum(rows@, small, measure)
             + if small == minor { if measure { volume as int } else { count as int } } else { 0 },
 {
@@ -164,8 +174,9 @@ fn add_cells(rows: Vec<Cell>, minor: Major, count: i128, volume: i128) -> (resul
     {
         let cell = current[index];
         if minor_of_exec(cell) == minor {
-            let new_count = cell.count.checked_add(count)?;
-            let new_volume = cell.volume.checked_add(volume)?;
+            proof { lemma_cell_lookup(before, minor, index as int); }
+            let new_count = match cell.count.checked_add(count) { Some(value) => value, None => return None };
+            let new_volume = match cell.volume.checked_add(volume) { Some(value) => value, None => return None };
             if new_count == 0 && new_volume == 0 {
                 current.remove(index);
                 proof {
@@ -872,7 +883,8 @@ pub fn flat_copy_with(bucket: &Flat, spare: usize) -> (result: Flat)
 #[verifier::rlimit(60)]
 pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i128, Ghost(position): Ghost<int>, Ghost(slots): Ghost<int>) -> (result: Option<Flat>)
     requires flat_ok(bucket, position, slots), slot(key, slots) == position,
-    ensures result matches Some(after) ==> flat_ok(after, position, slots)
+    ensures result is None ==> add_overflows(cell_sum(flat_rows(bucket, key), minor, false), cell_sum(flat_rows(bucket, key), minor, true), count, volume),
+        result matches Some(after) ==> flat_ok(after, position, slots)
         && (forall|other: Major| other != key ==> #[trigger] flat_rows(after, other) == flat_rows(bucket, other))
         && (forall|small: Major, measure: bool| #[trigger] cell_sum(flat_rows(after, key), small, measure) == cell_sum(flat_rows(bucket, key), small, measure)
             + if small == minor { if measure { volume as int } else { count as int } } else { 0 }),
@@ -952,8 +964,15 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
         let cell = b.cells[p];
         proof { lemma_flat_facts(orig, position, slots); }
         if (cell.first, cell.second, cell.third) == minor {
-            let new_count = cell.count.checked_add(count)?;
-            let new_volume = cell.volume.checked_add(volume)?;
+            proof {
+                let row = seq_row(orig.ends@, orig.cells@, i as int);
+                assert(flat_rows(orig, key) == row);
+                assert(row[p as int - start as int] == cell);
+                assert(rows_valid(row));
+                lemma_cell_lookup(row, minor, p as int - start as int);
+            }
+            let new_count = match cell.count.checked_add(count) { Some(value) => value, None => return None };
+            let new_volume = match cell.volume.checked_add(volume) { Some(value) => value, None => return None };
             if new_count == 0 && new_volume == 0 { break; }
             let replacement = Cell { first: minor.0, second: minor.1, third: minor.2, count: new_count, volume: new_volume };
             b.cells.set(p, replacement);
@@ -999,6 +1018,8 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
         // append a new minor to the row
         let cell = Cell { first: minor.0, second: minor.1, third: minor.2, count, volume };
         b.cells.insert(end, cell);
+        let grown = b.cells.len();
+        proof { lemma_flat_facts(orig, position, slots); assert(grown as int == orig.cells@.len() + 1); }
         let mut j = i;
         let m = b.ends.len();
         while j < m
@@ -1007,9 +1028,12 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
                 forall|q: int| 0 <= q < i ==> b.ends@[q] == orig.ends@[q],
                 forall|q: int| i <= q < j ==> b.ends@[q] as int == orig.ends@[q] as int + 1,
                 forall|q: int| j <= q < m ==> b.ends@[q] == orig.ends@[q],
+                grown as int == orig.cells@.len() + 1,
+                forall|q: int| 0 <= q < orig.ends@.len() ==> (#[trigger] orig.ends@[q]) as int <= orig.cells@.len(),
             decreases m - j,
         {
-            let e = b.ends[j].checked_add(1)?;
+            proof { assert(b.ends@[j as int] == orig.ends@[j as int]); assert(orig.ends@[j as int] as int <= orig.cells@.len()); }
+            let e = b.ends[j] + 1;
             b.ends.set(j, e);
             j += 1;
         }
@@ -1037,7 +1061,7 @@ pub fn flat_add(bucket: Flat, key: Major, minor: Major, count: i128, volume: i12
     proof { lemma_flat_facts(orig, position, slots); lemma_rows_agree(orig, d0); }
     let row = draft_remove(&mut draft, key, Ghost(position), Ghost(slots));
     let ghost d1 = draft;
-    let updated = add_cells(row, minor, count, volume)?;
+    let updated = match add_cells(row, minor, count, volume) { Some(value) => value, None => { proof { assert(row@ == flat_rows(orig, key)); } return None; } };
     draft_insert(&mut draft, key, updated, Ghost(position), Ghost(slots));
     let result = flat_of(&draft, Ghost(position), Ghost(slots));
     proof {
@@ -1967,7 +1991,8 @@ impl Work {
 
     pub fn add(&mut self, key: Major, minor: Major, count: i128, volume: i128) -> (result: Option<()>)
         requires old(self).valid(),
-        ensures result is Some ==> final(self).valid(),
+        ensures result is None ==> add_overflows(old(self).at(key, minor, false), old(self).at(key, minor, true), count, volume),
+            result is Some ==> final(self).valid(),
             result is Some ==> forall|other: Major, small: Major, measure: bool|
             #[trigger] final(self).at(other, small, measure) == old(self).at(other, small, measure)
                 + if other == key && small == minor { if measure { volume as int } else { count as int } } else { 0 },
@@ -1988,7 +2013,16 @@ impl Work {
         let draft = self.open_bucket(position);
         let ghost mid = *self;
         let ghost d0 = draft;
-        let draft = flat_add(draft, key, minor, count, volume, Ghost(position_int), Ghost(slots_int))?;
+        let draft = match flat_add(draft, key, minor, count, volume, Ghost(position_int), Ghost(slots_int)) {
+            Some(value) => value,
+            None => {
+                proof {
+                    reveal(Work::at);
+                    assert(before.rows(key) == flat_rows(d0, key));
+                }
+                return None;
+            },
+        };
         let ghost d2 = draft;
         self.drafts.insert(position, draft);
         proof {

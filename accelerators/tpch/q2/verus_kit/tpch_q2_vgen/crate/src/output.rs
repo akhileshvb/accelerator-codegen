@@ -16,6 +16,7 @@ use crate::skip_proofs::*;
 use crate::minimum_proofs::lemma_regions_nonnegative;
 use verus_common::sqlfns::like_match;
 use crate::parts::*;
+use crate::dict::{enc_exec, dec_exec, dec, enc};
 use verus_common::order::nondesc;
 
 verus! {
@@ -364,7 +365,7 @@ pub fn enumerate(s: &State, size: i64, pat: &[u8], name: &[u8]) -> (result: Vec<
     {
         let ghost type_start = enumeration@;
         if ok[ti] {
-            let rows = s.parts.tl.get((size, ti as i64, 0));
+            let rows = s.parts.tl.get((size, enc_exec(ti), 0));
             let ghost all_rows = tl_rows(s.parts, size, ti as int);
             proof { s.parts.tl.lemma_shaped_valid(); }
             let mut j = 0;
@@ -390,8 +391,8 @@ pub fn enumerate(s: &State, size: i64, pat: &[u8], name: &[u8]) -> (result: Vec<
                     assert(cell == all_rows[j as int]);
                 }
                 let key = cell.first;
-                let mfgr_id = cell.second as usize;
-                proof { assert(mfgr_id as int == cell.second as int); assert(mfgr_id < dict.strings.len()); }
+                let mfgr_id = dec_exec(cell.second);
+                proof { assert(mfgr_id as int == dec(cell.second)); assert(mfgr_id < dict.strings.len()); }
                 let part_row = Arc::new(BrassPartScan {
                     p_partkey: key, p_mfgr: copy_bytes(&dict.strings[mfgr_id]), p_size: size, p_type: copy_bytes(&dict.strings[ti]),
                 });

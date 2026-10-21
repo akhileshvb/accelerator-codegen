@@ -13,6 +13,300 @@ use crate::parts::*;
 
 verus! {
 
+/// The signs of unit-weight deltas are 1 or -1.
+pub(crate) proof fn lemma_partsupp_signs_unit(deltas: Seq<PartsuppDelta>)
+    requires unit_weights(partsupp_delta_seq_view(deltas)),
+    ensures forall|index: int| 0 <= index < deltas.len() ==> deltas[index].sign == 1 || deltas[index].sign == -1,
+{
+    assert forall|index: int| 0 <= index < deltas.len() implies deltas[index].sign == 1 || deltas[index].sign == -1 by {
+        assert(partsupp_delta_seq_view(deltas)[index].1 == deltas[index].sign as int);
+    }
+}
+
+pub(crate) proof fn lemma_supplier_signs_unit(deltas: Seq<SupplierDelta>)
+    requires unit_weights(supplier_delta_seq_view(deltas)),
+    ensures forall|index: int| 0 <= index < deltas.len() ==> deltas[index].sign == 1 || deltas[index].sign == -1,
+{
+    assert forall|index: int| 0 <= index < deltas.len() implies deltas[index].sign == 1 || deltas[index].sign == -1 by {
+        assert(supplier_delta_seq_view(deltas)[index].1 == deltas[index].sign as int);
+    }
+}
+
+pub(crate) proof fn lemma_nation_signs_unit(deltas: Seq<NationDelta>)
+    requires unit_weights(nation_delta_seq_view(deltas)),
+    ensures forall|index: int| 0 <= index < deltas.len() ==> deltas[index].sign == 1 || deltas[index].sign == -1,
+{
+    assert forall|index: int| 0 <= index < deltas.len() implies deltas[index].sign == 1 || deltas[index].sign == -1 by {
+        assert(nation_delta_seq_view(deltas)[index].1 == deltas[index].sign as int);
+    }
+}
+
+pub(crate) proof fn lemma_region_signs_unit(deltas: Seq<RegionDelta>)
+    requires unit_weights(region_delta_seq_view(deltas)),
+    ensures forall|index: int| 0 <= index < deltas.len() ==> deltas[index].sign == 1 || deltas[index].sign == -1,
+{
+    assert forall|index: int| 0 <= index < deltas.len() implies deltas[index].sign == 1 || deltas[index].sign == -1 by {
+        assert(region_delta_seq_view(deltas)[index].1 == deltas[index].sign as int);
+    }
+}
+
+/// A sum of weights in [-1, 1] is at most the number of summands in magnitude.
+pub proof fn lemma_signed_sum_bound<A>(rows: Seq<A>, weight: spec_fn(A) -> int)
+    requires forall|index: int| 0 <= index < rows.len() ==> -1 <= weight(#[trigger] rows[index]) <= 1,
+    ensures -(rows.len() as int) <= sum(rows, weight) <= rows.len(),
+    decreases rows.len(),
+{
+    if rows.len() > 0 {
+        let prefix = rows.drop_last();
+        assert forall|index: int| 0 <= index < prefix.len() implies -1 <= weight(#[trigger] prefix[index]) <= 1 by {
+            assert(prefix[index] == rows[index]);
+        }
+        lemma_signed_sum_bound(prefix, weight);
+    }
+}
+
+/// A bag amount of rows held by the database is at most the number of database rows.
+pub(crate) proof fn lemma_supplier_state_bound(s: State, key: i64, row: SupplierRow)
+    requires s.meaning(), s.db() == s.database@, envelope(s.db()),
+    ensures 0 <= index_amount(s.suppliers, key, row) <= max_rows(),
+{
+    let weight = |value: SupplierRow| if value == row && value.s_suppkey == key as int { 1int } else { 0int };
+    assert(supplier_amount(s.suppliers, key, row) == supplier_database_count(s.db(), key, row));
+    lemma_indicator_sum_le(s.db().supplier, weight);
+    assert(supplier_database_count(s.db(), key, row) == sum(s.db().supplier, weight)) by {
+        lemma_sum_ext_all(s.db().supplier, |value: SupplierRow| supplier_row_indicator(value, key, row), weight);
+    }
+}
+
+pub(crate) proof fn lemma_nation_state_bound(s: State, key: i64, row: NationRow)
+    requires s.meaning(), s.db() == s.database@, envelope(s.db()),
+    ensures 0 <= index_amount(s.nations, key, row) <= max_rows(),
+{
+    let weight = |value: NationRow| if value == row && value.n_nationkey == key as int { 1int } else { 0int };
+    assert(nation_amount(s.nations, key, row) == nation_database_count(s.db(), key, row));
+    lemma_indicator_sum_le(s.db().nation, weight);
+    assert(nation_database_count(s.db(), key, row) == sum(s.db().nation, weight)) by {
+        lemma_sum_ext_all(s.db().nation, |value: NationRow| nation_row_indicator(value, key, row), weight);
+    }
+}
+
+pub(crate) proof fn lemma_region_state_bound(s: State, name: Seq<u8>, key: i64)
+    requires s.meaning(), s.db() == s.database@, envelope(s.db()),
+    ensures 0 <= region_amount(s.regions, name, key) <= max_rows(),
+{
+    let weight = |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1int } else { 0int };
+    lemma_indicator_sum_le(s.db().region, weight);
+}
+
+/// The bags of a state have positive counts.
+pub(crate) proof fn lemma_meaning_bags_positive(s: State)
+    requires s.meaning(),
+    ensures index_positive(s.quotes), index_positive(s.suppliers), index_positive(s.nations),
+{
+    assert forall|key: i64| match #[trigger] s.quotes.lookup(key) { None => true, Some(bag) => (*bag).valid() } by {
+        assert(match s.quotes.lookup(key) { None => true, Some(bag) => (*bag).valid() });
+    }
+    assert forall|key: i64| match #[trigger] s.suppliers.lookup(key) { None => true, Some(bag) => (*bag).valid() } by {
+        assert(match s.suppliers.lookup(key) { None => true, Some(bag) => (*bag).valid() });
+    }
+    assert forall|key: i64| match #[trigger] s.nations.lookup(key) { None => true, Some(bag) => (*bag).valid() } by {
+        assert(match s.nations.lookup(key) { None => true, Some(bag) => (*bag).valid() });
+    }
+}
+
+/// Merging supplier changes into the state's suppliers keeps every amount in range.
+pub(crate) proof fn lemma_supplier_merge_fits(s: State, changes: Directory<Bag<SupplierScan>>, deltas: Seq<SupplierDelta>)
+    requires s.meaning(), s.db() == s.database@, deltas.len() <= 0x1_0000_0000_0000_0000,
+        forall|index: int| 0 <= index < deltas.len() ==> deltas[index].sign == 1 || deltas[index].sign == -1,
+        forall|key: i64, row: SupplierRow| #[trigger] supplier_amount(changes, key, row) ==
+            sum(deltas, |delta: SupplierDelta| if delta.row.s_suppkey == key && supplier_scan_view(delta.row) == row { delta.sign as int } else { 0 }),
+    ensures envelope(s.db()) ==> !merge_overflows(s.suppliers, changes),
+{
+    if envelope(s.db()) {
+        assert forall|key: i64, row: SupplierRow| magnitude(index_amount(s.suppliers, key, row)) + magnitude(index_amount(changes, key, row)) <= i128_max() by {
+            lemma_supplier_state_bound(s, key, row);
+            assert forall|index: int| 0 <= index < deltas.len() implies -1 <= (|delta: SupplierDelta| if delta.row.s_suppkey == key && supplier_scan_view(delta.row) == row { delta.sign as int } else { 0 })(#[trigger] deltas[index]) <= 1 by {}
+            lemma_signed_sum_bound(deltas, |delta: SupplierDelta| if delta.row.s_suppkey == key && supplier_scan_view(delta.row) == row { delta.sign as int } else { 0 });
+            assert(index_amount(changes, key, row) == supplier_amount(changes, key, row));
+        }
+    }
+}
+
+/// Merging nation changes into the state's nations keeps every amount in range.
+pub(crate) proof fn lemma_nation_merge_fits(s: State, changes: Directory<Bag<NationScan>>, deltas: Seq<NationDelta>)
+    requires s.meaning(), s.db() == s.database@, deltas.len() <= 0x1_0000_0000_0000_0000,
+        forall|index: int| 0 <= index < deltas.len() ==> deltas[index].sign == 1 || deltas[index].sign == -1,
+        forall|key: i64, row: NationRow| #[trigger] nation_amount(changes, key, row) ==
+            sum(deltas, |delta: NationDelta| if delta.row.n_nationkey == key && nation_scan_view(delta.row) == row { delta.sign as int } else { 0 }),
+    ensures envelope(s.db()) ==> !merge_overflows(s.nations, changes),
+{
+    if envelope(s.db()) {
+        assert forall|key: i64, row: NationRow| magnitude(index_amount(s.nations, key, row)) + magnitude(index_amount(changes, key, row)) <= i128_max() by {
+            lemma_nation_state_bound(s, key, row);
+            assert forall|index: int| 0 <= index < deltas.len() implies -1 <= (|delta: NationDelta| if delta.row.n_nationkey == key && nation_scan_view(delta.row) == row { delta.sign as int } else { 0 })(#[trigger] deltas[index]) <= 1 by {}
+            lemma_signed_sum_bound(deltas, |delta: NationDelta| if delta.row.n_nationkey == key && nation_scan_view(delta.row) == row { delta.sign as int } else { 0 });
+            assert(index_amount(changes, key, row) == nation_amount(changes, key, row));
+        }
+    }
+}
+
+/// Positive counts are distinct and nonzero.
+pub proof fn lemma_positive_facts<Row: BagRow>(directory: Directory<Bag<Row>>)
+    requires index_positive(directory),
+    ensures index_unique(directory), index_nonzero(directory),
+{
+    assert forall|key: i64| match #[trigger] directory.lookup(key) { None => true, Some(bag) => (*bag).unique() } by {
+        if directory.lookup(key) is Some { assert((*directory.lookup(key)->0).valid()); }
+    }
+    assert forall|key: i64| match #[trigger] directory.lookup(key) { None => true, Some(bag) => (*bag).nonzero() } by {
+        if directory.lookup(key) is Some { assert((*directory.lookup(key)->0).valid()); }
+    }
+}
+
+/// Distinct, nonzero counts that add up to non-negative amounts are positive.
+pub proof fn lemma_positive_from_amounts<Row: BagRow>(directory: Directory<Bag<Row>>)
+    requires index_unique(directory), index_nonzero(directory),
+        forall|key: i64, value: Row::V| #[trigger] index_amount(directory, key, value) >= 0,
+    ensures index_positive(directory),
+{
+    assert forall|key: i64| match #[trigger] directory.lookup(key) { None => true, Some(bag) => (*bag).valid() } by {
+        if directory.lookup(key) is Some {
+            let bag = directory.lookup(key)->0;
+            assert((*bag).unique());
+            assert forall|index: int| 0 <= index < (*bag).entries@.len() implies (#[trigger] (*bag).entries@[index]).count > 0 by {
+                lemma_entry_amount(*bag, index);
+                assert(index_amount(directory, key, (*(*bag).entries@[index].row).rv()) >= 0);
+                assert((*bag).entries@[index].count != 0);
+            }
+        }
+    }
+}
+
+/// The amount of a quote row in a bag routed by its part key.
+pub proof fn lemma_quote_index_amount(quotes: Directory<Bag<BrassPartsuppScan>>, db: Db, key: i64, value: PartsuppRow)
+    requires index_routed(quotes, quote_routing(db)),
+    ensures index_amount(quotes, key, value) ==
+        if value.ps_partkey == key as int { quote_amount(quotes, key, value.ps_suppkey, value.ps_supplycost) } else { 0int },
+{
+    lemma_index_indicator(quotes, key, value);
+    if quotes.lookup(key) is Some {
+        let bag = quotes.lookup(key)->0;
+        let local = |row: PartsuppRow| if row.ps_suppkey == value.ps_suppkey && row.ps_supplycost == value.ps_supplycost { 1int } else { 0int };
+        assert forall|index: int| 0 <= index < (*bag).entries@.len() implies
+            (*((#[trigger] (*bag).entries@[index]).row)).ps_partkey == key by {
+            assert(quote_routing(db)(key, (*(*bag).entries@[index].row).rv()));
+        }
+        if value.ps_partkey == key as int {
+            lemma_weighted_entries_ext((*bag).entries@, eqv(value), local);
+        } else {
+            lemma_weighted_entries_ext((*bag).entries@, eqv(value), |row: PartsuppRow| 0int);
+            assert forall|index: int| 0 <= index < (*bag).entries@.len() implies
+                (|entry: Counted<BrassPartsuppScan>| entry.count as int * (|row: PartsuppRow| 0int)((*entry.row).rv()))((*bag).entries@[index]) == 0 by {}
+            lemma_sum_zero((*bag).entries@, |entry: Counted<BrassPartsuppScan>| entry.count as int * (|row: PartsuppRow| 0int)((*entry.row).rv()));
+        }
+    }
+}
+
+/// Merging the rebuilt quotes with the changes stays within 2^96 in every amount.
+pub(crate) proof fn lemma_quote_amount_bounds(s: State, db2: Db, touched: Seq<i64>, scanned: Seq<BrassPartsuppScan>, deltas: Seq<PartsuppDelta>,
+    rebuilt: Directory<Bag<BrassPartsuppScan>>, changes: Directory<Bag<BrassPartsuppScan>>, key: i64, value: PartsuppRow)
+    requires s.meaning(), s.db() == s.database@, envelope(s.db()),
+        index_routed(rebuilt, quote_routing(db2)), index_routed(changes, quote_routing(db2)),
+        scanned.len() <= 0x1_0000_0000_0000_0000, deltas.len() <= 0x1_0000_0000_0000_0000,
+        forall|index: int| 0 <= index < deltas.len() ==> deltas[index].sign == 1 || deltas[index].sign == -1,
+        forall|probe: i64, supplier: int, cost: int| #[trigger] quote_amount(rebuilt, probe, supplier, cost) == if touched.contains(probe) {
+            sum(scanned, |row: BrassPartsuppScan| if row.ps_partkey == probe && row.ps_suppkey as int == supplier && row.ps_supplycost as int == cost { 1int } else { 0int })
+        } else { quote_amount(s.quotes, probe, supplier, cost) },
+        forall|probe: i64, supplier: int, cost: int| #[trigger] quote_amount(changes, probe, supplier, cost) == if !touched.contains(probe) && eligible(db2, probe) > 0 {
+            sum(deltas, |delta: PartsuppDelta| if delta.row.ps_partkey == probe && delta.row.ps_suppkey as int == supplier && delta.row.ps_supplycost as int == cost { delta.sign as int } else { 0int })
+        } else { 0int },
+    ensures magnitude(index_amount(rebuilt, key, value)) + magnitude(index_amount(changes, key, value)) <= 0x1_0000_0000_0000_0000_0000_0000int,
+{
+    lemma_quote_index_amount(rebuilt, db2, key, value);
+    lemma_quote_index_amount(changes, db2, key, value);
+    let supplier = value.ps_suppkey;
+    let cost = value.ps_supplycost;
+    let one = |row: BrassPartsuppScan| if row.ps_partkey == key && row.ps_suppkey as int == supplier && row.ps_supplycost as int == cost { 1int } else { 0int };
+    lemma_indicator_sum_le(scanned, one);
+    let state_weight = |row: PartsuppRow| if row.ps_partkey == key as int && row.ps_suppkey == supplier && row.ps_supplycost == cost { 1int } else { 0int };
+    lemma_indicator_sum_le(s.db().partsupp, state_weight);
+    let signed = |delta: PartsuppDelta| if delta.row.ps_partkey == key && delta.row.ps_suppkey as int == supplier && delta.row.ps_supplycost as int == cost { delta.sign as int } else { 0int };
+    assert forall|i: int| 0 <= i < deltas.len() implies -1 <= signed(#[trigger] deltas[i]) <= 1 by {}
+    lemma_signed_sum_bound(deltas, signed);
+    assert(quote_amount(s.quotes, key, supplier, cost) ==
+        if eligible(s.db(), key) > 0 { sum(s.db().partsupp, state_weight) } else { 0int });
+}
+
+/// What a region delta adds to one region name and key.
+pub open spec fn region_delta_weight(delta: RegionDelta, name: Seq<u8>, key: i64) -> int {
+    if delta.row.r_name@ == name && delta.row.r_regionkey == key { delta.sign as int } else { 0int }
+}
+
+/// The net change of one region name and key over the first `count` deltas.
+pub open spec fn region_prefix(deltas: Seq<RegionDelta>, count: int, name: Seq<u8>, key: i64) -> int {
+    sum(deltas.take(count), |delta: RegionDelta| region_delta_weight(delta, name, key))
+}
+
+pub proof fn lemma_region_prefix_step(deltas: Seq<RegionDelta>, count: int, name: Seq<u8>, key: i64)
+    requires 0 <= count < deltas.len(),
+    ensures region_prefix(deltas, count + 1, name, key) == region_prefix(deltas, count, name, key) + region_delta_weight(deltas[count], name, key),
+{
+    lemma_sum_take(deltas, count, |delta: RegionDelta| region_delta_weight(delta, name, key));
+}
+
+/// The count of a region name and key stays far from the i128 range while deltas are applied.
+pub(crate) proof fn lemma_region_step_fits(s: State, previous: Directory<RegionBucket>, deltas: Seq<RegionDelta>, count: int, name: Seq<u8>, key: i64)
+    requires s.meaning(), s.db() == s.database@, 0 <= count <= deltas.len(), count <= 0x1_0000_0000_0000_0000,
+        forall|index: int| 0 <= index < deltas.len() ==> deltas[index].sign == 1 || deltas[index].sign == -1,
+        region_amount(previous, name, key) == region_amount(s.regions, name, key) + region_prefix(deltas, count, name, key),
+    ensures envelope(s.db()) ==> magnitude(region_amount(previous, name, key)) + 1 <= i128_max(),
+{
+    if envelope(s.db()) {
+        lemma_region_state_bound(s, name, key);
+        assert forall|index: int| 0 <= index < deltas.take(count).len() implies
+            -1 <= (|delta: RegionDelta| region_delta_weight(delta, name, key))(#[trigger] deltas.take(count)[index]) <= 1 by {
+            assert(deltas.take(count)[index] == deltas[index]);
+        }
+        lemma_signed_sum_bound(deltas.take(count), |delta: RegionDelta| region_delta_weight(delta, name, key));
+    }
+}
+
+/// Merging the rebuilt quotes with the changes keeps every amount in range.
+pub(crate) proof fn lemma_quote_merge_fits(s: State, db2: Db, touched: Seq<i64>, scanned: Seq<BrassPartsuppScan>, deltas: Seq<PartsuppDelta>,
+    rebuilt: Directory<Bag<BrassPartsuppScan>>, changes: Directory<Bag<BrassPartsuppScan>>)
+    requires s.meaning(), s.db() == s.database@,
+        index_routed(rebuilt, quote_routing(db2)), index_routed(changes, quote_routing(db2)),
+        scanned.len() <= 0x1_0000_0000_0000_0000, deltas.len() <= 0x1_0000_0000_0000_0000,
+        forall|index: int| 0 <= index < deltas.len() ==> deltas[index].sign == 1 || deltas[index].sign == -1,
+        forall|probe: i64, supplier: int, cost: int| #[trigger] quote_amount(rebuilt, probe, supplier, cost) == if touched.contains(probe) {
+            sum(scanned, |row: BrassPartsuppScan| if row.ps_partkey == probe && row.ps_suppkey as int == supplier && row.ps_supplycost as int == cost { 1int } else { 0int })
+        } else { quote_amount(s.quotes, probe, supplier, cost) },
+        forall|probe: i64, supplier: int, cost: int| #[trigger] quote_amount(changes, probe, supplier, cost) == if !touched.contains(probe) && eligible(db2, probe) > 0 {
+            sum(deltas, |delta: PartsuppDelta| if delta.row.ps_partkey == probe && delta.row.ps_suppkey as int == supplier && delta.row.ps_supplycost as int == cost { delta.sign as int } else { 0int })
+        } else { 0int },
+    ensures envelope(s.db()) ==> !merge_overflows(rebuilt, changes),
+{
+    if envelope(s.db()) {
+        assert forall|key: i64, value: PartsuppRow| magnitude(index_amount(rebuilt, key, value)) + magnitude(index_amount(changes, key, value)) <= i128_max() by {
+            lemma_quote_amount_bounds(s, db2, touched, scanned, deltas, rebuilt, changes, key, value);
+        }
+    }
+}
+
+/// Merged quotes are positive when their amounts are the database counts.
+pub(crate) proof fn lemma_quotes_positive(quotes: Directory<Bag<BrassPartsuppScan>>, db: Db)
+    requires index_unique(quotes), index_nonzero(quotes), index_routed(quotes, quote_routing(db)),
+        forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quotes, key, supplier, cost) ==
+            if eligible(db, key) > 0 { sum(db.partsupp, |row: PartsuppRow| if row.ps_partkey == key as int && row.ps_suppkey == supplier && row.ps_supplycost == cost { 1int } else { 0int }) } else { 0int },
+    ensures index_positive(quotes),
+{
+    assert forall|key: i64, value: PartsuppRow| #[trigger] index_amount(quotes, key, value) >= 0 by {
+        lemma_quote_index_amount(quotes, db, key, value);
+        lemma_sum_nonneg(db.partsupp, |row: PartsuppRow| if row.ps_partkey == key as int && row.ps_suppkey == value.ps_suppkey && row.ps_supplycost == value.ps_supplycost { 1int } else { 0int });
+    }
+    lemma_positive_from_amounts(quotes);
+}
+
 pub(crate) proof fn lemma_state_indexes_meaning(db: Db, parts: Parts,
     quotes: Directory<Bag<BrassPartsuppScan>>, suppliers: Directory<Bag<SupplierScan>>, nations: Directory<Bag<NationScan>>,
     regions: Directory<RegionBucket>, sflat: Arc<Vec<crate::flat::SInfo>>)
@@ -263,6 +557,34 @@ pub proof fn lemma_quote_rescan_count(db: Db, keys: Seq<i64>, scanned: Seq<Brass
     assert(sum(brass_partsupp_scan_seq_view(scanned), weight) == sum(db.partsupp, restricted));
     lemma_sum_map(scanned, |row: BrassPartsuppScan| brass_partsupp_scan_view(row), weight,
         |row: BrassPartsuppScan| if row.ps_partkey == key && row.ps_suppkey as int == supplier && row.ps_supplycost as int == cost { 1int } else { 0int });
+}
+
+/// A scanned partsupp row has a part with its key.
+pub proof fn lemma_scan_row_eligible(db: Db, rows: Seq<BrassPartsuppScan>, index: int)
+    requires scan_brass_partsupp_ok(db, rows), 0 <= index < rows.len(),
+    ensures eligible(db, rows[index].ps_partkey) > 0,
+{
+    let row = rows[index];
+    let weight = |value: BrassPartsuppScan| if value.ps_partkey == row.ps_partkey && value.ps_suppkey == row.ps_suppkey && value.ps_supplycost == row.ps_supplycost { 1int } else { 0int };
+    lemma_quote_scan_count(db, rows, row.ps_partkey, row.ps_suppkey as int, row.ps_supplycost as int);
+    lemma_sum_nonneg(rows, weight);
+    lemma_sum_ge_term(rows, weight, index);
+    assert(weight(rows[index]) == 1);
+    lemma_eligible_exists(db, row.ps_partkey);
+}
+
+/// A rescanned partsupp row has a part with its key.
+pub proof fn lemma_rescan_row_eligible(db: Db, keys: Seq<i64>, rows: Seq<BrassPartsuppScan>, index: int)
+    requires rescan_brass_partsupp_after_ok(db, keys, rows), 0 <= index < rows.len(), keys.contains(rows[index].ps_partkey),
+    ensures eligible(db, rows[index].ps_partkey) > 0,
+{
+    let row = rows[index];
+    let weight = |value: BrassPartsuppScan| if value.ps_partkey == row.ps_partkey && value.ps_suppkey == row.ps_suppkey && value.ps_supplycost == row.ps_supplycost { 1int } else { 0int };
+    lemma_quote_rescan_count(db, keys, rows, row.ps_partkey, row.ps_suppkey as int, row.ps_supplycost as int);
+    lemma_sum_nonneg(rows, weight);
+    lemma_sum_ge_term(rows, weight, index);
+    assert(weight(rows[index]) == 1);
+    lemma_eligible_exists(db, row.ps_partkey);
 }
 
 pub(crate) proof fn lemma_quotes_transfer(before: State, after: Db, touched: Seq<i64>, keys: Seq<i64>, scanned: Seq<BrassPartsuppScan>,

@@ -16,6 +16,9 @@ pub use crate::model::State;
 
 verus! {
 
+/// Dictionary ids use the whole usize range, so nothing in the state is capped by past changes.
+pub open spec fn history(s: State) -> nat { 0 }
+
 #[verifier::rlimit(20)]
 pub fn build(
     brass_parts: Vec<BrassPartScan>, brass_partsupp: &[BrassPartsuppScan],
@@ -25,9 +28,9 @@ pub fn build(
     requires
         scan_brass_parts_ok(db, brass_parts@), scan_brass_partsupp_ok(db, brass_partsupp@),
         scan_suppliers_ok(db, suppliers@), scan_nations_ok(db, nations@), scan_regions_ok(db, regions@),
-    ensures result matches Some(state) ==> state.db() == db,
+    ensures result matches Some(state) ==> state.db() == db, envelope(db) ==> result is Some,
 {
-    let parts = match build_parts(brass_parts.as_slice()) { None => return None, Some(parts) => parts };
+    let parts = build_parts(brass_parts.as_slice());
     proof {
         lemma_scan_representable(db, brass_parts@, brass_partsupp@, suppliers@, nations@, regions@);
         lemma_build_parts_meaning(db, brass_parts@, parts);
@@ -46,21 +49,29 @@ pub fn build(
     while index < brass_partsupp.len()
         invariant
             index <= brass_partsupp.len(), processed@ == index as int, quotes.valid(),
+            scan_brass_partsupp_ok(db, brass_partsupp@),
             parts.meaning(db), supported_db(db),
             forall|index: int| 0 <= index < db.part.len() ==> fits_i64((#[trigger] db.part[index]).p_size),
             index_positive(quotes),
             index_nonempty(quotes),
             index_routed(quotes, quote_routing(db)),
+            forall|probe: i64| #[trigger] mass_at(quotes, probe) <= index as int,
             forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quotes, key, supplier, cost) ==
                 sum(brass_partsupp@.take(processed@), |row: BrassPartsuppScan| if row.ps_partkey == key && row.ps_suppkey as int == supplier && row.ps_supplycost as int == cost { 1 } else { 0 }),
         decreases brass_partsupp.len() - index,
     {
         let row = brass_partsupp[index];
         let cells = parts.tp.get((row.ps_partkey, 0, 0));
+        proof {
+            lemma_scan_row_eligible(db, brass_partsupp@, index as int);
+            lemma_eligible_cells(db, parts, row.ps_partkey);
+            assert(brass_partsupp@[index as int] == row);
+        }
         if cells.len() == 0 { return None; }
-        proof { lemma_eligible_cells(db, parts, row.ps_partkey); }
         let ghost previous = quotes;
-        if !adjust_bag(&mut quotes, row.ps_partkey, Arc::new(row), 1) { return None; }
+        let adjusted = adjust_bag(&mut quotes, row.ps_partkey, Arc::new(row), 1);
+        proof { assert(adjusted) by { if !adjusted { assert(mass_at(previous, row.ps_partkey) + 1 > i128_max()); } } }
+        if !adjusted { return None; }
         proof {
             assert forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quotes, key, supplier, cost) ==
                 sum(brass_partsupp@.take(index as int + 1), |row: BrassPartsuppScan| if row.ps_partkey == key && row.ps_suppkey as int == supplier && row.ps_supplycost as int == cost { 1int } else { 0int }) by {
@@ -82,12 +93,15 @@ pub fn build(
         invariant
             index <= suppliers.len(), processed@ == index as int, supplier_index.valid(),
             index_positive(supplier_index), index_routed(supplier_index, |key: i64, row: SupplierRow| row.s_suppkey == key as int),
+            forall|probe: i64| #[trigger] mass_at(supplier_index, probe) <= index as int,
             forall|key: i64, row: SupplierRow| #[trigger] supplier_amount(supplier_index, key, row) ==
                 sum(suppliers@.take(processed@), |value: SupplierScan| if value.s_suppkey == key && supplier_scan_view(value) == row { 1 } else { 0 }),
         decreases suppliers.len() - index,
     {
         let ghost previous = supplier_index;
-        if !adjust_bag(&mut supplier_index, suppliers[index].s_suppkey, Arc::new(suppliers[index].dup()), 1) { return None; }
+        let adjusted = adjust_bag(&mut supplier_index, suppliers[index].s_suppkey, Arc::new(suppliers[index].dup()), 1);
+        proof { assert(adjusted) by { if !adjusted { assert(mass_at(previous, suppliers@[index as int].s_suppkey) + 1 > i128_max()); } } }
+        if !adjusted { return None; }
         proof {
             assert forall|key: i64, row: SupplierRow| #[trigger] supplier_amount(supplier_index, key, row) ==
                 sum(suppliers@.take(index as int + 1), |value: SupplierScan| if value.s_suppkey == key && supplier_scan_view(value) == row { 1int } else { 0int }) by {
@@ -106,12 +120,15 @@ pub fn build(
         invariant
             index <= nations.len(), processed@ == index as int, nation_index.valid(),
             index_positive(nation_index), index_routed(nation_index, |key: i64, row: NationRow| row.n_nationkey == key as int),
+            forall|probe: i64| #[trigger] mass_at(nation_index, probe) <= index as int,
             forall|key: i64, row: NationRow| #[trigger] nation_amount(nation_index, key, row) ==
                 sum(nations@.take(processed@), |value: NationScan| if value.n_nationkey == key && nation_scan_view(value) == row { 1 } else { 0 }),
         decreases nations.len() - index,
     {
         let ghost previous = nation_index;
-        if !adjust_bag(&mut nation_index, nations[index].n_nationkey, Arc::new(nations[index].dup()), 1) { return None; }
+        let adjusted = adjust_bag(&mut nation_index, nations[index].n_nationkey, Arc::new(nations[index].dup()), 1);
+        proof { assert(adjusted) by { if !adjusted { assert(mass_at(previous, nations@[index as int].n_nationkey) + 1 > i128_max()); } } }
+        if !adjusted { return None; }
         proof {
             assert forall|key: i64, row: NationRow| #[trigger] nation_amount(nation_index, key, row) ==
                 sum(nations@.take(index as int + 1), |value: NationScan| if value.n_nationkey == key && nation_scan_view(value) == row { 1int } else { 0int }) by {
@@ -134,7 +151,14 @@ pub fn build(
                 sum(regions@.take(processed@), |row: RegionScan| if row.r_name@ == name && row.r_regionkey == key { 1 } else { 0 }),
         decreases regions.len() - index,
     {
-        if !adjust_region(&mut region_index, &regions[index].r_name, regions[index].r_regionkey, 1) { return None; }
+        let ghost previous_regions = region_index;
+        proof {
+            lemma_indicator_sum_le(regions@.take(processed@),
+                |row: RegionScan| if row.r_name@ == regions@[index as int].r_name@ && row.r_regionkey == regions@[index as int].r_regionkey { 1int } else { 0int });
+        }
+        let adjusted = adjust_region(&mut region_index, &regions[index].r_name, regions[index].r_regionkey, 1);
+        proof { assert(adjusted) by { if !adjusted { assert(magnitude(region_amount(previous_regions, regions@[index as int].r_name@, regions@[index as int].r_regionkey)) + 1 > i128_max()); } } }
+        if !adjusted { return None; }
         proof {
             assert forall|name: Seq<u8>, key: i64| #[trigger] region_amount(region_index, name, key) ==
                 sum(regions@.take(index as int + 1), |row: RegionScan| if row.r_name@ == name && row.r_regionkey == key { 1int } else { 0int }) by {
@@ -234,21 +258,288 @@ pub fn build(
 
 pub fn execute(s: &State, p1: i64, p2: &[u8], p3: &[u8]) -> (result: Option<Vec<Output>>)
     ensures result matches Some(out) ==> query_result(s.db(), params(p1 as int, p2@, p3@), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1 as int, p2@, p3@)) ==> result is Some,
 { Some(enumerate(s, p1, p2, p3)) }
+
+pub open spec fn rescan_brass_parts_after_wanted(s: State, nation_delta: Seq<NationDelta>, part_delta: Seq<PartKeyDelta>,
+    partsupp_delta: Seq<PartsuppDelta>, region_delta: Seq<RegionDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    wanted_part_keys(part_delta)
+}
+
+pub open spec fn rescan_brass_partsupp_after_wanted(s: State, nation_delta: Seq<NationDelta>, part_delta: Seq<PartKeyDelta>,
+    partsupp_delta: Seq<PartsuppDelta>, region_delta: Seq<RegionDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    wanted_part_keys(part_delta)
+}
 
 pub fn rescan_brass_parts_after_keys(
     s: &State, nation_delta: &Vec<NationDelta>, part_delta: &[PartKeyDelta],
     partsupp_delta: &[PartsuppDelta], region_delta: &Vec<RegionDelta>, supplier_delta: &Vec<SupplierDelta>,
-) -> Vec<i64>
+) -> (result: Vec<i64>)
+    ensures result@ == rescan_brass_parts_after_wanted(*s, nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
 { part_keys(part_delta) }
 
 pub fn rescan_brass_partsupp_after_keys(
     s: &State, nation_delta: &Vec<NationDelta>, part_delta: &[PartKeyDelta],
     partsupp_delta: &[PartsuppDelta], region_delta: &Vec<RegionDelta>, supplier_delta: &Vec<SupplierDelta>,
-) -> Vec<i64>
+) -> (result: Vec<i64>)
+    ensures result@ == rescan_brass_partsupp_after_wanted(*s, nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
 { part_keys(part_delta) }
 
-#[verifier::rlimit(40)]
+/// The region counts of the next database; None only when counts outgrow the i128 range.
+fn apply_regions(s: &State, region_delta: &Vec<RegionDelta>, Ghost(db2): Ghost<Db>) -> (result: Option<Directory<RegionBucket>>)
+    requires s.meaning(), s.db() == s.database@,
+        bag_step(s.db().region, db2.region, region_delta_seq_view(region_delta@)),
+        unit_weights(region_delta_seq_view(region_delta@)),
+    ensures
+        result matches Some(regions) ==> regions_valid(regions) && regions_nonzero(regions) && forall|name: Seq<u8>, key: i64|
+            #[trigger] region_amount(regions, name, key) == sum(db2.region, |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1int } else { 0int }),
+        result is None ==> !envelope(s.db()),
+{
+    proof {
+        use_type_invariant(s);
+        lemma_region_signs_unit(region_delta@);
+    }
+    let mut regions = s.regions.share();
+    let mut index = 0;
+    let mut processed: Ghost<int> = Ghost(0);
+    while index < region_delta.len()
+        invariant
+            index <= region_delta.len(), processed@ == index as int, regions_valid(regions),
+            regions_nonzero(regions), s.meaning(), s.db() == s.database@,
+            forall|i: int| 0 <= i < region_delta@.len() ==> region_delta@[i].sign == 1 || region_delta@[i].sign == -1,
+            forall|name: Seq<u8>, key: i64| #[trigger] region_amount(regions, name, key) == region_amount(s.regions, name, key) +
+                region_prefix(region_delta@, processed@, name, key),
+        decreases region_delta.len() - index,
+    {
+        let delta = &region_delta[index];
+        let ghost previous_regions = regions;
+        let region_count = region_delta.len();
+        proof { assert(region_count as int == region_delta@.len()); }
+        if !adjust_region(&mut regions, &delta.row.r_name, delta.row.r_regionkey, delta.sign as i128) {
+            proof {
+                assert(delta.sign == region_delta@[index as int].sign);
+                lemma_region_step_fits(*s, previous_regions, region_delta@, processed@, delta.row.r_name@, delta.row.r_regionkey);
+            }
+            return None;
+        }
+        proof {
+            assert forall|name: Seq<u8>, key: i64| #[trigger] region_amount(regions, name, key) == region_amount(s.regions, name, key) +
+                region_prefix(region_delta@, index as int + 1, name, key) by {
+                lemma_region_prefix_step(region_delta@, index as int, name, key);
+            }
+        }
+        index += 1;
+        processed = Ghost(index as int);
+    }
+    proof {
+        assert(region_delta@.take(processed@) =~= region_delta@);
+        assert forall|name: Seq<u8>, key: i64| #[trigger] region_amount(regions, name, key) ==
+            sum(db2.region, |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1int } else { 0int }) by {
+            let weight = |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1int } else { 0int };
+            let signed = |change: (RegionRow, int)| change.1 * weight(change.0);
+            let project = |delta: RegionDelta| (region_scan_view(delta.row), delta.sign as int);
+            lemma_sum_ext_all(region_delta@, |delta: RegionDelta| region_delta_weight(delta, name, key),
+                |delta: RegionDelta| if delta.row.r_name@ == name && delta.row.r_regionkey == key { delta.sign as int } else { 0int });
+            assert(region_prefix(region_delta@, processed@, name, key) == sum(region_delta@, |delta: RegionDelta| region_delta_weight(delta, name, key)));
+            lemma_sum_map(region_delta@, project, signed,
+                |delta: RegionDelta| if delta.row.r_name@ == name && delta.row.r_regionkey == key { delta.sign as int } else { 0int });
+            assert(sum(db2.region, weight) == sum(s.db().region, weight) + sum(region_delta_seq_view(region_delta@), signed));
+        }
+    }
+    index = 0;
+    processed = Ghost(0);
+    while index < region_delta.len()
+        invariant index <= region_delta.len(), processed@ == index as int, regions_valid(regions),
+            regions_nonzero(regions),
+            forall|name: Seq<u8>, key: i64| #[trigger] region_amount(regions, name, key) ==
+                sum(db2.region, |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1int } else { 0int }),
+        decreases region_delta.len() - index,
+    {
+        let delta = &region_delta[index];
+        if let Some(slice) = region_slice(&regions, &delta.row.r_name) {
+            if let Some(count) = slice.get(delta.row.r_regionkey) {
+                proof {
+                    let weight = |row: RegionRow| if row.r_name == delta.row.r_name@ && row.r_regionkey == delta.row.r_regionkey as int { 1int } else { 0int };
+                    lemma_sum_nonneg(db2.region, weight);
+                    assert(count_at(slice, delta.row.r_regionkey) == region_amount(regions, delta.row.r_name@, delta.row.r_regionkey));
+                    assert(count.value >= 0);
+                }
+                if count.value < 0 { return None; }
+            }
+        }
+        compact_region(&mut regions, hash_bytes(&delta.row.r_name));
+        index += 1;
+        processed = Ghost(index as int);
+    }
+    Some(regions)
+}
+
+/// The supplier bags and their flat index after the deltas; None only when counts outgrow the i128 range.
+fn apply_suppliers(s: &State, supplier_delta: &Vec<SupplierDelta>, Ghost(db2): Ghost<Db>) -> (result: Option<(Directory<Bag<SupplierScan>>, Arc<Vec<SInfo>>)>)
+    requires s.meaning(), s.db() == s.database@,
+        bag_step(s.db().supplier, db2.supplier, supplier_delta_seq_view(supplier_delta@)),
+        unit_weights(supplier_delta_seq_view(supplier_delta@)),
+    ensures
+        result matches Some((suppliers, sflat)) ==> suppliers.valid() && index_positive(suppliers) && index_routed(suppliers, supplier_routing())
+            && flat_ok((*sflat)@, suppliers)
+            && forall|key: i64, row: SupplierRow| #[trigger] supplier_amount(suppliers, key, row) ==
+                sum(db2.supplier, |value: SupplierRow| if value == row && value.s_suppkey == key as int { 1int } else { 0int }),
+        result is None ==> !envelope(s.db()),
+{
+    proof {
+        use_type_invariant(s);
+        lemma_supplier_signs_unit(supplier_delta@);
+    }
+    let mut suppliers = s.suppliers.share();
+    let mut supplier_changes = Directory::new();
+    let mut index = 0;
+    let mut processed: Ghost<int> = Ghost(0);
+    while index < supplier_delta.len()
+        invariant
+            index <= supplier_delta.len(), processed@ == index as int, supplier_changes.valid(),
+            index_unique(supplier_changes), index_nonempty(supplier_changes), index_nonzero(supplier_changes),
+            forall|probe: i64| #[trigger] mass_at(supplier_changes, probe) <= index as int,
+            forall|i: int| 0 <= i < supplier_delta@.len() ==> supplier_delta@[i].sign == 1 || supplier_delta@[i].sign == -1,
+            index_routed(supplier_changes, supplier_routing()),
+            forall|key: i64, row: SupplierRow| #[trigger] supplier_amount(supplier_changes, key, row) ==
+                sum(supplier_delta@.take(processed@), |delta: SupplierDelta| if delta.row.s_suppkey == key && supplier_scan_view(delta.row) == row { delta.sign as int } else { 0 }),
+        decreases supplier_delta.len() - index,
+    {
+        let delta = &supplier_delta[index];
+        let ghost previous = supplier_changes;
+        let adjusted = adjust_bag(&mut supplier_changes, delta.row.s_suppkey, Arc::new(delta.row.dup()), delta.sign as i128);
+        proof {
+            assert(adjusted) by {
+                if !adjusted {
+                    assert(delta.sign == supplier_delta@[index as int].sign);
+                    assert(magnitude(delta.sign as int) == 1);
+                    assert(mass_at(previous, delta.row.s_suppkey) + magnitude(delta.sign as int) > i128_max());
+                }
+            }
+        }
+        if !adjusted { return None; }
+        proof {
+            assert forall|key: i64, row: SupplierRow| #[trigger] supplier_amount(supplier_changes, key, row) ==
+                sum(supplier_delta@.take(index as int + 1), |value: SupplierDelta| if value.row.s_suppkey == key && supplier_scan_view(value.row) == row { value.sign as int } else { 0int }) by {
+                assert(index_amount(supplier_changes, key, row) == index_amount(previous, key, row) + if key == delta.row.s_suppkey && supplier_scan_view(delta.row) == row { delta.sign as int } else { 0int });
+                assert(supplier_amount(previous, key, row) == sum(supplier_delta@.take(index as int), |value: SupplierDelta| if value.row.s_suppkey == key && supplier_scan_view(value.row) == row { value.sign as int } else { 0int }));
+                lemma_sum_take(supplier_delta@, index as int, |value: SupplierDelta| if value.row.s_suppkey == key && supplier_scan_view(value.row) == row { value.sign as int } else { 0int });
+            }
+        }
+        index += 1;
+        processed = Ghost(index as int);
+    }
+    proof { assert(supplier_delta@.take(processed@) =~= supplier_delta@); }
+    proof { assert(index_routed(suppliers, supplier_routing())); }
+    let supplier_count = supplier_delta.len();
+    proof { assert(supplier_count as int == supplier_delta@.len()); }
+    if !finish_bags(&mut suppliers, &supplier_changes) {
+        proof {
+            lemma_meaning_bags_positive(*s);
+            lemma_positive_facts(s.suppliers);
+            lemma_supplier_merge_fits(*s, supplier_changes, supplier_delta@);
+        }
+        return None;
+    }
+    let sflat = Arc::new(patch_flat(&*s.sflat, &s.suppliers, &suppliers, &supplier_changes));
+    proof {
+        assert(index_routed(suppliers, supplier_routing()));
+        lemma_supplier_capture(*s, db2, supplier_delta@, supplier_changes, suppliers);
+    }
+    proof {
+        lemma_meaning_bags_positive(*s);
+        lemma_positive_facts(s.suppliers);
+        assert forall|key: i64, row: SupplierRow| #[trigger] index_amount(suppliers, key, row) >= 0 by {
+            assert(index_amount(suppliers, key, row) == supplier_amount(suppliers, key, row));
+            lemma_sum_nonneg(db2.supplier, |value: SupplierRow| if value == row && value.s_suppkey == key as int { 1int } else { 0int });
+        }
+        lemma_positive_from_amounts(suppliers);
+    }
+    Some((suppliers, sflat))
+}
+
+/// The nation bags after the deltas; None only when counts outgrow the i128 range.
+fn apply_nations(s: &State, nation_delta: &Vec<NationDelta>, Ghost(db2): Ghost<Db>) -> (result: Option<Directory<Bag<NationScan>>>)
+    requires s.meaning(), s.db() == s.database@,
+        bag_step(s.db().nation, db2.nation, nation_delta_seq_view(nation_delta@)),
+        unit_weights(nation_delta_seq_view(nation_delta@)),
+    ensures
+        result matches Some(nations) ==> nations.valid() && index_positive(nations) && index_routed(nations, nation_routing())
+            && forall|key: i64, row: NationRow| #[trigger] nation_amount(nations, key, row) ==
+                sum(db2.nation, |value: NationRow| if value == row && value.n_nationkey == key as int { 1int } else { 0int }),
+        result is None ==> !envelope(s.db()),
+{
+    proof {
+        use_type_invariant(s);
+        lemma_nation_signs_unit(nation_delta@);
+    }
+    let mut nations = s.nations.share();
+    let mut nation_changes = Directory::new();
+    let mut index = 0;
+    let mut processed: Ghost<int> = Ghost(0);
+    while index < nation_delta.len()
+        invariant
+            index <= nation_delta.len(), processed@ == index as int, nation_changes.valid(),
+            index_unique(nation_changes), index_nonempty(nation_changes), index_nonzero(nation_changes),
+            forall|probe: i64| #[trigger] mass_at(nation_changes, probe) <= index as int,
+            forall|i: int| 0 <= i < nation_delta@.len() ==> nation_delta@[i].sign == 1 || nation_delta@[i].sign == -1,
+            index_routed(nation_changes, nation_routing()),
+            forall|key: i64, row: NationRow| #[trigger] nation_amount(nation_changes, key, row) ==
+                sum(nation_delta@.take(processed@), |delta: NationDelta| if delta.row.n_nationkey == key && nation_scan_view(delta.row) == row { delta.sign as int } else { 0 }),
+        decreases nation_delta.len() - index,
+    {
+        let delta = &nation_delta[index];
+        let ghost previous = nation_changes;
+        let adjusted = adjust_bag(&mut nation_changes, delta.row.n_nationkey, Arc::new(delta.row.dup()), delta.sign as i128);
+        proof {
+            assert(adjusted) by {
+                if !adjusted {
+                    assert(delta.sign == nation_delta@[index as int].sign);
+                    assert(magnitude(delta.sign as int) == 1);
+                    assert(mass_at(previous, delta.row.n_nationkey) + magnitude(delta.sign as int) > i128_max());
+                }
+            }
+        }
+        if !adjusted { return None; }
+        proof {
+            assert forall|key: i64, row: NationRow| #[trigger] nation_amount(nation_changes, key, row) ==
+                sum(nation_delta@.take(index as int + 1), |value: NationDelta| if value.row.n_nationkey == key && nation_scan_view(value.row) == row { value.sign as int } else { 0int }) by {
+                assert(index_amount(nation_changes, key, row) == index_amount(previous, key, row) + if key == delta.row.n_nationkey && nation_scan_view(delta.row) == row { delta.sign as int } else { 0int });
+                assert(nation_amount(previous, key, row) == sum(nation_delta@.take(index as int), |value: NationDelta| if value.row.n_nationkey == key && nation_scan_view(value.row) == row { value.sign as int } else { 0int }));
+                lemma_sum_take(nation_delta@, index as int, |value: NationDelta| if value.row.n_nationkey == key && nation_scan_view(value.row) == row { value.sign as int } else { 0int });
+            }
+        }
+        index += 1;
+        processed = Ghost(index as int);
+    }
+    proof { assert(nation_delta@.take(processed@) =~= nation_delta@); }
+    proof { assert(index_routed(nations, nation_routing())); }
+    let nation_count = nation_delta.len();
+    proof { assert(nation_count as int == nation_delta@.len()); }
+    if !finish_bags(&mut nations, &nation_changes) {
+        proof {
+            lemma_meaning_bags_positive(*s);
+            lemma_positive_facts(s.nations);
+            lemma_nation_merge_fits(*s, nation_changes, nation_delta@);
+        }
+        return None;
+    }
+    proof {
+        assert(index_routed(nations, nation_routing()));
+        lemma_nation_capture(*s, db2, nation_delta@, nation_changes, nations);
+    }
+    proof {
+        lemma_meaning_bags_positive(*s);
+        lemma_positive_facts(s.nations);
+        assert forall|key: i64, row: NationRow| #[trigger] index_amount(nations, key, row) >= 0 by {
+            assert(index_amount(nations, key, row) == nation_amount(nations, key, row));
+            lemma_sum_nonneg(db2.nation, |value: NationRow| if value == row && value.n_nationkey == key as int { 1int } else { 0int });
+        }
+        lemma_positive_from_amounts(nations);
+    }
+    Some(nations)
+}
+
 pub fn apply(
     s: &State, nation_delta: &Vec<NationDelta>, part_delta: &[PartKeyDelta],
     partsupp_delta: &[PartsuppDelta], region_delta: &Vec<RegionDelta>, supplier_delta: &Vec<SupplierDelta>,
@@ -260,31 +551,29 @@ pub fn apply(
         part_delta_ok(part_delta@, part_full),
         capture_ok(s.db(), db2, nation_delta_seq_view(nation_delta@), part_full,
             partsupp_delta_seq_view(partsupp_delta@), region_delta_seq_view(region_delta@), supplier_delta_seq_view(supplier_delta@)),
+        brass_parts_after_keys@ == rescan_brass_parts_after_wanted(*s, nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
         rescan_brass_parts_after_ok(db2, brass_parts_after_keys@, brass_parts_after_rows@),
+        brass_partsupp_after_keys@ == rescan_brass_partsupp_after_wanted(*s, nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
         rescan_brass_partsupp_after_ok(db2, brass_partsupp_after_keys@, brass_partsupp_after_rows@),
     ensures result matches Ok(after) ==> after.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> result is Ok,
 {
     proof { use_type_invariant(s); s.database_witness(); }
     let touched_keys = part_keys(part_delta);
-    let mut check = 0;
-    while check < touched_keys.len()
-        invariant check <= touched_keys.len(),
-            forall|j: int| 0 <= j < check ==> brass_parts_after_keys@.contains(touched_keys@[j]) && brass_partsupp_after_keys@.contains(touched_keys@[j]),
-        decreases touched_keys.len() - check,
-    {
-        let key = touched_keys[check];
-        if !contains_key(brass_parts_after_keys, key) || !contains_key(brass_partsupp_after_keys, key) { return Err(1); }
-        check += 1;
-    }
     proof {
         assert forall|key: i64| #[trigger] touched_keys@.contains(key) implies
             brass_parts_after_keys@.contains(key) && brass_partsupp_after_keys@.contains(key) by {
-            let j = choose|j: int| 0 <= j < touched_keys@.len() && touched_keys@[j] == key;
+            assert(touched_keys@ == brass_parts_after_keys@);
         }
     }
-    let parts = match apply_parts(&s.parts, touched_keys.as_slice(), brass_parts_after_rows.as_slice()) {
-        None => return Err(2), Some(parts) => parts,
-    };
+    proof {
+        lemma_meaning_positive(s.db(), s.parts);
+        lemma_partsupp_signs_unit(partsupp_delta@);
+        lemma_supplier_signs_unit(supplier_delta@);
+        lemma_nation_signs_unit(nation_delta@);
+        lemma_region_signs_unit(region_delta@);
+    }
+    let parts = apply_parts(&s.parts, touched_keys.as_slice(), brass_parts_after_rows.as_slice());
     proof {
         lemma_parts_transfer(*s, db2, part_delta@, part_full, touched_keys@,
             brass_parts_after_keys@, brass_parts_after_rows@, parts);
@@ -302,7 +591,6 @@ pub fn apply(
     let mut quotes = s.quotes.share();
     let mut suppliers = s.suppliers.share();
     let mut nations = s.nations.share();
-    let mut regions = s.regions.share();
     let mut index = 0;
     let mut processed: Ghost<int> = Ghost(0);
     while index < touched_keys.len()
@@ -341,12 +629,20 @@ pub fn apply(
         index += 1;
         processed = Ghost(index as int);
     }
-    proof { assert(touched_keys@.take(processed@) =~= touched_keys@); }
+    proof {
+        assert(touched_keys@.take(processed@) =~= touched_keys@);
+        assert forall|probe: i64| touched_keys@.contains(probe) implies mass_at(quotes, probe) <= 0 by {
+            assert(quotes.lookup(probe) is None);
+        }
+    }
     index = 0;
     processed = Ghost(0);
     while index < brass_partsupp_after_rows.len()
         invariant
             index <= brass_partsupp_after_rows.len(), processed@ == index as int,
+            forall|probe: i64| touched_keys@.contains(probe) ==> #[trigger] mass_at(quotes, probe) <= index as int,
+            rescan_brass_partsupp_after_ok(db2, brass_partsupp_after_keys@, brass_partsupp_after_rows@),
+            touched_keys@ == brass_partsupp_after_keys@,
             touched.valid(), quotes.valid(), parts.meaning(db2), supported_db(db2),
             forall|k: int| 0 <= k < db2.part.len() ==> fits_i64((#[trigger] db2.part[k]).p_size),
             index_positive(quotes), index_unique(quotes), index_nonempty(quotes),
@@ -361,9 +657,16 @@ pub fn apply(
         let ghost previous = quotes;
         if touched.get(row.ps_partkey).is_some() {
             let cells = parts.tp.get((row.ps_partkey, 0, 0));
+            proof {
+                assert(brass_partsupp_after_rows@[index as int] == row);
+                assert(touched_keys@.contains(row.ps_partkey));
+                lemma_rescan_row_eligible(db2, brass_partsupp_after_keys@, brass_partsupp_after_rows@, index as int);
+                lemma_eligible_cells(db2, parts, row.ps_partkey);
+            }
             if cells.len() == 0 { return Err(3); }
-            proof { lemma_eligible_cells(db2, parts, row.ps_partkey); }
-            if !adjust_bag(&mut quotes, row.ps_partkey, Arc::new(row), 1) { return Err(2); }
+            let adjusted = adjust_bag(&mut quotes, row.ps_partkey, Arc::new(row), 1);
+            proof { assert(adjusted) by { if !adjusted { assert(mass_at(previous, row.ps_partkey) + 1 > i128_max()); } } }
+            if !adjusted { return Err(2); }
         }
         proof {
             assert forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quotes, key, supplier, cost) == if touched_keys@.contains(key) {
@@ -393,7 +696,9 @@ pub fn apply(
             touched.valid(), parts.meaning(db2), supported_db(db2),
             forall|k: int| 0 <= k < db2.part.len() ==> fits_i64((#[trigger] db2.part[k]).p_size),
             quote_changes.valid(),
-            index_unique(quote_changes), index_nonempty(quote_changes),
+            index_unique(quote_changes), index_nonempty(quote_changes), index_nonzero(quote_changes),
+            forall|probe: i64| #[trigger] mass_at(quote_changes, probe) <= index as int,
+            forall|i: int| 0 <= i < partsupp_delta@.len() ==> partsupp_delta@[i].sign == 1 || partsupp_delta@[i].sign == -1,
             index_routed(quote_changes, quote_routing(db2)),
             forall|key: i64| (#[trigger] touched.lookup(key) is Some) == touched_keys@.contains(key),
             forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quote_changes, key, supplier, cost) ==
@@ -408,7 +713,17 @@ pub fn apply(
         proof { lemma_eligible_cells(db2, parts, key); }
         let cells = parts.tp.get((key, 0, 0));
         if touched.get(key).is_none() && cells.len() > 0 {
-            if !adjust_bag(&mut quote_changes, key, Arc::new(delta.row), delta.sign as i128) { return Err(2); }
+            let adjusted = adjust_bag(&mut quote_changes, key, Arc::new(delta.row), delta.sign as i128);
+            proof {
+                assert(adjusted) by {
+                    if !adjusted {
+                        assert(delta.sign == partsupp_delta@[index as int].sign);
+                        assert(magnitude(delta.sign as int) == 1);
+                        assert(mass_at(previous, key) + magnitude(delta.sign as int) > i128_max());
+                    }
+                }
+            }
+            if !adjusted { return Err(2); }
         }
         proof {
             assert forall|probe: i64, supplier: int, cost: int| #[trigger] quote_amount(quote_changes, probe, supplier, cost) ==
@@ -430,129 +745,47 @@ pub fn apply(
     }
     proof { assert(partsupp_delta@.take(processed@) =~= partsupp_delta@); }
     proof { lemma_routing_after(touched_keys@, s.db(), db2, quotes); }
-    if !finish_bags(&mut quotes, &quote_changes) { return Err(4); }
+    let partsupp_count = partsupp_delta.len();
+    let rescan_count = brass_partsupp_after_rows.len();
+    proof {
+        assert(partsupp_count as int == partsupp_delta@.len());
+        assert(rescan_count as int == brass_partsupp_after_rows@.len());
+        assert(index_routed(rebuilt_quotes, quote_routing(db2)));
+        assert(index_positive(rebuilt_quotes));
+        lemma_positive_facts(rebuilt_quotes);
+    }
+    if !finish_bags(&mut quotes, &quote_changes) {
+        proof {
+            lemma_quote_merge_fits(*s, db2, touched_keys@, brass_partsupp_after_rows@, partsupp_delta@, rebuilt_quotes, quote_changes);
+        }
+        return Err(4);
+    }
     proof {
         lemma_quotes_transfer(*s, db2, touched_keys@, brass_partsupp_after_keys@, brass_partsupp_after_rows@,
             partsupp_delta@, rebuilt_quotes, quote_changes, quotes);
+        lemma_quotes_positive(quotes, db2);
     }
-    let mut supplier_changes = Directory::new();
-    index = 0;
-    processed = Ghost(0);
-    while index < supplier_delta.len()
-        invariant
-            index <= supplier_delta.len(), processed@ == index as int, supplier_changes.valid(),
-            index_unique(supplier_changes), index_nonempty(supplier_changes),
-            index_routed(supplier_changes, supplier_routing()),
-            forall|key: i64, row: SupplierRow| #[trigger] supplier_amount(supplier_changes, key, row) ==
-                sum(supplier_delta@.take(processed@), |delta: SupplierDelta| if delta.row.s_suppkey == key && supplier_scan_view(delta.row) == row { delta.sign as int } else { 0 }),
-        decreases supplier_delta.len() - index,
-    {
-        let delta = &supplier_delta[index];
-        let ghost previous = supplier_changes;
-        if !adjust_bag(&mut supplier_changes, delta.row.s_suppkey, Arc::new(delta.row.dup()), delta.sign as i128) { return Err(2); }
-        proof {
-            assert forall|key: i64, row: SupplierRow| #[trigger] supplier_amount(supplier_changes, key, row) ==
-                sum(supplier_delta@.take(index as int + 1), |value: SupplierDelta| if value.row.s_suppkey == key && supplier_scan_view(value.row) == row { value.sign as int } else { 0int }) by {
-                assert(index_amount(supplier_changes, key, row) == index_amount(previous, key, row) + if key == delta.row.s_suppkey && supplier_scan_view(delta.row) == row { delta.sign as int } else { 0int });
-                assert(supplier_amount(previous, key, row) == sum(supplier_delta@.take(index as int), |value: SupplierDelta| if value.row.s_suppkey == key && supplier_scan_view(value.row) == row { value.sign as int } else { 0int }));
-                lemma_sum_take(supplier_delta@, index as int, |value: SupplierDelta| if value.row.s_suppkey == key && supplier_scan_view(value.row) == row { value.sign as int } else { 0int });
-            }
-        }
-        index += 1;
-        processed = Ghost(index as int);
-    }
-    proof { assert(supplier_delta@.take(processed@) =~= supplier_delta@); }
-    proof { assert(index_routed(suppliers, supplier_routing())); }
-    let ghost suppliers_before = suppliers;
-    if !finish_bags(&mut suppliers, &supplier_changes) { return Err(4); }
-    let sflat = Arc::new(patch_flat(&*s.sflat, &s.suppliers, &suppliers, &supplier_changes));
-    proof {
-        assert(index_routed(suppliers, supplier_routing()));
-        lemma_supplier_capture(*s, db2, supplier_delta@, supplier_changes, suppliers);
-    }
-    let mut nation_changes = Directory::new();
-    index = 0;
-    processed = Ghost(0);
-    while index < nation_delta.len()
-        invariant
-            index <= nation_delta.len(), processed@ == index as int, nation_changes.valid(),
-            index_unique(nation_changes), index_nonempty(nation_changes),
-            index_routed(nation_changes, nation_routing()),
-            forall|key: i64, row: NationRow| #[trigger] nation_amount(nation_changes, key, row) ==
-                sum(nation_delta@.take(processed@), |delta: NationDelta| if delta.row.n_nationkey == key && nation_scan_view(delta.row) == row { delta.sign as int } else { 0 }),
-        decreases nation_delta.len() - index,
-    {
-        let delta = &nation_delta[index];
-        let ghost previous = nation_changes;
-        if !adjust_bag(&mut nation_changes, delta.row.n_nationkey, Arc::new(delta.row.dup()), delta.sign as i128) { return Err(2); }
-        proof {
-            assert forall|key: i64, row: NationRow| #[trigger] nation_amount(nation_changes, key, row) ==
-                sum(nation_delta@.take(index as int + 1), |value: NationDelta| if value.row.n_nationkey == key && nation_scan_view(value.row) == row { value.sign as int } else { 0int }) by {
-                assert(index_amount(nation_changes, key, row) == index_amount(previous, key, row) + if key == delta.row.n_nationkey && nation_scan_view(delta.row) == row { delta.sign as int } else { 0int });
-                assert(nation_amount(previous, key, row) == sum(nation_delta@.take(index as int), |value: NationDelta| if value.row.n_nationkey == key && nation_scan_view(value.row) == row { value.sign as int } else { 0int }));
-                lemma_sum_take(nation_delta@, index as int, |value: NationDelta| if value.row.n_nationkey == key && nation_scan_view(value.row) == row { value.sign as int } else { 0int });
-            }
-        }
-        index += 1;
-        processed = Ghost(index as int);
-    }
-    proof { assert(nation_delta@.take(processed@) =~= nation_delta@); }
-    proof { assert(index_routed(nations, nation_routing())); }
-    if !finish_bags(&mut nations, &nation_changes) { return Err(4); }
-    proof {
-        assert(index_routed(nations, nation_routing()));
-        lemma_nation_capture(*s, db2, nation_delta@, nation_changes, nations);
-    }
-    index = 0;
-    processed = Ghost(0);
-    while index < region_delta.len()
-        invariant
-            index <= region_delta.len(), processed@ == index as int, regions_valid(regions),
-            regions_nonzero(regions),
-            forall|name: Seq<u8>, key: i64| #[trigger] region_amount(regions, name, key) == region_amount(s.regions, name, key) +
-                sum(region_delta@.take(processed@), |delta: RegionDelta| if delta.row.r_name@ == name && delta.row.r_regionkey == key { delta.sign as int } else { 0 }),
-        decreases region_delta.len() - index,
-    {
-        let delta = &region_delta[index];
-        if !adjust_region(&mut regions, &delta.row.r_name, delta.row.r_regionkey, delta.sign as i128) { return Err(2); }
-        proof {
-            assert forall|name: Seq<u8>, key: i64| #[trigger] region_amount(regions, name, key) == region_amount(s.regions, name, key) +
-                sum(region_delta@.take(index as int + 1), |value: RegionDelta| if value.row.r_name@ == name && value.row.r_regionkey == key { value.sign as int } else { 0int }) by {
-                lemma_sum_take(region_delta@, index as int, |value: RegionDelta| if value.row.r_name@ == name && value.row.r_regionkey == key { value.sign as int } else { 0int });
-            }
-        }
-        index += 1;
-        processed = Ghost(index as int);
-    }
-    proof {
-        assert(region_delta@.take(processed@) =~= region_delta@);
-        assert forall|name: Seq<u8>, key: i64| #[trigger] region_amount(regions, name, key) ==
-            sum(db2.region, |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1int } else { 0int }) by {
-            let weight = |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1int } else { 0int };
-            let signed = |change: (RegionRow, int)| change.1 * weight(change.0);
-            let project = |delta: RegionDelta| (region_scan_view(delta.row), delta.sign as int);
-            lemma_sum_map(region_delta@, project, signed,
-                |delta: RegionDelta| if delta.row.r_name@ == name && delta.row.r_regionkey == key { delta.sign as int } else { 0int });
-            assert(sum(db2.region, weight) == sum(s.db().region, weight) + sum(region_delta_seq_view(region_delta@), signed));
-        }
-    }
-    index = 0;
-    processed = Ghost(0);
-    while index < region_delta.len()
-        invariant index <= region_delta.len(), processed@ == index as int, regions_valid(regions),
-            regions_nonzero(regions),
-            forall|name: Seq<u8>, key: i64| #[trigger] region_amount(regions, name, key) ==
-                sum(db2.region, |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1int } else { 0int }),
-        decreases region_delta.len() - index,
-    {
-        let delta = &region_delta[index];
-        if let Some(slice) = region_slice(&regions, &delta.row.r_name) {
-            if let Some(count) = slice.get(delta.row.r_regionkey) { if count.value < 0 { return Err(4); } }
-        }
-        compact_region(&mut regions, hash_bytes(&delta.row.r_name));
-        index += 1;
-        processed = Ghost(index as int);
-    }
+    let (suppliers, sflat) = match apply_suppliers(s, supplier_delta, Ghost(db2)) {
+        Some(result) => result,
+        None => {
+            proof { assert(!envelope(s.db())); }
+            return Err(2);
+        },
+    };
+    let nations = match apply_nations(s, nation_delta, Ghost(db2)) {
+        Some(nations) => nations,
+        None => {
+            proof { assert(!envelope(s.db())); }
+            return Err(2);
+        },
+    };
+    let regions = match apply_regions(s, region_delta, Ghost(db2)) {
+        Some(regions) => regions,
+        None => {
+            proof { assert(!envelope(s.db())); }
+            return Err(2);
+        },
+    };
     proof {
         lemma_regions_positive(db2, regions);
         assert(index_positive(quotes));

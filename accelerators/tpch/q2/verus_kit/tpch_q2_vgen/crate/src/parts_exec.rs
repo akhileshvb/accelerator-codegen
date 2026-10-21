@@ -5,9 +5,10 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::model::{retained, fits_i64};
 use crate::dict::*;
+use crate::bags::lemma_indicator_sum_le;
 use crate::parts::*;
 use crate::semantics::{part_scan_amount, part_scan_weight};
-use crate::table::{Table, Cell, Major, Work, rows_valid, minor_of, cell_sum};
+use crate::table::{Table, Cell, Major, Work, rows_valid, minor_of, cell_sum, lemma_cell_lookup};
 
 verus! {
 
@@ -16,7 +17,7 @@ pub open spec fn row_weight(key: i64, size: i64, mfgr: Seq<u8>, ty: Seq<u8>) -> 
 }
 
 pub open spec fn tp_expected(d: Dict, rows: Seq<BrassPartScan>, key: i64, size: i64, mid: i64, tid: i64) -> int {
-    if 0 <= mid < d.len() && 0 <= tid < d.len() { sum(rows, row_weight(key, size, d.text(mid as int), d.text(tid as int))) } else { 0int }
+    if dec(mid) < d.len() && dec(tid) < d.len() { sum(rows, row_weight(key, size, d.text(dec(mid)), d.text(dec(tid)))) } else { 0int }
 }
 
 pub open spec fn row_covered(d: Dict, row: BrassPartScan) -> bool {
@@ -25,20 +26,18 @@ pub open spec fn row_covered(d: Dict, row: BrassPartScan) -> bool {
 }
 
 /// Interns the manufacturer and type of every row.
-pub fn intern_rows(rows: &[BrassPartScan]) -> (result: Option<Dict>)
-    ensures result matches Some(dict) ==> dict.valid() && dict.len() <= 1000000 &&
+pub fn intern_rows(rows: &[BrassPartScan]) -> (dict: Dict)
+    ensures dict.valid(),
         forall|j: int| 0 <= j < rows@.len() ==> row_covered(dict, #[trigger] rows@[j]),
 {
     let mut dict = Dict::new();
     let mut index = 0;
     while index < rows.len()
-        invariant index <= rows.len(), dict.valid(), dict.len() <= 1000000,
+        invariant index <= rows.len(), dict.valid(),
             forall|j: int| 0 <= j < index ==> row_covered(dict, #[trigger] rows@[j]),
         decreases rows.len() - index,
     {
-        if dict.strings.len() >= 999990 { return None; }
         let ghost before = dict;
-        assert(before.len() < 999990);
         let first = dict.intern(&rows[index].p_mfgr);
         let ghost mid = dict;
         let second = dict.intern(&rows[index].p_type);
@@ -63,22 +62,38 @@ pub fn intern_rows(rows: &[BrassPartScan]) -> (result: Option<Dict>)
         index += 1;
     }
     assert(index == rows@.len());
-    Some(dict)
+    dict
 }
 
+
+/// The expected count of a cell is at most the number of rows.
+pub proof fn lemma_tp_expected_bound(d: Dict, rows: Seq<BrassPartScan>, key: i64, size: i64, mid: i64, tid: i64)
+    ensures 0 <= tp_expected(d, rows, key, size, mid, tid) <= rows.len(),
+{
+    if dec(mid) < d.len() && dec(tid) < d.len() {
+        lemma_indicator_sum_le(rows, row_weight(key, size, d.text(dec(mid)), d.text(dec(tid))));
+    }
+}
+
+/// Counts of at most usize::MAX rows plus one fit an i128.
+pub proof fn lemma_id_bound(count: int)
+    requires 0 <= count <= usize::MAX as int,
+    ensures crate::table::fits_i128(count + 1),
+{
+}
 
 /// Cells of a table whose at-values vanish outside the dictionary and whose volumes vanish.
 pub proof fn lemma_tp_structure(table: Table, dl: int)
     requires table.valid(),
-        forall|key: i64, size: i64, mid: i64, tid: i64| !(0 <= mid < dl && 0 <= tid < dl) ==>
+        forall|key: i64, size: i64, mid: i64, tid: i64| !(dec(mid) < dl && dec(tid) < dl) ==>
             #[trigger] table.at((key, 0, 0), (size, mid, tid), false) == 0,
         forall|key: Major, minor: Major| #[trigger] table.at(key, minor, true) == 0,
     ensures forall|key: i64, index: int| 0 <= index < table.rows((key, 0, 0)).len() ==>
-        0 <= (#[trigger] table.rows((key, 0, 0))[index]).second < dl && 0 <= table.rows((key, 0, 0))[index].third < dl,
+        dec((#[trigger] table.rows((key, 0, 0))[index]).second) < dl && dec(table.rows((key, 0, 0))[index].third) < dl,
 {
     table.lemma_shaped_valid();
     assert forall|key: i64, index: int| 0 <= index < table.rows((key, 0, 0)).len() implies
-        0 <= (#[trigger] table.rows((key, 0, 0))[index]).second < dl && 0 <= table.rows((key, 0, 0))[index].third < dl by {
+        dec((#[trigger] table.rows((key, 0, 0))[index]).second) < dl && dec(table.rows((key, 0, 0))[index].third) < dl by {
         let rows = table.rows((key, 0, 0));
         let cell = rows[index];
         let minor = minor_of(cell);
@@ -87,7 +102,7 @@ pub proof fn lemma_tp_structure(table: Table, dl: int)
         assert(table.at((key, 0, 0), minor, false) == cell_sum(rows, minor, false)) by { reveal(Table::at); }
         assert(cell.volume == 0);
         assert(cell.count != 0);
-        if !(0 <= cell.second < dl && 0 <= cell.third < dl) {
+        if !(dec(cell.second) < dl && dec(cell.third) < dl) {
             assert(table.at((key, 0, 0), (cell.first, cell.second, cell.third), false) == 0);
             assert(minor == (cell.first, cell.second, cell.third));
         }
@@ -131,21 +146,20 @@ pub proof fn lemma_scan_amount_zero(d: Dict, rows: Seq<BrassPartScan>, key: i64,
 }
 
 #[verifier::rlimit(60)]
-pub fn build_parts(rows: &[BrassPartScan]) -> (result: Option<Parts>)
-    ensures result matches Some(ps) ==> {
-        &&& ps.structure_ok()
-        &&& forall|key: i64, size: i64, target: PartRow| #[trigger] ps.amount(key, size, target) == part_scan_amount(rows@, key, size, target)
-        &&& forall|j: int| 0 <= j < rows@.len() ==> ps.dict_has((#[trigger] rows@[j]).p_mfgr@) && ps.dict_has(rows@[j].p_type@)
-    },
+pub fn build_parts(rows: &[BrassPartScan]) -> (ps: Parts)
+    ensures
+        ps.structure_ok(),
+        forall|key: i64, size: i64, target: PartRow| #[trigger] ps.amount(key, size, target) == part_scan_amount(rows@, key, size, target),
+        forall|j: int| 0 <= j < rows@.len() ==> ps.dict_has((#[trigger] rows@[j]).p_mfgr@) && ps.dict_has(rows@[j].p_type@),
 {
-    let dict = match intern_rows(rows) { None => return None, Some(dict) => dict };
+    let dict = intern_rows(rows);
     let tp0 = Table::empty(rows.len());
     let tl0 = Table::empty(8192);
     let mut tp = Work::new(&tp0);
     let mut tl = Work::new(&tl0);
     let mut index = 0;
     while index < rows.len()
-        invariant index <= rows.len(), dict.valid(), dict.len() <= 1000000, tp.valid(), tl.valid(),
+        invariant index <= rows.len(), dict.valid(), tp.valid(), tl.valid(),
             forall|j: int| 0 <= j < rows@.len() ==> row_covered(dict, #[trigger] rows@[j]),
             forall|key: i64, size: i64, mid: i64, tid: i64| #[trigger] tp.at((key, 0, 0), (size, mid, tid), false) ==
                 tp_expected(dict, rows@.take(index as int), key, size, mid, tid),
@@ -156,34 +170,40 @@ pub fn build_parts(rows: &[BrassPartScan]) -> (result: Option<Parts>)
         decreases rows.len() - index,
     {
         let row = &rows[index];
-        let mid = match dict.find(&row.p_mfgr) { Some(id) => id, None => { proof { assert(row_covered(dict, rows@[index as int])); } return None; } };
-        let tid = match dict.find(&row.p_type) { Some(id) => id, None => { proof { assert(row_covered(dict, rows@[index as int])); } return None; } };
-        proof { assert(mid < 1000000 && tid < 1000000); }
+        proof { assert(row_covered(dict, rows@[index as int])); }
+        let mid = dict.find_known(&row.p_mfgr);
+        let tid = dict.find_known(&row.p_type);
         let ghost tp_before = tp;
         let ghost tl_before = tl;
-        if tp.add((row.p_partkey, 0, 0), (row.p_size, mid as i64, tid as i64), 1, 0).is_none() { return None; }
-        let ghost tp_mid = tp;
-        if tl.add((row.p_size, tid as i64, 0), (row.p_partkey, mid as i64, 0), 1, 0).is_none() { return None; }
         proof {
-            let weight_at = |key: i64, size: i64, m: i64, t: i64| row_weight(key, size, dict.text(m as int), dict.text(t as int));
+            lemma_tp_expected_bound(dict, rows@.take(index as int), row.p_partkey, row.p_size, enc(mid as int), enc(tid as int));
+            lemma_id_bound(mid as int);
+        }
+        let added = tp.add((row.p_partkey, 0, 0), (row.p_size, enc_exec(mid), enc_exec(tid)), 1, 0);
+        proof { assert(added is Some); }
+        let ghost tp_mid = tp;
+        let added = tl.add((row.p_size, enc_exec(tid), 0), (row.p_partkey, enc_exec(mid), 0), 1, 0);
+        proof { assert(added is Some); }
+        proof {
+            let weight_at = |key: i64, size: i64, m: i64, t: i64| row_weight(key, size, dict.text(dec(m)), dict.text(dec(t)));
             assert forall|key: i64, size: i64, m: i64, t: i64| #[trigger] tp.at((key, 0, 0), (size, m, t), false) ==
                 tp_expected(dict, rows@.take(index as int + 1), key, size, m, t) by {
                 assert(tp.at((key, 0, 0), (size, m, t), false) == tp_mid.at((key, 0, 0), (size, m, t), false));
                 assert(tp_mid.at((key, 0, 0), (size, m, t), false) == tp_before.at((key, 0, 0), (size, m, t), false)
-                    + if (key, 0i64, 0i64) == (row.p_partkey, 0i64, 0i64) && (size, m, t) == (row.p_size, mid as i64, tid as i64) { 1int } else { 0int });
-                if 0 <= m < dict.len() && 0 <= t < dict.len() {
-                    lemma_sum_take(rows@, index as int, row_weight(key, size, dict.text(m as int), dict.text(t as int)));
-                    if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == dict.text(m as int) && row.p_type@ == dict.text(t as int) {
+                    + if (key, 0i64, 0i64) == (row.p_partkey, 0i64, 0i64) && (size, m, t) == (row.p_size, enc(mid as int), enc(tid as int)) { 1int } else { 0int });
+                if dec(m) < dict.len() && dec(t) < dict.len() {
+                    lemma_sum_take(rows@, index as int, row_weight(key, size, dict.text(dec(m)), dict.text(dec(t))));
+                    if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == dict.text(dec(m)) && row.p_type@ == dict.text(dec(t)) {
                         assert(dict.text(mid as int) == row.p_mfgr@);
-                        lemma_dict_ids_eq(dict, mid as int, m as int);
-                        lemma_dict_ids_eq(dict, tid as int, t as int);
+                        lemma_dict_ids_eq(dict, mid as int, dec(m));
+                        lemma_dict_ids_eq(dict, tid as int, dec(t));
                     }
-                    if (size, m, t) == (row.p_size, mid as i64, tid as i64) && key == row.p_partkey {
-                        assert(dict.text(m as int) == row.p_mfgr@);
-                        assert(dict.text(t as int) == row.p_type@);
+                    if (size, m, t) == (row.p_size, enc(mid as int), enc(tid as int)) && key == row.p_partkey {
+                        assert(dict.text(dec(m)) == row.p_mfgr@);
+                        assert(dict.text(dec(t)) == row.p_type@);
                     }
                 } else {
-                    assert((size, m, t) != (row.p_size, mid as i64, tid as i64));
+                    assert((size, m, t) != (row.p_size, enc(mid as int), enc(tid as int)));
                 }
             }
             assert forall|key: Major, minor: Major| #[trigger] tp.at(key, minor, true) == 0 by {
@@ -195,9 +215,9 @@ pub fn build_parts(rows: &[BrassPartScan]) -> (result: Option<Parts>)
             assert forall|size: i64, t: i64, key: i64, m: i64, third: i64| #[trigger] tl.at((size, t, 0), (key, m, third), false) ==
                 if third == 0 { tp.at((key, 0, 0), (size, m, t), false) } else { 0int } by {
                 assert(tl.at((size, t, 0), (key, m, third), false) == tl_before.at((size, t, 0), (key, m, third), false)
-                    + if (size, t, 0i64) == (row.p_size, tid as i64, 0i64) && (key, m, third) == (row.p_partkey, mid as i64, 0i64) { 1int } else { 0int });
+                    + if (size, t, 0i64) == (row.p_size, enc(tid as int), 0i64) && (key, m, third) == (row.p_partkey, enc(mid as int), 0i64) { 1int } else { 0int });
                 assert(tp.at((key, 0, 0), (size, m, t), false) == tp_before.at((key, 0, 0), (size, m, t), false)
-                    + if (key, 0i64, 0i64) == (row.p_partkey, 0i64, 0i64) && (size, m, t) == (row.p_size, mid as i64, tid as i64) { 1int } else { 0int });
+                    + if (key, 0i64, 0i64) == (row.p_partkey, 0i64, 0i64) && (size, m, t) == (row.p_size, enc(mid as int), enc(tid as int)) { 1int } else { 0int });
             }
         }
         index += 1;
@@ -208,7 +228,7 @@ pub fn build_parts(rows: &[BrassPartScan]) -> (result: Option<Parts>)
     let ps = Parts { dict: Arc::new(dict), tp: tpt, tl: tlt };
     proof {
         assert(ps.tp.valid() && ps.tl.valid());
-        assert forall|key: i64, size: i64, mid: i64, tid: i64| !(0 <= mid < dict.len() && 0 <= tid < dict.len()) implies
+        assert forall|key: i64, size: i64, mid: i64, tid: i64| !(dec(mid) < dict.len() && dec(tid) < dict.len()) implies
             #[trigger] ps.tp.at((key, 0, 0), (size, mid, tid), false) == 0 by {
             assert(tp.at((key, 0, 0), (size, mid, tid), false) == tp_expected(dict, rows@, key, size, mid, tid));
         }
@@ -222,7 +242,7 @@ pub fn build_parts(rows: &[BrassPartScan]) -> (result: Option<Parts>)
                 let m = ps.dict_id(target.p_mfgr);
                 let t = ps.dict_id(target.p_type);
                 assert(0 <= m < dict.len() && 0 <= t < dict.len());
-                assert(ps.tp.at((key, 0, 0), (size, m as i64, t as i64), false) == tp_expected(dict, rows@, key, size, m as i64, t as i64));
+                assert(ps.tp.at((key, 0, 0), (size, enc(m as int), enc(t as int)), false) == tp_expected(dict, rows@, key, size, enc(m as int), enc(t as int)));
                 lemma_scan_amount_cells(dict, rows@, key, size, target, m, t);
             } else {
                 lemma_dict_has_eq(ps, dict, target.p_mfgr);
@@ -236,7 +256,7 @@ pub fn build_parts(rows: &[BrassPartScan]) -> (result: Option<Parts>)
             lemma_dict_has_eq(ps, dict, rows@[j].p_type@);
         }
     }
-    Some(ps)
+    ps
 }
 
 
@@ -255,14 +275,29 @@ pub proof fn lemma_cells_at_sum(cells: Seq<Cell>, minor: Major)
     lemma_sum_ext_all(cells, |cell: Cell| crate::table::cell_weight(cell, minor, false), cell_minor_weight(minor));
 }
 
+/// No earlier cell of a row has the minor of a later one.
+pub proof fn lemma_prefix_cells_at_zero(rows: Seq<Cell>, j: int)
+    requires rows_valid(rows), 0 <= j < rows.len(),
+    ensures cells_at(rows.take(j), minor_of(rows[j])) == 0,
+{
+    let m = minor_of(rows[j]);
+    assert forall|i: int| 0 <= i < rows.take(j).len() implies cell_minor_weight(m)(#[trigger] rows.take(j)[i]) == 0 by {
+        assert(rows.take(j)[i] == rows[i]);
+        assert(minor_of(rows[i]) != m);
+    }
+    lemma_sum_zero(rows.take(j), cell_minor_weight(m));
+}
+
 /// Takes every cell of part key `key` out of both tables.
 #[verifier::rlimit(60)]
-pub fn remove_key(tp: &mut Work, tl: &mut Work, before: &Parts, key: i64) -> (result: Option<()>)
-    requires old(tp).valid(), old(tl).valid(), before.structure_ok(),
+pub fn remove_key(tp: &mut Work, tl: &mut Work, before: &Parts, key: i64)
+    requires old(tp).valid(), old(tl).valid(), before.structure_ok(), before.cells_positive(),
+        forall|k: Major, m: Major| #[trigger] old(tp).at(k, m, true) == 0,
+        forall|k: Major, m: Major| #[trigger] old(tl).at(k, m, true) == 0,
         forall|minor: Major| #[trigger] old(tp).at((key, 0, 0), minor, false) == before.tp.at((key, 0, 0), minor, false),
         forall|size: i64, tid: i64, mid: i64, third: i64| #[trigger] old(tl).at((size, tid, 0), (key, mid, third), false) ==
             if third == 0 { before.tp.at((key, 0, 0), (size, mid, tid), false) } else { 0int },
-    ensures result is Some ==> {
+    ensures {
         &&& final(tp).valid() && final(tl).valid()
         &&& forall|k: Major, m: Major| #[trigger] final(tp).at(k, m, false) == if k == (key, 0i64, 0i64) { 0int } else { old(tp).at(k, m, false) }
         &&& forall|k: Major, m: Major| #[trigger] final(tp).at(k, m, true) == old(tp).at(k, m, true)
@@ -277,7 +312,12 @@ pub fn remove_key(tp: &mut Work, tl: &mut Work, before: &Parts, key: i64) -> (re
     let ghost tl_start = *tl;
     let mut j = 0;
     while j < cells.len()
-        invariant j <= cells.len(), tp.valid(), tl.valid(), (*cells)@ == rows, rows == before.tp.rows((key, 0, 0)), rows_valid(rows),
+        invariant j <= cells.len(), tp.valid(), tl.valid(), before.cells_positive(), (*cells)@ == rows,
+            forall|minor: Major| #[trigger] tp_start.at((key, 0, 0), minor, false) == before.tp.at((key, 0, 0), minor, false),
+            forall|k: Major, m: Major| #[trigger] tp_start.at(k, m, true) == 0,
+            forall|k: Major, m: Major| #[trigger] tl_start.at(k, m, true) == 0,
+            forall|size: i64, tid: i64, mid: i64, third: i64| #[trigger] tl_start.at((size, tid, 0), (key, mid, third), false) ==
+                if third == 0 { before.tp.at((key, 0, 0), (size, mid, tid), false) } else { 0int }, rows == before.tp.rows((key, 0, 0)), rows_valid(rows),
             forall|k: Major, m: Major| #[trigger] tp.at(k, m, false) == tp_start.at(k, m, false) - (if k == (key, 0i64, 0i64) { cells_at(rows.take(j as int), m) } else { 0int }),
             forall|k: Major, m: Major| #[trigger] tp.at(k, m, true) == tp_start.at(k, m, true),
             forall|k: Major, m: Major| #[trigger] tl.at(k, m, false) == tl_start.at(k, m, false) -
@@ -286,11 +326,31 @@ pub fn remove_key(tp: &mut Work, tl: &mut Work, before: &Parts, key: i64) -> (re
         decreases cells.len() - j,
     {
         let cell = cells[j];
-        if cell.count == i128::MIN { return None; }
+        proof {
+            assert(cell == rows[j as int]);
+            assert(before.tp_rows(key)[j as int].count > 0);
+            assert(cell.count > 0);
+            lemma_prefix_cells_at_zero(rows, j as int);
+            lemma_cell_lookup(rows, minor_of(cell), j as int);
+            assert(before.tp.at((key, 0, 0), minor_of(cell), false) == cell_sum(rows, minor_of(cell), false)) by { reveal(Table::at); }
+            lemma_cells_at_sum(rows.take(j as int), minor_of(cell));
+            assert(tp_start.at((key, 0, 0), minor_of(cell), false) == before.tp.at((key, 0, 0), minor_of(cell), false));
+            assert(tp_start.at((key, 0, 0), minor_of(cell), true) == 0);
+            assert(tp.at((key, 0, 0), minor_of(cell), false) == tp_start.at((key, 0, 0), minor_of(cell), false) - cells_at(rows.take(j as int), minor_of(cell)));
+            assert(tp.at((key, 0, 0), minor_of(cell), true) == tp_start.at((key, 0, 0), minor_of(cell), true));
+            assert(tp.at((key, 0, 0), minor_of(cell), false) == cell.count as int);
+            assert(tp.at((key, 0, 0), minor_of(cell), true) == 0);
+        }
         let ghost tp_before = *tp;
         let ghost tl_before = *tl;
-        if tp.add((key, 0, 0), (cell.first, cell.second, cell.third), -cell.count, 0).is_none() { return None; }
-        if tl.add((cell.first, cell.third, 0), (key, cell.second, 0), -cell.count, 0).is_none() { return None; }
+        let added = tp.add((key, 0, 0), (cell.first, cell.second, cell.third), -cell.count, 0);
+        proof { assert(added is Some); }
+        proof {
+            assert(tl.at((cell.first, cell.third, 0), (key, cell.second, 0), false) == tl_start.at((cell.first, cell.third, 0), (key, cell.second, 0), false) - cells_at(rows.take(j as int), minor_of(cell)));
+            assert(tl_start.at((cell.first, cell.third, 0), (key, cell.second, 0), false) == before.tp.at((key, 0, 0), (cell.first, cell.second, cell.third), false));
+        }
+        let added = tl.add((cell.first, cell.third, 0), (key, cell.second, 0), -cell.count, 0);
+        proof { assert(added is Some); }
         proof {
             assert(rows.take(j as int + 1).drop_last() =~= rows.take(j as int));
             lemma_sum_take(rows, j as int, cell_minor_weight(minor_of(cell)));
@@ -331,28 +391,25 @@ pub fn remove_key(tp: &mut Work, tl: &mut Work, before: &Parts, key: i64) -> (re
             }
         }
     }
-    Some(())
 }
 
 
 /// Interns the strings of the rows into an existing dictionary (ids of existing strings stay).
-pub fn intern_into(start: Dict, rows: &[BrassPartScan]) -> (result: Option<Dict>)
-    requires start.valid(), start.len() <= 1000000,
-    ensures result matches Some(dict) ==> dict.valid() && dict.len() <= 1000000 && dict.len() >= start.len() &&
+pub fn intern_into(start: Dict, rows: &[BrassPartScan]) -> (dict: Dict)
+    requires start.valid(),
+    ensures dict.valid() && dict.len() >= start.len() &&
         (forall|id: int| 0 <= id < start.len() ==> dict.strings@[id] == start.strings@[id]) &&
         forall|j: int| 0 <= j < rows@.len() ==> row_covered(dict, #[trigger] rows@[j]),
 {
     let mut dict = start;
     let mut index = 0;
     while index < rows.len()
-        invariant index <= rows.len(), dict.valid(), dict.len() <= 1000000, dict.len() >= start.len(),
+        invariant index <= rows.len(), dict.valid(), dict.len() >= start.len(),
             forall|id: int| 0 <= id < start.len() ==> dict.strings@[id] == start.strings@[id],
             forall|j: int| 0 <= j < index ==> row_covered(dict, #[trigger] rows@[j]),
         decreases rows.len() - index,
     {
-        if dict.strings.len() >= 999990 { return None; }
         let ghost before = dict;
-        assert(before.len() < 999990);
         let first = dict.intern(&rows[index].p_mfgr);
         let ghost mid = dict;
         let second = dict.intern(&rows[index].p_type);
@@ -381,7 +438,7 @@ pub fn intern_into(start: Dict, rows: &[BrassPartScan]) -> (result: Option<Dict>
         index += 1;
     }
     assert(index == rows@.len());
-    Some(dict)
+    dict
 }
 
 
@@ -389,7 +446,7 @@ pub fn intern_into(start: Dict, rows: &[BrassPartScan]) -> (result: Option<Dict>
 /// The facts about the rebuilt tables give the post-condition of `apply_parts`.
 #[verifier::rlimit(60)]
 pub proof fn lemma_apply_parts_post(before: Parts, ps: Parts, dict: Dict, touched: Seq<i64>, rows: Seq<BrassPartScan>)
-    requires before.structure_ok(), *ps.dict == dict, dict.valid(), dict.len() <= 1000000, dict.len() >= before.dl(),
+    requires before.structure_ok(), *ps.dict == dict, dict.valid(), dict.len() >= before.dl(),
         forall|id: int| 0 <= id < before.dl() ==> dict.strings@[id] == (*before.dict).strings@[id],
         ps.tp.valid(), ps.tl.valid(),
         forall|j: int| 0 <= j < rows.len() ==> row_covered(dict, #[trigger] rows[j]),
@@ -407,7 +464,7 @@ pub proof fn lemma_apply_parts_post(before: Parts, ps: Parts, dict: Dict, touche
         forall|text: Seq<u8>| before.dict_has(text) ==> #[trigger] ps.dict_has(text),
 {
     assert(ps.dl() == dict.len());
-    assert forall|key: i64, size: i64, mid: i64, tid: i64| !(0 <= mid < dict.len() && 0 <= tid < dict.len()) implies
+    assert forall|key: i64, size: i64, mid: i64, tid: i64| !(dec(mid) < dict.len() && dec(tid) < dict.len()) implies
         #[trigger] ps.tp.at((key, 0, 0), (size, mid, tid), false) == 0 by {
         if !touched.contains(key) {
             lemma_out_of_range_zero(before, key, size, mid, tid);
@@ -432,7 +489,7 @@ pub proof fn lemma_apply_parts_post(before: Parts, ps: Parts, dict: Dict, touche
                 let m = ps.dict_id(target.p_mfgr);
                 let t = ps.dict_id(target.p_type);
                 assert(0 <= m < dict.len() && 0 <= t < dict.len());
-                assert(ps.tp.at((key, 0, 0), (size, m as i64, t as i64), false) == tp_expected(dict, rows, key, size, m as i64, t as i64));
+                assert(ps.tp.at((key, 0, 0), (size, enc(m as int), enc(t as int)), false) == tp_expected(dict, rows, key, size, enc(m as int), enc(t as int)));
                 lemma_scan_amount_cells(dict, rows, key, size, target, m, t);
             } else {
                 lemma_dict_has_eq(ps, dict, target.p_mfgr);
@@ -443,8 +500,8 @@ pub proof fn lemma_apply_parts_post(before: Parts, ps: Parts, dict: Dict, touche
             if target.p_partkey == key as int && target.p_size == size as int && ps.dict_has(target.p_mfgr) && ps.dict_has(target.p_type) {
                 let m = ps.dict_id(target.p_mfgr);
                 let t = ps.dict_id(target.p_type);
-                assert(ps.amount(key, size, target) == ps.tp.at((key, 0, 0), (size, m as i64, t as i64), false));
-                assert(ps.tp.at((key, 0, 0), (size, m as i64, t as i64), false) == before.tp.at((key, 0, 0), (size, m as i64, t as i64), false));
+                assert(ps.amount(key, size, target) == ps.tp.at((key, 0, 0), (size, enc(m as int), enc(t as int)), false));
+                assert(ps.tp.at((key, 0, 0), (size, enc(m as int), enc(t as int)), false) == before.tp.at((key, 0, 0), (size, enc(m as int), enc(t as int)), false));
                 if before.dict_has(target.p_mfgr) && before.dict_has(target.p_type) {
                     let m1 = before.dict_id(target.p_mfgr);
                     let t1 = before.dict_id(target.p_type);
@@ -454,7 +511,7 @@ pub proof fn lemma_apply_parts_post(before: Parts, ps: Parts, dict: Dict, touche
                     assert(0 <= t1 < dict.len() && dict.text(t1) == target.p_type);
                     lemma_dict_ids_eq(dict, m1, m);
                     lemma_dict_ids_eq(dict, t1, t);
-                    assert(before.amount(key, size, target) == before.tp.at((key, 0, 0), (size, m1 as i64, t1 as i64), false));
+                    assert(before.amount(key, size, target) == before.tp.at((key, 0, 0), (size, enc(m1 as int), enc(t1 as int)), false));
                 } else {
                     assert(before.amount(key, size, target) == 0);
                     // one of the ids is beyond the old dictionary
@@ -467,31 +524,30 @@ pub proof fn lemma_apply_parts_post(before: Parts, ps: Parts, dict: Dict, touche
                         assert(before.dict_has(target.p_mfgr));
                         assert(before.dict_has(target.p_type));
                     }
-                    lemma_out_of_range_zero(before, key, size, m as i64, t as i64);
+                    lemma_out_of_range_zero(before, key, size, enc(m as int), enc(t as int));
                 }
             }
         }
     }
 }
 
-pub fn apply_parts(before: &Parts, touched: &[i64], rows: &[BrassPartScan]) -> (result: Option<Parts>)
-    requires before.structure_ok(), touched@.no_duplicates(),
-    ensures result matches Some(ps) ==> {
-        &&& ps.structure_ok()
-        &&& forall|key: i64, size: i64, target: PartRow| #[trigger] ps.amount(key, size, target) ==
-            if touched@.contains(key) { part_scan_amount(rows@, key, size, target) } else { before.amount(key, size, target) }
-        &&& forall|j: int| 0 <= j < rows@.len() ==> ps.dict_has((#[trigger] rows@[j]).p_mfgr@) && ps.dict_has(rows@[j].p_type@)
-        &&& forall|text: Seq<u8>| before.dict_has(text) ==> #[trigger] ps.dict_has(text)
-    },
+pub fn apply_parts(before: &Parts, touched: &[i64], rows: &[BrassPartScan]) -> (ps: Parts)
+    requires before.structure_ok(), before.cells_positive(), touched@.no_duplicates(),
+    ensures
+        ps.structure_ok(),
+        forall|key: i64, size: i64, target: PartRow| #[trigger] ps.amount(key, size, target) ==
+            if touched@.contains(key) { part_scan_amount(rows@, key, size, target) } else { before.amount(key, size, target) },
+        forall|j: int| 0 <= j < rows@.len() ==> ps.dict_has((#[trigger] rows@[j]).p_mfgr@) && ps.dict_has(rows@[j].p_type@),
+        forall|text: Seq<u8>| before.dict_has(text) ==> #[trigger] ps.dict_has(text),
 {
     let start = (*before.dict).share();
-    let dict = match intern_into(start, rows) { None => return None, Some(dict) => dict };
+    let dict = intern_into(start, rows);
     let mut tp = Work::new(&before.tp);
     let mut tl = Work::new(&before.tl);
     // 1. take every touched key out of both tables
     let mut i = 0;
     while i < touched.len()
-        invariant i <= touched.len(), tp.valid(), tl.valid(), before.structure_ok(), touched@.no_duplicates(),
+        invariant i <= touched.len(), tp.valid(), tl.valid(), before.structure_ok(), before.cells_positive(), touched@.no_duplicates(),
             forall|key: i64, minor: Major| #[trigger] tp.at((key, 0, 0), minor, false) ==
                 if touched@.take(i as int).contains(key) { 0int } else { before.tp.at((key, 0, 0), minor, false) },
             forall|k: Major, m: Major| #[trigger] tp.at(k, m, true) == 0,
@@ -516,7 +572,7 @@ pub fn apply_parts(before: &Parts, touched: &[i64], rows: &[BrassPartScan]) -> (
                     if third == 0 { before.tp.at((key, 0, 0), (size, mid, tid), false) } else { 0int });
             }
         }
-        if remove_key(&mut tp, &mut tl, before, key).is_none() { return None; }
+        remove_key(&mut tp, &mut tl, before, key);
         proof {
             assert(touched@.take(i as int + 1) =~= touched@.take(i as int).push(key));
             assert forall|k: i64, minor: Major| #[trigger] tp.at((k, 0, 0), minor, false) ==
@@ -537,7 +593,7 @@ pub fn apply_parts(before: &Parts, touched: &[i64], rows: &[BrassPartScan]) -> (
     // 2. add the rescanned rows of the touched keys
     let mut r = 0;
     while r < rows.len()
-        invariant r <= rows.len(), tp.valid(), tl.valid(), dict.valid(), dict.len() <= 1000000, before.structure_ok(),
+        invariant r <= rows.len(), tp.valid(), tl.valid(), dict.valid(), before.structure_ok(),
             forall|j: int| 0 <= j < rows@.len() ==> row_covered(dict, #[trigger] rows@[j]),
             forall|key: i64, size: i64, mid: i64, tid: i64| #[trigger] tp.at((key, 0, 0), (size, mid, tid), false) ==
                 if touched@.contains(key) { tp_expected(dict, rows@.take(r as int), key, size, mid, tid) }
@@ -550,33 +606,41 @@ pub fn apply_parts(before: &Parts, touched: &[i64], rows: &[BrassPartScan]) -> (
     {
         let row = &rows[r];
         if crate::maintenance::contains_key(touched, row.p_partkey) {
-            let mid = match dict.find(&row.p_mfgr) { Some(id) => id, None => { proof { assert(row_covered(dict, rows@[r as int])); } return None; } };
-            let tid = match dict.find(&row.p_type) { Some(id) => id, None => { proof { assert(row_covered(dict, rows@[r as int])); } return None; } };
-            proof { assert(mid < 1000000 && tid < 1000000); }
+            proof { assert(row_covered(dict, rows@[r as int])); }
+            let mid = dict.find_known(&row.p_mfgr);
+            let tid = dict.find_known(&row.p_type);
             let ghost tp_before = tp;
             let ghost tl_before = tl;
-            if tp.add((row.p_partkey, 0, 0), (row.p_size, mid as i64, tid as i64), 1, 0).is_none() { return None; }
-            if tl.add((row.p_size, tid as i64, 0), (row.p_partkey, mid as i64, 0), 1, 0).is_none() { return None; }
+            proof {
+                lemma_tp_expected_bound(dict, rows@.take(r as int), row.p_partkey, row.p_size, enc(mid as int), enc(tid as int));
+                lemma_id_bound(mid as int);
+                assert(tp.at((row.p_partkey, 0, 0), (row.p_size, enc(mid as int), enc(tid as int)), false) ==
+                    tp_expected(dict, rows@.take(r as int), row.p_partkey, row.p_size, enc(mid as int), enc(tid as int)));
+            }
+            let added = tp.add((row.p_partkey, 0, 0), (row.p_size, enc_exec(mid), enc_exec(tid)), 1, 0);
+            proof { assert(added is Some); }
+            let added = tl.add((row.p_size, enc_exec(tid), 0), (row.p_partkey, enc_exec(mid), 0), 1, 0);
+            proof { assert(added is Some); }
             proof {
                 assert forall|key: i64, size: i64, m: i64, t: i64| #[trigger] tp.at((key, 0, 0), (size, m, t), false) ==
                     if touched@.contains(key) { tp_expected(dict, rows@.take(r as int + 1), key, size, m, t) }
                     else { before.tp.at((key, 0, 0), (size, m, t), false) } by {
                     assert(tp.at((key, 0, 0), (size, m, t), false) == tp_before.at((key, 0, 0), (size, m, t), false)
-                        + if (key, 0i64, 0i64) == (row.p_partkey, 0i64, 0i64) && (size, m, t) == (row.p_size, mid as i64, tid as i64) { 1int } else { 0int });
+                        + if (key, 0i64, 0i64) == (row.p_partkey, 0i64, 0i64) && (size, m, t) == (row.p_size, enc(mid as int), enc(tid as int)) { 1int } else { 0int });
                     if touched@.contains(key) {
-                        if 0 <= m < dict.len() && 0 <= t < dict.len() {
-                            lemma_sum_take(rows@, r as int, row_weight(key, size, dict.text(m as int), dict.text(t as int)));
-                            if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == dict.text(m as int) && row.p_type@ == dict.text(t as int) {
+                        if dec(m) < dict.len() && dec(t) < dict.len() {
+                            lemma_sum_take(rows@, r as int, row_weight(key, size, dict.text(dec(m)), dict.text(dec(t))));
+                            if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == dict.text(dec(m)) && row.p_type@ == dict.text(dec(t)) {
                                 assert(dict.text(mid as int) == row.p_mfgr@);
-                                lemma_dict_ids_eq(dict, mid as int, m as int);
-                                lemma_dict_ids_eq(dict, tid as int, t as int);
+                                lemma_dict_ids_eq(dict, mid as int, dec(m));
+                                lemma_dict_ids_eq(dict, tid as int, dec(t));
                             }
-                            if (size, m, t) == (row.p_size, mid as i64, tid as i64) && key == row.p_partkey {
-                                assert(dict.text(m as int) == row.p_mfgr@);
-                                assert(dict.text(t as int) == row.p_type@);
+                            if (size, m, t) == (row.p_size, enc(mid as int), enc(tid as int)) && key == row.p_partkey {
+                                assert(dict.text(dec(m)) == row.p_mfgr@);
+                                assert(dict.text(dec(t)) == row.p_type@);
                             }
                         } else {
-                            assert((size, m, t) != (row.p_size, mid as i64, tid as i64));
+                            assert((size, m, t) != (row.p_size, enc(mid as int), enc(tid as int)));
                         }
                     } else {
                         assert(key != row.p_partkey);
@@ -587,9 +651,9 @@ pub fn apply_parts(before: &Parts, touched: &[i64], rows: &[BrassPartScan]) -> (
                 assert forall|size: i64, t: i64, key: i64, m: i64, third: i64| #[trigger] tl.at((size, t, 0), (key, m, third), false) ==
                     if third == 0 { tp.at((key, 0, 0), (size, m, t), false) } else { 0int } by {
                     assert(tl.at((size, t, 0), (key, m, third), false) == tl_before.at((size, t, 0), (key, m, third), false)
-                        + if (size, t, 0i64) == (row.p_size, tid as i64, 0i64) && (key, m, third) == (row.p_partkey, mid as i64, 0i64) { 1int } else { 0int });
+                        + if (size, t, 0i64) == (row.p_size, enc(tid as int), 0i64) && (key, m, third) == (row.p_partkey, enc(mid as int), 0i64) { 1int } else { 0int });
                     assert(tp.at((key, 0, 0), (size, m, t), false) == tp_before.at((key, 0, 0), (size, m, t), false)
-                        + if (key, 0i64, 0i64) == (row.p_partkey, 0i64, 0i64) && (size, m, t) == (row.p_size, mid as i64, tid as i64) { 1int } else { 0int });
+                        + if (key, 0i64, 0i64) == (row.p_partkey, 0i64, 0i64) && (size, m, t) == (row.p_size, enc(mid as int), enc(tid as int)) { 1int } else { 0int });
                 }
             }
         } else {
@@ -597,8 +661,8 @@ pub fn apply_parts(before: &Parts, touched: &[i64], rows: &[BrassPartScan]) -> (
                 assert forall|key: i64, size: i64, m: i64, t: i64| #[trigger] tp.at((key, 0, 0), (size, m, t), false) ==
                     if touched@.contains(key) { tp_expected(dict, rows@.take(r as int + 1), key, size, m, t) }
                     else { before.tp.at((key, 0, 0), (size, m, t), false) } by {
-                    if touched@.contains(key) && 0 <= m < dict.len() && 0 <= t < dict.len() {
-                        lemma_sum_take(rows@, r as int, row_weight(key, size, dict.text(m as int), dict.text(t as int)));
+                    if touched@.contains(key) && dec(m) < dict.len() && dec(t) < dict.len() {
+                        lemma_sum_take(rows@, r as int, row_weight(key, size, dict.text(dec(m)), dict.text(dec(t))));
                         assert(key != row.p_partkey);
                     }
                 }
@@ -626,7 +690,7 @@ pub fn apply_parts(before: &Parts, touched: &[i64], rows: &[BrassPartScan]) -> (
         }
         lemma_apply_parts_post(*before, ps, dict, touched@, rows@);
     }
-    Some(ps)
+    ps
 }
 
 
