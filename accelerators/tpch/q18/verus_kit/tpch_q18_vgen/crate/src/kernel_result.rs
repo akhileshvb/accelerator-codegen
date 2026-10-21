@@ -40,7 +40,7 @@ pub(super) open spec fn slot(state: State, parameters: Params, position: Cursor)
         Some((quantity, key, variant, name)) => if quantity > parameters.p1 {
             Some(OutRow { c_name: name.name@, c_custkey: variant.customer as int, o_orderkey: key as int,
                 o_orderdate: variant.date as int, o_totalprice: variant.price as int,
-                sum_qty: quantity as int * variant.count as int * name.count as int })
+                sum_qty: quantity as int * variant.count@ * name.count@ })
         } else { None },
         None => None,
     }
@@ -60,7 +60,7 @@ pub(super) open spec fn model(state: State, parameters: Params, rows: Seq<OutRow
     &&& forall|position: Cursor| #[trigger] slot(state, parameters, position) is Some && before(position, limit) ==> rows.contains(slot_row(state, parameters, position))
 }
 
-proof fn slot_correct(state: State, parameters: Params, position: Cursor)
+pub(super) proof fn slot_correct(state: State, parameters: Params, position: Cursor)
     requires state.wf(), slot(state, parameters, position) is Some,
     ensures row_ok(state.db(), parameters, slot_row(state, parameters, position)),
 {
@@ -78,11 +78,11 @@ proof fn slot_correct(state: State, parameters: Params, position: Cursor)
     order.variant_count(position.2);
     customer.name_count(position.3);
     state.query_counts(parameters, name.name@, variant.customer as int, key as int, variant.date as int, variant.price as int);
-    assert(order.count > 0);
-    assert(variant.count > 0);
-    assert(name.count > 0);
-    assert(order.count as int * variant.count as int * name.count as int > 0) by (nonlinear_arith)
-        requires order.count > 0, variant.count > 0, name.count > 0;
+    assert(order.count@ > 0);
+    assert(variant.count@ > 0);
+    assert(name.count@ > 0);
+    assert(order.count@ * variant.count@ * name.count@ > 0) by (nonlinear_arith)
+        requires order.count@ > 0, variant.count@ > 0, name.count@ > 0;
 }
 
 proof fn slot_injective(state: State, parameters: Params, left: Cursor, right: Cursor)
@@ -188,10 +188,11 @@ proof fn group_slot(state: State, parameters: Params, name: Seq<u8>, customer: i
     let order_index = lemma_sum_nonzero_witness(order.variants@, variant_weight(customer, date, price));
     let name_index = lemma_sum_nonzero_witness(person.names@, name_weight(name));
     assert(order.variants@[order_index].customer == customer && order.variants@[order_index].date == date && order.variants@[order_index].price == price);
-    assert(state.bucket_has(order.quantity, key as i64));
-    let bucket = choose|bucket: KeyBucket| #[trigger] state.buckets.at(order.quantity) == Some(bucket);
-    assert(state.directory@.contains(order.quantity));
-    let quantity_index = choose|index: int| 0 <= index < state.directory.len() && #[trigger] state.directory@[index] == order.quantity;
+    assert(order.quantity@ == order.bucket_quantity() as int);
+    assert(state.bucket_has(order.bucket_quantity(), key as i64));
+    let bucket = choose|bucket: KeyBucket| #[trigger] state.buckets.at(order.bucket_quantity()) == Some(bucket);
+    assert(state.directory@.contains(order.bucket_quantity()));
+    let quantity_index = choose|index: int| 0 <= index < state.directory.len() && #[trigger] state.directory@[index] == order.bucket_quantity();
     let key_index = choose|index: int| 0 <= index < bucket.len && #[trigger] bucket.view()[index] == key;
     (quantity_index, key_index, order_index, name_index)
 }
@@ -220,6 +221,21 @@ pub(super) proof fn finish(state: State, parameters: Params, source: Seq<OutRow>
         assert(out.contains(row));
         let found = choose|found: int| 0 <= found < out.len() && #[trigger] out[found] == row;
     }
+}
+
+pub(super) proof fn unfit_slot_refutes(state: State, parameters: Params, position: Cursor)
+    requires state.wf(), slot(state, parameters, position) is Some, !out_fits(slot_row(state, parameters, position)),
+    ensures !answer_fits(state.db(), parameters),
+{
+    slot_correct(state, parameters, position);
+    let row = slot_row(state, parameters, position);
+    let db = state.db();
+    lemma_answer_ok(db, parameters);
+    let out = answer(db, parameters);
+    let index = choose|index: int| 0 <= index < out.len() && (#[trigger] out[index]).c_name == row.c_name && out[index].c_custkey == row.c_custkey
+        && out[index].o_orderkey == row.o_orderkey && out[index].o_orderdate == row.o_orderdate && out[index].o_totalprice == row.o_totalprice;
+    assert(row_ok(db, parameters, out[index]));
+    assert(!out_fits(out[index]));
 }
 
 }

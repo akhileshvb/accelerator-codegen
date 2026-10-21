@@ -756,6 +756,26 @@ impl KeyBucket {
         last
     }
 
+    pub fn locate(&self, key: i64, hint: Option<usize>) -> (out: usize)
+        requires self.wf(), self.view().contains(key),
+        ensures out < self.len, self.view()[out as int] == key,
+    {
+        if let Some(slot) = hint {
+            if slot < self.len && self.get(slot) == key { return slot; }
+        }
+        let mut index = 0usize;
+        while index < self.len
+            invariant index <= self.len, self.wf(),
+                forall|position: int| 0 <= position < index ==> self.view()[position] != key,
+            decreases self.len - index,
+        {
+            if self.get(index) == key { return index; }
+            index += 1;
+        }
+        proof { assert(false); }
+        0
+    }
+
     pub fn pop_last(&mut self)
         requires old(self).wf(), old(self).len > 0,
         ensures final(self).wf(), final(self).len == old(self).len - 1,

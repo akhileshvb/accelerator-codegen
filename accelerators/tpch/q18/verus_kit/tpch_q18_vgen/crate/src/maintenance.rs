@@ -11,16 +11,19 @@ use crate::kernel::{remember, remembered, bounded_keys};
 
 verus! {
 
-pub fn apply_lines(editor: &mut Editor<OrderData>, deltas: &[LineQuantityDelta], seen: &mut HashMap<i128, bool>, keys: &mut Vec<i128>) -> (success: bool)
+pub fn apply_lines(editor: &mut Editor<OrderData>, deltas: &[LineQuantityDelta], seen: &mut HashMap<i128, bool>, keys: &mut Vec<i128>)
     requires old(editor).wf(), remembered(old(seen)@, old(keys)@), bounded_keys(old(keys)@),
+        forall|key: i128| #[trigger] old(keys)@.contains(key) ==> old(editor).at(key) is Some,
         forall|key: i128| #[trigger] order_shape(old(editor).at(key)),
     ensures final(editor).wf(), remembered(final(seen)@, final(keys)@),
+        forall|key: i128| #[trigger] old(editor).at(key) is Some ==> final(editor).at(key) is Some,
+        forall|key: i128| #[trigger] final(keys)@.contains(key) ==> final(editor).at(key) is Some,
         bounded_keys(final(keys)@),
         forall|key: i128| #[trigger] old(keys)@.contains(key) ==> final(keys)@.contains(key),
         forall|key: i128| !final(keys)@.contains(key) ==> #[trigger] final(editor).at(key) == old(editor).at(key),
         forall|key: i128| #[trigger] order_shape(final(editor).at(key)),
-        success ==> forall|key: i128| #[trigger] line_count(final(editor).at(key)) == line_count(old(editor).at(key)) + sum(line_quantity_delta_seq_view(deltas@), dn(key as int)),
-        success ==> forall|key: i128| #[trigger] line_sum(final(editor).at(key)) == line_sum(old(editor).at(key)) + sum(line_quantity_delta_seq_view(deltas@), dq(key as int)),
+        forall|key: i128| #[trigger] line_count(final(editor).at(key)) == line_count(old(editor).at(key)) + sum(line_quantity_delta_seq_view(deltas@), dn(key as int)),
+        forall|key: i128| #[trigger] line_sum(final(editor).at(key)) == line_sum(old(editor).at(key)) + sum(line_quantity_delta_seq_view(deltas@), dq(key as int)),
         forall|key: i128, customer: int, date: int, price: int| #[trigger] order_count(final(editor).at(key), customer, date, price) == order_count(old(editor).at(key), customer, date, price),
 {
     hide(sum);
@@ -30,6 +33,8 @@ pub fn apply_lines(editor: &mut Editor<OrderData>, deltas: &[LineQuantityDelta],
     let mut index = 0usize;
     while index < deltas.len()
         invariant index <= deltas.len(), editor.wf(), remembered(seen@, keys@), bounded_keys(keys@),
+            forall|key: i128| #[trigger] old(editor).at(key) is Some ==> editor.at(key) is Some,
+            forall|key: i128| #[trigger] keys@.contains(key) ==> editor.at(key) is Some,
             forall|key: i128| #[trigger] old(keys)@.contains(key) ==> keys@.contains(key),
             forall|key: i128| !keys@.contains(key) ==> #[trigger] editor.at(key) == old(editor).at(key),
             forall|key: i128| #[trigger] order_shape(editor.at(key)),
@@ -39,9 +44,8 @@ pub fn apply_lines(editor: &mut Editor<OrderData>, deltas: &[LineQuantityDelta],
         decreases deltas.len() - index,
     {
         let delta = &deltas[index];
-        if delta.sign != 1 && delta.sign != -1 { return false; }
         remember(delta.row.l_orderkey as i128, seen, keys);
-        if !change_line(editor, delta.row.l_orderkey, delta.row.l_quantity, delta.sign) { return false; }
+        change_line(editor, delta.row.l_orderkey, delta.row.l_quantity, delta.sign);
         proof {
             assert forall|key: i128| #[trigger] line_count(editor.at(key)) == line_count(old(editor).at(key)) + sum(line_quantity_delta_seq_view(deltas@.take(index as int + 1)), dn(key as int)) by {
                 projected_prefix(deltas@, index as int, |input: LineQuantityDelta| (line_quantity_input_view(input.row), input.sign as int), dn(key as int));
@@ -54,20 +58,22 @@ pub fn apply_lines(editor: &mut Editor<OrderData>, deltas: &[LineQuantityDelta],
         index += 1;
     }
     proof { assert(deltas@.take(index as int) =~= deltas@); }
-    true
 }
 
-pub fn apply_orders(editor: &mut Editor<OrderData>, deltas: &[OrderGroupDelta], seen: &mut HashMap<i128, bool>, keys: &mut Vec<i128>) -> (success: bool)
+pub fn apply_orders(editor: &mut Editor<OrderData>, deltas: &[OrderGroupDelta], seen: &mut HashMap<i128, bool>, keys: &mut Vec<i128>)
     requires old(editor).wf(), remembered(old(seen)@, old(keys)@), bounded_keys(old(keys)@),
+        forall|key: i128| #[trigger] old(keys)@.contains(key) ==> old(editor).at(key) is Some,
         forall|key: i128| #[trigger] order_shape(old(editor).at(key)),
     ensures final(editor).wf(), remembered(final(seen)@, final(keys)@),
+        forall|key: i128| #[trigger] old(editor).at(key) is Some ==> final(editor).at(key) is Some,
+        forall|key: i128| #[trigger] final(keys)@.contains(key) ==> final(editor).at(key) is Some,
         bounded_keys(final(keys)@),
         forall|key: i128| #[trigger] old(keys)@.contains(key) ==> final(keys)@.contains(key),
         forall|key: i128| !final(keys)@.contains(key) ==> #[trigger] final(editor).at(key) == old(editor).at(key),
         forall|key: i128| #[trigger] order_shape(final(editor).at(key)),
         forall|key: i128| #[trigger] line_count(final(editor).at(key)) == line_count(old(editor).at(key)),
         forall|key: i128| #[trigger] line_sum(final(editor).at(key)) == line_sum(old(editor).at(key)),
-        success ==> forall|key: i128, customer: int, date: int, price: int| #[trigger] order_count(final(editor).at(key), customer, date, price) == order_count(old(editor).at(key), customer, date, price) + sum(order_group_delta_seq_view(deltas@), dorder(key as int, customer, date, price)),
+        forall|key: i128, customer: int, date: int, price: int| #[trigger] order_count(final(editor).at(key), customer, date, price) == order_count(old(editor).at(key), customer, date, price) + sum(order_group_delta_seq_view(deltas@), dorder(key as int, customer, date, price)),
 {
     hide(sum);
     hide(Editor::at);
@@ -76,6 +82,8 @@ pub fn apply_orders(editor: &mut Editor<OrderData>, deltas: &[OrderGroupDelta], 
     let mut index = 0usize;
     while index < deltas.len()
         invariant index <= deltas.len(), editor.wf(), remembered(seen@, keys@), bounded_keys(keys@),
+            forall|key: i128| #[trigger] old(editor).at(key) is Some ==> editor.at(key) is Some,
+            forall|key: i128| #[trigger] keys@.contains(key) ==> editor.at(key) is Some,
             forall|key: i128| #[trigger] old(keys)@.contains(key) ==> keys@.contains(key),
             forall|key: i128| !keys@.contains(key) ==> #[trigger] editor.at(key) == old(editor).at(key),
             forall|key: i128| #[trigger] order_shape(editor.at(key)),
@@ -85,9 +93,8 @@ pub fn apply_orders(editor: &mut Editor<OrderData>, deltas: &[OrderGroupDelta], 
         decreases deltas.len() - index,
     {
         let delta = &deltas[index];
-        if delta.sign != 1 && delta.sign != -1 { return false; }
         remember(delta.row.o_orderkey as i128, seen, keys);
-        if !change_order(editor, delta.row.o_orderkey, delta.row.o_custkey, delta.row.o_orderdate, delta.row.o_totalprice, delta.sign) { return false; }
+        change_order(editor, delta.row.o_orderkey, delta.row.o_custkey, delta.row.o_orderdate, delta.row.o_totalprice, delta.sign);
         proof {
             assert forall|key: i128, customer: int, date: int, price: int| #[trigger] order_count(editor.at(key), customer, date, price) == order_count(old(editor).at(key), customer, date, price) + sum(order_group_delta_seq_view(deltas@.take(index as int + 1)), dorder(key as int, customer, date, price)) by {
                 projected_prefix(deltas@, index as int, |input: OrderGroupDelta| (order_group_input_view(input.row), input.sign as int), dorder(key as int, customer, date, price));
@@ -96,18 +103,20 @@ pub fn apply_orders(editor: &mut Editor<OrderData>, deltas: &[OrderGroupDelta], 
         index += 1;
     }
     proof { assert(deltas@.take(index as int) =~= deltas@); }
-    true
 }
 
-pub fn apply_customers(editor: &mut Editor<CustomerData>, deltas: &Vec<CustomerNameDelta>, seen: &mut HashMap<i128, bool>, keys: &mut Vec<i128>) -> (success: bool)
+pub fn apply_customers(editor: &mut Editor<CustomerData>, deltas: &Vec<CustomerNameDelta>, seen: &mut HashMap<i128, bool>, keys: &mut Vec<i128>)
     requires old(editor).wf(), remembered(old(seen)@, old(keys)@), bounded_keys(old(keys)@),
+        forall|key: i128| #[trigger] old(keys)@.contains(key) ==> old(editor).at(key) is Some,
         forall|key: i128| #[trigger] customer_shape(old(editor).at(key)),
     ensures final(editor).wf(), remembered(final(seen)@, final(keys)@),
+        forall|key: i128| #[trigger] old(editor).at(key) is Some ==> final(editor).at(key) is Some,
+        forall|key: i128| #[trigger] final(keys)@.contains(key) ==> final(editor).at(key) is Some,
         bounded_keys(final(keys)@),
         forall|key: i128| #[trigger] old(keys)@.contains(key) ==> final(keys)@.contains(key),
         forall|key: i128| !final(keys)@.contains(key) ==> #[trigger] final(editor).at(key) == old(editor).at(key),
         forall|key: i128| #[trigger] customer_shape(final(editor).at(key)),
-        success ==> forall|key: i128, name: Seq<u8>| #[trigger] customer_count(final(editor).at(key), name) == customer_count(old(editor).at(key), name) + sum(customer_name_delta_seq_view(deltas@), dcustomer(key as int, name)),
+        forall|key: i128, name: Seq<u8>| #[trigger] customer_count(final(editor).at(key), name) == customer_count(old(editor).at(key), name) + sum(customer_name_delta_seq_view(deltas@), dcustomer(key as int, name)),
 {
     hide(sum);
     hide(Editor::at);
@@ -116,6 +125,8 @@ pub fn apply_customers(editor: &mut Editor<CustomerData>, deltas: &Vec<CustomerN
     let mut index = 0usize;
     while index < deltas.len()
         invariant index <= deltas.len(), editor.wf(), remembered(seen@, keys@), bounded_keys(keys@),
+            forall|key: i128| #[trigger] old(editor).at(key) is Some ==> editor.at(key) is Some,
+            forall|key: i128| #[trigger] keys@.contains(key) ==> editor.at(key) is Some,
             forall|key: i128| #[trigger] old(keys)@.contains(key) ==> keys@.contains(key),
             forall|key: i128| !keys@.contains(key) ==> #[trigger] editor.at(key) == old(editor).at(key),
             forall|key: i128| #[trigger] customer_shape(editor.at(key)),
@@ -123,9 +134,8 @@ pub fn apply_customers(editor: &mut Editor<CustomerData>, deltas: &Vec<CustomerN
         decreases deltas.len() - index,
     {
         let delta = &deltas[index];
-        if delta.sign != 1 && delta.sign != -1 { return false; }
         remember(delta.row.c_custkey as i128, seen, keys);
-        if !change_customer(editor, delta.row.c_custkey, &delta.row.c_name, delta.sign) { return false; }
+        change_customer(editor, delta.row.c_custkey, &delta.row.c_name, delta.sign);
         proof {
             assert forall|key: i128, name: Seq<u8>| #[trigger] customer_count(editor.at(key), name) == customer_count(old(editor).at(key), name) + sum(customer_name_delta_seq_view(deltas@.take(index as int + 1)), dcustomer(key as int, name)) by {
                 projected_prefix(deltas@, index as int, |input: CustomerNameDelta| (customer_name_input_view(input.row), input.sign as int), dcustomer(key as int, name));
@@ -134,7 +144,75 @@ pub fn apply_customers(editor: &mut Editor<CustomerData>, deltas: &Vec<CustomerN
         index += 1;
     }
     proof { assert(deltas@.take(index as int) =~= deltas@); }
-    true
+}
+
+pub proof fn lemma_clean_ready(db: Db, key: int, row: &OrderData)
+    requires row.shape(), row.count@ == sum(db.lineitem, nw(key)), row.quantity@ == sum(db.lineitem, qw(key)),
+        forall|person: int, day: int, total: int| #[trigger] row.multiplicity(person, day, total) == sum(db.orders, ow(key, person, day, total)),
+    ensures row.count@ >= 0, row.count@ == 0 ==> row.quantity@ == 0,
+        forall|index: int| 0 <= index < row.variants.len() ==> #[trigger] row.variants@[index].count@ >= 0,
+{
+    assert forall|i: int| 0 <= i < db.lineitem.len() implies nw(key)(#[trigger] db.lineitem[i]) >= 0 by {}
+    lemma_sum_nonneg(db.lineitem, nw(key));
+    if row.count@ == 0 {
+        assert forall|i: int| 0 <= i < db.lineitem.len() implies qw(key)(#[trigger] db.lineitem[i]) == 0 by {
+            if db.lineitem[i].l_orderkey == key { lemma_sum_pos(db.lineitem, nw(key), i); }
+        }
+        lemma_sum_zero(db.lineitem, qw(key));
+    }
+    assert forall|index: int| 0 <= index < row.variants.len() implies #[trigger] row.variants@[index].count@ >= 0 by {
+        let variant = row.variants@[index];
+        row.variant_count(index);
+        let weight = ow(key, variant.customer as int, variant.date as int, variant.price as int);
+        assert forall|i: int| 0 <= i < db.orders.len() implies weight(#[trigger] db.orders[i]) >= 0 by {}
+        lemma_sum_nonneg(db.orders, weight);
+    }
+}
+
+pub proof fn lemma_clean_ready_customer(db: Db, customer: int, row: &CustomerData)
+    requires row.shape(),
+        forall|name: Seq<u8>| #[trigger] row.multiplicity(name) == sum(db.customer, cw(customer, name)),
+    ensures forall|index: int| 0 <= index < row.names.len() ==> #[trigger] row.names@[index].count@ >= 0,
+{
+    assert forall|index: int| 0 <= index < row.names.len() implies #[trigger] row.names@[index].count@ >= 0 by {
+        row.name_count(index);
+        let weight = cw(customer, row.names@[index].name@);
+        assert forall|i: int| 0 <= i < db.customer.len() implies weight(#[trigger] db.customer[i]) >= 0 by {}
+        lemma_sum_nonneg(db.customer, weight);
+    }
+}
+
+/// Within the envelope an order key with lines is an i32.
+pub proof fn lemma_line_key_range(db: Db, key: int)
+    requires envelope(db), sum(db.lineitem, nw(key)) > 0,
+    ensures -2147483648 <= key <= 2147483647,
+{
+    if key < -2147483648 || key > 2147483647 {
+        assert forall|i: int| 0 <= i < db.lineitem.len() implies nw(key)(#[trigger] db.lineitem[i]) == 0 by {
+            assert(lineitem_in_type(db.lineitem[i]));
+        }
+        lemma_sum_zero(db.lineitem, nw(key));
+    }
+}
+
+/// A duplicate-free list of keys in the i32 range has at most 2^32 entries.
+pub proof fn lemma_distinct_keys_few(keys: Seq<i64>)
+    requires keys.no_duplicates(), forall|k: i64| keys.contains(k) ==> -2147483648 <= k <= 2147483647,
+    ensures keys.len() <= 4294967296,
+{
+    broadcast use vstd::seq_lib::group_seq_properties;
+    let widen = |k: i64| k as int;
+    assert(vstd::relations::injective(widen));
+    keys.lemma_no_duplicates_injective(widen);
+    let wide = keys.map_values(widen);
+    wide.unique_seq_to_set();
+    vstd::set_lib::lemma_int_range(-2147483648, 2147483648);
+    assert forall|v: int| wide.to_set().contains(v) implies vstd::set_lib::set_int_range(-2147483648, 2147483648).contains(v) by {
+        assert(wide.contains(v));
+        let at = choose|at: int| 0 <= at < wide.len() && wide[at] == v;
+        assert(keys.contains(keys[at]));
+    }
+    vstd::set_lib::lemma_len_subset(wide.to_set(), vstd::set_lib::set_int_range(-2147483648, 2147483648));
 }
 
 }

@@ -4,32 +4,45 @@ use std::sync::Arc;
 use verus_common::bytes::*;
 use verus_common::sums::*;
 use crate::pages::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
-#[derive(Clone, Copy)]
 pub struct OrderVariant {
     pub customer: i64,
     pub date: i32,
     pub price: i64,
-    pub count: i128,
+    pub count: Wide,
+}
+
+impl OrderVariant {
+    pub fn dup(&self) -> (out: Self)
+        ensures out == *self,
+    { OrderVariant { customer: self.customer, date: self.date, price: self.price, count: self.count.dup() } }
 }
 
 pub struct OrderData {
-    pub count: i128,
-    pub quantity: i128,
+    pub count: Wide,
+    pub quantity: Wide,
     pub variants: Vec<OrderVariant>,
     pub slot: Option<usize>,
 }
 
 pub open spec fn variant_weight(customer: int, date: int, price: int) -> spec_fn(OrderVariant) -> int {
-    |row: OrderVariant| if row.customer == customer && row.date == date && row.price == price { row.count as int } else { 0 }
+    |row: OrderVariant| if row.customer == customer && row.date == date && row.price == price { row.count@ } else { 0 }
 }
 
 impl OrderData {
+    pub open spec fn bucket_quantity(self) -> i128 { self.quantity@ as i128 }
+
+    pub fn bucket_key(&self) -> (out: i128)
+        requires i128::MIN <= self.quantity@ <= i128::MAX,
+        ensures out == self.bucket_quantity(), out as int == self.quantity@,
+    { self.quantity.to_i128().unwrap() }
+
     pub proof fn variant_count(self, index: int)
-        requires self.wf(), 0 <= index < self.variants.len(),
-        ensures self.multiplicity(self.variants@[index].customer as int, self.variants@[index].date as int, self.variants@[index].price as int) == self.variants@[index].count,
+        requires self.shape(), 0 <= index < self.variants.len(),
+        ensures self.multiplicity(self.variants@[index].customer as int, self.variants@[index].date as int, self.variants@[index].price as int) == self.variants@[index].count@,
     {
         let variant = self.variants@[index];
         let weight = variant_weight(variant.customer as int, variant.date as int, variant.price as int);
@@ -46,17 +59,17 @@ impl OrderData {
     }
 
     pub open spec fn wf(self) -> bool {
-        &&& self.count >= 0
-        &&& (self.count == 0 ==> self.quantity == 0)
-        &&& (self.count > 0 || self.variants.len() > 0)
+        &&& self.count@ >= 0
+        &&& (self.count@ == 0 ==> self.quantity@ == 0)
+        &&& (self.count@ > 0 || self.variants.len() > 0)
         &&& forall|index: int| 0 <= index < self.variants.len() ==>
-            #[trigger] self.variants@[index].count > 0
+            #[trigger] self.variants@[index].count@ > 0
         &&& self.shape()
     }
 
     pub fn empty() -> (out: Self)
-        ensures out.count == 0, out.quantity == 0, out.variants@ == Seq::<OrderVariant>::empty(), out.slot is None,
-    { OrderData { count: 0, quantity: 0, variants: Vec::new(), slot: None } }
+        ensures out.count@ == 0, out.quantity@ == 0, out.variants@ == Seq::<OrderVariant>::empty(), out.slot is None,
+    { OrderData { count: Wide::zero(), quantity: Wide::zero(), variants: Vec::new(), slot: None } }
 
     pub fn copy(&self) -> (out: Self)
         ensures out.count == self.count, out.quantity == self.quantity,
@@ -83,35 +96,35 @@ impl OrderData {
             invariant index <= self.variants.len(), variants@ == self.variants@.take(index as int),
             decreases self.variants.len() - index,
         {
-            variants.push(self.variants[index]);
+            variants.push(self.variants[index].dup());
             index += 1;
         }
         proof { assert(self.variants@.take(self.variants.len() as int) =~= self.variants@); }
-        OrderData { count: self.count, quantity: self.quantity, variants, slot: self.slot }
+        OrderData { count: self.count.dup(), quantity: self.quantity.dup(), variants, slot: self.slot }
     }
 
-    pub fn clean(&mut self) -> (success: bool)
-        requires old(self).shape(),
+    pub fn clean(&mut self)
+        requires old(self).shape(), old(self).count@ >= 0, old(self).count@ == 0 ==> old(self).quantity@ == 0,
+            forall|index: int| 0 <= index < old(self).variants.len() ==> #[trigger] old(self).variants@[index].count@ >= 0,
         ensures final(self).shape(), final(self).count == old(self).count,
             final(self).quantity == old(self).quantity, final(self).slot == old(self).slot,
-            success && (final(self).count > 0 || final(self).variants.len() > 0) ==> final(self).wf(),
-            success ==> final(self).count >= 0 && (final(self).count == 0 ==> final(self).quantity == 0),
+            (final(self).count@ > 0 || final(self).variants.len() > 0) ==> final(self).wf(),
+            final(self).count@ >= 0 && (final(self).count@ == 0 ==> final(self).quantity@ == 0),
             forall|person: int, day: int, total: int| #[trigger] final(self).multiplicity(person, day, total) ==
                 old(self).multiplicity(person, day, total),
     {
-        if self.count < 0 || (self.count == 0 && self.quantity != 0) { return false; }
         let mut index = 0usize;
         while index < self.variants.len()
             invariant index <= self.variants.len(), self.shape(),
                 self.count == old(self).count, self.quantity == old(self).quantity, self.slot == old(self).slot,
-                self.count >= 0, self.count == 0 ==> self.quantity == 0,
-                forall|position: int| 0 <= position < index ==> #[trigger] self.variants@[position].count > 0,
+                self.count@ >= 0, self.count@ == 0 ==> self.quantity@ == 0,
+                forall|position: int| 0 <= position < index ==> #[trigger] self.variants@[position].count@ > 0,
+                forall|position: int| index <= position < self.variants.len() ==> #[trigger] self.variants@[position].count@ >= 0,
                 forall|person: int, day: int, total: int| #[trigger] self.multiplicity(person, day, total) ==
                     old(self).multiplicity(person, day, total),
             decreases self.variants.len() - index,
         {
-            if self.variants[index].count < 0 { return false; }
-            if self.variants[index].count == 0 {
+            if self.variants[index].count.is_zero() {
                 let ghost before = self.variants@;
                 proof {
                     assert forall|person: int, day: int, total: int|
@@ -130,21 +143,20 @@ impl OrderData {
             }
             else { index += 1; }
         }
-        true
     }
 }
 
-pub struct NameVariant { pub name: Arc<Vec<u8>>, pub count: i128 }
+pub struct NameVariant { pub name: Arc<Vec<u8>>, pub count: Wide }
 pub struct CustomerData { pub names: Vec<NameVariant> }
 
 pub open spec fn name_weight(name: Seq<u8>) -> spec_fn(NameVariant) -> int {
-    |row: NameVariant| if row.name@ == name { row.count as int } else { 0 }
+    |row: NameVariant| if row.name@ == name { row.count@ } else { 0 }
 }
 
 impl CustomerData {
     pub proof fn name_count(self, index: int)
-        requires self.wf(), 0 <= index < self.names.len(),
-        ensures self.multiplicity(self.names@[index].name@) == self.names@[index].count,
+        requires self.shape(), 0 <= index < self.names.len(),
+        ensures self.multiplicity(self.names@[index].name@) == self.names@[index].count@,
     {
         let weight = name_weight(self.names@[index].name@);
         assert forall|position: int| 0 <= position < self.names.len() && position != index implies weight(#[trigger] self.names@[position]) == 0 by {}
@@ -160,7 +172,7 @@ impl CustomerData {
 
     pub open spec fn wf(self) -> bool {
         &&& self.names.len() > 0
-        &&& forall|index: int| 0 <= index < self.names.len() ==> #[trigger] self.names@[index].count > 0
+        &&& forall|index: int| 0 <= index < self.names.len() ==> #[trigger] self.names@[index].count@ > 0
         &&& self.shape()
     }
 
@@ -189,27 +201,28 @@ impl CustomerData {
             invariant index <= self.names.len(), names@ == self.names@.take(index as int),
             decreases self.names.len() - index,
         {
-            names.push(NameVariant { name: Arc::clone(&self.names[index].name), count: self.names[index].count });
+            names.push(NameVariant { name: Arc::clone(&self.names[index].name), count: self.names[index].count.dup() });
             index += 1;
         }
         proof { assert(self.names@.take(self.names.len() as int) =~= self.names@); }
         CustomerData { names }
     }
 
-    pub fn clean(&mut self) -> (success: bool)
+    pub fn clean(&mut self)
         requires old(self).shape(),
-        ensures final(self).shape(), success && final(self).names.len() > 0 ==> final(self).wf(),
+            forall|index: int| 0 <= index < old(self).names.len() ==> #[trigger] old(self).names@[index].count@ >= 0,
+        ensures final(self).shape(), final(self).names.len() > 0 ==> final(self).wf(),
             forall|bytes: Seq<u8>| #[trigger] final(self).multiplicity(bytes) == old(self).multiplicity(bytes),
     {
         let mut index = 0usize;
         while index < self.names.len()
             invariant index <= self.names.len(), self.shape(),
-                forall|position: int| 0 <= position < index ==> #[trigger] self.names@[position].count > 0,
+                forall|position: int| 0 <= position < index ==> #[trigger] self.names@[position].count@ > 0,
+                forall|position: int| index <= position < self.names.len() ==> #[trigger] self.names@[position].count@ >= 0,
                 forall|bytes: Seq<u8>| #[trigger] self.multiplicity(bytes) == old(self).multiplicity(bytes),
             decreases self.names.len() - index,
         {
-            if self.names[index].count < 0 { return false; }
-            if self.names[index].count == 0 {
+            if self.names[index].count.is_zero() {
                 let ghost before = self.names@;
                 proof {
                     assert forall|bytes: Seq<u8>|
@@ -227,7 +240,6 @@ impl CustomerData {
             }
             else { index += 1; }
         }
-        true
     }
 }
 
@@ -246,28 +258,26 @@ pub fn copy_bytes(source: &Vec<u8>) -> (out: Vec<u8>)
     out
 }
 
-pub fn change_line(editor: &mut Editor<OrderData>, key: i64, quantity: i64, sign: i64) -> (success: bool)
+pub fn change_line(editor: &mut Editor<OrderData>, key: i64, quantity: i64, sign: i64)
     requires old(editor).wf(), forall|other: i128| #[trigger] order_shape(old(editor).at(other)),
     ensures final(editor).wf(),
-        success ==> final(editor).at(key as i128) is Some,
+        final(editor).at(key as i128) is Some,
         forall|other: i128| other != key ==> #[trigger] final(editor).at(other) == old(editor).at(other),
-        success && sign > 0 && valid_orders(*old(editor)) ==> valid_orders(*final(editor)),
+        sign > 0 && valid_orders(*old(editor)) ==> valid_orders(*final(editor)),
         forall|other: i128| #[trigger] order_shape(final(editor).at(other)),
-        !success ==> final(editor).at(key as i128) == old(editor).at(key as i128),
-        success ==> forall|other: i128| #[trigger] line_count(final(editor).at(other)) ==
+        forall|other: i128| #[trigger] line_count(final(editor).at(other)) ==
             line_count(old(editor).at(other)) + if other == key { sign as int } else { 0 },
-        success ==> forall|other: i128| #[trigger] line_sum(final(editor).at(other)) ==
+        forall|other: i128| #[trigger] line_sum(final(editor).at(other)) ==
             line_sum(old(editor).at(other)) + if other == key { quantity as int * sign as int } else { 0 },
         forall|other: i128, customer: int, date: int, price: int| #[trigger] order_count(final(editor).at(other), customer, date, price) ==
             order_count(old(editor).at(other), customer, date, price),
 {
     proof { assert(order_shape(editor.at(key as i128))); }
     let mut value = match editor.get(key as i128) { Some(row) => row.copy(), None => OrderData::empty() };
-    let change = match (quantity as i128).checked_mul(sign as i128) { Some(value) => value, None => return false };
-    value.count = match value.count.checked_add(sign as i128) { Some(value) => value, None => return false };
-    value.quantity = match value.quantity.checked_add(change) { Some(value) => value, None => return false };
+    let change = Wide::from_i128(quantity as i128).mul(&Wide::from_i128(sign as i128));
+    value.count = value.count.add(&Wide::from_i128(sign as i128));
+    value.quantity = value.quantity.add(&change);
     editor.put(key as i128, Arc::new(value));
-    true
 }
 
 pub fn put_order_metadata(editor: &mut Editor<OrderData>, key: i128, value: OrderData)
@@ -289,16 +299,16 @@ pub fn put_order_metadata(editor: &mut Editor<OrderData>, key: i128, value: Orde
     editor.put(key, Arc::new(value));
 }
 
-pub fn change_order(editor: &mut Editor<OrderData>, key: i64, customer: i64, date: i32, price: i64, sign: i64) -> (success: bool)
+pub fn change_order(editor: &mut Editor<OrderData>, key: i64, customer: i64, date: i32, price: i64, sign: i64)
     requires old(editor).wf(), forall|other: i128| #[trigger] order_shape(old(editor).at(other)),
     ensures final(editor).wf(),
-        success ==> final(editor).at(key as i128) is Some,
+        final(editor).at(key as i128) is Some,
         forall|other: i128| other != key ==> #[trigger] final(editor).at(other) == old(editor).at(other),
-        success && sign > 0 && valid_orders(*old(editor)) ==> valid_orders(*final(editor)),
+        sign > 0 && valid_orders(*old(editor)) ==> valid_orders(*final(editor)),
         forall|other: i128| #[trigger] order_shape(final(editor).at(other)),
         forall|other: i128| #[trigger] line_count(final(editor).at(other)) == line_count(old(editor).at(other)),
         forall|other: i128| #[trigger] line_sum(final(editor).at(other)) == line_sum(old(editor).at(other)),
-        success ==> forall|other: i128, person: int, day: int, total: int| #[trigger] order_count(final(editor).at(other), person, day, total) ==
+        forall|other: i128, person: int, day: int, total: int| #[trigger] order_count(final(editor).at(other), person, day, total) ==
             order_count(old(editor).at(other), person, day, total) +
                 if other == key && person == customer && day == date && total == price { sign as int } else { 0 },
 {
@@ -314,30 +324,29 @@ pub fn change_order(editor: &mut Editor<OrderData>, key: i64, customer: i64, dat
     while index < value.variants.len()
         invariant index <= value.variants.len(), value.variants@ == original,
             value.shape(),
-            valid_orders(*old(editor)) ==> value.count >= 0 && (value.count == 0 ==> value.quantity == 0),
+            valid_orders(*old(editor)) ==> value.count@ >= 0 && (value.count@ == 0 ==> value.quantity@ == 0),
             valid_orders(*old(editor)) ==> forall|position: int| 0 <= position < value.variants.len() ==>
-                #[trigger] value.variants@[position].count > 0,
+                #[trigger] value.variants@[position].count@ > 0,
             forall|position: int| 0 <= position < index ==>
                 !(#[trigger] value.variants@[position].customer == customer &&
                     value.variants@[position].date == date && value.variants@[position].price == price),
             *editor == *old(editor), editor.wf(),
-            value.count == line_count(old(editor).at(key as i128)),
-            value.quantity == line_sum(old(editor).at(key as i128)),
+            value.count@ == line_count(old(editor).at(key as i128)),
+            value.quantity@ == line_sum(old(editor).at(key as i128)),
             forall|person: int, day: int, total: int| #[trigger] value.multiplicity(person, day, total) ==
                 order_count(old(editor).at(key as i128), person, day, total),
         decreases value.variants.len() - index,
     {
-        let row = value.variants[index];
-        if row.customer == customer && row.date == date && row.price == price {
-            let count = match row.count.checked_add(sign as i128) { Some(value) => value, None => return false };
+        if value.variants[index].customer == customer && value.variants[index].date == date && value.variants[index].price == price {
+            let count = value.variants[index].count.add(&Wide::from_i128(sign as i128));
             let updated = OrderVariant { customer, date, price, count };
             proof {
                 assert forall|person: int, day: int, total: int| #[trigger] value.multiplicity(person, day, total) +
                     (if person == customer && day == date && total == price { sign as int } else { 0 }) ==
                     sum(original.update(index as int, updated), |variant: OrderVariant|
-                        if variant.customer == person && variant.date == day && variant.price == total { variant.count as int } else { 0 }) by {
+                        if variant.customer == person && variant.date == day && variant.price == total { variant.count@ } else { 0 }) by {
                     lemma_sum_update(original, index as int, updated, |variant: OrderVariant|
-                        if variant.customer == person && variant.date == day && variant.price == total { variant.count as int } else { 0 });
+                        if variant.customer == person && variant.date == day && variant.price == total { variant.count@ } else { 0 });
                 }
             }
             value.variants.set(index, updated);
@@ -349,25 +358,25 @@ pub fn change_order(editor: &mut Editor<OrderData>, key: i64, customer: i64, dat
                     (if other == key && person == customer && day == date && total == price { sign as int } else { 0 }) by {
                     if other == key {
                         lemma_sum_update(original, index as int, updated, |variant: OrderVariant|
-                            if variant.customer == person && variant.date == day && variant.price == total { variant.count as int } else { 0 });
+                            if variant.customer == person && variant.date == day && variant.price == total { variant.count@ } else { 0 });
                         assert(editor.at(other) == Some(installed));
                     }
                 }
             }
-            return true;
+            return;
         }
         index += 1;
     }
     proof {
         assert forall|person: int, day: int, total: int| #[trigger] value.multiplicity(person, day, total) +
             (if person == customer && day == date && total == price { sign as int } else { 0 }) ==
-            sum(original.push(OrderVariant { customer, date, price, count: sign as i128 }), |variant: OrderVariant|
-                if variant.customer == person && variant.date == day && variant.price == total { variant.count as int } else { 0 }) by {
-            lemma_sum_push(original, OrderVariant { customer, date, price, count: sign as i128 }, |variant: OrderVariant|
-                if variant.customer == person && variant.date == day && variant.price == total { variant.count as int } else { 0 });
+            sum(original.push(OrderVariant { customer, date, price, count: Wide::Small(sign as i128) }), |variant: OrderVariant|
+                if variant.customer == person && variant.date == day && variant.price == total { variant.count@ } else { 0 }) by {
+            lemma_sum_push(original, OrderVariant { customer, date, price, count: Wide::Small(sign as i128) }, |variant: OrderVariant|
+                if variant.customer == person && variant.date == day && variant.price == total { variant.count@ } else { 0 });
         }
     }
-    value.variants.push(OrderVariant { customer, date, price, count: sign as i128 });
+    value.variants.push(OrderVariant { customer, date, price, count: Wide::Small(sign as i128) });
     let ghost installed = value;
     editor.put(key as i128, Arc::new(value));
     proof {
@@ -375,23 +384,22 @@ pub fn change_order(editor: &mut Editor<OrderData>, key: i64, customer: i64, dat
             order_count(old(editor).at(other), person, day, total) +
             (if other == key && person == customer && day == date && total == price { sign as int } else { 0 }) by {
             if other == key {
-                lemma_sum_push(original, OrderVariant { customer, date, price, count: sign as i128 }, |variant: OrderVariant|
-                    if variant.customer == person && variant.date == day && variant.price == total { variant.count as int } else { 0 });
+                lemma_sum_push(original, OrderVariant { customer, date, price, count: Wide::Small(sign as i128) }, |variant: OrderVariant|
+                    if variant.customer == person && variant.date == day && variant.price == total { variant.count@ } else { 0 });
                 assert(editor.at(other) == Some(installed));
             }
         }
     }
-    true
 }
 
-pub fn change_customer(editor: &mut Editor<CustomerData>, key: i64, name: &Vec<u8>, sign: i64) -> (success: bool)
+pub fn change_customer(editor: &mut Editor<CustomerData>, key: i64, name: &Vec<u8>, sign: i64)
     requires old(editor).wf(), forall|other: i128| #[trigger] customer_shape(old(editor).at(other)),
     ensures final(editor).wf(),
-        success ==> final(editor).at(key as i128) is Some,
+        final(editor).at(key as i128) is Some,
         forall|other: i128| other != key ==> #[trigger] final(editor).at(other) == old(editor).at(other),
-        success && sign > 0 && valid_customers(*old(editor)) ==> valid_customers(*final(editor)),
+        sign > 0 && valid_customers(*old(editor)) ==> valid_customers(*final(editor)),
         forall|other: i128| #[trigger] customer_shape(final(editor).at(other)),
-        success ==> forall|other: i128, bytes: Seq<u8>| #[trigger] customer_count(final(editor).at(other), bytes) ==
+        forall|other: i128, bytes: Seq<u8>| #[trigger] customer_count(final(editor).at(other), bytes) ==
             customer_count(old(editor).at(other), bytes) + if other == key && bytes == name@ { sign as int } else { 0 },
 {
     proof { assert(customer_shape(editor.at(key as i128))); }
@@ -407,7 +415,7 @@ pub fn change_customer(editor: &mut Editor<CustomerData>, key: i64, name: &Vec<u
         invariant index <= value.names.len(), value.names@ == original,
             value.shape(),
             valid_customers(*old(editor)) ==> forall|position: int| 0 <= position < value.names.len() ==>
-                #[trigger] value.names@[position].count > 0,
+                #[trigger] value.names@[position].count@ > 0,
             forall|position: int| 0 <= position < index ==> #[trigger] value.names@[position].name@ != name@,
             *editor == *old(editor), editor.wf(),
             forall|bytes: Seq<u8>| #[trigger] value.multiplicity(bytes) ==
@@ -415,16 +423,16 @@ pub fn change_customer(editor: &mut Editor<CustomerData>, key: i64, name: &Vec<u
         decreases value.names.len() - index,
     {
         if bytes_eq_exec(&value.names[index].name, name) {
-            let count = match value.names[index].count.checked_add(sign as i128) { Some(value) => value, None => return false };
+            let count = value.names[index].count.add(&Wide::from_i128(sign as i128));
             let shared_name = Arc::clone(&value.names[index].name);
             let updated = NameVariant { name: shared_name, count };
             proof {
                 assert forall|bytes: Seq<u8>| #[trigger] value.multiplicity(bytes) +
                     (if bytes == name@ { sign as int } else { 0 }) ==
                     sum(original.update(index as int, updated), |variant: NameVariant|
-                        if variant.name@ == bytes { variant.count as int } else { 0 }) by {
+                        if variant.name@ == bytes { variant.count@ } else { 0 }) by {
                     lemma_sum_update(original, index as int, updated, |variant: NameVariant|
-                        if variant.name@ == bytes { variant.count as int } else { 0 });
+                        if variant.name@ == bytes { variant.count@ } else { 0 });
                 }
             }
             value.names.set(index, updated);
@@ -435,21 +443,21 @@ pub fn change_customer(editor: &mut Editor<CustomerData>, key: i64, name: &Vec<u
                     customer_count(old(editor).at(other), bytes) + (if other == key && bytes == name@ { sign as int } else { 0 }) by {
                     if other == key {
                         lemma_sum_update(original, index as int, updated, |variant: NameVariant|
-                            if variant.name@ == bytes { variant.count as int } else { 0 });
+                            if variant.name@ == bytes { variant.count@ } else { 0 });
                         assert(editor.at(other) == Some(installed));
                     }
                 }
             }
-            return true;
+            return;
         }
         index += 1;
     }
-    let added = NameVariant { name: Arc::new(copy_bytes(name)), count: sign as i128 };
+    let added = NameVariant { name: Arc::new(copy_bytes(name)), count: Wide::Small(sign as i128) };
     proof {
         assert forall|bytes: Seq<u8>| #[trigger] value.multiplicity(bytes) +
             (if bytes == name@ { sign as int } else { 0 }) ==
-            sum(original.push(added), |variant: NameVariant| if variant.name@ == bytes { variant.count as int } else { 0 }) by {
-            lemma_sum_push(original, added, |variant: NameVariant| if variant.name@ == bytes { variant.count as int } else { 0 });
+            sum(original.push(added), |variant: NameVariant| if variant.name@ == bytes { variant.count@ } else { 0 }) by {
+            lemma_sum_push(original, added, |variant: NameVariant| if variant.name@ == bytes { variant.count@ } else { 0 });
         }
     }
     value.names.push(added);
@@ -459,20 +467,19 @@ pub fn change_customer(editor: &mut Editor<CustomerData>, key: i64, name: &Vec<u
         assert forall|other: i128, bytes: Seq<u8>| #[trigger] customer_count(editor.at(other), bytes) ==
             customer_count(old(editor).at(other), bytes) + (if other == key && bytes == name@ { sign as int } else { 0 }) by {
             if other == key {
-                lemma_sum_push(original, added, |variant: NameVariant| if variant.name@ == bytes { variant.count as int } else { 0 });
+                lemma_sum_push(original, added, |variant: NameVariant| if variant.name@ == bytes { variant.count@ } else { 0 });
                 assert(editor.at(other) == Some(installed));
             }
         }
     }
-    true
 }
 
 pub open spec fn line_count(value: Option<OrderData>) -> int {
-    match value { Some(row) => row.count as int, None => 0 }
+    match value { Some(row) => row.count@, None => 0 }
 }
 
 pub open spec fn eligible_order(value: Option<OrderData>, quantity: i128) -> bool {
-    match value { Some(row) => row.count > 0 && row.variants.len() > 0 && row.quantity == quantity, None => false }
+    match value { Some(row) => row.count@ > 0 && row.variants.len() > 0 && row.quantity@ == quantity as int, None => false }
 }
 
 pub open spec fn order_shape(value: Option<OrderData>) -> bool {
@@ -496,17 +503,17 @@ pub fn install_clean_order(editor: &mut Editor<OrderData>, key: i128, value: Ord
         forall|other: i128| #[trigger] order_shape(old(editor).at(other)),
         old(editor).at(key) matches Some(before) && value.count == before.count && value.quantity == before.quantity,
         forall|person: int, day: int, total: int| #[trigger] value.multiplicity(person, day, total) == order_count(old(editor).at(key), person, day, total),
-        value.shape(), value.count >= 0, value.count == 0 ==> value.quantity == 0,
-        value.count > 0 || value.variants.len() > 0 ==> value.wf(),
+        value.shape(), value.count@ >= 0, value.count@ == 0 ==> value.quantity@ == 0,
+        value.count@ > 0 || value.variants.len() > 0 ==> value.wf(),
     ensures final(editor).wf(), order_valid(final(editor).at(key), key),
-        final(editor).at(key) == if value.count == 0 && value.variants.len() == 0 { None } else { Some(value) },
+        final(editor).at(key) == if value.count@ == 0 && value.variants.len() == 0 { None } else { Some(value) },
         forall|other: i128| #[trigger] order_shape(final(editor).at(other)),
         forall|other: i128| other != key ==> #[trigger] final(editor).at(other) == old(editor).at(other),
         forall|other: i128| #[trigger] line_count(final(editor).at(other)) == line_count(old(editor).at(other)),
         forall|other: i128| #[trigger] line_sum(final(editor).at(other)) == line_sum(old(editor).at(other)),
         forall|other: i128, person: int, day: int, total: int| #[trigger] order_count(final(editor).at(other), person, day, total) == order_count(old(editor).at(other), person, day, total),
 {
-    if value.count == 0 && value.variants.len() == 0 {
+    if value.count.is_zero() && value.variants.len() == 0 {
         proof {
             assert forall|person: int, day: int, total: int| #[trigger] value.multiplicity(person, day, total) == 0 by {
                 lemma_sum_empty(value.variants@, variant_weight(person, day, total));
@@ -518,7 +525,7 @@ pub fn install_clean_order(editor: &mut Editor<OrderData>, key: i128, value: Ord
         assert forall|other: i128, person: int, day: int, total: int| #[trigger] order_count(editor.at(other), person, day, total) == order_count(old(editor).at(other), person, day, total) by {
             if other == key {
                 assert(value.multiplicity(person, day, total) == order_count(old(editor).at(key), person, day, total));
-                if value.count == 0 && value.variants.len() == 0 { lemma_sum_empty(value.variants@, variant_weight(person, day, total)); }
+                if value.count@ == 0 && value.variants.len() == 0 { lemma_sum_empty(value.variants@, variant_weight(person, day, total)); }
             }
         }
     }
@@ -560,7 +567,7 @@ pub open spec fn customer_shape(value: Option<CustomerData>) -> bool {
 }
 
 pub open spec fn line_sum(value: Option<OrderData>) -> int {
-    match value { Some(row) => row.quantity as int, None => 0 }
+    match value { Some(row) => row.quantity@, None => 0 }
 }
 
 pub open spec fn order_count(value: Option<OrderData>, customer: int, date: int, price: int) -> int {
