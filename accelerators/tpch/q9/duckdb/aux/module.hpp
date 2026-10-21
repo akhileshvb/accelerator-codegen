@@ -577,6 +577,9 @@ struct Q9TokenCube {
   int64_t dense[kNations][kYears] = {};
   // Cells outside the dense range (profit != 0 only).
   std::vector<Q9ProfitCell> sparse;
+
+  // Adds `delta` to the cell, dropping a sparse cell that reaches zero.
+  void Add(int32_t nation, int32_t year, int64_t delta);
 };
 
 enum class TpchQ9ImageKind : uint8_t {

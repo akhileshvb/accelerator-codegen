@@ -64,22 +64,21 @@ public:
     return n;
   }
 
-  // fn(partition, row) for every row of `bucket`, partition by partition.
-  template <class Fn> void ForEachWithPartition(std::size_t bucket, Fn &&fn) const {
+  // fn(partition, row) for every row of `bucket`, partition by partition. The rows are
+  // released as they are visited, on the visiting thread: visit each bucket once.
+  template <class Fn> void ForEachWithPartition(std::size_t bucket, Fn &&fn) {
     for (std::size_t run = 0; run < runs_.size(); ++run) {
       for (const auto &row : runs_[run][bucket]) {
         fn(run, row);
       }
+      runs_[run][bucket] = {};
     }
   }
 
-  // fn(row) for every row of `bucket`, partition by partition.
-  template <class Fn> void ForEach(std::size_t bucket, Fn &&fn) const {
-    for (const auto &run : runs_) {
-      for (const auto &row : run[bucket]) {
-        fn(row);
-      }
-    }
+  // fn(row) for every row of `bucket`, partition by partition, released like
+  // ForEachWithPartition does.
+  template <class Fn> void ForEach(std::size_t bucket, Fn &&fn) {
+    ForEachWithPartition(bucket, [&](std::size_t, const Row &row) { fn(row); });
   }
 
   // Moves the rows of `bucket` out, in partition order.
@@ -115,9 +114,10 @@ void ParallelBucketGroups(const core::AuxEngineServices &services, std::size_t b
   });
 }
 
-// fn(bucket, row) for every row, the buckets on the pool and each bucket's rows in partition order.
+// fn(bucket, row) for every row, the buckets on the pool and each bucket's rows in partition
+// order; the rows are released as they are visited.
 template <class Row, class Fn>
-void ParallelForEachRow(const core::AuxEngineServices &services, const DealtRows<Row> &rows,
+void ParallelForEachRow(const core::AuxEngineServices &services, DealtRows<Row> &rows,
                         Fn &&fn) {
   core::ParallelEach(services, rows.BucketCount(), 1, [&](std::size_t bucket) {
     rows.ForEach(bucket, [&](const Row &row) { fn(bucket, row); });

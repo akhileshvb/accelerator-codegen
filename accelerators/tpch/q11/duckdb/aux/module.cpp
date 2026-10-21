@@ -508,33 +508,63 @@ ValueBucketAgg AggregateValueBucket(std::vector<NationPart> &&parts) {
   return agg;
 }
 
-// A nation's aggregate from its value buckets: the sorted rows are the buckets' rows
-// merged by one parallel sort and cut into chunks.
-std::shared_ptr<const TpchQ11NationData>
-MakeNationData(core::AuxEngineServices &services, std::vector<ValueBucketAgg> &aggs) {
-  auto data = std::make_shared<TpchQ11NationData>();
-  std::vector<std::size_t> offsets(aggs.size() + 1, 0);
-  for (std::size_t i = 0; i < aggs.size(); ++i) {
-    data->total += aggs[i].total;
-    data->value_buckets.push_back(std::move(aggs[i].values));
-    offsets[i + 1] = offsets[i] + aggs[i].rows.size();
+struct NationRow {
+  std::size_t nation = 0;
+  TpchQ11OutputRow row;
+};
+
+// The aggregates of the nations that have suppliers, from their value buckets
+// (aggs[nation][bucket]): the buckets' rows of all nations are ordered by one parallel
+// sort and cut into chunks.
+std::vector<std::shared_ptr<const TpchQ11NationData>>
+MakeNationData(core::AuxEngineServices &services,
+               std::vector<std::vector<ValueBucketAgg>> &aggs) {
+  std::vector<std::shared_ptr<TpchQ11NationData>> data(aggs.size());
+  std::vector<std::size_t> bucket_offsets(aggs.size() * kQ11ValueBuckets + 1, 0);
+  std::vector<std::size_t> nation_starts(aggs.size() + 1, 0);
+  for (std::size_t n = 0; n < aggs.size(); ++n) {
+    data[n] = std::make_shared<TpchQ11NationData>();
+    for (std::size_t b = 0; b < kQ11ValueBuckets; ++b) {
+      auto &agg = aggs[n][b];
+      data[n]->total += agg.total;
+      data[n]->value_buckets.push_back(std::move(agg.values));
+      bucket_offsets[n * kQ11ValueBuckets + b + 1] =
+          bucket_offsets[n * kQ11ValueBuckets + b] + agg.rows.size();
+    }
+    nation_starts[n + 1] = bucket_offsets[(n + 1) * kQ11ValueBuckets];
   }
-  std::vector<TpchQ11OutputRow> sorted(offsets.back());
-  core::ParallelEach(services, aggs.size(), kBucketGrain, [&](std::size_t i) {
-    std::move(aggs[i].rows.begin(), aggs[i].rows.end(),
-              sorted.begin() + static_cast<std::ptrdiff_t>(offsets[i]));
+  std::vector<NationRow> sorted(bucket_offsets.back());
+  core::ParallelEach(services, aggs.size() * kQ11ValueBuckets, kBucketGrain, [&](std::size_t i) {
+    auto &rows = aggs[i / kQ11ValueBuckets][i % kQ11ValueBuckets].rows;
+    auto out = sorted.begin() + static_cast<std::ptrdiff_t>(bucket_offsets[i]);
+    for (const auto &row : rows)
+      *out++ = {i / kQ11ValueBuckets, row};
+    rows = {};
   });
-  core::ParallelStableSort(services, sorted, RowBefore, kSortGrain);
-  data->chunks.resize((sorted.size() + kQ11ChunkTarget - 1) / kQ11ChunkTarget);
-  core::ParallelEach(services, data->chunks.size(), kChunkGrain, [&](std::size_t c) {
-    const auto begin = sorted.begin() + static_cast<std::ptrdiff_t>(c * kQ11ChunkTarget);
-    const auto end = sorted.begin() + static_cast<std::ptrdiff_t>(
-                                          std::min(sorted.size(), (c + 1) * kQ11ChunkTarget));
+  core::ParallelStableSort(
+      services, sorted,
+      [](const NationRow &a, const NationRow &b) {
+        return a.nation != b.nation ? a.nation < b.nation : RowBefore(a.row, b.row);
+      },
+      kSortGrain);
+
+  std::vector<std::size_t> chunk_starts(aggs.size() + 1, 0);
+  for (std::size_t n = 0; n < aggs.size(); ++n) {
+    const std::size_t rows = nation_starts[n + 1] - nation_starts[n];
+    chunk_starts[n + 1] = chunk_starts[n] + (rows + kQ11ChunkTarget - 1) / kQ11ChunkTarget;
+    data[n]->chunks.resize(chunk_starts[n + 1] - chunk_starts[n]);
+  }
+  core::ParallelEach(services, chunk_starts.back(), kChunkGrain, [&](std::size_t i) {
+    const std::size_t n = std::upper_bound(chunk_starts.begin(), chunk_starts.end(), i) -
+                          chunk_starts.begin() - 1;
+    const std::size_t begin = nation_starts[n] + (i - chunk_starts[n]) * kQ11ChunkTarget;
+    const std::size_t end = std::min(nation_starts[n + 1], begin + kQ11ChunkTarget);
     auto chunk = std::make_shared<Q11SortedChunk>();
-    chunk->rows.assign(begin, end);
-    data->chunks[c] = std::move(chunk);
+    for (std::size_t r = begin; r < end; ++r)
+      chunk->rows.push_back(sorted[r].row);
+    data[n]->chunks[i - chunk_starts[n]] = std::move(chunk);
   });
-  return data;
+  return {data.begin(), data.end()};
 }
 
 // Per nation: its suppliers' parts, dealt by value bucket, summed bucket by bucket and
@@ -584,13 +614,14 @@ AggregateNations(core::AuxEngineServices &services, const TpchQ11State &state,
         AggregateValueBucket(dealt[0].TakeBucket(bucket));
   });
 
+  const auto data = MakeNationData(services, aggs);
   std::unordered_map<int32_t, std::shared_ptr<const TpchQ11NationData>> out;
   for (std::size_t n = 0; n < nations.size(); ++n) {
     bool present = false;
     for (const auto &flags : has_suppliers)
       present = present || flags[n];
     if (present)
-      out[nations[n]] = MakeNationData(services, aggs[n]);
+      out[nations[n]] = data[n];
   }
   return out;
 }
@@ -1091,14 +1122,14 @@ TpchQ11Built TpchQ11Module::BuildState(
 
   using scan::DecimalColumn;
   using scan::IntColumn;
-  const auto suppliers = DealTable<SupplierRow>(
+  auto suppliers = DealTable<SupplierRow>(
       services, *initial_scan, "supplier", {IntColumn("s_suppkey"), IntColumn("s_nationkey")},
       kQ11SupplierBuckets, [](DealtRows<SupplierRow> &rows, const auto &row) {
         const int64_t suppkey = row.Int(0);
         rows.Add(Q11SupplierBucketIndex(suppkey), suppkey,
                  {suppkey, static_cast<int32_t>(row.Int(1))});
       });
-  const auto partsupps = DealTable<PartsuppRow>(
+  auto partsupps = DealTable<PartsuppRow>(
       services, *initial_scan, "partsupp",
       {IntColumn("ps_partkey"), IntColumn("ps_suppkey"), IntColumn("ps_availqty"),
        DecimalColumn("ps_supplycost", 2)},

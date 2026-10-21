@@ -1267,6 +1267,23 @@ core::PartitionId TpchQ9State::ChooseProfitSlots(std::size_t part_count) {
   return slots;
 }
 
+void Q9TokenCube::Add(int32_t nation, int32_t year, int64_t delta) {
+  const int32_t yi = year - kYearBase;
+  if (nation >= 0 && nation < kNations && yi >= 0 && yi < kYears) {
+    dense[nation][yi] += delta;
+    return;
+  }
+  for (auto it = sparse.begin(); it != sparse.end(); ++it) {
+    if (it->Nation() != nation || it->Year() != year)
+      continue;
+    it->profit += delta;
+    if (it->profit == 0)
+      sparse.erase(it);
+    return;
+  }
+  sparse.push_back(Q9ProfitCell::Make(nation, year, delta));
+}
+
 void TpchQ9State::CubeAdd(const std::vector<std::string> &tokens,
                           int32_t nation, int32_t year, int64_t delta) {
   if (delta == 0)
@@ -1277,25 +1294,7 @@ void TpchQ9State::CubeAdd(const std::vector<std::string> &tokens,
       slot = std::make_shared<Q9TokenCube>();
     else if (slot.use_count() > 1)
       slot = std::make_shared<Q9TokenCube>(*slot);
-    const int32_t yi = year - Q9TokenCube::kYearBase;
-    if (nation >= 0 && nation < Q9TokenCube::kNations && yi >= 0 &&
-        yi < Q9TokenCube::kYears) {
-      slot->dense[nation][yi] += delta;
-      continue;
-    }
-    auto &sp = slot->sparse;
-    bool found = false;
-    for (auto it = sp.begin(); it != sp.end(); ++it) {
-      if (it->Nation() != nation || it->Year() != year)
-        continue;
-      it->profit += delta;
-      if (it->profit == 0)
-        sp.erase(it);
-      found = true;
-      break;
-    }
-    if (!found)
-      sp.push_back(Q9ProfitCell::Make(nation, year, delta));
+    slot->Add(nation, year, delta);
   }
 }
 
@@ -1312,25 +1311,40 @@ void TpchQ9State::CubeApplyRecord(const Q9PartRecord &record, int sign) {
 void TpchQ9State::BuildCube(const core::AuxEngineServices &services) {
   cube.clear();
   cube_active = true;
-  // Slices fill their own cube (states used as cube holders); the cubes are
-  // added into this one in slice order.
-  core::ParallelReduce(
-      services, profit_partitions.size(), kSlotFoldGrain, *this,
-      [&](TpchQ9State &into, std::size_t begin, std::size_t end) {
-        for (std::size_t p = begin; p < end; ++p)
-          for (const auto &entry : profit_partitions[p].parts)
-            into.CubeApplyRecord(*entry.second, +1);
-      },
-      [](TpchQ9State &into, TpchQ9State &&from) {
-        for (const auto &[token, part] : from.cube) {
-          const std::vector<std::string> one{token};
-          for (int32_t n = 0; n < Q9TokenCube::kNations; ++n)
-            for (int32_t y = 0; y < Q9TokenCube::kYears; ++y)
-              into.CubeAdd(one, n, Q9TokenCube::kYearBase + y, part->dense[n][y]);
-          for (const auto &cell : part->sparse)
-            into.CubeAdd(one, cell.Nation(), cell.Year(), cell.profit);
-        }
-      });
+  // Slices fill their own cube (states used as cube holders); the cubes are then
+  // added up token by token, in slice order.
+  const std::size_t slices = core::SliceCount(services, profit_partitions.size(), kSlotFoldGrain);
+  std::vector<TpchQ9State> holders(slices);
+  core::RunSlices(services, slices, profit_partitions.size(),
+                  [&](std::size_t slice, std::size_t begin, std::size_t end) {
+                    for (std::size_t p = begin; p < end; ++p)
+                      for (const auto &entry : profit_partitions[p].parts)
+                        holders[slice].CubeApplyRecord(*entry.second, +1);
+                  });
+  std::vector<std::pair<std::string, std::shared_ptr<Q9TokenCube>>> totals;
+  std::unordered_map<std::string, std::size_t> position;
+  for (const auto &holder : holders)
+    for (const auto &entry : holder.cube)
+      if (position.emplace(entry.first, totals.size()).second)
+        totals.emplace_back(entry.first, nullptr);
+  core::ParallelEach(services, totals.size(), 1, [&](std::size_t t) {
+    auto total = std::make_shared<Q9TokenCube>();
+    for (const auto &holder : holders) {
+      const auto it = holder.cube.find(totals[t].first);
+      if (it == holder.cube.end())
+        continue;
+      const Q9TokenCube &part = *it->second;
+      for (int32_t n = 0; n < Q9TokenCube::kNations; ++n)
+        for (int32_t y = 0; y < Q9TokenCube::kYears; ++y)
+          if (part.dense[n][y] != 0)
+            total->Add(n, Q9TokenCube::kYearBase + y, part.dense[n][y]);
+      for (const auto &cell : part.sparse)
+        total->Add(cell.Nation(), cell.Year(), cell.profit);
+    }
+    totals[t].second = std::move(total);
+  });
+  for (auto &entry : totals)
+    cube.emplace(std::move(entry.first), std::move(entry.second));
 }
 
 void TpchQ9State::RebuildNationEmitOrder() {
