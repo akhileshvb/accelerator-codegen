@@ -70,7 +70,7 @@ pub proof fn lemma_model_result(db: Db, start: int, end: int, count: int, total:
 pub proof fn lemma_zero_total(db: Db, start: int, end: int, count: int, total: int)
     requires count == interval_count(db, start, end), total == interval_total(db, start, end),
         count != 0, total == 0,
-    ensures forall|o: Seq<OutRow>| !#[trigger] query_result(db, params(start, end), o),
+    ensures !defined(db, params(start, end)),
 {
     let parameters = params(start, end);
     lemma_query_join(db, parameters, false, false);
@@ -80,12 +80,6 @@ pub proof fn lemma_zero_total(db: Db, start: int, end: int, count: int, total: i
     lemma_sum_ext_all(tuples(db, parameters), |tuple: Tuple| tuple_weight(tuple, true, false),
         |tuple: Tuple| tuple.lineitem.l_extendedprice * (100 - tuple.lineitem.l_discount));
     assert(count == group_count(db, parameters));
-    assert forall|o: Seq<OutRow>| !#[trigger] query_result(db, parameters, o) by {
-        if query_result(db, parameters, o) {
-            assert(o.len() == 1);
-            assert(row_ok(db, parameters, o[0]));
-        }
-    }
 }
 
 pub proof fn lemma_execute_result(db: Db, start: int, end: int, count: int, total: int, promo: int,
