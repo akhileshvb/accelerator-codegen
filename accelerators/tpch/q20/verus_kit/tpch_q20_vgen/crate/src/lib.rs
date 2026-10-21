@@ -8,6 +8,7 @@ pub mod kernel;
 pub mod gen_world;
 pub mod gen_ffi;
 pub mod storage;
+pub mod activation;
 pub mod profiles;
 pub mod dimensions;
 pub mod model;

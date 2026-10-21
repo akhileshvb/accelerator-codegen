@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::storage::*;
+use crate::activation::*;
 use crate::profiles::*;
 use crate::profiles::{add, sub, mul};
 use crate::dimensions::*;
@@ -1172,26 +1173,28 @@ fn part_changes(state: &Data, deltas: &Vec<PartDelta>) -> (result: Option<(HashM
     proof { assert(deltas@.take(deltas.len() as int) =~= deltas@); }
     Some((counts, keys))
 }
-pub fn activation_keys(state: &Data, part_delta: &Vec<PartDelta>) -> Vec<i64> {
-    let (counts, keys) = match part_changes(state, part_delta) { Some(value) => value, None => return Vec::new() };
-    let mut result = Vec::new(); let mut index = 0;
-    while index < keys.len() decreases keys.len() - index, {
-        let key = keys[index];
-        if state.parts.get(key).is_none() {
-            if let Some(count) = counts.get(&key) { if *count > 0 { result.push(key); } }
-        }
-        index += 1;
-    }
-    result
+pub closed spec fn rescan_stocks_for_parts_wanted(state: State, lineitem_delta: Seq<LineitemDelta>, nation_delta: Seq<NationDelta>,
+    part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64>
+{
+    activation_spec(state.data.parts, part_delta)
+}
+pub closed spec fn rescan_shipments_for_parts_wanted(state: State, lineitem_delta: Seq<LineitemDelta>, nation_delta: Seq<NationDelta>,
+    part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64>
+{
+    activation_spec(state.data.parts, part_delta)
 }
 pub fn rescan_stocks_for_parts_keys(
     state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta], supplier_delta: &Vec<SupplierDelta>,
-) -> Vec<i64> { activation_keys(&state.data, part_delta) }
+) -> (result: Vec<i64>)
+    ensures result@ == rescan_stocks_for_parts_wanted(*state, lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+{ activation_keys(&state.data.parts, part_delta) }
 pub fn rescan_shipments_for_parts_keys(
     state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta], supplier_delta: &Vec<SupplierDelta>,
-) -> Vec<i64> { activation_keys(&state.data, part_delta) }
+) -> (result: Vec<i64>)
+    ensures result@ == rescan_shipments_for_parts_wanted(*state, lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+{ activation_keys(&state.data.parts, part_delta) }
 fn touch(state: &Data, key: i64, counts: &HashMap<i64, i128>, work: &mut HashMap<i64, PartWork>, keys: &mut Vec<i64>) -> (result: bool)
     ensures result && parts_shape(state.parts) && work_ready(old(work)@, old(keys)@, state.parts, counts@) ==>
         work_ready(final(work)@, final(keys)@, state.parts, counts@),
