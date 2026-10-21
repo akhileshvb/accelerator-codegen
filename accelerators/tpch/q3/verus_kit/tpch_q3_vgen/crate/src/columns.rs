@@ -9,7 +9,7 @@ use crate::model::*;
 use crate::packed::{PackedOrders, PackedShips, PackedGroups};
 use crate::values::*;
 use crate::values::{add, mul};
-use verus_prooflib::wide::{self, Wide};
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -297,32 +297,6 @@ pub fn reverse_change(cell: &mut CustomerCell, key: i64, delta: i64) -> (result:
                 }
             }
         }
-    }
-    true
-}
-
-pub fn valid_customer(cell: &CustomerCell) -> (result: bool)
-    ensures result ==> (forall|index: int| #![trigger cell.segments@[index]] 0 <= index < cell.segments@.len() ==> cell.segments@[index].1 > 0)
-        && (forall|index: int| #![trigger cell.orders@[index]] 0 <= index < cell.orders@.len() ==> cell.orders@[index].1 > 0),
-{
-    let mut index = 0;
-    while index < cell.segments.len()
-        invariant index <= cell.segments.len(),
-            forall|position: int| #![trigger cell.segments@[position]] 0 <= position < index ==> cell.segments@[position].1 > 0,
-        decreases cell.segments.len() - index,
-    {
-        if cell.segments[index].1 <= 0 { return false; }
-        index += 1;
-    }
-    index = 0;
-    while index < cell.orders.len()
-        invariant index <= cell.orders.len(),
-            forall|position: int| #![trigger cell.orders@[position]] 0 <= position < index ==> cell.orders@[position].1 > 0,
-            forall|position: int| #![trigger cell.segments@[position]] 0 <= position < cell.segments@.len() ==> cell.segments@[position].1 > 0,
-        decreases cell.orders.len() - index,
-    {
-        if cell.orders[index].1 <= 0 { return false; }
-        index += 1;
     }
     true
 }

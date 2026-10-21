@@ -6,7 +6,7 @@ use std::sync::Arc;
 use vstd::prelude::*;
 use verus_common::bytes::*;
 use crate::model::{OrderCell, ShipCell, GroupCell, group_before_id, group_lt};
-use verus_prooflib::wide::{self, Wide};
+use verus_prooflib::wide::Wide;
 use crate::columns::{copy_orders, copy_ships, copy_groups};
 use crate::values::GroupId;
 
