@@ -7,7 +7,7 @@ use crate::gen_obligations::*;
 use crate::values::*;
 use crate::output::*;
 use crate::aggregate::sort_rows;
-use crate::wide::*;
+use verus_prooflib::wide::Wide;
 use crate::groups::*;
 
 verus! {

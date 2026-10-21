@@ -1,4 +1,4 @@
-// The six tables as event logs: what the general path answers from, kept exact under every write.
+// Scan rows as signed +1 events: how the general state is built from the scans.
 use vstd::prelude::*;
 use verus_common::sums::*;
 use crate::gen_spec::*;

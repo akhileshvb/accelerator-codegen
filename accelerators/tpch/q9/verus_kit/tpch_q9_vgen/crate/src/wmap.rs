@@ -1,9 +1,9 @@
-// Exact keyed accumulators: a map (k1, k2) -> (a, b) of wide integers, held as a hash table of
-// small vectors, with the sum of every update kept in the view.
+// Exact keyed accumulators: a hash table of small vectors of (k2) -> (a, b) wide integers,
+// used for the nation-year totals of a read.
 use vstd::prelude::*;
 use verus_common::sums::*;
 use crate::storage::*;
-use crate::wide::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 

@@ -1,5 +1,4 @@
-// The general path's groups: per (nation name, year) the exact tuple count and profit,
-// accumulated from the nation events and the nation-year totals.
+// The general answer's groups: per (nation name, year) the exact tuple count and profit.
 use vstd::prelude::*;
 use verus_common::sums::*;
 use verus_common::rel::*;
@@ -8,7 +7,7 @@ use crate::gen_obligations::*;
 use crate::meaning::*;
 use crate::storage::*;
 use crate::values::*;
-use crate::wide::*;
+use verus_prooflib::wide::Wide;
 use crate::wmap::*;
 
 verus! {

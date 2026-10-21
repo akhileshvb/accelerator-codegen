@@ -3,7 +3,7 @@
 use vstd::prelude::*;
 use verus_common::sums::*;
 use crate::storage::*;
-use crate::wide::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 

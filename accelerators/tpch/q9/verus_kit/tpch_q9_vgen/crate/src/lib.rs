@@ -31,7 +31,6 @@ pub mod yw;
 pub mod applyspec;
 pub mod applydiff;
 pub mod finish;
-pub mod wide;
 pub mod wmap;
 pub mod groups;
 pub mod emitw;

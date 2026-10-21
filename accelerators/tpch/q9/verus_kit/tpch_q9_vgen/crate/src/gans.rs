@@ -6,7 +6,7 @@ use crate::gen_obligations::*;
 use crate::meaning::*;
 use crate::storage::*;
 use crate::values::*;
-use crate::wide::*;
+use verus_prooflib::wide::Wide;
 use crate::wmap::*;
 use crate::pmap::*;
 use crate::gnames::*;

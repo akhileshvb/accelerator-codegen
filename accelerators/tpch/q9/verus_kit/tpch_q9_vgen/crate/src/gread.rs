@@ -6,7 +6,7 @@ use verus_common::sqlfns::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::storage::*;
-use crate::wide::*;
+use verus_prooflib::wide::Wide;
 use crate::pmap::*;
 use crate::gnames::*;
 use crate::gapply::*;
