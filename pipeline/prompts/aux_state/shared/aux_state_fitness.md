@@ -9,7 +9,7 @@ Evaluate **per-query** suitability using **signals**, not hard requirements. Par
 - **Bounded invalidation**: Mutations affect a predictable subset of partitions.
 - **Incremental maintenance is plausible**: Deltas or bounded rebuilds for typical writes.
 - **Read-heavy or mixed workload**: Repeated reads amortize maintenance cost.
-- **Clear fallback story**: Base kernel reproduces correct results when state is missing/stale/txn-blocked.
+- **Clear fallback story**: SQL answers correctly while state is missing/stale/txn-blocked.
 
 ## Weak / poor fit signals
 
@@ -20,7 +20,7 @@ Evaluate **per-query** suitability using **signals**, not hard requirements. Par
 - No stable grain for mutation → partition mapping.
 - Semantics require full re-execution (volatile UDFs, non-deterministic logic).
 - **Full-result cache** at output row grain (see `aux_state_design.md`).
-- **Negligible-speedup state** that still runs most of the base kernel on the fast path.
+- **Negligible-speedup state** that still does most of the query's work on the fast path.
 
 ## Per-query scope
 

@@ -29,13 +29,10 @@
 set(ACCEL_BASE_COPTS "-march=native" CACHE STRING "extra compile options for the base kernel sources")
 
 # C++-only aux sources (the generated aux modules and the C++ versioned store) are
-# compiled for this machine's CPU (AVX-512 on the Xeon Gold 6230).  Verus kit
-# glue, substrate/verus/kit and the shared table-function/runtime plumbing keep the
-# portable flags, so the Verus baseline is unchanged.  Off by default: measured on
-# SF1 reads it gave no consistent gain (the module compute is a few us of a ~300 us
-# read, the rest is DuckDB's own query machinery) and it makes the library
-# CPU-specific.  Opt in with -DACCEL_AUX_COPTS=-march=native.
-set(ACCEL_AUX_COPTS "" CACHE STRING "extra compile options for the C++ aux module sources")
+# compiled for this machine's CPU like the base kernels, so their SIMD paths are taken.
+# Verus kit glue, substrate/verus/kit and the shared table-function/runtime plumbing keep
+# the portable flags. -DACCEL_AUX_COPTS= (empty) builds them portable.
+set(ACCEL_AUX_COPTS "-march=native" CACHE STRING "extra compile options for the C++ aux module sources")
 
 function(accel_apply_base_copts)
     if(ACCEL_BASE_COPTS AND ARGN)

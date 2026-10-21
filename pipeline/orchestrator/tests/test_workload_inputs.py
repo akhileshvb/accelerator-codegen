@@ -78,7 +78,7 @@ def test_naming_functions():
 
 def test_aux_run_policy_defaults():
     workload = load_workload("tpch_q3_aux", REPO_ROOT, engine="duckdb")
-    assert workload["requires_base_accelerator"] is True
+    assert workload["requires_base_accelerator"] is False  # aux and base accelerators are independent
     assert workload["prerequisite_min_stage"] == "implementation"
     assert workload["allow_poor_fitness"] is False
 

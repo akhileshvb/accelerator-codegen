@@ -67,24 +67,28 @@ def parse_pack_queries(pack: dict[str, Any]) -> list[PackQuery]:
     default_resume = bool(pack.get("resume", True))
     default_mode = str(pack.get("mode") or "")
     default_engines = list(pack.get("engines") or [])
-    default_template = str(pack.get("workload_template", "tpch_q{q}_aux"))
+    templates = pack.get("workload_template", "tpch_q{q}_aux")
+    # A list runs each query's accelerators side by side (e.g. its base and its aux workload).
+    default_templates = [str(t) for t in templates] if isinstance(templates, list) else [str(templates)]
     for item in items:
         if isinstance(item, (int, str)) and str(item).isdigit():
             item = {"query": int(item)}
         if not isinstance(item, dict):
             raise ValueError(f"invalid pack query entry: {item!r}")
         q = int(item.get("query") or item.get("query_number"))
+        workloads = [str(item["workload"])] if item.get("workload") else default_templates
         for engine in item.get("engines") or default_engines or [""]:
-            out.append(
-                PackQuery(
-                    workload=str(item.get("workload") or default_template).format(q=q),
-                    query=q,
-                    engine=str(engine),
-                    stage=str(item.get("stage") or default_stage),
-                    resume=bool(item.get("resume", default_resume)),
-                    mode=str(item.get("mode") or default_mode),
+            for template in workloads:
+                out.append(
+                    PackQuery(
+                        workload=template.format(q=q),
+                        query=q,
+                        engine=str(engine),
+                        stage=str(item.get("stage") or default_stage),
+                        resume=bool(item.get("resume", default_resume)),
+                        mode=str(item.get("mode") or default_mode),
+                    )
                 )
-            )
     return out
 
 
@@ -220,6 +224,16 @@ def run_pack_query(
     return result
 
 
+def _chains_by_artifact_dir(entries: list[PackQuery]) -> list[list[PackQuery]]:
+    """A query's workloads on one engine (its base kernel and its aux accelerator) share an
+    artifact directory, so they run one after another; different query x engine pairs run in
+    parallel."""
+    chains: dict[tuple[int, str], list[PackQuery]] = {}
+    for entry in entries:
+        chains.setdefault((entry.query, entry.engine), []).append(entry)
+    return list(chains.values())
+
+
 def run_pack(
     pack: dict[str, Any],
     *,
@@ -298,24 +312,28 @@ def run_pack(
 
     first_wave = int(pack.get("first_wave") or 0)
     waves = [queries[:first_wave], queries[first_wave:]] if 0 < first_wave < len(queries) else [queries]
+    def run_chain(chain: list[PackQuery]) -> list[dict[str, Any]]:
+        return [
+            run_pack_query(
+                repo_root=repo_root,
+                entry=entry,
+                models_config=models_config or pack.get("models_config"),
+                pipeline_config_path=pipeline_config_path or pack.get("pipeline_config"),
+                dry_run=dry_run,
+                skip_gates=skip_gates,
+                extra_args=extra_args,
+                isolation_mode=isolation_mode,
+                pack_queries=pack_query_ids,
+            )
+            for entry in chain
+        ]
+
     for wave in waves:
-        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(wave)))) as pool:
-            futures = [
-                pool.submit(
-                    run_pack_query,
-                    repo_root=repo_root,
-                    entry=entry,
-                    models_config=models_config or pack.get("models_config"),
-                    pipeline_config_path=pipeline_config_path or pack.get("pipeline_config"),
-                    dry_run=dry_run,
-                    skip_gates=skip_gates,
-                    extra_args=extra_args,
-                    isolation_mode=isolation_mode,
-                    pack_queries=pack_query_ids,
-                )
-                for entry in wave
-            ]
-            results.extend(fut.result() for fut in as_completed(futures))
+        chains = _chains_by_artifact_dir(wave)
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(chains)))) as pool:
+            futures = [pool.submit(run_chain, chain) for chain in chains]
+            for fut in as_completed(futures):
+                results.extend(fut.result())
 
     results.sort(key=lambda r: (r["query"], r["workload"], r["engine"]))
     summary = {

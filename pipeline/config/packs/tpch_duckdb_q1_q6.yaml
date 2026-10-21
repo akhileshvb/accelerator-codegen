@@ -1,5 +1,5 @@
-# First accelerators on a regenerated DuckDB backend: TPC-H Q1 and Q6 (each base accelerator
-# first), two at a time, before the full tpch_regen_all22 pack.
+# First accelerators on a regenerated DuckDB backend: TPC-H Q1 and Q6, each query's aux
+# accelerator and base kernel as independent runs, before the full tpch_regen_all22 pack.
 
 pack_id: tpch_duckdb_q1_q6
 display_name: TPC-H Q1 + Q6 on DuckDB
@@ -9,7 +9,7 @@ stage: all
 resume: true
 models_config: pipeline/config/models.yaml
 
-workload_template: "tpch_q{q}_aux"
+workload_template: ["tpch_q{q}_aux", "tpch_q{q}"]   # per query and engine: aux, then base (they share an artifact dir)
 
 queries: [1, 6]
 

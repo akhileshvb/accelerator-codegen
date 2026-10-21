@@ -7,7 +7,6 @@ Design an auxiliary-state accelerator for **{{display_name}}** **Q{{query_number
 ## Workload
 
 - Accelerator id: `{{accelerator_id}}`
-- Base accelerator: `{{base_function_name}}`
 - Cost model config: `{{cost_model_config}}`
 
 {{workload_reference_section}}
@@ -41,7 +40,7 @@ Output `fitness_assessment`. Read `aux_state_fitness.md` if needed.
 
 In `performance_hypotheses.base_path_cost_decomposition`: dominant scans/joins/agg/sort, parameter-dependent work, scaling with cardinality/range/output, work remaining after aux replacement. Label as hypotheses.
 
-Ask explicitly: *What work does the base kernel repeat on every invocation that we can move into maintained state?*
+Ask explicitly: *What work does the query repeat on every invocation that we can move into maintained state?*
 
 ### 3. State candidate search (when recommended) — think hard here
 

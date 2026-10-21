@@ -108,3 +108,13 @@ def test_aux_write_paths_register_from_query_dir_not_backend() -> None:
     assert target.is_file()
     assert not writable(target)
     assert writable(REPO_ROOT / "accelerators/tpch/q2/duckdb/aux/register.cpp")
+
+
+def test_a_querys_workloads_run_one_after_another_per_engine():
+    from accel_pipeline.run_pack import _chains_by_artifact_dir, parse_pack_queries
+
+    pack = {"engines": ["engine_a", "engine_b"], "queries": [1, 6],
+            "workload_template": ["tpch_q{q}_aux", "tpch_q{q}"]}
+    chains = _chains_by_artifact_dir(parse_pack_queries(pack))
+    assert len(chains) == 4
+    assert all([e.workload for e in c] == [f"tpch_q{c[0].query}_aux", f"tpch_q{c[0].query}"] for c in chains)

@@ -55,7 +55,7 @@ mkdir -p .data && install -m 644 /flash1/akhilvb/tpch_sf1.pristine_20261016.duck
 # export ACCEL_DUCKDB_SEED=...
 
 # Engine backends, one per engine (each writes backends/<engine>/, host.sh first),
-# then the accelerators (22 queries x 3 engines, each base accelerator first; the first
+# then the accelerators (22 queries x 3 engines, aux accelerator and base kernel as independent runs; the first
 # wave, Q1 on every engine, grows prims/ before the rest fan out). Stops at the first failure.
 regen() {
   local e

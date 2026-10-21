@@ -30,7 +30,7 @@ Each point sets `ACCEL_Q{{query_number}}_WRITE_FREQUENCY_PCT` and uses a fresh D
 | `ACCEL_Q{N}_WRITE_FREQUENCY_PCT` | 0, 1, 10, or 50 |
 | `ACCEL_Q{N}_BENCH_SUITE` | e.g. `lineitem_only` |
 | `ACCEL_Q{N}_WRITE_LOCALITY` | e.g. `single_month` / `single_segment` |
-| `ACCEL_BENCH_WARMUP` | Warmup queries before measured loop (engine reference, base kernel, and aux) |
+| `ACCEL_BENCH_WARMUP` | Warmup queries before measured loop (engine reference SQL and aux) |
 | `ACCEL_BENCH_QUERIES` | Measured queries per point (used for all timed paths) |
 | `ACCEL_BENCH_REF_SAMPLES` | Legacy; ignored when benchmarks use warmup + measured loop |
 | `ACCEL_BENCH_BASE_WRITE_SAMPLES` | Base-path write calibration samples |
@@ -53,8 +53,8 @@ Optional `speedup_gate ...` lines may follow the CSV row (for audit gates); the 
 ## Measured workload
 
 1. Register accelerators, run `accel_q{N}_aux_build()` once.
-2. Warmup loop: `ACCEL_BENCH_WARMUP` untimed runs for the engine's reference SQL, base kernel, and aux query.
-3. Measured loop: `ACCEL_BENCH_QUERIES` timed aux iterations with optional writes. The engine reference and base kernel use the same warmup + measured counts on separate connections.
+2. Warmup loop: `ACCEL_BENCH_WARMUP` untimed runs for the engine's reference SQL and the aux query.
+3. Measured loop: `ACCEL_BENCH_QUERIES` timed aux iterations with optional writes. The engine reference uses the same warmup + measured counts on a separate connection.
 4. Write scheduling: 1% → every 100th query; 10% → every 10th; 50% → every 2nd.
 
 **Performance:** precompute a small pool of **invalidating** write targets at startup from the catalog probes (do not run expensive correlated subqueries per write). Keep write SQL cheap so the sweep finishes in minutes, not hours.
@@ -64,7 +64,7 @@ Optional `speedup_gate ...` lines may follow the CSV row (for audit gates); the 
 Parsed by `pipeline/orchestrator/accel_pipeline/aux_bench.py`:
 
 - `composite_workload_speedup` = **min** steady-state workload speedup across 0/1/10/50%
-- `read_only_query_speedup` = query-only speedup at 0% (base kernel vs aux hit)
+- `read_only_query_speedup` = query-only speedup at 0% (engine reference SQL vs aux hit)
 - `read_only_cold_start_workload_speedup` = workload speedup at 0% including one-time `aux_build()` cost
 - `composite_score` = min workload speedup + 0.1 × read-only query speedup
 

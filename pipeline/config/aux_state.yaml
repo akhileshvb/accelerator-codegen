@@ -1,7 +1,7 @@
 # Shared aux-state pipeline settings merged into PipelineConfig when workload_kind=aux_state.
 
 # Run policy of an aux workload; a workload's own value wins.
-requires_base_accelerator: true
+requires_base_accelerator: false   # aux and base accelerators are independent
 prerequisite_min_stage: implementation
 allow_poor_fitness: false
 allow_unsuccessful_design: false

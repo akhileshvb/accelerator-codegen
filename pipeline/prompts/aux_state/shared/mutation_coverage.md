@@ -9,7 +9,7 @@ For **every** `correctness_facts.dependent_tables` entry and **every** mutation 
 | `supported_delta` | Incremental update preserves correctness |
 | `bounded_rebuild` | Rebuild affected partition(s) only |
 | `full_rebuild` | Rebuild all partitions (rare; justify) |
-| `invalidate_safely` | Mark stale; fall back to base kernel until repaired |
+| `invalidate_safely` | Mark stale; answer from SQL until repaired |
 
 ## Rules
 

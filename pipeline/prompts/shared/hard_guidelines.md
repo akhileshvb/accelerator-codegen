@@ -37,6 +37,16 @@ Use measured profile/evidence to drive changes.
 
 Iteration benches are often SF1 for speed, but the accelerator must still deliver **strong speedups at high scale factor** (TPC-H **SF10 / SF20+**, with keys/offsets/sums/memory sized for **SF3000**; SEC at production scale). Treat SF1 wins that blow up memory, scan all groups globally, or hardcode iteration cardinalities as **failures**. Plan with bind-time estimates and data-shape/cardinality reasoning — not SF1 profile snapshots alone.
 
+### Low-level execution (base kernels and aux modules alike)
+
+Base kernels and aux accelerators are independent accelerators, and both are fast at the
+machine level: SIMD over columns (AVX-512 / AVX2 intrinsics guarded by `__AVX512F__` /
+`__AVX2__` with a scalar fallback; both are compiled with `-march=native`), branch-free
+predicates and selection vectors, tight typed loops over the engine's native vectors with no
+per-row virtual calls or allocation, cache-sized blocking, and prefetch where access is
+irregular. An aux accelerator adds what maintained state buys (less work per read, cheap
+incremental maintenance) on top of that, never instead of it.
+
 ### When you hit a read-path ceiling
 
 If measured gains stall (micro-opts / emit floors / full-domain filters) and the data shape or cardinality suggests a better family of state:

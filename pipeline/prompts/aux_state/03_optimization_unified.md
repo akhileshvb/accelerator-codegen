@@ -32,7 +32,7 @@ Work like a performance engineer on **two equal axes**:
 
 {{optimization_edit_paths}}
 
-Do **not** edit `accelerators/tpch/q{{query_number}}/<engine>/base/**` (base kernel — read-only reference).
+Do **not** edit `accelerators/tpch/q{{query_number}}/<engine>/base/**` (the base workload's kernel, a separate accelerator).
 
 ## Searching reference accelerators
 

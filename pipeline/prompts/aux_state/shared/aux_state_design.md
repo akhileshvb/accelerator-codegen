@@ -15,7 +15,7 @@ Aux state must **materially accelerate** the query while remaining maintainable 
 | Anti-pattern | Why reject |
 |--------------|------------|
 | **Full-result cache** | Entries directly encode complete query answers or result rows with little reusable intermediate structure. |
-| **Negligible-speedup state** | Fast path still runs most of the base kernel; maintenance cost exceeds benefit. |
+| **Negligible-speedup state** | Fast path still does most of the query's work; maintenance cost exceeds benefit. |
 | **Scan-for-scan swap** | Base-table scan removed but replaced by a linear scan or merge over many auxiliary partitions, buckets, or index nodes with similar asymptotic cost. |
 
 ## Parameter generality applies to every family
