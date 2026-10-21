@@ -6,7 +6,6 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -83,16 +82,6 @@ struct TpchQ17QtyPricePair {
   int64_t extendedprice_raw = 0;
 };
 
-// Working (build-time) stats of one part.
-struct TpchQ17PartStats {
-  int64_t sum_qty_raw = 0;
-  int32_t count = 0;
-  std::vector<TpchQ17QtyPricePair> qty_price_pairs;
-  int64_t precomputed_contribution_raw = 0;
-
-  void RecomputeContribution();
-};
-
 // Published per-part entry. The pair buckets are shared and immutable, so
 // copying a page (copy-on-write) copies pointers, not buckets.
 struct TpchQ17PartEntry {
@@ -120,18 +109,6 @@ struct TpchQ17AttrParts {
   // Another (brand, container) hashes to this partition: the total mixes both
   // pairs, so reads of either fall back to SQL.
   bool shared = false;
-};
-
-// In-memory build aggregate (not stored as a single partition).
-struct TpchQ17State {
-  std::unordered_map<std::string, std::unordered_set<int64_t>> attribute_index;
-  std::unordered_map<int64_t, TpchQ17PartStats> part_stats;
-  std::unordered_map<int64_t, std::string> part_attr_keys;
-
-  static std::string MakeAttrKey(const std::string &brand,
-                                 const std::string &container);
-  static void SplitAttrKey(const std::string &key, std::string &brand,
-                           std::string &container);
 };
 
 enum class TpchQ17ImageKind : uint8_t { PartStatsChunk, AttrParts };
@@ -205,7 +182,6 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ17State BuildState(core::AuxEngineServices &) const;
   void EmitResult(core::AuxEngineServices &, const std::string &brand,
                   const std::string &container, core::AuxRowSink &) const;
 

@@ -6,15 +6,12 @@
 #include "tpch/q17/calibration_writes.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <map>
-#include <set>
 #include <stdexcept>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -22,23 +19,32 @@ namespace accelerator_codegen::aux_state::query {
 namespace {
 
 
-// Parts per slice (~4000 us): sorting a part's few (quantity, price) buckets is ~1 us.
-constexpr std::size_t kPartStatsGrain = 4096;
-// Pages per slice (~800 us): sorting one 1024-part page is ~50 us.
-constexpr std::size_t kPageSortGrain = 16;
 // Page runs per slice (~160 us): restaging one 1024-part page run is ~20 us.
 constexpr std::size_t kStageRunGrain = 8;
 
-core::PartitionId AttrPartsPartition(const std::string &brand,
-                                     const std::string &container) {
-  const auto key = TpchQ17State::MakeAttrKey(brand, container);
+// FNV-1a over brand, '\0', container.
+uint64_t AttrHash(const std::string &brand, const std::string &container) {
   uint64_t hash = 1469598103934665603ULL;
-  for (const unsigned char c : key) {
+  for (const unsigned char c : brand) {
     hash ^= c;
     hash *= 1099511628211ULL;
   }
+  hash *= 1099511628211ULL; // the '\0' separator: hash ^= 0
+  for (const unsigned char c : container) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+core::PartitionId AttrPartsPartitionOf(uint64_t attr_hash) {
   return TpchQ17Layout::kAttrPartsBase +
-         static_cast<core::PartitionId>(hash % TpchQ17Layout::kAttrPartsSlots);
+         static_cast<core::PartitionId>(attr_hash % TpchQ17Layout::kAttrPartsSlots);
+}
+
+core::PartitionId AttrPartsPartition(const std::string &brand,
+                                     const std::string &container) {
+  return AttrPartsPartitionOf(AttrHash(brand, container));
 }
 
 std::shared_ptr<const TpchQ17StateImage>
@@ -360,24 +366,6 @@ bool StageAttrImages(const core::AuxStateStore &store, const core::VisibilityTok
   return true;
 }
 
-// FNV-1a over brand, '\0', container: the same hash as AttrPartsPartition,
-// without materializing the key.
-core::PartitionId AttrPartsPartitionView(const std::string &brand,
-                                                const std::string &container) {
-  uint64_t hash = 1469598103934665603ULL;
-  for (const unsigned char c : brand) {
-    hash ^= c;
-    hash *= 1099511628211ULL;
-  }
-  hash *= 1099511628211ULL; // the '\0' separator: hash ^= 0
-  for (const unsigned char c : container) {
-    hash ^= c;
-    hash *= 1099511628211ULL;
-  }
-  return TpchQ17Layout::kAttrPartsBase +
-         static_cast<core::PartitionId>(hash % TpchQ17Layout::kAttrPartsSlots);
-}
-
 const std::string *StringArg(const core::QueryArguments &arguments,
                                     std::size_t i) {
   if (arguments.values.size() <= i || arguments.values[i].is_null)
@@ -412,73 +400,222 @@ void EmitQ17(core::AuxRowSink &sink, int64_t contribution_raw) {
   sink.End();
 }
 
-// Statistics of the lineitems seen per part key, in hash shards.
-struct PartStatsShards {
-  static constexpr std::size_t kShards = 64;
-  std::array<std::unordered_map<int64_t, TpchQ17PartStats>, kShards> shards;
-
-  static std::size_t ShardOf(int64_t partkey) {
-    return (static_cast<uint64_t>(partkey) * 0x9E3779B97F4A7C15ULL) >> 58;
-  }
-  static void AddBucket(TpchQ17PartStats &stats, int64_t quantity_raw, int64_t rows,
-                        int64_t price_raw) {
-    if (quantity_raw != static_cast<int32_t>(quantity_raw) ||
-        rows != static_cast<int32_t>(rows))
-      throw std::runtime_error("TPC-H Q17: quantity or row count exceeds 32 bits");
-    stats.sum_qty_raw += quantity_raw * rows;
-    stats.count += static_cast<int32_t>(rows);
-    for (auto &pair : stats.qty_price_pairs)
-      if (pair.quantity_raw == quantity_raw) {
-        pair.row_count += static_cast<int32_t>(rows);
-        pair.extendedprice_raw += price_raw;
-        return;
-      }
-    stats.qty_price_pairs.push_back({static_cast<int32_t>(quantity_raw),
-                                     static_cast<int32_t>(rows), price_raw});
-  }
-  void Add(const TpchQ17LineitemInput &input) {
-    AddBucket(shards[ShardOf(input.partkey)][input.partkey], input.quantity_raw, 1,
-              input.extendedprice_raw);
-  }
-  // Moves shard `shard` of `from` into this one's.
-  void FoldShard(std::size_t shard, PartStatsShards &&from) {
-    for (auto &[partkey, theirs] : from.shards[shard]) {
-      auto &mine = shards[shard][partkey];
-      for (const auto &pair : theirs.qty_price_pairs)
-        AddBucket(mine, pair.quantity_raw, pair.row_count, pair.extendedprice_raw);
-    }
-  }
+// A lineitem as the build keeps it until its page bucket is processed.
+struct LineRow {
+  int64_t partkey;
+  int64_t extendedprice_raw;
+  int32_t quantity_raw;
 };
 
-} // namespace
+struct PartRow {
+  int64_t partkey;
+  uint64_t attr_hash;
+};
 
-void TpchQ17PartStats::RecomputeContribution() {
-  precomputed_contribution_raw =
-      ContributionRaw(sum_qty_raw, count, qty_price_pairs.data(),
-                      qty_price_pairs.data() + qty_price_pairs.size());
+// Page buckets: rows are dealt by page so one bucket holds whole pages and the
+// parallel pass builds them with no cross-bucket merge. A fixed count (a
+// function of the data layout, not of threads); 4096 keeps every worker busy.
+constexpr std::size_t kBucketBits = 12;
+constexpr std::size_t kBuckets = std::size_t{1} << kBucketBits;
+
+std::size_t BucketOf(int64_t partkey) {
+  return static_cast<std::size_t>(
+      (static_cast<uint64_t>(PageOf(partkey)) * 0x9E3779B97F4A7C15ULL) >>
+      (64 - kBucketBits));
 }
 
-std::string TpchQ17State::MakeAttrKey(const std::string &brand,
-                                      const std::string &container) {
-  std::string key;
-  key.reserve(brand.size() + 1 + container.size());
-  key.append(brand);
-  key.push_back('\0');
-  key.append(container);
-  return key;
-}
+// The rows of one scan's partitions, dealt into page buckets. Merging only
+// links the pieces (partition order); the parallel pass takes them bucket by
+// bucket and frees them there.
+template <class Row> class PageBucketedRows {
+public:
+  void Add(const Row &row) { mine[BucketOf(row.partkey)].push_back(row); }
 
-void TpchQ17State::SplitAttrKey(const std::string &key, std::string &brand,
-                                std::string &container) {
-  const auto nul = key.find('\0');
-  if (nul == std::string::npos) {
-    brand = key;
-    container.clear();
-    return;
+  void Absorb(PageBucketedRows &&from) {
+    absorbed.push_back(std::move(from.mine));
+    for (auto &pieces : from.absorbed)
+      absorbed.push_back(std::move(pieces));
   }
-  brand = key.substr(0, nul);
-  container = key.substr(nul + 1);
+
+  std::vector<Row> TakeBucket(std::size_t bucket) {
+    std::size_t total = mine[bucket].size();
+    for (const auto &pieces : absorbed)
+      total += pieces[bucket].size();
+    std::vector<Row> rows = std::move(mine[bucket]);
+    rows.reserve(total);
+    for (auto &pieces : absorbed) {
+      rows.insert(rows.end(), pieces[bucket].begin(), pieces[bucket].end());
+      std::vector<Row>().swap(pieces[bucket]);
+    }
+    return rows;
+  }
+
+private:
+  using Buckets = core::Buckets<Row>;
+  Buckets mine = Buckets(kBuckets);
+  std::vector<Buckets> absorbed;
+};
+
+struct AttrName {
+  std::string brand;
+  std::string container;
+};
+
+struct PartRows {
+  PageBucketedRows<PartRow> rows;
+  std::unordered_map<uint64_t, AttrName> names;
+};
+
+// One (brand, container): its name and the sum of its parts' contributions.
+struct BuiltAttr {
+  AttrName name;
+  int64_t total_contribution_raw = 0;
+};
+
+struct BuiltPages {
+  std::vector<std::shared_ptr<const TpchQ17PartStatsChunk>> chunks;
+  std::map<uint64_t, BuiltAttr> attrs; // by AttrHash
+};
+
+struct BuiltBucket {
+  std::vector<std::shared_ptr<const TpchQ17PartStatsChunk>> chunks;
+  std::unordered_map<uint64_t, int64_t> attr_totals;
+};
+
+// Folds the lineitems of one part (sorted by quantity) into its entry.
+void FillEntryFromLines(TpchQ17PartEntry &entry, const LineRow *begin,
+                        const LineRow *end) {
+  PairVec pairs;
+  for (const LineRow *row = begin; row != end; ++row) {
+    entry.sum_qty_raw += row->quantity_raw;
+    ++entry.count;
+    if (!pairs.empty() && pairs.back().quantity_raw == row->quantity_raw) {
+      ++pairs.back().row_count;
+      pairs.back().extendedprice_raw += row->extendedprice_raw;
+    } else {
+      pairs.push_back({row->quantity_raw, 1, row->extendedprice_raw});
+    }
+  }
+  entry.contribution_raw = ContributionRaw(entry.sum_qty_raw, entry.count,
+                                           pairs.data(), pairs.data() + pairs.size());
+  if (!pairs.empty()) {
+    pairs.shrink_to_fit();
+    entry.pairs = std::make_shared<const PairVec>(std::move(pairs));
+  }
 }
+
+// The pages of one bucket: every part with a lineitem or a part row.
+BuiltBucket BuildBucket(std::vector<LineRow> lines, std::vector<PartRow> parts) {
+  std::sort(lines.begin(), lines.end(), [](const LineRow &a, const LineRow &b) {
+    return a.partkey != b.partkey ? a.partkey < b.partkey
+                                  : a.quantity_raw < b.quantity_raw;
+  });
+  // Stable: for a repeated part key the last scanned row wins.
+  std::stable_sort(parts.begin(), parts.end(), [](const PartRow &a, const PartRow &b) {
+    return a.partkey < b.partkey;
+  });
+
+  BuiltBucket built;
+  TpchQ17PartStatsChunk page;
+  const auto close_page = [&] {
+    if (!page.parts.empty())
+      built.chunks.push_back(
+          std::make_shared<const TpchQ17PartStatsChunk>(std::move(page)));
+    page = {};
+  };
+  std::size_t l = 0, p = 0;
+  while (l < lines.size() || p < parts.size()) {
+    const int64_t partkey =
+        l < lines.size() && (p == parts.size() || lines[l].partkey <= parts[p].partkey)
+            ? lines[l].partkey
+            : parts[p].partkey;
+    if (!page.parts.empty() && page.chunk_index != PageOf(partkey))
+      close_page();
+    page.chunk_index = PageOf(partkey);
+    TpchQ17PartEntry entry;
+    entry.partkey = partkey;
+    const std::size_t first_line = l;
+    while (l < lines.size() && lines[l].partkey == partkey)
+      ++l;
+    FillEntryFromLines(entry, lines.data() + first_line, lines.data() + l);
+    const PartRow *attr = nullptr;
+    for (; p < parts.size() && parts[p].partkey == partkey; ++p)
+      attr = &parts[p];
+    if (attr) {
+      entry.attr_partition = AttrPartsPartitionOf(attr->attr_hash);
+      built.attr_totals[attr->attr_hash] += entry.contribution_raw;
+    }
+    page.parts.push_back(std::move(entry));
+  }
+  close_page();
+  return built;
+}
+
+PartRows ScanPartRows(core::AuxEngineServices &services, TpchQ17InitialScan &scan) {
+  return core::PartitionedBuild<PartRows>(
+      services, [] { return PartRows{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanParts(services, parts, [&](std::size_t p, const TpchQ17PartInput &input) {
+          sink(p, core::SingleRowBatch<TpchQ17PartInput>{input});
+        });
+      },
+      [](PartRows &partial, const TpchQ17PartInput &input) {
+        const uint64_t hash = AttrHash(input.brand, input.container);
+        partial.names.try_emplace(hash, AttrName{input.brand, input.container});
+        partial.rows.Add({input.key, hash});
+      },
+      [](PartRows &into, PartRows &&from) {
+        into.rows.Absorb(std::move(from.rows));
+        into.names.merge(from.names);
+      });
+}
+
+PageBucketedRows<LineRow> ScanLineRows(core::AuxEngineServices &services,
+                                       TpchQ17InitialScan &scan) {
+  return core::PartitionedBuild<PageBucketedRows<LineRow>>(
+      services, [] { return PageBucketedRows<LineRow>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanLineitems(services, parts,
+                           [&](std::size_t p, const TpchQ17LineitemInput &input) {
+                             sink(p, core::SingleRowBatch<TpchQ17LineitemInput>{input});
+                           });
+      },
+      [](PageBucketedRows<LineRow> &partial, const TpchQ17LineitemInput &input) {
+        if (input.quantity_raw != static_cast<int32_t>(input.quantity_raw))
+          throw std::runtime_error("TPC-H Q17: quantity exceeds 32 bits");
+        partial.Add({input.partkey, input.extendedprice_raw,
+                     static_cast<int32_t>(input.quantity_raw)});
+      },
+      [](PageBucketedRows<LineRow> &into, PageBucketedRows<LineRow> &&from) {
+        into.Absorb(std::move(from));
+      });
+}
+
+BuiltPages BuildPages(core::AuxEngineServices &services,
+                      TpchQ17InitialScan *initial_scan) {
+  if (!initial_scan)
+    throw std::logic_error("TPC-H Q17 requires a typed initial scan source");
+
+  auto part_rows = ScanPartRows(services, *initial_scan);
+  auto line_rows = ScanLineRows(services, *initial_scan);
+
+  std::vector<BuiltBucket> buckets(kBuckets);
+  core::ParallelEach(services, kBuckets, 1, [&](std::size_t b) {
+    buckets[b] = BuildBucket(line_rows.TakeBucket(b), part_rows.rows.TakeBucket(b));
+  });
+
+  BuiltPages built;
+  for (const auto &[hash, name] : part_rows.names)
+    built.attrs[hash].name = name;
+  for (auto &bucket : buckets) {
+    for (auto &chunk : bucket.chunks)
+      built.chunks.push_back(std::move(chunk));
+    for (const auto &[hash, total] : bucket.attr_totals)
+      built.attrs[hash].total_contribution_raw += total;
+  }
+  return built;
+}
+} // namespace
 
 bool TpchQ17TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ17TxnBuffer::Clear() {
@@ -524,103 +661,28 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ17Module::CreateTxnBuffer() const {
 
 void TpchQ17Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  auto state = BuildState(services);
-
-  std::unordered_map<int64_t, TpchQ17PartStatsChunk> pages;
-  std::unordered_map<core::PartitionId, TpchQ17AttrParts> attrs;
-
-  // Pass 1: parts that have lineitems (stats moved into shared buckets).
-  for (auto &[partkey, stats] : state.part_stats) {
-    const auto page_index = PageOf(partkey);
-    auto &page = pages[page_index];
-    page.chunk_index = page_index;
-    TpchQ17PartEntry entry;
-    entry.partkey = partkey;
-    entry.sum_qty_raw = stats.sum_qty_raw;
-    entry.count = stats.count;
-    entry.contribution_raw = stats.precomputed_contribution_raw;
-    if (!stats.qty_price_pairs.empty()) {
-      stats.qty_price_pairs.shrink_to_fit();
-      entry.pairs = std::make_shared<const PairVec>(
-          std::move(stats.qty_price_pairs));
-    }
-    page.parts.push_back(std::move(entry));
-  }
-  state.part_stats = {};
-  state.part_attr_keys = {};
-  const auto by_key = [](const TpchQ17PartEntry &a, const TpchQ17PartEntry &b) {
-    return a.partkey < b.partkey;
-  };
-  std::vector<TpchQ17PartStatsChunk *> page_list;
-  page_list.reserve(pages.size());
-  for (auto &entry : pages)
-    page_list.push_back(&entry.second);
-  core::ParallelEach(services, page_list.size(), kPageSortGrain, [&](std::size_t i) {
-    std::sort(page_list[i]->parts.begin(), page_list[i]->parts.end(), by_key);
-  });
-
-  // Pass 2: attach (brand, container); parts without lineitems get an entry.
-  std::unordered_map<int64_t, std::vector<TpchQ17PartEntry>> extras;
-  for (auto &[attr_key, partkeys] : state.attribute_index) {
-    std::string brand, container;
-    TpchQ17State::SplitAttrKey(attr_key, brand, container);
-    const auto attr_partition = AttrPartsPartition(brand, container);
-    auto &attr = attrs[attr_partition];
-    if (!attr.brand.empty() && (attr.brand != brand || attr.container != container))
-      attr.shared = true;
-    attr.brand = brand;
-    attr.container = container;
-    for (const auto partkey : partkeys) {
-      const auto page_index = PageOf(partkey);
-      auto page_it = pages.find(page_index);
-      TpchQ17PartEntry *found = nullptr;
-      if (page_it != pages.end()) {
-        auto &parts = page_it->second.parts;
-        auto pos = std::lower_bound(
-            parts.begin(), parts.end(), partkey,
-            [](const TpchQ17PartEntry &e, int64_t k) { return e.partkey < k; });
-        if (pos != parts.end() && pos->partkey == partkey)
-          found = &*pos;
-      }
-      if (!found) {
-        auto &ex = extras[page_index];
-        auto pos = std::find_if(ex.begin(), ex.end(),
-                                [&](const TpchQ17PartEntry &e) {
-                                  return e.partkey == partkey;
-                                });
-        if (pos == ex.end()) {
-          ex.emplace_back();
-          ex.back().partkey = partkey;
-          pos = ex.end() - 1;
-        }
-        found = &*pos;
-      }
-      found->attr_partition = attr_partition;
-      attr.total_contribution_raw += found->contribution_raw;
-    }
-  }
-  state.attribute_index = {};
-  for (auto &[page_index, ex] : extras) {
-    auto &page = pages[page_index];
-    page.chunk_index = page_index;
-    for (auto &e : ex)
-      page.parts.push_back(std::move(e));
-    std::sort(page.parts.begin(), page.parts.end(), by_key);
-  }
-
-  for (auto &[page_index, page] : pages) {
-    const auto chunk_ptr =
-        std::make_shared<const TpchQ17PartStatsChunk>(std::move(page));
+  const auto built = BuildPages(services, initial_scan);
+  for (const auto &chunk : built.chunks)
     builder.Write(core::StateImage::Make(TpchQ17Layout::kAccelerator,
-                                         PagePartition(page_index), 0,
-                                         MakeChunkImage(chunk_ptr)));
+                                         PagePartition(chunk->chunk_index), 0,
+                                         MakeChunkImage(chunk)));
+
+  // Two (brand, container) in one partition mix their totals: marked shared.
+  std::map<core::PartitionId, TpchQ17AttrParts> attrs;
+  for (const auto &[hash, attr] : built.attrs) {
+    auto &slot = attrs[AttrPartsPartitionOf(hash)];
+    if (slot.brand.empty()) {
+      slot.brand = attr.name.brand;
+      slot.container = attr.name.container;
+    } else {
+      slot.shared = true;
+    }
+    slot.total_contribution_raw += attr.total_contribution_raw;
   }
-  for (auto &[partition, attr] : attrs) {
-    const auto parts_ptr =
-        std::make_shared<const TpchQ17AttrParts>(std::move(attr));
-    builder.Write(core::StateImage::Make(TpchQ17Layout::kAccelerator, partition,
-                                         0, MakeAttrPartsImage(parts_ptr)));
-  }
+  for (auto &[partition, attr] : attrs)
+    builder.Write(core::StateImage::Make(
+        TpchQ17Layout::kAccelerator, partition, 0,
+        MakeAttrPartsImage(std::make_shared<const TpchQ17AttrParts>(std::move(attr)))));
 
   builder.Finish();
 }
@@ -807,7 +869,7 @@ void TpchQ17Module::Execute(core::AuxEngineServices &services,
 
   const auto &store = services.StateStore();
   const auto visibility = services.CurrentVisibility();
-  const auto partition = AttrPartsPartitionView(*brand, *container);
+  const auto partition = AttrPartsPartition(*brand, *container);
 
   // One observation: whole-state validity plus the partition's handle.
   thread_local std::vector<core::PartitionId> wanted(1);
@@ -839,68 +901,6 @@ void TpchQ17Module::Execute(core::AuxEngineServices &services,
   EmitQ17(sink, 0);
 }
 
-TpchQ17State TpchQ17Module::BuildState(
-    core::AuxEngineServices &services) const {
-  if (!initial_scan)
-    throw std::logic_error(
-        "TPC-H Q17 requires a typed initial scan source");
-
-  TpchQ17State state = core::PartitionedBuild<TpchQ17State>(
-      services, [] { return TpchQ17State{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanParts(services, parts,
-                                [&](std::size_t p, const TpchQ17PartInput &input) {
-                                  sink(p, core::SingleRowBatch<TpchQ17PartInput>{input});
-                                });
-      },
-      [](TpchQ17State &partial, const TpchQ17PartInput &input) {
-        const auto key = TpchQ17State::MakeAttrKey(input.brand, input.container);
-        partial.attribute_index[key].insert(input.key);
-        partial.part_attr_keys[input.key] = key;
-      },
-      [](TpchQ17State &into, TpchQ17State &&from) {
-        for (auto &[key, partkeys] : from.attribute_index)
-          into.attribute_index[key].insert(partkeys.begin(), partkeys.end());
-        for (auto &[partkey, key] : from.part_attr_keys)
-          into.part_attr_keys[partkey] = std::move(key);
-      });
-
-  // Lineitem statistics per part, in hash shards so partial states fold shard
-  // by shard in parallel.
-  auto shards = core::PartitionedBuild<PartStatsShards>(
-      services, [] { return PartStatsShards{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitems(services, parts,
-                                    [&](std::size_t p, const TpchQ17LineitemInput &input) {
-                                      sink(p, core::SingleRowBatch<TpchQ17LineitemInput>{input});
-                                    });
-      },
-      [](PartStatsShards &partial, const TpchQ17LineitemInput &input) {
-        partial.Add(input);
-      },
-      [&](PartStatsShards &into, PartStatsShards &&from) {
-        core::ParallelEach(services, PartStatsShards::kShards, 1,
-                           [&](std::size_t s) { into.FoldShard(s, std::move(from)); });
-      });
-  std::vector<TpchQ17PartStats *> stats_list;
-  for (auto &shard : shards.shards)
-    for (auto &entry : shard)
-      stats_list.push_back(&entry.second);
-  core::ParallelEach(services, stats_list.size(), kPartStatsGrain, [&](std::size_t i) {
-    auto &pairs = stats_list[i]->qty_price_pairs;
-    std::sort(pairs.begin(), pairs.end(),
-              [](const TpchQ17QtyPricePair &lhs, const TpchQ17QtyPricePair &rhs) {
-                return lhs.quantity_raw < rhs.quantity_raw;
-              });
-    stats_list[i]->RecomputeContribution();
-  });
-  state.part_stats.reserve(stats_list.size());
-  for (auto &shard : shards.shards)
-    for (auto &entry : shard)
-      state.part_stats.emplace(entry.first, std::move(entry.second));
-  return state;
-}
-
 // The fallback: the answer from a fresh build of the state.
 void TpchQ17Module::EmitResult(core::AuxEngineServices &services,
                                const std::string &brand,
@@ -908,16 +908,10 @@ void TpchQ17Module::EmitResult(core::AuxEngineServices &services,
                                core::AuxRowSink &sink) const {
   int64_t contribution_raw = 0;
   if (!brand.empty() && !container.empty()) {
-    const auto state = BuildState(services);
-    const auto parts =
-        state.attribute_index.find(TpchQ17State::MakeAttrKey(brand, container));
-    if (parts != state.attribute_index.end()) {
-      for (const auto partkey : parts->second) {
-        const auto stats = state.part_stats.find(partkey);
-        if (stats != state.part_stats.end())
-          contribution_raw += stats->second.precomputed_contribution_raw;
-      }
-    }
+    const auto built = BuildPages(services, initial_scan);
+    const auto attr = built.attrs.find(AttrHash(brand, container));
+    if (attr != built.attrs.end())
+      contribution_raw = attr->second.total_contribution_raw;
   }
   sink.Begin({{{"avg_yearly", core::AuxType::Double, true}}});
   if (contribution_raw == 0) {
