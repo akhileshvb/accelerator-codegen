@@ -36,6 +36,8 @@ impl State {
 }
 
 
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub open spec fn rescan_edges_for_parts_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
 pub open spec fn rescan_edges_for_suppliers_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
 pub open spec fn rescan_parts_for_neighbors_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
@@ -277,6 +279,7 @@ pub fn execute(
 ) -> (r: Option<Vec<(Vec<u8>, Vec<u8>, i64, i64)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2@, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int, p10 as int), out_view(out@)),
+        r is Some,
 {
     proof { use_type_invariant(s); }
     let sizes = [p3, p4, p5, p6, p7, p8, p9, p10];
