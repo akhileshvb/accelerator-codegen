@@ -193,12 +193,19 @@ struct RevenueRuns {
   std::vector<Bucketed> runs;
   std::set<int32_t> months;
   int64_t max_dense_key = -1;
+  int32_t last_days = std::numeric_limits<int32_t>::min();
+  int32_t last_month = 0;
 
   RevenueRuns() : runs(1, Bucketed(kRevenueBuckets)) {}
 
-  void Add(int32_t month_key, int64_t suppkey, int64_t revenue) {
-    runs.back()[RevenueBucketOf(suppkey)].push_back({month_key, suppkey, revenue});
-    months.insert(month_key);
+  // Shipdates arrive in runs, so the last date's month is remembered.
+  void Add(int32_t shipdate_days, int64_t suppkey, int64_t revenue) {
+    if (shipdate_days != last_days) {
+      last_days = shipdate_days;
+      last_month = MonthKey(shipdate_days);
+      months.insert(last_month);
+    }
+    runs.back()[RevenueBucketOf(suppkey)].push_back({last_month, suppkey, revenue});
     if (suppkey < TpchQ15RevArray::kMaxDenseKey)
       max_dense_key = std::max(max_dense_key, suppkey);
   }
@@ -222,7 +229,7 @@ void AccumulateWindows(core::AuxEngineServices &services, TpchQ15InitialScan &sc
         });
       },
       [](RevenueRuns &partial, const TpchQ15LineitemInput &input) {
-        partial.Add(MonthKey(input.shipdate_days), input.suppkey,
+        partial.Add(input.shipdate_days, input.suppkey,
                     TpchQ15RevenueRaw(input.extended_price_raw, input.extended_price_scale,
                                       input.discount_raw, input.discount_scale));
       },
