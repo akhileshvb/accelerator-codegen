@@ -3,6 +3,7 @@
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/common/dealt_rows.hpp"
 
@@ -28,6 +29,10 @@ constexpr std::size_t kSlotFoldGrain = 8;
 constexpr std::size_t kPairSlotGrain = 1;
 // Candidate parts per read slice (~800 us): a hash lookup, substring test and cells.
 constexpr std::size_t kCandidateGrain = 8192;
+// Affected pairs per slice of the parallel sort (~1000 us).
+constexpr std::size_t kAffectedSortGrain = 32768;
+// Lineitem deltas per slice when resolving their order years (~500 us).
+constexpr std::size_t kYearGrain = 16384;
 // Affected pairs per snapshot chunk.
 constexpr std::size_t kPairChunk = 4096;
 // Pair chunks per slice (untimed).
@@ -700,7 +705,7 @@ private:
         for (const auto &pair : rec->pairs)
           affected.emplace_back(partkey, pair.suppkey);
     }
-    std::sort(affected.begin(), affected.end());
+    core::ParallelStableSort(services, affected, std::less<>(), kAffectedSortGrain);
     affected.erase(std::unique(affected.begin(), affected.end()), affected.end());
     chunk_count = (affected.size() + kPairChunk - 1) / kPairChunk;
     net_chunks.resize(chunk_count);
@@ -756,10 +761,19 @@ private:
     }
 
     const auto &deltas = buffer.Deltas();
+    // Slices resolve what the overlay and the side image hold; the engine fallback
+    // (not thread-safe) serves the few years they miss.
     std::vector<int32_t> years(deltas.size());
+    std::vector<uint8_t> missed(deltas.size(), 0);
+    core::ParallelSlices(services, deltas.size(), kYearGrain,
+                         [&](std::size_t, std::size_t begin, std::size_t end) {
+                           for (std::size_t k = begin; k < end; ++k)
+                             missed[k] = !ResolveOrderYear(*join_side, nullptr, deltas[k].orderkey,
+                                                           years[k], year_overlay);
+                         });
     for (std::size_t k = 0; k < deltas.size(); ++k)
-      if (!ResolveOrderYear(*join_side, initial_scan, deltas[k].orderkey, years[k],
-                            year_overlay))
+      if (missed[k] && !ResolveOrderYear(*join_side, initial_scan, deltas[k].orderkey, years[k],
+                                         year_overlay))
         return false;
     std::vector<std::vector<uint32_t>> by_slot(slot_count);
     for (uint32_t k = 0; k < deltas.size(); ++k)
