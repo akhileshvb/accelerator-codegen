@@ -38,7 +38,7 @@ Owned by the **engine_backend** pipeline (`workload_kind: engine_backend`), not 
 - Existing backends (when present) are optional few-shot only; they are regenerable from the substrate via the engine pipeline.
 - Headers marked `GENERATED BACKEND` means engine-pipeline-owned.
 
-Query runs **never write** `backends/{engine}/**` (it is denied): register this query from its own directory through the backend's registries. If the backend lacks a generic engine-level helper, log a request for the engine_backend run (one JSON line `{"benchmark", "query", "helper", "reason"}` in `pipeline/artifacts/backend_additions/{engine}.jsonl`, no query names in `helper`) and work with what exists. CMake auto-discovery usually covers test/bench/calibrate; touch CMake only when targets are missing.
+Query runs **never write** `backends/{engine}/**` (it is denied): register this query from its own directory through the backend's registries. If the backend lacks a generic engine-level helper, log a request for its owner (one JSON line `{"benchmark", "query", "scope", "helper", "reason"}` in `pipeline/artifacts/backend_additions/{engine}.jsonl`, `scope` `"backend"` or `"harness"`, no query names in `helper`; `pipeline/prompts/shared/query_host_bootstrap.md`, Ownership) and work with what exists. CMake auto-discovery usually covers test/bench/calibrate; touch CMake only when targets are missing.
 
 ## Placement notes
 

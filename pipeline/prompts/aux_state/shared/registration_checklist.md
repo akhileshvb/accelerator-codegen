@@ -2,7 +2,7 @@
 
 New aux queries must be wired into **every** registration / helper surface that existing aux queries use. Do **not** stop after creating `module.{hpp,cpp}` or a single catalog entry.
 
-Registration happens **from the query's own directory** through static registrars (see `pipeline/prompts/shared/generated_layout.md`, "Registration"). Backends (`backends/{engine}/**`) name no query and are never written by a query run: if a backend registry or generic helper is missing, log a request to `pipeline/artifacts/backend_additions/{engine}.jsonl` (one JSON line: `benchmark`, `query`, `helper`, `reason`) and report it.
+Registration happens **from the query's own directory** through static registrars (see `pipeline/prompts/shared/generated_layout.md`, "Registration"). Backends (`backends/{engine}/**`) name no query and are never written by a query run: if a backend registry or generic helper is missing, log a request to `pipeline/artifacts/backend_additions/{engine}.jsonl` (one JSON line: `benchmark`, `query`, `scope`, `helper`, `reason`; format in `pipeline/prompts/shared/query_host_bootstrap.md`, Ownership) and report it.
 
 ## How to discover (preferred)
 

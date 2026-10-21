@@ -398,24 +398,28 @@ def test_other_stages_still_cannot_write_a_backend_harness():
     assert _hb_write("backends/postgres/tests/harness/x.cpp", stage="implementation")[0] is False
 
 
-def test_a_recorded_harness_defect_reopens_the_bootstrap(tmp_path):
-    import os
-    import time
+def test_recorded_defects_reach_their_owner_once(tmp_path):
+    import json
 
-    from accel_pipeline.host_bootstrap import (
-        backend_additions_path,
-        host_bootstrap_status_path,
-        pending_harness_requests,
-    )
+    from accel_pipeline import backend_requests as br
 
-    status = host_bootstrap_status_path(tmp_path, "anyengine")
-    status.parent.mkdir(parents=True, exist_ok=True)
-    status.write_text('{"status": "pass"}')
-    assert pending_harness_requests(tmp_path, "anyengine") == ""
+    path = br.requests_path(tmp_path, "anyengine")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        {"scope": "harness", "helper": "transaction-safe setup"},
+        {"scope": "backend", "helper": "commit outside the engine lock"},
+        {"helper": "unscoped: both owners see it"},
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
 
-    requests = backend_additions_path(tmp_path, "anyengine")
-    requests.parent.mkdir(parents=True, exist_ok=True)
-    requests.write_text('{"helper": "transaction-safe setup"}\n')
-    later = time.time() + 5
-    os.utime(requests, (later, later))
-    assert "transaction-safe setup" in pending_harness_requests(tmp_path, "anyengine")
+    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "harness")] == [
+        "transaction-safe setup", "unscoped: both owners see it"]
+    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "backend")] == [
+        "commit outside the engine lock", "unscoped: both owners see it"]
+
+    br.mark_handled(tmp_path, "anyengine", "backend")
+    assert br.pending(tmp_path, "anyengine", "backend") == []
+    assert len(br.pending(tmp_path, "anyengine", "harness")) == 2
+    with path.open("a") as f:
+        f.write(json.dumps({"scope": "backend", "helper": "a new one"}) + "\n")
+    assert [r["helper"] for r in br.pending(tmp_path, "anyengine", "backend")] == ["a new one"]

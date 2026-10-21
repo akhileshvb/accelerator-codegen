@@ -278,6 +278,11 @@ def run_pack(
         Path(models_cfg_path) if models_cfg_path else None,
         repo_root=repo_root,
     )
+    # Backend defects earlier query runs recorded go back to the engine's backend run first.
+    from accel_pipeline.backend_requests import reopen_engine_backend
+
+    for engine in sorted({str(q.engine) for q in queries if q.engine}):
+        reopen_engine_backend(pipeline_config, model_config, engine, dry_run=dry_run)
     hb_results = ensure_host_bootstrap_for_pack(
         pack,
         repo_root=repo_root,

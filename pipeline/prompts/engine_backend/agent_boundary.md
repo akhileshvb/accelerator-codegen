@@ -17,8 +17,8 @@
 This run is the only writer of `backends/{engine}/**`. Query runs never write it:
 when an accelerator needs a generic engine-level helper the backend lacks, the
 query run logs a request to `pipeline/artifacts/backend_additions/{engine}.jsonl`
-(one JSON object per line: `benchmark`, `query`, `helper`, `reason`). Read that
-log if it exists and add the requested helpers that are generic (no query,
+(one JSON object per line: `benchmark`, `query`, `scope`, `helper`, `reason`). Read that
+log if it exists and add the requested helpers (`scope` `"backend"` or none) that are generic (no query,
 table or benchmark names); note the ones you decline, and why, in your report.
 
 ## Must not modify

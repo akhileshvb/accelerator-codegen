@@ -306,7 +306,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # One-shot query-host bootstrap (engines without a query-scoped harness) before per-query stages.
     if args.stage in {"all", "host_bootstrap"}:
+        from accel_pipeline.backend_requests import reopen_engine_backend
         from accel_pipeline.host_bootstrap import ensure_host_bootstrap_for_workload
+
+        if pipeline_config.engine_name and repo_root == primary_root:
+            # Backend defects earlier query runs recorded go back to the engine's backend run first
+            # (a pack does this before its workers).
+            reopen_engine_backend(
+                pipeline_config, model_config, pipeline_config.engine_name,
+                model_overrides=model_overrides, dry_run=args.dry_run,
+            )
 
         hb = ensure_host_bootstrap_for_workload(
             pipeline_config,

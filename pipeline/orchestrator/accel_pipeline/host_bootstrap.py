@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.backend_requests import as_required_fixes, mark_handled, pending
 from accel_pipeline.config import (
     ModelConfig,
     PipelineConfig,
@@ -44,18 +45,9 @@ def needs_host_bootstrap(workload: dict[str, Any]) -> bool:
     return workload.get("workload_kind") != "engine_backend"
 
 
-def backend_additions_path(repo_root: Path, engine_name: str) -> Path:
-    return pipeline_root(repo_root) / "artifacts" / "backend_additions" / f"{sanitize_engine_name(engine_name)}.jsonl"
-
-
 def pending_harness_requests(repo_root: Path, engine_name: str) -> str:
-    """Harness defects query runs recorded since the last bootstrap pass (query_host_bootstrap.md,
-    Ownership): a query run may not edit the harnesses, so the next bootstrap fixes them."""
-    requests = backend_additions_path(repo_root, engine_name)
-    status = host_bootstrap_status_path(repo_root, engine_name)
-    if not requests.is_file() or (status.is_file() and status.stat().st_mtime >= requests.stat().st_mtime):
-        return ""
-    return requests.read_text(encoding="utf-8").strip()
+    """Harness defects query runs recorded that no bootstrap has fixed yet (backend_requests.py)."""
+    return as_required_fixes(pending(repo_root, sanitize_engine_name(engine_name), "harness"))
 
 
 def host_bootstrap_passed(repo_root: Path, engine_name: str) -> bool:
@@ -99,6 +91,8 @@ def write_host_bootstrap_status(
     if extra:
         payload.update(extra)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if status == "pass" and (payload.get("gate_data") or {}).get("status") == "pass":
+        mark_handled(repo_root, sanitize_engine_name(engine_name), "harness")
     return path
 
 
@@ -229,8 +223,7 @@ def run_host_bootstrap(
     max_critique = max(0, configured_critique)
     requests = pending_harness_requests(pipeline_config.repo_root, engine)
     extra = (
-        f"Query runs recorded these harness defects in "
-        f"`pipeline/artifacts/backend_additions/{engine}.jsonl`; fix every one in the harnesses:\n\n{requests}"
+        f"Query runs recorded these harness defects; fix every one in the harnesses:\n\n{requests}"
         if requests
         else ""
     )

@@ -18,7 +18,7 @@ Only these paths. Everything else in `backends/{{engine_name}}/`, every other ba
 - `backends/{{engine_name}}/bench/**` (bench and calibrate sources)
 - `backends/{{engine_name}}/tests/harness.cmake` (declares the targets; `cmake/Backend.cmake` includes it right after `backend.cmake`; use `accel_add_backend_exe({{engine_name}} <target> <sources>)`)
 
-If the backend lacks something the harnesses need (a registry lookup, a thread knob, table rows), append a request `{"benchmark", "query", "helper", "reason"}` (no query names in `helper`) to `pipeline/artifacts/backend_additions/{{engine_name}}.jsonl`, say so in your report, and work around it only inside the harnesses.
+If the backend lacks something the harnesses need (a registry lookup, a thread knob, table rows), append a request `{"benchmark", "query", "scope": "backend", "helper", "reason"}` (no query names in `helper`) to `pipeline/artifacts/backend_additions/{{engine_name}}.jsonl`, say so in your report, and work around it only inside the harnesses.
 
 ## Targets (one naming convention for every engine; the gates look these up)
 

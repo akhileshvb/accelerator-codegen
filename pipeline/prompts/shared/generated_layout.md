@@ -96,8 +96,8 @@ Backend files (`backends/{engine}/**`) belong to that engine's `engine_backend` 
 A query run never writes them (the write is denied): when a query needs an
 **engine-level** helper the backend lacks, log a request for the engine_backend
 run (Verus pipeline: the `backend_addition_record` tool; C++ pipeline: one JSON line
-`{"benchmark", "query", "helper", "reason"}` appended to
-`pipeline/artifacts/backend_additions/{engine}.jsonl`). The helper must be generic
+`{"benchmark", "query", "scope", "helper", "reason"}` appended to
+`pipeline/artifacts/backend_additions/{engine}.jsonl`; `pipeline/prompts/shared/query_host_bootstrap.md`, Ownership). The helper must be generic
 (no query names); never put per-query code in the backend, and do not rely on the
 helper in the current run.
 

@@ -94,16 +94,20 @@ mkdir -p "${ACCEL_AUX_BENCH_WORK_DIR}"
 : > "${SWEEP_LOG}"
 SWEEP_RC=0
 IFS=',' read -r -a SUITE_LIST <<< "${ACCEL_AUX_BENCH_SUITES}"
+IFS=',' read -r -a FREQ_LIST <<< "${EXPECTED_FREQS}"
+unset "ACCEL_Q${QUERY}_WRITE_FREQUENCY_PCT"   # the point is the CLI argument (query_host_bootstrap.md)
 for suite in "${SUITE_LIST[@]}"; do
   export "ACCEL_Q${QUERY}_BENCH_SUITE=${suite}"
-  engine_run "${BENCH_TARGET}"
-  printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
-  [[ ${RC} -eq 0 ]] || SWEEP_RC=${RC}
-  # keep the CSV rows (one header), drop banners
-  printf '%s\n' "${LOG}" | awk -F, -v hdr="$([[ -s "${RESULTS_CSV}" ]] && echo 1 || echo 0)" '
-    /^suite,/ { if (!hdr) { print; hdr = 1 }; next }
-    /^speedup_gate/ || /^#/ { next }
-    NF >= 10 { print }' >> "${RESULTS_CSV}"
+  for pct in "${FREQ_LIST[@]}"; do
+    engine_run "${BENCH_TARGET}" --query "${QUERY}" "${pct// /}"
+    printf '%s\n' "${LOG}" >> "${SWEEP_LOG}"
+    [[ ${RC} -eq 0 ]] || SWEEP_RC=${RC}
+    # keep the CSV rows (one header), drop banners
+    printf '%s\n' "${LOG}" | awk -F, -v hdr="$([[ -s "${RESULTS_CSV}" ]] && echo 1 || echo 0)" '
+      /^suite,/ { if (!hdr) { print; hdr = 1 }; next }
+      /^speedup_gate/ || /^#/ { next }
+      NF >= 10 { print }' >> "${RESULTS_CSV}"
+  done
 done
 
 python3 - <<PY
