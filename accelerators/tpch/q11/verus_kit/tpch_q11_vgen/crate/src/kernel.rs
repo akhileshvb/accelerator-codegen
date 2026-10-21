@@ -1,5 +1,6 @@
 use crate::packed::{self, Packed, PackedCursor};
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::{sum, lemma_sum_take, lemma_sum_empty};
 use verus_prooflib::ordered::{Key, Index, KeyView};
 use crate::gen_spec::*;
@@ -25,6 +26,8 @@ impl State {
     spec fn valid(self) -> bool { self.data.valid(self.db()) }
 }
 
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub fn build(
     partsupp_profiles: &[PartsuppInput],
     supplier_links: &[SupplierInput],
@@ -36,6 +39,7 @@ pub fn build(
         scan_supplier_links_ok(db, supplier_links@),
         scan_nation_names_ok(db, nation_names@),
     ensures result matches Some(state) ==> state.db() == db,
+        result is Some,
 {
     proof { lemma_build_ranges(db, partsupp_profiles@, supplier_links@, nation_names@); }
     let mut data = Data::new();
@@ -52,8 +56,8 @@ pub fn build(
             index <= partsupp_profiles.len(), processed@ == index as int,
             data.structures_valid(),
             profile_storage_ok(data.profiles),
-            positive_counts(data.suppliers), positive_counts(data.suppliers_reverse),
-            positive_counts(data.nations), positive_counts(data.nations_reverse),
+            nonzero_counts(data.suppliers), nonzero_counts(data.suppliers_reverse),
+            nonzero_counts(data.nations), nonzero_counts(data.nations_reverse),
             counts_layout(data.suppliers, true, true), counts_layout(data.suppliers_reverse, true, true),
             counts_layout(data.nations, true, false), counts_layout(data.nations_reverse, false, true),
             forall|key: verus_prooflib::ordered::KeyView| #[trigger] data.suppliers.at(key).is_none(),
@@ -70,9 +74,8 @@ pub fn build(
     {
         let row = partsupp_profiles[index];
         let ghost before = data.profiles;
-        proof { lemma_i64_product(row.ps_availqty, row.ps_supplycost); }
-        let value = (row.ps_availqty as i128) * (row.ps_supplycost as i128);
-        if !add_profile(&mut data.profiles, row.ps_suppkey, row.ps_partkey, Moment { count: 1, value }, false, 63) { return None; }
+        let value = Wide::from_i128(row.ps_availqty as i128).mul(&Wide::from_i128(row.ps_supplycost as i128));
+        add_profile(&mut data.profiles, row.ps_suppkey, row.ps_partkey, &Mom { count: Wide::from_i128(1), value }, 63);
         proof {
             assert forall|supplier: i64, part: i64| #[trigger] profile_at(data.profiles, supplier as int, part as int).count as int
                 == sum(partsupp_profiles@.take(index as int + 1), |other: PartsuppInput|
@@ -116,8 +119,8 @@ pub fn build(
             index <= supplier_links.len(), processed@ == index as int,
             data.structures_valid(),
             data.profiles_ok(db),
-            positive_counts(data.suppliers), positive_counts(data.suppliers_reverse),
-            positive_counts(data.nations), positive_counts(data.nations_reverse),
+            nonzero_counts(data.suppliers), nonzero_counts(data.suppliers_reverse),
+            nonzero_counts(data.nations), nonzero_counts(data.nations_reverse),
             counts_layout(data.suppliers, true, true), counts_layout(data.suppliers_reverse, true, true),
             counts_layout(data.nations, true, false), counts_layout(data.nations_reverse, false, true),
             forall|key: verus_prooflib::ordered::KeyView| #[trigger] data.nations.at(key).is_none(),
@@ -134,8 +137,8 @@ pub fn build(
         let row = supplier_links[index];
         let supplier = Key::number(row.s_suppkey);
         let nation = Key::number(row.s_nationkey);
-        if !add_count(&mut data.suppliers, &supplier, &nation, 1, false)
-            || !add_count(&mut data.suppliers_reverse, &nation, &supplier, 1, false) { return None; }
+        add_count(&mut data.suppliers, &supplier, &nation, &Wide::from_i128(1));
+        add_count(&mut data.suppliers_reverse, &nation, &supplier, &Wide::from_i128(1));
         proof {
             assert forall|supplier: i64, nation: i64| #[trigger] count_at(data.suppliers, numeric_key(supplier as int), numeric_key(nation as int))
                 == sum(supplier_links@.take(index as int + 1), |other: SupplierInput|
@@ -166,7 +169,7 @@ pub fn build(
             data.structures_valid(),
             data.profiles_ok(db),
             data.suppliers_ok(db),
-            positive_counts(data.nations), positive_counts(data.nations_reverse),
+            nonzero_counts(data.nations), nonzero_counts(data.nations_reverse),
             counts_layout(data.nations, true, false), counts_layout(data.nations_reverse, false, true),
             forall|nation: i64, name: Seq<u8>| #[trigger] count_at(data.nations, numeric_key(nation as int), text_key(name))
                 == sum(nation_names@.take(processed@), |row: NationInput|
@@ -178,8 +181,8 @@ pub fn build(
         let row = &nation_names[index];
         let nation = Key::number(row.n_nationkey);
         let name = Key::text(copy_bytes(row.n_name.as_slice()));
-        if !add_count(&mut data.nations, &nation, &name, 1, false)
-            || !add_count(&mut data.nations_reverse, &name, &nation, 1, false) { return None; }
+        add_count(&mut data.nations, &nation, &name, &Wide::from_i128(1));
+        add_count(&mut data.nations_reverse, &name, &nation, &Wide::from_i128(1));
         proof {
             assert forall|nation: i64, name: Seq<u8>| #[trigger] count_at(data.nations, numeric_key(nation as int), text_key(name))
                 == sum(nation_names@.take(index as int + 1), |other: NationInput|
@@ -195,7 +198,7 @@ pub fn build(
         assert(nation_names@.take(processed@) =~= nation_names@);
         lemma_nation_scan(data, db, nation_names@);
     }
-    if !build_inventories(&mut data) { return None; }
+    build_inventories(&mut data);
     proof {
         assert(data.profiles_ok(db));
         assert(data.suppliers_ok(db));
@@ -206,8 +209,44 @@ pub fn build(
     Some(State { data, database: Ghost(db) })
 }
 
+fn convert_rows(exact: Vec<(i64, Wide)>, Ghost(db): Ghost<Db>, Ghost(wanted): Ghost<Params>) -> (result: Option<Vec<(i64, i128)>>)
+    requires query_result(db, wanted, exact_view(exact_rows(exact@))),
+    ensures result matches Some(rows) ==> query_result(db, wanted, out_view(rows@)),
+        result is None ==> !answer_fits(db, wanted),
+{
+    let mut rows: Vec<(i64, i128)> = Vec::new();
+    let mut index: usize = 0;
+    while index < exact.len()
+        invariant index <= exact.len(), rows.len() == index, query_result(db, wanted, exact_view(exact_rows(exact@))),
+            forall|position: int| 0 <= position < index ==> rows@[position].0 == exact@[position].0 && rows@[position].1 as int == exact@[position].1@,
+        decreases exact.len() - index,
+    {
+        let converted = exact[index].1.to_i128();
+        match converted {
+            Some(value) => rows.push((exact[index].0, value)),
+            None => {
+                proof {
+                    let model = exact_view(exact_rows(exact@));
+                    assert(model.len() == exact@.len());
+                    assert(model[index as int].value == exact@[index as int].1@);
+                    if answer_fits(db, wanted) {
+                        assert(query_result(db, wanted, model));
+                        assert(forall|i: int| 0 <= i < model.len() ==> out_fits(#[trigger] model[i]));
+                        assert(out_fits(model[index as int]));
+                    }
+                }
+                return None;
+            },
+        }
+        index += 1;
+    }
+    proof { assert(out_view(rows@) =~= exact_view(exact_rows(exact@))); }
+    Some(rows)
+}
+
 pub fn execute(state: &State, p1: &[u8], p2: i64) -> (result: Option<Vec<(i64, i128)>>)
     ensures result matches Some(rows) ==> query_result(state.db(), params(p1@, p2 as int), out_view(rows@)),
+        envelope(state.db()) && answer_fits(state.db(), params(p1@, p2 as int)) ==> result is Some,
 {
     proof { use_type_invariant(state); }
     let name = Key::text(copy_bytes(p1));
@@ -234,38 +273,45 @@ pub fn execute(state: &State, p1: &[u8], p2: i64) -> (result: Option<Vec<(i64, i
                     return Some(Vec::new());
                 },
             };
-            let result = emit(&*inventory, *multiplicity, p2);
             proof {
-                if let Some(rows) = &result {
-                    assert forall|part: i64| #[trigger] group_count(state.db(), params0(p1@), part as int)
-                        == *multiplicity as int * moment_at(inventory.groups, part as int).count as int by {
-                        lemma_singleton_group(state.data, state.db(), p1@, *nation, *multiplicity, part as int);
-                        assert(inventory_at(state.data.inventories, *nation as int, part as int).count as int == h_count(state.db(), *nation as int, part as int));
-                    }
-                    assert forall|part: i64| #[trigger] query_group_value(state.db(), p1@, part as int)
-                        == *multiplicity as int * moment_at(inventory.groups, part as int).value as int by {
-                        lemma_singleton_group(state.data, state.db(), p1@, *nation, *multiplicity, part as int);
-                        assert(inventory_at(state.data.inventories, *nation as int, part as int).count as int == h_count(state.db(), *nation as int, part as int));
-                    }
-                    lemma_execute_model(state.db(), p1@, p2 as int, &*inventory, *multiplicity as int, rows@);
-                }
+                state.data.inventories.model();
+                assert(state.data.inventories.at(numeric_key(*nation as int)) == Some(*inventory));
+                lemma_stored_nonneg(state.data, state.db(), *nation);
+                assert(state.data.names_ok(state.db()));
             }
-            result
+            let exact = emit(&*inventory, &*multiplicity, p2);
+            proof {
+                assert forall|part: i64| #[trigger] group_count(state.db(), params0(p1@), part as int)
+                    == multiplicity@ * moment_at(inventory.groups, part as int).count as int by {
+                    lemma_singleton_group(state.data, state.db(), p1@, *nation, *multiplicity, part as int);
+                    assert(inventory_at(state.data.inventories, *nation as int, part as int).count as int == h_count(state.db(), *nation as int, part as int));
+                }
+                assert forall|part: i64| #[trigger] query_group_value(state.db(), p1@, part as int)
+                    == multiplicity@ * moment_at(inventory.groups, part as int).value as int by {
+                    lemma_singleton_group(state.data, state.db(), p1@, *nation, *multiplicity, part as int);
+                    assert(inventory_at(state.data.inventories, *nation as int, part as int).count as int == h_count(state.db(), *nation as int, part as int));
+                }
+                lemma_execute_model(state.db(), p1@, p2 as int, &*inventory, multiplicity@, exact_rows(exact@));
+            }
+            convert_rows(exact, Ghost(state.db()), Ghost(params(p1@, p2 as int)))
         },
         NameView::Merged { inventory } => {
-            let result = emit(inventory, 1, p2);
             proof {
-                if let Some(rows) = &result {
-                    assert forall|part: i64| #[trigger] group_count(state.db(), params0(p1@), part as int)
-                        == moment_at(inventory.groups, part as int).count as int by {}
-                    assert forall|part: i64| #[trigger] query_group_value(state.db(), p1@, part as int)
-                        == moment_at(inventory.groups, part as int).value as int by {
-                        assert(group_count(state.db(), params0(p1@), part as int) == moment_at(inventory.groups, part as int).count as int);
-                    }
-                    lemma_execute_model(state.db(), p1@, p2 as int, inventory, 1int, rows@);
-                }
+                state.data.names.model();
+                assert(state.data.names.at(name.view()) == Some(*view));
+                lemma_merged_nonneg(state.data, state.db(), p1@, *inventory);
             }
-            result
+            let exact = emit(inventory, &Wide::from_i128(1), p2);
+            proof {
+                assert forall|part: i64| #[trigger] group_count(state.db(), params0(p1@), part as int)
+                    == moment_at(inventory.groups, part as int).count as int by {}
+                assert forall|part: i64| #[trigger] query_group_value(state.db(), p1@, part as int)
+                    == moment_at(inventory.groups, part as int).value as int by {
+                    assert(group_count(state.db(), params0(p1@), part as int) == moment_at(inventory.groups, part as int).count as int);
+                }
+                lemma_execute_model(state.db(), p1@, p2 as int, inventory, 1int, exact_rows(exact@));
+            }
+            convert_rows(exact, Ghost(state.db()), Ghost(params(p1@, p2 as int)))
         },
     }
 }
@@ -280,18 +326,19 @@ pub fn apply(
     requires capture_ok(state.db(), db2, nation_delta_seq_view(nation_delta@),
         partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
     ensures result matches Ok(next) ==> next.db() == db2,
+        result is Ok,
 {
     proof {
         use_type_invariant(state);
         lemma_apply_ranges(state.db(), db2, partsupp_delta@, supplier_delta@, nation_delta@);
     }
-    let profiles = match coalesce_partsupp(partsupp_delta) { Some(changes) => changes, None => return Err(1) };
-    let suppliers = match coalesce_supplier(supplier_delta) { Some(changes) => changes, None => return Err(2) };
-    let nations = match coalesce_nation(nation_delta) { Some(changes) => changes, None => return Err(3) };
+    let profiles = coalesce_partsupp(partsupp_delta);
+    let suppliers = coalesce_supplier(supplier_delta);
+    let nations = coalesce_nation(nation_delta);
     let mut data = state.data.share();
     let ghost initial = data;
     let mut inventory_changes = Index::new();
-    if !stage_partsupp(&mut data, &profiles, &mut inventory_changes) { return Err(4); }
+    stage_partsupp(&mut data, &profiles, &mut inventory_changes);
     proof {
         assert(initial.valid(state.db()));
         crate::names::lemma_database_names(initial, state.db());
@@ -307,7 +354,7 @@ pub fn apply(
     }
     let ghost after_profiles = data;
     let ghost profile_inventory_changes = inventory_changes;
-    if !stage_supplier(&mut data, &suppliers, &mut inventory_changes) { return Err(5); }
+    stage_supplier(&mut data, &suppliers, &mut inventory_changes);
     proof {
         assert(data.profiles_ok(db2));
         lemma_supplier_commit(after_profiles, data, state.db(), db2, suppliers, supplier_delta@);
@@ -321,7 +368,7 @@ pub fn apply(
             assert(count_at(initial.nations, numeric_key(nation as int), text_key(name)) == n_count(state.db(), nation as int, name));
         }
     }
-    if !apply_inventory_changes(&mut data, &inventory_changes) { return Err(7); }
+    apply_inventory_changes(&mut data, &inventory_changes);
     proof {
         lemma_dimension_frames(before_nations, data, db2);
         assert(data.suppliers == before_nations.suppliers);
@@ -331,16 +378,16 @@ pub fn apply(
         assert(data.suppliers_ok(db2));
         assert forall|nation: i64, part: i64, value: bool| #[trigger] profile_cell(inventory_changes, nation, part, value)
             == sum(profiles.entries(), |row: (KeyView, Packed)| partsupp_effect(row, initial.suppliers, nation, part, value))
-                + sum(suppliers.entries(), |row: (KeyView, Index<i128>)| supplier_effect(row, data.profiles, nation, part, value)) by {
+                + sum(suppliers.entries(), |row: (KeyView, Index<Wide>)| supplier_effect(row, data.profiles, nation, part, value)) by {
             assert(profile_cell(profile_inventory_changes, nation, part, value)
                 == sum(profiles.entries(), |row: (KeyView, Packed)| partsupp_effect(row, initial.suppliers, nation, part, value)));
             assert(profile_cell(inventory_changes, nation, part, value) == profile_cell(profile_inventory_changes, nation, part, value)
-                + sum(suppliers.entries(), |row: (KeyView, Index<i128>)| supplier_effect(row, data.profiles, nation, part, value)));
+                + sum(suppliers.entries(), |row: (KeyView, Index<Wide>)| supplier_effect(row, data.profiles, nation, part, value)));
         }
         crate::join_proofs::lemma_inventory_commit(initial, data, state.db(), db2, profiles, suppliers, inventory_changes);
     }
     let ghost before_nation_update = data;
-    if !apply_nation(&mut data, &nations) { return Err(6); }
+    apply_nation(&mut data, &nations);
     proof {
         assert(data.profiles == before_nation_update.profiles);
         assert(data.profiles == after_profiles.profiles);

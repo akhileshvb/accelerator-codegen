@@ -1,5 +1,6 @@
 use crate::packed::{self, Packed, PackedCursor};
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::{sum, lemma_sum_take};
 use verus_prooflib::ordered::{Index, Key, KeyView};
 use crate::inventory::*;
@@ -38,18 +39,18 @@ pub open spec fn profile_measure_at(profiles: Profiles, supplier: KeyView, part:
     match profiles.at(supplier) { Some(groups) => profile_measure(groups, part, value), None => 0 }
 }
 
-pub open spec fn link_count(links: Index<i128>, nation: i64) -> int {
-    match links.at(numeric_key(nation as int)) { Some(count) => count as int, None => 0 }
+pub open spec fn link_count(links: Index<Wide>, nation: i64) -> int {
+    match links.at(numeric_key(nation as int)) { Some(count) => count@, None => 0 }
 }
 
-pub open spec fn supplier_measure(profiles: Profiles, row: (KeyView, Index<i128>), nation: i64, part: Option<i64>, value: bool) -> int {
+pub open spec fn supplier_measure(profiles: Profiles, row: (KeyView, Index<Wide>), nation: i64, part: Option<i64>, value: bool) -> int {
     profile_measure_at(profiles, row.0, part, value) * link_count(row.1, nation)
 }
 
 pub open spec fn indexed_inventory_ok(data: Data) -> bool {
     forall|nation: i64, part: Option<i64>, value: bool|
         #[trigger] inventory_measure(data.inventories, nation, part, value)
-            == sum(data.suppliers.entries(), |row: (KeyView, Index<i128>)| supplier_measure(data.profiles, row, nation, part, value))
+            == sum(data.suppliers.entries(), |row: (KeyView, Index<Wide>)| supplier_measure(data.profiles, row, nation, part, value))
 }
 
 pub open spec fn part_weight(row: PartsuppRow, part: i64, value: bool) -> int {
@@ -75,16 +76,16 @@ pub proof fn lemma_profile_part(profiles: Profiles, supplier: KeyView, part: i64
 
 pub proof fn lemma_inventory_part(data: Data, db: Db, nation: i64, part: i64, value: bool)
     requires data.profiles_ok(db), data.suppliers_ok(db), db_bounded(db),
-    ensures sum(data.suppliers.entries(), |row: (KeyView, Index<i128>)| supplier_measure(data.profiles, row, nation, Some(part), value))
+    ensures sum(data.suppliers.entries(), |row: (KeyView, Index<Wide>)| supplier_measure(data.profiles, row, nation, Some(part), value))
         == if value { h_value(db, nation as int, part as int) } else { h_count(db, nation as int, part as int) },
         indexed_inventory_ok(data) ==> inventory_measure(data.inventories, nation, Some(part), value)
         == if value { h_value(db, nation as int, part as int) } else { h_count(db, nation as int, part as int) },
 {
     let entries = data.suppliers.entries();
-    let left = |entry: (KeyView, Index<i128>)| supplier_measure(data.profiles, entry, nation, Some(part), value);
-    let pair = |entry: (KeyView, Index<i128>), row: PartsuppRow|
+    let left = |entry: (KeyView, Index<Wide>)| supplier_measure(data.profiles, entry, nation, Some(part), value);
+    let pair = |entry: (KeyView, Index<Wide>), row: PartsuppRow|
         if entry.0 == numeric_key(row.ps_suppkey) { part_weight(row, part, value) * link_count(entry.1, nation) } else { 0 };
-    let expanded = |entry: (KeyView, Index<i128>)| sum(db.partsupp, |row: PartsuppRow| pair(entry, row));
+    let expanded = |entry: (KeyView, Index<Wide>)| sum(db.partsupp, |row: PartsuppRow| pair(entry, row));
     data.suppliers.model();
     assert forall|position: int| 0 <= position < entries.len() implies left(#[trigger] entries[position]) == expanded(entries[position]) by {
         let entry = entries[position];
@@ -119,15 +120,15 @@ pub proof fn lemma_inventory_part(data: Data, db: Db, nation: i64, part: i64, va
                 left(entry) == profile_measure_at(data.profiles, entry.0, Some(part), value) * link_count(entry.1, nation);
     }
     verus_common::sums::lemma_sum_ext(entries, left, expanded);
-    let right = |row: PartsuppRow| sum(entries, |entry: (KeyView, Index<i128>)| pair(entry, row));
+    let right = |row: PartsuppRow| sum(entries, |entry: (KeyView, Index<Wide>)| pair(entry, row));
     verus_common::sums::lemma_sum_swap(entries, db.partsupp, pair, expanded, right);
     let expected = |row: PartsuppRow| part_weight(row, part, value) * s_count(db, row.ps_suppkey, nation as int);
     assert forall|position: int| 0 <= position < db.partsupp.len() implies right(#[trigger] db.partsupp[position]) == expected(db.partsupp[position]) by {
         let row = db.partsupp[position];
-        let weight = |entry: (KeyView, Index<i128>)| part_weight(row, part, value) * link_count(entry.1, nation);
+        let weight = |entry: (KeyView, Index<Wide>)| part_weight(row, part, value) * link_count(entry.1, nation);
         verus_prooflib::ordered::lemma_key_contribution(&data.suppliers, numeric_key(row.ps_suppkey), weight);
-        assert((|entry: (KeyView, Index<i128>)| pair(entry, row))
-            =~= (|entry: (KeyView, Index<i128>)| if entry.0 == numeric_key(row.ps_suppkey) { weight(entry) } else { 0 }));
+        assert((|entry: (KeyView, Index<Wide>)| pair(entry, row))
+            =~= (|entry: (KeyView, Index<Wide>)| if entry.0 == numeric_key(row.ps_suppkey) { weight(entry) } else { 0 }));
         reveal(verus_prooflib::ordered::contribution);
         assert(count_at(data.suppliers, numeric_key(row.ps_suppkey), numeric_key(nation as int)) == s_count(db, row.ps_suppkey, nation as int));
         if let Some(links) = data.suppliers.at(numeric_key(row.ps_suppkey)) {
@@ -228,9 +229,9 @@ pub proof fn lemma_indexed_inventories(data: Data, db: Db)
         let inventory = data.inventories.at(key).unwrap();
         &&& numeric(key)
         &&& inventory.valid()
-        &&& inventory.total.count > 0
-        &&& inventory.total.count as int == h_total_count(db, key.0)
-        &&& inventory.total.value as int == h_total_value(db, key.0)
+        &&& inventory.groups.entries().len() > 0
+        &&& inventory.total.count@ == h_total_count(db, key.0)
+        &&& inventory.total.value@ == h_total_value(db, key.0)
     } by {
         assert(numeric(key));
         lemma_inventory_total(data, db, key.0 as i64, false);
@@ -238,14 +239,14 @@ pub proof fn lemma_indexed_inventories(data: Data, db: Db)
     }
 }
 
-pub fn add_profile_inventory(data: &mut Data, nation: i64, groups: &Packed, weight: i128) -> (result: bool)
+pub fn add_profile_inventory(data: &mut Data, nation: i64, groups: &Packed, weight: &Wide)
     requires old(data).structures_valid(), profile_keys_ok(*groups),
     ensures final(data).structures_valid(), same_dimensions(*old(data), *final(data)),
         forall|key: KeyView| (#[trigger] old(data).names.at(key)).is_none() ==> final(data).names.at(key).is_none(),
-        result ==> forall|other: i64, part: Option<i64>, value: bool|
+        forall|other: i64, part: Option<i64>, value: bool|
             #[trigger] inventory_measure(final(data).inventories, other, part, value)
                 == inventory_measure(old(data).inventories, other, part, value)
-                    + if other == nation { profile_measure(*groups, part, value) * weight as int } else { 0 },
+                    + if other == nation { profile_measure(*groups, part, value) * weight@ } else { 0 },
 {
     let ghost initial = *data;
     let mut processed = Ghost(0int);
@@ -260,7 +261,7 @@ pub fn add_profile_inventory(data: &mut Data, nation: i64, groups: &Packed, weig
                 #[trigger] inventory_measure(data.inventories, other, part, value)
                     == inventory_measure(initial.inventories, other, part, value)
                         + sum(groups.entries().take(processed@), |row: (KeyView, Moment)|
-                            if other == nation { profile_row_measure(row, part, value) * weight as int } else { 0 }),
+                            if other == nation { profile_row_measure(row, part, value) * weight@ } else { 0 }),
         decreases cursor.remaining().len(),
     {
         let (key, moment) = match cursor.next() {
@@ -272,55 +273,55 @@ pub fn add_profile_inventory(data: &mut Data, nation: i64, groups: &Packed, weig
                     assert forall|other: i64, part: Option<i64>, value: bool|
                         #[trigger] inventory_measure(data.inventories, other, part, value)
                             == inventory_measure(initial.inventories, other, part, value)
-                                + if other == nation { profile_measure(*groups, part, value) * weight as int } else { 0 } by {
+                                + if other == nation { profile_measure(*groups, part, value) * weight@ } else { 0 } by {
                         assert(inventory_measure(data.inventories, other, part, value)
                             == inventory_measure(initial.inventories, other, part, value)
                                 + sum(groups.entries().take(processed@), |row: (KeyView, Moment)|
-                                    if other == nation { profile_row_measure(row, part, value) * weight as int } else { 0 }));
+                                    if other == nation { profile_row_measure(row, part, value) * weight@ } else { 0 }));
                         if other == nation {
-                            assert((|row: (KeyView, Moment)| if other == nation { profile_row_measure(row, part, value) * weight as int } else { 0 })
-                                =~= (|row: (KeyView, Moment)| profile_row_measure(row, part, value) * weight as int));
-                            assert forall|row: (KeyView, Moment)| #[trigger] (profile_row_measure(row, part, value) * weight as int)
-                                == weight as int * profile_row_measure(row, part, value) by {
-                                assert(profile_row_measure(row, part, value) * weight as int == weight as int * profile_row_measure(row, part, value)) by (nonlinear_arith);
+                            assert((|row: (KeyView, Moment)| if other == nation { profile_row_measure(row, part, value) * weight@ } else { 0 })
+                                =~= (|row: (KeyView, Moment)| profile_row_measure(row, part, value) * weight@));
+                            assert forall|row: (KeyView, Moment)| #[trigger] (profile_row_measure(row, part, value) * weight@)
+                                == weight@ * profile_row_measure(row, part, value) by {
+                                assert(profile_row_measure(row, part, value) * weight@ == weight@ * profile_row_measure(row, part, value)) by (nonlinear_arith);
                             }
                             verus_common::sums::lemma_sum_scale(groups.entries(),
                                 |row: (KeyView, Moment)| profile_row_measure(row, part, value),
-                                |row: (KeyView, Moment)| profile_row_measure(row, part, value) * weight as int,
-                                weight as int);
-                            assert(sum(groups.entries(), |row: (KeyView, Moment)| profile_row_measure(row, part, value) * weight as int)
-                                == profile_measure(*groups, part, value) * weight as int) by (nonlinear_arith)
-                                requires sum(groups.entries(), |row: (KeyView, Moment)| profile_row_measure(row, part, value) * weight as int)
-                                    == weight as int * profile_measure(*groups, part, value);
+                                |row: (KeyView, Moment)| profile_row_measure(row, part, value) * weight@,
+                                weight@);
+                            assert(sum(groups.entries(), |row: (KeyView, Moment)| profile_row_measure(row, part, value) * weight@)
+                                == profile_measure(*groups, part, value) * weight@) by (nonlinear_arith)
+                                requires sum(groups.entries(), |row: (KeyView, Moment)| profile_row_measure(row, part, value) * weight@)
+                                    == weight@ * profile_measure(*groups, part, value);
                         } else {
                             verus_common::sums::lemma_sum_zero(groups.entries(),
-                                |row: (KeyView, Moment)| if other == nation { profile_row_measure(row, part, value) * weight as int } else { 0 });
+                                |row: (KeyView, Moment)| if other == nation { profile_row_measure(row, part, value) * weight@ } else { 0 });
                         }
                     }
                 }
-                return true;
+                return;
             },
         };
         proof {
             groups.model();
-            assert(groups.at(key.view()) == Some(*moment));
+            assert(groups.at(key.view()) == Some((*moment)@));
             assert(numeric(key.view()));
         }
-        let change = match scale(*moment, weight) { Some(change) => change, None => return false };
+        let change = scale(&*moment, weight);
         let ghost previous = *data;
-        if !change_inventory(data, nation, key.number, change) { return false; }
+        change_inventory(data, nation, key.number, &change);
         proof {
             assert forall|other: i64, part: Option<i64>, value: bool|
                 #[trigger] inventory_measure(data.inventories, other, part, value)
                     == inventory_measure(initial.inventories, other, part, value)
                         + sum(groups.entries().take(processed@ + 1), |row: (KeyView, Moment)|
-                            if other == nation { profile_row_measure(row, part, value) * weight as int } else { 0 }) by {
+                            if other == nation { profile_row_measure(row, part, value) * weight@ } else { 0 }) by {
                 lemma_sum_take(groups.entries(), processed@, |row: (KeyView, Moment)|
-                    if other == nation { profile_row_measure(row, part, value) * weight as int } else { 0 });
+                    if other == nation { profile_row_measure(row, part, value) * weight@ } else { 0 });
                 assert(inventory_measure(previous.inventories, other, part, value)
                     == inventory_measure(initial.inventories, other, part, value)
                         + sum(groups.entries().take(processed@), |row: (KeyView, Moment)|
-                            if other == nation { profile_row_measure(row, part, value) * weight as int } else { 0 }));
+                            if other == nation { profile_row_measure(row, part, value) * weight@ } else { 0 }));
                 if other == nation {
                     if let Some(part) = part {
                         if part != key.number { assert(inventory_at(data.inventories, other as int, part as int) == inventory_at(previous.inventories, other as int, part as int)); }
@@ -332,18 +333,18 @@ pub fn add_profile_inventory(data: &mut Data, nation: i64, groups: &Packed, weig
     }
 }
 
-pub fn add_supplier_inventory(data: &mut Data, supplier: &Key, links: &Index<i128>) -> (result: bool)
+pub fn add_supplier_inventory(data: &mut Data, supplier: &Key, links: &Index<Wide>) 
     requires old(data).structures_valid(), profile_storage_ok(old(data).profiles), links.wf(),
         forall|key: KeyView| (#[trigger] links.at(key)).is_some() ==> numeric(key),
     ensures final(data).structures_valid(), same_dimensions(*old(data), *final(data)),
         forall|key: KeyView| (#[trigger] old(data).names.at(key)).is_none() ==> final(data).names.at(key).is_none(),
-        result ==> forall|nation: i64, part: Option<i64>, value: bool|
+        forall|nation: i64, part: Option<i64>, value: bool|
             #[trigger] inventory_measure(final(data).inventories, nation, part, value)
                 == inventory_measure(old(data).inventories, nation, part, value)
                     + profile_measure_at(old(data).profiles, supplier.view(), part, value) * link_count(*links, nation),
 {
     let ghost initial = *data;
-    let groups = match data.profiles.get(supplier) { Some(groups) => groups, None => return true };
+    let groups = match data.profiles.get(supplier) { Some(groups) => groups, None => return };
     let mut cursor = links.cursor();
     let mut processed = Ghost(0int);
     loop
@@ -357,8 +358,8 @@ pub fn add_supplier_inventory(data: &mut Data, supplier: &Key, links: &Index<i12
             forall|nation: i64, part: Option<i64>, value: bool|
                 #[trigger] inventory_measure(data.inventories, nation, part, value)
                     == inventory_measure(initial.inventories, nation, part, value)
-                        + sum(links.entries().take(processed@), |row: (KeyView, i128)|
-                            if row.0 == numeric_key(nation as int) { profile_measure(*groups, part, value) * row.1 as int } else { 0 }),
+                        + sum(links.entries().take(processed@), |row: (KeyView, Wide)|
+                            if row.0 == numeric_key(nation as int) { profile_measure(*groups, part, value) * row.1@ } else { 0 }),
         decreases cursor.remaining().len(),
     {
         let (nation, weight) = match cursor.next() {
@@ -371,15 +372,15 @@ pub fn add_supplier_inventory(data: &mut Data, supplier: &Key, links: &Index<i12
                         #[trigger] inventory_measure(data.inventories, nation, part, value)
                             == inventory_measure(initial.inventories, nation, part, value)
                                 + profile_measure_at(initial.profiles, supplier.view(), part, value) * link_count(*links, nation) by {
-                        let weight = |row: (KeyView, i128)| profile_measure(*groups, part, value) * row.1 as int;
+                        let weight = |row: (KeyView, Wide)| profile_measure(*groups, part, value) * row.1@;
                         verus_prooflib::ordered::lemma_key_contribution(links, numeric_key(nation as int), weight);
-                        assert((|row: (KeyView, i128)| if row.0 == numeric_key(nation as int) { profile_measure(*groups, part, value) * row.1 as int } else { 0 })
-                            =~= (|row: (KeyView, i128)| if row.0 == numeric_key(nation as int) { weight(row) } else { 0 }));
+                        assert((|row: (KeyView, Wide)| if row.0 == numeric_key(nation as int) { profile_measure(*groups, part, value) * row.1@ } else { 0 })
+                            =~= (|row: (KeyView, Wide)| if row.0 == numeric_key(nation as int) { weight(row) } else { 0 }));
                         reveal(verus_prooflib::ordered::contribution);
                         if links.at(numeric_key(nation as int)).is_some() {} else { assert(link_count(*links, nation) == 0); }
                     }
                 }
-                return true;
+                return;
             },
         };
         proof {
@@ -388,32 +389,32 @@ pub fn add_supplier_inventory(data: &mut Data, supplier: &Key, links: &Index<i12
             assert(numeric(nation.view()));
         }
         let ghost previous = *data;
-        if !add_profile_inventory(data, nation.number, &*groups, *weight) { return false; }
+        add_profile_inventory(data, nation.number, &*groups, &*weight);
         proof {
             assert forall|other: i64, part: Option<i64>, value: bool|
                 #[trigger] inventory_measure(data.inventories, other, part, value)
                     == inventory_measure(initial.inventories, other, part, value)
-                        + sum(links.entries().take(processed@ + 1), |row: (KeyView, i128)|
-                            if row.0 == numeric_key(other as int) { profile_measure(*groups, part, value) * row.1 as int } else { 0 }) by {
-                lemma_sum_take(links.entries(), processed@, |row: (KeyView, i128)|
-                    if row.0 == numeric_key(other as int) { profile_measure(*groups, part, value) * row.1 as int } else { 0 });
+                        + sum(links.entries().take(processed@ + 1), |row: (KeyView, Wide)|
+                            if row.0 == numeric_key(other as int) { profile_measure(*groups, part, value) * row.1@ } else { 0 }) by {
+                lemma_sum_take(links.entries(), processed@, |row: (KeyView, Wide)|
+                    if row.0 == numeric_key(other as int) { profile_measure(*groups, part, value) * row.1@ } else { 0 });
                 assert(inventory_measure(previous.inventories, other, part, value)
                     == inventory_measure(initial.inventories, other, part, value)
-                        + sum(links.entries().take(processed@), |row: (KeyView, i128)|
-                            if row.0 == numeric_key(other as int) { profile_measure(*groups, part, value) * row.1 as int } else { 0 }));
+                        + sum(links.entries().take(processed@), |row: (KeyView, Wide)|
+                            if row.0 == numeric_key(other as int) { profile_measure(*groups, part, value) * row.1@ } else { 0 }));
             }
         }
         processed = Ghost(processed@ + 1);
     }
 }
 
-pub fn build_inventory_rows(data: &mut Data) -> (result: bool)
+pub fn build_inventory_rows(data: &mut Data) 
     requires old(data).structures_valid(), profile_storage_ok(old(data).profiles), counts_layout(old(data).suppliers, true, true),
         forall|key: KeyView| (#[trigger] old(data).inventories.at(key)).is_none(),
         forall|key: KeyView| (#[trigger] old(data).names.at(key)).is_none(),
     ensures final(data).structures_valid(), same_dimensions(*old(data), *final(data)),
         forall|key: KeyView| (#[trigger] final(data).names.at(key)).is_none(),
-        result ==> indexed_inventory_ok(*final(data)),
+        indexed_inventory_ok(*final(data)),
 {
     let ghost initial = *data;
     let mut cursor = data.suppliers.cursor();
@@ -426,7 +427,7 @@ pub fn build_inventory_rows(data: &mut Data) -> (result: bool)
             0 <= processed@ <= data.suppliers.entries().len(), cursor.remaining() == data.suppliers.entries().skip(processed@),
             forall|nation: i64, part: Option<i64>, value: bool|
                 #[trigger] inventory_measure(data.inventories, nation, part, value)
-                    == sum(data.suppliers.entries().take(processed@), |row: (KeyView, Index<i128>)|
+                    == sum(data.suppliers.entries().take(processed@), |row: (KeyView, Index<Wide>)|
                         supplier_measure(data.profiles, row, nation, part, value)),
         decreases cursor.remaining().len(),
     {
@@ -437,7 +438,7 @@ pub fn build_inventory_rows(data: &mut Data) -> (result: bool)
                     assert(processed@ == data.suppliers.entries().len());
                     assert(data.suppliers.entries().take(processed@) =~= data.suppliers.entries());
                 }
-                return true;
+                return;
             },
         };
         proof {
@@ -445,22 +446,21 @@ pub fn build_inventory_rows(data: &mut Data) -> (result: bool)
             assert(data.suppliers.at(supplier.view()) == Some(*links));
         }
         let ghost previous = *data;
-        let applied = add_supplier_inventory(data, &supplier, &*links);
+        add_supplier_inventory(data, &supplier, &*links);
         proof {
             assert forall|key: KeyView| (#[trigger] data.names.at(key)).is_none() by {
                 assert(previous.names.at(key).is_none());
             }
         }
-        if !applied { return false; }
         proof {
             assert forall|nation: i64, part: Option<i64>, value: bool|
                 #[trigger] inventory_measure(data.inventories, nation, part, value)
-                    == sum(data.suppliers.entries().take(processed@ + 1), |row: (KeyView, Index<i128>)|
+                    == sum(data.suppliers.entries().take(processed@ + 1), |row: (KeyView, Index<Wide>)|
                         supplier_measure(data.profiles, row, nation, part, value)) by {
-                lemma_sum_take(data.suppliers.entries(), processed@, |row: (KeyView, Index<i128>)|
+                lemma_sum_take(data.suppliers.entries(), processed@, |row: (KeyView, Index<Wide>)|
                     supplier_measure(data.profiles, row, nation, part, value));
                 assert(inventory_measure(previous.inventories, nation, part, value)
-                    == sum(previous.suppliers.entries().take(processed@), |row: (KeyView, Index<i128>)|
+                    == sum(previous.suppliers.entries().take(processed@), |row: (KeyView, Index<Wide>)|
                         supplier_measure(previous.profiles, row, nation, part, value)));
             }
         }

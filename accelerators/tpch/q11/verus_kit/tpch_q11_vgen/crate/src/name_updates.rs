@@ -1,6 +1,7 @@
 use crate::packed::{self, Packed, PackedCursor};
 use std::sync::Arc;
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::*;
 use verus_prooflib::ordered::{Index, Key, KeyView};
 use crate::model::*;
@@ -55,57 +56,56 @@ pub proof fn lemma_shape_transitive(before: Index<NameView>, middle: Index<NameV
     } by { assert(middle.at(key).is_some()); }
 }
 
-pub fn change_name(data: &mut Data, name: &Key, part: i64, change: Moment, multiplicity: i128) -> (result: bool)
+pub fn change_name(data: &mut Data, name: &Key, part: i64, change: &Mom, multiplicity: &Wide)
     requires old(data).structures_valid(),
     ensures final(data).structures_valid(), same_dimensions(*old(data), *final(data)), final(data).inventories == old(data).inventories,
         same_shape(old(data).names, final(data).names),
         forall|key: KeyView| key != name.view() ==> (#[trigger] final(data).names.at(key)) == old(data).names.at(key),
-        result ==> forall|key: KeyView, selected: Option<i64>, value: bool| #[trigger] name_measure(final(data).names, key, selected, value)
+        forall|key: KeyView, selected: Option<i64>, value: bool| #[trigger] name_measure(final(data).names, key, selected, value)
             == name_measure(old(data).names, key, selected, value)
-                + if key == name.view() && merged_at(old(data).names, key) { cell_change(change, part, selected, value) * multiplicity as int } else { 0 },
+                + if key == name.view() && merged_at(old(data).names, key) { cell_change(change@, part, selected, value) * multiplicity@ } else { 0 },
 {
-    let view = match data.names.get(name) { Some(view) => view, None => return true };
+    let view = match data.names.get(name) { Some(view) => view, None => return };
     if let NameView::Merged { inventory } = &*view {
         let mut updated = inventory.share();
-        let weighted = match scale(change, multiplicity) { Some(weighted) => weighted, None => return false };
-        if !updated.update(part, weighted) { return false; }
+        let weighted = scale(change, multiplicity);
+        updated.update(part, &weighted);
         data.names.put(name.share(), Arc::new(NameView::Merged { inventory: updated }));
         proof {
             assert forall|selected: Option<i64>, value: bool| #[trigger] measure(updated, selected, value)
-                == measure(*inventory, selected, value) + cell_change(change, part, selected, value) * multiplicity as int by {
+                == measure(*inventory, selected, value) + cell_change(change@, part, selected, value) * multiplicity@ by {
                 if let Some(selected) = selected {
                     if selected == part {
-                        assert(moment_at(updated.groups, selected as int).count as int == moment_at(inventory.groups, selected as int).count as int + weighted.count as int);
-                        assert(moment_at(updated.groups, selected as int).value as int == moment_at(inventory.groups, selected as int).value as int + weighted.value as int);
+                        assert(moment_at(updated.groups, selected as int).count as int == moment_at(inventory.groups, selected as int).count as int + weighted.count@);
+                        assert(moment_at(updated.groups, selected as int).value as int == moment_at(inventory.groups, selected as int).value as int + weighted.value@);
                     } else { assert(moment_at(updated.groups, selected as int) == moment_at(inventory.groups, selected as int)); }
                 }
             }
         }
     }
-    true
 }
 
-pub proof fn lemma_support_cell(before: Index<Inventory>, after: Index<Inventory>, support: Index<i128>, nation: i64, part: i64, change: Moment, selected: Option<i64>, value: bool)
+pub proof fn lemma_support_cell(before: Index<Inventory>, after: Index<Inventory>, support: Index<Wide>, nation: i64, part: i64, change: Moment, selected: Option<i64>, value: bool)
     requires support.wf(),
         forall|key: KeyView| (#[trigger] support.at(key)).is_some() ==> source_measure(after, key, selected, value)
             == source_measure(before, key, selected, value) + if key == numeric_key(nation as int) { cell_change(change, part, selected, value) } else { 0 },
     ensures support_measure(after, support, selected, value) == support_measure(before, support, selected, value)
         + link_count(support, nation) * cell_change(change, part, selected, value),
 {
-    let old_weight = |row: (KeyView, i128)| source_measure(before, row.0, selected, value) * row.1 as int;
-    let new_weight = |row: (KeyView, i128)| source_measure(after, row.0, selected, value) * row.1 as int;
-    let delta_weight = |row: (KeyView, i128)| if row.0 == numeric_key(nation as int) { row.1 as int * cell_change(change, part, selected, value) } else { 0 };
+    let old_weight = |row: (KeyView, Wide)| source_measure(before, row.0, selected, value) * row.1@;
+    let new_weight = |row: (KeyView, Wide)| source_measure(after, row.0, selected, value) * row.1@;
+    let delta_weight = |row: (KeyView, Wide)| if row.0 == numeric_key(nation as int) { row.1@ * cell_change(change, part, selected, value) } else { 0 };
     support.model();
     assert forall|position: int| 0 <= position < support.entries().len() implies new_weight(#[trigger] support.entries()[position]) == old_weight(support.entries()[position]) + delta_weight(support.entries()[position]) by {
         let row = support.entries()[position]; assert(support.at(row.0).is_some());
         assert(new_weight(row) == old_weight(row) + delta_weight(row)) by (nonlinear_arith)
             requires source_measure(after, row.0, selected, value) == source_measure(before, row.0, selected, value)
                 + if row.0 == numeric_key(nation as int) { cell_change(change, part, selected, value) } else { 0 },
-                new_weight(row) == source_measure(after, row.0, selected, value) * row.1 as int,
-                old_weight(row) == source_measure(before, row.0, selected, value) * row.1 as int,
-                delta_weight(row) == if row.0 == numeric_key(nation as int) { row.1 as int * cell_change(change, part, selected, value) } else { 0 };
+                new_weight(row) == source_measure(after, row.0, selected, value) * row.1@,
+                old_weight(row) == source_measure(before, row.0, selected, value) * row.1@,
+                delta_weight(row) == if row.0 == numeric_key(nation as int) { row.1@ * cell_change(change, part, selected, value) } else { 0 };
     }
-    let combined = |row: (KeyView, i128)| old_weight(row) + delta_weight(row);
+    let combined = |row: (KeyView, Wide)| old_weight(row) + delta_weight(row);
     lemma_sum_ext(support.entries(), new_weight, combined);
     lemma_sum_add(support.entries(), old_weight, delta_weight, combined);
     crate::staging::lemma_link_finish(support, nation, cell_change(change, part, selected, value), delta_weight);
@@ -148,13 +148,13 @@ pub proof fn lemma_binding_cell(before: Data, after: Data, nation: i64, part: i6
     }
 }
 
-pub fn update_nation_names(data: &mut Data, names: &Index<i128>, part: i64, change: Moment) -> (result: bool)
+pub fn update_nation_names(data: &mut Data, names: &Index<Wide>, part: i64, change: &Mom)
     requires old(data).structures_valid(), names.wf(),
     ensures final(data).structures_valid(), same_dimensions(*old(data), *final(data)), final(data).inventories == old(data).inventories,
         same_shape(old(data).names, final(data).names),
-        result ==> forall|key: KeyView, selected: Option<i64>, value: bool| #[trigger] name_measure(final(data).names, key, selected, value)
+        forall|key: KeyView, selected: Option<i64>, value: bool| #[trigger] name_measure(final(data).names, key, selected, value)
             == name_measure(old(data).names, key, selected, value) + if merged_at(old(data).names, key) {
-                verus_prooflib::ordered_weight_at(*names, key, |row: (KeyView, i128)| row.1 as int) * cell_change(change, part, selected, value)
+                verus_prooflib::ordered_weight_at(*names, key, |row: (KeyView, Wide)| row.1@) * cell_change(change@, part, selected, value)
             } else { 0 },
 {
     let ghost initial = *data;
@@ -165,8 +165,8 @@ pub fn update_nation_names(data: &mut Data, names: &Index<i128>, part: i64, chan
             same_shape(initial.names, data.names), names.wf(),
             0 <= processed@ <= names.entries().len(), cursor.remaining() == names.entries().skip(processed@),
             forall|key: KeyView, selected: Option<i64>, value: bool| #[trigger] name_measure(data.names, key, selected, value)
-                == name_measure(initial.names, key, selected, value) + sum(names.entries().take(processed@), |row: (KeyView, i128)|
-                    if row.0 == key && merged_at(initial.names, key) { row.1 as int * cell_change(change, part, selected, value) } else { 0 }),
+                == name_measure(initial.names, key, selected, value) + sum(names.entries().take(processed@), |row: (KeyView, Wide)|
+                    if row.0 == key && merged_at(initial.names, key) { row.1@ * cell_change(change@, part, selected, value) } else { 0 }),
         decreases cursor.remaining().len(),
     {
         let (name, multiplicity) = match cursor.next() {
@@ -176,31 +176,31 @@ pub fn update_nation_names(data: &mut Data, names: &Index<i128>, part: i64, chan
                     assert(processed@ == names.entries().len()); assert(names.entries().take(processed@) =~= names.entries());
                     assert forall|key: KeyView, selected: Option<i64>, value: bool| #[trigger] name_measure(data.names, key, selected, value)
                         == name_measure(initial.names, key, selected, value) + if merged_at(initial.names, key) {
-                            verus_prooflib::ordered_weight_at(*names, key, |row: (KeyView, i128)| row.1 as int) * cell_change(change, part, selected, value)
+                            verus_prooflib::ordered_weight_at(*names, key, |row: (KeyView, Wide)| row.1@) * cell_change(change@, part, selected, value)
                         } else { 0 } by {
-                        let weight = |row: (KeyView, i128)| if row.0 == key && merged_at(initial.names, key) { row.1 as int * cell_change(change, part, selected, value) } else { 0 };
+                        let weight = |row: (KeyView, Wide)| if row.0 == key && merged_at(initial.names, key) { row.1@ * cell_change(change@, part, selected, value) } else { 0 };
                         if merged_at(initial.names, key) {
-                            verus_prooflib::lemma_ordered_selected_weight(names, key, |row: (KeyView, i128)| row.1 as int, cell_change(change, part, selected, value), weight);
+                            verus_prooflib::lemma_ordered_selected_weight(names, key, |row: (KeyView, Wide)| row.1@, cell_change(change@, part, selected, value), weight);
                         } else { lemma_sum_zero(names.entries(), weight); }
                         assert(name_measure(data.names, key, selected, value) == name_measure(initial.names, key, selected, value) + sum(names.entries(), weight));
                     }
                 }
-                return true;
+                return;
             },
         };
         let ghost previous = *data;
-        if !change_name(data, &name, part, change, *multiplicity) { return false; }
+        change_name(data, &name, part, change, &*multiplicity);
         proof {
             lemma_shape_transitive(initial.names, previous.names, data.names);
             assert forall|key: KeyView, selected: Option<i64>, value: bool| #[trigger] name_measure(data.names, key, selected, value)
-                == name_measure(initial.names, key, selected, value) + sum(names.entries().take(processed@ + 1), |row: (KeyView, i128)|
-                    if row.0 == key && merged_at(initial.names, key) { row.1 as int * cell_change(change, part, selected, value) } else { 0 }) by {
-                let weight = |row: (KeyView, i128)| if row.0 == key && merged_at(initial.names, key) { row.1 as int * cell_change(change, part, selected, value) } else { 0 };
+                == name_measure(initial.names, key, selected, value) + sum(names.entries().take(processed@ + 1), |row: (KeyView, Wide)|
+                    if row.0 == key && merged_at(initial.names, key) { row.1@ * cell_change(change@, part, selected, value) } else { 0 }) by {
+                let weight = |row: (KeyView, Wide)| if row.0 == key && merged_at(initial.names, key) { row.1@ * cell_change(change@, part, selected, value) } else { 0 };
                 lemma_sum_take(names.entries(), processed@, weight);
                 assert(names.entries()[processed@] == (name.view(), *multiplicity));
                 assert(merged_at(previous.names, key) == merged_at(initial.names, key));
                 assert(name_measure(previous.names, key, selected, value) == name_measure(initial.names, key, selected, value) + sum(names.entries().take(processed@), weight));
-                assert(cell_change(change, part, selected, value) * *multiplicity as int == *multiplicity as int * cell_change(change, part, selected, value)) by (nonlinear_arith);
+                assert(cell_change(change@, part, selected, value) * multiplicity@ == multiplicity@ * cell_change(change@, part, selected, value)) by (nonlinear_arith);
             }
         }
         processed = Ghost(processed@ + 1);
@@ -209,10 +209,10 @@ pub fn update_nation_names(data: &mut Data, names: &Index<i128>, part: i64, chan
 
 pub proof fn lemma_inventory_sources(before: Data, after: Data, nation: i64, part: i64, change: Moment)
     requires before.structures_valid(), after.structures_valid(),
-        inventory_at(after.inventories, nation as int, part as int).count as int == inventory_at(before.inventories, nation as int, part as int).count as int + change.count as int,
-        inventory_at(after.inventories, nation as int, part as int).value as int == inventory_at(before.inventories, nation as int, part as int).value as int + change.value as int,
-        inventory_total(after.inventories, nation as int).count as int == inventory_total(before.inventories, nation as int).count as int + change.count as int,
-        inventory_total(after.inventories, nation as int).value as int == inventory_total(before.inventories, nation as int).value as int + change.value as int,
+        inventory_at(after.inventories, nation as int, part as int).count as int == inventory_at(before.inventories, nation as int, part as int).count as int + change.count,
+        inventory_at(after.inventories, nation as int, part as int).value as int == inventory_at(before.inventories, nation as int, part as int).value as int + change.value,
+        inventory_total(after.inventories, nation as int).count as int == inventory_total(before.inventories, nation as int).count as int + change.count,
+        inventory_total(after.inventories, nation as int).value as int == inventory_total(before.inventories, nation as int).value as int + change.value,
         forall|other_nation: int, other_part: int| other_nation != nation || other_part != part ==> #[trigger] inventory_at(after.inventories, other_nation, other_part) == inventory_at(before.inventories, other_nation, other_part),
         forall|other_nation: int| other_nation != nation ==> #[trigger] inventory_total(after.inventories, other_nation) == inventory_total(before.inventories, other_nation),
     ensures forall|key: KeyView, selected: Option<i64>, value: bool| #[trigger] source_measure(after.inventories, key, selected, value)
@@ -236,26 +236,26 @@ pub open spec fn outer_measure(inventories: Index<Inventory>, counts: Counts, na
     match counts.at(name) { Some(support) => support_measure(inventories, support, part, value), None => 0 }
 }
 
-pub proof fn lemma_support_transpose(inventories: Index<Inventory>, support: Index<i128>, part: Option<i64>, value: bool)
+pub proof fn lemma_support_transpose(inventories: Index<Inventory>, support: Index<Wide>, part: Option<i64>, value: bool)
     requires inventories.wf(), support.wf(),
     ensures support_measure(inventories, support, part, value)
         == sum(inventories.entries(), |row: (KeyView, Inventory)| measure(row.1, part, value)
-            * verus_prooflib::ordered_weight_at(support, row.0, |entry: (KeyView, i128)| entry.1 as int)),
+            * verus_prooflib::ordered_weight_at(support, row.0, |entry: (KeyView, Wide)| entry.1@)),
 {
     let inventory_weight = |row: (KeyView, Inventory)| measure(row.1, part, value);
-    let count_weight = |row: (KeyView, i128)| row.1 as int;
+    let count_weight = |row: (KeyView, Wide)| row.1@;
     verus_prooflib::lemma_ordered_dot_transpose(&inventories, &support, inventory_weight, count_weight);
-    let original = |row: (KeyView, i128)| source_measure(inventories, row.0, part, value) * row.1 as int;
-    let dot_weight = |row: (KeyView, i128)| count_weight(row) * verus_prooflib::ordered_weight_at(inventories, row.0, inventory_weight);
-    assert forall|row: (KeyView, i128)| #[trigger] original(row) == dot_weight(row) by {
+    let original = |row: (KeyView, Wide)| source_measure(inventories, row.0, part, value) * row.1@;
+    let dot_weight = |row: (KeyView, Wide)| count_weight(row) * verus_prooflib::ordered_weight_at(inventories, row.0, inventory_weight);
+    assert forall|row: (KeyView, Wide)| #[trigger] original(row) == dot_weight(row) by {
         assert(source_measure(inventories, row.0, part, value) == verus_prooflib::ordered_weight_at(inventories, row.0, inventory_weight));
         assert(original(row) == dot_weight(row)) by (nonlinear_arith)
-            requires original(row) == source_measure(inventories, row.0, part, value) * row.1 as int,
-                dot_weight(row) == row.1 as int * source_measure(inventories, row.0, part, value);
+            requires original(row) == source_measure(inventories, row.0, part, value) * row.1@,
+                dot_weight(row) == row.1@ * source_measure(inventories, row.0, part, value);
     }
     lemma_sum_ext_all(support.entries(), original, dot_weight);
     let dot_inventory = |row: (KeyView, Inventory)| inventory_weight(row) * verus_prooflib::ordered_weight_at(support, row.0, count_weight);
-    let target = |row: (KeyView, Inventory)| measure(row.1, part, value) * verus_prooflib::ordered_weight_at(support, row.0, |entry: (KeyView, i128)| entry.1 as int);
+    let target = |row: (KeyView, Inventory)| measure(row.1, part, value) * verus_prooflib::ordered_weight_at(support, row.0, |entry: (KeyView, Wide)| entry.1@);
     lemma_sum_ext_all(inventories.entries(), dot_inventory, target);
 }
 
@@ -267,16 +267,16 @@ pub proof fn lemma_outer_transpose(inventories: Index<Inventory>, counts: Counts
     if let Some(support) = counts.at(name) {
         lemma_support_transpose(inventories, support, part, value);
         let original = |row: (KeyView, Inventory)| measure(row.1, part, value)
-            * verus_prooflib::ordered_weight_at(support, row.0, |entry: (KeyView, i128)| entry.1 as int);
+            * verus_prooflib::ordered_weight_at(support, row.0, |entry: (KeyView, Wide)| entry.1@);
         let target = |row: (KeyView, Inventory)| measure(row.1, part, value) * count_at(counts, name, row.0);
         lemma_sum_ext_all(inventories.entries(), original, target);
     } else { lemma_sum_zero(inventories.entries(), |row: (KeyView, Inventory)| measure(row.1, part, value) * count_at(counts, name, row.0)); }
 }
 
-pub proof fn lemma_support_count_step(inventories: Index<Inventory>, before: Counts, after: Counts, name: KeyView, changes: Index<i128>, part: Option<i64>, value: bool)
+pub proof fn lemma_support_count_step(inventories: Index<Inventory>, before: Counts, after: Counts, name: KeyView, changes: Index<Wide>, part: Option<i64>, value: bool)
     requires inventories.wf(), counts_layout(before, false, true), counts_layout(after, false, true), changes.wf(),
         forall|key: KeyView| #[trigger] count_at(after, name, key) == count_at(before, name, key)
-            + verus_prooflib::ordered_weight_at(changes, key, |row: (KeyView, i128)| row.1 as int),
+            + verus_prooflib::ordered_weight_at(changes, key, |row: (KeyView, Wide)| row.1@),
     ensures outer_measure(inventories, after, name, part, value) == outer_measure(inventories, before, name, part, value)
         + support_measure(inventories, changes, part, value),
 {
@@ -285,9 +285,9 @@ pub proof fn lemma_support_count_step(inventories: Index<Inventory>, before: Cou
     lemma_support_transpose(inventories, changes, part, value);
     let old_weight = |row: (KeyView, Inventory)| measure(row.1, part, value) * count_at(before, name, row.0);
     let new_weight = |row: (KeyView, Inventory)| measure(row.1, part, value) * count_at(after, name, row.0);
-    let delta_weight = |row: (KeyView, Inventory)| measure(row.1, part, value) * verus_prooflib::ordered_weight_at(changes, row.0, |entry: (KeyView, i128)| entry.1 as int);
+    let delta_weight = |row: (KeyView, Inventory)| measure(row.1, part, value) * verus_prooflib::ordered_weight_at(changes, row.0, |entry: (KeyView, Wide)| entry.1@);
     assert forall|row: (KeyView, Inventory)| #[trigger] new_weight(row) == old_weight(row) + delta_weight(row) by {
-        let count = verus_prooflib::ordered_weight_at(changes, row.0, |entry: (KeyView, i128)| entry.1 as int);
+        let count = verus_prooflib::ordered_weight_at(changes, row.0, |entry: (KeyView, Wide)| entry.1@);
         assert(count_at(after, name, row.0) == count_at(before, name, row.0) + count);
         assert(new_weight(row) == old_weight(row) + delta_weight(row)) by (nonlinear_arith)
             requires count_at(after, name, row.0) == count_at(before, name, row.0) + count,
@@ -298,10 +298,10 @@ pub proof fn lemma_support_count_step(inventories: Index<Inventory>, before: Cou
     lemma_sum_add(inventories.entries(), old_weight, delta_weight, new_weight);
 }
 
-pub fn merge_changes(target: &mut Inventory, data: &Data, changes: &Index<i128>) -> (result: bool)
+pub fn merge_changes(target: &mut Inventory, data: &Data, changes: &Index<Wide>)
     requires old(target).valid(), data.structures_valid(), changes.wf(),
     ensures final(target).valid(),
-        result ==> forall|part: Option<i64>, value: bool| #[trigger] measure(*final(target), part, value)
+        forall|part: Option<i64>, value: bool| #[trigger] measure(*final(target), part, value)
             == measure(*old(target), part, value) + support_measure(data.inventories, *changes, part, value),
 {
     let ghost initial = *target;
@@ -311,30 +311,30 @@ pub fn merge_changes(target: &mut Inventory, data: &Data, changes: &Index<i128>)
         invariant target.valid(), data.structures_valid(), changes.wf(), initial == *old(target),
             0 <= processed@ <= changes.entries().len(), cursor.remaining() == changes.entries().skip(processed@),
             forall|part: Option<i64>, value: bool| #[trigger] measure(*target, part, value)
-                == measure(initial, part, value) + sum(changes.entries().take(processed@), |row: (KeyView, i128)| source_measure(data.inventories, row.0, part, value) * row.1 as int),
+                == measure(initial, part, value) + sum(changes.entries().take(processed@), |row: (KeyView, Wide)| source_measure(data.inventories, row.0, part, value) * row.1@),
         decreases cursor.remaining().len(),
     {
         let (nation, weight) = match cursor.next() {
             Some(row) => row,
             None => {
                 proof { assert(processed@ == changes.entries().len()); assert(changes.entries().take(processed@) =~= changes.entries()); }
-                return true;
+                return;
             },
         };
         let ghost previous = *target;
         if let Some(source) = data.inventories.get(&nation) {
-            if !crate::maintenance::merge_inventory(target, &*source, *weight) { return false; }
+            crate::maintenance::merge_inventory(target, &*source, &*weight);
         }
         proof {
             assert forall|part: Option<i64>, value: bool| #[trigger] measure(*target, part, value)
-                == measure(initial, part, value) + sum(changes.entries().take(processed@ + 1), |row: (KeyView, i128)| source_measure(data.inventories, row.0, part, value) * row.1 as int) by {
-                let selected = |row: (KeyView, i128)| source_measure(data.inventories, row.0, part, value) * row.1 as int;
+                == measure(initial, part, value) + sum(changes.entries().take(processed@ + 1), |row: (KeyView, Wide)| source_measure(data.inventories, row.0, part, value) * row.1@) by {
+                let selected = |row: (KeyView, Wide)| source_measure(data.inventories, row.0, part, value) * row.1@;
                 lemma_sum_take(changes.entries(), processed@, selected);
                 assert(measure(previous, part, value) == measure(initial, part, value) + sum(changes.entries().take(processed@), selected));
                 if let Some(part) = part {
                     if let Some(source) = data.inventories.at(nation.view()) {
-                        assert(moment_at(target.groups, part as int).count as int == moment_at(previous.groups, part as int).count as int + moment_at(source.groups, part as int).count as int * *weight as int);
-                        assert(moment_at(target.groups, part as int).value as int == moment_at(previous.groups, part as int).value as int + moment_at(source.groups, part as int).value as int * *weight as int);
+                        assert(moment_at(target.groups, part as int).count as int == moment_at(previous.groups, part as int).count as int + moment_at(source.groups, part as int).count as int * (*weight)@);
+                        assert(moment_at(target.groups, part as int).value as int == moment_at(previous.groups, part as int).value as int + moment_at(source.groups, part as int).value as int * (*weight)@);
                     }
                 }
             }

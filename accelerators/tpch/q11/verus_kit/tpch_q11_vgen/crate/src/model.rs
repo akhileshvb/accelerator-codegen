@@ -8,15 +8,16 @@ use crate::gen_spec::*;
 use crate::gen_obligations::params;
 use crate::inventory::*;
 use crate::values::*;
+use verus_prooflib::wide::Wide;
 use verus_prooflib::lemma_ordered_equal;
 
 verus! {
 
 pub type Profiles = Index<Packed>;
-pub type Counts = Index<Index<i128>>;
+pub type Counts = Index<Index<Wide>>;
 
 pub enum NameView {
-    Singleton { nation: i64, multiplicity: i128 },
+    Singleton { nation: i64, multiplicity: Wide },
     Merged { inventory: Inventory },
 }
 
@@ -42,7 +43,7 @@ pub open spec fn profile_at(profiles: Profiles, supplier: int, part: int) -> Mom
 
 pub open spec fn count_at(counts: Counts, outer: KeyView, inner: KeyView) -> int {
     match counts.at(outer) {
-        Some(groups) => match groups.at(inner) { Some(count) => count as int, None => 0int },
+        Some(groups) => match groups.at(inner) { Some(count) => count@, None => 0int },
         None => 0,
     }
 }
@@ -91,7 +92,7 @@ pub open spec fn inventory_at(inventories: Index<Inventory>, nation: int, part: 
 }
 
 pub open spec fn inventory_total(inventories: Index<Inventory>, nation: int) -> Moment {
-    match inventories.at(numeric_key(nation)) { Some(inventory) => inventory.total, None => zero_moment() }
+    match inventories.at(numeric_key(nation)) { Some(inventory) => inventory.total@, None => zero_moment() }
 }
 
 pub open spec fn same_dimensions(before: Data, after: Data) -> bool {
@@ -102,12 +103,14 @@ pub open spec fn same_dimensions(before: Data, after: Data) -> bool {
     &&& before.nations_reverse == after.nations_reverse
 }
 
-pub open spec fn positive_counts(counts: Counts) -> bool {
+pub open spec fn nonzero_counts(counts: Counts) -> bool {
     counts.wf() && forall|outer: KeyView| #[trigger] counts.at(outer).is_some() ==> {
         let groups = counts.at(outer).unwrap();
-        groups.wf() && groups.entries().len() > 0 && forall|inner: KeyView| #[trigger] groups.at(inner).is_some() ==> groups.at(inner).unwrap() > 0
+        groups.wf() && groups.entries().len() > 0 && forall|inner: KeyView| #[trigger] groups.at(inner).is_some() ==> groups.at(inner).unwrap()@ != 0
     }
 }
+
+pub open spec fn nonzero_moment(moment: Moment) -> bool { moment.count != 0 || moment.value != 0 }
 
 pub open spec fn numeric( key: KeyView) -> bool {
     key.1 == Seq::<u8>::empty() && i64::MIN <= key.0 <= i64::MAX
@@ -120,7 +123,7 @@ pub open spec fn profile_storage_ok(profiles: Profiles) -> bool {
         &&& numeric(supplier)
         &&& groups.wf()
         &&& groups.entries().len() > 0
-        &&& forall|part: KeyView| (#[trigger] groups.at(part)).is_some() ==> numeric(part) && groups.at(part).unwrap().count > 0
+        &&& forall|part: KeyView| (#[trigger] groups.at(part)).is_some() ==> numeric(part) && nonzero_moment(groups.at(part).unwrap())
     }
 }
 
@@ -153,7 +156,7 @@ pub proof fn lemma_profile_storage_equal(before: Profiles, after: Profiles)
     assert forall|key: KeyView| (#[trigger] after.at(key)).is_some() implies {
         let groups = after.at(key).unwrap();
         numeric(key) && groups.wf() && groups.entries().len() > 0
-            && forall|part: KeyView| (#[trigger] groups.at(part)).is_some() ==> numeric(part) && groups.at(part).unwrap().count > 0
+            && forall|part: KeyView| (#[trigger] groups.at(part)).is_some() ==> numeric(part) && nonzero_moment(groups.at(part).unwrap())
     } by {
         assert(before.at(key) == after.at(key));
         assert(before.at(key).is_some());
@@ -162,13 +165,13 @@ pub proof fn lemma_profile_storage_equal(before: Profiles, after: Profiles)
 
 pub proof fn lemma_counts_storage_equal(before: Counts, after: Counts)
     requires before.wf(), after.wf(), forall|key: KeyView| #[trigger] before.at(key) == #[trigger] after.at(key),
-    ensures positive_counts(before) ==> positive_counts(after),
+    ensures nonzero_counts(before) ==> nonzero_counts(after),
         forall|outer_number: bool, inner_number: bool| #[trigger] counts_layout(before, outer_number, inner_number) ==> counts_layout(after, outer_number, inner_number),
 {
-    if positive_counts(before) {
+    if nonzero_counts(before) {
         assert forall|key: KeyView| (#[trigger] after.at(key)).is_some() implies {
             let groups = after.at(key).unwrap();
-            groups.wf() && groups.entries().len() > 0 && forall|inner: KeyView| (#[trigger] groups.at(inner)).is_some() ==> groups.at(inner).unwrap() > 0
+            groups.wf() && groups.entries().len() > 0 && forall|inner: KeyView| (#[trigger] groups.at(inner)).is_some() ==> groups.at(inner).unwrap()@ != 0
         } by { assert(before.at(key) == after.at(key)); assert(before.at(key).is_some()); }
     }
     assert forall|outer_number: bool, inner_number: bool| #[trigger] counts_layout(before, outer_number, inner_number) implies counts_layout(after, outer_number, inner_number) by {
@@ -195,7 +198,7 @@ impl Data {
         &&& forall|key: KeyView| (#[trigger] self.inventories.at(key)).is_some() ==> {
             &&& numeric(key)
             &&& self.inventories.at(key).unwrap().valid()
-            &&& self.inventories.at(key).unwrap().total.count > 0
+            &&& self.inventories.at(key).unwrap().groups.entries().len() > 0
         }
         &&& forall|key: KeyView| (#[trigger] self.names.at(key)).is_some() ==> match self.names.at(key).unwrap() {
             NameView::Singleton { .. } => true,
@@ -211,7 +214,7 @@ impl Data {
     }
 
     pub open spec fn suppliers_ok(self, db: Db) -> bool {
-        &&& positive_counts(self.suppliers) && positive_counts(self.suppliers_reverse)
+        &&& nonzero_counts(self.suppliers) && nonzero_counts(self.suppliers_reverse)
         &&& forall|supplier: i64, nation: i64| #[trigger] count_at(self.suppliers, numeric_key(supplier as int), numeric_key(nation as int))
             == s_count(db, supplier as int, nation as int)
             && count_at(self.suppliers_reverse, numeric_key(nation as int), numeric_key(supplier as int))
@@ -221,7 +224,7 @@ impl Data {
     }
 
     pub open spec fn nations_ok(self, db: Db) -> bool {
-        &&& positive_counts(self.nations) && positive_counts(self.nations_reverse)
+        &&& nonzero_counts(self.nations) && nonzero_counts(self.nations_reverse)
         &&& forall|nation: i64, name: Seq<u8>| #[trigger] count_at(self.nations, numeric_key(nation as int), text_key(name))
             == n_count(db, nation as int, name)
             && count_at(self.nations_reverse, text_key(name), numeric_key(nation as int)) == n_count(db, nation as int, name)
@@ -237,9 +240,9 @@ impl Data {
             let inventory = self.inventories.at(key).unwrap();
             &&& numeric(key)
             &&& inventory.valid()
-            &&& inventory.total.count > 0
-            &&& inventory.total.count as int == h_total_count(db, key.0)
-            &&& inventory.total.value as int == h_total_value(db, key.0)
+            &&& inventory.groups.entries().len() > 0
+            &&& inventory.total.count@ == h_total_count(db, key.0)
+            &&& inventory.total.value@ == h_total_value(db, key.0)
         }
     }
 
@@ -251,14 +254,14 @@ impl Data {
             &&& match self.names.at(key).unwrap() {
                 NameView::Singleton { nation, multiplicity } => {
                     &&& support.entries().len() == 1
-                    &&& support.at(numeric_key(nation as int)) == Some(multiplicity)
-                    &&& multiplicity > 0
+                    &&& support.at(numeric_key(nation as int)).is_some() && support.at(numeric_key(nation as int)).unwrap()@ == multiplicity@
+                    &&& multiplicity@ > 0
                 },
                 NameView::Merged { inventory } => {
                     &&& support.entries().len() >= 2
                     &&& inventory.valid()
-                    &&& inventory.total.count as int == scalar_1_group_count(db, params0(key.1))
-                    &&& inventory.total.value as int == scalar_1_group_sum(db, params0(key.1), |tuple: Scalar1Tuple|
+                    &&& inventory.total.count@ == scalar_1_group_count(db, params0(key.1))
+                    &&& inventory.total.value@ == scalar_1_group_sum(db, params0(key.1), |tuple: Scalar1Tuple|
                         tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
                     &&& forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count as int
                         == group_count(db, params0(key.1), part as int)
@@ -278,8 +281,8 @@ impl Data {
         ensures
             result.structures_valid(),
             profile_storage_ok(result.profiles),
-            positive_counts(result.suppliers), positive_counts(result.suppliers_reverse),
-            positive_counts(result.nations), positive_counts(result.nations_reverse),
+            nonzero_counts(result.suppliers), nonzero_counts(result.suppliers_reverse),
+            nonzero_counts(result.nations), nonzero_counts(result.nations_reverse),
             counts_layout(result.suppliers, true, true), counts_layout(result.suppliers_reverse, true, true),
             counts_layout(result.nations, true, false), counts_layout(result.nations_reverse, false, true),
             forall|key: KeyView| #[trigger] result.profiles.at(key).is_none(),
@@ -314,7 +317,7 @@ impl Data {
             if self.nations.wf() { lemma_ordered_equal(&self.nations, &result.nations); }
             if self.nations_reverse.wf() { lemma_ordered_equal(&self.nations_reverse, &result.nations_reverse); }
             assert forall|key: KeyView| (#[trigger] result.inventories.at(key)).is_some() implies
-                numeric(key) && result.inventories.at(key).unwrap().valid() && result.inventories.at(key).unwrap().total.count > 0
+                numeric(key) && result.inventories.at(key).unwrap().valid() && result.inventories.at(key).unwrap().groups.entries().len() > 0
                 by { assert(self.inventories.at(key).is_some()); }
             assert forall|key: KeyView| (#[trigger] result.names.at(key)).is_some() implies
                 (match result.names.at(key).unwrap() { NameView::Singleton { .. } => true, NameView::Merged { inventory } => inventory.valid() }) by {
@@ -339,8 +342,8 @@ impl Data {
                     assert(profile_at(self.profiles, supplier as int, part as int).count as int == p_count(db, supplier as int, part as int));
                 }
                 assert(result.profiles_ok(db));
-                assert(positive_counts(result.suppliers));
-                assert(positive_counts(result.suppliers_reverse));
+                assert(nonzero_counts(result.suppliers));
+                assert(nonzero_counts(result.suppliers_reverse));
                 assert(counts_layout(result.suppliers, true, true));
                 assert(counts_layout(result.suppliers_reverse, true, true));
                 assert forall|supplier: i64, nation: i64| #[trigger] count_at(result.suppliers, numeric_key(supplier as int), numeric_key(nation as int)) == s_count(db, supplier as int, nation as int)
@@ -359,8 +362,8 @@ impl Data {
                 }
                 assert forall|key: KeyView| (#[trigger] result.inventories.at(key)).is_some() implies {
                     let inventory = result.inventories.at(key).unwrap();
-                    numeric(key) && inventory.valid() && inventory.total.count > 0
-                        && inventory.total.count as int == h_total_count(db, key.0) && inventory.total.value as int == h_total_value(db, key.0)
+                    numeric(key) && inventory.valid() && inventory.groups.entries().len() > 0
+                        && inventory.total.count@ == h_total_count(db, key.0) && inventory.total.value@ == h_total_value(db, key.0)
                 } by { assert(self.inventories.at(key).is_some()); }
                 assert(result.inventories_ok(db));
                 assert forall|key: KeyView| (#[trigger] result.names.at(key)).is_some() <==> result.nations_reverse.at(key).is_some() by {
@@ -371,10 +374,10 @@ impl Data {
                     let support = result.nations_reverse.at(key).unwrap();
                     key.0 == 0 && match result.names.at(key).unwrap() {
                         NameView::Singleton { nation, multiplicity } => support.entries().len() == 1
-                            && support.at(numeric_key(nation as int)) == Some(multiplicity) && multiplicity > 0,
+                            && support.at(numeric_key(nation as int)).is_some() && support.at(numeric_key(nation as int)).unwrap()@ == multiplicity@ && multiplicity@ > 0,
                         NameView::Merged { inventory } => support.entries().len() >= 2 && inventory.valid()
-                            && inventory.total.count as int == scalar_1_group_count(db, params0(key.1))
-                            && inventory.total.value as int == scalar_1_group_sum(db, params0(key.1), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
+                            && inventory.total.count@ == scalar_1_group_count(db, params0(key.1))
+                            && inventory.total.value@ == scalar_1_group_sum(db, params0(key.1), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
                             && forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count as int == group_count(db, params0(key.1), part as int)
                                 && moment_at(inventory.groups, part as int).value as int == group_sum(db, params0(key.1), part as int, |tuple: Tuple| tuple.partsupp.ps_supplycost * tuple.partsupp.ps_availqty),
                     }
@@ -390,15 +393,15 @@ impl Data {
     }
 }
 
-pub fn add_profile(profiles: &mut Profiles, supplier: i64, part: i64, change: Moment, signed: bool, shift: u32) -> (result: bool)
+pub fn add_profile(profiles: &mut Profiles, supplier: i64, part: i64, change: &Mom, shift: u32)
     requires shift < 64,
-    ensures !signed && profile_storage_ok(*old(profiles)) ==> profile_storage_ok(*final(profiles)),
+    ensures profile_storage_ok(*old(profiles)) ==> profile_storage_ok(*final(profiles)),
         profile_layout(*old(profiles)) ==> profile_layout(*final(profiles)),
-        result ==> profile_at(*final(profiles), supplier as int, part as int).count as int
-            == profile_at(*old(profiles), supplier as int, part as int).count as int + change.count as int,
-        result ==> profile_at(*final(profiles), supplier as int, part as int).value as int
-            == profile_at(*old(profiles), supplier as int, part as int).value as int + change.value as int,
-        result ==> forall|other_supplier: int, other_part: int|
+        profile_at(*final(profiles), supplier as int, part as int).count
+            == profile_at(*old(profiles), supplier as int, part as int).count + change.count@,
+        profile_at(*final(profiles), supplier as int, part as int).value
+            == profile_at(*old(profiles), supplier as int, part as int).value + change.value@,
+        forall|other_supplier: int, other_part: int|
             other_supplier != supplier || other_part != part ==>
                 #[trigger] profile_at(*final(profiles), other_supplier, other_part)
                     == profile_at(*old(profiles), other_supplier, other_part),
@@ -419,21 +422,19 @@ pub fn add_profile(profiles: &mut Profiles, supplier: i64, part: i64, change: Mo
     }
     let ghost initial_groups = groups;
     let previous = match groups.get(part) { Some(moment) => moment, None => zero() };
-    let next = match plus(previous, change) { Some(moment) => moment, None => return false };
-    if !packed::fits_exec(&next) { return false; }
-    if !signed && (next.count < 0 || (next.count == 0 && next.value != 0)) { return false; }
-    if previous.count == next.count && previous.value == next.value {
+    let next = plus(&previous, change);
+    if previous.count.eq(&next.count) && previous.value.eq(&next.value) {
         proof {
-            assert(moment_at(groups, part as int) == next);
+            assert(moment_at(groups, part as int) == next@);
             assert forall|other_part: int| other_part != part implies
                 #[trigger] moment_at(groups, other_part) == moment_at(initial_groups, other_part) by {}
         }
-        return true;
+        return;
     }
-    if next.count == 0 && next.value == 0 { groups.remove(part); }
-    else { groups.put(part, next); }
+    if next.count.is_zero() && next.value.is_zero() { groups.remove(part); }
+    else { groups.put(part, &next); }
     proof {
-        assert(moment_at(groups, part as int) == next);
+        assert(moment_at(groups, part as int) == next@);
         assert forall|other_part: int| other_part != part implies
             #[trigger] moment_at(groups, other_part) == moment_at(initial_groups, other_part) by {}
     }
@@ -455,17 +456,17 @@ pub fn add_profile(profiles: &mut Profiles, supplier: i64, part: i64, change: Mo
             if other_supplier != supplier { assert(profiles.at(numeric_key(other_supplier)) == original.at(numeric_key(other_supplier))); }
             else { assert(moment_at(groups, other_part) == moment_at(initial_groups, other_part)); }
         }
-        if !signed && profile_storage_ok(original) {
+        if profile_storage_ok(original) {
             assert forall|supplier_key: KeyView| (#[trigger] profiles.at(supplier_key)).is_some() implies {
                 let stored = profiles.at(supplier_key).unwrap();
                 &&& numeric(supplier_key)
                 &&& stored.wf()
                 &&& stored.entries().len() > 0
-                &&& forall|part_key: KeyView| (#[trigger] stored.at(part_key)).is_some() ==> numeric(part_key) && stored.at(part_key).unwrap().count > 0
+                &&& forall|part_key: KeyView| (#[trigger] stored.at(part_key)).is_some() ==> numeric(part_key) && nonzero_moment(stored.at(part_key).unwrap())
             } by {
                 if supplier_key == numeric_key(supplier as int) {
                     assert(profiles.at(supplier_key) == Some(groups));
-                    assert forall|part_key: KeyView| (#[trigger] groups.at(part_key)).is_some() implies numeric(part_key) && groups.at(part_key).unwrap().count > 0 by {
+                    assert forall|part_key: KeyView| (#[trigger] groups.at(part_key)).is_some() implies numeric(part_key) && nonzero_moment(groups.at(part_key).unwrap()) by {
                         if part_key != numeric_key(part as int) {
                             assert(groups.at(part_key) == initial_groups.at(part_key));
                             assert(original.at(supplier_key).is_some());
@@ -493,18 +494,17 @@ pub fn add_profile(profiles: &mut Profiles, supplier: i64, part: i64, change: Mo
             }
         }
     }
-    true
 }
 
-pub fn add_count(counts: &mut Counts, outer: &Key, inner: &Key, change: i128, signed: bool) -> (result: bool)
-    ensures !signed && positive_counts(*old(counts)) ==> positive_counts(*final(counts)),
+pub fn add_count(counts: &mut Counts, outer: &Key, inner: &Key, change: &Wide)
+    ensures nonzero_counts(*old(counts)) ==> nonzero_counts(*final(counts)),
         forall|key: KeyView| key != outer.view() ==> (#[trigger] final(counts).at(key)) == old(counts).at(key),
         forall|outer_number: bool, inner_number: bool| #[trigger] counts_layout(*old(counts), outer_number, inner_number)
             && key_class(outer.view(), outer_number) && key_class(inner.view(), inner_number)
             ==> counts_layout(*final(counts), outer_number, inner_number),
-        result ==> count_at(*final(counts), outer.view(), inner.view())
-        == count_at(*old(counts), outer.view(), inner.view()) + change as int,
-        result ==> forall|other_outer: KeyView, other_inner: KeyView|
+        count_at(*final(counts), outer.view(), inner.view())
+        == count_at(*old(counts), outer.view(), inner.view()) + change@,
+        forall|other_outer: KeyView, other_inner: KeyView|
             other_outer != outer.view() || other_inner != inner.view() ==>
                 #[trigger] count_at(*final(counts), other_outer, other_inner)
                     == count_at(*old(counts), other_outer, other_inner),
@@ -521,12 +521,12 @@ pub fn add_count(counts: &mut Counts, outer: &Key, inner: &Key, change: i128, si
     let ghost initial_groups = groups;
     proof {
         assert forall|other_inner: KeyView| #[trigger] count_at(original, outer.view(), other_inner)
-            == match groups.at(other_inner) { Some(count) => count as int, None => 0int } by {}
+            == match groups.at(other_inner) { Some(count) => count@, None => 0int } by {}
     }
-    let previous = match groups.get(inner) { Some(count) => *count, None => 0 };
-    let next = match crate::values::add(previous, change) { Some(count) => count, None => return false };
-    if !signed && next < 0 { return false; }
-    if next == 0 { groups.remove(inner); }
+    let previous = match groups.get(inner) { Some(count) => count.dup(), None => Wide::zero() };
+    let next = previous.add(change);
+    let ghost next_view = next@;
+    if next.is_zero() { groups.remove(inner); }
     else { groups.put(inner.share(), Arc::new(next)); }
     if groups.is_empty() { counts.remove(outer); }
     else { counts.put(outer.share(), Arc::new(groups)); }
@@ -536,8 +536,8 @@ pub fn add_count(counts: &mut Counts, outer: &Key, inner: &Key, change: i128, si
             assert forall|key: KeyView| #[trigger] groups.at(key).is_none() by {}
         }
         assert forall|other_inner: KeyView| #[trigger] count_at(*counts, outer.view(), other_inner)
-            == match groups.at(other_inner) { Some(count) => count as int, None => 0int } by {}
-        assert(count_at(*counts, outer.view(), inner.view()) == next as int);
+            == match groups.at(other_inner) { Some(count) => count@, None => 0int } by {}
+        assert(count_at(*counts, outer.view(), inner.view()) == next_view);
         assert forall|other_outer: KeyView, other_inner: KeyView|
             other_outer != outer.view() || other_inner != inner.view() implies
                 #[trigger] count_at(*counts, other_outer, other_inner)
@@ -545,16 +545,16 @@ pub fn add_count(counts: &mut Counts, outer: &Key, inner: &Key, change: i128, si
             if other_outer != outer.view() { assert(counts.at(other_outer) == original.at(other_outer)); }
             else { assert(groups.at(other_inner) == initial_groups.at(other_inner)); }
         }
-        if !signed && positive_counts(original) {
+        if nonzero_counts(original) {
             assert forall|stored_outer: KeyView| (#[trigger] counts.at(stored_outer)).is_some() implies {
                 let stored = counts.at(stored_outer).unwrap();
                 &&& stored.wf()
                 &&& stored.entries().len() > 0
-                &&& forall|stored_inner: KeyView| (#[trigger] stored.at(stored_inner)).is_some() ==> stored.at(stored_inner).unwrap() > 0
+                &&& forall|stored_inner: KeyView| (#[trigger] stored.at(stored_inner)).is_some() ==> stored.at(stored_inner).unwrap()@ != 0
             } by {
                 if stored_outer == outer.view() {
                     assert(counts.at(stored_outer) == Some(groups));
-                    assert forall|stored_inner: KeyView| (#[trigger] groups.at(stored_inner)).is_some() implies groups.at(stored_inner).unwrap() > 0 by {
+                    assert forall|stored_inner: KeyView| (#[trigger] groups.at(stored_inner)).is_some() implies groups.at(stored_inner).unwrap()@ != 0 by {
                         if stored_inner != inner.view() {
                             assert(groups.at(stored_inner) == initial_groups.at(stored_inner));
                             assert(original.at(outer.view()).is_some());
@@ -585,7 +585,6 @@ pub fn add_count(counts: &mut Counts, outer: &Key, inner: &Key, change: i128, si
             }
         }
     }
-    true
 }
 
 }
