@@ -116,7 +116,7 @@ public:
       : count(chunk.size()), columns(chunk.ColumnCount()) {
     for (::duckdb::idx_t c = 0; c < columns.size(); ++c) {
       chunk.data[c].ToUnifiedFormat(count, columns[c]);
-      Require(specs[c].nullable || columns[c].validity.AllValid(), "unexpected NULL in a build scan column");
+      Require(specs[c].nullable || columns[c].validity.AllValid(), "unexpected NULL in build scan column " + specs[c].name);
     }
   }
   std::size_t size() const { return count; }
@@ -221,6 +221,11 @@ private:
     for (::duckdb::idx_t c = 0; c < specs.size(); ++c) {
       if (source.data[c].GetType() == typed.data[c].GetType()) {
         typed.data[c].Reference(source.data[c]);
+        // A dictionary's validity covers unselected entries too: the batch's NULL check needs flat rows.
+        if (typed.data[c].GetVectorType() != ::duckdb::VectorType::FLAT_VECTOR &&
+            typed.data[c].GetVectorType() != ::duckdb::VectorType::CONSTANT_VECTOR) {
+          typed.data[c].Flatten(source.size());
+        }
       } else {
         ::duckdb::VectorOperations::Cast(*(*connection).context, source.data[c], typed.data[c], source.size());
       }
