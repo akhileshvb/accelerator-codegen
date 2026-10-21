@@ -6,7 +6,7 @@ use crate::gen_obligations::*;
 use crate::storage::*;
 use crate::values::*;
 use crate::wide::*;
-use crate::ingest::signed;
+use crate::bagsig::signed;
 
 verus! {
 

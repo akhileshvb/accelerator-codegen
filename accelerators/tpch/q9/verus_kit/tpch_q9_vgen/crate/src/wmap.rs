@@ -98,4 +98,28 @@ pub fn wm_add(w: &mut WMap, k1: i64, k2: i64, da: &Wide, db: &Wide)
     w.put(k1, rows);
 }
 
+
+pub open spec fn kf(k0: int, k1: int, f: int) -> int {
+    if f == 0 { k0 } else { k1 }
+}
+
+/// The bucket of key k1 (an empty one when absent).
+pub fn bucket<'a>(w: &'a WMap, k1: i64, empty: &'a Vec<Ent>) -> (r: &'a Vec<Ent>)
+    requires empty@.len() == 0,
+    ensures forall|k2: int, f: int| #[trigger] ent_at(r@, k2, f) == wm_at(*w, k1, k2, f),
+{
+    match w.rows.get(&k1) {
+        Some(rows) => rows,
+        None => {
+            proof {
+                assert forall|k2: int, f: int| #[trigger] ent_at(empty@, k2, f) == wm_at(*w, k1, k2, f) by {
+                    lemma_sum_empty(empty@, ent_weight(k2, f));
+                }
+            }
+            empty
+        }
+    }
+}
+
+
 }

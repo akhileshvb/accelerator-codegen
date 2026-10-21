@@ -15,7 +15,6 @@ use crate::gread::*;
 use crate::gproof::*;
 use crate::groups::*;
 use crate::emitw::*;
-use crate::linepass::bucket;
 
 verus! {
 
@@ -112,6 +111,48 @@ proof fn lemma_ncell_fn_ext(rows: Seq<NCell>, f1: spec_fn((int, Seq<u8>)) -> int
     if rows.len() > 0 {
         lemma_ncell_fn_ext(rows.drop_last(), f1, f2);
     }
+}
+
+
+/// The answer for any pattern from the general state; None only when a profit does not fit.
+pub fn general_answer(g: &General, p1: &[u8], Ghost(db): Ghost<Db>) -> (r: Option<Vec<(Vec<u8>, i64, i128)>>)
+    requires general_of(*g, db),
+    ensures
+        r matches Some(out) ==> query_result(db, params(p1@), out_view(out@)),
+        r is None ==> !answer_fits(db, params(p1@)),
+{
+    proof { assert(read_wf(*g)); }
+    let t = read_t(g, p1);
+    let groups = groups_from_cells(&g.nations, &t);
+    proof {
+        let pp = params(p1@);
+        let dbp = filter_db(db, p1@);
+        let keys = choose|keys: Seq<i64>| keys.no_duplicates() && (forall|k: i64| #[trigger] g.pnames.at(k).is_some() <==> keys.contains(k))
+            && forall|nk: i64, y: int, f: int| 0 <= f <= 1 ==> #[trigger] wm_at(t, nk, y, f) == sum(keys, |q: i64| contrib(*g, p1@, q, nk as int, y, f));
+        assert forall|nk: i64, y: int, f: int| 0 <= f <= 1 implies #[trigger] wm_at(t, nk, y, f) == nation_total(dbp, nk as int, y, f) by {
+            lemma_read_is_nation_total(*g, db, p1@, keys, nk as int, y, f);
+        }
+        assert forall|n: Seq<u8>, y: int| #[trigger] g_at(groups@, n, y, 0) == group_count(db, pp, n, y)
+            && g_at(groups@, n, y, 1) == group_sum(db, pp, n, y, |row: Tuple| row.profit.amount) by {
+            assert forall|f: int| 0 <= f <= 1 implies g_at(groups@, n, y, f) == group_database(dbp, n, y, f) by {
+                let ft = tcell(t, n, y, f);
+                let fd = |kn: (int, Seq<u8>)| if kn.1 == n { nation_total(dbp, kn.0, y, f) } else { 0int };
+                assert forall|j: int| 0 <= j < g.nations@.len() implies ft(((#[trigger] g.nations@[j]).k as int, g.nations@[j].name@)) == fd((g.nations@[j].k as int, g.nations@[j].name@)) by {
+                    let e = g.nations@[j];
+                    assert((e.k as int) as i64 == e.k);
+                }
+                lemma_ncell_fn_ext(g.nations@, ft, fd);
+                assert(nations_state((*g.nations)@, db));
+                assert(ncell_sum(g.nations@, fd) == sum(db.nation, nation_wt(fd)));
+                lemma_sum_ext_all(db.nation, nation_wt(fd), |row: NationRow| if row.n_name == n { nation_total(dbp, row.n_nationkey, y, f) } else { 0int });
+                crate::meaning::lemma_filter_same(db, p1@);
+                assert(dbp.nation == db.nation);
+            }
+            crate::query_proofs::lemma_query_groups(db, pp, n, y, 0);
+            crate::query_proofs::lemma_query_groups(db, pp, n, y, 1);
+        }
+    }
+    emit_groups(&groups, Ghost(db), Ghost(params(p1@)))
 }
 
 }

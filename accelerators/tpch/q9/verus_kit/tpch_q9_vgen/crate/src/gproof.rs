@@ -119,12 +119,12 @@ pub proof fn lemma_tl_grouped(db: Db, pat: Seq<u8>, nk: int, y: int, f: int, ks:
 
 /// Cells with distinct keys: a cell's entry is its key's total.
 pub proof fn lemma_cell_value(rows: Seq<Cell>, i: int, f: int)
-    requires cell_keys(rows).no_duplicates(), 0 <= i < rows.len(), 0 <= f <= 2,
-    ensures cell_at(rows, rows[i].k2 as int, rows[i].k3 as int, f) == if f == 0 { rows[i].a@ } else if f == 1 { rows[i].b@ } else { rows[i].c@ },
+    requires pcell_keys(rows).no_duplicates(), 0 <= i < rows.len(), 0 <= f <= 2,
+    ensures pcell_at(rows, rows[i].k2 as int, rows[i].k3 as int, f) == if f == 0 { rows[i].a@ } else if f == 1 { rows[i].b@ } else { rows[i].c@ },
 {
-    let w = cell_w(rows[i].k2 as int, rows[i].k3 as int, f);
+    let w = pcell_w(rows[i].k2 as int, rows[i].k3 as int, f);
     assert forall|j: int| 0 <= j < rows.len() && j != i implies w(#[trigger] rows[j]) == 0 by {
-        assert(cell_keys(rows)[j] != cell_keys(rows)[i]);
+        assert(pcell_keys(rows)[j] != pcell_keys(rows)[i]);
     }
     lemma_sum_single_match(rows, w, i);
 }
@@ -142,9 +142,9 @@ pub open spec fn ks_of(g: General, keys: Seq<i64>, y: int) -> Seq<(int, int)> {
 }
 
 pub proof fn lemma_bucket_at(m: PMap, q: i64, k2: int, k3: int, f: int)
-    ensures cell_at(bucket_seq(m, q), k2, k3, f) == pm_at(m, q, k2, k3, f),
+    ensures pcell_at(bucket_seq(m, q), k2, k3, f) == pm_at(m, q, k2, k3, f),
 {
-    if m.at(q).is_none() { lemma_sum_empty(Seq::<Cell>::empty(), cell_w(k2, k3, f)); }
+    if m.at(q).is_none() { lemma_sum_empty(Seq::<Cell>::empty(), pcell_w(k2, k3, f)); }
 }
 
 /// One PartAgg cell of the part q adds what its (part, supplier) pair adds.
@@ -158,7 +158,7 @@ pub proof fn lemma_term_value(g: General, db: Db, pat: Seq<u8>, q: i64, i: int, 
     let e = a[i];
     let s = e.k2 as int;
     assert(pm_unique(g.agg));
-    if g.agg.at(q).is_some() { assert(cell_keys(g.agg.at(q).unwrap()@).no_duplicates()); }
+    if g.agg.at(q).is_some() { assert(pcell_keys(g.agg.at(q).unwrap()@).no_duplicates()); }
     lemma_cell_value(a, i, 0);
     lemma_cell_value(a, i, 1);
     lemma_cell_value(a, i, 2);
@@ -215,7 +215,7 @@ pub proof fn lemma_ks_distinct(g: General, keys: Seq<i64>, y: int)
     assert forall|pos: int| 0 <= pos < pages.len() implies (#[trigger] pages[pos]).no_duplicates() by {
         let q = keys[pos];
         let a = bucket_seq(g.agg, q);
-        if g.agg.at(q).is_some() { assert(cell_keys(g.agg.at(q).unwrap()@).no_duplicates()); }
+        if g.agg.at(q).is_some() { assert(pcell_keys(g.agg.at(q).unwrap()@).no_duplicates()); }
         let fl = year_cells(a, y);
         lemma_year_cells(a, y);
         assert forall|l: int, r: int| 0 <= l < r < pages[pos].len() implies (#[trigger] pages[pos][l]) != (#[trigger] pages[pos][r]) by {
@@ -240,7 +240,7 @@ pub proof fn lemma_ks_distinct(g: General, keys: Seq<i64>, y: int)
 
 /// The cells of one year: members of the bucket, with distinct suppliers when the cell keys are distinct.
 proof fn lemma_year_cells(a: Seq<Cell>, y: int)
-    requires cell_keys(a).no_duplicates(),
+    requires pcell_keys(a).no_duplicates(),
     ensures
         forall|j: int| 0 <= j < year_cells(a, y).len() ==> (#[trigger] year_cells(a, y)[j]).k3 == y,
         forall|l: int, r: int| 0 <= l < r < year_cells(a, y).len() ==> year_cells(a, y)[l].k2 != year_cells(a, y)[r].k2,
@@ -250,7 +250,7 @@ proof fn lemma_year_cells(a: Seq<Cell>, y: int)
     let p = |e: Cell| e.k3 == y;
     if a.len() > 0 {
         let pre = a.drop_last();
-        assert(cell_keys(pre) =~= cell_keys(a).drop_last());
+        assert(pcell_keys(pre) =~= pcell_keys(a).drop_last());
         lemma_year_cells(pre, y);
         let sub = pre.filter(p);
         if p(a.last()) {
@@ -262,9 +262,9 @@ proof fn lemma_year_cells(a: Seq<Cell>, y: int)
                     assert(sub[l].k3 == y);
                     lemma_member_of_prefix(pre, y, l);
                     let i = choose|i: int| 0 <= i < pre.len() && pre[i] == sub[l];
-                    assert(cell_keys(a)[i] == (sub[l].k2, sub[l].k3));
-                    assert(cell_keys(a)[a.len() - 1] == (a.last().k2, a.last().k3));
-                    if sub[l].k2 == a.last().k2 { assert(cell_keys(a)[i] == cell_keys(a)[a.len() - 1]); }
+                    assert(pcell_keys(a)[i] == (sub[l].k2, sub[l].k3));
+                    assert(pcell_keys(a)[a.len() - 1] == (a.last().k2, a.last().k3));
+                    if sub[l].k2 == a.last().k2 { assert(pcell_keys(a)[i] == pcell_keys(a)[a.len() - 1]); }
                 } else {
                     assert(fl[l] == sub[l] && fl[r] == sub[r]);
                 }
@@ -348,8 +348,8 @@ pub proof fn lemma_coverage(g: General, db: Db, pat: Seq<u8>, keys: Seq<i64>, nk
         assert(pm_at(g.agg, q, s as int, y, 0) == moments(db, q as int, s as int, y, 0));
         let a = bucket_seq(g.agg, q);
         lemma_bucket_at(g.agg, q, s as int, y, 0);
-        assert(cell_at(a, s as int, y, 0) != 0);
-        let j = lemma_sum_nonzero_witness(a, cell_w(s as int, y, 0));
+        assert(pcell_at(a, s as int, y, 0) != 0);
+        let j = lemma_sum_nonzero_witness(a, pcell_w(s as int, y, 0));
         let e = a[j];
         assert(e.k2 == s && e.k3 == y);
         lemma_year_member(a, y, j);

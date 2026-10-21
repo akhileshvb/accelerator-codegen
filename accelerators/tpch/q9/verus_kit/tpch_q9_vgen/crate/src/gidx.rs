@@ -10,7 +10,7 @@ use crate::storage::*;
 use crate::values::*;
 use crate::wide::*;
 use crate::pmap::*;
-use crate::ingest::{signed, dates_w, sup_w, ps_w};
+use crate::bagsig::{signed, dates_w, sup_w, ps_w};
 
 verus! {
 

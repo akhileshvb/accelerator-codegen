@@ -9,7 +9,7 @@ use crate::storage::*;
 use crate::pmap::*;
 use crate::gagg::*;
 use crate::gidx::*;
-use crate::ingest::signed;
+use crate::bagsig::signed;
 use crate::applyspec::*;
 
 verus! {

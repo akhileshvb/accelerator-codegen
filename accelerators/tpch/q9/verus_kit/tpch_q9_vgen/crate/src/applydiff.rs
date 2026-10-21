@@ -44,7 +44,8 @@ pub fn collect_okeys(changes: &[OrderDelta]) -> (r: Vec<i64>)
 }
 
 pub fn collect_pkeys(part: &Vec<PartDelta>, ps: &[PartsuppDelta]) -> (r: Vec<i64>)
-    ensures forall|k: i64| #[trigger] r@.contains(k) <==> (part_keys_of(part@).contains(k) || ps_keys_of(ps@).contains(k)),
+    ensures r@ == part_keys_of(part@) + ps_keys_of(ps@),
+        forall|k: i64| #[trigger] r@.contains(k) <==> (part_keys_of(part@).contains(k) || ps_keys_of(ps@).contains(k)),
 {
     let mut r: Vec<i64> = Vec::new();
     let mut i = 0;
@@ -91,7 +92,8 @@ pub fn is_cancel_exec(sup: &[SupplierDelta]) -> (r: bool)
 }
 
 pub fn collect_skeys(sup: &[SupplierDelta]) -> (r: Vec<i64>)
-    ensures forall|k: i64| #[trigger] r@.contains(k) <==> (!is_cancel(sup@) && sup_keys_of(sup@).contains(k)),
+    ensures r@ == (if is_cancel(sup@) { Seq::<i64>::empty() } else { sup_keys_of(sup@) }),
+        forall|k: i64| #[trigger] r@.contains(k) <==> (!is_cancel(sup@) && sup_keys_of(sup@).contains(k)),
 {
     let mut r: Vec<i64> = Vec::new();
     if is_cancel_exec(sup) {
