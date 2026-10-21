@@ -194,10 +194,16 @@ def run_gate(
     if kind:
         gate_env["ACCEL_WORKLOAD_KIND"] = kind
 
-    # Codex may never create the worker build dir; configure it before gates.
+    # Codex may never create the worker build dir. Once the engine has a host.sh, only its
+    # `build` verb configures the dir (host_contract.md, $ACCEL_CMAKE_ARGS); a bare configure here
+    # would reset the backend switch and the generator, or fight a build that runs in the
+    # engine's own environment under another source path.
+    from accel_pipeline.engine_host import host_script
     from accel_pipeline.worker_isolation import ensure_worker_build_dir
 
-    ensure_worker_build_dir(pipeline_config, configure=True)
+    engine = pipeline_config.engine_name
+    has_host = bool(engine) and host_script(Path(pipeline_config.repo_root), engine).is_file()
+    ensure_worker_build_dir(pipeline_config, configure=not has_host)
 
     from accel_pipeline.pipeline_log import log_gate_complete, log_gate_start
 
