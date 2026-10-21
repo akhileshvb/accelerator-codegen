@@ -72,8 +72,12 @@ pub open spec fn reverse_count(rows: Seq<(i64, i64)>, key: int) -> int {
     sum(rows, reverse_weight(key))
 }
 
+pub open spec fn order_reverse_weight(customer: i64, key: i64) -> spec_fn(OrderCell) -> int {
+    |row: OrderCell| if row.key == key && row.customer == customer { row.count as int } else { 0int }
+}
+
 pub open spec fn order_reverse_count(rows: Seq<OrderCell>, customer: i64, key: i64) -> int {
-    sum(rows, |row: OrderCell| if row.key == key && row.customer == customer { row.count as int } else { 0int })
+    sum(rows, order_reverse_weight(customer, key))
 }
 
 pub open spec fn segments_sorted(rows: Seq<(Arc<Vec<u8>>, i128)>) -> bool {
@@ -132,6 +136,12 @@ pub open spec fn page_database_ok(page: Page, number: int, db: Db) -> bool {
         0 <= kind <= 2 ==> ship_count((*page.ships)@, key, date, kind) == if key / 256 == number { ship_sum(db, key, date, kind) } else { 0int }
     &&& forall|segment: Seq<u8>, key: int, date: int, priority: int| #![trigger column_weight((*page.groups)@, segment, key, date, priority)]
         column_weight((*page.groups)@, segment, key, date, priority) == if key / 256 == number { weight_sum(db, segment, key, date, priority) } else { 0int }
+}
+
+/// No customer count is negative (with `signed_customer_shape`: every count is positive).
+pub open spec fn customer_counts_nonneg(cell: CustomerCell) -> bool {
+    &&& forall|index: int| #![trigger cell.segments@[index]] 0 <= index < cell.segments@.len() ==> cell.segments@[index].1 >= 0
+    &&& forall|index: int| #![trigger cell.orders@[index]] 0 <= index < cell.orders@.len() ==> cell.orders@[index].1 >= 0
 }
 
 pub open spec fn signed_customer_shape(cell: CustomerCell) -> bool {

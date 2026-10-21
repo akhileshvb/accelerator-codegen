@@ -77,6 +77,20 @@ proof fn lemma_segment_at(rows: Seq<(Arc<Vec<u8>>, i128)>, low: int, segment: Se
     else { lemma_sum_zero(rows, weight); }
 }
 
+/// In a sorted segment list each entry's count is its segment's total.
+pub proof fn lemma_segment_entry(rows: Seq<(Arc<Vec<u8>>, i128)>, index: int)
+    requires segments_sorted(rows), 0 <= index < rows.len(),
+    ensures segment_count(rows, (*rows[index].0)@) == rows[index].1 as int,
+{
+    let weight = segment_weight((*rows[index].0)@);
+    assert forall|other: int| 0 <= other < rows.len() && other != index implies weight(#[trigger] rows[other]) == 0 by {
+        lemma_bytes_lt_irrefl((*rows[index].0)@);
+        if other < index { assert(bytes_lt((*rows[other].0)@, (*rows[index].0)@)); }
+        else { assert(bytes_lt((*rows[index].0)@, (*rows[other].0)@)); }
+    }
+    lemma_sum_single_match(rows, weight, index);
+}
+
 pub fn segment_change(cell: &mut CustomerCell, segment: &Arc<Vec<u8>>, delta: i128) -> (result: bool)
     requires
         segments_sorted(old(cell).segments@),
@@ -193,6 +207,19 @@ proof fn lemma_reverse_at(rows: Seq<(i64, i64)>, low: int, key: i64)
     }
     if low < rows.len() && rows[low].0 == key { lemma_sum_single_match(rows, weight, low); }
     else { lemma_sum_zero(rows, weight); }
+}
+
+/// In a sorted reverse list each entry's count is its key's total.
+pub proof fn lemma_reverse_entry(rows: Seq<(i64, i64)>, index: int)
+    requires reverse_sorted(rows), 0 <= index < rows.len(),
+    ensures reverse_count(rows, rows[index].0 as int) == rows[index].1 as int,
+{
+    let weight = reverse_weight(rows[index].0 as int);
+    assert forall|other: int| 0 <= other < rows.len() && other != index implies weight(#[trigger] rows[other]) == 0 by {
+        if other < index { assert(rows[other].0 < rows[index].0); }
+        else { assert(rows[index].0 < rows[other].0); }
+    }
+    lemma_sum_single_match(rows, weight, index);
 }
 
 pub fn reverse_change(cell: &mut CustomerCell, key: i64, delta: i64) -> (result: bool)

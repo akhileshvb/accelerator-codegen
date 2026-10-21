@@ -151,4 +151,48 @@ pub proof fn lemma_ship_prefix_le(rows: Seq<ShipmentInput>, count: int, key: i64
     lemma_indicator_le_len(rows.take(count), ship_input_weight(key, date, 0));
 }
 
+/// Customer and order counts of a database are never negative.
+pub proof fn lemma_counts_nonneg(db: Db, customer: int, segment: Seq<u8>, key: int)
+    ensures customer_sum(db, customer, segment) >= 0, reverse_sum(db, customer, key) >= 0,
+{
+    lemma_sum_nonneg(db.customer, |row: CustomerRow| if row.c_custkey == customer && row.c_mktsegment == segment { 1 } else { 0 });
+    lemma_sum_nonneg(db.orders, |row: OrdersRow| if row.o_custkey == customer && row.o_orderkey == key { 1 } else { 0 });
+}
+
+/// A customer's segment count is at most the customer table's size.
+pub proof fn lemma_customer_sum_le(db: Db, customer: int, segment: Seq<u8>)
+    ensures customer_sum(db, customer, segment) <= db.customer.len(),
+{
+    let weight = |row: CustomerRow| if row.c_custkey == customer && row.c_mktsegment == segment { 1int } else { 0int };
+    lemma_indicator_le_len(db.customer, weight);
+}
+
+/// A rescan returns no more rows than the table has.
+pub proof fn lemma_rescan_orders_le(db: Db, keys: Seq<i64>, rows: Seq<OrderInput>)
+    requires rescan_orders_by_key_ok(db, keys, rows),
+    ensures rows.len() <= db.orders.len(),
+{
+    let one = |row: OrdersRow| 1int;
+    let picked = |row: OrdersRow| if seq_view_i64(keys).contains(row.o_orderkey) { one(row) } else { 0int };
+    lemma_sum_ones(order_input_seq_view(rows), one);
+    lemma_indicator_le_len(db.orders, picked);
+}
+
+pub proof fn lemma_rescan_shipments_le(db: Db, keys: Seq<i64>, rows: Seq<ShipmentInput>)
+    requires rescan_shipments_by_key_ok(db, keys, rows),
+    ensures rows.len() <= db.lineitem.len(),
+{
+    let one = |row: LineitemRow| 1int;
+    let picked = |row: LineitemRow| if seq_view_i64(keys).contains(row.l_orderkey) { one(row) } else { 0int };
+    lemma_sum_ones(shipment_input_seq_view(rows), one);
+    lemma_indicator_le_len(db.lineitem, picked);
+}
+
+/// An order count is at most the orders table's size.
+pub proof fn lemma_reverse_sum_le(db: Db, customer: int, key: int)
+    ensures reverse_sum(db, customer, key) <= db.orders.len(),
+{
+    lemma_indicator_le_len(db.orders, |row: OrdersRow| if row.o_custkey == customer && row.o_orderkey == key { 1int } else { 0int });
+}
+
 }

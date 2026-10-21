@@ -160,6 +160,7 @@ pub fn apply(
         rescan_shipments_by_key_ok(db2, shipments_by_key_keys@, shipments_by_key_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
     crate::maintenance::maintain(s, customer_delta, lineitem_delta, orders_delta,
         orders_by_key_keys, orders_by_key_rows, shipments_by_key_keys, shipments_by_key_rows,
