@@ -89,6 +89,24 @@ pub proof fn lemma_blocker_count_bound(db: Db, supplier: int)
         seq![b'%', b'C', b'u', b's', b't', b'o', b'm', b'e', b'r', b'%', b'C', b'o', b'm', b'p', b'l', b'a', b'i', b'n', b't', b's', b'%']) { 1int } else { 0int });
 }
 
+pub proof fn lemma_part_input_bound(rows: Seq<PartInput>, part: int, key: KeyView)
+    ensures 0 <= part_input_sum(rows, part, key) <= rows.len(),
+{
+    lemma_unit_sum(part_input_seq_view(rows), |row: PartRow| part_weight(row, part, key));
+}
+
+pub proof fn lemma_edge_input_bound(rows: Seq<EdgeInput>, supplier: int, part: int)
+    ensures 0 <= edge_input_sum(rows, supplier, part) <= rows.len(),
+{
+    lemma_unit_sum(edge_input_seq_view(rows), |row: PartsuppRow| edge_weight(row, supplier, part));
+}
+
+pub proof fn lemma_blocker_input_bound(rows: Seq<BlockerInput>, supplier: int)
+    ensures 0 <= blocker_input_sum(rows, supplier) <= rows.len(),
+{
+    lemma_unit_sum(blocker_input_seq_view(rows), |key: int| blocker_weight(key, supplier));
+}
+
 pub proof fn lemma_scan_parts_len(db: Db, rows: Seq<PartInput>)
     requires scan_parts_ok(db, rows),
     ensures rows.len() == db.part.len(),

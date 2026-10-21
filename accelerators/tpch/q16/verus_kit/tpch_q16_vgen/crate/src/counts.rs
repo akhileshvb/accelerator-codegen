@@ -950,6 +950,7 @@ pub fn collect_contribution(counts: &mut Counts, groups: &Counts, sign: i64, Gho
             assert((key.view(), *cell) == groups.entries()[processed@]);
             assert(groups.at(groups.entries()[processed@].0) == Some(groups.entries()[processed@].1));
             assert(groups.at(key.view()) == Some(*cell));
+            assert(groups.at(key.view()).is_some());
             assert(groups.at(key.view()).unwrap().group.valid());
             assert(cell.group.key() == key.view());
             assert(!(exists|position: int| 0 <= position < processed@

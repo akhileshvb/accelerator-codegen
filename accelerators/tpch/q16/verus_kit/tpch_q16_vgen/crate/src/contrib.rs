@@ -68,4 +68,39 @@ pub proof fn lemma_contribution_bound(parts: Parts, edges: Edges, blockers: Inde
     lemma_sum_nonneg(keys, weight);
 }
 
+pub proof fn lemma_edges_prefix_bound(parts: Parts, edges: Edges, blockers: Index<i64>, db: Db, count: int, key: KeyView)
+    requires nonneg_parts(parts), edges_keys_valid(edges), scanned_edges(edges, db), 0 <= count <= edges.entries().len(),
+    ensures 0 <= sum(edges.entries().take(count),
+            |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, key)) <= database_suppliers(db).len(),
+{
+    edges.model();
+    verus_prooflib::ordered::lemma_ordered_unique(edges.entries());
+    let rows = edges.entries().take(count);
+    let project = |row: (KeyView, Index<i64>)| row.0.0;
+    let f = contributes(parts, edges, blockers, key);
+    let h = |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, key);
+    let h2 = |row: (KeyView, Index<i64>)| f(project(row));
+    assert forall|position: int| 0 <= position < rows.len() implies h(#[trigger] rows[position]) == h2(rows[position]) by {
+        let row = rows[position];
+        assert(row == edges.entries()[position]);
+        assert(edges.at(row.0) == Some(row.1));
+        assert(row.0.1 == Seq::<u8>::empty());
+        assert(row.0 == (row.0.0, Seq::<u8>::empty()));
+    }
+    lemma_sum_ext(rows, h, h2);
+    lemma_sum_map(rows, project, f, h2);
+    let keys = rows.map_values(project);
+    assert(distinct(keys)) by {
+        assert forall|first: int, last: int| 0 <= first < keys.len() && 0 <= last < keys.len() && first != last implies keys[first] != keys[last] by {
+            let low = if first < last { first } else { last };
+            let high = if first < last { last } else { first };
+            assert(edges.entries()[low].0 != edges.entries()[high].0);
+            assert(edges.at(edges.entries()[low].0).is_some());
+            assert(edges.at(edges.entries()[high].0).is_some());
+            assert(rows[low] == edges.entries()[low] && rows[high] == edges.entries()[high]);
+        }
+    }
+    lemma_contribution_bound(parts, edges, blockers, db, keys, key);
+}
+
 }
