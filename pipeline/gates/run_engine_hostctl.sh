@@ -32,7 +32,11 @@ PY
 engine_steps "up" "load ${SCHEMA_SQL}" "load ${SCHEMA_SQL}" || fail "${ENGINE_FAIL}" "${ENGINE_LOG}"
 [[ -s "${ACCEL_ENGINE_STATE_DIR}/env" ]] || fail "up wrote no ${ACCEL_ENGINE_STATE_DIR}/env" "${ENGINE_LOG}"
 OUT="$(echo "SELECT 1 AS one;" | engine_host sql -)" || fail "host.sh sql failed" "${OUT}"
-[[ "$(tail -1 <<<"${OUT}" | tr -d '[:space:]')" == "1" ]] || fail "host.sh sql: expected CSV with header and the row 1" "${OUT}"
+rows="$(grep -v '^[[:space:]]*$' <<<"${OUT}")"
+[[ "$(wc -l <<<"${rows}")" -ge 2 && "$(head -1 <<<"${rows}" | tr -d '[:space:]"')" == "one" && \
+   "$(tail -1 <<<"${rows}" | tr -d '[:space:]')" == "1" ]] ||
+  fail "host.sh sql: expected CSV with the header one and the row 1" "${OUT}"
 engine_host down >/dev/null 2>&1 || fail "host.sh down failed"
-[[ ! -e "${ACCEL_ENGINE_STATE_DIR}/env" ]] || emit_result "${JSON}" engine_hostctl fail "down left ${ACCEL_ENGINE_STATE_DIR}" "" "engine=${ENGINE_NAME}"
+[[ ! -d "${ACCEL_ENGINE_STATE_DIR}" || -z "$(ls -A "${ACCEL_ENGINE_STATE_DIR}")" ]] ||
+  emit_result "${JSON}" engine_hostctl fail "down left $(ls -A "${ACCEL_ENGINE_STATE_DIR}" | tr '\n' ' ')in ${ACCEL_ENGINE_STATE_DIR}" "" "engine=${ENGINE_NAME}"
 emit_result "${JSON}" engine_hostctl pass "" "${ENGINE_LOG}" "engine=${ENGINE_NAME}"

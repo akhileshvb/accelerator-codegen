@@ -38,6 +38,10 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
    `accelerator_runtime.hpp`, `columnar_batch.hpp` as relevant)
 6. Gate JSON if present: `{{artifacts_path}}/gates/{{layer_gate}}.json`
 
+The pipeline's own files (`pipeline/**`: gates, prompts, contracts) are fixed for this run and the
+backend cannot change them: judge the backend and its harness under `backends/{{engine_name}}/`, never
+ask for a change to a gate or a contract. A check you think a gate lacks is not a violation.
+
 Prior layers (reuse; do not re-litigate style). If **this** layer cannot meet
 its contract because a prior layer has a real bug or design flaw, **fail** and
 tell implementation to make the smallest prior-layer patch (and keep that

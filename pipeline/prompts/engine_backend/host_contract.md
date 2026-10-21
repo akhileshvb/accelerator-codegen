@@ -11,7 +11,7 @@ container, plugin or data layout.
 
 | variable | meaning |
 |---|---|
-| `ACCEL_ENGINE_INSTANCE` | instance name, unique per run; containers, sockets, ports and DB names derive from it, so parallel runs never collide |
+| `ACCEL_ENGINE_INSTANCE` | instance name, unique per run; container, socket and database names derive from it, so parallel runs never collide. A port is any free one, chosen by `up` and recorded in the `env` file |
 | `ACCEL_ENGINE_STATE_DIR` | directory the instance owns (data, logs, `env`); delete it and the instance is gone |
 | `ACCEL_BUILD_DIR` | the CMake build directory |
 | `ACCEL_DATASET_DIR` | engine-neutral dataset: one `<table>.tbl` (`|`-separated, TPC-H dbgen format) per table |
