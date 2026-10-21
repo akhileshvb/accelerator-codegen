@@ -141,11 +141,29 @@ pub fn publish_changes(mut work: HashMapWithView<i64, CustomerCell>, keys: &Vec<
     Ok(after)
 }
 
+/// The keys in order of first occurrence.
+pub open spec fn first_seen(keys: Seq<i64>) -> Seq<i64>
+    decreases keys.len(),
+{
+    if keys.len() == 0 { Seq::empty() }
+    else {
+        let earlier = first_seen(keys.drop_last());
+        if earlier.contains(keys.last()) { earlier } else { earlier.push(keys.last()) }
+    }
+}
+
+/// The orderkeys of a transaction's lineitem and orders changes, each once.
+pub open spec fn requested_keys(lines: Seq<ShipmentKeyDelta>, orders: Seq<OrderKeyDelta>) -> Seq<i64> {
+    first_seen(lines.map_values(|row: ShipmentKeyDelta| row.l_orderkey) + orders.map_values(|row: OrderKeyDelta| row.o_orderkey))
+}
+
 pub fn add_key(set: &mut HashMapWithView<i64, ()>, keys: &mut Vec<i64>, key: i64)
     requires old(keys)@.no_duplicates(), old(keys)@.to_set() == old(set)@.dom(),
     ensures final(keys)@.no_duplicates(), final(keys)@.to_set() == final(set)@.dom(),
         final(set)@.dom() == old(set)@.dom().insert(key),
+        final(keys)@ == if old(keys)@.contains(key) { old(keys)@ } else { old(keys)@.push(key) },
 {
+    proof { old(keys)@.to_set_ensures(); }
     if !set.contains_key(&key) {
         proof {
             verus_prooflib::lemma_unique_push(keys@, key);
@@ -159,18 +177,24 @@ pub fn add_key(set: &mut HashMapWithView<i64, ()>, keys: &mut Vec<i64>, key: i64
 pub fn fact_keys(lines: &[ShipmentKeyDelta], orders: &[OrderKeyDelta]) -> (result: Vec<i64>)
     ensures result@.no_duplicates(), result@.to_set() == lines@.map_values(|row: ShipmentKeyDelta| row.l_orderkey).to_set()
         .union(orders@.map_values(|row: OrderKeyDelta| row.o_orderkey).to_set()),
+        result@ == requested_keys(lines@, orders@),
 {
+    let ghost all = lines@.map_values(|row: ShipmentKeyDelta| row.l_orderkey) + orders@.map_values(|row: OrderKeyDelta| row.o_orderkey);
     let mut seen: HashMapWithView<i64, ()> = HashMapWithView::new();
     let mut keys = Vec::new();
     let mut index = 0;
     while index < lines.len()
         invariant index <= lines.len(), keys@.no_duplicates(), keys@.to_set() == seen@.dom(),
+            all == lines@.map_values(|row: ShipmentKeyDelta| row.l_orderkey) + orders@.map_values(|row: OrderKeyDelta| row.o_orderkey),
+            keys@ == first_seen(all.take(index as int)),
             seen@.dom() == lines@.take(index as int).map_values(|row: ShipmentKeyDelta| row.l_orderkey).to_set(),
         decreases lines.len() - index,
     {
         let ghost processed = index as int;
         add_key(&mut seen, &mut keys, lines[index].l_orderkey);
         proof {
+            assert(all[index as int] == lines@[index as int].l_orderkey);
+            assert(all.take(index as int + 1).drop_last() =~= all.take(index as int));
             let projected = lines@.take(index as int).map_values(|row: ShipmentKeyDelta| row.l_orderkey);
             assert(lines@.take(index as int + 1).map_values(|row: ShipmentKeyDelta| row.l_orderkey)
                 =~= projected.push(lines@[index as int].l_orderkey));
@@ -182,6 +206,9 @@ pub fn fact_keys(lines: &[ShipmentKeyDelta], orders: &[OrderKeyDelta]) -> (resul
     index = 0;
     while index < orders.len()
         invariant index <= orders.len(), keys@.no_duplicates(), keys@.to_set() == seen@.dom(),
+            all == lines@.map_values(|row: ShipmentKeyDelta| row.l_orderkey) + orders@.map_values(|row: OrderKeyDelta| row.o_orderkey),
+            lines@.len() + index <= all.len(),
+            keys@ == first_seen(all.take(lines@.len() + index as int)),
             seen@.dom() == lines@.map_values(|row: ShipmentKeyDelta| row.l_orderkey).to_set()
                 .union(orders@.take(index as int).map_values(|row: OrderKeyDelta| row.o_orderkey).to_set()),
         decreases orders.len() - index,
@@ -189,6 +216,8 @@ pub fn fact_keys(lines: &[ShipmentKeyDelta], orders: &[OrderKeyDelta]) -> (resul
         let ghost processed = index as int;
         add_key(&mut seen, &mut keys, orders[index].o_orderkey);
         proof {
+            assert(all[lines@.len() + index as int] == orders@[index as int].o_orderkey);
+            assert(all.take(lines@.len() + index as int + 1).drop_last() =~= all.take(lines@.len() + index as int));
             let projected = orders@.take(index as int).map_values(|row: OrderKeyDelta| row.o_orderkey);
             assert(orders@.take(index as int + 1).map_values(|row: OrderKeyDelta| row.o_orderkey)
                 =~= projected.push(orders@[index as int].o_orderkey));
@@ -198,7 +227,7 @@ pub fn fact_keys(lines: &[ShipmentKeyDelta], orders: &[OrderKeyDelta]) -> (resul
         }
         index += 1;
     }
-    proof { assert(orders@.take(index as int) =~= orders@); }
+    proof { assert(orders@.take(index as int) =~= orders@); assert(all.take(all.len() as int) =~= all); }
     keys
 }
 
@@ -262,6 +291,8 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta@), lineitem_full, orders_full),
+        orders_keys@ == requested_keys(lineitem_delta@, orders_delta@),
+        ships_keys@ == requested_keys(lineitem_delta@, orders_delta@),
         rescan_orders_by_key_ok(db2, orders_keys@, order_rows@),
         rescan_shipments_by_key_ok(db2, ships_keys@, ship_rows@),
     ensures result matches Ok(next) ==> next.db() == db2,
@@ -273,19 +304,28 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
     let fact_set = key_set(&facts);
     let order_coverage = key_set(orders_keys);
     let ship_coverage = key_set(ships_keys);
+    proof { assert(facts@ == orders_keys@ && facts@ == ships_keys@); }
     let mut index = 0;
     while index < facts.len()
-        invariant index <= facts.len(),
+        invariant index <= facts.len(), facts@ == orders_keys@, facts@ == ships_keys@,
             order_coverage@.dom() == orders_keys@.to_set(), ship_coverage@.dom() == ships_keys@.to_set(),
             forall|position: int| #![trigger facts@[position]] 0 <= position < index ==>
                 orders_keys@.contains(facts@[position]) && ships_keys@.contains(facts@[position]),
         decreases facts.len() - index,
     {
-        if !order_coverage.contains_key(&facts[index]) || !ship_coverage.contains_key(&facts[index]) { return Err(1); }
+        proof {
+            orders_keys@.to_set_ensures();
+            ships_keys@.to_set_ensures();
+            assert(facts@ == orders_keys@);
+            assert(orders_keys@.contains(facts@[index as int]) && ships_keys@.contains(facts@[index as int]));
+        }
+        if !order_coverage.contains_key(&facts[index]) || !ship_coverage.contains_key(&facts[index]) { proof { assert(false); } return Err(1); }
         proof { assert(orders_keys@.contains(facts@[index as int]) && ships_keys@.contains(facts@[index as int])); }
         index += 1;
     }
     proof {
+        assert(facts@ == orders_keys@ && facts@ == ships_keys@);
+        assert(fact_set@.dom() == facts@.to_set());
         assert(fact_set@.dom().subset_of(orders_keys@.to_set()));
         assert(fact_set@.dom().subset_of(ships_keys@.to_set()));
         assert forall|position: int| #![trigger orders_full[position]] 0 <= position < orders_full.len() implies

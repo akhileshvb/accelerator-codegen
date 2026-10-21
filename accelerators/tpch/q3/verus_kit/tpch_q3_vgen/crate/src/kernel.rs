@@ -119,12 +119,25 @@ pub fn execute(
     Some(out)
 }
 
+/// The orderkeys whose orders the host rescans: those of the transaction's lineitem and orders changes.
+pub open spec fn rescan_orders_by_key_wanted(s: State, customer_delta: Seq<CustomerDelta>,
+    lineitem_delta: Seq<ShipmentKeyDelta>, orders_delta: Seq<OrderKeyDelta>) -> Seq<i64> {
+    crate::maintenance::requested_keys(lineitem_delta, orders_delta)
+}
+
+/// The orderkeys whose lineitems the host rescans: the same keys.
+pub open spec fn rescan_shipments_by_key_wanted(s: State, customer_delta: Seq<CustomerDelta>,
+    lineitem_delta: Seq<ShipmentKeyDelta>, orders_delta: Seq<OrderKeyDelta>) -> Seq<i64> {
+    crate::maintenance::requested_keys(lineitem_delta, orders_delta)
+}
+
 pub fn rescan_orders_by_key_keys(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
     lineitem_delta: &[ShipmentKeyDelta],
     orders_delta: &[OrderKeyDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_orders_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
 {
     crate::maintenance::fact_keys(lineitem_delta, orders_delta)
 }
@@ -135,6 +148,7 @@ pub fn rescan_shipments_by_key_keys(
     lineitem_delta: &[ShipmentKeyDelta],
     orders_delta: &[OrderKeyDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_shipments_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
 {
     crate::maintenance::fact_keys(lineitem_delta, orders_delta)
 }
@@ -156,6 +170,8 @@ pub fn apply(
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(s.db(), db2, customer_delta_seq_view(customer_delta@), lineitem_full, orders_full),
+        orders_by_key_keys@ == rescan_orders_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
+        shipments_by_key_keys@ == rescan_shipments_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
         rescan_orders_by_key_ok(db2, orders_by_key_keys@, orders_by_key_rows@),
         rescan_shipments_by_key_ok(db2, shipments_by_key_keys@, shipments_by_key_rows@),
     ensures
