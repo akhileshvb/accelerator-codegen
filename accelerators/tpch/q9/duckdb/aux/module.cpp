@@ -3,6 +3,7 @@
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 #include "tpch/common/dealt_rows.hpp"
 
@@ -25,9 +26,13 @@ constexpr std::size_t kSlotGrain = 16;
 // Profit slots per slice when copying them or folding them into the cube (~80 us).
 constexpr std::size_t kSlotFoldGrain = 8;
 // Profit slots per slice when applying buffered pair aggregates at build (untimed).
-constexpr std::size_t kPairSlotGrain = 4;
+constexpr std::size_t kPairSlotGrain = 1;
 // Candidate parts per read slice (~800 us): a hash lookup, substring test and cells.
 constexpr std::size_t kCandidateGrain = 8192;
+// Affected pairs per slice of the parallel sort (~1000 us).
+constexpr std::size_t kAffectedSortGrain = 32768;
+// Lineitem deltas per slice when resolving their order years (~500 us).
+constexpr std::size_t kYearGrain = 16384;
 // Affected pairs per snapshot chunk.
 constexpr std::size_t kPairChunk = 4096;
 // Pair chunks per slice (untimed).
@@ -42,32 +47,15 @@ constexpr int32_t kDenseYearBase = Q9TokenCube::kYearBase;
 // One (part, supplier, order year) lineitem aggregate: rev = SUM(extendedprice_raw
 // * (100 - discount_raw)), qty = SUM(quantity_raw).
 struct PairAgg {
-  int64_t partkey, suppkey;
+  int64_t partkey, rev, qty;
+  int32_t suppkey; // fits (PairKeyFits)
   int32_t year;
-  int64_t rev, qty;
 };
 
 // Chunks of a ChunkedCowArray dealt round-robin to `buckets`: a bucket owns whole chunks,
 // so threads that each take a bucket write disjoint chunks of one array.
 template <class Array> std::size_t ChunkBucket(int64_t key, std::size_t buckets) {
   return key >= 0 ? static_cast<std::size_t>(key) / Array::kChunkSize % buckets : 0;
-}
-
-// The rows of a typed partitioned scan, dealt by `deal(rows, input)`.
-template <class Row, class Input, class Scan, class Deal>
-DealtRows<Row> DealScan(const core::AuxEngineServices &services, std::size_t buckets,
-                        Scan &&scan, Deal &&deal) {
-  using Rows = DealtRows<Row>;
-  return core::PartitionedBuild<Rows>(
-      services, [buckets] { return Rows(buckets); },
-      [&](std::size_t partitions, auto &&sink) {
-        scan(partitions, [&](std::size_t partition, const Input &input) {
-          sink(partition, core::SingleRowBatch<Input>{input});
-        });
-      },
-      [&](Rows &rows, const Input &input) { deal(rows, input); },
-      [](Rows &into, Rows &&from) { into.Merge(std::move(from)); },
-      core::BuildPartitions(services));
 }
 
 // Keys that do not fit the int32 pair index are not supported incrementally.
@@ -717,7 +705,7 @@ private:
         for (const auto &pair : rec->pairs)
           affected.emplace_back(partkey, pair.suppkey);
     }
-    std::sort(affected.begin(), affected.end());
+    core::ParallelStableSort(services, affected, std::less<>(), kAffectedSortGrain);
     affected.erase(std::unique(affected.begin(), affected.end()), affected.end());
     chunk_count = (affected.size() + kPairChunk - 1) / kPairChunk;
     net_chunks.resize(chunk_count);
@@ -773,11 +761,33 @@ private:
     }
 
     const auto &deltas = buffer.Deltas();
+    // Slices resolve what the overlay and the side image hold; the engine fallback
+    // (not thread-safe) serves the few years they miss.
     std::vector<int32_t> years(deltas.size());
+    std::vector<uint8_t> missed(deltas.size(), 0);
+    core::ParallelSlices(services, deltas.size(), kYearGrain,
+                         [&](std::size_t, std::size_t begin, std::size_t end) {
+                           for (std::size_t k = begin; k < end; ++k)
+                             missed[k] = !ResolveOrderYear(*join_side, nullptr, deltas[k].orderkey,
+                                                           years[k], year_overlay);
+                         });
+    std::vector<int64_t> missing;
     for (std::size_t k = 0; k < deltas.size(); ++k)
-      if (!ResolveOrderYear(*join_side, initial_scan, deltas[k].orderkey, years[k],
-                            year_overlay))
+      if (missed[k])
+        missing.push_back(deltas[k].orderkey);
+    std::sort(missing.begin(), missing.end());
+    missing.erase(std::unique(missing.begin(), missing.end()), missing.end());
+    std::unordered_map<int64_t, int32_t> fetched;
+    if (!missing.empty() && initial_scan)
+      initial_scan->LookupOrderYears(missing, fetched);
+    for (std::size_t k = 0; k < deltas.size(); ++k) {
+      if (!missed[k])
+        continue;
+      const auto it = fetched.find(deltas[k].orderkey);
+      if (it == fetched.end())
         return false;
+      years[k] = it->second;
+    }
     std::vector<std::vector<uint32_t>> by_slot(slot_count);
     for (uint32_t k = 0; k < deltas.size(); ++k)
       by_slot[TpchQ9State::HashPartition(deltas[k].partkey, slot_count)].push_back(k);
@@ -1284,28 +1294,34 @@ void Q9TokenCube::Add(int32_t nation, int32_t year, int64_t delta) {
   sparse.push_back(Q9ProfitCell::Make(nation, year, delta));
 }
 
+Q9TokenCube &TpchQ9State::CubeOf(const std::string &token) {
+  auto &slot = cube[token];
+  if (!slot)
+    slot = std::make_shared<Q9TokenCube>();
+  else if (slot.use_count() > 1)
+    slot = std::make_shared<Q9TokenCube>(*slot);
+  return *slot;
+}
+
 void TpchQ9State::CubeAdd(const std::vector<std::string> &tokens,
                           int32_t nation, int32_t year, int64_t delta) {
   if (delta == 0)
     return;
-  for (const auto &token : tokens) {
-    auto &slot = cube[token];
-    if (!slot)
-      slot = std::make_shared<Q9TokenCube>();
-    else if (slot.use_count() > 1)
-      slot = std::make_shared<Q9TokenCube>(*slot);
-    slot->Add(nation, year, delta);
-  }
+  for (const auto &token : tokens)
+    CubeOf(token).Add(nation, year, delta);
 }
 
 void TpchQ9State::CubeApplyRecord(const Q9PartRecord &record, int sign) {
   if (record.cells.empty())
     return;
   const auto tokens = NameTokens(record.normalized_name);
-  if (tokens.empty())
-    return;
+  std::vector<Q9TokenCube *> cubes; // one lookup per token, not per cell
+  cubes.reserve(tokens.size());
+  for (const auto &token : tokens)
+    cubes.push_back(&CubeOf(token));
   for (const auto &cell : record.cells)
-    CubeAdd(tokens, cell.Nation(), cell.Year(), sign * cell.profit);
+    for (auto *token_cube : cubes)
+      token_cube->Add(cell.Nation(), cell.Year(), sign * cell.profit);
 }
 
 void TpchQ9State::BuildCube(const core::AuxEngineServices &services) {
@@ -1733,9 +1749,9 @@ DealtRows<PairAgg> ScanPairAggregates(const core::AuxEngineServices &services,
         if (!PairKeyFits(input.suppkey) || !state.LookupOrderYear(input.orderkey, year))
           return;
         dealt.Add(TpchQ9State::HashPartition(input.partkey, slots), input.partkey,
-                  {input.partkey, input.suppkey, year,
+                  {input.partkey,
                    input.extendedprice_raw * (static_cast<int64_t>(100) - input.discount_raw),
-                   input.quantity_raw});
+                   input.quantity_raw, static_cast<int32_t>(input.suppkey), year});
       });
 }
 
@@ -1869,6 +1885,8 @@ void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
 
   auto pairs = ScanPairAggregates(services, *initial_scan, state);
   BuildPartRecords(services, state, parts, pairs);
+  parts.Release(services);
+  pairs.Release(services);
 
   state.RebuildNationEmitOrder();
   state.BuildCellsFromPairs(services);
