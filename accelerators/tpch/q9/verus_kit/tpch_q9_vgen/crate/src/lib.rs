@@ -38,3 +38,4 @@ pub mod ingest;
 pub mod linepass;
 pub mod groups;
 pub mod emitw;
+pub mod raw;
