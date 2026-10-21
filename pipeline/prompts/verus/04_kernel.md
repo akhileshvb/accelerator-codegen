@@ -15,7 +15,7 @@ unprovable goals later.
 `#[verifier::external_body]` / `unimplemented!()`. Replace them all with real
 implementations: `State` (with `db()` and a type invariant tying the data to
 the database it answers for), `build`, `execute`, `apply`, and any
-`rescan_<n>_keys`. Split the work into modules as you see fit. Write the spec
+`rescan_<n>_keys` and its spec fn `rescan_<n>_wanted`. Split the work into modules as you see fit. Write the spec
 side now too (`db()`, the type invariant, the `requires`/`ensures` the
 obligations impose; loop invariants you already know), since it shapes the
 code; leave the proof bodies (lemmas, `assert`s, `proof` blocks) for the next

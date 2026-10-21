@@ -34,8 +34,9 @@ to key k", or `eqv(v)` to get row multiplicities (`lemma_count_as_sum`).
 
 **Rescan contracts** (`rescan_<n>_ok(db2, keys, rows)`): the same, restricted
 to rows whose key is in `keys`, on the post-transaction database. For a key
-outside `keys` they say nothing: apply must check that every key it relies on
-was rescanned, and use only those.
+outside `keys` they say nothing; but `keys` is exactly your
+`rescan_<n>_wanted(..)` (apply requires it), so what you asked for is what you
+get: prove from the definition of `wanted` that the keys apply relies on are in it.
 
 **Capture** (`capture_ok(db, db2, deltas...)`): per table,
 `bag_step(before, after, d)`:
@@ -79,7 +80,8 @@ your output is its prefix of length n.
   neighborhood is unchanged (its rows are not in the deltas). Keep the
   per-neighborhood contribution as one spec function used in both the
   invariant and the update.
-* **Arithmetic**: checked operations in exec code (decline on overflow);
+* **Arithmetic**: exact integers (`wide`) or bounds proven from the envelope in exec
+  code (never decline on an intermediate overflow);
   in proofs, nonlinear facts need `by (nonlinear_arith)` or
   `vstd::arithmetic` lemmas.
 * **Quantifiers**: one trigger per quantifier, on a term containing every

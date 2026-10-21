@@ -45,7 +45,8 @@ How to work:
   domain, new on every run (not shown ahead, the same for the best and the
   candidate within one decision). Never specialize to particular parameter
   values: the kit must stay correct and fast for any value of the domain,
-  and a decline inside the domain counts against it.
+  and answer every other value of the parameter's type (no declines inside
+  the envelope; the obligations enforce it).
 * Memory footprint is the third objective (`scale_principles`, "Memory
   footprint"). Do not raise the score by growing the state past its SF20
   budget (e.g. a per-key container, an extra copy of the facts, wider
