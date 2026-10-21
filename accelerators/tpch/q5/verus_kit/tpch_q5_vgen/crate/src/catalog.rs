@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use verus_common::sums::*;
 use crate::gen_obligations::*;
 use crate::gen_spec::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -11,7 +12,7 @@ pub struct Binding {
     pub key: i64,
     pub region: i64,
     pub name: Vec<u8>,
-    pub count: i128,
+    pub count: Wide,
 }
 
 #[verifier::opaque]
@@ -201,19 +202,46 @@ pub fn bytes_equal(left: &[u8], right: &[u8]) -> (out: bool)
     true
 }
 
+pub open spec fn same_binding(left: Binding, right: Binding) -> bool {
+    left.key == right.key && left.region == right.region && left.name@ == right.name@
+}
+
+pub open spec fn bindings_unique(rows: Seq<Binding>) -> bool {
+    forall|first: int, second: int| 0 <= first < second < rows.len() ==> !same_binding(#[trigger] rows[first], #[trigger] rows[second])
+}
+
+pub proof fn lemma_binding_unique_row(rows: Seq<Binding>, position: int)
+    requires bindings_unique(rows), 0 <= position < rows.len(),
+    ensures binding_count(rows, rows[position].key, rows[position].region, rows[position].name@) == rows[position].count@,
+{
+    let key = rows[position].key;
+    let region = rows[position].region;
+    let name = rows[position].name@;
+    let weight = |row: Binding| if row.key == key && row.region == region && row.name@ == name { row.count@ } else { 0 };
+    assert forall|other: int| 0 <= other < rows.len() && other != position implies weight(#[trigger] rows[other]) == 0 by {
+        if other < position { assert(!same_binding(rows[other], rows[position])); }
+        else { assert(!same_binding(rows[position], rows[other])); }
+    }
+    lemma_sum_single_match(rows, weight, position);
+    assert(weight(rows[position]) == rows[position].count@);
+    assert forall|index: int| 0 <= index < rows.len() implies weight(#[trigger] rows[index]) ==
+        if rows[index].key == key && rows[index].region == region && rows[index].name@ == name { rows[index].count@ } else { 0 } by {}
+    lemma_binding_weight(rows, key, region, name, weight);
+}
+
 pub open spec fn binding_count(rows: Seq<Binding>, key: i64, region: i64, name: Seq<u8>) -> int {
-    sum(rows, |row: Binding| if row.key == key && row.region == region && row.name@ == name { row.count as int } else { 0 })
+    sum(rows, |row: Binding| if row.key == key && row.region == region && row.name@ == name { row.count@ } else { 0 })
 }
 
 pub proof fn lemma_binding_weight(rows: Seq<Binding>, key: i64, region: i64, name: Seq<u8>, weight: spec_fn(Binding) -> int)
     requires forall|position: int| 0 <= position < rows.len() ==> weight(#[trigger] rows[position]) ==
-        if rows[position].key == key && rows[position].region == region && rows[position].name@ == name { rows[position].count as int } else { 0 },
+        if rows[position].key == key && rows[position].region == region && rows[position].name@ == name { rows[position].count@ } else { 0 },
     ensures sum(rows, weight) == binding_count(rows, key, region, name),
     decreases rows.len(),
 {
     if rows.len() > 0 {
         assert forall|position: int| 0 <= position < rows.drop_last().len() implies weight(#[trigger] rows.drop_last()[position]) ==
-            if rows.drop_last()[position].key == key && rows.drop_last()[position].region == region && rows.drop_last()[position].name@ == name { rows.drop_last()[position].count as int } else { 0 } by {
+            if rows.drop_last()[position].key == key && rows.drop_last()[position].region == region && rows.drop_last()[position].name@ == name { rows.drop_last()[position].count@ } else { 0 } by {
             assert(rows.drop_last()[position] == rows[position]);
         }
         lemma_binding_weight(rows.drop_last(), key, region, name, weight);
@@ -223,6 +251,7 @@ pub proof fn lemma_binding_weight(rows: Seq<Binding>, key: i64, region: i64, nam
 
 pub fn copy(rows: &Vec<Binding>) -> (out: Vec<Binding>)
     ensures out@.len() == rows@.len(),
+        bindings_unique(rows@) ==> bindings_unique(out@),
         forall|key: i64, region: i64, name: Seq<u8>| #[trigger] binding_count(out@, key, region, name) == binding_count(rows@, key, region, name),
 {
     let mut out: Vec<Binding> = Vec::new();
@@ -233,87 +262,116 @@ pub fn copy(rows: &Vec<Binding>) -> (out: Vec<Binding>)
                 (#[trigger] out@[position]).key == rows@[position].key
                 && out@[position].region == rows@[position].region
                 && out@[position].name@ == rows@[position].name@
-                && out@[position].count == rows@[position].count,
+                && out@[position].count@ == rows@[position].count@,
         decreases rows.len() - index,
     {
         let row = &rows[index];
-        out.push(Binding { key: row.key, region: row.region, name: bytes_copy(&row.name), count: row.count });
+        out.push(Binding { key: row.key, region: row.region, name: bytes_copy(&row.name), count: row.count.dup() });
         index += 1;
     }
     proof {
+        if bindings_unique(rows@) {
+            assert forall|first: int, second: int| 0 <= first < second < out@.len() implies !same_binding(#[trigger] out@[first], #[trigger] out@[second]) by {
+                assert(!same_binding(rows@[first], rows@[second]));
+            }
+        }
         assert forall|key: i64, region: i64, name: Seq<u8>| #[trigger] binding_count(out@, key, region, name) == binding_count(rows@, key, region, name) by {
-            let weight = |row: Binding| if row.key == key && row.region == region && row.name@ == name { row.count as int } else { 0 };
+            let weight = |row: Binding| if row.key == key && row.region == region && row.name@ == name { row.count@ } else { 0 };
             verus_prooflib::lemma_sum_aligned(out@, rows@, weight, weight);
         }
     }
     out
 }
 
-pub fn add(rows: &mut Vec<Binding>, key: i64, region: i64, name: &[u8], sign: i128) -> (ok: bool)
-    ensures ok ==> forall|other: i64, area: i64, text: Seq<u8>| #[trigger] binding_count(final(rows)@, other, area, text) ==
-        binding_count(old(rows)@, other, area, text) + if other == key && area == region && text == name@ { sign as int } else { 0 },
-        ok && sign > 0 && (forall|position: int| 0 <= position < old(rows)@.len() ==> (#[trigger] old(rows)@[position]).count > 0) ==>
-            forall|position: int| 0 <= position < final(rows)@.len() ==> (#[trigger] final(rows)@[position]).count > 0,
+pub fn add(rows: &mut Vec<Binding>, key: i64, region: i64, name: &[u8], sign: i64)
+    requires bindings_unique(old(rows)@),
+    ensures bindings_unique(final(rows)@),
+        forall|other: i64, area: i64, text: Seq<u8>| #[trigger] binding_count(final(rows)@, other, area, text) ==
+            binding_count(old(rows)@, other, area, text) + if other == key && area == region && text == name@ { sign as int } else { 0 },
+        sign > 0 && (forall|position: int| 0 <= position < old(rows)@.len() ==> (#[trigger] old(rows)@[position]).count@ > 0) ==>
+            forall|position: int| 0 <= position < final(rows)@.len() ==> (#[trigger] final(rows)@[position]).count@ > 0,
 {
     let ghost entry = rows@;
     let mut index = 0;
     while index < rows.len()
-        invariant index <= rows.len(), rows@ == entry, entry == old(rows)@,
+        invariant index <= rows.len(), rows@ == entry, entry == old(rows)@, bindings_unique(entry),
+            forall|position: int| 0 <= position < index ==> !(entry[position].key == key && entry[position].region == region && entry[position].name@ == name@),
         decreases rows.len() - index,
     {
         let row = &rows[index];
         if row.key == key && row.region == region && bytes_equal(&row.name, name) {
-            let count = match row.count.checked_add(sign) { Some(value) => value, None => return false };
+            let count = row.count.add(&Wide::from_i128(sign as i128));
             let replacement = Binding { key, region, name: bytes_copy(name), count };
             proof {
                 assert forall|other: i64, area: i64, text: Seq<u8>| #[trigger] binding_count(entry.update(index as int, replacement), other, area, text) ==
                     binding_count(entry, other, area, text) + if other == key && area == region && text == name@ { sign as int } else { 0 } by {
                     lemma_sum_update(entry, index as int, replacement,
-                        |item: Binding| if item.key == other && item.region == area && item.name@ == text { item.count as int } else { 0 });
+                        |item: Binding| if item.key == other && item.region == area && item.name@ == text { item.count@ } else { 0 });
+                }
+                assert forall|first: int, second: int| 0 <= first < second < entry.update(index as int, replacement).len() implies
+                    !same_binding(#[trigger] entry.update(index as int, replacement)[first], #[trigger] entry.update(index as int, replacement)[second]) by {
+                    assert(!same_binding(entry[first], entry[second]));
                 }
             }
             rows.set(index, replacement);
-            return true;
+            return;
         }
+        proof { assert(!(entry[index as int].key == key && entry[index as int].region == region && entry[index as int].name@ == name@)); }
         index += 1;
     }
     if sign != 0 {
-        let row = Binding { key, region, name: bytes_copy(name), count: sign };
+        let row = Binding { key, region, name: bytes_copy(name), count: Wide::from_i128(sign as i128) };
         proof {
             assert forall|other: i64, area: i64, text: Seq<u8>| #[trigger] binding_count(entry.push(row), other, area, text) ==
                 binding_count(entry, other, area, text) + if other == key && area == region && text == name@ { sign as int } else { 0 } by {
-                lemma_sum_push(entry, row, |item: Binding| if item.key == other && item.region == area && item.name@ == text { item.count as int } else { 0 });
+                lemma_sum_push(entry, row, |item: Binding| if item.key == other && item.region == area && item.name@ == text { item.count@ } else { 0 });
+            }
+            assert forall|first: int, second: int| 0 <= first < second < entry.push(row).len() implies
+                !same_binding(#[trigger] entry.push(row)[first], #[trigger] entry.push(row)[second]) by {
+                if second < entry.len() { assert(!same_binding(entry[first], entry[second])); }
+                else { assert(!(entry[first].key == key && entry[first].region == region && entry[first].name@ == name@)); }
             }
         }
         rows.push(row);
     }
-    true
 }
 
-pub fn compact(rows: &mut Vec<Binding>) -> (ok: bool)
-    ensures ok ==> forall|index: int| 0 <= index < final(rows)@.len() ==> (#[trigger] final(rows)@[index]).count > 0,
+pub fn compact(rows: &mut Vec<Binding>)
+    requires bindings_unique(old(rows)@),
+        forall|key: i64, region: i64, name: Seq<u8>| #[trigger] binding_count(old(rows)@, key, region, name) >= 0,
+    ensures forall|index: int| 0 <= index < final(rows)@.len() ==> (#[trigger] final(rows)@[index]).count@ > 0,
+        bindings_unique(final(rows)@),
         forall|key: i64, region: i64, name: Seq<u8>| #[trigger] binding_count(final(rows)@, key, region, name) == binding_count(old(rows)@, key, region, name),
 {
     let ghost entry = rows@;
     let mut index = rows.len();
     while index > 0
-        invariant index <= rows.len(), entry == old(rows)@,
-            forall|position: int| index <= position < rows@.len() ==> (#[trigger] rows@[position]).count > 0,
+        invariant index <= rows.len(), entry == old(rows)@, bindings_unique(rows@),
+            forall|position: int| index <= position < rows@.len() ==> (#[trigger] rows@[position]).count@ > 0,
             forall|key: i64, region: i64, name: Seq<u8>| #[trigger] binding_count(rows@, key, region, name) == binding_count(entry, key, region, name),
+            forall|key: i64, region: i64, name: Seq<u8>| #[trigger] binding_count(entry, key, region, name) >= 0,
         decreases index,
     {
         index -= 1;
-        if rows[index].count < 0 { return false; }
-        if rows[index].count == 0 {
+        proof {
+            lemma_binding_unique_row(rows@, index as int);
+            assert(binding_count(rows@, rows@[index as int].key, rows@[index as int].region, rows@[index as int].name@) >= 0);
+        }
+        if rows[index].count.is_zero() {
             proof {
                 assert forall|key: i64, region: i64, name: Seq<u8>| #[trigger] binding_count(rows@.remove(index as int), key, region, name) == binding_count(rows@, key, region, name) by {
-                    lemma_sum_remove(rows@, index as int, |item: Binding| if item.key == key && item.region == region && item.name@ == name { item.count as int } else { 0 });
+                    lemma_sum_remove(rows@, index as int, |item: Binding| if item.key == key && item.region == region && item.name@ == name { item.count@ } else { 0 });
+                }
+                assert forall|first: int, second: int| 0 <= first < second < rows@.remove(index as int).len() implies
+                    !same_binding(#[trigger] rows@.remove(index as int)[first], #[trigger] rows@.remove(index as int)[second]) by {
+                    let source_first = if first < index { first } else { first + 1 };
+                    let source_second = if second < index { second } else { second + 1 };
+                    assert(!same_binding(rows@[source_first], rows@[source_second]));
                 }
             }
             rows.remove(index);
         }
     }
-    true
 }
 
 }
