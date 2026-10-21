@@ -1,6 +1,6 @@
 #pragma once
 //
-// RowPieces<Row>, GroupRows
+// RowPieces<Row>, InternedPieces<Row>, GroupRows, FillChunks
 // PURPOSE    Partials of a partitioned scan that cost O(rows seen) to create and O(1)
 //            to merge, and the parallel regroup of those rows afterwards. A bulk load
 //            then runs per group on the pool instead of merging per-partition
@@ -15,7 +15,11 @@
 //
 
 #include <cstddef>
+#include <algorithm>
+#include <cstdint>
 #include <iterator>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -32,6 +36,45 @@ template <class Row> struct RowPieces {
     into.pieces.insert(into.pieces.end(), std::make_move_iterator(from.pieces.begin()),
                        std::make_move_iterator(from.pieces.end()));
     from.pieces.clear();
+  }
+};
+
+// RowPieces whose rows carry a small-integer id of a string, numbered per piece in
+// first-seen order. Unify renumbers them in piece order, which is the numbering
+// the serial scan would have produced.
+template <class Row> struct InternedPieces : RowPieces<Row> {
+  std::vector<std::vector<std::string>> piece_names = std::vector<std::vector<std::string>>(1);
+  std::unordered_map<std::string, int32_t> index; // of the scanning (last) piece
+
+  int32_t Intern(const std::string &name) {
+    const auto it = index.find(name);
+    if (it != index.end())
+      return it->second;
+    auto &names = piece_names.back();
+    const auto id = static_cast<int32_t>(names.size());
+    names.push_back(name);
+    index.emplace(name, id);
+    return id;
+  }
+  static void Merge(InternedPieces &into, InternedPieces &&from) {
+    RowPieces<Row>::Merge(into, std::move(from));
+    into.piece_names.insert(into.piece_names.end(),
+                            std::make_move_iterator(from.piece_names.begin()),
+                            std::make_move_iterator(from.piece_names.end()));
+    from.piece_names.clear();
+  }
+  // global_id(name) numbers a string; set_id(row, table) rewrites a row's local id
+  // through table (local id -> global id).
+  template <class GlobalId, class SetId>
+  void Unify(const Parallelism &parallelism, GlobalId &&global_id, SetId &&set_id) {
+    std::vector<std::vector<int32_t>> renumber(this->pieces.size());
+    for (std::size_t p = 0; p < renumber.size(); ++p)
+      for (const auto &name : piece_names[p])
+        renumber[p].push_back(global_id(name));
+    parallelism.For(this->pieces.size(), [&](std::size_t p) {
+      for (Row &row : this->pieces[p])
+        set_id(row, renumber[p]);
+    });
   }
 };
 
@@ -63,6 +106,32 @@ std::vector<GroupedPiece<Row>> GroupRows(const Parallelism &parallelism,
     std::vector<Row>().swap(source);
   });
   return grouped;
+}
+
+// Calls apply(array.Mutable(key_of(row)), row) for every row of `pieces` (keys >= 0),
+// rows of one chunk in piece order. Chunks are dealt to groups that run concurrently
+// on the pool, so `array` (a ChunkedCowArray) needs no lock. Empties `pieces`.
+template <class Array, class Row, class KeyOf, class Apply>
+void FillChunks(const Parallelism &parallelism, Array &array,
+                std::vector<std::vector<Row>> &pieces, KeyOf &&key_of, Apply &&apply) {
+  constexpr std::size_t kGroups = 1024;
+  std::vector<int64_t> top(pieces.size(), -1);
+  parallelism.For(pieces.size(), [&](std::size_t p) {
+    for (const Row &row : pieces[p])
+      top[p] = std::max<int64_t>(top[p], key_of(row));
+  });
+  const int64_t last = top.empty() ? -1 : *std::max_element(top.begin(), top.end());
+  if (last < 0)
+    return;
+  array.Reserve(last);
+  auto grouped = GroupRows(parallelism, pieces, kGroups, [&](const Row &row) {
+    return static_cast<std::size_t>(key_of(row)) / Array::kChunkSize % kGroups;
+  });
+  parallelism.For(kGroups, [&](std::size_t g) {
+    for (auto &piece : grouped)
+      for (std::size_t i = piece.begin[g]; i < piece.begin[g + 1]; ++i)
+        apply(array.Mutable(key_of(piece.rows[i])), piece.rows[i]);
+  });
 }
 
 } // namespace accelerator_codegen::aux_state::core

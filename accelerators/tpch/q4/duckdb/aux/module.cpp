@@ -146,22 +146,17 @@ bool ReadOrder(const core::AuxRow &row, int64_t &orderkey,
          core::StringCell(row, 2, orderpriority);
 }
 
-// Orders of one scan partition: eligibility entries (count 0) in pieces, each
-// piece with the priority dictionary its rows were numbered by, plus the
-// partition's order-date range. `names` / `map` intern the scanning piece.
+// Orders of one scan partition: eligibility entries (count 0) numbered by the
+// partition's own priority dictionary, plus the partition's order-date range.
 struct OrdersPartial {
-  core::RowPieces<TpchQ4EligIndex::Element> rows;
-  std::vector<std::vector<std::string>> piece_names = std::vector<std::vector<std::string>>(1);
-  std::unordered_map<std::string, int32_t> map;
+  core::InternedPieces<TpchQ4EligIndex::Element> rows;
   bool any = false;
   int32_t min_orderdate_days = 0, max_orderdate_days = 0;
 };
 
 // Appends `from` to `into` as if its rows had been scanned after into's.
 void MergeOrders(OrdersPartial &into, OrdersPartial &&from) {
-  core::RowPieces<TpchQ4EligIndex::Element>::Merge(into.rows, std::move(from.rows));
-  into.piece_names.insert(into.piece_names.end(), std::make_move_iterator(from.piece_names.begin()),
-                          std::make_move_iterator(from.piece_names.end()));
+  core::InternedPieces<TpchQ4EligIndex::Element>::Merge(into.rows, std::move(from.rows));
   if (from.any) {
     into.min_orderdate_days = into.any ? std::min(into.min_orderdate_days, from.min_orderdate_days)
                                        : from.min_orderdate_days;
@@ -169,22 +164,6 @@ void MergeOrders(OrdersPartial &into, OrdersPartial &&from) {
                                        : from.max_orderdate_days;
     into.any = true;
   }
-}
-
-// Interns every piece's priorities in piece order (the serial scan's first-seen
-// order) into `names` / `map` and renumbers the pieces' rows to match, in parallel.
-void UnifyPriorities(core::AuxEngineServices &services, OrdersPartial &orders,
-                     std::vector<std::string> &names,
-                     std::unordered_map<std::string, int32_t> &map) {
-  auto &pieces = orders.rows.pieces;
-  std::vector<std::vector<int32_t>> renumber(pieces.size());
-  for (std::size_t p = 0; p < pieces.size(); ++p)
-    for (const auto &name : orders.piece_names[p])
-      renumber[p].push_back(TpchQ4PriorityIndex(name, names, map));
-  core::ParallelEach(services, pieces.size(), 1, [&](std::size_t p) {
-    for (auto &e : pieces[p])
-      e.value.priority_idx = renumber[p][e.value.priority_idx];
-  });
 }
 
 using TreePages = std::vector<std::shared_ptr<const std::vector<int64_t>>>;
@@ -693,20 +672,27 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
       },
       [](OrdersPartial &p, const auto &row) {
         const int32_t date = row.Date(1);
-        const int32_t pidx = TpchQ4PriorityIndex(row.Text(2), p.piece_names.back(), p.map);
-        p.rows.Add({row.Int(0), TpchQ4OrderInfo{date, pidx, 0}});
+        p.rows.Add({row.Int(0), TpchQ4OrderInfo{date, p.rows.Intern(row.Text(2)), 0}});
         p.min_orderdate_days = p.any ? std::min(p.min_orderdate_days, date) : date;
         p.max_orderdate_days = p.any ? std::max(p.max_orderdate_days, date) : date;
         p.any = true;
       },
       MergeOrders);
-  UnifyPriorities(services, orders, state.priority_names, state.priority_map);
+  const auto parallelism = core::Parallelism::OnPool(services);
+  orders.rows.Unify(
+      parallelism,
+      [&](const std::string &name) {
+        return TpchQ4PriorityIndex(name, state.priority_names, state.priority_map);
+      },
+      [](TpchQ4EligIndex::Element &e, const std::vector<int32_t> &table) {
+        e.value.priority_idx = table[e.value.priority_idx];
+      });
   if (orders.any) {
     state.min_orderdate_days = orders.min_orderdate_days;
     state.max_orderdate_days = orders.max_orderdate_days;
   }
   TpchQ4EligIndex::Builder shards;
-  shards.AddPieces(orders.rows.pieces, core::Parallelism::OnPool(services));
+  shards.AddPieces(orders.rows.pieces, parallelism);
   shards.Sort([&](std::size_t n, const auto &fn) {
     core::ParallelEach(services, n, kSortShardGrain, fn);
   });
