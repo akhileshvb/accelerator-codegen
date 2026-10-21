@@ -292,4 +292,122 @@ proof fn lemma_member_of_prefix(a: Seq<Cell>, y: int, j: int)
     }
 }
 
+
+pub open spec fn lines_fit(db: Db) -> bool {
+    forall|i: int| 0 <= i < db.lineitem.len() ==> {
+        let l = #[trigger] db.lineitem[i];
+        i64::MIN <= l.l_partkey <= i64::MAX && i64::MIN <= l.l_suppkey <= i64::MAX
+    }
+}
+
+pub proof fn lemma_dates_nonneg(db: Db, k: int, y: int)
+    ensures dates(db, k, y) >= 0,
+{
+    lemma_sum_nonneg(db.orders, |row: OrdersRow| if row.o_orderkey == k && civil_year(row.o_orderdate) == y { 1int } else { 0int });
+}
+
+pub proof fn lemma_green_state(g: General, db: Db, pat: Seq<u8>, q: i64)
+    requires general_of(g, db),
+    ensures green_q(g, pat, q) == green(filter_db(db, pat), q as int),
+{
+    lemma_matched_green(db, pat, q as int);
+    lemma_sum_ext_all(db.part, part_w(q as int, like_ind(pat)), matched_weight(pat, q as int));
+}
+
+/// Lines that add anything are listed in ks_of: their part has matching rows and their pair has year cells.
+#[verifier::spinoff_prover]
+pub proof fn lemma_coverage(g: General, db: Db, pat: Seq<u8>, keys: Seq<i64>, nk: int, y: int, f: int)
+    requires general_of(g, db), lines_fit(db), 0 <= f <= 1,
+        forall|k: i64| #[trigger] g.pnames.at(k).is_some() <==> keys.contains(k),
+    ensures forall|i: int| 0 <= i < db.lineitem.len() && hline(db, pat, #[trigger] db.lineitem[i], nk, y, f) != 0
+        ==> ks_of(g, keys, y).contains(pair_key(db.lineitem[i])),
+{
+    assert forall|i: int| 0 <= i < db.lineitem.len() && hline(db, pat, #[trigger] db.lineitem[i], nk, y, f) != 0
+        implies ks_of(g, keys, y).contains(pair_key(db.lineitem[i])) by {
+        let l = db.lineitem[i];
+        let q = l.l_partkey as i64;
+        let s = l.l_suppkey as i64;
+        assert(q as int == l.l_partkey && s as int == l.l_suppkey);
+        let d = dates(db, l.l_orderkey, y);
+        let gr = green(filter_db(db, pat), l.l_partkey);
+        let rest = supplier_count(db, l.l_suppkey, nk) * gr * pf(db, l, f);
+        assert(d != 0 && rest != 0) by { if d == 0 { assert(d * rest == 0) by (nonlinear_arith) requires d == 0; } if rest == 0 { assert(d * rest == 0) by (nonlinear_arith) requires rest == 0; } }
+        assert(gr != 0) by { if gr == 0 { assert(supplier_count(db, l.l_suppkey, nk) * gr * pf(db, l, f) == 0) by (nonlinear_arith) requires gr == 0; } }
+        lemma_green_state(g, db, pat, q);
+        assert(pn_at(g.pnames, q, like_ind(pat)) != 0);
+        assert(g.pnames.at(q).is_some());
+        assert(keys.contains(q));
+        lemma_dates_nonneg(db, l.l_orderkey, y);
+        // the moment of the pair counts this line
+        let w = |x: LineitemRow| if x.l_partkey == l.l_partkey && x.l_suppkey == l.l_suppkey { dates(db, x.l_orderkey, y) * line_weight(x, 0) } else { 0int };
+        assert forall|j: int| 0 <= j < db.lineitem.len() implies w(#[trigger] db.lineitem[j]) >= 0 by {
+            lemma_dates_nonneg(db, db.lineitem[j].l_orderkey, y);
+        }
+        lemma_sum_ge_term(db.lineitem, w, i);
+        assert(moments(db, l.l_partkey, l.l_suppkey, y, 0) >= d);
+        assert(pm_at(g.agg, q, s as int, y, 0) == moments(db, q as int, s as int, y, 0));
+        let a = bucket_seq(g.agg, q);
+        lemma_bucket_at(g.agg, q, s as int, y, 0);
+        assert(cell_at(a, s as int, y, 0) != 0);
+        let j = lemma_sum_nonzero_witness(a, cell_w(s as int, y, 0));
+        let e = a[j];
+        assert(e.k2 == s && e.k3 == y);
+        lemma_year_member(a, y, j);
+        let t = choose|t: int| 0 <= t < year_cells(a, y).len() && year_cells(a, y)[t] == e;
+        let ps = pairs_of(g, q, y);
+        assert(ps[t] == (q as int, s as int));
+        assert(ps.contains((q as int, s as int)));
+        let pages = keys.map_values(|q2: i64| pairs_of(g, q2, y));
+        let pos = choose|pos: int| 0 <= pos < keys.len() && keys[pos] == q;
+        assert(pages[pos] == ps);
+        lemma_flat_contains(pages, (q as int, s as int));
+    }
+}
+
+/// A cell of the bucket with the year is among the year's cells.
+proof fn lemma_year_member(a: Seq<Cell>, y: int, j: int)
+    requires 0 <= j < a.len(), a[j].k3 == y,
+    ensures exists|t: int| 0 <= t < year_cells(a, y).len() && year_cells(a, y)[t] == a[j],
+{
+    broadcast use vstd::seq_lib::group_filter_ensures;
+    assert(year_cells(a, y).contains(a[j]));
+}
+
+
+pub proof fn lemma_ks_sum(g: General, keys: Seq<i64>, y: int, vfun: spec_fn((int, int)) -> int)
+    ensures sum(ks_of(g, keys, y), vfun) == sum(keys, |q: i64| sum(pairs_of(g, q, y), vfun)),
+{
+    let gp = |q: i64| pairs_of(g, q, y);
+    lemma_sum_flat_map(keys, gp, vfun);
+    assert(ks_of(g, keys, y) == flat(keys.map_values(gp)));
+    lemma_sum_ext_all(keys, |q: i64| sum(gp(q), vfun), |q: i64| sum(pairs_of(g, q, y), vfun));
+}
+
+pub proof fn lemma_contrib_sum(g: General, db: Db, pat: Seq<u8>, keys: Seq<i64>, nk: int, y: int, f: int, vfun: spec_fn((int, int)) -> int)
+    requires general_of(g, db), 0 <= f <= 1, vfun == (|k: (int, int)| vdb(db, pat, nk, y, f, k.0, k.1)),
+    ensures sum(keys, |q: i64| contrib(g, pat, q, nk, y, f)) == sum(keys, |q: i64| sum(pairs_of(g, q, y), vfun)),
+{
+    assert forall|q: i64| #[trigger] contrib(g, pat, q, nk, y, f) == sum(pairs_of(g, q, y), vfun) by {
+        lemma_contrib_pairs(g, db, pat, q, nk, y, f);
+    }
+    lemma_sum_ext_all(keys, |q: i64| contrib(g, pat, q, nk, y, f), |q: i64| sum(pairs_of(g, q, y), vfun));
+}
+
+/// The read's totals are the nation totals of the filtered database.
+#[verifier::spinoff_prover]
+pub proof fn lemma_read_is_nation_total(g: General, db: Db, pat: Seq<u8>, keys: Seq<i64>, nk: int, y: int, f: int)
+    requires general_of(g, db), lines_fit(db), 0 <= f <= 1, keys.no_duplicates(),
+        forall|k: i64| #[trigger] g.pnames.at(k).is_some() <==> keys.contains(k),
+    ensures sum(keys, |q: i64| contrib(g, pat, q, nk, y, f)) == nation_total(filter_db(db, pat), nk, y, f),
+{
+    let vfun = |k: (int, int)| vdb(db, pat, nk, y, f, k.0, k.1);
+    let ks = ks_of(g, keys, y);
+    lemma_ks_distinct(g, keys, y);
+    lemma_coverage(g, db, pat, keys, nk, y, f);
+    lemma_tl_grouped(db, pat, nk, y, f, ks);
+    lemma_ks_sum(g, keys, y, vfun);
+    lemma_contrib_sum(g, db, pat, keys, nk, y, f, vfun);
+    lemma_tl_bridge(db, pat, nk, y, f);
+}
+
 }
