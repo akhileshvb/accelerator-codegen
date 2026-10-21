@@ -200,7 +200,7 @@ pub open spec fn vaccum_at(index_of: Map<i64, usize>, moms: Seq<Moment>, key: i6
 /// Aggregates the rows per partkey with one hash lookup per row: pass one
 /// finds (or creates) each row's slot in dense vectors, pass two reuses the
 /// recorded slot, pass three exports the nonzero moments.
-#[verifier::rlimit(30)]
+#[verifier::rlimit(4)]
 pub fn summarize(rows: &[LineInput]) -> (result: (HashMap<i64, Moment>, Vec<i64>))
     requires rows_bounded(rows@),
     ensures ({ let (moments, keys) = result;
@@ -225,7 +225,7 @@ pub fn summarize(rows: &[LineInput]) -> (result: (HashMap<i64, Moment>, Vec<i64>
         assert forall|key: i64| #[trigger] vtotal_at(index_of@, totals@, key).quantity as int == quantity(line_input_seq_view(rows@.take(0)), key as int) by { lemma_line_empty(rows@, key); }
     }
     while index < rows.len()
-        invariant index <= rows.len(), processed@ == index as int,
+        invariant index <= rows.len(), processed@ == index as int, rows_bounded(rows@),
             keys@.no_duplicates(), totals@.len() == keys@.len(), positions@.len() == index, keys@.len() <= index,
             index_of@.dom() == keys@.to_set(),
             forall|key: i64| #![trigger index_of@[key]] index_of@.contains_key(key) ==> index_of@[key] < keys@.len() && keys@[index_of@[key] as int] == key,
@@ -352,7 +352,7 @@ pub fn summarize(rows: &[LineInput]) -> (result: (HashMap<i64, Moment>, Vec<i64>
     index = 0;
     processed = Ghost(0int);
     while index < rows.len()
-        invariant index <= rows.len(), processed@ == index as int,
+        invariant index <= rows.len(), processed@ == index as int, rows_bounded(rows@),
             keys@.no_duplicates(), totals@.len() == keys@.len(), positions@.len() == rows@.len(), moms@.len() == keys@.len(),
             index_of@.dom() == keys@.to_set(),
             forall|key: i64| #![trigger index_of@[key]] index_of@.contains_key(key) ==> index_of@[key] < keys@.len() && keys@[index_of@[key] as int] == key,
