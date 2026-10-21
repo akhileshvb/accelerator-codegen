@@ -1,6 +1,7 @@
 use vstd::prelude::*;
 use verus_common::sums::*;
 use verus_common::rel::*;
+use verus_common::sqlfns::like_match;
 use verus_prooflib::ordered::KeyView;
 use crate::gen_obligations::*;
 use crate::gen_spec::*;
@@ -39,7 +40,7 @@ pub proof fn lemma_prefix_bound(keys: Seq<int>, support: Seq<int>, weight: spec_
             |other: int| if identity(other) == key { weight(other) } else { 0int });
     }
     lemma_sum_group(keys, support, identity, weight, per);
-    assert forall|key: int| per(key) <= 1 by {
+    assert forall|key: int| #[trigger] per(key) <= 1 by {
         let selected = |other: int| if other == key { weight(other) } else { 0int };
         if keys.contains(key) {
             lemma_sum_indicator_distinct(keys, key, weight(key), selected);
@@ -59,7 +60,8 @@ pub proof fn lemma_edge_supplier_listed(db: Db, part: int, supplier: int)
     let weight = |row: PartsuppRow| if row.ps_partkey == part && row.ps_suppkey == supplier { 1int } else { 0int };
     let position = lemma_sum_nonzero_witness(db.partsupp, weight);
     assert(supplier_keys(db.partsupp)[position] == supplier);
-    crate::maintenance_semantics::lemma_database_suppliers_contains(db, supplier);
+    assert(supplier_keys(db.partsupp).contains(supplier));
+    lemma_dedup(supplier_keys(db.partsupp));
 }
 
 pub proof fn lemma_database_suppliers_len(db: Db)
