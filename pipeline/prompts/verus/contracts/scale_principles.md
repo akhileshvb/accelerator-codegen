@@ -38,9 +38,10 @@ accelerator keeps its advantage as data grows:
   * spread sparse keys over pages or chunks with a fixed hash or key range,
     so pages stay evenly full;
   * **exact, small first**: sums and counts over joined tuples use
-    the prooflib's exact integer `wide` (an `i128` fast path that allocates only
-    past `i128`); counts of one table's rows fit `i64` (at most 2^40 rows);
-    never narrow a stored value below what the envelope allows;
+    the prooflib's exact integer `wide`, whose `i128` fast path holds their
+    SF3000 magnitude without allocating; counts of one table's rows fit
+    `i64` (at most 2^40 rows); never narrow a stored value below what the
+    envelope allows;
   * keep one copy of each fact: rank or secondary indexes hold small
     records (key + ranking value), not pointers to or copies of full rows.
   State the bytes per entry and the SF20 total (steady and build peak) in
@@ -61,8 +62,9 @@ accelerator keeps its advantage as data grows:
   `lineitem` by partkey or suppkey, `orders` by custkey). The frequent
   writes are inserts and deletes of orders with their lineitems (TPC-H
   refresh functions): keep their rescans on clustered keys. Apply may not
-  decline inside the envelope; the host passes back exactly the rescan keys
-  the kernel asked for.
+  decline inside the envelope (the host passes back exactly the rescan keys
+  the kernel asked for), and a write that cannot use its delta and rebuilds
+  costs hours at SF3000.
   A refresh touches nearly every key range (0.1% of orders and their
   lineitems, keys spread uniformly), so the unit a write copies must itself
   cost O(changed rows): plain records in small pages or persistent maps with
@@ -134,8 +136,10 @@ accelerator keeps its advantage as data grows:
   without a second copy (never keep a source map alive while re-bucketing
   it into a new one), process the largest table in bounded chunks so
   temporaries stay small, and drop each temporary as soon as it is consumed.
-* **Magnitudes**: size every value for the envelope, not the data: keys as
-  their column type, row counts up to 2^40, sums over joins exact (the prooflib's `wide`).
+* **Magnitudes**: at SF3000 order keys exceed 2^31 and sums of decimal
+  products exceed i64. Size every value for the envelope, not the data: keys
+  as their column type, row counts up to 2^40, sums over joins exact (the
+  prooflib's `wide`).
   The only overflow decline left is a correct answer that does not fit the
   result types, proven with that answer as the witness.
 * **No SF1 constants**: size from the inputs, never from literals.

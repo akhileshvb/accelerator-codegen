@@ -48,7 +48,9 @@ estimate breaks the check.
   read or a write would touch many scattered entries (no locality), not for
   its size alone. Size never excuses a slower read or write: a compact
   design that breaks C2 or C7 still fails those.
-* **C4 values**: totality inside the envelope (`verus_kernel.md`): every
+* **C4 values**: NULLs handled; magnitudes sized for SF3000 (order keys
+  exceed 2^31, sums of decimal products exceed i64); totality inside the
+  envelope (`verus_kernel.md`): every
   sum or count over joined tuples is exact (the prooflib's exact integer `wide`;
   bags have no unique keys, so join groups are unbounded), no narrow counter
   can overflow, and every value of each parameter's type is answered (LIKE
