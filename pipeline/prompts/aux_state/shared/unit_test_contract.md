@@ -1,6 +1,6 @@
 # Aux unit-test contract (mandatory)
 
-The module unit test is **shared, not written per query**: the shared module test harness under `eval/`, built as `test_<bench>_q<N>_aux` and registered as ctest `<bench>_q<N>_aux_smoke_test` for every query that has registered its catalog entry. Do not add a per-query module test file.
+The module unit test is **shared, not written per query**: the module test of the engine's workload harnesses (made by `host_bootstrap`, `pipeline/prompts/shared/query_host_bootstrap.md`), built as `test_<bench>_q<N>_aux` and registered as ctest `<bench>_q<N>_aux_smoke_test` for every query that has registered its catalog entry. Do not add a per-query module test file.
 
 It hosts your module alone on `ModuleRuntime` (the real aux runtime over a plain engine connection, no host or SQL entry point) over the small benchmark test database, and checks through the public module interface only:
 

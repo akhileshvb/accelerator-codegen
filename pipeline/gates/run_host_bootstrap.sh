@@ -29,6 +29,8 @@ done
 for file in "${DIFF_SOURCE}" "backends/${ENGINE_NAME}/tests/harness.cmake"; do
   [[ -f "${ROOT}/${file}" ]] || finish fail "missing ${file}. ${HOST_HINT}" ""
 done
+grep -q "aux/finalize.cpp" "${ROOT}/backends/${ENGINE_NAME}/tests/harness.cmake" ||
+  finish fail "harness.cmake declares no module test: glob accelerators/*/q*/${ENGINE_NAME}/aux/finalize.cpp into test_<bench>_q<N>_aux (query_host_bootstrap.md)" ""
 
 HARNESS_FILES=()
 while IFS= read -r file; do HARNESS_FILES+=("${file}"); done < <(cd "${ROOT}" &&
@@ -45,7 +47,7 @@ if ! engine_ready "${TARGETS[@]}"; then
 fi
 
 REGISTERED_QUERY=""
-for register in "${ROOT}"/accelerators/"${BENCHMARK_NAME}"/q*/"${ENGINE_NAME}"/register.cpp; do
+for register in "${ROOT}"/accelerators/"${BENCHMARK_NAME}"/q*/"${ENGINE_NAME}"/aux/register.cpp; do
   [[ -f "${register}" ]] || continue
   REGISTERED_QUERY="$(sed -E 's#.*/q([0-9]+)/.*#\1#' <<<"${register}")"
   break

@@ -290,7 +290,7 @@ def host_bootstrap_repo(repo):
     harness = repo / "backends" / "fake" / "tests" / "harness"
     harness.mkdir(parents=True)
     (harness / "test_fake_tpch_differential.cpp").write_text("// harness\n")
-    (repo / "backends" / "fake" / "tests" / "harness.cmake").write_text("# targets\n")
+    (repo / "backends" / "fake" / "tests" / "harness.cmake").write_text("# targets; module test: accelerators/*/q*/fake/aux/finalize.cpp\n")
 
 
 def test_host_bootstrap_builds_every_harness_and_smokes_each(repo):
