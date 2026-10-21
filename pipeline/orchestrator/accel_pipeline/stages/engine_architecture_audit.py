@@ -72,11 +72,13 @@ def format_implementation_feedback(audit: dict[str, Any], *, round_idx: int) -> 
     lines.append(feedback or "(auditor left feedback_for_implementation empty — re-read violations)")
     lines.append("")
     lines.append(
-        "Re-implement only the failing layer(s) against `layers.md` + "
-        "`acceptance_checklist.md`. Smallest patch; do not weaken the harness "
-        "to greenwash. Mid-loop MCP `engine_build` plus that layer's gate until "
-        "green. The orchestrator re-runs only layers named in `violations[].layer` "
-        "(pipeline order), then re-audits."
+        "Resolve every violation named for this layer against `layers.md` + "
+        "`acceptance_checklist.md`, however large the change: a missing mechanism or "
+        "placement is built now, not deferred. A gate that passes without exercising a "
+        "violation does not resolve it: first add the harness assertion that fails on it, "
+        "then make it pass. Do not weaken the harness to greenwash. Mid-loop MCP "
+        "`engine_build` plus that layer's gate until green. The orchestrator re-runs only "
+        "layers named in `violations[].layer` (pipeline order), then re-audits."
     )
     return "\n".join(lines)
 
