@@ -262,6 +262,12 @@ Implements the host (`api/{engine}_host.*`): the `EngineSlots` object owning a
   cannot be delivered becomes a gap (the runtime rebuilds). Read threads call
   no engine API: no engine headers in their files, signals blocked. A worker
   restart is safe: the next build includes everything.
+- **The placement is the analysis's.** Implement the placement the profile's
+  `placement_candidates` and the backend analysis select; another placement is
+  not a substitute, even when the harness passes with it. A shipped worker is
+  this layer's whole job: the worker process and how it starts (the engine's
+  worker mechanism from the profile, plus any server configuration it needs,
+  added to `host.sh up`), the commit transport, and the shared `TokenSource`.
 - **Thread budget and phase caps.** One `ThreadBudget` from `ResolveThreadBudget(engine setting)`; the read, build and maintenance caps from `ResolveReadThreads` / `ResolveBuildThreads` / `ResolveMaintenanceThreads` with the engine's own settings when it has a settings mechanism (the profile's `thread_knobs`, base names of `api_contract.md` §4; `ACCEL_AUX_*_THREADS` always override), applied with `SetPhaseLimits`. A multi-process placement shares the budget across processes (`TokenSource`).
 - **Table sizes and cost model.** `TableRows(table)` returns the engine's cheap row estimate (64-bit; 0 only if unknown) so `DataScaleRows` scales the maintenance policy; `CostModel(accelerator)` comes from `core::ResolveAuxCostModelPath` with the engine name, the scale tag (the profile names where it comes from) and the per-engine override env var.
 - No commit is dropped or skipped by the host; no thread pool, build
