@@ -76,7 +76,7 @@ optimization:
 crash_debug:
   # 0 = keep crash-debugging within the same stage/iter until mandatory gates pass
   max_rounds: 0
-  safety_cap: 25
+  safety_cap: 10
 
 stage_max_turns:
   analysis: 8
