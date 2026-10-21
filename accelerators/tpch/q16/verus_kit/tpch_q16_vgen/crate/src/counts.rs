@@ -363,37 +363,6 @@ pub fn insert_key(keys: &mut Index<i64>, key: i64)
     keys.put(Key::number(key), Arc::new(1));
 }
 
-pub fn keys_from_slice(rows: &[i64]) -> (out: Index<i64>)
-    ensures integer_keys(out), key_set(out),
-        forall|key: int| #[trigger] integer_at(out, (key, Seq::<u8>::empty()))
-            == if seq_view_i64(rows@).contains(key) { 1int } else { 0int },
-{
-    let mut keys = Index::new();
-    let mut index = 0;
-    let mut processed: Ghost<int> = Ghost(0);
-    while index < rows.len()
-        invariant index <= rows.len(), processed@ == index as int, integer_keys(keys), key_set(keys),
-            forall|key: int| #[trigger] integer_at(keys, (key, Seq::empty()))
-                == if seq_view_i64(rows@.take(processed@)).contains(key) { 1int } else { 0int },
-        decreases rows.len() - index,
-    {
-        insert_key(&mut keys, rows[index]);
-        proof {
-            assert(rows@.take(processed@ + 1) =~= rows@.take(processed@).push(rows@[processed@]));
-            assert forall|key: int| #[trigger] integer_at(keys, (key, Seq::<u8>::empty()))
-                == if seq_view_i64(rows@.take(processed@ + 1)).contains(key) { 1int } else { 0int } by {
-                let prefix = seq_view_i64(rows@.take(processed@));
-                assert(seq_view_i64(rows@.take(processed@ + 1)) =~= prefix.push(rows@[processed@] as int));
-                verus_prooflib::lemma_push_membership(prefix, rows@[processed@] as int);
-            }
-        }
-        index += 1;
-        processed = Ghost(index as int);
-    }
-    proof { assert(rows@.take(processed@) =~= rows@); }
-    keys
-}
-
 pub fn keys_vec(keys: &Index<i64>) -> (out: Vec<i64>)
     requires keys.wf(),
     ensures seq_view_i64(out@) == keys.entries().map_values(|row: (verus_prooflib::ordered::KeyView, i64)| row.0.0),
@@ -448,47 +417,6 @@ pub fn keys_vec(keys: &Index<i64>) -> (out: Vec<i64>)
                     }
                 }
                 return out;
-            },
-        }
-    }
-}
-
-pub fn covered(needed: &Index<i64>, supplied: &Index<i64>) -> (ok: bool)
-    requires needed.wf(),
-    ensures ok <==> forall|key: verus_prooflib::ordered::KeyView|
-        #[trigger] needed.at(key).is_some() ==> supplied.at(key).is_some(),
-{
-    proof { needed.model(); }
-    let mut cursor = needed.cursor();
-    let mut processed: Ghost<int> = Ghost(0);
-    loop
-        invariant needed.wf(), 0 <= processed@ <= needed.entries().len(),
-            cursor.remaining() == needed.entries().skip(processed@),
-            forall|position: int| 0 <= position < processed@ ==>
-                #[trigger] supplied.at(needed.entries()[position].0).is_some(),
-        decreases cursor.remaining().len(),
-    {
-        proof { needed.model(); }
-        match cursor.next() {
-            Some((key, value)) => {
-                proof {
-                    assert((key.view(), *value) == needed.entries()[processed@]);
-                    assert(needed.at(key.view()).is_some());
-                }
-                if supplied.get(&key).is_none() { return false; }
-                processed = Ghost(processed@ + 1);
-            },
-            None => {
-                proof {
-                    assert(processed@ == needed.entries().len());
-                    assert forall|key: verus_prooflib::ordered::KeyView|
-                        #[trigger] needed.at(key).is_some() implies supplied.at(key).is_some() by {
-                        let position = choose|position: int| #[trigger] needed.entries()[position].0 == key
-                            && 0 <= position < needed.entries().len();
-                        assert(supplied.at(needed.entries()[position].0).is_some());
-                    }
-                }
-                return true;
             },
         }
     }

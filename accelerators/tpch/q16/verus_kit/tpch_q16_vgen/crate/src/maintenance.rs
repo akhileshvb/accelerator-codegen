@@ -406,10 +406,6 @@ pub open spec fn within(db: Db, db2: Db) -> bool {
     envelope(db) && envelope(db2)
 }
 
-pub open spec fn contribution_row(parts: Parts, edges: Edges, blockers: Index<i64>, key: KeyView, row: (KeyView, i64)) -> int {
-    supplier_contribution(parts, edges, blockers, row.0.0, key)
-}
-
 #[verifier::rlimit(200)]
 pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Index<i64>,
     new_parts: &Parts, new_edges: &Edges, new_blockers: &Index<i64>, suppliers: &Index<i64>,
@@ -865,7 +861,7 @@ pub fn maintain(counts: &Counts, ranks: &Ranks, parts: &Parts, edges: &Edges, bl
     proof {
         lemma_changes_are_totals(db, db2, *suppliers, *parts, *edges, *blocked, new_parts, new_edges, new_blocked, changes);
         lemma_ranks_positive(*ranks, *counts);
-        assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int| fits@ ==>
+        assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int| fits@ implies
             0 <= count_at(*counts, #[trigger] group_key(brand, kind, size)) + count_at(changes, group_key(brand, kind, size)) <= i64::MAX as int by {
             if fits@ {
                 lemma_total_bound(db2, brand, kind, size);
