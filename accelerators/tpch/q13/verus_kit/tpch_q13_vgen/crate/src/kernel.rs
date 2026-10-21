@@ -11,6 +11,7 @@ use crate::aggregate::*;
 use crate::facts::*;
 use crate::recs::*;
 use crate::dense::*;
+use crate::general::*;
 
 verus! {
 
@@ -37,14 +38,14 @@ pub open spec fn hist_at(h: Seq<i64>, j: int, b: int) -> int {
 /// per customer key (multiplicity, then per pattern the customer's non-matching order count),
 /// in copy-on-write pages; one 1024-bucket histogram per pattern.  A read whose pattern is not
 /// tracked declines.
-pub struct State {
+pub struct Fast {
     recs: Recs,
     hist: Arc<Vec<i64>>,
     pats: Arc<Vec<Vec<u8>>>,
     db: Ghost<Db>,
 }
 
-impl State {
+impl Fast {
     pub closed spec fn db(self) -> Db { self.db@ }
 
     pub closed spec fn pat(self, j: int) -> Seq<u8> { (*self.pats)@[j]@ }
@@ -175,11 +176,11 @@ fn read_rec(recs: &Recs, key: i64) -> (v: Vec<u16>)
     v
 }
 
-pub fn build(
+pub fn fast_build(
     customers: &[CustomerScan],
-    orders: Vec<OrderScan>,
+    orders: &Vec<OrderScan>,
     Ghost(db): Ghost<Db>,
-) -> (result: Option<State>)
+) -> (result: Option<Fast>)
     requires scan_customers_ok(db, customers@),
         scan_orders_ok(db, orders@),
     ensures result matches Some(state) ==> state.db() == db,
@@ -566,10 +567,10 @@ pub fn build(
     }
     let hist_a = Arc::new(hist);
     let pats_a = Arc::new(pats);
-    Some(State { recs, hist: hist_a, pats: pats_a, db: Ghost(db) })
+    Some(Fast { recs, hist: hist_a, pats: pats_a, db: Ghost(db) })
 }
 
-pub fn execute_j(state: &State, j: usize) -> (result: Option<Vec<(i64, i64)>>)
+pub fn fast_execute_j(state: &Fast, j: usize) -> (result: Option<Vec<(i64, i64)>>)
     requires j < 16,
     ensures result matches Some(out) ==>
         query_result(state.db(), params(state.pat(j as int)), out_view(out@)),
@@ -659,7 +660,7 @@ pub fn execute_j(state: &State, j: usize) -> (result: Option<Vec<(i64, i64)>>)
     }
     Some(rows)
 }
-pub fn execute(state: &State, p1: &[u8]) -> (result: Option<Vec<(i64, i64)>>)
+pub fn fast_execute(state: &Fast, p1: &[u8]) -> (result: Option<Vec<(i64, i64)>>)
     ensures result matches Some(out) ==> query_result(state.db(), params(p1@), out_view(out@)),
 {
     proof { use_type_invariant(state); }
@@ -669,7 +670,7 @@ pub fn execute(state: &State, p1: &[u8]) -> (result: Option<Vec<(i64, i64)>>)
         decreases 16 - j,
     {
         if bytes_eq(p1, state.pats[j].as_slice()) {
-            return execute_j(state, j);
+            return fast_execute_j(state, j);
         }
         j += 1;
     }
@@ -687,13 +688,13 @@ pub open spec fn tgt(pats: Seq<Vec<u8>>, db: Db, key: int, f: int) -> int {
     if f == 0 { customer_count(db, key) } else { order_count(db, pats[f - 1]@, key) }
 }
 
-pub fn apply(
-    state: &State,
+pub fn fast_apply(
+    state: &Fast,
     customer_delta: &[CustomerDelta],
     orders_delta: &Vec<OrderDelta>,
     Ghost(orders_full): Ghost<Seq<(OrdersRow, int)>>,
     Ghost(db2): Ghost<Db>,
-) -> (result: Result<State, u32>)
+) -> (result: Result<Fast, u32>)
     requires orders_delta_ok(orders_delta@, orders_full),
         capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta@), orders_full),
     ensures result matches Ok(next) ==> next.db() == db2,
@@ -988,7 +989,325 @@ pub fn apply(
             lemma_apply_facts(db, db2, state.pat(j), touched.keys(), b);
         }
     }
-    Ok(State { recs, hist: hist_a, pats: pats_a, db: Ghost(db2) })
+    Ok(Fast { recs, hist: hist_a, pats: pats_a, db: Ghost(db2) })
+}
+
+
+pub proof fn lemma_sum_pointwise<A, B>(left: Seq<A>, right: Seq<B>, f: spec_fn(A) -> int, g: spec_fn(B) -> int)
+    requires left.len() == right.len(), forall|index: int| 0 <= index < left.len() ==> f(#[trigger] left[index]) == g(right[index]),
+    ensures sum(left, f) == sum(right, g),
+    decreases left.len(),
+{
+    if left.len() > 0 {
+        let rest_left = left.drop_last();
+        let rest_right = right.drop_last();
+        assert forall|index: int| 0 <= index < rest_left.len() implies f(#[trigger] rest_left[index]) == g(rest_right[index]) by {
+            assert(rest_left[index] == left[index]);
+            assert(rest_right[index] == right[index]);
+        }
+        lemma_sum_pointwise(rest_left, rest_right, f, g);
+        assert(left =~= rest_left.push(left.last()));
+        assert(right =~= rest_right.push(right.last()));
+        lemma_sum_push(rest_left, left.last(), f);
+        lemma_sum_push(rest_right, right.last(), g);
+    }
+}
+
+pub proof fn lemma_scan_lens(db: Db, customers: Seq<CustomerScan>, orders: Seq<OrderScan>)
+    requires scan_customers_ok(db, customers), scan_orders_ok(db, orders),
+    ensures customers.len() == db.customer.len(), orders.len() == db.orders.len(),
+{
+    let one_customer = |row: CustomerRow| 1int;
+    verus_prooflib::lemma_sum_ones(customer_scan_seq_view(customers));
+    verus_prooflib::lemma_sum_ones(db.customer);
+    assert(sum(customer_scan_seq_view(customers), one_customer) == sum(db.customer, one_customer));
+    let one_order = |row: (int, Seq<u8>)| 1int;
+    verus_prooflib::lemma_sum_ones(order_scan_seq_view(orders));
+    verus_prooflib::lemma_sum_ones(db.orders);
+    assert(sum(order_scan_seq_view(orders), one_order) == sum(db.orders, |row: OrdersRow| if true { one_order((row.o_custkey, row.o_comment)) } else { 0int }));
+    lemma_sum_ext_all(db.orders, |row: OrdersRow| if true { one_order((row.o_custkey, row.o_comment)) } else { 0int }, |row: OrdersRow| 1int);
+}
+
+pub proof fn lemma_scan_log(db: Db, rows: Seq<OrderScan>, f: spec_fn((int, Seq<u8>)) -> int)
+    requires scan_orders_ok(db, rows),
+    ensures sum(order_scan_seq_view(rows), f) == sum(db.orders, |orders: OrdersRow| f((orders.o_custkey, orders.o_comment))),
+{
+    assert(sum(order_scan_seq_view(rows), f) == sum(db.orders, |orders: OrdersRow| if true { f((orders.o_custkey, orders.o_comment)) } else { 0 }));
+    lemma_sum_ext_all(db.orders, |orders: OrdersRow| if true { f((orders.o_custkey, orders.o_comment)) } else { 0 },
+        |orders: OrdersRow| f((orders.o_custkey, orders.o_comment)));
+}
+
+/// The tracked fast path (when it could be built) and the signed logs the general path replays.
+pub struct State {
+    fast: Option<Fast>,
+    orders: Log<OrderEntry>,
+    customers: Log<CustEntry>,
+    appended: u64,
+    db: Ghost<Db>,
+}
+
+pub closed spec fn history(s: State) -> nat { s.appended as nat }
+
+impl State {
+    pub closed spec fn db(self) -> Db { self.db@ }
+
+    #[verifier::type_invariant]
+    spec fn valid(self) -> bool {
+        &&& self.fast matches Some(fast) ==> fast.db() == self.db@
+        &&& unit_orders(self.orders.entries())
+        &&& unit_customers(self.customers.entries())
+        &&& self.appended <= 4611686018427387904
+        &&& self.orders.entries().len() <= 1099511627776 + self.appended
+        &&& self.customers.entries().len() <= 1099511627776 + self.appended
+        &&& forall|f: spec_fn((int, Seq<u8>)) -> int| #[trigger] order_log_sum(self.orders.entries(), f)
+            == sum(self.db@.orders, |orders: OrdersRow| f((orders.o_custkey, orders.o_comment)))
+        &&& forall|f: spec_fn(CustomerRow) -> int| #[trigger] customer_log_sum(self.customers.entries(), f)
+            == sum(self.db@.customer, f)
+    }
+}
+
+#[verifier::rlimit(40)]
+pub fn build(
+    customers: &[CustomerScan],
+    orders: Vec<OrderScan>,
+    Ghost(db): Ghost<Db>,
+) -> (result: Option<State>)
+    requires scan_customers_ok(db, customers@), scan_orders_ok(db, orders@),
+    ensures result matches Some(state) ==> state.db() == db,
+        result matches Some(state) ==> history(state) == 0,
+        envelope(db) ==> result is Some,
+{
+    proof { lemma_scan_lens(db, customers@, orders@); }
+    if customers.len() as u64 > 1099511627776u64 || orders.len() as u64 > 1099511627776u64 { return None; }
+    let fast = fast_build(customers, &orders, Ghost(db));
+    let mut customer_entries: Vec<CustEntry> = Vec::new();
+    let mut index = 0usize;
+    while index < customers.len()
+        invariant index <= customers.len(), customer_entries@.len() == index,
+            forall|k: int| 0 <= k < index ==> customer_entries@[k].custkey == customers@[k].c_custkey && customer_entries@[k].sign == 1,
+        decreases customers.len() - index,
+    {
+        customer_entries.push(CustEntry { custkey: customers[index].c_custkey, sign: 1 });
+        index += 1;
+    }
+    let ghost cview = customer_scan_seq_view(customers@);
+    let ghost original = order_scan_seq_view(orders@);
+    let ghost orders_original = orders@;
+    let mut remaining = orders;
+    let mut order_entries: Vec<OrderEntry> = Vec::new();
+    proof {
+        assert(order_scan_seq_view(remaining@) == original);
+        assert(order_entries@ =~= Seq::<OrderEntry>::empty());
+        assert forall|f: spec_fn((int, Seq<u8>)) -> int| #[trigger] order_log_sum(order_entries@, f) + sum(order_scan_seq_view(remaining@), f)
+            == sum(original, f) by {
+            lemma_sum_empty(order_entries@, |entry: OrderEntry| entry.sign as int * f((entry.custkey as int, (*entry.comment)@)));
+        }
+    }
+    while remaining.len() > 0
+        invariant remaining.len() + order_entries.len() == orders_original.len(),
+            forall|k: int| 0 <= k < order_entries@.len() ==> order_entries@[k].sign == 1,
+            forall|f: spec_fn((int, Seq<u8>)) -> int| #[trigger] order_log_sum(order_entries@, f) + sum(order_scan_seq_view(remaining@), f)
+                == sum(original, f),
+        decreases remaining.len(),
+    {
+        let ghost before_entries = order_entries@;
+        let ghost before_remaining = remaining@;
+        let row = remaining.pop().unwrap();
+        let ghost viewed = (row.o_custkey as int, row.o_comment@);
+        order_entries.push(OrderEntry { custkey: row.o_custkey, comment: Arc::new(row.o_comment), sign: 1 });
+        proof {
+            assert(order_scan_seq_view(before_remaining) =~= order_scan_seq_view(remaining@).push(viewed));
+            assert forall|f: spec_fn((int, Seq<u8>)) -> int| #[trigger] order_log_sum(order_entries@, f) + sum(order_scan_seq_view(remaining@), f)
+                == sum(original, f) by {
+                let weight = |entry: OrderEntry| entry.sign as int * f((entry.custkey as int, (*entry.comment)@));
+                assert(order_log_sum(before_entries, f) + sum(order_scan_seq_view(before_remaining), f) == sum(original, f));
+                lemma_sum_push(before_entries, order_entries@.last(), weight);
+                assert(order_entries@ =~= before_entries.push(order_entries@.last()));
+                lemma_sum_push(order_scan_seq_view(remaining@), viewed, f);
+                assert(order_entries@.last().sign as int * f((order_entries@.last().custkey as int, (*order_entries@.last().comment)@)) == f(viewed));
+            }
+        }
+    }
+    proof {
+        assert(order_scan_seq_view(remaining@) =~= Seq::<(int, Seq<u8>)>::empty());
+    }
+    let ghost final_customers = customer_entries@;
+    let ghost final_orders = order_entries@;
+    let orders_log = Log::empty().with_chunk(order_entries);
+    let customers_log = Log::empty().with_chunk(customer_entries);
+    proof {
+        assert(orders_log.entries() =~= final_orders);
+        assert(customers_log.entries() =~= final_customers);
+        assert forall|f: spec_fn((int, Seq<u8>)) -> int| #[trigger] order_log_sum(orders_log.entries(), f)
+            == sum(db.orders, |orders: OrdersRow| f((orders.o_custkey, orders.o_comment))) by {
+            assert(order_log_sum(final_orders, f) + sum(order_scan_seq_view(remaining@), f) == sum(original, f));
+            lemma_sum_empty(order_scan_seq_view(remaining@), f);
+            lemma_scan_log(db, orders_original, f);
+            assert(orders_log.entries() == final_orders);
+        }
+        assert forall|f: spec_fn(CustomerRow) -> int| #[trigger] customer_log_sum(customers_log.entries(), f) == sum(db.customer, f) by {
+            lemma_sum_pointwise(final_customers, cview,
+                |entry: CustEntry| entry.sign as int * f(CustomerRow { c_custkey: entry.custkey as int }), f);
+        }
+        assert forall|k: int| 0 <= k < orders_log.entries().len() implies
+            (#[trigger] orders_log.entries()[k]).sign == 1 || orders_log.entries()[k].sign == -1 by {}
+        assert forall|k: int| 0 <= k < customers_log.entries().len() implies
+            (#[trigger] customers_log.entries()[k]).sign == 1 || customers_log.entries()[k].sign == -1 by {}
+        assert(final_orders.len() == orders_original.len());
+        assert(final_customers.len() == customers@.len());
+    }
+    let state = State { fast, orders: orders_log, customers: customers_log, appended: 0, db: Ghost(db) };
+    Some(state)
+}
+
+
+pub proof fn lemma_log_order_count(db: Db, entries: Seq<OrderEntry>, p: Seq<u8>, key: int)
+    requires forall|f: spec_fn((int, Seq<u8>)) -> int| #[trigger] order_log_sum(entries, f)
+        == sum(db.orders, |orders: OrdersRow| f((orders.o_custkey, orders.o_comment))),
+    ensures order_count(db, p, key) == sum(entries, order_weight(p, key)),
+{
+    let f = |row: (int, Seq<u8>)| ind(row.0 == key && !like_match(row.1, p));
+    assert(order_log_sum(entries, f) == sum(db.orders, |orders: OrdersRow| f((orders.o_custkey, orders.o_comment))));
+    lemma_sum_ext_all(entries, |entry: OrderEntry| entry.sign as int * f((entry.custkey as int, (*entry.comment)@)), order_weight(p, key));
+    lemma_sum_ext_all(db.orders, |row: OrdersRow| ind(c_orders_on_orders(db, params(p), CustomerRow { c_custkey: key }, row)),
+        |orders: OrdersRow| f((orders.o_custkey, orders.o_comment)));
+}
+
+pub proof fn lemma_log_customer_count(db: Db, entries: Seq<CustEntry>, key: int)
+    requires forall|f: spec_fn(CustomerRow) -> int| #[trigger] customer_log_sum(entries, f) == sum(db.customer, f),
+    ensures customer_count(db, key) == sum(entries, customer_weight(key)),
+{
+    let f = |row: CustomerRow| ind(row.c_custkey == key);
+    assert(customer_log_sum(entries, f) == sum(db.customer, f));
+    lemma_sum_ext_all(entries, |entry: CustEntry| entry.sign as int * f(CustomerRow { c_custkey: entry.custkey as int }), customer_weight(key));
+}
+
+pub fn execute(state: &State, p1: &[u8]) -> (result: Option<Vec<(i64, i64)>>)
+    ensures result matches Some(out) ==> query_result(state.db(), params(p1@), out_view(out@)),
+        envelope(state.db()) && answer_fits(state.db(), params(p1@)) ==> result is Some,
+{
+    proof { use_type_invariant(state); }
+    if let Some(fast) = &state.fast {
+        if let Some(rows) = fast_execute(fast, p1) { return Some(rows); }
+    }
+    proof {
+        assert forall|key: int| #[trigger] order_count(state.db(), p1@, key) == sum(state.orders.entries(), order_weight(p1@, key)) by {
+            lemma_log_order_count(state.db(), state.orders.entries(), p1@, key);
+        }
+        assert forall|key: int| #[trigger] customer_count(state.db(), key) == sum(state.customers.entries(), customer_weight(key)) by {
+            lemma_log_customer_count(state.db(), state.customers.entries(), key);
+        }
+    }
+    replay(&state.orders, &state.customers, p1, Ghost(state.db()))
+}
+
+#[verifier::rlimit(40)]
+pub fn apply(
+    state: &State,
+    customer_delta: &[CustomerDelta],
+    orders_delta: &Vec<OrderDelta>,
+    Ghost(orders_full): Ghost<Seq<(OrdersRow, int)>>,
+    Ghost(db2): Ghost<Db>,
+) -> (result: Result<State, u32>)
+    requires orders_delta_ok(orders_delta@, orders_full),
+        capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta@), orders_full),
+    ensures result matches Ok(next) ==> next.db() == db2,
+        result matches Ok(next) ==> history(next) <= history(*state) + customer_delta@.len() + orders_delta@.len(),
+        envelope(state.db()) && envelope(db2) && history(*state) + customer_delta@.len() + orders_delta@.len() <= max_history() ==> result is Ok,
+{
+    proof { use_type_invariant(state); }
+    let total = state.appended as u128 + customer_delta.len() as u128 + orders_delta.len() as u128;
+    if total > 4611686018427387904 { return Err(1); }
+    let mut customer_entries: Vec<CustEntry> = Vec::new();
+    let mut index = 0usize;
+    while index < customer_delta.len()
+        invariant index <= customer_delta.len(), customer_entries@.len() == index,
+            forall|k: int| 0 <= k < index ==> customer_entries@[k].custkey == customer_delta@[k].row.c_custkey
+                && customer_entries@[k].sign == customer_delta@[k].sign,
+        decreases customer_delta.len() - index,
+    {
+        customer_entries.push(CustEntry { custkey: customer_delta[index].row.c_custkey, sign: customer_delta[index].sign });
+        index += 1;
+    }
+    let mut order_entries: Vec<OrderEntry> = Vec::new();
+    index = 0;
+    while index < orders_delta.len()
+        invariant index <= orders_delta.len(), order_entries@.len() == index,
+            forall|k: int| 0 <= k < index ==> order_entries@[k].custkey == orders_delta@[k].o_custkey
+                && order_entries@[k].sign == orders_delta@[k].sign && (*order_entries@[k].comment)@ == orders_delta@[k].o_comment@,
+        decreases orders_delta.len() - index,
+    {
+        order_entries.push(OrderEntry {
+            custkey: orders_delta[index].o_custkey,
+            comment: Arc::new(crate::general::copy_bytes(&orders_delta[index].o_comment)),
+            sign: orders_delta[index].sign,
+        });
+        index += 1;
+    }
+    let fast = match &state.fast {
+        Some(fast) => match fast_apply(fast, customer_delta, orders_delta, Ghost(orders_full), Ghost(db2)) {
+            Ok(next) => Some(next),
+            Err(_) => None,
+        },
+        None => None,
+    };
+    let ghost new_customers = customer_entries@;
+    let ghost new_orders = order_entries@;
+    let orders_log = state.orders.with_chunk(order_entries);
+    let customers_log = state.customers.with_chunk(customer_entries);
+    proof {
+        let db = state.db();
+        let cdelta = customer_delta_seq_view(customer_delta@);
+        assert(orders_log.entries() == state.orders.entries() + new_orders);
+        assert(customers_log.entries() == state.customers.entries() + new_customers);
+        assert forall|k: int| 0 <= k < orders_log.entries().len() implies
+            (#[trigger] orders_log.entries()[k]).sign == 1 || orders_log.entries()[k].sign == -1 by {
+            if k < state.orders.entries().len() { assert(orders_log.entries()[k] == state.orders.entries()[k]); }
+            else {
+                let offset = k - state.orders.entries().len();
+                assert(orders_log.entries()[k] == new_orders[offset]);
+                assert(orders_delta@[offset].sign as int == orders_full[offset].1);
+            }
+        }
+        assert forall|k: int| 0 <= k < customers_log.entries().len() implies
+            (#[trigger] customers_log.entries()[k]).sign == 1 || customers_log.entries()[k].sign == -1 by {
+            if k < state.customers.entries().len() { assert(customers_log.entries()[k] == state.customers.entries()[k]); }
+            else {
+                let offset = k - state.customers.entries().len();
+                assert(customers_log.entries()[k] == new_customers[offset]);
+                assert(cdelta[offset].1 == customer_delta@[offset].sign as int);
+            }
+        }
+        assert forall|f: spec_fn((int, Seq<u8>)) -> int| #[trigger] order_log_sum(orders_log.entries(), f)
+            == sum(db2.orders, |orders: OrdersRow| f((orders.o_custkey, orders.o_comment))) by {
+            let weight = |entry: OrderEntry| entry.sign as int * f((entry.custkey as int, (*entry.comment)@));
+            lemma_sum_concat(state.orders.entries(), new_orders, weight);
+            let g = |orders: OrdersRow| f((orders.o_custkey, orders.o_comment));
+            assert(order_log_sum(state.orders.entries(), f) == sum(db.orders, g));
+            assert(sum(db2.orders, g) == sum(db.orders, g) + sum(orders_full, |d: (OrdersRow, int)| d.1 * g(d.0)));
+            assert(new_orders.len() == orders_full.len());
+            assert forall|k: int| 0 <= k < new_orders.len() implies weight(#[trigger] new_orders[k]) == (|d: (OrdersRow, int)| d.1 * g(d.0))(orders_full[k]) by {
+                assert(new_orders[k].sign as int == orders_full[k].1);
+                assert(new_orders[k].custkey as int == orders_full[k].0.o_custkey);
+                assert((*new_orders[k].comment)@ == orders_full[k].0.o_comment);
+            }
+            lemma_sum_pointwise(new_orders, orders_full, weight, |d: (OrdersRow, int)| d.1 * g(d.0));
+        }
+        assert forall|f: spec_fn(CustomerRow) -> int| #[trigger] customer_log_sum(customers_log.entries(), f) == sum(db2.customer, f) by {
+            let weight = |entry: CustEntry| entry.sign as int * f(CustomerRow { c_custkey: entry.custkey as int });
+            lemma_sum_concat(state.customers.entries(), new_customers, weight);
+            assert(customer_log_sum(state.customers.entries(), f) == sum(db.customer, f));
+            assert(sum(db2.customer, f) == sum(db.customer, f) + sum(cdelta, |d: (CustomerRow, int)| d.1 * f(d.0)));
+            assert(new_customers.len() == cdelta.len());
+            assert forall|k: int| 0 <= k < new_customers.len() implies weight(#[trigger] new_customers[k]) == (|d: (CustomerRow, int)| d.1 * f(d.0))(cdelta[k]) by {
+                assert(new_customers[k].sign as int == cdelta[k].1);
+                assert(new_customers[k].custkey as int == cdelta[k].0.c_custkey);
+            }
+            lemma_sum_pointwise(new_customers, cdelta, weight, |d: (CustomerRow, int)| d.1 * f(d.0));
+        }
+    }
+    let next = State { fast, orders: orders_log, customers: customers_log, appended: total as u64, db: Ghost(db2) };
+    Ok(next)
 }
 
 }

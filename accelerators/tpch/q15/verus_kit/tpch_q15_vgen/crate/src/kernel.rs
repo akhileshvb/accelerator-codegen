@@ -8,6 +8,8 @@ use crate::database_proofs::*;
 use verus_common::sums::*;
 
 verus! {
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub struct State {
     pub(crate) facts: Facts,
     pub(crate) dimensions: Dimensions,
