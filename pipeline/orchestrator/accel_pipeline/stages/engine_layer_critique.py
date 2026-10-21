@@ -79,6 +79,23 @@ def load_layer_critique(art: Path, layer_id: str) -> dict[str, Any]:
         )
     data["status"] = status
     data["layer"] = str(data.get("layer") or layer_id)
+    return _without_pipeline_harness_gaps(data)
+
+
+def _without_pipeline_harness_gaps(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop harness gaps aimed at the pipeline's own files (gates, contracts): the backend agent
+    cannot change them, so they are never backend violations. A critique left with none passes."""
+    kept, dropped = [], []
+    for v in data.get("violations") or []:
+        paths = v.get("paths") or [] if isinstance(v, dict) else []
+        aimed_at_pipeline = isinstance(v, dict) and v.get("rule") == "harness_gap" and any(
+            str(p).startswith("pipeline/") for p in paths
+        )
+        (dropped if aimed_at_pipeline else kept).append(v)
+    if dropped:
+        data["violations"], data["dropped_pipeline_harness_gaps"] = kept, dropped
+        if data["status"] == "fail" and not kept:
+            data["status"] = "pass"
     return data
 
 

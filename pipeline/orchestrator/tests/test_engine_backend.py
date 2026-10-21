@@ -899,3 +899,19 @@ def test_dry_run_impl_capture_skips_critique(monkeypatch):
     )
     assert called["critique"] == 0
     assert called["gates"] == 0
+
+
+def test_critique_harness_gaps_aimed_at_the_pipeline_are_dropped(tmp_path):
+    from accel_pipeline.stages.engine_layer_critique import layer_critique_path, load_layer_critique
+
+    def critique(violations):
+        layer_critique_path(tmp_path, "hostctl").write_text(json.dumps(
+            {"status": "fail", "layer": "hostctl", "violations": violations}), encoding="utf-8")
+        return load_layer_critique(tmp_path, "hostctl")
+
+    gate_gap = {"rule": "harness_gap", "paths": ["pipeline/gates/run_engine_hostctl.sh", "backends/x/host.sh"]}
+    real = {"rule": "host_contract", "paths": ["backends/x/host.sh", "pipeline/prompts/engine_backend/host_contract.md"]}
+    only_gate = critique([gate_gap])
+    assert only_gate["status"] == "pass" and only_gate["dropped_pipeline_harness_gaps"] == [gate_gap]
+    mixed = critique([gate_gap, real])
+    assert mixed["status"] == "fail" and mixed["violations"] == [real]
