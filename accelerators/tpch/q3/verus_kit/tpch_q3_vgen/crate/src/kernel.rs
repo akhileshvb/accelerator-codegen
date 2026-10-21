@@ -55,6 +55,7 @@ pub fn build(
         scan_shipments_ok(db, shipments@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        envelope(db) ==> r is Some,
 {
     crate::construction::construct(customers, orders, shipments, Ghost(db))
 }

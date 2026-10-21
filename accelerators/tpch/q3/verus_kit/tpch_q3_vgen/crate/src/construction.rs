@@ -267,6 +267,7 @@ pub fn chunk_exec(page: i64) -> (result: i64)
 pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments: &[ShipmentInput], Ghost(db): Ghost<Db>) -> (result: Option<State>)
     requires scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
     ensures result matches Some(state) ==> state.db() == db,
+        envelope(db) ==> result is Some,
 {
     proof { crate::input_proofs::lemma_scan_lens(db, customers@, orders@, shipments@); }
     let mut customer_work: HashMapWithView<i64, CustomerCell> = HashMapWithView::new();
