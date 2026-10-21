@@ -1,7 +1,9 @@
 # Engine backend implementation — layer `{{layer_id}}`
 
-Implement **only** **{{layer_title}}** (`{{layer_id}}`) for **{{display_name}}**
-(`{{engine_name}}`). Do **not** start a later layer. Do **not** author
+Implement **{{layer_title}}** (`{{layer_id}}`) for **{{display_name}}**
+(`{{engine_name}}`): its contract end to end, including the wiring it needs in files other
+layers own (plugin or extension registration, SQL that `host.sh` installs, a binding into
+another layer's object). Do **not** implement a later layer's contract. Do **not** author
 `test_{{engine_name}}_adversarial.cpp`.
 
 {{hard_guidelines}}
