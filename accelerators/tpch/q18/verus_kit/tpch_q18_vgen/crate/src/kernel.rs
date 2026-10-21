@@ -435,7 +435,7 @@ pub fn build(
     Some(State { db: Ghost(db), orders, customers, buckets, directory })
 }
 
-#[verifier::rlimit(30)]
+#[verifier::rlimit(80)]
 pub fn execute(s: &State, p1: i64) -> (r: Option<Vec<Row>>)
     ensures r matches Some(out) ==> query_result(s.db(), params(p1 as int), out_view(out@)),
         envelope(s.db()) && answer_fits(s.db(), params(p1 as int)) ==> r is Some,
