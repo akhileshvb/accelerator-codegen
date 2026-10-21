@@ -36,8 +36,20 @@ fi
 if ! engine_steps "up" "build ${TARGET}"; then
   emit_result "${JSON}" "${GATE}" fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "layer=${LAYER_ID}" "cmake_target=${TARGET}"
 fi
-ACCEL_GATE_RUN_TIMEOUT="${ACCEL_GATE_RUN_TIMEOUT:-300}" engine_run "${TARGET}"   # a toy-module harness runs in seconds
+# A race shows up only sometimes: the harness runs up to ACCEL_LAYER_GATE_RUNS times (while the
+# repeats fit in ACCEL_LAYER_GATE_REPEAT_BUDGET seconds) and every run must pass.
+runs="${ACCEL_LAYER_GATE_RUNS:-10}" budget="${ACCEL_LAYER_GATE_REPEAT_BUDGET:-120}"
+started=${SECONDS} run=0
+while :; do
+  run=$((run + 1))
+  ACCEL_GATE_RUN_TIMEOUT="${ACCEL_GATE_RUN_TIMEOUT:-300}" engine_run "${TARGET}"   # a toy-module harness runs in seconds
+  [[ ${RC} -eq 0 ]] || break
+  (( run < runs && SECONDS - started < budget )) || break
+done
+if [[ ${RC} -ne 0 && ${run} -gt 1 && -z "${RUN_REASON}" ]]; then
+  RUN_REASON="${TARGET} failed on run ${run} after passing $((run - 1)) times: a race (the harness or the backend depends on timing)"
+fi
 STATUS=pass
 [[ ${RC} -eq 0 ]] || STATUS=fail
 emit_result "${JSON}" "${GATE}" "${STATUS}" "${RUN_REASON}" "${ENGINE_LOG}${LOG}" \
-  "layer=${LAYER_ID}" "harness=${HARNESS}" "cmake_target=${TARGET}" "returncode:=${RC}"
+  "layer=${LAYER_ID}" "harness=${HARNESS}" "cmake_target=${TARGET}" "returncode:=${RC}" "runs:=${run}"
