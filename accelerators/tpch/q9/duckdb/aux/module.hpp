@@ -5,6 +5,7 @@
 #include <climits>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -181,60 +182,155 @@ struct Q9PartRecord {
   std::vector<Q9ExtraAgg> extras;
 };
 
-// Part records of one profit slot, sorted by partkey. Records are shared_ptr'd
-// so copying a slot (every maintenance write copies each slot it touches out of
-// the published image) copies only pointers; Mutable() clones just the records
-// a write changes.
+// Part records of one profit slot, sorted by partkey, in small pages. Copying a slot
+// (every maintenance write copies each slot it touches out of the published image)
+// copies one pointer per page; a write clones its page (kPageSize entries of record
+// pointers) and then only the records it changes (Mutable() clones the record), so the
+// cost of a commit follows the parts it changes, not the parts the slot holds.
 class Q9PartMap {
 public:
   using Entry = std::pair<int64_t, std::shared_ptr<Q9PartRecord>>;
+  static constexpr std::size_t kPageSize = 32;
 
-  std::vector<Entry>::const_iterator begin() const { return entries.begin(); }
-  std::vector<Entry>::const_iterator end() const { return entries.end(); }
-  std::size_t size() const { return entries.size(); }
-  bool empty() const { return entries.empty(); }
-  void clear() { entries.clear(); }
+private:
+  struct Page {
+    std::vector<Entry> entries;
+  };
+
+public:
+
+  class const_iterator {
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = Entry;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const Entry *;
+    using reference = const Entry &;
+
+    const_iterator() = default;
+    reference operator*() const { return (*pages_)[page_]->entries[at_]; }
+    pointer operator->() const { return &**this; }
+    const_iterator &operator++() {
+      if (++at_ == (*pages_)[page_]->entries.size()) {
+        ++page_;
+        at_ = 0;
+      }
+      return *this;
+    }
+    bool operator==(const const_iterator &o) const { return page_ == o.page_ && at_ == o.at_; }
+    bool operator!=(const const_iterator &o) const { return !(*this == o); }
+
+  private:
+    friend class Q9PartMap;
+    const_iterator(const std::vector<std::shared_ptr<Page>> *pages, std::size_t page)
+        : pages_(pages), page_(page) {}
+    const std::vector<std::shared_ptr<Page>> *pages_ = nullptr;
+    std::size_t page_ = 0, at_ = 0;
+  };
+
+  const_iterator begin() const { return {&pages, 0}; }
+  const_iterator end() const { return {&pages, pages.size()}; }
+  std::size_t size() const { return count; }
+  bool empty() const { return count == 0; }
+  void clear() {
+    pages.clear();
+    lows.clear();
+    count = 0;
+  }
 
   // Installs the whole map from entries sorted by partkey (build).
-  void Assign(std::vector<Entry> &&sorted) { entries = std::move(sorted); }
+  void Assign(std::vector<Entry> &&sorted) {
+    clear();
+    for (std::size_t i = 0; i < sorted.size(); i += kPageSize) {
+      const auto last = std::min(sorted.size(), i + kPageSize);
+      auto page = std::make_shared<Page>();
+      page->entries.assign(std::make_move_iterator(sorted.begin() + static_cast<std::ptrdiff_t>(i)),
+                           std::make_move_iterator(sorted.begin() + static_cast<std::ptrdiff_t>(last)));
+      lows.push_back(page->entries.front().first);
+      pages.push_back(std::move(page));
+    }
+    count = sorted.size();
+  }
 
   const Q9PartRecord *Find(int64_t partkey) const {
-    const auto it = Lower(partkey);
-    return it != entries.end() && it->first == partkey ? it->second.get()
-                                                       : nullptr;
+    if (pages.empty())
+      return nullptr;
+    const auto &entries = pages[PageOf(partkey)]->entries;
+    const auto it = Lower(entries, partkey);
+    return it != entries.end() && it->first == partkey ? it->second.get() : nullptr;
   }
   // The record for writing (cloned if a published image shares it); null if absent.
   Q9PartRecord *Mutable(int64_t partkey) {
-    const auto it = Lower(partkey);
-    return it != entries.end() && it->first == partkey ? Own(it->second)
-                                                       : nullptr;
+    if (pages.empty() || Find(partkey) == nullptr)
+      return nullptr;
+    auto &entries = OwnPage(PageOf(partkey)).entries;
+    return Own(Lower(entries, partkey)->second);
   }
   // The record for writing, created empty if absent.
   Q9PartRecord &Get(int64_t partkey) {
-    auto it = Lower(partkey);
-    if (it == entries.end() || it->first != partkey)
+    if (pages.empty()) {
+      pages.push_back(std::make_shared<Page>());
+      lows.push_back(partkey);
+    }
+    const auto index = PageOf(partkey);
+    auto &entries = OwnPage(index).entries;
+    auto it = Lower(entries, partkey);
+    if (it == entries.end() || it->first != partkey) {
       it = entries.insert(it, {partkey, std::make_shared<Q9PartRecord>()});
-    return *Own(it->second);
+      ++count;
+      lows[index] = std::min(lows[index], entries.front().first);
+      if (entries.size() > 2 * kPageSize)
+        Split(index);
+    }
+    return *Own(Lower(OwnPage(PageOf(partkey)).entries, partkey)->second);
   }
   void Emplace(int64_t partkey, Q9PartRecord record) {
     Get(partkey) = std::move(record);
   }
   void Erase(int64_t partkey) {
-    const auto it = Lower(partkey);
-    if (it != entries.end() && it->first == partkey)
-      entries.erase(it);
+    if (pages.empty() || Find(partkey) == nullptr)
+      return;
+    const auto index = PageOf(partkey);
+    auto &entries = OwnPage(index).entries;
+    entries.erase(Lower(entries, partkey));
+    --count;
+    if (entries.empty()) {
+      pages.erase(pages.begin() + static_cast<std::ptrdiff_t>(index));
+      lows.erase(lows.begin() + static_cast<std::ptrdiff_t>(index));
+    } else {
+      lows[index] = entries.front().first;
+    }
   }
 
 private:
-  std::vector<Entry>::const_iterator Lower(int64_t partkey) const {
-    return std::lower_bound(
-        entries.begin(), entries.end(), partkey,
-        [](const Entry &e, int64_t k) { return e.first < k; });
+  // The page that holds, or would take, partkey: the last whose lowest key is <= it.
+  std::size_t PageOf(int64_t partkey) const {
+    const auto it = std::upper_bound(lows.begin(), lows.end(), partkey);
+    return it == lows.begin() ? 0 : static_cast<std::size_t>(it - lows.begin()) - 1;
   }
-  std::vector<Entry>::iterator Lower(int64_t partkey) {
-    return std::lower_bound(
-        entries.begin(), entries.end(), partkey,
-        [](const Entry &e, int64_t k) { return e.first < k; });
+  static std::vector<Entry>::const_iterator Lower(const std::vector<Entry> &entries,
+                                                  int64_t partkey) {
+    return std::lower_bound(entries.begin(), entries.end(), partkey,
+                            [](const Entry &e, int64_t k) { return e.first < k; });
+  }
+  static std::vector<Entry>::iterator Lower(std::vector<Entry> &entries, int64_t partkey) {
+    return std::lower_bound(entries.begin(), entries.end(), partkey,
+                            [](const Entry &e, int64_t k) { return e.first < k; });
+  }
+  Page &OwnPage(std::size_t index) {
+    auto &page = pages[index];
+    if (page.use_count() > 1)
+      page = std::make_shared<Page>(*page);
+    return *page;
+  }
+  void Split(std::size_t index) {
+    auto &entries = pages[index]->entries;
+    auto upper = std::make_shared<Page>();
+    const auto middle = entries.begin() + static_cast<std::ptrdiff_t>(entries.size() / 2);
+    upper->entries.assign(std::make_move_iterator(middle), std::make_move_iterator(entries.end()));
+    entries.erase(middle, entries.end());
+    lows.insert(lows.begin() + static_cast<std::ptrdiff_t>(index) + 1, upper->entries.front().first);
+    pages.insert(pages.begin() + static_cast<std::ptrdiff_t>(index) + 1, std::move(upper));
   }
   static Q9PartRecord *Own(std::shared_ptr<Q9PartRecord> &rec) {
     if (rec.use_count() > 1)
@@ -242,7 +338,9 @@ private:
     return rec.get();
   }
 
-  std::vector<Entry> entries;
+  std::vector<std::shared_ptr<Page>> pages;
+  std::vector<int64_t> lows; // lowest key of each page
+  std::size_t count = 0;
 };
 
 // Ids beyond these are never stored in the dense COW arrays (a directory entry
