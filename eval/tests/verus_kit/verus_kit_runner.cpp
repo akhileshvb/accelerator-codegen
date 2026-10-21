@@ -437,6 +437,8 @@ struct Tally {
   int checks = 0, mismatches = 0, order_mismatches = 0;
   int reference_errors = 0; // DuckDB itself could not evaluate the query: nothing to compare
   std::vector<std::string> examples;
+  std::vector<std::string> fallback_examples, reference_error_examples;
+  std::map<std::string, int> fallback_kinds; // kernel_none | param_outside_type | host_conversion
   // One comparison: the reference first (if DuckDB cannot evaluate it, e.g. a decimal
   // overflow on extreme test values, the check is skipped and counted); an accelerator
   // call that fails where the reference succeeds is a wrong answer.
@@ -445,8 +447,11 @@ struct Tally {
     Rows q;
     try {
       q = query();
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
       ++reference_errors;
+      if (reference_error_examples.size() < 8)
+        reference_error_examples.push_back("{\"at\":" + Json(where) + ",\"params\":" + Json(tuple) +
+                                           ",\"error\":" + Json(std::string(e.what()).substr(0, 300)) + "}");
       return;
     }
     Rows a;
@@ -475,11 +480,39 @@ struct Tally {
                          ",\"query_rows\":" + std::to_string(q.size()) + ",\"accel\":" + RowsJson(a) +
                          ",\"query\":" + RowsJson(q) + "}");
   }
+  // An accelerator call that answered with the SQL fallback: why (the host could not convert
+  // an argument, or the kernel returned None). Recorded per call, one example per tuple.
+  Rows RunAccelRecorded(duckdb::Connection &c, const std::string &id, const std::string &where,
+                        const std::string &tuple) {
+    kit::ClearArgFailure();
+    const auto before = core::ReadAuxExecuteCounts().fallback;
+    Rows r = RunAccel(c, id, tuple);
+    if (core::ReadAuxExecuteCounts().fallback > before) {
+      const auto arg = kit::LastArgFailure();
+      const char *kind = arg.what.empty() ? "kernel_none" : arg.outside_type ? "param_outside_type" : "host_conversion";
+      const std::string reason = arg.what.empty() ? "kernel returned None" : "host arg conversion failed: " + arg.what;
+      ++fallback_kinds[kind];
+      if (fallback_examples.size() < 64)
+        fallback_examples.push_back("{\"at\":" + Json(where) + ",\"params\":" + Json(tuple) +
+                                    ",\"kind\":" + Json(kind) + ",\"reason\":" + Json(reason) + "}");
+    }
+    return r;
+  }
+  static std::string Array(const std::vector<std::string> &items) {
+    std::string o = "[";
+    for (std::size_t i = 0; i < items.size(); ++i)
+      o += (i ? "," : "") + items[i];
+    return o + "]";
+  }
   std::string Fields() const {
     std::string ex = "[";
     for (std::size_t i = 0; i < examples.size(); ++i)
       ex += (i ? "," : "") + examples[i];
-    return "\"checks\":" + std::to_string(checks) + ",\"reference_errors\":" + std::to_string(reference_errors) +
+    std::string kinds = "{";
+    for (const auto &[k, n] : fallback_kinds)
+      kinds += (kinds.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(n);
+    return "\"fallback_kinds\":" + kinds + "},\"fallback_examples\":" + Array(fallback_examples) + ",\"reference_error_examples\":" +
+           Array(reference_error_examples) + "," + "\"checks\":" + std::to_string(checks) + ",\"reference_errors\":" + std::to_string(reference_errors) +
            ",\"mismatches\":" + std::to_string(mismatches) +
            ",\"order_mismatches\":" + std::to_string(order_mismatches) + ",\"examples\":" + ex + "]";
   }
@@ -534,7 +567,7 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
   std::mt19937_64 rng(7);
   auto check_all = [&](const std::string &where) {
     for (const auto &t : spec.params)
-      tally.CheckCall(where, t, [&] { return RunAccel(qc, id, t); }, [&] { return RunQuery(qc, s.glue->query_sql, t); },
+      tally.CheckCall(where, t, [&] { return tally.RunAccelRecorded(qc, id, where, t); }, [&] { return RunQuery(qc, s.glue->query_sql, t); },
                         s.ordering, [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
   };
   check_all("build");
@@ -560,7 +593,7 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
     } else {
       for (int k = 0; k < 2; ++k) {
         const auto &t = spec.params[rng() % spec.params.size()];
-        tally.CheckCall(where, t, [&] { return RunAccel(qc, id, t); }, [&] { return RunQuery(qc, s.glue->query_sql, t); },
+        tally.CheckCall(where, t, [&] { return tally.RunAccelRecorded(qc, id, where, t); }, [&] { return RunQuery(qc, s.glue->query_sql, t); },
                         s.ordering, [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
       }
     }
