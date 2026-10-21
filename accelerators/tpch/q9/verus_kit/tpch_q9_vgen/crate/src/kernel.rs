@@ -30,13 +30,15 @@ use crate::yw::*;
 use crate::applyspec::*;
 use crate::applydiff::*;
 use crate::finish::*;
+use crate::raw::*;
+use crate::slow::*;
 use std::sync::Arc;
 
 verus! {
 
 broadcast use vstd::seq_lib::group_seq_properties;
 
-pub struct State {
+pub struct Fast {
     db: Ghost<Db>,
     pub pats: Arc<Vec<Vec<u8>>>,
     pub masks: Pages<Vec<MaskRow>>,
@@ -52,7 +54,7 @@ pub open spec fn rollup_ready(r: Seq<Arc<Vec<RCell>>>, pats: Seq<Seq<u8>>, db: D
             == nation_total(filter_db(db, pats[c]), nk, y, f)
 }
 
-impl State {
+impl Fast {
     pub closed spec fn db(self) -> Db {
         self.db@
     }
@@ -70,15 +72,15 @@ impl State {
 }
 
 #[verifier::spinoff_prover]
-pub fn build(
-    all_parts: Vec<PartIn>,
+pub fn build_fast(
+    all_parts: &Vec<PartIn>,
     all_orders: &[OrderIn],
     supplier_nations: &[SupplierIn],
-    nation_names: Vec<NationIn>,
+    nation_names: &Vec<NationIn>,
     all_partsupp: &[PartsuppIn],
     all_lines: &[LineIn],
     Ghost(db): Ghost<Db>,
-) -> (r: Option<State>)
+) -> (r: Option<Fast>)
     requires
         scan_all_parts_ok(db, all_parts@),
         scan_all_orders_ok(db, all_orders@),
@@ -91,10 +93,10 @@ pub fn build(
 {
     let pats = tracked_patterns();
     let ghost pv = pat_views(pats@);
-    let masks = build_masks(&all_parts, &pats, Ghost(db))?;
+    let masks = build_masks(all_parts, &pats, Ghost(db))?;
     let pairs = build_pairs(all_partsupp, Ghost(db))?;
     let suppliers = build_suppliers(supplier_nations, Ghost(db))?;
-    let names = build_names(&nation_names, Ghost(db))?;
+    let names = build_names(nation_names, Ghost(db))?;
     let dates_w = build_dates(all_orders, Ghost(db));
     let n = pats.len();
     let mut delta = build_rollup(all_lines, &dates_w, &masks, &pairs, &suppliers, n, Ghost(db), Ghost(pv))?;
@@ -131,13 +133,13 @@ pub fn build(
             assert(delta_view[c]@ == (*rollup@[c])@);
         }
     }
-    Some(State { db: Ghost(db), pats: Arc::new(pats), masks, pairs, suppliers, names, rollup })
+    Some(Fast { db: Ghost(db), pats: Arc::new(pats), masks, pairs, suppliers, names, rollup })
 }
 
 
 #[verifier::spinoff_prover]
-pub fn execute(
-    s: &State,
+pub fn execute_fast(
+    s: &Fast,
     p1: &[u8],
 ) -> (r: Option<Vec<(Vec<u8>, i64, i128)>>)
     ensures
@@ -232,6 +234,64 @@ pub fn execute(
     Some(out)
 }
 
+pub struct State {
+    db: Ghost<Db>,
+    raw: Raw,
+    fast: Option<Fast>,
+}
+
+impl State {
+    pub closed spec fn db(self) -> Db {
+        self.db@
+    }
+
+    #[verifier::type_invariant]
+    closed spec fn valid(self) -> bool {
+        raw_of(self.raw, self.db@) && (self.fast matches Some(f) ==> f.db() == self.db@)
+    }
+}
+
+pub fn build(
+    all_parts: Vec<PartIn>,
+    all_orders: &[OrderIn],
+    supplier_nations: &[SupplierIn],
+    nation_names: Vec<NationIn>,
+    all_partsupp: &[PartsuppIn],
+    all_lines: &[LineIn],
+    Ghost(db): Ghost<Db>,
+) -> (r: Option<State>)
+    requires
+        scan_all_parts_ok(db, all_parts@),
+        scan_all_orders_ok(db, all_orders@),
+        scan_supplier_nations_ok(db, supplier_nations@),
+        scan_nation_names_ok(db, nation_names@),
+        scan_all_partsupp_ok(db, all_partsupp@),
+        scan_all_lines_ok(db, all_lines@),
+    ensures
+        r matches Some(s) ==> s.db() == db,
+        r is Some,
+{
+    let raw = raw_build(&all_parts, all_orders, supplier_nations, &nation_names, all_partsupp, all_lines, Ghost(db));
+    let fast = build_fast(&all_parts, all_orders, supplier_nations, &nation_names, all_partsupp, all_lines, Ghost(db));
+    Some(State { db: Ghost(db), raw, fast })
+}
+
+pub fn execute(
+    s: &State,
+    p1: &[u8],
+) -> (r: Option<Vec<(Vec<u8>, i64, i128)>>)
+    ensures
+        r matches Some(out) ==> query_result(s.db(), params(p1@), out_view(out@)),
+        r is None ==> !answer_fits(s.db(), params(p1@)),
+{
+    proof { use_type_invariant(s); }
+    if let Some(f) = &s.fast {
+        let r = execute_fast(f, p1);
+        if r.is_some() { return r; }
+    }
+    slow_answer(&s.raw, p1, Ghost(s.db()))
+}
+
 pub fn rescan_lines_for_orders_keys(s: &State, lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta],
     part_delta: &Vec<PartDelta>, partsupp_delta: &[PartsuppDelta], supplier_delta: &[SupplierDelta]) -> (r: Vec<i64>)
 { collect_okeys(orders_delta) }
@@ -261,8 +321,8 @@ pub fn rescan_orders_for_keys_keys(s: &State, lineitem_delta: &[LineDelta], nati
 }
 
 #[verifier::spinoff_prover]
-pub fn apply(
-    s: &State,
+pub fn apply_fast(
+    s: &Fast,
     lineitem_delta: &[LineDelta],
     nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrderDelta],
@@ -280,7 +340,7 @@ pub fn apply(
     orders_for_keys_keys: &[i64],
     orders_for_keys_rows: &[OrderIn],
     Ghost(db2): Ghost<Db>,
-) -> (r: Result<State, u32>)
+) -> (r: Result<Fast, u32>)
     requires
         capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
         rescan_lines_for_orders_ok(db2, lines_for_orders_keys@, lines_for_orders_rows@),
@@ -364,7 +424,50 @@ pub fn apply(
                 lines_for_suppliers_keys@, lines_for_suppliers_rows@);
         }
     }
-    Ok(State { db: Ghost(db2), pats: Arc::clone(&s.pats), masks: masks2, pairs: pairs2, suppliers: sups2, names: s.names.share(), rollup: rollup2 })
+    Ok(Fast { db: Ghost(db2), pats: Arc::clone(&s.pats), masks: masks2, pairs: pairs2, suppliers: sups2, names: s.names.share(), rollup: rollup2 })
+}
+
+
+pub fn apply(
+    s: &State,
+    lineitem_delta: &[LineDelta],
+    nation_delta: &Vec<NationDelta>,
+    orders_delta: &[OrderDelta],
+    part_delta: &Vec<PartDelta>,
+    partsupp_delta: &[PartsuppDelta],
+    supplier_delta: &[SupplierDelta],
+    lines_for_orders_keys: &[i64],
+    lines_for_orders_rows: &[LineIn],
+    lines_for_parts_keys: &[i64],
+    lines_for_parts_rows: &[LineIn],
+    lines_for_suppliers_keys: &[i64],
+    lines_for_suppliers_rows: &[LineIn],
+    partsupp_for_parts_keys: &[i64],
+    partsupp_for_parts_rows: &[PartsuppIn],
+    orders_for_keys_keys: &[i64],
+    orders_for_keys_rows: &[OrderIn],
+    Ghost(db2): Ghost<Db>,
+) -> (r: Result<State, u32>)
+    requires
+        capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+        rescan_lines_for_orders_ok(db2, lines_for_orders_keys@, lines_for_orders_rows@),
+        rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
+        rescan_lines_for_suppliers_ok(db2, lines_for_suppliers_keys@, lines_for_suppliers_rows@),
+        rescan_partsupp_for_parts_ok(db2, partsupp_for_parts_keys@, partsupp_for_parts_rows@),
+        rescan_orders_for_keys_ok(db2, orders_for_keys_keys@, orders_for_keys_rows@),
+    ensures
+        r matches Ok(s2) ==> s2.db() == db2,
+        r is Ok,
+{
+    proof { use_type_invariant(s); }
+    let raw = raw_apply(&s.raw, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta, Ghost(s.db()), Ghost(db2));
+    let fast = match &s.fast {
+        Some(f) => match apply_fast(f, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta,
+            lines_for_orders_keys, lines_for_orders_rows, lines_for_parts_keys, lines_for_parts_rows, lines_for_suppliers_keys, lines_for_suppliers_rows,
+            partsupp_for_parts_keys, partsupp_for_parts_rows, orders_for_keys_keys, orders_for_keys_rows, Ghost(db2)) { Ok(f2) => Some(f2), Err(_) => None },
+        None => None,
+    };
+    Ok(State { db: Ghost(db2), raw, fast })
 }
 
 }

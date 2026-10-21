@@ -39,3 +39,4 @@ pub mod linepass;
 pub mod groups;
 pub mod emitw;
 pub mod raw;
+pub mod slow;
