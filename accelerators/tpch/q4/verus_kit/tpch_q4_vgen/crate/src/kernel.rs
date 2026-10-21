@@ -31,6 +31,8 @@ impl State {
     }
 }
 
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub fn build(qualifying_orders: Vec<DatePriorityInput>, Ghost(db): Ghost<Db>) -> (out: Option<State>)
     requires scan_qualifying_orders_ok(db, qualifying_orders@),
     ensures out matches Some(state) ==> state.db() == db,

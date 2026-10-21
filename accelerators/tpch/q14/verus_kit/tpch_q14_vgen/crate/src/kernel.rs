@@ -156,6 +156,8 @@ fn key_set(keys: &[i64]) -> (out: HashMap<i64, bool>)
     out
 }
 
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub fn build(parts: Vec<PartInput>, lines: &[LineInput], Ghost(db): Ghost<Db>) -> (out: Option<State>)
     requires scan_parts_ok(db, parts@), scan_lines_ok(db, lines@),
     ensures out matches Some(state) ==> state.db() == db,
