@@ -74,17 +74,23 @@ void CollectSparseQuantities(
   std::sort(entries.begin(), entries.end());
 }
 
-// Quantity sum per order key in hash shards: partial states of a parallel
-// build fold shard by shard in parallel. A run of rows of one order (lineitem
-// is clustered by order) is summed before it touches a shard.
+// Quantity sums per order key, bucketed by key hash so a partition keeps
+// O(runs seen) and one task later owns whole orders. A run of rows of one
+// order (lineitem is clustered by order) is summed before it is stored.
+constexpr std::size_t kSumBuckets = 1024;
+
 struct OrderSums {
-  static constexpr std::size_t kShards = 64;
-  std::array<std::unordered_map<int64_t, int64_t>, kShards> shards;
+  struct Partial {
+    int64_t orderkey;
+    int64_t sum;
+  };
+  std::vector<std::vector<std::vector<Partial>>> runs{
+      1, std::vector<std::vector<Partial>>(kSumBuckets)};
   int64_t run_key = -1;
   int64_t run_sum = 0;
 
-  static std::size_t ShardOf(int64_t orderkey) {
-    return (static_cast<uint64_t>(orderkey) * 0x9E3779B97F4A7C15ULL) >> 58;
+  static std::size_t BucketOf(int64_t orderkey) {
+    return (static_cast<uint64_t>(orderkey) * 0x9E3779B97F4A7C15ULL) >> 54;
   }
   void Add(int64_t orderkey, int64_t quantity_raw) {
     if (orderkey != run_key) {
@@ -93,18 +99,40 @@ struct OrderSums {
     }
     run_sum += quantity_raw;
   }
-  // Moves the open run into its shard; call before reading or folding.
+  // Stores the open run; call before the partial is merged or read.
   void Flush() {
     if (run_key >= 0)
-      shards[ShardOf(run_key)][run_key] += run_sum;
+      runs.back()[BucketOf(run_key)].push_back({run_key, run_sum});
     run_key = -1;
     run_sum = 0;
   }
-  void FoldShard(std::size_t shard, const OrderSums &from) {
-    for (const auto &[orderkey, sum] : from.shards[shard])
-      shards[shard][orderkey] += sum;
+  void MergeFrom(OrderSums &&from) {
+    Flush();
+    from.Flush();
+    runs.insert(runs.end(), std::make_move_iterator(from.runs.begin()),
+                std::make_move_iterator(from.runs.end()));
   }
 };
+
+// Appends the orders of one bucket whose total quantity is above the persist
+// threshold.
+void AppendOrdersAbove(OrderSums &sums, std::size_t bucket,
+                       std::vector<std::pair<int64_t, int64_t>> &found) {
+  std::vector<OrderSums::Partial> all;
+  for (auto &run : sums.runs) {
+    all.insert(all.end(), run[bucket].begin(), run[bucket].end());
+    run[bucket] = {};
+  }
+  std::sort(all.begin(), all.end(), [](const auto &a, const auto &b) { return a.orderkey < b.orderkey; });
+  for (std::size_t i = 0; i < all.size();) {
+    const int64_t orderkey = all[i].orderkey;
+    int64_t sum = 0;
+    for (; i < all.size() && all[i].orderkey == orderkey; ++i)
+      sum += all[i].sum;
+    if (sum > TpchQ18State::kMinPersistQuantityRaw)
+      found.emplace_back(orderkey, sum);
+  }
+}
 
 // Per-order quantity sums from the tables. The state holds only orders above
 // kMinPersistQuantityRaw, so a lower threshold needs these.
@@ -721,8 +749,7 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q18 aux requires a typed initial scan source");
 
-  // Quantity sum per order, hash-sharded so the partials fold shard by shard
-  // in parallel.
+  // Quantity sum per order; the orders above the persist threshold survive.
   auto sums = core::PartitionedBuild<OrderSums>(
       services, [] { return OrderSums{}; },
       [&](std::size_t parts, auto &&sink) {
@@ -735,25 +762,15 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
         if (input.orderkey >= 0)
           partial.Add(input.orderkey, input.quantity_raw);
       },
-      [&](OrderSums &into, OrderSums &&from) {
-        into.Flush();
-        from.Flush();
-        core::ParallelSlices(services, OrderSums::kShards, 1,
-                             [&](std::size_t, std::size_t first, std::size_t last) {
-                               for (std::size_t s = first; s < last; ++s)
-                                 into.FoldShard(s, from);
-                             });
-      });
+      [](OrderSums &into, OrderSums &&from) { into.MergeFrom(std::move(from)); });
   sums.Flush();
   using Sums = std::vector<std::pair<int64_t, int64_t>>;
   Sums above_sums;
   core::ParallelReduce(
-      services, OrderSums::kShards, 1, above_sums,
+      services, kSumBuckets, 1, above_sums,
       [&](Sums &found, std::size_t first, std::size_t last) {
-        for (std::size_t s = first; s < last; ++s)
-          for (const auto &entry : sums.shards[s])
-            if (entry.second > TpchQ18State::kMinPersistQuantityRaw)
-              found.push_back(entry);
+        for (std::size_t bucket = first; bucket < last; ++bucket)
+          AppendOrdersAbove(sums, bucket, found);
       },
       [](Sums &into, Sums &&from) { into.insert(into.end(), from.begin(), from.end()); });
   const std::unordered_map<int64_t, int64_t> above(above_sums.begin(), above_sums.end());
