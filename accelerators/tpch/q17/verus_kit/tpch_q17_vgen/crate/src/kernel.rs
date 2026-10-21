@@ -19,6 +19,8 @@ verus! {
 
 broadcast use vstd::seq_lib::group_seq_properties;
 
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub struct State {
     db: Ghost<Db>,
     lines: Store<Moment>,

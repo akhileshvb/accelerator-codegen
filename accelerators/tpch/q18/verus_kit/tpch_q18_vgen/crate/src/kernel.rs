@@ -17,6 +17,8 @@ mod result_proof;
 
 verus! {
 
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub struct State {
     db: Ghost<Db>,
     orders: Table<OrderData>,
