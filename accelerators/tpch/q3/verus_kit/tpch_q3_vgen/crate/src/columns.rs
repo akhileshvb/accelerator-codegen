@@ -195,7 +195,7 @@ pub fn segment_change(cell: &mut CustomerCell, segment: &Arc<Vec<u8>>, delta: i1
 }
 
 /// The count stored for an order key is the key's total, since the keys are distinct.
-proof fn lemma_reverse_at(rows: Seq<(i64, i64)>, low: int, key: i64)
+proof fn lemma_reverse_at(rows: Seq<(i64, i128)>, low: int, key: i64)
     requires reverse_sorted(rows), 0 <= low <= rows.len(),
         forall|index: int| #![trigger rows[index]] 0 <= index < low ==> rows[index].0 < key,
         forall|index: int| #![trigger rows[index]] low <= index < rows.len() ==> rows[index].0 >= key,
@@ -210,7 +210,7 @@ proof fn lemma_reverse_at(rows: Seq<(i64, i64)>, low: int, key: i64)
 }
 
 /// In a sorted reverse list each entry's count is its key's total.
-pub proof fn lemma_reverse_entry(rows: Seq<(i64, i64)>, index: int)
+pub proof fn lemma_reverse_entry(rows: Seq<(i64, i128)>, index: int)
     requires reverse_sorted(rows), 0 <= index < rows.len(),
     ensures reverse_count(rows, rows[index].0 as int) == rows[index].1 as int,
 {
@@ -222,7 +222,7 @@ pub proof fn lemma_reverse_entry(rows: Seq<(i64, i64)>, index: int)
     lemma_sum_single_match(rows, weight, index);
 }
 
-pub fn reverse_change(cell: &mut CustomerCell, key: i64, delta: i64) -> (result: bool)
+pub fn reverse_change(cell: &mut CustomerCell, key: i64, delta: i128) -> (result: bool)
     requires
         reverse_sorted(old(cell).orders@),
         forall|index: int| #![trigger old(cell).orders@[index]] 0 <= index < old(cell).orders@.len() ==> old(cell).orders@[index].1 != 0,
@@ -231,8 +231,8 @@ pub fn reverse_change(cell: &mut CustomerCell, key: i64, delta: i64) -> (result:
         reverse_sorted(final(cell).orders@),
         forall|index: int| #![trigger final(cell).orders@[index]] 0 <= index < final(cell).orders@.len() ==> final(cell).orders@[index].1 != 0,
         !result ==> final(cell).orders@ == old(cell).orders@,
-        !result ==> reverse_count(old(cell).orders@, key as int) + delta as int > i64::MAX as int
-            || reverse_count(old(cell).orders@, key as int) + (delta as int) < i64::MIN as int,
+        !result ==> reverse_count(old(cell).orders@, key as int) + delta as int > i128::MAX as int
+            || reverse_count(old(cell).orders@, key as int) + (delta as int) < i128::MIN as int,
         result ==> forall|target: int| #![trigger reverse_count(final(cell).orders@, target)]
             reverse_count(final(cell).orders@, target) == reverse_count(old(cell).orders@, target)
                 + if target == key { delta as int } else { 0 },
@@ -256,7 +256,7 @@ pub fn reverse_change(cell: &mut CustomerCell, key: i64, delta: i64) -> (result:
     let old = if low < cell.orders.len() && cell.orders[low].0 == key { cell.orders[low].1 } else { 0 };
     proof { lemma_reverse_at(before, low as int, key); }
     let count = match old.checked_add(delta) { Some(value) => value, None => return false };
-    let ghost less = |left: (i64, i64), right: (i64, i64)| left.0 < right.0;
+    let ghost less = |left: (i64, i128), right: (i64, i128)| left.0 < right.0;
     if old != 0 {
         if count == 0 {
             cell.orders.remove(low);
@@ -278,7 +278,7 @@ pub fn reverse_change(cell: &mut CustomerCell, key: i64, delta: i64) -> (result:
         assert forall|target: int| #![trigger reverse_count(cell.orders@, target)]
             reverse_count(cell.orders@, target) == reverse_count(before, target)
                 + if target == key { delta as int } else { 0 } by {
-            let weight = |entry: (i64, i64)| if entry.0 == target { entry.1 as int } else { 0 };
+            let weight = |entry: (i64, i128)| if entry.0 == target { entry.1 as int } else { 0 };
             if old != 0 {
                 if count == 0 { lemma_sum_remove(before, low as int, weight); }
                 else { lemma_sum_update(before, low as int, (key, count), weight); }
@@ -354,7 +354,7 @@ pub fn insert_order(rows: &mut Vec<OrderCell>, row: OrderInput) -> (result: bool
         orders_sorted(final(rows)@),
         forall|index: int| #![trigger final(rows)@[index]] 0 <= index < final(rows)@.len() ==> final(rows)@[index].count > 0,
         !result ==> final(rows)@ == old(rows)@,
-        !result ==> order_count(old(rows)@, row.o_orderkey as int, row.o_custkey as int, row.o_orderdate as int, row.o_shippriority as int) >= i64::MAX as int,
+        !result ==> order_count(old(rows)@, row.o_orderkey as int, row.o_custkey as int, row.o_orderdate as int, row.o_shippriority as int) >= i128::MAX as int,
         forall|page: int| #![trigger orders_owner(final(rows)@, page)]
             orders_owner(old(rows)@, page) && row.o_orderkey as int / 256 == page ==> orders_owner(final(rows)@, page),
         result ==> forall|key: int, customer: int, date: int, priority: int| #![trigger order_count(final(rows)@, key, customer, date, priority)]
@@ -433,7 +433,7 @@ pub fn insert_ship(rows: &mut Vec<ShipCell>, row: ShipmentInput) -> (result: boo
     ensures ships_sorted(final(rows)@),
         forall|index: int| #![trigger final(rows)@[index]] 0 <= index < final(rows)@.len() ==> ship_ok(final(rows)@[index]),
         !result ==> final(rows)@ == old(rows)@,
-        !result ==> ship_count(old(rows)@, row.l_orderkey as int, row.l_shipdate as int, 0) >= i64::MAX as int,
+        !result ==> ship_count(old(rows)@, row.l_orderkey as int, row.l_shipdate as int, 0) >= i128::MAX as int,
         forall|page: int| #![trigger ships_owner(final(rows)@, page)]
             ships_owner(old(rows)@, page) && row.l_orderkey as int / 256 == page ==> ships_owner(final(rows)@, page),
         result ==> forall|key: int, date: int, kind: int| #![trigger ship_count(final(rows)@, key, date, kind)]

@@ -60,7 +60,6 @@ pub fn publish_changes(mut work: HashMapWithView<i64, CustomerCell>, keys: &Vec<
     let mut after = before.share();
     proof {
         assert forall|target: verus_prooflib::ordered::KeyView| #![trigger after.at(target)] after.at(target) == before.at(target) by {
-            
         }
     }
     let mut position = 0;
@@ -134,7 +133,7 @@ pub fn publish_changes(mut work: HashMapWithView<i64, CustomerCell>, keys: &Vec<
         assert forall|customer: i64, key: i64| #![trigger reverse_at(after, customer as int, key as int)]
             reverse_at(after, customer as int, key as int) == reverse_overlay(original, *before, customer, key) by {
             if original.contains_key(customer) && original[customer].segments@.len() == 0 && original[customer].orders@.len() == 0 {
-                lemma_sum_zero(original[customer].orders@, |entry: (i64, i64)| if entry.0 == key as int { entry.1 as int } else { 0int });
+                lemma_sum_zero(original[customer].orders@, |entry: (i64, i128)| if entry.0 == key as int { entry.1 as int } else { 0int });
             }
         }
     }
@@ -383,14 +382,13 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                 crate::input_proofs::lemma_customer_sum_le(state.db(), key as int, delta.row.c_mktsegment@);
                 assert(!(envelope(state.db()) && envelope(db2))) by {
                     if envelope(state.db()) && envelope(db2) {
-                        assert(max_rows() == 1099511627776int);
                         assert(customer_delta@.len() <= usize::MAX);
                         let seg = delta.row.c_mktsegment@;
                         let prefix = customer_delta@.take(processed);
                         assert(prefix.len() == processed);
                         assert(customer_delta_prefix(prefix, key, seg) <= processed * 0x8000_0000_0000_0000int);
                         assert(customer_overlay(previous_work, state.customers, key, seg) == customer_at(state.customers, key as int, seg) + customer_delta_prefix(prefix, key, seg));
-                        assert(segment_count(previous_cell.segments@, seg) <= 1099511627776int + processed * 0x8000_0000_0000_0000int);
+                        assert(segment_count(previous_cell.segments@, seg) <= max_rows() + processed * 0x8000_0000_0000_0000int);
                         assert(processed + 1 <= customer_delta@.len());
                         assert(customer_delta@.len() <= 0xFFFF_FFFF_FFFF_FFFFint);
                         crate::input_proofs::lemma_counts_nonneg(state.db(), key as int, seg, 0);
@@ -533,7 +531,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                 if fact_set.contains_key(&row.key) {
                     let mut customer = take_customer(&mut customers_work, &mut customer_keys, &state.customers, row.customer);
                     let ghost previous_customer = customer;
-                    if !reverse_change(&mut customer, row.key, -row.count) {
+                    if !reverse_change(&mut customer, row.key, -(row.count as i128)) {
                         proof {
                             let weight = order_reverse_weight(row.customer, row.key);
                             lemma_sum_take((*page.orders)@, processed, weight);
@@ -556,7 +554,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                                 == order_reverse_count((*page.orders)@.take(processed), row.customer, row.key) + row.count as int);
                             assert(reverse_at(state.customers, row.customer as int, row.key as int) == reverse_sum(state.db(), row.customer as int, row.key as int));
                             assert(!(envelope(state.db()) && envelope(db2))) by {
-                                if envelope(state.db()) && envelope(db2) { assert(max_rows() == 1099511627776int); assert(false); }
+                                if envelope(state.db()) && envelope(db2) { assert(false); }
                             }
                         }
                         return Err(2);
@@ -785,7 +783,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                     assert(order_count(previous_page.orders@, row.o_orderkey as int, row.o_custkey as int, row.o_orderdate as int, row.o_shippriority as int)
                         == scratch_order_at(previous_pages, row.o_orderkey, row.o_custkey, row.o_orderdate, row.o_shippriority));
                     assert(!(envelope(state.db()) && envelope(db2))) by {
-                        if envelope(state.db()) && envelope(db2) { assert(max_rows() == 1099511627776int); assert(false); }
+                        if envelope(state.db()) && envelope(db2) { assert(false); }
                     }
                 }
                 return Err(2);
@@ -817,7 +815,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                     crate::input_proofs::lemma_reverse_prefix_le(order_rows@, processed, row.o_custkey, row.o_orderkey);
                     assert(reverse_count(previous_customer.orders@, row.o_orderkey as int) == reverse_overlay(previous_customers, state.customers, row.o_custkey, row.o_orderkey));
                     assert(!(envelope(state.db()) && envelope(db2))) by {
-                        if envelope(state.db()) && envelope(db2) { assert(max_rows() == 1099511627776int); assert(false); }
+                        if envelope(state.db()) && envelope(db2) { assert(false); }
                     }
                 }
                 return Err(2);
@@ -908,7 +906,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                     assert(ship_count(previous_page.ships@, row.l_orderkey as int, row.l_shipdate as int, 0)
                         == scratch_ship_at(previous_pages, row.l_orderkey, row.l_shipdate, 0));
                     assert(!(envelope(state.db()) && envelope(db2))) by {
-                        if envelope(state.db()) && envelope(db2) { assert(max_rows() == 1099511627776int); assert(false); }
+                        if envelope(state.db()) && envelope(db2) { assert(false); }
                     }
                 }
                 return Err(2);
@@ -1052,7 +1050,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                     lemma_sum_zero(state.db().orders, |row: OrdersRow| if row.o_custkey == customer && row.o_orderkey == key { 1int } else { 0int });
                 } else if customers.at((customer, Seq::empty())).is_some() {
                     let cell = customers.at((customer, Seq::empty())).unwrap();
-                    lemma_sum_zero(cell.orders@, |entry: (i64, i64)| if entry.0 == key { entry.1 as int } else { 0int });
+                    lemma_sum_zero(cell.orders@, |entry: (i64, i128)| if entry.0 == key { entry.1 as int } else { 0int });
                 }
             }
         }
@@ -1101,7 +1099,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                 assert forall|key: i64| #![trigger reverse_at(customers, customer_key as int, key as int)]
                     reverse_at(customers, customer_key as int, key as int) > 0 implies affected@.contains_key(key) by {
                     let rows = customer.orders@;
-                    let weight = |entry: (i64, i64)| if entry.0 == key as int { entry.1 as int } else { 0int };
+                    let weight = |entry: (i64, i128)| if entry.0 == key as int { entry.1 as int } else { 0int };
                     let position = lemma_sum_nonzero_witness(rows, weight);
                     assert(rows[position].0 == key);
                 }

@@ -28,7 +28,7 @@ pub open spec fn page_key(number: int, low: u8) -> i64 {
 // ---- orders ------------------------------------------------------------------------------
 
 pub open spec fn order_cell(number: int, low: u8, customer: u32, date: u16, priority: i8, count: u8) -> OrderCell {
-    OrderCell { key: page_key(number, low), customer: customer as i64, date: date as i32, priority: priority as i64, count: count as i64 }
+    OrderCell { key: page_key(number, low), customer: customer as i64, date: date as i32, priority: priority as i64, count: count as i128 }
 }
 
 pub struct NarrowOrders {
@@ -66,7 +66,7 @@ impl NarrowOrders {
     {
         proof { use_type_invariant(self); }
         OrderCell { key: self.number * 256 + self.lows[index] as i64, customer: self.customers[index] as i64,
-            date: self.dates[index] as i32, priority: self.priorities[index] as i64, count: self.counts[index] as i64 }
+            date: self.dates[index] as i32, priority: self.priorities[index] as i64, count: self.counts[index] as i128 }
     }
 
     pub fn to_vec(&self) -> (result: Vec<OrderCell>)
@@ -150,7 +150,7 @@ pub open spec fn narrow_wide(revenue: i64) -> Wide {
 }
 
 pub open spec fn ship_cell(number: int, low: u8, count: u8, date: u16, revenue: i64) -> ShipCell {
-    ShipCell { key: page_key(number, low), date: date as i32, count: count as i64,
+    ShipCell { key: page_key(number, low), date: date as i32, count: count as i128,
         revenue: narrow_wide(revenue), positive: narrow_wide(revenue) }
 }
 
@@ -217,7 +217,7 @@ impl NarrowShips {
         let word = self.words[index];
         let revenue: i64 = if word == u32::MAX { lookup_big(&self.big, index) } else { word as i64 };
         ShipCell { key: self.number * 256 + self.lows[index] as i64, date: self.dates[index] as i32,
-            count: self.counts[index] as i64, revenue: Wide::Small(revenue as i128), positive: Wide::Small(revenue as i128) }
+            count: self.counts[index] as i128, revenue: Wide::Small(revenue as i128), positive: Wide::Small(revenue as i128) }
     }
 
     pub fn to_vec(&self) -> (result: Vec<ShipCell>)

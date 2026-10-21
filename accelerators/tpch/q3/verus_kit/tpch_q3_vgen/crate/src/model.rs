@@ -17,7 +17,7 @@ verus! {
 
 pub struct CustomerCell {
     pub segments: Vec<(Arc<Vec<u8>>, i128)>,
-    pub orders: Vec<(i64, i64)>,
+    pub orders: Vec<(i64, i128)>,
 }
 
 #[derive(Clone, Copy)]
@@ -26,13 +26,13 @@ pub struct OrderCell {
     pub customer: i64,
     pub date: i32,
     pub priority: i64,
-    pub count: i64,
+    pub count: i128,
 }
 
 pub struct ShipCell {
     pub key: i64,
     pub date: i32,
-    pub count: i64,
+    pub count: i128,
     pub revenue: Wide,
     pub positive: Wide,
 }
@@ -64,11 +64,11 @@ pub open spec fn segment_count(rows: Seq<(Arc<Vec<u8>>, i128)>, segment: Seq<u8>
     sum(rows, segment_weight(segment))
 }
 
-pub open spec fn reverse_weight(key: int) -> spec_fn((i64, i64)) -> int {
-    |entry: (i64, i64)| if entry.0 == key { entry.1 as int } else { 0 }
+pub open spec fn reverse_weight(key: int) -> spec_fn((i64, i128)) -> int {
+    |entry: (i64, i128)| if entry.0 == key { entry.1 as int } else { 0 }
 }
 
-pub open spec fn reverse_count(rows: Seq<(i64, i64)>, key: int) -> int {
+pub open spec fn reverse_count(rows: Seq<(i64, i128)>, key: int) -> int {
     sum(rows, reverse_weight(key))
 }
 
@@ -85,7 +85,7 @@ pub open spec fn segments_sorted(rows: Seq<(Arc<Vec<u8>>, i128)>) -> bool {
         0 <= left < right < rows.len() ==> bytes_lt((*rows[left].0)@, (*rows[right].0)@)
 }
 
-pub open spec fn reverse_sorted(rows: Seq<(i64, i64)>) -> bool {
+pub open spec fn reverse_sorted(rows: Seq<(i64, i128)>) -> bool {
     forall|left: int, right: int| #![trigger rows[left], rows[right]]
         0 <= left < right < rows.len() ==> rows[left].0 < rows[right].0
 }

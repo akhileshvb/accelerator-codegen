@@ -361,17 +361,16 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
             proof {
                 crate::input_proofs::lemma_reverse_prefix_le(orders@, processed, row.o_custkey, row.o_orderkey);
                 if !previous_customers.dom().contains(row.o_custkey) {
-                    assert(previous_customer.orders@ == Seq::<(i64, i64)>::empty());
+                    assert(previous_customer.orders@ == Seq::<(i64, i128)>::empty());
                     lemma_sum_empty(previous_customer.orders@, reverse_weight(row.o_orderkey as int));
                 }
                 assert(reverse_count(previous_customer.orders@, row.o_orderkey as int) == scratch_reverse_at(previous_customers, row.o_custkey, row.o_orderkey));
                 assert(!envelope(db)) by {
                     if envelope(db) {
-                        assert(max_rows() == 1099511627776int);
-                        assert(db.orders.len() <= 1099511627776int);
-                        assert(db.lineitem.len() <= 1099511627776int);
-                        assert(orders@.len() <= 1099511627776int);
-                        assert(shipments@.len() <= 1099511627776int);
+                        assert(db.orders.len() <= max_rows());
+                        assert(db.lineitem.len() <= max_rows());
+                        assert(orders@.len() <= max_rows());
+                        assert(shipments@.len() <= max_rows());
                         assert(false);
                     }
                 }
@@ -428,7 +427,7 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                 lemma_sum_zero(db.orders, |row: OrdersRow| if row.o_custkey == customer && row.o_orderkey == key { 1int } else { 0int });
                 if customer_index.at((customer, Seq::empty())).is_some() {
                     lemma_sum_zero(customer_index.at((customer, Seq::empty())).unwrap().orders@,
-                        |entry: (i64, i64)| if entry.0 == key { entry.1 as int } else { 0int });
+                        |entry: (i64, i128)| if entry.0 == key { entry.1 as int } else { 0int });
                 }
             }
         }
@@ -500,11 +499,10 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                             == scratch_order_at(previous_pages, row.o_orderkey, row.o_custkey, row.o_orderdate, row.o_shippriority));
                         assert(!envelope(db)) by {
                     if envelope(db) {
-                        assert(max_rows() == 1099511627776int);
-                        assert(db.orders.len() <= 1099511627776int);
-                        assert(db.lineitem.len() <= 1099511627776int);
-                        assert(orders@.len() <= 1099511627776int);
-                        assert(shipments@.len() <= 1099511627776int);
+                        assert(db.orders.len() <= max_rows());
+                        assert(db.lineitem.len() <= max_rows());
+                        assert(orders@.len() <= max_rows());
+                        assert(shipments@.len() <= max_rows());
                         assert(false);
                     }
                 }
@@ -579,11 +577,10 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                             == scratch_ship_at(previous_pages, row.l_orderkey, row.l_shipdate, 0));
                         assert(!envelope(db)) by {
                     if envelope(db) {
-                        assert(max_rows() == 1099511627776int);
-                        assert(db.orders.len() <= 1099511627776int);
-                        assert(db.lineitem.len() <= 1099511627776int);
-                        assert(orders@.len() <= 1099511627776int);
-                        assert(shipments@.len() <= 1099511627776int);
+                        assert(db.orders.len() <= max_rows());
+                        assert(db.lineitem.len() <= max_rows());
+                        assert(orders@.len() <= max_rows());
+                        assert(shipments@.len() <= max_rows());
                         assert(false);
                     }
                 }
