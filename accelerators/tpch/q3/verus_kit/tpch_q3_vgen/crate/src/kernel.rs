@@ -8,7 +8,7 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use verus_prooflib::ordered::Index;
 use crate::model::*;
-use crate::wide;
+use verus_prooflib::wide;
 use crate::output::wide_out;
 
 verus! {

@@ -10,7 +10,7 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::values::*;
 use crate::packed::{PackedOrders, PackedShips, PackedGroups};
-use crate::wide::Wide;
+use verus_prooflib::wide::Wide;
 pub use verus_prooflib::dyadic_width as pow2;
 
 verus! {
@@ -57,8 +57,12 @@ pub struct PageWork {
     pub ships: Vec<ShipCell>,
 }
 
+pub open spec fn segment_weight(segment: Seq<u8>) -> spec_fn((Arc<Vec<u8>>, i128)) -> int {
+    |entry: (Arc<Vec<u8>>, i128)| if (*entry.0)@ == segment { entry.1 as int } else { 0 }
+}
+
 pub open spec fn segment_count(rows: Seq<(Arc<Vec<u8>>, i128)>, segment: Seq<u8>) -> int {
-    sum(rows, |entry: (Arc<Vec<u8>>, i128)| if (*entry.0)@ == segment { entry.1 as int } else { 0 })
+    sum(rows, segment_weight(segment))
 }
 
 pub open spec fn reverse_count(rows: Seq<(i64, i64)>, key: int) -> int {

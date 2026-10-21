@@ -7,7 +7,7 @@ pub mod gen_obligations;
 pub mod kernel;
 pub mod gen_world;
 pub mod gen_ffi;
-pub mod wide;
+pub mod bounds;
 pub mod values;
 pub mod paged;
 pub mod rank_ent;

@@ -11,7 +11,7 @@ use crate::model::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::{params, out_view};
 use crate::values::*;
-use crate::wide::{self, Wide};
+use verus_prooflib::wide::{self, Wide};
 use crate::semantics::*;
 use crate::read_proofs::*;
 
