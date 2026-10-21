@@ -350,10 +350,18 @@ def run_implementation_layer(
         )
         gate_fails = 0
         if critique_round >= max_rounds:
-            raise GateFailure(
-                f"layer critique `{lid}` still failing after {max_rounds} round(s): "
-                f"{critique.get('summary') or critique.get('feedback_for_implementation') or feedback_path.name}"
+            # The layer's gates pass; what the critique still asks moves to the architecture
+            # audit (a required fix there) instead of stopping the whole backend run.
+            (art / f"layer_{lid}.open_findings.md").write_text(feedback + "\n", encoding="utf-8")
+            append_experiment_log(
+                pipeline_config.repo_root,
+                query,
+                f"- layer `{lid}` accepted with open critique findings after {max_rounds} round(s) "
+                f"(layer_{lid}.open_findings.md, for the architecture audit)",
+                workload=workload,
             )
+            (art / f"layer_{lid}.passed").touch()
+            return result
 
 
 def run_implementation(

@@ -27,6 +27,9 @@ A profile field given as `{na: reason}` declares that mechanic absent on this en
 - Native scan (scan layer only): `pipeline/prompts/engine_backend/native_scan_contract.md`
 - Slot contracts: `pipeline/prompts/shared/engine_interfaces.md` ("Backend contract")
 - Analysis: `{{artifacts_path}}/backend_analysis.json`
+- Open layer findings: `{{artifacts_path}}/layer_*.open_findings.md` (a layer whose gates passed but whose
+  last critique did not). Each one is a required fix of this audit: resolve it in the backend and its
+  harness, or show in the report why it does not hold.
 - Backend trees:
 {{engine_target_paths}}
 - Layer harnesses under `backends/{{engine_name}}/tests/test_{{engine_name}}_*.cpp`

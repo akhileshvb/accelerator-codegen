@@ -801,7 +801,7 @@ def test_layer_critique_fail_reinvokes_impl(tmp_path, monkeypatch):
     assert "Invalidate(PartitionSet)" in user_messages[1]
 
 
-def test_layer_critique_exhausted_rounds_raises(tmp_path, monkeypatch):
+def test_layer_critique_exhausted_rounds_hands_findings_to_the_audit(tmp_path, monkeypatch):
     import pytest
     from accel_pipeline.gates import GateFailure
     from accel_pipeline.stages import engine_backend as eb
@@ -835,15 +835,15 @@ def test_layer_critique_exhausted_rounds_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(eb, "run_layer_critique_agent", fake_critique)
     monkeypatch.setattr(eb, "query_artifacts_dir", lambda *a, **k: tmp_path)
     monkeypatch.setattr(eb, "append_experiment_log", lambda *a, **k: tmp_path)
-    with pytest.raises(GateFailure, match="still failing after 2"):
-        run_implementation_layer(
-            pc, mc, "engine_mysql", 0, {}, False, layer, skip_gates=True
-        )
+    run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer, skip_gates=True)
+    # The gates passed: the layer is accepted and the critique's last word goes to the audit.
+    assert "Honor expected_version" in (tmp_path / "layer_capture.open_findings.md").read_text()
+    assert (tmp_path / "layer_capture.passed").exists()
 
 
 def test_relaunched_layer_starts_from_the_feedback_its_last_run_stopped_on(tmp_path, monkeypatch):
     import pytest
-    from accel_pipeline.gates import GateFailure
+    from accel_pipeline.gates import GateFailure, GateResult
     from accel_pipeline.stages import engine_backend as eb
     from accel_pipeline.stages.engine_backend import run_implementation_layer
 
@@ -857,24 +857,18 @@ def test_relaunched_layer_starts_from_the_feedback_its_last_run_stopped_on(tmp_p
         messages.append(kwargs.get("user_message") or "")
         return object()
 
-    def fake_critique(*args, **kwargs):
-        (tmp_path / "layer_critique_capture.json").write_text(json.dumps({
-            "engine_name": "mysql", "layer": "capture", "status": "fail", "summary": "still broken",
-            "violations": [{"rule": "contract", "evidence": "updated_attnums never set"}],
-            "feedback_for_implementation": "Set updated_attnums on UPDATE batches.",
-        }) + "\n", encoding="utf-8")
-
+    failing = GateResult(name="engine_capture", status="fail", data={"reason": "updated_attnums never set"})
     monkeypatch.setattr(eb, "run_agent_stage", fake_impl)
-    monkeypatch.setattr(eb, "run_layer_critique_agent", fake_critique)
+    monkeypatch.setattr(eb, "run_post_stage_gates_collect", lambda *a, **k: ([failing], failing))
     monkeypatch.setattr(eb, "query_artifacts_dir", lambda *a, **k: tmp_path)
     monkeypatch.setattr(eb, "append_experiment_log", lambda *a, **k: tmp_path)
     with pytest.raises(GateFailure):
-        run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer, skip_gates=True)
+        run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer)
     assert "Carried over" not in messages[0]  # a first run starts clean
 
     messages.clear()
     with pytest.raises(GateFailure):
-        run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer, skip_gates=True)
+        run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer)
     assert "Carried over" in messages[0] and "updated_attnums" in messages[0]
 
 
