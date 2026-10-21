@@ -687,7 +687,7 @@ fn add_parameter(codes: &mut Vec<u32>, parameter: &[u8])
 pub fn execute(state: &State, p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[u8], p6: &[u8], p7: &[u8])
     -> (result: Option<Vec<(Vec<u8>, i64, i128)>>)
     ensures result matches Some(out) ==> query_result(state.db(), params(p1@, p2@, p3@, p4@, p5@, p6@, p7@), out_view(out@)),
-        envelope(state.db()) ==> result is Some,
+        envelope(state.db()) && answer_fits(state.db(), params(p1@, p2@, p3@, p4@, p5@, p6@, p7@)) ==> result is Some,
 {
     proof {
         use_type_invariant(state);
@@ -761,7 +761,7 @@ pub fn execute(state: &State, p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[
     index = 0;
     while index < codes.len()
         invariant index <= codes.len(), codes@.no_duplicates(), codes_cover(codes@, parameters@),
-            state.valid(),
+            state.valid(), parameters@ == params(p1@, p2@, p3@, p4@, p5@, p6@, p7@),
             envelope(state.db()) ==> histogram_bounded(state.histogram),
             threshold >= 0,
             threshold == scalar_1_group_sum(state.db(), parameters@,
@@ -780,8 +780,21 @@ pub fn execute(state: &State, p1: &[u8], p2: &[u8], p3: &[u8], p4: &[u8], p5: &[
             proof { assert(!envelope(state.db())); }
             return None;
         } };
-        if value.count < 0 || value.count > i64::MAX as i128 {
+        if value.count < 0 {
             proof { assert(!envelope(state.db())); }
+            return None;
+        }
+        if value.count > i64::MAX as i128 {
+            proof {
+                assert(value.model() == suffix_moment(state.histogram, code, threshold, 50));
+                assert(codes@.contains(code));
+                lemma_code_matches(code, codes@, parameters@);
+                lemma_suffix_group(state.db(), state.histogram, code, threshold, parameters@,
+                    scalar_1_group_sum(state.db(), parameters@, |entry: Scalar1Tuple| entry.customer_2.c_acctbal),
+                    scalar_1_group_count(state.db(), parameters@));
+                lemma_group_count_unfit(state.db(), parameters@, code, codes@);
+                assert(!answer_fits(state.db(), params(p1@, p2@, p3@, p4@, p5@, p6@, p7@)));
+            }
             return None;
         }
         if value.count > 0 {
