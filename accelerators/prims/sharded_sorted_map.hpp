@@ -41,6 +41,9 @@
 #include <utility>
 #include <vector>
 
+#include "prims/parallelism.hpp"
+#include "prims/row_pieces.hpp"
+
 namespace accelerator_codegen::aux_state::core {
 
 // Default shard hash: integral keys convert directly, others use std::hash.
@@ -326,6 +329,27 @@ public:
       part = Leaf();
     }
   }
+  // Adds every element of `pieces` as if Add were called in piece order (the
+  // pieces of a partitioned scan, see RowPieces), filling disjoint groups of
+  // shards in parallel. Empties `pieces`.
+  void AddPieces(std::vector<std::vector<T>> &pieces, const Parallelism &parallelism) {
+    const unsigned group_bits = std::min(bits_, kGroupBits);
+    const unsigned shift = bits_ - group_bits;
+    const std::size_t groups = std::size_t{1} << group_bits;
+    auto grouped = GroupRows(parallelism, pieces, groups, [&](const T &e) {
+      return static_cast<std::size_t>(Map::ShardOf(KeyOf{}(e), bits_) >> shift);
+    });
+    parallelism.For(groups, [&](std::size_t g) {
+      const std::size_t first = g << shift;
+      std::vector<std::size_t> extra(std::size_t{1} << shift, 0);
+      ForGroup(grouped, g, [&](T &e) { ++extra[Map::ShardOf(KeyOf{}(e), bits_) - first]; });
+      for (std::size_t k = 0; k < extra.size(); ++k)
+        shards_[first + k].reserve(shards_[first + k].size() + extra[k]);
+      ForGroup(grouped, g, [&](T &e) {
+        shards_[Map::ShardOf(KeyOf{}(e), bits_)].push_back(std::move(e));
+      });
+    });
+  }
   // Sorts every shard by key. Keys must be unique. `parallel_for(n, fn)` must
   // run fn(0..n-1), possibly on several threads; each call owns one shard.
   template <class ParallelFor> void Sort(ParallelFor &&parallel_for) {
@@ -404,6 +428,14 @@ public:
   }
 
 private:
+  // Shard groups AddPieces hands to the pool: enough to balance 1000+ workers.
+  static constexpr unsigned kGroupBits = 10;
+
+  template <class Grouped, class F> static void ForGroup(Grouped &grouped, std::size_t g, F &&f) {
+    for (auto &piece : grouped)
+      for (std::size_t i = piece.begin[g]; i < piece.begin[g + 1]; ++i)
+        f(piece.rows[i]);
+  }
   explicit Builder(Bits b) : bits_(b.v), shards_(std::size_t{1} << b.v) {}
   static uint32_t BitsFor(std::size_t n, std::size_t target) {
     uint32_t b = 0;

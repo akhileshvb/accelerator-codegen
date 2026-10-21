@@ -29,7 +29,9 @@ constexpr int32_t kWindowMonths = 3;
 // Deltas above which the cost model chooses between delta-apply and rebuild.
 constexpr std::size_t kBulkDeltaCount = 256;
 // Shards per slice when sorting the built index (untimed).
-constexpr std::size_t kSortShardGrain = 1024;
+constexpr std::size_t kSortShardGrain = 16;
+// Shards per slice when counting the segment tree's leaves (untimed).
+constexpr std::size_t kLeafShardGrain = 256;
 // Touched orders per slice when reading their current info (untimed).
 constexpr std::size_t kLookupGrain = 2048;
 // Touched mid arrays per slice when publishing the eligibility index (untimed).
@@ -144,31 +146,22 @@ bool ReadOrder(const core::AuxRow &row, int64_t &orderkey,
          core::StringCell(row, 2, orderpriority);
 }
 
-// Orders of one scan partition: eligibility entries (count 0) plus the
-// partition's own priority dictionary and order-date range.
+// Orders of one scan partition: eligibility entries (count 0) in pieces, each
+// piece with the priority dictionary its rows were numbered by, plus the
+// partition's order-date range. `names` / `map` intern the scanning piece.
 struct OrdersPartial {
-  TpchQ4EligIndex::Builder shards;
-  std::vector<std::string> priority_names;
-  std::unordered_map<std::string, int32_t> priority_map;
+  core::RowPieces<TpchQ4EligIndex::Element> rows;
+  std::vector<std::vector<std::string>> piece_names = std::vector<std::vector<std::string>>(1);
+  std::unordered_map<std::string, int32_t> map;
   bool any = false;
   int32_t min_orderdate_days = 0, max_orderdate_days = 0;
 };
 
-// Appends `from` to `into` as if its rows had been scanned after into's: its
-// priorities are interned in first-seen order and its entries renumbered.
+// Appends `from` to `into` as if its rows had been scanned after into's.
 void MergeOrders(OrdersPartial &into, OrdersPartial &&from) {
-  std::vector<int32_t> renumber(from.priority_names.size());
-  bool identity = true;
-  for (std::size_t i = 0; i < renumber.size(); ++i) {
-    renumber[i] = TpchQ4PriorityIndex(from.priority_names[i], into.priority_names,
-                                      into.priority_map);
-    identity = identity && renumber[i] == static_cast<int32_t>(i);
-  }
-  if (!identity)
-    from.shards.ForEach([&](TpchQ4EligIndex::Element &e) {
-      e.value.priority_idx = renumber[e.value.priority_idx];
-    });
-  into.shards.Merge(std::move(from.shards));
+  core::RowPieces<TpchQ4EligIndex::Element>::Merge(into.rows, std::move(from.rows));
+  into.piece_names.insert(into.piece_names.end(), std::make_move_iterator(from.piece_names.begin()),
+                          std::make_move_iterator(from.piece_names.end()));
   if (from.any) {
     into.min_orderdate_days = into.any ? std::min(into.min_orderdate_days, from.min_orderdate_days)
                                        : from.min_orderdate_days;
@@ -176,6 +169,22 @@ void MergeOrders(OrdersPartial &into, OrdersPartial &&from) {
                                        : from.max_orderdate_days;
     into.any = true;
   }
+}
+
+// Interns every piece's priorities in piece order (the serial scan's first-seen
+// order) into `names` / `map` and renumbers the pieces' rows to match, in parallel.
+void UnifyPriorities(core::AuxEngineServices &services, OrdersPartial &orders,
+                     std::vector<std::string> &names,
+                     std::unordered_map<std::string, int32_t> &map) {
+  auto &pieces = orders.rows.pieces;
+  std::vector<std::vector<int32_t>> renumber(pieces.size());
+  for (std::size_t p = 0; p < pieces.size(); ++p)
+    for (const auto &name : orders.piece_names[p])
+      renumber[p].push_back(TpchQ4PriorityIndex(name, names, map));
+  core::ParallelEach(services, pieces.size(), 1, [&](std::size_t p) {
+    for (auto &e : pieces[p])
+      e.value.priority_idx = renumber[p][e.value.priority_idx];
+  });
 }
 
 using TreePages = std::vector<std::shared_ptr<const std::vector<int64_t>>>;
@@ -671,8 +680,8 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   using scan::IntColumn;
   using scan::TextColumn;
 
-  // First scan: orders go straight into hash-sharded vectors, one set per scan
-  // partition (no intermediate 30M-entry map); counts are filled in by the
+  // First scan: orders are kept as one piece of rows per scan partition (no
+  // per-partition shard arrays, no merge of rows); counts are filled in by the
   // lineitem scan.
   auto orders = core::PartitionedBuild<OrdersPartial>(
       services, [] { return OrdersPartial{}; },
@@ -684,21 +693,20 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
       },
       [](OrdersPartial &p, const auto &row) {
         const int32_t date = row.Date(1);
-        const int32_t pidx =
-            TpchQ4PriorityIndex(row.Text(2), p.priority_names, p.priority_map);
-        p.shards.Add({row.Int(0), TpchQ4OrderInfo{date, pidx, 0}});
+        const int32_t pidx = TpchQ4PriorityIndex(row.Text(2), p.piece_names.back(), p.map);
+        p.rows.Add({row.Int(0), TpchQ4OrderInfo{date, pidx, 0}});
         p.min_orderdate_days = p.any ? std::min(p.min_orderdate_days, date) : date;
         p.max_orderdate_days = p.any ? std::max(p.max_orderdate_days, date) : date;
         p.any = true;
       },
       MergeOrders);
-  TpchQ4EligIndex::Builder shards = std::move(orders.shards);
-  state.priority_names = std::move(orders.priority_names);
-  state.priority_map = std::move(orders.priority_map);
+  UnifyPriorities(services, orders, state.priority_names, state.priority_map);
   if (orders.any) {
     state.min_orderdate_days = orders.min_orderdate_days;
     state.max_orderdate_days = orders.max_orderdate_days;
   }
+  TpchQ4EligIndex::Builder shards;
+  shards.AddPieces(orders.rows.pieces, core::Parallelism::OnPool(services));
   shards.Sort([&](std::size_t n, const auto &fn) {
     core::ParallelEach(services, n, kSortShardGrain, fn);
   });
@@ -736,19 +744,28 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   state.tree_stride = num_p;
   state.tree.assign(static_cast<std::size_t>(state.tree_size) * 2 * num_p, 0);
 
-  // Populate leaves
-  shards.ForEach([&](const TpchQ4EligIndex::Element &entry) {
-    const auto &info = entry.value;
-    if (info.qualifying_count <= 0)
-      return;
-    int32_t ord = info.orderdate_days - state.min_orderdate_days;
-    if (ord < 0 || ord >= static_cast<int32_t>(state.tree_size))
-      return;
-    uint32_t leaf = LeafNode(state.tree_size, ord);
-    if (info.priority_idx >= 0 &&
-        info.priority_idx < static_cast<int32_t>(num_p))
-      state.tree[static_cast<std::size_t>(leaf) * num_p + info.priority_idx] += 1;
-  });
+  // Populate leaves: slices of shards count into private trees, summed in slice order.
+  core::ParallelReduce(
+      services, shards.shard_count(), kLeafShardGrain, state.tree,
+      [&](std::vector<int64_t> &tree, std::size_t begin, std::size_t end) {
+        if (tree.empty())
+          tree.assign(state.tree.size(), 0);
+        shards.ForEachInShards(begin, end, [&](const TpchQ4EligIndex::Element &entry) {
+          const auto &info = entry.value;
+          if (info.qualifying_count <= 0)
+            return;
+          int32_t ord = info.orderdate_days - state.min_orderdate_days;
+          if (ord < 0 || ord >= static_cast<int32_t>(state.tree_size))
+            return;
+          uint32_t leaf = LeafNode(state.tree_size, ord);
+          if (info.priority_idx >= 0 && info.priority_idx < static_cast<int32_t>(num_p))
+            tree[static_cast<std::size_t>(leaf) * num_p + info.priority_idx] += 1;
+        });
+      },
+      [](std::vector<int64_t> &into, std::vector<int64_t> &&from) {
+        for (std::size_t i = 0; i < from.size(); ++i)
+          into[i] += from[i];
+      });
 
   // Populate internal nodes
   for (uint32_t i = state.tree_size - 1; i > 0; i--)
