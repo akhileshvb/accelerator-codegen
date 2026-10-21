@@ -3,6 +3,7 @@ use verus_common::sums::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::model::*;
+use crate::bounds::*;
 
 verus! {
 
@@ -103,6 +104,51 @@ pub proof fn lemma_customer_capture(before: Db, after: Db, customers: Seq<Custom
     let signed = |delta: (CustomerRow, int)| delta.1 * weight(delta.0);
     assert(sum(after.customer, weight) == sum(before.customer, weight) + sum(customer_delta_seq_view(customers), signed));
     lemma_sum_map(customers, |delta: CustomerDelta| (customer_input_view(delta.row), delta.sign as int), signed, customer_delta_weight(customer, segment));
+}
+
+/// The scanned rows are as many as the database's.
+pub proof fn lemma_scan_lens(db: Db, customers: Seq<CustomerInput>, orders: Seq<OrderInput>, shipments: Seq<ShipmentInput>)
+    requires scan_customers_ok(db, customers), scan_orders_ok(db, orders), scan_shipments_ok(db, shipments),
+    ensures customers.len() == db.customer.len(), orders.len() == db.orders.len(), shipments.len() == db.lineitem.len(),
+{
+    let one_customer = |row: CustomerRow| 1int;
+    let one_order = |row: OrdersRow| 1int;
+    let one_line = |row: LineitemRow| 1int;
+    lemma_sum_ones(customer_input_seq_view(customers), one_customer);
+    lemma_sum_ones(db.customer, one_customer);
+    lemma_sum_ones(order_input_seq_view(orders), one_order);
+    lemma_sum_ones(db.orders, one_order);
+    lemma_sum_ones(shipment_input_seq_view(shipments), one_line);
+    lemma_sum_ones(db.lineitem, one_line);
+}
+
+/// Counting rows of a prefix of the scan never exceeds the prefix length.
+pub proof fn lemma_customer_prefix_le(rows: Seq<CustomerInput>, count: int, customer: i64, segment: Seq<u8>)
+    requires 0 <= count <= rows.len(),
+    ensures 0 <= customer_prefix(rows.take(count), customer, segment) <= count,
+{
+    lemma_indicator_le_len(rows.take(count), customer_input_weight(customer, segment));
+}
+
+pub proof fn lemma_reverse_prefix_le(rows: Seq<OrderInput>, count: int, customer: i64, key: i64)
+    requires 0 <= count <= rows.len(),
+    ensures 0 <= reverse_prefix(rows.take(count), customer, key) <= count,
+{
+    lemma_indicator_le_len(rows.take(count), reverse_input_weight(customer, key));
+}
+
+pub proof fn lemma_order_prefix_le(rows: Seq<OrderInput>, count: int, key: i64, customer: i64, date: i32, priority: i64)
+    requires 0 <= count <= rows.len(),
+    ensures 0 <= order_prefix(rows.take(count), key, customer, date, priority) <= count,
+{
+    lemma_indicator_le_len(rows.take(count), order_input_weight(key, customer, date, priority));
+}
+
+pub proof fn lemma_ship_prefix_le(rows: Seq<ShipmentInput>, count: int, key: i64, date: i32)
+    requires 0 <= count <= rows.len(),
+    ensures 0 <= ship_prefix(rows.take(count), key, date, 0) <= count,
+{
+    lemma_indicator_le_len(rows.take(count), ship_input_weight(key, date, 0));
 }
 
 }

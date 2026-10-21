@@ -41,4 +41,19 @@ pub proof fn lemma_prefix_le<A>(s: Seq<A>, f: spec_fn(A) -> int, count: int)
     lemma_sum_concat(s.take(count), rest, f);
 }
 
+/// Summands equal to 1 add up to the number of rows.
+pub proof fn lemma_sum_ones<A>(s: Seq<A>, f: spec_fn(A) -> int)
+    requires forall|i: int| 0 <= i < s.len() ==> f(#[trigger] s[i]) == 1,
+    ensures sum(s, f) == s.len(),
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        let t = s.drop_last();
+        assert forall|i: int| 0 <= i < t.len() implies f(#[trigger] t[i]) == 1 by { assert(t[i] == s[i]); }
+        lemma_sum_ones(t, f);
+        assert(s =~= t.push(s.last()));
+        lemma_sum_push(t, s.last(), f);
+    }
+}
+
 }

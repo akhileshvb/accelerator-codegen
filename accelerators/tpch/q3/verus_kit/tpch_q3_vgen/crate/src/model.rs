@@ -65,8 +65,12 @@ pub open spec fn segment_count(rows: Seq<(Arc<Vec<u8>>, i128)>, segment: Seq<u8>
     sum(rows, segment_weight(segment))
 }
 
+pub open spec fn reverse_weight(key: int) -> spec_fn((i64, i64)) -> int {
+    |entry: (i64, i64)| if entry.0 == key { entry.1 as int } else { 0 }
+}
+
 pub open spec fn reverse_count(rows: Seq<(i64, i64)>, key: int) -> int {
-    sum(rows, |entry: (i64, i64)| if entry.0 == key { entry.1 as int } else { 0 })
+    sum(rows, reverse_weight(key))
 }
 
 pub open spec fn order_reverse_count(rows: Seq<OrderCell>, customer: i64, key: i64) -> int {
@@ -283,20 +287,32 @@ pub open spec fn customer_input_weight(customer: i64, segment: Seq<u8>) -> spec_
     |row: CustomerInput| if row.c_custkey == customer && row.c_mktsegment@ == segment { 1int } else { 0int }
 }
 
+pub open spec fn reverse_input_weight(customer: i64, key: i64) -> spec_fn(OrderInput) -> int {
+    |row: OrderInput| if row.o_custkey == customer && row.o_orderkey == key { 1 } else { 0 }
+}
+
 pub open spec fn reverse_prefix(rows: Seq<OrderInput>, customer: i64, key: i64) -> int {
-    sum(rows, |row: OrderInput| if row.o_custkey == customer && row.o_orderkey == key { 1 } else { 0 })
+    sum(rows, reverse_input_weight(customer, key))
+}
+
+pub open spec fn order_input_weight(key: i64, customer: i64, date: i32, priority: i64) -> spec_fn(OrderInput) -> int {
+    |row: OrderInput| if row.o_orderkey == key && row.o_custkey == customer
+        && row.o_orderdate == date && row.o_shippriority == priority { 1 } else { 0 }
 }
 
 pub open spec fn order_prefix(rows: Seq<OrderInput>, key: i64, customer: i64, date: i32, priority: i64) -> int {
-    sum(rows, |row: OrderInput| if row.o_orderkey == key && row.o_custkey == customer
-        && row.o_orderdate == date && row.o_shippriority == priority { 1 } else { 0 })
+    sum(rows, order_input_weight(key, customer, date, priority))
+}
+
+pub open spec fn ship_input_weight(key: i64, date: i32, kind: int) -> spec_fn(ShipmentInput) -> int {
+    |row: ShipmentInput| if row.l_orderkey == key && row.l_shipdate == date {
+        let value = row.l_extendedprice as int * (100 - row.l_discount as int);
+        if kind == 0 { 1 } else if kind == 1 { value } else { if value > 0 { value } else { 0 } }
+    } else { 0 }
 }
 
 pub open spec fn ship_prefix(rows: Seq<ShipmentInput>, key: i64, date: i32, kind: int) -> int {
-    sum(rows, |row: ShipmentInput| if row.l_orderkey == key && row.l_shipdate == date {
-        let value = row.l_extendedprice as int * (100 - row.l_discount as int);
-        if kind == 0 { 1 } else if kind == 1 { value } else { if value > 0 { value } else { 0 } }
-    } else { 0 })
+    sum(rows, ship_input_weight(key, date, kind))
 }
 
 pub open spec fn customer_overlay(work: Map<i64, CustomerCell>, before: Custs, customer: i64, segment: Seq<u8>) -> int {

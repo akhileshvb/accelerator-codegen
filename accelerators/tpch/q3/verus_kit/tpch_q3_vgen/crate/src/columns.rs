@@ -187,7 +187,7 @@ proof fn lemma_reverse_at(rows: Seq<(i64, i64)>, low: int, key: i64)
         forall|index: int| #![trigger rows[index]] low <= index < rows.len() ==> rows[index].0 >= key,
     ensures reverse_count(rows, key as int) == if low < rows.len() && rows[low].0 == key { rows[low].1 as int } else { 0int },
 {
-    let weight = |entry: (i64, i64)| if entry.0 == key as int { entry.1 as int } else { 0 };
+    let weight = reverse_weight(key as int);
     assert forall|index: int| 0 <= index < rows.len() && (index != low || !(low < rows.len() && rows[low].0 == key)) implies weight(#[trigger] rows[index]) == 0 by {
         if index > low { assert(rows[low].0 < rows[index].0); }
     }
