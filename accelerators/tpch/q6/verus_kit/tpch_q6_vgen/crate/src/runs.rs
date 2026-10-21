@@ -1,12 +1,13 @@
 use vstd::prelude::*;
 use verus_common::sums::*;
+use verus_prooflib::wide::Wide;
 use crate::cube::*;
 
 verus! {
 
-pub fn merge(left: &Vec<Cell>, right: &Vec<Cell>) -> (result: Option<Vec<Cell>>)
+pub fn merge(left: &Vec<Cell>, right: &Vec<Cell>) -> (cells: Vec<Cell>)
     requires sorted(left@), sorted(right@), nonzero(left@), nonzero(right@),
-    ensures result matches Some(cells) ==> sorted(cells@) && nonzero(cells@) &&
+    ensures sorted(cells@) && nonzero(cells@) &&
         cells.len() <= left.len() + right.len() &&
         (forall|weight: spec_fn(Key) -> int, revenue: bool| #[trigger] weighted(cells@, weight, revenue) ==
             weighted(left@, weight, revenue) + weighted(right@, weight, revenue)),
@@ -36,47 +37,47 @@ pub fn merge(left: &Vec<Cell>, right: &Vec<Cell>) -> (result: Option<Vec<Cell>>)
             if second < right.len() { lemma_weight_take(right@, second as int); }
         }
         if second == right.len() || (first < left.len() && less(left[first].key, right[second].key)) {
+            cells.push(left[first].dup());
             proof {
+                assert(cells@ == previous.push(left@[first as int]));
                 lemma_sorted_push(previous, left@[first as int]);
                 lemma_nonzero_push(previous, left@[first as int]);
                 lemma_weight_push(previous, left@[first as int]);
             }
-            cells.push(left[first]);
             first += 1;
         } else if first == left.len() || less(right[second].key, left[first].key) {
+            cells.push(right[second].dup());
             proof {
+                assert(cells@ == previous.push(right@[second as int]));
                 lemma_sorted_push(previous, right@[second as int]);
                 lemma_nonzero_push(previous, right@[second as int]);
                 lemma_weight_push(previous, right@[second as int]);
             }
-            cells.push(right[second]);
             second += 1;
         } else {
-            let left_cell = left[first];
-            let right_cell = right[second];
+            let ghost left_cell = left@[first as int];
+            let ghost right_cell = right@[second as int];
             proof { lemma_key_order(left_cell.key, right_cell.key, right_cell.key); }
-            let count = match left_cell.count.checked_add(right_cell.count) {
-                Some(value) => value,
-                None => return None,
-            };
-            let revenue = match left_cell.revenue.checked_add(right_cell.revenue) {
-                Some(value) => value,
-                None => return None,
-            };
-            if count != 0 || revenue != 0 {
-                let cell = Cell { key: left_cell.key, count, revenue };
+            let count = left[first].count.add(&right[second].count);
+            let revenue = left[first].revenue.add(&right[second].revenue);
+            let keep = !count.is_zero() || !revenue.is_zero();
+            let ghost total_count = count@;
+            let ghost total_revenue = revenue@;
+            if keep {
+                cells.push(Cell { key: left[first].key, count, revenue });
                 proof {
+                    let cell = cells@[previous.len() as int];
+                    assert(cells@ == previous.push(cell));
                     lemma_sorted_push(previous, cell);
                     lemma_nonzero_push(previous, cell);
                     lemma_weight_push(previous, cell);
                 }
-                cells.push(cell);
             }
             proof {
                 assert forall|weight: spec_fn(Key) -> int, revenues: bool| #[trigger] weighted(cells@, weight, revenues) ==
                     weighted(previous, weight, revenues) + weight(left_cell.key) * measure(left_cell, revenues) + weight(right_cell.key) * measure(right_cell, revenues) by {
-                    let total = if revenues { revenue as int } else { count as int };
-                    if count != 0 || revenue != 0 {
+                    let total = if revenues { total_revenue } else { total_count };
+                    if keep {
                         assert(weighted(cells@, weight, revenues) == weighted(previous, weight, revenues) + weight(left_cell.key) * total);
                     } else {
                         assert(cells@ == previous);
@@ -122,29 +123,34 @@ pub fn merge(left: &Vec<Cell>, right: &Vec<Cell>) -> (result: Option<Vec<Cell>>)
         assert(left@.take(first as int) == left@);
         assert(right@.take(second as int) == right@);
     }
-    Some(cells)
+    cells
 }
 
-pub fn seal(cells: Vec<Cell>) -> (result: Option<Vec<Cell>>)
-    ensures result matches Some(output) ==> sorted(output@) && nonzero(output@) &&
+pub fn seal(cells: Vec<Cell>) -> (output: Vec<Cell>)
+    ensures sorted(output@) && nonzero(output@) &&
         output.len() <= cells.len() &&
         (forall|weight: spec_fn(Key) -> int, revenue: bool| #[trigger] weighted(output@, weight, revenue) == weighted(cells@, weight, revenue)),
     decreases cells.len(),
 {
     if cells.len() <= 1 {
         let mut output = Vec::new();
-        if cells.len() == 1 && (cells[0].count != 0 || cells[0].revenue != 0) {
+        if cells.len() == 1 && (!cells[0].count.is_zero() || !cells[0].revenue.is_zero()) {
             proof { lemma_weight_push(Seq::empty(), cells@[0]); }
-            output.push(cells[0]);
+            output.push(cells[0].dup());
         }
         proof {
             if cells.len() == 1 { assert(cells@ == seq![cells@[0]]); }
             assert forall|weight: spec_fn(Key) -> int, revenue: bool| #[trigger] weighted(output@, weight, revenue) == weighted(cells@, weight, revenue) by {
-                if output.len() == 0 { lemma_sum_zero(cells@, |cell: Cell| weight(cell.key) * measure(cell, revenue)); }
-                else { lemma_sum_singleton(cells@[0], |cell: Cell| weight(cell.key) * measure(cell, revenue)); }
+                if output.len() == 0 {
+                    assert forall|index: int| 0 <= index < cells@.len() implies
+                        (|cell: Cell| weight(cell.key) * measure(cell, revenue))(#[trigger] cells@[index]) == 0 by {
+                        assert(measure(cells@[index], revenue) == 0);
+                    }
+                    lemma_sum_zero(cells@, |cell: Cell| weight(cell.key) * measure(cell, revenue));
+                } else { lemma_sum_singleton(cells@[0], |cell: Cell| weight(cell.key) * measure(cell, revenue)); }
             }
         }
-        return Some(output);
+        return output;
     }
     let midpoint = cells.len() / 2;
     let mut left = Vec::new();
@@ -158,16 +164,16 @@ pub fn seal(cells: Vec<Cell>) -> (result: Option<Vec<Cell>>)
             right@ == cells@.subrange(midpoint as int, if position < midpoint { midpoint as int } else { position as int }),
         decreases cells.len() - position,
     {
-        if position < midpoint { left.push(cells[position]); }
-        else { right.push(cells[position]); }
+        if position < midpoint { left.push(cells[position].dup()); }
+        else { right.push(cells[position].dup()); }
         position += 1;
     }
     proof {
         assert(cells@ == left@ + right@);
         lemma_weight_concat(left@, right@);
     }
-    let left = match seal(left) { Some(value) => value, None => return None };
-    let right = match seal(right) { Some(value) => value, None => return None };
+    let left = seal(left);
+    let right = seal(right);
     merge(&left, &right)
 }
 
@@ -270,11 +276,11 @@ pub open spec fn day_start(cells: Seq<Cell>, position: int, discount: i64) -> bo
             #[trigger] before(cells[index], discount, cells[position].key.1, 0, 0))
 }
 
-pub fn query_run(cells: &Vec<Cell>, discount: i64, start: i32, quantity: i64, end: i32) -> (result: Option<(i128, i128)>)
+pub fn query_run(cells: &Vec<Cell>, discount: i64, start: i32, quantity: i64, end: i32) -> (weights: (Wide, Wide))
     requires sorted(cells@), start < end,
-    ensures result matches Some(weights) ==>
-        weights.0 == selected_count(cells@, discount, start, quantity, end) &&
-        weights.1 == selected_revenue(cells@, discount, start, quantity, end),
+    ensures
+        weights.0@ == selected_count(cells@, discount, start, quantity, end),
+        weights.1@ == selected_revenue(cells@, discount, start, quantity, end),
 {
     let begin = bound(cells, discount, start, 0, 0);
     let finish = bound(cells, discount, end, 0, 0);
@@ -303,8 +309,8 @@ pub fn query_run(cells: &Vec<Cell>, discount: i64, start: i32, quantity: i64, en
         }
     }
     let mut position = begin;
-    let mut count = 0i128;
-    let mut revenue = 0i128;
+    let mut count = Wide::zero();
+    let mut revenue = Wide::zero();
     while position < finish
         invariant
             begin <= position <= finish <= cells.len(),
@@ -313,8 +319,8 @@ pub fn query_run(cells: &Vec<Cell>, discount: i64, start: i32, quantity: i64, en
             cut(cells@, begin as int, discount, start, 0, 0),
             cut(cells@, finish as int, discount, end, 0, 0),
             forall|index: int| begin <= index < finish ==> (#[trigger] cells@[index]).key.0 == discount && start <= cells@[index].key.1 < end,
-            count == selected_count(cells@.take(position as int), discount, start, quantity, end),
-            revenue == selected_revenue(cells@.take(position as int), discount, start, quantity, end),
+            count@ == selected_count(cells@.take(position as int), discount, start, quantity, end),
+            revenue@ == selected_revenue(cells@.take(position as int), discount, start, quantity, end),
         decreases finish - position,
     {
         let day = cells[position].key.1;
@@ -328,8 +334,8 @@ pub fn query_run(cells: &Vec<Cell>, discount: i64, start: i32, quantity: i64, en
                     (#[trigger] cells@[index]).key.0 == discount && start <= cells@[index].key.1 < end,
                 forall|index: int| position <= index < cursor ==>
                     (#[trigger] cells@[index]).key.0 == discount && cells@[index].key.1 == day,
-                count == selected_count(cells@.take(cursor as int), discount, start, quantity, end),
-                revenue == selected_revenue(cells@.take(cursor as int), discount, start, quantity, end),
+                count@ == selected_count(cells@.take(cursor as int), discount, start, quantity, end),
+                revenue@ == selected_revenue(cells@.take(cursor as int), discount, start, quantity, end),
             decreases finish - cursor,
         {
             proof {
@@ -340,8 +346,8 @@ pub fn query_run(cells: &Vec<Cell>, discount: i64, start: i32, quantity: i64, en
                     if cells@[cursor as int].key.2 < quantity { 1int } else { 0int });
             }
             if cells[cursor].key.2 < quantity {
-                count = match count.checked_add(cells[cursor].count) { Some(value) => value, None => return None };
-                revenue = match revenue.checked_add(cells[cursor].revenue) { Some(value) => value, None => return None };
+                count = count.add(&cells[cursor].count);
+                revenue = revenue.add(&cells[cursor].revenue);
             }
             cursor += 1;
         }
@@ -355,7 +361,7 @@ pub fn query_run(cells: &Vec<Cell>, discount: i64, start: i32, quantity: i64, en
         lemma_sum_prefix_skip(cells@, finish as int, cells@.len() as int, |cell: Cell| weight(cell.key) * measure(cell, true));
         assert(cells@.take(cells@.len() as int) == cells@);
     }
-    Some((count, revenue))
+    (count, revenue)
 }
 
 }

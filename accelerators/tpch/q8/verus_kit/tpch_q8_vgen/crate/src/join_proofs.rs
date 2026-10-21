@@ -23,7 +23,7 @@ pub open spec fn join_ready(data: Data) -> bool {
 #[verifier::opaque]
 pub open spec fn order_projection(rows: Seq<Cell>, customers: Table, customer: i64, year: i64) -> int {
     sum(rows, |order: Cell| if order.second == year {
-        order.count as int * customers.at((order.first, 0, 0), (customer, 0, 0), false)
+        order.count@ * customers.at((order.first, 0, 0), (customer, 0, 0), false)
     } else { 0 })
 }
 
@@ -32,7 +32,7 @@ proof fn lemma_customer_factor(customers: Table, part: Cell, supplier: Cell, ord
     requires scalar(customers),
     ensures customer_effect(customers.rows((order.first, 0, 0)), part, supplier, order, key, minor, sign, volume, measure)
         == if key.1 == supplier.first && key.2 == 0 && minor == (part.first, order.second, 0) {
-            sign * part.count as int * supplier.count as int * order.count as int
+            sign * part.count@ * supplier.count@ * order.count@
                 * (if measure { volume } else { 1 }) * customers.at((order.first, 0, 0), (key.0, 0, 0), false)
         } else { 0 },
 {
@@ -40,11 +40,11 @@ proof fn lemma_customer_factor(customers: Table, part: Cell, supplier: Cell, ord
     reveal(customer_effect);
     let rows = customers.rows((order.first, 0, 0));
     let raw = |customer: Cell| if key == (customer.first, supplier.first, 0) && minor == (part.first, order.second, 0) {
-        sign * part.count as int * supplier.count as int * order.count as int * customer.count as int
+        sign * part.count@ * supplier.count@ * order.count@ * customer.count@
             * if measure { volume } else { 1 }
     } else { 0int };
     if key.1 == supplier.first && key.2 == 0 && minor == (part.first, order.second, 0) {
-        let coefficient = sign * part.count as int * supplier.count as int * order.count as int
+        let coefficient = sign * part.count@ * supplier.count@ * order.count@
             * if measure { volume } else { 1 };
         let weight = |customer: Cell| cell_weight(customer, (key.0, 0, 0), false);
         let scaled = |customer: Cell| coefficient * weight(customer);
@@ -52,9 +52,9 @@ proof fn lemma_customer_factor(customers: Table, part: Cell, supplier: Cell, ord
             let customer = rows[index];
             assert(customer.second == 0 && customer.third == 0);
             if customer.first == key.0 {
-                assert(sign * part.count as int * supplier.count as int * order.count as int * customer.count as int
-                    * (if measure { volume } else { 1 }) == coefficient * customer.count as int) by (nonlinear_arith)
-                    requires coefficient == sign * part.count as int * supplier.count as int * order.count as int * (if measure { volume } else { 1 });
+                assert(sign * part.count@ * supplier.count@ * order.count@ * customer.count@
+                    * (if measure { volume } else { 1 }) == coefficient * customer.count@) by (nonlinear_arith)
+                    requires coefficient == sign * part.count@ * supplier.count@ * order.count@ * (if measure { volume } else { 1 });
             }
         }
         lemma_sum_ext(rows, raw, scaled);
@@ -71,7 +71,7 @@ proof fn lemma_order_factor(rows: Seq<Cell>, customers: Table, part: Cell, suppl
     requires scalar(customers),
     ensures order_effect(rows, customers, part, supplier, key, minor, sign, volume, measure)
         == if key.1 == supplier.first && key.2 == 0 && minor.0 == part.first && minor.2 == 0 {
-            sign * part.count as int * supplier.count as int * (if measure { volume } else { 1 })
+            sign * part.count@ * supplier.count@ * (if measure { volume } else { 1 })
                 * order_projection(rows, customers, key.0, minor.1)
         } else { 0 },
 {
@@ -79,9 +79,9 @@ proof fn lemma_order_factor(rows: Seq<Cell>, customers: Table, part: Cell, suppl
     reveal(order_effect);
     let raw = |order: Cell| customer_effect(customers.rows((order.first, 0, 0)), part, supplier, order, key, minor, sign, volume, measure);
     let active = key.1 == supplier.first && key.2 == 0 && minor.0 == part.first && minor.2 == 0;
-    let coefficient = if active { sign * part.count as int * supplier.count as int * (if measure { volume } else { 1 }) } else { 0int };
+    let coefficient = if active { sign * part.count@ * supplier.count@ * (if measure { volume } else { 1 }) } else { 0int };
     let weight = |order: Cell| if order.second == minor.1 {
-        order.count as int * customers.at((order.first, 0, 0), (key.0, 0, 0), false)
+        order.count@ * customers.at((order.first, 0, 0), (key.0, 0, 0), false)
     } else { 0int };
     let scaled = |order: Cell| coefficient * weight(order);
     assert forall|index: int| 0 <= index < rows.len() implies raw(#[trigger] rows[index]) == scaled(rows[index]) by {
@@ -89,9 +89,9 @@ proof fn lemma_order_factor(rows: Seq<Cell>, customers: Table, part: Cell, suppl
         lemma_customer_factor(customers, part, supplier, order, key, minor, sign, volume, measure);
         if active && order.second == minor.1 {
             let count = customers.at((order.first, 0, 0), (key.0, 0, 0), false);
-            assert(sign * part.count as int * supplier.count as int * order.count as int
-                * (if measure { volume } else { 1 }) * count == coefficient * (order.count as int * count)) by (nonlinear_arith)
-                requires coefficient == sign * part.count as int * supplier.count as int * (if measure { volume } else { 1 });
+            assert(sign * part.count@ * supplier.count@ * order.count@
+                * (if measure { volume } else { 1 }) * count == coefficient * (order.count@ * count)) by (nonlinear_arith)
+                requires coefficient == sign * part.count@ * supplier.count@ * (if measure { volume } else { 1 });
         }
     }
     lemma_sum_ext(rows, raw, scaled);
@@ -104,7 +104,7 @@ proof fn lemma_supplier_factor(rows: Seq<Cell>, orders: Seq<Cell>, customers: Ta
     requires scalar(customers), scalar_rows(rows),
     ensures supplier_effect(rows, orders, customers, part, key, minor, sign, volume, measure)
         == if key.2 == 0 && minor.0 == part.first && minor.2 == 0 {
-            sign * part.count as int * (if measure { volume } else { 1 })
+            sign * part.count@ * (if measure { volume } else { 1 })
                 * order_projection(orders, customers, key.0, minor.1) * cell_sum(rows, (key.1, 0, 0), false)
         } else { 0 },
 {
@@ -112,7 +112,7 @@ proof fn lemma_supplier_factor(rows: Seq<Cell>, orders: Seq<Cell>, customers: Ta
     reveal(supplier_effect);
     let raw = |supplier: Cell| order_effect(orders, customers, part, supplier, key, minor, sign, volume, measure);
     let active = key.2 == 0 && minor.0 == part.first && minor.2 == 0;
-    let coefficient = if active { sign * part.count as int * (if measure { volume } else { 1 })
+    let coefficient = if active { sign * part.count@ * (if measure { volume } else { 1 })
         * order_projection(orders, customers, key.0, minor.1) } else { 0int };
     let weight = |supplier: Cell| cell_weight(supplier, (key.1, 0, 0), false);
     let scaled = |supplier: Cell| coefficient * weight(supplier);
@@ -121,9 +121,9 @@ proof fn lemma_supplier_factor(rows: Seq<Cell>, orders: Seq<Cell>, customers: Ta
         lemma_order_factor(orders, customers, part, supplier, key, minor, sign, volume, measure);
         if active && supplier.first == key.1 {
             let projected = order_projection(orders, customers, key.0, minor.1);
-            assert(sign * part.count as int * supplier.count as int * (if measure { volume } else { 1 }) * projected
-                == coefficient * supplier.count as int) by (nonlinear_arith)
-                requires coefficient == sign * part.count as int * (if measure { volume } else { 1 }) * projected;
+            assert(sign * part.count@ * supplier.count@ * (if measure { volume } else { 1 }) * projected
+                == coefficient * supplier.count@) by (nonlinear_arith)
+                requires coefficient == sign * part.count@ * (if measure { volume } else { 1 }) * projected;
         }
     }
     lemma_sum_ext(rows, raw, scaled);
@@ -163,8 +163,8 @@ pub proof fn lemma_line_factor(parts: Table, suppliers: Table, customers: Table,
         let part = part_rows[index];
         lemma_supplier_factor(supplier_rows, order_rows, customers, part, key, minor, sign, volume, measure);
         if key.2 == 0 && minor.2 == 0 && part.first == minor.0 {
-            assert(sign * part.count as int * (if measure { volume } else { 1 }) * projected * supplier_count
-                == coefficient * part.count as int) by (nonlinear_arith)
+            assert(sign * part.count@ * (if measure { volume } else { 1 }) * projected * supplier_count
+                == coefficient * part.count@) by (nonlinear_arith)
                 requires coefficient == sign * (if measure { volume } else { 1 }) * projected * supplier_count;
         }
     }
@@ -215,7 +215,7 @@ pub proof fn lemma_order_projection(data: Data, db: Db, orderkey: i64, customer:
     let rows = data.orders.rows((orderkey, 0, 0));
     let left_project = |cell: Cell| (cell.first as int, cell.second as int);
     let right_project = |order: OrdersRow| (order.o_custkey, year_of(order.o_orderdate));
-    let left_multiplicity = |cell: Cell| cell.count as int;
+    let left_multiplicity = |cell: Cell| cell.count@;
     let right_multiplicity = |order: OrdersRow| if order.o_orderkey == orderkey as int && year_of(order.o_orderdate) != 0 { 1int } else { 0int };
     let weight = |class: (int, int)| if class.1 == year as int && i64::MIN <= class.0 <= i64::MAX {
         data.customers.at((class.0 as i64, 0, 0), (customer, 0, 0), false)
@@ -248,7 +248,7 @@ pub proof fn lemma_order_projection(data: Data, db: Db, orderkey: i64, customer:
     verus_prooflib::lemma_equal_classes(rows, db.orders, left_project, right_project, left_multiplicity, right_multiplicity, weight);
     let left_weight = |cell: Cell| left_multiplicity(cell) * weight(left_project(cell));
     let left_core = |cell: Cell| if cell.second == year {
-        cell.count as int * data.customers.at((cell.first, 0, 0), (customer, 0, 0), false)
+        cell.count@ * data.customers.at((cell.first, 0, 0), (customer, 0, 0), false)
     } else { 0int };
     lemma_sum_ext_all(rows, left_weight, left_core);
     let right_weight = |order: OrdersRow| right_multiplicity(order) * weight(right_project(order));

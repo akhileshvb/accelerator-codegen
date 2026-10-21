@@ -43,27 +43,31 @@ impl Parts {
     pub open spec fn tp_rows(self, key: i64) -> Seq<Cell> { self.tp.rows((key, 0, 0)) }
 
     pub open spec fn cell_part(self, key: i64, cell: Cell) -> PartRow {
-        PartRow { p_partkey: key as int, p_mfgr: self.dtext(cell.second as int), p_type: self.dtext(cell.third as int), p_size: cell.first as int }
+        PartRow { p_partkey: key as int, p_mfgr: self.dtext(dec(cell.second)), p_type: self.dtext(dec(cell.third)), p_size: cell.first as int }
     }
 
     /// The number of rows equal to `row` with part key `key` and size `size`.
     pub open spec fn amount(self, key: i64, size: i64, row: PartRow) -> int {
         if row.p_partkey == key as int && row.p_size == size as int && self.dict_has(row.p_mfgr) && self.dict_has(row.p_type) {
-            self.tp.at((key, 0, 0), (size, self.dict_id(row.p_mfgr) as i64, self.dict_id(row.p_type) as i64), false)
+            self.tp.at((key, 0, 0), (size, enc(self.dict_id(row.p_mfgr)), enc(self.dict_id(row.p_type))), false)
         } else { 0 }
     }
 
     pub open spec fn structure_ok(self) -> bool {
         &&& (*self.dict).valid()
-        &&& self.dl() <= 1000000
         &&& self.tp.valid()
         &&& self.tl.valid()
         &&& forall|key: i64, index: int| 0 <= index < self.tp_rows(key).len() ==>
-            0 <= (#[trigger] self.tp_rows(key)[index]).second < self.dl() && 0 <= self.tp_rows(key)[index].third < self.dl()
+            dec((#[trigger] self.tp_rows(key)[index]).second) < self.dl() && dec(self.tp_rows(key)[index].third) < self.dl()
         &&& forall|key: Major, minor: Major| #[trigger] self.tp.at(key, minor, true) == 0
         &&& forall|key: Major, minor: Major| #[trigger] self.tl.at(key, minor, true) == 0
         &&& forall|size: i64, tid: i64, key: i64, mid: i64, third: i64| #[trigger] self.tl.at((size, tid, 0), (key, mid, third), false) ==
             if third == 0 { self.tp.at((key, 0, 0), (size, mid, tid), false) } else { 0int }
+    }
+
+    /// Every cell of the part table counts at least one row.
+    pub open spec fn cells_positive(self) -> bool {
+        forall|key: i64, index: int| 0 <= index < self.tp_rows(key).len() ==> (#[trigger] self.tp_rows(key)[index]).count > 0
     }
 
     pub open spec fn meaning(self, db: Db) -> bool {
@@ -74,9 +78,17 @@ impl Parts {
     }
 }
 
+/// A dictionary id and its table key stand for each other.
+pub proof fn lemma_id_key(ps: Parts, id: int)
+    requires (*ps.dict).valid(), 0 <= id < ps.dl(),
+    ensures dec(enc(id)) == id,
+{
+    lemma_enc_dec(id);
+}
+
 /// A dictionary id outside the dictionary has no cells.
 pub proof fn lemma_out_of_range_zero(ps: Parts, key: i64, size: i64, mid: i64, tid: i64)
-    requires ps.structure_ok(), !(0 <= mid < ps.dl() && 0 <= tid < ps.dl()),
+    requires ps.structure_ok(), !(dec(mid) < ps.dl() && dec(tid) < ps.dl()),
     ensures ps.tp.at((key, 0, 0), (size, mid, tid), false) == 0,
 {
     ps.tp.lemma_shaped_valid();
@@ -86,7 +98,7 @@ pub proof fn lemma_out_of_range_zero(ps: Parts, key: i64, size: i64, mid: i64, t
     reveal(cell_sum);
     assert forall|index: int| 0 <= index < rows.len() implies
         (|cell: Cell| crate::table::cell_weight(cell, minor, false))(#[trigger] rows[index]) == 0 by {
-        assert(0 <= rows[index].second < ps.dl() && 0 <= rows[index].third < ps.dl());
+        assert(dec(rows[index].second) < ps.dl() && dec(rows[index].third) < ps.dl());
         assert(minor_of(rows[index]) != minor);
     }
     lemma_sum_zero(rows, |cell: Cell| crate::table::cell_weight(cell, minor, false));
@@ -115,12 +127,12 @@ pub proof fn lemma_dict_text_eq(ps: Parts, first: int, second: int)
 
 /// No cell of a part key stands for a part that is not in the dictionary or has another key.
 pub proof fn lemma_cell_part_facts(ps: Parts, key: i64, cell: Cell)
-    requires (*ps.dict).valid(), 0 <= cell.second < ps.dl(), 0 <= cell.third < ps.dl(),
+    requires (*ps.dict).valid(), dec(cell.second) < ps.dl(), dec(cell.third) < ps.dl(),
     ensures ps.cell_part(key, cell).p_partkey == key as int, ps.dict_has(ps.cell_part(key, cell).p_mfgr),
         ps.dict_has(ps.cell_part(key, cell).p_type), fits_i64(ps.cell_part(key, cell).p_size),
 {
-    assert(ps.dict_has(ps.dtext(cell.second as int)));
-    assert(ps.dict_has(ps.dtext(cell.third as int)));
+    assert(ps.dict_has(ps.dtext(dec(cell.second))));
+    assert(ps.dict_has(ps.dtext(dec(cell.third))));
 }
 
 #[verifier::auto_ext_equal(assert, assert_by, ensures)]
@@ -151,23 +163,25 @@ pub proof fn lemma_part_class(db: Db, ps: Parts, key: i64, x: PartRow,
         let size = x.p_size as i64;
         let mid = ps.dict_id(x.p_mfgr);
         let tid = ps.dict_id(x.p_type);
-        assert(ps.amount(key, size, x) == ps.tp.at((key, 0, 0), (size, mid as i64, tid as i64), false));
+        assert(ps.amount(key, size, x) == ps.tp.at((key, 0, 0), (size, enc(mid), enc(tid)), false));
         lemma_sum_ext_all(db.part, source,
             |row: PartRow| if retained(row) && row.p_partkey == key as int && row.p_size == size as int && row == x { 1int } else { 0int });
-        let minor = (size, mid as i64, tid as i64);
+        let minor = (size, enc(mid), enc(tid));
         assert forall|index: int| 0 <= index < rows.len() implies
             right_source(#[trigger] rows[index]) == crate::table::cell_weight(rows[index], minor, false) by {
             let cell = rows[index];
-            assert(0 <= cell.second < ps.dl() && 0 <= cell.third < ps.dl());
+            assert(dec(cell.second) < ps.dl() && dec(cell.third) < ps.dl());
             assert(0 <= mid < ps.dl() && 0 <= tid < ps.dl());
             assert(ps.dtext(mid) == x.p_mfgr && ps.dtext(tid) == x.p_type);
             if right_project(cell) == x {
-                lemma_dict_text_eq(ps, cell.second as int, mid);
-                lemma_dict_text_eq(ps, cell.third as int, tid);
+                lemma_dict_text_eq(ps, dec(cell.second), mid);
+                lemma_dict_text_eq(ps, dec(cell.third), tid);
                 assert(cell.first == size);
                 assert(minor_of(cell) == minor);
             } else if minor_of(cell) == minor {
-                assert(cell.second as int == mid && cell.third as int == tid);
+                lemma_id_key(ps, mid);
+                lemma_id_key(ps, tid);
+                assert(dec(cell.second) == mid && dec(cell.third) == tid);
                 assert(right_project(cell) == x);
             }
         }
@@ -228,11 +242,11 @@ pub proof fn lemma_tp_cell_positive(db: Db, ps: Parts, key: i64, index: int)
     assert(ps.tp.at((key, 0, 0), minor, false) == cell_sum(rows, minor, false)) by { reveal(Table::at); }
     assert(cell.volume == 0);
     assert(cell.count != 0);
-    assert(0 <= cell.second < ps.dl() && 0 <= cell.third < ps.dl());
-    lemma_dict_id(ps, cell.second as int);
-    lemma_dict_id(ps, cell.third as int);
+    assert(dec(cell.second) < ps.dl() && dec(cell.third) < ps.dl());
+    lemma_dict_id(ps, dec(cell.second));
+    lemma_dict_id(ps, dec(cell.third));
     let row = ps.cell_part(key, cell);
-    assert(row.p_mfgr == ps.dtext(cell.second as int));
+    assert(row.p_mfgr == ps.dtext(dec(cell.second)));
     assert(ps.amount(key, cell.first, row) == ps.tp.at((key, 0, 0), (cell.first, cell.second, cell.third), false));
     assert(minor == (cell.first, cell.second, cell.third));
     assert(ps.amount(key, cell.first, row) == db_amount(db, key, cell.first, row));
@@ -260,6 +274,16 @@ pub proof fn lemma_eligible_cells(db: Db, ps: Parts, key: i64)
     } else {
         lemma_tp_cell_positive(db, ps, key, 0);
         lemma_sum_pos(rows, |cell: Cell| cell.count as int * one(ps.cell_part(key, cell)), 0);
+    }
+}
+
+/// The meaning of a database gives positive cells.
+pub proof fn lemma_meaning_positive(db: Db, ps: Parts)
+    requires ps.meaning(db),
+    ensures ps.cells_positive(),
+{
+    assert forall|key: i64, index: int| 0 <= index < ps.tp_rows(key).len() implies (#[trigger] ps.tp_rows(key)[index]).count > 0 by {
+        lemma_tp_cell_positive(db, ps, key, index);
     }
 }
 

@@ -2,7 +2,7 @@ use vstd::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::bytes;
-use crate::counts::Counts;
+use crate::counts::{Counts, Tally};
 use crate::histogram::Sparse;
 use crate::gen_obligations::*;
 use verus_common::sums::sum;
@@ -12,13 +12,13 @@ verus! {
 broadcast use vstd::seq_lib::group_seq_properties;
 
 pub struct Orders {
-    pub values: HashMap<i64, Counts>,
+    pub values: HashMap<i64, Tally>,
     pub keys: Vec<i64>,
 }
 
 impl Orders {
     pub open spec fn at(self, key: i64) -> Counts {
-        if self.values@.contains_key(key) { self.values@[key] }
+        if self.values@.contains_key(key) { self.values@[key]@ }
         else { Counts { high: 0, low: 0 } }
     }
 
@@ -38,22 +38,22 @@ impl Orders {
         out
     }
 
-    pub fn get(&self, key: i64) -> (out: Counts)
-        ensures out == self.at(key),
+    pub fn get(&self, key: i64) -> (out: Tally)
+        ensures out@ == self.at(key),
     {
-        match self.values.get(&key) { Some(value) => *value, None => Counts::zero() }
+        match self.values.get(&key) { Some(value) => value.dup(), None => Tally::zero() }
     }
 
-    pub fn add(&mut self, key: i64, change: Counts) -> (out: bool)
+    pub fn add(&mut self, key: i64, change: &Tally)
         requires old(self).wf(),
         ensures final(self).wf(),
-            out ==> final(self).at(key).high == old(self).at(key).high + change.high
-                && final(self).at(key).low == old(self).at(key).low + change.low,
+            final(self).at(key).high == old(self).at(key).high + change@.high
+                && final(self).at(key).low == old(self).at(key).low + change@.low,
             forall|other: i64| #![trigger final(self).at(other)]
                 other != key ==> final(self).at(other) == old(self).at(other),
     {
         let ghost before = *self;
-        let value = match self.get(key).add(change) { Some(value) => value, None => return false };
+        let value = self.get(key).add(change);
         proof { self.keys@.to_set_ensures(); }
         if !self.values.contains_key(&key) {
             proof { verus_prooflib::lemma_unique_push(self.keys@, key); }
@@ -66,7 +66,6 @@ impl Orders {
             assert(self.keys@ == if before.values@.contains_key(key) { before.keys@ } else { before.keys@.push(key) });
             assert(self.keys@.to_set() =~= self.values@.dom());
         }
-        true
     }
 }
 
@@ -287,19 +286,18 @@ impl Cells {
         None
     }
 
-    pub fn get(&self, mode: &[u8], day: i32) -> (out: Counts)
+    pub fn get(&self, mode: &[u8], day: i32) -> (out: Tally)
         requires self.wf(),
-        ensures out == self.at(mode@, day),
+        ensures out@ == self.at(mode@, day),
     {
-        match self.find(mode) { Some(days) => days.get(day), None => Counts::zero() }
+        match self.find(mode) { Some(days) => days.get(day), None => Tally::zero() }
     }
 
-    pub fn add(&mut self, mode: &[u8], day: i32, change: Counts) -> (out: bool)
+    pub fn add(&mut self, mode: &[u8], day: i32, change: &Tally)
         requires old(self).wf(),
         ensures final(self).wf(),
-            out ==> final(self).at(mode@, day).high == old(self).at(mode@, day).high + change.high
-                && final(self).at(mode@, day).low == old(self).at(mode@, day).low + change.low,
-            !out ==> final(self).at(mode@, day) == old(self).at(mode@, day),
+            final(self).at(mode@, day).high == old(self).at(mode@, day).high + change@.high
+                && final(self).at(mode@, day).low == old(self).at(mode@, day).low + change@.low,
             forall|other: Seq<u8>, date: i32| #![trigger final(self).at(other, date)]
                 (other != mode@ || date != day) ==> final(self).at(other, date) == old(self).at(other, date),
     {
@@ -346,7 +344,7 @@ impl Cells {
                     before.at(mode@, date) == previous.at(date) by {}
             }
         }
-        let ok = entry.days.add(day, change);
+        entry.days.add(day, change);
         let ghost updated = entry.days;
         proof {
             assert forall|date: i32| #![trigger updated.at(date)] date != day implies updated.at(date) == previous.at(date) by {}
@@ -410,7 +408,6 @@ impl Cells {
             }
             self.lemma_index(code, index as int, day);
         }
-        ok
     }
 
     pub open spec fn active_mode(self, mode: Seq<u8>) -> bool {
@@ -494,54 +491,6 @@ impl Cells {
         }
         false
     }
-
-    pub fn add_support(&mut self, other: &Cells) -> (out: bool)
-        requires old(self).wf(), other.wf(),
-        ensures final(self).wf(),
-            forall|mode: Seq<u8>, day: i32| #![trigger final(self).at(mode, day)]
-                final(self).at(mode, day) == old(self).at(mode, day),
-    {
-        let ghost before = *self;
-        let mut hash_index = 0;
-        while hash_index < other.hashes.len()
-            invariant hash_index <= other.hashes@.len(), self.wf(), other.wf(), before == *old(self),
-                forall|mode: Seq<u8>, day: i32| #![trigger self.at(mode, day)] self.at(mode, day) == before.at(mode, day),
-            decreases other.hashes@.len() - hash_index,
-        {
-            let code = other.hashes[hash_index];
-            match other.buckets.get(&code) {
-                Some(bucket) => {
-                    let mut mode_index = 0;
-                    while mode_index < bucket.len()
-                        invariant mode_index <= bucket@.len(), self.wf(), other.wf(), before == *old(self),
-                            forall|mode: Seq<u8>, day: i32| #![trigger self.at(mode, day)] self.at(mode, day) == before.at(mode, day),
-                        decreases bucket@.len() - mode_index,
-                    {
-                        let entry = &bucket[mode_index];
-                        let mut day_index = 0;
-                        while day_index < entry.days.keys.len()
-                            invariant day_index <= entry.days.keys@.len(), self.wf(), other.wf(), before == *old(self),
-                                forall|mode: Seq<u8>, day: i32| #![trigger self.at(mode, day)] self.at(mode, day) == before.at(mode, day),
-                            decreases entry.days.keys@.len() - day_index,
-                        {
-                            let ghost previous = *self;
-                            let ok = self.add(&entry.mode, entry.days.keys[day_index], Counts::zero());
-                            proof {
-                                assert forall|mode: Seq<u8>, day: i32| #![trigger self.at(mode, day)]
-                                    self.at(mode, day) == previous.at(mode, day) by {}
-                            }
-                            if !ok { return false; }
-                            day_index += 1;
-                        }
-                        mode_index += 1;
-                    }
-                },
-                None => {},
-            }
-            hash_index += 1;
-        }
-        true
-    }
 }
 
 pub struct Lines {
@@ -575,10 +524,10 @@ impl Lines {
         out
     }
 
-    pub fn add(&mut self, key: i64, mode: &[u8], day: i32, change: i128) -> (out: bool)
+    pub fn add(&mut self, key: i64, mode: &[u8], day: i32, change: i64)
         requires old(self).wf(),
         ensures final(self).wf(),
-            out ==> final(self).at(key, mode@, day) == old(self).at(key, mode@, day) + change,
+            final(self).at(key, mode@, day) == old(self).at(key, mode@, day) + change as int,
             forall|other: i64, text: Seq<u8>, date: i32| #![trigger final(self).at(other, text, date)]
                 (other != key || text != mode@ || date != day) ==>
                     final(self).at(other, text, date) == old(self).at(other, text, date),
@@ -593,7 +542,7 @@ impl Lines {
                 Cells::new()
             },
         };
-        let ok = cells.add(mode, day, Counts { high: change, low: 0 });
+        cells.add(mode, day, &Tally::of(change as i128, 0));
         self.profiles.insert(key, cells);
         proof {
             self.keys@.to_set_ensures();
@@ -603,7 +552,6 @@ impl Lines {
                 if other != key { assert(self.profiles@[other] == before.profiles@[other]); }
             }
         }
-        ok
     }
 }
 
@@ -623,8 +571,8 @@ pub open spec fn line_change_weight(key: i64, mode: Seq<u8>, day: i32) -> spec_f
         && row.row.l_commitdate < row.row.l_receiptdate { row.sign as int } else { 0 }
 }
 
-pub fn order_deltas(rows: &[OrderDelta]) -> (out: Option<Orders>)
-    ensures out matches Some(value) ==> value.wf()
+pub fn order_deltas(rows: &[OrderDelta]) -> (value: Orders)
+    ensures value.wf()
         && forall|key: i64| #![trigger value.at(key)]
             value.at(key).high == order_change(rows@, key, true)
                 && value.at(key).low == order_change(rows@, key, false),
@@ -640,9 +588,9 @@ pub fn order_deltas(rows: &[OrderDelta]) -> (out: Option<Orders>)
         decreases rows.len() - index,
     {
         let row = &rows[index];
-        let change = if row.is_high != 0 { Counts { high: row.sign as i128, low: 0 } }
-            else { Counts { high: 0, low: row.sign as i128 } };
-        if !out.add(row.o_orderkey, change) { return None; }
+        let change = if row.is_high != 0 { Tally::of(row.sign as i128, 0) }
+            else { Tally::of(0, row.sign as i128) };
+        out.add(row.o_orderkey, &change);
         proof {
             assert forall|key: i64| #![trigger out.at(key)]
                 out.at(key).high == order_change(rows@.take(index as int + 1), key, true)
@@ -657,11 +605,11 @@ pub fn order_deltas(rows: &[OrderDelta]) -> (out: Option<Orders>)
         processed = Ghost(index as int);
     }
     proof { assert(rows@.take(processed@) =~= rows@); }
-    Some(out)
+    out
 }
 
-pub fn line_deltas(rows: &Vec<LineDelta>) -> (out: Option<Lines>)
-    ensures out matches Some(value) ==> value.wf()
+pub fn line_deltas(rows: &Vec<LineDelta>) -> (value: Lines)
+    ensures value.wf()
         && forall|key: i64, mode: Seq<u8>, day: i32| #![trigger value.at(key, mode, day)]
             value.at(key, mode, day) == line_change(rows@, key, mode, day),
 {
@@ -677,7 +625,7 @@ pub fn line_deltas(rows: &Vec<LineDelta>) -> (out: Option<Lines>)
         let delta = &rows[index];
         let row = &delta.row;
         if row.l_shipdate < row.l_commitdate && row.l_commitdate < row.l_receiptdate {
-            if !out.add(row.l_orderkey, &row.l_shipmode, row.l_receiptdate, delta.sign as i128) { return None; }
+            out.add(row.l_orderkey, &row.l_shipmode, row.l_receiptdate, delta.sign);
         }
         proof {
             assert forall|key: i64, mode: Seq<u8>, day: i32| #![trigger out.at(key, mode, day)]
@@ -689,112 +637,6 @@ pub fn line_deltas(rows: &Vec<LineDelta>) -> (out: Option<Lines>)
         processed = Ghost(index as int);
     }
     proof { assert(rows@.take(processed@) =~= rows@); }
-    Some(out)
-}
-
-pub fn affected(orders: &Orders, lines: &Lines) -> (out: Vec<i64>)
-    requires orders.wf(), lines.wf(),
-    ensures out@.no_duplicates(),
-        forall|key: i64| #![trigger out@.contains(key)]
-            out@.contains(key) <==> (orders.at(key).high != 0 || orders.at(key).low != 0
-                || exists|mode: Seq<u8>, day: i32| #![trigger lines.at(key, mode, day)]
-                    lines.at(key, mode, day) != 0),
-{
-    let mut out = Vec::new();
-    let mut seen: HashMap<i64, bool> = HashMap::new();
-    let mut index = 0;
-    while index < orders.keys.len()
-        invariant index <= orders.keys@.len(), orders.wf(), lines.wf(), out@.no_duplicates(),
-            seen@.dom() == out@.to_set(),
-            forall|key: i64| #![trigger out@.contains(key)]
-                out@.contains(key) <==> orders.keys@.take(index as int).contains(key)
-                    && (orders.at(key).high != 0 || orders.at(key).low != 0),
-        decreases orders.keys@.len() - index,
-    {
-        let key = orders.keys[index];
-        proof {
-            verus_prooflib::lemma_prefix_fresh(orders.keys@, index as int);
-            out@.to_set_ensures();
-        }
-        if !orders.get(key).is_zero() {
-            proof { verus_prooflib::lemma_unique_push(out@, key); }
-            out.push(key); seen.insert(key, true);
-            proof { out@.to_set_ensures(); assert(seen@.dom() =~= out@.to_set()); }
-        }
-        index += 1;
-    }
-    proof {
-        orders.keys@.to_set_ensures();
-        assert(orders.keys@.take(index as int) =~= orders.keys@);
-    }
-    index = 0;
-    while index < lines.keys.len()
-        invariant index <= lines.keys@.len(), orders.wf(), lines.wf(), out@.no_duplicates(),
-            seen@.dom() == out@.to_set(),
-            forall|key: i64| #![trigger out@.contains(key)]
-                out@.contains(key) <==> (orders.at(key).high != 0 || orders.at(key).low != 0
-                    || lines.keys@.take(index as int).contains(key)
-                        && (exists|mode: Seq<u8>, day: i32| #![trigger lines.at(key, mode, day)] lines.at(key, mode, day) != 0)),
-        decreases lines.keys@.len() - index,
-    {
-        let key = lines.keys[index];
-        if !seen.contains_key(&key) {
-            proof { out@.to_set_ensures(); }
-            match lines.profiles.get(&key) {
-                Some(cells) => {
-                    let active = cells.has_nonzero();
-                    proof {
-                        assert(*cells == lines.profiles@[key]);
-                        assert forall|mode: Seq<u8>, day: i32| #![trigger cells.at(mode, day)]
-                            cells.at(mode, day).low == 0 by {}
-                        assert forall|mode: Seq<u8>, day: i32| #![trigger lines.at(key, mode, day)]
-                            lines.at(key, mode, day) == cells.at(mode, day).high by {}
-                        if active {
-                            let text = choose|text: Seq<u8>| #![trigger cells.active_mode(text)] cells.active_mode(text);
-                            let date = choose|date: i32| #![trigger cells.at(text, date)]
-                                cells.at(text, date).high != 0 || cells.at(text, date).low != 0;
-                            assert(lines.at(key, text, date) != 0);
-                            assert(exists|mode: Seq<u8>, day: i32| #![trigger lines.at(key, mode, day)] lines.at(key, mode, day) != 0);
-                        } else {
-                            assert forall|mode: Seq<u8>, day: i32| #![trigger lines.at(key, mode, day)]
-                                lines.at(key, mode, day) == 0 by { assert(!cells.active_mode(mode)); }
-                        }
-                        assert(active <==> exists|mode: Seq<u8>, day: i32| #![trigger lines.at(key, mode, day)]
-                            lines.at(key, mode, day) != 0);
-                    }
-                    if active {
-                        proof { verus_prooflib::lemma_unique_push(out@, key); }
-                        out.push(key); seen.insert(key, true);
-                        proof { out@.to_set_ensures(); assert(seen@.dom() =~= out@.to_set()); }
-                    }
-                },
-                None => {},
-            }
-        }
-        index += 1;
-    }
-    proof { lines.keys@.to_set_ensures(); assert(lines.keys@.take(index as int) =~= lines.keys@); }
-    out
-}
-
-pub fn key_set(keys: &[i64]) -> (out: HashMap<i64, bool>)
-    ensures out@.dom() == keys@.to_set(),
-{
-    let mut out = HashMap::new();
-    let mut index = 0;
-    while index < keys.len()
-        invariant index <= keys.len(), out@.dom() == keys@.take(index as int).to_set(),
-        decreases keys.len() - index,
-    {
-        out.insert(keys[index], true);
-        proof {
-            keys@.take(index as int + 1).to_set_ensures();
-            keys@.take(index as int).to_set_ensures();
-            assert(out@.dom() =~= keys@.take(index as int + 1).to_set());
-        }
-        index += 1;
-    }
-    proof { assert(keys@.take(index as int) =~= keys@); }
     out
 }
 

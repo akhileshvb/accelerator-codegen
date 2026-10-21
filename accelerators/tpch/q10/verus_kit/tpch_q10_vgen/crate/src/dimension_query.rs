@@ -20,7 +20,7 @@ pub proof fn lemma_nation_database_sum(db: Db, index: &Index<Index<Nation>>, wei
     let source_view = |row: NationRow| row;
     let source_count = |row: NationRow| 1int;
     let representative_view = |value: Nation| nation_input_view(*value.row);
-    let representative_count = |value: Nation| value.count as int;
+    let representative_count = |value: Nation| value.count@;
     assert forall|row: NationRow| #[trigger] verus_prooflib::class_total(db.nation, source_view, source_count, row)
         == verus_prooflib::class_total(representatives, representative_view, representative_count, row) by {
         lemma_nation_point(index, row);

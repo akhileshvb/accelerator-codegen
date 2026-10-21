@@ -9,8 +9,8 @@ verus! {
 
 pub proof fn lemma_row_count_add(before: Table, changes: Table, after: Table, key: Major)
     requires forall|minor: Major| #[trigger] after.at(key, minor, false) == before.at(key, minor, false) + changes.at(key, minor, false),
-    ensures sum(after.rows(key), |cell: Cell| cell.count as int) ==
-        sum(before.rows(key), |cell: Cell| cell.count as int) + sum(changes.rows(key), |cell: Cell| cell.count as int),
+    ensures sum(after.rows(key), |cell: Cell| cell.count@) ==
+        sum(before.rows(key), |cell: Cell| cell.count@) + sum(changes.rows(key), |cell: Cell| cell.count@),
 {
     hide(sum);
     reveal(Table::at);
@@ -20,7 +20,7 @@ pub proof fn lemma_row_count_add(before: Table, changes: Table, after: Table, ke
     let joined = old_rows + delta_rows;
     let new_rows = after.rows(key);
     let project = |cell: Cell| minor_of(cell);
-    let count = |cell: Cell| cell.count as int;
+    let count = |cell: Cell| cell.count@;
     assert forall|minor: Major| #[trigger] class_total(new_rows, project, count, minor) ==
         class_total(joined, project, count, minor) by {
         let weight = |cell: Cell| cell_weight(cell, minor, false);
@@ -47,12 +47,12 @@ pub proof fn lemma_apply_index_meaning(before: Data, data: Data, changes: Table)
     hide(sum);
     reveal(index_meaning);
     assert forall|customer: i64, supplier: i64| #[trigger] data.base_by_customer.at((customer, 0, 0), (supplier, 0, 0), false) ==
-        sum(data.base.rows((customer, supplier, 0)), |cell: Cell| cell.count as int) by {
+        sum(data.base.rows((customer, supplier, 0)), |cell: Cell| cell.count@) by {
         lemma_pair_index_effect(changes, (customer, 0, 0), (supplier, 0, 0), false, false);
         lemma_row_count_add(before.base, changes, data.base, (customer, supplier, 0));
     }
     assert forall|supplier: i64, customer: i64| #[trigger] data.base_by_supplier.at((supplier, 0, 0), (customer, 0, 0), false) ==
-        sum(data.base.rows((customer, supplier, 0)), |cell: Cell| cell.count as int) by {
+        sum(data.base.rows((customer, supplier, 0)), |cell: Cell| cell.count@) by {
         lemma_pair_index_effect(changes, (supplier, 0, 0), (customer, 0, 0), true, false);
         lemma_row_count_add(before.base, changes, data.base, (customer, supplier, 0));
     }
@@ -103,7 +103,7 @@ pub open spec fn base_key_shape(base: Table) -> bool {
 pub proof fn lemma_pair_index_effect(changes: Table, key: Major, minor: Major, supplier: bool, measure: bool)
     requires changes.valid(), base_key_shape(changes), key.1 == 0, key.2 == 0, minor.1 == 0, minor.2 == 0, !measure,
     ensures pair_index_effect(changes.keys_view(), changes, key, minor, supplier, measure)
-        == sum(changes.rows(if supplier { (minor.0, key.0, 0) } else { (key.0, minor.0, 0) }), |cell: Cell| cell.count as int),
+        == sum(changes.rows(if supplier { (minor.0, key.0, 0) } else { (key.0, minor.0, 0) }), |cell: Cell| cell.count@),
 {
     hide(sum);
     lemma_keys_complete(changes);
@@ -111,20 +111,20 @@ pub proof fn lemma_pair_index_effect(changes: Table, key: Major, minor: Major, s
     reveal(pair_index_effect);
     let keys = changes.keys_view();
     let target = if supplier { (minor.0, key.0, 0i64) } else { (key.0, minor.0, 0i64) };
-    let value = sum(changes.rows(target), |cell: Cell| cell.count as int);
-    let raw = |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count as int), key, minor, supplier, measure);
+    let value = sum(changes.rows(target), |cell: Cell| cell.count@);
+    let raw = |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count@), key, minor, supplier, measure);
     let selected = |entry: Major| if entry == target { value } else { 0int };
     assert forall|entry: Major| #[trigger] raw(entry) == selected(entry) by {
         if entry.2 != 0 {
             if changes.rows(entry).len() > 0 { assert((changes.rows(entry)[0]).third == 0); }
             assert(changes.rows(entry).len() == 0);
-            lemma_sum_empty(changes.rows(entry), |cell: Cell| cell.count as int);
+            lemma_sum_empty(changes.rows(entry), |cell: Cell| cell.count@);
         }
     }
     lemma_sum_ext_all(keys, raw, selected);
     if !keys.contains(target) {
         assert(changes.rows(target).len() == 0);
-        lemma_sum_empty(changes.rows(target), |cell: Cell| cell.count as int);
+        lemma_sum_empty(changes.rows(target), |cell: Cell| cell.count@);
     }
     lemma_sum_indicator_distinct(keys, target, value, selected);
 }
@@ -135,7 +135,7 @@ pub proof fn lemma_pair_index_support(changes: Table, key: Major, minor: Major, 
 {
     hide(sum);
     reveal(pair_index_effect);
-    lemma_sum_zero(changes.keys_view(), |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count as int), key, minor, supplier, measure));
+    lemma_sum_zero(changes.keys_view(), |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count@), key, minor, supplier, measure));
 }
 
 pub proof fn lemma_build_indexes(data: Data)
@@ -150,11 +150,11 @@ pub proof fn lemma_build_indexes(data: Data)
     hide(sum);
     reveal(index_meaning);
     assert forall|customer: i64, supplier: i64| #[trigger] data.base_by_customer.at((customer, 0, 0), (supplier, 0, 0), false)
-        == sum(data.base.rows((customer, supplier, 0)), |cell: Cell| cell.count as int) by {
+        == sum(data.base.rows((customer, supplier, 0)), |cell: Cell| cell.count@) by {
         lemma_pair_index_effect(data.base, (customer, 0, 0), (supplier, 0, 0), false, false);
     }
     assert forall|supplier: i64, customer: i64| #[trigger] data.base_by_supplier.at((supplier, 0, 0), (customer, 0, 0), false)
-        == sum(data.base.rows((customer, supplier, 0)), |cell: Cell| cell.count as int) by {
+        == sum(data.base.rows((customer, supplier, 0)), |cell: Cell| cell.count@) by {
         lemma_pair_index_effect(data.base, (supplier, 0, 0), (customer, 0, 0), true, false);
     }
     assert forall|key: Major, minor: Major, measure: bool| measure || !crate::dimensions::dimension_support(key, minor, data.dictionary, 1)
@@ -168,15 +168,15 @@ pub proof fn lemma_build_indexes(data: Data)
     assert forall|key: Major, minor: Major| #[trigger] data.base_by_customer.at(key, minor, false) >= 0 by {
         if crate::dimensions::dimension_support(key, minor, data.dictionary, 1) {
             let rows = data.base.rows((key.0, minor.0, 0));
-            assert forall|index: int| 0 <= index < rows.len() implies (#[trigger] rows[index]).count as int >= 0 by {}
-            lemma_sum_nonneg(rows, |cell: Cell| cell.count as int);
+            assert forall|index: int| 0 <= index < rows.len() implies (#[trigger] rows[index]).count@ >= 0 by {}
+            lemma_sum_nonneg(rows, |cell: Cell| cell.count@);
         }
     }
     assert forall|key: Major, minor: Major| #[trigger] data.base_by_supplier.at(key, minor, false) >= 0 by {
         if crate::dimensions::dimension_support(key, minor, data.dictionary, 1) {
             let rows = data.base.rows((minor.0, key.0, 0));
-            assert forall|index: int| 0 <= index < rows.len() implies (#[trigger] rows[index]).count as int >= 0 by {}
-            lemma_sum_nonneg(rows, |cell: Cell| cell.count as int);
+            assert forall|index: int| 0 <= index < rows.len() implies (#[trigger] rows[index]).count@ >= 0 by {}
+            lemma_sum_nonneg(rows, |cell: Cell| cell.count@);
         }
     }
     crate::dimensions::lemma_dimension_cells(data.base_by_customer, data.dictionary, 1);

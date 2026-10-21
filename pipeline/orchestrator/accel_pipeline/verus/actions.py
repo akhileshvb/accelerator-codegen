@@ -638,10 +638,10 @@ def correctness(ctx: VerusContext, *, store: str = "verus_global", snapshots_too
         ok = ok and s["ok"]
     rate = fallback_rate(d)
     res["fallback_rate"] = round(rate, 3)
-    if rate > float(ctx.setting("gates.max_fallback_rate", 0.25)):
+    if rate > float(ctx.setting("gates.max_fallback_rate", 0.0)):
         ok = False
-        res["fallback_error"] = (f"{rate:.0%} of accelerator queries were answered with SQL: the kernel declines "
-                                 "too often (execute returning None, or states missing)")
+        res["fallback_error"] = (f"{rate:.0%} of accelerator queries were answered with SQL: inside the envelope "
+                                 "the kernel may not decline, so a state went missing or execute returned None")
     res["ok"] = ok
     return res
 
@@ -972,6 +972,7 @@ FORBIDDEN = [
     (r"#\s*!?\[\s*verifier::external_body", "#[verifier::external_body] (unverified code)"),
     (r"#\s*!?\[\s*verifier::external\b", "#[verifier::external]"),
     (r"external_fn_specification|assume_specification", "an assumed specification"),
+    (r"exec_allows_no_decreases_clause", "a loop or function without a termination proof"),
     (r"\bunsafe\b", "unsafe code"),
     (r"extern\s+\"C\"|#\s*\[\s*no_mangle", "a C ABI item (the C ABI is generated)"),
     (r"\bstd::(fs|net|process|env)\b", "I/O or process access"),

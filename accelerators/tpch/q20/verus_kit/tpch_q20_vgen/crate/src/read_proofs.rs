@@ -12,14 +12,14 @@ use crate::predicate_proofs::*;
 
 verus! {
 pub open spec fn variant_weight(rows: Seq<SupplierVariant>, weight: spec_fn(OutRow) -> int) -> int {
-    sum(rows, |row: SupplierVariant| row.count as int * weight(OutRow { s_name: row.name@, s_address: row.address@ }))
+    sum(rows, |row: SupplierVariant| row.count@ * weight(OutRow { s_name: row.name@, s_address: row.address@ }))
 }
 pub proof fn lemma_variant_take(rows: Seq<SupplierVariant>, index: int, weight: spec_fn(OutRow) -> int)
     requires 0 <= index < rows.len(),
     ensures variant_weight(rows.take(index + 1), weight) == variant_weight(rows.take(index), weight)
-        + rows[index].count as int * weight(OutRow { s_name: rows[index].name@, s_address: rows[index].address@ }),
+        + rows[index].count@ * weight(OutRow { s_name: rows[index].name@, s_address: rows[index].address@ }),
 {
-    lemma_sum_take(rows, index, |row: SupplierVariant| row.count as int * weight(OutRow { s_name: row.name@, s_address: row.address@ }));
+    lemma_sum_take(rows, index, |row: SupplierVariant| row.count@ * weight(OutRow { s_name: row.name@, s_address: row.address@ }));
 }
 pub open spec fn bucket_rows(bucket: Table<Vec<SupplierVariant>>, key: i64) -> Seq<SupplierVariant> {
     match bucket.lookup(key) { Some(rows) => rows@, None => Seq::empty() }
@@ -38,7 +38,7 @@ pub open spec fn nation_weight(db: Db, parameters: Params, nation: int, weight: 
     sum(db.supplier, |row: SupplierRow| if row.s_nationkey == nation && in_1(db, parameters, row.s_suppkey) { weight(OutRow { s_name: row.s_name, s_address: row.s_address }) } else { 0 })
 }
 pub open spec fn nation_output_weight(db: Db, parameters: Params, rows: Seq<NationVariant>, weight: spec_fn(OutRow) -> int) -> int {
-    sum(rows, |row: NationVariant| if row.name@ == parameters.p3 { row.count as int * nation_weight(db, parameters, row.key as int, weight) } else { 0 })
+    sum(rows, |row: NationVariant| if row.name@ == parameters.p3 { row.count@ * nation_weight(db, parameters, row.key as int, weight) } else { 0 })
 }
 pub open spec fn sql_nation_weight(db: Db, parameters: Params, weight: spec_fn(OutRow) -> int) -> int {
     sum(db.nation, |row: NationRow| if row.n_name == parameters.p3 { nation_weight(db, parameters, row.n_nationkey, weight) } else { 0 })
@@ -83,14 +83,14 @@ pub proof fn lemma_nation_rows(db: Db, parameters: Params, nations: Nations, row
 {
     let left_project = |row: NationVariant| row.key as int;
     let right_project = |row: NationRow| row.n_nationkey;
-    let left_count = |row: NationVariant| if row.name@ == parameters.p3 { row.count as int } else { 0int };
+    let left_count = |row: NationVariant| if row.name@ == parameters.p3 { row.count@ } else { 0int };
     let right_count = |row: NationRow| if row.n_name == parameters.p3 { 1int } else { 0int };
     assert forall|key: int| #[trigger] class_total(rows, left_project, left_count, key) == class_total(db.nation, right_project, right_count, key) by {
         if machine_key(key) {
             let bounded = key as i64;
             assert(bounded as int == key);
             lemma_sum_ext_all(rows, |row: NationVariant| if left_project(row) == key { left_count(row) } else { 0 },
-                |row: NationVariant| if row.name@ == parameters.p3 && row.key == bounded { row.count as int } else { 0 });
+                |row: NationVariant| if row.name@ == parameters.p3 && row.key == bounded { row.count@ } else { 0 });
             lemma_sum_ext_all(db.nation, |row: NationRow| if right_project(row) == key { right_count(row) } else { 0 },
                 |row: NationRow| if row.n_name == parameters.p3 && row.n_nationkey == bounded { 1int } else { 0int });
             assert(nation_measure(rows, parameters.p3, bounded) == nation_count(nations, parameters.p3, bounded));
@@ -108,7 +108,7 @@ pub proof fn lemma_nation_rows(db: Db, parameters: Params, nations: Nations, row
     let class_weight = |key: int| nation_weight(db, parameters, key, weight);
     lemma_equal_classes(rows, db.nation, left_project, right_project, left_count, right_count, class_weight);
     lemma_sum_ext_all(rows, |row: NationVariant| left_count(row) * class_weight(left_project(row)),
-        |row: NationVariant| if row.name@ == parameters.p3 { row.count as int * nation_weight(db, parameters, row.key as int, weight) } else { 0 });
+        |row: NationVariant| if row.name@ == parameters.p3 { row.count@ * nation_weight(db, parameters, row.key as int, weight) } else { 0 });
     lemma_sum_ext_all(db.nation, |row: NationRow| right_count(row) * class_weight(right_project(row)),
         |row: NationRow| if row.n_name == parameters.p3 { nation_weight(db, parameters, row.n_nationkey, weight) } else { 0 });
     lemma_query_weight(db, parameters, weight);
@@ -120,11 +120,11 @@ pub proof fn lemma_variants(db: Db, nation: i64, supplier: i64, rows: Seq<Suppli
 {
     let left_project = |row: SupplierVariant| (row.name@, row.address@);
     let right_project = |row: SupplierRow| (row.s_name, row.s_address);
-    let left_count = |row: SupplierVariant| row.count as int;
+    let left_count = |row: SupplierVariant| row.count@;
     let right_count = |row: SupplierRow| if row.s_nationkey == nation && row.s_suppkey == supplier { 1int } else { 0int };
     assert forall|key: (Seq<u8>, Seq<u8>)| #[trigger] class_total(rows, left_project, left_count, key) == class_total(db.supplier, right_project, right_count, key) by {
         lemma_sum_ext_all(rows, |row: SupplierVariant| if left_project(row) == key { left_count(row) } else { 0 },
-            |row: SupplierVariant| if row.name@ == key.0 && row.address@ == key.1 { row.count as int } else { 0 });
+            |row: SupplierVariant| if row.name@ == key.0 && row.address@ == key.1 { row.count@ } else { 0 });
         lemma_sum_ext_all(db.supplier, |row: SupplierRow| if right_project(row) == key { right_count(row) } else { 0 },
             |row: SupplierRow| if row.s_nationkey == nation && row.s_suppkey == supplier && row.s_name == key.0 && row.s_address == key.1 { 1int } else { 0int });
         assert(supplier_measure(rows, key.0, key.1) == sum(db.supplier,
@@ -133,7 +133,7 @@ pub proof fn lemma_variants(db: Db, nation: i64, supplier: i64, rows: Seq<Suppli
     let class_weight = |key: (Seq<u8>, Seq<u8>)| weight(OutRow { s_name: key.0, s_address: key.1 });
     lemma_equal_classes(rows, db.supplier, left_project, right_project, left_count, right_count, class_weight);
     lemma_sum_ext_all(rows, |row: SupplierVariant| left_count(row) * class_weight(left_project(row)),
-        |row: SupplierVariant| row.count as int * weight(OutRow { s_name: row.name@, s_address: row.address@ }));
+        |row: SupplierVariant| row.count@ * weight(OutRow { s_name: row.name@, s_address: row.address@ }));
     lemma_sum_ext_all(db.supplier, |row: SupplierRow| right_count(row) * class_weight(right_project(row)),
         |row: SupplierRow| if row.s_nationkey == nation && row.s_suppkey == supplier { weight(OutRow { s_name: row.s_name, s_address: row.s_address }) } else { 0 });
 }

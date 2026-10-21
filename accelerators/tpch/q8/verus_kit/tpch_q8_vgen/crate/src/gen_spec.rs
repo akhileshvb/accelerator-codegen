@@ -564,6 +564,42 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
     }
 }
 
+// ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──
+
+/// With non-zero divisors the query has an answer.
+pub proof fn lemma_defined_exists(db: Db, params: Params)
+    requires
+        defined(db, params),
+    ensures
+        exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o),
+{
+    lemma_query_result_iff(db, params, answer(db, params));
+    assert(query_result(db, params, answer(db, params)));
+}
+
+/// An answer exists only if the divisors are non-zero.
+pub proof fn lemma_exists_defined(db: Db, params: Params)
+    ensures
+        (exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)) ==> defined(db, params),
+{
+    if exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o) {
+        let o = choose|o: Seq<OutRow>| #[trigger] query_result(db, params, o);
+        let full = o;
+        assert(full_result(db, params, full));
+        assert forall|i: int| 0 <= i < tuples(db, params).len() implies #[trigger] row_ok(db, params, present_row(db, params)(tuples(db, params)[i])) || !present_keep(db, params)(tuples(db, params)[i]) by {
+            let t = tuples(db, params)[i];
+            if present_keep(db, params)(t) {
+                lemma_tuple_group(db, params, i);
+                assert(group_count(db, params, t.all_nations.o_year) > 0 && having(db, params, t.all_nations.o_year));
+                let j = choose|j: int| 0 <= j < full.len() && (#[trigger] full[j]).o_year == t.all_nations.o_year;
+                assert(row_ok(db, params, full[j]));
+                assert(row_ok(db, params, present_row(db, params)(t)));
+            }
+        }
+        assert(defined(db, params));
+    }
+}
+
 // ── Permutation invariance (verified by Verus, not trusted) ──────────────────
 // A table is a bag: the answers do not depend on the order of any table's rows.
 

@@ -178,6 +178,42 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
     assert(full_result(db, params, r));
 }
 
+// ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──
+
+/// No divisor of the query is zero.
+pub open spec fn defined(db: Db, params: Params) -> bool {
+    &&& group_count(db, params) > 0 ==> group_sum(db, params, |t: Tuple| t.lineitem.l_extendedprice * (100 - t.lineitem.l_discount)) != 0
+}
+
+/// With non-zero divisors the query has an answer.
+pub proof fn lemma_defined_exists(db: Db, params: Params)
+    requires
+        defined(db, params),
+    ensures
+        exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o),
+{
+    assert(row_ok(db, params, row_of(db, params)));
+    lemma_query_result_iff(db, params, rows(db, params));
+    assert(query_result(db, params, rows(db, params)));
+}
+
+/// An answer exists only if the divisors are non-zero.
+pub proof fn lemma_exists_defined(db: Db, params: Params)
+    ensures
+        (exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)) ==> defined(db, params),
+{
+    if exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o) {
+        let o = choose|o: Seq<OutRow>| #[trigger] query_result(db, params, o);
+        let full = o;
+        assert(full_result(db, params, full));
+        assert(full.len() == rows(db, params).len());
+        if full.len() > 0 {
+            assert(row_ok(db, params, full[0]));
+        }
+        assert(defined(db, params));
+    }
+}
+
 // ── Permutation invariance (verified by Verus, not trusted) ──────────────────
 // A table is a bag: the answers do not depend on the order of any table's rows.
 

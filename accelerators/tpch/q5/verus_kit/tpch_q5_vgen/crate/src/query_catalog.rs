@@ -86,14 +86,14 @@ pub proof fn lemma_nation_window(db: Db, parameters: Params, group: Seq<u8>, rev
 pub proof fn lemma_region_binding(regions: Seq<Binding>, db: Db, key: i64, name: Seq<u8>)
     requires forall|key: i64, region: i64, name: Seq<u8>| #[trigger] binding_count(regions, key, region, name) ==
             if region == 0 { region_count(db, key, name) } else { 0 },
-        forall|position: int| 0 <= position < regions.len() ==> (#[trigger] regions[position]).count > 0,
+        forall|position: int| 0 <= position < regions.len() ==> (#[trigger] regions[position]).count@ > 0,
     ensures sum(regions, |region: Binding| output::region_count_weight(region, key, name)) == region_count(db, key, name),
 {
     reveal(binding_count);
     assert forall|position: int| 0 <= position < regions.len() implies (#[trigger] regions[position]).region == 0 by {
         let row = regions[position];
         if row.region != 0 {
-            let weight = |region: Binding| if region.key == row.key && region.region == row.region && region.name@ == row.name@ { region.count as int } else { 0 };
+            let weight = |region: Binding| if region.key == row.key && region.region == row.region && region.name@ == row.name@ { region.count@ } else { 0 };
             lemma_sum_nonneg(regions, weight);
             lemma_sum_ge_term(regions, weight, position);
             assert(sum(regions, weight) == binding_count(regions, row.key, row.region, row.name@));
@@ -109,7 +109,7 @@ pub proof fn lemma_catalog_database(profiles: Table, nations: Seq<Binding>, regi
         forall|nation: i64, day: i32| #[trigger] profiles.at(nation, 0, day) == profile(db, nation, day),
         forall|key: i64, region: i64, text: Seq<u8>| #[trigger] binding_count(nations, key, region, text) == nation_count(db, key, region, text),
         forall|key: i64, region: i64, text: Seq<u8>| #[trigger] binding_count(regions, key, region, text) == if region == 0 { region_count(db, key, text) } else { 0 },
-        forall|position: int| 0 <= position < regions.len() ==> (#[trigger] regions[position]).count > 0,
+        forall|position: int| 0 <= position < regions.len() ==> (#[trigger] regions[position]).count@ > 0,
     ensures (if revenue { output::catalog_value(profiles, nations, regions, name, start, end, group).1 }
         else { output::catalog_value(profiles, nations, regions, name, start, end, group).0 }) ==
         sum(tuples(db, params(name, start as int, end as int)), |tuple: Tuple| tuple_weight(tuple, group, revenue)),
@@ -117,7 +117,7 @@ pub proof fn lemma_catalog_database(profiles: Table, nations: Seq<Binding>, regi
     let parameters = params(name, start as int, end as int);
     let left_project = |nation: Binding| (nation.key, nation.region, nation.name@);
     let right_project = |nation: NationRow| (nation.n_nationkey as i64, nation.n_regionkey as i64, nation.n_name);
-    let left_multiplicity = |nation: Binding| nation.count as int;
+    let left_multiplicity = |nation: Binding| nation.count@;
     let right_multiplicity = |nation: NationRow| 1int;
     let weight = |key: (i64, i64, Seq<u8>)| if key.2 == group {
         region_count(db, key.1, name) * database_window(db, key.0 as int, start, end, revenue)
@@ -125,7 +125,7 @@ pub proof fn lemma_catalog_database(profiles: Table, nations: Seq<Binding>, regi
     assert forall|key: (i64, i64, Seq<u8>)| #[trigger] verus_prooflib::class_total(nations, left_project, left_multiplicity, key) ==
         verus_prooflib::class_total(db.nation, right_project, right_multiplicity, key) by {
         lemma_sum_ext_all(nations, |nation: Binding| if left_project(nation) == key { left_multiplicity(nation) } else { 0 },
-            |nation: Binding| if nation.key == key.0 && nation.region == key.1 && nation.name@ == key.2 { nation.count as int } else { 0 });
+            |nation: Binding| if nation.key == key.0 && nation.region == key.1 && nation.name@ == key.2 { nation.count@ } else { 0 });
         let projected = |nation: NationRow| if right_project(nation) == key { 1int } else { 0 };
         let uncast = |nation: NationRow| ind(nation.n_nationkey == key.0 && nation.n_regionkey == key.1 && nation.n_name == key.2);
         assert forall|position: int| 0 <= position < db.nation.len() implies projected(#[trigger] db.nation[position]) == uncast(db.nation[position]) by {
@@ -145,7 +145,7 @@ pub proof fn lemma_catalog_database(profiles: Table, nations: Seq<Binding>, regi
         assert(output::catalog_weight(regions, nation, name) == region_count(db, nation.region, name));
         if nation.name@ == group {
             let window = database_window(db, nation.key as int, start, end, revenue);
-            assert(nation.count as int * region_count(db, nation.region, name) * window == nation.count as int * (region_count(db, nation.region, name) * window)) by (nonlinear_arith);
+            assert(nation.count@ * region_count(db, nation.region, name) * window == nation.count@ * (region_count(db, nation.region, name) * window)) by (nonlinear_arith);
         }
     }
     lemma_sum_ext_all(nations, executable, projected_left);

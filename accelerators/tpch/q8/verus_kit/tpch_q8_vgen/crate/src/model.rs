@@ -9,8 +9,8 @@ use crate::table::*;
 verus! {
 pub proof fn lemma_shape_fields(state: Data)
     requires
-        forall|key: Major, index: int| 0 <= index < state.orders.rows(key).len() ==> crate::dimensions::dimension_support(key, minor_of(#[trigger] state.orders.rows(key)[index]), state.dictionary, 3) && state.orders.rows(key)[index].volume == 0,
-        forall|key: Major, index: int| 0 <= index < state.nations.rows(key).len() ==> crate::dimensions::dimension_support(key, minor_of(#[trigger] state.nations.rows(key)[index]), state.dictionary, 4) && state.nations.rows(key)[index].volume == 0,
+        forall|key: Major, index: int| 0 <= index < state.orders.rows(key).len() ==> crate::dimensions::dimension_support(key, minor_of(#[trigger] state.orders.rows(key)[index]), state.dictionary, 3) && state.orders.rows(key)[index].volume@ == 0,
+        forall|key: Major, index: int| 0 <= index < state.nations.rows(key).len() ==> crate::dimensions::dimension_support(key, minor_of(#[trigger] state.nations.rows(key)[index]), state.dictionary, 4) && state.nations.rows(key)[index].volume@ == 0,
         crate::aggregate_bridge::aggregate_ready(state),
         forall|key: Major, index: int| 0 <= index < state.totals.rows(key).len() ==> crate::aggregate_cells::output_support(key, minor_of(#[trigger] state.totals.rows(key)[index]), state.dictionary, false),
         forall|key: Major, index: int| 0 <= index < state.numerators.rows(key).len() ==> crate::aggregate_cells::output_support(key, minor_of(#[trigger] state.numerators.rows(key)[index]), state.dictionary, true),
@@ -24,12 +24,12 @@ pub proof fn lemma_shape_fields(state: Data)
     assert forall|key: Major, index: int| 0 <= index < state.orders.rows(key).len() implies
         order_cell_shape(key, #[trigger] state.orders.rows(key)[index]) by {
         assert(crate::dimensions::dimension_support(key, minor_of(state.orders.rows(key)[index]), state.dictionary, 3));
-        assert(state.orders.rows(key)[index].volume == 0);
+        assert(state.orders.rows(key)[index].volume@ == 0);
     }
     assert forall|key: Major, index: int| 0 <= index < state.nations.rows(key).len() implies
         runtime_nation_cell_shape(key, #[trigger] state.nations.rows(key)[index]) by {
         assert(crate::dimensions::dimension_support(key, minor_of(state.nations.rows(key)[index]), state.dictionary, 4));
-        assert(state.nations.rows(key)[index].volume == 0);
+        assert(state.nations.rows(key)[index].volume@ == 0);
     }
     assert(runtime_orders(state));
     assert(runtime_nations(state));
@@ -74,12 +74,21 @@ pub struct Data {
 }
 
 
-pub open spec fn text_matches(dictionary: Dictionary, id: i64, text: Seq<u8>) -> bool {
-    0 <= id < dictionary.length && dictionary.text(id) == text
+pub open spec fn words_match(words: Words, id: i64, text: Seq<u8>) -> bool {
+    words.known(id) && words.text(id) == text
 }
 
-pub open spec fn text_present(dictionary: Dictionary, text: Seq<u8>) -> bool {
-    exists|id: i64| 0 <= id < dictionary.length && #[trigger] dictionary.text(id) == text
+pub open spec fn words_present(words: Words, text: Seq<u8>) -> bool {
+    exists|id: i64| words.known(id) && #[trigger] words.text(id) == text
+}
+
+/// Id `id` of column `c` (types, names or regions) is the text.
+pub open spec fn text_matches(dictionary: Dictionary, c: int, id: i64, text: Seq<u8>) -> bool {
+    words_match(dictionary.col(c), id, text)
+}
+
+pub open spec fn text_present(dictionary: Dictionary, c: int, text: Seq<u8>) -> bool {
+    words_present(dictionary.col(c), text)
 }
 
 pub open spec fn year_of(date: int) -> int {
@@ -123,11 +132,11 @@ pub open spec fn line_domain(db: Db) -> bool {
 
 pub open spec fn positive(table: Table) -> bool {
     forall|key: Major, index: int| 0 <= index < table.rows(key).len() ==>
-        (#[trigger] table.rows(key)[index]).count > 0
+        (#[trigger] table.rows(key)[index]).count@ > 0
 }
 
 pub open spec fn scalar_cell(key: Major, cell: Cell) -> bool {
-    key.1 == 0 && key.2 == 0 && cell.second == 0 && cell.third == 0 && cell.volume == 0
+    key.1 == 0 && key.2 == 0 && cell.second == 0 && cell.third == 0 && cell.volume@ == 0
 }
 
 pub open spec fn scalar(table: Table) -> bool {
@@ -135,9 +144,9 @@ pub open spec fn scalar(table: Table) -> bool {
         scalar_cell(key, #[trigger] table.rows(key)[index])
 }
 
-pub open spec fn text_domain(table: Table, dictionary: Dictionary) -> bool {
+pub open spec fn text_domain(table: Table, dictionary: Dictionary, c: int) -> bool {
     forall|key: Major, index: int| 0 <= index < table.rows(key).len() ==>
-        0 <= (#[trigger] table.rows(key)[index]).first < dictionary.length
+        dictionary.col(c).known((#[trigger] table.rows(key)[index]).first)
 }
 
 #[verifier::opaque]
@@ -151,7 +160,7 @@ pub open spec fn line_weight(state: Data, db: Db, line: LineitemRow, customer_na
 }
 
 pub open spec fn measure(cell: Cell, volume: bool) -> int {
-    if volume { cell.volume as int } else { cell.count as int }
+    if volume { cell.volume@ } else { cell.count@ }
 }
 
 pub open spec fn line_measure(line: LineitemRow, volume: bool) -> int {
@@ -166,7 +175,7 @@ pub open spec fn projected_line_weight(parts: Table, suppliers: Table, customers
         * suppliers.at((line.l_suppkey as i64, 0, 0), (key.1, 0, 0), false)
         * sum(orders.rows((line.l_orderkey as i64, 0, 0)), |order: Cell|
             if order.second == minor.1 {
-                order.count as int * customers.at((order.first, 0, 0), (key.0, 0, 0), false)
+                order.count@ * customers.at((order.first, 0, 0), (key.0, 0, 0), false)
             } else { 0 })
     }
 }
@@ -181,6 +190,31 @@ pub proof fn lemma_valid(state: Data, db: Db)
     ensures valid(state, db),
 {
     reveal(valid);
+}
+
+/// What a valid state says: its runtime shape, the meaning of each table, and its answers.
+pub proof fn lemma_valid_parts(state: Data, db: Db)
+    requires valid(state, db),
+    ensures runtime_valid(state), meaning(state, db), crate::reading::read_valid(state, db),
+{
+    reveal(valid);
+}
+
+/// The meaning of a state is the meaning of each of its tables.
+pub proof fn lemma_meaning_parts(state: Data, db: Db)
+    requires meaning(state, db),
+    ensures dimension_meaning(state, db), line_domain(db), base_meaning(state, db), index_meaning(state),
+        route_meaning(state, db), aggregate_meaning(state, db), routed_meaning(state),
+{
+    reveal(meaning);
+}
+
+pub proof fn lemma_meaning_from_parts(state: Data, db: Db)
+    requires dimension_meaning(state, db), line_domain(db), base_meaning(state, db), index_meaning(state),
+        route_meaning(state, db), aggregate_meaning(state, db), routed_meaning(state),
+    ensures meaning(state, db),
+{
+    reveal(meaning);
 }
 
 #[verifier::opaque]
@@ -226,17 +260,17 @@ pub open spec fn runtime_scalar(state: Data) -> bool {
 }
 
 pub open spec fn runtime_text(state: Data) -> bool {
-    &&& text_domain(state.parts, state.dictionary) && text_domain(state.nations, state.dictionary) && text_domain(state.regions, state.dictionary)
-    &&& text_domain(state.customer_routes, state.dictionary) && text_domain(state.supplier_routes, state.dictionary) && text_domain(state.base, state.dictionary)
+    &&& text_domain(state.parts, state.dictionary, 0) && text_domain(state.nations, state.dictionary, 1) && text_domain(state.regions, state.dictionary, 2)
+    &&& text_domain(state.customer_routes, state.dictionary, 2) && text_domain(state.supplier_routes, state.dictionary, 1) && text_domain(state.base, state.dictionary, 0)
 }
 
 pub open spec fn order_cell_shape(key: Major, cell: Cell) -> bool {
-    key.1 == 0 && key.2 == 0 && cell.third == 0 && cell.volume == 0
+    key.1 == 0 && key.2 == 0 && cell.third == 0 && cell.volume@ == 0
         && (cell.second == 1995 || cell.second == 1996)
 }
 
 pub open spec fn runtime_nation_cell_shape(key: Major, cell: Cell) -> bool {
-    key.1 == 0 && key.2 == 0 && cell.third == 0 && cell.volume == 0
+    key.1 == 0 && key.2 == 0 && cell.third == 0 && cell.volume@ == 0
 }
 
 pub open spec fn runtime_orders(state: Data) -> bool {
@@ -269,12 +303,12 @@ pub open spec fn runtime_base_cell_shape(key: Major, cell: Cell) -> bool {
 }
 
 pub open spec fn runtime_total_cell_shape(key: Major, cell: Cell, dictionary: Dictionary) -> bool {
-    0 <= key.0 < dictionary.length && 0 <= key.1 < dictionary.length && key.2 == 0
+    dictionary.regions.known(key.0) && dictionary.types.known(key.1) && key.2 == 0
         && (cell.first == 1995 || cell.first == 1996) && cell.second == 0 && cell.third == 0
 }
 
 pub open spec fn runtime_numerator_cell_shape(key: Major, cell: Cell, dictionary: Dictionary) -> bool {
-    0 <= key.0 < dictionary.length && 0 <= key.1 < dictionary.length && 0 <= key.2 < dictionary.length
+    dictionary.regions.known(key.0) && dictionary.types.known(key.1) && dictionary.names.known(key.2)
         && (cell.first == 1995 || cell.first == 1996) && cell.second == 0 && cell.third == 0
 }
 
@@ -288,13 +322,13 @@ pub open spec fn dimension_meaning(state: Data, db: Db) -> bool {
     &&& order_domain(db)
     &&& nation_domain(db)
     &&& forall|index: int| 0 <= index < db.part.len() ==>
-        text_present(dictionary, (#[trigger] db.part[index]).p_type)
+        text_present(dictionary, 0, (#[trigger] db.part[index]).p_type)
     &&& forall|index: int| 0 <= index < db.nation.len() ==>
-        text_present(dictionary, (#[trigger] db.nation[index]).n_name)
+        text_present(dictionary, 1, (#[trigger] db.nation[index]).n_name)
     &&& forall|index: int| 0 <= index < db.region.len() ==>
-        text_present(dictionary, (#[trigger] db.region[index]).r_name)
+        text_present(dictionary, 2, (#[trigger] db.region[index]).r_name)
     &&& forall|key: i64, kind: i64| #[trigger] state.parts.at((key, 0, 0), (kind, 0, 0), false) ==
-        sum(db.part, |row: PartRow| if row.p_partkey == key as int && text_matches(dictionary, kind, row.p_type) { 1 } else { 0 })
+        sum(db.part, |row: PartRow| if row.p_partkey == key as int && text_matches(dictionary, 0, kind, row.p_type) { 1 } else { 0 })
     &&& forall|key: i64, nation: i64| #[trigger] state.suppliers.at((key, 0, 0), (nation, 0, 0), false) ==
         sum(db.supplier, |row: SupplierRow| if row.s_suppkey == key as int && row.s_nationkey == nation as int { 1 } else { 0 })
     &&& forall|key: i64, nation: i64| #[trigger] state.customers.at((key, 0, 0), (nation, 0, 0), false) ==
@@ -304,9 +338,9 @@ pub open spec fn dimension_meaning(state: Data, db: Db) -> bool {
             && year != 0 && year_of(row.o_orderdate) == year as int { 1 } else { 0 })
     &&& forall|key: i64, name: i64, region: i64| #[trigger] state.nations.at((key, 0, 0), (name, region, 0), false) ==
         sum(db.nation, |row: NationRow| if row.n_nationkey == key as int && row.n_regionkey == region as int
-            && text_matches(dictionary, name, row.n_name) { 1 } else { 0 })
+            && text_matches(dictionary, 1, name, row.n_name) { 1 } else { 0 })
     &&& forall|key: i64, name: i64| #[trigger] state.regions.at((key, 0, 0), (name, 0, 0), false) ==
-        sum(db.region, |row: RegionRow| if row.r_regionkey == key as int && text_matches(dictionary, name, row.r_name) { 1 } else { 0 })
+        sum(db.region, |row: RegionRow| if row.r_regionkey == key as int && text_matches(dictionary, 2, name, row.r_name) { 1 } else { 0 })
     &&& forall|customer: i64, order: i64| #[trigger] state.orders_by_customer.at((customer, 0, 0), (order, 0, 0), false) ==
         sum(db.orders, |row: OrdersRow| if row.o_orderkey == order as int && row.o_custkey == customer as int
             && year_of(row.o_orderdate) != 0 { 1 } else { 0 })
@@ -344,9 +378,9 @@ pub open spec fn routed_meaning(state: Data) -> bool {
 #[verifier::opaque]
 pub open spec fn index_meaning(state: Data) -> bool {
     &&& forall|customer: i64, supplier: i64| #[trigger] state.base_by_customer.at((customer, 0, 0), (supplier, 0, 0), false) ==
-        sum(state.base.rows((customer, supplier, 0)), |cell: Cell| cell.count as int)
+        sum(state.base.rows((customer, supplier, 0)), |cell: Cell| cell.count@)
     &&& forall|supplier: i64, customer: i64| #[trigger] state.base_by_supplier.at((supplier, 0, 0), (customer, 0, 0), false) ==
-        sum(state.base.rows((customer, supplier, 0)), |cell: Cell| cell.count as int)
+        sum(state.base.rows((customer, supplier, 0)), |cell: Cell| cell.count@)
 }
 
 #[verifier::opaque]
@@ -355,10 +389,10 @@ pub open spec fn route_meaning(state: Data, db: Db) -> bool {
     &&& forall|nation: i64, region: i64| #[trigger] state.customer_routes.at((nation, 0, 0), (region, 0, 0), false) ==
         sum(db.nation, |row: NationRow| if row.n_nationkey == nation as int {
             sum(db.region, |other: RegionRow| if row.n_regionkey == other.r_regionkey
-                && text_matches(dictionary, region, other.r_name) { 1 } else { 0 })
+                && text_matches(dictionary, 2, region, other.r_name) { 1 } else { 0 })
         } else { 0 })
     &&& forall|nation: i64, name: i64| #[trigger] state.supplier_routes.at((nation, 0, 0), (name, 0, 0), false) ==
-        sum(db.nation, |row: NationRow| if row.n_nationkey == nation as int && text_matches(dictionary, name, row.n_name) { 1 } else { 0 })
+        sum(db.nation, |row: NationRow| if row.n_nationkey == nation as int && text_matches(dictionary, 1, name, row.n_name) { 1 } else { 0 })
 }
 
 #[verifier::opaque]
@@ -366,15 +400,15 @@ pub open spec fn aggregate_meaning(state: Data, db: Db) -> bool {
     let dictionary = state.dictionary;
     &&& forall|region: i64, kind: i64, year: i64, volume: bool|
         #[trigger] state.totals.at((region, kind, 0), (year, 0, 0), volume) ==
-        if 0 <= region < dictionary.length && 0 <= kind < dictionary.length {
-            let parameters = Params { p1: Seq::empty(), p2: dictionary.text(region), p3: dictionary.text(kind) };
+        if dictionary.regions.known(region) && dictionary.types.known(kind) {
+            let parameters = Params { p1: Seq::empty(), p2: dictionary.regions.text(region), p3: dictionary.types.text(kind) };
             if volume { group_sum(db, parameters, year as int, |tuple: Tuple| tuple.all_nations.volume) }
             else { group_count(db, parameters, year as int) }
         } else { 0 }
     &&& forall|region: i64, kind: i64, name: i64, year: i64, volume: bool|
         #[trigger] state.numerators.at((region, kind, name), (year, 0, 0), volume) ==
-        if 0 <= region < dictionary.length && 0 <= kind < dictionary.length && 0 <= name < dictionary.length {
-            let parameters = Params { p1: dictionary.text(name), p2: dictionary.text(region), p3: dictionary.text(kind) };
+        if dictionary.regions.known(region) && dictionary.types.known(kind) && dictionary.names.known(name) {
+            let parameters = Params { p1: dictionary.names.text(name), p2: dictionary.regions.text(region), p3: dictionary.types.text(kind) };
             group_sum(db, parameters, year as int, numerator_weight(parameters, volume))
         } else { 0 }
 }

@@ -214,16 +214,87 @@ pub open spec fn lineitem_delta_ok(d: Seq<ShipmentKeyDelta>, full: Seq<(Lineitem
     }
 }
 
+/// Each change is one row, inserted (+1) or deleted (-1).
+pub open spec fn unit_weights<A>(d: Seq<(A, int)>) -> bool {
+    forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1
+}
+
 /// One transaction's changes: every table of db2 is that of db plus its deltas (bags).
 pub open spec fn capture_ok(db: Db, db2: Db, customer: Seq<(CustomerRow, int)>, lineitem: Seq<(LineitemRow, int)>, orders: Seq<(OrdersRow, int)>) -> bool {
     &&& bag_step(db.customer, db2.customer, customer)
+    &&& unit_weights(customer)
     &&& bag_step(db.lineitem, db2.lineitem, lineitem)
+    &&& unit_weights(lineitem)
     &&& bag_step(db.orders, db2.orders, orders)
+    &&& unit_weights(orders)
+}
+
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table can hold (the DBMS's row ids are 64-bit).
+pub open spec fn max_rows() -> int {
+    9223372036854775808
+}
+
+/// Most changed rows a state may absorb after its build before apply may decline
+/// (the host then rebuilds).
+pub open spec fn max_history() -> int {
+    4611686018427387904
+}
+
+/// Each value of customer lies in the range of its column's SQL type.
+pub open spec fn customer_in_type(r: CustomerRow) -> bool {
+    -2147483648 <= r.c_custkey <= 2147483647
+}
+
+/// Each value of lineitem lies in the range of its column's SQL type.
+pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
+    -2147483648 <= r.l_orderkey <= 2147483647
+    && -999999999999999 <= r.l_extendedprice <= 999999999999999
+    && -999999999999999 <= r.l_discount <= 999999999999999
+    && -2147483648 <= r.l_shipdate <= 2147483647
+}
+
+/// Each value of orders lies in the range of its column's SQL type.
+pub open spec fn orders_in_type(r: OrdersRow) -> bool {
+    -2147483648 <= r.o_orderkey <= 2147483647
+    && -2147483648 <= r.o_custkey <= 2147483647
+    && -2147483648 <= r.o_orderdate <= 2147483647
+    && -2147483648 <= r.o_shippriority <= 2147483647
+}
+
+/// The databases the DBMS can represent: each table within its row-id space, each
+/// value within its column's SQL type.
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.customer.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.customer.len() ==> customer_in_type(#[trigger] db.customer[i])
+    &&& db.lineitem.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.lineitem.len() ==> lineitem_in_type(#[trigger] db.lineitem[i])
+    &&& db.orders.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.orders.len() ==> orders_in_type(#[trigger] db.orders[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    -9223372036854775808 <= r.l_orderkey <= 9223372036854775807
+    && -170141183460469231731687303715884105728 <= r.revenue <= 170141183460469231731687303715884105727
+    && -2147483648 <= r.o_orderdate <= 2147483647
+    && -9223372036854775808 <= r.o_shippriority <= 9223372036854775807
+}
+
+/// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves
+/// `defined <==> exists an answer`) and every correct answer fits: at most max_rows()
+/// rows, each in the result's runtime types.  A kernel that declines because no answer
+/// exists must prove
+/// `!defined`.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    &&& defined(db, params)
+    &&& forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> o.len() <= max_rows() && forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
 }
 
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     customers: Vec<CustomerInput>,
     orders: &[OrderInput],
@@ -236,11 +307,14 @@ pub fn ob_build(
         scan_shipments_ok(db, shipments@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        r matches Some(s) ==> crate::kernel::history(s) == 0,
+        envelope(db) ==> r is Some,
 {
     kernel::build(customers, orders, shipments, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope, or when no correct answer exists or one overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: &[u8],
@@ -248,35 +322,41 @@ pub fn ob_execute(
 ) -> (r: Option<Vec<(i64, i128, i32, i64)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2 as int), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1@, p2 as int)) ==> r is Some,
 {
     kernel::execute(s, p1, p2)
 }
 
-/// The keys whose rows the host rescans (rescan orders_by_key) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan orders_by_key) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_orders_by_key_keys(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
     lineitem_delta: &[ShipmentKeyDelta],
     orders_delta: &[OrderKeyDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_orders_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
 {
     kernel::rescan_orders_by_key_keys(s, customer_delta, lineitem_delta, orders_delta)
 }
 
-/// The keys whose rows the host rescans (rescan shipments_by_key) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan shipments_by_key) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_shipments_by_key_keys(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
     lineitem_delta: &[ShipmentKeyDelta],
     orders_delta: &[OrderKeyDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_shipments_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
 {
     kernel::rescan_shipments_by_key_keys(s, customer_delta, lineitem_delta, orders_delta)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope or after max_history() changed rows since the build.
 pub fn ob_apply(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
@@ -294,10 +374,14 @@ pub fn ob_apply(
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(s.db(), db2, customer_delta_seq_view(customer_delta@), lineitem_full, orders_full),
+        orders_by_key_keys@ == crate::kernel::rescan_orders_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
         rescan_orders_by_key_ok(db2, orders_by_key_keys@, orders_by_key_rows@),
+        shipments_by_key_keys@ == crate::kernel::rescan_shipments_by_key_wanted(*s, customer_delta@, lineitem_delta@, orders_delta@),
         rescan_shipments_by_key_ok(db2, shipments_by_key_keys@, shipments_by_key_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        r matches Ok(s2) ==> crate::kernel::history(s2) <= crate::kernel::history(*s) + customer_delta@.len() + lineitem_delta@.len() + orders_delta@.len(),
+        envelope(s.db()) && envelope(db2) && crate::kernel::history(*s) + customer_delta@.len() + lineitem_delta@.len() + orders_delta@.len() <= max_history() ==> r is Ok,
 {
     kernel::apply(s, customer_delta, lineitem_delta, orders_delta, orders_by_key_keys, orders_by_key_rows, shipments_by_key_keys, shipments_by_key_rows, Ghost(lineitem_full), Ghost(orders_full), Ghost(db2))
 }

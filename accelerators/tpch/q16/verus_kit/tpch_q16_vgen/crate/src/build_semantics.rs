@@ -38,11 +38,11 @@ pub proof fn lemma_join_support(parts: Parts, edges: Edges, db: Db, supplier: in
     if edges.at((supplier, Seq::empty())).is_some() {
         let neighborhood = edges.at((supplier, Seq::empty())).unwrap();
         neighborhood.model();
-        let pair = |edge: (KeyView, i64), row: PartRow| if edge.0 == (row.p_partkey, Seq::<u8>::empty()) && matching(row) { edge.1 as int } else { 0int };
-        let horizontal = |edge: (KeyView, i64)| sum(db.part, |row: PartRow| pair(edge, row));
-        let vertical = |row: PartRow| sum(neighborhood.entries(), |edge: (KeyView, i64)| pair(edge, row));
+        let pair = |edge: (KeyView, i128), row: PartRow| if edge.0 == (row.p_partkey, Seq::<u8>::empty()) && matching(row) { edge.1 as int } else { 0int };
+        let horizontal = |edge: (KeyView, i128)| sum(db.part, |row: PartRow| pair(edge, row));
+        let vertical = |row: PartRow| sum(neighborhood.entries(), |edge: (KeyView, i128)| pair(edge, row));
         lemma_sum_swap(neighborhood.entries(), db.part, pair, horizontal, vertical);
-        let original = |edge: (KeyView, i64)| edge.1 as int * part_at(parts, edge.0.0, key);
+        let original = |edge: (KeyView, i128)| edge.1 as int * part_at(parts, edge.0.0, key);
         assert forall|position: int| 0 <= position < neighborhood.entries().len() implies
             horizontal(#[trigger] neighborhood.entries()[position]) == original(neighborhood.entries()[position]) by {
             let edge = neighborhood.entries()[position];
@@ -76,9 +76,9 @@ pub proof fn lemma_join_support(parts: Parts, edges: Edges, db: Db, supplier: in
         assert forall|row: PartRow| #[trigger] vertical(row) == target(row) by {
             let factor = if matching(row) { 1int } else { 0int };
             verus_prooflib::lemma_ordered_selected_weight(&neighborhood, (row.p_partkey, Seq::empty()),
-                |edge: (KeyView, i64)| edge.1 as int, factor, |edge: (KeyView, i64)| pair(edge, row));
+                |edge: (KeyView, i128)| edge.1 as int, factor, |edge: (KeyView, i128)| pair(edge, row));
             assert(verus_prooflib::ordered_weight_at(neighborhood, (row.p_partkey, Seq::empty()),
-                |edge: (KeyView, i64)| edge.1 as int) == integer_at(neighborhood, (row.p_partkey, Seq::empty())));
+                |edge: (KeyView, i128)| edge.1 as int) == integer_at(neighborhood, (row.p_partkey, Seq::empty())));
             assert(edge_at(edges, supplier, row.p_partkey) == integer_at(neighborhood, (row.p_partkey, Seq::empty())));
             assert(edge_at(edges, supplier, row.p_partkey) == edge_count(db, row.p_partkey, supplier));
         }
@@ -142,11 +142,11 @@ pub proof fn lemma_directory_contains(edges: Edges, db: Db, position: int)
     assert(edge_at(edges, row.ps_suppkey, row.ps_partkey) > 0);
 }
 
-pub proof fn lemma_build_total(parts: Parts, edges: Edges, blockers: Index<i64>, db: Db, brand: Seq<u8>, kind: Seq<u8>, size: int)
+pub proof fn lemma_build_total(parts: Parts, edges: Edges, blockers: Index<i128>, db: Db, brand: Seq<u8>, kind: Seq<u8>, size: int)
     requires parts_keys_valid(parts), edges_keys_valid(edges), integer_keys(blockers),
         scanned_parts(parts, db), scanned_edges(edges, db), scanned_blockers(blockers, db),
     ensures total(db, brand, kind, size) == sum(edges.entries(),
-        |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, group_key(brand, kind, size))),
+        |row: (KeyView, Index<i128>)| supplier_weight(parts, blockers, row, group_key(brand, kind, size))),
 {
     edges.model();
     let key = group_key(brand, kind, size);
@@ -155,8 +155,8 @@ pub proof fn lemma_build_total(parts: Parts, edges: Edges, blockers: Index<i64>,
     lemma_dedup(selected);
     assert(distinct(keys));
     let qualified = |supplier: int| if qualifying_supplier(db, brand, kind, size, supplier) { 1int } else { 0int };
-    let weight = |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, key);
-    let project = |row: (KeyView, Index<i64>)| row.0.0;
+    let weight = |row: (KeyView, Index<i128>)| supplier_weight(parts, blockers, row, key);
+    let project = |row: (KeyView, Index<i128>)| row.0.0;
     assert forall|position: int| 0 <= position < edges.entries().len() implies
         weight(#[trigger] edges.entries()[position]) == qualified(edges.entries()[position].0.0) by {
         let row = edges.entries()[position];
@@ -166,16 +166,16 @@ pub proof fn lemma_build_total(parts: Parts, edges: Edges, blockers: Index<i64>,
         assert(integer_at(blockers, row.0) == blocker_count(db, row.0.0));
     }
     assert forall|supplier: int| #[trigger] qualified(supplier) ==
-        sum(edges.entries(), |row: (KeyView, Index<i64>)| if project(row) == supplier { weight(row) } else { 0int }) by {
+        sum(edges.entries(), |row: (KeyView, Index<i128>)| if project(row) == supplier { weight(row) } else { 0int }) by {
         if qualified(supplier) != 0 {
             lemma_qualified_witness(db, brand, kind, size, supplier);
             let position = choose|position: int| 0 <= position < db.partsupp.len()
                 && #[trigger] supplier_keys(db.partsupp)[position] == supplier;
             lemma_directory_contains(edges, db, position);
         }
-        let selected_weight = |row: (KeyView, Index<i64>)| if row.0 == (supplier, Seq::<u8>::empty()) { qualified(row.0.0) } else { 0int };
+        let selected_weight = |row: (KeyView, Index<i128>)| if row.0 == (supplier, Seq::<u8>::empty()) { qualified(row.0.0) } else { 0int };
         verus_prooflib::lemma_ordered_selected_weight(&edges, (supplier, Seq::empty()),
-            |row: (KeyView, Index<i64>)| qualified(row.0.0), 1int, selected_weight);
+            |row: (KeyView, Index<i128>)| qualified(row.0.0), 1int, selected_weight);
         assert(sum(edges.entries(), selected_weight) == qualified(supplier));
         assert forall|position: int| 0 <= position < edges.entries().len() implies
             selected_weight(#[trigger] edges.entries()[position]) ==
@@ -184,7 +184,7 @@ pub proof fn lemma_build_total(parts: Parts, edges: Edges, blockers: Index<i64>,
             assert(edges.entries()[position].0.1 == Seq::<u8>::empty());
         }
         lemma_sum_ext(edges.entries(), selected_weight,
-            |row: (KeyView, Index<i64>)| if project(row) == supplier { weight(row) } else { 0int });
+            |row: (KeyView, Index<i128>)| if project(row) == supplier { weight(row) } else { 0int });
     }
     assert forall|position: int| 0 <= position < edges.entries().len() && weight(edges.entries()[position]) != 0 implies
         keys.contains(project(#[trigger] edges.entries()[position])) by {

@@ -21,7 +21,7 @@ pub open spec fn valid(root: Option<Arc<Directory>>, depth: nat) -> bool
         None => true,
         Some(node) => match *node {
             Directory::Page(map) => depth == 0 && map@.dom().len() > 0 &&
-                forall|key: u64| #[trigger] map@.dom().contains(key) ==> key < 64 && map@[key].count > 0,
+                forall|key: u64| #[trigger] map@.dom().contains(key) ==> key < 64 && !is_zero(map@[key]),
             Directory::Branch(children) => depth > 0 && children.len() == 16 &&
                 (forall|index: int| 0 <= index < 16 ==>
                     valid(#[trigger] children@[index], (depth - 1) as nat)),
@@ -29,7 +29,7 @@ pub open spec fn valid(root: Option<Arc<Directory>>, depth: nat) -> bool
     }
 }
 
-pub open spec fn lookup(root: Option<Arc<Directory>>, depth: nat, id: u64) -> Moments
+pub open spec fn lookup(root: Option<Arc<Directory>>, depth: nat, id: u64) -> MomentsView
     decreases depth,
 {
     match root {
@@ -117,7 +117,7 @@ fn digit_stride(depth: u32) -> (out: u64)
 
 pub fn get(root: &Option<Arc<Directory>>, depth: u32, id: u64) -> (out: Moments)
     requires depth <= 7, valid(*root, depth as nat),
-    ensures same(out, lookup(*root, depth as nat, id)),
+    ensures moments_view(out) == lookup(*root, depth as nat, id),
     decreases depth,
     {
     match root {
@@ -246,20 +246,20 @@ impl Changes {
         ensures out.wf(), out.blocks@ == Map::<u64, Moments>::empty(), out.pages@ == Seq::<u64>::empty(),
     { Changes { blocks: HashMap::new(), pages: Vec::new(), seen: HashMap::new() } }
 
-    pub fn add_day(&mut self, date: i32, change: Moments) -> (out: bool)
+    pub fn add_day(&mut self, date: i32, change: &Moments)
         requires old(self).wf(),
-        ensures out ==> final(self).wf(),
-            out ==> forall|id: u64| (#[trigger] block_value(final(self).blocks@, id)).count as int ==
-            block_value(old(self).blocks@, id).count as int +
-                if in_block(id, date as int) { change.count as int } else { 0 },
-            out ==> forall|id: u64| (#[trigger] block_value(final(self).blocks@, id)).total as int ==
-            block_value(old(self).blocks@, id).total as int +
-                if in_block(id, date as int) { change.total as int } else { 0 },
-            out ==> forall|id: u64| (#[trigger] block_value(final(self).blocks@, id)).promo as int ==
-            block_value(old(self).blocks@, id).promo as int +
-                if in_block(id, date as int) { change.promo as int } else { 0 },
+        ensures final(self).wf(),
+            forall|id: u64| (#[trigger] block_value(final(self).blocks@, id)).count ==
+            block_value(old(self).blocks@, id).count +
+                if in_block(id, date as int) { change.count@ } else { 0 },
+            forall|id: u64| (#[trigger] block_value(final(self).blocks@, id)).total ==
+            block_value(old(self).blocks@, id).total +
+                if in_block(id, date as int) { change.total@ } else { 0 },
+            forall|id: u64| (#[trigger] block_value(final(self).blocks@, id)).promo ==
+            block_value(old(self).blocks@, id).promo +
+                if in_block(id, date as int) { change.promo@ } else { 0 },
     {
-        if change.count == 0 && change.total == 0 && change.promo == 0 { return true; }
+        if change.is_empty() { return; }
         let original_date: Ghost<int> = Ghost(date as int);
         let initial: Ghost<Map<u64, Moments>> = Ghost(self.blocks@);
         let date = date_key(date);
@@ -267,15 +267,15 @@ impl Changes {
         while level <= 32
             invariant level <= 33, self.wf(),
                 original_date@ == date as int - 2147483648, date < 4294967296u64,
-                forall|id: u64| (#[trigger] block_value(self.blocks@, id)).count as int ==
-                    block_value(initial@, id).count as int +
-                        if in_block_prefix(id, original_date@, level as nat) { change.count as int } else { 0 },
-                forall|id: u64| (#[trigger] block_value(self.blocks@, id)).total as int ==
-                    block_value(initial@, id).total as int +
-                        if in_block_prefix(id, original_date@, level as nat) { change.total as int } else { 0 },
-                forall|id: u64| (#[trigger] block_value(self.blocks@, id)).promo as int ==
-                    block_value(initial@, id).promo as int +
-                        if in_block_prefix(id, original_date@, level as nat) { change.promo as int } else { 0 },
+                forall|id: u64| (#[trigger] block_value(self.blocks@, id)).count ==
+                    block_value(initial@, id).count +
+                        if in_block_prefix(id, original_date@, level as nat) { change.count@ } else { 0 },
+                forall|id: u64| (#[trigger] block_value(self.blocks@, id)).total ==
+                    block_value(initial@, id).total +
+                        if in_block_prefix(id, original_date@, level as nat) { change.total@ } else { 0 },
+                forall|id: u64| (#[trigger] block_value(self.blocks@, id)).promo ==
+                    block_value(initial@, id).promo +
+                        if in_block_prefix(id, original_date@, level as nat) { change.promo@ } else { 0 },
             decreases 33 - level,
         {
             let width = power(level);
@@ -283,7 +283,7 @@ impl Changes {
             proof { lemma_block_bounds(original_date@, level as nat); }
             let id = base + date / width;
             let before = get_block(&self.blocks, id);
-            let after = match add(before, change) { Some(value) => value, None => return false };
+            let after = add(&before, change);
             let ghost previous = self.blocks@;
             let ghost previous_pages = self.pages@;
             let ghost previous_seen = self.seen@;
@@ -295,23 +295,23 @@ impl Changes {
                 self.pages.push(page);
             }
             proof {
-                assert forall|key: u64| (#[trigger] block_value(self.blocks@, key)).count as int == block_value(initial@, key).count as int +
-                    if in_block_prefix(key, original_date@, level as nat + 1) { change.count as int } else { 0 } by {
+                assert forall|key: u64| (#[trigger] block_value(self.blocks@, key)).count == block_value(initial@, key).count +
+                    if in_block_prefix(key, original_date@, level as nat + 1) { change.count@ } else { 0 } by {
                     lemma_block_prefix(key, original_date@, level as nat);
-                    assert(block_value(previous, key).count as int == block_value(initial@, key).count as int +
-                        if in_block_prefix(key, original_date@, level as nat) { change.count as int } else { 0 });
+                    assert(block_value(previous, key).count == block_value(initial@, key).count +
+                        if in_block_prefix(key, original_date@, level as nat) { change.count@ } else { 0 });
                 }
-                assert forall|key: u64| (#[trigger] block_value(self.blocks@, key)).total as int == block_value(initial@, key).total as int +
-                    if in_block_prefix(key, original_date@, level as nat + 1) { change.total as int } else { 0 } by {
+                assert forall|key: u64| (#[trigger] block_value(self.blocks@, key)).total == block_value(initial@, key).total +
+                    if in_block_prefix(key, original_date@, level as nat + 1) { change.total@ } else { 0 } by {
                     lemma_block_prefix(key, original_date@, level as nat);
-                    assert(block_value(previous, key).total as int == block_value(initial@, key).total as int +
-                        if in_block_prefix(key, original_date@, level as nat) { change.total as int } else { 0 });
+                    assert(block_value(previous, key).total == block_value(initial@, key).total +
+                        if in_block_prefix(key, original_date@, level as nat) { change.total@ } else { 0 });
                 }
-                assert forall|key: u64| (#[trigger] block_value(self.blocks@, key)).promo as int == block_value(initial@, key).promo as int +
-                    if in_block_prefix(key, original_date@, level as nat + 1) { change.promo as int } else { 0 } by {
+                assert forall|key: u64| (#[trigger] block_value(self.blocks@, key)).promo == block_value(initial@, key).promo +
+                    if in_block_prefix(key, original_date@, level as nat + 1) { change.promo@ } else { 0 } by {
                     lemma_block_prefix(key, original_date@, level as nat);
-                    assert(block_value(previous, key).promo as int == block_value(initial@, key).promo as int +
-                        if in_block_prefix(key, original_date@, level as nat) { change.promo as int } else { 0 });
+                    assert(block_value(previous, key).promo == block_value(initial@, key).promo +
+                        if in_block_prefix(key, original_date@, level as nat) { change.promo@ } else { 0 });
                 }
                 assert forall|candidate: u64| #[trigger] self.seen@.dom().contains(candidate) == self.pages@.contains(candidate) by {
                     if add_page { lemma_push_contains(previous_pages, page, candidate); }
@@ -327,19 +327,18 @@ impl Changes {
             }
             level += 1;
         }
-        true
     }
 
-    pub fn publish(&self, root: &Option<Arc<Directory>>) -> (out: Option<Option<Arc<Directory>>>)
+    pub fn publish(&self, root: &Option<Arc<Directory>>) -> (result: Option<Arc<Directory>>)
         requires self.wf(), valid(*root, 7),
-        ensures out matches Some(result) ==> valid(result, 7),
-            out matches Some(result) ==> forall|id: u64| id < 17179869184u64 ==> {
-                &&& (#[trigger] lookup(result, 7, id)).count as int ==
-                    lookup(*root, 7, id).count as int + block_value(self.blocks@, id).count as int
-                &&& lookup(result, 7, id).total as int ==
-                    lookup(*root, 7, id).total as int + block_value(self.blocks@, id).total as int
-                &&& lookup(result, 7, id).promo as int ==
-                    lookup(*root, 7, id).promo as int + block_value(self.blocks@, id).promo as int
+        ensures valid(result, 7),
+            forall|id: u64| id < 17179869184u64 ==> {
+                &&& (#[trigger] lookup(result, 7, id)).count ==
+                    lookup(*root, 7, id).count + block_value(self.blocks@, id).count
+                &&& lookup(result, 7, id).total ==
+                    lookup(*root, 7, id).total + block_value(self.blocks@, id).total
+                &&& lookup(result, 7, id).promo ==
+                    lookup(*root, 7, id).promo + block_value(self.blocks@, id).promo
             },
     {
         let mut result = share(root);
@@ -347,12 +346,12 @@ impl Changes {
         while index < self.pages.len()
             invariant index <= self.pages.len(), valid(result, 7), self.wf(), valid(*root, 7),
                 forall|id: u64| id < 17179869184u64 ==> {
-                    &&& (#[trigger] lookup(result, 7, id)).count as int == lookup(*root, 7, id).count as int +
-                        if self.pages@.take(index as int).contains(id / 64) { block_value(self.blocks@, id).count as int } else { 0 }
-                    &&& lookup(result, 7, id).total as int == lookup(*root, 7, id).total as int +
-                        if self.pages@.take(index as int).contains(id / 64) { block_value(self.blocks@, id).total as int } else { 0 }
-                    &&& lookup(result, 7, id).promo as int == lookup(*root, 7, id).promo as int +
-                        if self.pages@.take(index as int).contains(id / 64) { block_value(self.blocks@, id).promo as int } else { 0 }
+                    &&& (#[trigger] lookup(result, 7, id)).count == lookup(*root, 7, id).count +
+                        if self.pages@.take(index as int).contains(id / 64) { block_value(self.blocks@, id).count } else { 0 }
+                    &&& lookup(result, 7, id).total == lookup(*root, 7, id).total +
+                        if self.pages@.take(index as int).contains(id / 64) { block_value(self.blocks@, id).total } else { 0 }
+                    &&& lookup(result, 7, id).promo == lookup(*root, 7, id).promo +
+                        if self.pages@.take(index as int).contains(id / 64) { block_value(self.blocks@, id).promo } else { 0 }
                 },
             decreases self.pages.len() - index,
         {
@@ -361,41 +360,38 @@ impl Changes {
             let mut offset: u64 = 0;
             while offset < 64
                 invariant offset <= 64, page < 134217728u64, valid(*root, 7),
-                    forall|slot: u64| (#[trigger] map@.dom().contains(slot)) ==> slot < offset && map@[slot].count > 0,
+                    forall|slot: u64| (#[trigger] map@.dom().contains(slot)) ==> slot < offset && !is_zero(map@[slot]),
                     forall|slot: u64| slot < offset ==> {
-                        &&& (#[trigger] block_value(map@, slot)).count as int ==
-                            lookup(*root, 7, (page * 64 + slot) as u64).count as int + block_value(self.blocks@, (page * 64 + slot) as u64).count as int
-                        &&& block_value(map@, slot).total as int ==
-                            lookup(*root, 7, (page * 64 + slot) as u64).total as int + block_value(self.blocks@, (page * 64 + slot) as u64).total as int
-                        &&& block_value(map@, slot).promo as int ==
-                            lookup(*root, 7, (page * 64 + slot) as u64).promo as int + block_value(self.blocks@, (page * 64 + slot) as u64).promo as int
+                        &&& (#[trigger] block_value(map@, slot)).count ==
+                            lookup(*root, 7, (page * 64 + slot) as u64).count + block_value(self.blocks@, (page * 64 + slot) as u64).count
+                        &&& block_value(map@, slot).total ==
+                            lookup(*root, 7, (page * 64 + slot) as u64).total + block_value(self.blocks@, (page * 64 + slot) as u64).total
+                        &&& block_value(map@, slot).promo ==
+                            lookup(*root, 7, (page * 64 + slot) as u64).promo + block_value(self.blocks@, (page * 64 + slot) as u64).promo
                     },
                 decreases 64 - offset,
             {
                 let id = page * 64 + offset;
                 let before = get(root, 7, id);
                 let change = get_block(&self.blocks, id);
-                let after = match add(before, change) { Some(value) => value, None => return None };
-                if after.count < 0 { return None; }
+                let after = add(&before, &change);
                 let ghost earlier = map@;
-                if after.count == 0 {
-                    if after.total != 0 || after.promo != 0 { return None; }
-                } else { map.insert(offset, after); }
+                if !after.is_empty() { map.insert(offset, after.dup()); }
                 proof {
                     assert forall|slot: u64| slot < offset + 1 implies {
-                        &&& (#[trigger] block_value(map@, slot)).count as int ==
-                            lookup(*root, 7, (page * 64 + slot) as u64).count as int + block_value(self.blocks@, (page * 64 + slot) as u64).count as int
-                        &&& block_value(map@, slot).total as int ==
-                            lookup(*root, 7, (page * 64 + slot) as u64).total as int + block_value(self.blocks@, (page * 64 + slot) as u64).total as int
-                        &&& block_value(map@, slot).promo as int ==
-                            lookup(*root, 7, (page * 64 + slot) as u64).promo as int + block_value(self.blocks@, (page * 64 + slot) as u64).promo as int
+                        &&& (#[trigger] block_value(map@, slot)).count ==
+                            lookup(*root, 7, (page * 64 + slot) as u64).count + block_value(self.blocks@, (page * 64 + slot) as u64).count
+                        &&& block_value(map@, slot).total ==
+                            lookup(*root, 7, (page * 64 + slot) as u64).total + block_value(self.blocks@, (page * 64 + slot) as u64).total
+                        &&& block_value(map@, slot).promo ==
+                            lookup(*root, 7, (page * 64 + slot) as u64).promo + block_value(self.blocks@, (page * 64 + slot) as u64).promo
                     } by {
                         if slot < offset {
-                            assert(same(block_value(map@, slot), block_value(earlier, slot)));
+                            assert(block_value(map@, slot) == block_value(earlier, slot));
                         } else {
                             assert(slot == offset);
                             assert(!earlier.dom().contains(slot));
-                            assert(same(block_value(map@, slot), after));
+                            assert(block_value(map@, slot) == moments_view(after));
                         }
                     }
                 }
@@ -405,13 +401,13 @@ impl Changes {
             proof {
                 assert(valid(replacement, 0));
                 assert forall|id: u64| id < 17179869184u64 && id / 64 == page implies {
-                    &&& (#[trigger] lookup(replacement, 0, id)).count as int == lookup(*root, 7, id).count as int + block_value(self.blocks@, id).count as int
-                    &&& lookup(replacement, 0, id).total as int == lookup(*root, 7, id).total as int + block_value(self.blocks@, id).total as int
-                    &&& lookup(replacement, 0, id).promo as int == lookup(*root, 7, id).promo as int + block_value(self.blocks@, id).promo as int
+                    &&& (#[trigger] lookup(replacement, 0, id)).count == lookup(*root, 7, id).count + block_value(self.blocks@, id).count
+                    &&& lookup(replacement, 0, id).total == lookup(*root, 7, id).total + block_value(self.blocks@, id).total
+                    &&& lookup(replacement, 0, id).promo == lookup(*root, 7, id).promo + block_value(self.blocks@, id).promo
                 } by {
                     lemma_division(id as int, 64);
                     assert(id == page * 64 + id % 64);
-                    assert(same(lookup(replacement, 0, id), block_value(map@, id % 64)));
+                    assert(lookup(replacement, 0, id) == block_value(map@, id % 64));
                 }
             }
             let ghost earlier = result;
@@ -426,12 +422,12 @@ impl Changes {
                     }
                 }
                 assert forall|id: u64| id < 17179869184u64 implies {
-                    &&& (#[trigger] lookup(result, 7, id)).count as int == lookup(*root, 7, id).count as int +
-                        if self.pages@.take(index as int + 1).contains(id / 64) { block_value(self.blocks@, id).count as int } else { 0 }
-                    &&& lookup(result, 7, id).total as int == lookup(*root, 7, id).total as int +
-                        if self.pages@.take(index as int + 1).contains(id / 64) { block_value(self.blocks@, id).total as int } else { 0 }
-                    &&& lookup(result, 7, id).promo as int == lookup(*root, 7, id).promo as int +
-                        if self.pages@.take(index as int + 1).contains(id / 64) { block_value(self.blocks@, id).promo as int } else { 0 }
+                    &&& (#[trigger] lookup(result, 7, id)).count == lookup(*root, 7, id).count +
+                        if self.pages@.take(index as int + 1).contains(id / 64) { block_value(self.blocks@, id).count } else { 0 }
+                    &&& lookup(result, 7, id).total == lookup(*root, 7, id).total +
+                        if self.pages@.take(index as int + 1).contains(id / 64) { block_value(self.blocks@, id).total } else { 0 }
+                    &&& lookup(result, 7, id).promo == lookup(*root, 7, id).promo +
+                        if self.pages@.take(index as int + 1).contains(id / 64) { block_value(self.blocks@, id).promo } else { 0 }
                 } by {
                     lemma_prefix_contains(self.pages@, index as int, id / 64);
                     assert(id as int / 64 < 268435456);
@@ -447,14 +443,14 @@ impl Changes {
         proof {
             assert(self.pages@.take(index as int) =~= self.pages@);
             assert forall|id: u64| id < 17179869184u64 implies {
-                &&& (#[trigger] lookup(result, 7, id)).count as int == lookup(*root, 7, id).count as int + block_value(self.blocks@, id).count as int
-                &&& lookup(result, 7, id).total as int == lookup(*root, 7, id).total as int + block_value(self.blocks@, id).total as int
-                &&& lookup(result, 7, id).promo as int == lookup(*root, 7, id).promo as int + block_value(self.blocks@, id).promo as int
+                &&& (#[trigger] lookup(result, 7, id)).count == lookup(*root, 7, id).count + block_value(self.blocks@, id).count
+                &&& lookup(result, 7, id).total == lookup(*root, 7, id).total + block_value(self.blocks@, id).total
+                &&& lookup(result, 7, id).promo == lookup(*root, 7, id).promo + block_value(self.blocks@, id).promo
             } by {
                 if !self.pages@.contains(id / 64) { assert(!self.blocks@.dom().contains(id)); }
             }
         }
-        Some(result)
+        result
     }
 }
 

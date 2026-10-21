@@ -4,7 +4,9 @@ use verus_common::sums::sum;
 use verus_common::sums::lemma_sum_take;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
-use crate::counts::Counts;
+use crate::counts::{Counts, Tally};
+use verus_prooflib::wide::Wide;
+use std::collections::HashMap;
 use crate::histogram::{Directory, Layers, Sparse};
 use crate::moments::{self, Orders, Lines, Cells};
 use crate::bytes;
@@ -33,6 +35,13 @@ pub open spec fn cell_count(db: Db, mode: Seq<u8>, day: int, high: bool) -> int 
     } else { 0 })
 }
 
+pub open spec fn directory_at(directory: Arc<Directory>, mode: Seq<u8>, day: int) -> Counts {
+    if i32::MIN <= day <= i32::MAX { directory.at(mode, day as i32) }
+    else { Counts { high: 0, low: 0 } }
+}
+
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub struct State {
     directory: Arc<Directory>,
     database: Ghost<Db>,
@@ -42,8 +51,7 @@ impl State {
     pub closed spec fn db(self) -> Db { self.database@ }
 
     pub closed spec fn at(self, mode: Seq<u8>, day: int) -> Counts {
-        if i32::MIN <= day <= i32::MAX { self.directory.at(mode, day as i32) }
-        else { Counts { high: 0, low: 0 } }
+        directory_at(self.directory, mode, day)
     }
 
     #[verifier::type_invariant]
@@ -104,8 +112,8 @@ pub open spec fn scan_line_weight(key: i64, mode: Seq<u8>, day: i32) -> spec_fn(
         && row.l_receiptdate == day { 1 } else { 0 }
 }
 
-fn fold_orders(high: &[OrderKeyInput], low: &[OrderKeyInput]) -> (out: Option<Orders>)
-    ensures out matches Some(value) ==> value.wf()
+fn fold_orders(high: &[OrderKeyInput], low: &[OrderKeyInput]) -> (value: Orders)
+    ensures value.wf()
         && forall|key: i64| #![trigger value.at(key)]
             value.at(key).high == scan_order_count(high@, key)
                 && value.at(key).low == scan_order_count(low@, key),
@@ -120,7 +128,7 @@ fn fold_orders(high: &[OrderKeyInput], low: &[OrderKeyInput]) -> (out: Option<Or
                     && out.at(key).low == 0,
         decreases high.len() - index,
     {
-        if !out.add(high[index].o_orderkey, Counts { high: 1, low: 0 }) { return None; }
+        out.add(high[index].o_orderkey, &Tally::of(1, 0));
         proof {
             assert forall|key: i64| #![trigger out.at(key)]
                 out.at(key).high == scan_order_count(high@.take(index as int + 1), key) by {
@@ -140,7 +148,7 @@ fn fold_orders(high: &[OrderKeyInput], low: &[OrderKeyInput]) -> (out: Option<Or
                     && out.at(key).low == scan_order_count(low@.take(processed@), key),
         decreases low.len() - index,
     {
-        if !out.add(low[index].o_orderkey, Counts { high: 0, low: 1 }) { return None; }
+        out.add(low[index].o_orderkey, &Tally::of(0, 1));
         proof {
             assert forall|key: i64| #![trigger out.at(key)]
                 out.at(key).low == scan_order_count(low@.take(index as int + 1), key) by {
@@ -151,11 +159,11 @@ fn fold_orders(high: &[OrderKeyInput], low: &[OrderKeyInput]) -> (out: Option<Or
         processed = Ghost(index as int);
     }
     proof { assert(low@.take(processed@) =~= low@); }
-    Some(out)
+    out
 }
 
-fn fold_lines(rows: &Vec<QualifyingLineInput>) -> (out: Option<Lines>)
-    ensures out matches Some(value) ==> value.wf()
+fn fold_lines(rows: &Vec<QualifyingLineInput>) -> (value: Lines)
+    ensures value.wf()
         && forall|key: i64, mode: Seq<u8>, day: i32| #![trigger value.at(key, mode, day)]
             value.at(key, mode, day) == scan_line_count(rows@, key, mode, day),
 {
@@ -169,7 +177,7 @@ fn fold_lines(rows: &Vec<QualifyingLineInput>) -> (out: Option<Lines>)
         decreases rows@.len() - index,
     {
         let row = &rows[index];
-        if !out.add(row.l_orderkey, &row.l_shipmode, row.l_receiptdate, 1) { return None; }
+        out.add(row.l_orderkey, &row.l_shipmode, row.l_receiptdate, 1);
         proof {
             assert forall|key: i64, mode: Seq<u8>, day: i32| #![trigger out.at(key, mode, day)]
                 out.at(key, mode, day) == scan_line_count(rows@.take(index as int + 1), key, mode, day) by {
@@ -180,7 +188,7 @@ fn fold_lines(rows: &Vec<QualifyingLineInput>) -> (out: Option<Lines>)
         processed = Ghost(index as int);
     }
     proof { assert(rows@.take(processed@) =~= rows@); }
-    Some(out)
+    out
 }
 
 pub open spec fn joined_weight(orders: Orders, mode: Seq<u8>, day: i32, high: bool) -> spec_fn(QualifyingLineInput) -> int {
@@ -194,11 +202,14 @@ pub open spec fn joined_scan(rows: Seq<QualifyingLineInput>, orders: Orders,
     sum(rows, joined_weight(orders, mode, day, high))
 }
 
-fn publish_mode(base: &Arc<Directory>, next: &mut Directory, entry: &crate::moments::CellMode) -> (out: bool)
+fn publish_mode(base: &Arc<Directory>, next: &mut Directory, entry: &crate::moments::CellMode)
     requires base.wf(), old(next).wf(), entry.days.wf(),
         forall|day: i32| #![trigger old(next).at(entry.mode@, day)] old(next).at(entry.mode@, day) == base.at(entry.mode@, day),
+        forall|day: i32| #![trigger entry.days.at(day)]
+            base.at(entry.mode@, day).high + entry.days.at(day).high >= 0
+                && base.at(entry.mode@, day).low + entry.days.at(day).low >= 0,
     ensures final(next).wf(),
-        out ==> forall|day: i32| #![trigger final(next).at(entry.mode@, day)]
+        forall|day: i32| #![trigger final(next).at(entry.mode@, day)]
             final(next).at(entry.mode@, day).high == base.at(entry.mode@, day).high + entry.days.at(day).high
                 && final(next).at(entry.mode@, day).low == base.at(entry.mode@, day).low + entry.days.at(day).low,
         forall|text: Seq<u8>, day: i32| #![trigger final(next).at(text, day)]
@@ -210,6 +221,9 @@ fn publish_mode(base: &Arc<Directory>, next: &mut Directory, entry: &crate::mome
     while index < entry.days.keys.len()
         invariant index <= entry.days.keys@.len(), base.wf(), entry.days.wf(), patch.wf(),
             *next == *old(next), next.wf(),
+            forall|day: i32| #![trigger entry.days.at(day)]
+                base.at(entry.mode@, day).high + entry.days.at(day).high >= 0
+                    && base.at(entry.mode@, day).low + entry.days.at(day).low >= 0,
             forall|day: i32| #![trigger next.at(entry.mode@, day)] next.at(entry.mode@, day) == base.at(entry.mode@, day),
             existing matches Some(days) ==> days.wf()
                 && forall|day: i32| #![trigger days.at(day)] days.at(day) == base.at(entry.mode@, day),
@@ -225,10 +239,17 @@ fn publish_mode(base: &Arc<Directory>, next: &mut Directory, entry: &crate::mome
         let day = entry.days.keys[index];
         let change = entry.days.get(day);
         if !change.is_zero() {
-            let before = match &existing { Some(days) => days.get(day), None => Counts::zero() };
-            let after = match before.add(change) { Some(value) => value, None => return false };
-            if after.high < 0 || after.low < 0 { return false; }
+            let before = match &existing { Some(days) => days.get(day), None => Tally::zero() };
+            let after = before.add(&change);
+            proof {
+                assert(before@ == base.at(entry.mode@, day));
+                assert(change@ == entry.days.at(day));
+            }
             patch.put(day, after);
+            proof {
+                assert(patch.at(day).nonnegative());
+                assert(patch.values@.contains_key(day));
+            }
         }
         proof {
             entry.days.keys@.take(index as int).to_set_ensures();
@@ -254,10 +275,10 @@ fn publish_mode(base: &Arc<Directory>, next: &mut Directory, entry: &crate::mome
                 }
             }
         }
-        return true;
+        return;
     }
     let days = match existing {
-        Some(days) => match days.replace(patch) { Some(value) => value, None => return false },
+        Some(days) => days.replace(patch),
         None => {
             let mut clean = Sparse::new();
             index = 0;
@@ -298,12 +319,14 @@ fn publish_mode(base: &Arc<Directory>, next: &mut Directory, entry: &crate::mome
             && days.at(day).low == base.at(entry.mode@, day).low + entry.days.at(day).low by {}
     }
     next.install(entry.mode.clone(), Arc::new(days));
-    true
 }
 
-fn publish(base: &Arc<Directory>, changes: &Cells) -> (out: Option<Arc<Directory>>)
+fn publish(base: &Arc<Directory>, changes: &Cells) -> (next: Arc<Directory>)
     requires base.wf(), changes.wf(),
-    ensures out matches Some(next) ==> next.wf()
+        forall|mode: Seq<u8>, day: i32| #![trigger changes.at(mode, day)]
+            base.at(mode, day).high + changes.at(mode, day).high >= 0
+                && base.at(mode, day).low + changes.at(mode, day).low >= 0,
+    ensures next.wf()
         && forall|mode: Seq<u8>, day: i32| #![trigger next.at(mode, day)]
             next.at(mode, day).high == base.at(mode, day).high + changes.at(mode, day).high
                 && next.at(mode, day).low == base.at(mode, day).low + changes.at(mode, day).low,
@@ -315,12 +338,15 @@ fn publish(base: &Arc<Directory>, changes: &Cells) -> (out: Option<Arc<Directory
                 changes.lemma_inactive(mode, day);
             }
         }
-        return Some(base.clone());
+        return base.clone();
     }
     let mut next = base.share();
     let mut hash_index = 0;
     while hash_index < changes.hashes.len()
         invariant hash_index <= changes.hashes@.len(), changes.wf(), base.wf(), next.wf(),
+            forall|mode: Seq<u8>, day: i32| #![trigger changes.at(mode, day)]
+            base.at(mode, day).high + changes.at(mode, day).high >= 0
+                && base.at(mode, day).low + changes.at(mode, day).low >= 0,
             forall|mode: Seq<u8>, day: i32| #![trigger next.at(mode, day)]
                 next.at(mode, day).high == base.at(mode, day).high
                     + if changes.mode_prefix(hash_index as nat, 0).contains(mode) { changes.at(mode, day).high as int } else { 0 }
@@ -334,6 +360,9 @@ fn publish(base: &Arc<Directory>, changes: &Cells) -> (out: Option<Arc<Directory
                 let mut mode_index = 0;
                 while mode_index < bucket.len()
                     invariant mode_index <= bucket@.len(), changes.wf(), base.wf(), next.wf(), hash_index < changes.hashes@.len(),
+                        forall|mode: Seq<u8>, day: i32| #![trigger changes.at(mode, day)]
+            base.at(mode, day).high + changes.at(mode, day).high >= 0
+                && base.at(mode, day).low + changes.at(mode, day).low >= 0,
                         code == changes.hashes@[hash_index as int], bucket@ == changes.buckets@[code]@,
                         forall|mode: Seq<u8>, day: i32| #![trigger next.at(mode, day)]
                             next.at(mode, day).high == base.at(mode, day).high
@@ -347,8 +376,15 @@ fn publish(base: &Arc<Directory>, changes: &Cells) -> (out: Option<Arc<Directory
                         changes.lemma_mode_fresh(hash_index as nat, mode_index as int);
                         assert forall|day: i32| #![trigger changes.at(entry.mode@, day)]
                             changes.at(entry.mode@, day) == entry.days.at(day) by { changes.lemma_index(code, mode_index as int, day); }
+                        assert forall|day: i32| #![trigger entry.days.at(day)]
+                            base.at(entry.mode@, day).high + entry.days.at(day).high >= 0
+                                && base.at(entry.mode@, day).low + entry.days.at(day).low >= 0 by {
+                            assert(changes.at(entry.mode@, day) == entry.days.at(day));
+                            assert(base.at(entry.mode@, day).high + changes.at(entry.mode@, day).high >= 0);
+                            assert(base.at(entry.mode@, day).low + changes.at(entry.mode@, day).low >= 0);
+                        }
                     }
-                    if !publish_mode(base, &mut next, entry) { return None; }
+                    publish_mode(base, &mut next, entry);
                     proof { changes.lemma_mode_step(hash_index as nat, mode_index as int); }
                     mode_index += 1;
                 }
@@ -365,7 +401,7 @@ fn publish(base: &Arc<Directory>, changes: &Cells) -> (out: Option<Arc<Directory
             if !changes.modes(changes.hashes@.len()).contains(mode) { changes.lemma_mode_complete(mode, day); }
         }
     }
-    Some(Arc::new(next))
+    Arc::new(next)
 }
 
 pub fn build(
@@ -374,9 +410,9 @@ pub fn build(
 ) -> (r: Option<State>)
     requires scan_high_orders_ok(db, high_orders@), scan_low_orders_ok(db, low_orders@),
         scan_qualifying_lines_ok(db, qualifying_lines@),
-    ensures r matches Some(s) ==> s.db() == db,
+    ensures r matches Some(s) ==> s.db() == db, r is Some,
 {
-    let orders = match fold_orders(high_orders, low_orders) { Some(value) => value, None => return None };
+    let orders = fold_orders(high_orders, low_orders);
     let mut cells = Cells::new();
     let mut index = 0;
     let mut processed = Ghost(0int);
@@ -390,7 +426,7 @@ pub fn build(
         let row = &qualifying_lines[index];
         let weight = orders.get(row.l_orderkey);
         if !weight.is_zero() {
-            if !cells.add(&row.l_shipmode, row.l_receiptdate, weight) { return None; }
+            cells.add(&row.l_shipmode, row.l_receiptdate, &weight);
         }
         proof {
             assert forall|mode: Seq<u8>, day: i32| #![trigger cells.at(mode, day)]
@@ -405,7 +441,16 @@ pub fn build(
     }
     proof { assert(qualifying_lines@.take(processed@) =~= qualifying_lines@); }
     let empty = Arc::new(Directory::new());
-    let directory = match publish(&empty, &cells) { Some(value) => value, None => return None };
+    proof {
+        assert forall|mode: Seq<u8>, day: i32| #![trigger cells.at(mode, day)]
+            empty.at(mode, day).high + cells.at(mode, day).high >= 0 && empty.at(mode, day).low + cells.at(mode, day).low >= 0 by {
+            crate::semantics::lemma_build_cell(db, high_orders@, low_orders@, qualifying_lines@, orders, mode, day as int, true);
+            crate::semantics::lemma_build_cell(db, high_orders@, low_orders@, qualifying_lines@, orders, mode, day as int, false);
+            crate::semantics::lemma_cell_count_nonneg(db, mode, day as int, true);
+            crate::semantics::lemma_cell_count_nonneg(db, mode, day as int, false);
+        }
+    }
+    let directory = publish(&empty, &cells);
     proof {
         assert forall|mode: Seq<u8>, day: int| #![trigger cell_count(db, mode, day, true)]
             cell_count(db, mode, day, true) == if i32::MIN <= day <= i32::MAX { directory.at(mode, day as i32).high as int } else { 0 } by {
@@ -419,14 +464,17 @@ pub fn build(
     Some(State { directory, database: Ghost(db) })
 }
 
-fn emit(directory: &Directory, mode: &[u8], start: i32, end: i32)
-    -> (out: Option<Option<(Vec<u8>, i64, i64)>>)
+pub open spec fn rows_model(rows: Seq<(Vec<u8>, Tally)>) -> Seq<OutRow> {
+    rows.map_values(|row: (Vec<u8>, Tally)| OutRow { l_shipmode: row.0@, high_line_count: row.1@.high, low_line_count: row.1@.low })
+}
+
+fn emit(directory: &Directory, mode: &[u8], start: i32, end: i32) -> (out: Option<(Vec<u8>, Tally)>)
     requires directory.wf(),
-    ensures out matches Some(Some(row)) ==> row.0@ == mode@
-        && row.1 >= 0 && row.2 >= 0 && (row.1 > 0 || row.2 > 0)
-        && row.1 == directory.range_count(mode@, start as int, end as int, true)
-        && row.2 == directory.range_count(mode@, start as int, end as int, false),
-        out matches Some(None) ==> directory.range_count(mode@, start as int, end as int, true) == 0
+    ensures out matches Some(row) ==> row.0@ == mode@
+        && row.1@.nonnegative() && (row.1@.high > 0 || row.1@.low > 0)
+        && row.1@.high == directory.range_count(mode@, start as int, end as int, true)
+        && row.1@.low == directory.range_count(mode@, start as int, end as int, false),
+        out is None ==> directory.range_count(mode@, start as int, end as int, true) == 0
             && directory.range_count(mode@, start as int, end as int, false) == 0,
 {
     let days = match directory.find(mode) {
@@ -436,105 +484,299 @@ fn emit(directory: &Directory, mode: &[u8], start: i32, end: i32)
                 directory.lemma_range_missing(mode@, start as int, end as int, true);
                 directory.lemma_range_missing(mode@, start as int, end as int, false);
             }
-            return Some(None);
+            return None;
         },
     };
-    let total = match days.range(start, end) { Some(value) => value, None => return None };
+    let total = days.range(start, end);
     proof {
         let ghost days_model = *days;
         directory.lemma_range_mode(mode@, start as int, end as int, days_model, true);
         directory.lemma_range_mode(mode@, start as int, end as int, days_model, false);
     }
-    if total.is_zero() { return Some(None); }
-    if total.high < 0 || total.low < 0 || total.high > i64::MAX as i128 || total.low > i64::MAX as i128 {
-        return None;
+    if total.is_zero() { return None; }
+    Some((bytes::copy(mode), total))
+}
+
+fn narrow(rows: &Vec<(Vec<u8>, Tally)>) -> (out: Option<Vec<(Vec<u8>, i64, i64)>>)
+    ensures out matches Some(narrowed) ==> out_view(narrowed@) == rows_model(rows@),
+        out is None ==> exists|index: int| 0 <= index < rows@.len() && !out_fits(rows_model(rows@)[index]),
+{
+    let mut out: Vec<(Vec<u8>, i64, i64)> = Vec::new();
+    let mut index = 0;
+    while index < rows.len()
+        invariant index <= rows@.len(), out_view(out@) == rows_model(rows@).take(index as int),
+        decreases rows@.len() - index,
+    {
+        let row = &rows[index];
+        let high = row.1.high.to_i128();
+        let low = row.1.low.to_i128();
+        match (high, low) {
+            (Some(high), Some(low)) if i64::MIN as i128 <= high && high <= i64::MAX as i128
+                && i64::MIN as i128 <= low && low <= i64::MAX as i128 => {
+                let ghost previous = out@;
+                out.push((bytes::copy(&row.0), high as i64, low as i64));
+                proof {
+                    let model = rows_model(rows@);
+                    assert(out@ =~= previous.push(out@.last()));
+                    assert(out_view(out@) =~= out_view(previous).push(out_view(out@).last()));
+                    assert(out_view(out@).last() == model[index as int]);
+                    assert(model.take(index as int + 1) =~= model.take(index as int).push(model[index as int]));
+                    assert(out_view(out@) =~= model.take(index as int + 1));
+                }
+            },
+            _ => {
+                proof { assert(!out_fits(rows_model(rows@)[index as int])); }
+                return None;
+            },
+        }
+        index += 1;
     }
-    Some(Some((bytes::copy(mode), total.high as i64, total.low as i64)))
+    proof { assert(rows_model(rows@).take(index as int) =~= rows_model(rows@)); }
+    Some(out)
 }
 
 pub fn execute(s: &State, p1: &[u8], p2: &[u8], p3: i32, p4: i32)
     -> (r: Option<Vec<(Vec<u8>, i64, i64)>>)
     ensures r matches Some(out) ==> query_result(s.db(), params(p1@, p2@, p3 as int, p4 as int), out_view(out@)),
+        answer_fits(s.db(), params(p1@, p2@, p3 as int, p4 as int)) ==> r is Some,
 {
     proof { use_type_invariant(s); }
     let ghost parameters = params(p1@, p2@, p3 as int, p4 as int);
-    let mut out = Vec::new();
+    let mut rows: Vec<(Vec<u8>, Tally)> = Vec::new();
     if p4 <= p3 {
         proof {
             assert forall|mode: Seq<u8>| #![trigger group_count(s.db(), parameters, mode)] group_count(s.db(), parameters, mode) == 0 by {
                 s.lemma_group_range(parameters, mode);
             }
-            crate::semantics::lemma_execute_result(s.db(), parameters, out_view(out@));
+            crate::semantics::lemma_execute_result(s.db(), parameters, rows_model(rows@));
+            assert(out_view(Seq::<(Vec<u8>, i64, i64)>::empty()) =~= rows_model(rows@));
         }
-        return Some(out);
+        return Some(Vec::new());
     }
     let (first, second) = if bytes::less(p2, p1) { (p2, p1) } else { (p1, p2) };
-    let first_row = match emit(&s.directory, first, p3, p4) { Some(value) => value, None => return None };
+    let first_row = emit(&s.directory, first, p3, p4);
     let ghost first_model = first_row;
-    match first_row { Some(row) => out.push(row), None => {}, }
-    let ghost after_first = out@;
-    let ghost mut second_model: Option<(Vec<u8>, i64, i64)> = None;
+    match first_row { Some(row) => rows.push(row), None => {}, }
+    let ghost after_first = rows@;
+    let ghost mut second_model: Option<(Vec<u8>, Tally)> = None;
     if !bytes::equal(first, second) {
-        let second_row = match emit(&s.directory, second, p3, p4) { Some(value) => value, None => return None };
+        let second_row = emit(&s.directory, second, p3, p4);
         proof { second_model = second_row; }
-        match second_row { Some(row) => out.push(row), None => {}, }
+        match second_row { Some(row) => rows.push(row), None => {}, }
     }
     proof {
         verus_common::bytes::lemma_bytes_lt_asym(first@, second@);
         assert(!verus_common::bytes::bytes_lt(second@, first@));
-        assert forall|index: int| #![trigger out_view(out@)[index]] 0 <= index < out@.len() implies {
-            let row = out_view(out@)[index];
+        assert forall|index: int| #![trigger rows_model(rows@)[index]] 0 <= index < rows@.len() implies {
+            let row = rows_model(rows@)[index];
             row == row_of(s.db(), parameters, row.l_shipmode) && row.high_line_count + row.low_line_count > 0
         } by {
-            s.lemma_group_range(parameters, out_view(out@)[index].l_shipmode);
+            s.lemma_group_range(parameters, rows_model(rows@)[index].l_shipmode);
         }
-        assert forall|left: int, right: int| #![trigger out_view(out@)[left], out_view(out@)[right]]
-            0 <= left < right < out@.len() implies verus_common::bytes::bytes_lt(out_view(out@)[left].l_shipmode, out_view(out@)[right].l_shipmode) by {
+        assert forall|left: int, right: int| #![trigger rows_model(rows@)[left], rows_model(rows@)[right]]
+            0 <= left < right < rows@.len() implies verus_common::bytes::bytes_lt(rows_model(rows@)[left].l_shipmode, rows_model(rows@)[right].l_shipmode) by {
             verus_common::bytes::lemma_bytes_lt_total(first@, second@);
         }
         assert forall|mode: Seq<u8>| #![trigger group_count(s.db(), parameters, mode)] group_count(s.db(), parameters, mode) > 0 implies
-            exists|index: int| #![trigger out_view(out@)[index]] 0 <= index < out@.len() && out_view(out@)[index].l_shipmode == mode by {
+            exists|index: int| #![trigger rows_model(rows@)[index]] 0 <= index < rows@.len() && rows_model(rows@)[index].l_shipmode == mode by {
             s.lemma_group_range(parameters, mode);
             if mode == first@ {
                 assert(first_model.is_some());
-                assert(out_view(out@)[0].l_shipmode == mode);
+                assert(rows_model(rows@)[0].l_shipmode == mode);
             } else {
                 assert(mode == second@);
                 assert(second_model.is_some());
-                assert(out_view(out@)[after_first.len() as int].l_shipmode == mode);
+                assert(rows_model(rows@)[after_first.len() as int].l_shipmode == mode);
             }
         }
-        crate::semantics::lemma_execute_result(s.db(), parameters, out_view(out@));
+        crate::semantics::lemma_execute_result(s.db(), parameters, rows_model(rows@));
     }
-    Some(out)
+    match narrow(&rows) {
+        Some(out) => Some(out),
+        None => {
+            proof {
+                if answer_fits(s.db(), parameters) {
+                    assert(query_result(s.db(), parameters, rows_model(rows@)));
+                }
+            }
+            None
+        },
+    }
 }
 
-fn plan(lineitem_delta: &Vec<LineDelta>, orders_delta: &[OrderDelta]) -> (out: Vec<i64>) {
-    let orders = match moments::order_deltas(orders_delta) { Some(value) => value, None => return Vec::new() };
-    let lines = match moments::line_deltas(lineitem_delta) { Some(value) => value, None => return Vec::new() };
-    moments::affected(&orders, &lines)
+pub open spec fn extend_distinct(acc: Seq<i64>, keys: Seq<i64>) -> Seq<i64>
+    decreases keys.len(),
+{
+    if keys.len() == 0 { acc } else {
+        let before = extend_distinct(acc, keys.drop_last());
+        if before.contains(keys.last()) { before } else { before.push(keys.last()) }
+    }
 }
 
-pub fn rescan_high_orders_for_keys_keys(s: &State, lineitem_delta: &Vec<LineDelta>, orders_delta: &[OrderDelta]) -> (r: Vec<i64>) {
+pub open spec fn order_keys(rows: Seq<OrderDelta>) -> Seq<i64> {
+    rows.map_values(|row: OrderDelta| row.o_orderkey)
+}
+
+pub open spec fn line_keys(rows: Seq<LineDelta>) -> Seq<i64> {
+    rows.map_values(|row: LineDelta| row.row.l_orderkey)
+}
+
+/// The keys whose rows are rescanned: each key of a delta row, once, orders first.
+pub open spec fn wanted_keys(lineitem_delta: Seq<LineDelta>, orders_delta: Seq<OrderDelta>) -> Seq<i64> {
+    extend_distinct(extend_distinct(Seq::empty(), order_keys(orders_delta)), line_keys(lineitem_delta))
+}
+
+pub open spec fn rescan_high_orders_for_keys_wanted(s: State, lineitem_delta: Seq<LineDelta>, orders_delta: Seq<OrderDelta>) -> Seq<i64> {
+    wanted_keys(lineitem_delta, orders_delta)
+}
+
+pub open spec fn rescan_low_orders_for_keys_wanted(s: State, lineitem_delta: Seq<LineDelta>, orders_delta: Seq<OrderDelta>) -> Seq<i64> {
+    wanted_keys(lineitem_delta, orders_delta)
+}
+
+pub open spec fn rescan_qualifying_lines_for_keys_wanted(s: State, lineitem_delta: Seq<LineDelta>, orders_delta: Seq<OrderDelta>) -> Seq<i64> {
+    wanted_keys(lineitem_delta, orders_delta)
+}
+
+proof fn lemma_extend_distinct(acc: Seq<i64>, keys: Seq<i64>)
+    ensures acc.no_duplicates() ==> extend_distinct(acc, keys).no_duplicates(),
+        forall|key: i64| #![trigger extend_distinct(acc, keys).contains(key)]
+            extend_distinct(acc, keys).contains(key) <==> acc.contains(key) || keys.contains(key),
+    decreases keys.len(),
+{
+    if keys.len() > 0 {
+        let init = keys.drop_last();
+        lemma_extend_distinct(acc, init);
+        let before = extend_distinct(acc, init);
+        if !before.contains(keys.last()) && acc.no_duplicates() {
+            verus_prooflib::lemma_unique_push(before, keys.last());
+        }
+        assert forall|key: i64| #![trigger extend_distinct(acc, keys).contains(key)]
+            extend_distinct(acc, keys).contains(key) <==> acc.contains(key) || keys.contains(key) by {
+            if keys.contains(key) && key != keys.last() {
+                let index = choose|index: int| 0 <= index < keys.len() && keys[index] == key;
+                assert(init[index] == key);
+            }
+            if init.contains(key) {
+                let index = choose|index: int| 0 <= index < init.len() && init[index] == key;
+                assert(keys[index] == key);
+            }
+        }
+    }
+}
+
+pub proof fn lemma_wanted(lineitem_delta: Seq<LineDelta>, orders_delta: Seq<OrderDelta>)
+    ensures wanted_keys(lineitem_delta, orders_delta).no_duplicates(),
+        forall|key: i64| #![trigger wanted_keys(lineitem_delta, orders_delta).contains(key)]
+            !wanted_keys(lineitem_delta, orders_delta).contains(key) ==>
+                moments::order_change(orders_delta, key, true) == 0 && moments::order_change(orders_delta, key, false) == 0
+                && forall|mode: Seq<u8>, day: i32| #![trigger moments::line_change(lineitem_delta, key, mode, day)]
+                    moments::line_change(lineitem_delta, key, mode, day) == 0,
+{
+    let ordered = extend_distinct(Seq::empty(), order_keys(orders_delta));
+    lemma_extend_distinct(Seq::empty(), order_keys(orders_delta));
+    lemma_extend_distinct(ordered, line_keys(lineitem_delta));
+    assert forall|key: i64| #![trigger wanted_keys(lineitem_delta, orders_delta).contains(key)]
+        !wanted_keys(lineitem_delta, orders_delta).contains(key) implies
+            moments::order_change(orders_delta, key, true) == 0 && moments::order_change(orders_delta, key, false) == 0
+            && forall|mode: Seq<u8>, day: i32| #![trigger moments::line_change(lineitem_delta, key, mode, day)]
+                moments::line_change(lineitem_delta, key, mode, day) == 0 by {
+        assert forall|index: int| #![trigger orders_delta[index]] 0 <= index < orders_delta.len() implies orders_delta[index].o_orderkey != key by {
+            assert(order_keys(orders_delta)[index] == orders_delta[index].o_orderkey);
+        }
+        assert forall|index: int| #![trigger lineitem_delta[index]] 0 <= index < lineitem_delta.len() implies lineitem_delta[index].row.l_orderkey != key by {
+            assert(line_keys(lineitem_delta)[index] == lineitem_delta[index].row.l_orderkey);
+        }
+        verus_common::sums::lemma_sum_zero(orders_delta, |row: OrderDelta| if row.o_orderkey == key && (row.is_high != 0) == true { row.sign as int } else { 0 });
+        verus_common::sums::lemma_sum_zero(orders_delta, |row: OrderDelta| if row.o_orderkey == key && (row.is_high != 0) == false { row.sign as int } else { 0 });
+        assert forall|mode: Seq<u8>, day: i32| #![trigger moments::line_change(lineitem_delta, key, mode, day)]
+            moments::line_change(lineitem_delta, key, mode, day) == 0 by {
+            verus_common::sums::lemma_sum_zero(lineitem_delta, moments::line_change_weight(key, mode, day));
+        }
+    }
+}
+
+fn plan(lineitem_delta: &Vec<LineDelta>, orders_delta: &[OrderDelta]) -> (out: Vec<i64>)
+    ensures out@ == wanted_keys(lineitem_delta@, orders_delta@),
+{
+    let mut out: Vec<i64> = Vec::new();
+    let mut seen: HashMap<i64, bool> = HashMap::new();
+    let mut index = 0;
+    while index < orders_delta.len()
+        invariant index <= orders_delta@.len(), seen@.dom() == out@.to_set(),
+            out@ == extend_distinct(Seq::empty(), order_keys(orders_delta@).take(index as int)),
+        decreases orders_delta.len() - index,
+    {
+        let key = orders_delta[index].o_orderkey;
+        proof {
+            assert(order_keys(orders_delta@).take(index as int + 1).drop_last() =~= order_keys(orders_delta@).take(index as int));
+            assert(order_keys(orders_delta@).take(index as int + 1).last() == key);
+            out@.to_set_ensures();
+        }
+        if !seen.contains_key(&key) {
+            proof { lemma_push_to_set_i64(out@, key); }
+            seen.insert(key, true);
+            out.push(key);
+        }
+        index += 1;
+    }
+    proof { assert(order_keys(orders_delta@).take(index as int) =~= order_keys(orders_delta@)); }
+    let ghost ordered = out@;
+    let mut index = 0;
+    while index < lineitem_delta.len()
+        invariant index <= lineitem_delta@.len(), seen@.dom() == out@.to_set(),
+            out@ == extend_distinct(ordered, line_keys(lineitem_delta@).take(index as int)),
+        decreases lineitem_delta.len() - index,
+    {
+        let key = lineitem_delta[index].row.l_orderkey;
+        proof {
+            assert(line_keys(lineitem_delta@).take(index as int + 1).drop_last() =~= line_keys(lineitem_delta@).take(index as int));
+            assert(line_keys(lineitem_delta@).take(index as int + 1).last() == key);
+            out@.to_set_ensures();
+        }
+        if !seen.contains_key(&key) {
+            proof { lemma_push_to_set_i64(out@, key); }
+            seen.insert(key, true);
+            out.push(key);
+        }
+        index += 1;
+    }
+    proof { assert(line_keys(lineitem_delta@).take(index as int) =~= line_keys(lineitem_delta@)); }
+    out
+}
+
+proof fn lemma_push_to_set_i64(keys: Seq<i64>, key: i64)
+    ensures keys.push(key).to_set() == keys.to_set().insert(key),
+{
+    verus_prooflib::lemma_push_to_set(keys, key);
+}
+
+pub fn rescan_high_orders_for_keys_keys(s: &State, lineitem_delta: &Vec<LineDelta>, orders_delta: &[OrderDelta]) -> (r: Vec<i64>)
+    ensures r@ == rescan_high_orders_for_keys_wanted(*s, lineitem_delta@, orders_delta@),
+{
     plan(lineitem_delta, orders_delta)
 }
 
-pub fn rescan_low_orders_for_keys_keys(s: &State, lineitem_delta: &Vec<LineDelta>, orders_delta: &[OrderDelta]) -> (r: Vec<i64>) {
+pub fn rescan_low_orders_for_keys_keys(s: &State, lineitem_delta: &Vec<LineDelta>, orders_delta: &[OrderDelta]) -> (r: Vec<i64>)
+    ensures r@ == rescan_low_orders_for_keys_wanted(*s, lineitem_delta@, orders_delta@),
+{
     plan(lineitem_delta, orders_delta)
 }
 
-pub fn rescan_qualifying_lines_for_keys_keys(s: &State, lineitem_delta: &Vec<LineDelta>, orders_delta: &[OrderDelta]) -> (r: Vec<i64>) {
+pub fn rescan_qualifying_lines_for_keys_keys(s: &State, lineitem_delta: &Vec<LineDelta>, orders_delta: &[OrderDelta]) -> (r: Vec<i64>)
+    ensures r@ == rescan_qualifying_lines_for_keys_wanted(*s, lineitem_delta@, orders_delta@),
+{
     plan(lineitem_delta, orders_delta)
 }
 
-fn accumulate_mode(patch: &mut Cells, entry: &moments::CellMode, factor: Counts) -> (out: bool)
+fn accumulate_mode(patch: &mut Cells, entry: &moments::CellMode, factor: &Tally)
     requires old(patch).wf(), entry.days.wf(),
     ensures final(patch).wf(),
-        out ==> forall|mode: Seq<u8>, day: i32| #![trigger final(patch).at(mode, day)]
+        forall|mode: Seq<u8>, day: i32| #![trigger final(patch).at(mode, day)]
             final(patch).at(mode, day).high == old(patch).at(mode, day).high
-                + if mode == entry.mode@ { factor.high * entry.days.at(day).high } else { 0 }
+                + if mode == entry.mode@ { factor@.high * entry.days.at(day).high } else { 0 }
             && final(patch).at(mode, day).low == old(patch).at(mode, day).low
-                + if mode == entry.mode@ { factor.low * entry.days.at(day).high } else { 0 },
+                + if mode == entry.mode@ { factor@.low * entry.days.at(day).high } else { 0 },
 {
     let ghost before = *patch;
     let mut index = 0;
@@ -542,18 +784,18 @@ fn accumulate_mode(patch: &mut Cells, entry: &moments::CellMode, factor: Counts)
         invariant index <= entry.days.keys@.len(), patch.wf(), entry.days.wf(), before == *old(patch),
             forall|mode: Seq<u8>, day: i32| #![trigger patch.at(mode, day)]
                 patch.at(mode, day).high == before.at(mode, day).high
-                    + if mode == entry.mode@ && entry.days.keys@.take(index as int).contains(day) { factor.high * entry.days.at(day).high } else { 0 }
+                    + if mode == entry.mode@ && entry.days.keys@.take(index as int).contains(day) { factor@.high * entry.days.at(day).high } else { 0 }
                 && patch.at(mode, day).low == before.at(mode, day).low
-                    + if mode == entry.mode@ && entry.days.keys@.take(index as int).contains(day) { factor.low * entry.days.at(day).high } else { 0 },
+                    + if mode == entry.mode@ && entry.days.keys@.take(index as int).contains(day) { factor@.low * entry.days.at(day).high } else { 0 },
         decreases entry.days.keys@.len() - index,
     {
         let day = entry.days.keys[index];
         let value = entry.days.get(day).high;
-        let change = match factor.scale(value) { Some(value) => value, None => return false };
+        let change = factor.scale(&value);
         proof {
             verus_prooflib::lemma_prefix_fresh(entry.days.keys@, index as int);
         }
-        if !change.is_zero() && !patch.add(&entry.mode, day, change) { return false; }
+        if !change.is_zero() { patch.add(&entry.mode, day, &change); }
         proof {
             assert(entry.days.keys@.take(index as int + 1) =~= entry.days.keys@.take(index as int).push(day));
         }
@@ -563,26 +805,25 @@ fn accumulate_mode(patch: &mut Cells, entry: &moments::CellMode, factor: Counts)
         entry.days.keys@.to_set_ensures();
         assert(entry.days.keys@.take(index as int) =~= entry.days.keys@);
         assert forall|mode: Seq<u8>, day: i32| #![trigger patch.at(mode, day)]
-            patch.at(mode, day).high == before.at(mode, day).high + if mode == entry.mode@ { factor.high * entry.days.at(day).high } else { 0 }
-            && patch.at(mode, day).low == before.at(mode, day).low + if mode == entry.mode@ { factor.low * entry.days.at(day).high } else { 0 } by {
+            patch.at(mode, day).high == before.at(mode, day).high + if mode == entry.mode@ { factor@.high * entry.days.at(day).high } else { 0 }
+            && patch.at(mode, day).low == before.at(mode, day).low + if mode == entry.mode@ { factor@.low * entry.days.at(day).high } else { 0 } by {
             assert(entry.days.keys@.take(index as int).contains(day) == entry.days.keys@.contains(day));
             if !entry.days.keys@.contains(day) {
                 assert(!entry.days.values@.contains_key(day));
                 assert(entry.days.at(day).high == 0);
             }
             assert(patch.at(mode, day).high == before.at(mode, day).high
-                + if mode == entry.mode@ && entry.days.keys@.take(index as int).contains(day) { factor.high * entry.days.at(day).high } else { 0 });
+                + if mode == entry.mode@ && entry.days.keys@.take(index as int).contains(day) { factor@.high * entry.days.at(day).high } else { 0 });
         }
     }
-    true
 }
 
-fn accumulate_cells(patch: &mut Cells, cells: &Cells, factor: Counts) -> (out: bool)
+fn accumulate_cells(patch: &mut Cells, cells: &Cells, factor: &Tally)
     requires old(patch).wf(), cells.wf(),
     ensures final(patch).wf(),
-        out ==> forall|mode: Seq<u8>, day: i32| #![trigger final(patch).at(mode, day)]
-            final(patch).at(mode, day).high == old(patch).at(mode, day).high + factor.high * cells.at(mode, day).high
-            && final(patch).at(mode, day).low == old(patch).at(mode, day).low + factor.low * cells.at(mode, day).high,
+        forall|mode: Seq<u8>, day: i32| #![trigger final(patch).at(mode, day)]
+            final(patch).at(mode, day).high == old(patch).at(mode, day).high + factor@.high * cells.at(mode, day).high
+            && final(patch).at(mode, day).low == old(patch).at(mode, day).low + factor@.low * cells.at(mode, day).high,
 {
     let ghost before = *patch;
     let mut hash_index = 0;
@@ -590,9 +831,9 @@ fn accumulate_cells(patch: &mut Cells, cells: &Cells, factor: Counts) -> (out: b
         invariant hash_index <= cells.hashes@.len(), cells.wf(), patch.wf(), before == *old(patch),
             forall|mode: Seq<u8>, day: i32| #![trigger patch.at(mode, day)]
                 patch.at(mode, day).high == before.at(mode, day).high
-                    + if cells.mode_prefix(hash_index as nat, 0).contains(mode) { factor.high * cells.at(mode, day).high } else { 0 }
+                    + if cells.mode_prefix(hash_index as nat, 0).contains(mode) { factor@.high * cells.at(mode, day).high } else { 0 }
                 && patch.at(mode, day).low == before.at(mode, day).low
-                    + if cells.mode_prefix(hash_index as nat, 0).contains(mode) { factor.low * cells.at(mode, day).high } else { 0 },
+                    + if cells.mode_prefix(hash_index as nat, 0).contains(mode) { factor@.low * cells.at(mode, day).high } else { 0 },
         decreases cells.hashes@.len() - hash_index,
     {
         let code = cells.hashes[hash_index];
@@ -605,9 +846,9 @@ fn accumulate_cells(patch: &mut Cells, cells: &Cells, factor: Counts) -> (out: b
                         code == cells.hashes@[hash_index as int], bucket@ == cells.buckets@[code]@,
                         forall|mode: Seq<u8>, day: i32| #![trigger patch.at(mode, day)]
                             patch.at(mode, day).high == before.at(mode, day).high
-                                + if cells.mode_prefix(hash_index as nat, mode_index as int).contains(mode) { factor.high * cells.at(mode, day).high } else { 0 }
+                                + if cells.mode_prefix(hash_index as nat, mode_index as int).contains(mode) { factor@.high * cells.at(mode, day).high } else { 0 }
                             && patch.at(mode, day).low == before.at(mode, day).low
-                                + if cells.mode_prefix(hash_index as nat, mode_index as int).contains(mode) { factor.low * cells.at(mode, day).high } else { 0 },
+                                + if cells.mode_prefix(hash_index as nat, mode_index as int).contains(mode) { factor@.low * cells.at(mode, day).high } else { 0 },
                     decreases bucket@.len() - mode_index,
                 {
                     let entry = &bucket[mode_index];
@@ -616,7 +857,7 @@ fn accumulate_cells(patch: &mut Cells, cells: &Cells, factor: Counts) -> (out: b
                         assert forall|day: i32| #![trigger cells.at(entry.mode@, day)]
                             cells.at(entry.mode@, day) == entry.days.at(day) by { cells.lemma_index(code, mode_index as int, day); }
                     }
-                    if !accumulate_mode(patch, entry, factor) { return false; }
+                    accumulate_mode(patch, entry, factor);
                     proof { cells.lemma_mode_step(hash_index as nat, mode_index as int); }
                     mode_index += 1;
                 }
@@ -628,45 +869,42 @@ fn accumulate_cells(patch: &mut Cells, cells: &Cells, factor: Counts) -> (out: b
     }
     proof {
         assert forall|mode: Seq<u8>, day: i32| #![trigger patch.at(mode, day)]
-            patch.at(mode, day).high == before.at(mode, day).high + factor.high * cells.at(mode, day).high
-            && patch.at(mode, day).low == before.at(mode, day).low + factor.low * cells.at(mode, day).high by {
+            patch.at(mode, day).high == before.at(mode, day).high + factor@.high * cells.at(mode, day).high
+            && patch.at(mode, day).low == before.at(mode, day).low + factor@.low * cells.at(mode, day).high by {
             if !cells.modes(cells.hashes@.len()).contains(mode) { cells.lemma_mode_complete(mode, day); }
         }
     }
-    true
 }
 
-fn maintain_key(patch: &mut Cells, post: &Cells, delta: &Cells, post_orders: Counts, delta_orders: Counts) -> (out: bool)
+fn maintain_key(patch: &mut Cells, post: &Cells, delta: &Cells, post_orders: &Tally, delta_orders: &Tally)
     requires old(patch).wf(), post.wf(), delta.wf(),
     ensures final(patch).wf(),
-        out ==> forall|mode: Seq<u8>, day: i32| #![trigger final(patch).at(mode, day)]
+        forall|mode: Seq<u8>, day: i32| #![trigger final(patch).at(mode, day)]
             final(patch).at(mode, day).high == old(patch).at(mode, day).high
-                + delta_orders.high * (post.at(mode, day).high - delta.at(mode, day).high)
-                + post_orders.high * delta.at(mode, day).high
+                + delta_orders@.high * (post.at(mode, day).high - delta.at(mode, day).high)
+                + post_orders@.high * delta.at(mode, day).high
             && final(patch).at(mode, day).low == old(patch).at(mode, day).low
-                + delta_orders.low * (post.at(mode, day).high - delta.at(mode, day).high)
-                + post_orders.low * delta.at(mode, day).high,
+                + delta_orders@.low * (post.at(mode, day).high - delta.at(mode, day).high)
+                + post_orders@.low * delta.at(mode, day).high,
 {
-    let old_orders = match post_orders.sub(delta_orders) { Some(value) => value, None => return false };
-    if old_orders.high < 0 || old_orders.low < 0 || post_orders.high < 0 || post_orders.low < 0 { return false; }
+    let old_orders = post_orders.sub(delta_orders);
     let ghost before = *patch;
-    if !accumulate_cells(patch, post, delta_orders) { return false; }
-    if !accumulate_cells(patch, delta, old_orders) { return false; }
+    accumulate_cells(patch, post, delta_orders);
+    accumulate_cells(patch, delta, &old_orders);
     proof {
         assert forall|mode: Seq<u8>, day: i32| #![trigger patch.at(mode, day)]
             patch.at(mode, day).high == before.at(mode, day).high
-                + delta_orders.high * (post.at(mode, day).high - delta.at(mode, day).high) + post_orders.high * delta.at(mode, day).high
+                + delta_orders@.high * (post.at(mode, day).high - delta.at(mode, day).high) + post_orders@.high * delta.at(mode, day).high
             && patch.at(mode, day).low == before.at(mode, day).low
-                + delta_orders.low * (post.at(mode, day).high - delta.at(mode, day).high) + post_orders.low * delta.at(mode, day).high by {
-            assert(delta_orders.high * post.at(mode, day).high + old_orders.high * delta.at(mode, day).high
-                == delta_orders.high * (post.at(mode, day).high - delta.at(mode, day).high) + post_orders.high * delta.at(mode, day).high) by (nonlinear_arith)
-                requires old_orders.high == post_orders.high - delta_orders.high;
-            assert(delta_orders.low * post.at(mode, day).high + old_orders.low * delta.at(mode, day).high
-                == delta_orders.low * (post.at(mode, day).high - delta.at(mode, day).high) + post_orders.low * delta.at(mode, day).high) by (nonlinear_arith)
-                requires old_orders.low == post_orders.low - delta_orders.low;
+                + delta_orders@.low * (post.at(mode, day).high - delta.at(mode, day).high) + post_orders@.low * delta.at(mode, day).high by {
+            assert(delta_orders@.high * post.at(mode, day).high + old_orders@.high * delta.at(mode, day).high
+                == delta_orders@.high * (post.at(mode, day).high - delta.at(mode, day).high) + post_orders@.high * delta.at(mode, day).high) by (nonlinear_arith)
+                requires old_orders@.high == post_orders@.high - delta_orders@.high;
+            assert(delta_orders@.low * post.at(mode, day).high + old_orders@.low * delta.at(mode, day).high
+                == delta_orders@.low * (post.at(mode, day).high - delta.at(mode, day).high) + post_orders@.low * delta.at(mode, day).high) by (nonlinear_arith)
+                requires old_orders@.low == post_orders@.low - delta_orders@.low;
         }
     }
-    true
 }
 
 pub open spec fn key_effect(db: Db, post_db: Db, key: i64, mode: Seq<u8>, day: i32, high: bool) -> int {
@@ -682,36 +920,21 @@ pub fn apply(
 ) -> (r: Result<State, u32>)
     requires orders_delta_ok(orders_delta@, orders_full),
         capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), orders_full),
+        high_orders_for_keys_keys@ == rescan_high_orders_for_keys_wanted(*s, lineitem_delta@, orders_delta@),
         rescan_high_orders_for_keys_ok(db2, high_orders_for_keys_keys@, high_orders_for_keys_rows@),
+        low_orders_for_keys_keys@ == rescan_low_orders_for_keys_wanted(*s, lineitem_delta@, orders_delta@),
         rescan_low_orders_for_keys_ok(db2, low_orders_for_keys_keys@, low_orders_for_keys_rows@),
+        qualifying_lines_for_keys_keys@ == rescan_qualifying_lines_for_keys_wanted(*s, lineitem_delta@, orders_delta@),
         rescan_qualifying_lines_for_keys_ok(db2, qualifying_lines_for_keys_keys@, qualifying_lines_for_keys_rows@),
-    ensures r matches Ok(s2) ==> s2.db() == db2,
+    ensures r matches Ok(s2) ==> s2.db() == db2, r is Ok,
 {
     proof { use_type_invariant(s); }
-    let delta_orders = match moments::order_deltas(orders_delta) { Some(value) => value, None => return Err(1) };
-    let delta_lines = match moments::line_deltas(lineitem_delta) { Some(value) => value, None => return Err(1) };
-    let keys = moments::affected(&delta_orders, &delta_lines);
-    let high_coverage = moments::key_set(high_orders_for_keys_keys);
-    let low_coverage = moments::key_set(low_orders_for_keys_keys);
-    let line_coverage = moments::key_set(qualifying_lines_for_keys_keys);
-    let mut index = 0;
-    while index < keys.len()
-        invariant index <= keys@.len(),
-            forall|offset: int| #![trigger keys@[offset]]
-                0 <= offset < index ==> high_coverage@.contains_key(keys@[offset])
-                    && low_coverage@.contains_key(keys@[offset]) && line_coverage@.contains_key(keys@[offset]),
-        decreases keys@.len() - index,
-    {
-        let key = keys[index];
-        if !high_coverage.contains_key(&key) || !low_coverage.contains_key(&key) || !line_coverage.contains_key(&key) {
-            return Err(2);
-        }
-        index += 1;
-    }
-    let post_orders = match fold_orders(high_orders_for_keys_rows, low_orders_for_keys_rows) {
-        Some(value) => value, None => return Err(1),
-    };
-    let post_lines = match fold_lines(qualifying_lines_for_keys_rows) { Some(value) => value, None => return Err(1) };
+    let delta_orders = moments::order_deltas(orders_delta);
+    let delta_lines = moments::line_deltas(lineitem_delta);
+    let keys = high_orders_for_keys_keys;
+    proof { lemma_wanted(lineitem_delta@, orders_delta@); }
+    let post_orders = fold_orders(high_orders_for_keys_rows, low_orders_for_keys_rows);
+    let post_lines = fold_lines(qualifying_lines_for_keys_rows);
     proof {
         assert forall|key: i64| #![trigger keys@.contains(key)] keys@.contains(key) implies
             post_orders.at(key).high == order_count(db2, key as int, true)
@@ -731,7 +954,7 @@ pub fn apply(
     }
     let empty = Cells::new();
     let mut patch = Cells::new();
-    index = 0;
+    let mut index = 0;
     let mut processed = Ghost(0int);
     while index < keys.len()
         invariant index <= keys@.len(), processed@ == index as int, patch.wf(), empty.wf(),
@@ -740,9 +963,7 @@ pub fn apply(
             rescan_qualifying_lines_for_keys_ok(db2, qualifying_lines_for_keys_keys@, qualifying_lines_for_keys_rows@),
             forall|key: i64| #![trigger keys@.contains(key)] keys@.contains(key) ==>
                 qualifying_lines_for_keys_keys@.contains(key),
-            forall|key: i64| #![trigger keys@.contains(key)] keys@.contains(key) <==>
-                (delta_orders.at(key).high != 0 || delta_orders.at(key).low != 0
-                    || exists|mode: Seq<u8>, day: i32| #![trigger delta_lines.at(key, mode, day)] delta_lines.at(key, mode, day) != 0),
+            keys@ == wanted_keys(lineitem_delta@, orders_delta@),
             post_orders.wf(), post_lines.wf(), delta_orders.wf(), delta_lines.wf(), s.wf(),
             orders_delta_ok(orders_delta@, orders_full), capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), orders_full),
             forall|key: i64| #![trigger post_orders.at(key)] keys@.contains(key) ==>
@@ -767,7 +988,7 @@ pub fn apply(
             assert forall|mode: Seq<u8>, day: i32| #![trigger post.at(mode, day)]
                 post.at(mode, day).high == post_lines.at(key, mode, day) && delta.at(mode, day).high == delta_lines.at(key, mode, day) by {}
         }
-        if !maintain_key(&mut patch, post, delta, post_orders.get(key), delta_orders.get(key)) { return Err(1); }
+        maintain_key(&mut patch, post, delta, &post_orders.get(key), &delta_orders.get(key));
         proof {
             assert forall|mode: Seq<u8>, day: i32| #![trigger patch.at(mode, day)]
                 patch.at(mode, day).high == sum(keys@.take(index as int + 1), |key: i64| key_effect(s.db(), db2, key, mode, day, true))
@@ -786,12 +1007,11 @@ pub fn apply(
         index += 1;
         processed = Ghost(index as int);
     }
-    let directory = match publish(&s.directory, &patch) { Some(value) => value, None => return Err(1) };
     proof {
         assert(keys@.take(processed@) =~= keys@);
         assert forall|mode: Seq<u8>, day: int| #![trigger cell_count(db2, mode, day, true)]
-            (if i32::MIN <= day <= i32::MAX { directory.at(mode, day as i32).high as int } else { 0 }) == cell_count(db2, mode, day, true)
-            && (if i32::MIN <= day <= i32::MAX { directory.at(mode, day as i32).low as int } else { 0 }) == cell_count(db2, mode, day, false) by {
+            (if i32::MIN <= day <= i32::MAX { s.directory.at(mode, day as i32).high + patch.at(mode, day as i32).high } else { 0 }) == cell_count(db2, mode, day, true)
+            && (if i32::MIN <= day <= i32::MAX { s.directory.at(mode, day as i32).low + patch.at(mode, day as i32).low } else { 0 }) == cell_count(db2, mode, day, false) by {
             assert forall|key: i64| #![trigger keys@.contains(key)] !keys@.contains(key) implies
                 moments::order_change(orders_delta@, key, true) == 0 && moments::order_change(orders_delta@, key, false) == 0
                 && (i32::MIN <= day <= i32::MAX ==> moments::line_change(lineitem_delta@, key, mode, day as i32) == 0) by {
@@ -817,6 +1037,20 @@ pub fn apply(
                 verus_common::sums::lemma_sum_zero(keys@, |key: i64| crate::update_proofs::effect(s.db(), db2, key as int, mode, day, true));
                 verus_common::sums::lemma_sum_zero(keys@, |key: i64| crate::update_proofs::effect(s.db(), db2, key as int, mode, day, false));
             }
+        }
+        assert forall|mode: Seq<u8>, day: i32| #![trigger patch.at(mode, day)]
+            s.directory.at(mode, day).high + patch.at(mode, day).high >= 0
+                && s.directory.at(mode, day).low + patch.at(mode, day).low >= 0 by {
+            crate::semantics::lemma_cell_count_nonneg(db2, mode, day as int, true);
+            crate::semantics::lemma_cell_count_nonneg(db2, mode, day as int, false);
+        }
+    }
+    let directory = publish(&s.directory, &patch);
+    proof {
+        assert forall|mode: Seq<u8>, day: int| #![trigger directory_at(directory, mode, day)]
+            directory_at(directory, mode, day).high == cell_count(db2, mode, day, true)
+            && directory_at(directory, mode, day).low == cell_count(db2, mode, day, false) by {
+            assert((if i32::MIN <= day <= i32::MAX { s.directory.at(mode, day as i32).high + patch.at(mode, day as i32).high } else { 0 }) == cell_count(db2, mode, day, true));
         }
     }
     Ok(State { directory, database: Ghost(db2) })

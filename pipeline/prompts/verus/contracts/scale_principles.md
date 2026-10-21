@@ -37,10 +37,11 @@ accelerator keeps its advantage as data grows:
     so versions stay persistent and cheap;
   * spread sparse keys over pages or chunks with a fixed hash or key range,
     so pages stay evenly full;
-  * **store narrow, compute wide**: keep sums and counts in the narrowest
-    width that holds their SF3000 magnitude (`i64` sums, `u32` counts are
-    usually ample), do arithmetic in `i128`, and decline the update (host
-    falls back) if a stored value would overflow;
+  * **exact, small first**: sums and counts over joined tuples use
+    the prooflib's exact integer `wide`, whose `i128` fast path holds their
+    SF3000 magnitude without allocating; counts of one table's rows fit
+    `i64` (at most 2^63 rows, the DBMS's row-id space), sums of counts need more; never narrow a stored value below what the
+    envelope allows;
   * keep one copy of each fact: rank or secondary indexes hold small
     records (key + ranking value), not pointers to or copies of full rows.
   State the bytes per entry and the SF20 total (steady and build peak) in
@@ -49,8 +50,9 @@ accelerator keeps its advantage as data grows:
   parameter (LIKE patterns and fractions too) and the state must serve any
   value of its TPC-H domain at the same cost bounds. State kept for one
   parameter value (one color, one nation, one pattern) is not allowed;
-  benchmarks and tests draw random values from the domain on every run. A
-  decline is allowed only outside the domain and counts against the kit.
+  benchmarks and tests draw random values from the domain on every run.
+  Values outside the TPC-H domain must be answered too (a slower general
+  path is fine; a decline is not).
 * **Maintenance**: cost per changed row, independent of table size. A point
   write touches its own keys; rescans are restricted to touched keys; no full
   rebuild on ordinary writes. A keyed rescan is a scan filtered by key: it
@@ -59,9 +61,10 @@ accelerator keeps its advantage as data grows:
   partkey, `customer` by custkey) and the WHOLE table otherwise (e.g.
   `lineitem` by partkey or suppkey, `orders` by custkey). The frequent
   writes are inserts and deletes of orders with their lineitems (TPC-H
-  refresh functions): keep their rescans on clustered keys. An apply that
-  declines a valid write makes the host rebuild from scratch: hours at
-  SF3000.
+  refresh functions): keep their rescans on clustered keys. Apply may not
+  decline inside the envelope (the host passes back exactly the rescan keys
+  the kernel asked for), and a write that cannot use its delta and rebuilds
+  costs hours at SF3000.
   A refresh touches nearly every key range (0.1% of orders and their
   lineitems, keys spread uniformly), so the unit a write copies must itself
   cost O(changed rows): plain records in small pages or persistent maps with
@@ -133,9 +136,12 @@ accelerator keeps its advantage as data grows:
   without a second copy (never keep a source map alive while re-bucketing
   it into a new one), process the largest table in bounded chunks so
   temporaries stay small, and drop each temporary as soon as it is consumed.
-* **Magnitudes**: keys and aggregates must not overflow at SF3000 (order keys
-  exceed 2^31; sums of decimal products can exceed i64: use i128). Overflow is
-  safe (the kernel declines) but a decline at scale is a performance cliff.
+* **Magnitudes**: at SF3000 order keys exceed 2^31 and sums of decimal
+  products exceed i64. Size every value for the envelope, not the data: keys
+  as their column type, row counts up to 2^63 (the DBMS's row ids), sums over joins exact (the
+  prooflib's `wide`).
+  The only overflow decline left is a correct answer that does not fit the
+  result types, proven with that answer as the witness.
 * **No SF1 constants**: size from the inputs, never from literals.
 * **Final answers**: do not cache the query's final answer as the state,
   unless the answer is small, keeping it right is really cheap (a changed row

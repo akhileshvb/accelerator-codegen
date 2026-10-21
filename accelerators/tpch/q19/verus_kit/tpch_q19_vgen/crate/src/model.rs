@@ -4,21 +4,22 @@ use verus_common::sums::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::storage::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
 pub struct PartCell {
     pub class: u8,
     pub brand: Arc<Vec<u8>>,
-    pub count: i128,
+    pub count: Wide,
 }
 
 pub struct HistCell {
     pub class: u8,
     pub brand: Arc<Vec<u8>>,
     pub quantity: i64,
-    pub count: i128,
-    pub revenue: i128,
+    pub count: Wide,
+    pub revenue: Wide,
 }
 
 pub open spec fn class_matches(part: PartRow, class: u8) -> bool {
@@ -39,6 +40,10 @@ pub open spec fn class_matches(part: PartRow, class: u8) -> bool {
             || part.p_container == seq![b'L', b'G', b' ', b'P', b'A', b'C', b'K']
             || part.p_container == seq![b'L', b'G', b' ', b'P', b'K', b'G'])
     } else { false }
+}
+
+pub open spec fn classified(part: PartRow) -> bool {
+    class_matches(part, 0) || class_matches(part, 1) || class_matches(part, 2)
 }
 
 pub open spec fn eligible(line: LineitemRow) -> bool {
@@ -173,12 +178,12 @@ pub open spec fn window_prefix(store: Store<HistCell>, class: u8, brand: Seq<u8>
 }
 
 pub open spec fn part_cell_weight(cell: PartCell, class: u8, brand: Seq<u8>) -> int {
-    if cell.class == class && (*cell.brand)@ == brand { cell.count as int } else { 0 }
+    if cell.class == class && (*cell.brand)@ == brand { cell.count@ } else { 0 }
 }
 
 pub open spec fn hist_cell_weight(cell: HistCell, class: u8, brand: Seq<u8>, quantity: int, revenue: bool) -> int {
     if cell.class == class && (*cell.brand)@ == brand && cell.quantity == quantity {
-        if revenue { cell.revenue as int } else { cell.count as int }
+        if revenue { cell.revenue@ } else { cell.count@ }
     } else { 0 }
 }
 
@@ -194,7 +199,7 @@ pub open spec fn join_cell_weight(cell: PartCell, class: u8, brand: Seq<u8>, qua
     input_quantity: int, sign: int, value: int, revenue: bool) -> int
 {
     if quantity == input_quantity && cell.class == class && (*cell.brand)@ == brand {
-        cell.count as int * sign * if revenue { value } else { 1 }
+        cell.count@ * sign * if revenue { value } else { 1 }
     } else { 0 }
 }
 
@@ -209,7 +214,7 @@ pub proof fn lemma_join_cell_factor(cells: Seq<PartCell>, class: u8, brand: Seq<
         let scalar = sign * factor;
         assert forall|cell: PartCell| #[trigger] weight(cell) == scalar * part_cell_weight(cell, class, brand) by {
             if cell.class == class && (*cell.brand)@ == brand {
-                let count = cell.count as int;
+                let count = cell.count@;
                 assert(count * sign * factor == (sign * factor) * count) by (nonlinear_arith);
             }
         }
@@ -221,14 +226,14 @@ pub proof fn lemma_join_cell_factor(cells: Seq<PartCell>, class: u8, brand: Seq<
 
 pub open spec fn part_cells_valid(cells: Seq<PartCell>, positive: bool) -> bool {
     forall|index: int| #![trigger cells[index]]
-        0 <= index < cells.len() ==> cells[index].class < 3 && (positive ==> cells[index].count > 0)
+        0 <= index < cells.len() ==> cells[index].class < 3 && (positive ==> cells[index].count@ > 0)
 }
 
 pub open spec fn hist_cells_valid(cells: Seq<HistCell>, key: u64, positive: bool) -> bool {
     &&& forall|index: int| #![trigger cells[index]]
         0 <= index < cells.len() ==> {
             let cell = cells[index];
-            cell.class < 3 && (positive ==> cell.count > 0) && hist_key(cell.class, (*cell.brand)@, cell.quantity) == key
+            cell.class < 3 && (positive ==> cell.count@ > 0) && hist_key(cell.class, (*cell.brand)@, cell.quantity) == key
         }
 }
 
@@ -266,6 +271,59 @@ pub proof fn lemma_signed_keys(keys: Seq<i64>, key: i64)
         assert(keys[index] == key);
         assert(keys_u64(keys)[index] == key as u64);
         assert(keys_u64(keys).contains(key as u64));
+    }
+}
+
+pub open spec fn part_touches(row: PartDelta) -> bool {
+    row.small != 0 || row.medium != 0 || row.large != 0
+}
+
+/// The part keys whose lineitems are rescanned: each key of a class-touching delta row, once, in order.
+pub open spec fn wanted_keys(rows: Seq<PartDelta>) -> Seq<i64>
+    decreases rows.len(),
+{
+    if rows.len() == 0 { Seq::empty() } else {
+        let before = wanted_keys(rows.drop_last());
+        let row = rows.last();
+        if part_touches(row) && !before.contains(row.p_partkey) { before.push(row.p_partkey) } else { before }
+    }
+}
+
+pub proof fn lemma_wanted_covers(rows: Seq<PartDelta>, key: int, class: u8, brand: Seq<u8>)
+    ensures !seq_view_i64(wanted_keys(rows)).contains(key)
+        ==> sum(rows, |row: PartDelta| part_delta_weight(row, key, class, brand)) == 0,
+    decreases rows.len(),
+{
+    if rows.len() > 0 {
+        let init = rows.drop_last();
+        lemma_wanted_covers(init, key, class, brand);
+        let row = rows.last();
+        let before = wanted_keys(init);
+        if !seq_view_i64(wanted_keys(rows)).contains(key) {
+            if part_touches(row) && !before.contains(row.p_partkey) {
+                assert(seq_view_i64(before.push(row.p_partkey)) =~= seq_view_i64(before).push(row.p_partkey as int));
+                assert(seq_view_i64(before.push(row.p_partkey)).last() == row.p_partkey as int);
+                assert(!seq_view_i64(before).contains(key)) by {
+                    if seq_view_i64(before).contains(key) {
+                        let i = choose|i: int| 0 <= i < seq_view_i64(before).len() && seq_view_i64(before)[i] == key;
+                        assert(seq_view_i64(before.push(row.p_partkey))[i] == key);
+                    }
+                }
+            }
+            assert(!seq_view_i64(before).contains(key));
+            assert(part_delta_weight(row, key, class, brand) == 0) by {
+                if part_delta_weight(row, key, class, brand) != 0 {
+                    assert(row.p_partkey as int == key && part_touches(row));
+                    if before.contains(row.p_partkey) {
+                        let i = choose|i: int| 0 <= i < before.len() && before[i] == row.p_partkey;
+                        assert(seq_view_i64(before)[i] == key);
+                    } else {
+                        assert(seq_view_i64(before.push(row.p_partkey)) =~= seq_view_i64(before).push(row.p_partkey as int));
+                        assert(seq_view_i64(wanted_keys(rows)).contains(key));
+                    }
+                }
+            }
+        }
     }
 }
 

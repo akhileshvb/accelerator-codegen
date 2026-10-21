@@ -3,6 +3,7 @@ use vstd::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use verus_common::sums::*;
+use verus_prooflib::wide::Wide;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::data::*;
@@ -10,10 +11,13 @@ use crate::pages::*;
 use crate::output::*;
 use crate::model::*;
 use crate::maintenance::*;
+use crate::bounds::*;
 #[path = "kernel_result.rs"]
 mod result_proof;
 
 verus! {
+
+pub open spec fn history(s: State) -> nat { 0 }
 
 pub struct State {
     db: Ghost<Db>,
@@ -67,8 +71,10 @@ impl State {
         &&& forall|quantity: i128| #[trigger] self.buckets.at(quantity) matches Some(bucket) ==>
             bucket.wf() && bucket.len > 0 && bucket.view().no_duplicates()
         &&& forall|quantity: i128, key: i64| #[trigger] self.bucket_has(quantity, key) ==
-            (self.order_at(key as int) matches Some(row) && row.count > 0 &&
-                row.variants.len() > 0 && row.quantity == quantity)
+            (self.order_at(key as int) matches Some(row) && row.count@ > 0 &&
+                row.variants.len() > 0 && row.quantity@ == quantity as int)
+        &&& forall|key: i128| #[trigger] self.orders.at(key) matches Some(row) ==>
+            (row.count@ > 0 && row.variants.len() > 0 ==> i128::MIN <= row.quantity@ <= i128::MAX)
         &&& forall|quantity: i128| #[trigger] self.buckets.at(quantity) is Some <==>
             self.directory@.contains(quantity)
         &&& forall|left: int, right: int| 0 <= left < right < self.directory.len() ==>
@@ -181,6 +187,7 @@ pub fn build(
     requires scan_line_quantities_ok(db, line_quantities@),
         scan_order_groups_ok(db, order_groups@), scan_customer_names_ok(db, customer_names@),
     ensures r matches Some(s) ==> s.db() == db,
+        envelope(db) ==> r is Some,
 {
     hide(sum);
     hide(Editor::at);
@@ -217,7 +224,7 @@ pub fn build(
         let ghost processed = index as int;
         let row = &line_quantities[index];
         remember(row.l_orderkey as i128, &mut order_seen, &mut order_keys);
-        if !change_line(&mut orders, row.l_orderkey, row.l_quantity, 1) { return None; }
+        change_line(&mut orders, row.l_orderkey, row.l_quantity, 1);
         proof {
             assert forall|key: i128| #[trigger] line_count(orders.at(key)) ==
                 sum(line_quantity_scan_seq_view(line_quantities@.take(processed + 1)), nw(key as int)) by {
@@ -246,7 +253,7 @@ pub fn build(
         let ghost processed = index as int;
         let row = &order_groups[index];
         remember(row.o_orderkey as i128, &mut order_seen, &mut order_keys);
-        if !change_order(&mut orders, row.o_orderkey, row.o_custkey, row.o_orderdate, row.o_totalprice, 1) { return None; }
+        change_order(&mut orders, row.o_orderkey, row.o_custkey, row.o_orderdate, row.o_totalprice, 1);
         proof {
             assert forall|key: i128, customer: int, date: int, price: int| #[trigger]
                 order_count(orders.at(key), customer, date, price) ==
@@ -269,7 +276,7 @@ pub fn build(
     {
         let ghost processed = index as int;
         let row = &customer_names[index];
-        if !change_customer(&mut customers, row.c_custkey, &row.c_name, 1) { return None; }
+        change_customer(&mut customers, row.c_custkey, &row.c_name, 1);
         proof {
             assert forall|key: i128, name: Seq<u8>| #[trigger] customer_count(customers.at(key), name) ==
                 sum(customer_name_scan_seq_view(customer_names@.take(processed + 1)), cw(key as int, name)) by {
@@ -292,6 +299,7 @@ pub fn build(
             forall|quantity: i128| #[trigger] grouped@.contains_key(quantity) ==> grouped@[quantity].len() > 0 && grouped@[quantity]@.no_duplicates(),
             forall|quantity: i128, key: i64| #[trigger] grouped_has(grouped@, quantity, key) <==>
                 order_keys@.take(index as int).contains(key as i128) && eligible_order(orders.at(key as i128), quantity),
+            forall|other: i128| (!order_keys@.contains(other) || order_keys@.take(index as int).contains(other)) ==> #[trigger] order_fit(orders.at(other)),
         decreases order_keys.len() - index,
     {
         let key = order_keys[index];
@@ -300,26 +308,38 @@ pub fn build(
         proof { assert(order_keys@.contains(key)); }
         if let Some(row) = orders.get(key) {
             proof { assert(row.wf()); assert(i64::MIN <= key <= i64::MAX); }
-            if row.count > 0 && row.variants.len() > 0 {
+            if row.count.is_pos() && row.variants.len() > 0 {
+                let quantity = match row.quantity.to_i128() {
+                    Some(value) => value,
+                    None => {
+                        proof {
+                            assert(row.quantity@ == line_sum(orders.at(key)));
+                            assert(line_sum(orders.at(key)) == sum(db.lineitem, qw(key as int)));
+                            if envelope(db) { lemma_quantity_fits(db, key as int); }
+                        }
+                        return None;
+                    }
+                };
                 let mut value = row.copy();
-                if !grouped.contains_key(&row.quantity) {
-                    grouped.insert(row.quantity, Vec::new());
-                    proof { push_set(quantities@, row.quantity); }
-                    quantities.push(row.quantity);
+                if !grouped.contains_key(&quantity) {
+                    grouped.insert(quantity, Vec::new());
+                    proof { push_set(quantities@, quantity); }
+                    quantities.push(quantity);
                 }
-                if let Some(mut bucket) = grouped.remove(&row.quantity) {
+                if let Some(mut bucket) = grouped.remove(&quantity) {
                     proof {
                         assert(!order_keys@.take(index as int).contains(key));
-                        assert(!grouped_has(prior_groups, row.quantity, key as i64));
-                        assert(bucket@ == if prior_groups.contains_key(row.quantity) { prior_groups[row.quantity]@ } else { Seq::<i64>::empty() });
+                        assert(!grouped_has(prior_groups, quantity, key as i64));
+                        assert(bucket@ == if prior_groups.contains_key(quantity) { prior_groups[quantity]@ } else { Seq::<i64>::empty() });
                         assert(!bucket@.contains(key as i64));
                         push_set(bucket@, key as i64);
                     }
                     value.slot = Some(bucket.len());
                     bucket.push(key as i64);
-                    grouped.insert(row.quantity, bucket);
+                    grouped.insert(quantity, bucket);
                 }
                 put_order_metadata(&mut orders, key, value);
+                proof { assert(row.quantity@ == quantity as int); assert(order_fit(orders.at(key))); }
             }
         }
         proof {
@@ -329,6 +349,9 @@ pub fn build(
                     (candidate as i128 == key && eligible_order(prior_orders.at(key), quantity)) by {}
             assert forall|quantity: i128, candidate: i64| #[trigger] grouped_has(grouped@, quantity, candidate) <==>
                 order_keys@.take(index as int + 1).contains(candidate as i128) && eligible_order(orders.at(candidate as i128), quantity) by {}
+            assert forall|other: i128| (!order_keys@.contains(other) || order_keys@.take(index as int + 1).contains(other)) implies #[trigger] order_fit(orders.at(other)) by {
+                if other != key { assert(orders.at(other) == prior_orders.at(other)); }
+            }
         }
         index += 1;
     }
@@ -385,6 +408,9 @@ pub fn build(
         }
         assert forall|key: i128| #[trigger] orders.at(key) matches Some(row) ==> i64::MIN <= key <= i64::MAX && row.wf() by {}
         assert forall|key: i128| #[trigger] customers.at(key) matches Some(row) ==> i64::MIN <= key <= i64::MAX && row.wf() by {}
+        assert forall|key: i128| #[trigger] orders.at(key) matches Some(row) ==> (row.count@ > 0 && row.variants.len() > 0 ==> i128::MIN <= row.quantity@ <= i128::MAX) by {
+            assert(order_fit(orders.at(key)));
+        }
         assert forall|key: int| line_count(if i64::MIN <= key <= i64::MAX { orders.at(key as i128) } else { None }) == #[trigger] sum(db.lineitem, nw(key)) by {
             if key < i64::MIN || key > i64::MAX { line_range(line_quantities@, key); }
         }
@@ -409,9 +435,10 @@ pub fn build(
     Some(State { db: Ghost(db), orders, customers, buckets, directory })
 }
 
-#[verifier::rlimit(30)]
+#[verifier::rlimit(80)]
 pub fn execute(s: &State, p1: i64) -> (r: Option<Vec<Row>>)
     ensures r matches Some(out) ==> query_result(s.db(), params(p1 as int), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1 as int)) ==> r is Some,
 {
     hide(sum);
     proof { use_type_invariant(s); }
@@ -426,7 +453,7 @@ pub fn execute(s: &State, p1: i64) -> (r: Option<Vec<Row>>)
         decreases s.directory.len() - quantity_index,
     {
         let quantity = s.directory[quantity_index];
-        let bucket = match s.buckets.get(quantity) { Some(value) => value, None => return None };
+        let bucket = match s.buckets.get(quantity) { Some(value) => value, None => { proof { assert(s.directory@.contains(quantity)); assert(false); } return None; } };
         let mut key_index = 0usize;
         while key_index < bucket.len
             invariant key_index <= bucket.len,
@@ -434,7 +461,8 @@ pub fn execute(s: &State, p1: i64) -> (r: Option<Vec<Row>>)
             decreases bucket.len - key_index,
         {
             let key = bucket.get(key_index);
-            let row = match s.orders.get(key as i128) { Some(value) => value, None => return None };
+            proof { assert(bucket.view()[key_index as int] == key); assert(bucket.view().contains(key)); assert(s.bucket_has(quantity, key)); }
+            let row = match s.orders.get(key as i128) { Some(value) => value, None => { proof { assert(false); } return None; } };
             let mut order_index = 0usize;
             while order_index < row.variants.len()
                 invariant order_index <= row.variants.len(),
@@ -450,10 +478,16 @@ pub fn execute(s: &State, p1: i64) -> (r: Option<Vec<Row>>)
                         decreases customer.names.len() - name_index,
                     {
                         let name = &customer.names[name_index];
-                        let subtotal = match quantity.checked_mul(order.count) { Some(value) => value, None => return None };
-                        let total = match subtotal.checked_mul(name.count) { Some(value) => value, None => return None };
                         let ghost previous = out_view(out@);
                         let ghost location = (quantity_index as int, key_index as int, order_index as int, name_index as int);
+                        let exact = Wide::from_i128(quantity).mul(&order.count).mul(&name.count);
+                        let total = match exact.to_i128() {
+                            Some(value) => value,
+                            None => {
+                                proof { result_proof::unfit_slot_refutes(*s, parameters, location); }
+                                return None;
+                            }
+                        };
                         out.push((copy_bytes(&name.name), order.customer, key, order.date, order.price as i128, total));
                         proof {
                             assert(result_proof::slot(*s, parameters, location) == Some(row_view(out@.last())));
@@ -504,7 +538,7 @@ pub fn execute(s: &State, p1: i64) -> (r: Option<Vec<Row>>)
     Some(out)
 }
 
-#[verifier::rlimit(30)]
+#[verifier::rlimit(100)]
 pub fn apply(
     s: &State,
     customer_delta: &Vec<CustomerNameDelta>,
@@ -515,6 +549,7 @@ pub fn apply(
     requires capture_ok(s.db(), db2, customer_name_delta_seq_view(customer_delta@),
         line_quantity_delta_seq_view(lineitem_delta@), order_group_delta_seq_view(orders_delta@)),
     ensures r matches Ok(s2) ==> s2.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
     hide(sum);
     hide(Editor::at);
@@ -555,9 +590,9 @@ pub fn apply(
     let mut quantities = Vec::new();
     let mut quantity_seen = HashMap::new();
     proof { empty_set::<i128>(); }
-    if !apply_lines(&mut orders, lineitem_delta, &mut order_seen, &mut order_keys) { return Err(1); }
-    if !apply_orders(&mut orders, orders_delta, &mut order_seen, &mut order_keys) { return Err(1); }
-    if !apply_customers(&mut customers, customer_delta, &mut customer_seen, &mut customer_keys) { return Err(1); }
+    apply_lines(&mut orders, lineitem_delta, &mut order_seen, &mut order_keys);
+    apply_orders(&mut orders, orders_delta, &mut order_seen, &mut order_keys);
+    apply_customers(&mut customers, customer_delta, &mut customer_seen, &mut customer_keys);
     proof {
         assert forall|key: i128| #[trigger] line_count(orders.at(key)) == sum(db2.lineitem, nw(key as int)) by {
             if key < i64::MIN || key > i64::MAX { assert(s.orders.at(key) is None); }
@@ -581,6 +616,13 @@ pub fn apply(
         }
         assert(orders_valid_prefix(orders, order_keys@, 0));
         assert(customers_valid_prefix(customers, customer_keys@, 0));
+        assert forall|position: int| 0 <= position < customer_keys.len() implies #[trigger] customers.at(customer_keys@[position]) is Some by {
+            assert(customer_keys@.contains(customer_keys@[position]));
+        }
+        assert forall|other: i128| !order_keys@.contains(other) implies #[trigger] order_fit(orders.at(other)) by {
+            assert(orders.at(other) == s.orders.at(other));
+            if let Some(row) = s.orders.at(other) { assert(row.count@ > 0 && row.variants.len() > 0 ==> i128::MIN <= row.quantity@ <= i128::MAX); }
+        }
         assert(consistent_buckets(buckets));
         assert forall|quantity: i128, key: i64| #[trigger] bucket_member(buckets, quantity, key) == s.bucket_has(quantity, key) by {}
         assert forall|quantity: i128, key: i64| !order_keys@.contains(key as i128) ==> #[trigger] eligible_order(orders.at(key as i128), quantity) == s.bucket_has(quantity, key) by {}
@@ -595,21 +637,31 @@ pub fn apply(
             forall|quantity: i128, key: i64| #[trigger] bucket_member(buckets, quantity, key) <==>
                 s.bucket_has(quantity, key) && !order_keys@.take(index as int).contains(key as i128),
             forall|quantity: i128| (#[trigger] buckets.at(quantity) is Some) != (s.buckets.at(quantity) is Some) ==> quantities@.contains(quantity),
+            forall|other: i128| #[trigger] s.orders.at(other) is Some ==> orders.at(other) is Some,
+            forall|position: int| 0 <= position < order_keys.len() ==> #[trigger] orders.at(order_keys@[position]) is Some,
+            forall|other: i128| !order_keys@.contains(other) ==> #[trigger] order_fit(orders.at(other)),
+            forall|position: int| 0 <= position < customer_keys.len() ==> #[trigger] customers.at(customer_keys@[position]) is Some,
         decreases order_keys.len() - index,
     {
         let key = order_keys[index];
         let ghost before_buckets = buckets;
         if let Some(old) = s.orders.get(key) {
-            if old.count > 0 && old.variants.len() > 0 {
-                let current = match orders.get(key) { Some(value) => value, None => return Err(2) };
-                let slot = match current.slot { Some(value) => value, None => return Err(2) };
-                let original = match buckets.get(old.quantity) { Some(value) => value, None => return Err(2) };
-                proof { assert(bucket_valid(buckets.at(old.quantity))); }
-                if slot >= original.len || original.get(slot) as i128 != key { return Err(2); }
+            proof { assert(s.orders.at(key) == Some(*old)); }
+            if old.count.is_pos() && old.variants.len() > 0 {
+                let old_quantity = old.bucket_key();
+                proof {
+                    assert(old_quantity@ == old.bucket_quantity() as int);
+                    assert(s.bucket_has(old_quantity, key as i64));
+                    assert(bucket_member(buckets, old_quantity, key as i64));
+                }
+                let current = match orders.get(key) { Some(value) => value, None => { proof { assert(false); } return Err(2); } };
+                let original = match buckets.get(old_quantity) { Some(value) => value, None => { proof { assert(false); } return Err(2); } };
+                proof { assert(bucket_valid(buckets.at(old_quantity))); assert(original.view().contains(key as i64)); }
+                let slot = original.locate(key as i64, current.slot);
                 let mut bucket = original.share();
                 let ghost original_view = bucket.view();
                 proof {
-                    assert(bucket_valid(buckets.at(old.quantity)));
+                    assert(bucket_valid(buckets.at(old_quantity)));
                     assert(original.view()[slot as int] == key as i64);
                     swap_remove_unique(original_view, slot as int);
                 }
@@ -617,12 +669,17 @@ pub fn apply(
                 let ghost removed_view = bucket.view();
                 proof {
                     assert(original_view == original.view());
-                    assert(before_buckets.at(old.quantity) == Some(*original));
+                    assert(before_buckets.at(old_quantity) == Some(*original));
                     assert forall|candidate: i64| #[trigger] bucket.view().contains(candidate) <==>
                         original_view.contains(candidate) && candidate as i128 != key by {}
                 }
                 if moved as i128 != key {
-                    let value = match orders.get(moved as i128) { Some(value) => value, None => return Err(2) };
+                    proof {
+                        assert(original_view.contains(moved));
+                        assert(bucket_member(before_buckets, old_quantity, moved));
+                        assert(s.bucket_has(old_quantity, moved));
+                    }
+                    let value = match orders.get(moved as i128) { Some(value) => value, None => { proof { assert(false); } return Err(2); } };
                     let mut updated = value.copy();
                     updated.slot = Some(slot);
                     put_order_metadata(&mut orders, moved as i128, updated);
@@ -630,16 +687,16 @@ pub fn apply(
                 let mut updated = current.copy();
                 updated.slot = None;
                 put_order_metadata(&mut orders, key, updated);
-                if bucket.len == 0 { erase_valid(&mut buckets, old.quantity, Ghost(|row: Option<KeyBucket>| bucket_valid(row))); }
-                else { put_valid(&mut buckets, old.quantity, Arc::new(bucket), Ghost(|row: Option<KeyBucket>| bucket_valid(row))); }
-                remember(old.quantity, &mut quantity_seen, &mut quantities);
+                if bucket.len == 0 { erase_valid(&mut buckets, old_quantity, Ghost(|row: Option<KeyBucket>| bucket_valid(row))); }
+                else { put_valid(&mut buckets, old_quantity, Arc::new(bucket), Ghost(|row: Option<KeyBucket>| bucket_valid(row))); }
+                remember(old_quantity, &mut quantity_seen, &mut quantities);
                 proof {
-                    assert forall|candidate: i64| #[trigger] bucket_member(buckets, old.quantity, candidate) == removed_view.contains(candidate) by {
+                    assert forall|candidate: i64| #[trigger] bucket_member(buckets, old_quantity, candidate) == removed_view.contains(candidate) by {
                         if removed_view.len() == 0 { assert(!removed_view.contains(candidate)); }
                     }
                     assert forall|quantity: i128, candidate: i64| #[trigger] bucket_member(buckets, quantity, candidate) <==>
                         bucket_member(before_buckets, quantity, candidate) && candidate as i128 != key by {
-                        if quantity == old.quantity {
+                        if quantity == old_quantity {
                             assert(bucket_member(buckets, quantity, candidate) == removed_view.contains(candidate));
                             assert(bucket_member(before_buckets, quantity, candidate) == original_view.contains(candidate));
                             assert(removed_view.contains(candidate) <==> original_view.contains(candidate) && candidate as i128 != key);
@@ -647,7 +704,7 @@ pub fn apply(
                             assert(buckets.at(quantity) == before_buckets.at(quantity));
                             assert(bucket_member(buckets, quantity, candidate) == bucket_member(before_buckets, quantity, candidate));
                         }
-                        if quantity != old.quantity && candidate as i128 == key {
+                        if quantity != old_quantity && candidate as i128 == key {
                             assert(!s.bucket_has(quantity, candidate));
                             assert(!bucket_member(before_buckets, quantity, candidate));
                             assert(!bucket_member(buckets, quantity, candidate));
@@ -685,35 +742,79 @@ pub fn apply(
                 (if order_keys@.take(index as int).contains(key as i128) { eligible_order(orders.at(key as i128), quantity) }
                 else { !order_keys@.contains(key as i128) && s.bucket_has(quantity, key) }),
             forall|quantity: i128| (#[trigger] buckets.at(quantity) is Some) != (s.buckets.at(quantity) is Some) ==> quantities@.contains(quantity),
+            forall|position: int| index <= position < order_keys.len() ==> #[trigger] orders.at(order_keys@[position]) is Some,
+            forall|other: i128| (!order_keys@.contains(other) || order_keys@.take(index as int).contains(other)) ==> #[trigger] order_fit(orders.at(other)),
+            forall|position: int| 0 <= position < customer_keys.len() ==> #[trigger] customers.at(customer_keys@[position]) is Some,
         decreases order_keys.len() - index,
     {
         let key = order_keys[index];
         let ghost before_buckets = buckets;
-        let current = match orders.get(key) { Some(value) => value, None => return Err(2) };
-        proof { assert(order_shape(orders.at(key))); }
+        let current = match orders.get(key) { Some(value) => value, None => { proof { assert(false); } return Err(2); } };
+        proof {
+            assert(order_shape(orders.at(key)));
+            assert(current.shape());
+            assert(orders.at(key) == Some(*current));
+            assert(line_count(orders.at(key)) == sum(db2.lineitem, nw(key as int)));
+            assert(line_sum(orders.at(key)) == sum(db2.lineitem, qw(key as int)));
+            assert forall|person: int, day: int, total: int| #[trigger] current.multiplicity(person, day, total) == sum(db2.orders, ow(key as int, person, day, total)) by {
+                assert(order_count(orders.at(key), person, day, total) == sum(db2.orders, ow(key as int, person, day, total)));
+            }
+            lemma_clean_ready(db2, key as int, &*current);
+        }
         let mut value = current.copy();
-        if !value.clean() { return Err(2); }
+        value.clean();
         let ghost cleaned = value;
-        if value.count > 0 && value.variants.len() > 0 {
-            proof { assert(bucket_valid(buckets.at(value.quantity))); assert(bucket_shape(buckets.at(value.quantity))); }
-            let mut bucket = match buckets.get(value.quantity) { Some(value) => value.share(), None => KeyBucket::empty() };
+        if value.count.is_pos() && value.variants.len() > 0 {
+            let value_quantity = match value.quantity.to_i128() {
+                Some(found) => found,
+                None => {
+                    proof {
+                        assert(value.quantity == current.quantity);
+                        if envelope(db2) { lemma_quantity_fits(db2, key as int); assert(false); }
+                    }
+                    return Err(2);
+                }
+            };
+            proof { assert(bucket_valid(buckets.at(value_quantity))); assert(bucket_shape(buckets.at(value_quantity))); }
+            let mut bucket = match buckets.get(value_quantity) { Some(value) => value.share(), None => KeyBucket::empty() };
             let ghost original_view = bucket.view();
             proof {
-                assert forall|candidate: i64| #[trigger] original_view.contains(candidate) == bucket_member(before_buckets, value.quantity, candidate) by {}
+                assert forall|candidate: i64| #[trigger] original_view.contains(candidate) == bucket_member(before_buckets, value_quantity, candidate) by {}
                 assert(!order_keys@.take(index as int).contains(key));
-                assert(!bucket_member(buckets, value.quantity, key as i64));
+                assert(!bucket_member(buckets, value_quantity, key as i64));
                 assert(!bucket.view().contains(key as i64));
                 push_set(bucket.view(), key as i64);
             }
             value.slot = Some(bucket.len);
-            if !bucket.push(key as i64) { return Err(1); }
+            if !bucket.push(key as i64) {
+                proof {
+                    if envelope(s.db()) && envelope(db2) {
+                        assert forall|member: i64| original_view.contains(member) implies -2147483648 <= member <= 2147483647 by {
+                            assert(bucket_member(before_buckets, value_quantity, member));
+                            if order_keys@.take(index as int).contains(member as i128) {
+                                assert(eligible_order(orders.at(member as i128), value_quantity));
+                                assert(line_count(orders.at(member as i128)) == sum(db2.lineitem, nw(member as int)));
+                                lemma_line_key_range(db2, member as int);
+                            } else {
+                                assert(s.bucket_has(value_quantity, member));
+                                assert(s.n(member as int) > 0);
+                                lemma_line_key_range(s.db(), member as int);
+                            }
+                        }
+                        lemma_distinct_keys_few(original_view);
+                        assert(original_view.len() == usize::MAX);
+                        assert(false);
+                    }
+                }
+                return Err(1);
+            }
             let ghost pushed_view = bucket.view();
-            put_valid(&mut buckets, value.quantity, Arc::new(bucket), Ghost(|row: Option<KeyBucket>| bucket_valid(row)));
-            remember(value.quantity, &mut quantity_seen, &mut quantities);
+            put_valid(&mut buckets, value_quantity, Arc::new(bucket), Ghost(|row: Option<KeyBucket>| bucket_valid(row)));
+            remember(value_quantity, &mut quantity_seen, &mut quantities);
             proof {
                 assert forall|quantity: i128, candidate: i64| #[trigger] bucket_member(buckets, quantity, candidate) <==>
-                    bucket_member(before_buckets, quantity, candidate) || (candidate as i128 == key && quantity == value.quantity) by {
-                    if quantity == value.quantity {
+                    bucket_member(before_buckets, quantity, candidate) || (candidate as i128 == key && quantity == value_quantity) by {
+                    if quantity == value_quantity {
                         broadcast use vstd::seq_lib::group_seq_properties;
                         assert(bucket_member(buckets, quantity, candidate) == pushed_view.contains(candidate));
                         assert(pushed_view == original_view.push(key as i64));
@@ -736,7 +837,7 @@ pub fn apply(
             assert(order_keys@.take(index as int + 1) =~= order_keys@.take(index as int).push(key));
             assert forall|quantity: i128, candidate: i64| #[trigger] bucket_member(buckets, quantity, candidate) <==>
                 bucket_member(before_buckets, quantity, candidate) || (candidate as i128 == key && eligible_order(orders.at(key), quantity)) by {
-                assert(eligible_order(orders.at(key), quantity) == (cleaned.count > 0 && cleaned.variants.len() > 0 && cleaned.quantity == quantity));
+                assert(eligible_order(orders.at(key), quantity) == (cleaned.count@ > 0 && cleaned.variants.len() > 0 && cleaned.quantity@ == quantity as int));
             }
         }
         index += 1;
@@ -752,15 +853,24 @@ pub fn apply(
         invariant index <= customer_keys.len(), coherent(orders, customers), consistent_buckets(buckets),
             bounded_keys(customer_keys@), valid_orders(orders), totals(orders, customers, db2),
             customers_valid_prefix(customers, customer_keys@, index as int),
+            remembered(customer_seen@, customer_keys@),
+            forall|position: int| index <= position < customer_keys.len() ==> #[trigger] customers.at(customer_keys@[position]) is Some,
             forall|quantity: i128, key: i64| #[trigger] bucket_member(buckets, quantity, key) <==> eligible_order(orders.at(key as i128), quantity),
             forall|quantity: i128| (#[trigger] buckets.at(quantity) is Some) != (s.buckets.at(quantity) is Some) ==> quantities@.contains(quantity),
         decreases customer_keys.len() - index,
     {
         let key = customer_keys[index];
-        let current = match customers.get(key) { Some(value) => value, None => return Err(2) };
-        proof { assert(customer_shape(customers.at(key))); }
+        let current = match customers.get(key) { Some(value) => value, None => { proof { assert(false); } return Err(2); } };
+        proof {
+            assert(customer_shape(customers.at(key)));
+            assert(customers.at(key) == Some(*current));
+            assert forall|name: Seq<u8>| #[trigger] current.multiplicity(name) == sum(db2.customer, cw(key as int, name)) by {
+                assert(customer_count(customers.at(key), name) == sum(db2.customer, cw(key as int, name)));
+            }
+            lemma_clean_ready_customer(db2, key as int, &*current);
+        }
         let mut value = current.copy();
-        if !value.clean() { return Err(2); }
+        value.clean();
         install_clean_customer(&mut customers, key, value);
         proof { assert(customer_keys@.take(index as int + 1) =~= customer_keys@.take(index as int).push(key)); }
         index += 1;
@@ -802,7 +912,13 @@ pub fn apply(
                 values.insert(position, quantity);
             }
             else {
-                if position >= values.len() || values[position] != quantity { return Err(2); }
+                proof {
+                    assert(previous.contains(quantity));
+                    assert(values@ == previous);
+                    let at = choose|at: int| 0 <= at < values@.len() && values@[at] == quantity;
+                    assert(values@[at] == quantity);
+                }
+                if position >= values.len() || values[position] != quantity { proof { assert(false); } return Err(2); }
                 proof { removal_ordered(values@, position as int); remove_unique(values@, position as int); }
                 values.remove(position);
             }
@@ -829,6 +945,10 @@ pub fn apply(
         assert forall|quantity: i128| #[trigger] directory@.contains(quantity) <==> buckets.at(quantity) is Some by {
             if (buckets.at(quantity) is Some) != (s.buckets.at(quantity) is Some) { assert(quantities@.contains(quantity)); }
         }
+    }
+    proof {
+        assert(order_keys@.take(order_keys.len() as int) =~= order_keys@);
+        assert forall|key: i128| #[trigger] order_fit(orders.at(key)) by {}
     }
     let ghost final_orders = orders;
     let ghost final_buckets = buckets;
@@ -857,6 +977,10 @@ pub fn apply(
         assert forall|quantity: i128| #[trigger] buckets.at(quantity) matches Some(bucket) ==> bucket.wf() && bucket.len > 0 && bucket.view().no_duplicates() by { assert(bucket_valid(buckets.at(quantity))); }
         assert forall|key: i128| #[trigger] orders.at(key) matches Some(row) ==> i64::MIN <= key <= i64::MAX && row.wf() by {}
         assert forall|key: i128| #[trigger] customers.at(key) matches Some(row) ==> i64::MIN <= key <= i64::MAX && row.wf() by {}
+        assert forall|key: i128| #[trigger] orders.at(key) matches Some(row) ==> (row.count@ > 0 && row.variants.len() > 0 ==> i128::MIN <= row.quantity@ <= i128::MAX) by {
+            assert(orders.at(key) == final_orders.at(key));
+            assert(order_fit(final_orders.at(key)));
+        }
         assert forall|left: int, right: int| 0 <= left < right < directory.len() implies #[trigger] directory@[left] < #[trigger] directory@[right] by {}
         assert(candidate.wf());
     }

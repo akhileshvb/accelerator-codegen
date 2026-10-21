@@ -146,15 +146,71 @@ pub open spec fn part_delta_seq_view(s: Seq<PartDelta>) -> Seq<(PartRow, int)> {
     s.map_values(|d: PartDelta| (part_input_view(d.row), d.sign as int))
 }
 
+/// Each change is one row, inserted (+1) or deleted (-1).
+pub open spec fn unit_weights<A>(d: Seq<(A, int)>) -> bool {
+    forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1
+}
+
 /// One transaction's changes: every table of db2 is that of db plus its deltas (bags).
 pub open spec fn capture_ok(db: Db, db2: Db, lineitem: Seq<(LineitemRow, int)>, part: Seq<(PartRow, int)>) -> bool {
     &&& bag_step(db.lineitem, db2.lineitem, lineitem)
+    &&& unit_weights(lineitem)
     &&& bag_step(db.part, db2.part, part)
+    &&& unit_weights(part)
+}
+
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table can hold (the DBMS's row ids are 64-bit).
+pub open spec fn max_rows() -> int {
+    9223372036854775808
+}
+
+/// Most changed rows a state may absorb after its build before apply may decline
+/// (the host then rebuilds).
+pub open spec fn max_history() -> int {
+    4611686018427387904
+}
+
+/// Each value of lineitem lies in the range of its column's SQL type.
+pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
+    -2147483648 <= r.l_partkey <= 2147483647
+    && -999999999999999 <= r.l_quantity <= 999999999999999
+    && -999999999999999 <= r.l_extendedprice <= 999999999999999
+}
+
+/// Each value of part lies in the range of its column's SQL type.
+pub open spec fn part_in_type(r: PartRow) -> bool {
+    -2147483648 <= r.p_partkey <= 2147483647
+}
+
+/// The databases the DBMS can represent: each table within its row-id space, each
+/// value within its column's SQL type.
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.lineitem.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.lineitem.len() ==> lineitem_in_type(#[trigger] db.lineitem[i])
+    &&& db.part.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.part.len() ==> part_in_type(#[trigger] db.part[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    match r.avg_yearly { Some(v) => -170141183460469231731687303715884105728 <= v.num <= 170141183460469231731687303715884105727 && -170141183460469231731687303715884105728 <= v.den <= 170141183460469231731687303715884105727, None => true }
+}
+
+/// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves
+/// `defined <==> exists an answer`) and every correct answer fits: at most max_rows()
+/// rows, each in the result's runtime types.  A kernel that declines because no answer
+/// exists must prove
+/// `!defined`.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    &&& defined(db, params)
+    &&& forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> o.len() <= max_rows() && forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
 }
 
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     lines: &[LineInput],
     parts: Vec<PartInput>,
@@ -165,11 +221,14 @@ pub fn ob_build(
         scan_parts_ok(db, parts@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        r matches Some(s) ==> crate::kernel::history(s) == 0,
+        envelope(db) ==> r is Some,
 {
     kernel::build(lines, parts, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope, or when no correct answer exists or one overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: &[u8],
@@ -177,22 +236,26 @@ pub fn ob_execute(
 ) -> (r: Option<Vec<Option<(i128, i128)>>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2@), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1@, p2@)) ==> r is Some,
 {
     kernel::execute(s, p1, p2)
 }
 
-/// The keys whose rows the host rescans (rescan lines_for_parts) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan lines_for_parts) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_lines_for_parts_keys(
     s: &State,
     lineitem_delta: &[LineKeyDelta],
     part_delta: &Vec<PartDelta>,
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_lines_for_parts_wanted(*s, lineitem_delta@, part_delta@),
 {
     kernel::rescan_lines_for_parts_keys(s, lineitem_delta, part_delta)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope or after max_history() changed rows since the build.
 pub fn ob_apply(
     s: &State,
     lineitem_delta: &[LineKeyDelta],
@@ -205,9 +268,12 @@ pub fn ob_apply(
     requires
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         capture_ok(s.db(), db2, lineitem_full, part_delta_seq_view(part_delta@)),
+        lines_for_parts_keys@ == crate::kernel::rescan_lines_for_parts_wanted(*s, lineitem_delta@, part_delta@),
         rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        r matches Ok(s2) ==> crate::kernel::history(s2) <= crate::kernel::history(*s) + lineitem_delta@.len() + part_delta@.len(),
+        envelope(s.db()) && envelope(db2) && crate::kernel::history(*s) + lineitem_delta@.len() + part_delta@.len() <= max_history() ==> r is Ok,
 {
     kernel::apply(s, lineitem_delta, part_delta, lines_for_parts_keys, lines_for_parts_rows, Ghost(lineitem_full), Ghost(db2))
 }

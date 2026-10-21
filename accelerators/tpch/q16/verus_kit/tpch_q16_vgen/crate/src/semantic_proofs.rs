@@ -7,35 +7,22 @@ use verus_common::sqlfns::like_match;
 
 verus! {
 
-pub open spec fn materialized(parts: Parts, edges: Edges, blockers: Index<i64>, counts: Counts) -> bool {
+pub open spec fn materialized(parts: Parts, edges: Edges, blockers: Index<i128>, counts: Counts) -> bool {
     &&& cell_keys_valid(counts)
     &&& forall|key: KeyView| #[trigger] counts.at(key).is_some() ==> counts.at(key).unwrap().count > 0
     &&& forall|key: KeyView| #[trigger] count_at(counts, key)
-        == sum(edges.entries(), |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, key))
+        == sum(edges.entries(), |row: (KeyView, Index<i128>)| supplier_weight(parts, blockers, row, key))
 }
 
-pub proof fn lemma_build_result(db: Db, parts: Parts, edges: Edges, blockers: Index<i64>, counts: Counts, ranks: Ranks)
+pub proof fn lemma_build_result(db: Db, parts: Parts, edges: Edges, blockers: Index<i128>, counts: Counts, ranks: Ranks)
     requires materialized(parts, edges, blockers, counts), ranks_valid(ranks, counts),
         forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
             #[trigger] total(db, brand, kind, size) == sum(edges.entries(),
-                |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, group_key(brand, kind, size))),
+                |row: (KeyView, Index<i128>)| supplier_weight(parts, blockers, row, group_key(brand, kind, size))),
     ensures counts_valid(counts, db), ranks_valid(ranks, counts),
 {
     assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
         #[trigger] count_at(counts, group_key(brand, kind, size)) == total(db, brand, kind, size) by {}
-}
-
-pub proof fn lemma_apply_result(db: Db, db2: Db, before: Counts, after: Counts, changes: Counts, ranks: Ranks)
-    requires counts_valid(before, db), cell_keys_valid(after), ranks_valid(ranks, after),
-        forall|key: KeyView| #[trigger] after.at(key).is_some() ==> after.at(key).unwrap().count > 0,
-        forall|key: KeyView| #[trigger] count_at(after, key) == count_at(before, key) + count_at(changes, key),
-        forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
-            #[trigger] total(db2, brand, kind, size) - total(db, brand, kind, size)
-                == count_at(changes, group_key(brand, kind, size)),
-    ensures counts_valid(after, db2), ranks_valid(ranks, after),
-{
-    assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
-        #[trigger] count_at(after, group_key(brand, kind, size)) == total(db2, brand, kind, size) by {}
 }
 
 pub open spec fn output_model(counts: Counts, params: Params, out: Seq<OutRow>) -> bool {

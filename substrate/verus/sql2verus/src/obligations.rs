@@ -35,8 +35,10 @@
 //   * A row type without text is #[repr(C)] + Copy and passed as a slice;
 //     one with text is passed as an owned Vec (build) or &Vec (apply).
 //   * The kernel provides crate::kernel::{State, build, execute, apply,
-//     rescan_<name>_keys} with State::db(); the host calls only the ob_*
-//     functions, whose contracts are fixed here.
+//     rescan_<name>_keys} with State::db(), and a spec fn rescan_<name>_wanted
+//     (State, delta views) -> Seq<key>: the keys it asks for.  The host passes
+//     back exactly those keys; it calls only the ob_* functions, whose
+//     contracts are fixed here.
 //   * `Model` describes the ob_* functions for the generated glue (glue.rs):
 //     the store adapter and the C ABI are derived from it, never written.
 use super::*;
@@ -233,6 +235,7 @@ pub(crate) struct P {
 pub(crate) const SDB: &str = "$SDB";
 pub(crate) const DB: &str = "$DB";
 pub(crate) const DB2: &str = "$DB2";
+pub(crate) const ST: &str = "$S";
 
 pub(crate) struct ObFn {
     pub(crate) doc: String,
@@ -299,8 +302,8 @@ pub(crate) struct Model {
 }
 
 /// `requires` with its database placeholders instantiated.
-pub(crate) fn inst(r: &str, sdb: &str, db: &str, db2: &str) -> String {
-    r.replace(SDB, sdb).replace(DB2, db2).replace(DB, db)
+pub(crate) fn inst(r: &str, st: &str, sdb: &str, db: &str, db2: &str) -> String {
+    r.replace(SDB, sdb).replace(DB2, db2).replace(DB, db).replace(ST, st)
 }
 
 impl ObFn {
@@ -315,13 +318,13 @@ impl ObFn {
         if !self.requires.is_empty() {
             writeln!(w, "    requires").unwrap();
             for r in &self.requires {
-                writeln!(w, "        {},", inst(r, "s.db()", "db", "db2")).unwrap();
+                writeln!(w, "        {},", inst(r, "*s", "s.db()", "db", "db2")).unwrap();
             }
         }
         if !self.ensures.is_empty() {
             writeln!(w, "    ensures").unwrap();
             for e in &self.ensures {
-                writeln!(w, "        {e},").unwrap();
+                writeln!(w, "        {},", inst(e, "*s", "s.db()", "db", "db2")).unwrap();
             }
         }
         w
@@ -492,6 +495,16 @@ impl<'t, 'a> Ob<'t, 'a> {
         self.prim_views.insert(rt);
         Ok(format!("seq_view_{}", prim_tag(rt)))
     }
+}
+
+/// Rows a table can hold: the DBMS numbers rows with 64-bit row ids.
+const MAX_ROWS: i128 = 1 << 63;
+
+/// Changed rows a state may absorb after its build before apply may decline.
+const MAX_HISTORY: i128 = 1 << 62;
+
+fn range_of(x: &str, lo: i128, hi: i128) -> String {
+    format!("{lo} <= {x} <= {hi}")
 }
 
 fn prim_tag(rt: &str) -> &'static str {
@@ -890,6 +903,7 @@ pub(crate) async fn obligations(
     let mut out_tys = vec![];
     let mut out_views = vec![];
     let mut outs_rt: Vec<(&'static str, bool, Ty)> = vec![];
+    let mut out_fits = vec![];
     for (k, c) in b.outs.iter().enumerate() {
         if c.val.approx.is_some() {
             bail!("result column {}: a rounded float has no exact runtime value", c.sql);
@@ -904,6 +918,21 @@ pub(crate) async fn obligations(
             other => bail!("result column {}: {other:?}", c.sql),
         };
         outs_rt.push((rt, c.nullable, c.val.ty));
+        let fits = |x: &str| match rt {
+            "i128" => Some(range_of(x, i128::MIN, i128::MAX)),
+            "i64" => Some(range_of(x, i64::MIN as i128, i64::MAX as i128)),
+            "i32" => Some(range_of(x, i32::MIN as i128, i32::MAX as i128)),
+            "(i128, i128)" => Some(format!("{} && {}", range_of(&format!("{x}.num"), i128::MIN, i128::MAX),
+                                           range_of(&format!("{x}.den"), i128::MIN, i128::MAX))),
+            _ => None,
+        };
+        if let Some(f) = fits("v") {
+            out_fits.push(if c.nullable {
+                format!("match r.{} {{ Some(v) => {f}, None => true }}", c.field)
+            } else {
+                fits(&format!("r.{}", c.field)).unwrap()
+            });
+        }
         let acc = if b.outs.len() == 1 { "r".to_string() } else { format!("r.{k}") };
         if c.nullable {
             out_tys.push(format!("Option<{rt}>"));
@@ -927,21 +956,28 @@ pub(crate) async fn obligations(
         }
         ps.push(P { name: "db".into(), ty: "Db".into(), ghost: true, arg: Arg::Ghost });
         fns.push(ObFn {
-            doc: "Build: a state for db, or None (the host then answers with SQL).".into(),
+            doc: "Build: a state for db; None only outside the envelope.".into(),
             name: "build".into(),
             params: ps,
             ret: "(r: Option<State>)".into(),
             requires: req,
-            ensures: vec!["r matches Some(s) ==> s.db() == db".into()],
+            ensures: vec![
+                "r matches Some(s) ==> s.db() == db".into(),
+                "r matches Some(s) ==> crate::kernel::history(s) == 0".into(),
+                "envelope(db) ==> r is Some".into(),
+            ],
         });
     }
     fns.push(ObFn {
-        doc: "Execute: the query's answer on s.db(), or None (the host then answers with SQL).".into(),
+        doc: "Execute: the query's answer on s.db(); None (the host then answers with SQL) only\n/// outside the envelope, or when no correct answer exists or one overflows the result's types.".into(),
         name: "execute".into(),
         params: exec_params,
         ret: format!("(r: Option<Vec<{out_ty}>>)"),
         requires: vec![],
-        ensures: vec![format!("r matches Some(out) ==> query_result(s.db(), params({}), out_view(out@))", pargs.join(", "))],
+        ensures: vec![
+            format!("r matches Some(out) ==> query_result(s.db(), params({}), out_view(out@))", pargs.join(", ")),
+            format!("envelope(s.db()) && answer_fits(s.db(), params({})) ==> r is Some", pargs.join(", ")),
+        ],
     });
     let delta_params = |deltas: &BTreeMap<String, DeltaOut>| -> Vec<P> {
         deltas
@@ -952,16 +988,25 @@ pub(crate) async fn obligations(
             })
             .collect()
     };
+    let wanted = |s: &ScanOut| {
+        let views: Vec<String> = deltas.values().map(|d| format!("{}_delta@", table_field(&d.table))).collect();
+        format!("crate::kernel::rescan_{}_wanted({ST}, {})", s.name, views.join(", "))
+    };
+    let changes = deltas.values().map(|d| format!("{}_delta@.len()", table_field(&d.table))).collect::<Vec<_>>().join(" + ");
+    let changes = if changes.is_empty() { "0".to_string() } else { changes };
+    let mut wanted_decls: Vec<String> = vec!["/// What the state has absorbed since its build, in changed rows at most (e.g. ids it\n/// never frees).\npub open spec fn history(s: State) -> nat {\n    0\n}\n".to_string()];
     for s in scans.iter().filter(|s| s.rescan) {
+        let tys: Vec<String> = deltas.values().map(|d| format!("{}_delta: Seq<{}>", table_field(&d.table), d.elem)).collect();
+        wanted_decls.push(format!("/// The keys the kernel asks the host to rescan ({}); the host passes back exactly these.\npub open spec fn rescan_{}_wanted(s: State, {}) -> Seq<{}> {{\n    Seq::empty()\n}}\n", s.name, s.name, tys.join(", "), s.key_rt.unwrap()));
         let mut ps = vec![P { name: "s".into(), ty: "&State".into(), ghost: false, arg: Arg::State }];
         ps.extend(delta_params(&deltas));
         fns.push(ObFn {
-            doc: format!("The keys whose rows the host rescans (rescan {}) for apply.  No contract:\n/// apply's result does not depend on trusting them.", s.name),
+            doc: format!("The keys whose rows the host rescans (rescan {}) for apply: the kernel's\n/// requested keys, which the host passes back to apply.", s.name),
             name: format!("rescan_{}_keys", s.name),
             params: ps,
             ret: format!("(r: Vec<{}>)", s.key_rt.unwrap()),
             requires: vec![],
-            ensures: vec![],
+            ensures: vec![format!("r@ == {}", wanted(s))],
         });
     }
     {
@@ -986,16 +1031,21 @@ pub(crate) async fn obligations(
         }
         req.push(format!("capture_ok({SDB}, {DB2}, {})", cap.join(", ")));
         for s in scans.iter().filter(|s| s.rescan) {
+            req.push(format!("{n}_keys@ == {}", wanted(s), n = s.name));
             req.push(format!("{}({DB2}, {n}_keys@, {n}_rows@)", s.contract, n = s.name));
         }
         ps.push(P { name: "db2".into(), ty: "Db".into(), ghost: true, arg: Arg::Ghost });
         fns.push(ObFn {
-            doc: "Apply one transaction: a state for db2, or Err (the host then rebuilds).".into(),
+            doc: "Apply one transaction: a state for db2; Err (the host then rebuilds) only outside\n/// the envelope or after max_history() changed rows since the build.".into(),
             name: "apply".into(),
             params: ps,
             ret: "(r: Result<State, u32>)".into(),
             requires: req,
-            ensures: vec!["r matches Ok(s2) ==> s2.db() == db2".into()],
+            ensures: vec![
+                "r matches Ok(s2) ==> s2.db() == db2".into(),
+                format!("r matches Ok(s2) ==> crate::kernel::history(s2) <= crate::kernel::history(*s) + {changes}"),
+                format!("envelope(s.db()) && envelope(db2) && crate::kernel::history(*s) + {changes} <= max_history() ==> r is Ok"),
+            ],
         });
     }
 
@@ -1031,18 +1081,60 @@ pub(crate) async fn obligations(
         w.push_str(it);
     }
     let cps: Vec<String> = tables.iter().map(|t| format!("{}: Seq<({}, int)>", table_field(t), table_row(t))).collect();
+    writeln!(w, "/// Each change is one row, inserted (+1) or deleted (-1).").unwrap();
+    writeln!(w, "pub open spec fn unit_weights<A>(d: Seq<(A, int)>) -> bool {{").unwrap();
+    writeln!(w, "    forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1\n}}\n").unwrap();
     writeln!(w, "/// One transaction's changes: every table of db2 is that of db plus its deltas (bags).").unwrap();
     writeln!(w, "pub open spec fn capture_ok(db: Db, db2: Db, {}) -> bool {{", cps.join(", ")).unwrap();
     for t in &tables {
         writeln!(w, "    &&& bag_step(db.{f}, db2.{f}, {f})", f = table_field(t)).unwrap();
+        writeln!(w, "    &&& unit_weights({})", table_field(t)).unwrap();
     }
     writeln!(w, "}}\n").unwrap();
+    writeln!(w, "// ── The envelope: where the kernel may not decline ──\n").unwrap();
+    writeln!(w, "/// Most rows a table can hold (the DBMS's row ids are 64-bit).\npub open spec fn max_rows() -> int {{\n    {MAX_ROWS}\n}}\n").unwrap();
+    writeln!(w, "/// Most changed rows a state may absorb after its build before apply may decline\n/// (the host then rebuilds).\npub open spec fn max_history() -> int {{\n    {MAX_HISTORY}\n}}\n").unwrap();
+    let mut env = vec![];
+    for t in &tables {
+        let f = table_field(t);
+        env.push(format!("db.{f}.len() <= max_rows()"));
+        let bounds: Vec<String> = ob
+            .db_cols(t)
+            .iter()
+            .filter_map(|c| ob.tr.sch.col_range.get(&(t.clone(), c.clone())).map(|&(lo, hi)| range_of(&format!("r.{}", sanitize(c)), lo, hi)))
+            .collect();
+        if !bounds.is_empty() {
+            writeln!(w, "/// Each value of {t} lies in the range of its column's SQL type.").unwrap();
+            writeln!(w, "pub open spec fn {f}_in_type(r: {}) -> bool {{\n    {}\n}}\n", table_row(t), bounds.join("\n    && ")).unwrap();
+            env.push(format!("forall|i: int| 0 <= i < db.{f}.len() ==> {f}_in_type(#[trigger] db.{f}[i])"));
+        }
+    }
+    writeln!(w, "/// The databases the DBMS can represent: each table within its row-id space, each").unwrap();
+    writeln!(w, "/// value within its column's SQL type.").unwrap();
+    writeln!(w, "pub open spec fn envelope(db: Db) -> bool {{").unwrap();
+    for e in &env {
+        writeln!(w, "    &&& {e}").unwrap();
+    }
+    writeln!(w, "}}\n").unwrap();
+    writeln!(w, "/// An answer row whose values fit the result's runtime types.").unwrap();
+    writeln!(w, "pub open spec fn out_fits(r: OutRow) -> bool {{\n    {}\n}}\n", if out_fits.is_empty() { "true".to_string() } else { out_fits.join("\n    && ") }).unwrap();
+    writeln!(w, "/// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves").unwrap();
+    writeln!(w, "/// `defined <==> exists an answer`) and every correct answer fits: at most max_rows()").unwrap();
+    writeln!(w, "/// rows, each in the result's runtime types.  A kernel that declines because no answer").unwrap();
+    writeln!(w, "/// exists must prove").unwrap();
+    writeln!(w, "/// `!defined`.").unwrap();
+    writeln!(w, "pub open spec fn answer_fits(db: Db, params: Params) -> bool {{").unwrap();
+    writeln!(w, "    &&& defined(db, params)").unwrap();
+    writeln!(w, "    &&& forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> o.len() <= max_rows() && forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])\n}}\n").unwrap();
     writeln!(w, "// ── Obligations: the host calls only these ──\n").unwrap();
     let mut stub = String::new();
     writeln!(stub, "// Kernel skeleton GENERATED by {VERSION} for {src_name}: the entry points").unwrap();
     writeln!(stub, "// gen_obligations.rs calls, with its contracts.  Replace the bodies (and State).").unwrap();
     writeln!(stub, "#![allow(unused_imports)]\nuse vstd::prelude::*;\nuse verus_common::rat::*;\nuse crate::gen_spec::*;\nuse crate::gen_obligations::*;\n\nverus! {{\n").unwrap();
     writeln!(stub, "pub struct State {{\n    db: Ghost<Db>,\n}}\n\nimpl State {{\n    pub closed spec fn db(self) -> Db {{\n        self.db@\n    }}\n}}\n").unwrap();
+    for d in &wanted_decls {
+        writeln!(stub, "{d}").unwrap();
+    }
     for f in &fns {
         writeln!(w, "/// {}", f.doc).unwrap();
         w.push_str(&f.sig("ob_"));

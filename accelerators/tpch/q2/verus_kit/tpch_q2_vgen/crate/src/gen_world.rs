@@ -53,7 +53,9 @@ pub fn prepare_apply(
         base.timeline() == store.timeline(),
         part_delta_ok(part_delta@, part_full),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), nation_delta_seq_view(nation_delta@), part_full, partsupp_delta_seq_view(partsupp_delta@), region_delta_seq_view(region_delta@), supplier_delta_seq_view(supplier_delta@)),
+        brass_parts_after_keys@ == crate::kernel::rescan_brass_parts_after_wanted(base.state_spec(), nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
         rescan_brass_parts_after_ok(store.db_at((base.epoch() + 1) as nat), brass_parts_after_keys@, brass_parts_after_rows@),
+        brass_partsupp_after_keys@ == crate::kernel::rescan_brass_partsupp_after_wanted(base.state_spec(), nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
         rescan_brass_partsupp_after_ok(store.db_at((base.epoch() + 1) as nat), brass_partsupp_after_keys@, brass_partsupp_after_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),

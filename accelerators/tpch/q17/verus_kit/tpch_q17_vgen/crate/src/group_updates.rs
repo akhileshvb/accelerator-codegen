@@ -4,21 +4,23 @@ use verus_common::sums::*;
 use crate::aggregation::*;
 use crate::model::*;
 use crate::storage::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
+
+pub open spec fn is_empty_group(group: Group) -> bool {
+    group.references@ == 0 && group.moment.count@ == 0 && group.moment.price@ == 0
+}
 
 pub proof fn lemma_group_replacement(before: Seq<Group>, after: Seq<Group>, hash: i64, position: int, replacement: Group)
     requires groups_wf(before, hash), 0 <= position <= before.len(),
         replacement.identity.fingerprint == hash, hash as int == pair_hash(replacement.identity.brand@, replacement.identity.container@),
         forall|index: int| #![trigger before[index]] 0 <= index < before.len() ==> (same(*before[index].identity, replacement.identity.brand@, replacement.identity.container@) == (index == position)),
         after == if position < before.len() {
-            if replacement.references == 0 { before.remove(position) } else { before.update(position, replacement) }
+            if is_empty_group(replacement) { before.remove(position) } else { before.update(position, replacement) }
         } else {
-            if replacement.references == 0 { before } else { before.push(replacement) }
+            if is_empty_group(replacement) { before } else { before.push(replacement) }
         },
-        replacement.references >= 0, replacement.moment.count >= 0,
-        replacement.moment.count == 0 ==> replacement.moment.price == 0,
-        replacement.references == 0 ==> replacement.moment.count == 0,
     ensures groups_wf(after, hash),
         forall|brand: Seq<u8>, container: Seq<u8>, column: nat| #[trigger] group_total(after, brand, container, column)
             == group_total(before, brand, container, column) + if same(*replacement.identity, brand, container) {
@@ -28,7 +30,7 @@ pub proof fn lemma_group_replacement(before: Seq<Group>, after: Seq<Group>, hash
 {
     reveal(groups_wf);
     let identity = *replacement.identity;
-    let references = replacement.references;
+    let removed = is_empty_group(replacement);
     assert forall|brand: Seq<u8>, container: Seq<u8>, column: nat| #[trigger] group_total(after, brand, container, column)
         == group_total(before, brand, container, column) + if same(identity, brand, container) {
             group_value(replacement, column)
@@ -37,18 +39,15 @@ pub proof fn lemma_group_replacement(before: Seq<Group>, after: Seq<Group>, hash
         reveal(group_total);
         let weight = |group: Group| if same(*group.identity, brand, container) { group_value(group, column) } else { 0int };
         if position < before.len() {
-            if references == 0 { lemma_sum_remove(before, position, weight); }
+            if removed { lemma_sum_remove(before, position, weight); }
             else { lemma_sum_update(before, position, replacement, weight); }
-        } else if references > 0 { lemma_sum_push(before, replacement, weight); }
+        } else if !removed { lemma_sum_push(before, replacement, weight); }
     }
     assert forall|index: int| #![trigger after[index]] 0 <= index < after.len() implies {
-        &&& after[index].references > 0
-        &&& after[index].moment.count >= 0
-        &&& after[index].moment.count == 0 ==> after[index].moment.price == 0
         &&& after[index].identity.fingerprint == hash
         &&& hash as int == pair_hash(after[index].identity.brand@, after[index].identity.container@)
     } by {
-        if position < before.len() && references == 0 {
+        if position < before.len() && removed {
             let source = if index < position { index } else { index + 1 };
             assert(after[index] == before[source]);
         } else if index == position { assert(after[index] == replacement); }
@@ -56,7 +55,7 @@ pub proof fn lemma_group_replacement(before: Seq<Group>, after: Seq<Group>, hash
     }
     assert forall|first: int, second: int| #![trigger after[first], after[second]] 0 <= first < second < after.len()
         implies !same(*after[first].identity, after[second].identity.brand@, after[second].identity.container@) by {
-        if position < before.len() && references == 0 {
+        if position < before.len() && removed {
             let source_first = if first < position { first } else { first + 1 };
             let source_second = if second < position { second } else { second + 1 };
             assert(source_first < source_second);
@@ -69,12 +68,12 @@ pub proof fn lemma_group_replacement(before: Seq<Group>, after: Seq<Group>, hash
 }
 
 #[verifier::rlimit(1)]
-pub fn adjust_group(groups: &mut Store<Vec<Group>>, identity: &Arc<Identity>, references_delta: i128, count_delta: i128, price_delta: i128) -> (result: bool)
+pub fn adjust_group(groups: &mut Store<Vec<Group>>, identity: &Arc<Identity>, references_delta: &Wide, count_delta: &Wide, price_delta: &Wide)
     requires group_store_wf(*old(groups)), identity.fingerprint as int == pair_hash(identity.brand@, identity.container@),
     ensures group_store_wf(*final(groups)),
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>, column: nat| #[trigger] group_total_at(*final(groups), brand, container, column)
+        forall|brand: Seq<u8>, container: Seq<u8>, column: nat| #[trigger] group_total_at(*final(groups), brand, container, column)
             == group_total_at(*old(groups), brand, container, column) + if same(**identity, brand, container) {
-                if column == 0 { references_delta as int } else if column == 1 { count_delta as int } else { price_delta as int }
+                if column == 0 { references_delta@ } else if column == 1 { count_delta@ } else { price_delta@ }
             } else { 0 },
 {
     let before_store = Ghost(*groups);
@@ -87,7 +86,7 @@ pub fn adjust_group(groups: &mut Store<Vec<Group>>, identity: &Arc<Identity>, re
                 group_store_wf(*groups), *groups == before_store@,
             decreases previous.len() - index,
         {
-            bucket.push(Group { identity: previous[index].identity.clone(), references: previous[index].references, moment: previous[index].moment });
+            bucket.push(Group { identity: previous[index].identity.clone(), references: previous[index].references.dup(), moment: previous[index].moment.dup() });
             index += 1;
         }
     }
@@ -106,12 +105,9 @@ pub fn adjust_group(groups: &mut Store<Vec<Group>>, identity: &Arc<Identity>, re
         else { index += 1; }
     }
     let position = index;
-    let old_references = if position < bucket.len() { bucket[position].references } else { 0 };
-    let old_moment = if position < bucket.len() { bucket[position].moment } else { zero() };
-    let references = match old_references.checked_add(references_delta) { Some(value) => value, None => return false };
-    let count = match old_moment.count.checked_add(count_delta) { Some(value) => value, None => return false };
-    let price = match old_moment.price.checked_add(price_delta) { Some(value) => value, None => return false };
-    if references < 0 || count < 0 || (count == 0 && price != 0) || (references == 0 && count != 0) { return false; }
+    let (references, count, price) = if position < bucket.len() {
+        (bucket[position].references.add(references_delta), bucket[position].moment.count.add(count_delta), bucket[position].moment.price.add(price_delta))
+    } else { (references_delta.dup(), count_delta.dup(), price_delta.dup()) };
     proof {
         assert forall|offset: int| #![trigger before@[offset]] 0 <= offset < before@.len() implies
             (same(*before@[offset].identity, identity.brand@, identity.container@) == (offset == position)) by {
@@ -122,10 +118,11 @@ pub fn adjust_group(groups: &mut Store<Vec<Group>>, identity: &Arc<Identity>, re
             }
         }
     }
-    let replacement = Group { identity: identity.clone(), references, moment: Moment { count, price } };
+    let replacement = Group { identity: identity.clone(), references, moment: Joined { count, price } };
+    let empty = replacement.references.is_zero() && replacement.moment.count.is_zero() && replacement.moment.price.is_zero();
     if position < bucket.len() {
-        if references == 0 { bucket.remove(position); } else { bucket.set(position, replacement); }
-    } else if references > 0 { bucket.push(replacement); }
+        if empty { bucket.remove(position); } else { bucket.set(position, replacement); }
+    } else if !empty { bucket.push(replacement); }
     proof {
         lemma_group_replacement(before@, bucket@, identity.fingerprint, position as int, replacement);
     }
@@ -139,12 +136,11 @@ pub fn adjust_group(groups: &mut Store<Vec<Group>>, identity: &Arc<Identity>, re
         }
         assert forall|brand: Seq<u8>, container: Seq<u8>, column: nat| #[trigger] group_total_at(*groups, brand, container, column)
             == group_total_at(before_store@, brand, container, column) + if same(**identity, brand, container) {
-                if column == 0 { references_delta as int } else if column == 1 { count_delta as int } else { price_delta as int }
+                if column == 0 { references_delta@ } else if column == 1 { count_delta@ } else { price_delta@ }
             } else { 0 } by {
             if same(**identity, brand, container) { assert(pair_hash(brand, container) as i64 == identity.fingerprint); }
         }
     }
-    true
 }
 
 }

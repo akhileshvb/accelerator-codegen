@@ -1,50 +1,47 @@
 use vstd::prelude::*;
 use verus_prooflib::ordered::{Key, KeyView};
+use verus_prooflib::wide::Wide;
 
 verus! {
 
-#[derive(Clone, Copy)]
+/// The exact value of a moment (spec).
 pub struct Moment {
-    pub count: i128,
-    pub value: i128,
+    pub count: int,
+    pub value: int,
 }
 
 pub open spec fn zero_moment() -> Moment { Moment { count: 0, value: 0 } }
 
-pub fn zero() -> (result: Moment)
-    ensures result.count == 0, result.value == 0,
-{
-    Moment { count: 0, value: 0 }
+/// A moment as stored: exact integers of any size.
+pub struct Mom {
+    pub count: Wide,
+    pub value: Wide,
 }
 
-pub fn add(left: i128, right: i128) -> (result: Option<i128>)
-    ensures result matches Some(value) ==> value as int == left as int + right as int,
-{
-    left.checked_add(right)
+impl Mom {
+    pub open spec fn view(self) -> Moment { Moment { count: self.count@, value: self.value@ } }
+
+    pub fn dup(&self) -> (result: Mom)
+        ensures result == *self,
+    { Mom { count: self.count.dup(), value: self.value.dup() } }
 }
 
-pub fn multiply(left: i128, right: i128) -> (result: Option<i128>)
-    ensures result matches Some(value) ==> value as int == left as int * right as int,
+pub fn zero() -> (result: Mom)
+    ensures result@ == zero_moment(),
 {
-    left.checked_mul(right)
+    Mom { count: Wide::zero(), value: Wide::zero() }
 }
 
-pub fn plus(left: Moment, right: Moment) -> (result: Option<Moment>)
-    ensures result matches Some(value) ==> value.count as int == left.count as int + right.count as int
-        && value.value as int == left.value as int + right.value as int,
+pub fn plus(left: &Mom, right: &Mom) -> (result: Mom)
+    ensures result@.count == left@.count + right@.count && result@.value == left@.value + right@.value,
 {
-    let count = match add(left.count, right.count) { Some(value) => value, None => return None };
-    let value = match add(left.value, right.value) { Some(value) => value, None => return None };
-    Some(Moment { count, value })
+    Mom { count: left.count.add(&right.count), value: left.value.add(&right.value) }
 }
 
-pub fn scale(moment: Moment, weight: i128) -> (result: Option<Moment>)
-    ensures result matches Some(value) ==> value.count as int == moment.count as int * weight as int
-        && value.value as int == moment.value as int * weight as int,
+pub fn scale(moment: &Mom, weight: &Wide) -> (result: Mom)
+    ensures result@.count == moment@.count * weight@ && result@.value == moment@.value * weight@,
 {
-    let count = match multiply(moment.count, weight) { Some(value) => value, None => return None };
-    let value = match multiply(moment.value, weight) { Some(value) => value, None => return None };
-    Some(Moment { count, value })
+    Mom { count: moment.count.mul(weight), value: moment.value.mul(weight) }
 }
 
 pub fn copy_bytes(bytes: &[u8]) -> (result: Vec<u8>)
@@ -166,16 +163,6 @@ pub fn sentinel_key() -> (result: Key)
         index += 1;
     }
     Key::composite(i64::MAX, bytes)
-}
-
-pub fn threshold(total: i128, fraction: i64) -> (result: Option<i128>)
-    ensures result matches Some(cutoff) ==> cutoff as int * 1000000000 > total as int * fraction as int
-        && (cutoff as int - 1) * 1000000000 <= total as int * fraction as int,
-{
-    let product = match total.checked_mul(fraction as i128) { Some(product) => product, None => return None };
-    let quotient = product / 1000000000;
-    let remainder = product % 1000000000;
-    if remainder < 0 { Some(quotient) } else { Some(quotient + 1) }
 }
 
 }

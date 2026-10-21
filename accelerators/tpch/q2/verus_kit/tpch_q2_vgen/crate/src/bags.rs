@@ -117,7 +117,30 @@ pub proof fn lemma_weighted_push<Row: BagRow>(entries: Seq<Counted<Row>>, entry:
     lemma_sum_push(entries, entry, |entry: Counted<Row>| entry.count as int * weight((*entry.row).rv()));
 }
 
+pub open spec fn magnitude(value: int) -> int {
+    if value < 0 { -value } else { value }
+}
+
+pub open spec fn i128_max() -> int { 170141183460469231731687303715884105727 }
+
+pub open spec fn entry_magnitude<Row: BagRow>(entry: Counted<Row>) -> int {
+    magnitude(entry.count as int)
+}
+
+pub open spec fn entries_amount<Row: BagRow>(entries: Seq<Counted<Row>>, value: Row::V) -> int {
+    sum(entries, |entry: Counted<Row>| if (*entry.row).rv() == value { entry.count as int } else { 0int })
+}
+
+pub open spec fn entries_mass<Row: BagRow>(entries: Seq<Counted<Row>>) -> int {
+    sum(entries, |entry: Counted<Row>| entry_magnitude(entry))
+}
+
 impl<Row: BagRow> Bag<Row> {
+    /// The sum of the magnitudes of the counts: no count is larger.
+    pub open spec fn mass(self) -> int {
+        entries_mass(self.entries@)
+    }
+
     pub open spec fn weight(self, weight: spec_fn(Row::V) -> int) -> int {
         weighted_entries(self.entries@, weight)
     }
@@ -128,6 +151,10 @@ impl<Row: BagRow> Bag<Row> {
 
     pub open spec fn total(self) -> int {
         sum(self.entries@, |entry: Counted<Row>| entry.count as int)
+    }
+
+    pub open spec fn nonzero(self) -> bool {
+        forall|index: int| 0 <= index < self.entries@.len() ==> (#[trigger] self.entries@[index]).count != 0
     }
 
     pub open spec fn unique(self) -> bool {
@@ -145,7 +172,12 @@ impl<Row: BagRow> Bag<Row> {
     { Bag { entries: Vec::new() } }
 
     pub fn adjust(&self, row: Arc<Row>, change: i128) -> (result: Option<Self>)
-        ensures result matches Some(after) ==> {
+        ensures result is None ==> self.mass() + magnitude(change as int) > i128_max(),
+            result is None ==> exists|k: int| 0 <= k < self.entries@.len() && (*self.entries@[k].row).rv() == (*row).rv() &&
+                magnitude(self.entries@[k].count as int) + magnitude(change as int) > i128_max(),
+            result matches Some(after) ==> after.mass() <= self.mass() + magnitude(change as int),
+            result matches Some(after) ==> (self.nonzero() ==> after.nonzero()),
+            result matches Some(after) ==> {
             &&& self.unique() ==> after.unique()
             &&& self.valid() && change > 0 ==> after.valid()
             &&& forall|index: int| 0 <= index < after.entries@.len() ==>
@@ -163,6 +195,7 @@ impl<Row: BagRow> Bag<Row> {
         while index < self.entries.len()
             invariant
                 index <= self.entries.len(),
+                entries_mass(entries@) <= entries_mass(self.entries@.take(index as int)) + if found { magnitude(change as int) } else { 0int },
                 forall|weight: spec_fn(Row::V) -> int|
                     #[trigger] weighted_entries(entries@, weight) ==
                     weighted_entries(self.entries@.take(index as int), weight) +
@@ -174,6 +207,7 @@ impl<Row: BagRow> Bag<Row> {
                     exists|source: int| 0 <= source < index &&
                         (*(#[trigger] entries@[offset]).row).rv() == (*(#[trigger] self.entries@[source]).row).rv(),
                 !found ==> forall|source: int| 0 <= source < index ==> (*(#[trigger] self.entries@[source]).row).rv() != (*row).rv(),
+                self.nonzero() ==> forall|offset: int| 0 <= offset < entries@.len() ==> (#[trigger] entries@[offset]).count != 0,
             decreases self.entries.len() - index,
         {
             let ghost previous = entries@;
@@ -183,11 +217,31 @@ impl<Row: BagRow> Bag<Row> {
             let ghost future_count = if did_change { entry.count as int + change as int } else { entry.count as int };
             if !found && entry.row.same(&*row) {
                 found = true;
-                let count = match entry.count.checked_add(change) { Some(value) => value, None => return None };
+                let count = match entry.count.checked_add(change) {
+                    Some(value) => value,
+                    None => {
+                        proof {
+                            lemma_sum_ge_term(self.entries@, |entry: Counted<Row>| entry_magnitude(entry), index as int);
+                            assert(entry_magnitude(self.entries@[index as int]) == magnitude(entry.count as int));
+                            assert(self.entries@[index as int] == *entry);
+                            assert((*self.entries@[index as int].row).rv() == (*row).rv());
+                        }
+                        return None;
+                    },
+                };
                 if count != 0 { entries.push(Counted { row: Arc::clone(&entry.row), count }); }
             } else { entries.push(Counted { row: Arc::clone(&entry.row), count: entry.count }); }
             proof {
                 assert(found == (previous_found || did_change));
+                lemma_sum_take(self.entries@, index as int, |entry: Counted<Row>| entry_magnitude(entry));
+                if entries@.len() > previous.len() {
+                    assert(entries@.drop_last() =~= previous);
+                    lemma_sum_push(previous, entries@.last(), |entry: Counted<Row>| entry_magnitude(entry));
+                    assert(entry_magnitude(entries@.last()) == magnitude(future_count));
+                    assert(magnitude(future_count) <= magnitude(entry.count as int) + if did_change { magnitude(change as int) } else { 0int });
+                } else {
+                    assert(entries@ == previous);
+                }
                 assert(entries@.len() == previous.len() + if did_change && future_count == 0 { 0int } else { 1int });
                 if entries@.len() > previous.len() {
                     assert(entries@.drop_last() =~= previous);
@@ -270,26 +324,52 @@ impl<Row: BagRow> Bag<Row> {
                 assert(weighted_entries(entries@, weight) == self.weight(weight) + change as int * weight((*row).rv()));
             }
         }
+        proof {
+            assert(self.entries@.take(index as int) =~= self.entries@);
+            if !found && change != 0 {
+                assert(entries@ =~= previous.push(entries@.last()));
+                lemma_sum_push(previous, entries@.last(), |entry: Counted<Row>| entry_magnitude(entry));
+                assert(entry_magnitude(entries@.last()) == magnitude(change as int));
+            }
+        }
         Some(Bag { entries })
     }
+}
 
-    pub fn positive(&self) -> (result: bool)
-        ensures result == (forall|index: int| 0 <= index < self.entries@.len() ==> (#[trigger] self.entries@[index]).count > 0),
-    {
-        let mut index = 0;
-        while index < self.entries.len()
-            invariant index <= self.entries.len(),
-                forall|offset: int| 0 <= offset < index ==> (#[trigger] self.entries@[offset]).count > 0,
-            decreases self.entries.len() - index,
-        {
-            if self.entries[index].count <= 0 {
-                proof { assert(self.entries@[index as int].count <= 0); }
-                return false;
-            }
-            index += 1;
-        }
-        true
+/// Weights that agree on the rows of the entries give the same total.
+pub proof fn lemma_weighted_entries_ext<Row: BagRow>(entries: Seq<Counted<Row>>, first: spec_fn(Row::V) -> int, second: spec_fn(Row::V) -> int)
+    requires forall|index: int| 0 <= index < entries.len() ==> first((*entries[index].row).rv()) == second((*entries[index].row).rv()),
+    ensures weighted_entries(entries, first) == weighted_entries(entries, second),
+{
+    assert forall|index: int| 0 <= index < entries.len() implies
+        (|entry: Counted<Row>| entry.count as int * first((*entry.row).rv()))(entries[index]) ==
+        (|entry: Counted<Row>| entry.count as int * second((*entry.row).rv()))(entries[index]) by {}
+    lemma_sum_ext(entries, |entry: Counted<Row>| entry.count as int * first((*entry.row).rv()),
+        |entry: Counted<Row>| entry.count as int * second((*entry.row).rv()));
+}
+
+/// In a bag of distinct rows, a row's count is its amount.
+pub proof fn lemma_entry_amount<Row: BagRow>(bag: Bag<Row>, k: int)
+    requires bag.unique(), 0 <= k < bag.entries@.len(),
+    ensures bag.amount((*bag.entries@[k].row).rv()) == bag.entries@[k].count as int,
+{
+    let value = (*bag.entries@[k].row).rv();
+    let counter = |entry: Counted<Row>| if (*entry.row).rv() == value { entry.count as int } else { 0int };
+    assert forall|other: int| 0 <= other < bag.entries@.len() && other != k implies counter(#[trigger] bag.entries@[other]) == 0 by {
+        if other < k { assert((*bag.entries@[other].row).rv() != (*bag.entries@[k].row).rv()); }
+        else { assert((*bag.entries@[k].row).rv() != (*bag.entries@[other].row).rv()); }
     }
+    lemma_sum_single_match(bag.entries@, counter, k);
+}
+
+/// A sum of indicator weights is at most the number of summands.
+pub proof fn lemma_indicator_sum_le<A>(rows: Seq<A>, weight: spec_fn(A) -> int)
+    requires forall|row: A| 0 <= #[trigger] weight(row) <= 1,
+    ensures 0 <= sum(rows, weight) <= rows.len(),
+{
+    lemma_sum_nonneg(rows, weight);
+    lemma_sum_le(rows, weight, |row: A| 1int);
+    verus_prooflib::lemma_sum_ones(rows);
 }
 
 pub fn capped_product(left: i128, right: i128) -> (result: i128)

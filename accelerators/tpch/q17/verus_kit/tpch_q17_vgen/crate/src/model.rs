@@ -3,6 +3,7 @@ use std::sync::Arc;
 use verus_common::sums::{sum, ind};
 use crate::gen_spec::*;
 use crate::storage::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -20,13 +21,24 @@ pub struct Identity {
 
 pub struct Variant {
     pub identity: Arc<Identity>,
-    pub multiplicity: i128,
+    pub multiplicity: Wide,
+}
+
+pub struct Joined {
+    pub count: Wide,
+    pub price: Wide,
+}
+
+impl Joined {
+    pub fn dup(&self) -> (result: Joined)
+        ensures result == *self,
+    { Joined { count: self.count.dup(), price: self.price.dup() } }
 }
 
 pub struct Group {
     pub identity: Arc<Identity>,
-    pub references: i128,
-    pub moment: Moment,
+    pub references: Wide,
+    pub moment: Joined,
 }
 
 #[verifier::opaque]
@@ -105,7 +117,7 @@ pub open spec fn variants_at(store: Store<Vec<Variant>>, key: i64) -> Seq<Varian
 
 #[verifier::opaque]
 pub open spec fn variant_total(rows: Seq<Variant>, brand: Seq<u8>, container: Seq<u8>) -> int {
-    sum(rows, |row: Variant| if same(*row.identity, brand, container) { row.multiplicity as int } else { 0 })
+    sum(rows, |row: Variant| if same(*row.identity, brand, container) { row.multiplicity@ } else { 0 })
 }
 
 #[verifier::opaque]
@@ -118,7 +130,7 @@ pub open spec fn groups_at(store: Store<Vec<Group>>, fingerprint: i64) -> Seq<Gr
 }
 
 pub open spec fn group_value(group: Group, column: nat) -> int {
-    if column == 0 { group.references as int } else if column == 1 { group.moment.count as int } else { group.moment.price as int }
+    if column == 0 { group.references@ } else if column == 1 { group.moment.count@ } else { group.moment.price@ }
 }
 
 #[verifier::opaque]
@@ -148,7 +160,6 @@ pub open spec fn group_refs_at(store: Store<Vec<Group>>, brand: Seq<u8>, contain
 #[verifier::opaque]
 pub open spec fn variants_wf(variants: Seq<Variant>) -> bool {
     &&& forall|index: int| #![trigger variants[index]] 0 <= index < variants.len() ==> {
-        &&& variants[index].multiplicity > 0
         &&& variants[index].identity.fingerprint as int == pair_hash(variants[index].identity.brand@, variants[index].identity.container@)
     }
     &&& forall|first: int, second: int| #![trigger variants[first], variants[second]]
@@ -158,9 +169,6 @@ pub open spec fn variants_wf(variants: Seq<Variant>) -> bool {
 #[verifier::opaque]
 pub open spec fn groups_wf(groups: Seq<Group>, fingerprint: i64) -> bool {
     &&& forall|index: int| #![trigger groups[index]] 0 <= index < groups.len() ==> {
-        &&& groups[index].references > 0
-        &&& groups[index].moment.count >= 0
-        &&& groups[index].moment.count == 0 ==> groups[index].moment.price == 0
         &&& groups[index].identity.fingerprint == fingerprint
         &&& fingerprint as int == pair_hash(groups[index].identity.brand@, groups[index].identity.container@)
     }
@@ -178,9 +186,7 @@ pub open spec fn group_store_wf(store: Store<Vec<Group>>) -> bool {
 
 pub proof fn lemma_group_entry(groups: Seq<Group>, hash: i64, index: int)
     requires groups_wf(groups, hash), 0 <= index < groups.len(),
-    ensures groups[index].references > 0, groups[index].moment.count >= 0,
-        groups[index].moment.count == 0 ==> groups[index].moment.price == 0,
-        groups[index].identity.fingerprint == hash,
+    ensures groups[index].identity.fingerprint == hash,
         hash as int == pair_hash(groups[index].identity.brand@, groups[index].identity.container@),
 { reveal(groups_wf); }
 
@@ -191,8 +197,7 @@ pub proof fn lemma_group_distinct(groups: Seq<Group>, hash: i64, first: int, sec
 
 pub proof fn lemma_variant_entry(variants: Seq<Variant>, index: int)
     requires variants_wf(variants), 0 <= index < variants.len(),
-    ensures variants[index].multiplicity > 0,
-        variants[index].identity.fingerprint as int == pair_hash(variants[index].identity.brand@, variants[index].identity.container@),
+    ensures variants[index].identity.fingerprint as int == pair_hash(variants[index].identity.brand@, variants[index].identity.container@),
 { reveal(variants_wf); }
 
 pub proof fn lemma_empty_groups(hash: i64)

@@ -10,6 +10,7 @@ use crate::model::*;
 use crate::bags::*;
 use crate::storage::*;
 use crate::parts::*;
+use crate::dict::{dec, enc};
 use crate::table::{Table, Cell, Major, rows_valid, minor_of, cell_sum};
 use crate::enumeration::*;
 use crate::enumeration_proofs::*;
@@ -27,11 +28,11 @@ verus! {
 
 /// The part-row class that a cell of the (size, type) list stands for.
 pub open spec fn cell_cnt(ps: Parts, size: i64, t: int, cell: Cell) -> PartCnt {
-    PartCnt { row: PartRow { p_partkey: cell.first as int, p_mfgr: ps.dtext(cell.second as int), p_type: ps.dtext(t), p_size: size as int },
+    PartCnt { row: PartRow { p_partkey: cell.first as int, p_mfgr: ps.dtext(dec(cell.second)), p_type: ps.dtext(t), p_size: size as int },
         count: cell.count }
 }
 
-pub open spec fn tl_rows(ps: Parts, size: i64, t: int) -> Seq<Cell> { ps.tl.rows((size, t as i64, 0)) }
+pub open spec fn tl_rows(ps: Parts, size: i64, t: int) -> Seq<Cell> { ps.tl.rows((size, enc(t), 0)) }
 
 pub open spec fn eq_weight(x: PartRow) -> spec_fn(PartRow) -> int {
     |part: PartRow| if part == x { 1int } else { 0int }
@@ -47,7 +48,7 @@ pub proof fn lemma_tl_cell_facts(db: Db, ps: Parts, size: i64, t: int, index: in
     ensures ({
         let cell = tl_rows(ps, size, t)[index];
         &&& cell.count > 0
-        &&& 0 <= cell.second < ps.dl() && cell.third == 0
+        &&& dec(cell.second) < ps.dl() && cell.third == 0
         &&& row_count(db, cell_cnt(ps, size, t, cell).row) == cell.count as int
         &&& fits_i64(cell_cnt(ps, size, t, cell).row.p_partkey)
     }),
@@ -55,7 +56,7 @@ pub proof fn lemma_tl_cell_facts(db: Db, ps: Parts, size: i64, t: int, index: in
     ps.tl.lemma_shaped_valid();
     let rows = tl_rows(ps, size, t);
     let cell = rows[index];
-    let key = (size, t as i64, 0i64);
+    let key = (size, enc(t), 0i64);
     let minor = minor_of(cell);
     crate::table::lemma_cell_lookup(rows, minor, index);
     assert(ps.tl.at(key, minor, true) == cell_sum(rows, minor, true)) by { reveal(Table::at); }
@@ -63,15 +64,15 @@ pub proof fn lemma_tl_cell_facts(db: Db, ps: Parts, size: i64, t: int, index: in
     assert(cell.volume == 0);
     assert(cell.count != 0);
     // the relation to the part table
-    assert(ps.tl.at((size, t as i64, 0), (cell.first, cell.second, cell.third), false) ==
-        if cell.third == 0 { ps.tp.at((cell.first, 0, 0), (size, cell.second, t as i64), false) } else { 0int });
+    assert(ps.tl.at((size, enc(t), 0), (cell.first, cell.second, cell.third), false) ==
+        if cell.third == 0 { ps.tp.at((cell.first, 0, 0), (size, cell.second, enc(t)), false) } else { 0int });
     assert(cell.third == 0);
-    if !(0 <= cell.second < ps.dl()) { lemma_out_of_range_zero(ps, cell.first, size, cell.second, t as i64); }
-    assert(0 <= cell.second < ps.dl());
-    lemma_dict_id(ps, cell.second as int);
+    if !(dec(cell.second) < ps.dl()) { lemma_out_of_range_zero(ps, cell.first, size, cell.second, enc(t)); }
+    assert(dec(cell.second) < ps.dl());
+    lemma_dict_id(ps, dec(cell.second));
     lemma_dict_id(ps, t);
     let x = cell_cnt(ps, size, t, cell).row;
-    assert(ps.amount(cell.first, size, x) == ps.tp.at((cell.first, 0, 0), (size, cell.second, t as i64), false));
+    assert(ps.amount(cell.first, size, x) == ps.tp.at((cell.first, 0, 0), (size, cell.second, enc(t)), false));
     assert(ps.amount(cell.first, size, x) == db_amount(db, cell.first, size, x));
     lemma_sum_ext_all(db.part, amount_weight(cell.first, size, x), eq_weight(x));
     lemma_sum_nonneg(db.part, eq_weight(x));
@@ -113,18 +114,19 @@ pub proof fn lemma_row_class(db: Db, ps: Parts, size: i64, t: int, y: PartRow,
         let key = y.p_partkey as i64;
         let mid = ps.dict_id(y.p_mfgr);
         assert(0 <= mid < ps.dl() && ps.dtext(mid) == y.p_mfgr);
-        let minor = (key, mid as i64, 0i64);
-        let tkey = (size, t as i64, 0i64);
+        let minor = (key, enc(mid), 0i64);
+        let tkey = (size, enc(t), 0i64);
         assert forall|index: int| 0 <= index < rows.len() implies
             right_source(#[trigger] rows[index]) == crate::table::cell_weight(rows[index], minor, false) by {
             let cell = rows[index];
             lemma_tl_cell_facts(db, ps, size, t, index);
             if right_project(cell) == y {
-                lemma_dict_ids_eq_ps(ps, cell.second as int, mid);
-                assert(cell.first == key && cell.second == mid as i64 && cell.third == 0);
+                lemma_dict_ids_eq_ps(ps, dec(cell.second), mid);
+                assert(cell.first == key && cell.second == enc(mid) && cell.third == 0);
                 assert(minor_of(cell) == minor);
             } else if minor_of(cell) == minor {
-                assert(cell.second as int == mid);
+                lemma_id_key(ps, mid);
+                assert(dec(cell.second) == mid);
                 assert(right_project(cell) == y);
             }
         }
@@ -132,11 +134,11 @@ pub proof fn lemma_row_class(db: Db, ps: Parts, size: i64, t: int, y: PartRow,
         assert(ps.tl.at(tkey, minor, false) == cell_sum(rows, minor, false)) by { reveal(Table::at); }
         assert(cell_sum(rows, minor, false) == sum(rows, |cell: Cell| crate::table::cell_weight(cell, minor, false))) by { reveal(cell_sum); }
         // the list cell count equals the part table count equals the database count
-        assert(ps.tl.at((size, t as i64, 0), (key, mid as i64, 0), false) == ps.tp.at((key, 0, 0), (size, mid as i64, t as i64), false));
+        assert(ps.tl.at((size, enc(t), 0), (key, enc(mid), 0), false) == ps.tp.at((key, 0, 0), (size, enc(mid), enc(t)), false));
         lemma_dict_id(ps, t);
         assert(ps.dict_has(y.p_type));
         assert(ps.dict_id(y.p_type) == t);
-        assert(ps.amount(key, size, y) == ps.tp.at((key, 0, 0), (size, mid as i64, t as i64), false));
+        assert(ps.amount(key, size, y) == ps.tp.at((key, 0, 0), (size, enc(mid), enc(t)), false));
         assert(ps.amount(key, size, y) == db_amount(db, key, size, y));
         lemma_sum_ext_all(db.part, amount_weight(key, size, y), eq_weight(y));
         assert forall|index: int| 0 <= index < db.part.len() implies source(#[trigger] db.part[index]) == eq_weight(y)(db.part[index]) by {}
@@ -150,7 +152,7 @@ pub proof fn lemma_row_class(db: Db, ps: Parts, size: i64, t: int, y: PartRow,
         assert forall|index: int| 0 <= index < rows.len() implies right_source(#[trigger] rows[index]) == 0 by {
             lemma_tl_cell_facts(db, ps, size, t, index);
             let cell = rows[index];
-            assert(ps.dict_has(ps.dtext(cell.second as int)));
+            assert(ps.dict_has(ps.dtext(dec(cell.second))));
         }
         lemma_sum_zero(rows, right_source);
     }

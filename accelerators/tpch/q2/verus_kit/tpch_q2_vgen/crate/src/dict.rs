@@ -11,6 +11,42 @@ pub struct Dict {
     pub index: Vec<Vec<usize>>,
 }
 
+/// A dictionary id as a table key: ids fill the whole i64 range from i64::MIN up, so any
+/// usize id has a key.
+pub open spec fn enc(id: int) -> i64 { (id - 0x8000_0000_0000_0000int) as i64 }
+
+/// The id a table key stands for.
+pub open spec fn dec(key: i64) -> int { key as int + 0x8000_0000_0000_0000int }
+
+pub proof fn lemma_enc_dec(id: int)
+    requires 0 <= id <= 0xffff_ffff_ffff_ffffint,
+    ensures dec(enc(id)) == id, enc(id) as int == id - 0x8000_0000_0000_0000int,
+{
+}
+
+pub proof fn lemma_dec_enc(key: i64)
+    ensures enc(dec(key)) == key, 0 <= dec(key) <= 0xffff_ffff_ffff_ffffint,
+{
+    assert(-0x8000_0000_0000_0000int <= key as int <= 0x7fff_ffff_ffff_ffffint);
+}
+
+pub fn enc_exec(id: usize) -> (key: i64)
+    ensures key == enc(id as int),
+{
+    (id as i128 - 0x8000_0000_0000_0000i128) as i64
+}
+
+pub fn dec_exec(key: i64) -> (id: usize)
+    requires dec(key) <= usize::MAX as int,
+    ensures id as int == dec(key),
+{
+    proof { lemma_dec_enc(key); }
+    let wide = key as i128 + 0x8000_0000_0000_0000i128;
+    assert(wide as int == dec(key));
+    assert(0 <= wide as int <= usize::MAX as int);
+    wide as usize
+}
+
 pub open spec fn dict_seq(strings: Seq<Arc<Vec<u8>>>) -> Seq<Seq<u8>> {
     strings.map_values(|text: Arc<Vec<u8>>| (*text)@)
 }
@@ -32,6 +68,7 @@ impl Dict {
 
     pub open spec fn valid(self) -> bool {
         &&& self.index@.len() == 1024
+        &&& self.strings@.len() <= 0xffff_ffff_ffff_ffffint
         &&& forall|first: int, second: int| 0 <= first < second < self.strings@.len() ==>
             (*(#[trigger] self.strings@[first]))@ != (*(#[trigger] self.strings@[second]))@
         &&& forall|id: usize| id < self.strings@.len() ==>
@@ -90,9 +127,33 @@ impl Dict {
         None
     }
 
+    /// The id of a text the dictionary holds.
+    pub fn find_known(&self, text: &[u8]) -> (id: usize)
+        requires self.valid(), exists|id: int| 0 <= id < self.len() && self.text(id) == text@,
+        ensures id < self.strings@.len(), (*self.strings@[id as int])@ == text@,
+    {
+        match self.find(text) {
+            Some(id) => id,
+            None => {
+                proof {
+                    let known = choose|id: int| 0 <= id < self.len() && self.text(id) == text@;
+                    let size = self.strings.len();
+                    assert(size as int == self.strings@.len());
+                    let known_id = known as usize;
+                    assert(known_id < self.strings@.len());
+                    assert(self.text(known) == text@);
+                    assert((*self.strings@[known_id as int])@ == text@);
+                    assert((*self.strings@[known_id as int])@ != text@);
+                    assert(false);
+                }
+                0
+            },
+        }
+    }
+
     /// The id of `text`, adding it when it is new.  Existing ids keep their strings.
     pub fn intern(&mut self, text: &[u8]) -> (result: usize)
-        requires old(self).valid(), old(self).strings@.len() < 1000000,
+        requires old(self).valid(),
         ensures final(self).valid(), result < final(self).strings@.len(), (*final(self).strings@[result as int])@ == text@,
             final(self).strings@.len() >= old(self).strings@.len(), final(self).strings@.len() <= old(self).strings@.len() + 1,
             forall|id: int| 0 <= id < old(self).strings@.len() ==> final(self).strings@[id] == old(self).strings@[id],
@@ -103,6 +164,8 @@ impl Dict {
         let slot = cheap_hash_exec(text);
         let owned = Arc::new(copy_bytes(text));
         self.strings.push(owned);
+        let grown = self.strings.len();
+        proof { assert(grown as int == self.strings@.len()); }
         self.index[slot].push(id);
         proof {
             broadcast use vstd::seq_lib::group_seq_properties;

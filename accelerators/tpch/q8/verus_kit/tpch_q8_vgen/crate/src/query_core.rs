@@ -268,7 +268,7 @@ pub proof fn lemma_supplier_factor(data: Data, db: Db, part: PartRow, line: Line
 pub proof fn lemma_represented_line(data: Data, db: Db, line: LineitemRow, route: RouteTuple,
     parameters: Params, kind: i64, year: i64, numerator: bool, volume: bool)
     requires dimension_meaning(data, db), line_represented(line), route_in_db(db, route),
-        0 <= kind < data.dictionary.length, data.dictionary.text(kind) == parameters.p3,
+        data.dictionary.types.known(kind), data.dictionary.types.text(kind) == parameters.p3,
     ensures raw_line(db, line, route, parameters, year as int, numerator, volume) ==
         if route_active(route, parameters, numerator) {
             line_weight(data, db, line, route.n1.n_nationkey as i64, route.n2.n_nationkey as i64, kind, year) * line_measure(line, volume)
@@ -295,7 +295,7 @@ pub proof fn lemma_represented_line(data: Data, db: Db, line: LineitemRow, route
     lemma_sum_ext_all(db.part, raw, scaled);
     lemma_sum_scale(db.part, count, scaled, coefficient);
     let part_count = data.parts.at((line.l_partkey as i64, 0, 0), (kind, 0, 0), false);
-    let stored_parts = |part: PartRow| if part.p_partkey == line.l_partkey as i64 as int && text_matches(data.dictionary, kind, part.p_type) { 1int } else { 0int };
+    let stored_parts = |part: PartRow| if part.p_partkey == line.l_partkey as i64 as int && text_matches(data.dictionary, 0, kind, part.p_type) { 1int } else { 0int };
     lemma_sum_ext_all(db.part, count, stored_parts);
     assert(part_count == sum(db.part, count));
     reveal(line_weight);
@@ -400,7 +400,7 @@ pub proof fn lemma_core_reorder(db: Db, route: RouteTuple, parameters: Params, y
 
 pub proof fn lemma_core_base(data: Data, db: Db, route: RouteTuple, parameters: Params, kind: i64, year: i64, numerator: bool, volume: bool)
     requires dimension_meaning(data, db), line_domain(db), base_meaning(data, db), route_in_db(db, route),
-        0 <= kind < data.dictionary.length, data.dictionary.text(kind) == parameters.p3, year == 1995 || year == 1996,
+        data.dictionary.types.known(kind), data.dictionary.types.text(kind) == parameters.p3, year == 1995 || year == 1996,
     ensures sum(core_rows_0(db), |core: CoreTuple| joined_weight(db, core, route, parameters, year as int, query_weight(parameters, numerator, volume))) ==
         if route_active(route, parameters, numerator) {
             data.base.at((route.n1.n_nationkey as i64, route.n2.n_nationkey as i64, 0), (kind, year, 0), volume)

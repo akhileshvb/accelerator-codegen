@@ -17,12 +17,27 @@ pub open spec fn index_weight<Row: BagRow>(directory: Directory<Bag<Row>>, key: 
     match directory.lookup(key) { None => 0, Some(bag) => (*bag).weight(weight) }
 }
 
+/// The total magnitude of the counts of the bag of a key.
+pub open spec fn mass_at<Row: BagRow>(directory: Directory<Bag<Row>>, key: i64) -> int {
+    match directory.lookup(key) { None => 0, Some(bag) => (*bag).mass() }
+}
+
+/// Some amount of the bag and of its changes together leave the i128 range.
+pub open spec fn merge_overflows<Row: BagRow>(directory: Directory<Bag<Row>>, changes: Directory<Bag<Row>>) -> bool {
+    exists|key: i64, value: Row::V|
+        magnitude(index_amount(directory, key, value)) + magnitude(index_amount(changes, key, value)) > i128_max()
+}
+
 pub open spec fn index_unique<Row: BagRow>(directory: Directory<Bag<Row>>) -> bool {
     forall|key: i64| match #[trigger] directory.lookup(key) { None => true, Some(bag) => (*bag).unique() }
 }
 
 pub open spec fn index_positive<Row: BagRow>(directory: Directory<Bag<Row>>) -> bool {
     forall|key: i64| match #[trigger] directory.lookup(key) { None => true, Some(bag) => (*bag).valid() }
+}
+
+pub open spec fn index_nonzero<Row: BagRow>(directory: Directory<Bag<Row>>) -> bool {
+    forall|key: i64| match #[trigger] directory.lookup(key) { None => true, Some(bag) => (*bag).nonzero() }
 }
 
 pub open spec fn index_nonempty<Row: BagRow>(directory: Directory<Bag<Row>>) -> bool {
@@ -39,12 +54,18 @@ pub open spec fn index_routed<Row: BagRow>(directory: Directory<Bag<Row>>, predi
 
 pub fn adjust_bag<Row: BagRow>(directory: &mut Directory<Bag<Row>>, key: i64, row: Arc<Row>, change: i128) -> (result: bool)
     requires old(directory).valid(),
-    ensures result ==> {
+    ensures !result ==> mass_at(*old(directory), key) + magnitude(change as int) > i128_max(),
+        !result ==> index_unique(*old(directory)) ==>
+            magnitude(index_amount(*old(directory), key, (*row).rv())) + magnitude(change as int) > i128_max(),
+        result ==> forall|probe: i64| #[trigger] mass_at(*final(directory), probe) <=
+            mass_at(*old(directory), probe) + if probe == key { magnitude(change as int) } else { 0int },
+        result ==> {
         &&& final(directory).valid()
         &&& forall|probe: i64| probe != key ==> #[trigger] final(directory).lookup(probe) == old(directory).lookup(probe)
         &&& index_unique(*old(directory)) ==> index_unique(*final(directory))
         &&& index_positive(*old(directory)) && change > 0 ==> index_positive(*final(directory))
         &&& index_nonempty(*old(directory)) ==> index_nonempty(*final(directory))
+        &&& index_nonzero(*old(directory)) ==> index_nonzero(*final(directory))
         &&& forall|predicate: spec_fn(i64, Row::V) -> bool| #[trigger] index_routed(*old(directory), predicate) && predicate(key, (*row).rv()) ==>
             index_routed(*final(directory), predicate)
         &&& forall|probe: i64, value: Row::V| #[trigger] index_amount(*final(directory), probe, value) ==
@@ -57,7 +78,22 @@ pub fn adjust_bag<Row: BagRow>(directory: &mut Directory<Bag<Row>>, key: i64, ro
     let old_bag = directory.get(key);
     let before = match &old_bag { Some(bag) => &**bag, None => &empty };
     let ghost original = *directory;
-    let after = match before.adjust(Arc::clone(&row), change) { None => return false, Some(bag) => bag };
+    let after = match before.adjust(Arc::clone(&row), change) {
+        None => {
+            proof {
+                if original.lookup(key) is None { assert(before.entries@.len() == 0); lemma_sum_empty(before.entries@, |entry: Counted<Row>| entry_magnitude(entry)); }
+                else if index_unique(original) {
+                    assert(before.unique());
+                    let k = choose|k: int| 0 <= k < before.entries@.len() && (*before.entries@[k].row).rv() == (*row).rv() &&
+                        magnitude(before.entries@[k].count as int) + magnitude(change as int) > i128_max();
+                    lemma_entry_amount(*before, k);
+                    assert(index_amount(original, key, (*row).rv()) == before.amount((*row).rv()));
+                }
+            }
+            return false;
+        },
+        Some(bag) => bag,
+    };
     let ghost after_bag = after;
     if after.entries.len() == 0 { directory.replace(key, None); }
     else { directory.replace(key, Some(Arc::new(after))); }
@@ -92,8 +128,35 @@ pub fn adjust_bag<Row: BagRow>(directory: &mut Directory<Bag<Row>>, key: i64, ro
                 if after_bag.entries@.len() == 0 { assert(after_bag.weight(weight) == 0); }
             }
         }
+        assert(index_nonzero(original) ==> index_nonzero(*directory)) by {
+            if index_nonzero(original) {
+                assert(before.nonzero());
+                assert forall|probe: i64| match #[trigger] directory.lookup(probe) { None => true, Some(bag) => (*bag).nonzero() } by {
+                    if probe == key && directory.lookup(probe) is Some { assert((*directory.lookup(probe)->0) == after_bag); }
+                }
+            }
+        }
+        lemma_mass_nonneg(before.entries@);
+        lemma_sum_empty(Seq::<Counted<Row>>::empty(), |entry: Counted<Row>| entry_magnitude(entry));
+        assert(mass_at(original, key) == before.mass());
+        assert forall|probe: i64| #[trigger] mass_at(*directory, probe) <=
+            mass_at(original, probe) + if probe == key { magnitude(change as int) } else { 0int } by {
+            if probe == key {
+                if after_bag.entries@.len() == 0 {
+                    assert(directory.lookup(key) is None);
+                } else {
+                    assert(directory.lookup(key) is Some && (*directory.lookup(key)->0) == after_bag);
+                }
+            }
+        }
     }
     true
+}
+
+pub proof fn lemma_mass_nonneg<Row: BagRow>(entries: Seq<Counted<Row>>)
+    ensures entries_mass(entries) >= 0,
+{
+    lemma_sum_nonneg(entries, |entry: Counted<Row>| entry_magnitude(entry));
 }
 
 pub proof fn lemma_index_indicator<Row: BagRow>(directory: Directory<Bag<Row>>, key: i64, value: Row::V)
@@ -110,10 +173,11 @@ pub proof fn lemma_index_indicator<Row: BagRow>(directory: Directory<Bag<Row>>, 
 #[verifier::rlimit(20)]
 pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &Directory<Bag<Row>>) -> (result: bool)
     requires old(directory).valid(), changes.valid(),
-    ensures result ==> {
+    ensures !result ==> index_unique(*old(directory)) && index_unique(*changes) ==> merge_overflows(*old(directory), *changes),
+        result ==> {
         &&& final(directory).valid()
         &&& index_unique(*old(directory)) ==> index_unique(*final(directory))
-        &&& index_positive(*old(directory)) ==> index_positive(*final(directory))
+        &&& index_nonzero(*old(directory)) ==> index_nonzero(*final(directory))
         &&& index_nonempty(*old(directory)) ==> index_nonempty(*final(directory))
         &&& forall|predicate: spec_fn(i64, Row::V) -> bool| #[trigger] index_routed(*old(directory), predicate) && index_routed(*changes, predicate) ==>
             index_routed(*final(directory), predicate)
@@ -132,8 +196,9 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
             entry_keys(keys@).no_duplicates(),
             forall|offset: int| 0 <= offset < keys@.len() ==> changes.lookup((#[trigger] keys@[offset]).0) == Some(keys@[offset].1),
             forall|key: i64| (#[trigger] changes.lookup(key) is Some) == entry_keys(keys@).contains(key),
+            original == *old(directory),
             index_unique(original) ==> index_unique(*directory),
-            index_positive(original) ==> index_positive(*directory),
+            index_nonzero(original) ==> index_nonzero(*directory),
             index_nonempty(original) ==> index_nonempty(*directory),
             forall|probe: i64| !entry_keys(keys@.take(index as int)).contains(probe) ==> #[trigger] directory.lookup(probe) == original.lookup(probe),
             forall|predicate: spec_fn(i64, Row::V) -> bool| #[trigger] index_routed(original, predicate) && index_routed(*changes, predicate) ==>
@@ -158,11 +223,36 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
                 }
             }
         }
+        proof {
+            assert(changes.lookup(key) is Some);
+            assert((*changes.lookup(key)->0).entries@ == rows@);
+            assert(mass_at(*changes, key) == entries_mass(rows@));
+            assert(entry_keys(keys@)[index as int] == key);
+            assert(entry_keys(keys@.take(index as int)) =~= entry_keys(keys@).take(index as int));
+            assert(!entry_keys(keys@.take(index as int)).contains(key));
+            assert(directory.lookup(key) == original.lookup(key));
+            lemma_sum_empty(rows@.take(0), |entry: Counted<Row>| entry_magnitude(entry));
+            assert(rows@.take(0) =~= Seq::<Counted<Row>>::empty());
+            assert forall|value: Row::V| #[trigger] index_amount(*directory, key, value) ==
+                index_amount(*directory, key, value) + entries_amount(rows@.take(0), value) by {
+                lemma_sum_empty(rows@.take(0), |entry: Counted<Row>| if (*entry.row).rv() == value { entry.count as int } else { 0int });
+            }
+        }
         let mut offset = 0;
         while offset < rows.len()
             invariant offset <= rows.len(), directory.valid(),
                 index_unique(previous_directory) ==> index_unique(*directory),
+                index_nonzero(previous_directory) ==> index_nonzero(*directory),
                 index_nonempty(previous_directory) ==> index_nonempty(*directory),
+                (*changes).lookup(key) is Some && (*(*changes).lookup(key)->0).entries@ == rows@,
+                mass_at(previous_directory, key) <= mass_at(original, key),
+                original == *old(directory), mass_at(*changes, key) == entries_mass(rows@),
+                index_unique(original) ==> index_unique(previous_directory),
+                forall|value: Row::V| #[trigger] index_amount(*directory, key, value) ==
+                    index_amount(previous_directory, key, value) + entries_amount(rows@.take(offset as int), value),
+                previous_directory.lookup(key) == original.lookup(key),
+                forall|probe: i64| #[trigger] mass_at(*directory, probe) <= mass_at(previous_directory, probe) +
+                    if probe == key { entries_mass(rows@.take(offset as int)) } else { 0int },
                 forall|predicate: spec_fn(i64, Row::V) -> bool| #[trigger] index_routed(previous_directory, predicate) && index_routed(*changes, predicate) ==>
                     index_routed(*directory, predicate),
                 forall|predicate: spec_fn(i64, Row::V) -> bool| #[trigger] index_routed(*changes, predicate) ==>
@@ -180,8 +270,50 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
                     assert(predicate(key, (*rows@[offset as int].row).rv()));
                 }
             }
-            if !adjust_bag(directory, key, Arc::clone(&rows[offset].row), rows[offset].count) { return false; }
             proof {
+                lemma_prefix_mass_le(rows@, offset as int);
+                lemma_sum_ge_term(rows@, |entry: Counted<Row>| entry_magnitude(entry), offset as int);
+                assert(entry_magnitude(rows@[offset as int]) == magnitude(rows@[offset as int].count as int));
+            }
+            let adjusted = adjust_bag(directory, key, Arc::clone(&rows[offset].row), rows[offset].count);
+            if adjusted {
+                proof {
+                    assert forall|value: Row::V| #[trigger] index_amount(*directory, key, value) ==
+                        index_amount(previous_directory, key, value) + entries_amount(rows@.take(offset as int + 1), value) by {
+                        lemma_sum_take(rows@, offset as int, |entry: Counted<Row>| if (*entry.row).rv() == value { entry.count as int } else { 0int });
+                    }
+                }
+            }
+            if !adjusted {
+                proof {
+                    if index_unique(original) && index_unique(*changes) {
+                        assert(index_unique(previous));
+                        let value = (*rows[offset as int].row).rv();
+                        assert(magnitude(index_amount(previous, key, value)) + magnitude(rows@[offset as int].count as int) > i128_max());
+                        assert(index_amount(previous, key, value) == index_amount(previous_directory, key, value) + entries_amount(rows@.take(offset as int), value));
+                        let bag = (*changes.lookup(key)->0);
+                        assert(bag.unique());
+                        lemma_entry_amount(bag, offset as int);
+                        assert(entries_amount(rows@.take(offset as int), value) == 0) by {
+                            let counter = |entry: Counted<Row>| if (*entry.row).rv() == value { entry.count as int } else { 0int };
+                            assert forall|j: int| 0 <= j < rows@.take(offset as int).len() implies counter(#[trigger] rows@.take(offset as int)[j]) == 0 by {
+                                assert(rows@.take(offset as int)[j] == rows@[j]);
+                                assert((*rows@[j].row).rv() != (*rows@[offset as int].row).rv());
+                            }
+                            lemma_sum_zero(rows@.take(offset as int), counter);
+                        }
+                        assert(index_amount(previous_directory, key, value) == index_amount(original, key, value));
+                        assert(index_amount(*changes, key, value) == bag.amount(value));
+                    }
+                }
+                return false;
+            }
+            proof {
+                assert forall|probe: i64| #[trigger] mass_at(*directory, probe) <= mass_at(previous_directory, probe) +
+                    if probe == key { entries_mass(rows@.take(offset as int + 1)) } else { 0int } by {
+                    lemma_sum_take(rows@, offset as int, |entry: Counted<Row>| entry_magnitude(entry));
+                    assert(entries_mass(rows@.take(offset as int + 1)) == entries_mass(rows@.take(offset as int)) + magnitude(rows@[offset as int].count as int));
+                }
                 assert forall|probe: i64, weight: spec_fn(Row::V) -> int| #[trigger] index_weight(*directory, probe, weight) ==
                     index_weight(previous_directory, probe, weight) +
                     if probe == key { weighted_entries(rows@.take(offset as int + 1), weight) } else { 0int } by {
@@ -193,19 +325,7 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
             offset += 1;
         }
         proof { assert(rows@.take(offset as int) =~= rows@); }
-        if let Some(bag) = directory.get(key) {
-            if !bag.positive() { return false; }
-        }
         proof {
-            assert(index_positive(original) ==> index_positive(*directory)) by {
-                if index_positive(original) {
-                    assert forall|probe: i64| match #[trigger] directory.lookup(probe) {
-                        None => true, Some(bag) => (*bag).valid(),
-                    } by {
-                        if probe != key { assert(directory.lookup(probe) == previous_directory.lookup(probe)); }
-                    }
-                }
-            }
             assert(entry_keys(keys@.take(index as int + 1)) =~= entry_keys(keys@.take(index as int)).push(key));
             assert forall|probe: i64| !entry_keys(keys@.take(index as int + 1)).contains(probe) implies directory.lookup(probe) == original.lookup(probe) by {
                 broadcast use vstd::seq_lib::group_seq_properties;
@@ -248,9 +368,19 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
     true
 }
 
+pub proof fn lemma_prefix_mass_le<Row: BagRow>(entries: Seq<Counted<Row>>, k: int)
+    requires 0 <= k <= entries.len(),
+    ensures entries_mass(entries.take(k)) <= entries_mass(entries),
+{
+    assert(entries =~= entries.take(k) + entries.skip(k));
+    lemma_sum_concat(entries.take(k), entries.skip(k), |entry: Counted<Row>| entry_magnitude(entry));
+    lemma_mass_nonneg(entries.skip(k));
+}
+
 pub fn adjust_region(regions: &mut Directory<RegionBucket>, name: &[u8], key: i64, change: i128) -> (result: bool)
     requires regions_valid(*old(regions)),
-    ensures result ==> {
+    ensures !result ==> magnitude(region_amount(*old(regions), name@, key)) + magnitude(change as int) > i128_max(),
+        result ==> {
         &&& regions_valid(*final(regions))
         &&& regions_positive(*old(regions)) && change > 0 ==> regions_positive(*final(regions))
         &&& regions_nonzero(*old(regions)) ==> regions_nonzero(*final(regions))
@@ -268,6 +398,7 @@ pub fn adjust_region(regions: &mut Directory<RegionBucket>, name: &[u8], key: i6
         while offset < bucket.names.len()
             invariant
                 offset <= bucket.names.len(), region_bucket_valid(*bucket, hash), names.len() == offset,
+                original == *old(regions), hash as int == text_hash(name@),
                 original.lookup(hash) == Some(bucket),
                 regions_positive(original) && change > 0 ==> region_bucket_positive(*bucket),
                 regions_positive(original) && change > 0 ==> forall|index: int| 0 <= index < names@.len() ==>
@@ -293,7 +424,27 @@ pub fn adjust_region(regions: &mut Directory<RegionBucket>, name: &[u8], key: i6
             if compare_bytes(&entry.name, name) == 0 {
                 found = true;
                 let before = match keys.get(key) { None => 0, Some(count) => count.value };
-                let after = match before.checked_add(change) { None => return false, Some(value) => value };
+                let after = match before.checked_add(change) {
+                    None => {
+                        proof {
+                            let weight = |value: RegionName| region_name_weight(value, name@, key);
+                            assert forall|other: int| 0 <= other < bucket.names@.len() && other != offset as int implies weight(#[trigger] bucket.names@[other]) == 0 by {
+                                if other < offset as int { assert((*bucket.names@[other].name)@ != (*bucket.names@[offset as int].name)@); }
+                                else { assert((*bucket.names@[offset as int].name)@ != (*bucket.names@[other].name)@); }
+                            }
+                            lemma_sum_single_match(bucket.names@, weight, offset as int);
+                            assert(region_amount(original, name@, key) == count_at(entry.keys, key));
+                            assert(keys == entry.keys);
+                            assert(before as int == count_at(keys, key));
+                            assert((before as int + change as int) > i128_max() || (before as int + change as int) < (-i128_max() - 1));
+                            assert(magnitude(before as int) + magnitude(change as int) > i128_max());
+                            assert(original == *old(regions));
+                            assert(magnitude(region_amount(*old(regions), name@, key)) == magnitude(before as int));
+                        }
+                        return false;
+                    },
+                    Some(value) => value,
+                };
                 proof { assert(regions_positive(original) && change > 0 ==> after > 0); }
                 if after == 0 { keys.replace(key, None); }
                 else { keys.replace(key, Some(Arc::new(Count { value: after }))); }
@@ -518,8 +669,29 @@ pub fn compact_region(regions: &mut Directory<RegionBucket>, hash: i64)
     }
 }
 
+pub open spec fn delta_part_keys(deltas: Seq<PartKeyDelta>) -> Seq<i64> {
+    deltas.map_values(|delta: PartKeyDelta| delta.p_partkey)
+}
+
+/// The keys in order of first occurrence.
+pub open spec fn first_keys(keys: Seq<i64>) -> Seq<i64>
+    decreases keys.len(),
+{
+    if keys.len() == 0 { Seq::empty() }
+    else {
+        let previous = first_keys(keys.drop_last());
+        if previous.contains(keys.last()) { previous } else { previous.push(keys.last()) }
+    }
+}
+
+/// The part keys the host rescans: those of the part deltas, once each.
+pub open spec fn wanted_part_keys(deltas: Seq<PartKeyDelta>) -> Seq<i64> {
+    first_keys(delta_part_keys(deltas))
+}
+
 pub fn part_keys(deltas: &[PartKeyDelta]) -> (result: Vec<i64>)
     ensures
+        result@ == wanted_part_keys(deltas@),
         result@.no_duplicates(),
         forall|key: i64| #[trigger] result@.contains(key) ==
             deltas@.map_values(|delta: PartKeyDelta| delta.p_partkey).contains(key),
@@ -531,6 +703,7 @@ pub fn part_keys(deltas: &[PartKeyDelta]) -> (result: Vec<i64>)
     while index < deltas.len()
         invariant
             index <= deltas.len(), processed@ == index as int, seen.valid(), result@.no_duplicates(),
+            result@ == first_keys(delta_part_keys(deltas@.take(processed@))),
             forall|key: i64| #[trigger] result@.contains(key) ==
                 deltas@.take(processed@).map_values(|delta: PartKeyDelta| delta.p_partkey).contains(key),
             forall|key: i64| (#[trigger] seen.lookup(key) is Some) == result@.contains(key),
@@ -547,6 +720,10 @@ pub fn part_keys(deltas: &[PartKeyDelta]) -> (result: Vec<i64>)
         proof {
             assert(deltas@.take(index as int + 1).map_values(|delta: PartKeyDelta| delta.p_partkey) =~=
                 deltas@.take(index as int).map_values(|delta: PartKeyDelta| delta.p_partkey).push(key));
+            let keys_now = delta_part_keys(deltas@.take(index as int + 1));
+            assert(keys_now.drop_last() =~= delta_part_keys(deltas@.take(index as int)));
+            assert(keys_now.last() == key);
+            assert(result@ == first_keys(keys_now));
             assert forall|probe: i64| (#[trigger] seen.lookup(probe) is Some) == result@.contains(probe) by {
                 broadcast use vstd::seq_lib::group_seq_properties;
                 assert((previous_seen.lookup(probe) is Some) == previous.contains(probe));

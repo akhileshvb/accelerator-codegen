@@ -6,6 +6,7 @@ pub mod gen_spec;
 pub mod gen_obligations;
 pub mod kernel;
 pub mod storage;
+pub mod sorted;
 pub mod values;
 pub mod model;
 pub mod joins;

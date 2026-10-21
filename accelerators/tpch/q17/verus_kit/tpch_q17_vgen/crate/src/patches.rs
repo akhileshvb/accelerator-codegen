@@ -8,20 +8,21 @@ use crate::maintenance::{Change, read_moment, adjust_group};
 use crate::model::*;
 use crate::storage::*;
 use crate::variants::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
 #[verifier::rlimit(1)]
-pub fn apply_key_patch(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, groups: &mut Store<Vec<Group>>, key: i64, patch: &Vec<Change>) -> (result: bool)
+pub fn apply_key_patch(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, groups: &mut Store<Vec<Group>>, key: i64, patch: &Vec<Change>)
     requires part_store_wf(*old(parts)), lines.wf(), group_store_wf(*old(groups)), change_bucket_wf(patch@),
     ensures part_store_wf(*final(parts)), group_store_wf(*final(groups)),
-        result ==> forall|other: i64, brand: Seq<u8>, container: Seq<u8>| #[trigger] multiplicity(*final(parts), other, brand, container)
+        forall|other: i64, brand: Seq<u8>, container: Seq<u8>| #[trigger] multiplicity(*final(parts), other, brand, container)
             == multiplicity(*old(parts), other, brand, container) + if other == key { change_total(patch@, brand, container) } else { 0 },
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*final(groups), brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_count_at(*final(groups), brand, container)
             == group_count_at(*old(groups), brand, container) + change_total(patch@, brand, container) * moment_at(*lines, key).count as int,
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*final(groups), brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*final(groups), brand, container)
             == group_price_at(*old(groups), brand, container) + change_total(patch@, brand, container) * moment_at(*lines, key).price as int,
-        result ==> forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*final(groups), brand, container)
+        forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*final(groups), brand, container)
             == group_refs_at(*old(groups), brand, container) + change_total(patch@, brand, container),
 {
     let before_parts = Ghost(*parts);
@@ -36,7 +37,7 @@ pub fn apply_key_patch(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, g
                 previous@ == variants_at(*parts, key),
             decreases previous.len() - index,
         {
-            variants.push(Variant { identity: previous[index].identity.clone(), multiplicity: previous[index].multiplicity });
+            variants.push(Variant { identity: previous[index].identity.clone(), multiplicity: previous[index].multiplicity.dup() });
             index += 1;
         }
     }
@@ -67,12 +68,12 @@ pub fn apply_key_patch(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, g
         let change = &patch[index];
         let old_variants = Ghost(variants@);
         let old_groups = Ghost(*groups);
-        if change.delta != 0 {
+        if !change.delta.is_zero() {
             proof { lemma_change_entry(patch@, index as int); }
-            if !update_variant(&mut variants, change.identity.clone(), change.delta) { return false; }
-            let count = match change.delta.checked_mul(line.count) { Some(value) => value, None => return false };
-            let price = match change.delta.checked_mul(line.price) { Some(value) => value, None => return false };
-            if !adjust_group(groups, &change.identity, change.delta, count, price) { return false; }
+            update_variant(&mut variants, change.identity.clone(), &change.delta);
+            let count = change.delta.mul(&Wide::from_i128(line.count));
+            let price = change.delta.mul(&Wide::from_i128(line.price));
+            adjust_group(groups, &change.identity, &change.delta, &count, &price);
         }
         proof {
             assert forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] variant_total(variants@, brand, container)
@@ -85,14 +86,14 @@ pub fn apply_key_patch(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, g
                 assert(group_count_at(old_groups@, brand, container) == group_count_at(before_groups@, brand, container) + change_total(patch@.take(index as int), brand, container) * line.count as int);
                 lemma_change_prefix(patch@, index as int, brand, container);
                 lemma_count_weight_add(change_total(patch@.take(index as int), brand, container),
-                    if same(*change.identity, brand, container) { change.delta as int } else { 0int }, line.count as int);
+                    if same(*change.identity, brand, container) { change.delta@ } else { 0int }, line.count as int);
             }
             assert forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_price_at(*groups, brand, container)
                 == group_price_at(before_groups@, brand, container) + change_total(patch@.take(index as int + 1), brand, container) * line.price as int by {
                 assert(group_price_at(old_groups@, brand, container) == group_price_at(before_groups@, brand, container) + change_total(patch@.take(index as int), brand, container) * line.price as int);
                 lemma_change_prefix(patch@, index as int, brand, container);
                 lemma_count_weight_add(change_total(patch@.take(index as int), brand, container),
-                    if same(*change.identity, brand, container) { change.delta as int } else { 0int }, line.price as int);
+                    if same(*change.identity, brand, container) { change.delta@ } else { 0int }, line.price as int);
             }
             assert forall|brand: Seq<u8>, container: Seq<u8>| #[trigger] group_refs_at(*groups, brand, container)
                 == group_refs_at(before_groups@, brand, container) + change_total(patch@.take(index as int + 1), brand, container) by {
@@ -114,7 +115,6 @@ pub fn apply_key_patch(parts: &mut Store<Vec<Variant>>, lines: &Store<Moment>, g
             reveal(multiplicity);
         }
     }
-    true
 }
 
 }

@@ -345,18 +345,103 @@ pub open spec fn region_delta_seq_view(s: Seq<RegionDelta>) -> Seq<(RegionRow, i
     s.map_values(|d: RegionDelta| (region_scan_view(d.row), d.sign as int))
 }
 
+/// Each change is one row, inserted (+1) or deleted (-1).
+pub open spec fn unit_weights<A>(d: Seq<(A, int)>) -> bool {
+    forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1
+}
+
 /// One transaction's changes: every table of db2 is that of db plus its deltas (bags).
 pub open spec fn capture_ok(db: Db, db2: Db, nation: Seq<(NationRow, int)>, part: Seq<(PartRow, int)>, partsupp: Seq<(PartsuppRow, int)>, region: Seq<(RegionRow, int)>, supplier: Seq<(SupplierRow, int)>) -> bool {
     &&& bag_step(db.nation, db2.nation, nation)
+    &&& unit_weights(nation)
     &&& bag_step(db.part, db2.part, part)
+    &&& unit_weights(part)
     &&& bag_step(db.partsupp, db2.partsupp, partsupp)
+    &&& unit_weights(partsupp)
     &&& bag_step(db.region, db2.region, region)
+    &&& unit_weights(region)
     &&& bag_step(db.supplier, db2.supplier, supplier)
+    &&& unit_weights(supplier)
+}
+
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table can hold (the DBMS's row ids are 64-bit).
+pub open spec fn max_rows() -> int {
+    9223372036854775808
+}
+
+/// Most changed rows a state may absorb after its build before apply may decline
+/// (the host then rebuilds).
+pub open spec fn max_history() -> int {
+    4611686018427387904
+}
+
+/// Each value of nation lies in the range of its column's SQL type.
+pub open spec fn nation_in_type(r: NationRow) -> bool {
+    -2147483648 <= r.n_nationkey <= 2147483647
+    && -2147483648 <= r.n_regionkey <= 2147483647
+}
+
+/// Each value of part lies in the range of its column's SQL type.
+pub open spec fn part_in_type(r: PartRow) -> bool {
+    -2147483648 <= r.p_partkey <= 2147483647
+    && -2147483648 <= r.p_size <= 2147483647
+}
+
+/// Each value of partsupp lies in the range of its column's SQL type.
+pub open spec fn partsupp_in_type(r: PartsuppRow) -> bool {
+    -2147483648 <= r.ps_partkey <= 2147483647
+    && -2147483648 <= r.ps_suppkey <= 2147483647
+    && -999999999999999 <= r.ps_supplycost <= 999999999999999
+}
+
+/// Each value of region lies in the range of its column's SQL type.
+pub open spec fn region_in_type(r: RegionRow) -> bool {
+    -2147483648 <= r.r_regionkey <= 2147483647
+}
+
+/// Each value of supplier lies in the range of its column's SQL type.
+pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
+    -2147483648 <= r.s_suppkey <= 2147483647
+    && -2147483648 <= r.s_nationkey <= 2147483647
+    && -999999999999999 <= r.s_acctbal <= 999999999999999
+}
+
+/// The databases the DBMS can represent: each table within its row-id space, each
+/// value within its column's SQL type.
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.nation.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.nation.len() ==> nation_in_type(#[trigger] db.nation[i])
+    &&& db.part.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.part.len() ==> part_in_type(#[trigger] db.part[i])
+    &&& db.partsupp.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.partsupp.len() ==> partsupp_in_type(#[trigger] db.partsupp[i])
+    &&& db.region.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.region.len() ==> region_in_type(#[trigger] db.region[i])
+    &&& db.supplier.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.supplier.len() ==> supplier_in_type(#[trigger] db.supplier[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    -170141183460469231731687303715884105728 <= r.s_acctbal <= 170141183460469231731687303715884105727
+    && -9223372036854775808 <= r.p_partkey <= 9223372036854775807
+}
+
+/// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves
+/// `defined <==> exists an answer`) and every correct answer fits: at most max_rows()
+/// rows, each in the result's runtime types.  A kernel that declines because no answer
+/// exists must prove
+/// `!defined`.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    &&& defined(db, params)
+    &&& forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> o.len() <= max_rows() && forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
 }
 
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     brass_parts: Vec<BrassPartScan>,
     brass_partsupp: &[BrassPartsuppScan],
@@ -373,11 +458,14 @@ pub fn ob_build(
         scan_regions_ok(db, regions@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        r matches Some(s) ==> crate::kernel::history(s) == 0,
+        envelope(db) ==> r is Some,
 {
     kernel::build(brass_parts, brass_partsupp, suppliers, nations, regions, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope, or when no correct answer exists or one overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: i64,
@@ -386,12 +474,13 @@ pub fn ob_execute(
 ) -> (r: Option<Vec<(i128, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1 as int, p2@, p3@), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1 as int, p2@, p3@)) ==> r is Some,
 {
     kernel::execute(s, p1, p2, p3)
 }
 
-/// The keys whose rows the host rescans (rescan brass_parts_after) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan brass_parts_after) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_brass_parts_after_keys(
     s: &State,
     nation_delta: &Vec<NationDelta>,
@@ -400,12 +489,14 @@ pub fn ob_rescan_brass_parts_after_keys(
     region_delta: &Vec<RegionDelta>,
     supplier_delta: &Vec<SupplierDelta>,
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_brass_parts_after_wanted(*s, nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
 {
     kernel::rescan_brass_parts_after_keys(s, nation_delta, part_delta, partsupp_delta, region_delta, supplier_delta)
 }
 
-/// The keys whose rows the host rescans (rescan brass_partsupp_after) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan brass_partsupp_after) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_brass_partsupp_after_keys(
     s: &State,
     nation_delta: &Vec<NationDelta>,
@@ -414,11 +505,14 @@ pub fn ob_rescan_brass_partsupp_after_keys(
     region_delta: &Vec<RegionDelta>,
     supplier_delta: &Vec<SupplierDelta>,
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_brass_partsupp_after_wanted(*s, nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
 {
     kernel::rescan_brass_partsupp_after_keys(s, nation_delta, part_delta, partsupp_delta, region_delta, supplier_delta)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope or after max_history() changed rows since the build.
 pub fn ob_apply(
     s: &State,
     nation_delta: &Vec<NationDelta>,
@@ -436,10 +530,14 @@ pub fn ob_apply(
     requires
         part_delta_ok(part_delta@, part_full),
         capture_ok(s.db(), db2, nation_delta_seq_view(nation_delta@), part_full, partsupp_delta_seq_view(partsupp_delta@), region_delta_seq_view(region_delta@), supplier_delta_seq_view(supplier_delta@)),
+        brass_parts_after_keys@ == crate::kernel::rescan_brass_parts_after_wanted(*s, nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
         rescan_brass_parts_after_ok(db2, brass_parts_after_keys@, brass_parts_after_rows@),
+        brass_partsupp_after_keys@ == crate::kernel::rescan_brass_partsupp_after_wanted(*s, nation_delta@, part_delta@, partsupp_delta@, region_delta@, supplier_delta@),
         rescan_brass_partsupp_after_ok(db2, brass_partsupp_after_keys@, brass_partsupp_after_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        r matches Ok(s2) ==> crate::kernel::history(s2) <= crate::kernel::history(*s) + nation_delta@.len() + part_delta@.len() + partsupp_delta@.len() + region_delta@.len() + supplier_delta@.len(),
+        envelope(s.db()) && envelope(db2) && crate::kernel::history(*s) + nation_delta@.len() + part_delta@.len() + partsupp_delta@.len() + region_delta@.len() + supplier_delta@.len() <= max_history() ==> r is Ok,
 {
     kernel::apply(s, nation_delta, part_delta, partsupp_delta, region_delta, supplier_delta, brass_parts_after_keys, brass_parts_after_rows, brass_partsupp_after_keys, brass_partsupp_after_rows, Ghost(part_full), Ghost(db2))
 }

@@ -21,7 +21,7 @@ pub open spec fn cell_nation_weight(key: i64, cell: Cell, first: Seq<u8>, second
 {
     if cell.year == year && left.n_nationkey == key && left.n_name == first
         && right.n_nationkey == cell.other && right.n_name == second {
-        if revenue { cell.revenue as int } else { cell.count as int }
+        if revenue { cell.revenue@ } else { cell.count@ }
     } else { 0int }
 }
 
@@ -50,7 +50,7 @@ pub proof fn lemma_cell_nations(db: Db, nations: Layers<Names>, key: i64, cell: 
             cell_nation_weight(key, cell, first, second, year, revenue, left, right))),
 {
     reveal(nation_count);
-    let measure = if cell.year == year { if revenue { cell.revenue as int } else { cell.count as int } } else { 0int };
+    let measure = if cell.year == year { if revenue { cell.revenue@ } else { cell.count@ } } else { 0int };
     let left_count = |left: NationRow| if left.n_nationkey == key && left.n_name == first { 1int } else { 0int };
     let right_count = |right: NationRow| if right.n_nationkey == cell.other && right.n_name == second { 1int } else { 0int };
     let outer = |left: NationRow| sum(db.nation, |right: NationRow|

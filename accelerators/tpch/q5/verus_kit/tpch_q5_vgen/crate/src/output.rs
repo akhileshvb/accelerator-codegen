@@ -3,21 +3,22 @@ use std::collections::HashMap;
 use crate::storage::*;
 use crate::catalog::*;
 use verus_common::sums::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
 pub struct OutputGroup {
     pub name: Vec<u8>,
-    pub count: i128,
-    pub revenue: i128,
+    pub count: Wide,
+    pub revenue: Wide,
 }
 
 pub open spec fn group_count_weight(row: OutputGroup, name: Seq<u8>) -> int {
-    if row.name@ == name { row.count as int } else { 0 }
+    if row.name@ == name { row.count@ } else { 0 }
 }
 
 pub open spec fn group_revenue_weight(row: OutputGroup, name: Seq<u8>) -> int {
-    if row.name@ == name { row.revenue as int } else { 0 }
+    if row.name@ == name { row.revenue@ } else { 0 }
 }
 
 pub open spec fn group_total(rows: Seq<OutputGroup>, name: Seq<u8>) -> (int, int) {
@@ -26,14 +27,14 @@ pub open spec fn group_total(rows: Seq<OutputGroup>, name: Seq<u8>) -> (int, int
 }
 
 pub open spec fn groups_wf(rows: Seq<OutputGroup>) -> bool {
-    &&& forall|position: int| 0 <= position < rows.len() ==> (#[trigger] rows[position]).count > 0
+    &&& forall|position: int| 0 <= position < rows.len() ==> (#[trigger] rows[position]).count@ > 0
     &&& forall|first: int, second: int| 0 <= first < second < rows.len() ==>
         (#[trigger] rows[first]).name@ != (#[trigger] rows[second]).name@
 }
 
 pub proof fn lemma_group_row(rows: Seq<OutputGroup>, position: int)
     requires groups_wf(rows), 0 <= position < rows.len(),
-    ensures group_total(rows, rows[position].name@) == (rows[position].count as int, rows[position].revenue as int),
+    ensures group_total(rows, rows[position].name@) == (rows[position].count@, rows[position].revenue@),
 {
     let name = rows[position].name@;
     assert forall|other: int| 0 <= other < rows.len() && other != position implies (#[trigger] rows[other]).name@ != name by {
@@ -45,42 +46,42 @@ pub proof fn lemma_group_row(rows: Seq<OutputGroup>, position: int)
     reveal(group_total);
     assert(group_total(rows, name).0 == sum(rows, |row: OutputGroup| group_count_weight(row, name)));
     assert(group_total(rows, name).1 == sum(rows, |row: OutputGroup| group_revenue_weight(row, name)));
-    assert(group_total(rows, name).0 == rows[position].count);
-    assert(group_total(rows, name).1 == rows[position].revenue);
+    assert(group_total(rows, name).0 == rows[position].count@);
+    assert(group_total(rows, name).1 == rows[position].revenue@);
 }
 
-pub fn add_group(rows: &mut Vec<OutputGroup>, name: &[u8], count: i128, revenue: i128) -> (ok: bool)
-    requires groups_wf(old(rows)@), count > 0,
-    ensures ok ==> groups_wf(final(rows)@),
-        ok ==> forall|text: Seq<u8>| #[trigger] group_total(final(rows)@, text) ==
-            (group_total(old(rows)@, text).0 + if text == name@ { count as int } else { 0 },
-             group_total(old(rows)@, text).1 + if text == name@ { revenue as int } else { 0 }),
+pub fn add_group(rows: &mut Vec<OutputGroup>, name: &[u8], count: &Wide, revenue: &Wide)
+    requires groups_wf(old(rows)@), count@ > 0,
+    ensures groups_wf(final(rows)@),
+        forall|text: Seq<u8>| #[trigger] group_total(final(rows)@, text) ==
+            (group_total(old(rows)@, text).0 + if text == name@ { count@ } else { 0 },
+             group_total(old(rows)@, text).1 + if text == name@ { revenue@ } else { 0 }),
 {
     let ghost entry = rows@;
     let mut index = 0;
     while index < rows.len()
-        invariant index <= rows.len(), rows@ == entry, entry == old(rows)@, groups_wf(entry), count > 0,
+        invariant index <= rows.len(), rows@ == entry, entry == old(rows)@, groups_wf(entry), count@ > 0,
             forall|position: int| 0 <= position < index ==> (#[trigger] entry[position]).name@ != name@,
         decreases rows.len() - index,
     {
         if bytes_equal(&rows[index].name, name) {
-            let next_count = match rows[index].count.checked_add(count) { Some(value) => value, None => return false };
-            let next_revenue = match rows[index].revenue.checked_add(revenue) { Some(value) => value, None => return false };
+            let next_count = rows[index].count.add(count);
+            let next_revenue = rows[index].revenue.add(revenue);
             let replacement = OutputGroup { name: bytes_copy(name), count: next_count, revenue: next_revenue };
             proof {
-                assert(entry[index as int].count > 0);
-                assert(next_count > 0);
+                assert(entry[index as int].count@ > 0);
+                assert(replacement.count@ > 0);
                 assert forall|text: Seq<u8>| #[trigger] group_total(entry.update(index as int, replacement), text) ==
-                    (group_total(entry, text).0 + if text == name@ { count as int } else { 0 },
-                     group_total(entry, text).1 + if text == name@ { revenue as int } else { 0 }) by {
+                    (group_total(entry, text).0 + if text == name@ { count@ } else { 0 },
+                     group_total(entry, text).1 + if text == name@ { revenue@ } else { 0 }) by {
                     lemma_sum_update(entry, index as int, replacement, |row: OutputGroup| group_count_weight(row, text));
                     lemma_sum_update(entry, index as int, replacement, |row: OutputGroup| group_revenue_weight(row, text));
                 }
             }
             rows.set(index, replacement);
             proof {
-                assert forall|position: int| 0 <= position < rows@.len() implies (#[trigger] rows@[position]).count > 0 by {
-                    if position != index { assert(rows@[position].count == entry[position].count); }
+                assert forall|position: int| 0 <= position < rows@.len() implies (#[trigger] rows@[position]).count@ > 0 by {
+                    if position != index { assert(rows@[position] == entry[position]); }
                 }
                 assert forall|first: int, second: int| 0 <= first < second < rows@.len() implies
                     (#[trigger] rows@[first]).name@ != (#[trigger] rows@[second]).name@ by {
@@ -89,21 +90,20 @@ pub fn add_group(rows: &mut Vec<OutputGroup>, name: &[u8], count: i128, revenue:
                     assert(entry[first].name@ != entry[second].name@);
                 }
             }
-            return true;
+            return;
         }
         index += 1;
     }
-    let addition = OutputGroup { name: bytes_copy(name), count, revenue };
+    let addition = OutputGroup { name: bytes_copy(name), count: count.dup(), revenue: revenue.dup() };
     proof {
         assert forall|text: Seq<u8>| #[trigger] group_total(entry.push(addition), text) ==
-            (group_total(entry, text).0 + if text == name@ { count as int } else { 0 },
-             group_total(entry, text).1 + if text == name@ { revenue as int } else { 0 }) by {
+            (group_total(entry, text).0 + if text == name@ { count@ } else { 0 },
+             group_total(entry, text).1 + if text == name@ { revenue@ } else { 0 }) by {
             lemma_sum_push(entry, addition, |row: OutputGroup| group_count_weight(row, text));
             lemma_sum_push(entry, addition, |row: OutputGroup| group_revenue_weight(row, text));
         }
     }
     rows.push(addition);
-    true
 }
 
 pub open spec fn window_cells(rows: Seq<Cell>, start: i32, end: i32) -> (int, int) {
@@ -146,7 +146,7 @@ pub proof fn lemma_window_step(group: Run, start: i32, day: i32)
 }
 
 pub open spec fn region_count_weight(region: Binding, key: i64, name: Seq<u8>) -> int {
-    if region.key == key && region.name@ == name { region.count as int } else { 0 }
+    if region.key == key && region.name@ == name { region.count@ } else { 0 }
 }
 
 pub open spec fn catalog_weight(regions: Seq<Binding>, nation: Binding, name: Seq<u8>) -> int {
@@ -156,8 +156,8 @@ pub open spec fn catalog_weight(regions: Seq<Binding>, nation: Binding, name: Se
 pub open spec fn catalog_nation_value(profiles: Table, nation: Binding, regions: Seq<Binding>,
     name: Seq<u8>, start: i32, end: i32, group: Seq<u8>) -> (int, int) {
     if nation.name@ == group {
-        (nation.count as int * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).0,
-         nation.count as int * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).1)
+        (nation.count@ * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).0,
+         nation.count@ * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).1)
     } else { (0, 0) }
 }
 
@@ -197,7 +197,7 @@ pub open spec fn nation_value(profiles: Table, nation: Binding, region: Binding,
     name: Seq<u8>, start: i32, end: i32, group: Seq<u8>) -> (int, int) {
     if region.name@ == name && nation.region == region.key && nation.name@ == group {
         let window = window_value(profiles, nation.key, start, end);
-        (window.0 * (nation.count as int * region.count), window.1 * (nation.count as int * region.count))
+        (window.0 * (nation.count@ * region.count@), window.1 * (nation.count@ * region.count@))
     } else { (0, 0) }
 }
 
@@ -216,36 +216,36 @@ pub proof fn lemma_catalog_transpose(profiles: Table, nations: Seq<Binding>, reg
     let count_by_nation = |nation: Binding| sum(regions, |region: Binding| nation_value(profiles, nation, region, name, start, end, group).0);
     let revenue_by_nation = |nation: Binding| sum(regions, |region: Binding| nation_value(profiles, nation, region, name, start, end, group).1);
     assert forall|nation: Binding| #[trigger] count_by_nation(nation) ==
-        if nation.name@ == group { nation.count as int * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).0 } else { 0 } by {
+        if nation.name@ == group { nation.count@ * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).0 } else { 0 } by {
         let raw = |region: Binding| region_count_weight(region, nation.region, name);
         let scaled = |region: Binding| nation_value(profiles, nation, region, name, start, end, group).0;
-        let factor = if nation.name@ == group { nation.count as int * window_value(profiles, nation.key, start, end).0 } else { 0 };
+        let factor = if nation.name@ == group { nation.count@ * window_value(profiles, nation.key, start, end).0 } else { 0 };
         assert forall|region: Binding| #[trigger] scaled(region) == factor * raw(region) by {
-            assert(window_value(profiles, nation.key, start, end).0 * (nation.count as int * region.count) ==
-                (nation.count as int * window_value(profiles, nation.key, start, end).0) * region.count) by (nonlinear_arith);
+            assert(window_value(profiles, nation.key, start, end).0 * (nation.count@ * region.count@) ==
+                (nation.count@ * window_value(profiles, nation.key, start, end).0) * region.count@) by (nonlinear_arith);
         }
         lemma_sum_scale(regions, raw, scaled, factor);
         lemma_sum_ext_all(regions, raw, |region: Binding| region_count_weight(region, nation.region, name));
         assert(sum(regions, raw) == catalog_weight(regions, nation, name));
         assert(count_by_nation(nation) == factor * catalog_weight(regions, nation, name));
-        assert((nation.count as int * window_value(profiles, nation.key, start, end).0) * catalog_weight(regions, nation, name) ==
-            nation.count as int * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).0) by (nonlinear_arith);
+        assert((nation.count@ * window_value(profiles, nation.key, start, end).0) * catalog_weight(regions, nation, name) ==
+            nation.count@ * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).0) by (nonlinear_arith);
     }
     assert forall|nation: Binding| #[trigger] revenue_by_nation(nation) ==
-        if nation.name@ == group { nation.count as int * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).1 } else { 0 } by {
+        if nation.name@ == group { nation.count@ * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).1 } else { 0 } by {
         let raw = |region: Binding| region_count_weight(region, nation.region, name);
         let scaled = |region: Binding| nation_value(profiles, nation, region, name, start, end, group).1;
-        let factor = if nation.name@ == group { nation.count as int * window_value(profiles, nation.key, start, end).1 } else { 0 };
+        let factor = if nation.name@ == group { nation.count@ * window_value(profiles, nation.key, start, end).1 } else { 0 };
         assert forall|region: Binding| #[trigger] scaled(region) == factor * raw(region) by {
-            assert(window_value(profiles, nation.key, start, end).1 * (nation.count as int * region.count) ==
-                (nation.count as int * window_value(profiles, nation.key, start, end).1) * region.count) by (nonlinear_arith);
+            assert(window_value(profiles, nation.key, start, end).1 * (nation.count@ * region.count@) ==
+                (nation.count@ * window_value(profiles, nation.key, start, end).1) * region.count@) by (nonlinear_arith);
         }
         lemma_sum_scale(regions, raw, scaled, factor);
         lemma_sum_ext_all(regions, raw, |region: Binding| region_count_weight(region, nation.region, name));
         assert(sum(regions, raw) == catalog_weight(regions, nation, name));
         assert(revenue_by_nation(nation) == factor * catalog_weight(regions, nation, name));
-        assert((nation.count as int * window_value(profiles, nation.key, start, end).1) * catalog_weight(regions, nation, name) ==
-            nation.count as int * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).1) by (nonlinear_arith);
+        assert((nation.count@ * window_value(profiles, nation.key, start, end).1) * catalog_weight(regions, nation, name) ==
+            nation.count@ * catalog_weight(regions, nation, name) * window_value(profiles, nation.key, start, end).1) by (nonlinear_arith);
     }
     let joint_count = |nation: Binding, region: Binding| nation_value(profiles, nation, region, name, start, end, group).0;
     let joint_revenue = |nation: Binding, region: Binding| nation_value(profiles, nation, region, name, start, end, group).1;
@@ -287,8 +287,8 @@ pub proof fn lemma_catalog_empty(profiles: Table, nations: Seq<Binding>, regions
                 assert(window_value(profiles, nation.key, start, end) == (0, 0));
             } else {
                 assert(catalog_weight(regions, nation, name) == 0);
-                assert(nation.count as int * 0int * window_value(profiles, nation.key, start, end).0 == 0) by (nonlinear_arith);
-                assert(nation.count as int * 0int * window_value(profiles, nation.key, start, end).1 == 0) by (nonlinear_arith);
+                assert(nation.count@ * 0int * window_value(profiles, nation.key, start, end).0 == 0) by (nonlinear_arith);
+                assert(nation.count@ * 0int * window_value(profiles, nation.key, start, end).1 == 0) by (nonlinear_arith);
             }
         }
         lemma_sum_zero(nations, count);
@@ -296,22 +296,22 @@ pub proof fn lemma_catalog_empty(profiles: Table, nations: Seq<Binding>, regions
     }
 }
 
-pub fn window(profiles: &Table, nation: i64, start: i32, end: i32) -> (out: Option<Cell>)
+pub fn window(profiles: &Table, nation: i64, start: i32, end: i32) -> (out: Exact)
     requires profiles.wf(), profiles.daily(),
-    ensures out matches Some(cell) ==> (cell.count as int, cell.revenue as int) == window_value(*profiles, nation, start, end),
+    ensures (out@.count, out@.revenue) == window_value(*profiles, nation, start, end),
 {
-    let mut count = 0i128;
-    let mut revenue = 0i128;
+    let mut count = Wide::zero();
+    let mut revenue = Wide::zero();
     if start >= end {
         proof { lemma_window_empty(profiles.rows(nation), start, end); }
-        return Some(Cell { sub: nation, day: 0, count, revenue });
+        return Exact { sub: nation, day: 0, count, revenue };
     }
-    let group = match profiles.group(nation) { Some(group) => group, None => return Some(Cell { sub: nation, day: 0, count, revenue }) };
+    let group = match profiles.group(nation) { Some(group) => group, None => return Exact { sub: nation, day: 0, count, revenue } };
     let mut index = 0;
     while index < group.len()
         invariant group.wf(), group.rows@ == profiles.rows(nation), index <= group.rows@.len(),
-            count == sum(group.rows@.take(index as int), |cell: Cell| if start <= cell.day < end { cell.count as int } else { 0 }),
-            revenue == sum(group.rows@.take(index as int), |cell: Cell| if start <= cell.day < end { cell.revenue as int } else { 0 }),
+            count@ == sum(group.rows@.take(index as int), |cell: Cell| if start <= cell.day < end { cell.count as int } else { 0 }),
+            revenue@ == sum(group.rows@.take(index as int), |cell: Cell| if start <= cell.day < end { cell.revenue as int } else { 0 }),
         decreases group.rows@.len() - index,
     {
         let cell = group.cell(index);
@@ -320,20 +320,20 @@ pub fn window(profiles: &Table, nation: i64, start: i32, end: i32) -> (out: Opti
             lemma_sum_take(group.rows@, index as int, |cell: Cell| if start <= cell.day < end { cell.revenue as int } else { 0 });
         }
         if start <= cell.day && cell.day < end {
-            count = match count.checked_add(cell.count) { Some(value) => value, None => return None };
-            revenue = match revenue.checked_add(cell.revenue) { Some(value) => value, None => return None };
+            count = count.add(&cell.count);
+            revenue = revenue.add(&cell.revenue);
         }
         index += 1;
     }
     proof { assert(group.rows@.take(group.rows@.len() as int) =~= group.rows@); }
-    Some(Cell { sub: nation, day: 0, count, revenue })
+    Exact { sub: nation, day: 0, count, revenue }
 }
 
-pub open spec fn output_name_count(rows: Seq<(Vec<u8>, i128)>, name: Seq<u8>) -> int {
-    sum(rows, |row: (Vec<u8>, i128)| output_name_weight(row, name))
+pub open spec fn output_name_count(rows: Seq<(Vec<u8>, Wide)>, name: Seq<u8>) -> int {
+    sum(rows, |row: (Vec<u8>, Wide)| output_name_weight(row, name))
 }
 
-pub open spec fn output_name_weight(row: (Vec<u8>, i128), name: Seq<u8>) -> int {
+pub open spec fn output_name_weight(row: (Vec<u8>, Wide), name: Seq<u8>) -> int {
     ind(row.0@ == name)
 }
 
@@ -341,40 +341,40 @@ pub open spec fn source_name_weight(row: OutputGroup, name: Seq<u8>) -> int {
     ind(row.name@ == name)
 }
 
-pub fn insertion_position(rows: &Vec<(Vec<u8>, i128)>, revenue: i128) -> (position: usize)
+pub fn insertion_position(rows: &Vec<(Vec<u8>, Wide)>, revenue: &Wide) -> (position: usize)
     ensures position <= rows@.len(),
-        forall|before: int| 0 <= before < position ==> (#[trigger] rows@[before]).1 >= revenue,
-        position < rows@.len() ==> rows@[position as int].1 < revenue,
+        forall|before: int| 0 <= before < position ==> (#[trigger] rows@[before]).1@ >= revenue@,
+        position < rows@.len() ==> rows@[position as int].1@ < revenue@,
 {
     let mut position = 0;
     while position < rows.len()
         invariant position <= rows@.len(),
-            forall|before: int| 0 <= before < position ==> (#[trigger] rows@[before]).1 >= revenue,
+            forall|before: int| 0 <= before < position ==> (#[trigger] rows@[before]).1@ >= revenue@,
         decreases rows.len() - position,
     {
-        if rows[position].1 < revenue { return position; }
+        if rows[position].1.lt(revenue) { return position; }
         position += 1;
     }
     position
 }
 
-pub fn finish(groups: &Vec<OutputGroup>) -> (out: Vec<(Vec<u8>, i128)>)
+pub fn finish(groups: &Vec<OutputGroup>) -> (out: Vec<(Vec<u8>, Wide)>)
     requires groups_wf(groups@),
     ensures forall|position: int| 0 <= position < out@.len() ==>
-        (#[trigger] out@[position]).1 == group_total(groups@, out@[position].0@).1 && group_total(groups@, out@[position].0@).0 > 0,
+        (#[trigger] out@[position]).1@ == group_total(groups@, out@[position].0@).1 && group_total(groups@, out@[position].0@).0 > 0,
         forall|first: int, second: int| 0 <= first < second < out@.len() ==>
-            (#[trigger] out@[first]).0@ != (#[trigger] out@[second]).0@ && out@[first].1 >= out@[second].1,
+            (#[trigger] out@[first]).0@ != (#[trigger] out@[second]).0@ && out@[first].1@ >= out@[second].1@,
         forall|name: Seq<u8>| (#[trigger] group_total(groups@, name)).0 > 0 ==>
             exists|position: int| 0 <= position < out@.len() && (#[trigger] out@[position]).0@ == name,
 {
-    let mut out: Vec<(Vec<u8>, i128)> = Vec::new();
+    let mut out: Vec<(Vec<u8>, Wide)> = Vec::new();
     let mut index = 0;
     while index < groups.len()
         invariant index <= groups.len(), out@.len() == index, groups_wf(groups@),
             forall|position: int| 0 <= position < out@.len() ==>
-                (#[trigger] out@[position]).1 == group_total(groups@, out@[position].0@).1 && group_total(groups@, out@[position].0@).0 > 0,
+                (#[trigger] out@[position]).1@ == group_total(groups@, out@[position].0@).1 && group_total(groups@, out@[position].0@).0 > 0,
             forall|first: int, second: int| 0 <= first < second < out@.len() ==>
-                (#[trigger] out@[first]).0@ != (#[trigger] out@[second]).0@ && out@[first].1 >= out@[second].1,
+                (#[trigger] out@[first]).0@ != (#[trigger] out@[second]).0@ && out@[first].1@ >= out@[second].1@,
             forall|name: Seq<u8>| #[trigger] output_name_count(out@, name) ==
                 sum(groups@.take(index as int), |row: OutputGroup| source_name_weight(row, name)),
         decreases groups.len() - index,
@@ -391,20 +391,20 @@ pub fn finish(groups: &Vec<OutputGroup>) -> (out: Vec<(Vec<u8>, i128)>)
                 lemma_sum_zero(groups@.take(index as int), weight);
                 assert(output_name_count(previous, group.name@) == 0);
                 if previous[position].0@ == group.name@ {
-                    lemma_sum_pos(previous, |row: (Vec<u8>, i128)| output_name_weight(row, group.name@), position);
+                    lemma_sum_pos(previous, |row: (Vec<u8>, Wide)| output_name_weight(row, group.name@), position);
                 }
             }
         }
-        let position = insertion_position(&out, group.revenue);
-        let row = (bytes_copy(&group.name), group.revenue);
+        let position = insertion_position(&out, &group.revenue);
+        let row = (bytes_copy(&group.name), group.revenue.dup());
         proof {
-            assert forall|after: int| position <= after < previous.len() implies row.1 >= (#[trigger] previous[after]).1 by {
-                if position < previous.len() { assert(previous[position as int].1 < row.1); }
+            assert forall|after: int| position <= after < previous.len() implies row.1@ >= (#[trigger] previous[after]).1@ by {
+                if position < previous.len() { assert(previous[position as int].1@ < row.1@); }
             }
-            verus_prooflib::lemma_sorted_insert_at(previous, position as int, row, |left: (Vec<u8>, i128), right: (Vec<u8>, i128)| left.1 >= right.1);
+            verus_prooflib::lemma_sorted_insert_at(previous, position as int, row, |left: (Vec<u8>, Wide), right: (Vec<u8>, Wide)| left.1@ >= right.1@);
             assert forall|name: Seq<u8>| #[trigger] output_name_count(previous.insert(position as int, row), name) ==
                 sum(groups@.take(index as int + 1), |group: OutputGroup| source_name_weight(group, name)) by {
-                verus_prooflib::lemma_sum_insert(previous, position as int, row, |entry: (Vec<u8>, i128)| output_name_weight(entry, name));
+                verus_prooflib::lemma_sum_insert(previous, position as int, row, |entry: (Vec<u8>, Wide)| output_name_weight(entry, name));
                 lemma_sum_take(groups@, index as int, |group: OutputGroup| source_name_weight(group, name));
                 assert(output_name_count(previous, name) == sum(groups@.take(index as int), |group: OutputGroup| source_name_weight(group, name)));
                 assert(output_name_weight(row, name) == source_name_weight(groups@[index as int], name));
@@ -429,7 +429,7 @@ pub fn finish(groups: &Vec<OutputGroup>) -> (out: Vec<(Vec<u8>, i128)>)
             let source = lemma_sum_nonzero_witness(groups@, |row: OutputGroup| group_count_weight(row, name));
             lemma_sum_pos(groups@, |row: OutputGroup| source_name_weight(row, name), source);
             assert(output_name_count(out@, name) > 0);
-            let position = lemma_sum_nonzero_witness(out@, |row: (Vec<u8>, i128)| output_name_weight(row, name));
+            let position = lemma_sum_nonzero_witness(out@, |row: (Vec<u8>, Wide)| output_name_weight(row, name));
             assert(out@[position].0@ == name);
         }
     }
@@ -438,27 +438,26 @@ pub fn finish(groups: &Vec<OutputGroup>) -> (out: Vec<(Vec<u8>, i128)>)
 
 pub fn run(profiles: &Table, nations: &Vec<Binding>, regions: &Vec<Binding>,
     nation_regions: &HashMap<i64, Vec<usize>>, region_names: &HashMap<u64, Vec<usize>>,
-    name: &[u8], start: i32, end: i32) -> (out: Option<Vec<(Vec<u8>, i128)>>)
+    name: &[u8], start: i32, end: i32) -> (rows: Vec<(Vec<u8>, Wide)>)
     requires profiles.wf(), profiles.daily(), regions_indexed(nations@, nation_regions@), names_indexed(regions@, region_names@),
-        forall|index: int| 0 <= index < nations@.len() ==> (#[trigger] nations@[index]).count > 0,
-        forall|index: int| 0 <= index < regions@.len() ==> (#[trigger] regions@[index]).count > 0,
-    ensures out matches Some(rows) ==>
-        (forall|index: int| 0 <= index < rows@.len() ==>
+        forall|index: int| 0 <= index < nations@.len() ==> (#[trigger] nations@[index]).count@ > 0,
+        forall|index: int| 0 <= index < regions@.len() ==> (#[trigger] regions@[index]).count@ > 0,
+    ensures (forall|index: int| 0 <= index < rows@.len() ==>
             catalog_value(*profiles, nations@, regions@, name@, start, end, (#[trigger] rows@[index]).0@).0 > 0
-            && rows@[index].1 == catalog_value(*profiles, nations@, regions@, name@, start, end, rows@[index].0@).1)
+            && rows@[index].1@ == catalog_value(*profiles, nations@, regions@, name@, start, end, rows@[index].0@).1)
         && (forall|first: int, second: int| 0 <= first < second < rows@.len() ==>
             (#[trigger] rows@[first]).0@ != (#[trigger] rows@[second]).0@
-            && rows@[first].1 >= rows@[second].1)
+            && rows@[first].1@ >= rows@[second].1@)
         && (forall|group: Seq<u8>| (#[trigger] catalog_value(*profiles, nations@, regions@, name@, start, end, group)).0 > 0 ==>
             exists|index: int| 0 <= index < rows@.len() && (#[trigger] rows@[index]).0@ == group),
 {
     let mut groups: Vec<OutputGroup> = Vec::new();
-    let mut windows: HashMap<i64, Cell> = HashMap::new();
+    let mut windows: HashMap<i64, Exact> = HashMap::new();
     let nation_len = nations.len();
     let region_len = regions.len();
     if start >= end {
         proof { lemma_catalog_empty(*profiles, nations@, regions@, name@, start, end); }
-        return Some(Vec::new());
+        return Vec::new();
     }
     let name_key = hash_name(name);
     let selected_regions = match region_names.get(&name_key) {
@@ -473,7 +472,7 @@ pub fn run(profiles: &Table, nations: &Vec<Binding>, regions: &Vec<Binding>,
                 }
                 lemma_catalog_empty(*profiles, nations@, regions@, name@, start, end);
             }
-            return Some(Vec::new());
+            return Vec::new();
         },
     };
     let mut region_index = 0;
@@ -483,9 +482,9 @@ pub fn run(profiles: &Table, nations: &Vec<Binding>, regions: &Vec<Binding>,
             regions_indexed(nations@, nation_regions@), names_indexed(regions@, region_names@),
             region_names@.contains_key(name_key), selected_regions@ == (region_names@[name_key])@,
             name_key == name_hash(name@),
-            forall|position: int| 0 <= position < nations@.len() ==> (#[trigger] nations@[position]).count > 0,
-            forall|position: int| 0 <= position < regions@.len() ==> (#[trigger] regions@[position]).count > 0,
-            forall|key: i64| windows@.contains_key(key) ==> ((#[trigger] windows@[key]).count as int, windows@[key].revenue as int) == window_value(*profiles, key, start, end),
+            forall|position: int| 0 <= position < nations@.len() ==> (#[trigger] nations@[position]).count@ > 0,
+            forall|position: int| 0 <= position < regions@.len() ==> (#[trigger] regions@[position]).count@ > 0,
+            forall|key: i64| windows@.contains_key(key) ==> ((#[trigger] windows@[key]@).count, windows@[key]@.revenue) == window_value(*profiles, key, start, end),
             forall|group: Seq<u8>| #[trigger] group_total(groups@, group) ==
                 (sum(selected_regions@.take(region_index as int), |position: usize| region_value(*profiles, nations@, regions@[position as int], name@, start, end, group).0),
                  sum(selected_regions@.take(region_index as int), |position: usize| region_value(*profiles, nations@, regions@[position as int], name@, start, end, group).1)),
@@ -528,14 +527,14 @@ pub fn run(profiles: &Table, nations: &Vec<Binding>, regions: &Vec<Binding>,
                     nations@.len() == nation_len, regions@.len() == region_len,
                     region_index < selected_regions.len(), selected_regions@[region_index as int] < regions@.len(),
                     region == regions@[selected_regions@[region_index as int] as int],
-                    region.count > 0, region.name@ == name@,
+                    region.count@ > 0, region.name@ == name@,
                     regions_indexed(nations@, nation_regions@), names_indexed(regions@, region_names@),
                     region_names@.contains_key(name_key), selected_regions@ == (region_names@[name_key])@,
                     nation_regions@.contains_key(region.key), selected_nations@ == (nation_regions@[region.key])@,
                     name_key == name_hash(name@),
-                    forall|position: int| 0 <= position < nations@.len() ==> (#[trigger] nations@[position]).count > 0,
-                    forall|position: int| 0 <= position < regions@.len() ==> (#[trigger] regions@[position]).count > 0,
-                    forall|key: i64| windows@.contains_key(key) ==> ((#[trigger] windows@[key]).count as int, windows@[key].revenue as int) == window_value(*profiles, key, start, end),
+                    forall|position: int| 0 <= position < nations@.len() ==> (#[trigger] nations@[position]).count@ > 0,
+                    forall|position: int| 0 <= position < regions@.len() ==> (#[trigger] regions@[position]).count@ > 0,
+                    forall|key: i64| windows@.contains_key(key) ==> ((#[trigger] windows@[key]@).count, windows@[key]@.revenue) == window_value(*profiles, key, start, end),
                     forall|group: Seq<u8>| #[trigger] group_total(before_region, group) ==
                         (sum(selected_regions@.take(region_index as int), |position: usize| region_value(*profiles, nations@, regions@[position as int], name@, start, end, group).0),
                          sum(selected_regions@.take(region_index as int), |position: usize| region_value(*profiles, nations@, regions@[position as int], name@, start, end, group).1)),
@@ -552,24 +551,24 @@ pub fn run(profiles: &Table, nations: &Vec<Binding>, regions: &Vec<Binding>,
                 let ghost before_nation = groups@;
                 if nation.region == region.key {
                     let cell = match windows.get(&nation.key) {
-                        Some(cell) => *cell,
+                        Some(cell) => cell.dup(),
                         None => {
-                            let cell = match window(profiles, nation.key, start, end) { Some(cell) => cell, None => return None };
-                            windows.insert(nation.key, cell);
+                            let cell = window(profiles, nation.key, start, end);
+                            windows.insert(nation.key, cell.dup());
                             cell
                         },
                     };
                     proof { lemma_window_shape(*profiles, nation.key, start, end); }
-                    if cell.count > 0 {
-                        let weight = match nation.count.checked_mul(region.count) { Some(value) => value, None => return None };
-                        let count = match cell.count.checked_mul(weight) { Some(value) => value, None => return None };
-                        let revenue = match cell.revenue.checked_mul(weight) { Some(value) => value, None => return None };
+                    if cell.count.is_pos() {
+                        let weight = nation.count.mul(&region.count);
+                        let count = cell.count.mul(&weight);
+                        let revenue = cell.revenue.mul(&weight);
                         proof {
-                            verus_prooflib::lemma_positive_product(nation.count as int, region.count as int);
-                            verus_prooflib::lemma_positive_product(cell.count as int, weight as int);
-                            assert(count > 0);
+                            verus_prooflib::lemma_positive_product(nation.count@, region.count@);
+                            verus_prooflib::lemma_positive_product(cell@.count, weight@);
+                            assert(count@ > 0);
                         }
-                        if !add_group(&mut groups, &nation.name, count, revenue) { return None; }
+                        add_group(&mut groups, &nation.name, &count, &revenue);
                     }
                 }
                 proof {
@@ -663,8 +662,7 @@ pub fn run(profiles: &Table, nations: &Vec<Binding>, regions: &Vec<Binding>,
         }
         assert forall|group: Seq<u8>| #[trigger] catalog_value(*profiles, nations@, regions@, name@, start, end, group) == group_total(groups@, group) by {}
     }
-    let out = finish(&groups);
-    Some(out)
+    finish(&groups)
 }
 
 }

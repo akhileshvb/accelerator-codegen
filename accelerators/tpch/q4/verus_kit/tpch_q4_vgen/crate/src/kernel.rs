@@ -6,7 +6,9 @@ use crate::emission::sorted_output;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::rollup::*;
-use crate::maintenance::{changes, support};
+use crate::maintenance::*;
+use crate::emission::lemma_bucket_entry;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -29,9 +31,12 @@ impl State {
     }
 }
 
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub fn build(qualifying_orders: Vec<DatePriorityInput>, Ghost(db): Ghost<Db>) -> (out: Option<State>)
     requires scan_qualifying_orders_ok(db, qualifying_orders@),
     ensures out matches Some(state) ==> state.db() == db,
+        envelope(db) ==> out is Some,
 {
     let mut patch = empty_patch();
     let mut index = 0;
@@ -43,7 +48,7 @@ pub fn build(qualifying_orders: Vec<DatePriorityInput>, Ghost(db): Ghost<Db>) ->
         decreases qualifying_orders.len() - index,
     {
         let row = &qualifying_orders[index];
-        if !add_order(&mut patch, row.o_orderdate, &row.o_orderpriority, 1) { return None; }
+        add_order(&mut patch, row.o_orderdate, &row.o_orderpriority, &Wide::from_i128(1));
         proof {
             assert forall|key: Key, priority: Seq<u8>| #[trigger] patch_count(patch, key, priority)
                 == sum(qualifying_orders@.take(index as int + 1), |row: DatePriorityInput| build_weight(row, key, priority)) by {
@@ -54,7 +59,21 @@ pub fn build(qualifying_orders: Vec<DatePriorityInput>, Ghost(db): Ghost<Db>) ->
         frontier = Ghost(index as int);
     }
     let layers = Vec::new();
-    let layer = match finish_patch(patch, &layers) { Some(value) => value, None => return None };
+    let layer = match finish_patch(patch, &layers) {
+        Some(value) => value,
+        None => {
+            proof {
+                let (key, priority) = choose|key: Key, priority: Seq<u8>|
+                    !count_fits(#[trigger] effective(layers@, key, priority) + patch_count(patch, key, priority));
+                assert(patch_count(patch, key, priority)
+                    == sum(qualifying_orders@.take(qualifying_orders@.len() as int), |row: DatePriorityInput| build_weight(row, key, priority)));
+                assert(qualifying_orders@.take(qualifying_orders@.len() as int) =~= qualifying_orders@);
+                lemma_build_meaning(db, qualifying_orders@, key, priority);
+                if envelope(db) { lemma_envelope_counts_fit(db, key, priority); }
+            }
+            return None;
+        },
+    };
     proof {
         assert forall|key: Key, priority: Seq<u8>| #[trigger] layer_count(layer, key, priority)
             == if key_height(key) <= 32 { db_count(db, key, priority) } else { 0 } by {
@@ -76,6 +95,7 @@ pub fn build(qualifying_orders: Vec<DatePriorityInput>, Ghost(db): Ghost<Db>) ->
 
 pub fn execute(state: &State, p1: i32, p2: i32) -> (out: Option<Vec<(Vec<u8>, i64)>>)
     ensures out matches Some(rows) ==> query_result(state.db(), params(p1 as int, p2 as int), out_view(rows@)),
+        envelope(state.db()) && answer_fits(state.db(), params(p1 as int, p2 as int)) ==> out is Some,
 {
     proof { use_type_invariant(state); }
     if p1 >= p2 {
@@ -120,7 +140,7 @@ pub fn execute(state: &State, p1: i32, p2: i32) -> (out: Option<Vec<(Vec<u8>, i6
         let previous: Ghost<Bucket> = Ghost(answer);
         match lookup(&state.layers, key) {
             Some(bucket) => {
-                if !add_all(&mut answer, &*bucket) { return None; }
+                add_all(&mut answer, &*bucket);
             },
             None => {},
         }
@@ -147,21 +167,40 @@ pub fn execute(state: &State, p1: i32, p2: i32) -> (out: Option<Vec<(Vec<u8>, i6
     proof {
         if let Some(out) = &result {
             lemma_output_meaning(state.db(), params(p1 as int, p2 as int), bucket@@, out@);
+        } else {
+            let index = choose|index: int| 0 <= index < bucket@@.len() && !output_fits(bucket@@[index].1@);
+            let priority = bucket@@[index].0@;
+            lemma_bucket_entry(bucket@@, index);
+            lemma_query_count(state.db(), params(p1 as int, p2 as int), priority);
+            lemma_window_range(state.db(), p1 as int + 2147483648, p2 as int + 2147483648, priority);
+            lemma_overflow_not_answer_fits(state.db(), params(p1 as int, p2 as int), priority);
         }
     }
     result
 }
 
+pub open spec fn rescan_orders_for_line_changes_wanted(s: State, lineitem_delta: Seq<LineDelta>, orders_delta: Seq<OrderDelta>) -> Seq<i64> {
+    line_support_keys(lineitem_delta)
+}
+
+pub open spec fn rescan_qualifying_lines_for_keys_wanted(s: State, lineitem_delta: Seq<LineDelta>, orders_delta: Seq<OrderDelta>) -> Seq<i64> {
+    order_support_keys(lineitem_delta, orders_delta)
+}
+
 pub fn rescan_orders_for_line_changes_keys(
     state: &State, lineitem_delta: &[LineDelta], orders_delta: &Vec<OrderDelta>,
-) -> Vec<i64> {
-    support(lineitem_delta, orders_delta, false)
+) -> (out: Vec<i64>)
+    ensures out@ == rescan_orders_for_line_changes_wanted(*state, lineitem_delta@, orders_delta@),
+{
+    line_support(lineitem_delta)
 }
 
 pub fn rescan_qualifying_lines_for_keys_keys(
     state: &State, lineitem_delta: &[LineDelta], orders_delta: &Vec<OrderDelta>,
-) -> Vec<i64> {
-    support(lineitem_delta, orders_delta, true)
+) -> (out: Vec<i64>)
+    ensures out@ == rescan_qualifying_lines_for_keys_wanted(*state, lineitem_delta@, orders_delta@),
+{
+    order_support(lineitem_delta, orders_delta)
 }
 
 pub fn apply(
@@ -172,18 +211,34 @@ pub fn apply(
 ) -> (out: Result<State, u32>)
     requires
         capture_ok(state.db(), db2, line_delta_seq_view(lineitem_delta@), order_delta_seq_view(orders_delta@)),
+        orders_for_line_changes_keys@ == rescan_orders_for_line_changes_wanted(*state, lineitem_delta@, orders_delta@),
         rescan_orders_for_line_changes_ok(db2, orders_for_line_changes_keys@, orders_for_line_changes_rows@),
+        qualifying_lines_for_keys_keys@ == rescan_qualifying_lines_for_keys_wanted(*state, lineitem_delta@, orders_delta@),
         rescan_qualifying_lines_for_keys_ok(db2, qualifying_lines_for_keys_keys@, qualifying_lines_for_keys_rows@),
     ensures out matches Ok(next) ==> next.db() == db2,
+        envelope(db2) ==> out is Ok,
 {
-    proof { use_type_invariant(state); }
-    let patch = match changes(lineitem_delta, orders_delta,
+    proof {
+        use_type_invariant(state);
+        lemma_support_coverage(lineitem_delta@, orders_delta@);
+    }
+    let patch = changes(lineitem_delta, orders_delta,
         orders_for_line_changes_keys, orders_for_line_changes_rows,
-        qualifying_lines_for_keys_keys, qualifying_lines_for_keys_rows) {
-        Some(patch) => patch,
-        None => return Err(1),
+        qualifying_lines_for_keys_keys, qualifying_lines_for_keys_rows);
+    let layer = match finish_patch(patch, &state.layers) {
+        Some(layer) => layer,
+        None => {
+            proof {
+                let (key, priority) = choose|key: Key, priority: Seq<u8>|
+                    !count_fits(#[trigger] effective(state.layers@, key, priority) + patch_count(patch, key, priority));
+                lemma_apply_meaning(state.db(), db2, lineitem_delta@, orders_delta@,
+                    orders_for_line_changes_keys@, orders_for_line_changes_rows@,
+                    qualifying_lines_for_keys_keys@, qualifying_lines_for_keys_rows@, key, priority);
+                if envelope(db2) { lemma_envelope_counts_fit(db2, key, priority); }
+            }
+            return Err(2);
+        },
     };
-    let layer = match finish_patch(patch, &state.layers) { Some(layer) => layer, None => return Err(2) };
     let layers = publish(&state.layers, layer);
     proof {
         assert forall|key: Key, priority: Seq<u8>| #[trigger] effective(layers@, key, priority)

@@ -4,13 +4,15 @@ use std::sync::Arc;
 use verus_common::bytes::*;
 use verus_common::sums::*;
 use crate::gen_spec::*;
+use verus_prooflib::wide::Wide;
+use crate::emission::lemma_bucket_entry;
 
 verus! {
 
 broadcast use vstd::seq_lib::group_seq_properties;
 
 pub type Key = u64;
-pub type Bucket = Vec<(Vec<u8>, i128)>;
+pub type Bucket = Vec<(Vec<u8>, Wide)>;
 
 pub open spec fn key_height(key: Key) -> u32 { (key / 4294967296) as u32 }
 pub open spec fn key_bucket(key: Key) -> u64 { (key % 4294967296) as u64 }
@@ -36,8 +38,8 @@ pub struct Layer {
     pub keys: Vec<Key>,
 }
 
-pub open spec fn bucket_count(bucket: Seq<(Vec<u8>, i128)>, priority: Seq<u8>) -> int {
-    sum(bucket, |cell: (Vec<u8>, i128)| if cell.0@ == priority { cell.1 as int } else { 0 })
+pub open spec fn bucket_count(bucket: Seq<(Vec<u8>, Wide)>, priority: Seq<u8>) -> int {
+    sum(bucket, |cell: (Vec<u8>, Wide)| if cell.0@ == priority { cell.1@ } else { 0 })
 }
 
 pub open spec fn patch_count(patch: Patch, key: Key, priority: Seq<u8>) -> int {
@@ -56,9 +58,9 @@ pub open spec fn effective(layers: Seq<Arc<Layer>>, key: Key, priority: Seq<u8>)
     else { effective(layers.drop_last(), key, priority) }
 }
 
-pub open spec fn bucket_valid(bucket: Seq<(Vec<u8>, i128)>) -> bool {
+pub open spec fn bucket_valid(bucket: Seq<(Vec<u8>, Wide)>) -> bool {
     &&& forall|index: int| #![trigger bucket[index].1]
-        0 <= index < bucket.len() ==> 0 < bucket[index].1 <= i64::MAX
+        0 <= index < bucket.len() ==> 0 < bucket[index].1@ <= crate::gen_obligations::max_rows()
     &&& forall|left: int, right: int| #![trigger bucket[left], bucket[right]]
         0 <= left < right < bucket.len() ==> bucket[left].0@ != bucket[right].0@
 }
@@ -75,7 +77,7 @@ pub open spec fn patch_valid(patch: Patch) -> bool {
         key_height(key) <= 32 && bucket_unique(patch.cells@[key]@)
 }
 
-pub open spec fn bucket_unique(bucket: Seq<(Vec<u8>, i128)>) -> bool {
+pub open spec fn bucket_unique(bucket: Seq<(Vec<u8>, Wide)>) -> bool {
     forall|left: int, right: int| #![trigger bucket[left], bucket[right]]
         0 <= left < right < bucket.len() ==> bucket[left].0@ != bucket[right].0@
 }
@@ -147,28 +149,28 @@ pub fn copy_bucket(bucket: &Bucket) -> (out: Bucket)
                 out@[position].0@ == bucket@[position].0@ && out@[position].1 == bucket@[position].1,
         decreases bucket.len() - index,
     {
-        out.push((copy_bytes(&bucket[index].0), bucket[index].1));
+        out.push((copy_bytes(&bucket[index].0), bucket[index].1.dup()));
         index += 1;
     }
     proof {
         assert forall|priority: Seq<u8>| #[trigger] bucket_count(out@, priority) == bucket_count(bucket@, priority) by {
             verus_prooflib::lemma_sum_aligned(out@, bucket@,
-                |cell: (Vec<u8>, i128)| if cell.0@ == priority { cell.1 as int } else { 0 },
-                |cell: (Vec<u8>, i128)| if cell.0@ == priority { cell.1 as int } else { 0 });
+                |cell: (Vec<u8>, Wide)| if cell.0@ == priority { cell.1@ } else { 0 },
+                |cell: (Vec<u8>, Wide)| if cell.0@ == priority { cell.1@ } else { 0 });
         }
     }
     out
 }
 
-pub fn add_bucket(bucket: &mut Bucket, priority: &Vec<u8>, amount: i128) -> (ok: bool)
+pub fn add_bucket(bucket: &mut Bucket, priority: &Vec<u8>, amount: &Wide)
     requires bucket_unique(old(bucket)@),
     ensures
         bucket_unique(final(bucket)@),
-        ok ==> forall|group: Seq<u8>| #[trigger] bucket_count(final(bucket)@, group)
-            == bucket_count(old(bucket)@, group) + if group == priority@ { amount as int } else { 0 },
+        forall|group: Seq<u8>| #[trigger] bucket_count(final(bucket)@, group)
+            == bucket_count(old(bucket)@, group) + if group == priority@ { amount@ } else { 0 },
 {
     let original: Ghost<Bucket> = Ghost(*bucket);
-    if amount == 0 { return true; }
+    if amount.is_zero() { return; }
     let mut index = 0;
     while index < bucket.len()
         invariant index <= bucket.len(), bucket@ == original@@, original@@ == old(bucket)@, bucket_unique(bucket@),
@@ -176,13 +178,13 @@ pub fn add_bucket(bucket: &mut Bucket, priority: &Vec<u8>, amount: i128) -> (ok:
         decreases bucket.len() - index,
     {
         if bytes_eq_exec(&bucket[index].0, priority) {
-            let count = match bucket[index].1.checked_add(amount) { Some(value) => value, None => return false };
+            let count = bucket[index].1.add(amount);
             bucket[index].1 = count;
             proof {
                 assert forall|group: Seq<u8>| #[trigger] bucket_count(bucket@, group)
-                    == bucket_count(original@@, group) + if group == priority@ { amount as int } else { 0 } by {
+                    == bucket_count(original@@, group) + if group == priority@ { amount@ } else { 0 } by {
                     lemma_sum_update(original@@, index as int, (original@@[index as int].0, count),
-                        |cell: (Vec<u8>, i128)| if cell.0@ == group { cell.1 as int } else { 0 });
+                        |cell: (Vec<u8>, Wide)| if cell.0@ == group { cell.1@ } else { 0 });
                 }
                 assert(bucket_unique(bucket@)) by {
                     assert forall|left: int, right: int| #![trigger bucket@[left], bucket@[right]]
@@ -192,16 +194,16 @@ pub fn add_bucket(bucket: &mut Bucket, priority: &Vec<u8>, amount: i128) -> (ok:
                     }
                 }
             }
-            return true;
+            return;
         }
         index += 1;
     }
     let bytes = copy_bytes(priority);
-    bucket.push((bytes, amount));
+    bucket.push((bytes, amount.dup()));
     proof {
         assert forall|group: Seq<u8>| #[trigger] bucket_count(bucket@, group)
-            == bucket_count(original@@, group) + if group == priority@ { amount as int } else { 0 } by {
-            lemma_sum_push(original@@, (bytes, amount), |cell: (Vec<u8>, i128)| if cell.0@ == group { cell.1 as int } else { 0 });
+            == bucket_count(original@@, group) + if group == priority@ { amount@ } else { 0 } by {
+            lemma_sum_push(original@@, bucket@.last(), |cell: (Vec<u8>, Wide)| if cell.0@ == group { cell.1@ } else { 0 });
         }
         assert(bucket_unique(bucket@)) by {
             assert forall|left: int, right: int| #![trigger bucket@[left], bucket@[right]]
@@ -211,7 +213,6 @@ pub fn add_bucket(bucket: &mut Bucket, priority: &Vec<u8>, amount: i128) -> (ok:
             }
         }
     }
-    true
 }
 
 pub fn empty_patch() -> (out: Patch)
@@ -221,20 +222,20 @@ pub fn empty_patch() -> (out: Patch)
     Patch { cells: HashMap::new(), keys: Vec::new() }
 }
 
-pub fn add_cell(patch: &mut Patch, key: Key, priority: &Vec<u8>, amount: i128) -> (ok: bool)
+pub fn add_cell(patch: &mut Patch, key: Key, priority: &Vec<u8>, amount: &Wide)
     requires patch_valid(*old(patch)), key_height(key) <= 32,
     ensures
         patch_valid(*final(patch)),
-        ok ==> forall|other: Key, group: Seq<u8>| #[trigger] patch_count(*final(patch), other, group)
-            == patch_count(*old(patch), other, group) + if other == key && group == priority@ { amount as int } else { 0 },
+        forall|other: Key, group: Seq<u8>| #[trigger] patch_count(*final(patch), other, group)
+            == patch_count(*old(patch), other, group) + if other == key && group == priority@ { amount@ } else { 0 },
 {
     let original: Ghost<Patch> = Ghost(*patch);
-    if amount == 0 { return true; }
+    if amount.is_zero() { return; }
     let mut bucket = match patch.cells.remove(&key) {
         Some(bucket) => bucket,
         None => { patch.keys.push(key); Vec::new() },
     };
-    let ok = add_bucket(&mut bucket, priority, amount);
+    add_bucket(&mut bucket, priority, amount);
     patch.cells.insert(key, bucket);
     proof {
         assert(patch_valid(*patch)) by {
@@ -242,23 +243,20 @@ pub fn add_cell(patch: &mut Patch, key: Key, priority: &Vec<u8>, amount: i128) -
                 if other != key { assert(patch.cells@.contains_key(other) == original@.cells@.contains_key(other)); }
             }
         }
-        if ok {
-            assert forall|other: Key, group: Seq<u8>| #[trigger] patch_count(*patch, other, group)
-                == patch_count(original@, other, group) + if other == key && group == priority@ { amount as int } else { 0 } by {
-                if other != key { assert(patch.cells@[other] == original@.cells@[other]); }
-            }
+        assert forall|other: Key, group: Seq<u8>| #[trigger] patch_count(*patch, other, group)
+            == patch_count(original@, other, group) + if other == key && group == priority@ { amount@ } else { 0 } by {
+            if other != key { assert(patch.cells@[other] == original@.cells@[other]); }
         }
     }
-    ok
 }
 
-pub fn add_order(patch: &mut Patch, date: i32, priority: &Vec<u8>, amount: i128) -> (ok: bool)
+pub fn add_order(patch: &mut Patch, date: i32, priority: &Vec<u8>, amount: &Wide)
     requires patch_valid(*old(patch)),
     ensures
         patch_valid(*final(patch)),
-        ok ==> forall|key: Key, group: Seq<u8>| #[trigger] patch_count(*final(patch), key, group)
+        forall|key: Key, group: Seq<u8>| #[trigger] patch_count(*final(patch), key, group)
             == patch_count(*old(patch), key, group)
-                + if key_height(key) <= 32 && in_block(date as int, key) && group == priority@ { amount as int } else { 0 },
+                + if key_height(key) <= 32 && in_block(date as int, key) && group == priority@ { amount@ } else { 0 },
 {
     let initial: Ghost<Patch> = Ghost(*patch);
     let mut height: u32 = 0;
@@ -268,17 +266,17 @@ pub fn add_order(patch: &mut Patch, date: i32, priority: &Vec<u8>, amount: i128)
             bucket * block_width(height) <= date as int + 2147483648 < (bucket + 1) * block_width(height),
             forall|key: Key, group: Seq<u8>| #[trigger] patch_count(*patch, key, group)
                 == patch_count(initial@, key, group)
-                    + if key_height(key) < height && in_block(date as int, key) && group == priority@ { amount as int } else { 0 },
+                    + if key_height(key) < height && in_block(date as int, key) && group == priority@ { amount@ } else { 0 },
         decreases 33 - height,
     {
         let key = make_key(height, bucket);
         let previous: Ghost<Patch> = Ghost(*patch);
-        if !add_cell(patch, key, priority, amount) { return false; }
+        add_cell(patch, key, priority, amount);
         proof {
             lemma_width(height);
             assert forall|other: Key, group: Seq<u8>| #[trigger] patch_count(*patch, other, group)
                 == patch_count(initial@, other, group)
-                    + if key_height(other) < height + 1 && in_block(date as int, other) && group == priority@ { amount as int } else { 0 } by {
+                    + if key_height(other) < height + 1 && in_block(date as int, other) && group == priority@ { amount@ } else { 0 } by {
                 if key_height(other) == height && in_block(date as int, other) {
                     verus_prooflib::lemma_aligned_interval_unique(date as int + 2147483648, block_width(height), key_bucket(other) as int, bucket as int);
                     lemma_key_same(other, key);
@@ -290,7 +288,6 @@ pub fn add_order(patch: &mut Patch, date: i32, priority: &Vec<u8>, amount: i128)
         bucket = bucket / 2;
         height += 1;
     }
-    true
 }
 
 pub fn lookup(layers: &Vec<Arc<Layer>>, key: Key) -> (out: Option<Arc<Bucket>>)
@@ -322,10 +319,10 @@ pub fn lookup(layers: &Vec<Arc<Layer>>, key: Key) -> (out: Option<Arc<Bucket>>)
     None
 }
 
-pub fn add_all(target: &mut Bucket, source: &Bucket) -> (ok: bool)
+pub fn add_all(target: &mut Bucket, source: &Bucket)
     requires bucket_unique(old(target)@),
     ensures bucket_unique(final(target)@),
-        ok ==> forall|priority: Seq<u8>| #[trigger] bucket_count(final(target)@, priority)
+        forall|priority: Seq<u8>| #[trigger] bucket_count(final(target)@, priority)
             == bucket_count(old(target)@, priority) + bucket_count(source@, priority),
 {
     let original: Ghost<Bucket> = Ghost(*target);
@@ -336,22 +333,30 @@ pub fn add_all(target: &mut Bucket, source: &Bucket) -> (ok: bool)
                 == bucket_count(original@@, priority) + bucket_count(source@.take(index as int), priority),
         decreases source.len() - index,
     {
-        if !add_bucket(target, &source[index].0, source[index].1) { return false; }
+        add_bucket(target, &source[index].0, &source[index].1);
         proof {
             assert forall|priority: Seq<u8>| #[trigger] bucket_count(target@, priority)
                 == bucket_count(original@@, priority) + bucket_count(source@.take(index as int + 1), priority) by {
-                lemma_sum_take(source@, index as int, |cell: (Vec<u8>, i128)| if cell.0@ == priority { cell.1 as int } else { 0 });
+                lemma_sum_take(source@, index as int, |cell: (Vec<u8>, Wide)| if cell.0@ == priority { cell.1@ } else { 0 });
             }
         }
         index += 1;
     }
-    true
+}
+
+pub open spec fn count_fits(count: int) -> bool {
+    0 <= count <= crate::gen_obligations::max_rows()
+}
+
+pub open spec fn output_fits(count: int) -> bool {
+    0 <= count <= i64::MAX
 }
 
 pub fn clean_bucket(bucket: &Bucket) -> (out: Option<Bucket>)
     requires bucket_unique(bucket@),
     ensures out matches Some(clean) ==> bucket_valid(clean@)
         && forall|priority: Seq<u8>| #[trigger] bucket_count(clean@, priority) == bucket_count(bucket@, priority),
+        out is None ==> exists|index: int| #![trigger bucket@[index]] 0 <= index < bucket@.len() && !count_fits(bucket@[index].1@),
 {
     let mut clean: Bucket = Vec::new();
     let mut index = 0;
@@ -363,14 +368,23 @@ pub fn clean_bucket(bucket: &Bucket) -> (out: Option<Bucket>)
                     && clean@[position].0@ == bucket@[source].0@ && clean@[position].1 == bucket@[source].1,
         decreases bucket.len() - index,
     {
-        let count = bucket[index].1;
-        if count < 0 || count > i64::MAX as i128 { return None; }
+        let count = match bucket[index].1.to_i128() {
+            Some(value) => value,
+            None => {
+                proof { assert(!count_fits(bucket@[index as int].1@)); }
+                return None;
+            },
+        };
+        if count < 0 || count > 9223372036854775808i128 {
+            proof { assert(!count_fits(bucket@[index as int].1@)); }
+            return None;
+        }
         let previous: Ghost<Bucket> = Ghost(clean);
-        if count > 0 { clean.push((copy_bytes(&bucket[index].0), count)); }
+        if count > 0 { clean.push((copy_bytes(&bucket[index].0), bucket[index].1.dup())); }
         proof {
             assert forall|priority: Seq<u8>| #[trigger] bucket_count(clean@, priority) == bucket_count(bucket@.take(index as int + 1), priority) by {
-                lemma_sum_take(bucket@, index as int, |cell: (Vec<u8>, i128)| if cell.0@ == priority { cell.1 as int } else { 0 });
-                if count > 0 { lemma_sum_push(previous@@, clean@.last(), |cell: (Vec<u8>, i128)| if cell.0@ == priority { cell.1 as int } else { 0 }); }
+                lemma_sum_take(bucket@, index as int, |cell: (Vec<u8>, Wide)| if cell.0@ == priority { cell.1@ } else { 0 });
+                if count > 0 { lemma_sum_push(previous@@, clean@.last(), |cell: (Vec<u8>, Wide)| if cell.0@ == priority { cell.1@ } else { 0 }); }
                 assert(bucket_count(previous@@, priority) == bucket_count(bucket@.take(index as int), priority));
             }
             if count > 0 {
@@ -395,6 +409,8 @@ pub fn finish_patch(patch: Patch, layers: &Vec<Arc<Layer>>) -> (out: Option<Laye
     ensures out matches Some(layer) ==> layer_valid(layer),
         out matches Some(layer) ==> forall|key: Key, priority: Seq<u8>| #[trigger] replacement(layer.cells@, layers@, key, priority)
             == effective(layers@, key, priority) + patch_count(patch, key, priority),
+        out is None ==> exists|key: Key, priority: Seq<u8>|
+            !count_fits(#[trigger] effective(layers@, key, priority) + patch_count(patch, key, priority)),
 {
     let mut cells: HashMap<Key, Arc<Bucket>> = HashMap::new();
     let mut keys: Vec<Key> = Vec::new();
@@ -409,23 +425,47 @@ pub fn finish_patch(patch: Patch, layers: &Vec<Arc<Layer>>) -> (out: Option<Laye
         decreases patch.keys.len() - index,
     {
         let key = patch.keys[index];
-        let changes = match patch.cells.get(&key) { Some(value) => value, None => return None };
+        let changes = match patch.cells.get(&key) {
+            Some(value) => value,
+            None => {
+                proof { assert(patch.keys@.contains(key)); assert(false); }
+                return None;
+            },
+        };
         let mut changed = false;
         let mut change_index = 0;
         while change_index < changes.len()
             invariant change_index <= changes.len(),
-                !changed ==> forall|position: int| #![trigger changes@[position]] 0 <= position < change_index ==> changes@[position].1 == 0,
+                !changed ==> forall|position: int| #![trigger changes@[position]] 0 <= position < change_index ==> changes@[position].1@ == 0,
             decreases changes.len() - change_index,
         {
-            if changes[change_index].1 != 0 { changed = true; }
+            if !changes[change_index].1.is_zero() { changed = true; }
             change_index += 1;
         }
         let previous_cells: Ghost<Map<Key, Arc<Bucket>>> = Ghost(cells@);
         if changed {
-            let mut bucket = match lookup(layers, key) { Some(old) => copy_bucket(&*old), None => Vec::new() };
-            proof { assert(bucket_unique(bucket@)); }
-            if !add_all(&mut bucket, changes) { return None; }
-            let clean = match clean_bucket(&bucket) { Some(value) => value, None => return None };
+            let found = lookup(layers, key);
+            let mut bucket = match &found { Some(old) => copy_bucket(&**old), None => Vec::new() };
+            proof {
+                assert(bucket_unique(bucket@));
+                assert forall|priority: Seq<u8>| #[trigger] bucket_count(bucket@, priority) == effective(layers@, key, priority) by {
+                    if found is None { lemma_sum_empty(bucket@, |cell: (Vec<u8>, Wide)| if cell.0@ == priority { cell.1@ } else { 0 }); }
+                }
+            }
+            add_all(&mut bucket, changes);
+            let clean = match clean_bucket(&bucket) {
+                Some(value) => value,
+                None => {
+                    proof {
+                        let index = choose|index: int| 0 <= index < bucket@.len() && !count_fits(bucket@[index].1@);
+                        let priority = bucket@[index].0@;
+                        lemma_bucket_entry(bucket@, index);
+                        assert(bucket_count(changes@, priority) == patch_count(patch, key, priority));
+                        assert(!count_fits(effective(layers@, key, priority) + patch_count(patch, key, priority)));
+                    }
+                    return None;
+                },
+            };
             keys.push(key);
             cells.insert(key, Arc::new(clean));
             proof {
@@ -437,7 +477,7 @@ pub fn finish_patch(patch: Patch, layers: &Vec<Arc<Layer>>) -> (out: Option<Laye
         } else {
             proof {
                 assert forall|priority: Seq<u8>| #[trigger] patch_count(patch, key, priority) == 0 by {
-                    lemma_sum_zero(changes@, |cell: (Vec<u8>, i128)| if cell.0@ == priority { cell.1 as int } else { 0 });
+                    lemma_sum_zero(changes@, |cell: (Vec<u8>, Wide)| if cell.0@ == priority { cell.1@ } else { 0 });
                 }
             }
         }
@@ -538,7 +578,7 @@ pub fn trim_layer(layer: &Layer) -> (out: Layer)
                 } else {
                     proof {
                         assert forall|priority: Seq<u8>| #[trigger] layer_count(*layer, key, priority) == 0 by {
-                            lemma_sum_empty(bucket@, |cell: (Vec<u8>, i128)| if cell.0@ == priority { cell.1 as int } else { 0 });
+                            lemma_sum_empty(bucket@, |cell: (Vec<u8>, Wide)| if cell.0@ == priority { cell.1@ } else { 0 });
                         }
                     }
                 }

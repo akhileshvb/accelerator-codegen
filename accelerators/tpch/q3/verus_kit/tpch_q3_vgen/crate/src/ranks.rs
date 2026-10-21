@@ -12,7 +12,7 @@ verus! {
 
 pub fn append_groups(ranks: &mut Index<Paged<RankEnt>>, groups: &Vec<GroupCell>)
     requires ranks_wf(*old(ranks)),
-        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> groups@[position].bound >= 0 && id_fits(groups@[position].id),
+        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> groups@[position].bound >= 0,
     ensures ranks_wf(*final(ranks)),
         forall|outer: KeyView, rank: KeyView| #![trigger rank_at(*final(ranks), outer, rank)]
             rank_at(*final(ranks), outer, rank) == (rank_at(*old(ranks), outer, rank) || rank_present(groups@, outer, rank)),
@@ -21,7 +21,7 @@ pub fn append_groups(ranks: &mut Index<Paged<RankEnt>>, groups: &Vec<GroupCell>)
     let mut position = 0;
     while position < groups.len()
         invariant position <= groups.len(), ranks_wf(*ranks),
-            forall|source: int| #![trigger groups@[source]] 0 <= source < groups@.len() ==> groups@[source].bound >= 0 && id_fits(groups@[source].id),
+            forall|source: int| #![trigger groups@[source]] 0 <= source < groups@.len() ==> groups@[source].bound >= 0,
             forall|outer: KeyView, rank: KeyView| #![trigger rank_at(*ranks, outer, rank)]
                 rank_at(*ranks, outer, rank) == (rank_at(original, outer, rank) || rank_present(groups@.take(position as int), outer, rank)),
         decreases groups.len() - position,
@@ -241,7 +241,7 @@ pub fn cover(group: &GroupCell) -> (nodes: Vec<i64>)
 }
 
 pub fn change(ranks: &mut Index<Paged<RankEnt>>, group: &GroupCell, insert: bool)
-    requires group.bound >= 0, id_fits(group.id), ranks_wf(*old(ranks)),
+    requires group.bound >= 0, ranks_wf(*old(ranks)),
     ensures ranks_wf(*final(ranks)),
         forall|outer: KeyView, key: KeyView| #![trigger rank_at(*final(ranks), outer, key)]
         rank_at(*final(ranks), outer, key) ==
@@ -253,7 +253,7 @@ pub fn change(ranks: &mut Index<Paged<RankEnt>>, group: &GroupCell, insert: bool
     let ent = rank_ent(group.bound, group.id);
     let mut index = 0;
     while index < nodes.len()
-        invariant index <= nodes.len(), group.bound >= 0, id_fits(group.id),
+        invariant index <= nodes.len(), group.bound >= 0,
             ent.kv() == group_rank(*group),
             ranks_wf(*ranks),
             forall|outer: KeyView, key: KeyView| #![trigger rank_at(*ranks, outer, key)]

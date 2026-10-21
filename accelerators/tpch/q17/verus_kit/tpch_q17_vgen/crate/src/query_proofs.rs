@@ -9,13 +9,14 @@ use crate::gen_obligations::*;
 use crate::model::*;
 use crate::storage::*;
 use crate::aggregation::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
 pub proof fn lemma_group_match(groups: Seq<Group>, hash: i64, index: int, brand: Seq<u8>, container: Seq<u8>)
     requires groups_wf(groups, hash), 0 <= index < groups.len(), same(*groups[index].identity, brand, container),
-    ensures sum(groups, |group: Group| if same(*group.identity, brand, container) { group.moment.count as int } else { 0 }) == groups[index].moment.count as int,
-        sum(groups, |group: Group| if same(*group.identity, brand, container) { group.moment.price as int } else { 0 }) == groups[index].moment.price as int,
+    ensures sum(groups, |group: Group| if same(*group.identity, brand, container) { group.moment.count@ } else { 0 }) == groups[index].moment.count@,
+        sum(groups, |group: Group| if same(*group.identity, brand, container) { group.moment.price@ } else { 0 }) == groups[index].moment.price@,
 {
     reveal(groups_wf);
     assert forall|other: int| 0 <= other < groups.len() && other != index implies !same(*#[trigger] groups[other].identity, brand, container) by {
@@ -25,14 +26,14 @@ pub proof fn lemma_group_match(groups: Seq<Group>, hash: i64, index: int, brand:
             assert(!same(*groups[index].identity, groups[other].identity.brand@, groups[other].identity.container@));
         }
     }
-    lemma_sum_single_match(groups, |group: Group| if same(*group.identity, brand, container) { group.moment.count as int } else { 0int }, index);
-    lemma_sum_single_match(groups, |group: Group| if same(*group.identity, brand, container) { group.moment.price as int } else { 0int }, index);
+    lemma_sum_single_match(groups, |group: Group| if same(*group.identity, brand, container) { group.moment.count@ } else { 0int }, index);
+    lemma_sum_single_match(groups, |group: Group| if same(*group.identity, brand, container) { group.moment.price@ } else { 0int }, index);
 }
 
-pub fn read_group(groups: &Store<Vec<Group>>, brand: &[u8], container: &[u8]) -> (result: Moment)
+pub fn read_group(groups: &Store<Vec<Group>>, brand: &[u8], container: &[u8]) -> (result: Joined)
     requires group_store_wf(*groups),
-    ensures result.count as int == group_count_at(*groups, brand@, container@),
-        result.price as int == group_price_at(*groups, brand@, container@),
+    ensures result.count@ == group_count_at(*groups, brand@, container@),
+        result.price@ == group_price_at(*groups, brand@, container@),
 {
     let hash = fingerprint(brand, container);
     if let Some(bucket) = groups.get(hash) {
@@ -49,17 +50,17 @@ pub fn read_group(groups: &Store<Vec<Group>>, brand: &[u8], container: &[u8]) ->
                     lemma_group_match(bucket@, hash, index as int, brand@, container@);
                     reveal(group_count_at); reveal(group_price_at); reveal(group_total);
                     assert((|group: Group| if same(*group.identity, brand@, container@) { group_value(group, 1) } else { 0int })
-                        =~= (|group: Group| if same(*group.identity, brand@, container@) { group.moment.count as int } else { 0int }));
+                        =~= (|group: Group| if same(*group.identity, brand@, container@) { group.moment.count@ } else { 0int }));
                     assert((|group: Group| if same(*group.identity, brand@, container@) { group_value(group, 2) } else { 0int })
-                        =~= (|group: Group| if same(*group.identity, brand@, container@) { group.moment.price as int } else { 0int }));
+                        =~= (|group: Group| if same(*group.identity, brand@, container@) { group.moment.price@ } else { 0int }));
                 }
-                return bucket[index].moment;
+                return bucket[index].moment.dup();
             }
             index += 1;
         }
         proof {
-            lemma_sum_zero(bucket@, |group: Group| if same(*group.identity, brand@, container@) { group.moment.count as int } else { 0int });
-            lemma_sum_zero(bucket@, |group: Group| if same(*group.identity, brand@, container@) { group.moment.price as int } else { 0int });
+            lemma_sum_zero(bucket@, |group: Group| if same(*group.identity, brand@, container@) { group.moment.count@ } else { 0int });
+            lemma_sum_zero(bucket@, |group: Group| if same(*group.identity, brand@, container@) { group.moment.price@ } else { 0int });
             reveal(group_count_at); reveal(group_price_at); reveal(group_total);
             lemma_sum_zero(bucket@, |group: Group| if same(*group.identity, brand@, container@) { group_value(group, 1) } else { 0int });
             lemma_sum_zero(bucket@, |group: Group| if same(*group.identity, brand@, container@) { group_value(group, 2) } else { 0int });
@@ -67,7 +68,7 @@ pub fn read_group(groups: &Store<Vec<Group>>, brand: &[u8], container: &[u8]) ->
     } else {
         proof { reveal(group_count_at); reveal(group_price_at); reveal(group_total); }
     }
-    zero()
+    Joined { count: Wide::zero(), price: Wide::zero() }
 }
 
 #[verifier::opaque]
@@ -288,6 +289,17 @@ pub proof fn lemma_execute_result(db: Db, brand: Seq<u8>, container: Seq<u8>, an
     lemma_query_moments(db, parameter);
     assert(out_view(seq![answer]) =~= rows(db, parameter));
     lemma_query_result_iff(db, parameter, out_view(seq![answer]));
+}
+
+pub proof fn lemma_answer_overflow(db: Db, brand: Seq<u8>, container: Seq<u8>, count: int, price: int)
+    requires count == joined_count(db, brand, container), price == joined_price(db, brand, container),
+        count > 0, !(i128::MIN <= price * 10 <= i128::MAX),
+    ensures !answer_fits(db, params(brand, container)),
+{
+    let parameter = params(brand, container);
+    lemma_query_moments(db, parameter);
+    lemma_query_result_iff(db, parameter, rows(db, parameter));
+    assert(rows(db, parameter)[0] == row_of(db, parameter));
 }
 
 }

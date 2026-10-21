@@ -8,7 +8,10 @@ use crate::gen_obligations::*;
 use crate::table::*;
 use crate::dictionary::*;
 use crate::maintenance::*;
+use crate::scans::*;
+use crate::deltas::*;
 use crate::model;
+use crate::num::Num;
 use verus_common::sums::*;
 
 verus! {
@@ -16,17 +19,38 @@ verus! {
 pub struct State {
     db: Ghost<Db>,
     data: model::Data,
+    history: u64,
 }
 
 impl State {
     #[verifier::type_invariant]
     pub closed spec fn valid(self) -> bool {
         model::valid(self.data, self.db())
+            && ids_within(self.data.dictionary, self.history as int)
+            && self.history as int <= max_history()
     }
 
     pub closed spec fn db(self) -> Db {
         self.db@
     }
+}
+
+/// A column has an id per row of the build and per change since (so at most 2^63 + 2^62 of them).
+pub open spec fn ids_within(dictionary: Dictionary, history: int) -> bool {
+    &&& dictionary.types.length as int <= max_rows() + history
+    &&& dictionary.names.length as int <= max_rows() + history
+    &&& dictionary.regions.length as int <= max_rows() + history
+}
+
+/// The rows that one transaction changes, over all tables.
+pub open spec fn changed_rows(customer: Seq<CustomerDelta>, lineitem: Seq<LineDelta>, nation: Seq<NationDelta>,
+    orders: Seq<OrderDelta>, part: Seq<PartDelta>, region: Seq<RegionDelta>, supplier: Seq<SupplierDelta>) -> nat {
+    customer.len() + lineitem.len() + nation.len() + orders.len() + part.len() + region.len() + supplier.len()
+}
+
+/// The changed rows absorbed since the build.
+pub closed spec fn history(s: State) -> nat {
+    s.history as nat
 }
 
 pub fn build(
@@ -49,14 +73,62 @@ pub fn build(
         scan_regions_ok(db, regions@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        r matches Some(s) ==> history(s) == 0,
+        envelope(db) ==> r is Some,
 {
     match build_data(parts, suppliers, customers, window_orders, lines, nations, regions, Ghost(db)) {
-        Some(data) => Some(State { db: Ghost(db), data }),
+        Some(data) => Some(State { db: Ghost(db), data, history: 0 }),
         None => None,
     }
 }
 
-#[verifier::rlimit(20)]
+/// The totals and numerators of the routed pairs of a base.
+fn route_all_pairs(base: &Table, customer_routes: &Table, supplier_routes: &Table) -> (result: (Table, Table))
+    requires base.valid(), customer_routes.valid(), supplier_routes.valid(),
+    ensures result.0.valid(), result.1.valid(),
+        forall|key: Major, minor: Major, measure: bool| #[trigger] result.0.at(key, minor, measure)
+            == crate::routing::routed_effect(base.keys_view(), *base, *customer_routes, *supplier_routes, 1, key, minor, false, measure),
+        forall|key: Major, minor: Major, measure: bool| #[trigger] result.1.at(key, minor, measure)
+            == crate::routing::routed_effect(base.keys_view(), *base, *customer_routes, *supplier_routes, 1, key, minor, true, measure),
+{
+    let base_keys = base.keys();
+    let mut totals = Work::new(&Table::empty(size_hint(base_keys.len(), 4)));
+    let mut numerators = Work::new(&Table::empty(size_hint(base_keys.len(), 64)));
+    let mut index = 0;
+    proof { reveal(crate::routing::routed_effect); }
+    while index < base_keys.len()
+        invariant index <= base_keys.len(), base.valid(), customer_routes.valid(), supplier_routes.valid(), totals.valid(), numerators.valid(),
+            base_keys@ == base.keys_view(),
+            forall|key: Major, minor: Major, measure: bool| #[trigger] totals.at(key, minor, measure)
+                == crate::routing::routed_effect(base_keys@.take(index as int), *base, *customer_routes, *supplier_routes, 1, key, minor, false, measure),
+            forall|key: Major, minor: Major, measure: bool| #[trigger] numerators.at(key, minor, measure)
+                == crate::routing::routed_effect(base_keys@.take(index as int), *base, *customer_routes, *supplier_routes, 1, key, minor, true, measure),
+        decreases base_keys.len() - index,
+    {
+        route_pair(base, customer_routes, supplier_routes, base_keys[index], 1, &mut totals, &mut numerators);
+        proof {
+            assert forall|key: Major, minor: Major, measure: bool| #[trigger] totals.at(key, minor, measure)
+                == crate::routing::routed_effect(base_keys@.take(index as int + 1), *base, *customer_routes, *supplier_routes, 1, key, minor, false, measure) by {
+                reveal(crate::routing::routed_effect);
+                lemma_sum_take(base_keys@, index as int, |pair: Major|
+                    crate::routing::route_key_effect(pair, *base, *customer_routes, *supplier_routes, 1, key, minor, false, measure));
+            }
+            assert forall|key: Major, minor: Major, measure: bool| #[trigger] numerators.at(key, minor, measure)
+                == crate::routing::routed_effect(base_keys@.take(index as int + 1), *base, *customer_routes, *supplier_routes, 1, key, minor, true, measure) by {
+                reveal(crate::routing::routed_effect);
+                lemma_sum_take(base_keys@, index as int, |pair: Major|
+                    crate::routing::route_key_effect(pair, *base, *customer_routes, *supplier_routes, 1, key, minor, true, measure));
+            }
+        }
+        index += 1;
+    }
+    proof { assert(base_keys@.take(base_keys@.len() as int) =~= base_keys@); }
+    let totals = totals.finish();
+    let numerators = numerators.finish();
+    (totals, numerators)
+}
+
+/// The tables of a version, one scan per table (scans.rs), then the base and what is routed from it.
 fn build_data(
     parts: Vec<PartInput>,
     suppliers: &[SupplierInput],
@@ -76,397 +148,52 @@ fn build_data(
         scan_nations_ok(db, nations@),
         scan_regions_ok(db, regions@),
     ensures
-        r matches Some(data) ==> model::valid(data, db),
+        r matches Some(data) ==> model::valid(data, db) && ids_within(data.dictionary, 0),
+        envelope(db) ==> r is Some,
 {
     hide(group_count);
     hide(group_sum);
-    let text_capacity = parts.len().checked_add(nations.len())?.checked_add(regions.len())?;
-    let mut dictionary = Dictionary::new(text_capacity);
-    let empty = Table::empty(0);
-    let mut part_work = Work::new(&Table::empty(parts.len()));
-    let mut supplier_work = Work::new(&Table::empty(suppliers.len()));
-    let mut customer_work = Work::new(&Table::empty(customers.len()));
-    let mut order_work = Work::new(&Table::empty(window_orders.len()));
-    let mut nation_work = Work::new(&Table::empty(nations.len()));
-    let mut region_work = Work::new(&Table::empty(regions.len()));
-    let mut reverse_orders = Work::new(&Table::empty(window_orders.len()));
-    let mut reverse_nations = Work::new(&empty);
-    let mut index = 0;
-    let ghost part_rows = parts@;
-    while index < parts.len()
-        invariant index <= parts.len(), part_rows == parts@, part_work.valid(), dictionary.valid(),
-            crate::dimensions::work_support(part_work, dictionary, 0),
-            forall|key: Major, minor: Major| #[trigger] part_work.at(key, minor, false) >= 0,
-            forall|offset: int| 0 <= offset < index ==> exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] part_rows[offset]).p_type@,
-            forall|key: i64, kind: i64| #[trigger] part_work.at((key, 0, 0), (kind, 0, 0), false) ==
-                sum(part_input_seq_view(part_rows.take(index as int)), |row: PartRow|
-                    if row.p_partkey == key as int && model::text_matches(dictionary, kind, row.p_type) { 1 } else { 0 }),
-        decreases parts.len() - index,
-    {
-        let ghost processed = index as int;
-        let row = &parts[index];
-        let ghost before_dictionary = dictionary;
-        let kind = dictionary.intern(row.p_type.as_slice())?;
-        part_work.add((row.p_partkey, 0, 0), (kind, 0, 0), 1, 0)?;
+    if parts.len() as u128 > 9223372036854775808u128 || nations.len() as u128 > 9223372036854775808u128 || regions.len() as u128 > 9223372036854775808u128 {
         proof {
-            lemma_text_identifier(dictionary, kind, row.p_type@);
-            assert forall|offset: int| 0 <= offset < index implies exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] part_rows[offset]).p_type@ by {
-                lemma_known_text_extension(before_dictionary, dictionary, part_rows[offset].p_type@);
-            }
-            assert(dictionary.text(kind) == part_rows[index as int].p_type@);
-            assert forall|key: i64, selected: i64| #[trigger] part_work.at((key, 0, 0), (selected, 0, 0), false) ==
-                sum(part_input_seq_view(part_rows.take(index as int + 1)), |row: PartRow|
-                    if row.p_partkey == key as int && model::text_matches(dictionary, selected, row.p_type) { 1 } else { 0 }) by {
-                let prefix = part_input_seq_view(part_rows.take(index as int));
-                let before_weight = |row: PartRow| if row.p_partkey == key as int && model::text_matches(before_dictionary, selected, row.p_type) { 1int } else { 0int };
-                let weight = |row: PartRow| if row.p_partkey == key as int && model::text_matches(dictionary, selected, row.p_type) { 1int } else { 0int };
-                assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
-                    lemma_known_text_extension(before_dictionary, dictionary, part_rows[offset].p_type@);
-                }
-                lemma_sum_ext(prefix, before_weight, weight);
-                assert(part_input_seq_view(part_rows.take(index as int + 1)) =~= prefix.push(part_input_view(part_rows[index as int])));
-                lemma_sum_push(prefix, part_input_view(part_rows[index as int]), weight);
-            }
+            crate::bounds::lemma_parts_len(db, parts@);
+            crate::bounds::lemma_nations_len(db, nations@);
+            crate::bounds::lemma_regions_len(db, regions@);
         }
-        index += 1;
+        return None;
     }
+    let dictionary = Dictionary::new(size_hint(parts.len(), 1));
+    let (part_table, dictionary) = scan_parts(&parts, dictionary);
     let ghost part_dictionary = dictionary;
-    proof {
-        assert forall|offset: int| 0 <= offset < part_rows.len() implies
-            model::text_present(part_dictionary, (#[trigger] part_rows[offset]).p_type@) by {}
-    }
-    index = 0;
-    let ghost supplier_rows = suppliers@;
-    while index < suppliers.len()
-        invariant index <= suppliers.len(), supplier_rows == suppliers@, supplier_work.valid(),
-            crate::dimensions::work_support(supplier_work, dictionary, 1),
-            forall|key: Major, minor: Major| #[trigger] supplier_work.at(key, minor, false) >= 0,
-            forall|key: i64, nation: i64| #[trigger] supplier_work.at((key, 0, 0), (nation, 0, 0), false) ==
-                sum(supplier_input_seq_view(supplier_rows.take(index as int)), |row: SupplierRow|
-                    if row.s_suppkey == key as int && row.s_nationkey == nation as int { 1 } else { 0 }),
-        decreases suppliers.len() - index,
-    {
-        let ghost processed = index as int;
-        let row = suppliers[index];
-        supplier_work.add((row.s_suppkey, 0, 0), (row.s_nationkey, 0, 0), 1, 0)?;
-        proof {
-            assert forall|key: i64, nation: i64| #[trigger] supplier_work.at((key, 0, 0), (nation, 0, 0), false) ==
-                sum(supplier_input_seq_view(supplier_rows.take(index as int + 1)), |row: SupplierRow|
-                    if row.s_suppkey == key as int && row.s_nationkey == nation as int { 1 } else { 0 }) by {
-                assert(supplier_input_seq_view(supplier_rows.take(index as int)) =~= supplier_input_seq_view(supplier_rows).take(index as int));
-                assert(supplier_input_seq_view(supplier_rows.take(index as int + 1)) =~= supplier_input_seq_view(supplier_rows).take(index as int + 1));
-                lemma_sum_take(supplier_input_seq_view(supplier_rows), index as int,
-                    |row: SupplierRow| if row.s_suppkey == key as int && row.s_nationkey == nation as int { 1 } else { 0 });
-            }
-        }
-        index += 1;
-    }
-    index = 0;
-    let ghost customer_rows = customers@;
-    while index < customers.len()
-        invariant index <= customers.len(), customer_rows == customers@, customer_work.valid(),
-            crate::dimensions::work_support(customer_work, dictionary, 2),
-            forall|key: Major, minor: Major| #[trigger] customer_work.at(key, minor, false) >= 0,
-            forall|key: i64, nation: i64| #[trigger] customer_work.at((key, 0, 0), (nation, 0, 0), false) ==
-                sum(customer_input_seq_view(customer_rows.take(index as int)), |row: CustomerRow|
-                    if row.c_custkey == key as int && row.c_nationkey == nation as int { 1 } else { 0 }),
-        decreases customers.len() - index,
-    {
-        let ghost processed = index as int;
-        let row = customers[index];
-        customer_work.add((row.c_custkey, 0, 0), (row.c_nationkey, 0, 0), 1, 0)?;
-        proof {
-            assert forall|key: i64, nation: i64| #[trigger] customer_work.at((key, 0, 0), (nation, 0, 0), false) ==
-                sum(customer_input_seq_view(customer_rows.take(index as int + 1)), |row: CustomerRow|
-                    if row.c_custkey == key as int && row.c_nationkey == nation as int { 1 } else { 0 }) by {
-                assert(customer_input_seq_view(customer_rows.take(index as int)) =~= customer_input_seq_view(customer_rows).take(index as int));
-                assert(customer_input_seq_view(customer_rows.take(index as int + 1)) =~= customer_input_seq_view(customer_rows).take(index as int + 1));
-                lemma_sum_take(customer_input_seq_view(customer_rows), index as int,
-                    |row: CustomerRow| if row.c_custkey == key as int && row.c_nationkey == nation as int { 1 } else { 0 });
-            }
-        }
-        index += 1;
-    }
-    index = 0;
-    let ghost order_rows = window_orders@;
-    while index < window_orders.len()
-        invariant index <= window_orders.len(), order_rows == window_orders@, order_work.valid(), reverse_orders.valid(),
-            crate::dimensions::work_support(reverse_orders, dictionary, 1),
-            crate::dimensions::work_support(order_work, dictionary, 3),
-            forall|key: Major, minor: Major| #[trigger] order_work.at(key, minor, false) >= 0,
-            forall|customer: i64, order: i64| #[trigger] reverse_orders.at((customer, 0, 0), (order, 0, 0), false) ==
-                sum(order_input_seq_view(order_rows.take(index as int)), |row: OrdersRow|
-                    if row.o_orderkey == order as int && row.o_custkey == customer as int
-                        && model::year_of(row.o_orderdate) != 0 { 1 } else { 0 }),
-            forall|key: i64, customer: i64, year: i64| #[trigger] order_work.at((key, 0, 0), (customer, year, 0), false) ==
-                sum(order_input_seq_view(order_rows.take(index as int)), |row: OrdersRow|
-                    if row.o_orderkey == key as int && row.o_custkey == customer as int
-                        && year != 0 && model::year_of(row.o_orderdate) == year as int { 1 } else { 0 }),
-        decreases window_orders.len() - index,
-    {
-        let ghost processed = index as int;
-        let row = window_orders[index];
-        if row.o_orderdate < 9131 || row.o_orderdate > 9861 { return None; }
-        let year: i64 = if row.o_orderdate <= 9495 { 1995 } else { 1996 };
-        order_work.add((row.o_orderkey, 0, 0), (row.o_custkey, year, 0), 1, 0)?;
-        reverse_orders.add((row.o_custkey, 0, 0), (row.o_orderkey, 0, 0), 1, 0)?;
-        proof {
-            assert forall|customer: i64, order: i64| #[trigger] reverse_orders.at((customer, 0, 0), (order, 0, 0), false) ==
-                sum(order_input_seq_view(order_rows.take(index as int + 1)), |row: OrdersRow|
-                    if row.o_orderkey == order as int && row.o_custkey == customer as int
-                        && model::year_of(row.o_orderdate) != 0 { 1 } else { 0 }) by {
-                assert(order_input_seq_view(order_rows.take(index as int)) =~= order_input_seq_view(order_rows).take(index as int));
-                assert(order_input_seq_view(order_rows.take(index as int + 1)) =~= order_input_seq_view(order_rows).take(index as int + 1));
-                lemma_sum_take(order_input_seq_view(order_rows), index as int,
-                    |row: OrdersRow| if row.o_orderkey == order as int && row.o_custkey == customer as int
-                        && model::year_of(row.o_orderdate) != 0 { 1 } else { 0 });
-            }
-            assert forall|key: i64, customer: i64, selected: i64| #[trigger] order_work.at((key, 0, 0), (customer, selected, 0), false) ==
-                sum(order_input_seq_view(order_rows.take(index as int + 1)), |row: OrdersRow|
-                    if row.o_orderkey == key as int && row.o_custkey == customer as int && selected != 0
-                        && model::year_of(row.o_orderdate) == selected as int { 1 } else { 0 }) by {
-                assert(order_input_seq_view(order_rows.take(index as int)) =~= order_input_seq_view(order_rows).take(index as int));
-                assert(order_input_seq_view(order_rows.take(index as int + 1)) =~= order_input_seq_view(order_rows).take(index as int + 1));
-                lemma_sum_take(order_input_seq_view(order_rows), index as int,
-                    |row: OrdersRow| if row.o_orderkey == key as int && row.o_custkey == customer as int && selected != 0
-                        && model::year_of(row.o_orderdate) == selected as int { 1 } else { 0 });
-            }
-        }
-        index += 1;
-    }
-    index = 0;
-    let ghost nation_rows = nations@;
-    while index < nations.len()
-        invariant index <= nations.len(), nation_rows == nations@, nation_work.valid(), reverse_nations.valid(), dictionary.valid(),
-            crate::dimensions::work_support(reverse_nations, dictionary, 1),
-            crate::dimensions::work_support(nation_work, dictionary, 4),
-            forall|key: Major, minor: Major| #[trigger] nation_work.at(key, minor, false) >= 0,
-            extension(part_dictionary, dictionary),
-            forall|region: i64, nation: i64| #[trigger] reverse_nations.at((region, 0, 0), (nation, 0, 0), false) ==
-                sum(nation_input_seq_view(nation_rows.take(index as int)), |row: NationRow|
-                    if row.n_regionkey == region as int && row.n_nationkey == nation as int { 1 } else { 0 }),
-            forall|offset: int| 0 <= offset < index ==> exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] nation_rows[offset]).n_name@,
-            forall|key: i64, name: i64, region: i64| #[trigger] nation_work.at((key, 0, 0), (name, region, 0), false) ==
-                sum(nation_input_seq_view(nation_rows.take(index as int)), |row: NationRow|
-                    if row.n_nationkey == key as int && row.n_regionkey == region as int
-                        && model::text_matches(dictionary, name, row.n_name) { 1 } else { 0 }),
-        decreases nations.len() - index,
-    {
-        let ghost processed = index as int;
-        let row = &nations[index];
-        let ghost before_dictionary = dictionary;
-        let name = dictionary.intern(row.n_name.as_slice())?;
-        nation_work.add((row.n_nationkey, 0, 0), (name, row.n_regionkey, 0), 1, 0)?;
-        reverse_nations.add((row.n_regionkey, 0, 0), (row.n_nationkey, 0, 0), 1, 0)?;
-        proof {
-            lemma_extension_transitive(part_dictionary, before_dictionary, dictionary);
-            assert forall|region: i64, nation: i64| #[trigger] reverse_nations.at((region, 0, 0), (nation, 0, 0), false) ==
-                sum(nation_input_seq_view(nation_rows.take(index as int + 1)), |row: NationRow|
-                    if row.n_regionkey == region as int && row.n_nationkey == nation as int { 1 } else { 0 }) by {
-                assert(nation_input_seq_view(nation_rows.take(index as int)) =~= nation_input_seq_view(nation_rows).take(index as int));
-                assert(nation_input_seq_view(nation_rows.take(index as int + 1)) =~= nation_input_seq_view(nation_rows).take(index as int + 1));
-                lemma_sum_take(nation_input_seq_view(nation_rows), index as int,
-                    |row: NationRow| if row.n_regionkey == region as int && row.n_nationkey == nation as int { 1 } else { 0 });
-            }
-            lemma_text_identifier(dictionary, name, row.n_name@);
-            assert forall|offset: int| 0 <= offset < index implies exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] nation_rows[offset]).n_name@ by {
-                lemma_known_text_extension(before_dictionary, dictionary, nation_rows[offset].n_name@);
-            }
-            assert forall|key: i64, selected: i64, region: i64| #[trigger] nation_work.at((key, 0, 0), (selected, region, 0), false) ==
-                sum(nation_input_seq_view(nation_rows.take(index as int + 1)), |row: NationRow|
-                    if row.n_nationkey == key as int && row.n_regionkey == region as int
-                        && model::text_matches(dictionary, selected, row.n_name) { 1 } else { 0 }) by {
-                let prefix = nation_input_seq_view(nation_rows.take(index as int));
-                let before_weight = |row: NationRow| if row.n_nationkey == key as int && row.n_regionkey == region as int
-                    && model::text_matches(before_dictionary, selected, row.n_name) { 1int } else { 0int };
-                let weight = |row: NationRow| if row.n_nationkey == key as int && row.n_regionkey == region as int
-                    && model::text_matches(dictionary, selected, row.n_name) { 1int } else { 0int };
-                assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
-                    lemma_known_text_extension(before_dictionary, dictionary, nation_rows[offset].n_name@);
-                }
-                lemma_sum_ext(prefix, before_weight, weight);
-                assert(nation_input_seq_view(nation_rows.take(index as int + 1)) =~= prefix.push(nation_input_view(nation_rows[index as int])));
-                lemma_sum_push(prefix, nation_input_view(nation_rows[index as int]), weight);
-            }
-        }
-        index += 1;
-    }
+    let supplier_table = scan_suppliers(&suppliers, &dictionary);
+    let customer_table = scan_customers(&customers, &dictionary);
+    let (order_table, orders_by_customer) = scan_orders(&window_orders, &dictionary, Ghost(db));
+    let (nation_table, nations_by_region, dictionary) = scan_nations(&nations, dictionary);
     let ghost nation_dictionary = dictionary;
-    proof {
-        assert forall|offset: int| 0 <= offset < nation_rows.len() implies
-            model::text_present(nation_dictionary, (#[trigger] nation_rows[offset]).n_name@) by {}
-    }
-    index = 0;
-    let ghost region_rows = regions@;
-    while index < regions.len()
-        invariant index <= regions.len(), region_rows == regions@, region_work.valid(), dictionary.valid(),
-            crate::dimensions::work_support(region_work, dictionary, 5),
-            forall|key: Major, minor: Major| #[trigger] region_work.at(key, minor, false) >= 0,
-            extension(part_dictionary, dictionary), extension(nation_dictionary, dictionary),
-            forall|offset: int| 0 <= offset < index ==> exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] region_rows[offset]).r_name@,
-            forall|key: i64, name: i64| #[trigger] region_work.at((key, 0, 0), (name, 0, 0), false) ==
-                sum(region_input_seq_view(region_rows.take(index as int)), |row: RegionRow|
-                    if row.r_regionkey == key as int && model::text_matches(dictionary, name, row.r_name) { 1 } else { 0 }),
-        decreases regions.len() - index,
-    {
-        let ghost processed = index as int;
-        let row = &regions[index];
-        let ghost before_dictionary = dictionary;
-        let name = dictionary.intern(row.r_name.as_slice())?;
-        region_work.add((row.r_regionkey, 0, 0), (name, 0, 0), 1, 0)?;
-        proof {
-            lemma_extension_transitive(part_dictionary, before_dictionary, dictionary);
-            lemma_extension_transitive(nation_dictionary, before_dictionary, dictionary);
-            lemma_text_identifier(dictionary, name, row.r_name@);
-            assert forall|offset: int| 0 <= offset < index implies exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] region_rows[offset]).r_name@ by {
-                lemma_known_text_extension(before_dictionary, dictionary, region_rows[offset].r_name@);
-            }
-            assert forall|key: i64, selected: i64| #[trigger] region_work.at((key, 0, 0), (selected, 0, 0), false) ==
-                sum(region_input_seq_view(region_rows.take(index as int + 1)), |row: RegionRow|
-                    if row.r_regionkey == key as int && model::text_matches(dictionary, selected, row.r_name) { 1 } else { 0 }) by {
-                let prefix = region_input_seq_view(region_rows.take(index as int));
-                let before_weight = |row: RegionRow| if row.r_regionkey == key as int && model::text_matches(before_dictionary, selected, row.r_name) { 1int } else { 0int };
-                let weight = |row: RegionRow| if row.r_regionkey == key as int && model::text_matches(dictionary, selected, row.r_name) { 1int } else { 0int };
-                assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
-                    lemma_known_text_extension(before_dictionary, dictionary, region_rows[offset].r_name@);
-                }
-                lemma_sum_ext(prefix, before_weight, weight);
-                assert(region_input_seq_view(region_rows.take(index as int + 1)) =~= prefix.push(region_input_view(region_rows[index as int])));
-                lemma_sum_push(prefix, region_input_view(region_rows[index as int]), weight);
-            }
-        }
-        index += 1;
-    }
-    proof {
-        assert(extension(part_dictionary, dictionary));
-        assert(extension(nation_dictionary, dictionary));
-    }
-    let parts = part_work.finish();
-    let suppliers = supplier_work.finish();
-    let customers = customer_work.finish();
-    let orders = order_work.finish();
-    let nations = nation_work.finish();
-    let regions = region_work.finish();
-    let orders_by_customer = reverse_orders.finish();
-    let nations_by_region = reverse_nations.finish();
-    proof {
-        assert(part_rows.take(part_rows.len() as int) =~= part_rows);
-        assert(supplier_rows.take(supplier_rows.len() as int) =~= supplier_rows);
-        assert(customer_rows.take(customer_rows.len() as int) =~= customer_rows);
-        assert(order_rows.take(order_rows.len() as int) =~= order_rows);
-        assert(nation_rows.take(nation_rows.len() as int) =~= nation_rows);
-        assert(region_rows.take(region_rows.len() as int) =~= region_rows);
-        crate::dimensions::lemma_part_scan(parts, dictionary, part_dictionary, part_rows, db);
-        crate::dimensions::lemma_supplier_scan(suppliers, supplier_rows, db);
-        crate::dimensions::lemma_customer_scan(customers, customer_rows, db);
-        crate::dimensions::lemma_order_scan(orders, orders_by_customer, order_rows, db);
-        crate::dimensions::lemma_nation_scan(nations, nations_by_region, dictionary, nation_dictionary, nation_rows, db);
-        crate::dimensions::lemma_region_scan(regions, dictionary, region_rows, db);
-    }
-    let nation_count = nations.keys().len();
-    let mut base_work = Work::new(&Table::empty(nation_count.checked_mul(nation_count)?.checked_mul(16)?));
-    index = 0;
-    let ghost line_rows = lines@;
-    while index < lines.len()
-        invariant index <= lines.len(), line_rows == lines@, base_work.valid(), parts.valid(), suppliers.valid(), customers.valid(), orders.valid(),
-            forall|key: Major, minor: Major, volume: bool| #[trigger] base_work.at(key, minor, volume) ==
-                sum(line_input_seq_view(line_rows.take(index as int)), |line: LineitemRow|
-                    crate::contributions::line_effect(parts, suppliers, customers, orders, line, key, minor, 1, volume)),
-        decreases lines.len() - index,
-    {
-        let ghost processed = line_rows.take(index as int);
-        line_contribution(&parts, &suppliers, &customers, &orders, lines[index], 1, &mut base_work)?;
-        proof {
-            assert forall|key: Major, minor: Major, volume: bool| #[trigger] base_work.at(key, minor, volume) ==
-                sum(line_input_seq_view(line_rows.take(index as int + 1)), |line: LineitemRow|
-                    crate::contributions::line_effect(parts, suppliers, customers, orders, line, key, minor, 1, volume)) by {
-                let prefix = line_input_seq_view(line_rows.take(index as int));
-                let next = line_input_view(line_rows[index as int]);
-                assert(line_input_seq_view(line_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |line: LineitemRow|
-                    crate::contributions::line_effect(parts, suppliers, customers, orders, line, key, minor, 1, volume));
-            }
-        }
-        index += 1;
-    }
-    let base = base_work.finish();
+    let (region_table, dictionary) = scan_regions(&regions, dictionary);
+    let nation_count = nation_table.keys().len();
+    let base = scan_lines(&lines, nation_count, &part_table, &supplier_table, &customer_table, &order_table);
+    let empty = Table::empty(0);
     let mut customer_index = Work::new(&empty);
     let mut supplier_index = Work::new(&empty);
-    index_pairs(&base, &mut customer_index, &mut supplier_index)?;
-    let mut customer_routes = Work::new(&empty);
-    let mut supplier_routes = Work::new(&empty);
-    let nation_keys = nations.keys();
-    index = 0;
-    proof { reveal(crate::routing::all_customer_routes); reveal(crate::routing::all_supplier_routes); }
-    while index < nation_keys.len()
-        invariant index <= nation_keys.len(), nations.valid(), regions.valid(), customer_routes.valid(), supplier_routes.valid(),
-            forall|key: Major, minor: Major, measure: bool| #[trigger] customer_routes.at(key, minor, measure)
-                == crate::routing::all_customer_routes(nation_keys@.take(index as int), nations, regions, key, minor, measure),
-            forall|key: Major, minor: Major, measure: bool| #[trigger] supplier_routes.at(key, minor, measure)
-                == crate::routing::all_supplier_routes(nation_keys@.take(index as int), nations, key, minor, measure),
-        decreases nation_keys.len() - index,
-    {
-        route_nation(&nations, &regions, nation_keys[index].0, &mut customer_routes, &mut supplier_routes, 1)?;
-        proof {
-            assert forall|key: Major, minor: Major, measure: bool| #[trigger] customer_routes.at(key, minor, measure)
-                == crate::routing::all_customer_routes(nation_keys@.take(index as int + 1), nations, regions, key, minor, measure) by {
-                reveal(crate::routing::all_customer_routes);
-                lemma_sum_take(nation_keys@, index as int, |entry: Major|
-                    crate::routing::customer_nation_effect(nations.rows((entry.0, 0, 0)), regions, entry.0, 1, key, minor, measure));
-            }
-            assert forall|key: Major, minor: Major, measure: bool| #[trigger] supplier_routes.at(key, minor, measure)
-                == crate::routing::all_supplier_routes(nation_keys@.take(index as int + 1), nations, key, minor, measure) by {
-                reveal(crate::routing::all_supplier_routes);
-                lemma_sum_take(nation_keys@, index as int, |entry: Major|
-                    crate::routing::supplier_nation_effect(nations.rows((entry.0, 0, 0)), entry.0, 1, key, minor, measure));
-            }
-        }
-        index += 1;
-    }
-    let customer_routes = customer_routes.finish();
-    let supplier_routes = supplier_routes.finish();
-    let base_keys = base.keys();
-    let mut totals = Work::new(&Table::empty(base_keys.len().checked_mul(4)?));
-    let mut numerators = Work::new(&Table::empty(base_keys.len().checked_mul(64)?));
-    index = 0;
-    proof { reveal(crate::routing::routed_effect); }
-    while index < base_keys.len()
-        invariant index <= base_keys.len(), base.valid(), customer_routes.valid(), supplier_routes.valid(), totals.valid(), numerators.valid(),
-            forall|key: Major, minor: Major, measure: bool| #[trigger] totals.at(key, minor, measure)
-                == crate::routing::routed_effect(base_keys@.take(index as int), base, customer_routes, supplier_routes, 1, key, minor, false, measure),
-            forall|key: Major, minor: Major, measure: bool| #[trigger] numerators.at(key, minor, measure)
-                == crate::routing::routed_effect(base_keys@.take(index as int), base, customer_routes, supplier_routes, 1, key, minor, true, measure),
-        decreases base_keys.len() - index,
-    {
-        route_pair(&base, &customer_routes, &supplier_routes, base_keys[index], 1, &mut totals, &mut numerators)?;
-        proof {
-            assert forall|key: Major, minor: Major, measure: bool| #[trigger] totals.at(key, minor, measure)
-                == crate::routing::routed_effect(base_keys@.take(index as int + 1), base, customer_routes, supplier_routes, 1, key, minor, false, measure) by {
-                reveal(crate::routing::routed_effect);
-                lemma_sum_take(base_keys@, index as int, |pair: Major|
-                    crate::routing::route_key_effect(pair, base, customer_routes, supplier_routes, 1, key, minor, false, measure));
-            }
-            assert forall|key: Major, minor: Major, measure: bool| #[trigger] numerators.at(key, minor, measure)
-                == crate::routing::routed_effect(base_keys@.take(index as int + 1), base, customer_routes, supplier_routes, 1, key, minor, true, measure) by {
-                reveal(crate::routing::routed_effect);
-                lemma_sum_take(base_keys@, index as int, |pair: Major|
-                    crate::routing::route_key_effect(pair, base, customer_routes, supplier_routes, 1, key, minor, true, measure));
-            }
-        }
-        index += 1;
-    }
-    let data = model::Data { dictionary, parts, suppliers, customers, orders, nations, regions,
+    index_pairs(&base, &mut customer_index, &mut supplier_index);
+    let (customer_routes, supplier_routes) = route_all_nations(&nation_table, &region_table);
+    let ghost base_keys = base.keys_view();
+    let (totals, numerators) = route_all_pairs(&base, &customer_routes, &supplier_routes);
+    let data = model::Data { dictionary, parts: part_table, suppliers: supplier_table, customers: customer_table,
+        orders: order_table, nations: nation_table, regions: region_table,
         orders_by_customer, nations_by_region,
         base, base_by_customer: customer_index.finish(), base_by_supplier: supplier_index.finish(),
-        customer_routes, supplier_routes, totals: totals.finish(), numerators: numerators.finish(),
+        customer_routes, supplier_routes, totals, numerators,
     };
+    let ghost line_rows = lines@;
     proof {
+        lemma_extension_transitive(part_dictionary, nation_dictionary, dictionary);
+        crate::dimensions::lemma_part_scan(data.parts, dictionary, part_dictionary, parts@, db);
+        crate::dimensions::lemma_supplier_scan(data.suppliers, suppliers@, db);
+        crate::dimensions::lemma_customer_scan(data.customers, customers@, db);
+        crate::dimensions::lemma_order_scan(data.orders, data.orders_by_customer, window_orders@, db);
+        crate::dimensions::lemma_nation_scan(data.nations, data.nations_by_region, dictionary, nation_dictionary, nations@, db);
+        crate::dimensions::lemma_region_scan(data.regions, dictionary, regions@, db);
         reveal(model::dimension_meaning);
         assert(model::dimension_meaning(data, db));
         crate::dimensions::lemma_reverse_cells(data.orders_by_customer, data, db, true);
@@ -486,15 +213,13 @@ fn build_data(
         assert(data.nations.valid());
         assert(data.regions.valid());
         assert(model::scalar(data.regions));
-        assert(model::text_domain(data.nations, data.dictionary));
-        assert(model::text_domain(data.regions, data.dictionary));
+        assert(model::text_domain(data.nations, data.dictionary, 1));
+        assert(model::text_domain(data.regions, data.dictionary, 2));
         assert(model::positive(data.nations));
         assert(model::positive(data.regions));
         assert(crate::route_proofs::route_ready(data));
-        assert(nation_keys@.take(nation_keys@.len() as int) =~= nation_keys@);
         crate::route_proofs::lemma_build_routes(data, db);
         crate::route_proofs::lemma_build_route_cells(data, db);
-        assert(line_rows.take(line_rows.len() as int) =~= line_rows);
         crate::join_proofs::lemma_build_base(data, db, line_rows);
         assert forall|key: Major, offset: int| 0 <= offset < data.orders.rows(key).len() implies
             (#[trigger] data.orders.rows(key)[offset]).second == 1995 || data.orders.rows(key)[offset].second == 1996 by {
@@ -507,7 +232,7 @@ fn build_data(
         }
         crate::index_proofs::lemma_build_indexes(data);
         crate::join_proofs::lemma_scan_line_domain(db, line_rows);
-        assert(base_keys@.take(base_keys@.len() as int) =~= base_keys@);
+        assert(base_keys.take(base_keys.len() as int) =~= base_keys);
         assert(crate::aggregate_bridge::aggregate_ready(data));
         assert(model::routed_meaning(data)) by { reveal(model::routed_meaning); }
         crate::aggregate_bridge::lemma_build_aggregates(data, db);
@@ -520,6 +245,129 @@ fn build_data(
     Some(data)
 }
 
+/// The output row of a year's group, as the specification sees it.
+spec fn year_row(year: i64, row: (i128, i128)) -> OutRow {
+    OutRow { o_year: year as int, mkt_share: Rat { num: row.0 as int, den: row.1 as int } }
+}
+
+/// The output row of one order year: `Some(None)` when the year has no group, `None` (with the
+/// proof that no answer fits) when its volume is zero or its share overflows the row types.
+fn year_output(
+    s: &State, region: i64, kind: i64, nation: Option<i64>, year: i64,
+    Ghost(database): Ghost<Db>, Ghost(parameters): Ghost<Params>,
+) -> (r: Option<Option<(i64, (i128, i128))>>)
+    requires
+        model::runtime_valid(s.data), crate::reading::read_valid(s.data, database),
+        s.data.dictionary.regions.resolve_spec(parameters.p2) == Some(region),
+        s.data.dictionary.types.resolve_spec(parameters.p3) == Some(kind),
+        s.data.dictionary.names.resolve_spec(parameters.p1) == nation,
+    ensures
+        r is None ==> !answer_fits(database, parameters),
+        r matches Some(step) ==> year_step_ok(database, parameters, year, step),
+{
+    hide(group_count);
+    hide(group_sum);
+    proof { model::lemma_runtime_access(s.data); }
+    proof { crate::reading::lemma_statistics(s.data, database, parameters, region, kind, nation, year); }
+    let total = s.data.totals.lookup((region, kind, 0), (year, 0, 0));
+    if !total.0.is_pos() {
+        return Some(None);
+    }
+    if total.1.is_zero() {
+        proof { crate::reading::lemma_refute_zero_volume(database, parameters, year as int); }
+        return None;
+    }
+    let volume = match nation {
+        Some(id) => s.data.numerators.lookup((region, kind, id), (year, 0, 0)).1,
+        None => Num::zero(),
+    };
+    let numerator_exact = volume.mul(&Num::Small(10000));
+    let denominator_exact = total.1.mul(&Num::Small(10000));
+    let numerator = match numerator_exact.to_i128() {
+        Some(value) => value,
+        None => {
+            proof { crate::reading::lemma_refute_overflow(database, parameters, year as int, numerator_exact@, denominator_exact@); }
+            return None;
+        },
+    };
+    let denominator = match denominator_exact.to_i128() {
+        Some(value) => value,
+        None => {
+            proof { crate::reading::lemma_refute_overflow(database, parameters, year as int, numerator_exact@, denominator_exact@); }
+            return None;
+        },
+    };
+    proof { assert(row_ok(database, parameters, year_row(year, (numerator, denominator)))); }
+    Some(Some((year, (numerator, denominator))))
+}
+
+/// What a year contributes to the answer: its row, if it has a group.
+spec fn year_rows(step: Option<(i64, (i128, i128))>) -> Seq<(i64, (i128, i128))> {
+    match step {
+        Some(row) => seq![row],
+        None => seq![],
+    }
+}
+
+/// `step` is year `year`'s correct contribution: its row when the year has a group, nothing otherwise.
+spec fn year_step_ok(database: Db, parameters: Params, year: i64, step: Option<(i64, (i128, i128))>) -> bool {
+    match step {
+        Some(row) => row.0 == year && group_count(database, parameters, year as int) > 0
+            && row_ok(database, parameters, year_row(year, row.1)),
+        None => group_count(database, parameters, year as int) <= 0,
+    }
+}
+
+/// The two years' contributions as the specification's rows.
+spec fn two_years_out(first: Option<(i64, (i128, i128))>, second: Option<(i64, (i128, i128))>) -> Seq<OutRow> {
+    out_view(year_rows(first) + year_rows(second))
+}
+
+proof fn lemma_two_years_rows(database: Db, parameters: Params, first: Option<(i64, (i128, i128))>, second: Option<(i64, (i128, i128))>)
+    requires year_step_ok(database, parameters, 1995, first), year_step_ok(database, parameters, 1996, second),
+    ensures forall|i: int| 0 <= i < two_years_out(first, second).len() ==> row_ok(database, parameters, #[trigger] two_years_out(first, second)[i]),
+{
+    assert(forall|i: int| 0 <= i < two_years_out(first, second).len() ==> row_ok(database, parameters, #[trigger] two_years_out(first, second)[i]));
+}
+
+proof fn lemma_two_years_order(first: Option<(i64, (i128, i128))>, second: Option<(i64, (i128, i128))>)
+    requires first matches Some(row) ==> row.0 == 1995, second matches Some(row) ==> row.0 == 1996,
+    ensures forall|i: int, j: int| 0 <= i < j < two_years_out(first, second).len() ==>
+        !same_group(#[trigger] two_years_out(first, second)[i], #[trigger] two_years_out(first, second)[j])
+        && !row_lt(two_years_out(first, second)[j], two_years_out(first, second)[i]),
+{
+}
+
+proof fn lemma_two_years_cover(database: Db, parameters: Params, first: Option<(i64, (i128, i128))>, second: Option<(i64, (i128, i128))>)
+    requires
+        forall|year: int| #[trigger] group_count(database, parameters, year) > 0 ==> year == 1995 || year == 1996,
+        year_step_ok(database, parameters, 1995, first), year_step_ok(database, parameters, 1996, second),
+    ensures forall|year: int| #[trigger] group_count(database, parameters, year) > 0 && having(database, parameters, year) ==>
+        exists|i: int| 0 <= i < two_years_out(first, second).len() && (#[trigger] two_years_out(first, second)[i]).o_year == year,
+{
+    let out = two_years_out(first, second);
+    assert forall|year: int| #[trigger] group_count(database, parameters, year) > 0 && having(database, parameters, year) implies
+        exists|i: int| 0 <= i < out.len() && (#[trigger] out[i]).o_year == year by {
+        if year == 1995 { assert(first is Some); assert(out[0].o_year == year); }
+        else { assert(second is Some); assert(out[out.len() - 1].o_year == year); }
+    }
+}
+
+/// Every group is in 1995 or 1996, so the two years' contributions are the whole answer.
+proof fn lemma_two_years(
+    database: Db, parameters: Params, first: Option<(i64, (i128, i128))>, second: Option<(i64, (i128, i128))>,
+)
+    requires
+        forall|year: int| #[trigger] group_count(database, parameters, year) > 0 ==> year == 1995 || year == 1996,
+        year_step_ok(database, parameters, 1995, first), year_step_ok(database, parameters, 1996, second),
+    ensures query_result(database, parameters, out_view(year_rows(first) + year_rows(second))),
+{
+    hide(group_count);
+    lemma_two_years_rows(database, parameters, first, second);
+    lemma_two_years_order(first, second);
+    lemma_two_years_cover(database, parameters, first, second);
+}
+
 pub fn execute(
     s: &State,
     p1: &[u8],
@@ -528,6 +376,7 @@ pub fn execute(
 ) -> (r: Option<Vec<(i64, (i128, i128))>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2@, p3@), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1@, p2@, p3@)) ==> r is Some,
 {
     hide(group_count);
     hide(group_sum);
@@ -538,78 +387,49 @@ pub fn execute(
     let ghost database = s.db();
     let ghost parameters = params(p1@, p2@, p3@);
     let mut output = Vec::new();
-    let region = match s.data.dictionary.resolve(p2) {
+    let region = match s.data.dictionary.regions.resolve(p2) {
         Some(id) => id,
         None => { proof { crate::reading::lemma_empty(s.data, database, parameters); } return Some(output); },
     };
-    let kind = match s.data.dictionary.resolve(p3) {
+    let kind = match s.data.dictionary.types.resolve(p3) {
         Some(id) => id,
         None => { proof { crate::reading::lemma_empty(s.data, database, parameters); } return Some(output); },
     };
-    let nation = s.data.dictionary.resolve(p1);
-    let mut offset: i64 = 0;
-    while offset < 2
-        invariant
-            0 <= offset <= 2, output.len() <= offset as int,
-            model::runtime_valid(s.data), crate::reading::read_valid(s.data, database),
-            s.data.dictionary.resolve_spec(parameters.p2) == Some(region),
-            s.data.dictionary.resolve_spec(parameters.p3) == Some(kind),
-            s.data.dictionary.resolve_spec(parameters.p1) == nation,
-            forall|index: int| 0 <= index < out_view(output@).len() ==>
-                row_ok(database, parameters, #[trigger] out_view(output@)[index]) && out_view(output@)[index].o_year < 1995 + offset,
-            forall|left: int, right: int| 0 <= left < right < out_view(output@).len() ==>
-                (#[trigger] out_view(output@)[left]).o_year < (#[trigger] out_view(output@)[right]).o_year,
-            forall|year: int| #[trigger] group_count(database, parameters, year) > 0 && 1995 <= year < 1995 + offset ==>
-                exists|index: int| 0 <= index < out_view(output@).len() && (#[trigger] out_view(output@)[index]).o_year == year,
-        decreases 2 - offset,
-    {
-        let year = 1995i64 + offset;
-        proof { model::lemma_runtime_access(s.data); }
-        let ghost previous = output@;
-        proof { crate::reading::lemma_statistics(s.data, database, parameters, region, kind, nation, year); }
-        let total = s.data.totals.lookup((region, kind, 0), (year, 0, 0));
-        if total.0 > 0 {
-            if total.1 == 0 { return None; }
-            let volume = match nation {
-                Some(id) => s.data.numerators.lookup((region, kind, id), (year, 0, 0)).1,
-                None => 0,
-            };
-            let numerator = volume.checked_mul(10000i128)?;
-            let denominator = total.1.checked_mul(10000i128)?;
-            let row = (year, (numerator, denominator));
-            let ghost spec_row = OutRow { o_year: year as int, mkt_share: Rat { num: numerator as int, den: denominator as int } };
-            proof {
-                assert(row_ok(database, parameters, spec_row));
-                crate::reading::lemma_push(database, parameters, out_view(previous), spec_row, year as int);
-            }
-            output.push(row);
-            proof { assert(out_view(output@) =~= out_view(previous).push(spec_row)); }
-        }
-        proof {
-            assert forall|group_year: int| #[trigger] group_count(database, parameters, group_year) > 0
-                && 1995 <= group_year < 1995 + offset + 1 implies
-                exists|index: int| 0 <= index < out_view(output@).len() && (#[trigger] out_view(output@)[index]).o_year == group_year by {
-                if group_year < year {
-                    let index = choose|index: int| 0 <= index < out_view(previous).len() && (#[trigger] out_view(previous)[index]).o_year == group_year;
-                    assert(out_view(output@)[index] == out_view(previous)[index]);
-                } else {
-                    assert(group_year == year);
-                    assert(total.0 > 0);
-                    assert(out_view(output@)[output@.len() - 1].o_year == group_year);
-                }
-            }
-        }
-        offset += 1;
-    }
+    let nation = s.data.dictionary.names.resolve(p1);
+    let first = match year_output(s, region, kind, nation, 1995, Ghost(database), Ghost(parameters)) {
+        Some(step) => step,
+        None => return None,
+    };
+    let second = match year_output(s, region, kind, nation, 1996, Ghost(database), Ghost(parameters)) {
+        Some(step) => step,
+        None => return None,
+    };
+    if let Some(row) = first { output.push(row); }
+    if let Some(row) = second { output.push(row); }
     proof {
         reveal(crate::reading::read_valid);
-        assert forall|year: int| #[trigger] group_count(database, parameters, year) > 0 implies
-            exists|index: int| 0 <= index < out_view(output@).len() && (#[trigger] out_view(output@)[index]).o_year == year by {
-            assert(year == 1995 || year == 1996);
-        }
-        assert(query_result(database, parameters, out_view(output@)));
+        assert(output@ =~= year_rows(first) + year_rows(second));
+        lemma_two_years(database, parameters, first, second);
     }
     Some(output)
+}
+
+/// The orderkeys whose lineitems the host rescans: those of the changed customers' orders and of the changed window orders.
+pub closed spec fn rescan_lines_for_orders_wanted(s: State, customer_delta: Seq<CustomerDelta>, lineitem_delta: Seq<LineDelta>, nation_delta: Seq<NationDelta>,
+    orders_delta: Seq<OrderDelta>, part_delta: Seq<PartDelta>, region_delta: Seq<RegionDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    crate::maintenance::wanted_order_keys(s.data.orders_by_customer, customer_delta, orders_delta)
+}
+
+/// The partkeys whose lineitems the host rescans: those of the changed parts.
+pub open spec fn rescan_lines_for_parts_wanted(s: State, customer_delta: Seq<CustomerDelta>, lineitem_delta: Seq<LineDelta>, nation_delta: Seq<NationDelta>,
+    orders_delta: Seq<OrderDelta>, part_delta: Seq<PartDelta>, region_delta: Seq<RegionDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    crate::maintenance::wanted_part_keys(part_delta)
+}
+
+/// The suppkeys whose lineitems the host rescans: those of the changed suppliers.
+pub open spec fn rescan_lines_for_suppliers_wanted(s: State, customer_delta: Seq<CustomerDelta>, lineitem_delta: Seq<LineDelta>, nation_delta: Seq<NationDelta>,
+    orders_delta: Seq<OrderDelta>, part_delta: Seq<PartDelta>, region_delta: Seq<RegionDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {
+    crate::maintenance::wanted_supplier_keys(supplier_delta)
 }
 
 pub fn rescan_lines_for_orders_keys(
@@ -622,6 +442,7 @@ pub fn rescan_lines_for_orders_keys(
     region_delta: &Vec<RegionDelta>,
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_lines_for_orders_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
 {
     proof { use_type_invariant(s); reveal(model::valid); model::lemma_runtime_access(s.data); }
     order_keys(&s.data.orders_by_customer, customer_delta, orders_delta).values
@@ -637,6 +458,7 @@ pub fn rescan_lines_for_parts_keys(
     region_delta: &Vec<RegionDelta>,
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_lines_for_parts_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
 {
     proof { use_type_invariant(s); reveal(model::valid); model::lemma_runtime_access(s.data); }
     part_keys(part_delta).values
@@ -652,6 +474,7 @@ pub fn rescan_lines_for_suppliers_keys(
     region_delta: &Vec<RegionDelta>,
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_lines_for_suppliers_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
 {
     proof { use_type_invariant(s); reveal(model::valid); model::lemma_runtime_access(s.data); }
     supplier_keys(supplier_delta).values
@@ -681,19 +504,27 @@ pub fn apply(
         rescan_lines_for_orders_ok(db2, lines_for_orders_keys@, lines_for_orders_rows@),
         rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
         rescan_lines_for_suppliers_ok(db2, lines_for_suppliers_keys@, lines_for_suppliers_rows@),
+        lines_for_orders_keys@ == rescan_lines_for_orders_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
+        lines_for_parts_keys@ == rescan_lines_for_parts_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
+        lines_for_suppliers_keys@ == rescan_lines_for_suppliers_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        r matches Ok(s2) ==> history(s2) <= history(*s) + changed_rows(customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
+        envelope(s.db()) && envelope(db2) && history(*s) + changed_rows(customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@) <= max_history() ==> r is Ok,
 {
-    match apply_inner(s, customer_delta, lineitem_delta, nation_delta, orders_delta, part_delta,
+    proof { use_type_invariant(s); }
+    let changed = customer_delta.len() as u128 + lineitem_delta.len() as u128 + nation_delta.len() as u128
+        + orders_delta.len() as u128 + part_delta.len() as u128 + region_delta.len() as u128 + supplier_delta.len() as u128;
+    if s.history as u128 + changed > 4611686018427387904u128 { return Err(1); }
+    let data = apply_inner(s, customer_delta, lineitem_delta, nation_delta, orders_delta, part_delta,
         region_delta, supplier_delta, lines_for_orders_keys, lines_for_orders_rows,
-        lines_for_parts_keys, lines_for_parts_rows, lines_for_suppliers_keys, lines_for_suppliers_rows, Ghost(orders_full), Ghost(db2)) {
-        Some(data) => Ok(State { db: Ghost(db2), data }),
-        None => Err(1),
-    }
+        lines_for_parts_keys, lines_for_parts_rows, lines_for_suppliers_keys, lines_for_suppliers_rows, Ghost(orders_full), Ghost(db2));
+    Ok(State { db: Ghost(db2), data, history: s.history + changed as u64 })
 }
 
 
-#[verifier::rlimit(20)]
+/// The new version's tables: each table's changes (deltas.rs), the base from the changed lines, then the
+/// routes and totals the changes reach.
 fn apply_inner(
     s: &State,
     customer_delta: &[CustomerDelta], lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>,
@@ -702,25 +533,33 @@ fn apply_inner(
     lines_for_parts_keys: &[i64], lines_for_parts_rows: &[LineInput],
     lines_for_suppliers_keys: &[i64], lines_for_suppliers_rows: &[LineInput],
     Ghost(orders_full): Ghost<Seq<(OrdersRow, int)>>, Ghost(db2): Ghost<Db>,
-) -> (result: Option<model::Data>)
+) -> (result: model::Data)
     requires
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(s.db(), db2, customer_delta_seq_view(customer_delta@), line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), orders_full, part_delta_seq_view(part_delta@), region_delta_seq_view(region_delta@), supplier_delta_seq_view(supplier_delta@)),
         rescan_lines_for_orders_ok(db2, lines_for_orders_keys@, lines_for_orders_rows@),
         rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
         rescan_lines_for_suppliers_ok(db2, lines_for_suppliers_keys@, lines_for_suppliers_rows@),
-    ensures result matches Some(data) ==> model::valid(data, db2),
+        lines_for_orders_keys@ == rescan_lines_for_orders_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
+        lines_for_parts_keys@ == rescan_lines_for_parts_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
+        lines_for_suppliers_keys@ == rescan_lines_for_suppliers_wanted(*s, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@),
+        history(*s) + changed_rows(customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, region_delta@, supplier_delta@) <= max_history(),
+    ensures model::valid(result, db2),
+        result.dictionary.types.length as int <= s.data.dictionary.types.length as int + part_delta@.len(),
+        result.dictionary.names.length as int <= s.data.dictionary.names.length as int + nation_delta@.len(),
+        result.dictionary.regions.length as int <= s.data.dictionary.regions.length as int + region_delta@.len(),
 {
     hide(group_count);
     hide(group_sum);
-    proof { use_type_invariant(s); reveal(model::valid); model::lemma_runtime_access(s.data); }
+    proof { use_type_invariant(s); model::lemma_valid_parts(s.data, s.db()); model::lemma_runtime_access(s.data); }
     let required_orders = order_keys(&s.data.orders_by_customer, customer_delta, orders_delta);
     let required_parts = part_keys(part_delta);
     let required_suppliers = supplier_keys(supplier_delta);
-    if !required_orders.covered(lines_for_orders_keys) || !required_parts.covered(lines_for_parts_keys)
-        || !required_suppliers.covered(lines_for_suppliers_keys) { return None; }
-    let empty = Table::empty(0);
-    let mut dictionary = s.data.dictionary.share();
+    proof {
+        assert forall|key: i64| #[trigger] required_orders.has(key) implies lines_for_orders_keys@.contains(key) by {}
+        assert forall|key: i64| #[trigger] required_parts.has(key) implies lines_for_parts_keys@.contains(key) by {}
+        assert forall|key: i64| #[trigger] required_suppliers.has(key) implies lines_for_suppliers_keys@.contains(key) by {}
+    }
     let ghost old_dictionary = s.data.dictionary;
     proof {
         crate::dimensions::lemma_support_from_cells(s.data.parts, old_dictionary, 0);
@@ -732,462 +571,26 @@ fn apply_inner(
         crate::dimensions::lemma_support_from_cells(s.data.orders_by_customer, old_dictionary, 1);
         crate::dimensions::lemma_support_from_cells(s.data.nations_by_region, old_dictionary, 1);
     }
-    let mut parts = Work::new(&s.data.parts);
-    let mut suppliers = Work::new(&s.data.suppliers);
-    let mut customers = Work::new(&s.data.customers);
-    let mut orders = Work::new(&s.data.orders);
-    let mut nations = Work::new(&s.data.nations);
-    let mut regions = Work::new(&s.data.regions);
-    let mut reverse_orders = Work::new(&s.data.orders_by_customer);
-    let mut reverse_nations = Work::new(&s.data.nations_by_region);
-    let mut changed_nations = Keys::new();
-    let mut index = 0;
-    index = 0;
-    let ghost part_delta_rows = part_delta@;
-    while index < part_delta.len()
-        invariant index <= part_delta.len(), part_delta_rows == part_delta@, parts.valid(), dictionary.valid(),
-            crate::dimensions::work_support(parts, dictionary, 0),
-            extension(old_dictionary, dictionary),
-            forall|offset: int| 0 <= offset < index ==> exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] part_delta_rows[offset]).row.p_type@,
-            forall|key: i64, kind: i64| #[trigger] parts.at((key, 0, 0), (kind, 0, 0), false) ==
-                s.data.parts.at((key, 0, 0), (kind, 0, 0), false)
-                    + sum(part_delta_seq_view(part_delta_rows.take(index as int)), |change: (PartRow, int)|
-                        if change.0.p_partkey == key as int && model::text_matches(dictionary, kind, change.0.p_type) { change.1 } else { 0 }),
-        decreases part_delta.len() - index,
-    {
-        let ghost processed = part_delta_rows.take(index as int);
-        let change = &part_delta[index];
-        let ghost before_dictionary = dictionary;
-        let kind = dictionary.intern(change.row.p_type.as_slice())?;
-        parts.add((change.row.p_partkey, 0, 0), (kind, 0, 0), change.sign as i128, 0)?;
-        proof {
-            lemma_extension_transitive(old_dictionary, before_dictionary, dictionary);
-            lemma_text_identifier(dictionary, kind, change.row.p_type@);
-            assert forall|offset: int| 0 <= offset < index implies exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] part_delta_rows[offset]).row.p_type@ by {
-                lemma_known_text_extension(before_dictionary, dictionary, part_delta_rows[offset].row.p_type@);
-            }
-            assert forall|key: i64, selected: i64| #[trigger] parts.at((key, 0, 0), (selected, 0, 0), false) ==
-                s.data.parts.at((key, 0, 0), (selected, 0, 0), false)
-                    + sum(part_delta_seq_view(part_delta_rows.take(index as int + 1)), |change: (PartRow, int)|
-                        if change.0.p_partkey == key as int && model::text_matches(dictionary, selected, change.0.p_type) { change.1 } else { 0 }) by {
-                let prefix = part_delta_seq_view(part_delta_rows.take(index as int));
-                let before_weight = |change: (PartRow, int)| if change.0.p_partkey == key as int
-                    && model::text_matches(before_dictionary, selected, change.0.p_type) { change.1 } else { 0int };
-                let weight = |change: (PartRow, int)| if change.0.p_partkey == key as int
-                    && model::text_matches(dictionary, selected, change.0.p_type) { change.1 } else { 0int };
-                assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
-                    lemma_known_text_extension(before_dictionary, dictionary, part_delta_rows[offset].row.p_type@);
-                }
-                lemma_sum_ext(prefix, before_weight, weight);
-                let next = (part_input_view(part_delta_rows[index as int].row), part_delta_rows[index as int].sign as int);
-                assert(part_delta_seq_view(part_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, weight);
-            }
-        }
-        index += 1;
-    }
+    let (parts, dictionary) = apply_parts(part_delta, &s.data.parts, s.data.dictionary.share());
     let ghost part_dictionary = dictionary;
-    proof {
-        assert forall|offset: int| 0 <= offset < part_delta_rows.len() implies
-            model::text_present(part_dictionary, (#[trigger] part_delta_rows[offset]).row.p_type@) by {}
-    }
-    index = 0;
-    let ghost supplier_delta_rows = supplier_delta@;
-    while index < supplier_delta.len()
-        invariant index <= supplier_delta.len(), supplier_delta_rows == supplier_delta@, suppliers.valid(),
-            crate::dimensions::work_support(suppliers, dictionary, 1),
-            forall|key: i64, nation: i64| #[trigger] suppliers.at((key, 0, 0), (nation, 0, 0), false) ==
-                s.data.suppliers.at((key, 0, 0), (nation, 0, 0), false)
-                    + sum(supplier_delta_seq_view(supplier_delta_rows.take(index as int)), |change: (SupplierRow, int)|
-                        if change.0.s_suppkey == key as int && change.0.s_nationkey == nation as int { change.1 } else { 0 }),
-        decreases supplier_delta.len() - index,
-    {
-        let ghost processed = supplier_delta_rows.take(index as int);
-        let change = supplier_delta[index];
-        suppliers.add((change.row.s_suppkey, 0, 0), (change.row.s_nationkey, 0, 0), change.sign as i128, 0)?;
-        proof {
-            assert forall|key: i64, nation: i64| #[trigger] suppliers.at((key, 0, 0), (nation, 0, 0), false) ==
-                s.data.suppliers.at((key, 0, 0), (nation, 0, 0), false)
-                    + sum(supplier_delta_seq_view(supplier_delta_rows.take(index as int + 1)), |change: (SupplierRow, int)|
-                        if change.0.s_suppkey == key as int && change.0.s_nationkey == nation as int { change.1 } else { 0 }) by {
-                let prefix = supplier_delta_seq_view(supplier_delta_rows.take(index as int));
-                let next = (supplier_input_view(supplier_delta_rows[index as int].row), supplier_delta_rows[index as int].sign as int);
-                assert(supplier_delta_seq_view(supplier_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |change: (SupplierRow, int)| if change.0.s_suppkey == key as int
-                    && change.0.s_nationkey == nation as int { change.1 } else { 0 });
-            }
-        }
-        index += 1;
-    }
-    index = 0;
-    let ghost customer_delta_rows = customer_delta@;
-    while index < customer_delta.len()
-        invariant index <= customer_delta.len(), customer_delta_rows == customer_delta@, customers.valid(),
-            crate::dimensions::work_support(customers, dictionary, 2),
-            forall|key: i64, nation: i64| #[trigger] customers.at((key, 0, 0), (nation, 0, 0), false) ==
-                s.data.customers.at((key, 0, 0), (nation, 0, 0), false)
-                    + sum(customer_delta_seq_view(customer_delta_rows.take(index as int)), |change: (CustomerRow, int)|
-                        if change.0.c_custkey == key as int && change.0.c_nationkey == nation as int { change.1 } else { 0 }),
-        decreases customer_delta.len() - index,
-    {
-        let ghost processed = customer_delta_rows.take(index as int);
-        let change = customer_delta[index];
-        customers.add((change.row.c_custkey, 0, 0), (change.row.c_nationkey, 0, 0), change.sign as i128, 0)?;
-        proof {
-            assert forall|key: i64, nation: i64| #[trigger] customers.at((key, 0, 0), (nation, 0, 0), false) ==
-                s.data.customers.at((key, 0, 0), (nation, 0, 0), false)
-                    + sum(customer_delta_seq_view(customer_delta_rows.take(index as int + 1)), |change: (CustomerRow, int)|
-                        if change.0.c_custkey == key as int && change.0.c_nationkey == nation as int { change.1 } else { 0 }) by {
-                let prefix = customer_delta_seq_view(customer_delta_rows.take(index as int));
-                let next = (customer_input_view(customer_delta_rows[index as int].row), customer_delta_rows[index as int].sign as int);
-                assert(customer_delta_seq_view(customer_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |change: (CustomerRow, int)| if change.0.c_custkey == key as int
-                    && change.0.c_nationkey == nation as int { change.1 } else { 0 });
-            }
-        }
-        index += 1;
-    }
-    index = 0;
-    let ghost orders_delta_rows = orders_delta@;
-    while index < orders_delta.len()
-        invariant index <= orders_delta.len(), orders_delta_rows == orders_delta@, orders.valid(), reverse_orders.valid(),
-            crate::dimensions::work_support(reverse_orders, dictionary, 1),
-            crate::dimensions::work_support(orders, dictionary, 3),
-            forall|customer: i64, order: i64| #[trigger] reverse_orders.at((customer, 0, 0), (order, 0, 0), false) ==
-                s.data.orders_by_customer.at((customer, 0, 0), (order, 0, 0), false)
-                    + sum(orders_delta_rows.take(index as int), |change: OrderDelta|
-                        if change.o_orderkey == order && change.o_custkey == customer
-                            && (change.in_1995 != 0 || change.in_1996 != 0) { change.sign as int } else { 0 }),
-            forall|key: i64, customer: i64, year: i64| #[trigger] orders.at((key, 0, 0), (customer, year, 0), false) ==
-                s.data.orders.at((key, 0, 0), (customer, year, 0), false)
-                    + sum(orders_delta_rows.take(index as int), |change: OrderDelta|
-                        if change.o_orderkey == key && change.o_custkey == customer
-                            && ((year == 1995 && change.in_1995 != 0) || (year == 1996 && change.in_1996 != 0))
-                        { change.sign as int } else { 0 }),
-        decreases orders_delta.len() - index,
-    {
-        let ghost processed = orders_delta_rows.take(index as int);
-        let change = orders_delta[index];
-        if change.in_1995 != 0 && change.in_1996 != 0 { return None; }
-        if change.in_1995 != 0 || change.in_1996 != 0 {
-            let year: i64 = if change.in_1995 != 0 { 1995 } else { 1996 };
-            orders.add((change.o_orderkey, 0, 0), (change.o_custkey, year, 0), change.sign as i128, 0)?;
-            reverse_orders.add((change.o_custkey, 0, 0), (change.o_orderkey, 0, 0), change.sign as i128, 0)?;
-        }
-        proof {
-            assert forall|customer: i64, order: i64| #[trigger] reverse_orders.at((customer, 0, 0), (order, 0, 0), false) ==
-                s.data.orders_by_customer.at((customer, 0, 0), (order, 0, 0), false)
-                    + sum(orders_delta_rows.take(index as int + 1), |change: OrderDelta|
-                        if change.o_orderkey == order && change.o_custkey == customer
-                            && (change.in_1995 != 0 || change.in_1996 != 0) { change.sign as int } else { 0 }) by {
-                lemma_sum_take(orders_delta_rows, index as int, |change: OrderDelta|
-                    if change.o_orderkey == order && change.o_custkey == customer
-                        && (change.in_1995 != 0 || change.in_1996 != 0) { change.sign as int } else { 0 });
-            }
-            assert forall|key: i64, customer: i64, year: i64| #[trigger] orders.at((key, 0, 0), (customer, year, 0), false) ==
-                s.data.orders.at((key, 0, 0), (customer, year, 0), false)
-                    + sum(orders_delta_rows.take(index as int + 1), |change: OrderDelta|
-                        if change.o_orderkey == key && change.o_custkey == customer
-                            && ((year == 1995 && change.in_1995 != 0) || (year == 1996 && change.in_1996 != 0))
-                        { change.sign as int } else { 0 }) by {
-                lemma_sum_take(orders_delta_rows, index as int, |change: OrderDelta|
-                    if change.o_orderkey == key && change.o_custkey == customer
-                        && ((year == 1995 && change.in_1995 != 0) || (year == 1996 && change.in_1996 != 0))
-                    { change.sign as int } else { 0 });
-            }
-        }
-        index += 1;
-    }
-    index = 0;
-    let ghost nation_delta_rows = nation_delta@;
-    while index < nation_delta.len()
-        invariant index <= nation_delta.len(), nation_delta_rows == nation_delta@, nations.valid(), reverse_nations.valid(), dictionary.valid(),
-            crate::dimensions::work_support(reverse_nations, dictionary, 1),
-            changed_nations.valid(),
-            forall|offset: int| 0 <= offset < index ==> changed_nations.has((#[trigger] nation_delta_rows[offset]).row.n_nationkey),
-            crate::dimensions::work_support(nations, dictionary, 4),
-            extension(old_dictionary, dictionary), extension(part_dictionary, dictionary),
-            forall|region: i64, nation: i64| #[trigger] reverse_nations.at((region, 0, 0), (nation, 0, 0), false) ==
-                s.data.nations_by_region.at((region, 0, 0), (nation, 0, 0), false)
-                    + sum(nation_delta_seq_view(nation_delta_rows.take(index as int)), |change: (NationRow, int)|
-                        if change.0.n_regionkey == region as int && change.0.n_nationkey == nation as int { change.1 } else { 0 }),
-            forall|offset: int| 0 <= offset < index ==> exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] nation_delta_rows[offset]).row.n_name@,
-            forall|key: i64, name: i64, region: i64| #[trigger] nations.at((key, 0, 0), (name, region, 0), false) ==
-                s.data.nations.at((key, 0, 0), (name, region, 0), false)
-                    + sum(nation_delta_seq_view(nation_delta_rows.take(index as int)), |change: (NationRow, int)|
-                        if change.0.n_nationkey == key as int && change.0.n_regionkey == region as int
-                            && model::text_matches(dictionary, name, change.0.n_name) { change.1 } else { 0 }),
-        decreases nation_delta.len() - index,
-    {
-        let ghost processed = nation_delta_rows.take(index as int);
-        let change = &nation_delta[index];
-        let ghost before_dictionary = dictionary;
-        let name = dictionary.intern(change.row.n_name.as_slice())?;
-        nations.add((change.row.n_nationkey, 0, 0), (name, change.row.n_regionkey, 0), change.sign as i128, 0)?;
-        reverse_nations.add((change.row.n_regionkey, 0, 0), (change.row.n_nationkey, 0, 0), change.sign as i128, 0)?;
-        changed_nations.add(change.row.n_nationkey);
-        proof {
-            lemma_extension_transitive(old_dictionary, before_dictionary, dictionary);
-            lemma_extension_transitive(part_dictionary, before_dictionary, dictionary);
-            assert forall|region: i64, nation: i64| #[trigger] reverse_nations.at((region, 0, 0), (nation, 0, 0), false) ==
-                s.data.nations_by_region.at((region, 0, 0), (nation, 0, 0), false)
-                    + sum(nation_delta_seq_view(nation_delta_rows.take(index as int + 1)), |change: (NationRow, int)|
-                        if change.0.n_regionkey == region as int && change.0.n_nationkey == nation as int { change.1 } else { 0 }) by {
-                let prefix = nation_delta_seq_view(nation_delta_rows.take(index as int));
-                let next = (nation_input_view(nation_delta_rows[index as int].row), nation_delta_rows[index as int].sign as int);
-                assert(nation_delta_seq_view(nation_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |change: (NationRow, int)|
-                    if change.0.n_regionkey == region as int && change.0.n_nationkey == nation as int { change.1 } else { 0 });
-            }
-            lemma_text_identifier(dictionary, name, change.row.n_name@);
-            assert forall|offset: int| 0 <= offset < index implies exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] nation_delta_rows[offset]).row.n_name@ by {
-                lemma_known_text_extension(before_dictionary, dictionary, nation_delta_rows[offset].row.n_name@);
-            }
-            assert forall|key: i64, selected: i64, region: i64| #[trigger] nations.at((key, 0, 0), (selected, region, 0), false) ==
-                s.data.nations.at((key, 0, 0), (selected, region, 0), false)
-                    + sum(nation_delta_seq_view(nation_delta_rows.take(index as int + 1)), |change: (NationRow, int)|
-                        if change.0.n_nationkey == key as int && change.0.n_regionkey == region as int
-                            && model::text_matches(dictionary, selected, change.0.n_name) { change.1 } else { 0 }) by {
-                let prefix = nation_delta_seq_view(nation_delta_rows.take(index as int));
-                let before_weight = |change: (NationRow, int)| if change.0.n_nationkey == key as int && change.0.n_regionkey == region as int
-                    && model::text_matches(before_dictionary, selected, change.0.n_name) { change.1 } else { 0int };
-                let weight = |change: (NationRow, int)| if change.0.n_nationkey == key as int && change.0.n_regionkey == region as int
-                    && model::text_matches(dictionary, selected, change.0.n_name) { change.1 } else { 0int };
-                assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
-                    lemma_known_text_extension(before_dictionary, dictionary, nation_delta_rows[offset].row.n_name@);
-                }
-                lemma_sum_ext(prefix, before_weight, weight);
-                let next = (nation_input_view(nation_delta_rows[index as int].row), nation_delta_rows[index as int].sign as int);
-                assert(nation_delta_seq_view(nation_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, weight);
-            }
-        }
-        index += 1;
-    }
+    let suppliers = apply_suppliers(supplier_delta, &s.data.suppliers, &dictionary);
+    let customers = apply_customers(customer_delta, &s.data.customers, &dictionary);
+    let (orders, orders_by_customer) = apply_orders(orders_delta, &s.data.orders, &s.data.orders_by_customer, &dictionary, Ghost(orders_full));
+    let (nations, nations_by_region, dictionary, changed_nations) =
+        apply_nations(nation_delta, &s.data.nations, &s.data.nations_by_region, dictionary);
     let ghost nation_dictionary = dictionary;
+    let (regions, dictionary, changed_nations) = apply_regions(region_delta, &s.data.regions, &s.data.nations_by_region,
+        dictionary, changed_nations, Ghost(nation_delta@));
     proof {
-        assert forall|offset: int| 0 <= offset < nation_delta_rows.len() implies
-            model::text_present(nation_dictionary, (#[trigger] nation_delta_rows[offset]).row.n_name@) by {}
+        lemma_extension_transitive(old_dictionary, part_dictionary, nation_dictionary);
+        lemma_extension_transitive(part_dictionary, nation_dictionary, dictionary);
+        lemma_extension_transitive(old_dictionary, nation_dictionary, dictionary);
     }
-    index = 0;
-    let ghost region_delta_rows = region_delta@;
-    while index < region_delta.len()
-        invariant index <= region_delta.len(), region_delta_rows == region_delta@, regions.valid(), dictionary.valid(),
-            changed_nations.valid(),
-            forall|offset: int| 0 <= offset < nation_delta_rows.len() ==> changed_nations.has((#[trigger] nation_delta_rows[offset]).row.n_nationkey),
-            forall|earlier: int, offset: int| 0 <= earlier < index
-                && 0 <= offset < s.data.nations_by_region.rows((region_delta_rows[earlier].row.r_regionkey, 0, 0)).len() ==>
-                changed_nations.has((#[trigger] s.data.nations_by_region.rows((region_delta_rows[earlier].row.r_regionkey, 0, 0))[offset]).first),
-            crate::dimensions::work_support(regions, dictionary, 5),
-            extension(old_dictionary, dictionary), extension(part_dictionary, dictionary), extension(nation_dictionary, dictionary),
-            forall|offset: int| 0 <= offset < index ==> exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] region_delta_rows[offset]).row.r_name@,
-            forall|key: i64, name: i64| #[trigger] regions.at((key, 0, 0), (name, 0, 0), false) ==
-                s.data.regions.at((key, 0, 0), (name, 0, 0), false)
-                    + sum(region_delta_seq_view(region_delta_rows.take(index as int)), |change: (RegionRow, int)|
-                        if change.0.r_regionkey == key as int && model::text_matches(dictionary, name, change.0.r_name) { change.1 } else { 0 }),
-        decreases region_delta.len() - index,
-    {
-        let ghost processed = region_delta_rows.take(index as int);
-        let change = &region_delta[index];
-        let ghost before_dictionary = dictionary;
-        let name = dictionary.intern(change.row.r_name.as_slice())?;
-        regions.add((change.row.r_regionkey, 0, 0), (name, 0, 0), change.sign as i128, 0)?;
-        proof {
-            lemma_extension_transitive(old_dictionary, before_dictionary, dictionary);
-            lemma_extension_transitive(part_dictionary, before_dictionary, dictionary);
-            lemma_extension_transitive(nation_dictionary, before_dictionary, dictionary);
-            lemma_text_identifier(dictionary, name, change.row.r_name@);
-            assert forall|offset: int| 0 <= offset < index implies exists|id: i64| 0 <= id < dictionary.length
-                && #[trigger] dictionary.text(id) == (#[trigger] region_delta_rows[offset]).row.r_name@ by {
-                lemma_known_text_extension(before_dictionary, dictionary, region_delta_rows[offset].row.r_name@);
-            }
-            assert forall|key: i64, selected: i64| #[trigger] regions.at((key, 0, 0), (selected, 0, 0), false) ==
-                s.data.regions.at((key, 0, 0), (selected, 0, 0), false)
-                    + sum(region_delta_seq_view(region_delta_rows.take(index as int + 1)), |change: (RegionRow, int)|
-                        if change.0.r_regionkey == key as int && model::text_matches(dictionary, selected, change.0.r_name) { change.1 } else { 0 }) by {
-                let prefix = region_delta_seq_view(region_delta_rows.take(index as int));
-                let before_weight = |change: (RegionRow, int)| if change.0.r_regionkey == key as int
-                    && model::text_matches(before_dictionary, selected, change.0.r_name) { change.1 } else { 0int };
-                let weight = |change: (RegionRow, int)| if change.0.r_regionkey == key as int
-                    && model::text_matches(dictionary, selected, change.0.r_name) { change.1 } else { 0int };
-                assert forall|offset: int| 0 <= offset < prefix.len() implies before_weight(#[trigger] prefix[offset]) == weight(prefix[offset]) by {
-                    lemma_known_text_extension(before_dictionary, dictionary, region_delta_rows[offset].row.r_name@);
-                }
-                lemma_sum_ext(prefix, before_weight, weight);
-                let next = (region_input_view(region_delta_rows[index as int].row), region_delta_rows[index as int].sign as int);
-                assert(region_delta_seq_view(region_delta_rows.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, weight);
-            }
-            use_type_invariant(s); reveal(model::valid); model::lemma_runtime_access(s.data);
-        }
-        include_region_nations(&s.data.nations_by_region, change.row.r_regionkey, &mut changed_nations);
-        index += 1;
-    }
-    let parts = parts.finish();
-    let suppliers = suppliers.finish();
-    let customers = customers.finish();
-    let orders = orders.finish();
-    let nations = nations.finish();
-    let regions = regions.finish();
-    let orders_by_customer = reverse_orders.finish();
-    let nations_by_region = reverse_nations.finish();
-    proof {
-        use_type_invariant(s);
-        reveal(model::valid); model::lemma_runtime_access(s.data);
-        reveal(model::meaning);
-        assert(part_delta_rows.take(part_delta_rows.len() as int) =~= part_delta_rows);
-        assert(nation_delta_rows.take(nation_delta_rows.len() as int) =~= nation_delta_rows);
-        assert(region_delta_rows.take(region_delta_rows.len() as int) =~= region_delta_rows);
-        assert(supplier_delta_rows.take(supplier_delta_rows.len() as int) =~= supplier_delta_rows);
-        assert(customer_delta_rows.take(customer_delta_rows.len() as int) =~= customer_delta_rows);
-        assert(orders_delta_rows.take(orders_delta_rows.len() as int) =~= orders_delta_rows);
-        crate::dimensions::lemma_supplier_capture(suppliers, s.data, supplier_delta_rows, s.db(), db2);
-        crate::dimensions::lemma_customer_capture(customers, s.data, customer_delta_rows, s.db(), db2);
-        crate::dimensions::lemma_order_capture(orders, orders_by_customer, s.data, orders_delta_rows, orders_full, s.db(), db2);
-        crate::dimensions::lemma_part_capture(parts, s.data, dictionary, part_dictionary, part_delta_rows, s.db(), db2);
-        crate::dimensions::lemma_nation_capture(nations, nations_by_region, s.data, dictionary, nation_dictionary, nation_delta_rows, s.db(), db2);
-        crate::dimensions::lemma_region_capture(regions, s.data, dictionary, region_delta_rows, s.db(), db2);
-    }
-    index = 0;
-    while index < region_delta.len()
-        invariant index <= region_delta.len(), nations_by_region.valid(), changed_nations.valid(),
-            forall|offset: int| 0 <= offset < nation_delta_rows.len() ==> changed_nations.has((#[trigger] nation_delta_rows[offset]).row.n_nationkey),
-            forall|earlier: int, offset: int| 0 <= earlier < region_delta_rows.len()
-                && 0 <= offset < s.data.nations_by_region.rows((region_delta_rows[earlier].row.r_regionkey, 0, 0)).len() ==>
-                changed_nations.has((#[trigger] s.data.nations_by_region.rows((region_delta_rows[earlier].row.r_regionkey, 0, 0))[offset]).first),
-        decreases region_delta.len() - index,
-    {
-        include_region_nations(&nations_by_region, region_delta[index].row.r_regionkey, &mut changed_nations);
-        index += 1;
-    }
-    let mut delta_base = Work::new(&empty);
-    index = 0;
-    let ghost line_changes = lineitem_delta@;
-    while index < lineitem_delta.len()
-        invariant index <= lineitem_delta.len(), line_changes == lineitem_delta@, delta_base.valid(),
-            forall|key: Major, minor: Major, volume: bool| #[trigger] delta_base.at(key, minor, volume) ==
-                sum(line_delta_seq_view(line_changes.take(index as int)), |change: (LineitemRow, int)|
-                    crate::contributions::line_effect(s.data.parts, s.data.suppliers, s.data.customers, s.data.orders, change.0, key, minor, change.1, volume)),
-        decreases lineitem_delta.len() - index,
-    {
-        let ghost processed = line_changes.take(index as int);
-        let change = lineitem_delta[index];
-        proof { use_type_invariant(s); reveal(model::valid); model::lemma_runtime_access(s.data); }
-        line_contribution(&s.data.parts, &s.data.suppliers, &s.data.customers, &s.data.orders, change.row, change.sign as i128, &mut delta_base)?;
-        proof {
-            assert forall|key: Major, minor: Major, volume: bool| #[trigger] delta_base.at(key, minor, volume) ==
-                sum(line_delta_seq_view(line_changes.take(index as int + 1)), |change: (LineitemRow, int)|
-                    crate::contributions::line_effect(s.data.parts, s.data.suppliers, s.data.customers, s.data.orders, change.0, key, minor, change.1, volume)) by {
-                let prefix = line_delta_seq_view(line_changes.take(index as int));
-                let next = (line_input_view(line_changes[index as int].row), line_changes[index as int].sign as int);
-                assert(line_delta_seq_view(line_changes.take(index as int + 1)) =~= prefix.push(next));
-                lemma_sum_push(prefix, next, |change: (LineitemRow, int)|
-                    crate::contributions::line_effect(s.data.parts, s.data.suppliers, s.data.customers, s.data.orders, change.0, key, minor, change.1, volume));
-            }
-        }
-        index += 1;
-    }
-    index = 0;
-    let ghost lines_for_orders_rows_input = lines_for_orders_rows@;
-    let ghost before_order_neighborhood = delta_base;
-    proof { reveal(crate::contributions::rescan_effect); }
-    while index < lines_for_orders_rows.len()
-        invariant index <= lines_for_orders_rows.len(), delta_base.valid(), parts.valid(), suppliers.valid(), customers.valid(), orders.valid(),
-            lines_for_orders_rows_input == lines_for_orders_rows@,
-            forall|key: Major, minor: Major, measure: bool| #[trigger] delta_base.at(key, minor, measure) == before_order_neighborhood.at(key, minor, measure)
-                + crate::contributions::rescan_effect(lines_for_orders_rows_input.take(index as int), required_orders, required_parts, required_suppliers, 0,
-                    parts, suppliers, customers, orders, s.data, key, minor, measure),
-        decreases lines_for_orders_rows.len() - index,
-    {
-        let ghost processed = lines_for_orders_rows_input.take(index as int);
-        let line = lines_for_orders_rows[index];
-        proof { use_type_invariant(s); reveal(model::valid); model::lemma_runtime_access(s.data); }
-        if required_orders.contains(line.l_orderkey) {
-            line_contribution(&parts, &suppliers, &customers, &orders, line, 1, &mut delta_base)?;
-            line_contribution(&s.data.parts, &s.data.suppliers, &s.data.customers, &s.data.orders, line, -1, &mut delta_base)?;
-        }
-        proof {
-            assert forall|key: Major, minor: Major, measure: bool| #[trigger] delta_base.at(key, minor, measure) == before_order_neighborhood.at(key, minor, measure)
-                + crate::contributions::rescan_effect(lines_for_orders_rows_input.take(index as int + 1), required_orders, required_parts, required_suppliers, 0,
-                    parts, suppliers, customers, orders, s.data, key, minor, measure) by {
-                reveal(crate::contributions::rescan_effect);
-                lemma_sum_take(lines_for_orders_rows_input, index as int, |line: LineInput|
-                    crate::contributions::rescan_weight(line, required_orders, required_parts, required_suppliers, 0,
-                        parts, suppliers, customers, orders, s.data, key, minor, measure));
-            }
-        }
-        index += 1;
-    }
-    index = 0;
-    let ghost lines_for_parts_rows_input = lines_for_parts_rows@;
-    let ghost before_part_neighborhood = delta_base;
-    proof { reveal(crate::contributions::rescan_effect); }
-    while index < lines_for_parts_rows.len()
-        invariant index <= lines_for_parts_rows.len(), delta_base.valid(), parts.valid(), suppliers.valid(), customers.valid(), orders.valid(),
-            lines_for_parts_rows_input == lines_for_parts_rows@,
-            forall|key: Major, minor: Major, measure: bool| #[trigger] delta_base.at(key, minor, measure) == before_part_neighborhood.at(key, minor, measure)
-                + crate::contributions::rescan_effect(lines_for_parts_rows_input.take(index as int), required_orders, required_parts, required_suppliers, 1,
-                    parts, suppliers, customers, orders, s.data, key, minor, measure),
-        decreases lines_for_parts_rows.len() - index,
-    {
-        let ghost processed = lines_for_parts_rows_input.take(index as int);
-        let line = lines_for_parts_rows[index];
-        proof { use_type_invariant(s); reveal(model::valid); model::lemma_runtime_access(s.data); }
-        if required_parts.contains(line.l_partkey) && !required_orders.contains(line.l_orderkey) {
-            line_contribution(&parts, &suppliers, &customers, &orders, line, 1, &mut delta_base)?;
-            line_contribution(&s.data.parts, &s.data.suppliers, &s.data.customers, &s.data.orders, line, -1, &mut delta_base)?;
-        }
-        proof {
-            assert forall|key: Major, minor: Major, measure: bool| #[trigger] delta_base.at(key, minor, measure) == before_part_neighborhood.at(key, minor, measure)
-                + crate::contributions::rescan_effect(lines_for_parts_rows_input.take(index as int + 1), required_orders, required_parts, required_suppliers, 1,
-                    parts, suppliers, customers, orders, s.data, key, minor, measure) by {
-                reveal(crate::contributions::rescan_effect);
-                lemma_sum_take(lines_for_parts_rows_input, index as int, |line: LineInput|
-                    crate::contributions::rescan_weight(line, required_orders, required_parts, required_suppliers, 1,
-                        parts, suppliers, customers, orders, s.data, key, minor, measure));
-            }
-        }
-        index += 1;
-    }
-    index = 0;
-    let ghost lines_for_suppliers_rows_input = lines_for_suppliers_rows@;
-    let ghost before_supplier_neighborhood = delta_base;
-    proof { reveal(crate::contributions::rescan_effect); }
-    while index < lines_for_suppliers_rows.len()
-        invariant index <= lines_for_suppliers_rows.len(), delta_base.valid(), parts.valid(), suppliers.valid(), customers.valid(), orders.valid(),
-            lines_for_suppliers_rows_input == lines_for_suppliers_rows@,
-            forall|key: Major, minor: Major, measure: bool| #[trigger] delta_base.at(key, minor, measure) == before_supplier_neighborhood.at(key, minor, measure)
-                + crate::contributions::rescan_effect(lines_for_suppliers_rows_input.take(index as int), required_orders, required_parts, required_suppliers, 2,
-                    parts, suppliers, customers, orders, s.data, key, minor, measure),
-        decreases lines_for_suppliers_rows.len() - index,
-    {
-        let ghost processed = lines_for_suppliers_rows_input.take(index as int);
-        let line = lines_for_suppliers_rows[index];
-        proof { use_type_invariant(s); reveal(model::valid); model::lemma_runtime_access(s.data); }
-        if required_suppliers.contains(line.l_suppkey) && !required_orders.contains(line.l_orderkey) && !required_parts.contains(line.l_partkey) {
-            line_contribution(&parts, &suppliers, &customers, &orders, line, 1, &mut delta_base)?;
-            line_contribution(&s.data.parts, &s.data.suppliers, &s.data.customers, &s.data.orders, line, -1, &mut delta_base)?;
-        }
-        proof {
-            assert forall|key: Major, minor: Major, measure: bool| #[trigger] delta_base.at(key, minor, measure) == before_supplier_neighborhood.at(key, minor, measure)
-                + crate::contributions::rescan_effect(lines_for_suppliers_rows_input.take(index as int + 1), required_orders, required_parts, required_suppliers, 2,
-                    parts, suppliers, customers, orders, s.data, key, minor, measure) by {
-                reveal(crate::contributions::rescan_effect);
-                lemma_sum_take(lines_for_suppliers_rows_input, index as int, |line: LineInput|
-                    crate::contributions::rescan_weight(line, required_orders, required_parts, required_suppliers, 2,
-                        parts, suppliers, customers, orders, s.data, key, minor, measure));
-            }
-        }
-        index += 1;
-    }
-    let delta_base = delta_base.finish();
+    let changed_nations = include_changed_region_nations(region_delta, &nations_by_region, changed_nations, Ghost(nation_delta@));
+    let delta_base = changed_lines_delta(&s.data, &parts, &suppliers, &customers, &orders, lineitem_delta,
+        lines_for_orders_rows, lines_for_parts_rows, lines_for_suppliers_rows, &required_orders, &required_parts, &required_suppliers);
     let mut base = Work::new(&s.data.base);
-    add_table(&delta_base, &mut base)?;
+    add_table(&delta_base, &mut base);
     let base = base.finish();
     proof {
         assert forall|key: Major, minor: Major, measure: bool| #[trigger] base.at(key, minor, measure)
@@ -1197,7 +600,7 @@ fn apply_inner(
     }
     let mut customer_index = Work::new(&s.data.base_by_customer);
     let mut supplier_index = Work::new(&s.data.base_by_supplier);
-    index_pairs(&delta_base, &mut customer_index, &mut supplier_index)?;
+    index_pairs(&delta_base, &mut customer_index, &mut supplier_index);
     let base_by_customer = customer_index.finish();
     let base_by_supplier = supplier_index.finish();
     let mut customer_routes = Work::new(&s.data.customer_routes);
@@ -1207,46 +610,26 @@ fn apply_inner(
     let ghost delta_pairs = affected_pairs;
     crate::routing::maintain_nation_routes(&changed_nations, &s.data.nations, &s.data.regions,
         &nations, &regions, &s.data.base_by_customer, &s.data.base_by_supplier,
-        &mut customer_routes, &mut supplier_routes, &mut affected_pairs)?;
+        &mut customer_routes, &mut supplier_routes, &mut affected_pairs);
     let customer_routes = customer_routes.finish();
     let supplier_routes = supplier_routes.finish();
     let mut totals = Work::new(&s.data.totals);
     let mut numerators = Work::new(&s.data.numerators);
     crate::routing::maintain_pair_routes(&affected_pairs, &s.data.base, &s.data.customer_routes, &s.data.supplier_routes,
-        &base, &customer_routes, &supplier_routes, &mut totals, &mut numerators)?;
+        &base, &customer_routes, &supplier_routes, &mut totals, &mut numerators);
     let data = model::Data { dictionary, parts, suppliers, customers, orders, nations, regions,
         orders_by_customer, nations_by_region, base, base_by_customer, base_by_supplier,
         customer_routes, supplier_routes, totals: totals.finish(), numerators: numerators.finish(),
     };
     proof {
-        reveal(model::dimension_meaning);
-        assert(model::dimension_meaning(data, db2));
-        crate::dimensions::lemma_reverse_cells(data.orders_by_customer, data, db2, true);
-        crate::dimensions::lemma_reverse_cells(data.nations_by_region, data, db2, false);
-        crate::dimensions::lemma_dimension_nonneg(data.parts, data, db2, 0);
-        crate::dimensions::lemma_dimension_nonneg(data.suppliers, data, db2, 1);
-        crate::dimensions::lemma_dimension_nonneg(data.customers, data, db2, 2);
-        crate::dimensions::lemma_dimension_nonneg(data.orders, data, db2, 3);
-        crate::dimensions::lemma_dimension_nonneg(data.nations, data, db2, 4);
-        crate::dimensions::lemma_dimension_nonneg(data.regions, data, db2, 5);
-        crate::dimensions::lemma_dimension_cells(data.parts, data.dictionary, 0);
-        crate::dimensions::lemma_dimension_cells(data.suppliers, data.dictionary, 1);
-        crate::dimensions::lemma_dimension_cells(data.customers, data.dictionary, 2);
-        crate::dimensions::lemma_dimension_cells(data.orders, data.dictionary, 3);
-        crate::dimensions::lemma_dimension_cells(data.nations, data.dictionary, 4);
-        crate::dimensions::lemma_dimension_cells(data.regions, data.dictionary, 5);
         use_type_invariant(s);
-        reveal(model::valid); model::lemma_runtime_access(s.data);
-        reveal(model::meaning);
-        reveal(model::route_meaning);
-        crate::route_updates::lemma_runtime_route_ready(s.data);
-        assert forall|key: Major, offset: int| 0 <= offset < data.nations.rows(key).len() implies
-            crate::route_proofs::nation_cell_shape(key, #[trigger] data.nations.rows(key)[offset]) by {
-            assert(crate::dimensions::dimension_support(key, minor_of(data.nations.rows(key)[offset]), data.dictionary, 4));
-        }
-        assert(crate::route_proofs::route_ready(data));
-        crate::route_updates::lemma_apply_routes(s.data, data, s.db(), db2, changed_nations, nation_delta_rows, region_delta_rows);
-        crate::route_updates::lemma_apply_route_cells(s.data, data, db2, changed_nations);
+        crate::apply_proofs::lemma_dimensions_applied(s.data, s.db(), data, db2, part_dictionary, nation_dictionary,
+            part_delta@, supplier_delta@, customer_delta@, orders_delta@, nation_delta@, region_delta@, orders_full);
+        assert(crate::route_updates::routes_changed(s.data, data, changed_nations)) by { reveal(crate::route_updates::routes_changed); }
+        crate::apply_proofs::lemma_routes_applied(s.data, s.db(), data, db2, changed_nations, nation_delta@, region_delta@);
+        model::lemma_valid_parts(s.data, s.db());
+        model::lemma_runtime_access(s.data);
+        model::lemma_meaning_parts(s.data, s.db());
         crate::join_proofs::lemma_capture_line_domain(s.db(), db2, lineitem_delta@, orders_delta@, orders_full,
             required_orders, lines_for_orders_keys@, lines_for_orders_rows@);
         assert forall|index: int, customer: i64, supplier: i64, kind: i64, year: i64|
@@ -1265,25 +648,21 @@ fn apply_inner(
                 crate::join_proofs::lemma_excluded_line(data, db2, line, customer, supplier, kind, year);
             }
         }
-        assert(line_changes.take(line_changes.len() as int) =~= line_changes);
-        assert(lines_for_orders_rows_input.take(lines_for_orders_rows_input.len() as int) =~= lines_for_orders_rows_input);
-        assert(lines_for_parts_rows_input.take(lines_for_parts_rows_input.len() as int) =~= lines_for_parts_rows_input);
-        assert(lines_for_suppliers_rows_input.take(lines_for_suppliers_rows_input.len() as int) =~= lines_for_suppliers_rows_input);
         assert forall|customer: i64, supplier: i64, kind: i64, year: i64, measure: bool|
             #[trigger] data.base.at((customer, supplier, 0), (kind, year, 0), measure) == s.data.base.at((customer, supplier, 0), (kind, year, 0), measure)
-                + sum(line_delta_seq_view(line_changes), |change: (LineitemRow, int)| crate::contributions::line_effect(s.data.parts, s.data.suppliers, s.data.customers, s.data.orders,
+                + sum(line_delta_seq_view(lineitem_delta@), |change: (LineitemRow, int)| crate::contributions::line_effect(s.data.parts, s.data.suppliers, s.data.customers, s.data.orders,
                     change.0, (customer, supplier, 0), (kind, year, 0), change.1, measure))
-                + crate::contributions::rescan_effect(lines_for_orders_rows_input, required_orders, required_parts, required_suppliers, 0,
+                + crate::contributions::rescan_effect(lines_for_orders_rows@, required_orders, required_parts, required_suppliers, 0,
                     data.parts, data.suppliers, data.customers, data.orders, s.data, (customer, supplier, 0), (kind, year, 0), measure)
-                + crate::contributions::rescan_effect(lines_for_parts_rows_input, required_orders, required_parts, required_suppliers, 1,
+                + crate::contributions::rescan_effect(lines_for_parts_rows@, required_orders, required_parts, required_suppliers, 1,
                     data.parts, data.suppliers, data.customers, data.orders, s.data, (customer, supplier, 0), (kind, year, 0), measure)
-                + crate::contributions::rescan_effect(lines_for_suppliers_rows_input, required_orders, required_parts, required_suppliers, 2,
+                + crate::contributions::rescan_effect(lines_for_suppliers_rows@, required_orders, required_parts, required_suppliers, 2,
                     data.parts, data.suppliers, data.customers, data.orders, s.data, (customer, supplier, 0), (kind, year, 0), measure) by {}
-        crate::base_updates::lemma_apply_base(s.data, data, s.db(), db2, line_changes, required_orders, required_parts, required_suppliers,
-            lines_for_orders_keys@, lines_for_orders_rows_input, lines_for_parts_keys@, lines_for_parts_rows_input,
-            lines_for_suppliers_keys@, lines_for_suppliers_rows_input);
-        crate::base_proofs::lemma_delta_base_support(s.data, data, delta_base, line_changes,
-            required_orders, required_parts, required_suppliers, lines_for_orders_rows_input, lines_for_parts_rows_input, lines_for_suppliers_rows_input);
+        crate::base_updates::lemma_apply_base(s.data, data, s.db(), db2, lineitem_delta@, required_orders, required_parts, required_suppliers,
+            lines_for_orders_keys@, lines_for_orders_rows@, lines_for_parts_keys@, lines_for_parts_rows@,
+            lines_for_suppliers_keys@, lines_for_suppliers_rows@);
+        crate::base_proofs::lemma_delta_base_support(s.data, data, delta_base, lineitem_delta@,
+            required_orders, required_parts, required_suppliers, lines_for_orders_rows@, lines_for_parts_rows@, lines_for_suppliers_rows@);
         crate::base_proofs::lemma_apply_base_cells(s.data, data, db2, delta_base);
         assert forall|key: Major, index: int| 0 <= index < data.base.rows(key).len() implies
             key.2 == 0 && (#[trigger] data.base.rows(key)[index]).third == 0 by {
@@ -1300,12 +679,13 @@ fn apply_inner(
         crate::aggregate_updates::lemma_apply_aggregates(s.data, data, delta_base, changed_nations, affected_pairs);
         crate::aggregate_bridge::lemma_build_aggregates(data, db2);
         model::lemma_shape_fields(data);
+        assert(model::runtime_text(data));
         model::lemma_runtime_from_fields(data);
-        assert(model::meaning(data, db2)) by { reveal(model::meaning); }
+        model::lemma_meaning_from_parts(data, db2);
         crate::sql_bridge::lemma_read_valid(data, db2);
         model::lemma_valid(data, db2);
     }
-    Some(data)
+    data
 }
 
 } // verus!

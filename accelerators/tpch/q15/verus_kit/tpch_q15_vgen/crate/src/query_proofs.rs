@@ -4,8 +4,6 @@ use verus_common::rel::*;
 use verus_prooflib::ordered::{Index, KeyView, lemma_key_order};
 use crate::gen_spec::*;
 use crate::model::*;
-use crate::output::{selected_count, selected_revenue, pending_weight};
-use crate::output::{maximum_matches, winning_keys};
 use verus_common::order::{map_where, lemma_map_where};
 
 verus! {
@@ -61,33 +59,6 @@ pub open spec fn window_weight(supplier: int, lower: int, upper: int, revenue: b
 }
 pub open spec fn window_sum(rows: Seq<LineitemRow>, supplier: int, lower: int, upper: int, revenue: bool) -> int {
     sum(rows, window_weight(supplier, lower, upper, revenue))
-}
-pub open spec fn has_group(totals: Seq<(i64, i128)>, supplier: int) -> bool {
-    exists|position: int| 0 <= position < totals.len() && (#[trigger] totals[position]).0 as int == supplier
-}
-pub open spec fn groups_match(totals: Seq<(i64, i128)>, db: Db, lower: int, upper: int) -> bool {
-    (forall|position: int| 0 <= position < totals.len() ==> {
-        let pair = #[trigger] totals[position];
-        window_sum(db.lineitem, pair.0 as int, lower, upper, false) > 0 &&
-        pair.1 as int == window_sum(db.lineitem, pair.0 as int, lower, upper, true)
-    }) &&
-    (forall|supplier: int| #[trigger] has_group(totals, supplier) <==> window_sum(db.lineitem, supplier, lower, upper, false) > 0)
-}
-pub proof fn lemma_group_push(totals: Seq<(i64, i128)>, pair: (i64, i128), supplier: int)
-    ensures has_group(totals.push(pair), supplier) <==> has_group(totals, supplier) || supplier == pair.0 as int,
-{
-    let after = totals.push(pair);
-    if has_group(after, supplier) {
-        let position = choose|position: int| 0 <= position < after.len() && (#[trigger] after[position]).0 as int == supplier;
-        if position < totals.len() { assert(totals[position] == after[position]); assert(has_group(totals, supplier)); }
-        else { assert(position == totals.len()); }
-    }
-    if has_group(totals, supplier) {
-        let position = choose|position: int| 0 <= position < totals.len() && (#[trigger] totals[position]).0 as int == supplier;
-        assert(after[position] == totals[position]);
-        assert(has_group(after, supplier));
-    }
-    if supplier == pair.0 as int { assert(after[totals.len() as int] == pair); assert(has_group(after, supplier)); }
 }
 pub proof fn lemma_no_groups(db: Db, parameters: Params)
     requires forall|supplier: int| #[trigger] window_sum(db.lineitem, supplier, parameters.p1, parameters.p2, false) == 0,
@@ -172,43 +143,6 @@ pub proof fn lemma_support1(db: Db, parameters: Params, supplier: int)
 pub open spec fn has_winner(winners: Seq<i64>, supplier: int) -> bool {
     exists|position: int| 0 <= position < winners.len() && (#[trigger] winners[position]) as int == supplier
 }
-pub proof fn lemma_winner_membership(totals: Seq<(i64, i128)>, value: i128)
-    ensures forall|supplier: int| #[trigger] has_winner(winning_keys(totals, value), supplier) <==>
-        exists|position: int| 0 <= position < totals.len() && (#[trigger] totals[position]).0 as int == supplier && totals[position].1 == value,
-    decreases totals.len(),
-{
-    reveal_with_fuel(Seq::filter, 2);
-    if totals.len() > 0 {
-        let prefix = totals.drop_last();
-        lemma_winner_membership(prefix, value);
-        let before = winning_keys(prefix, value);
-        let after = winning_keys(totals, value);
-        let last = totals.last();
-        if last.1 == value { assert(after =~= before.push(last.0)); }
-        else { assert(after =~= before); }
-        assert forall|supplier: int| #[trigger] has_winner(after, supplier) <==>
-            exists|position: int| 0 <= position < totals.len() && (#[trigger] totals[position]).0 as int == supplier && totals[position].1 == value by {
-            if has_winner(after, supplier) {
-                let position = choose|position: int| 0 <= position < after.len() && (#[trigger] after[position]) as int == supplier;
-                if position < before.len() {
-                    assert(has_winner(before, supplier));
-                    let index = choose|index: int| 0 <= index < prefix.len() && (#[trigger] prefix[index]).0 as int == supplier && prefix[index].1 == value;
-                    assert(totals[index] == prefix[index]);
-                } else { assert(last.0 as int == supplier); assert(totals[totals.len() as int - 1] == last); }
-            }
-            if exists|position: int| 0 <= position < totals.len() && (#[trigger] totals[position]).0 as int == supplier && totals[position].1 == value {
-                let index = choose|index: int| 0 <= index < totals.len() && (#[trigger] totals[index]).0 as int == supplier && totals[index].1 == value;
-                if index < prefix.len() {
-                    assert(prefix[index] == totals[index]);
-                    assert(has_winner(before, supplier));
-                    let position = choose|position: int| 0 <= position < before.len() && (#[trigger] before[position]) as int == supplier;
-                    assert(after[position] == before[position]);
-                    assert(has_winner(after, supplier));
-                } else { assert(after[after.len() as int - 1] == last.0); assert(has_winner(after, supplier)); }
-            }
-        }
-    }
-}
 pub proof fn lemma_scalar_values(rows: Seq<Revenue1Row>, db: Db, parameters: Params)
     ensures flat(rows.map_values(|row: Revenue1Row| scalar_1_tuples_1(db, parameters, row))).len() == rows.len(),
         flat(rows.map_values(|row: Revenue1Row| scalar_1_tuples_1(db, parameters, row))).map_values(|tuple: Scalar1Tuple| tuple.revenue1.total_revenue)
@@ -251,37 +185,6 @@ pub proof fn lemma_revenue1_max(rows: Seq<Revenue1Row>)
             if position < prefix.len() { assert(rows[position] == prefix[position]); }
         }
     }
-}
-pub proof fn lemma_maximum_sql(db: Db, parameters: Params, totals: Seq<(i64, i128)>, winners: Seq<i64>, value: i128)
-    requires groups_match(totals, db, parameters.p1, parameters.p2), maximum_matches(totals, Some(value), winners),
-    ensures scalar_1_value(db, parameters) == Some(value as int),
-{
-    let rows = rel_revenue1(db, parameters);
-    let keys = revenue1_keys(db, parameters);
-    assert(rows == keys.map_values(|key: int| revenue1_row_of(db, parameters, key)));
-    assert forall|position: int| 0 <= position < rows.len() implies (#[trigger] rows[position]).total_revenue <= value as int by {
-        let key = keys[position];
-        assert(keys.contains(key));
-        lemma_support1(db, parameters, key);
-        lemma_range_group(db, parameters, key);
-        assert(has_group(totals, key));
-        let index = choose|index: int| 0 <= index < totals.len() && (#[trigger] totals[index]).0 as int == key;
-        assert(rows[position].total_revenue == totals[index].1 as int);
-    }
-    let witness = choose|position: int| 0 <= position < totals.len() && (#[trigger] totals[position]).1 == value;
-    let key = totals[witness].0 as int;
-    lemma_support1(db, parameters, key);
-    lemma_range_group(db, parameters, key);
-    assert(keys.contains(key));
-    let position = choose|position: int| 0 <= position < keys.len() && (#[trigger] keys[position]) == key;
-    assert(rows[position].total_revenue == value as int);
-    assert(rows.len() > 0);
-    lemma_revenue1_max(rows);
-    let maximum_position = choose|position: int| 0 <= position < rows.len() && (#[trigger] rows[position]).total_revenue == max_of(rows.map_values(|row: Revenue1Row| row.total_revenue));
-    assert(max_of(rows.map_values(|row: Revenue1Row| row.total_revenue)) == value as int);
-    lemma_scalar_values(rows, db, parameters);
-    assert(scalar_1_group_count(db, parameters) == rows.len());
-    assert(scalar_1_group_vals(db, parameters, |tuple: Scalar1Tuple| tuple.revenue1.total_revenue) == rows.map_values(|row: Revenue1Row| row.total_revenue));
 }
 pub open spec fn profile_value(profile: BucketProfile, lower: int, upper: int, revenue: bool) -> int {
     if revenue { selected_revenue(profile, lower, upper) } else { selected_count(profile, lower, upper) }
@@ -384,7 +287,7 @@ pub proof fn lemma_day_outside(profile: BucketProfile, bin: int, date: int, reve
 {
     if revenue {
         assert forall|position: int| 0 <= position < profile.days.len() implies (#[trigger] profile.days@[position]).shipdate as int != date by { }
-        lemma_sum_zero(profile.days@, |day: Day| if day.shipdate as int == date { day.revenue as int } else { 0int });
+        lemma_sum_zero(profile.days@, |day: Day| if day.shipdate as int == date { day.revenue@ } else { 0int });
     } else {
         assert forall|position: int| 0 <= position < profile.days.len() implies (#[trigger] profile.days@[position]).shipdate as int != date by { }
         lemma_sum_zero(profile.days@, |day: Day| if day.shipdate as int == date { day.count as int } else { 0int });
@@ -434,10 +337,10 @@ pub proof fn lemma_profile_partition(profile: BucketProfile, lower: int, upper: 
     let dates = rng(upper - lower);
     let rows = profile.days@;
     let paired = |day: Day, offset: int| if day.shipdate as int == lower + offset {
-        if revenue { day.revenue as int } else { day.count as int }
+        if revenue { day.revenue@ } else { day.count as int }
     } else { 0int };
     let per_row = |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper {
-        if revenue { day.revenue as int } else { day.count as int }
+        if revenue { day.revenue@ } else { day.count as int }
     } else { 0int };
     let per_date = |offset: int| profile_day_value(profile, lower + offset, revenue);
     assert forall|day: Day| #[trigger] per_row(day) == sum(dates, |offset: int| paired(day, offset)) by {
@@ -454,11 +357,11 @@ pub proof fn lemma_profile_partition(profile: BucketProfile, lower: int, upper: 
         }
     }
     assert forall|offset: int| #[trigger] per_date(offset) == sum(rows, |day: Day| paired(day, offset)) by {
-        if revenue { lemma_sum_ext_all(rows, |day: Day| paired(day, offset), |day: Day| if day.shipdate as int == lower + offset { day.revenue as int } else { 0int }); }
+        if revenue { lemma_sum_ext_all(rows, |day: Day| paired(day, offset), |day: Day| if day.shipdate as int == lower + offset { day.revenue@ } else { 0int }); }
         else { lemma_sum_ext_all(rows, |day: Day| paired(day, offset), |day: Day| if day.shipdate as int == lower + offset { day.count as int } else { 0int }); }
     }
     lemma_sum_swap(rows, dates, paired, per_row, per_date);
-    if revenue { lemma_sum_ext_all(rows, per_row, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.revenue as int } else { 0int }); }
+    if revenue { lemma_sum_ext_all(rows, per_row, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.revenue@ } else { 0int }); }
     else { lemma_sum_ext_all(rows, per_row, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.count as int } else { 0int }); }
 }
 pub proof fn lemma_database_partition(rows: Seq<LineitemRow>, supplier: int, lower: int, upper: int, revenue: bool)
@@ -538,7 +441,7 @@ pub proof fn lemma_profile_range_zero(profile: BucketProfile, bin: int, lower: i
         }
     }
     lemma_sum_zero(profile.days@, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.count as int } else { 0int });
-    lemma_sum_zero(profile.days@, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.revenue as int } else { 0int });
+    lemma_sum_zero(profile.days@, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.revenue@ } else { 0int });
 }
 pub proof fn lemma_bucket_range_zero(facts: &Facts, entry: (KeyView, Index<BucketProfile>), supplier: int, lower: int, upper: int, revenue: bool)
     requires facts_shape(*facts), facts.at(entry.0) == Some(entry.1), lower < upper,
@@ -552,5 +455,48 @@ pub proof fn lemma_bucket_range_zero(facts: &Facts, entry: (KeyView, Index<Bucke
         assert(profile_at(*facts, entry.0.0, supplier) == Some(profile));
         lemma_profile_range_zero(profile, entry.0.0, lower, upper);
     }
+}
+pub open spec fn selected_count(profile: BucketProfile, lower: int, upper: int) -> int {
+    sum(profile.days@, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.count as int } else { 0int })
+}
+pub open spec fn selected_revenue(profile: BucketProfile, lower: int, upper: int) -> int {
+    sum(profile.days@, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.revenue@ } else { 0int })
+}
+pub proof fn lemma_selected_zero(profile: BucketProfile, lower: int, upper: int)
+    requires forall|position: int| 0 <= position < profile.days.len() ==> (#[trigger] profile.days@[position]).count > 0,
+    ensures selected_count(profile, lower, upper) >= 0,
+        selected_count(profile, lower, upper) == 0 ==> selected_revenue(profile, lower, upper) == 0,
+{
+    let count = |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.count as int } else { 0int };
+    lemma_sum_nonneg(profile.days@, count);
+    if selected_count(profile, lower, upper) == 0 {
+        assert forall|position: int| 0 <= position < profile.days.len() implies
+            !(lower <= (#[trigger] profile.days@[position]).shipdate as int && (profile.days@[position].shipdate as int) < upper) by {
+            if lower <= profile.days@[position].shipdate as int && (profile.days@[position].shipdate as int) < upper {
+                lemma_sum_pos(profile.days@, count, position);
+            }
+        }
+        lemma_sum_zero(profile.days@, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.revenue@ } else { 0int });
+    }
+}
+pub proof fn lemma_profile_full(profile: BucketProfile, bin: int, lower: int, upper: int)
+    requires profile_shape(profile, bin), lower <= bin * 256, upper >= (bin + 1) * 256,
+    ensures selected_count(profile, lower, upper) == profile.count as int,
+        selected_revenue(profile, lower, upper) == profile.revenue@,
+{
+    assert forall|position: int| 0 <= position < profile.days.len() implies
+        lower <= (#[trigger] profile.days@[position]).shipdate as int && (profile.days@[position].shipdate as int) < upper by {
+        let date = profile.days@[position].shipdate as int;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(date, 256);
+        vstd::arithmetic::div_mod::lemma_mod_bound(date, 256);
+        assert(date / 256 == bin);
+    }
+    lemma_sum_ext(profile.days@, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.count as int } else { 0int }, |day: Day| day.count as int);
+    lemma_sum_ext(profile.days@, |day: Day| if lower <= day.shipdate as int && (day.shipdate as int) < upper { day.revenue@ } else { 0int }, |day: Day| day.revenue@);
+}
+pub open spec fn pending_weight(supplier: int, lower: int, upper: int, revenue: bool) -> spec_fn((verus_prooflib::ordered::KeyView, BucketProfile)) -> int {
+    |entry: (verus_prooflib::ordered::KeyView, BucketProfile)| if entry.0 == number_key(supplier) {
+        if revenue { selected_revenue(entry.1, lower, upper) } else { selected_count(entry.1, lower, upper) }
+    } else { 0int }
 }
 }

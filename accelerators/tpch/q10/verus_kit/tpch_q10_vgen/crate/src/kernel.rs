@@ -11,6 +11,7 @@ use crate::customers::*;
 use crate::model::*;
 use crate::maintenance::*;
 use crate::output::{OutputRow, run};
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -19,6 +20,19 @@ pub struct State {
     pub(crate) periods: Periods,
     pub(crate) dimensions: Dimensions,
     db: Ghost<Db>,
+}
+
+/// Nothing in the state grows with past writes.
+pub open spec fn history(s: State) -> nat { 0 }
+
+pub open spec fn rescan_orders_for_keys_wanted(s: State, customer_delta: Seq<CustomerDelta>, lineitem_delta: Seq<LineDelta>,
+    nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>) -> Seq<i64> {
+    wanted_keys(orders_delta, lineitem_delta)
+}
+
+pub open spec fn rescan_returned_lines_for_keys_wanted(s: State, customer_delta: Seq<CustomerDelta>, lineitem_delta: Seq<LineDelta>,
+    nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>) -> Seq<i64> {
+    wanted_keys(orders_delta, lineitem_delta)
 }
 
 impl State {
@@ -36,13 +50,13 @@ impl State {
 
 /// Lines, orders and their per-grain facts, built chunk by chunk so the intermediate patches stay small.
 pub fn build_facts(orders: &[OrderInput], returned_lines: &[ReturnedLineInput], Ghost(db): Ghost<Db>)
-    -> (result: Option<(Index<Slice>, Periods)>)
+    -> (result: (Index<Slice>, Periods))
     requires scan_orders_ok(db, orders@), scan_returned_lines_ok(db, returned_lines@),
-    ensures result matches Some((days, periods)) ==> facts_valid(db, days, 0)
-        && facts_valid(db, periods.quarters, 2)
-        && facts_valid(db, periods.quarters1, 4) && facts_valid(db, periods.quarters2, 5),
+    ensures facts_valid(db, result.0, 0)
+        && facts_valid(db, result.1.quarters, 2)
+        && facts_valid(db, result.1.quarters1, 4) && facts_valid(db, result.1.quarters2, 5),
 {
-    let lines = match scan_lines(returned_lines) { Some(value) => value, None => return None };
+    let lines = scan_lines(returned_lines);
     let mut days = Index::new();
     let mut periods = Periods::new();
     let mut start = 0usize;
@@ -64,10 +78,16 @@ pub fn build_facts(orders: &[OrderInput], returned_lines: &[ReturnedLineInput], 
     {
         let end = if orders.len() - start > 262144 { start + 262144 } else { orders.len() };
         let chunk = vstd::slice::slice_subrange(orders, start, end);
-        let patches = match build_chunk_patches(chunk, Ghost(returned_lines@), &lines) { Some(value) => value, None => return None };
-        if !apply_patches(&mut days, &mut periods, &patches) { return None; }
+        let patches = build_chunk_patches(chunk, Ghost(returned_lines@), &lines);
         proof {
             assert(chunk@ == orders@.subrange(start as int, end as int));
+            crate::scan_proofs::lemma_chunk_ready(orders@, returned_lines@, start as int, end as int, days, patches, 0);
+            crate::scan_proofs::lemma_chunk_ready(orders@, returned_lines@, start as int, end as int, periods.quarters, patches, 2);
+            crate::scan_proofs::lemma_chunk_ready(orders@, returned_lines@, start as int, end as int, periods.quarters1, patches, 4);
+            crate::scan_proofs::lemma_chunk_ready(orders@, returned_lines@, start as int, end as int, periods.quarters2, patches, 5);
+        }
+        apply_patches(&mut days, &mut periods, &patches);
+        proof {
             assert forall|day: int, customer: int, component: int| #[trigger] slice_at(days, day, customer).component(component)
                 == scanned_fact_sum(orders@.take(end as int), returned_lines@, day, customer, 0, component) by {
                 lemma_scanned_fact_split(orders@, returned_lines@, start as int, end as int, day, customer, 0, component);
@@ -94,14 +114,14 @@ pub fn build_facts(orders: &[OrderInput], returned_lines: &[ReturnedLineInput], 
         crate::scan_proofs::lemma_facts_from_scans(db, periods.quarters1, orders@, returned_lines@, 4);
         crate::scan_proofs::lemma_facts_from_scans(db, periods.quarters2, orders@, returned_lines@, 5);
     }
-    Some((days, periods))
+    (days, periods)
 }
 
 pub fn build(mut customers: Vec<CustomerInput>, nations: Vec<NationInput>, orders: &[OrderInput],
     returned_lines: &[ReturnedLineInput], Ghost(db): Ghost<Db>) -> (result: Option<State>)
     requires scan_customers_ok(db, customers@), scan_nations_ok(db, nations@),
         scan_orders_ok(db, orders@), scan_returned_lines_ok(db, returned_lines@),
-    ensures result matches Some(state) ==> state.db() == db,
+    ensures result matches Some(state) ==> state.db() == db, result is Some,
 {
     let ghost original = customers@;
     let mut dimensions = Dimensions::new();
@@ -120,7 +140,10 @@ pub fn build(mut customers: Vec<CustomerInput>, nations: Vec<NationInput>, order
         decreases customers.len(),
     {
         let ghost remaining = customers.len() as int;
-        let row = match customers.pop() { Some(value) => value, None => return None };
+        let row = match customers.pop() { Some(value) => value, None => {
+            proof { assert(false); }
+            return None;
+        } };
         proof {
             assert(customers@ =~= original.take(remaining - 1));
             assert(original.skip(remaining - 1) =~= seq![row] + original.skip(remaining));
@@ -128,7 +151,13 @@ pub fn build(mut customers: Vec<CustomerInput>, nations: Vec<NationInput>, order
                 =~= seq![customer_input_view(row)] + customer_input_seq_view(original.skip(remaining)));
         }
         let shared = Arc::new(row);
-        if !dimensions.edit_customer(&shared, 1) { return None; }
+        proof {
+            let weight = crate::customers::row_indicator(customer_input_view(row));
+            let rest = customer_input_seq_view(original.skip(remaining));
+            assert forall|index: int| 0 <= index < rest.len() implies weight(#[trigger] rest[index]) >= 0 by {}
+            verus_common::sums::lemma_sum_nonneg(rest, weight);
+        }
+        dimensions.edit_customer(&shared, &Wide::from_i128(1));
         proof {
             assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(dimensions.customers, weight)
                 == sum(customer_input_seq_view(original.skip(remaining - 1)), weight) by {
@@ -161,7 +190,13 @@ pub fn build(mut customers: Vec<CustomerInput>, nations: Vec<NationInput>, order
         decreases nations.len() - index,
     {
         let ghost processed = index as int;
-        if !dimensions.edit_nation(&nations[index], 1) { return None; }
+        proof {
+            let weight = |input: NationInput| if input.n_nationkey == nations@[index as int].n_nationkey { 1int } else { 0int };
+            assert forall|position: int| 0 <= position < nations@.take(index as int).len()
+                implies weight(#[trigger] nations@.take(index as int)[position]) >= 0 by {}
+            verus_common::sums::lemma_sum_nonneg(nations@.take(index as int), weight);
+        }
+        dimensions.edit_nation(&nations[index], &Wide::from_i128(1));
         proof {
             assert forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
                 == sum(nations@.take(index as int + 1), |input: NationInput| if input.n_nationkey == key { 1 } else { 0 }) by {
@@ -180,25 +215,28 @@ pub fn build(mut customers: Vec<CustomerInput>, nations: Vec<NationInput>, order
         assert(nations@.take(index as int) =~= nations@);
         lemma_dimensions_from_scans(db, dimensions, original, nations@);
     }
-    let (days, periods) = match build_facts(orders, returned_lines, Ghost(db)) { Some(value) => value, None => return None };
+    let (days, periods) = build_facts(orders, returned_lines, Ghost(db));
     Some(State { days, periods, dimensions, db: Ghost(db) })
 }
 
 pub fn execute(state: &State, p1: i32, p2: i32) -> (result: Option<Vec<OutputRow>>)
     ensures result matches Some(out) ==> query_result(state.db(), params(p1 as int, p2 as int), out_view(out@)),
+        result is None ==> !answer_fits(state.db(), params(p1 as int, p2 as int)),
 {
     proof { use_type_invariant(state); reveal(State::valid); }
     run(&state.days, &state.periods, &state.dimensions, p1, p2, Ghost(state.db()))
 }
 
 pub fn rescan_orders_for_keys_keys(state: &State, customer_delta: &Vec<CustomerDelta>,
-    lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta]) -> Vec<i64>
+    lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta]) -> (result: Vec<i64>)
+    ensures result@ == rescan_orders_for_keys_wanted(*state, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@),
 {
     planned_keys(orders_delta, lineitem_delta)
 }
 
 pub fn rescan_returned_lines_for_keys_keys(state: &State, customer_delta: &Vec<CustomerDelta>,
-    lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta]) -> Vec<i64>
+    lineitem_delta: &[LineDelta], nation_delta: &Vec<NationDelta>, orders_delta: &[OrderDelta]) -> (result: Vec<i64>)
+    ensures result@ == rescan_returned_lines_for_keys_wanted(*state, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@),
 {
     planned_keys(orders_delta, lineitem_delta)
 }
@@ -212,9 +250,11 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, lineitem_delta:
     requires lineitem_delta_ok(lineitem_delta@, lineitem_full),
         capture_ok(state.db(), db2, customer_delta_seq_view(customer_delta@), lineitem_full,
             nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@)),
+        orders_for_keys_keys@ == rescan_orders_for_keys_wanted(*state, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@),
         rescan_orders_for_keys_ok(db2, orders_for_keys_keys@, orders_for_keys_rows@),
+        returned_lines_for_keys_keys@ == rescan_returned_lines_for_keys_wanted(*state, customer_delta@, lineitem_delta@, nation_delta@, orders_delta@),
         rescan_returned_lines_for_keys_ok(db2, returned_lines_for_keys_keys@, returned_lines_for_keys_rows@),
-    ensures result matches Ok(next) ==> next.db() == db2,
+    ensures result matches Ok(next) ==> next.db() == db2, result is Ok,
 {
     proof {
         use_type_invariant(state);
@@ -225,15 +265,22 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, lineitem_delta:
         lemma_facts_shape(state.db(), state.periods.quarters2, 5);
         lemma_dimensions_shape(state.db(), state.dimensions);
     }
-    let order_changes = match collect_order_changes(orders_delta) { Some(value) => value, None => return Err(1) };
-    let line_changes = match collect_line_changes(lineitem_delta) { Some(value) => value, None => return Err(1) };
-    let keys = support(&order_changes, &line_changes);
-    if !covers(&keys, orders_for_keys_keys) || !covers(&keys, returned_lines_for_keys_keys) { return Err(2); }
-    let post_orders = match collect_orders(orders_for_keys_rows) { Some(value) => value, None => return Err(1) };
-    let post_lines = match collect_lines(returned_lines_for_keys_rows) { Some(value) => value, None => return Err(1) };
-    let patches = match changed_patches(&keys, &order_changes, &line_changes, &post_orders, &post_lines) {
-        Some(value) => value, None => return Err(3),
-    };
+    let order_changes = collect_order_changes(orders_delta);
+    let line_changes = collect_line_changes(lineitem_delta);
+    let keys = key_set(orders_for_keys_keys);
+    let post_orders = collect_orders(orders_for_keys_rows);
+    let post_lines = collect_lines(returned_lines_for_keys_rows);
+    proof {
+        crate::maintenance_proofs::lemma_change_keys_wanted(order_changes, line_changes, orders_delta@, lineitem_delta@);
+        assert forall|key: (int, Seq<u8>)| #[trigger] keys.at(key).is_some() implies
+            key.1 == Seq::<u8>::empty() && seq_view_i64(orders_for_keys_keys@).contains(key.0)
+                && seq_view_i64(returned_lines_for_keys_keys@).contains(key.0) by {}
+        assert forall|key: (int, Seq<u8>)| #![trigger order_changes.at(key), line_changes.at(key)]
+            order_changes.at(key).is_some() || line_changes.at(key).is_some() implies keys.at(key).is_some() by {
+            crate::maintenance_proofs::lemma_view_contains(orders_for_keys_keys@, key.0);
+        }
+    }
+    let patches = changed_patches(&keys, &order_changes, &line_changes, &post_orders, &post_lines);
     let key_snapshot = keys.share();
     let patch_snapshot = patches.share();
     proof {
@@ -273,14 +320,27 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, lineitem_delta:
     let ghost previous_days = days;
     let ghost previous_periods = periods;
     let ghost previous_dimensions = dimensions;
-    if !apply_patches(&mut days, &mut periods, &patches) { return Err(3); }
+    proof {
+        assert forall|day: int, customer: int, grain: int, component: int|
+            #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
+                == fact_sum(db2, day, customer, grain, component) - fact_sum(state.db(), day, customer, grain, component) by {}
+        crate::maintenance_proofs::lemma_patch_ready(state.db(), db2, days, patches, 0);
+        crate::maintenance_proofs::lemma_patch_ready(state.db(), db2, periods.quarters, patches, 2);
+        crate::maintenance_proofs::lemma_patch_ready(state.db(), db2, periods.quarters1, patches, 4);
+        crate::maintenance_proofs::lemma_patch_ready(state.db(), db2, periods.quarters2, patches, 5);
+    }
+    apply_patches(&mut days, &mut periods, &patches);
     proof {
         crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_days, days, &patches, 0);
         crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_periods.quarters, periods.quarters, &patches, 2);
         crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_periods.quarters1, periods.quarters1, &patches, 4);
         crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_periods.quarters2, periods.quarters2, &patches, 5);
     }
-    if !apply_dimensions(&mut dimensions, customer_delta, nation_delta) { return Err(3); }
+    proof {
+        crate::dimension_updates::lemma_dimension_nonneg(state.db(), db2, previous_dimensions,
+            customer_delta@, nation_delta@);
+    }
+    apply_dimensions(&mut dimensions, customer_delta, nation_delta);
     proof {
         crate::dimension_updates::lemma_dimensions_capture(state.db(), db2, previous_dimensions, dimensions, customer_delta@, nation_delta@);
     }

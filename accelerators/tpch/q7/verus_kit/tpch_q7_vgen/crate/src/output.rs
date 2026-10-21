@@ -1,7 +1,8 @@
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::*;
 use crate::gen_spec::*;
-use crate::gen_obligations::out_view;
+use crate::gen_obligations::{out_view, out_fits, answer_fits};
 use crate::model::*;
 use crate::storage::*;
 use crate::values::*;
@@ -25,11 +26,15 @@ pub open spec fn pair_output(answers: Layers<Answers>, first: Seq<u8>, second: S
     output_cell(answers, first, second, 1995) + output_cell(answers, first, second, 1996)
 }
 
-pub fn read_answer(answers: &Layers<Answers>, first: &[u8], second: &[u8], year: i64) -> (result: (i128, i128))
+pub open spec fn rows_fit(rows: Seq<OutRow>) -> bool {
+    forall|index: int| 0 <= index < rows.len() ==> out_fits(#[trigger] rows[index])
+}
+
+pub fn read_answer(answers: &Layers<Answers>, first: &[u8], second: &[u8], year: i64) -> (result: (Wide, Wide))
     requires forall|key: i64| #![trigger answers.at(key)]
         answers.at(key) matches Some(bucket) ==> answers_valid(bucket, key),
-    ensures result.0 as int == answer_value(*answers, first@, second@, year, false),
-        result.1 as int == answer_value(*answers, first@, second@, year, true),
+    ensures result.0@ == answer_value(*answers, first@, second@, year, false),
+        result.1@ == answer_value(*answers, first@, second@, year, true),
 {
     let key = pair_hash(first, second);
     if let Some(bucket) = answers.get(key) {
@@ -49,9 +54,9 @@ pub fn read_answer(answers: &Layers<Answers>, first: &[u8], second: &[u8], year:
                     assert forall|measure: bool|
                         #![trigger answer_at(bucket.rows@, first@, second@, year, measure)]
                         answer_at(bucket.rows@, first@, second@, year, measure)
-                            == if measure { row.revenue as int } else { row.count as int } by {
+                            == if measure { row.revenue@ } else { row.count@ } by {
                         let weight = |entry: Answer| if entry.first@ == first@ && entry.second@ == second@
-                            && entry.year == year { if measure { entry.revenue as int } else { entry.count as int } } else { 0int };
+                            && entry.year == year { if measure { entry.revenue@ } else { entry.count@ } } else { 0int };
                         assert forall|index: int| #![trigger bucket.rows@[index]]
                             0 <= index < bucket.rows@.len() && index != offset implies weight(bucket.rows@[index]) == 0 by {
                             assert(answer_keys(bucket.rows@)[offset as int] == (row.first@, row.second@, row.year));
@@ -68,7 +73,7 @@ pub fn read_answer(answers: &Layers<Answers>, first: &[u8], second: &[u8], year:
                         lemma_sum_single_match(bucket.rows@, weight, offset as int);
                     }
                 }
-                return (row.count, row.revenue);
+                return (row.count.dup(), row.revenue.dup());
             }
             offset += 1;
         }
@@ -76,26 +81,42 @@ pub fn read_answer(answers: &Layers<Answers>, first: &[u8], second: &[u8], year:
             assert forall|measure: bool| #![trigger answer_at(bucket.rows@, first@, second@, year, measure)]
                 answer_at(bucket.rows@, first@, second@, year, measure) == 0 by {
                 lemma_sum_zero(bucket.rows@, |entry: Answer| if entry.first@ == first@ && entry.second@ == second@
-                    && entry.year == year { if measure { entry.revenue as int } else { entry.count as int } } else { 0int });
+                    && entry.year == year { if measure { entry.revenue@ } else { entry.count@ } } else { 0int });
             }
         }
-        return (0, 0);
+        return (Wide::zero(), Wide::zero());
     }
-    (0, 0)
+    (Wide::zero(), Wide::zero())
 }
 
-pub fn emit_pair(answers: &Layers<Answers>, first: &[u8], second: &[u8], out: &mut Vec<(Vec<u8>, Vec<u8>, i64, i128)>)
+pub fn emit_pair(answers: &Layers<Answers>, first: &[u8], second: &[u8], out: &mut Vec<(Vec<u8>, Vec<u8>, i64, i128)>) -> (result: bool)
     requires forall|key: i64| #![trigger answers.at(key)]
         answers.at(key) matches Some(bucket) ==> answers_valid(bucket, key),
-    ensures out_view(final(out)@) == out_view(old(out)@) + pair_output(*answers, first@, second@),
+    ensures result ==> out_view(final(out)@) == out_view(old(out)@) + pair_output(*answers, first@, second@),
+        !result ==> !rows_fit(pair_output(*answers, first@, second@)),
 {
     proof { reveal(output_cell); reveal(pair_output); }
     let ghost before = out_view(out@);
     let earlier = read_answer(answers, first, second, 1995);
-    if earlier.0 > 0 { out.push((copy_bytes(first), copy_bytes(second), 1995, earlier.1)); }
+    if earlier.0.is_pos() {
+        let value = match earlier.1.to_i128() { Some(value) => value, None => {
+            proof { assert(pair_output(*answers, first@, second@)[0].revenue == earlier.1@); assert(!out_fits(pair_output(*answers, first@, second@)[0])); }
+            return false;
+        } };
+        out.push((copy_bytes(first), copy_bytes(second), 1995, value));
+    }
     proof { assert(out_view(out@) == before + output_cell(*answers, first@, second@, 1995)); }
     let later = read_answer(answers, first, second, 1996);
-    if later.0 > 0 { out.push((copy_bytes(first), copy_bytes(second), 1996, later.1)); }
+    if later.0.is_pos() {
+        let value = match later.1.to_i128() { Some(value) => value, None => {
+            proof {
+            let position = if earlier.0@ > 0 { 1int } else { 0int };
+            assert(pair_output(*answers, first@, second@)[position].revenue == later.1@); assert(!out_fits(pair_output(*answers, first@, second@)[position])); }
+            return false;
+        } };
+        out.push((copy_bytes(first), copy_bytes(second), 1996, value));
+    }
+    true
 }
 
 #[verifier::opaque]
@@ -318,6 +339,33 @@ pub proof fn lemma_cached_query(db: Db, answers: Layers<Answers>, first: Seq<u8>
         lemma_group_parameter(db, p, left, right, year);
         assert(answer_value(answers, left, right, year as i64, false) > 0);
     }
+}
+
+pub proof fn lemma_unfit(db: Db, answers: Layers<Answers>, first: Seq<u8>, second: Seq<u8>, left: Seq<u8>, right: Seq<u8>)
+    requires
+        forall|a: Seq<u8>, b: Seq<u8>, year: i64|
+            #![trigger answer_value(answers, a, b, year, false)]
+            answer_value(answers, a, b, year, false) == group_count(db, params(a, b), a, b, year as int),
+        forall|a: Seq<u8>, b: Seq<u8>, year: i64|
+            #![trigger answer_value(answers, a, b, year, true)]
+            answer_value(answers, a, b, year, true) == row_of(db, params(a, b), a, b, year as int).revenue,
+        (left == first && right == second) || (left == second && right == first),
+        !rows_fit(pair_output(answers, left, right)),
+    ensures !answer_fits(db, params(first, second)),
+{
+    lemma_cached_query(db, answers, first, second);
+    reveal(ordered_output);
+    let out = ordered_output(answers, first, second);
+    let pair = pair_output(answers, left, right);
+    let index = choose|index: int| 0 <= index < pair.len() && !out_fits(#[trigger] pair[index]);
+    let target = if bytes_lt(second, first) {
+        if left == second && right == first { index } else { pair_output(answers, second, first).len() as int + index }
+    } else if first == second { index } else {
+        if left == first && right == second { index } else { pair_output(answers, first, second).len() as int + index }
+    };
+    assert(0 <= target < out.len());
+    assert(out[target] == pair[index]);
+    assert(query_result(db, params(first, second), out));
 }
 
 }

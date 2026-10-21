@@ -2,6 +2,7 @@ use vstd::prelude::*;
 use vstd::hash_map::HashMapWithView as HashMap;
 use verus_common::sums::*;
 use crate::table::*;
+use crate::num::Num;
 use crate::gen_obligations::*;
 use crate::compound_map::CompoundMap;
 pub use crate::contributions::line_contribution;
@@ -228,9 +229,57 @@ pub proof fn lemma_reverse_pairs_step(before: Pairs, after: Pairs, keys: Keys, r
     }
 }
 
+pub open spec fn key_added(values: Seq<i64>, key: i64) -> Seq<i64> {
+    if values.contains(key) { values } else { values.push(key) }
+}
+
+pub open spec fn keys_added(values: Seq<i64>, keys: Seq<i64>) -> Seq<i64>
+    decreases keys.len(),
+{
+    if keys.len() == 0 { values } else { key_added(keys_added(values, keys.drop_last()), keys.last()) }
+}
+
+pub open spec fn cell_firsts(rows: Seq<Cell>) -> Seq<i64> {
+    rows.map_values(|cell: Cell| cell.first)
+}
+
+/// The orderkeys of the orders of the changed customers, in the order the rescan requests them.
+pub open spec fn customer_order_keys(reverse: Table, customers: Seq<CustomerDelta>) -> Seq<i64>
+    decreases customers.len(),
+{
+    if customers.len() == 0 { Seq::empty() }
+    else {
+        keys_added(customer_order_keys(reverse, customers.drop_last()),
+            cell_firsts(reverse.rows((customers.last().row.c_custkey, 0, 0))))
+    }
+}
+
+pub open spec fn window_order_keys(values: Seq<i64>, orders: Seq<OrderDelta>) -> Seq<i64>
+    decreases orders.len(),
+{
+    if orders.len() == 0 { values }
+    else {
+        let before = window_order_keys(values, orders.drop_last());
+        if orders.last().in_1995 != 0 || orders.last().in_1996 != 0 { key_added(before, orders.last().o_orderkey) } else { before }
+    }
+}
+
+pub open spec fn wanted_order_keys(reverse: Table, customers: Seq<CustomerDelta>, orders: Seq<OrderDelta>) -> Seq<i64> {
+    window_order_keys(customer_order_keys(reverse, customers), orders)
+}
+
+pub open spec fn wanted_part_keys(parts: Seq<PartDelta>) -> Seq<i64> {
+    keys_added(Seq::empty(), parts.map_values(|change: PartDelta| change.row.p_partkey))
+}
+
+pub open spec fn wanted_supplier_keys(suppliers: Seq<SupplierDelta>) -> Seq<i64> {
+    keys_added(Seq::empty(), suppliers.map_values(|change: SupplierDelta| change.row.s_suppkey))
+}
+
 pub fn order_keys(reverse: &Table, customers: &[CustomerDelta], orders: &[OrderDelta]) -> (result: Keys)
     requires reverse.valid(),
     ensures result.valid(),
+        result.values@ == wanted_order_keys(*reverse, customers@, orders@),
         forall|customer_index: int, offset: int| 0 <= customer_index < customers@.len()
             && 0 <= offset < reverse.rows((customers@[customer_index].row.c_custkey, 0, 0)).len() ==>
             result.has((#[trigger] reverse.rows((customers@[customer_index].row.c_custkey, 0, 0))[offset]).first),
@@ -241,30 +290,49 @@ pub fn order_keys(reverse: &Table, customers: &[CustomerDelta], orders: &[OrderD
     let mut index = 0;
     let ghost customer_rows = customers@;
     while index < customers.len()
-        invariant index <= customers.len(), reverse.valid(), keys.valid(),
+        invariant index <= customers.len(), reverse.valid(), keys.valid(), customer_rows == customers@,
+            keys.values@ == customer_order_keys(*reverse, customer_rows.take(index as int)),
             forall|customer_index: int, offset: int| 0 <= customer_index < index
                 && 0 <= offset < reverse.rows((customers@[customer_index].row.c_custkey, 0, 0)).len() ==>
                 keys.has((#[trigger] reverse.rows((customers@[customer_index].row.c_custkey, 0, 0))[offset]).first),
         decreases customers.len() - index,
     {
-        let ghost processed = customer_rows.take(index as int);
+        let ghost before = keys.values@;
         let rows = reverse.get((customers[index].row.c_custkey, 0, 0));
         let mut offset = 0;
         while offset < rows.len()
             invariant reverse.valid(), keys.valid(), index < customers.len(), offset <= rows.len(),
                 (*rows)@ == reverse.rows((customers@[index as int].row.c_custkey, 0, 0)),
+                keys.values@ == keys_added(before, cell_firsts((*rows)@.take(offset as int))),
                 forall|customer_index: int, earlier: int| 0 <= customer_index < index
                     && 0 <= earlier < reverse.rows((customers@[customer_index].row.c_custkey, 0, 0)).len() ==>
                     keys.has((#[trigger] reverse.rows((customers@[customer_index].row.c_custkey, 0, 0))[earlier]).first),
                 forall|earlier: int| 0 <= earlier < offset ==> keys.has((#[trigger] (*rows)@[earlier]).first),
             decreases rows.len() - offset,
-        { keys.add(rows[offset].first); offset += 1; }
+        {
+            keys.add(rows[offset].first);
+            proof {
+                let taken = (*rows)@.take(offset as int + 1);
+                assert(cell_firsts(taken).drop_last() =~= cell_firsts((*rows)@.take(offset as int)));
+                assert(cell_firsts(taken).last() == rows@[offset as int].first);
+            }
+            offset += 1;
+        }
+        proof {
+            assert((*rows)@.take(rows@.len() as int) =~= (*rows)@);
+            assert(customer_rows.take(index as int + 1).drop_last() =~= customer_rows.take(index as int));
+            assert(customer_rows.take(index as int + 1).last() == customer_rows[index as int]);
+        }
         index += 1;
     }
+    proof { assert(customer_rows.take(customer_rows.len() as int) =~= customer_rows); }
+    let ghost customer_keys = keys.values@;
     index = 0;
     let ghost order_rows = orders@;
     while index < orders.len()
-        invariant index <= orders.len(), reverse.valid(), keys.valid(),
+        invariant index <= orders.len(), reverse.valid(), keys.valid(), order_rows == orders@,
+            customer_keys == customer_order_keys(*reverse, customers@),
+            keys.values@ == window_order_keys(customer_keys, order_rows.take(index as int)),
             forall|customer_index: int, offset: int| 0 <= customer_index < customers@.len()
                 && 0 <= offset < reverse.rows((customers@[customer_index].row.c_custkey, 0, 0)).len() ==>
                 keys.has((#[trigger] reverse.rows((customers@[customer_index].row.c_custkey, 0, 0))[offset]).first),
@@ -272,55 +340,73 @@ pub fn order_keys(reverse: &Table, customers: &[CustomerDelta], orders: &[OrderD
                 || orders@[earlier].in_1996 != 0) ==> keys.has(orders@[earlier].o_orderkey),
         decreases orders.len() - index,
     {
-        let ghost processed = order_rows.take(index as int);
         if orders[index].in_1995 != 0 || orders[index].in_1996 != 0 { keys.add(orders[index].o_orderkey); }
+        proof {
+            assert(order_rows.take(index as int + 1).drop_last() =~= order_rows.take(index as int));
+            assert(order_rows.take(index as int + 1).last() == order_rows[index as int]);
+        }
         index += 1;
     }
+    proof { assert(order_rows.take(order_rows.len() as int) =~= order_rows); }
     keys
 }
 
 pub fn part_keys(parts: &Vec<PartDelta>) -> (result: Keys)
-    ensures result.valid(),
+    ensures result.valid(), result.values@ == wanted_part_keys(parts@),
         forall|index: int| 0 <= index < parts@.len() ==> result.has((#[trigger] parts@[index]).row.p_partkey),
 {
     let mut keys = Keys::new();
     let mut index = 0;
-    let ghost input = parts@;
+    let ghost input = parts@.map_values(|change: PartDelta| change.row.p_partkey);
     while index < parts.len()
-        invariant index <= parts.len(), keys.valid(),
+        invariant index <= parts.len(), keys.valid(), input == parts@.map_values(|change: PartDelta| change.row.p_partkey),
+            input.len() == parts@.len(),
+            keys.values@ == keys_added(Seq::empty(), input.take(index as int)),
             forall|earlier: int| 0 <= earlier < index ==> keys.has((#[trigger] parts@[earlier]).row.p_partkey),
         decreases parts.len() - index,
     {
-        let ghost processed = input.take(index as int);
-        keys.add(parts[index].row.p_partkey); index += 1;
+        keys.add(parts[index].row.p_partkey);
+        proof {
+            assert(input.take(index as int + 1).drop_last() =~= input.take(index as int));
+            assert(input.take(index as int + 1).last() == input[index as int]);
+        }
+        index += 1;
     }
+    proof { assert(input.take(input.len() as int) =~= input); }
     keys
 }
 
 pub fn supplier_keys(suppliers: &[SupplierDelta]) -> (result: Keys)
-    ensures result.valid(),
+    ensures result.valid(), result.values@ == wanted_supplier_keys(suppliers@),
         forall|index: int| 0 <= index < suppliers@.len() ==> result.has((#[trigger] suppliers@[index]).row.s_suppkey),
 {
     let mut keys = Keys::new();
     let mut index = 0;
-    let ghost input = suppliers@;
+    let ghost input = suppliers@.map_values(|change: SupplierDelta| change.row.s_suppkey);
     while index < suppliers.len()
-        invariant index <= suppliers.len(), keys.valid(),
+        invariant index <= suppliers.len(), keys.valid(), input == suppliers@.map_values(|change: SupplierDelta| change.row.s_suppkey),
+            input.len() == suppliers@.len(),
+            keys.values@ == keys_added(Seq::empty(), input.take(index as int)),
             forall|earlier: int| 0 <= earlier < index ==> keys.has((#[trigger] suppliers@[earlier]).row.s_suppkey),
         decreases suppliers.len() - index,
     {
-        let ghost processed = input.take(index as int);
-        keys.add(suppliers[index].row.s_suppkey); index += 1;
+        keys.add(suppliers[index].row.s_suppkey);
+        proof {
+            assert(input.take(index as int + 1).drop_last() =~= input.take(index as int));
+            assert(input.take(index as int + 1).last() == input[index as int]);
+        }
+        index += 1;
     }
+    proof { assert(input.take(input.len() as int) =~= input); }
     keys
 }
 
-pub fn index_pairs(changes: &Table, customer_index: &mut Work, supplier_index: &mut Work) -> (result: Option<()>)
+pub fn index_pairs(changes: &Table, customer_index: &mut Work, supplier_index: &mut Work)
     requires changes.valid(), old(customer_index).valid(), old(supplier_index).valid(),
-    ensures result is Some ==> final(customer_index).valid() && final(supplier_index).valid(),
-        result is Some ==> forall|key: Major, minor: Major, measure: bool| #[trigger] final(customer_index).at(key, minor, measure)
+    ensures final(customer_index).valid() && final(supplier_index).valid(),
+        forall|key: Major, minor: Major, measure: bool| #[trigger] final(customer_index).at(key, minor, measure)
             == old(customer_index).at(key, minor, measure) + pair_index_effect(changes.keys_view(), *changes, key, minor, false, measure),
-        result is Some ==> forall|key: Major, minor: Major, measure: bool| #[trigger] final(supplier_index).at(key, minor, measure)
+        forall|key: Major, minor: Major, measure: bool| #[trigger] final(supplier_index).at(key, minor, measure)
             == old(supplier_index).at(key, minor, measure) + pair_index_effect(changes.keys_view(), *changes, key, minor, true, measure),
 {
     let keys = changes.keys();
@@ -339,34 +425,33 @@ pub fn index_pairs(changes: &Table, customer_index: &mut Work, supplier_index: &
         let key = keys[index];
         let rows = changes.get(key);
         let mut offset = 0;
-        let mut count: i128 = 0;
+        let mut count = Num::zero();
         while offset < rows.len()
-            invariant offset <= rows.len(), count as int == sum((*rows)@.take(offset as int), |cell: Cell| cell.count as int),
+            invariant offset <= rows.len(), count@ == sum((*rows)@.take(offset as int), |cell: Cell| cell.count@),
             decreases rows.len() - offset,
         {
-            count = count.checked_add(rows[offset].count)?;
-            proof { lemma_sum_take((*rows)@, offset as int, |cell: Cell| cell.count as int); }
+            count = count.add(&rows[offset].count);
+            proof { lemma_sum_take((*rows)@, offset as int, |cell: Cell| cell.count@); }
             offset += 1;
         }
         proof { assert((*rows)@.take((*rows)@.len() as int) =~= (*rows)@); }
-        customer_index.add((key.0, 0, 0), (key.1, 0, 0), count, 0)?;
-        supplier_index.add((key.1, 0, 0), (key.0, 0, 0), count, 0)?;
+        customer_index.add((key.0, 0, 0), (key.1, 0, 0), count.dup(), Num::zero());
+        supplier_index.add((key.1, 0, 0), (key.0, 0, 0), count, Num::zero());
         proof {
             assert forall|target: Major, minor: Major, measure: bool| #[trigger] customer_index.at(target, minor, measure)
                 == initial_customer.at(target, minor, measure) + pair_index_effect(keys@.take(index as int + 1), *changes, target, minor, false, measure) by {
                 reveal(pair_index_effect);
-                lemma_sum_take(keys@, index as int, |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count as int), target, minor, false, measure));
+                lemma_sum_take(keys@, index as int, |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count@), target, minor, false, measure));
             }
             assert forall|target: Major, minor: Major, measure: bool| #[trigger] supplier_index.at(target, minor, measure)
                 == initial_supplier.at(target, minor, measure) + pair_index_effect(keys@.take(index as int + 1), *changes, target, minor, true, measure) by {
                 reveal(pair_index_effect);
-                lemma_sum_take(keys@, index as int, |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count as int), target, minor, true, measure));
+                lemma_sum_take(keys@, index as int, |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count@), target, minor, true, measure));
             }
         }
         index += 1;
     }
     proof { assert(keys@.take(keys@.len() as int) =~= keys@); }
-    Some(())
 }
 
 pub open spec fn index_weight(entry: Major, count: int, key: Major, minor: Major, supplier: bool, measure: bool) -> int {
@@ -376,7 +461,7 @@ pub open spec fn index_weight(entry: Major, count: int, key: Major, minor: Major
 
 #[verifier::opaque]
 pub open spec fn pair_index_effect(keys: Seq<Major>, changes: Table, key: Major, minor: Major, supplier: bool, measure: bool) -> int {
-    sum(keys, |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count as int), key, minor, supplier, measure))
+    sum(keys, |entry: Major| index_weight(entry, sum(changes.rows(entry), |cell: Cell| cell.count@), key, minor, supplier, measure))
 }
 
 #[verifier::opaque]
@@ -423,10 +508,10 @@ pub proof fn lemma_table_effect(changes: Table, key: Major, minor: Major, measur
     lemma_sum_indicator_distinct(keys, key, value, selected);
 }
 
-fn add_rows(rows: &[Cell], entry: Major, target: &mut Work) -> (result: Option<()>)
+fn add_rows(rows: &[Cell], entry: Major, target: &mut Work)
     requires old(target).valid(),
-    ensures result is Some ==> final(target).valid(),
-        result is Some ==> forall|key: Major, minor: Major, measure: bool| #[trigger] final(target).at(key, minor, measure)
+    ensures final(target).valid(),
+        forall|key: Major, minor: Major, measure: bool| #[trigger] final(target).at(key, minor, measure)
             == old(target).at(key, minor, measure) + row_effect(rows@, entry, key, minor, measure),
 {
     let ghost initial = *target;
@@ -438,8 +523,8 @@ fn add_rows(rows: &[Cell], entry: Major, target: &mut Work) -> (result: Option<(
                 == initial.at(key, minor, measure) + row_effect(rows@.take(index as int), entry, key, minor, measure),
         decreases rows.len() - index,
     {
-        let cell = rows[index];
-        target.add(entry, (cell.first, cell.second, cell.third), cell.count, cell.volume)?;
+        let cell = &rows[index];
+        target.add(entry, (cell.first, cell.second, cell.third), cell.count.dup(), cell.volume.dup());
         proof {
             assert forall|key: Major, minor: Major, measure: bool| #[trigger] target.at(key, minor, measure)
                 == initial.at(key, minor, measure) + row_effect(rows@.take(index as int + 1), entry, key, minor, measure) by {
@@ -450,13 +535,12 @@ fn add_rows(rows: &[Cell], entry: Major, target: &mut Work) -> (result: Option<(
         index += 1;
     }
     proof { assert(rows@.take(rows@.len() as int) =~= rows@); }
-    Some(())
 }
 
-pub fn add_table(changes: &Table, target: &mut Work) -> (result: Option<()>)
+pub fn add_table(changes: &Table, target: &mut Work)
     requires changes.valid(), old(target).valid(),
-    ensures result is Some ==> final(target).valid(),
-        result is Some ==> forall|key: Major, minor: Major, measure: bool| #[trigger] final(target).at(key, minor, measure)
+    ensures final(target).valid(),
+        forall|key: Major, minor: Major, measure: bool| #[trigger] final(target).at(key, minor, measure)
             == old(target).at(key, minor, measure) + table_effect(changes.keys_view(), *changes, key, minor, measure),
 {
     let keys = changes.keys();
@@ -470,7 +554,7 @@ pub fn add_table(changes: &Table, target: &mut Work) -> (result: Option<()>)
         decreases keys.len() - index,
     {
         let rows = changes.get(keys[index]);
-        add_rows(rows.as_slice(), keys[index], target)?;
+        add_rows(rows.as_slice(), keys[index], target);
         proof {
             assert forall|key: Major, minor: Major, measure: bool| #[trigger] target.at(key, minor, measure)
                 == initial.at(key, minor, measure) + table_effect(keys@.take(index as int + 1), *changes, key, minor, measure) by {
@@ -481,7 +565,6 @@ pub fn add_table(changes: &Table, target: &mut Work) -> (result: Option<()>)
         index += 1;
     }
     proof { assert(keys@.take(keys@.len() as int) =~= keys@); }
-    Some(())
 }
 
 }

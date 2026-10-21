@@ -1,17 +1,18 @@
 use vstd::prelude::*;
 use std::sync::Arc;
+use verus_prooflib::wide::Wide;
 use crate::gen_obligations::*;
 use crate::gen_spec::*;
 
 verus! {
 
 pub struct Totals {
-    pub count: i128,
-    pub quantity: i128,
-    pub price: i128,
-    pub discounted: i128,
-    pub charge: i128,
-    pub discount: i128,
+    pub count: Wide,
+    pub quantity: Wide,
+    pub price: Wide,
+    pub discounted: Wide,
+    pub charge: Wide,
+    pub discount: Wide,
 }
 
 pub open spec fn weight(row: LineitemRow, component: int) -> int {
@@ -25,66 +26,61 @@ pub open spec fn weight(row: LineitemRow, component: int) -> int {
 
 impl Totals {
     pub open spec fn at(self, component: int) -> int {
-        if component == 0 { self.count as int }
-        else if component == 1 { self.quantity as int }
-        else if component == 2 { self.price as int }
-        else if component == 3 { self.discounted as int }
-        else if component == 4 { self.charge as int }
-        else { self.discount as int }
+        if component == 0 { self.count@ }
+        else if component == 1 { self.quantity@ }
+        else if component == 2 { self.price@ }
+        else if component == 3 { self.discounted@ }
+        else if component == 4 { self.charge@ }
+        else { self.discount@ }
+    }
+
+    pub open spec fn vanishes(self) -> bool {
+        forall|component: int| #[trigger] self.at(component) == 0
     }
 
     pub fn zero() -> (result: Self)
         ensures forall|component: int| #[trigger] result.at(component) == 0,
     {
-        Self { count: 0, quantity: 0, price: 0, discounted: 0, charge: 0, discount: 0 }
+        Self { count: Wide::zero(), quantity: Wide::zero(), price: Wide::zero(),
+            discounted: Wide::zero(), charge: Wide::zero(), discount: Wide::zero() }
     }
 
     pub fn copy(&self) -> (result: Self)
         ensures result == *self,
     {
-        Self { count: self.count, quantity: self.quantity, price: self.price,
-            discounted: self.discounted, charge: self.charge, discount: self.discount }
+        Self { count: self.count.dup(), quantity: self.quantity.dup(), price: self.price.dup(),
+            discounted: self.discounted.dup(), charge: self.charge.dup(), discount: self.discount.dup() }
     }
 
-    pub fn add(&self, other: &Self) -> (result: Option<Self>)
-        ensures result matches Some(value) ==> forall|component: int|
-            #[trigger] value.at(component) == self.at(component) + other.at(component),
+    pub fn add(&self, other: &Self) -> (result: Self)
+        ensures forall|component: int| #[trigger] result.at(component) == self.at(component) + other.at(component),
     {
-        let count = match self.count.checked_add(other.count) { Some(value) => value, None => return None };
-        let quantity = match self.quantity.checked_add(other.quantity) { Some(value) => value, None => return None };
-        let price = match self.price.checked_add(other.price) { Some(value) => value, None => return None };
-        let discounted = match self.discounted.checked_add(other.discounted) { Some(value) => value, None => return None };
-        let charge = match self.charge.checked_add(other.charge) { Some(value) => value, None => return None };
-        let discount = match self.discount.checked_add(other.discount) { Some(value) => value, None => return None };
-        Some(Self { count, quantity, price, discounted, charge, discount })
+        Self { count: self.count.add(&other.count), quantity: self.quantity.add(&other.quantity),
+            price: self.price.add(&other.price), discounted: self.discounted.add(&other.discounted),
+            charge: self.charge.add(&other.charge), discount: self.discount.add(&other.discount) }
     }
 
-    pub fn scaled(&self, sign: i64) -> (result: Option<Self>)
-        ensures result matches Some(value) ==> forall|component: int|
-            #[trigger] value.at(component) == self.at(component) * sign,
+    pub fn scaled(&self, sign: i64) -> (result: Self)
+        ensures forall|component: int| #[trigger] result.at(component) == self.at(component) * sign,
     {
-        let factor = sign as i128;
-        let count = match self.count.checked_mul(factor) { Some(value) => value, None => return None };
-        let quantity = match self.quantity.checked_mul(factor) { Some(value) => value, None => return None };
-        let price = match self.price.checked_mul(factor) { Some(value) => value, None => return None };
-        let discounted = match self.discounted.checked_mul(factor) { Some(value) => value, None => return None };
-        let charge = match self.charge.checked_mul(factor) { Some(value) => value, None => return None };
-        let discount = match self.discount.checked_mul(factor) { Some(value) => value, None => return None };
-        Some(Self { count, quantity, price, discounted, charge, discount })
+        let factor = Wide::from_i128(sign as i128);
+        Self { count: self.count.mul(&factor), quantity: self.quantity.mul(&factor),
+            price: self.price.mul(&factor), discounted: self.discounted.mul(&factor),
+            charge: self.charge.mul(&factor), discount: self.discount.mul(&factor) }
     }
 
     pub fn is_zero(&self) -> (result: bool)
-        ensures result == (forall|component: int| #[trigger] self.at(component) == 0),
+        ensures result == self.vanishes(),
     {
-        let result = self.count == 0 && self.quantity == 0 && self.price == 0
-            && self.discounted == 0 && self.charge == 0 && self.discount == 0;
+        let result = self.count.is_zero() && self.quantity.is_zero() && self.price.is_zero()
+            && self.discounted.is_zero() && self.charge.is_zero() && self.discount.is_zero();
         proof {
             if !result {
-                if self.count != 0 { assert(self.at(0) != 0); }
-                else if self.quantity != 0 { assert(self.at(1) != 0); }
-                else if self.price != 0 { assert(self.at(2) != 0); }
-                else if self.discounted != 0 { assert(self.at(3) != 0); }
-                else if self.charge != 0 { assert(self.at(4) != 0); }
+                if self.count@ != 0 { assert(self.at(0) != 0); }
+                else if self.quantity@ != 0 { assert(self.at(1) != 0); }
+                else if self.price@ != 0 { assert(self.at(2) != 0); }
+                else if self.discounted@ != 0 { assert(self.at(3) != 0); }
+                else if self.charge@ != 0 { assert(self.at(4) != 0); }
                 else { assert(self.at(5) != 0); }
             }
         }
@@ -92,18 +88,14 @@ impl Totals {
     }
 }
 
-pub fn contribution(row: &LineitemInput) -> (result: Option<Totals>)
-    ensures result matches Some(value) ==> forall|component: int|
-        #[trigger] value.at(component) == weight(lineitem_input_view(*row), component),
+pub fn contribution(row: &LineitemInput) -> (result: Totals)
+    ensures forall|component: int| #[trigger] result.at(component) == weight(lineitem_input_view(*row), component),
 {
-    let discounted = match (row.l_extendedprice as i128).checked_mul(100i128 - row.l_discount as i128) {
-        Some(value) => value, None => return None,
-    };
-    let charge = match discounted.checked_mul(100i128 + row.l_tax as i128) {
-        Some(value) => value, None => return None,
-    };
-    Some(Totals { count: 1, quantity: row.l_quantity as i128, price: row.l_extendedprice as i128,
-        discounted, charge, discount: row.l_discount as i128 })
+    let price = Wide::from_i128(row.l_extendedprice as i128);
+    let discounted = price.mul(&Wide::from_i128(100i128 - row.l_discount as i128));
+    let charge = discounted.mul(&Wide::from_i128(100i128 + row.l_tax as i128));
+    Totals { count: Wide::from_i128(1), quantity: Wide::from_i128(row.l_quantity as i128), price,
+        discounted, charge, discount: Wide::from_i128(row.l_discount as i128) }
 }
 
 pub fn copy_bytes(bytes: &Vec<u8>) -> (result: Vec<u8>)

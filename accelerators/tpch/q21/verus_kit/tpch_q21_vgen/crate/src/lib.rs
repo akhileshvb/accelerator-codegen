@@ -17,5 +17,6 @@ pub mod neighborhood_proofs;
 pub mod summaries;
 pub mod contribution_proofs;
 pub mod aggregation_proofs;
+pub mod bounds;
 pub mod gen_world;
 pub mod gen_ffi;

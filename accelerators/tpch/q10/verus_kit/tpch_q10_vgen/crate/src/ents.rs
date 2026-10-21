@@ -2,20 +2,62 @@ use vstd::prelude::*;
 use verus_prooflib::ordered::{Key, KeyView, key_lt, lemma_key_order};
 use verus_common::bytes::*;
 use crate::paged::*;
+use crate::values::*;
+use std::sync::Arc;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
-/// One (customer) cell of a slice: count of lines, revenue and its positive part.
-#[derive(Clone, Copy)]
+/// One (customer) cell of a slice: count of lines, revenue and its positive part.  The narrow
+/// fields hold the moments unless they do not fit, in which case `spill` holds them exactly.
 pub struct CellEnt {
     pub customer: i64,
     pub count: u32,
     pub revenue: i64,
     pub upper: i64,
+    pub spill: Option<Arc<Moms>>,
+}
+
+impl CellEnt {
+    pub open spec fn moments(self) -> Moments {
+        match self.spill {
+            Some(spill) => (*spill)@,
+            None => Moments { count: self.count as int, revenue: self.revenue as int, upper: self.upper as int },
+        }
+    }
+
+    /// The cell of `customer` with exactly these moments.
+    pub fn make(customer: i64, moments: &Moms) -> (result: CellEnt)
+        ensures result.customer == customer, result.moments() == moments@,
+    {
+        match (moments.count.to_i128(), moments.revenue.to_i128(), moments.upper.to_i128()) {
+            (Some(count), Some(revenue), Some(upper)) if 0 <= count && count <= u32::MAX as i128
+                && i64::MIN as i128 <= revenue && revenue <= i64::MAX as i128 && 0 <= upper && upper <= i64::MAX as i128 =>
+                CellEnt { customer, count: count as u32, revenue: revenue as i64, upper: upper as i64, spill: None },
+            _ => CellEnt { customer, count: 0, revenue: 0, upper: 0, spill: Some(Arc::new(moments.dup())) },
+        }
+    }
+
+    /// The moments, exactly.
+    pub fn read(&self) -> (result: Moms)
+        ensures result@ == self.moments(),
+    {
+        match &self.spill {
+            Some(spill) => spill.dup(),
+            None => Moms {
+                count: Wide::from_i128(self.count as i128),
+                revenue: Wide::from_i128(self.revenue as i128),
+                upper: Wide::from_i128(self.upper as i128),
+            },
+        }
+    }
 }
 
 impl Ent for CellEnt {
-    fn dup(&self) -> (result: Self) { *self }
+    fn dup(&self) -> (result: Self) {
+        CellEnt { customer: self.customer, count: self.count, revenue: self.revenue, upper: self.upper,
+            spill: match &self.spill { Some(spill) => Some(Arc::clone(spill)), None => None } }
+    }
     open spec fn kv(self) -> KeyView { (self.customer as int, Seq::<u8>::empty()) }
     open spec fn top() -> KeyView { (i64::MAX as int, seq![0u8]) }
     fn key(&self) -> (result: Key) { Key::number(self.customer) }

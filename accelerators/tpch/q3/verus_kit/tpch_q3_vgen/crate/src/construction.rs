@@ -67,22 +67,21 @@ pub proof fn lemma_page_groups_put(before: Index<Page>, after: Index<Page>, prio
     }
 }
 
-pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &Vec<i64>) -> (result: Option<Custs>)
+pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &Vec<i64>) -> (index: Custs)
     requires
         keys@.no_duplicates(), keys@.to_set() == cells@.dom(),
         forall|key: i64| #![trigger cells@[key]] cells@.contains_key(key) ==> customer_shape(cells@[key]),
-    ensures result matches Some(index) ==> {
-        &&& index.wf()
-        &&& forall|target: verus_prooflib::ordered::KeyView| #![trigger index.at(target)]
+    ensures
+        index.wf(),
+        forall|target: verus_prooflib::ordered::KeyView| #![trigger index.at(target)]
             index.at(target) == if target.1 == Seq::<u8>::empty() && i64::MIN <= target.0 <= i64::MAX
-                && cells@.contains_key(target.0 as i64) { Some(cells@[target.0 as i64]) } else { None }
-        &&& forall|customer: i64, segment: Seq<u8>| #![trigger customer_at(index, customer as int, segment)]
-            customer_at(index, customer as int, segment) == scratch_customer_at(cells@, customer, segment)
-        &&& forall|customer: i64, key: i64| #![trigger reverse_at(index, customer as int, key as int)]
-            reverse_at(index, customer as int, key as int) == scratch_reverse_at(cells@, customer, key)
-        &&& forall|target: verus_prooflib::ordered::KeyView| #![trigger index.at(target)]
-            index.at(target).is_some() ==> customer_shape(index.at(target).unwrap())
-    },
+                && cells@.contains_key(target.0 as i64) { Some(cells@[target.0 as i64]) } else { None },
+        forall|customer: i64, segment: Seq<u8>| #![trigger customer_at(index, customer as int, segment)]
+            customer_at(index, customer as int, segment) == scratch_customer_at(cells@, customer, segment),
+        forall|customer: i64, key: i64| #![trigger reverse_at(index, customer as int, key as int)]
+            reverse_at(index, customer as int, key as int) == scratch_reverse_at(cells@, customer, key),
+        forall|target: verus_prooflib::ordered::KeyView| #![trigger index.at(target)]
+            index.at(target).is_some() ==> customer_shape(index.at(target).unwrap()),
 {
     let ghost original = cells@;
     let mut result = Custs::new();
@@ -101,7 +100,12 @@ pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &V
         let key = keys[position];
         let ghost before = cells@;
         proof { verus_prooflib::lemma_prefix_fresh(keys@, position as int); }
-        let cell = match cells.remove(&key) { Some(cell) => cell, None => return None };
+        proof {
+            keys@.to_set_ensures();
+            assert(keys@.contains(key));
+            assert(original.dom().contains(key));
+        }
+        let cell = match cells.remove(&key) { Some(cell) => cell, None => { proof { assert(false); } return result; } };
         result.put(key, Arc::new(cell));
         proof {
             assert(keys@.take(position as int + 1) =~= keys@.take(position as int).push(key));
@@ -116,26 +120,25 @@ pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &V
         position += 1;
     }
     proof { assert(keys@.take(position as int) =~= keys@); }
-    Some(result)
+    result
 }
 
-pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<GroupCell>>)
+pub fn make_groups(work: &PageWork, customers: &Custs) -> (groups: Vec<GroupCell>)
     requires customers.wf(), orders_sorted(work.orders@), ships_sorted(work.ships@),
         forall|position: int| #![trigger work.orders@[position]] 0 <= position < work.orders@.len() ==> work.orders@[position].count > 0,
-        forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> work.ships@[position].positive >= 0,
+        forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> ship_ok(work.ships@[position]),
         forall|target: verus_prooflib::ordered::KeyView| #![trigger customers.at(target)]
             customers.at(target).is_some() ==> customer_shape(customers.at(target).unwrap()),
-    ensures result matches Some(groups) ==> {
-        &&& groups_sorted(groups@)
-        &&& forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> {
+    ensures
+        groups_sorted(groups@),
+        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> {
             let group = groups@[position];
-            &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+            &&& group.weight@ > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
             &&& exists|source: int| #![trigger work.orders@[source]]
                 0 <= source < work.orders@.len() && work.orders@[source].key == group.id.key
-        }
-        &&& forall|target: Seq<u8>, key: int, date: int, priority: int| #![trigger column_weight(groups@, target, key, date, priority)]
-            column_weight(groups@, target, key, date, priority) == column_join(work.orders@, *customers, target, key, date, priority)
-    },
+        },
+        forall|target: Seq<u8>, key: int, date: int, priority: int| #![trigger column_weight(groups@, target, key, date, priority)]
+            column_weight(groups@, target, key, date, priority) == column_join(work.orders@, *customers, target, key, date, priority),
 {
     let mut groups = Vec::new();
     let mut order_index = 0;
@@ -152,11 +155,11 @@ pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<Gr
         invariant order_index <= work.orders.len(), customers.wf(), orders_sorted(work.orders@), ships_sorted(work.ships@),
             groups_sorted(groups@),
             forall|position: int| #![trigger work.orders@[position]] 0 <= position < work.orders@.len() ==> work.orders@[position].count > 0,
-            forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> work.ships@[position].positive >= 0,
+            forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> ship_ok(work.ships@[position]),
             forall|target: verus_prooflib::ordered::KeyView| #![trigger customers.at(target)] customers.at(target).is_some() ==> customer_shape(customers.at(target).unwrap()),
             forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> {
                 let group = groups@[position];
-                &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+                &&& group.weight@ > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
                 &&& group.id.key < next_order_key(work.orders@, order_index as int)
                 &&& exists|source: int| #![trigger work.orders@[source]]
                     0 <= source < work.orders@.len() && work.orders@[source].key == group.id.key
@@ -172,11 +175,11 @@ pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<Gr
         let ghost previous_index = order_index as int;
         let ghost previous_groups = groups@;
         let orderkey = work.orders[order_index].key;
-        if !compute_key(&mut groups, &work.orders, &work.ships, customers, orderkey) { return None; }
+        compute_key(&mut groups, &work.orders, &work.ships, customers, orderkey);
         proof {
             assert forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() implies {
                 let group = groups@[position];
-                &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+                &&& group.weight@ > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
                 &&& group.id.key <= orderkey
                 &&& exists|source: int| #![trigger work.orders@[source]]
                     0 <= source < work.orders@.len() && work.orders@[source].key == group.id.key
@@ -201,7 +204,7 @@ pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<Gr
                 groups_sorted(groups@),
                 forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> {
                     let group = groups@[position];
-                    &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+                    &&& group.weight@ > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
                     &&& group.id.key <= orderkey
                     &&& exists|source: int| #![trigger work.orders@[source]]
                         0 <= source < work.orders@.len() && work.orders@[source].key == group.id.key
@@ -240,7 +243,11 @@ pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<Gr
             }
         }
     }
-    Some(groups)
+    groups
+}
+
+pub open spec fn scan_lens_ok(db: Db, customers: Seq<CustomerInput>, orders: Seq<OrderInput>, shipments: Seq<ShipmentInput>) -> bool {
+    customers.len() == db.customer.len() && orders.len() == db.orders.len() && shipments.len() == db.lineitem.len()
 }
 
 pub open spec fn chunk_of(page: i64) -> int { ((page as u64) % 16) as int }
@@ -260,13 +267,16 @@ pub fn chunk_exec(page: i64) -> (result: i64)
 pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments: &[ShipmentInput], Ghost(db): Ghost<Db>) -> (result: Option<State>)
     requires scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
     ensures result matches Some(state) ==> state.db() == db,
+        envelope(db) ==> result is Some,
 {
+    proof { crate::input_proofs::lemma_scan_lens(db, customers@, orders@, shipments@); }
     let mut customer_work: HashMapWithView<i64, CustomerCell> = HashMapWithView::new();
     let mut customer_keys = Vec::new();
     let mut names: Vec<Arc<Vec<u8>>> = Vec::new();
     let mut index: usize = 0;
     while index < customers.len()
         invariant
+            scan_lens_ok(db, customers@, orders@, shipments@),
             index <= customers.len(),
             customer_keys@.no_duplicates(), customer_keys@.to_set() == customer_work@.dom(),
             forall|key: i64| #![trigger customer_work@[key]] customer_work@.dom().contains(key) ==>
@@ -294,7 +304,14 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                 segment_count(previous.segments@, segment) == scratch_customer_at(before, row.c_custkey, segment) by {}
         }
         let name = intern(&mut names, &row.c_mktsegment);
-        if !segment_change(&mut cell, &name, 1) { return None; }
+        if !segment_change(&mut cell, &name, 1i128) {
+            proof {
+                crate::input_proofs::lemma_customer_prefix_le(customers@, processed, row.c_custkey, row.c_mktsegment@);
+                assert(segment_count(previous.segments@, row.c_mktsegment@) == scratch_customer_at(before, row.c_custkey, row.c_mktsegment@));
+                assert(false);
+            }
+            return None;
+        }
         customer_work.insert(row.c_custkey, cell);
         proof {
             assert(customer_work@ == before.insert(row.c_custkey, cell));
@@ -316,6 +333,7 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
     index = 0;
     while index < orders.len()
         invariant
+            scan_lens_ok(db, customers@, orders@, shipments@),
             index <= orders.len(),
             customer_keys@.no_duplicates(), customer_keys@.to_set() == customer_work@.dom(),
             forall|key: i64| #![trigger customer_work@[key]] customer_work@.dom().contains(key) ==> customer_shape(customer_work@[key]),
@@ -339,7 +357,26 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
             },
         };
         let ghost previous_customer = customer;
-        if !reverse_change(&mut customer, row.o_orderkey, 1) { return None; }
+        if !reverse_change(&mut customer, row.o_orderkey, 1) {
+            proof {
+                crate::input_proofs::lemma_reverse_prefix_le(orders@, processed, row.o_custkey, row.o_orderkey);
+                if !previous_customers.dom().contains(row.o_custkey) {
+                    assert(previous_customer.orders@ == Seq::<(i64, i128)>::empty());
+                    lemma_sum_empty(previous_customer.orders@, reverse_weight(row.o_orderkey as int));
+                }
+                assert(reverse_count(previous_customer.orders@, row.o_orderkey as int) == scratch_reverse_at(previous_customers, row.o_custkey, row.o_orderkey));
+                assert(!envelope(db)) by {
+                    if envelope(db) {
+                        assert(db.orders.len() <= max_rows());
+                        assert(db.lineitem.len() <= max_rows());
+                        assert(orders@.len() <= max_rows());
+                        assert(shipments@.len() <= max_rows());
+                        assert(false);
+                    }
+                }
+            }
+            return None;
+        }
         customer_work.insert(row.o_custkey, customer);
         proof {
             assert(customer_work@ == previous_customers.insert(row.o_custkey, customer));
@@ -361,7 +398,7 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
     }
     proof { assert(orders@.take(index as int) =~= orders@); }
 
-    let customer_index = match publish_customers(customer_work, &customer_keys) { Some(index) => index, None => return None };
+    let customer_index = publish_customers(customer_work, &customer_keys);
     proof {
         crate::input_proofs::lemma_scan_domains(db, customers@, orders@, shipments@);
         assert forall|customer: i64, segment: Seq<u8>| #![trigger customer_at(customer_index, customer as int, segment)]
@@ -390,7 +427,7 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                 lemma_sum_zero(db.orders, |row: OrdersRow| if row.o_custkey == customer && row.o_orderkey == key { 1int } else { 0int });
                 if customer_index.at((customer, Seq::empty())).is_some() {
                     lemma_sum_zero(customer_index.at((customer, Seq::empty())).unwrap().orders@,
-                        |entry: (i64, i64)| if entry.0 == key { entry.1 as int } else { 0int });
+                        |entry: (i64, i128)| if entry.0 == key { entry.1 as int } else { 0int });
                 }
             }
         }
@@ -401,7 +438,8 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
     let ghost published_groups = Seq::<GroupCell>::empty();
     let mut chunk: i64 = 0;
     while chunk < 16
-        invariant 0 <= chunk <= 16,
+        invariant
+            scan_lens_ok(db, customers@, orders@, shipments@), 0 <= chunk <= 16,
             scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
             customer_database_ok(customer_index, db),
             forall|target: verus_prooflib::ordered::KeyView| #![trigger customer_index.at(target)] customer_index.at(target).is_some() ==> customer_shape(customer_index.at(target).unwrap()),
@@ -427,6 +465,7 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
         index = 0;
         while index < orders.len()
             invariant
+            scan_lens_ok(db, customers@, orders@, shipments@),
                 index <= orders.len(), 0 <= chunk < 16,
                 scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
                 page_keys@.no_duplicates(), page_keys@.to_set() == pages_work@.dom(),
@@ -452,7 +491,24 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                     },
                 };
                 let ghost previous_work = work;
-                if !insert_order(&mut work.orders, row) { return None; }
+                if !insert_order(&mut work.orders, row) {
+                    proof {
+                        crate::input_proofs::lemma_order_prefix_le(orders@, processed, row.o_orderkey, row.o_custkey, row.o_orderdate, row.o_shippriority);
+                        assert(in_chunk(row.o_orderkey, chunk as int));
+                        assert(order_count(previous_work.orders@, row.o_orderkey as int, row.o_custkey as int, row.o_orderdate as int, row.o_shippriority as int)
+                            == scratch_order_at(previous_pages, row.o_orderkey, row.o_custkey, row.o_orderdate, row.o_shippriority));
+                        assert(!envelope(db)) by {
+                    if envelope(db) {
+                        assert(db.orders.len() <= max_rows());
+                        assert(db.lineitem.len() <= max_rows());
+                        assert(orders@.len() <= max_rows());
+                        assert(shipments@.len() <= max_rows());
+                        assert(false);
+                    }
+                }
+                    }
+                    return None;
+                }
                 pages_work.insert(page, work);
                 proof {
                     assert(pages_work@ == previous_pages.insert(page, work));
@@ -485,6 +541,7 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
         index = 0;
         while index < shipments.len()
             invariant
+            scan_lens_ok(db, customers@, orders@, shipments@),
                 index <= shipments.len(), 0 <= chunk < 16,
                 scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
                 page_keys@.no_duplicates(), page_keys@.to_set() == pages_work@.dom(),
@@ -512,7 +569,24 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                     },
                 };
                 let ghost previous_work = work;
-                if !insert_ship(&mut work.ships, row) { return None; }
+                if !insert_ship(&mut work.ships, row) {
+                    proof {
+                        crate::input_proofs::lemma_ship_prefix_le(shipments@, processed, row.l_orderkey, row.l_shipdate);
+                        assert(in_chunk(row.l_orderkey, chunk as int));
+                        assert(ship_count(previous_work.ships@, row.l_orderkey as int, row.l_shipdate as int, 0)
+                            == scratch_ship_at(previous_pages, row.l_orderkey, row.l_shipdate, 0));
+                        assert(!envelope(db)) by {
+                    if envelope(db) {
+                        assert(db.orders.len() <= max_rows());
+                        assert(db.lineitem.len() <= max_rows());
+                        assert(orders@.len() <= max_rows());
+                        assert(shipments@.len() <= max_rows());
+                        assert(false);
+                    }
+                }
+                    }
+                    return None;
+                }
                 pages_work.insert(page, work);
                 proof {
                     assert(pages_work@ == previous_pages.insert(page, work));
@@ -575,7 +649,8 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
         }
         let mut position = 0;
         while position < page_keys.len()
-            invariant position <= page_keys.len(), 0 <= chunk < 16,
+            invariant
+            scan_lens_ok(db, customers@, orders@, shipments@), position <= page_keys.len(), 0 <= chunk < 16,
                 forall|key: int, customer: int, date: int, priority: int| #![trigger order_at(base_index, key, customer, date, priority)]
                     chunk_done(key, chunk as int) ==> order_at(base_index, key, customer, date, priority) == order_sum(db, key, customer, date, priority),
                 forall|key: int, date: int, kind: int| #![trigger ship_at(base_index, key, date, kind)]
@@ -608,6 +683,8 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                 forall|key: i64| #![trigger pages_work@[key]] pages_work@.contains_key(key) ==> work_database_ok(pages_work@[key], key as int, db),
                 forall|key: i64| #![trigger pages_work@[key]] pages_work@.dom().contains(key) ==> work_page_shape(pages_work@[key], key as int),
                 forall|key: i64| #![trigger pages_work@.dom().contains(key)] pages_work@.dom().contains(key) ==> completed_pages.dom().contains(key),
+                forall|key: i64| #![trigger pages_work@.contains_key(key)]
+                    pages_work@.contains_key(key) == (completed_pages.contains_key(key) && !page_keys@.take(position as int).contains(key)),
                 scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
                 forall|target: verus_prooflib::ordered::KeyView| #![trigger customer_index.at(target)] customer_index.at(target).is_some() ==> customer_shape(customer_index.at(target).unwrap()),
             decreases page_keys.len() - position,
@@ -617,15 +694,19 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
             let ghost previous_ranks = rank_index;
             let ghost previous_groups = published_groups;
             proof { verus_prooflib::lemma_prefix_fresh(page_keys@, position as int); }
-            let work = match pages_work.remove(&key) { Some(work) => work, None => return None };
+            proof {
+                page_keys@.to_set_ensures();
+                assert(page_keys@.contains(key));
+                assert(completed_pages.dom().contains(key));
+            }
+            let work = match pages_work.remove(&key) { Some(work) => work, None => { proof { assert(false); } return None; } };
             let ghost original_work = work;
-            let groups = match make_groups(&work, &customer_index) { Some(groups) => groups, None => return None };
-            let packed_orders = match crate::packed::PackedOrders::pack(&work.orders, key) { Some(value) => value, None => return None };
-            let packed_ships = match crate::packed::PackedShips::pack(&work.ships, key) { Some(value) => value, None => return None };
-            let packed_groups = match crate::packed::PackedGroups::pack(&groups, key) { Some(value) => value, None => return None };
+            let groups = make_groups(&work, &customer_index);
+            let packed_orders = crate::packed::PackedOrders::pack(&work.orders, key);
+            let packed_ships = crate::packed::PackedShips::pack(&work.ships, key);
+            let packed_groups = crate::packed::PackedGroups::pack(&groups, key);
             let page = Page { orders: Arc::new(packed_orders), ships: Arc::new(packed_ships), groups: Arc::new(packed_groups) };
             let page_groups = page.groups.to_vec();
-            page.groups.fits();
             ranks::append_groups(&mut rank_index, &page_groups);
             proof { published_groups = published_groups + page_groups@; }
             proof { crate::semantics::lemma_page_publication_equiv(page, groups@, original_work, key as int, customer_index, db); }
@@ -654,6 +735,13 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                     rank_at(rank_index, outer, rank) == rank_present(published_groups, outer, rank) by {
                     ranks::lemma_rank_concat(previous_groups, (*page.groups)@, outer, rank);
                     assert(rank_at(previous_ranks, outer, rank) == rank_present(previous_groups, outer, rank));
+                }
+            }
+            proof {
+                assert forall|target: i64| #![trigger pages_work@.contains_key(target)]
+                    pages_work@.contains_key(target) == (completed_pages.contains_key(target) && !page_keys@.take(position as int + 1).contains(target)) by {
+                    assert(page_keys@.take(position as int + 1) =~= page_keys@.take(position as int).push(key));
+                    verus_prooflib::lemma_push_membership(page_keys@.take(position as int), key);
                 }
             }
             position += 1;

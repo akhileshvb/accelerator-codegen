@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use verus_prooflib::wide::Wide;
 use std::sync::Arc;
 use verus_common::sums::*;
 use verus_prooflib::*;
@@ -13,7 +14,6 @@ use crate::kernel::{cell_marked, mark_bucket};
 use crate::kernel::find_cell;
 use crate::joins::*;
 use crate::expansion::*;
-use crate::values::value;
 
 verus! {
 broadcast use vstd::seq_lib::group_seq_properties;
@@ -206,10 +206,18 @@ pub open spec fn answer_change(rows: Seq<(i64, Arc<Groups>)>, old_nations: Layer
 
 pub fn update_answers(old_nations: &Layers<Names>, new_nations: &Layers<Names>,
     old_groups: &Layers<Groups>, new_groups: &Layers<Groups>, previous: &Layers<Answers>, affected: &Sparse<Groups>)
-    -> (result: Option<Layers<Answers>>)
+    -> (answers: Layers<Answers>)
     requires affected.valid(), sparse_groups_shape(*affected), group_shape(*old_groups), group_shape(*new_groups),
         forall|key: i64| #![trigger previous.at(key)] previous.at(key) matches Some(bucket) ==> answers_valid(bucket, key),
-    ensures result matches Some(answers) ==> {
+        forall|first: Seq<u8>, second: Seq<u8>, year: i64|
+            #![trigger answer_change(affected.view(), *old_nations, *new_nations, *old_groups, *new_groups, first, second, year, false)]
+            answer_value(*previous, first, second, year, false)
+                + answer_change(affected.view(), *old_nations, *new_nations, *old_groups, *new_groups, first, second, year, false) >= 0
+            && (answer_value(*previous, first, second, year, false)
+                + answer_change(affected.view(), *old_nations, *new_nations, *old_groups, *new_groups, first, second, year, false) == 0 ==>
+                answer_value(*previous, first, second, year, true)
+                    + answer_change(affected.view(), *old_nations, *new_nations, *old_groups, *new_groups, first, second, year, true) == 0),
+    ensures {
         &&& answers.valid()
         &&& forall|key: i64| #![trigger answers.at(key)] answers.at(key) matches Some(bucket) ==> answers_valid(bucket, key)
         &&& forall|first: Seq<u8>, second: Seq<u8>, year: i64, revenue: bool|
@@ -249,11 +257,11 @@ pub fn update_answers(old_nations: &Layers<Names>, new_nations: &Layers<Names>,
             decreases bucket.rows@.len() - offset,
         {
             let ghost before = changes;
-            let key = bucket.rows[offset];
+            let key = bucket.rows[offset].dup();
             let old_cell = find_cell(old_groups, first_key, key.other, key.year);
             let new_cell = find_cell(new_groups, first_key, key.other, key.year);
-            value!(expand_cell(old_nations, previous, &mut changes, first_key, old_cell, -1));
-            value!(expand_cell(new_nations, previous, &mut changes, first_key, new_cell, 1));
+            expand_cell(old_nations, previous, &mut changes, first_key, &old_cell, &Wide::from_i128(-1));
+            expand_cell(new_nations, previous, &mut changes, first_key, &new_cell, &Wide::from_i128(1));
             proof {
                 assert forall|first: Seq<u8>, second: Seq<u8>, year: i64, revenue: bool|
                     #![trigger patched_answer(*previous, changes, first, second, year, revenue)]
@@ -264,7 +272,7 @@ pub fn update_answers(old_nations: &Layers<Names>, new_nations: &Layers<Names>,
                     let old_value = named_group(*old_nations, *old_groups, first_key, key.other, key.year, first, second, year, revenue);
                     let left_count = nation_value(*old_nations, first_key, first);
                     let right_count = nation_value(*old_nations, key.other, second);
-                    let measure = if revenue { old_cell.revenue as int } else { old_cell.count as int };
+                    let measure = if revenue { old_cell.revenue@ } else { old_cell.count@ };
                     assert(measure == group_value(*old_groups, first_key, key.other, key.year, revenue));
                     assert(left_count * (right_count * (-measure)) == -(left_count * (right_count * measure))) by (nonlinear_arith);
                     assert(cell_expansion(*old_nations, first_key, old_cell, -1int, first, second, year, revenue) == -old_value);
@@ -286,8 +294,8 @@ pub fn update_answers(old_nations: &Layers<Names>, new_nations: &Layers<Names>,
         }
         index += 1;
     }
-    if !positive_answers(&changes) { return None; }
-    let answers = value!(previous.patch(changes));
+    let patched = previous.patch(changes);
+    let answers = patched;
     proof {
         assert(affected.view().take(affected.view().len() as int) == affected.view());
         assert forall|first: Seq<u8>, second: Seq<u8>, year: i64, revenue: bool|
@@ -298,11 +306,17 @@ pub fn update_answers(old_nations: &Layers<Names>, new_nations: &Layers<Names>,
         }
         assert forall|key: i64| #![trigger answers.at(key)] answers.at(key) matches Some(bucket) ==> answers_valid(bucket, key) by {
             if changes.at(key).is_some() {
+                let target = |first: Seq<u8>, second: Seq<u8>, year: i64, revenue: bool| answer_value(*previous, first, second, year, revenue)
+                    + answer_change(affected.view(), *old_nations, *new_nations, *old_groups, *new_groups, first, second, year, revenue);
+                assert forall|first: Seq<u8>, second: Seq<u8>, year: i64, revenue: bool|
+                    #![trigger patched_answer(*previous, changes, first, second, year, revenue)]
+                    patched_answer(*previous, changes, first, second, year, revenue) == target(first, second, year, revenue) by {}
+                lemma_answers_positive(*previous, changes, key, target);
                 assert(changes.at(key) matches Some(bucket) && answers_shape(bucket, key) && answers_positive(bucket));
             } else { assert(answers.at(key) == previous.at(key)); }
         }
     }
-    Some(answers)
+    answers
 }
 
 }

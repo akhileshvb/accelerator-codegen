@@ -52,7 +52,9 @@ pub fn prepare_apply(
         base.timeline() == store.timeline(),
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), customer_delta_seq_view(customer_delta@), lineitem_full, nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@)),
+        orders_for_keys_keys@ == crate::kernel::rescan_orders_for_keys_wanted(base.state_spec(), customer_delta@, lineitem_delta@, nation_delta@, orders_delta@),
         rescan_orders_for_keys_ok(store.db_at((base.epoch() + 1) as nat), orders_for_keys_keys@, orders_for_keys_rows@),
+        returned_lines_for_keys_keys@ == crate::kernel::rescan_returned_lines_for_keys_wanted(base.state_spec(), customer_delta@, lineitem_delta@, nation_delta@, orders_delta@),
         rescan_returned_lines_for_keys_ok(store.db_at((base.epoch() + 1) as nat), returned_lines_for_keys_keys@, returned_lines_for_keys_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),

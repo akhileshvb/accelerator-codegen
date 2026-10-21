@@ -73,6 +73,14 @@ struct TextColumn {
 bool ArgText(const core::QueryArguments &args, std::size_t i, std::string &out);
 bool ArgI64(const core::QueryArguments &args, std::size_t i, int scale, int64_t &out);
 bool ArgDate(const core::QueryArguments &args, std::size_t i, int32_t &out);
+// Why the last Arg* call returned false ("argument 1: NULL", ...); empty after ClearArgFailure.
+// An execute that returns false with no argument failure came from the kernel declining.
+void ClearArgFailure();
+struct ArgFailure {
+  std::string what;
+  bool outside_type = false; // NULL / not representable in the parameter's type, vs a host conversion fault
+};
+ArgFailure LastArgFailure();
 
 // ---- result cells ----
 core::AuxValue OutText(const uint8_t *bytes, std::size_t len);

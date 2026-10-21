@@ -965,16 +965,42 @@ const std::string &Text(const core::AuxRow &row, std::size_t i) {
 
 // ---- arguments ----
 namespace {
+std::mutex g_arg_failure_mutex;
+ArgFailure g_arg_failure;
+
+// outside_type: the value is not one of the parameter's type (NULL, more digits than its scale,
+// beyond its range), so SQL answers it; otherwise the host failed to convert an in-type value.
+bool ArgFailed(std::size_t i, const std::string &why, bool outside_type) {
+  std::lock_guard<std::mutex> lock(g_arg_failure_mutex);
+  g_arg_failure = {"argument " + std::to_string(i) + ": " + why, outside_type};
+  return false;
+}
+
+// A conversion error that says the value does not fit the type (the range and scale checks).
+bool OutsideType(const std::exception &e) { return std::string(e.what()).rfind("not a", 0) != 0; }
+
 const core::AuxValue *Arg(const core::QueryArguments &args, std::size_t i) {
   return i < args.values.size() && !args.values[i].is_null ? &args.values[i] : nullptr;
 }
 } // namespace
 
+void ClearArgFailure() {
+  std::lock_guard<std::mutex> lock(g_arg_failure_mutex);
+  g_arg_failure = {};
+}
+
+ArgFailure LastArgFailure() {
+  std::lock_guard<std::mutex> lock(g_arg_failure_mutex);
+  return g_arg_failure;
+}
+
 bool ArgText(const core::QueryArguments &args, std::size_t i, std::string &out) {
   const auto *v = Arg(args, i);
-  const auto *s = v ? std::get_if<std::string>(&v->payload) : nullptr;
+  if (!v)
+    return ArgFailed(i, "NULL", true);
+  const auto *s = std::get_if<std::string>(&v->payload);
   if (!s)
-    return false;
+    return ArgFailed(i, "not a text value", false);
   out = *s;
   return true;
 }
@@ -982,13 +1008,13 @@ bool ArgText(const core::QueryArguments &args, std::size_t i, std::string &out) 
 bool ArgI64(const core::QueryArguments &args, std::size_t i, int scale, int64_t &out) {
   const auto *v = Arg(args, i);
   if (!v)
-    return false;
+    return ArgFailed(i, "NULL", true);
   try {
     if (const auto *d = std::get_if<double>(&v->payload)) {
       const double scaled = *d * static_cast<double>(Pow10(scale));
       if (!std::isfinite(scaled) || std::fabs(scaled - std::nearbyint(scaled)) > 1e-6 ||
           std::fabs(scaled) > 9.0e18)
-        return false;
+        return ArgFailed(i, "double value " + std::to_string(*d) + " is not exact at scale " + std::to_string(scale), false);
       out = static_cast<int64_t>(std::llround(scaled));
       return true;
     }
@@ -998,7 +1024,7 @@ bool ArgI64(const core::QueryArguments &args, std::size_t i, int scale, int64_t 
       std::size_t dot = t.find('.');
       std::string whole = t.substr(0, dot), frac = dot == std::string::npos ? "" : t.substr(dot + 1);
       if (static_cast<int>(frac.size()) > scale)
-        return false;
+        return ArgFailed(i, "'" + t + "' has more fractional digits than the scale " + std::to_string(scale), true);
       frac.append(static_cast<std::size_t>(scale) - frac.size(), '0');
       out = std::stoll(whole + frac);
       return true;
@@ -1007,22 +1033,22 @@ bool ArgI64(const core::QueryArguments &args, std::size_t i, int scale, int64_t 
     row.values.push_back(*v);
     out = I64(row, 0, scale);
     return true;
-  } catch (...) {
-    return false;
+  } catch (const std::exception &e) {
+    return ArgFailed(i, e.what(), OutsideType(e));
   }
 }
 
 bool ArgDate(const core::QueryArguments &args, std::size_t i, int32_t &out) {
   const auto *v = Arg(args, i);
   if (!v)
-    return false;
+    return ArgFailed(i, "NULL", true);
   try {
     core::AuxRow row;
     row.values.push_back(*v);
     out = Date(row, 0);
     return true;
-  } catch (...) {
-    return false;
+  } catch (const std::exception &e) {
+    return ArgFailed(i, e.what(), OutsideType(e));
   }
 }
 

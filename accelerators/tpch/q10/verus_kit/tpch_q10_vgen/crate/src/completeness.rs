@@ -10,6 +10,7 @@ use crate::group_proofs::*;
 use crate::model::*;
 use crate::paged::*;
 use crate::customers::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -80,7 +81,7 @@ pub open spec fn seen_covered(db: Db, parameters: Params, top: Seq<OutRow>, seen
 
 pub proof fn lemma_customer_bound(db: Db, dimensions: Dimensions, key: int)
     requires dimensions_valid(db, dimensions),
-    ensures sum(db.customer, customer_key_weight(key)) <= dimensions.customer_max as int,
+    ensures sum(db.customer, customer_key_weight(key)) <= dimensions.customer_max@,
 {
     reveal(dimensions_valid);
     let weight = customer_key_weight(key);
@@ -96,30 +97,35 @@ pub proof fn lemma_customer_bound(db: Db, dimensions: Dimensions, key: int)
                 assert(customer_input_view(*variants[index].row).c_custkey == key);
             }
             lemma_sum_ext(variants, variant_weight(weight), variant_count());
-            assert(variants_count(variants) <= dimensions.customer_max as int);
+            assert(variants_count(variants) <= dimensions.customer_max@);
         },
         None => { assert(variants =~= Seq::<Customer>::empty()); },
     }
 }
 
-pub proof fn lemma_maximum_bounds(db: Db, dimensions: Dimensions, customer_max: int, nation_max: int)
-    requires dimensions_valid(db, dimensions), customer_max >= dimensions.customer_max as int, nation_max >= 0,
-        forall|key: KeyView| #[trigger] dimensions.nation_maxima.at(key).is_some()
-            ==> dimensions.nation_maxima.at(key).unwrap() <= nation_max,
-    ensures forall|key: int| #[trigger] sum(db.customer, customer_key_weight(key)) <= customer_max,
-        forall|key: int| #[trigger] crate::query_semantics::nation_total(db, key) <= nation_max,
+pub proof fn lemma_customer_bounds(db: Db, dimensions: Dimensions)
+    requires dimensions_valid(db, dimensions),
+    ensures forall|key: int| #[trigger] sum(db.customer, customer_key_weight(key)) <= dimensions.customer_max@,
 {
-    reveal(dimensions_valid);
-    assert forall|key: int| #[trigger] sum(db.customer, customer_key_weight(key)) <= customer_max by {
+    assert forall|key: int| #[trigger] sum(db.customer, customer_key_weight(key)) <= dimensions.customer_max@ by {
         lemma_customer_bound(db, dimensions, key);
     }
+}
+
+pub proof fn lemma_nation_bounds(db: Db, dimensions: Dimensions, nation_max: int)
+    requires dimensions_valid(db, dimensions), nation_max >= 0,
+        forall|key: KeyView| #[trigger] dimensions.nation_maxima.at(key).is_some()
+            ==> dimensions.nation_maxima.at(key).unwrap()@ <= nation_max,
+    ensures forall|key: int| #[trigger] crate::query_semantics::nation_total(db, key) <= nation_max,
+{
+    reveal(dimensions_valid);
     assert forall|key: int| #[trigger] crate::query_semantics::nation_total(db, key) <= nation_max by {
         assert(nation_key_weight(key) =~= (|row: NationRow| if row.n_nationkey == key { 1int } else { 0int }));
         assert(total_at(dimensions.nation_totals, key) == crate::query_semantics::nation_total(db, key));
         if dimensions.nation_totals.at((key, Seq::empty())).is_some() {
             let total = dimensions.nation_totals.at((key, Seq::empty())).unwrap();
-            assert(dimensions.nation_maxima.at(crate::values::rank_view(total as int, key)).is_some());
-            assert(dimensions.nation_maxima.at(crate::values::rank_view(total as int, key)).unwrap() <= nation_max);
+            assert(dimensions.nation_maxima.at(crate::values::rank_view(crate::values::sat(total@), key)).is_some());
+            assert(dimensions.nation_maxima.at(crate::values::rank_view(crate::values::sat(total@), key)).unwrap()@ == total@);
         }
     }
 }
@@ -160,6 +166,7 @@ pub proof fn lemma_threshold(db: Db, parameters: Params, dimensions: Dimensions,
     slices: Seq<crate::output::ReadSlice>, top: Seq<OutRow>, seen: Set<i64>, customer_max: int, nation_max: int)
     requires dimensions_valid(db, dimensions), dimensions.nations.wf(),
         crate::output::read_slices_valid(slices), seen_prefix(slices, seen), seen_covered(db, parameters, top, seen),
+        crate::output::heads_exact(slices),
         crate::selection::valid_top(top), top.len() == 20,
         forall|row: OutRow| #[trigger] top.contains(row) ==> row_ok(db, parameters, row),
         forall|customer: int, component: int| #[trigger] crate::output::read_moment_sum(slices, customer, component)
@@ -185,6 +192,67 @@ pub proof fn lemma_threshold(db: Db, parameters: Params, dimensions: Dimensions,
         }
     }
     crate::selection::lemma_query_from_coverage(db, parameters, top);
+}
+
+pub open spec fn opt_view(value: Option<Wide>) -> Option<int> {
+    match value { Some(wide) => Some(wide@), None => None }
+}
+
+pub open spec fn customers_bounded(db: Db, bound: int) -> bool {
+    forall|key: int| #[trigger] sum(db.customer, customer_key_weight(key)) <= bound
+}
+
+pub open spec fn nations_bounded(db: Db, bound: int) -> bool {
+    forall|key: int| #[trigger] crate::query_semantics::nation_total(db, key) <= bound
+}
+
+/// A bound on the revenue multiplier of any unseen customer: the largest customer count times the largest nation total.
+pub open spec fn factor_ok(db: Db, factor: Option<int>) -> bool {
+    match factor {
+        Some(bound) => exists|customer_max: int, nation_max: int|
+            #![trigger customers_bounded(db, customer_max), nations_bounded(db, nation_max)]
+            customer_max >= 0 && nation_max >= 0 && bound == customer_max * nation_max
+            && customers_bounded(db, customer_max) && nations_bounded(db, nation_max),
+        None => true,
+    }
+}
+
+pub proof fn lemma_threshold_factor(db: Db, parameters: Params, dimensions: Dimensions,
+    slices: Seq<crate::output::ReadSlice>, top: Seq<OutRow>, seen: Set<i64>, factor: Option<int>)
+    requires dimensions_valid(db, dimensions), dimensions.nations.wf(),
+        crate::output::read_slices_valid(slices), seen_prefix(slices, seen), seen_covered(db, parameters, top, seen),
+        crate::output::heads_exact(slices),
+        crate::selection::valid_top(top), top.len() == 20,
+        forall|row: OutRow| #[trigger] top.contains(row) ==> row_ok(db, parameters, row),
+        forall|customer: int, component: int| #[trigger] crate::output::read_moment_sum(slices, customer, component)
+            == crate::query_semantics::window_fact(db, parameters, customer, component),
+        factor is Some, factor_ok(db, factor),
+        top[19].revenue > sum(slices, crate::output::head_upper_weight()) * factor.unwrap(),
+    ensures query_result(db, parameters, top),
+{
+    let (customer_max, nation_max) = choose|customer_max: int, nation_max: int|
+        #![trigger customers_bounded(db, customer_max), nations_bounded(db, nation_max)]
+        customer_max >= 0 && nation_max >= 0 && factor.unwrap() == customer_max * nation_max
+        && customers_bounded(db, customer_max) && nations_bounded(db, nation_max);
+    lemma_threshold(db, parameters, dimensions, slices, top, seen, customer_max, nation_max);
+}
+
+pub proof fn lemma_factor_from_bounds(db: Db, dimensions: Dimensions, nation_max: Option<int>, factor: Option<int>)
+    requires dimensions_valid(db, dimensions),
+        nation_max matches Some(bound) ==> bound >= 0 && (forall|key: KeyView| #[trigger] dimensions.nation_maxima.at(key).is_some()
+            ==> dimensions.nation_maxima.at(key).unwrap()@ <= bound),
+        factor is Some == nation_max is Some,
+        factor matches Some(product) ==> product == dimensions.customer_max@ * nation_max.unwrap(),
+    ensures factor_ok(db, factor),
+{
+    reveal(dimensions_valid);
+    if factor is Some {
+        lemma_customer_bounds(db, dimensions);
+        lemma_nation_bounds(db, dimensions, nation_max.unwrap());
+        assert(dimensions.customer_max@ >= 0);
+        assert(customers_bounded(db, dimensions.customer_max@));
+        assert(nations_bounded(db, nation_max.unwrap()));
+    }
 }
 
 }

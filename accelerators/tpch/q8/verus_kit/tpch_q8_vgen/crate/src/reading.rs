@@ -1,6 +1,7 @@
 use vstd::prelude::*;
 use verus_common::rat::*;
 use crate::gen_spec::*;
+use verus_common::sums::*;
 use crate::gen_obligations::*;
 use crate::model::*;
 use crate::table::*;
@@ -8,7 +9,7 @@ use crate::table::*;
 verus! {
 
 pub open spec fn read_total(data: Data, parameters: Params, year: int, volume: bool) -> int {
-    match (data.dictionary.resolve_spec(parameters.p2), data.dictionary.resolve_spec(parameters.p3)) {
+    match (data.dictionary.regions.resolve_spec(parameters.p2), data.dictionary.types.resolve_spec(parameters.p3)) {
         (Some(region), Some(kind)) => if i64::MIN <= year <= i64::MAX {
             data.totals.at((region, kind, 0), (year as i64, 0, 0), volume)
         } else { 0 },
@@ -17,7 +18,7 @@ pub open spec fn read_total(data: Data, parameters: Params, year: int, volume: b
 }
 
 pub open spec fn read_numerator(data: Data, parameters: Params, year: int) -> int {
-    match (data.dictionary.resolve_spec(parameters.p2), data.dictionary.resolve_spec(parameters.p3), data.dictionary.resolve_spec(parameters.p1)) {
+    match (data.dictionary.regions.resolve_spec(parameters.p2), data.dictionary.types.resolve_spec(parameters.p3), data.dictionary.names.resolve_spec(parameters.p1)) {
         (Some(region), Some(kind), Some(nation)) => if i64::MIN <= year <= i64::MAX {
             data.numerators.at((region, kind, nation), (year as i64, 0, 0), true)
         } else { 0 },
@@ -36,7 +37,7 @@ pub open spec fn read_valid(data: Data, db: Db) -> bool {
 
 pub proof fn lemma_empty(data: Data, db: Db, parameters: Params)
     requires read_valid(data, db),
-        data.dictionary.resolve_spec(parameters.p2) is None || data.dictionary.resolve_spec(parameters.p3) is None,
+        data.dictionary.regions.resolve_spec(parameters.p2) is None || data.dictionary.types.resolve_spec(parameters.p3) is None,
     ensures query_result(db, parameters, Seq::empty()),
 {
     hide(group_count);
@@ -49,9 +50,9 @@ pub proof fn lemma_empty(data: Data, db: Db, parameters: Params)
 
 pub proof fn lemma_statistics(data: Data, db: Db, parameters: Params, region: i64, kind: i64, nation: Option<i64>, year: i64)
     requires read_valid(data, db),
-        data.dictionary.resolve_spec(parameters.p2) == Some(region),
-        data.dictionary.resolve_spec(parameters.p3) == Some(kind),
-        data.dictionary.resolve_spec(parameters.p1) == nation,
+        data.dictionary.regions.resolve_spec(parameters.p2) == Some(region),
+        data.dictionary.types.resolve_spec(parameters.p3) == Some(kind),
+        data.dictionary.names.resolve_spec(parameters.p1) == nation,
     ensures
         data.totals.at((region, kind, 0), (year, 0, 0), false) == group_count(db, parameters, year as int),
         data.totals.at((region, kind, 0), (year, 0, 0), true) == group_sum(db, parameters, year as int, |tuple: Tuple| tuple.all_nations.volume),
@@ -92,5 +93,42 @@ pub proof fn lemma_push(db: Db, parameters: Params, output: Seq<OutRow>, row: Ou
         }
     }
 }
+
+/// A group of a defined query with every answer fitting has a non-zero volume sum, and its
+/// answer row's numerator and denominator fit.
+proof fn lemma_group_row(db: Db, parameters: Params, year: int)
+    requires answer_fits(db, parameters), group_count(db, parameters, year) > 0,
+    ensures
+        group_sum(db, parameters, year, |tuple: Tuple| tuple.all_nations.volume) != 0,
+        i128::MIN <= group_sum(db, parameters, year, |tuple: Tuple| if tuple.all_nations.nation == parameters.p1 { tuple.all_nations.volume } else { 0 }) * 10000 <= i128::MAX,
+        i128::MIN <= 10000 * group_sum(db, parameters, year, |tuple: Tuple| tuple.all_nations.volume) <= i128::MAX,
+{
+    lemma_defined_exists(db, parameters);
+    let output = choose|output: Seq<OutRow>| #[trigger] query_result(db, parameters, output);
+    let index = choose|index: int| 0 <= index < output.len() && (#[trigger] output[index]).o_year == year;
+    assert(row_ok(db, parameters, output[index]));
+    assert(out_fits(output[index]));
+}
+
+/// The volume sum of a non-empty group is zero: there is no answer.
+pub proof fn lemma_refute_zero_volume(db: Db, parameters: Params, year: int)
+    requires group_count(db, parameters, year) > 0,
+        group_sum(db, parameters, year, |tuple: Tuple| tuple.all_nations.volume) == 0,
+    ensures !answer_fits(db, parameters),
+{
+    if answer_fits(db, parameters) { lemma_group_row(db, parameters, year); }
+}
+
+/// The row's numerator or denominator does not fit: no answer fits.
+pub proof fn lemma_refute_overflow(db: Db, parameters: Params, year: int, numerator: int, denominator: int)
+    requires group_count(db, parameters, year) > 0,
+        numerator == group_sum(db, parameters, year, |tuple: Tuple| if tuple.all_nations.nation == parameters.p1 { tuple.all_nations.volume } else { 0 }) * 10000,
+        denominator == 10000 * group_sum(db, parameters, year, |tuple: Tuple| tuple.all_nations.volume),
+        !(i128::MIN <= numerator <= i128::MAX) || !(i128::MIN <= denominator <= i128::MAX),
+    ensures !answer_fits(db, parameters),
+{
+    if answer_fits(db, parameters) { lemma_group_row(db, parameters, year); }
+}
+
 
 }

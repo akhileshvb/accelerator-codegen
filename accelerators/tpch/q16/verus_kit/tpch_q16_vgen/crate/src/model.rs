@@ -46,18 +46,22 @@ impl Cell {
     }
 }
 
+pub struct PartCell {
+    pub group: Arc<Group>,
+    pub count: i128,
+}
+
 pub type Counts = Index<Cell>;
-pub type Parts = Index<Counts>;
-pub type Edges = Index<Index<i64>>;
+pub type PartGroups = Index<PartCell>;
+pub type Parts = Index<PartGroups>;
+pub type Edges = Index<Index<i128>>;
 pub struct BrandRanks {
     pub rows: Counts,
-    pub groups: i64,
 }
 
 pub struct SizeRanks {
     pub brands: Index<BrandRanks>,
     pub rows: Counts,
-    pub groups: i64,
 }
 
 pub type Ranks = Index<SizeRanks>;
@@ -139,7 +143,7 @@ pub open spec fn count_at(counts: Counts, key: KeyView) -> int {
     match counts.at(key) { Some(cell) => cell.count as int, None => 0 }
 }
 
-pub open spec fn integer_at(counts: Index<i64>, key: KeyView) -> int {
+pub open spec fn integer_at(counts: Index<i128>, key: KeyView) -> int {
     match counts.at(key) { Some(value) => value as int, None => 0 }
 }
 
@@ -147,9 +151,13 @@ pub open spec fn integer_keys<Value>(index: Index<Value>) -> bool {
     index.wf() && forall|key: KeyView| #[trigger] index.at(key).is_some() ==> key.1 == Seq::<u8>::empty()
 }
 
+pub open spec fn part_count_at(groups: PartGroups, key: KeyView) -> int {
+    match groups.at(key) { Some(cell) => cell.count as int, None => 0 }
+}
+
 pub open spec fn part_at(parts: Parts, part: int, key: KeyView) -> int {
     match parts.at((part, Seq::empty())) {
-        Some(groups) => count_at(groups, key),
+        Some(groups) => part_count_at(groups, key),
         None => 0,
     }
 }
@@ -167,9 +175,14 @@ pub open spec fn cell_keys_valid(counts: Counts) -> bool {
         && counts.at(key).unwrap().consistent()
 }
 
+pub open spec fn part_groups_valid(groups: PartGroups) -> bool {
+    groups.wf() && forall|key: KeyView| #[trigger] groups.at(key).is_some() ==>
+        groups.at(key).unwrap().group.valid() && groups.at(key).unwrap().group.key() == key
+}
+
 pub open spec fn parts_keys_valid(parts: Parts) -> bool {
     parts.wf() && integer_keys(parts)
-        && forall|key: KeyView| #[trigger] parts.at(key).is_some() ==> cell_keys_valid(parts.at(key).unwrap())
+        && forall|key: KeyView| #[trigger] parts.at(key).is_some() ==> part_groups_valid(parts.at(key).unwrap())
 }
 
 pub open spec fn edges_keys_valid(edges: Edges) -> bool {
@@ -183,23 +196,23 @@ pub open spec fn positive_counts(counts: Counts) -> bool {
         && forall|key: KeyView| #[trigger] counts.at(key).is_some() ==> counts.at(key).unwrap().count > 0
 }
 
-pub open spec fn key_set(keys: Index<i64>) -> bool {
+pub open spec fn key_set(keys: Index<i128>) -> bool {
     integer_keys(keys) && forall|key: KeyView| #[trigger] keys.at(key).is_some() ==> keys.at(key).unwrap() == 1
 }
 
-pub open spec fn nonzero_integers(keys: Index<i64>) -> bool {
+pub open spec fn nonzero_integers(keys: Index<i128>) -> bool {
     integer_keys(keys) && forall|key: KeyView| #[trigger] keys.at(key).is_some() ==> keys.at(key).unwrap() != 0
 }
 
-pub open spec fn joined_count(parts: Parts, edges: Index<i64>, key: KeyView) -> int {
-    sum(edges.entries(), |row: (KeyView, i64)| row.1 as int * part_at(parts, row.0.0, key))
+pub open spec fn joined_count(parts: Parts, edges: Index<i128>, key: KeyView) -> int {
+    sum(edges.entries(), |row: (KeyView, i128)| row.1 as int * part_at(parts, row.0.0, key))
 }
 
-pub open spec fn supplier_weight(parts: Parts, blockers: Index<i64>, row: (KeyView, Index<i64>), key: KeyView) -> int {
+pub open spec fn supplier_weight(parts: Parts, blockers: Index<i128>, row: (KeyView, Index<i128>), key: KeyView) -> int {
     if integer_at(blockers, row.0) == 0 && joined_count(parts, row.1, key) > 0 { 1 } else { 0 }
 }
 
-pub open spec fn supplier_contribution(parts: Parts, edges: Edges, blockers: Index<i64>, supplier: int, key: KeyView) -> int {
+pub open spec fn supplier_contribution(parts: Parts, edges: Edges, blockers: Index<i128>, supplier: int, key: KeyView) -> int {
     match edges.at((supplier, Seq::<u8>::empty())) {
         Some(rows) => supplier_weight(parts, blockers, ((supplier, Seq::<u8>::empty()), rows), key),
         None => 0int,
@@ -268,7 +281,6 @@ pub open spec fn stream_valid(rows: Counts, counts: Counts, size: int, brand: Op
 
 pub open spec fn size_profile_valid(rows: SizeRanks, counts: Counts, size: int) -> bool {
     &&& rows.brands.wf() && stream_valid(rows.rows, counts, size, None)
-    &&& rows.groups == rows.rows.entries().len()
     &&& brands_valid(rows.brands, counts, size)
 }
 
@@ -276,14 +288,13 @@ pub open spec fn brands_valid(brands: Index<BrandRanks>, counts: Counts, size: i
     &&& brands.wf()
     &&& forall|brand: KeyView| #[trigger] brands.at(brand).is_some() ==>
         brand.0 == 0 && stream_valid(brands.at(brand).unwrap().rows, counts, size, Some(brand.1))
-        && brands.at(brand).unwrap().groups == brands.at(brand).unwrap().rows.entries().len()
-        && brands.at(brand).unwrap().groups > 0
+        && brands.at(brand).unwrap().rows.entries().len() > 0
     &&& forall|key: KeyView| #[trigger] counts.at(key).is_some() && counts.at(key).unwrap().group.size == size ==>
         brands.at((0int, (*counts.at(key).unwrap().group.brand)@)).is_some()
 }
 
 pub open spec fn size_valid(rows: SizeRanks, counts: Counts, size: int) -> bool {
-    size_profile_valid(rows, counts, size) && rows.groups > 0
+    size_profile_valid(rows, counts, size) && rows.rows.entries().len() > 0
 }
 
 }

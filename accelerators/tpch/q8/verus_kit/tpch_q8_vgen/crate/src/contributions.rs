@@ -3,13 +3,14 @@ use verus_common::sums::*;
 use crate::table::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
+use crate::num::Num;
 
 verus! {
 
 #[verifier::opaque]
 pub open spec fn customer_effect(rows: Seq<Cell>, part: Cell, supplier: Cell, order: Cell, key: Major, minor: Major, sign: int, volume: int, measure: bool) -> int {
     sum(rows, |customer: Cell| if key == (customer.first, supplier.first, 0) && minor == (part.first, order.second, 0) {
-        sign * part.count as int * supplier.count as int * order.count as int * customer.count as int
+        sign * part.count@ * supplier.count@ * order.count@ * customer.count@
             * if measure { volume } else { 1 }
     } else { 0 })
 }
@@ -56,11 +57,11 @@ pub open spec fn rescan_effect(rows: Seq<LineInput>, required_orders: crate::mai
         parts, suppliers, customers, orders, before, key, minor, measure))
 }
 
-fn add_customers(rows: &[Cell], part: Cell, supplier: Cell, order: Cell, sign: i128, volume: i128, output: &mut Work) -> (result: Option<()>)
+fn add_customers(rows: &[Cell], part: &Cell, supplier: &Cell, order: &Cell, sign: i128, volume: i128, output: &mut Work)
     requires old(output).valid(),
-    ensures result is Some ==> final(output).valid(),
-        result is Some ==> forall|key: Major, minor: Major, measure: bool| #[trigger] final(output).at(key, minor, measure)
-            == old(output).at(key, minor, measure) + customer_effect(rows@, part, supplier, order, key, minor, sign as int, volume as int, measure),
+    ensures final(output).valid(),
+        forall|key: Major, minor: Major, measure: bool| #[trigger] final(output).at(key, minor, measure)
+            == old(output).at(key, minor, measure) + customer_effect(rows@, *part, *supplier, *order, key, minor, sign as int, volume as int, measure),
 {
     let ghost initial = *output;
     let mut index = 0;
@@ -68,19 +69,20 @@ fn add_customers(rows: &[Cell], part: Cell, supplier: Cell, order: Cell, sign: i
     while index < rows.len()
         invariant index <= rows.len(), output.valid(),
             forall|key: Major, minor: Major, measure: bool| #[trigger] output.at(key, minor, measure)
-                == initial.at(key, minor, measure) + customer_effect(rows@.take(index as int), part, supplier, order, key, minor, sign as int, volume as int, measure),
+                == initial.at(key, minor, measure) + customer_effect(rows@.take(index as int), *part, *supplier, *order, key, minor, sign as int, volume as int, measure),
         decreases rows.len() - index,
     {
-        let customer = rows[index];
-        let count = sign.checked_mul(part.count)?.checked_mul(supplier.count)?.checked_mul(order.count)?.checked_mul(customer.count)?;
-        output.add((customer.first, supplier.first, 0), (part.first, order.second, 0), count, count.checked_mul(volume)?)?;
+        let customer = &rows[index];
+        let count = Num::Small(sign).mul(&part.count).mul(&supplier.count).mul(&order.count).mul(&customer.count);
+        let measured = count.mul(&Num::Small(volume));
+        output.add((customer.first, supplier.first, 0), (part.first, order.second, 0), count, measured);
         proof {
             assert forall|key: Major, minor: Major, measure: bool| #[trigger] output.at(key, minor, measure)
-                == initial.at(key, minor, measure) + customer_effect(rows@.take(index as int + 1), part, supplier, order, key, minor, sign as int, volume as int, measure) by {
+                == initial.at(key, minor, measure) + customer_effect(rows@.take(index as int + 1), *part, *supplier, *order, key, minor, sign as int, volume as int, measure) by {
                 reveal(customer_effect);
                 lemma_sum_take(rows@, index as int, |customer: Cell|
                     if key == (customer.first, supplier.first, 0) && minor == (part.first, order.second, 0) {
-                        sign as int * part.count as int * supplier.count as int * order.count as int * customer.count as int
+                        sign as int * part.count@ * supplier.count@ * order.count@ * customer.count@
                             * if measure { volume as int } else { 1 }
                     } else { 0 });
             }
@@ -88,14 +90,13 @@ fn add_customers(rows: &[Cell], part: Cell, supplier: Cell, order: Cell, sign: i
         index += 1;
     }
     proof { assert(rows@.take(rows@.len() as int) =~= rows@); }
-    Some(())
 }
 
-fn add_orders(rows: &[Cell], customers: &Table, part: Cell, supplier: Cell, sign: i128, volume: i128, output: &mut Work) -> (result: Option<()>)
+fn add_orders(rows: &[Cell], customers: &Table, part: &Cell, supplier: &Cell, sign: i128, volume: i128, output: &mut Work)
     requires customers.valid(), old(output).valid(),
-    ensures result is Some ==> final(output).valid(),
-        result is Some ==> forall|key: Major, minor: Major, measure: bool| #[trigger] final(output).at(key, minor, measure)
-            == old(output).at(key, minor, measure) + order_effect(rows@, *customers, part, supplier, key, minor, sign as int, volume as int, measure),
+    ensures final(output).valid(),
+        forall|key: Major, minor: Major, measure: bool| #[trigger] final(output).at(key, minor, measure)
+            == old(output).at(key, minor, measure) + order_effect(rows@, *customers, *part, *supplier, key, minor, sign as int, volume as int, measure),
 {
     let ghost initial = *output;
     let mut index = 0;
@@ -103,31 +104,30 @@ fn add_orders(rows: &[Cell], customers: &Table, part: Cell, supplier: Cell, sign
     while index < rows.len()
         invariant index <= rows.len(), customers.valid(), output.valid(),
             forall|key: Major, minor: Major, measure: bool| #[trigger] output.at(key, minor, measure)
-                == initial.at(key, minor, measure) + order_effect(rows@.take(index as int), *customers, part, supplier, key, minor, sign as int, volume as int, measure),
+                == initial.at(key, minor, measure) + order_effect(rows@.take(index as int), *customers, *part, *supplier, key, minor, sign as int, volume as int, measure),
         decreases rows.len() - index,
     {
-        let order = rows[index];
+        let order = &rows[index];
         let neighbors = customers.get((order.first, 0, 0));
-        add_customers(neighbors.as_slice(), part, supplier, order, sign, volume, output)?;
+        add_customers(neighbors.as_slice(), part, supplier, order, sign, volume, output);
         proof {
             assert forall|key: Major, minor: Major, measure: bool| #[trigger] output.at(key, minor, measure)
-                == initial.at(key, minor, measure) + order_effect(rows@.take(index as int + 1), *customers, part, supplier, key, minor, sign as int, volume as int, measure) by {
+                == initial.at(key, minor, measure) + order_effect(rows@.take(index as int + 1), *customers, *part, *supplier, key, minor, sign as int, volume as int, measure) by {
                 reveal(order_effect);
                 lemma_sum_take(rows@, index as int, |order: Cell|
-                    customer_effect(customers.rows((order.first, 0, 0)), part, supplier, order, key, minor, sign as int, volume as int, measure));
+                    customer_effect(customers.rows((order.first, 0, 0)), *part, *supplier, order, key, minor, sign as int, volume as int, measure));
             }
         }
         index += 1;
     }
     proof { assert(rows@.take(rows@.len() as int) =~= rows@); }
-    Some(())
 }
 
-fn add_suppliers(rows: &[Cell], orders: &[Cell], customers: &Table, part: Cell, sign: i128, volume: i128, output: &mut Work) -> (result: Option<()>)
+fn add_suppliers(rows: &[Cell], orders: &[Cell], customers: &Table, part: &Cell, sign: i128, volume: i128, output: &mut Work)
     requires customers.valid(), old(output).valid(),
-    ensures result is Some ==> final(output).valid(),
-        result is Some ==> forall|key: Major, minor: Major, measure: bool| #[trigger] final(output).at(key, minor, measure)
-            == old(output).at(key, minor, measure) + supplier_effect(rows@, orders@, *customers, part, key, minor, sign as int, volume as int, measure),
+    ensures final(output).valid(),
+        forall|key: Major, minor: Major, measure: bool| #[trigger] final(output).at(key, minor, measure)
+            == old(output).at(key, minor, measure) + supplier_effect(rows@, orders@, *customers, *part, key, minor, sign as int, volume as int, measure),
 {
     let ghost initial = *output;
     let mut index = 0;
@@ -135,34 +135,50 @@ fn add_suppliers(rows: &[Cell], orders: &[Cell], customers: &Table, part: Cell, 
     while index < rows.len()
         invariant index <= rows.len(), customers.valid(), output.valid(),
             forall|key: Major, minor: Major, measure: bool| #[trigger] output.at(key, minor, measure)
-                == initial.at(key, minor, measure) + supplier_effect(rows@.take(index as int), orders@, *customers, part, key, minor, sign as int, volume as int, measure),
+                == initial.at(key, minor, measure) + supplier_effect(rows@.take(index as int), orders@, *customers, *part, key, minor, sign as int, volume as int, measure),
         decreases rows.len() - index,
     {
-        add_orders(orders, customers, part, rows[index], sign, volume, output)?;
+        add_orders(orders, customers, part, &rows[index], sign, volume, output);
         proof {
             assert forall|key: Major, minor: Major, measure: bool| #[trigger] output.at(key, minor, measure)
-                == initial.at(key, minor, measure) + supplier_effect(rows@.take(index as int + 1), orders@, *customers, part, key, minor, sign as int, volume as int, measure) by {
+                == initial.at(key, minor, measure) + supplier_effect(rows@.take(index as int + 1), orders@, *customers, *part, key, minor, sign as int, volume as int, measure) by {
                 reveal(supplier_effect);
                 lemma_sum_take(rows@, index as int, |supplier: Cell|
-                    order_effect(orders@, *customers, part, supplier, key, minor, sign as int, volume as int, measure));
+                    order_effect(orders@, *customers, *part, supplier, key, minor, sign as int, volume as int, measure));
             }
         }
         index += 1;
     }
     proof { assert(rows@.take(rows@.len() as int) =~= rows@); }
-    Some(())
 }
 
-pub fn line_contribution(parts: &Table, suppliers: &Table, customers: &Table, orders: &Table, line: LineInput, sign: i128, output: &mut Work) -> (result: Option<()>)
+/// extendedprice * (100 - discount): an i64 times a value just past an i64 always fits an i128.
+fn line_volume(line: &LineInput) -> (result: i128)
+    ensures result as int == line.l_extendedprice as int * (100 - line.l_discount as int),
+{
+    let price = line.l_extendedprice as i128;
+    let rest = 100i128 - line.l_discount as i128;
+    proof {
+        assert(-9223372036854775808int <= price as int <= 9223372036854775807int);
+        assert(-9223372036854775707int <= rest as int <= 9223372036854775908int);
+        assert(price as int * rest as int <= 9223372036854775808int * 9223372036854775908int) by (nonlinear_arith)
+            requires -9223372036854775808int <= price as int <= 9223372036854775807int, -9223372036854775707int <= rest as int <= 9223372036854775908int;
+        assert(price as int * rest as int >= -9223372036854775808int * 9223372036854775908int) by (nonlinear_arith)
+            requires -9223372036854775808int <= price as int <= 9223372036854775807int, -9223372036854775707int <= rest as int <= 9223372036854775908int;
+    }
+    price * rest
+}
+
+pub fn line_contribution(parts: &Table, suppliers: &Table, customers: &Table, orders: &Table, line: LineInput, sign: i128, output: &mut Work)
     requires parts.valid(), suppliers.valid(), customers.valid(), orders.valid(), old(output).valid(),
-    ensures result is Some ==> final(output).valid(),
-        result is Some ==> forall|key: Major, minor: Major, measure: bool| #[trigger] final(output).at(key, minor, measure)
+    ensures final(output).valid(),
+        forall|key: Major, minor: Major, measure: bool| #[trigger] final(output).at(key, minor, measure)
             == old(output).at(key, minor, measure) + line_effect(*parts, *suppliers, *customers, *orders, line_input_view(line), key, minor, sign as int, measure),
 {
     let types = parts.get((line.l_partkey, 0, 0));
     let nations = suppliers.get((line.l_suppkey, 0, 0));
     let order_rows = orders.get((line.l_orderkey, 0, 0));
-    let volume = (line.l_extendedprice as i128).checked_mul(100i128 - line.l_discount as i128)?;
+    let volume = line_volume(&line);
     let ghost initial = *output;
     let mut index = 0;
     proof { reveal(part_effect); }
@@ -174,7 +190,7 @@ pub fn line_contribution(parts: &Table, suppliers: &Table, customers: &Table, or
                 == initial.at(key, minor, measure) + part_effect((*types)@.take(index as int), (*nations)@, (*order_rows)@, *customers, key, minor, sign as int, volume as int, measure),
         decreases types.len() - index,
     {
-        add_suppliers(nations.as_slice(), order_rows.as_slice(), customers, types[index], sign, volume, output)?;
+        add_suppliers(nations.as_slice(), order_rows.as_slice(), customers, &types[index], sign, volume, output);
         proof {
             assert forall|key: Major, minor: Major, measure: bool| #[trigger] output.at(key, minor, measure)
                 == initial.at(key, minor, measure) + part_effect((*types)@.take(index as int + 1), (*nations)@, (*order_rows)@, *customers, key, minor, sign as int, volume as int, measure) by {
@@ -186,7 +202,6 @@ pub fn line_contribution(parts: &Table, suppliers: &Table, customers: &Table, or
         index += 1;
     }
     proof { assert((*types)@.take((*types)@.len() as int) =~= (*types)@); }
-    Some(())
 }
 
 }

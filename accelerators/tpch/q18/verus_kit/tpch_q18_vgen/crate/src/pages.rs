@@ -646,6 +646,7 @@ impl KeyBucket {
         self.chunks[index / 16384][index / 128 % 128][index % 128]
     }
 
+    #[verifier::rlimit(30)]
     pub fn push(&mut self, key: i64) -> (out: bool)
         requires old(self).wf(),
         ensures final(self).wf(), out ==> final(self).view() == old(self).view().push(key),
@@ -754,6 +755,26 @@ impl KeyBucket {
         }
         self.pop_last();
         last
+    }
+
+    pub fn locate(&self, key: i64, hint: Option<usize>) -> (out: usize)
+        requires self.wf(), self.view().contains(key),
+        ensures out < self.len, self.view()[out as int] == key,
+    {
+        if let Some(slot) = hint {
+            if slot < self.len && self.get(slot) == key { return slot; }
+        }
+        let mut index = 0usize;
+        while index < self.len
+            invariant index <= self.len, self.wf(),
+                forall|position: int| 0 <= position < index ==> self.view()[position] != key,
+            decreases self.len - index,
+        {
+            if self.get(index) == key { return index; }
+            index += 1;
+        }
+        proof { assert(false); }
+        0
     }
 
     pub fn pop_last(&mut self)

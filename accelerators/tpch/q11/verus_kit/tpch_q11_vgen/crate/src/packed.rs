@@ -12,16 +12,22 @@ use verus_common::sums::*;
 use verus_prooflib::ordered::{Index, Key, KeyView, key_lt, ordered_rows, drop_key, lemma_ordered_unique,
     lemma_drop_bindings, lemma_drop_ordered, lemma_drop_sum};
 use crate::values::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
 broadcast use vstd::seq_lib::group_seq_properties;
 
-#[derive(Clone, Copy)]
 pub struct Cell {
     pub key: i64,
-    pub count: i64,
-    pub value: i128,
+    pub count: Wide,
+    pub value: Wide,
+}
+
+impl Cell {
+    pub fn dup(&self) -> (result: Cell)
+        ensures result == *self,
+    { Cell { key: self.key, count: self.count.dup(), value: self.value.dup() } }
 }
 
 pub struct Run {
@@ -29,14 +35,10 @@ pub struct Run {
 }
 
 pub open spec fn cell_key(cell: Cell) -> KeyView { (cell.key as int, Seq::<u8>::empty()) }
-pub open spec fn cell_moment(cell: Cell) -> Moment { Moment { count: cell.count as i128, value: cell.value } }
+pub open spec fn cell_moment(cell: Cell) -> Moment { Moment { count: cell.count@, value: cell.value@ } }
 pub open spec fn cell_row(cell: Cell) -> (KeyView, Moment) { (cell_key(cell), cell_moment(cell)) }
 pub open spec fn cell_rows(cells: Seq<Cell>) -> Seq<(KeyView, Moment)> { cells.map_values(|cell: Cell| cell_row(cell)) }
 pub open spec fn run_rows(run: Run) -> Seq<(KeyView, Moment)> { cell_rows(run.cells@) }
-
-pub open spec fn fits(moment: Moment) -> bool {
-    i64::MIN <= moment.count <= i64::MAX
-}
 
 pub open spec fn bucket_of(key: i64, shift: u32) -> i64 { key >> shift }
 
@@ -78,12 +80,6 @@ pub open spec fn tops_ok(tops: Seq<(KeyView, Run)>, shift: u32) -> bool {
 
 pub open spec fn flat_rows(tops: Seq<(KeyView, Run)>) -> Seq<(KeyView, Moment)> {
     flat(tops.map_values(|e: (KeyView, Run)| run_rows(e.1)))
-}
-
-pub fn fits_exec(moment: &Moment) -> (result: bool)
-    ensures result == fits(*moment),
-{
-    moment.count >= i64::MIN as i128 && moment.count <= i64::MAX as i128
 }
 
 pub proof fn lemma_key_lt_num(a: int, b: int)
@@ -318,7 +314,7 @@ pub fn copy_into(target: &mut Vec<Cell>, cells: &Vec<Cell>, start: usize, end: u
         invariant start <= i <= end <= cells.len(), target@ == original + cells@.subrange(start as int, i as int),
         decreases end - i,
     {
-        target.push(cells[i]);
+        target.push(cells[i].dup());
         proof { assert(cells@.subrange(start as int, i as int + 1) =~= cells@.subrange(start as int, i as int).push(cells@[i as int])); }
         i += 1;
     }
@@ -356,7 +352,7 @@ pub fn run_get(cells: &Vec<Cell>, key: i64) -> (result: Option<Cell>)
     let position = lower(cells, key);
     if position < cells.len() && cells[position].key == key {
         proof { lemma_find_cell(cells@, position as int); }
-        Some(cells[position])
+        Some(cells[position].dup())
     } else {
         proof {
             lemma_find_iff(cells@, key as int);
@@ -568,8 +564,11 @@ impl Packed {
         result
     }
 
-    pub fn get(&self, key: i64) -> (result: Option<Moment>)
-        ensures self.wf(), result == self.at((key as int, Seq::<u8>::empty())),
+    pub fn get(&self, key: i64) -> (result: Option<Mom>)
+        ensures self.wf(), match result {
+            Some(moment) => self.at((key as int, Seq::<u8>::empty())) == Some(moment@),
+            None => self.at((key as int, Seq::<u8>::empty())) is None,
+        },
     {
         proof { use_type_invariant(self); }
         let bucket = key >> self.shift;
@@ -585,7 +584,7 @@ impl Packed {
                     assert(self.top.entries()[position].1 == *run);
                 }
                 match run_get(&run.cells, key) {
-                    Some(cell) => Some(Moment { count: cell.count as i128, value: cell.value }),
+                    Some(cell) => Some(Mom { count: cell.count.dup(), value: cell.value.dup() }),
                     None => None,
                 }
             },
@@ -665,18 +664,17 @@ pub proof fn lemma_singleton_run(cell: Cell, shift: u32)
 }
 
 impl Packed {
-    pub fn put(&mut self, key: i64, moment: Moment)
-        requires fits(moment),
+    pub fn put(&mut self, key: i64, moment: &Mom)
         ensures final(self).wf(), final(self).shift() == old(self).shift(),
             forall|query: KeyView| #![trigger final(self).at(query)] final(self).at(query)
-                == if query == (key as int, Seq::<u8>::empty()) { Some(moment) } else { old(self).at(query) },
+                == if query == (key as int, Seq::<u8>::empty()) { Some(moment@) } else { old(self).at(query) },
     {
         proof { use_type_invariant(&*self); }
         let ghost old_top = self.top;
         let ghost shift = self.shift;
         let bucket = key >> self.shift;
         let bkey = Key::number(bucket);
-        let cell = Cell { key, count: moment.count as i64, value: moment.value };
+        let cell = Cell { key, count: moment.count.dup(), value: moment.value.dup() };
         let run = match self.top.get(&bkey) {
             Some(existing) => {
                 proof { lemma_run_of(old_top, shift, bkey.view(), &*existing); }
@@ -710,7 +708,7 @@ impl Packed {
         self.top = top;
         proof {
             assert forall|query: KeyView| #![trigger self.at(query)] self.at(query)
-                == if query == (key as int, Seq::<u8>::empty()) { Some(moment) } else { Packed { top: old_top, shift }.at(query) } by {
+                == if query == (key as int, Seq::<u8>::empty()) { Some(moment@) } else { Packed { top: old_top, shift }.at(query) } by {
                 if query.1 == Seq::<u8>::empty() && i64::MIN <= query.0 <= i64::MAX {
                     let b = (bucket_of(query.0 as i64, shift) as int, Seq::<u8>::empty());
                     if query == (key as int, Seq::<u8>::empty()) {
@@ -797,13 +795,13 @@ impl PackedCursor {
     #[verifier::type_invariant]
     spec fn valid(self) -> bool { self.position <= self.rows@.len() }
 
-    pub fn next(&mut self) -> (result: Option<(Key, Arc<Moment>)>)
+    pub fn next(&mut self) -> (result: Option<(Key, Arc<Mom>)>)
         ensures
             final(self).work() >= 0,
             match result {
                 Some(row) => {
                     &&& old(self).remaining().len() > 0
-                    &&& (row.0.view(), *row.1) == old(self).remaining()[0]
+                    &&& (row.0.view(), (*row.1)@) == old(self).remaining()[0]
                     &&& final(self).remaining() == old(self).remaining().skip(1)
                     &&& final(self).work() < old(self).work()
                 },
@@ -812,10 +810,10 @@ impl PackedCursor {
     {
         proof { use_type_invariant(&*self); }
         if self.position < self.rows.len() {
-            let cell = self.rows[self.position];
+            let cell = self.rows[self.position].dup();
             self.position += 1;
             proof { assert(cell_rows(self.rows@).skip(self.position as int) =~= cell_rows(self.rows@).skip(self.position as int - 1).skip(1)); }
-            Some((Key::number(cell.key), Arc::new(Moment { count: cell.count as i128, value: cell.value })))
+            Some((Key::number(cell.key), Arc::new(Mom { count: cell.count, value: cell.value })))
         } else {
             None
         }

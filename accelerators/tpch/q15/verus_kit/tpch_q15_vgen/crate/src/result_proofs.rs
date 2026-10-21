@@ -5,7 +5,6 @@ use verus_prooflib::ordered::{Index, KeyView};
 use crate::gen_spec::*;
 use crate::model::*;
 use crate::query_proofs::*;
-use crate::output::{maximum_matches, winning_keys};
 use crate::emission::*;
 use crate::maintenance::{variant_count, variants_shape};
 
@@ -19,117 +18,10 @@ pub open spec fn tuple_output(tuple: Tuple) -> OutRow {
 pub open spec fn tuple_weight(output: OutRow) -> spec_fn(Tuple) -> int {
     |tuple: Tuple| if tuple_output(tuple) == output { 1int } else { 0int }
 }
-pub proof fn lemma_winners_sorted(totals: Seq<(i64, i128)>, value: i128)
-    requires forall|left: int, right: int| #![trigger totals[left], totals[right]] 0 <= left < right < totals.len() ==> totals[left].0 < totals[right].0,
-    ensures forall|left: int, right: int| #![trigger winning_keys(totals, value)[left], winning_keys(totals, value)[right]]
-        0 <= left < right < winning_keys(totals, value).len() ==> winning_keys(totals, value)[left] < winning_keys(totals, value)[right],
-    decreases totals.len(),
-{
-    reveal_with_fuel(Seq::filter, 2);
-    if totals.len() > 0 {
-        let prefix = totals.drop_last();
-        lemma_winners_sorted(prefix, value);
-        lemma_winner_membership(prefix, value);
-        let before = winning_keys(prefix, value);
-        let after = winning_keys(totals, value);
-        let last = totals.last();
-        if last.1 == value {
-            assert(after =~= before.push(last.0));
-            assert forall|left: int, right: int| #![trigger after[left], after[right]] 0 <= left < right < after.len() implies after[left] < after[right] by {
-                if right < before.len() { assert(after[left] == before[left]); assert(after[right] == before[right]); }
-                else {
-                    assert(has_winner(before, before[left] as int));
-                    let index = choose|index: int| 0 <= index < prefix.len() && (#[trigger] prefix[index]).0 == before[left] && prefix[index].1 == value;
-                    assert(totals[index] == prefix[index]);
-                    assert(totals[index].0 < totals[totals.len() as int - 1].0);
-                }
-            }
-        } else { assert(after =~= before); }
-    }
-}
 pub open spec fn supplier_output_weight(winners: Seq<i64>, revenue: int, output: OutRow) -> spec_fn(SupplierRow) -> int {
     |row: SupplierRow| if has_winner(winners, row.s_suppkey) && supplier_output(row, revenue) == output { 1int } else { 0int }
 }
-pub proof fn lemma_winner_qualifies(db: Db, parameters: Params, totals: Seq<(i64, i128)>, winners: Seq<i64>, value: i128, supplier: int)
-    requires groups_match(totals, db, parameters.p1, parameters.p2), maximum_matches(totals, Some(value), winners),
-    ensures has_winner(winners, supplier) <==> window_sum(db.lineitem, supplier, parameters.p1, parameters.p2, false) > 0 &&
-        window_sum(db.lineitem, supplier, parameters.p1, parameters.p2, true) == value as int,
-{
-    lemma_winner_membership(totals, value);
-    if has_winner(winners, supplier) {
-        let position = choose|position: int| 0 <= position < totals.len() && (#[trigger] totals[position]).0 as int == supplier && totals[position].1 == value;
-    }
-    if window_sum(db.lineitem, supplier, parameters.p1, parameters.p2, false) > 0 && window_sum(db.lineitem, supplier, parameters.p1, parameters.p2, true) == value as int {
-        assert(has_group(totals, supplier));
-        let position = choose|position: int| 0 <= position < totals.len() && (#[trigger] totals[position]).0 as int == supplier;
-        assert(totals[position].1 == value);
-        assert(has_winner(winners, supplier));
-    }
-}
-pub proof fn lemma_supplier_join(db: Db, parameters: Params, totals: Seq<(i64, i128)>, winners: Seq<i64>, value: i128, supplier: SupplierRow, output: OutRow)
-    requires groups_match(totals, db, parameters.p1, parameters.p2), maximum_matches(totals, Some(value), winners), scalar_1_value(db, parameters) == Some(value as int),
-    ensures sum(tuples_1(db, parameters, supplier), tuple_weight(output)) == supplier_output_weight(winners, value as int, output)(supplier),
-{
-    let keys = revenue0_keys(db, parameters);
-    let rows0 = rel_revenue0(db, parameters);
-    let weight = tuple_weight(output);
-    let mapper = |row: Revenue0Row| tuples_2(db, parameters, supplier, row);
-    let per_row = |row: Revenue0Row| sum(mapper(row), weight);
-    let projection = |key: int| revenue0_row_of(db, parameters, key);
-    let per_key = |key: int| per_row(projection(key));
-    assert(rows0 == keys.map_values(projection));
-    lemma_sum_flat_map(rows0, mapper, weight);
-    lemma_sum_map(keys, projection, per_row, per_key);
-    assert(sum(tuples_1(db, parameters, supplier), weight) == sum(keys, per_key));
-    lemma_support0(db, parameters, supplier.s_suppkey);
-    lemma_range_group(db, parameters, supplier.s_suppkey);
-    lemma_winner_qualifies(db, parameters, totals, winners, value, supplier.s_suppkey);
-    if keys.contains(supplier.s_suppkey) {
-        let position = choose|position: int| 0 <= position < keys.len() && (#[trigger] keys[position]) == supplier.s_suppkey;
-        assert forall|other: int| 0 <= other < keys.len() && other != position implies per_key(#[trigger] keys[other]) == 0 by {
-            if other < position { assert(keys[other] != keys[position]); }
-            else { assert(keys[position] != keys[other]); }
-            let row = projection(keys[other]);
-            assert(!where_clause(db, parameters, supplier, row));
-            lemma_sum_opt(false, Tuple { supplier, revenue0: row }, weight);
-        }
-        lemma_sum_single_match(keys, per_key, position);
-        let row = projection(supplier.s_suppkey);
-        lemma_sum_opt(where_clause(db, parameters, supplier, row), Tuple { supplier, revenue0: row }, weight);
-        if where_clause(db, parameters, supplier, row) { assert(tuple_output(Tuple { supplier, revenue0: row }) == supplier_output(supplier, value as int)); }
-        assert(per_key(supplier.s_suppkey) == supplier_output_weight(winners, value as int, output)(supplier));
-    } else {
-        assert forall|position: int| 0 <= position < keys.len() implies per_key(#[trigger] keys[position]) == 0 by {
-            assert(keys[position] != supplier.s_suppkey);
-            let row = projection(keys[position]);
-            assert(!where_clause(db, parameters, supplier, row));
-            lemma_sum_opt(false, Tuple { supplier, revenue0: row }, weight);
-        }
-        lemma_sum_zero(keys, per_key);
-        assert(!has_winner(winners, supplier.s_suppkey));
-    }
-}
-pub proof fn lemma_sql_count(db: Db, parameters: Params, totals: Seq<(i64, i128)>, winners: Seq<i64>, value: i128, output: OutRow)
-    requires groups_match(totals, db, parameters.p1, parameters.p2), maximum_matches(totals, Some(value), winners),
-    ensures rows(db, parameters).to_multiset().count(output) as int == sum(db.supplier, supplier_output_weight(winners, value as int, output)),
-{
-    lemma_maximum_sql(db, parameters, totals, winners, value);
-    let tuples = tuples(db, parameters);
-    let rows = rows(db, parameters);
-    let projection = |tuple: Tuple| tuple_output(tuple);
-    let weight = tuple_weight(output);
-    assert(rows =~= tuples.map_values(projection));
-    lemma_count_as_sum(rows, output);
-    lemma_sum_map(tuples, projection, eqv(output), weight);
-    let mapper = |supplier: SupplierRow| tuples_1(db, parameters, supplier);
-    lemma_sum_flat_map(db.supplier, mapper, weight);
-    let nested = |supplier: SupplierRow| sum(mapper(supplier), weight);
-    let expected = supplier_output_weight(winners, value as int, output);
-    assert forall|supplier: SupplierRow| #[trigger] nested(supplier) == expected(supplier) by {
-        lemma_supplier_join(db, parameters, totals, winners, value, supplier, output);
-    }
-    lemma_sum_ext_all(db.supplier, nested, expected);
-}
+#[verifier::spinoff_prover]
 pub proof fn lemma_repeat_count(row: OutRow, count: int, output: OutRow)
     requires count >= 0,
     ensures sum(repeated(row, count), eqv(output)) == count * eqv(output)(row),
@@ -139,6 +31,8 @@ pub proof fn lemma_repeat_count(row: OutRow, count: int, output: OutRow)
         lemma_repeat_count(row, count - 1, output);
         lemma_repeat_push(row, count - 1);
         lemma_sum_push(repeated(row, count - 1), row, eqv(output));
+        let unit = eqv(output)(row);
+        assert(count * unit == (count - 1) * unit + unit) by (nonlinear_arith);
     }
 }
 pub proof fn lemma_inner_count(variants: &Index<Variant>, supplier: int, revenue: int, output: OutRow)

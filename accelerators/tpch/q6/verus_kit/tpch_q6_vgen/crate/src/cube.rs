@@ -1,6 +1,7 @@
 use vstd::prelude::*;
 use std::collections::HashMap;
 use verus_common::sums::*;
+use verus_prooflib::wide::Wide;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 
@@ -58,7 +59,7 @@ pub open spec fn position_valid(cells: Seq<Cell>, positions: Map<i64, HashMap<u1
 }
 
 pub open spec fn measure(cell: Cell, revenue: bool) -> int {
-    if revenue { cell.revenue as int } else { cell.count as int }
+    if revenue { cell.revenue@ } else { cell.count@ }
 }
 
 pub open spec fn weighted(cells: Seq<Cell>, weight: spec_fn(Key) -> int, revenue: bool) -> int {
@@ -116,11 +117,18 @@ pub proof fn lemma_weight_update(cells: Seq<Cell>, index: int, cell: Cell)
     }
 }
 
-#[derive(Clone, Copy)]
 pub struct Cell {
     pub key: Key,
-    pub count: i128,
-    pub revenue: i128,
+    pub count: Wide,
+    pub revenue: Wide,
+}
+
+impl Cell {
+    pub fn dup(&self) -> (result: Cell)
+        ensures result == *self,
+    {
+        Cell { key: self.key, count: self.count.dup(), revenue: self.revenue.dup() }
+    }
 }
 
 pub open spec fn row_key(row: LineitemRow) -> Key {
@@ -164,11 +172,11 @@ pub proof fn lemma_sorted_push(cells: Seq<Cell>, cell: Cell)
 }
 
 pub proof fn lemma_nonzero_push(cells: Seq<Cell>, cell: Cell)
-    requires nonzero(cells), cell.count != 0 || cell.revenue != 0,
+    requires nonzero(cells), cell.count@ != 0 || cell.revenue@ != 0,
     ensures nonzero(cells.push(cell)),
 {
     assert forall|index: int| 0 <= index < cells.push(cell).len() implies
-        (#[trigger] cells.push(cell)[index]).count != 0 || cells.push(cell)[index].revenue != 0 by {
+        (#[trigger] cells.push(cell)[index]).count@ != 0 || cells.push(cell)[index].revenue@ != 0 by {
         if index < cells.len() { assert(cells.push(cell)[index] == cells[index]); }
     }
 }
@@ -184,11 +192,11 @@ pub proof fn lemma_weight_concat(left: Seq<Cell>, right: Seq<Cell>)
 }
 
 pub open spec fn cell_count(cells: Seq<Cell>, key: Key) -> int {
-    sum(cells, |cell: Cell| if cell.key == key { cell.count as int } else { 0 })
+    sum(cells, |cell: Cell| if cell.key == key { cell.count@ } else { 0 })
 }
 
 pub open spec fn cell_revenue(cells: Seq<Cell>, key: Key) -> int {
-    sum(cells, |cell: Cell| if cell.key == key { cell.revenue as int } else { 0 })
+    sum(cells, |cell: Cell| if cell.key == key { cell.revenue@ } else { 0 })
 }
 
 pub open spec fn db_count(db: Db, key: Key) -> int {
@@ -239,7 +247,7 @@ pub open spec fn sorted(cells: Seq<Cell>) -> bool {
 
 pub open spec fn nonzero(cells: Seq<Cell>) -> bool {
     forall|index: int| 0 <= index < cells.len() ==>
-        (#[trigger] cells[index]).count != 0 || cells[index].revenue != 0
+        (#[trigger] cells[index]).count@ != 0 || cells[index].revenue@ != 0
 }
 
 pub struct Accumulator {
@@ -261,11 +269,11 @@ impl Accumulator {
         Self { cells: Vec::new(), positions: HashMap::new() }
     }
 
-    pub fn add(&mut self, row: LineitemInput, sign: i64) -> (result: bool)
-        requires old(self).wf(), sign == 1 || sign == -1,
+    pub fn add(&mut self, row: LineitemInput, sign: i64)
+        requires old(self).wf(),
         ensures
             final(self).wf(),
-            result ==> forall|weight: spec_fn(Key) -> int, revenue: bool|
+            forall|weight: spec_fn(Key) -> int, revenue: bool|
                 #[trigger] weighted(final(self).cells@, weight, revenue) == weighted(old(self).cells@, weight, revenue) +
                 weight(row_key(lineitem_input_view(row))) * ((sign as int) * row_measure(lineitem_input_view(row), revenue)),
     {
@@ -277,16 +285,12 @@ impl Accumulator {
             assert(i128::MIN <= (row.l_extendedprice as int) * (row.l_discount as int) <= i128::MAX) by(nonlinear_arith);
         }
         let product = (row.l_extendedprice as i128) * (row.l_discount as i128);
-        let revenue = if sign == 1 { product } else {
-            match 0i128.checked_sub(product) {
-                Some(value) => value,
-                None => return false,
-            }
-        };
-        let ghost change = Cell { key, count: sign as i128, revenue };
+        let change_count = Wide::from_i128(sign as i128);
+        let change_revenue = change_count.mul(&Wide::from_i128(product));
+        let ghost row_view = lineitem_input_view(row);
         proof {
-            assert forall|revenues: bool| #[trigger] measure(change, revenues) ==
-                (sign as int) * row_measure(lineitem_input_view(row), revenues) by {};
+            assert(change_revenue@ == (sign as int) * row_measure(row_view, true));
+            assert(change_count@ == (sign as int) * row_measure(row_view, false));
         }
         let position = match self.positions.get(&key.0) {
             Some(inner) => match inner.get(&packed_key) {
@@ -302,22 +306,18 @@ impl Accumulator {
                     assert(position_valid(original, original_positions, key));
                     assert(position < self.cells.len());
                 }
-                let old_cell = self.cells[position];
-                let count = match old_cell.count.checked_add(sign as i128) {
-                    Some(value) => value,
-                    None => return false,
-                };
-                let revenue = match old_cell.revenue.checked_add(revenue) {
-                    Some(value) => value,
-                    None => return false,
-                };
-                let cell = Cell { key, count, revenue };
-                self.cells.set(position, cell);
+                let ghost old_cell = original[position as int];
+                let count = self.cells[position].count.add(&change_count);
+                let revenue = self.cells[position].revenue.add(&change_revenue);
+                self.cells.set(position, Cell { key, count, revenue });
+                let ghost cell = self.cells@[position as int];
                 proof {
+                    assert(cell.key == key);
                     lemma_weight_update(original, position as int, cell);
-                    assert forall|revenues: bool| #[trigger] measure(cell, revenues) - measure(old_cell, revenues) == measure(change, revenues) by {};
+                    assert forall|revenues: bool| #[trigger] measure(cell, revenues) - measure(old_cell, revenues) ==
+                        (sign as int) * row_measure(row_view, revenues) by {};
                     assert forall|weight: spec_fn(Key) -> int, revenues: bool| #[trigger] weighted(self.cells@, weight, revenues) ==
-                        weighted(original, weight, revenues) + weight(key) * measure(change, revenues) by {};
+                        weighted(original, weight, revenues) + weight(key) * ((sign as int) * row_measure(row_view, revenues)) by {};
                     assert(self.cells@ == original.update(position as int, cell));
                     assert forall|index: int| 0 <= index < self.cells@.len() implies
                         position_for(self.positions@, (#[trigger] self.cells@[index]).key) == Some(index as usize) by {
@@ -333,15 +333,18 @@ impl Accumulator {
             },
             None => {
                 let position = self.cells.len();
-                let cell = Cell { key, count: sign as i128, revenue };
-                self.cells.push(cell);
+                self.cells.push(Cell { key, count: change_count, revenue: change_revenue });
+                let ghost cell = self.cells@[position as int];
                 let mut inner = match self.positions.remove(&key.0) { Some(value) => value, None => HashMap::new() };
                 inner.insert(packed_key, position);
                 self.positions.insert(key.0, inner);
                 proof {
+                    assert(self.cells@ == original.push(cell));
                     lemma_weight_push(original, cell);
                     assert forall|weight: spec_fn(Key) -> int, revenues: bool| #[trigger] weighted(self.cells@, weight, revenues) ==
-                        weighted(original, weight, revenues) + weight(key) * measure(change, revenues) by {};
+                        weighted(original, weight, revenues) + weight(key) * ((sign as int) * row_measure(row_view, revenues)) by {
+                        assert(measure(cell, revenues) == (sign as int) * row_measure(row_view, revenues));
+                    }
                     assert forall|index: int| 0 <= index < original.len() implies (#[trigger] original[index]).key != key by {
                         assert(position_for(original_positions, original[index].key) == Some(index as usize));
                     }
@@ -371,7 +374,6 @@ impl Accumulator {
                 assert(position_for(self.positions@, self.cells@[second].key) == Some(second as usize));
             }
         }
-        true
     }
 }
 

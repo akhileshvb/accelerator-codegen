@@ -4,17 +4,20 @@ use std::collections::HashMap;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::storage::*;
+use crate::activation::*;
 use crate::profiles::*;
-use crate::profiles::{add, sub, mul};
 use crate::dimensions::*;
 use crate::model::*;
 use crate::output::merge_sort;
 use crate::query_proofs::*;
 use crate::read_proofs::*;
 use crate::update_proofs::*;
+use crate::ready_proofs::*;
 use verus_common::sums::sum;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::lemma_sum_nonzero_witness;
 use verus_common::sums::lemma_sum_pos;
+use verus_common::sums::lemma_sum_nonneg;
 use crate::profile_proofs::pair_lookup;
 use verus_common::sums::bag_step;
 use verus_common::sqlfns::like_match;
@@ -22,6 +25,9 @@ use verus_common::sums::lemma_sum_take;
 use verus_prooflib::{lemma_unique_push, lemma_push_membership};
 
 verus! {
+
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub struct State {
     db: Ghost<Db>,
     data: Data,
@@ -41,27 +47,28 @@ impl State {
             && domain_valid(self.db@)
     }
 }
-pub fn stock_change(work: &mut HashMap<i64, PartWork>, row: &StockInput, sign: i128) -> (result: bool)
-    ensures result ==> final(work)@.dom() == old(work)@.dom(),
-        result ==> forall|key: i64| #![trigger final(work)@[key]] final(work)@.contains_key(key) ==> final(work)@[key].count == old(work)@[key].count,
-        result ==> forall|key: i64| #[trigger] work_part_count(final(work)@, key) == work_part_count(old(work)@, key),
-        result && empty_originals(old(work)@) ==> empty_originals(final(work)@),
-        result && work_shape(old(work)@) ==> work_shape(final(work)@),
-        result && (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, value: int|
+pub fn stock_change(work: &mut HashMap<i64, PartWork>, row: &StockInput, sign: i128)
+    requires old(work)@.contains_key(row.ps_partkey),
+    ensures final(work)@.dom() == old(work)@.dom(),
+        forall|key: i64| #![trigger final(work)@[key]] final(work)@.contains_key(key) ==> final(work)@[key].count == old(work)@[key].count,
+        forall|key: i64| #[trigger] work_part_count(final(work)@, key) == work_part_count(old(work)@, key),
+        empty_originals(old(work)@) ==> empty_originals(final(work)@),
+        work_shape(old(work)@) ==> work_shape(final(work)@),
+        (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, value: int|
             #[trigger] work_stock_count(final(work)@, part, supplier, value)
                 == work_stock_count(old(work)@, part, supplier, value)
                     + if part == row.ps_partkey && supplier == row.ps_suppkey && value == row.ps_availqty { sign as int } else { 0 },
-        result && (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, date: int|
+        (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, date: int|
             #[trigger] work_day_count(final(work)@, part, supplier, date) == work_day_count(old(work)@, part, supplier, date)
                 && work_day_quantity(final(work)@, part, supplier, date) == work_day_quantity(old(work)@, part, supplier, date),
-        result && (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, date: int|
+        (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, date: int|
             #[trigger] work_day_quantity(final(work)@, part, supplier, date) == work_day_quantity(old(work)@, part, supplier, date),
 {
     let ghost before = work@;
-    let mut part = match work.remove(&row.ps_partkey) { Some(value) => value, None => return false };
-    let mut pair = match part.take_pair(row.ps_suppkey) { Some(value) => value, None => return false };
+    let mut part = match work.remove(&row.ps_partkey) { Some(value) => value, None => { proof { assert(false); } return; } };
+    let mut pair = part.take_pair(row.ps_suppkey);
     let ghost previous_pair = pair;
-    if !pair.stock(row.ps_availqty, sign) { return false; }
+    pair.stock(row.ps_availqty, sign);
     let ghost updated_pair = pair;
     part.install_pair(row.ps_suppkey, pair); work.insert(row.ps_partkey, part);
     proof {
@@ -87,28 +94,28 @@ pub fn stock_change(work: &mut HashMap<i64, PartWork>, row: &StockInput, sign: i
             }
         }
     }
-    true
 }
-pub fn shipment_change(work: &mut HashMap<i64, PartWork>, row: &ShipmentInput, sign: i128) -> (result: bool)
-    ensures result ==> final(work)@.dom() == old(work)@.dom(),
-        result ==> forall|key: i64| #![trigger final(work)@[key]] final(work)@.contains_key(key) ==> final(work)@[key].count == old(work)@[key].count,
-        result ==> forall|key: i64| #[trigger] work_part_count(final(work)@, key) == work_part_count(old(work)@, key),
-        result && empty_originals(old(work)@) ==> empty_originals(final(work)@),
-        result && work_shape(old(work)@) ==> work_shape(final(work)@),
-        result && (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, date: int|
+pub fn shipment_change(work: &mut HashMap<i64, PartWork>, row: &ShipmentInput, sign: i128)
+    requires old(work)@.contains_key(row.l_partkey),
+    ensures final(work)@.dom() == old(work)@.dom(),
+        forall|key: i64| #![trigger final(work)@[key]] final(work)@.contains_key(key) ==> final(work)@[key].count == old(work)@[key].count,
+        forall|key: i64| #[trigger] work_part_count(final(work)@, key) == work_part_count(old(work)@, key),
+        empty_originals(old(work)@) ==> empty_originals(final(work)@),
+        work_shape(old(work)@) ==> work_shape(final(work)@),
+        (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, date: int|
             #[trigger] work_day_count(final(work)@, part, supplier, date) == work_day_count(old(work)@, part, supplier, date)
                 + if part == row.l_partkey && supplier == row.l_suppkey && date == row.l_shipdate { sign as int } else { 0 },
-        result && (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, date: int|
+        (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, date: int|
             #[trigger] work_day_quantity(final(work)@, part, supplier, date) == work_day_quantity(old(work)@, part, supplier, date)
                 + if part == row.l_partkey && supplier == row.l_suppkey && date == row.l_shipdate { (sign as int) * (row.l_quantity as int) } else { 0 },
-        result && (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, value: int|
+        (empty_originals(old(work)@) || work_shape(old(work)@)) ==> forall|part: i64, supplier: i64, value: int|
             #[trigger] work_stock_count(final(work)@, part, supplier, value) == work_stock_count(old(work)@, part, supplier, value),
 {
     let ghost before = work@;
-    let mut part = match work.remove(&row.l_partkey) { Some(value) => value, None => return false };
-    let mut pair = match part.take_pair(row.l_suppkey) { Some(value) => value, None => return false };
+    let mut part = match work.remove(&row.l_partkey) { Some(value) => value, None => { proof { assert(false); } return; } };
+    let mut pair = part.take_pair(row.l_suppkey);
     let ghost previous_pair = pair;
-    if !pair.shipment(row.l_shipdate, row.l_quantity, sign) { return false; }
+    pair.shipment(row.l_shipdate, row.l_quantity, sign);
     let ghost updated_pair = pair;
     part.install_pair(row.l_suppkey, pair); work.insert(row.l_partkey, part);
     proof {
@@ -145,7 +152,6 @@ pub fn shipment_change(work: &mut HashMap<i64, PartWork>, row: &ShipmentInput, s
             }
         }
     }
-    true
 }
 fn publish_part(state: &mut Data, key: i64, part: Option<Part>)
     ensures final(state).parts.lookup(key) == part,
@@ -166,6 +172,7 @@ pub fn build(
     requires scan_parts_ok(db, parts@), scan_stocks_ok(db, stocks@),
         scan_shipments_ok(db, shipments@), scan_suppliers_ok(db, suppliers@), scan_nations_ok(db, nations@),
     ensures result matches Some(state) ==> state.db() == db,
+        result is Some,
 {
     let mut state = Data { parts: Table::new(), stock_pairs: Table::new(), suppliers: Table::new(), nations: Table::new(), names: Table::new() };
     let ghost initial_parts = state.parts;
@@ -197,6 +204,7 @@ pub fn build(
     let mut work: HashMap<i64, PartWork> = HashMap::new(); let mut keys = Vec::new(); let mut index = 0;
     while index < parts.len()
         invariant index <= parts.len(), work@.dom() == keys@.to_set(), keys@.no_duplicates(), chunk < 16,
+            forall|key: i64| #![trigger work@[key]] work@.contains_key(key) ==> work@[key].count@ > 0,
             domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
             work_shape(work@), state.parts == chunk_parts, state.stock_pairs == chunk_directory,
             projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
@@ -218,12 +226,12 @@ pub fn build(
                 Some(value) => value,
                 None => {
                     proof { lemma_unique_push(keys@, key); lemma_push_membership(keys@, key); }
-                    keys.push(key); PartWork::new(0)
+                    keys.push(key); PartWork::new(Wide::zero())
                 },
             };
-            proof { assert(part.count as int == work_part_count(before, key)); assert(chunk_of(key) == chunk as int); }
-            let count = match add(part.count, 1) { Some(value) => value, None => return None };
-            part.count = count;
+            proof { assert(part.count@ == work_part_count(before, key)); assert(chunk_of(key) == chunk as int); }
+            proof { assert(part.count@ >= 0); }
+            part.count = part.count.add(&Wide::from_i128(1));
             let ghost replacement = part;
             let ghost remaining = work@;
             work.insert(key, part);
@@ -268,6 +276,7 @@ pub fn build(
     let mut index = 0;
     while index < stocks.len()
         invariant index <= stocks.len(), empty_originals(work@), chunk < 16,
+            forall|key: i64| #![trigger work@[key]] work@.contains_key(key) ==> work@[key].count@ > 0,
             forall|key: i64| #![trigger keys@.contains(key)] keys@.contains(key) ==> chunk_of(key) == chunk as int,
             domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
             work_shape(work@), state.parts == chunk_parts, state.stock_pairs == chunk_directory,
@@ -285,7 +294,7 @@ pub fn build(
     {
         let ghost processed = index as int;
         let present = (stocks[index].ps_partkey as u64) % 16 == chunk && work.contains_key(&stocks[index].ps_partkey);
-        if present { if !stock_change(&mut work, &stocks[index], 1) { return None; } }
+        if present { stock_change(&mut work, &stocks[index], 1); }
         proof {
             if !present {
                 assert(work_part_count(work@, stocks@[index as int].ps_partkey) == 0) by {
@@ -307,6 +316,7 @@ pub fn build(
     proof { assert(stocks@.take(stocks.len() as int) =~= stocks@); }
     while index < shipments.len()
         invariant index <= shipments.len(), empty_originals(work@), chunk < 16,
+            forall|key: i64| #![trigger work@[key]] work@.contains_key(key) ==> work@[key].count@ > 0,
             forall|key: i64| #![trigger keys@.contains(key)] keys@.contains(key) ==> chunk_of(key) == chunk as int,
             domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
             work_shape(work@), state.parts == chunk_parts, state.stock_pairs == chunk_directory,
@@ -324,7 +334,7 @@ pub fn build(
     {
         let ghost processed = index as int;
         let present = (shipments[index].l_partkey as u64) % 16 == chunk && work.contains_key(&shipments[index].l_partkey);
-        if present { if !shipment_change(&mut work, &shipments[index], 1) { return None; } }
+        if present { shipment_change(&mut work, &shipments[index], 1); }
         proof {
             if !present {
                 assert(work_part_count(work@, shipments@[index as int].l_partkey) == 0) by {
@@ -365,7 +375,8 @@ pub fn build(
         }
     }
     while index < keys.len()
-        invariant index <= keys.len(), keys@.no_duplicates(), chunk < 16,
+        invariant index <= keys.len(), keys@.no_duplicates(), chunk < 16, built.dom() == keys@.to_set(),
+            forall|key: i64| #![trigger built[key]] built.contains_key(key) ==> built[key].count@ > 0,
             domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
             work@ == built.remove_keys(keys@.take(index as int).to_set()), work_shape(built),
             projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
@@ -396,12 +407,44 @@ pub fn build(
             assert(chunk_of(key) == chunk as int);
             assert(work_part_count(previous_work, key) == eligible(db, key as int));
         }
-        let raw = match work.remove(&key) { Some(value) => value, None => return None };
-        let ghost source = raw;
-        proof { assert(raw.count as int == eligible(db, key as int)); }
-        let part = match raw.finish() { Some(value) => value, None => return None };
         proof {
-            assert(part.count > 0 && part.count == source.count);
+            keys@.to_set_ensures();
+            keys@.take(index as int).to_set_ensures();
+            assert(built.contains_key(key));
+            assert(!keys@.take(index as int).to_set().contains(key));
+            assert(work@.contains_key(key));
+        }
+        let raw = match work.remove(&key) { Some(value) => value, None => { proof { assert(false); } return None; } };
+        let ghost source = raw;
+        proof {
+            assert(raw.count@ == eligible(db, key as int));
+            assert(source == built[key]);
+            assert(source.count@ > 0);
+            assert forall|supplier: i64, value: int| #[trigger] source.stock_for(supplier, value) >= 0 by {
+                assert(source.stock_for(supplier, value) == work_stock_count(built, key, supplier, value));
+                let weight = |row: StockInput| if row.ps_partkey == key && row.ps_suppkey == supplier && row.ps_availqty == value { 1int } else { 0int };
+                assert forall|i: int| 0 <= i < stocks@.len() implies weight(#[trigger] stocks@[i]) >= 0 by {}
+                lemma_sum_nonneg(stocks@, weight);
+                assert(work_stock_count(built, key, supplier, value) == sum(stocks@, weight));
+            }
+            assert forall|supplier: i64, date: int| #![trigger source.day_for(supplier, date, false)]
+                source.day_for(supplier, date, false) >= 0 && (source.day_for(supplier, date, false) == 0 ==> source.day_for(supplier, date, true) == 0) by {
+                assert(source.day_for(supplier, date, false) == work_day_count(built, key, supplier, date));
+                assert(source.day_for(supplier, date, true) == work_day_quantity(built, key, supplier, date));
+                let count = |row: ShipmentInput| if row.l_partkey == key && row.l_suppkey == supplier && row.l_shipdate == date { 1int } else { 0int };
+                let quantity = |row: ShipmentInput| if row.l_partkey == key && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0int };
+                assert forall|row: ShipmentInput| #[trigger] count(row) >= 0 by {}
+                assert forall|row: ShipmentInput| #![trigger quantity(row)] count(row) == 0 ==> quantity(row) == 0 by {}
+                lemma_sum_nonneg(shipments@, count);
+                assert(work_day_count(built, key, supplier, date) == sum(shipments@, count));
+                assert(work_day_quantity(built, key, supplier, date) == sum(shipments@, quantity));
+                if sum(shipments@, count) == 0 { crate::ready_proofs::lemma_empty_indicator(shipments@, count, quantity); }
+            }
+            crate::ready_proofs::lemma_part_finish_ready(source);
+        }
+        let part = match raw.finish() { Some(value) => value, None => { proof { assert(false); } return None; } };
+        proof {
+            assert(part.count@ > 0 && part.count == source.count);
             assert(eligible(db, key as int) > 0);
             assert(source == built[key]);
             assert forall|supplier: i64, value: int| #![trigger source.stock_for(supplier, value)] source.stock_for(supplier, value) ==
@@ -489,7 +532,7 @@ pub fn build(
     {
         let ghost processed = index as int;
         let ghost previous = supplier_work;
-        if !supplier_work.change(&state.suppliers, &suppliers[index], 1) { return None; }
+        supplier_work.change(&state.suppliers, &suppliers[index], 1);
         proof {
             assert forall|nation: i64, supplier: i64, name: Seq<u8>, address: Seq<u8>| #![trigger supplier_work.count(initial_suppliers, nation, supplier, name, address)]
                 supplier_work.count(initial_suppliers, nation, supplier, name, address) == sum(suppliers@.take(index as int + 1),
@@ -501,8 +544,15 @@ pub fn build(
         }
         index += 1;
     }
-    proof { assert(suppliers@.take(suppliers.len() as int) =~= suppliers@); }
-    if !supplier_work.publish(&mut state.suppliers) { return None; }
+    proof {
+        assert(suppliers@.take(suppliers.len() as int) =~= suppliers@);
+        assert forall|nation: i64, supplier: i64, name: Seq<u8>, address: Seq<u8>| #[trigger] supplier_work.count(initial_suppliers, nation, supplier, name, address) >= 0 by {
+            let weight = |row: SupplierInput| if row.s_nationkey == nation && row.s_suppkey == supplier && row.s_name@ == name && row.s_address@ == address { 1int } else { 0int };
+            assert forall|i: int| 0 <= i < suppliers@.len() implies weight(#[trigger] suppliers@[i]) >= 0 by {}
+            lemma_sum_nonneg(suppliers@, weight);
+        }
+    }
+    if !supplier_work.publish(&mut state.suppliers) { proof { assert(false); } return None; }
     proof { crate::state_proofs::lemma_supplier_build(projected, state.suppliers, suppliers@); }
     let ghost finished_suppliers = state.suppliers;
     let mut nation_work = NationWork::new(); let mut index = 0;
@@ -520,7 +570,7 @@ pub fn build(
     {
         let ghost processed = index as int;
         let ghost previous = nation_work;
-        if !nation_work.change(&state.nations, &nations[index], 1) { return None; }
+        nation_work.change(&state.nations, &nations[index], 1);
         proof {
             assert forall|name: Seq<u8>, key: i64| #![trigger nation_work.count(initial_nations, name, key)] nation_work.count(initial_nations, name, key) ==
                 sum(nations@.take(index as int + 1), |row: NationInput| if row.n_name@ == name && row.n_nationkey == key { 1 } else { 0 }) by {
@@ -531,8 +581,15 @@ pub fn build(
         }
         index += 1;
     }
-    proof { assert(nations@.take(nations.len() as int) =~= nations@); }
-    if !nation_work.publish(&mut state.nations) { return None; }
+    proof {
+        assert(nations@.take(nations.len() as int) =~= nations@);
+        assert forall|name: Seq<u8>, key: i64| #[trigger] nation_work.count(initial_nations, name, key) >= 0 by {
+            let weight = |row: NationInput| if row.n_name@ == name && row.n_nationkey == key { 1int } else { 0int };
+            assert forall|i: int| 0 <= i < nations@.len() implies weight(#[trigger] nations@[i]) >= 0 by {}
+            lemma_sum_nonneg(nations@, weight);
+        }
+    }
+    if !nation_work.publish(&mut state.nations) { proof { assert(false); } return None; }
     proof { crate::state_proofs::lemma_nation_build(projected, state.nations, nations@); }
     let ghost finished_nations = state.nations;
     let mut name_work = NameWork::new(); let mut index = 0;
@@ -550,7 +607,7 @@ pub fn build(
         decreases parts.len() - index,
     {
         let ghost previous = name_work;
-        if !name_work.change(&state.names, &parts[index], 1) { return None; }
+        name_work.change(&state.names, &parts[index], 1);
         proof {
             assert forall|key: i64, name: Seq<u8>| #![trigger name_work.count(initial_names, key, name)] name_work.count(initial_names, key, name) ==
                 sum(parts@.take(index as int + 1), |row: PartInput| if row.p_partkey == key && row.p_name@ == name { 1 } else { 0 }) by {
@@ -561,8 +618,15 @@ pub fn build(
         }
         index += 1;
     }
-    proof { assert(parts@.take(parts.len() as int) =~= parts@); }
-    if !name_work.publish(&mut state.names) { return None; }
+    proof {
+        assert(parts@.take(parts.len() as int) =~= parts@);
+        assert forall|key: i64, name: Seq<u8>| #[trigger] name_work.count(initial_names, key, name) >= 0 by {
+            let weight = |row: PartInput| if row.p_partkey == key && row.p_name@ == name { 1int } else { 0int };
+            assert forall|i: int| 0 <= i < parts@.len() implies weight(#[trigger] parts@[i]) >= 0 by {}
+            lemma_sum_nonneg(parts@, weight);
+        }
+    }
+    if !name_work.publish(&mut state.names) { proof { assert(false); } return None; }
     proof {
         crate::state_proofs::lemma_names_build(db, state.names, parts@);
         use_type_invariant(&state.parts);
@@ -656,7 +720,7 @@ fn scan_slot(names: &PartNames, slot: i64, pattern: &[u8], literal_prefix: bool,
                     assert(name_slot(row.key, row.name@) == slot);
                     assert(name_count(*names, row.key, row.name@) > 0) by {
                         let name = row.name@;
-                        let w = |item: NationVariant| if item.name@ == name && item.key == row.key { item.count as int } else { 0int };
+                        let w = |item: NationVariant| if item.name@ == name && item.key == row.key { item.count@ } else { 0int };
                         assert forall|j: int| 0 <= j < whole@.len() implies w(#[trigger] whole@[j]) >= 0 by { lemma_names_row(*names, slot, whole, j); }
                         lemma_sum_pos(whole@, w, index as int);
                         lemma_nation_measure_weight(whole@, name, row.key, w);
@@ -683,7 +747,7 @@ fn scan_slot(names: &PartNames, slot: i64, pattern: &[u8], literal_prefix: bool,
         proof {
             assert forall|key: i64, name: Seq<u8>| #![trigger name_count(*names, key, name)]
                 name_slot(key, name) == slot && name_count(*names, key, name) > 0 && like_match(name, pattern@) implies cands@.contains(key) by {
-                let w = |item: NationVariant| if item.name@ == name && item.key == key { item.count as int } else { 0int };
+                let w = |item: NationVariant| if item.name@ == name && item.key == key { item.count@ } else { 0int };
                 lemma_nation_measure_weight(rows@, name, key, w);
                 let j = lemma_sum_nonzero_witness(rows@, w);
                 assert(rows@[j].name@ == name && rows@[j].key == key);
@@ -782,22 +846,21 @@ fn candidates(names: &PartNames, pattern: &[u8]) -> (result: Vec<i64>)
     }
     cands
 }
-fn pair_passes(pair: &Pair, start: i32, end: i32) -> (result: Option<bool>)
+fn pair_passes(pair: &Pair, start: i32, end: i32) -> (result: bool)
     requires pair_valid(*pair),
-    ensures result matches Some(value) ==> value == cached_pair_passes(*pair, start as int, end as int),
+    ensures result == cached_pair_passes(*pair, start as int, end as int),
 {
-    if pair.stocks.len() == 0 { return Some(false); }
+    if pair.stocks.len() == 0 { return false; }
     let lower = prefix(pair, start); let upper = prefix(pair, end);
-    let count = match sub(upper.0, lower.0) { Some(value) => value, None => return None };
-    let quantity = match sub(upper.1, lower.1) { Some(value) => value, None => return None };
-    let maximum = pair.stocks[pair.stocks.len() - 1].value as i128;
-    let threshold = match mul(maximum, 200) { Some(value) => value, None => return None };
-    Some(count > 0 && threshold > quantity)
+    let count = upper.0.sub(&lower.0);
+    let quantity = upper.1.sub(&lower.1);
+    let threshold = Wide::from_i128(pair.stocks[pair.stocks.len() - 1].value as i128).mul(&Wide::from_i128(200));
+    count.is_pos() && quantity.lt(&threshold)
 }
 /// For each supplier key of the bucket: does any candidate part have a qualifying (part, supplier) pair?
-fn bucket_qualified(state: &Data, keys: &Vec<i64>, cands: &Vec<i64>, start: i32, end: i32) -> (result: Option<HashMap<i64, bool>>)
+fn bucket_qualified(state: &Data, keys: &Vec<i64>, cands: &Vec<i64>, start: i32, end: i32) -> (found: HashMap<i64, bool>)
     requires read_shape(state.parts),
-    ensures result matches Some(found) ==> found@.dom() == keys@.to_set()
+    ensures found@.dom() == keys@.to_set()
         && forall|supplier: i64| #![trigger found@[supplier]] keys@.contains(supplier) ==>
             found@[supplier] == any_cand_passes(state.parts, cands@, supplier, start as int, end as int),
 {
@@ -847,7 +910,7 @@ fn bucket_qualified(state: &Data, keys: &Vec<i64>, cands: &Vec<i64>, start: i32,
                         assert(pair_of(state.parts, part_key, supplier) == Some(*pair));
                         assert(pair_valid(*pair));
                     }
-                    let passes = match pair_passes(pair, start, end) { Some(value) => value, None => return None };
+                    let passes = pair_passes(pair, start, end);
                     if passes { found.insert(supplier, true); }
                 }
                 pi += 1;
@@ -881,32 +944,63 @@ fn bucket_qualified(state: &Data, keys: &Vec<i64>, cands: &Vec<i64>, start: i32,
         }
         ci += 1;
     }
-    Some(found)
+    found
 }
-fn emit_rows(out: &mut Vec<(Vec<u8>, Vec<u8>)>, rows: &Vec<SupplierVariant>, factor: i128) -> (result: bool)
+fn emit_rows(out: &mut Vec<(Vec<u8>, Vec<u8>)>, rows: &Vec<SupplierVariant>, factor: &Wide) -> (result: bool)
+    requires factor@ > 0, forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() ==> rows@[index].count@ > 0,
     ensures result ==> forall|weight: spec_fn(OutRow) -> int| #[trigger] verus_common::sums::sum(out_view(final(out)@), weight) ==
-        verus_common::sums::sum(out_view(old(out)@), weight) + factor as int * variant_weight(rows@, weight),
+            verus_common::sums::sum(out_view(old(out)@), weight) + factor@ * variant_weight(rows@, weight),
+        !result ==> sum(out_view(old(out)@), one_row()) + factor@ * variant_weight(rows@, one_row()) > max_rows(),
 {
     let ghost initial = out_view(out@);
     let mut variant = 0;
     while variant < rows.len()
-        invariant variant <= rows.len(),
-            forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight) + factor as int * variant_weight(rows@.take(variant as int), weight),
+        invariant variant <= rows.len(), factor@ > 0, initial == out_view(old(out)@),
+            forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() ==> rows@[index].count@ > 0,
+            forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight) + factor@ * variant_weight(rows@.take(variant as int), weight),
         decreases rows.len() - variant,
     {
-        let copies = match mul(rows[variant].count, factor) { Some(value) => value, None => return false };
-        if copies < 0 || copies > usize::MAX as i128 { return false; }
-        let copies = copies as usize;
-        if out.len().checked_add(copies).is_none() { return false; }
+        let copies_wide = rows[variant].count.mul(factor);
+        let total = Wide::from_i128(out.len() as i128).add(&copies_wide);
+        proof {
+            let count = rows@[variant as int].count@;
+            assert(copies_wide@ == count * factor@);
+            assert(copies_wide@ >= 0) by (nonlinear_arith) requires count > 0, factor@ > 0, copies_wide@ == count * factor@;
+        }
+        if Wide::from_i128(9223372036854775808).lt(&total) {
+            proof {
+                let weight = one_row();
+                lemma_out_len(out@);
+                lemma_variant_take(rows@, variant as int, weight);
+                lemma_variant_prefix_le(rows@, variant as int + 1, weight);
+                let length = out@.len() as int;
+                let before = variant_weight(rows@.take(variant as int), weight);
+                let count = rows@[variant as int].count@;
+                let whole = variant_weight(rows@, weight);
+                assert(variant_weight(rows@.take(variant as int + 1), weight) == before + count * weight(OutRow { s_name: rows@[variant as int].name@, s_address: rows@[variant as int].address@ }));
+                assert(weight(OutRow { s_name: rows@[variant as int].name@, s_address: rows@[variant as int].address@ }) == 1int);
+                assert(whole >= before + count);
+                assert(factor@ * whole >= factor@ * (before + count)) by (nonlinear_arith) requires factor@ > 0, whole >= before + count;
+                assert(factor@ * (before + count) == factor@ * before + count * factor@) by (nonlinear_arith);
+                assert(length == sum(initial, weight) + factor@ * before);
+                assert(total@ == length + count * factor@);
+                assert(sum(initial, weight) + factor@ * whole > max_rows());
+            }
+            return false;
+        }
+        proof { assert(total@ == out@.len() as int + copies_wide@); assert(copies_wide@ <= max_rows()); }
+        let copies_signed = match copies_wide.to_i128() { Some(value) => value, None => { proof { assert(false); } return false; } };
+        proof { assert(copies_signed as int == copies_wide@); }
+        let copies = copies_signed as u64;
         let ghost before = out_view(out@);
         let ghost row = OutRow { s_name: rows@[variant as int].name@, s_address: rows@[variant as int].address@ };
-        proof { assert(copies as int == rows@[variant as int].count as int * factor as int); }
-        let mut copy = 0;
+        proof { assert(copies as int == copies_wide@); assert(copies as int == rows@[variant as int].count@ * factor@); }
+        let mut copy: u64 = 0;
         while copy < copies
             invariant copy <= copies, variant < rows.len(),
                 row == (OutRow { s_name: rows@[variant as int].name@, s_address: rows@[variant as int].address@ }),
-                copies as int == rows@[variant as int].count as int * factor as int,
-                forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(before, weight) == sum(initial, weight) + factor as int * variant_weight(rows@.take(variant as int), weight),
+                copies as int == rows@[variant as int].count@ * factor@,
+                forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(before, weight) == sum(initial, weight) + factor@ * variant_weight(rows@.take(variant as int), weight),
                 forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(before, weight) + copy as int * weight(row),
             decreases copies - copy,
         {
@@ -923,15 +1017,15 @@ fn emit_rows(out: &mut Vec<(Vec<u8>, Vec<u8>)>, rows: &Vec<SupplierVariant>, fac
             copy += 1;
         }
         proof {
-            assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight) + factor as int * variant_weight(rows@.take(variant as int + 1), weight) by {
-                let term = |item: SupplierVariant| item.count as int * weight(OutRow { s_name: item.name@, s_address: item.address@ });
+            assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight) + factor@ * variant_weight(rows@.take(variant as int + 1), weight) by {
+                let term = |item: SupplierVariant| item.count@ * weight(OutRow { s_name: item.name@, s_address: item.address@ });
                 lemma_sum_take(rows@, variant as int, term);
                 lemma_variant_take(rows@, variant as int, weight);
-                assert(sum(before, weight) == sum(initial, weight) + factor as int * variant_weight(rows@.take(variant as int), weight));
+                assert(sum(before, weight) == sum(initial, weight) + factor@ * variant_weight(rows@.take(variant as int), weight));
                 assert(sum(out_view(out@), weight) == sum(before, weight) + copies as int * weight(row));
-                verus_prooflib::lemma_count_weight_assoc(factor as int, rows@[variant as int].count as int, weight(row));
-                let count = rows@[variant as int].count as int;
-                let multiplier = factor as int;
+                verus_prooflib::lemma_count_weight_assoc(factor@, rows@[variant as int].count@, weight(row));
+                let count = rows@[variant as int].count@;
+                let multiplier = factor@;
                 let number = copies as int;
                 let mass = weight(row);
                 assert(number == count * multiplier);
@@ -943,7 +1037,7 @@ fn emit_rows(out: &mut Vec<(Vec<u8>, Vec<u8>)>, rows: &Vec<SupplierVariant>, fac
                 assert(next_total == previous_total + count * mass);
                 assert(multiplier * next_total == multiplier * previous_total + number * mass) by (nonlinear_arith)
                     requires number == count * multiplier, next_total == previous_total + count * mass;
-                verus_prooflib::lemma_scalar_distribute(variant_weight(rows@.take(variant as int), weight), term(rows@[variant as int]), factor as int);
+                verus_prooflib::lemma_scalar_distribute(variant_weight(rows@.take(variant as int), weight), term(rows@[variant as int]), factor@);
             }
         }
         variant += 1;
@@ -951,15 +1045,16 @@ fn emit_rows(out: &mut Vec<(Vec<u8>, Vec<u8>)>, rows: &Vec<SupplierVariant>, fac
     proof { assert(rows@.take(rows.len() as int) =~= rows@); }
     true
 }
-fn emit_bucket(state: &State, bucket: &Table<Vec<SupplierVariant>>, nation: i64, factor: i128, start: i32, end: i32, pattern: &[u8],
+fn emit_bucket(state: &State, bucket: &Table<Vec<SupplierVariant>>, nation: i64, factor: &Wide, start: i32, end: i32, pattern: &[u8],
     Ghost(parameters): Ghost<Params>, cands: &Vec<i64>, out: &mut Vec<(Vec<u8>, Vec<u8>)>) -> (result: bool)
-    requires parameters.p1 == start, parameters.p4 == end, parameters.p2 == pattern@, start < end,
+    requires parameters.p1 == start, parameters.p4 == end, parameters.p2 == pattern@, start < end, factor@ > 0,
         state.data.suppliers.lookup(nation) == Some(*bucket),
         forall|key: i64| #![trigger names_match(state.data.names, key, pattern@)] names_match(state.data.names, key, pattern@) ==> cands@.contains(key),
         forall|key: i64| #![trigger cands@.contains(key)] cands@.contains(key) ==> names_match(state.data.names, key, pattern@),
     ensures
         result ==> forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(final(out)@), weight) ==
-            sum(out_view(old(out)@), weight) + factor as int * nation_weight(state.db(), parameters, nation as int, weight),
+            sum(out_view(old(out)@), weight) + factor@ * nation_weight(state.db(), parameters, nation as int, weight),
+        !result ==> sum(out_view(old(out)@), one_row()) + factor@ * nation_weight(state.db(), parameters, nation as int, one_row()) > max_rows(),
 {
     proof { use_type_invariant(state); }
     let ghost db = state.db();
@@ -967,68 +1062,90 @@ fn emit_bucket(state: &State, bucket: &Table<Vec<SupplierVariant>>, nation: i64,
     let keys = bucket.keys();
     proof {
         assert(read_shape(state.data.parts));
+        assert(state.data.suppliers.lookup(nation) == Some(*bucket));
+        assert forall|key: i64| #![trigger bucket.lookup(key)] bucket.lookup(key) matches Some(rows) ==>
+            forall|offset: int| #![trigger rows@[offset]] 0 <= offset < rows@.len() ==> rows@[offset].count@ > 0 by {}
     }
-    let qualified = match bucket_qualified(&state.data, &keys, cands, start, end) { Some(value) => value, None => return false };
+    let qualified = bucket_qualified(&state.data, &keys, cands, start, end);
     let mut index = 0;
     while index < keys.len()
-        invariant index <= keys.len(), keys@.no_duplicates(),
+        invariant index <= keys.len(), keys@.no_duplicates(), initial == out_view(old(out)@),
             qualified@.dom() == keys@.to_set(),
             forall|supplier: i64| #![trigger qualified@[supplier]] keys@.contains(supplier) ==>
                 qualified@[supplier] == any_cand_passes(state.data.parts, cands@, supplier, start as int, end as int),
             forall|key: i64| #![trigger names_match(state.data.names, key, pattern@)] names_match(state.data.names, key, pattern@) ==> cands@.contains(key),
             forall|key: i64| #![trigger cands@.contains(key)] cands@.contains(key) ==> names_match(state.data.names, key, pattern@),
-            forall|key: i64| #![trigger bucket.lookup(key)] keys@.contains(key) == bucket.lookup(key).is_some(),
+            forall|key: i64| #![trigger bucket.lookup(key)] keys@.contains(key) == bucket.lookup(key).is_some(), factor@ > 0,
+            forall|key: i64| #![trigger bucket.lookup(key)] bucket.lookup(key) matches Some(rows) ==> forall|offset: int| #![trigger rows@[offset]] 0 <= offset < rows@.len() ==> rows@[offset].count@ > 0,
             meaning(db, state.data.parts, state.data.stock_pairs, state.data.suppliers, state.data.nations, state.data.names), domain_valid(db), db == state.db(),
             state.data.suppliers.lookup(nation) == Some(*bucket), parameters.p1 == start, parameters.p4 == end, parameters.p2 == pattern@, start < end,
             forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight)
-                + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight),
+                + factor@ * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight),
         decreases keys.len() - index,
     {
         let key = keys[index];
         proof { keys@.to_set_ensures(); assert(keys@.contains(key)); }
-        let valid = match qualified.get(&key) { Some(value) => *value, None => return false };
+        let valid = match qualified.get(&key) { Some(value) => *value, None => { proof { assert(false); } return false; } };
         let ghost before = out_view(out@);
         proof {
             lemma_cands_equiv(db, state.data.parts, state.data.stock_pairs, state.data.suppliers, state.data.nations, state.data.names, cands@, key, start as int, end as int, pattern@);
             assert(valid == cached_supplier_passes(state.data.parts, state.data.stock_pairs, state.data.names, key, parameters.p1, parameters.p4, parameters.p2)); }
         if valid {
-            let rows = match bucket.get(key) { Some(value) => value, None => return false };
-            if !emit_rows(out, &rows, factor) { return false; }
+            let rows = match bucket.get(key) { Some(value) => value, None => { proof { assert(false); } return false; } };
+            proof { assert(bucket.lookup(key) == Some(*rows)); }
+            if !emit_rows(out, &rows, factor) {
+                proof {
+                    let weight = one_row();
+                    assert(bucket_rows(*bucket, key) == rows@);
+                    lemma_bucket_take(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@, index as int, parameters, weight);
+                    lemma_bucket_prefix_le(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@, index as int + 1, parameters, weight);
+                    lemma_bucket(db, parameters, state.data.parts, state.data.stock_pairs, state.data.suppliers, state.data.nations, state.data.names, nation, *bucket, keys@, weight);
+                    let whole = bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@, parameters, weight);
+                    let upto = bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int + 1), parameters, weight);
+                    assert(sum(before, weight) == sum(initial, weight) + factor@ * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight));
+                    assert(upto == bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight) + variant_weight(rows@, weight));
+                    assert(factor@ * whole >= factor@ * upto) by (nonlinear_arith) requires factor@ > 0, whole >= upto;
+                    assert(factor@ * upto == factor@ * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight) + factor@ * variant_weight(rows@, weight)) by (nonlinear_arith)
+                        requires upto == bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight) + variant_weight(rows@, weight);
+                    assert(whole == nation_weight(db, parameters, nation as int, weight));
+                }
+                return false;
+            }
             proof {
-                assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(before, weight) + factor as int * variant_weight(bucket_rows(*bucket, key), weight) by {
+                assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(before, weight) + factor@ * variant_weight(bucket_rows(*bucket, key), weight) by {
                     assert(bucket_rows(*bucket, key) == rows@);
                 }
             }
         }
         proof {
             assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight)
-                + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int + 1), parameters, weight) by {
+                + factor@ * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int + 1), parameters, weight) by {
                 let term = |key: i64| if cached_supplier_passes(state.data.parts, state.data.stock_pairs, state.data.names, key, parameters.p1, parameters.p4, parameters.p2) { variant_weight(bucket_rows(*bucket, key), weight) } else { 0int };
                 lemma_sum_take(keys@, index as int, term);
                 lemma_bucket_take(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@, index as int, parameters, weight);
-                assert(sum(out_view(out@), weight) == sum(before, weight) + factor as int * term(key));
-                assert(sum(before, weight) == sum(initial, weight) + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight));
-                verus_prooflib::lemma_scalar_distribute(bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight), term(key), factor as int);
+                assert(sum(out_view(out@), weight) == sum(before, weight) + factor@ * term(key));
+                assert(sum(before, weight) == sum(initial, weight) + factor@ * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight));
+                verus_prooflib::lemma_scalar_distribute(bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight), term(key), factor@);
             }
         }
         index += 1;
     }
     proof {
         assert(keys@.take(keys.len() as int) =~= keys@);
-        assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight) + factor as int * nation_weight(db, parameters, nation as int, weight) by {
+        assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight) + factor@ * nation_weight(db, parameters, nation as int, weight) by {
             lemma_bucket(db, parameters, state.data.parts, state.data.stock_pairs, state.data.suppliers, state.data.nations, state.data.names, nation, *bucket, keys@, weight);
-            assert(sum(out_view(out@), weight) == sum(initial, weight) + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@, parameters, weight));
+            assert(sum(out_view(out@), weight) == sum(initial, weight) + factor@ * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@, parameters, weight));
         }
     }
     true
 }
-pub fn execute(state: &State, p1: i32, p2: &[u8], p3: &[u8], p4: i32) -> (result: Option<Vec<(Vec<u8>, Vec<u8>)>>)
-    ensures result matches Some(out) ==> query_result(state.db(), params(p1 as int, p2@, p3@, p4 as int), out_view(out@)),
+pub fn execute(owner: &State, p1: i32, p2: &[u8], p3: &[u8], p4: i32) -> (result: Option<Vec<(Vec<u8>, Vec<u8>)>>)
+    ensures result matches Some(out) ==> query_result(owner.db(), params(p1 as int, p2@, p3@, p4 as int), out_view(out@)),
+        result is None ==> !answer_fits(owner.db(), params(p1 as int, p2@, p3@, p4 as int)),
 {
-    let ghost db = state.db();
+    let ghost db = owner.db();
     let ghost parameters = params(p1 as int, p2@, p3@, p4 as int);
-    proof { use_type_invariant(state); }
-    let owner = state;
+    proof { use_type_invariant(owner); }
     let state = &owner.data;
     let mut out = Vec::new();
     if p1 >= p4 {
@@ -1053,8 +1170,16 @@ pub fn execute(state: &State, p1: i32, p2: &[u8], p3: &[u8], p4: i32) -> (result
     proof { assert(names_correct(db, state.names)); }
     let cands = candidates(&state.names, p2);
     let mut nation_index = 0;
+    proof {
+        assert(state.nations.lookup(name_hash(p3@) as i64) == Some(*nations));
+        assert(meaning(db, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names));
+        assert forall|index: int| #![trigger nations@[index]] 0 <= index < nations@.len() implies nations@[index].count@ > 0 by {
+            lemma_meaning_nation_row(db, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names, name_hash(p3@) as i64, *nations, index);
+        }
+    }
     while nation_index < nations.len()
-        invariant nation_index <= nations.len(), *state == owner.data, db == owner.db(), parameters == params(p1 as int, p2@, p3@, p4 as int), p1 < p4,
+        invariant nation_index <= nations.len(), *state == owner.data,
+            forall|index: int| #![trigger nations@[index]] 0 <= index < nations@.len() ==> nations@[index].count@ > 0, db == owner.db(), parameters == params(p1 as int, p2@, p3@, p4 as int), p1 < p4,
             meaning(db, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names), domain_valid(db),
             state.nations.lookup(name_hash(p3@) as i64) == Some(*nations),
             forall|key: i64| #![trigger names_match(state.names, key, p2@)] names_match(state.names, key, p2@) ==> cands@.contains(key),
@@ -1066,7 +1191,19 @@ pub fn execute(state: &State, p1: i32, p2: &[u8], p3: &[u8], p4: i32) -> (result
         let ghost before = out_view(out@);
         if compare(&nation.name, p3) == 0 {
             if let Some(bucket) = state.suppliers.get(nation.key) {
-                if !emit_bucket(owner, &bucket, nation.key, nation.count, p1, p4, p2, Ghost(parameters), &cands, &mut out) { return None; }
+                if !emit_bucket(owner, &bucket, nation.key, &nation.count, p1, p4, p2, Ghost(parameters), &cands, &mut out) {
+                    proof {
+                        let weight = one_row();
+                        let term = |row: NationVariant| if row.name@ == parameters.p3 { row.count@ * nation_weight(db, parameters, row.key as int, weight) } else { 0int };
+                        lemma_sum_take(nations@, nation_index as int, term);
+                        assert(nations@[nation_index as int] == *nation);
+                        assert(nation.name@ == parameters.p3);
+                        lemma_nation_prefix_le(db, parameters, nations@, nation_index as int + 1, weight);
+                        lemma_nation_rows(db, parameters, state.nations, nations@, weight);
+                        lemma_too_long(db, parameters);
+                    }
+                    return None;
+                }
             } else {
                 proof {
                     assert forall|weight: spec_fn(OutRow) -> int| #[trigger] nation_weight(db, parameters, nation.key as int, weight) == 0 by {
@@ -1077,7 +1214,7 @@ pub fn execute(state: &State, p1: i32, p2: &[u8], p3: &[u8], p4: i32) -> (result
         }
         proof {
             assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == nation_output_weight(db, parameters, nations@.take(nation_index as int + 1), weight) by {
-                let term = |row: NationVariant| if row.name@ == parameters.p3 { row.count as int * nation_weight(db, parameters, row.key as int, weight) } else { 0int };
+                let term = |row: NationVariant| if row.name@ == parameters.p3 { row.count@ * nation_weight(db, parameters, row.key as int, weight) } else { 0int };
                 lemma_sum_take(nations@, nation_index as int, term);
                 assert(sum(before, weight) == nation_output_weight(db, parameters, nations@.take(nation_index as int), weight));
                 if nation.name@ == p3@ {
@@ -1111,14 +1248,14 @@ pub fn contains(keys: &[i64], key: i64) -> (result: bool)
     }
     false
 }
-fn part_changes(state: &Data, deltas: &Vec<PartDelta>) -> (result: Option<(HashMap<i64, i128>, Vec<i64>)>)
-    ensures result matches Some(data) ==> data.1@.no_duplicates() && data.0@.dom() == data.1@.to_set()
-        && data.1@.to_set() == deltas@.map_values(|row: PartDelta| row.row.p_partkey).to_set()
-        && forall|key: i64| #![trigger coalesced_part_count(state.parts, data.0@, key)]
-            coalesced_part_count(state.parts, data.0@, key) == part_count(state.parts, key)
+fn part_changes(state: &Data, deltas: &Vec<PartDelta>) -> (result: (HashMap<i64, Wide>, Vec<i64>))
+    ensures result.1@.no_duplicates() && result.0@.dom() == result.1@.to_set()
+        && result.1@.to_set() == deltas@.map_values(|row: PartDelta| row.row.p_partkey).to_set()
+        && forall|key: i64| #![trigger coalesced_part_count(state.parts, result.0@, key)]
+            coalesced_part_count(state.parts, result.0@, key) == part_count(state.parts, key)
                 + sum(deltas@, crate::semantic_proofs::part_capture_weight(key as int)),
 {
-    let mut counts: HashMap<i64, i128> = HashMap::new(); let mut keys: Vec<i64> = Vec::new(); let mut index = 0;
+    let mut counts: HashMap<i64, Wide> = HashMap::new(); let mut keys: Vec<i64> = Vec::new(); let mut index = 0;
     while index < deltas.len()
         invariant index <= deltas.len(), keys@.no_duplicates(), counts@.dom() == keys@.to_set(),
             keys@.to_set() == deltas@.take(index as int).map_values(|row: PartDelta| row.row.p_partkey).to_set(),
@@ -1140,12 +1277,11 @@ fn part_changes(state: &Data, deltas: &Vec<PartDelta>) -> (result: Option<(HashM
                     lemma_push_membership(keys@, key);
                     verus_prooflib::lemma_push_to_set(keys@, key);
                 }
-                keys.push(key); match state.parts.get(key) { Some(part) => part.count, None => 0 }
+                keys.push(key); match state.parts.get(key) { Some(part) => part.count.dup(), None => Wide::zero() }
             },
         };
-        proof { assert(before as int == coalesced_part_count(state.parts, previous, key)); }
-        let change = row.sign as i128;
-        let after = match add(before, change) { Some(value) => value, None => return None };
+        proof { assert(before@ == coalesced_part_count(state.parts, previous, key)); }
+        let after = before.add(&Wide::from_i128(row.sign as i128));
         counts.insert(key, after);
         proof {
             assert(counts@ == previous.insert(key, after));
@@ -1170,44 +1306,46 @@ fn part_changes(state: &Data, deltas: &Vec<PartDelta>) -> (result: Option<(HashM
         index += 1;
     }
     proof { assert(deltas@.take(deltas.len() as int) =~= deltas@); }
-    Some((counts, keys))
+    (counts, keys)
 }
-pub fn activation_keys(state: &Data, part_delta: &Vec<PartDelta>) -> Vec<i64> {
-    let (counts, keys) = match part_changes(state, part_delta) { Some(value) => value, None => return Vec::new() };
-    let mut result = Vec::new(); let mut index = 0;
-    while index < keys.len() decreases keys.len() - index, {
-        let key = keys[index];
-        if state.parts.get(key).is_none() {
-            if let Some(count) = counts.get(&key) { if *count > 0 { result.push(key); } }
-        }
-        index += 1;
-    }
-    result
+pub closed spec fn rescan_stocks_for_parts_wanted(state: State, lineitem_delta: Seq<LineitemDelta>, nation_delta: Seq<NationDelta>,
+    part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64>
+{
+    activation_spec(state.data.parts, part_delta)
+}
+pub closed spec fn rescan_shipments_for_parts_wanted(state: State, lineitem_delta: Seq<LineitemDelta>, nation_delta: Seq<NationDelta>,
+    part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64>
+{
+    activation_spec(state.data.parts, part_delta)
 }
 pub fn rescan_stocks_for_parts_keys(
     state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta], supplier_delta: &Vec<SupplierDelta>,
-) -> Vec<i64> { activation_keys(&state.data, part_delta) }
+) -> (result: Vec<i64>)
+    ensures result@ == rescan_stocks_for_parts_wanted(*state, lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+{ activation_keys(&state.data.parts, part_delta) }
 pub fn rescan_shipments_for_parts_keys(
     state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta], supplier_delta: &Vec<SupplierDelta>,
-) -> Vec<i64> { activation_keys(&state.data, part_delta) }
-fn touch(state: &Data, key: i64, counts: &HashMap<i64, i128>, work: &mut HashMap<i64, PartWork>, keys: &mut Vec<i64>) -> (result: bool)
-    ensures result && parts_shape(state.parts) && work_ready(old(work)@, old(keys)@, state.parts, counts@) ==>
+) -> (result: Vec<i64>)
+    ensures result@ == rescan_shipments_for_parts_wanted(*state, lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+{ activation_keys(&state.data.parts, part_delta) }
+fn touch(state: &Data, key: i64, counts: &HashMap<i64, Wide>, work: &mut HashMap<i64, PartWork>, keys: &mut Vec<i64>)
+    ensures parts_shape(state.parts) && work_ready(old(work)@, old(keys)@, state.parts, counts@) ==>
         work_ready(final(work)@, final(keys)@, state.parts, counts@),
-        result ==> final(work)@.contains_key(key) == (old(work)@.contains_key(key) || coalesced_part_count(state.parts, counts@, key) > 0),
-        result ==> forall|other: i64| #![trigger final(work)@.contains_key(other)] other != key ==> final(work)@.contains_key(other) == old(work)@.contains_key(other),
-        result && parts_shape(state.parts) ==> forall|part: i64, supplier: i64, value: int| #[trigger] combined_stock(final(work)@, state.parts, part, supplier, value)
+        final(work)@.contains_key(key) == (old(work)@.contains_key(key) || coalesced_part_count(state.parts, counts@, key) > 0),
+        forall|other: i64| #![trigger final(work)@.contains_key(other)] other != key ==> final(work)@.contains_key(other) == old(work)@.contains_key(other),
+        parts_shape(state.parts) ==> forall|part: i64, supplier: i64, value: int| #[trigger] combined_stock(final(work)@, state.parts, part, supplier, value)
             == combined_stock(old(work)@, state.parts, part, supplier, value),
-        result && parts_shape(state.parts) ==> forall|part: i64, supplier: i64, date: int, quantity: bool| #[trigger] combined_day(final(work)@, state.parts, part, supplier, date, quantity)
+        parts_shape(state.parts) ==> forall|part: i64, supplier: i64, date: int, quantity: bool| #[trigger] combined_day(final(work)@, state.parts, part, supplier, date, quantity)
             == combined_day(old(work)@, state.parts, part, supplier, date, quantity),
 {
     let ghost previous = work@;
     let ghost previous_keys = keys@;
-    if work.contains_key(&key) { return true; }
+    if work.contains_key(&key) { return; }
     let before = state.parts.get(key);
-    let count = match counts.get(&key) { Some(value) => *value, None => match &before { Some(value) => value.count, None => 0 } };
-    if count <= 0 { return true; }
+    let count = match counts.get(&key) { Some(value) => value.dup(), None => match &before { Some(value) => value.count.dup(), None => Wide::zero() } };
+    if !count.is_pos() { return; }
     let mut part = match before {
         Some(value) => {
             proof {
@@ -1216,9 +1354,9 @@ fn touch(state: &Data, key: i64, counts: &HashMap<i64, i128>, work: &mut HashMap
                     assert(crate::profile_proofs::part_shape(*value));
                 }
             }
-            match PartWork::from_part(&value) { Some(value) => value, None => return false }
+            PartWork::from_part(&value)
         },
-        None => PartWork::new(count),
+        None => PartWork::new(count.dup()),
     };
     let ghost loaded = part;
     part.count = count;
@@ -1235,7 +1373,7 @@ fn touch(state: &Data, key: i64, counts: &HashMap<i64, i128>, work: &mut HashMap
     proof {
         if parts_shape(state.parts) && work_ready(previous, previous_keys, state.parts, counts@) {
             assert(work@.dom() =~= keys@.to_set());
-            assert(replacement.count == coalesced_part_count(state.parts, counts@, key));
+            assert(replacement.count@ == coalesced_part_count(state.parts, counts@, key));
         }
         if parts_shape(state.parts) {
             assert forall|part: i64, supplier: i64, value: int| #[trigger] combined_stock(work@, state.parts, part, supplier, value) == combined_stock(previous, state.parts, part, supplier, value) by {
@@ -1258,7 +1396,6 @@ fn touch(state: &Data, key: i64, counts: &HashMap<i64, i128>, work: &mut HashMap
             }
         }
     }
-    true
 }
 pub fn apply(
     state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &Vec<PartDelta>,
@@ -1268,14 +1405,18 @@ pub fn apply(
     Ghost(db2): Ghost<Db>,
 ) -> (result: Result<State, u32>)
     requires capture_ok(state.db(), db2, lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+        stocks_for_parts_keys@ == rescan_stocks_for_parts_wanted(*state, lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_stocks_for_parts_ok(db2, stocks_for_parts_keys@, stocks_for_parts_rows@),
+        shipments_for_parts_keys@ == rescan_shipments_for_parts_wanted(*state, lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_shipments_for_parts_ok(db2, shipments_for_parts_keys@, shipments_for_parts_rows@),
     ensures result matches Ok(next) ==> next.db() == db2,
+        result is Ok,
 {
     let ghost previous_db = state.db();
     proof { use_type_invariant(state); }
+    let ghost previous_state = *state;
     let state = &state.data;
-    let (counts, changed) = match part_changes(state, part_delta) { Some(value) => value, None => return Err(1) };
+    let (counts, changed) = part_changes(state, part_delta);
     proof {
         crate::semantic_proofs::lemma_coalesced_after(previous_db, db2, part_delta@, state.parts, counts@);
         crate::state_proofs::lemma_meaning_components(previous_db, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names);
@@ -1297,6 +1438,12 @@ pub fn apply(
     }
     while index < changed.len()
         invariant index <= changed.len(), changed@.no_duplicates(), counts@.dom() == changed@.to_set(), directory_unique(next.stock_pairs),
+            changed@.to_set() == part_delta@.map_values(|row: PartDelta| row.row.p_partkey).to_set(),
+            forall|key: i64| #![trigger coalesced_part_count(state.parts, counts@, key)] coalesced_part_count(state.parts, counts@, key) == part_count(state.parts, key)
+                + sum(part_delta@, crate::semantic_proofs::part_capture_weight(key as int)),
+            *state == previous_state.data,
+            stocks_for_parts_keys@ == rescan_stocks_for_parts_wanted(previous_state, lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
+            shipments_for_parts_keys@ == rescan_shipments_for_parts_wanted(previous_state, lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
             meaning(previous_db, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names), domain_valid(previous_db), parts_shape(state.parts),
             forall|key: i64| #![trigger state.parts.lookup(key)] part_correct(previous_db, key, state.parts.lookup(key)),
             next.suppliers == initial_suppliers, next.nations == initial_nations, next.names == initial_names,
@@ -1318,20 +1465,31 @@ pub fn apply(
         let ghost previous_parts = next.parts;
         let ghost previous_work = work@;
         proof { verus_prooflib::lemma_prefix_fresh(changed@, index as int); }
-        let key = changed[index]; let count = match counts.get(&key) { Some(value) => *value, None => return Err(2) };
-        if count < 0 { return Err(3); }
-        if count == 0 { publish_part(&mut next, key, None); }
+        let key = changed[index];
+        proof { changed@.to_set_ensures(); assert(changed@.contains(key)); assert(counts@.contains_key(key)); }
+        let count = match counts.get(&key) { Some(value) => value.dup(), None => { proof { assert(false); } return Err(2); } };
+        proof {
+            assert(count@ == coalesced_part_count(state.parts, counts@, key));
+            crate::ready_proofs::lemma_eligible_nonneg(db2, key as int);
+        }
+        if count.is_neg() { proof { assert(false); } return Err(3); }
+        if count.is_zero() { publish_part(&mut next, key, None); }
         else {
             if state.parts.get(key).is_none() {
-                if !contains(stocks_for_parts_keys, key) || !contains(shipments_for_parts_keys, key) { return Err(4); }
+                proof {
+                    assert(*state == previous_state.data);
+                    assert(coalesced_part_count(state.parts, counts@, key) == sum(part_delta@, crate::semantic_proofs::part_capture_weight(key as int)));
+                    crate::ready_proofs::lemma_activation_member(state.parts, part_delta@, changed@, key);
+                }
+                if !contains(stocks_for_parts_keys, key) || !contains(shipments_for_parts_keys, key) { proof { assert(false); } return Err(4); }
                 activated.insert(key, true);
             }
-            if !touch(state, key, &counts, &mut work, &mut keys) { return Err(5); }
+            touch(state, key, &counts, &mut work, &mut keys);
         }
         proof {
             assert(changed@.take(index as int + 1) =~= changed@.take(index as int).push(key));
             lemma_push_membership(changed@.take(index as int), key);
-            assert(count as int == coalesced_part_count(state.parts, counts@, key));
+            assert(count@ == coalesced_part_count(state.parts, counts@, key));
             assert forall|other: i64| #[trigger] activated@.contains_key(other) == (changed@.take(index as int + 1).contains(other) && state.parts.lookup(other).is_none() && coalesced_part_count(state.parts, counts@, other) > 0) by {
                 if other != key { assert(activated@.contains_key(other) == previous_activated.contains_key(other)); }
             }
@@ -1404,7 +1562,10 @@ pub fn apply(
         let ghost processed = index as int;
         let ghost before = work@;
         let row = &stocks_for_parts_rows[index];
-        if activated.contains_key(&row.ps_partkey) && !stock_change(&mut work, row, 1) { return Err(6); }
+        if activated.contains_key(&row.ps_partkey) {
+            proof { assert(activated@.contains_key(row.ps_partkey)); assert(eligible(db2, row.ps_partkey as int) > 0); assert(work@.contains_key(row.ps_partkey)); }
+            stock_change(&mut work, row, 1);
+        }
         proof {
             lemma_day_frame(before, work@, state.parts);
             assert forall|key: i64, supplier: i64, value: int| eligible(db2, key as int) > 0 implies
@@ -1433,7 +1594,10 @@ pub fn apply(
         let ghost processed = index as int;
         let ghost before = work@;
         let row = &shipments_for_parts_rows[index];
-        if activated.contains_key(&row.l_partkey) && !shipment_change(&mut work, row, 1) { return Err(7); }
+        if activated.contains_key(&row.l_partkey) {
+            proof { assert(activated@.contains_key(row.l_partkey)); assert(eligible(db2, row.l_partkey as int) > 0); assert(work@.contains_key(row.l_partkey)); }
+            shipment_change(&mut work, row, 1);
+        }
         proof {
             lemma_stock_frame(before, work@, state.parts);
             assert forall|key: i64, supplier: i64, date: int, quantity: bool| eligible(db2, key as int) > 0 implies
@@ -1465,9 +1629,9 @@ pub fn apply(
         let ghost before = work@;
         let delta = &partsupp_delta[index]; let key = delta.row.ps_partkey;
         if !activated.contains_key(&key) {
-            if !touch(state, key, &counts, &mut work, &mut keys) { return Err(8); }
+            touch(state, key, &counts, &mut work, &mut keys);
             let ghost loaded = work@;
-            if work.contains_key(&key) && !stock_change(&mut work, &delta.row, delta.sign as i128) { return Err(9); }
+            if work.contains_key(&key) { stock_change(&mut work, &delta.row, delta.sign as i128); }
             proof {
                 lemma_day_frame(loaded, work@, state.parts);
                 assert forall|part: i64, supplier: i64, value: int| eligible(db2, part as int) > 0 implies
@@ -1501,9 +1665,9 @@ pub fn apply(
         let ghost before = work@;
         let delta = &lineitem_delta[index]; let key = delta.row.l_partkey;
         if !activated.contains_key(&key) {
-            if !touch(state, key, &counts, &mut work, &mut keys) { return Err(10); }
+            touch(state, key, &counts, &mut work, &mut keys);
             let ghost loaded = work@;
-            if work.contains_key(&key) && !shipment_change(&mut work, &delta.row, delta.sign as i128) { return Err(11); }
+            if work.contains_key(&key) { shipment_change(&mut work, &delta.row, delta.sign as i128); }
             proof {
                 lemma_stock_frame(loaded, work@, state.parts);
                 assert forall|part: i64, supplier: i64, date: int, quantity: bool| eligible(db2, part as int) > 0 implies
@@ -1554,9 +1718,10 @@ pub fn apply(
             assert(built.contains_key(key));
             assert(work@.contains_key(key));
         }
-        let raw = match work.remove(&key) { Some(value) => value, None => return Err(12) };
+        let raw = match work.remove(&key) { Some(value) => value, None => { proof { assert(false); } return Err(12); } };
         let ghost source = raw;
-        let part = match raw.finish() { Some(value) => value, None => return Err(13) };
+        proof { facts.finish_ready_part(built, key, source); }
+        let part = match raw.finish() { Some(value) => value, None => { proof { assert(false); } return Err(13); } };
         proof { facts.finished_part(built, key, source, &part); }
         publish_part(&mut next, key, Some(part));
         proof {
@@ -1593,7 +1758,7 @@ pub fn apply(
     {
         let ghost previous = supplier_work;
         let delta = &supplier_delta[index];
-        if !supplier_work.change(&next.suppliers, &delta.row, delta.sign as i128) { return Err(14); }
+        supplier_work.change(&next.suppliers, &delta.row, delta.sign as i128);
         proof {
             assert forall|nation: i64, supplier: i64, name: Seq<u8>, address: Seq<u8>| #[trigger] supplier_work.count(initial_suppliers, nation, supplier, name, address) == supplier_count(initial_suppliers, nation, supplier, name, address)
                 + sum(supplier_delta@.take(index as int + 1), supplier_delta_weight(nation, supplier, name, address)) by {
@@ -1605,7 +1770,8 @@ pub fn apply(
     }
     let ghost supplier_source = supplier_work;
     proof { assert(supplier_delta@.take(supplier_delta.len() as int) =~= supplier_delta@); }
-    if !supplier_work.publish(&mut next.suppliers) { return Err(15); }
+    proof { crate::update_proofs::lemma_supplier_ready(previous_db, db2, initial_suppliers, supplier_work, supplier_delta@); }
+    if !supplier_work.publish(&mut next.suppliers) { proof { assert(false); } return Err(15); }
     proof {
         lemma_supplier_updated(previous_db, db2, initial_suppliers, next.suppliers, supplier_delta@);
     }
@@ -1624,7 +1790,7 @@ pub fn apply(
     {
         let ghost previous = nation_work;
         let delta = &nation_delta[index];
-        if !nation_work.change(&next.nations, &delta.row, delta.sign as i128) { return Err(16); }
+        nation_work.change(&next.nations, &delta.row, delta.sign as i128);
         proof {
             assert forall|name: Seq<u8>, key: i64| #[trigger] nation_work.count(initial_nations, name, key) == nation_count(initial_nations, name, key)
                 + sum(nation_delta@.take(index as int + 1), nation_delta_weight(name, key)) by {
@@ -1636,7 +1802,8 @@ pub fn apply(
     }
     let ghost nation_source = nation_work;
     proof { assert(nation_delta@.take(nation_delta.len() as int) =~= nation_delta@); }
-    if !nation_work.publish(&mut next.nations) { return Err(17); }
+    proof { crate::update_proofs::lemma_nation_ready(previous_db, db2, initial_nations, nation_work, nation_delta@); }
+    if !nation_work.publish(&mut next.nations) { proof { assert(false); } return Err(17); }
     proof { lemma_nation_updated(previous_db, db2, initial_nations, next.nations, nation_delta@); }
     let ghost finished_nations = next.nations;
     let mut name_work = NameWork::new(); let mut index = 0;
@@ -1654,7 +1821,7 @@ pub fn apply(
     {
         let ghost previous = name_work;
         let delta = &part_delta[index];
-        if !name_work.change(&next.names, &delta.row, delta.sign as i128) { return Err(18); }
+        name_work.change(&next.names, &delta.row, delta.sign as i128);
         proof {
             assert forall|key: i64, name: Seq<u8>| #[trigger] name_work.count(initial_names, key, name) == name_count(initial_names, key, name)
                 + sum(part_delta@.take(index as int + 1), name_delta_weight(key, name)) by {
@@ -1666,7 +1833,8 @@ pub fn apply(
     }
     let ghost name_source = name_work;
     proof { assert(part_delta@.take(part_delta.len() as int) =~= part_delta@); }
-    if !name_work.publish(&mut next.names) { return Err(19); }
+    proof { crate::update_proofs::lemma_names_ready(previous_db, db2, initial_names, name_work, part_delta@); }
+    if !name_work.publish(&mut next.names) { proof { assert(false); } return Err(19); }
     proof {
         lemma_names_updated(previous_db, db2, initial_names, next.names, part_delta@);
         use_type_invariant(&next.names); next.names.reveal_well_formed();

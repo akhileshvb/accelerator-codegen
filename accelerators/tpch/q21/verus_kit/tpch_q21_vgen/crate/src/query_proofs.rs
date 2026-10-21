@@ -1,6 +1,7 @@
 use vstd::prelude::*;
 use verus_common::rel::*;
 use verus_common::sums::*;
+use verus_prooflib::wide::Wide;
 use crate::gen_spec::*;
 use crate::aggregates::*;
 use crate::index::*;
@@ -42,7 +43,7 @@ pub open spec fn matches_for(matches: Counts, db: Db, parameter: Params) -> bool
 }
 
 pub open spec fn indexed_group(matches: Counts, buckets: Slices, name: Seq<u8>) -> int {
-    sum(matches.entries(), |row: (KeyView, i128)| row.1 as int * nested_count(buckets, row.0, (0int, name)))
+    sum(matches.entries(), |row: (KeyView, Wide)| row.1@ * nested_count(buckets, row.0, (0int, name)))
 }
 
 pub proof fn lemma_matches_for(nations: &Slices, matches: &Counts, db: Db, parameter: Params)
@@ -68,16 +69,16 @@ pub proof fn lemma_group_indexed(db: Db, parameter: Params, matches: &Counts, bu
     hide(Tree::wf);
     matches.model();
     lemma_group_by_nation(db, parameter, name);
-    let pair = |nation: NationRow, row: (KeyView, i128)| if nation.n_name == parameter.p1 && row.0 == (nation.n_nationkey, Seq::<u8>::empty()) {
+    let pair = |nation: NationRow, row: (KeyView, Wide)| if nation.n_name == parameter.p1 && row.0 == (nation.n_nationkey, Seq::<u8>::empty()) {
         bucket(db, nation.n_nationkey, name)
     } else { 0 };
-    let left = |nation: NationRow| sum(matches.entries(), |row: (KeyView, i128)| pair(nation, row));
-    let right = |row: (KeyView, i128)| sum(db.nation, |nation: NationRow| pair(nation, row));
+    let left = |nation: NationRow| sum(matches.entries(), |row: (KeyView, Wide)| pair(nation, row));
+    let right = |row: (KeyView, Wide)| sum(db.nation, |nation: NationRow| pair(nation, row));
     lemma_sum_swap(db.nation, matches.entries(), pair, left, right);
     let full = |nation: NationRow| if nation.n_name == parameter.p1 { bucket(db, nation.n_nationkey, name) } else { 0 };
     assert forall|position: int| #![trigger db.nation[position]] 0 <= position < db.nation.len() implies left(db.nation[position]) == full(db.nation[position]) by {
         let nation = db.nation[position];
-        let weight = |row: (KeyView, i128)| pair(nation, row);
+        let weight = |row: (KeyView, Wide)| pair(nation, row);
         if nation.n_name == parameter.p1 {
             let key = (nation.n_nationkey, Seq::<u8>::empty());
             let indicator = |other: NationRow| if other.n_nationkey == nation.n_nationkey && other.n_name == parameter.p1 { 1int } else { 0int };
@@ -94,10 +95,10 @@ pub proof fn lemma_group_indexed(db: Db, parameter: Params, matches: &Counts, bu
         } else { lemma_sum_zero(matches.entries(), weight); }
     }
     lemma_sum_ext(db.nation, left, full);
-    let indexed = |row: (KeyView, i128)| row.1 as int * nested_count(*buckets, row.0, (0int, name));
+    let indexed = |row: (KeyView, Wide)| row.1@ * nested_count(*buckets, row.0, (0int, name));
     assert forall|position: int| #![trigger matches.entries()[position]] 0 <= position < matches.entries().len() implies right(matches.entries()[position]) == indexed(matches.entries()[position]) by {
         let row = matches.entries()[position];
-        assert(count(*matches, row.0) == row.1 as int);
+        assert(count(*matches, row.0) == row.1@);
         assert(row.0.1 == Seq::<u8>::empty());
         let indicator = |nation: NationRow| if nation.n_nationkey == row.0.0 && nation.n_name == parameter.p1 { 1int } else { 0int };
         lemma_sum_scale(db.nation, indicator, |nation: NationRow| pair(nation, row), bucket(db, row.0.0, name));

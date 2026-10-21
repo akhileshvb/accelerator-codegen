@@ -8,6 +8,8 @@ pub mod kernel;
 pub mod pages;
 pub mod moments;
 pub mod algebra;
+pub mod totality;
+pub mod scratch;
 pub mod query_proofs;
 pub mod gen_world;
 pub mod gen_ffi;
