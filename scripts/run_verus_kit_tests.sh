@@ -70,7 +70,7 @@ rmdir "${OUT}/dbs" 2>/dev/null
 python3 -I - "${OUT}" "${QUERIES}" "${MODES}" <<'PY' | tee "${OUT}/summary.txt"
 import json, os, sys
 out, queries, modes = sys.argv[1], sys.argv[2].split(), sys.argv[3].split()
-print("Verus kit tests  (mm = mismatches + order mismatches + reader failures; fb = other fallbacks (failures); pt = parameter outside its type, kd = proof-allowed kernel decline (neither fails);")
+print("Verus kit tests  (mm = mismatches + order mismatches + reader failures; fb = other fallbacks (failures); pt = parameter outside its type, kd = kernel declines (fail);")
 print("                  rfb = reader fallbacks; we = write errors; re = reference errors; chk = checks)")
 print("              (validate: tuples with a nonempty answer / tuples; txn errors; setup/param errors)")
 W = {"validate": 26}
@@ -96,13 +96,11 @@ for q in queries:
             continue
         mm = j.get("mismatches", 0) + j.get("order_mismatches", 0) + j.get("reader_failures", 0)
         fb = j.get("executes", {}).get("fallback", 0)
-        # answered by SQL by design, so reported but not failures: pt, a parameter outside its type
-        # (NULL, too many digits); kd, a kernel decline, which its proof allows only outside the
-        # envelope, for a zero divisor, or when the answer overflows.  Any other differential
-        # fallback (host conversion fault, missing state) fails.
+        # pt, a parameter outside its type (NULL, too many digits), is answered by SQL by design and
+        # does not fail; any other differential fallback fails, including kd, a kernel decline
         kinds = j.get("fallback_kinds", {}) if m == "differential" else {}
         pt, kd = kinds.get("param_outside_type", 0), kinds.get("kernel_none", 0)
-        bad += mm > 0 or rc != "0" or (m == "differential" and fb > pt + kd)
+        bad += mm > 0 or rc != "0" or (m == "differential" and fb > pt)
         cells.append(f"mm={mm} fb={fb - pt - kd}" + (f" pt={pt} kd={kd}" if m == "differential" else "") + f" rfb={j.get('reader_fallbacks', 0)} we={j.get('write_errors', 0)} "
                      f"re={j.get('reference_errors', 0)} chk={j.get('checks')}" + ("" if rc == "0" else f" rc={rc}"))
     print(f"q{q:<4}" + "".join(f"| {c:<{W.get(m, 44)}}" for m, c in zip(modes, cells)))
