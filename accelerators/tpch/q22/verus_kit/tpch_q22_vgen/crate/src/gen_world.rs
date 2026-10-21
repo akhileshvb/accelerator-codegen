@@ -46,6 +46,7 @@ pub fn prepare_apply(
     requires
         base.timeline() == store.timeline(),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), customer_delta_seq_view(customer_delta@), orders_delta_seq_view(orders_delta@)),
+        positive_customers_by_key_keys@ == crate::kernel::rescan_positive_customers_by_key_wanted(base.state_spec(), customer_delta@, orders_delta@),
         rescan_positive_customers_by_key_ok(store.db_at((base.epoch() + 1) as nat), positive_customers_by_key_keys@, positive_customers_by_key_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),

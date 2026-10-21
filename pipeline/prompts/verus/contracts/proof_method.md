@@ -80,7 +80,8 @@ your output is its prefix of length n.
   neighborhood is unchanged (its rows are not in the deltas). Keep the
   per-neighborhood contribution as one spec function used in both the
   invariant and the update.
-* **Arithmetic**: checked operations in exec code (decline on overflow);
+* **Arithmetic**: exact integers (`wide`) or bounds proven from the envelope in exec
+  code (never decline on an intermediate overflow);
   in proofs, nonlinear facts need `by (nonlinear_arith)` or
   `vstd::arithmetic` lemmas.
 * **Quantifiers**: one trigger per quantifier, on a term containing every
