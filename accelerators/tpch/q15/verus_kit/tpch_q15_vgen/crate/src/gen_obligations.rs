@@ -138,10 +138,17 @@ pub open spec fn supplier_delta_seq_view(s: Seq<SupplierDelta>) -> Seq<(Supplier
     s.map_values(|d: SupplierDelta| (supplier_input_view(d.row), d.sign as int))
 }
 
+/// Each change is one row, inserted (+1) or deleted (-1).
+pub open spec fn unit_weights<A>(d: Seq<(A, int)>) -> bool {
+    forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1
+}
+
 /// One transaction's changes: every table of db2 is that of db plus its deltas (bags).
 pub open spec fn capture_ok(db: Db, db2: Db, lineitem: Seq<(LineitemRow, int)>, supplier: Seq<(SupplierRow, int)>) -> bool {
     &&& bag_step(db.lineitem, db2.lineitem, lineitem)
+    &&& unit_weights(lineitem)
     &&& bag_step(db.supplier, db2.supplier, supplier)
+    &&& unit_weights(supplier)
 }
 
 // ── The envelope: where the kernel may not decline ──
