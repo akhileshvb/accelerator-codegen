@@ -184,6 +184,14 @@ applies after visibility), and the engine-local typed chunked scans behind
   offsets; native engine types, no shared chunk IR, no client SQL round-trip.
   `RunBuild` calls the module's `Build` through them inside `snapshot` and
   **must call `builder.Finish()`**.
+- **Read views that cannot be shared.** If the engine fixes a snapshot per
+  connection and cannot hand it to another (no exported or shared read view),
+  the partitions still read one snapshot: hold commits at the backend's own
+  commit point only while the partitions' connections open their views (an
+  instant, never the scan), take `b` from the epoch counter at that instant,
+  then release. Writes continue for the whole scan. This is the valid design for
+  such engines, not a missing feature; never stop this layer for want of a
+  shareable snapshot.
 
 **Harness:** seed >=3 rows (one NULL); commit A; open the snapshot; commit B
 **while it is open** (the commit must complete); scan: A visible, B not,
