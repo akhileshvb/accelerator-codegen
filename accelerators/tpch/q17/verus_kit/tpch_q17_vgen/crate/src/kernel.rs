@@ -11,6 +11,8 @@ use crate::query_proofs::*;
 use crate::semantics::*;
 use crate::ordering::*;
 use crate::maintenance_semantics::*;
+use crate::bounds::*;
+use verus_prooflib::wide::Wide;
 use verus_common::sums::*;
 
 verus! {
@@ -37,11 +39,16 @@ impl State {
 pub fn build(lines: &[LineInput], parts: Vec<PartInput>, Ghost(db): Ghost<Db>) -> (result: Option<State>)
     requires scan_lines_ok(db, lines@), scan_parts_ok(db, parts@),
     ensures result matches Some(state) ==> state.db() == db,
+        envelope(db) ==> result is Some,
 {
-    let (summaries, keys) = match summarize(lines) { Some(value) => value, None => return None };
-    let mut line_store: Store<Moment> = match Store::new(keys.len()) { Some(value) => value, None => return None };
-    let mut part_store = match Store::new(parts.len()) { Some(value) => value, None => return None };
-    let mut groups = match Store::new(parts.len()) { Some(value) => value, None => return None };
+    if !rows_in_range(lines) || parts.len() > 1099511627776 {
+        proof { if envelope(db) { lemma_scan_bounded(db, lines@); lemma_scan_parts_len(db, parts@); } }
+        return None;
+    }
+    let (summaries, keys) = summarize(lines);
+    let mut line_store: Store<Moment> = Store::new(keys.len());
+    let mut part_store = Store::new(parts.len());
+    let mut groups = Store::new(parts.len());
     let mut index = 0;
     let mut processed = Ghost(0int);
     proof {
@@ -92,10 +99,10 @@ pub fn build(lines: &[LineInput], parts: Vec<PartInput>, Ghost(db): Ghost<Db>) -
         assert(line_model(line_store, line_input_seq_view(lines@)));
         lemma_empty_part_store(part_store); lemma_empty_group_store(groups);
     }
-    let changes = match build_changes(&parts, &groups) { Some(value) => value, None => return None };
+    let changes = build_changes(&parts, &groups);
     let old_parts = Ghost(part_store);
     let old_groups = Ghost(groups);
-    if !apply_changes(&mut part_store, &line_store, &mut groups, &changes) { return None; }
+    apply_changes(&mut part_store, &line_store, &mut groups, &changes);
     proof {
         lemma_changes_fields(changes);
         lemma_input_parts_fit(parts@);
@@ -137,23 +144,36 @@ pub fn build(lines: &[LineInput], parts: Vec<PartInput>, Ghost(db): Ghost<Db>) -
 
 pub fn execute(state: &State, p1: &[u8], p2: &[u8]) -> (result: Option<Vec<Option<(i128, i128)>>>)
     ensures result matches Some(out) ==> query_result(state.db(), params(p1@, p2@), out_view(out@)),
+        envelope(state.db()) && answer_fits(state.db(), params(p1@, p2@)) ==> result is Some,
 {
     proof { use_type_invariant(state); }
     let moment = read_group(&state.groups, p1, p2);
-    let answer = if moment.count > 0 {
-        let numerator = match moment.price.checked_mul(10) { Some(value) => value, None => return None };
-        Some((numerator, 7000))
+    let answer = if moment.count.is_pos() {
+        let numerator = moment.price.mul(&Wide::from_i128(10));
+        match numerator.to_i128() {
+            Some(value) => Some((value, 7000)),
+            None => {
+                proof { lemma_answer_overflow(state.db(), p1@, p2@, moment.count@, moment.price@); }
+                return None;
+            }
+        }
     } else { None };
     let mut output = Vec::new();
     output.push(answer);
     proof {
-        lemma_execute_result(state.db(), p1@, p2@, answer, moment.count as int, moment.price as int);
+        lemma_execute_result(state.db(), p1@, p2@, answer, moment.count@, moment.price@);
         assert(output@ =~= seq![answer]);
     }
     Some(output)
 }
 
-pub fn rescan_lines_for_parts_keys(state: &State, lineitem_delta: &[LineKeyDelta], part_delta: &Vec<PartDelta>) -> Vec<i64> {
+pub open spec fn rescan_lines_for_parts_wanted(state: State, lineitem_delta: Seq<LineKeyDelta>, part_delta: Seq<PartDelta>) -> Seq<i64> {
+    first_keys(lineitem_delta, lineitem_delta.len() as int)
+}
+
+pub fn rescan_lines_for_parts_keys(state: &State, lineitem_delta: &[LineKeyDelta], part_delta: &Vec<PartDelta>) -> (result: Vec<i64>)
+    ensures result@ == rescan_lines_for_parts_wanted(*state, lineitem_delta@, part_delta@),
+{
     touched_keys(lineitem_delta)
 }
 
@@ -163,8 +183,10 @@ pub fn apply(state: &State, lineitem_delta: &[LineKeyDelta], part_delta: &Vec<Pa
     Ghost(lineitem_full): Ghost<Seq<(LineitemRow, int)>>, Ghost(db2): Ghost<Db>) -> (result: Result<State, u32>)
     requires lineitem_delta_ok(lineitem_delta@, lineitem_full),
         capture_ok(state.db(), db2, lineitem_full, part_delta_seq_view(part_delta@)),
+        lines_for_parts_keys@ == rescan_lines_for_parts_wanted(*state, lineitem_delta@, part_delta@),
         rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
     ensures result matches Ok(updated) ==> updated.db() == db2,
+        envelope(state.db()) && envelope(db2) ==> result is Ok,
 {
     proof { use_type_invariant(state); }
     let touched = touched_keys(lineitem_delta);
@@ -173,34 +195,16 @@ pub fn apply(state: &State, lineitem_delta: &[LineKeyDelta], part_delta: &Vec<Pa
     proof {
         assert forall|index: int| #![trigger lineitem_delta@[index]] 0 <= index < lineitem_delta@.len() implies touched@.contains(lineitem_delta@[index].l_partkey) by {}
     }
-    let mut supplied: HashMap<i64, bool> = HashMap::with_capacity(lines_for_parts_keys.len());
-    let mut index = 0;
-    while index < lines_for_parts_keys.len()
-        invariant index <= lines_for_parts_keys.len(),
-            supplied@.dom() == lines_for_parts_keys@.take(index as int).to_set(),
-        decreases lines_for_parts_keys.len() - index,
-    {
-        proof {
-            lines_for_parts_keys@.take(index as int).to_set_ensures();
-            assert(lines_for_parts_keys@.take(index as int + 1) =~= lines_for_parts_keys@.take(index as int).push(lines_for_parts_keys@[index as int]));
-            lines_for_parts_keys@.take(index as int + 1).to_set_ensures();
-        }
-        supplied.insert(lines_for_parts_keys[index], true);
-        index += 1;
+    proof {
+        assert(touched@.no_duplicates());
+        assert forall|position: int| #![trigger touched@[position]] 0 <= position < touched.len() implies lines_for_parts_keys@.contains(touched@[position]) by {}
     }
-    index = 0;
-    while index < touched.len()
-        invariant index <= touched.len(),
-            supplied@.dom() == lines_for_parts_keys@.to_set(),
-            forall|position: int| #![trigger touched@[position]] 0 <= position < index ==> lines_for_parts_keys@.contains(touched@[position]),
-        decreases touched.len() - index,
-    {
-        if !supplied.contains_key(&touched[index]) { return Err(1); }
-        proof { lines_for_parts_keys@.to_set_ensures(); }
-        index += 1;
+    if !rows_in_range(lines_for_parts_rows) {
+        proof { if envelope(db2) { lemma_rescan_bounded(db2, lines_for_parts_keys@, lines_for_parts_rows@); } }
+        return Err(2);
     }
-    let (summaries, _summary_keys) = match summarize(lines_for_parts_rows) { Some(value) => value, None => return Err(2) };
-    let changes = match delta_changes(part_delta, &state.groups) { Some(value) => value, None => return Err(3) };
+    let (summaries, _summary_keys) = summarize(lines_for_parts_rows);
+    let changes = delta_changes(part_delta, &state.groups);
     let mut lines = state.lines.fork();
     let mut parts = state.parts.fork();
     let mut groups = state.groups.fork();
@@ -209,7 +213,7 @@ pub fn apply(state: &State, lineitem_delta: &[LineKeyDelta], part_delta: &Vec<Pa
         lemma_part_fork(state.parts, parts);
         lemma_group_fork(state.groups, groups);
     }
-    index = 0;
+    let mut index = 0;
     let mut processed = Ghost(0int);
     while index < touched.len()
         invariant index <= touched.len(), processed@ == index as int,
@@ -235,7 +239,7 @@ pub fn apply(state: &State, lineitem_delta: &[LineKeyDelta], part_delta: &Vec<Pa
         let old_groups = Ghost(groups);
         proof { verus_prooflib::lemma_prefix_fresh(touched@, index as int); }
         let moment = match summaries.get(&key) { Some(value) => *value, None => zero() };
-        if !replace_lines(&mut lines, &parts, &mut groups, key, moment) { return Err(4); }
+        replace_lines(&mut lines, &parts, &mut groups, key, moment);
         proof {
             assert forall|other: i64| match #[trigger] lines.lookup(other) { Some(value) => value.count > 0, None => true } by {
                 assert(lines.lookup(other) == if other == key { if moment.count == 0 { None } else { Some(moment) } } else { old_lines@.lookup(other) });
@@ -283,7 +287,7 @@ pub fn apply(state: &State, lineitem_delta: &[LineKeyDelta], part_delta: &Vec<Pa
         assert(line_model(lines, db2.lineitem));
     }
     let line_stage_groups = Ghost(groups);
-    if !apply_changes(&mut parts, &lines, &mut groups, &changes) { return Err(5); }
+    apply_changes(&mut parts, &lines, &mut groups, &changes);
     proof {
         lemma_changes_fields(changes);
         let delta = part_delta_seq_view(part_delta@);

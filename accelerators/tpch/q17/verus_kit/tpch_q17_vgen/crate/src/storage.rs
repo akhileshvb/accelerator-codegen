@@ -319,9 +319,9 @@ impl<Value> Store<Value> {
     }
 
     #[verifier::rlimit(1)]
-    pub fn new(expected: usize) -> (result: Option<Self>)
-        ensures result matches Some(store) ==> store.wf()
-            && forall|key: i64| #[trigger] store.lookup(key).is_none(),
+    pub fn new(expected: usize) -> (store: Self)
+        requires expected <= 1099511627776,
+        ensures store.wf(), forall|key: i64| #[trigger] store.lookup(key).is_none(),
     {
         proof { reveal(Page::wf); reveal(Page::lookup); }
         let empty = Bucket { base: Arc::new(HashMap::new()), keys: Arc::new(Vec::new()), overlay: HashMap::new(), overlay_keys: Vec::new() };
@@ -334,12 +334,13 @@ impl<Value> Store<Value> {
         let mut root = Arc::new(Page::Leaf(Arc::new(empty)));
         let mut span: usize = 1;
         let wanted = expected / 128 + 1;
+        assert(wanted <= 8589934593) by (nonlinear_arith) requires expected <= 1099511627776, wanted == expected / 128 + 1;
         while span < wanted
-            invariant span > 0, root.wf(span as nat),
+            invariant span > 0, wanted <= 8589934593, root.wf(span as nat),
                 forall|slot: nat, key: i64| slot < span ==> #[trigger] root.lookup(span as nat, slot, key).is_none(),
             decreases usize::MAX - span,
         {
-            let next_span = match span.checked_mul(16) { Some(value) => value, None => return None };
+            let next_span = span * 16;
             proof { assert(next_span > span) by (nonlinear_arith) requires span > 0, next_span == 16 * span; }
             let mut children = Vec::new();
             let mut index = 0;
@@ -368,7 +369,7 @@ impl<Value> Store<Value> {
             root = next_root;
             span = next_span;
         }
-        Some(Store { root, span })
+        Store { root, span }
     }
 
     pub fn fork(&self) -> (result: Self)
