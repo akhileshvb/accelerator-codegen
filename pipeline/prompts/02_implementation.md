@@ -14,7 +14,7 @@ Full analysis: `{{full_analysis_path}}`
 
 Reference SQL: `{{reference_sql_path}}` · Artifacts: `{{artifacts_path}}/`
 
-## Files (patch stubs — do not rewrite from scratch)
+## Files (the scaffold creates stubs; create any that are still missing)
 
 Paths are under `accelerators/.../q{{query_number}}/{{engine_name}}/`:
 

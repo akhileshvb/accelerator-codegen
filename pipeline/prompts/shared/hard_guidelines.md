@@ -2,6 +2,12 @@
 
 Non-negotiable for analysis (planning), implementation, optimization, and audit.
 
+You run unattended: nobody answers a question, and a turn that ends asking for files,
+scaffolds or permission changes nothing. A file this task names that does not exist yet is
+yours to create (the tree may start with none of the query's files); a backend API that
+looks unfamiliar is the one to use, through its `api/README.md`. "Blocked" is not a result:
+ship the work and make the gate pass.
+
 ## 1. Native base-table storage
 
 Accelerators read **base tables** through **this engine’s** (`{{engine_name}}`) native storage/scan APIs. Consume engine-local batches, slots, or typed rebuild callbacks — **not** a shared portable chunk IR.

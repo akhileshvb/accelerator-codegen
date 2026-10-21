@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,6 +166,8 @@ def run_gate(
     out_json.unlink(missing_ok=True)  # a gate that dies before writing never reads as its last result
 
     gate_env = os.environ.copy()
+    # Gate scripts' `python3` is the pipeline's own interpreter (its packages), not the system one.
+    gate_env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{gate_env.get('PATH', '')}"
     if change_kind:
         gate_env["ACCEL_GATE_CHANGE_KIND"] = change_kind
     gate_env["ACCEL_GATE_ITERATION"] = str(iteration)
@@ -228,8 +231,12 @@ def run_gate(
             data = {"stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
     status = data.get("status", "pass" if proc.returncode == 0 else "fail")
-    if "status" not in data:
-        data["status"] = status
+    if proc.returncode != 0 and status == "pass" and not out_json.is_file():
+        # A script that failed after printing an early pass line has not passed.
+        status = "fail"
+        data["reason"] = f"gate script exited {proc.returncode} after reporting pass"
+        data["stderr"] = (proc.stderr or "")[-2000:]
+    data["status"] = status
     if status == "fail":
         from accel_pipeline.gate_capture import enrich_failed_gate_data
 
