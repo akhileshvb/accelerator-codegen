@@ -64,7 +64,6 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
 }
 
 constexpr int64_t kMaxKey = int64_t{1} << 36;  // customer keys beyond fail the build
-constexpr std::size_t kShardMask = kTpchQ13Shards - 1;
 
 bool KeyOk(int64_t ck) { return ck >= 0 && ck < kMaxKey; }
 
@@ -434,16 +433,17 @@ struct Mut {
   std::vector<std::shared_ptr<TpchQ13OrderShard>> mo;
   std::vector<std::shared_ptr<TpchQ13CustShard>> mc;
 
-  Mut() {
-    st.orders.assign(kTpchQ13Shards, nullptr);
-    st.cust.assign(kTpchQ13Shards, nullptr);
+  explicit Mut(uint32_t shard_bits) {
+    st.shard_bits = shard_bits;
+    st.orders.assign(st.Shards(), nullptr);
+    st.cust.assign(st.Shards(), nullptr);
     st.vocab = std::make_shared<const TpchQ13Vocab>();
-    mo.resize(kTpchQ13Shards);
-    mc.resize(kTpchQ13Shards);
+    mo.resize(st.Shards());
+    mc.resize(st.Shards());
   }
   explicit Mut(const TpchQ13State &base) : st(base) {
-    mo.resize(kTpchQ13Shards);
-    mc.resize(kTpchQ13Shards);
+    mo.resize(st.Shards());
+    mc.resize(st.Shards());
   }
   // Call after st.patterns is filled (fresh states only).
   void InitPatterns() {
@@ -502,7 +502,7 @@ struct Mut {
     {  // index the orders appended since the shards were last indexed
       auto intern = [&](std::string_view t) { return Intern(t); };
       auto df_add = [&](uint16_t t, int64_t d) { DfAdd(t, d); };
-      for (std::size_t s = 0; s < kTpchQ13Shards; ++s) {
+      for (std::size_t s = 0; s < st.Shards(); ++s) {
         if (!mo[s])
           continue;
         TpchQ13OrderShard &o = *mo[s];
@@ -517,7 +517,7 @@ struct Mut {
     st.sorted.assign(st.hist.size(), {});
     for (std::size_t p = 0; p < st.hist.size(); ++p)
       st.sorted[p] = SortedRows(st.hist[p]);
-    for (std::size_t s = 0; s < kTpchQ13Shards; ++s) {
+    for (std::size_t s = 0; s < st.Shards(); ++s) {
       if (mo[s])
         st.orders[s] = std::move(mo[s]);
       if (mc[s])
@@ -624,8 +624,8 @@ bool ApplyOrder(Mut &m, Tally &tally, int64_t ck, std::string_view comment,
                 int sign, Apply mode) {
   if (!KeyOk(ck))
     return RejectKey(mode);
-  const std::size_t s = static_cast<std::size_t>(ck) & kShardMask;
-  const std::size_t lc = static_cast<std::size_t>(ck) >> kTpchQ13ShardBits;
+  const std::size_t s = m.st.ShardOf(ck);
+  const std::size_t lc = m.st.LocalOf(ck);
   const std::size_t np = m.st.patterns.size();
   TpchQ13OrderShard &o = m.O(s);
   tally.live_orders += sign;
@@ -694,8 +694,8 @@ bool ApplyOrder(Mut &m, Tally &tally, int64_t ck, std::string_view comment,
 bool ApplyCustomer(Mut &m, Tally &tally, int64_t ck, int sign, Apply mode) {
   if (!KeyOk(ck))
     return RejectKey(mode);
-  const std::size_t s = static_cast<std::size_t>(ck) & kShardMask;
-  const std::size_t lc = static_cast<std::size_t>(ck) >> kTpchQ13ShardBits;
+  const std::size_t s = m.st.ShardOf(ck);
+  const std::size_t lc = m.st.LocalOf(ck);
   TpchQ13CustShard &c = m.C(s);
   const std::size_t np = m.st.patterns.size();
   const std::size_t slot = EnsureCust(c, lc, np);
@@ -821,11 +821,11 @@ struct LocalIntern {
 // the token index, then trim the shard's vectors to size.
 void BulkFinish(Mut &m, const core::AuxEngineServices &services) {
   const std::size_t np = m.st.patterns.size();
-  const std::size_t slices = core::SliceCount(services, kTpchQ13Shards, kFinishGrain);
+  const std::size_t slices = core::SliceCount(services, m.st.Shards(), kFinishGrain);
   SharedVocab shared;
   shared.v = *m.st.vocab;
   std::vector<std::vector<int32_t>> dfs(slices);
-  core::RunSlices(services, slices, kTpchQ13Shards,
+  core::RunSlices(services, slices, m.st.Shards(),
            [&](std::size_t slice, std::size_t b, std::size_t e) {
              std::vector<uint64_t> mask;
              LocalIntern intern{&shared, {}};
@@ -854,7 +854,7 @@ void BulkFinish(Mut &m, const core::AuxEngineServices &services) {
                    continue;
                  const char *d = o->blob.data() + o->start[j];
                  const std::size_t slot = c->SlotOf(static_cast<uint32_t>(
-                     static_cast<std::size_t>(o->custkey[j]) >> kTpchQ13ShardBits));
+                     m.st.LocalOf(o->custkey[j])));
                  for (std::size_t p = 0; p < np; ++p)
                    if (PatMatch(m.st.patterns[p], mask[j], d, o->len[j]))
                      ++c->match[p][slot];
@@ -883,10 +883,10 @@ void BulkFinish(Mut &m, const core::AuxEngineServices &services) {
 // Histograms (tracked patterns and the no-match base) from the customer arrays.
 void RecomputeHist(Mut &m, const core::AuxEngineServices &services) {
   const std::size_t np = m.st.patterns.size();
-  const std::size_t slices = core::SliceCount(services, kTpchQ13Shards, kHistGrain);
+  const std::size_t slices = core::SliceCount(services, m.st.Shards(), kHistGrain);
   std::vector<std::vector<std::vector<int64_t>>> part(
       slices, std::vector<std::vector<int64_t>>(np + 1));
-  core::RunSlices(services, slices, kTpchQ13Shards,
+  core::RunSlices(services, slices, m.st.Shards(),
            [&](std::size_t slice, std::size_t b, std::size_t e) {
              auto &h = part[slice];
              for (std::size_t s = b; s < e; ++s) {
@@ -1054,13 +1054,13 @@ bool PlanIndex(const TpchQ13State &st, const TpchQ13Like &like,
 
 // Customers owning matching orders of one shard: move them between buckets.
 // `m` is zero scratch (left zero), `touched` is empty scratch.
-void QuerySeg(const TpchQ13OrderSeg *o, const TpchQ13CustShard &c, const uint8_t *alive,
+void QuerySeg(const TpchQ13State &st, const TpchQ13OrderSeg *o, const TpchQ13CustShard &c,
+              const uint8_t *alive,
               const TpchQ13Like &like, bool anchored_scan, const IndexPlan *plan,
               std::vector<int32_t> &m, std::vector<uint32_t> &touched) {
   const char *blob = o->blob.data();
   auto count = [&](std::size_t j) {
-    const std::size_t slot = c.SlotOf(static_cast<uint32_t>(
-        static_cast<std::size_t>(o->custkey[j]) >> kTpchQ13ShardBits));
+    const std::size_t slot = c.SlotOf(st.LocalOf(o->custkey[j]));
     if (slot == TpchQ13CustShard::kNone)
       return;
     if (m[slot]++ == 0)
@@ -1161,9 +1161,9 @@ void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
   if (m.size() < c->total.size())
     m.resize(c->total.size(), 0);
   if (o->base)
-    QuerySeg(o->base.get(), *c, o->alive.data(), like, anchored_scan, plan, m,
+    QuerySeg(st, o->base.get(), *c, o->alive.data(), like, anchored_scan, plan, m,
              touched);
-  QuerySeg(&o->tail, *c, o->alive.data() + o->BaseSize(), like, anchored_scan, plan,
+  QuerySeg(st, &o->tail, *c, o->alive.data() + o->BaseSize(), like, anchored_scan, plan,
            m, touched);
   for (const uint32_t slot : touched) {
     if (c->mult[slot] > 0) {
@@ -1202,9 +1202,9 @@ std::vector<TpchQ13OutputRow> EvalUntracked(const TpchQ13State &st,
   const bool anchored_scan = !like.anchor.empty() && !like.parts.empty() &&
                              like.parts.front().text.empty() &&
                              like.parts.back().text.empty() && like.has_pct;
-  const std::size_t slices = core::SliceCount(services, kTpchQ13Shards, kEvalGrain);
+  const std::size_t slices = core::SliceCount(services, st.Shards(), kEvalGrain);
   std::vector<std::vector<int64_t>> deltas(slices);
-  core::RunSlices(services, slices, kTpchQ13Shards,
+  core::RunSlices(services, slices, st.Shards(),
            [&](std::size_t slice, std::size_t b, std::size_t e) {
              thread_local std::vector<int32_t> m;
              thread_local std::vector<uint32_t> touched;
@@ -1226,10 +1226,18 @@ std::vector<TpchQ13OutputRow> EvalUntracked(const TpchQ13State &st,
 // seen), never sized by the shard or customer domains. Merging collects the runs
 // in table order; the shards are built from them afterwards, one bucket per task.
 constexpr std::size_t kBuildBuckets = 1024;
-static_assert(kTpchQ13Shards % kBuildBuckets == 0);
+static_assert(std::size_t{1} << kTpchQ13MinShardBits == kBuildBuckets);
 
 std::size_t BuildBucketOf(int64_t custkey) {
   return static_cast<std::size_t>(custkey) & (kBuildBuckets - 1);
+}
+
+uint32_t ShardBitsFor(int64_t order_count) {
+  uint32_t bits = kTpchQ13MinShardBits;
+  while (bits < kTpchQ13MaxShardBits &&
+         (std::size_t{1} << bits) * kTpchQ13OrdersPerShard < static_cast<std::size_t>(order_count))
+    ++bits;
+  return bits;
 }
 
 struct OrderRun {
@@ -1274,7 +1282,7 @@ void AppendBucketOrders(Mut &m, BuildRuns &orders, std::size_t bucket) {
     OrderRun &src = run.orders[bucket];
     std::size_t at = 0;
     for (std::size_t i = 0; i < src.custkey.size(); ++i) {
-      TpchQ13OrderShard &o = m.O(static_cast<std::size_t>(src.custkey[i]) & kShardMask);
+      TpchQ13OrderShard &o = m.O(m.st.ShardOf(src.custkey[i]));
       TpchQ13OrderSeg &t = o.tail;
       if (t.blob.size() + src.len[i] > std::numeric_limits<uint32_t>::max())
         throw std::runtime_error("TPC-H Q13: order comments of one shard exceed 4 GiB");
@@ -1312,15 +1320,13 @@ void BuildBucketShards(Mut &m, const BuildRuns &customers, BuildRuns &orders,
                        std::size_t bucket) {
   AppendBucketOrders(m, orders, bucket);
   const std::size_t np = m.st.patterns.size();
-  constexpr std::size_t kPerBucket = kTpchQ13Shards / kBuildBuckets;
-  std::array<std::vector<int64_t>, kPerBucket> customer_keys;
+  const std::size_t per_bucket = m.st.Shards() / kBuildBuckets;
+  std::vector<std::vector<int64_t>> customer_keys(per_bucket);
   for (const auto &run : customers.runs)
     for (const int64_t ck : run.customers[bucket])
-      customer_keys[(static_cast<std::size_t>(ck) & kShardMask) / kBuildBuckets].push_back(ck);
-  const auto local_of = [](int64_t ck) {
-    return static_cast<uint32_t>(static_cast<std::size_t>(ck) >> kTpchQ13ShardBits);
-  };
-  for (std::size_t j = 0; j < kPerBucket; ++j) {
+      customer_keys[m.st.ShardOf(ck) / kBuildBuckets].push_back(ck);
+  const auto local_of = [&](int64_t ck) { return m.st.LocalOf(ck); };
+  for (std::size_t j = 0; j < per_bucket; ++j) {
     const std::size_t s = bucket + j * kBuildBuckets;
     const TpchQ13OrderShard *o = m.ReadO(s);
     if (!o && customer_keys[j].empty())
@@ -1487,7 +1493,7 @@ TpchQ13State TpchQ13Module::BuildState(
       });
 
   // Every TPC-H-domain pattern is maintained from the start.
-  Mut m;
+  Mut m(ShardBitsFor(orders.order_count));
   for (const auto &text : DomainPatterns())
     m.st.patterns.push_back(MakePattern(text));
   m.InitPatterns();
@@ -1642,7 +1648,7 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   // keep their arrival order) and tally their count changes apart.
   const auto &deltas = buffer.Deltas();
   const auto shard_of = [&](uint32_t i) {
-    return static_cast<std::size_t>(deltas[i].custkey) & kShardMask;
+    return m.st.ShardOf(deltas[i].custkey);
   };
   std::vector<uint32_t> by_shard(deltas.size());
   std::iota(by_shard.begin(), by_shard.end(), 0u);

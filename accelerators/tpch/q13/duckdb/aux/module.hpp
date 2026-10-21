@@ -56,9 +56,12 @@ struct TpchQ13Like {
 
 // Sharding: custkey -> shard (custkey & mask), local index (custkey >> bits).
 // Published states hold shared_ptr<const> shards; a write clones only the
-// shards it touches (copy-on-write), never the whole state.
-constexpr uint32_t kTpchQ13ShardBits = 14;
-constexpr std::size_t kTpchQ13Shards = std::size_t{1} << kTpchQ13ShardBits;
+// shards it touches (copy-on-write), never the whole state. The shard count is
+// sized at build so a shard holds about kTpchQ13OrdersPerShard orders whatever
+// the scale: the copy and the delete scan of one touched shard stay bounded.
+constexpr uint32_t kTpchQ13MinShardBits = 10;
+constexpr uint32_t kTpchQ13MaxShardBits = 26;
+constexpr std::size_t kTpchQ13OrdersPerShard = 2048;
 constexpr std::size_t kTpchQ13MaxPatterns = 32;  // tracked (maintained) patterns
 
 // Word-token inverted index of one order shard.  A token is a maximal run of
@@ -147,6 +150,15 @@ struct TpchQ13OutputRow {
 struct TpchQ13State {
   std::vector<std::shared_ptr<const TpchQ13OrderShard>> orders;  // may be null
   std::vector<std::shared_ptr<const TpchQ13CustShard>> cust;     // may be null
+  uint32_t shard_bits = kTpchQ13MinShardBits;  // orders.size() == 1 << shard_bits
+
+  std::size_t Shards() const { return std::size_t{1} << shard_bits; }
+  std::size_t ShardOf(int64_t custkey) const {
+    return static_cast<std::size_t>(custkey) & (Shards() - 1);
+  }
+  uint32_t LocalOf(int64_t custkey) const {
+    return static_cast<uint32_t>(static_cast<std::size_t>(custkey) >> shard_bits);
+  }
   // Tracked LIKE patterns; hist[p][c] = #customers whose count of orders NOT
   // matching patterns[p] equals c.  Immutable per published version.
   std::vector<TpchQ13Pattern> patterns;
