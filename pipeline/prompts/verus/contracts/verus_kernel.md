@@ -45,6 +45,10 @@ that does not fit.
   integer (`wide`: an `i128` fast path, unbounded limbs) if it exists;
   otherwise write one (verified add, sub, mul, neg, compare, narrowing to
   `i128`) and publish it.
+* History: define `pub open spec fn history(s: State) -> nat` in kernel.rs
+  (`0` unless the state keeps something that grows with past writes, such as
+  ids it never frees). Build yields 0 and each apply adds at most its changed
+  rows; apply may decline only past `max_history()` (2^62) rows since the build.
 * Tracked parameter values: a design may precompute answers for chosen
   values (e.g. the TPC-H colors) as a fast path, but every other value of the
   parameter's type needs a total general path, compact and maintained

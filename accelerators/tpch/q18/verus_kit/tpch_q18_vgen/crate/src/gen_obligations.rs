@@ -256,6 +256,12 @@ pub open spec fn max_rows() -> int {
     1099511627776
 }
 
+/// Most changed rows a state may absorb after its build before apply may decline
+/// (the host then rebuilds).
+pub open spec fn max_history() -> int {
+    4611686018427387904
+}
+
 /// Each value of customer lies in the range of its column's SQL type.
 pub open spec fn customer_in_type(r: CustomerRow) -> bool {
     -2147483648 <= r.c_custkey <= 2147483647
@@ -319,6 +325,7 @@ pub fn ob_build(
         scan_customer_names_ok(db, customer_names@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        r matches Some(s) ==> crate::kernel::history(s) == 0,
         envelope(db) ==> r is Some,
 {
     kernel::build(line_quantities, order_groups, customer_names, Ghost(db))
@@ -338,7 +345,7 @@ pub fn ob_execute(
 }
 
 /// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
-/// the envelope.
+/// the envelope or after max_history() changed rows since the build.
 pub fn ob_apply(
     s: &State,
     customer_delta: &Vec<CustomerNameDelta>,
@@ -350,7 +357,8 @@ pub fn ob_apply(
         capture_ok(s.db(), db2, customer_name_delta_seq_view(customer_delta@), line_quantity_delta_seq_view(lineitem_delta@), order_group_delta_seq_view(orders_delta@)),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
-        envelope(s.db()) && envelope(db2) ==> r is Ok,
+        r matches Ok(s2) ==> crate::kernel::history(s2) <= crate::kernel::history(*s) + customer_delta@.len() + lineitem_delta@.len() + orders_delta@.len(),
+        envelope(s.db()) && envelope(db2) && crate::kernel::history(*s) + customer_delta@.len() + lineitem_delta@.len() + orders_delta@.len() <= max_history() ==> r is Ok,
 {
     kernel::apply(s, customer_delta, lineitem_delta, orders_delta, Ghost(db2))
 }
