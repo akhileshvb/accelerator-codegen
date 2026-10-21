@@ -47,7 +47,7 @@ pub proof fn lemma_part_delta_unseen(parts: Seq<PartDelta>, part: int, key: KeyV
 }
 
 pub proof fn lemma_coverage(db: Db, db2: Db, links: Edges, parts: Seq<PartDelta>, edges: Seq<EdgeDelta>, suppliers_delta: Seq<SupplierDelta>,
-    full: Seq<(SupplierRow, int)>, suppliers: Index<i64>, changed: Index<i64>,
+    full: Seq<(SupplierRow, int)>, suppliers: Index<i128>, changed: Index<i128>,
 )
     requires supplier_delta_ok(suppliers_delta, full),
         capture_ok(db, db2, part_delta_seq_view(parts), edge_delta_seq_view(edges), full),

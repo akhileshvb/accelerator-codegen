@@ -29,7 +29,7 @@ pub struct State {
     ranks: Ranks,
     parts: Parts,
     edges: Edges,
-    blocked: Index<i64>,
+    blocked: Index<i128>,
     links: Edges,
 }
 
@@ -102,7 +102,7 @@ pub fn build(
             proof {
                 lemma_part_input_bound(parts_rows@.take(processed@), parts_rows[index as int].p_partkey as int,
                     group_key(parts_rows[index as int].p_brand@, parts_rows[index as int].p_type@, parts_rows[index as int].p_size as int));
-                if envelope(db) { assert(max_rows() == 1099511627776int); }
+                if envelope(db) { assert(max_rows() == 9223372036854775808int); }
             }
             return None;
         }
@@ -135,14 +135,14 @@ pub fn build(
         if !bump_edge(&mut edge_map, edge.ps_partkey, edge.ps_suppkey, 1) {
             proof {
                 lemma_edge_input_bound(edges@.take(processed@), edges@[index as int].ps_suppkey as int, edges@[index as int].ps_partkey as int);
-                if envelope(db) { assert(max_rows() == 1099511627776int); }
+                if envelope(db) { assert(max_rows() == 9223372036854775808int); }
             }
             return None;
         }
         if !bump_edge(&mut links, edge.ps_suppkey, edge.ps_partkey, 1) {
             proof {
                 lemma_edge_input_bound(edges@.take(processed@), edges@[index as int].ps_suppkey as int, edges@[index as int].ps_partkey as int);
-                if envelope(db) { assert(max_rows() == 1099511627776int); }
+                if envelope(db) { assert(max_rows() == 9223372036854775808int); }
             }
             return None;
         }
@@ -176,7 +176,7 @@ pub fn build(
         if !bump(&mut blocked, Key::number(blockers[index].s_suppkey), 1) {
             proof {
                 lemma_blocker_input_bound(blockers@.take(processed@), blockers@[index as int].s_suppkey as int);
-                if envelope(db) { assert(max_rows() == 1099511627776int); }
+                if envelope(db) { assert(max_rows() == 9223372036854775808int); }
             }
             return None;
         }
@@ -213,7 +213,7 @@ pub fn build(
             cursor.remaining() == edge_map.entries().skip(processed@),
             forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key)
                 == sum(edge_map.entries().take(processed@),
-                    |row: (verus_prooflib::ordered::KeyView, Index<i64>)|
+                    |row: (verus_prooflib::ordered::KeyView, Index<i128>)|
                         supplier_weight(parts, blocked, row, key)),
         decreases cursor.remaining().len() + if finished { 0int } else { 1int },
     {
@@ -244,9 +244,9 @@ pub fn build(
                 assert(integer_at(blocked, supplier.view()) != 0);
                 assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key)
                     == sum(edge_map.entries().take(processed@),
-                        |row: (verus_prooflib::ordered::KeyView, Index<i64>)| supplier_weight(parts, blocked, row, key)) by {
+                        |row: (verus_prooflib::ordered::KeyView, Index<i128>)| supplier_weight(parts, blocked, row, key)) by {
                     lemma_sum_take(edge_map.entries(), previous_processed@,
-                        |row: (verus_prooflib::ordered::KeyView, Index<i64>)| supplier_weight(parts, blocked, row, key));
+                        |row: (verus_prooflib::ordered::KeyView, Index<i128>)| supplier_weight(parts, blocked, row, key));
                 }
                 assert(processed@ == edge_map.entries().len() ==> edge_map.entries().take(processed@) =~= edge_map.entries());
             }
@@ -265,18 +265,17 @@ pub fn build(
         proof {
             assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key) + contribution(groups, key, 1)
                 == sum(edge_map.entries().take(processed@),
-                    |row: (verus_prooflib::ordered::KeyView, Index<i64>)| supplier_weight(parts, blocked, row, key)) by {
+                    |row: (verus_prooflib::ordered::KeyView, Index<i128>)| supplier_weight(parts, blocked, row, key)) by {
                 lemma_hit_joined(parts, edges.entries(), key);
                 lemma_sum_take(edge_map.entries(), previous_processed@,
-                    |row: (verus_prooflib::ordered::KeyView, Index<i64>)| supplier_weight(parts, blocked, row, key));
+                    |row: (verus_prooflib::ordered::KeyView, Index<i128>)| supplier_weight(parts, blocked, row, key));
                 assert(integer_at(blocked, supplier.view()) == 0);
-                assert(joined_count(parts, *edges, key) == sum(edges.entries(), |row: (verus_prooflib::ordered::KeyView, i64)| row.1 as int * part_at(parts, row.0.0, key)));
+                assert(joined_count(parts, *edges, key) == sum(edges.entries(), |row: (verus_prooflib::ordered::KeyView, i128)| row.1 as int * part_at(parts, row.0.0, key)));
             }
             if envelope(db) {
                 assert forall|key: verus_prooflib::ordered::KeyView| !out_of_range(count_at(counts, key) + contribution(groups, key, 1)) by {
                     lemma_edges_prefix_bound(parts, edge_map, blocked, db, processed@, key);
-                    lemma_database_suppliers_len(db);
-                    assert(max_rows() == 1099511627776int);
+                    lemma_suppliers_in_type(db);
                 }
             }
         }
@@ -284,11 +283,11 @@ pub fn build(
         proof {
             assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key)
                 == sum(edge_map.entries().take(processed@),
-                    |row: (verus_prooflib::ordered::KeyView, Index<i64>)| supplier_weight(parts, blocked, row, key)) by {
+                    |row: (verus_prooflib::ordered::KeyView, Index<i128>)| supplier_weight(parts, blocked, row, key)) by {
                 lemma_hit_joined(parts, edges.entries(), key);
                 assert((count_at(groups, key) > 0) == (joined_count(parts, *edges, key) > 0));
                 lemma_sum_take(edge_map.entries(), previous_processed@,
-                    |row: (verus_prooflib::ordered::KeyView, Index<i64>)| supplier_weight(parts, blocked, row, key));
+                    |row: (verus_prooflib::ordered::KeyView, Index<i128>)| supplier_weight(parts, blocked, row, key));
             }
             assert(processed@ == edge_map.entries().len() ==> edge_map.entries().take(processed@) =~= edge_map.entries());
         }
@@ -298,11 +297,10 @@ pub fn build(
         counts.model();
         verus_prooflib::ordered::lemma_ordered_unique(counts.entries());
         if envelope(db) {
-            assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key) <= max_rows() by {
+            assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key) <= max_suppliers() by {
                 lemma_edges_prefix_bound(parts, edge_map, blocked, db, edge_map.entries().len() as int, key);
                 assert(edge_map.entries().take(edge_map.entries().len() as int) =~= edge_map.entries());
-                lemma_database_suppliers_len(db);
-                assert(max_rows() == 1099511627776int);
+                lemma_suppliers_in_type(db);
             }
         }
     }
@@ -327,7 +325,7 @@ pub fn build(
                 #[trigger] counts.at(counts.entries()[position].0) == Some(counts.entries()[position].1),
             forall|first: int, last: int| 0 <= first < last < counts.entries().len() ==>
                 (#[trigger] counts.entries()[first]).0 != (#[trigger] counts.entries()[last]).0,
-            envelope(db) ==> forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key) <= max_rows(),
+            envelope(db) ==> forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key) <= max_suppliers(),
             forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(published_counts, key)
                 == sum(counts.entries().take(processed@),
                     |row: (verus_prooflib::ordered::KeyView, Cell)|
@@ -380,7 +378,6 @@ pub fn build(
             proof {
                 if envelope(db) {
                     assert(count_at(counts, cell.group.key()) == cell.count as int);
-                    assert(max_rows() == 1099511627776int);
                 }
             }
             return None;
@@ -397,7 +394,7 @@ pub fn build(
     }
     proof {
         assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int| #[trigger] total(db, brand, kind, size)
-            == sum(edge_map.entries(), |row: (verus_prooflib::ordered::KeyView, Index<i64>)|
+            == sum(edge_map.entries(), |row: (verus_prooflib::ordered::KeyView, Index<i128>)|
                 supplier_weight(parts, blocked, row, group_key(brand, kind, size))) by {
             lemma_build_total(parts, edge_map, blocked, db, brand, kind, size);
         }

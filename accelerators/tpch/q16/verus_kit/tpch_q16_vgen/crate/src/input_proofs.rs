@@ -51,14 +51,14 @@ pub open spec fn scanned_links(links: Edges, db: Db) -> bool {
         == edge_count(db, part, supplier)
 }
 
-pub open spec fn tables_valid(parts: Parts, edges: Edges, blocked: verus_prooflib::ordered::Index<i64>, links: Edges, db: Db) -> bool {
+pub open spec fn tables_valid(parts: Parts, edges: Edges, blocked: verus_prooflib::ordered::Index<i128>, links: Edges, db: Db) -> bool {
     &&& parts_keys_valid(parts) && scanned_parts(parts, db)
     &&& edges_keys_valid(edges) && scanned_edges(edges, db)
     &&& integer_keys(blocked) && scanned_blockers(blocked, db)
     &&& edges_keys_valid(links) && scanned_links(links, db)
 }
 
-pub open spec fn scanned_blockers(blockers: verus_prooflib::ordered::Index<i64>, db: Db) -> bool {
+pub open spec fn scanned_blockers(blockers: verus_prooflib::ordered::Index<i128>, db: Db) -> bool {
     forall|supplier: int| #[trigger] integer_at(blockers, (supplier, Seq::empty()))
         == blocker_count(db, supplier)
 }

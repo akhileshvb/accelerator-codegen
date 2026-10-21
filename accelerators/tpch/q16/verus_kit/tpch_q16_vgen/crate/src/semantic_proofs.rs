@@ -7,18 +7,18 @@ use verus_common::sqlfns::like_match;
 
 verus! {
 
-pub open spec fn materialized(parts: Parts, edges: Edges, blockers: Index<i64>, counts: Counts) -> bool {
+pub open spec fn materialized(parts: Parts, edges: Edges, blockers: Index<i128>, counts: Counts) -> bool {
     &&& cell_keys_valid(counts)
     &&& forall|key: KeyView| #[trigger] counts.at(key).is_some() ==> counts.at(key).unwrap().count > 0
     &&& forall|key: KeyView| #[trigger] count_at(counts, key)
-        == sum(edges.entries(), |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, key))
+        == sum(edges.entries(), |row: (KeyView, Index<i128>)| supplier_weight(parts, blockers, row, key))
 }
 
-pub proof fn lemma_build_result(db: Db, parts: Parts, edges: Edges, blockers: Index<i64>, counts: Counts, ranks: Ranks)
+pub proof fn lemma_build_result(db: Db, parts: Parts, edges: Edges, blockers: Index<i128>, counts: Counts, ranks: Ranks)
     requires materialized(parts, edges, blockers, counts), ranks_valid(ranks, counts),
         forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
             #[trigger] total(db, brand, kind, size) == sum(edges.entries(),
-                |row: (KeyView, Index<i64>)| supplier_weight(parts, blockers, row, group_key(brand, kind, size))),
+                |row: (KeyView, Index<i128>)| supplier_weight(parts, blockers, row, group_key(brand, kind, size))),
     ensures counts_valid(counts, db), ranks_valid(ranks, counts),
 {
     assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int|
