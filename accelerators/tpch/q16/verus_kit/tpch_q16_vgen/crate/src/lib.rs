@@ -22,3 +22,4 @@ pub mod build_semantics;
 pub mod query_semantics;
 pub mod output_validation;
 pub mod maintenance_semantics;
+pub mod bounds;
