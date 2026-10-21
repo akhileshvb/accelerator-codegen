@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/partitioned_build.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -129,6 +130,24 @@ void ParallelForEachRow(const core::AuxEngineServices &services, DealtRows<Row> 
   core::ParallelEach(services, rows.BucketCount(), 1, [&](std::size_t bucket) {
     rows.ForEach(bucket, [&](const Row &row) { fn(bucket, row); });
   });
+}
+
+
+// The rows of a typed partitioned scan, dealt by `deal(rows, input)`.
+template <class Row, class Input, class Scan, class Deal>
+DealtRows<Row> DealScan(const core::AuxEngineServices &services, std::size_t buckets,
+                        Scan &&scan, Deal &&deal) {
+  using Rows = DealtRows<Row>;
+  return core::PartitionedBuild<Rows>(
+      services, [buckets] { return Rows(buckets); },
+      [&](std::size_t partitions, auto &&sink) {
+        scan(partitions, [&](std::size_t partition, const Input &input) {
+          sink(partition, core::SingleRowBatch<Input>{input});
+        });
+      },
+      [&](Rows &rows, const Input &input) { deal(rows, input); },
+      [](Rows &into, Rows &&from) { into.Merge(std::move(from)); },
+      core::BuildPartitions(services));
 }
 
 } // namespace accelerator_codegen::aux_state::query

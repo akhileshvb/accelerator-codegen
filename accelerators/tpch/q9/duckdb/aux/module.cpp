@@ -53,23 +53,6 @@ template <class Array> std::size_t ChunkBucket(int64_t key, std::size_t buckets)
   return key >= 0 ? static_cast<std::size_t>(key) / Array::kChunkSize % buckets : 0;
 }
 
-// The rows of a typed partitioned scan, dealt by `deal(rows, input)`.
-template <class Row, class Input, class Scan, class Deal>
-DealtRows<Row> DealScan(const core::AuxEngineServices &services, std::size_t buckets,
-                        Scan &&scan, Deal &&deal) {
-  using Rows = DealtRows<Row>;
-  return core::PartitionedBuild<Rows>(
-      services, [buckets] { return Rows(buckets); },
-      [&](std::size_t partitions, auto &&sink) {
-        scan(partitions, [&](std::size_t partition, const Input &input) {
-          sink(partition, core::SingleRowBatch<Input>{input});
-        });
-      },
-      [&](Rows &rows, const Input &input) { deal(rows, input); },
-      [](Rows &into, Rows &&from) { into.Merge(std::move(from)); },
-      core::BuildPartitions(services));
-}
-
 // Keys that do not fit the int32 pair index are not supported incrementally.
 bool PairKeyFits(int64_t suppkey) {
   return suppkey >= 1 && suppkey <= static_cast<int64_t>(INT32_MAX);
