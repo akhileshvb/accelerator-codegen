@@ -209,11 +209,19 @@ pub open spec fn supplier_delta_ok(d: Seq<SupplierDelta>, full: Seq<(SupplierRow
     }
 }
 
+/// Each change is one row, inserted (+1) or deleted (-1).
+pub open spec fn unit_weights<A>(d: Seq<(A, int)>) -> bool {
+    forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1
+}
+
 /// One transaction's changes: every table of db2 is that of db plus its deltas (bags).
 pub open spec fn capture_ok(db: Db, db2: Db, part: Seq<(PartRow, int)>, partsupp: Seq<(PartsuppRow, int)>, supplier: Seq<(SupplierRow, int)>) -> bool {
     &&& bag_step(db.part, db2.part, part)
+    &&& unit_weights(part)
     &&& bag_step(db.partsupp, db2.partsupp, partsupp)
+    &&& unit_weights(partsupp)
     &&& bag_step(db.supplier, db2.supplier, supplier)
+    &&& unit_weights(supplier)
 }
 
 // ── The envelope: where the kernel may not decline ──
