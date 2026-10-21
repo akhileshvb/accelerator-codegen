@@ -2,7 +2,9 @@
 #include "tpch/q11/calibration_writes.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/dealt_rows.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -19,10 +21,13 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Suppliers per build slice (~2500 us): sorting ~80 parts is ~10 us, so hundreds pay for a task.
-constexpr std::size_t kSupplierFoldGrain = 256;
-// Nation aggregates per slice when building (~1000 us).
-constexpr std::size_t kNationJobGrain = 1;
+// Supplier buckets per slice when dealing their parts to nations.
+constexpr std::size_t kSupplierBucketGrain = 16;
+// Value buckets or supplier-part buckets per slice when aggregating a nation.
+constexpr std::size_t kBucketGrain = 4;
+// Rows per slice of a nation's sort, and chunks per slice when cutting it.
+constexpr std::size_t kSortGrain = 65536;
+constexpr std::size_t kChunkGrain = 64;
 // Nation ops below which a commit applies its nations inline (untimed).
 constexpr std::size_t kNationOpThreshold = 2048;
 // Deltas in a commit below which the supplier bookkeeping stays on one thread (untimed).
@@ -93,38 +98,26 @@ bool ReadNation(const core::AuxRow &row, int32_t &nationkey,
   return core::Int32Cell(row, 0, nationkey) && core::StringCell(row, 1, name);
 }
 
+struct SupplierRow {
+  int64_t suppkey = 0;
+  int32_t nationkey = 0;
+};
+
+struct PartsuppRow {
+  int64_t suppkey = 0;
+  Q11SupplierPart part;
+};
+
 bool RowBefore(const TpchQ11OutputRow &lhs, const TpchQ11OutputRow &rhs) {
   if (lhs.value != rhs.value)
     return lhs.value > rhs.value;
   return lhs.partkey < rhs.partkey;
 }
 
-// Builds an immutable nation aggregate from rows already sorted by RowBefore
-// (unique partkeys, value > 0).
-std::shared_ptr<const TpchQ11NationData>
-MakeNationData(const std::vector<TpchQ11OutputRow> &sorted, Q11AccT total) {
-  auto data = std::make_shared<TpchQ11NationData>();
-  data->total = total;
-  std::vector<std::shared_ptr<Q11ValueBucket>> tmp(kQ11ValueBuckets);
-  for (const auto &row : sorted) {
-    auto &bucket = tmp[Q11ValueBucketIndex(row.partkey)];
-    if (!bucket)
-      bucket = std::make_shared<Q11ValueBucket>();
-    (*bucket)[row.partkey] = row.value;
-  }
-  data->value_buckets.assign(tmp.begin(), tmp.end());
-  for (std::size_t i = 0; i < sorted.size(); i += kQ11ChunkTarget) {
-    const std::size_t end = std::min(sorted.size(), i + kQ11ChunkTarget);
-    auto chunk = std::make_shared<Q11SortedChunk>();
-    chunk->rows.assign(sorted.begin() + static_cast<std::ptrdiff_t>(i),
-                       sorted.begin() + static_cast<std::ptrdiff_t>(end));
-    data->chunks.push_back(std::move(chunk));
-  }
-  return data;
-}
-
 std::shared_ptr<const TpchQ11NationData> EmptyNationData() {
-  return MakeNationData({}, 0);
+  auto data = std::make_shared<TpchQ11NationData>();
+  data->value_buckets.assign(kQ11ValueBuckets, nullptr);
+  return data;
 }
 
 // Copy-on-write working copy of a nation aggregate.  Only the touched value
@@ -463,73 +456,142 @@ core::AuxRow &RowBuffer() {
   return row;
 }
 
-// Per supplier: sorts the parts by partkey and folds duplicates (bag semantics).
-void FoldSupplierParts(core::AuxEngineServices &services,
-                       std::unordered_map<int64_t, Q11SupplierEntry> &suppliers) {
-  std::vector<Q11SupplierEntry *> entries;
-  entries.reserve(suppliers.size());
-  for (auto &[suppkey, entry] : suppliers)
-    entries.push_back(&entry);
-  core::ParallelSlices(
-      services, entries.size(), kSupplierFoldGrain,
-      [&](std::size_t, std::size_t begin, std::size_t end) {
-        for (std::size_t e = begin; e < end; ++e) {
-          auto &parts = entries[e]->parts;
-          std::sort(parts.begin(), parts.end(),
-                    [](const Q11SupplierPart &a, const Q11SupplierPart &b) {
-                      return a.partkey < b.partkey;
-                    });
-          std::size_t out = 0;
-          for (std::size_t i = 0; i < parts.size(); ++i) {
-            if (out > 0 && parts[out - 1].partkey == parts[i].partkey) {
-              parts[out - 1].value += parts[i].value;
-              parts[out - 1].count += parts[i].count;
-            } else {
-              parts[out++] = parts[i];
-            }
-          }
-          parts.resize(out);
-          parts.shrink_to_fit();
-        }
-      });
+// Sorts a supplier's parts by partkey and folds duplicates (bag semantics).
+void FoldParts(std::vector<Q11SupplierPart> &parts) {
+  std::sort(parts.begin(), parts.end(),
+            [](const Q11SupplierPart &a, const Q11SupplierPart &b) { return a.partkey < b.partkey; });
+  std::size_t out = 0;
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    if (out > 0 && parts[out - 1].partkey == parts[i].partkey) {
+      parts[out - 1].value += parts[i].value;
+      parts[out - 1].count += parts[i].count;
+    } else {
+      parts[out++] = parts[i];
+    }
+  }
+  parts.resize(out);
+  parts.shrink_to_fit();
 }
 
-// Per nation: merges its suppliers' parts and sorts them into the aggregate.
-// Sums are exact integers, so supplier order does not matter.
+using SupplierBuckets = std::vector<std::shared_ptr<Q11SupplierBucket>>;
+
+struct NationPart {
+  int64_t partkey = 0;
+  int64_t value = 0;
+};
+
+// One value bucket of a nation's aggregate: its parts summed per partkey.
+struct ValueBucketAgg {
+  std::shared_ptr<Q11ValueBucket> values; // value > 0 only; null when empty
+  std::vector<TpchQ11OutputRow> rows;     // the same, by RowBefore
+  Q11AccT total = 0;                      // over all parts, whatever their sign
+};
+
+// Sums are exact integers, so the order of the parts does not matter.
+ValueBucketAgg AggregateValueBucket(std::vector<NationPart> &&parts) {
+  std::sort(parts.begin(), parts.end(),
+            [](const NationPart &a, const NationPart &b) { return a.partkey < b.partkey; });
+  ValueBucketAgg agg;
+  for (std::size_t begin = 0, end = 0; begin < parts.size(); begin = end) {
+    Q11AccT sum = 0;
+    for (end = begin; end < parts.size() && parts[end].partkey == parts[begin].partkey; ++end)
+      sum += static_cast<Q11AccT>(parts[end].value);
+    agg.total += sum;
+    if (sum <= 0)
+      continue;
+    if (!agg.values)
+      agg.values = std::make_shared<Q11ValueBucket>();
+    (*agg.values)[parts[begin].partkey] = sum;
+    agg.rows.push_back({parts[begin].partkey, sum});
+  }
+  std::sort(agg.rows.begin(), agg.rows.end(), RowBefore);
+  return agg;
+}
+
+// A nation's aggregate from its value buckets: the sorted rows are the buckets' rows
+// merged by one parallel sort and cut into chunks.
+std::shared_ptr<const TpchQ11NationData>
+MakeNationData(core::AuxEngineServices &services, std::vector<ValueBucketAgg> &aggs) {
+  auto data = std::make_shared<TpchQ11NationData>();
+  std::vector<std::size_t> offsets(aggs.size() + 1, 0);
+  for (std::size_t i = 0; i < aggs.size(); ++i) {
+    data->total += aggs[i].total;
+    data->value_buckets.push_back(std::move(aggs[i].values));
+    offsets[i + 1] = offsets[i] + aggs[i].rows.size();
+  }
+  std::vector<TpchQ11OutputRow> sorted(offsets.back());
+  core::ParallelEach(services, aggs.size(), kBucketGrain, [&](std::size_t i) {
+    std::move(aggs[i].rows.begin(), aggs[i].rows.end(),
+              sorted.begin() + static_cast<std::ptrdiff_t>(offsets[i]));
+  });
+  core::ParallelStableSort(services, sorted, RowBefore, kSortGrain);
+  data->chunks.resize((sorted.size() + kQ11ChunkTarget - 1) / kQ11ChunkTarget);
+  core::ParallelEach(services, data->chunks.size(), kChunkGrain, [&](std::size_t c) {
+    const auto begin = sorted.begin() + static_cast<std::ptrdiff_t>(c * kQ11ChunkTarget);
+    const auto end = sorted.begin() + static_cast<std::ptrdiff_t>(
+                                          std::min(sorted.size(), (c + 1) * kQ11ChunkTarget));
+    auto chunk = std::make_shared<Q11SortedChunk>();
+    chunk->rows.assign(begin, end);
+    data->chunks[c] = std::move(chunk);
+  });
+  return data;
+}
+
+// Per nation: its suppliers' parts, dealt by value bucket, summed bucket by bucket and
+// merged into the aggregate.
 std::unordered_map<int32_t, std::shared_ptr<const TpchQ11NationData>>
 AggregateNations(core::AuxEngineServices &services, const TpchQ11State &state,
-                 const std::unordered_map<int64_t, Q11SupplierEntry> &suppliers) {
-  std::unordered_set<int32_t> known_nations;
+                 const SupplierBuckets &buckets) {
+  std::vector<int32_t> nations;
   for (const auto &entry : state.nation_name_to_key)
-    known_nations.insert(entry.second);
-  std::unordered_map<int32_t, std::vector<const Q11SupplierEntry *>> by_nation;
-  for (const auto &[suppkey, entry] : suppliers) {
-    if (entry.has_supplier && known_nations.count(entry.nationkey))
-      by_nation[entry.nationkey].push_back(&entry);
-  }
-  const std::vector<std::pair<int32_t, std::vector<const Q11SupplierEntry *>>>
-      jobs(by_nation.begin(), by_nation.end());
-  std::vector<std::shared_ptr<const TpchQ11NationData>> nation_data(jobs.size());
-  core::ParallelEach(services, jobs.size(), kNationJobGrain, [&](std::size_t j) {
-    std::unordered_map<int64_t, Q11AccT> merged;
-    Q11AccT total = 0;
-    for (const auto *entry : jobs[j].second) {
-      for (const auto &part : entry->parts) {
-        merged[part.partkey] += static_cast<Q11AccT>(part.value);
-        total += static_cast<Q11AccT>(part.value);
-      }
-    }
-    std::vector<TpchQ11OutputRow> sorted;
-    sorted.reserve(merged.size());
-    for (const auto &[pk, value] : merged)
-      if (value > 0)
-        sorted.push_back({pk, value});
-    std::sort(sorted.begin(), sorted.end(), RowBefore);
-    nation_data[j] = MakeNationData(sorted, total);
+    nations.push_back(entry.second);
+  std::sort(nations.begin(), nations.end());
+  nations.erase(std::unique(nations.begin(), nations.end()), nations.end());
+  const auto nation_index = [&](int32_t nationkey) {
+    const auto it = std::lower_bound(nations.begin(), nations.end(), nationkey);
+    return it != nations.end() && *it == nationkey
+               ? static_cast<std::size_t>(it - nations.begin())
+               : nations.size();
+  };
+
+  const std::size_t deal_buckets = nations.size() * kQ11ValueBuckets;
+  const std::size_t slices = core::SliceCount(services, buckets.size(), kSupplierBucketGrain);
+  std::vector<DealtRows<NationPart>> dealt(slices, DealtRows<NationPart>(deal_buckets));
+  std::vector<std::vector<char>> has_suppliers(slices, std::vector<char>(nations.size(), 0));
+  core::RunSlices(services, slices, buckets.size(),
+                  [&](std::size_t slice, std::size_t begin, std::size_t end) {
+                    for (std::size_t b = begin; b < end; ++b) {
+                      if (!buckets[b])
+                        continue;
+                      for (const auto &[suppkey, entry] : *buckets[b]) {
+                        const std::size_t nation = nation_index(entry.nationkey);
+                        if (!entry.has_supplier || nation == nations.size())
+                          continue;
+                        has_suppliers[slice][nation] = 1;
+                        for (const auto &part : entry.parts)
+                          dealt[slice].Add(nation * kQ11ValueBuckets + Q11ValueBucketIndex(part.partkey),
+                                           part.partkey, {part.partkey, part.value});
+                      }
+                    }
+                  });
+  for (std::size_t slice = 1; slice < slices; ++slice)
+    dealt[0].Merge(std::move(dealt[slice]));
+
+  std::vector<std::vector<ValueBucketAgg>> aggs(nations.size(),
+                                                std::vector<ValueBucketAgg>(kQ11ValueBuckets));
+  core::ParallelEach(services, deal_buckets, kBucketGrain, [&](std::size_t bucket) {
+    aggs[bucket / kQ11ValueBuckets][bucket % kQ11ValueBuckets] =
+        AggregateValueBucket(dealt[0].TakeBucket(bucket));
   });
+
   std::unordered_map<int32_t, std::shared_ptr<const TpchQ11NationData>> out;
-  for (std::size_t j = 0; j < jobs.size(); ++j)
-    out[jobs[j].first] = std::move(nation_data[j]);
+  for (std::size_t n = 0; n < nations.size(); ++n) {
+    bool present = false;
+    for (const auto &flags : has_suppliers)
+      present = present || flags[n];
+    if (present)
+      out[nations[n]] = MakeNationData(services, aggs[n]);
+  }
   return out;
 }
 
@@ -1029,58 +1091,47 @@ TpchQ11Built TpchQ11Module::BuildState(
 
   using scan::DecimalColumn;
   using scan::IntColumn;
-  std::unordered_map<int64_t, Q11SupplierEntry> all;
-  for (const auto &input : CollectTable<TpchQ11SupplierInput>(
-           services, *initial_scan, "supplier", {IntColumn("s_suppkey"), IntColumn("s_nationkey")},
-           [](const auto &row) {
-             return TpchQ11SupplierInput{row.Int(0), static_cast<int32_t>(row.Int(1))};
-           })) {
-    auto &entry = all[input.suppkey];
-    entry.nationkey = input.nationkey;
-    entry.has_supplier = true;
-  }
-
-  // Partsupp rows are grouped by supplier per scan partition; the groups are
-  // joined supplier by supplier (their order within a supplier is folded away
-  // by the sort below).
-  auto by_supplier = core::PartitionedBuild<std::unordered_map<int64_t, std::vector<Q11SupplierPart>>>(
-      services, [] { return std::unordered_map<int64_t, std::vector<Q11SupplierPart>>{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanTable(services, "partsupp",
-                                {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
-                                 IntColumn("ps_availqty"), DecimalColumn("ps_supplycost", 2)},
-                                parts, sink);
-      },
-      [](auto &groups, const auto &row) {
+  const auto suppliers = DealTable<SupplierRow>(
+      services, *initial_scan, "supplier", {IntColumn("s_suppkey"), IntColumn("s_nationkey")},
+      kQ11SupplierBuckets, [](DealtRows<SupplierRow> &rows, const auto &row) {
+        const int64_t suppkey = row.Int(0);
+        rows.Add(Q11SupplierBucketIndex(suppkey), suppkey,
+                 {suppkey, static_cast<int32_t>(row.Int(1))});
+      });
+  const auto partsupps = DealTable<PartsuppRow>(
+      services, *initial_scan, "partsupp",
+      {IntColumn("ps_partkey"), IntColumn("ps_suppkey"), IntColumn("ps_availqty"),
+       DecimalColumn("ps_supplycost", 2)},
+      kQ11SupplierBuckets, [](DealtRows<PartsuppRow> &rows, const auto &row) {
         Q11AccT product = 0;
         AddAcc(product, row.Decimal(3), row.Int(2));
-        groups[row.Int(1)].push_back({row.Int(0), static_cast<int64_t>(product), 1});
-      },
-      [](auto &into, auto &&from) {
-        for (auto &[suppkey, parts] : from) {
-          auto &target = into[suppkey];
-          target.insert(target.end(), parts.begin(), parts.end());
-        }
+        const int64_t suppkey = row.Int(1);
+        rows.Add(Q11SupplierBucketIndex(suppkey), suppkey,
+                 {suppkey, {row.Int(0), static_cast<int64_t>(product), 1}});
       });
-  for (auto &[suppkey, parts] : by_supplier)
-    all[suppkey].parts = std::move(parts);
 
-  FoldSupplierParts(services, all);
+  // A supplier bucket owns its suppliers and their partsupp rows; the rows of a
+  // supplier fold into one sorted entry (their order is folded away by the sort).
+  SupplierBuckets buckets(kQ11SupplierBuckets);
+  core::ParallelEach(services, kQ11SupplierBuckets, 1, [&](std::size_t b) {
+    auto bucket = std::make_shared<Q11SupplierBucket>();
+    suppliers.ForEach(b, [&](const SupplierRow &row) {
+      auto &entry = (*bucket)[row.suppkey];
+      entry.nationkey = row.nationkey;
+      entry.has_supplier = true;
+    });
+    partsupps.ForEach(b, [&](const PartsuppRow &row) {
+      (*bucket)[row.suppkey].parts.push_back(row.part);
+    });
+    for (auto &[suppkey, entry] : *bucket)
+      FoldParts(entry.parts);
+    if (!bucket->empty())
+      buckets[b] = std::move(bucket);
+  });
 
   TpchQ11Built built;
-  built.nations = AggregateNations(services, *state, all);
-
-  // Distribute suppliers into COW buckets (moving, no copies).
-  std::vector<std::shared_ptr<Q11SupplierBucket>> tmp(kQ11SupplierBuckets);
-  for (auto &[suppkey, entry] : all) {
-    auto &bucket = tmp[Q11SupplierBucketIndex(suppkey)];
-    if (!bucket)
-      bucket = std::make_shared<Q11SupplierBucket>();
-    bucket->emplace(suppkey, std::move(entry));
-  }
-  all.clear();
-  state->supplier_buckets.assign(tmp.begin(), tmp.end());
-  tmp.clear();
+  built.nations = AggregateNations(services, *state, buckets);
+  state->supplier_buckets.assign(buckets.begin(), buckets.end());
 
   built.state = std::move(state);
   return built;
