@@ -7,6 +7,7 @@ from accel_pipeline.base_bench import process_base_bench_after_gates
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
 from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
 from accel_pipeline.gates import run_gate
+from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
 from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
 from accel_pipeline.stages.base import run_agent_stage
@@ -101,6 +102,7 @@ def run(
         user_message=_implementation_user_message(pipeline_config, workload, query),
         model_overrides=model_overrides,
         dry_run=dry_run,
+        must_change=pipeline_config.repo_root / query_dir(str(workload.get("benchmark_name", "tpch")), query),
     )
     if not dry_run and not skip_gates:
         workload = load_run_workload(pipeline_config, workload_name)

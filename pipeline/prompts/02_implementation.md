@@ -34,7 +34,7 @@ When the engine's harnesses lack the surfaces this workload needs, **shared** SQ
 ## Requirements
 
 - Ordered full-result test: reference SQL vs accelerator on the **{{engine_name}}** host
-- `CreateQ{{query_number}}Kernel` + `CreateQ{{query_number}}ProfilingKernel` with phase counters (`num_aggregate_us` on fused paths when the host uses fused APIs)
+- The kernel factories the scaffolded `{{kernel_path}}` declares (`Create…Kernel` + `Create…ProfilingKernel`), with phase counters (`num_aggregate_us` on fused paths when the host uses fused APIs)
 - Benchmark: median timing, `speedup_median` CSV (templates: `{{test_template_path}}`, `{{benchmark_template_path}}`) — harness matches `{{engine_name}}`; differential correctness comes first
 - Base scans via **{{engine_name}}** native storage / host APIs (reuse `engine_backend` mutation/store adapters only; no portable chunk type)
 

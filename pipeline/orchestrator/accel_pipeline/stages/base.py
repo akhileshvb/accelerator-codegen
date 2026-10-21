@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
@@ -55,7 +57,11 @@ def run_agent_stage(
     dry_run: bool = False,
     analysis_revision_request: str = "",
     extra_context: dict[str, str] | None = None,
+    must_change: Path | None = None,
 ) -> Any:
+    """Run one agent stage. With `must_change`, a run that leaves every file under that
+    directory as it was is re-invoked (twice at most): agents run unattended, so a turn that
+    ends with a question or a plan instead of edits did nothing."""
     workload = load_run_workload(pipeline_config, workload_name)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     if not dry_run:
@@ -138,7 +144,14 @@ def run_agent_stage(
         max_turns=max_turns,
     )
     frozen = snapshot_frozen(pipeline_config.repo_root)
+    before = _tree_state(must_change) if must_change else None
     result = backend.run_stage(request)
+    for _ in range(2):
+        if before is None or result.status != "finished" or _tree_state(must_change) != before:
+            break
+        print(f"[pipeline] {stage}: no file under {must_change} changed; re-invoking", flush=True)
+        request = replace(request, user_message=request.user_message + "\n\n" + _no_change_nudge(must_change))
+        result = backend.run_stage(request)
     reverted = restore_frozen(pipeline_config.repo_root, frozen)
     if reverted:
         print(f"[pipeline] {stage}: reverted agent edits to frozen paths: {', '.join(reverted)}", flush=True)
@@ -168,3 +181,20 @@ def run_agent_stage(
         run_id=result.run_id,
     )
     return result
+
+
+def _tree_state(root: Path) -> dict[str, tuple[int, int]]:
+    if not root.is_dir():
+        return {}
+    return {
+        str(f): (f.stat().st_mtime_ns, f.stat().st_size)
+        for f in root.rglob("*") if f.is_file()
+    }
+
+
+def _no_change_nudge(root: Path) -> str:
+    return (
+        f"Your last run ended without changing any file under `{root}`. Nobody reads a question "
+        "or approves a next step: this run is the work. Write the code now (create the files "
+        "that are missing), run the gate, and finish only when it passes."
+    )
