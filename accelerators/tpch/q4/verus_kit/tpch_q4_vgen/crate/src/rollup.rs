@@ -60,7 +60,7 @@ pub open spec fn effective(layers: Seq<Arc<Layer>>, key: Key, priority: Seq<u8>)
 
 pub open spec fn bucket_valid(bucket: Seq<(Vec<u8>, Wide)>) -> bool {
     &&& forall|index: int| #![trigger bucket[index].1]
-        0 <= index < bucket.len() ==> 0 < bucket[index].1@ <= i64::MAX
+        0 <= index < bucket.len() ==> 0 < bucket[index].1@ <= crate::gen_obligations::max_rows()
     &&& forall|left: int, right: int| #![trigger bucket[left], bucket[right]]
         0 <= left < right < bucket.len() ==> bucket[left].0@ != bucket[right].0@
 }
@@ -345,6 +345,10 @@ pub fn add_all(target: &mut Bucket, source: &Bucket)
 }
 
 pub open spec fn count_fits(count: int) -> bool {
+    0 <= count <= crate::gen_obligations::max_rows()
+}
+
+pub open spec fn output_fits(count: int) -> bool {
     0 <= count <= i64::MAX
 }
 
@@ -371,7 +375,7 @@ pub fn clean_bucket(bucket: &Bucket) -> (out: Option<Bucket>)
                 return None;
             },
         };
-        if count < 0 || count > i64::MAX as i128 {
+        if count < 0 || count > 9223372036854775808i128 {
             proof { assert(!count_fits(bucket@[index as int].1@)); }
             return None;
         }

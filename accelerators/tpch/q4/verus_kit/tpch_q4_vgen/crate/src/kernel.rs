@@ -95,7 +95,7 @@ pub fn build(qualifying_orders: Vec<DatePriorityInput>, Ghost(db): Ghost<Db>) ->
 
 pub fn execute(state: &State, p1: i32, p2: i32) -> (out: Option<Vec<(Vec<u8>, i64)>>)
     ensures out matches Some(rows) ==> query_result(state.db(), params(p1 as int, p2 as int), out_view(rows@)),
-        envelope(state.db()) ==> out is Some,
+        envelope(state.db()) && answer_fits(state.db(), params(p1 as int, p2 as int)) ==> out is Some,
 {
     proof { use_type_invariant(state); }
     if p1 >= p2 {
@@ -168,11 +168,12 @@ pub fn execute(state: &State, p1: i32, p2: i32) -> (out: Option<Vec<(Vec<u8>, i6
         if let Some(out) = &result {
             lemma_output_meaning(state.db(), params(p1 as int, p2 as int), bucket@@, out@);
         } else {
-            let index = choose|index: int| 0 <= index < bucket@@.len() && !count_fits(bucket@@[index].1@);
+            let index = choose|index: int| 0 <= index < bucket@@.len() && !output_fits(bucket@@[index].1@);
             let priority = bucket@@[index].0@;
             lemma_bucket_entry(bucket@@, index);
             lemma_query_count(state.db(), params(p1 as int, p2 as int), priority);
             lemma_window_range(state.db(), p1 as int + 2147483648, p2 as int + 2147483648, priority);
+            lemma_overflow_not_answer_fits(state.db(), params(p1 as int, p2 as int), priority);
         }
     }
     result

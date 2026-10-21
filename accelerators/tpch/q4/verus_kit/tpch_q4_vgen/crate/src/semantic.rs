@@ -292,4 +292,16 @@ pub proof fn lemma_envelope_counts_fit(db: Db, key: Key, priority: Seq<u8>)
 }
 
 
+/// A group whose count exceeds the result's i64 means no answer fits.
+pub proof fn lemma_overflow_not_answer_fits(db: Db, parameters: Params, priority: Seq<u8>)
+    requires group_count(db, parameters, priority) > i64::MAX,
+    ensures !answer_fits(db, parameters),
+{
+    lemma_query_result_iff(db, parameters, answer(db, parameters));
+    let answered = answer(db, parameters);
+    assert(query_result(db, parameters, answered));
+    let index = choose|index: int| 0 <= index < answered.len() && answered[index].o_orderpriority == priority;
+    assert(answered[index].order_count == group_count(db, parameters, priority));
+}
+
 }

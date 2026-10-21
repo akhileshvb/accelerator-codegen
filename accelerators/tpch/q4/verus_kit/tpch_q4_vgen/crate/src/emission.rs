@@ -205,7 +205,7 @@ pub fn sorted_output(bucket: Bucket) -> (result: Option<Vec<(Vec<u8>, i64)>>)
             exists|index: int| #![trigger out@[index]] 0 <= index < out@.len() && out@[index].0@ == priority)
         && (forall|left: int, right: int| #![trigger out@[left], out@[right]] 0 <= left < right < out@.len() ==>
             verus_common::bytes::bytes_lt(out@[left].0@, out@[right].0@)),
-        result is None ==> exists|index: int| #![trigger bucket@[index]] 0 <= index < bucket@.len() && !count_fits(bucket@[index].1@),
+        result is None ==> exists|index: int| #![trigger bucket@[index]] 0 <= index < bucket@.len() && !output_fits(bucket@[index].1@),
 {
     hide(bucket_count);
     hide(sum);
@@ -222,12 +222,12 @@ pub fn sorted_output(bucket: Bucket) -> (result: Option<Vec<(Vec<u8>, i64)>>)
         let count = match converted {
             Some(value) => value,
             None => {
-                proof { assert(!count_fits(bucket@[index as int].1@)); }
+                proof { assert(!output_fits(bucket@[index as int].1@)); }
                 return None;
             },
         };
         if count < 0 || count > i64::MAX as i128 {
-            proof { assert(!count_fits(bucket@[index as int].1@)); }
+            proof { assert(!output_fits(bucket@[index as int].1@)); }
             return None;
         }
         if count > 0 {
