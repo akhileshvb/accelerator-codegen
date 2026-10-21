@@ -373,12 +373,13 @@ pub open spec fn out_fits(r: OutRow) -> bool {
 }
 
 /// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves
-/// `defined <==> exists an answer`) and every correct answer fits the result's
-/// runtime types.  A kernel that declines because no answer exists must prove
+/// `defined <==> exists an answer`) and every correct answer fits: at most max_rows()
+/// rows, each in the result's runtime types.  A kernel that declines because no answer
+/// exists must prove
 /// `!defined`.
 pub open spec fn answer_fits(db: Db, params: Params) -> bool {
     &&& defined(db, params)
-    &&& forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
+    &&& forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> o.len() <= max_rows() && forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
 }
 
 // ── Obligations: the host calls only these ──
