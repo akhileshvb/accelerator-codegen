@@ -967,7 +967,7 @@ fn emit_rows(out: &mut Vec<(Vec<u8>, Vec<u8>)>, rows: &Vec<SupplierVariant>, fac
             assert(copies_wide@ == count * factor@);
             assert(copies_wide@ >= 0) by (nonlinear_arith) requires count > 0, factor@ > 0, copies_wide@ == count * factor@;
         }
-        if Wide::from_i128(1099511627776).lt(&total) {
+        if Wide::from_i128(9223372036854775808).lt(&total) {
             proof {
                 let weight = one_row();
                 lemma_out_len(out@);
@@ -988,7 +988,7 @@ fn emit_rows(out: &mut Vec<(Vec<u8>, Vec<u8>)>, rows: &Vec<SupplierVariant>, fac
             }
             return false;
         }
-        proof { assert(total@ == out@.len() as int + copies_wide@); assert(copies_wide@ <= 1099511627776); }
+        proof { assert(total@ == out@.len() as int + copies_wide@); assert(copies_wide@ <= max_rows()); }
         let copies_signed = match copies_wide.to_i128() { Some(value) => value, None => { proof { assert(false); } return false; } };
         proof { assert(copies_signed as int == copies_wide@); }
         let copies = copies_signed as u64;
