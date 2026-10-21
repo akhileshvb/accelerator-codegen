@@ -3,10 +3,13 @@
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/dealt_rows.hpp"
 
 #include <algorithm>
 #include <cstddef>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -160,14 +163,18 @@ private:
 struct DenseI32 {
   static constexpr int64_t kMaxKey = int64_t(1) << 27;
   std::vector<int32_t> v;
-  template <class M> void Fill(M &m, int64_t max_key) {
+  // Keys are unique, so shards fill disjoint slots.
+  template <class M> void Fill(const core::AuxEngineServices &services, M &m, int64_t max_key) {
     if (max_key < 0 || max_key > kMaxKey)
       return;
     v.assign(static_cast<std::size_t>(max_key) + 1, kAbsent);
-    m.ForEach([&](const TpchQ8SmallMap::Element &e) {
-      if (e.key >= 0 && e.key <= max_key)
-        v[static_cast<std::size_t>(e.key)] = e.value;
-    });
+    core::ParallelSlices(services, m.shard_count(), kSortShardGrain,
+                         [&](std::size_t, std::size_t begin, std::size_t end) {
+                           m.ForEachInShards(begin, end, [&](const TpchQ8SmallMap::Element &e) {
+                             if (e.key >= 0 && e.key <= max_key)
+                               v[static_cast<std::size_t>(e.key)] = e.value;
+                           });
+                         });
   }
   template <class M>
   bool Get(M &m, int64_t k, int32_t &out) const {
@@ -240,11 +247,64 @@ void AccumulateDim(const core::MutationBatch &mutation, TpchQ8TxnBuffer &buffer,
   }
 }
 
-// Orders of one scan partition.
-struct OrdersPartial {
-  TpchQ8OrderMap::Builder orders;
-  int64_t max_key = 0;
+struct PartRow {
+  int64_t key = 0;
+  int32_t local_type = 0; // index into the type dictionary of the partition that scanned the row
 };
+
+// Parts of every partition, each partition with its own type dictionary.
+struct PartScan {
+  DealtRows<PartRow> rows{kDealBuckets};
+  std::vector<std::vector<std::string>> types{1}; // per partition, in first-appearance order
+  std::map<std::string, int32_t, std::less<>> index; // the scanning partition's types
+};
+
+// Adds the parts to `builder` as (key, index into dims.dict->part_types), numbering the
+// types by first appearance in the table: the partitions' dictionaries are folded in
+// table order.
+ScannedMap<TpchQ8SmallMap> ScanParts(core::AuxEngineServices &services,
+                                     TpchQ8InitialScan &source, TpchQ8Dimensions &dims) {
+  auto scanned = core::PartitionedBuild<PartScan>(
+      services, [] { return PartScan{}; },
+      [&](std::size_t parts, auto &&sink) {
+        source.ScanTable(services, "part",
+                         {scan::IntColumn("p_partkey"), scan::TextColumn("p_type")}, parts, sink);
+      },
+      [&](PartScan &partial, const auto &row) {
+        const int64_t key = row.Int(0);
+        if (key <= 0)
+          return;
+        auto &types = partial.types.front();
+        auto it = partial.index.find(row.TextView(1));
+        if (it == partial.index.end()) {
+          it = partial.index.emplace(row.Text(1), static_cast<int32_t>(types.size())).first;
+          types.push_back(it->first);
+        }
+        partial.rows.Add(TpchQ8SmallMap::ShardOf(key, kDealBucketBits), key, {key, it->second});
+      },
+      [](PartScan &into, PartScan &&from) {
+        into.rows.Merge(std::move(from.rows));
+        std::move(from.types.begin(), from.types.end(), std::back_inserter(into.types));
+      });
+
+  auto &dict = *dims.dict;
+  std::vector<std::vector<int32_t>> global_index(scanned.types.size());
+  for (std::size_t run = 0; run < scanned.types.size(); ++run) {
+    for (const auto &type : scanned.types[run]) {
+      const auto it = dict.part_type_to_index.emplace(type, static_cast<int32_t>(dict.part_types.size()));
+      if (it.second)
+        dict.part_types.push_back(type);
+      global_index[run].push_back(it.first->second);
+    }
+  }
+  ScannedMap<TpchQ8SmallMap> out{TpchQ8SmallMap::Builder(), scanned.rows.MaxKey()};
+  ParallelBucketGroups(services, kDealBuckets, out.builder.shard_count(), [&](std::size_t bucket) {
+    scanned.rows.ForEachWithPartition(bucket, [&](std::size_t run, const PartRow &row) {
+      out.builder.Add({row.key, global_index[run][static_cast<std::size_t>(row.local_type)]});
+    });
+  });
+  return out;
+}
 
 // A partition's cube: the state and its editor (the editor keeps a reference,
 // so both live behind pointers and the partial can move).
@@ -1134,77 +1194,53 @@ void TpchQ8Module::Execute(core::AuxEngineServices &services,
 TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ8State state;
   TpchQ8Dimensions dims;
-  TpchQ8SmallMap::Builder part_b, supp_b, cust_b;
-  TpchQ8OrderMap::Builder order_b;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q8 aux requires a typed initial scan source");
 
   // Dimension dictionaries: parts (value = index into part_types)
   using scan::IntColumn;
-  for (const auto &input : CollectTable<TpchQ8PartInput>(
-           services, *initial_scan, "part", {IntColumn("p_partkey"), scan::TextColumn("p_type")},
-           [](const auto &row) { return TpchQ8PartInput{row.Int(0), row.Text(1)}; })) {
-    if (input.key <= 0)
-      continue;
-    auto ti = dims.dict->part_type_to_index.find(input.type);
-    if (ti == dims.dict->part_type_to_index.end()) {
-      ti = dims.dict->part_type_to_index
-               .emplace(input.type, static_cast<int32_t>(dims.dict->part_types.size()))
-               .first;
-      dims.dict->part_types.push_back(input.type);
-    }
-    part_b.Add({input.key, ti->second});
-    dims.part_build_max = std::max(dims.part_build_max, input.key);
-  }
+  auto parts = ScanParts(services, *initial_scan, dims);
+  auto &part_b = parts.builder;
+  dims.part_build_max = parts.max_key;
 
+  // Nation keys per supplier / customer; the largest sizes the cube's nation axis.
   int32_t max_nation = 0;
-  for (const auto &input : CollectTable<TpchQ8SupplierInput>(
-           services, *initial_scan, "supplier",
-           {IntColumn("s_suppkey"), IntColumn("s_nationkey")}, [](const auto &row) {
-             return TpchQ8SupplierInput{row.Int(0), static_cast<int32_t>(row.Int(1))};
-           })) {
-    if (input.key <= 0)
-      continue;
-    supp_b.Add({input.key, input.nationkey});
-    dims.supp_build_max = std::max(dims.supp_build_max, input.key);
-    max_nation = std::max(max_nation, input.nationkey);
-  }
-
-  for (const auto &input : CollectTable<TpchQ8CustomerInput>(
-           services, *initial_scan, "customer",
-           {IntColumn("c_custkey"), IntColumn("c_nationkey")}, [](const auto &row) {
-             return TpchQ8CustomerInput{row.Int(0), static_cast<int32_t>(row.Int(1))};
-           })) {
-    if (input.key <= 0)
-      continue;
-    cust_b.Add({input.key, input.nationkey});
-    dims.cust_build_max = std::max(dims.cust_build_max, input.key);
-    max_nation = std::max(max_nation, input.nationkey);
-  }
+  std::vector<int32_t> max_nation_in_bucket(kDealBuckets, 0);
+  const auto scan_nations = [&](const char *table, const char *key_column,
+                                const char *nation_column) {
+    return ScanIntoBuilder<TpchQ8SmallMap>(
+        services, *initial_scan, table, {IntColumn(key_column), IntColumn(nation_column)},
+        [](std::size_t) { return TpchQ8SmallMap::Builder(); },
+        [](const auto &row, TpchQ8SmallMap::Element &element) {
+          element = {row.Int(0), static_cast<int32_t>(row.Int(1))};
+          return element.key > 0;
+        },
+        [&](std::size_t bucket, const TpchQ8SmallMap::Element &element) {
+          max_nation_in_bucket[bucket] = std::max(max_nation_in_bucket[bucket], element.value);
+        });
+  };
+  auto suppliers = scan_nations("supplier", "s_suppkey", "s_nationkey");
+  auto customers = scan_nations("customer", "c_custkey", "c_nationkey");
+  auto &supp_b = suppliers.builder;
+  auto &cust_b = customers.builder;
+  dims.supp_build_max = suppliers.max_key;
+  dims.cust_build_max = customers.max_key;
+  for (const int32_t nation : max_nation_in_bucket)
+    max_nation = std::max(max_nation, nation);
 
   using scan::DateColumn;
   using scan::DecimalColumn;
-  auto scanned = core::PartitionedBuild<OrdersPartial>(
-      services, [] { return OrdersPartial{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanTable(services, "orders",
-                                {IntColumn("o_orderkey"), IntColumn("o_custkey"),
-                                 DateColumn("o_orderdate")},
-                                parts, sink);
+  auto orders = ScanIntoBuilder<TpchQ8OrderMap>(
+      services, *initial_scan, "orders",
+      {IntColumn("o_orderkey"), IntColumn("o_custkey"), DateColumn("o_orderdate")},
+      [](std::size_t) { return TpchQ8OrderMap::Builder(); },
+      [](const auto &row, TpchQ8OrderMap::Element &element) {
+        element = {row.Int(0), TpchQ8OrderInfo{row.Int(1), row.Date(2), 0}};
+        return element.key > 0;
       },
-      [](OrdersPartial &p, const auto &row) {
-        const int64_t key = row.Int(0);
-        if (key <= 0)
-          return;
-        p.orders.Add({key, TpchQ8OrderInfo{row.Int(1), row.Date(2), 0}});
-        p.max_key = std::max(p.max_key, key);
-      },
-      [](OrdersPartial &into, OrdersPartial &&from) {
-        into.orders.Merge(std::move(from.orders));
-        into.max_key = std::max(into.max_key, from.max_key);
-      });
-  order_b = std::move(scanned.orders);
-  dims.order_build_max = std::max(dims.order_build_max, scanned.max_key);
+      [](std::size_t, const TpchQ8OrderMap::Element &) {});
+  auto &order_b = orders.builder;
+  dims.order_build_max = std::max(dims.order_build_max, orders.max_key);
 
   // Nation/region dictionaries in one pass each.
   std::unordered_map<int32_t, std::string> regionkey_to_name;
@@ -1223,18 +1259,19 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   });
 
   state.nat_dim = max_nation + 1;
-  part_b.SortDedupe();
-  supp_b.SortDedupe();
-  cust_b.SortDedupe();
-  order_b.SortDedupe([&](std::size_t n, const auto &fn) {
+  const auto parallel_shards = [&](std::size_t n, const auto &fn) {
     core::ParallelEach(services, n, kSortShardGrain, fn);
-  });
+  };
+  part_b.SortDedupe(parallel_shards);
+  supp_b.SortDedupe(parallel_shards);
+  cust_b.SortDedupe(parallel_shards);
+  order_b.SortDedupe(parallel_shards);
 
   // Dense key->value arrays make the per-lineitem lookups O(1) array reads.
   DenseI32 part_dense, supp_dense, cust_dense;
-  part_dense.Fill(part_b, dims.part_build_max);
-  supp_dense.Fill(supp_b, dims.supp_build_max);
-  cust_dense.Fill(cust_b, dims.cust_build_max);
+  part_dense.Fill(services, part_b, dims.part_build_max);
+  supp_dense.Fill(services, supp_b, dims.supp_build_max);
+  cust_dense.Fill(services, cust_b, dims.cust_build_max);
 
   {
     // Each partition sums into its own cube; the order index is sorted and

@@ -723,23 +723,29 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
   for (const auto &[nk, name] : state.nation_names)
     max_nk = std::max(max_nk, nk);
 
-  // Scan into a flat vector first so the page table is sized from the actual
-  // row count (no hard-coded scale-factor constants).
-  using NcEntry = TpchQ7Map<TpchQ7NationCount>::Element;
+  // The nation axis is as wide as the largest nation key of any dimension row.
+  using NationMap = TpchQ7Map<TpchQ7NationCount>;
   using scan::IntColumn;
-  const auto collect_nations = [&](const char *table, const char *key_column,
-                                   const char *nation_column) {
-    auto rows = CollectTable<NcEntry>(
+  std::vector<int32_t> max_nation_in_bucket(kDealBuckets, 0);
+  const auto scan_nations = [&](const char *table, const char *key_column,
+                                const char *nation_column) {
+    return ScanIntoBuilder<NationMap>(
         services, *initial_scan, table, {IntColumn(key_column), IntColumn(nation_column)},
-        [](const auto &row) {
-          return NcEntry{row.Int(0), {static_cast<int32_t>(row.Int(1)), 0}};
+        [](std::size_t rows) { return NationMap::Builder(rows); },
+        [](const auto &row, NationMap::Element &element) {
+          element = {row.Int(0), {static_cast<int32_t>(row.Int(1)), 0}};
+          return true;
+        },
+        [&](std::size_t bucket, const NationMap::Element &element) {
+          max_nation_in_bucket[bucket] = std::max(max_nation_in_bucket[bucket], element.value.nation);
         });
-    for (const auto &e : rows)
-      max_nk = std::max(max_nk, e.value.nation);
-    return rows;
   };
-  auto supplier_rows = collect_nations("supplier", "s_suppkey", "s_nationkey");
-  auto customer_rows = collect_nations("customer", "c_custkey", "c_nationkey");
+  auto suppliers = scan_nations("supplier", "s_suppkey", "s_nationkey");
+  auto customers = scan_nations("customer", "c_custkey", "c_nationkey");
+  auto &supp_b = suppliers.builder;
+  auto &cust_b = customers.builder;
+  for (const int32_t nation : max_nation_in_bucket)
+    max_nk = std::max(max_nk, nation);
   // Dense nation grid wide enough for every nation key present; the revenue
   // image never aliases (supp_nk * slots + cust_nk) across rows.
   state.num_nation_slots = max_nk + 1;
@@ -747,38 +753,27 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
                     static_cast<std::size_t>(state.num_nation_slots);
   state.revenue_1995.assign(grid, 0);
   state.revenue_1996.assign(grid, 0);
-
-  TpchQ7Map<TpchQ7NationCount>::Builder supp_b(supplier_rows.size());
-  for (const auto &e : supplier_rows)
-    supp_b.Add(e);
-  std::vector<NcEntry>().swap(supplier_rows);
-  supp_b.Sort();
-  TpchQ7Map<TpchQ7NationCount>::Builder cust_b(customer_rows.size());
-  for (const auto &e : customer_rows)
-    cust_b.Add(e);
-  std::vector<NcEntry>().swap(customer_rows);
-  cust_b.Sort();
+  const auto sort_shards = [&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, kSortShardGrain, fn);
+  };
+  supp_b.Sort(sort_shards);
+  cust_b.Sort(sort_shards);
 
   const int64_t expected = initial_scan->CountOrders();
-  auto make_orders = [&] {
-    return expected >= 0 ? TpchQ7Map<TpchQ7OrderCust>::Builder(static_cast<std::size_t>(expected))
-                         : TpchQ7Map<TpchQ7OrderCust>::Builder();
-  };
-  auto ob = core::PartitionedBuild<TpchQ7Map<TpchQ7OrderCust>::Builder>(
-      services, make_orders,
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanTable(services, "orders",
-                                {IntColumn("o_orderkey"), IntColumn("o_custkey")},
-                                parts, sink);
+  auto orders = ScanIntoBuilder<TpchQ7Map<TpchQ7OrderCust>>(
+      services, *initial_scan, "orders", {IntColumn("o_orderkey"), IntColumn("o_custkey")},
+      [&](std::size_t rows) {
+        using Orders = TpchQ7Map<TpchQ7OrderCust>;
+        return expected >= 0 ? Orders::Builder(static_cast<std::size_t>(expected))
+                             : Orders::Builder(rows);
       },
-      [](auto &builder, const auto &row) {
-        builder.Add({row.Int(0), {row.Int(1)}});
+      [](const auto &row, TpchQ7Map<TpchQ7OrderCust>::Element &element) {
+        element = {row.Int(0), {row.Int(1)}};
+        return true;
       },
-      [](auto &into, auto &&from) { into.Merge(std::move(from)); });
-  ob.Sort([&](std::size_t n, const auto &fn) {
-    core::ParallelEach(services, n, kSortShardGrain, fn);
-  });
-  state.order_custkeys = ob.Finish();
+      [](std::size_t, const TpchQ7Map<TpchQ7OrderCust>::Element &) {});
+  orders.builder.Sort(sort_shards);
+  state.order_custkeys = orders.builder.Finish();
 
   const auto add_revenue = [&](int32_t supp_nk, int32_t cust_nk, int32_t year,
                                int64_t revenue) {
@@ -887,8 +882,8 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
     supp_b.Add({k, {-1, static_cast<int32_t>(n)}});
   for (const auto &[k, n] : cust_orphans)
     cust_b.Add({k, {-1, static_cast<int32_t>(n)}});
-  supp_b.Sort();
-  cust_b.Sort();
+  supp_b.Sort(sort_shards);
+  cust_b.Sort(sort_shards);
   state.supplier_nations = supp_b.Finish();
   state.customer_nations = cust_b.Finish();
   return state;
