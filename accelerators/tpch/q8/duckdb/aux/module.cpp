@@ -328,12 +328,12 @@ void MergeCubes(TpchQ8State &into, TpchQ8State &from) {
       into.pages[i] = std::move(from.pages[i]);
       continue;
     }
-    auto sum = std::make_shared<TpchQ8CubePage>(*into.pages[i]);
+    // Pages of a partition's cube are not shared yet: add into them in place.
+    const auto sum = std::const_pointer_cast<TpchQ8CubePage>(into.pages[i]);
     for (std::size_t c = 0; c < sum->cell.size(); ++c)
       sum->cell[c] += from.pages[i]->cell[c];
     for (std::size_t c = 0; c < sum->roll.size(); ++c)
       sum->roll[c] += from.pages[i]->roll[c];
-    into.pages[i] = std::move(sum);
   }
 }
 
