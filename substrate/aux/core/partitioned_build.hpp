@@ -1,6 +1,7 @@
 // SCAFFOLDING
 // Parallel build: the engine's partitioned scan fills one partial per
-// partition on pool threads, and the partials are merged in partition order.
+// partition on pool threads, and the partials are merged pairwise over
+// adjacent partitions (MergeAdjacent), in parallel.
 //
 // The engine's scan (`scan(partitions, sink)`, e.g. the DuckDB or Postgres
 // ScanPartitioned bound to a table and columns) guarantees:
@@ -25,6 +26,7 @@
 #include <vector>
 
 #include "substrate/aux/core/aux_types.hpp"
+#include "substrate/aux/core/parallel_slices.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 
@@ -87,9 +89,7 @@ Partial PartitionedBuild(const AuxEngineServices &services, Make &&make, Scan &&
       consume(partial, batch.Row(row));
     }
   });
-  for (std::size_t p = 1; p < partitions; ++p) {
-    merge(partials[0], std::move(partials[p]));
-  }
+  MergeAdjacent(services, partials, merge);
   return std::move(partials[0]);
 }
 

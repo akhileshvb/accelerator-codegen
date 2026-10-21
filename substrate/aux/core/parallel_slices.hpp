@@ -94,9 +94,25 @@ std::vector<std::size_t> RunStarts(const Items &items, KeyFn &&key) {
   return starts;
 }
 
+// Folds parts[1..] into parts[0] pairwise over adjacent parts, one tree level
+// at a time with each level's merges in parallel: merge(Part &into, Part &&from)
+// always has `from` right after `into`, so an associative merge (also an
+// order-keeping one, like appending) gives the serial chain's result, and the
+// tree's shape depends on parts.size() only.
+template <class Part, class Merge>
+void MergeAdjacent(const AuxEngineServices &services, std::vector<Part> &parts, Merge &&merge) {
+  for (std::size_t stride = 1; stride < parts.size(); stride *= 2) {
+    const std::size_t pairs = (parts.size() - stride + 2 * stride - 1) / (2 * stride);
+    services.ParallelFor(pairs, [&](std::size_t pair) {
+      const std::size_t into = pair * 2 * stride;
+      merge(parts[into], std::move(parts[into + stride]));
+    });
+  }
+}
+
 // Slice 0 accumulates straight into `acc`; the others into fresh Acc values
-// that are then merged into `acc` in slice order, so an associative merge gives
-// the serial result at any thread count.
+// that are merged pairwise (MergeAdjacent) and then into `acc`, so an
+// associative merge gives the serial result at any thread count.
 //   body(Acc &, begin, end)   merge(Acc &into, Acc &&from)
 template <class Acc, class Body, class Merge>
 void ParallelReduce(const AuxEngineServices &services, std::size_t n, std::size_t grain, Acc &acc,
@@ -106,8 +122,9 @@ void ParallelReduce(const AuxEngineServices &services, std::size_t n, std::size_
   RunSlices(services, slices, n, [&](std::size_t slice, std::size_t begin, std::size_t end) {
     body(slice == 0 ? acc : partials[slice - 1], begin, end);
   });
-  for (auto &partial : partials) {
-    merge(acc, std::move(partial));
+  MergeAdjacent(services, partials, merge);
+  if (!partials.empty()) {
+    merge(acc, std::move(partials[0]));
   }
 }
 

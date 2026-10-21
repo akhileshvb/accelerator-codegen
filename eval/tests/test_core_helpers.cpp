@@ -141,7 +141,7 @@ void TestParallel() {
   CHECK((core::RunStarts(std::vector<int>{}, id) == std::vector<std::size_t>{0}));
   CHECK((core::RunStarts(std::vector<int>{5}, id) == std::vector<std::size_t>{0, 1}));
 
-  for (const std::size_t workers : {1, 3, 8}) {
+  for (const std::size_t workers : {1, 3, 5, 8, 16, 48}) {
     FakeServices sort_services(workers);
     std::vector<std::pair<int, int>> values;
     for (int i = 0; i < 5000; ++i) {
@@ -153,6 +153,19 @@ void TestParallel() {
     core::ParallelStableSort(sort_services, values,
                              [](const auto &a, const auto &b) { return a.first < b.first; }, 100);
     CHECK(values == expected);
+  }
+
+  // Adjacent pairwise merge keeps the order of an appending merge, at any part count.
+  for (const std::size_t parts : {1, 2, 3, 5, 8, 13}) {
+    FakeServices merge_services(4);
+    std::vector<std::vector<int>> pieces(parts);
+    std::vector<int> expected;
+    for (std::size_t p = 0; p < parts; ++p) {
+      pieces[p] = {static_cast<int>(p), static_cast<int>(p) + 100};
+      expected.insert(expected.end(), pieces[p].begin(), pieces[p].end());
+    }
+    core::MergeAdjacent(merge_services, pieces, core::AppendRows<int>);
+    CHECK(pieces[0] == expected);
   }
 }
 
