@@ -32,3 +32,6 @@ pub mod applyspec;
 pub mod applydiff;
 pub mod finish;
 pub mod wide;
+pub mod wmap;
+pub mod log;
+pub mod ingest;

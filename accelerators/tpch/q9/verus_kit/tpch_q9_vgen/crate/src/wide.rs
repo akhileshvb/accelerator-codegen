@@ -442,6 +442,15 @@ impl Wide {
         Wide::make(neg, mag)
     }
 
+    pub fn dup(&self) -> (r: Wide)
+        ensures r@ == self@,
+    {
+        proof { use_type_invariant(self); }
+        let mag = self.mag.clone();
+        proof { assert(mag@ == self.mag@); }
+        Wide { neg: self.neg, mag }
+    }
+
     pub fn neg(&self) -> (r: Wide)
         ensures r@ == -self@,
     {
