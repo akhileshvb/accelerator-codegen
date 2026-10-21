@@ -161,6 +161,43 @@ pub open spec fn part_wanted(parts: Seq<PartDelta>, key: int) -> bool {
     part_seen(parts, parts.len() as int, key)
 }
 
+pub open spec fn supplier_pred(links: Edges, parts: Seq<PartDelta>, edges: Seq<EdgeDelta>, suppliers: Seq<SupplierDelta>) -> spec_fn(int) -> bool {
+    |key: int| supplier_wanted(links, parts, edges, suppliers, key)
+}
+
+pub open spec fn part_pred(parts: Seq<PartDelta>) -> spec_fn(int) -> bool {
+    |key: int| part_wanted(parts, key)
+}
+
+pub fn supplier_keys_wanted(links: &Edges, parts: &Vec<PartDelta>, edges: &[EdgeDelta], suppliers: &[SupplierDelta]) -> (out: Vec<i64>)
+    requires edges_keys_valid(*links),
+    ensures out@ == wanted_keys(supplier_pred(*links, parts@, edges@, suppliers@)),
+{
+    let set = supplier_set(links, parts, edges, suppliers);
+    let out = keys_sorted(&set);
+    proof {
+        assert forall|key: int| seq_view_i64(out@).contains(key) <==> supplier_pred(*links, parts@, edges@, suppliers@)(key) by {
+            assert(set.at((key, Seq::<u8>::empty())).is_some() == (integer_at(set, (key, Seq::<u8>::empty())) > 0));
+        }
+        lemma_wanted_keys(out@, supplier_pred(*links, parts@, edges@, suppliers@));
+    }
+    out
+}
+
+pub fn part_keys_wanted(parts: &Vec<PartDelta>) -> (out: Vec<i64>)
+    ensures out@ == wanted_keys(part_pred(parts@)),
+{
+    let set = part_set(parts);
+    let out = keys_sorted(&set);
+    proof {
+        assert forall|key: int| seq_view_i64(out@).contains(key) <==> part_pred(parts@)(key) by {
+            assert(set.at((key, Seq::<u8>::empty())).is_some() == (integer_at(set, (key, Seq::<u8>::empty())) > 0));
+        }
+        lemma_wanted_keys(out@, part_pred(parts@));
+    }
+    out
+}
+
 pub fn add_edge_suppliers(keys: &mut Index<i64>, edges: &[EdgeDelta])
     requires key_set(*old(keys)),
     ensures key_set(*final(keys)),

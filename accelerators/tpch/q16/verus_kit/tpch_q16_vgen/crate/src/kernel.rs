@@ -12,6 +12,7 @@ use crate::counts::*;
 use verus_common::sums::*;
 use crate::input_proofs::*;
 use crate::bounds::*;
+use crate::wanted::*;
 use crate::contrib::*;
 use crate::maintenance_proofs::*;
 use crate::semantic_proofs::materialized;
@@ -43,10 +44,21 @@ impl State {
 
 pub open spec fn history(s: State) -> nat { 0 }
 
-pub open spec fn rescan_edges_for_parts_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
-pub open spec fn rescan_edges_for_suppliers_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
-pub open spec fn rescan_parts_for_neighbors_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
-pub open spec fn rescan_blockers_for_suppliers_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
+pub open spec fn rescan_edges_for_parts_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> {
+    Seq::empty()
+}
+
+pub closed spec fn rescan_edges_for_suppliers_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> {
+    wanted_keys(supplier_pred(s.links, pd, ed, sd))
+}
+
+pub open spec fn rescan_parts_for_neighbors_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> {
+    wanted_keys(part_pred(pd))
+}
+
+pub closed spec fn rescan_blockers_for_suppliers_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> {
+    wanted_keys(supplier_pred(s.links, pd, ed, sd))
+}
 
 #[verifier::rlimit(40)]
 pub fn build(
@@ -438,6 +450,7 @@ pub fn rescan_edges_for_parts_keys(
     partsupp_delta: &[EdgeDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_edges_for_parts_wanted(*s, part_delta@, partsupp_delta@, supplier_delta@),
 {
     Vec::new()
 }
@@ -448,8 +461,10 @@ pub fn rescan_edges_for_suppliers_keys(
     partsupp_delta: &[EdgeDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_edges_for_suppliers_wanted(*s, part_delta@, partsupp_delta@, supplier_delta@),
 {
-    Vec::new()
+    proof { use_type_invariant(s); }
+    supplier_keys_wanted(&s.links, part_delta, partsupp_delta, supplier_delta)
 }
 
 pub fn rescan_parts_for_neighbors_keys(
@@ -458,8 +473,9 @@ pub fn rescan_parts_for_neighbors_keys(
     partsupp_delta: &[EdgeDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_parts_for_neighbors_wanted(*s, part_delta@, partsupp_delta@, supplier_delta@),
 {
-    Vec::new()
+    part_keys_wanted(part_delta)
 }
 
 pub fn rescan_blockers_for_suppliers_keys(
@@ -468,8 +484,9 @@ pub fn rescan_blockers_for_suppliers_keys(
     partsupp_delta: &[EdgeDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures r@ == rescan_blockers_for_suppliers_wanted(*s, part_delta@, partsupp_delta@, supplier_delta@),
 {
-    Vec::new()
+    rescan_edges_for_suppliers_keys(s, part_delta, partsupp_delta, supplier_delta)
 }
 
 pub fn apply(
