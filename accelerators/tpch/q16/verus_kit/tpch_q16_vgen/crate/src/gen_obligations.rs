@@ -231,6 +231,12 @@ pub open spec fn max_rows() -> int {
     1099511627776
 }
 
+/// Most changed rows a state may absorb after its build before apply may decline
+/// (the host then rebuilds).
+pub open spec fn max_history() -> int {
+    4611686018427387904
+}
+
 /// Each value of part lies in the range of its column's SQL type.
 pub open spec fn part_in_type(r: PartRow) -> bool {
     -2147483648 <= r.p_partkey <= 2147483647
@@ -289,6 +295,7 @@ pub fn ob_build(
         scan_blockers_ok(db, blockers@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        r matches Some(s) ==> crate::kernel::history(s) == 0,
         envelope(db) ==> r is Some,
 {
     kernel::build(parts, edges, blockers, Ghost(db))
@@ -373,7 +380,7 @@ pub fn ob_rescan_blockers_for_suppliers_keys(
 }
 
 /// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
-/// the envelope.
+/// the envelope or after max_history() changed rows since the build.
 pub fn ob_apply(
     s: &State,
     part_delta: &Vec<PartDelta>,
@@ -403,7 +410,8 @@ pub fn ob_apply(
         rescan_blockers_for_suppliers_ok(db2, blockers_for_suppliers_keys@, blockers_for_suppliers_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
-        envelope(s.db()) && envelope(db2) ==> r is Ok,
+        r matches Ok(s2) ==> crate::kernel::history(s2) <= crate::kernel::history(*s) + part_delta@.len() + partsupp_delta@.len() + supplier_delta@.len(),
+        envelope(s.db()) && envelope(db2) && crate::kernel::history(*s) + part_delta@.len() + partsupp_delta@.len() + supplier_delta@.len() <= max_history() ==> r is Ok,
 {
     kernel::apply(s, part_delta, partsupp_delta, supplier_delta, edges_for_parts_keys, edges_for_parts_rows, edges_for_suppliers_keys, edges_for_suppliers_rows, parts_for_neighbors_keys, parts_for_neighbors_rows, blockers_for_suppliers_keys, blockers_for_suppliers_rows, Ghost(supplier_full), Ghost(db2))
 }
