@@ -2,10 +2,11 @@ use vstd::prelude::*;
 use verus_common::sums::*;
 use verus_common::bytes::*;
 use crate::rollup::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
-pub proof fn lemma_bucket_absent(bucket: Seq<(Vec<u8>, i128)>, priority: Seq<u8>)
+pub proof fn lemma_bucket_absent(bucket: Seq<(Vec<u8>, Wide)>, priority: Seq<u8>)
     requires forall|index: int| #![trigger bucket[index]] 0 <= index < bucket.len() ==> bucket[index].0@ != priority,
     ensures bucket_count(bucket, priority) == 0,
     decreases bucket.len(),
@@ -16,15 +17,15 @@ pub proof fn lemma_bucket_absent(bucket: Seq<(Vec<u8>, i128)>, priority: Seq<u8>
     }
 }
 
-pub proof fn lemma_bucket_entry(bucket: Seq<(Vec<u8>, i128)>, index: int)
+pub proof fn lemma_bucket_entry(bucket: Seq<(Vec<u8>, Wide)>, index: int)
     requires bucket_unique(bucket), 0 <= index < bucket.len(),
-    ensures bucket_count(bucket, bucket[index].0@) == bucket[index].1 as int,
+    ensures bucket_count(bucket, bucket[index].0@) == bucket[index].1@,
     decreases bucket.len(),
 {
     let priority = bucket[index].0@;
     let prefix = bucket.drop_last();
     assert(bucket_count(bucket, priority) == bucket_count(prefix, priority)
-        + if bucket.last().0@ == priority { bucket.last().1 as int } else { 0 });
+        + if bucket.last().0@ == priority { bucket.last().1@ } else { 0 });
     if index == bucket.len() - 1 {
         assert forall|other: int| #![trigger prefix[other]] 0 <= other < prefix.len() implies prefix[other].0@ != priority by {
             assert(bucket[other].0@ != bucket[index].0@);
@@ -36,9 +37,9 @@ pub proof fn lemma_bucket_entry(bucket: Seq<(Vec<u8>, i128)>, index: int)
     }
 }
 
-pub proof fn lemma_bucket_positive(bucket: Seq<(Vec<u8>, i128)>, priority: Seq<u8>) -> (index: int)
+pub proof fn lemma_bucket_positive(bucket: Seq<(Vec<u8>, Wide)>, priority: Seq<u8>) -> (index: int)
     requires bucket_unique(bucket), bucket_count(bucket, priority) > 0,
-    ensures 0 <= index < bucket.len(), bucket[index].0@ == priority, bucket[index].1 > 0,
+    ensures 0 <= index < bucket.len(), bucket[index].0@ == priority, bucket[index].1@ > 0,
     decreases bucket.len(),
 {
     assert(bucket.len() > 0);
@@ -50,21 +51,21 @@ pub proof fn lemma_bucket_positive(bucket: Seq<(Vec<u8>, i128)>, priority: Seq<u
     }
 }
 
-pub open spec fn output_rows_ok(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, i128)>, processed: int) -> bool {
+pub open spec fn output_rows_ok(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, Wide)>, processed: int) -> bool {
     forall|index: int| #![trigger out[index]] 0 <= index < out.len() ==>
         out[index].1 > 0 && out[index].1 as int == bucket_count(bucket, out[index].0@)
             && exists|source: int| #![trigger bucket[source]] 0 <= source < processed
-                && bucket[source].0@ == out[index].0@ && bucket[source].1 as int == out[index].1 as int
+                && bucket[source].0@ == out[index].0@ && bucket[source].1@ == out[index].1 as int
 }
 
-pub open spec fn output_covered(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, i128)>, processed: int) -> bool {
-    forall|source: int| #![trigger bucket[source]] 0 <= source < processed && bucket[source].1 > 0 ==>
+pub open spec fn output_covered(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, Wide)>, processed: int) -> bool {
+    forall|source: int| #![trigger bucket[source]] 0 <= source < processed && bucket[source].1@ > 0 ==>
         exists|index: int| #![trigger out[index]] 0 <= index < out.len() && out[index].0@ == bucket[source].0@
 }
 
 pub open spec fn output_less(left: (Vec<u8>, i64), right: (Vec<u8>, i64)) -> bool { bytes_lt(left.0@, right.0@) }
 
-pub open spec fn output_prefix_ok(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, i128)>, processed: int) -> bool {
+pub open spec fn output_prefix_ok(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, Wide)>, processed: int) -> bool {
     &&& output_rows_ok(out, bucket, processed)
     &&& output_covered(out, bucket, processed)
     &&& verus_common::order::sorted_by(out, |left: (Vec<u8>, i64), right: (Vec<u8>, i64)| output_less(left, right))
@@ -97,7 +98,7 @@ pub fn insertion_position(out: &Vec<(Vec<u8>, i64)>, bucket: &Bucket, index: usi
         }
         proof {
             let source = choose|source: int| #![trigger bucket@[source]] 0 <= source < index
-                && bucket@[source].0@ == out@[position as int].0@ && bucket@[source].1 as int == out@[position as int].1 as int;
+                && bucket@[source].0@ == out@[position as int].0@ && bucket@[source].1@ == out@[position as int].1 as int;
             assert(bucket@[source].0@ != bucket@[index as int].0@);
             lemma_bytes_lt_total(bucket@[index as int].0@, out@[position as int].0@);
         }
@@ -106,13 +107,13 @@ pub fn insertion_position(out: &Vec<(Vec<u8>, i64)>, bucket: &Bucket, index: usi
     position
 }
 
-pub proof fn lemma_output_empty(bucket: Seq<(Vec<u8>, i128)>)
+pub proof fn lemma_output_empty(bucket: Seq<(Vec<u8>, Wide)>)
     ensures output_prefix_ok(Seq::empty(), bucket, 0),
 {
 }
 
-pub proof fn lemma_output_skip(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, i128)>, index: int)
-    requires 0 <= index < bucket.len(), output_prefix_ok(out, bucket, index), bucket[index].1 <= 0,
+pub proof fn lemma_output_skip(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, Wide)>, index: int)
+    requires 0 <= index < bucket.len(), output_prefix_ok(out, bucket, index), bucket[index].1@ <= 0,
     ensures output_prefix_ok(out, bucket, index + 1),
 {
     hide(bucket_count);
@@ -120,9 +121,9 @@ pub proof fn lemma_output_skip(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, i
     hide(bytes_lt);
 }
 
-pub proof fn lemma_insert_rows(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, i128)>, index: int, position: int, cell: (Vec<u8>, i64))
+pub proof fn lemma_insert_rows(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, Wide)>, index: int, position: int, cell: (Vec<u8>, i64))
     requires 0 <= index < bucket.len(), bucket_unique(bucket), output_rows_ok(previous, bucket, index),
-        0 <= position <= previous.len(), cell.0@ == bucket[index].0@, cell.1 as int == bucket[index].1 as int, cell.1 > 0,
+        0 <= position <= previous.len(), cell.0@ == bucket[index].0@, cell.1 as int == bucket[index].1@, cell.1 > 0,
     ensures output_rows_ok(previous.insert(position, cell), bucket, index + 1),
 {
     hide(bucket_count);
@@ -133,7 +134,7 @@ pub proof fn lemma_insert_rows(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u
     assert forall|target: int| #![trigger out[target]] 0 <= target < out.len() implies
         out[target].1 > 0 && out[target].1 as int == bucket_count(bucket, out[target].0@)
             && exists|source: int| #![trigger bucket[source]] 0 <= source < index + 1
-                && bucket[source].0@ == out[target].0@ && bucket[source].1 as int == out[target].1 as int by {
+                && bucket[source].0@ == out[target].0@ && bucket[source].1@ == out[target].1 as int by {
         if target == position { assert(out[target].0@ == bucket[index].0@); }
         else {
             let old_target = if target < position { target } else { target - 1 };
@@ -142,13 +143,13 @@ pub proof fn lemma_insert_rows(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u
     }
 }
 
-pub proof fn lemma_insert_coverage(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, i128)>, index: int, position: int, cell: (Vec<u8>, i64))
+pub proof fn lemma_insert_coverage(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, Wide)>, index: int, position: int, cell: (Vec<u8>, i64))
     requires 0 <= index < bucket.len(), output_covered(previous, bucket, index),
         0 <= position <= previous.len(), cell.0@ == bucket[index].0@,
     ensures output_covered(previous.insert(position, cell), bucket, index + 1),
 {
     let out = previous.insert(position, cell);
-    assert forall|source: int| #![trigger bucket[source]] 0 <= source < index + 1 && bucket[source].1 > 0 implies
+    assert forall|source: int| #![trigger bucket[source]] 0 <= source < index + 1 && bucket[source].1@ > 0 implies
         exists|target: int| #![trigger out[target]] 0 <= target < out.len() && out[target].0@ == bucket[source].0@ by {
         if source == index { assert(out[position].0@ == bucket[source].0@); }
         else {
@@ -159,9 +160,9 @@ pub proof fn lemma_insert_coverage(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(V
     }
 }
 
-pub proof fn lemma_output_insert(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, i128)>, index: int, position: int, cell: (Vec<u8>, i64))
+pub proof fn lemma_output_insert(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, Wide)>, index: int, position: int, cell: (Vec<u8>, i64))
     requires 0 <= index < bucket.len(), bucket_unique(bucket), output_prefix_ok(previous, bucket, index),
-        0 <= position <= previous.len(), cell.0@ == bucket[index].0@, cell.1 as int == bucket[index].1 as int, cell.1 > 0,
+        0 <= position <= previous.len(), cell.0@ == bucket[index].0@, cell.1 as int == bucket[index].1@, cell.1 > 0,
         forall|before: int| #![trigger previous[before]] 0 <= before < position ==> bytes_lt(previous[before].0@, cell.0@),
         forall|after: int| #![trigger previous[after]] position <= after < previous.len() ==> bytes_lt(cell.0@, previous[after].0@),
     ensures output_prefix_ok(previous.insert(position, cell), bucket, index + 1),
@@ -177,7 +178,7 @@ pub proof fn lemma_output_insert(previous: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec
         |left: (Vec<u8>, i64), right: (Vec<u8>, i64)| output_less(left, right));
 }
 
-pub proof fn lemma_output_finish(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, i128)>)
+pub proof fn lemma_output_finish(out: Seq<(Vec<u8>, i64)>, bucket: Seq<(Vec<u8>, Wide)>)
     requires bucket_unique(bucket), output_prefix_ok(out, bucket, bucket.len() as int),
     ensures
         forall|index: int| #![trigger out[index]] 0 <= index < out.len() ==>
@@ -204,6 +205,7 @@ pub fn sorted_output(bucket: Bucket) -> (result: Option<Vec<(Vec<u8>, i64)>>)
             exists|index: int| #![trigger out@[index]] 0 <= index < out@.len() && out@[index].0@ == priority)
         && (forall|left: int, right: int| #![trigger out@[left], out@[right]] 0 <= left < right < out@.len() ==>
             verus_common::bytes::bytes_lt(out@[left].0@, out@[right].0@)),
+        result is None ==> exists|index: int| #![trigger bucket@[index]] 0 <= index < bucket@.len() && !count_fits(bucket@[index].1@),
 {
     hide(bucket_count);
     hide(sum);
@@ -216,8 +218,18 @@ pub fn sorted_output(bucket: Bucket) -> (result: Option<Vec<(Vec<u8>, i64)>>)
         invariant index <= bucket.len(), bucket_unique(bucket@), output_prefix_ok(out@, bucket@, index as int),
         decreases bucket.len() - index,
     {
-        let count = bucket[index].1;
-        if count < 0 || count > i64::MAX as i128 { return None; }
+        let converted = bucket[index].1.to_i128();
+        let count = match converted {
+            Some(value) => value,
+            None => {
+                proof { assert(!count_fits(bucket@[index as int].1@)); }
+                return None;
+            },
+        };
+        if count < 0 || count > i64::MAX as i128 {
+            proof { assert(!count_fits(bucket@[index as int].1@)); }
+            return None;
+        }
         if count > 0 {
             let previous: Ghost<Vec<(Vec<u8>, i64)>> = Ghost(out);
             let position = insertion_position(&out, &bucket, index);

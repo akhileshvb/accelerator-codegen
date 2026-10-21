@@ -2,6 +2,7 @@ use vstd::prelude::*;
 use verus_common::sums::*;
 use verus_common::rel::*;
 use verus_common::bytes::*;
+use verus_prooflib::wide::Wide;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::rollup::*;
@@ -80,7 +81,7 @@ pub proof fn lemma_query_count(db: Db, parameters: Params, priority: Seq<u8>)
     lemma_sum_ext_all(db.orders, nested, target);
 }
 
-pub proof fn lemma_output_meaning(db: Db, parameters: Params, bucket: Seq<(Vec<u8>, i128)>, out: Seq<(Vec<u8>, i64)>)
+pub proof fn lemma_output_meaning(db: Db, parameters: Params, bucket: Seq<(Vec<u8>, Wide)>, out: Seq<(Vec<u8>, i64)>)
     requires
         forall|priority: Seq<u8>| #[trigger] bucket_count(bucket, priority) == group_count(db, parameters, priority),
         forall|index: int| #![trigger out[index]] 0 <= index < out.len() ==>
@@ -258,5 +259,37 @@ pub proof fn lemma_apply_meaning(db: Db, next: Db, lines: Seq<LineDelta>, orders
     lemma_sum_ext_all(next.orders, after,
         |order: OrdersRow| if in_block(order.o_orderdate, key) && order.o_orderpriority == priority && exists_1(next, order) { 1int } else { 0int });
 }
+
+
+pub proof fn lemma_indicator_sum_range<A>(rows: Seq<A>, weight: spec_fn(A) -> int)
+    requires forall|row: A| 0 <= #[trigger] weight(row) <= 1,
+    ensures 0 <= sum(rows, weight) <= rows.len(),
+    decreases rows.len(),
+{
+    if rows.len() > 0 { lemma_indicator_sum_range(rows.drop_last(), weight); }
+}
+
+pub proof fn lemma_window_range(db: Db, lower: int, upper: int, priority: Seq<u8>)
+    ensures 0 <= window_count(db, lower, upper, priority) <= db.orders.len(),
+{
+    lemma_indicator_sum_range(db.orders, |order: OrdersRow| if lower <= order.o_orderdate + 2147483648 < upper
+        && order.o_orderpriority == priority && exists_1(db, order) { 1int } else { 0int });
+}
+
+pub proof fn lemma_db_count_range(db: Db, key: Key, priority: Seq<u8>)
+    ensures 0 <= db_count(db, key, priority) <= db.orders.len(),
+{
+    lemma_indicator_sum_range(db.orders, |order: OrdersRow|
+        if in_block(order.o_orderdate, key) && order.o_orderpriority == priority && exists_1(db, order) { 1int } else { 0int });
+}
+
+/// Every count of a database within the envelope fits.
+pub proof fn lemma_envelope_counts_fit(db: Db, key: Key, priority: Seq<u8>)
+    requires envelope(db),
+    ensures count_fits(if key_height(key) <= 32 { db_count(db, key, priority) } else { 0 }),
+{
+    if key_height(key) <= 32 { lemma_db_count_range(db, key, priority); }
+}
+
 
 }
