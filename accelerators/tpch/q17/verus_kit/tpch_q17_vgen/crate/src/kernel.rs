@@ -43,7 +43,7 @@ pub fn build(lines: &[LineInput], parts: Vec<PartInput>, Ghost(db): Ghost<Db>) -
     ensures result matches Some(state) ==> state.db() == db,
         envelope(db) ==> result is Some,
 {
-    if !rows_in_range(lines) || parts.len() > 1099511627776 {
+    if !rows_in_range(lines) || parts.len() > 9223372036854775808 {
         proof { if envelope(db) { lemma_scan_bounded(db, lines@); lemma_scan_parts_len(db, parts@); } }
         return None;
     }

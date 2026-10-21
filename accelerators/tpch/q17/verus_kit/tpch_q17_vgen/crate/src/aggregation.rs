@@ -158,7 +158,7 @@ pub proof fn lemma_row_bounds(rows: Seq<LineInput>, index: int)
 pub fn rows_in_range(rows: &[LineInput]) -> (result: bool)
     ensures result == rows_bounded(rows@),
 {
-    if rows.len() > 1099511627776 { return false; }
+    if rows.len() > 9223372036854775808 { return false; }
     let mut index = 0;
     while index < rows.len()
         invariant index <= rows.len(),
@@ -175,15 +175,15 @@ pub fn rows_in_range(rows: &[LineInput]) -> (result: bool)
 }
 
 pub fn qualified(quantity: i64, total: Total) -> (result: bool)
-    requires 0 < total.count <= 1099511627776, -value_bound() <= quantity <= value_bound(),
+    requires 0 < total.count <= 9223372036854775808, -value_bound() <= quantity <= value_bound(),
     ensures result == (5 * (total.count as int) * (quantity as int) < total.quantity as int),
 {
     let factor = total.count * 5;
     proof {
         let f = factor as int;
         let q = quantity as int;
-        assert(-(5 * 1099511627776int * value_bound()) <= f * q <= 5 * 1099511627776int * value_bound()) by (nonlinear_arith)
-            requires 0 < f <= 5 * 1099511627776int, -value_bound() <= q <= value_bound();
+        assert(-(5 * 9223372036854775808int * value_bound()) <= f * q <= 5 * 9223372036854775808int * value_bound()) by (nonlinear_arith)
+            requires 0 < f <= 5 * 9223372036854775808int, -value_bound() <= q <= value_bound();
     }
     let left = factor * (quantity as i128);
     left < total.quantity

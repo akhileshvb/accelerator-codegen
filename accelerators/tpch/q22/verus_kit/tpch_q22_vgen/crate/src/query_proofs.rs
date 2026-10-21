@@ -5,7 +5,7 @@ use verus_common::rel::*;
 use verus_common::sqlfns::*;
 use verus_common::bytes::*;
 use crate::gen_spec::*;
-use crate::gen_obligations::out_view;
+use crate::gen_obligations::{out_view, out_fits, answer_fits};
 use crate::moments::*;
 use crate::pages::*;
 use crate::algebra::*;
@@ -544,6 +544,17 @@ pub proof fn lemma_suffix_group(db: Db, histogram: Pages, code: u32, threshold: 
         lemma_average_cutoff(total, count, row.c_acctbal);
     }
     lemma_moment_ext(db.customer, first, second);
+}
+
+pub proof fn lemma_group_count_unfit(db: Db, parameters: Params, code: u32, codes: Seq<u32>)
+    requires group_count(db, parameters, country(code)) > 9223372036854775807,
+    ensures !answer_fits(db, parameters),
+{
+    lemma_defined_exists(db, parameters);
+    let out = choose|o: Seq<OutRow>| #[trigger] query_result(db, parameters, o);
+    let index = choose|i: int| 0 <= i < out.len() && (#[trigger] out[i]).cntrycode == country(code);
+    assert(row_ok(db, parameters, out[index]));
+    assert(!out_fits(out[index]));
 }
 
 pub open spec fn output_part(db: Db, parameters: Params, histogram: Pages,

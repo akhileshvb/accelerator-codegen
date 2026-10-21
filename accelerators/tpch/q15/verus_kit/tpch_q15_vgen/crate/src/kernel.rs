@@ -30,8 +30,8 @@ impl State {
     closed spec fn valid(self) -> bool {
         &&& facts_match(self.facts, self.database@.lineitem)
         &&& dimensions_match(self.dimensions, self.database@.supplier)
-        &&& self.lines as int == self.database@.lineitem.len() && self.lines <= 0x10000000000
-        &&& self.suppliers as int == self.database@.supplier.len() && self.suppliers <= 0x10000000000
+        &&& self.lines as int == self.database@.lineitem.len() && self.lines <= 0x8000000000000000
+        &&& self.suppliers as int == self.database@.supplier.len() && self.suppliers <= 0x8000000000000000
     }
 }
 
@@ -70,13 +70,13 @@ pub fn build(lines: &[LineInput], suppliers: Vec<SupplierInput>, Ghost(db): Ghos
         envelope(db) ==> result is Some,
 {
     proof { lemma_scan_lens(db, lines@, suppliers@); }
-    if lines.len() as u64 > 1099511627776u64 || suppliers.len() as u64 > 1099511627776u64 { return None; }
+    if lines.len() as u64 > 9223372036854775808u64 || suppliers.len() as u64 > 9223372036854775808u64 { return None; }
     let mut scratch = Scratch::new();
     proof { assert(line_input_seq_view(lines@.take(0)) =~= Seq::<LineitemRow>::empty()); }
     let mut position = 0;
     let mut processed = Ghost(0int);
     while position < lines.len()
-        invariant position <= lines.len(), processed@ == position as int, lines.len() <= 1099511627776,
+        invariant position <= lines.len(), processed@ == position as int, lines.len() <= 9223372036854775808,
             scratch.well_formed(), scratch.bounded(position as int),
             scratch.matches_lines(line_input_seq_view(lines@.take(processed@))),
         decreases lines.len() - position,
@@ -263,7 +263,7 @@ pub fn apply(state: &State, lineitem_delta: &[LineDelta], supplier_delta: &Vec<S
     }
     let new_lines = state.lines as i128 + line_net;
     let new_suppliers = state.suppliers as i128 + supplier_net;
-    if new_lines > 1099511627776i128 || new_suppliers > 1099511627776i128 { return Err(2); }
+    if new_lines > 9223372036854775808i128 || new_suppliers > 9223372036854775808i128 { return Err(2); }
     let mut scratch = Scratch::new();
     proof { assert(line_delta_seq_view(lineitem_delta@.take(0)) =~= Seq::<(LineitemRow, int)>::empty()); }
     let mut position = 0;

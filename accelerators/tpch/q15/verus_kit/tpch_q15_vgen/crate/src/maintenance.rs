@@ -11,7 +11,7 @@ use crate::values::*;
 use crate::query_proofs::lemma_day_outside;
 
 verus! {
-pub struct Change { pub revenue: Wide, pub date: i32, pub count: i64 }
+pub struct Change { pub revenue: Wide, pub date: i32, pub count: i128 }
 pub open spec fn changes_shape(days: Seq<Change>, bin: int) -> bool {
     days.len() <= 256 &&
     (forall|position: int| 0 <= position < days.len() ==> bucket((#[trigger] days[position]).date as int) == bin) &&
@@ -153,7 +153,7 @@ impl Scratch {
         Scratch { groups: HashMapWithView::new(), keys: Vec::new() }
     }
     pub fn add(&mut self, row: &LineInput, sign: i64, Ghost(bound): Ghost<int>)
-        requires old(self).well_formed(), old(self).bounded(bound), 0 <= bound < 0x4000000000000000, sign == 1 || sign == -1,
+        requires old(self).well_formed(), old(self).bounded(bound), 0 <= bound < 0x8000000000000000, sign == 1 || sign == -1,
         ensures final(self).well_formed(), final(self).bounded(bound + 1),
             forall|supplier: i64, date: i32| #[trigger] final(self).count(supplier, date) == old(self).count(supplier, date) +
                     if supplier == row.l_suppkey && date == row.l_shipdate { sign as int } else { 0int },
@@ -387,7 +387,7 @@ impl Scratch {
 pub fn update_changes(mut days: Vec<Change>, date: i32, count_delta: i64, revenue_delta: Wide, Ghost(bin): Ghost<int>, Ghost(bound): Ghost<int>)
     -> (result: Vec<Change>)
     requires changes_shape(days@, bin), bucket(date as int) == bin, changes_bounded(days@, bound),
-        0 <= bound < 0x4000000000000000, count_delta == 1 || count_delta == -1,
+        0 <= bound < 0x8000000000000000, count_delta == 1 || count_delta == -1,
     ensures changes_shape(result@, bin), changes_bounded(result@, bound + 1),
         forall|other: i32| #[trigger] changes_count(result@, other) == changes_count(days@, other) +
             if other == date { count_delta as int } else { 0int },
@@ -402,7 +402,7 @@ pub fn update_changes(mut days: Vec<Change>, date: i32, count_delta: i64, revenu
         decreases days.len() - position,
     { position += 1; }
     if position < days.len() && days[position].date == date {
-        let count = days[position].count + count_delta;
+        let count = days[position].count + count_delta as i128;
         let revenue = days[position].revenue.add(&revenue_delta);
         let value = Change { date, count, revenue };
         proof {
@@ -431,7 +431,7 @@ pub fn update_changes(mut days: Vec<Change>, date: i32, count_delta: i64, revenu
             }
             lemma_room_changes(days@, bin, date as int);
         }
-        let value = Change { date, count: count_delta, revenue: revenue_delta };
+        let value = Change { date, count: count_delta as i128, revenue: revenue_delta };
         days.insert(position, value);
         proof {
             assert(days@.remove(position as int) =~= before);
@@ -535,7 +535,7 @@ pub proof fn lemma_day_rows(rows: Seq<LineitemRow>, supplier: int, date: int)
 /// Drops the day at `position`, whose count and revenue the change cancels.
 #[verifier::rlimit(100)]
 #[verifier::spinoff_prover]
-pub fn drop_day(days: &mut Vec<Day>, position: usize, count: i64, revenue: &Wide, Ghost(bin): Ghost<int>)
+pub fn drop_day(days: &mut Vec<Day>, position: usize, count: i128, revenue: &Wide, Ghost(bin): Ghost<int>)
     requires days_shape(old(days)@, bin), position < old(days).len(),
         old(days)@[position as int].count as int + count as int == 0, old(days)@[position as int].revenue@ + revenue@ == 0,
     ensures days_shape(final(days)@, bin),
@@ -565,7 +565,7 @@ pub fn drop_day(days: &mut Vec<Day>, position: usize, count: i64, revenue: &Wide
 /// Adds the change to the day at `position`, which stays present with a positive count.
 #[verifier::rlimit(100)]
 #[verifier::spinoff_prover]
-pub fn set_day(days: &mut Vec<Day>, position: usize, count: i64, revenue: &Wide, Ghost(bin): Ghost<int>)
+pub fn set_day(days: &mut Vec<Day>, position: usize, count: i128, revenue: &Wide, Ghost(bin): Ghost<int>)
     requires days_shape(old(days)@, bin), position < old(days).len(),
         0 < old(days)@[position as int].count as int + count as int <= 0xffffffffffffffffint,
     ensures days_shape(final(days)@, bin), final(days).len() == old(days).len(),
@@ -574,7 +574,7 @@ pub fn set_day(days: &mut Vec<Day>, position: usize, count: i64, revenue: &Wide,
         forall|index: int| 0 <= index < final(days).len() ==> final(days)@[index].shipdate == old(days)@[index].shipdate,
 {
     let ghost before = days@;
-    let total = days[position].count as i128 + count as i128;
+    let total = days[position].count as i128 + count;
     let merged = days[position].revenue.add(revenue);
     let value = Day { shipdate: days[position].shipdate, count: total as u64, revenue: merged };
     proof {
@@ -599,8 +599,8 @@ pub fn set_day(days: &mut Vec<Day>, position: usize, count: i64, revenue: &Wide,
 /// Inserts a new day at `position` among the days.
 #[verifier::rlimit(100)]
 #[verifier::spinoff_prover]
-pub fn add_day(days: &mut Vec<Day>, position: usize, date: i32, count: i64, revenue: &Wide, Ghost(bin): Ghost<int>)
-    requires days_shape(old(days)@, bin), position <= old(days).len(), old(days).len() < 256, bucket(date as int) == bin, count > 0,
+pub fn add_day(days: &mut Vec<Day>, position: usize, date: i32, count: i128, revenue: &Wide, Ghost(bin): Ghost<int>)
+    requires days_shape(old(days)@, bin), position <= old(days).len(), old(days).len() < 256, bucket(date as int) == bin, 0 < count <= 0xffffffffffffffffint,
         forall|index: int| 0 <= index < position ==> (#[trigger] old(days)@[index]).shipdate < date,
         forall|index: int| position <= index < old(days).len() ==> (#[trigger] old(days)@[index]).shipdate > date,
     ensures days_shape(final(days)@, bin),
@@ -643,7 +643,7 @@ pub fn add_day(days: &mut Vec<Day>, position: usize, date: i32, count: i64, reve
 }
 /// Adds a change to the day `date` of a bucket's days, inserting or dropping the day as its count requires.
 #[verifier::rlimit(100)]
-pub fn apply_change(days: &mut Vec<Day>, from: usize, date: i32, count: i64, revenue: &Wide, Ghost(bin): Ghost<int>) -> (next: usize)
+pub fn apply_change(days: &mut Vec<Day>, from: usize, date: i32, count: i128, revenue: &Wide, Ghost(bin): Ghost<int>) -> (next: usize)
     requires days_shape(old(days)@, bin), bucket(date as int) == bin, from <= old(days).len(),
         forall|index: int| 0 <= index < from ==> (#[trigger] old(days)@[index]).shipdate < date,
         0 <= days_count(old(days)@, date as int) + count as int <= 0xffffffffffffffffint,
@@ -662,7 +662,7 @@ pub fn apply_change(days: &mut Vec<Day>, from: usize, date: i32, count: i64, rev
     { position += 1; }
     if position < days.len() && days[position].shipdate == date {
         proof { lemma_day_unique(before, bin, position as int); }
-        let total = days[position].count as i128 + count as i128;
+        let total = days[position].count as i128 + count;
         if total == 0 {
             drop_day(days, position, count, revenue, Ghost(bin));
             position
@@ -776,11 +776,11 @@ pub fn merge_profile(previous: &Option<Arc<BucketProfile>>, changes: &Vec<Change
     }
     proof {
         assert(changes@.take(done as int) =~= changes@);
-        assert forall|index: int| 0 <= index < days.len() implies (#[trigger] days@[index]).count as int <= 0x10000000000int by {
+        assert forall|index: int| 0 <= index < days.len() implies
+            (#[trigger] days@[index]).count as int == day_count(target, supplier, days@[index].shipdate as int) by {
             lemma_day_unique(days@, bin, index);
             let date = days@[index].shipdate as int;
             assert(bucket(date) == bin);
-            lemma_day_rows(target, supplier, date);
             assert(days_count(days@, date) == day_count(target, supplier, date));
         }
     }
@@ -794,14 +794,16 @@ pub fn merge_profile(previous: &Option<Arc<BucketProfile>>, changes: &Vec<Change
     }
     while index < days.len()
         invariant index <= days.len(), days.len() <= 256, days_shape(days@, bin),
-            forall|position: int| 0 <= position < days.len() ==> (#[trigger] days@[position]).count as int <= 0x10000000000int,
+            forall|position: int| 0 <= position < days.len() ==>
+                (#[trigger] days@[position]).count as int == day_count(target, supplier, days@[position].shipdate as int),
             count == sum(days@.take(index as int), |day: Day| day.count as int), revenue@ == sum(days@.take(index as int), |day: Day| day.revenue@),
-            0 <= count <= index as int * 0x10000000000int,
+            0 <= count <= target.len(), target.len() <= max_rows(),
         decreases days.len() - index,
     {
         proof {
             lemma_sum_take(days@, index as int, |day: Day| day.count as int);
             lemma_sum_take(days@, index as int, |day: Day| day.revenue@);
+            lemma_days_within_rows(days@, bin, target, supplier, index as int + 1);
         }
         count = count + days[index].count as i128;
         revenue = revenue.add(&days[index].revenue);
@@ -816,6 +818,52 @@ pub fn merge_profile(previous: &Option<Arc<BucketProfile>>, changes: &Vec<Change
         }
     }
     BucketProfile { count: count as u64, revenue, days }
+}
+
+pub open spec fn day_dates_weight(days: Seq<Day>, k: int, supplier: int) -> spec_fn(LineitemRow) -> int {
+    |row: LineitemRow| ind(row.l_suppkey == supplier && exists|i: int| 0 <= i < k && (#[trigger] days[i]).shipdate as int == row.l_shipdate)
+}
+
+/// The counts of the first `k` days add up to the rows of the supplier on those days.
+pub proof fn lemma_days_cover(days: Seq<Day>, bin: int, target: Seq<LineitemRow>, supplier: int, k: int)
+    requires days_shape(days, bin), 0 <= k <= days.len(),
+        forall|i: int| 0 <= i < days.len() ==> (#[trigger] days[i]).count as int == day_count(target, supplier, days[i].shipdate as int),
+    ensures sum(days.take(k), |day: Day| day.count as int) == sum(target, day_dates_weight(days, k, supplier)),
+    decreases k,
+{
+    let count = |day: Day| day.count as int;
+    if k == 0 {
+        assert(days.take(0) =~= Seq::<Day>::empty());
+        lemma_sum_empty(days.take(0), count);
+        lemma_sum_zero(target, day_dates_weight(days, 0, supplier));
+    } else {
+        lemma_days_cover(days, bin, target, supplier, k - 1);
+        lemma_sum_take(days, k - 1, count);
+        let date = days[k - 1].shipdate as int;
+        let on_date = |row: LineitemRow| if row.l_shipdate == date && row.l_suppkey == supplier { 1int } else { 0int };
+        assert forall|row: LineitemRow| #[trigger] day_dates_weight(days, k, supplier)(row)
+            == day_dates_weight(days, k - 1, supplier)(row) + on_date(row) by {
+            if row.l_suppkey == supplier && row.l_shipdate == date {
+                assert(days[k - 1].shipdate as int == row.l_shipdate);
+                assert(!exists|i: int| 0 <= i < k - 1 && (#[trigger] days[i]).shipdate as int == row.l_shipdate) by {
+                    assert forall|i: int| 0 <= i < k - 1 implies (#[trigger] days[i]).shipdate as int != row.l_shipdate by {
+                        assert(days[i].shipdate < days[k - 1].shipdate);
+                    }
+                }
+            }
+        }
+        lemma_sum_add(target, day_dates_weight(days, k - 1, supplier), on_date, day_dates_weight(days, k, supplier));
+    }
+}
+
+pub proof fn lemma_days_within_rows(days: Seq<Day>, bin: int, target: Seq<LineitemRow>, supplier: int, k: int)
+    requires days_shape(days, bin), 0 <= k <= days.len(),
+        forall|i: int| 0 <= i < days.len() ==> (#[trigger] days[i]).count as int == day_count(target, supplier, days[i].shipdate as int),
+    ensures sum(days.take(k), |day: Day| day.count as int) <= target.len(),
+{
+    lemma_days_cover(days, bin, target, supplier, k);
+    verus_prooflib::lemma_sum_ones(target);
+    lemma_sum_le(target, day_dates_weight(days, k, supplier), |row: LineitemRow| 1int);
 }
 
 pub proof fn lemma_changes_outside(changes: Seq<Change>, date: int)

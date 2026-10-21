@@ -320,7 +320,7 @@ impl<Value> Store<Value> {
 
     #[verifier::rlimit(1)]
     pub fn new(expected: usize) -> (store: Self)
-        requires expected <= 1099511627776,
+        requires expected <= 9223372036854775808,
         ensures store.wf(), forall|key: i64| #[trigger] store.lookup(key).is_none(),
     {
         proof { reveal(Page::wf); reveal(Page::lookup); }
@@ -334,9 +334,9 @@ impl<Value> Store<Value> {
         let mut root = Arc::new(Page::Leaf(Arc::new(empty)));
         let mut span: usize = 1;
         let wanted = expected / 128 + 1;
-        assert(wanted <= 8589934593) by (nonlinear_arith) requires expected <= 1099511627776, wanted == expected / 128 + 1;
+        assert(wanted <= 72057594037927937) by (nonlinear_arith) requires expected <= 9223372036854775808, wanted == expected / 128 + 1;
         while span < wanted
-            invariant span > 0, wanted <= 8589934593, root.wf(span as nat),
+            invariant span > 0, wanted <= 72057594037927937, root.wf(span as nat),
                 forall|slot: nat, key: i64| slot < span ==> #[trigger] root.lookup(span as nat, slot, key).is_none(),
             decreases usize::MAX - span,
         {

@@ -432,7 +432,7 @@ pub fn execute(facts: &Facts, dimensions: &Dimensions, lower: i32, upper: i32, G
     }
     let ghost model = emitted_rows(*dimensions, ordered@, revenue);
     let total = winners_total_exec(dimensions, &ordered);
-    if Wide::from_i128(1099511627776).lt(&total) {
+    if Wide::from_i128(9223372036854775808).lt(&total) {
         proof {
             assert(model.len() == total@);
             if answer_fits(db, parameters) { assert(query_result(db, parameters, model)); assert(model.len() <= max_rows()); }
