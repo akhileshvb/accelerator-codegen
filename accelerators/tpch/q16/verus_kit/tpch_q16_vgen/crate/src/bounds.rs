@@ -144,4 +144,38 @@ pub proof fn lemma_scan_blockers_len(db: Db, rows: Seq<BlockerInput>)
             seq![b'%', b'C', b'u', b's', b't', b'o', b'm', b'e', b'r', b'%', b'C', b'o', b'm', b'p', b'l', b'a', b'i', b'n', b't', b's', b'%']) { 1int } else { 0int });
 }
 
+pub proof fn lemma_rescan_parts_len(db: Db, keys: Seq<i64>, rows: Seq<PartInput>)
+    requires rescan_parts_for_neighbors_ok(db, keys, rows),
+    ensures rows.len() <= db.part.len(),
+{
+    let one = |row: PartRow| 1int;
+    let selected = |row: PartRow| if seq_view_i64(keys).contains(row.p_partkey) { one(row) } else { 0int };
+    verus_prooflib::lemma_sum_ones(part_input_seq_view(rows));
+    assert(sum(part_input_seq_view(rows), one) == sum(db.part, selected));
+    lemma_unit_sum(db.part, selected);
+}
+
+pub proof fn lemma_rescan_edges_len(db: Db, keys: Seq<i64>, rows: Seq<EdgeInput>)
+    requires rescan_edges_for_suppliers_ok(db, keys, rows),
+    ensures rows.len() <= db.partsupp.len(),
+{
+    let one = |row: PartsuppRow| 1int;
+    let selected = |row: PartsuppRow| if seq_view_i64(keys).contains(row.ps_suppkey) { one(row) } else { 0int };
+    verus_prooflib::lemma_sum_ones(edge_input_seq_view(rows));
+    assert(sum(edge_input_seq_view(rows), one) == sum(db.partsupp, selected));
+    lemma_unit_sum(db.partsupp, selected);
+}
+
+pub proof fn lemma_rescan_blockers_len(db: Db, keys: Seq<i64>, rows: Seq<BlockerInput>)
+    requires rescan_blockers_for_suppliers_ok(db, keys, rows),
+    ensures rows.len() <= db.supplier.len(),
+{
+    let one = |key: int| 1int;
+    verus_prooflib::lemma_sum_ones(blocker_input_seq_view(rows));
+    let selected = |row: SupplierRow| if like_match(row.s_comment,
+        seq![b'%', b'C', b'u', b's', b't', b'o', b'm', b'e', b'r', b'%', b'C', b'o', b'm', b'p', b'l', b'a', b'i', b'n', b't', b's', b'%']) && seq_view_i64(keys).contains(row.s_suppkey) { one(row.s_suppkey) } else { 0int };
+    assert(sum(blocker_input_seq_view(rows), one) == sum(db.supplier, selected));
+    lemma_unit_sum(db.supplier, selected);
+}
+
 }

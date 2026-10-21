@@ -673,4 +673,92 @@ pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Coun
     }
 }
 
+#[verifier::rlimit(100)]
+pub fn rewrite_links(links: &mut Edges, source: &Edges, suppliers: &Index<i64>, keep: bool)
+    requires edges_keys_valid(*old(links)), edges_keys_valid(*source), key_set(*suppliers),
+    ensures edges_keys_valid(*final(links)),
+        forall|part: int, supplier: int| #[trigger] edge_at(*final(links), part, supplier)
+            == if suppliers.at((supplier, Seq::<u8>::empty())).is_some() && edge_entry(*source, supplier, part) {
+                if keep { edge_at(*source, supplier, part) } else { 0int }
+            } else { edge_at(*old(links), part, supplier) },
+{
+    let initial = Ghost(*links);
+    proof { suppliers.model(); }
+    let mut cursor = suppliers.cursor();
+    let mut processed: Ghost<int> = Ghost(0);
+    loop
+        invariant edges_keys_valid(*links), edges_keys_valid(*source), key_set(*suppliers), initial@ == *old(links),
+            0 <= processed@ <= suppliers.entries().len(), cursor.remaining() == suppliers.entries().skip(processed@),
+            forall|position: int| 0 <= position < suppliers.entries().len() ==>
+                #[trigger] suppliers.at(suppliers.entries()[position].0) == Some(suppliers.entries()[position].1),
+            forall|part: int, supplier: int| #[trigger] edge_at(*links, part, supplier)
+                == if key_seen(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty())) && edge_entry(*source, supplier, part) {
+                    if keep { edge_at(*source, supplier, part) } else { 0int }
+                } else { edge_at(initial@, part, supplier) },
+        decreases cursor.remaining().len(),
+    {
+        let (key, _) = match cursor.next() {
+            Some(row) => row,
+            None => {
+                proof {
+                    suppliers.model();
+                    assert(processed@ == suppliers.entries().len());
+                    assert forall|part: int, supplier: int| #[trigger] edge_at(*links, part, supplier)
+                        == if suppliers.at((supplier, Seq::<u8>::empty())).is_some() && edge_entry(*source, supplier, part) {
+                            if keep { edge_at(*source, supplier, part) } else { 0int }
+                        } else { edge_at(initial@, part, supplier) } by {
+                        if key_seen(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty())) {
+                            let position = choose|position: int| 0 <= position < processed@ && (#[trigger] suppliers.entries()[position]).0 == (supplier, Seq::<u8>::empty());
+                            assert(suppliers.at(suppliers.entries()[position].0) == Some(suppliers.entries()[position].1));
+                        }
+                        if suppliers.at((supplier, Seq::<u8>::empty())).is_some() {
+                            let position = choose|position: int| #![auto] 0 <= position < suppliers.entries().len() && suppliers.entries()[position].0 == (supplier, Seq::<u8>::empty());
+                            assert(key_seen(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty())));
+                        }
+                    }
+                }
+                return;
+            },
+        };
+        proof {
+            assert(key.view() == suppliers.entries()[processed@].0);
+            assert(suppliers.at(key.view()).is_some());
+            assert(key.view() == (key.number as int, Seq::<u8>::empty()));
+        }
+        let before = Ghost(*links);
+        match source.get(&key) {
+            Some(inner) => {
+                proof { assert(source.at(key.view()) == Some(*inner)); assert(integer_keys(*inner)); }
+                rewrite_column(links, key.number, &*inner, keep);
+                proof {
+                    assert forall|part: int, supplier: int| #[trigger] edge_at(*links, part, supplier)
+                        == if key_seen(suppliers.entries(), processed@ + 1, (supplier, Seq::<u8>::empty())) && edge_entry(*source, supplier, part) {
+                            if keep { edge_at(*source, supplier, part) } else { 0int }
+                        } else { edge_at(initial@, part, supplier) } by {
+                        lemma_key_seen_step(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty()));
+                        if supplier == key.number as int {
+                            assert(suppliers.entries()[processed@].0 == (supplier, Seq::<u8>::empty()));
+                            assert(edge_entry(*source, supplier, part) == inner.at((part, Seq::<u8>::empty())).is_some());
+                            assert(edge_at(*source, supplier, part) == integer_at(*inner, (part, Seq::<u8>::empty())));
+                        }
+                    }
+                }
+            },
+            None => {
+                proof {
+                    assert(source.at(key.view()).is_none());
+                    assert forall|part: int, supplier: int| #[trigger] edge_at(*links, part, supplier)
+                        == if key_seen(suppliers.entries(), processed@ + 1, (supplier, Seq::<u8>::empty())) && edge_entry(*source, supplier, part) {
+                            if keep { edge_at(*source, supplier, part) } else { 0int }
+                        } else { edge_at(initial@, part, supplier) } by {
+                        lemma_key_seen_step(suppliers.entries(), processed@, (supplier, Seq::<u8>::empty()));
+                        if supplier == key.number as int { assert(!edge_entry(*source, supplier, part)); }
+                    }
+                }
+            },
+        }
+        processed = Ghost(processed@ + 1);
+    }
+}
+
 }
