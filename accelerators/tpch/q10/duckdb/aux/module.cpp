@@ -4,6 +4,7 @@
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/dealt_rows.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -137,11 +138,12 @@ CompactSideBase(const TpchQ10State &state) {
       if (slot.present) {
         base->SetCustomerRank(key, slot.customer.acctbal_raw,
                               slot.customer.nationkey);
-        base->customers[key] = slot.customer;
+        base->customers.Set(key, slot.customer);
       } else {
         if (base->ranks.Get(key).present != 0)
           base->ranks.Set(key, TpchQ10CustomerRank{});
-        base->customers.erase(key);
+        if (auto *customer = base->customers.Find(key))
+          *customer = TpchQ10Customer{};
       }
     }
   }
@@ -1210,6 +1212,128 @@ void TpchQ10Module::Execute(core::AuxEngineServices &services,
                   sink);
 }
 
+namespace {
+
+using scan::DateColumn;
+using scan::DecimalColumn;
+using scan::IntColumn;
+using scan::TextColumn;
+
+struct CustomerRow {
+  int64_t key = 0;
+  TpchQ10Customer customer;
+};
+
+DealtRows<CustomerRow> ScanCustomers(core::AuxEngineServices &services, TpchQ10InitialScan &source) {
+  return DealTable<CustomerRow>(
+      services, source, "customer",
+      {IntColumn("c_custkey"), TextColumn("c_name"), DecimalColumn("c_acctbal", 2),
+       IntColumn("c_nationkey"), TextColumn("c_address"), TextColumn("c_phone"),
+       TextColumn("c_comment")},
+      1, [](DealtRows<CustomerRow> &rows, const auto &row) {
+        const int64_t key = row.Int(0);
+        if (!core::DenseIdArray<TpchQ10CustomerRank>::Fits(key))
+          return;
+        rows.Add(0, key,
+                 {key,
+                  {row.Text(1), row.Decimal(2), static_cast<int32_t>(row.Int(3)), row.Text(4),
+                   row.Text(5), row.Text(6)}});
+      });
+}
+
+// Keys are unique, so the runs write disjoint slots of the pre-allocated arrays.
+void FillCustomerSide(core::AuxEngineServices &services, DealtRows<CustomerRow> &&rows,
+                      TpchQ10SideBase &base) {
+  const auto parallel_for = [&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, 1, fn);
+  };
+  base.ranks.Allocate(rows.MaxKey(), parallel_for);
+  base.customers.Allocate(rows.MaxKey(), parallel_for);
+  core::ParallelEach(services, rows.RunCount(), 1, [&](std::size_t run) {
+    for (auto &row : rows.Rows(run, 0)) {
+      base.SetCustomerRank(row.key, row.customer.acctbal_raw, row.customer.nationkey);
+      base.customers.Set(row.key, std::move(row.customer));
+    }
+  });
+}
+
+struct OrderRow {
+  int64_t key = 0;
+  TpchQ10Order order;
+};
+using OrderMap = decltype(TpchQ10State::orders);
+
+// Orders are dealt by the top bits of their shard, so each bucket owns whole shards.
+constexpr unsigned kOrderBucketBits = 10;
+constexpr std::size_t kOrdersPerShard = 4096;
+
+OrderMap ScanOrders(core::AuxEngineServices &services, TpchQ10InitialScan &source) {
+  auto dealt = DealTable<OrderRow>(
+      services, source, "orders",
+      {IntColumn("o_orderkey"), IntColumn("o_custkey"), DateColumn("o_orderdate")},
+      std::size_t{1} << kOrderBucketBits, [](DealtRows<OrderRow> &rows, const auto &row) {
+        const int64_t key = row.Int(0);
+        rows.Add(OrderMap::ShardOf(key, kOrderBucketBits), key,
+                 {key, TpchQ10Order{row.Int(1), row.Date(2)}});
+      });
+  OrderMap orders(std::max(kOrderBucketBits, OrderMap::ShardBitsFor(dealt.Size(), kOrdersPerShard)));
+  ParallelForEachRow(services, dealt,
+                     [&](std::size_t, const OrderRow &row) { orders.Upsert(row.key, row.order); });
+  return orders;
+}
+
+using MonthTables = std::map<int32_t, std::vector<TpchQ10KV>>;
+
+// Returned-lineitem revenue entries per order month, unsorted. The partitions' tables
+// are gathered month by month.
+std::map<int32_t, std::vector<TpchQ10KV>>
+ScanReturnedRevenue(core::AuxEngineServices &services, TpchQ10InitialScan &source,
+                    const OrderMap &orders) {
+  std::vector<MonthTables> runs = core::PartitionedBuild<std::vector<MonthTables>>(
+      services, [] { return std::vector<MonthTables>(1); },
+      [&](std::size_t parts, auto &&sink) {
+        source.ScanTable(services, "lineitem",
+                         {IntColumn("l_orderkey"), DecimalColumn("l_extendedprice", 2),
+                          DecimalColumn("l_discount", 2), TextColumn("l_returnflag")},
+                         parts, sink);
+      },
+      [&](std::vector<MonthTables> &partial, const auto &row) {
+        if (row.Char(3) != 'R')
+          return;
+        const TpchQ10Order *order = orders.Find(row.Int(0));
+        if (!order)
+          return;
+        const auto revenue = TpchQ10RevenueRaw(static_cast<double>(row.Decimal(1)) / 100.0,
+                                               static_cast<double>(row.Decimal(2)) / 100.0);
+        partial.front()[MonthKey(order->orderdate_days)].push_back({order->custkey, revenue});
+      },
+      [](std::vector<MonthTables> &into, std::vector<MonthTables> &&from) {
+        std::move(from.begin(), from.end(), std::back_inserter(into));
+      },
+      core::BuildPartitions(services));
+
+  std::map<int32_t, std::vector<TpchQ10KV>> months;
+  for (const auto &run : runs)
+    for (const auto &entry : run)
+      months[entry.first];
+  std::vector<std::pair<const int32_t, std::vector<TpchQ10KV>> *> slots;
+  for (auto &entry : months)
+    slots.push_back(&entry);
+  core::ParallelEach(services, slots.size(), 1, [&](std::size_t i) {
+    auto &[month, table] = *slots[i];
+    for (auto &run : runs) {
+      const auto it = run.find(month);
+      if (it == run.end())
+        continue;
+      table.insert(table.end(), it->second.begin(), it->second.end());
+      it->second = {};
+    }
+  });
+  return months;
+}
+
+} // namespace
+
 TpchQ10BuildData
 TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ10BuildData data;
@@ -1218,28 +1342,7 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
     throw std::logic_error("TPC-H Q10 requires a typed initial scan source");
 
   auto base = std::make_shared<TpchQ10SideBase>();
-  using scan::DateColumn;
-  using scan::DecimalColumn;
-  using scan::IntColumn;
-  using scan::TextColumn;
-  base->customers = core::PartitionedBuild<TpchQ10CustomerMap>(
-      services, [] { return TpchQ10CustomerMap{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanTable(services, "customer",
-                                {IntColumn("c_custkey"), TextColumn("c_name"),
-                                 DecimalColumn("c_acctbal", 2), IntColumn("c_nationkey"),
-                                 TextColumn("c_address"), TextColumn("c_phone"),
-                                 TextColumn("c_comment")},
-                                parts, sink);
-      },
-      [](TpchQ10CustomerMap &customers, const auto &row) {
-        customers[row.Int(0)] = {row.Text(1), row.Decimal(2),
-                                 static_cast<int32_t>(row.Int(3)), row.Text(4),
-                                 row.Text(5), row.Text(6)};
-      },
-      [](TpchQ10CustomerMap &into, TpchQ10CustomerMap &&from) { into.merge(from); });
-  for (const auto &[key, customer] : base->customers)
-    base->SetCustomerRank(key, customer.acctbal_raw, customer.nationkey);
+  FillCustomerSide(services, ScanCustomers(services, *initial_scan), *base);
   state.side_base = std::move(base);
 
   initial_scan->ScanNationsSerial([&](const TpchQ10NationInput &input) {
@@ -1258,41 +1361,8 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
       });
 
   if (!used_sql_revenue) {
-    using OrderEntry = std::pair<int64_t, TpchQ10Order>;
-    const auto orders = CollectTable<OrderEntry>(
-        services, *initial_scan, "orders",
-        {IntColumn("o_orderkey"), IntColumn("o_custkey"), DateColumn("o_orderdate")},
-        [](const auto &row) {
-          return OrderEntry{row.Int(0), TpchQ10Order{row.Int(1), row.Date(2)}};
-        });
-    for (const auto &[key, order] : orders)
-      state.orders.Upsert(key, order);
-
-    using MonthTables = std::map<int32_t, std::vector<TpchQ10KV>>;
-    data.months = core::PartitionedBuild<MonthTables>(
-        services, [] { return MonthTables{}; },
-        [&](std::size_t parts, auto &&sink) {
-          initial_scan->ScanTable(services, "lineitem",
-                                  {IntColumn("l_orderkey"), DecimalColumn("l_extendedprice", 2),
-                                   DecimalColumn("l_discount", 2), TextColumn("l_returnflag")},
-                                  parts, sink);
-        },
-        [&](MonthTables &months, const auto &row) {
-          if (row.Char(3) != 'R')
-            return;
-          const TpchQ10Order *order = state.orders.Find(row.Int(0));
-          if (!order)
-            return;
-          const auto revenue = TpchQ10RevenueRaw(static_cast<double>(row.Decimal(1)) / 100.0,
-                                                 static_cast<double>(row.Decimal(2)) / 100.0);
-          months[MonthKey(order->orderdate_days)].push_back({order->custkey, revenue});
-        },
-        [](MonthTables &into, MonthTables &&from) {
-          for (auto &[month, entries] : from) {
-            auto &target = into[month];
-            target.insert(target.end(), entries.begin(), entries.end());
-          }
-        });
+    state.orders = ScanOrders(services, *initial_scan);
+    data.months = ScanReturnedRevenue(services, *initial_scan, state.orders);
   }
   // Key-sorted, deduplicated (summed), nonzero month tables.
   std::vector<std::vector<TpchQ10KV> *> tables;
