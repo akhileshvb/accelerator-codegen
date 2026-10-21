@@ -103,6 +103,13 @@ def test_engine_build_fails_when_the_backend_is_not_in_the_build(repo):
     assert "ACCEL_CMAKE_ARGS" in json.loads(out.read_text())["reason"]
 
 
+def test_engine_build_rejects_debris_in_the_backend(repo):
+    (repo / "backends" / "fake" / "capture.cpp.bak").write_text("old\n")
+    proc, _, _, _, out = run_gate(repo, "run_engine_build.sh", kind="engine_backend")
+    assert proc.returncode != 0
+    assert "capture.cpp.bak" in json.loads(out.read_text())["reason"]
+
+
 def test_correctness_runs_up_load_build_run_with_contract_env(repo):
     proc, calls, log, gj, _ = run_gate(repo, "run_correctness.sh", "3")
     assert proc.returncode == 0, proc.stdout + proc.stderr

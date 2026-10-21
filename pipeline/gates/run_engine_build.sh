@@ -19,6 +19,15 @@ fi
 if ! engine_steps "up" "build"; then
   emit_result "${JSON}" engine_build fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "engine=${ENGINE_NAME}"
 fi
+# No editor or agent debris in the backend tree (backup copies, scratch and debug variants of
+# files): what is in backends/<engine>/ is the backend.
+debris="$(cd "${ROOT}/backends/${ENGINE_NAME}" 2>/dev/null &&
+  find . -type f \( -name '*.bak' -o -name '*.orig' -o -name '*.rej' -o -name '*~' -o -name '*.swp' \
+    -o -name '*_debug.*' -o -name '*_scratch.*' -o -name '*.old' \) | sort)"
+if [[ -n "${debris}" ]]; then
+  emit_result "${JSON}" engine_build fail "stray files in backends/${ENGINE_NAME}/ (delete them): $(tr '\n' ' ' <<<"${debris}")" \
+    "" "engine=${ENGINE_NAME}"
+fi
 # The build really includes the backend: some CMake cache under the build dir (the host's,
 # or the one the engine's own build environment writes) has this backend switched on and was
 # configured with $ACCEL_CMAKE_ARGS' build type.
