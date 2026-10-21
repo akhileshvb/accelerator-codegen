@@ -38,6 +38,9 @@ You run unattended: nobody answers a question, and a turn that ends asking for s
 permission changes nothing. A layer owns its contract, not a set of files: the wiring the
 contract needs (plugin or extension registration, SQL that `host.sh` installs, a binding into
 another layer's object) is this layer's work. Make it and keep every harness green.
+A missing SDK, header or package is not a blocker either: the backend owns its build
+environment (`host.sh up`/`build` and the image it sets up). Fetch or install what the profile's
+`identity.sdk_headers` names, or declare in a backend header the stable ABI subset the backend uses.
 A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
 
 ## Required reads (before writing code)

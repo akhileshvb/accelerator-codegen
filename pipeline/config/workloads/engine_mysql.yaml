@@ -20,7 +20,8 @@ engine_profile:
     display_name: MySQL
     version: "MySQL 8.4 (mysql:8.4 image)"
     sdk_headers:
-      - "server plugin headers: mysql/plugin.h, mysql/plugin_audit.h, mysql/udf_registration.h, component service headers"
+      - "server plugin headers: mysql/plugin.h, mysql/plugin_audit.h, mysql/udf_registration_types.h, component service headers"
+      - "the mysql:8.4 image ships only client headers (/usr/include/mysql, MariaDB Connector/C): none of the server plugin headers above; they are in include/ of the MySQL source distribution of the same release (e.g. the mysql-8.4.x source tarball from dev.mysql.com or the mysql/mysql-server tag on GitHub). The plugin, audit and UDF ABI are plain C structs and enums whose layout is fixed within a release."
     docs:
       - "MySQL 8.4 reference manual: plugin API, audit plugin, user-defined functions, InnoDB locking and metadata locking, triggers"
 
