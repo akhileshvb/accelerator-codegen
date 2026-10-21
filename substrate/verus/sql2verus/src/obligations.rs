@@ -501,6 +501,9 @@ impl<'t, 'a> Ob<'t, 'a> {
 /// database (TPC-H SF3000 lineitem has about 2^34 rows).
 const MAX_ROWS: i128 = 1 << 40;
 
+/// Changed rows a state may absorb after its build before apply may decline.
+const MAX_HISTORY: i128 = 1 << 62;
+
 fn range_of(x: &str, lo: i128, hi: i128) -> String {
     format!("{lo} <= {x} <= {hi}")
 }
@@ -959,7 +962,11 @@ pub(crate) async fn obligations(
             params: ps,
             ret: "(r: Option<State>)".into(),
             requires: req,
-            ensures: vec!["r matches Some(s) ==> s.db() == db".into(), "envelope(db) ==> r is Some".into()],
+            ensures: vec![
+                "r matches Some(s) ==> s.db() == db".into(),
+                "r matches Some(s) ==> crate::kernel::history(s) == 0".into(),
+                "envelope(db) ==> r is Some".into(),
+            ],
         });
     }
     fns.push(ObFn {
@@ -986,7 +993,9 @@ pub(crate) async fn obligations(
         let views: Vec<String> = deltas.values().map(|d| format!("{}_delta@", table_field(&d.table))).collect();
         format!("crate::kernel::rescan_{}_wanted({ST}, {})", s.name, views.join(", "))
     };
-    let mut wanted_decls: Vec<String> = vec![];
+    let changes = deltas.values().map(|d| format!("{}_delta@.len()", table_field(&d.table))).collect::<Vec<_>>().join(" + ");
+    let changes = if changes.is_empty() { "0".to_string() } else { changes };
+    let mut wanted_decls: Vec<String> = vec!["/// What the state has absorbed since its build, in changed rows at most (e.g. ids it\n/// never frees).\npub open spec fn history(s: State) -> nat {\n    0\n}\n".to_string()];
     for s in scans.iter().filter(|s| s.rescan) {
         let tys: Vec<String> = deltas.values().map(|d| format!("{}_delta: Seq<{}>", table_field(&d.table), d.elem)).collect();
         wanted_decls.push(format!("/// The keys the kernel asks the host to rescan ({}); the host passes back exactly these.\npub open spec fn rescan_{}_wanted(s: State, {}) -> Seq<{}> {{\n    Seq::empty()\n}}\n", s.name, s.name, tys.join(", "), s.key_rt.unwrap()));
@@ -1028,12 +1037,16 @@ pub(crate) async fn obligations(
         }
         ps.push(P { name: "db2".into(), ty: "Db".into(), ghost: true, arg: Arg::Ghost });
         fns.push(ObFn {
-            doc: "Apply one transaction: a state for db2; Err (the host then rebuilds) only outside\n/// the envelope.".into(),
+            doc: "Apply one transaction: a state for db2; Err (the host then rebuilds) only outside\n/// the envelope or after max_history() changed rows since the build.".into(),
             name: "apply".into(),
             params: ps,
             ret: "(r: Result<State, u32>)".into(),
             requires: req,
-            ensures: vec!["r matches Ok(s2) ==> s2.db() == db2".into(), "envelope(s.db()) && envelope(db2) ==> r is Ok".into()],
+            ensures: vec![
+                "r matches Ok(s2) ==> s2.db() == db2".into(),
+                format!("r matches Ok(s2) ==> crate::kernel::history(s2) <= crate::kernel::history(*s) + {changes}"),
+                format!("envelope(s.db()) && envelope(db2) && crate::kernel::history(*s) + {changes} <= max_history() ==> r is Ok"),
+            ],
         });
     }
 
@@ -1081,6 +1094,7 @@ pub(crate) async fn obligations(
     writeln!(w, "}}\n").unwrap();
     writeln!(w, "// ── The envelope: where the kernel may not decline ──\n").unwrap();
     writeln!(w, "/// Most rows a table may hold.\npub open spec fn max_rows() -> int {{\n    {MAX_ROWS}\n}}\n").unwrap();
+    writeln!(w, "/// Most changed rows a state may absorb after its build before apply may decline\n/// (the host then rebuilds).\npub open spec fn max_history() -> int {{\n    {MAX_HISTORY}\n}}\n").unwrap();
     let mut env = vec![];
     for t in &tables {
         let f = table_field(t);
