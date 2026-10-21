@@ -413,6 +413,65 @@ pub fn adjust_slice(index: &mut Slices, outer: Key, inner: Key, delta: &Wide, no
     Some(())
 }
 
+pub proof fn lemma_slices_nonnegative(index: &Slices, outer: KeyView, inner: KeyView)
+    requires positive_slices(*index),
+    ensures nested_count(*index, outer, inner) >= 0,
+{
+    index.model();
+    if index.at(outer).is_some() {
+        let position = choose|position: int| #![auto] 0 <= position < index.entries().len() && index.entries()[position].0 == outer;
+        assert(positive(index.entries()[position].1));
+        lemma_positive_at(&index.entries()[position].1, inner);
+    }
+}
+
+pub fn add_nonneg(index: &mut Counts, key: Key, delta: &Wide)
+    requires positive(*old(index)), delta@ >= 0,
+    ensures positive(*final(index)),
+        forall|query: KeyView| #![trigger count(*final(index), query)]
+            count(*final(index), query) == count(*old(index), query) + if query == key.view() { delta@ } else { 0 },
+{
+    proof { lemma_positive_at(&*index, key.view()); }
+    let result = adjust(index, key, delta, true);
+    proof { assert(result.is_some()); }
+}
+
+pub fn add_nonneg_slice(index: &mut Slices, outer: Key, inner: Key, delta: &Wide)
+    requires positive_slices(*old(index)), delta@ >= 0,
+    ensures positive_slices(*final(index)),
+        forall|query_outer: KeyView, query_inner: KeyView| #![trigger nested_count(*final(index), query_outer, query_inner)]
+            nested_count(*final(index), query_outer, query_inner) == nested_count(*old(index), query_outer, query_inner)
+                + if query_outer == outer.view() && query_inner == inner.view() { delta@ } else { 0 },
+{
+    proof { lemma_slices_nonnegative(&*index, outer.view(), inner.view()); }
+    let result = adjust_slice(index, outer, inner, delta, true);
+    proof { assert(result.is_some()); }
+}
+
+pub fn some_of<T>(option: Option<T>) -> (value: T)
+    requires option.is_some(),
+    ensures option == Some(value),
+{
+    match option { Some(value) => value, None => { proof { assert(false); } vstd::pervasive::unreached() } }
+}
+
+pub fn add_to(index: &mut Counts, key: Key, delta: &Wide)
+    ensures forall|query: KeyView| #![trigger count(*final(index), query)]
+        count(*final(index), query) == count(*old(index), query) + if query == key.view() { delta@ } else { 0 },
+{
+    let result = adjust(index, key, delta, false);
+    proof { assert(result.is_some()); }
+}
+
+pub fn add_to_slice(index: &mut Slices, outer: Key, inner: Key, delta: &Wide)
+    ensures forall|query_outer: KeyView, query_inner: KeyView| #![trigger nested_count(*final(index), query_outer, query_inner)]
+        nested_count(*final(index), query_outer, query_inner) == nested_count(*old(index), query_outer, query_inner)
+            + if query_outer == outer.view() && query_inner == inner.view() { delta@ } else { 0 },
+{
+    let result = adjust_slice(index, outer, inner, delta, false);
+    proof { assert(result.is_some()); }
+}
+
 pub open spec fn variant_row_weight(outer: KeyView, inner: KeyView, delta: int) -> spec_fn((Key, Arc<Wide>)) -> int {
     |row: (Key, Arc<Wide>)| if outer == (row.0.view().0, Seq::<u8>::empty()) && inner == (0int, row.0.view().1) { delta * (*row.1)@ } else { 0 }
 }
@@ -439,9 +498,8 @@ pub fn add_weighted_variants(target: &mut Slices, variants: &Counts, delta: &Wid
     {
         let (key, multiplicity) = &rows[position];
         let change = delta.mul(&**multiplicity);
-        let adjusted = adjust_slice(target, Key::number(key.number), key.with_number(0), &change, false);
+        add_to_slice(target, Key::number(key.number), key.with_number(0), &change);
         proof {
-            assert(adjusted.is_some());
             assert forall|outer: KeyView, inner: KeyView| #![trigger nested_count(*target, outer, inner)]
                 nested_count(*target, outer, inner) == nested_count(previous, outer, inner)
                     + sum(rows@.take(position as int + 1), variant_row_weight(outer, inner, delta@)) by {

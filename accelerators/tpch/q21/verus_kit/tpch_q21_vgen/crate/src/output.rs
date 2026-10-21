@@ -3,7 +3,8 @@ use crate::index::*;
 use crate::aggregates::*;
 use crate::aggregates::some_or_return;
 use crate::gen_spec::*;
-use crate::gen_obligations::{params, out_view};
+use crate::gen_obligations::{params, out_view, out_fits, answer_fits};
+use verus_prooflib::wide::Wide;
 use crate::query_proofs::*;
 use crate::output_proofs::*;
 use verus_common::order::*;
@@ -14,35 +15,35 @@ verus! {
 
 struct Candidate {
     name: Key,
-    count: i128,
+    count: Wide,
 }
 
 impl Candidate {
-    spec fn row(self) -> OutRow { OutRow { s_name: self.name.view().1, numwait: self.count as int } }
+    spec fn row(self) -> OutRow { OutRow { s_name: self.name.view().1, numwait: self.count@ } }
 }
 
 spec fn candidate_rows(rows: Seq<Candidate>) -> Seq<OutRow> {
     rows.map_values(|row: Candidate| row.row())
 }
 
-pub open spec fn group_rows(rows: Seq<(KeyView, i128)>, multiplier: int) -> Seq<OutRow> {
-    rows.map_values(|row: (KeyView, i128)| OutRow { s_name: row.0.1, numwait: row.1 as int * multiplier })
+pub open spec fn group_rows(rows: Seq<(KeyView, Wide)>, multiplier: int) -> Seq<OutRow> {
+    rows.map_values(|row: (KeyView, Wide)| OutRow { s_name: row.0.1, numwait: row.1@ * multiplier })
 }
 
 fn better(left: &Candidate, right: &Candidate) -> (result: bool)
     ensures result == row_lt(left.row(), right.row()), result == ext_order()(left.row(), right.row()),
 {
-    left.count > right.count || (left.count == right.count && compare_bytes(&left.name.text, &right.name.text) < 0)
+    right.count.lt(&left.count) || (left.count.eq(&right.count) && compare_bytes(&left.name.text, &right.name.text) < 0)
 }
 
-fn retain(selected: &mut Vec<Candidate>, name: Key, count: i128)
-    requires old(selected).len() <= 100, count > 0,
+fn retain(selected: &mut Vec<Candidate>, name: Key, count: Wide)
+    requires old(selected).len() <= 100, count@ > 0,
         strict_order(ext_order()),
         sorted_by(candidate_rows(old(selected)@), ext_order()),
-        forall|index: int| 0 <= index < old(selected).len() ==> (#[trigger] old(selected)[index]).count > 0,
+        forall|index: int| 0 <= index < old(selected).len() ==> (#[trigger] old(selected)[index]).count@ > 0,
     ensures final(selected).len() <= 100,
-        candidate_rows(final(selected)@) == limit_rows(insert_by(candidate_rows(old(selected)@), OutRow { s_name: name.view().1, numwait: count as int }, ext_order()), 100),
-        forall|index: int| 0 <= index < final(selected).len() ==> (#[trigger] final(selected)[index]).count > 0,
+        candidate_rows(final(selected)@) == limit_rows(insert_by(candidate_rows(old(selected)@), OutRow { s_name: name.view().1, numwait: count@ }, ext_order()), 100),
+        forall|index: int| 0 <= index < final(selected).len() ==> (#[trigger] final(selected)[index]).count@ > 0,
 {
     let ghost previous = selected@;
     let candidate = Candidate { name, count };
@@ -154,42 +155,47 @@ fn retain(selected: &mut Vec<Candidate>, name: Key, count: i128)
     }
 }
 
-fn select(groups: &Counts, multiplier: i128) -> (result: Option<Vec<(Vec<u8>, i64)>>)
-    requires groups.wf(),
+pub open spec fn rows_fit(rows: Seq<OutRow>) -> bool {
+    forall|index: int| 0 <= index < rows.len() ==> out_fits(#[trigger] rows[index])
+}
+
+fn select(groups: &Counts, multiplier: &Wide) -> (result: Option<Vec<(Vec<u8>, i64)>>)
+    requires groups.wf(), positive(*groups), multiplier@ > 0,
         forall|index: int| 0 <= index < groups.entries().len() ==> (#[trigger] groups.entries()[index]).0.0 == 0,
-    ensures result matches Some(output) ==> out_view(output@) == limit_rows(sort_by(group_rows(groups.entries(), multiplier as int), ext_order()), 100),
+    ensures
+        result matches Some(output) ==> out_view(output@) == limit_rows(sort_by(group_rows(groups.entries(), multiplier@), ext_order()), 100),
+        result.is_none() ==> !rows_fit(limit_rows(sort_by(group_rows(groups.entries(), multiplier@), ext_order()), 100)),
 {
     hide(Tree::at);
     hide(Tree::entries);
     hide(Tree::wf);
     let mut selected: Vec<Candidate> = Vec::new();
     let mut cursor = groups.cursor();
-    let ghost all_rows = group_rows(groups.entries(), multiplier as int);
+    let ghost all_rows = group_rows(groups.entries(), multiplier@);
     let ghost mut consumed = 0int;
     proof { lemma_row_order(); groups.model(); }
     let mut finished = false;
     while !finished
         invariant
             selected.len() <= 100, 0 <= consumed <= groups.entries().len(), groups.wf(), ordered_rows(groups.entries()),
+            positive(*groups), multiplier@ > 0,
             forall|index: int| 0 <= index < groups.entries().len() ==> (#[trigger] groups.entries()[index]).0.0 == 0,
             cursor.remaining() == groups.entries().skip(consumed),
-            all_rows == group_rows(groups.entries(), multiplier as int),
+            all_rows == group_rows(groups.entries(), multiplier@),
             candidate_rows(selected@) == limit_rows(sort_by(all_rows.take(consumed), ext_order()), 100),
-            forall|index: int| 0 <= index < selected.len() ==> (#[trigger] selected@[index]).count > 0,
+            forall|index: int| 0 <= index < selected.len() ==> (#[trigger] selected@[index]).count@ > 0,
             strict_order(ext_order()),
             forall|first: OutRow, second: OutRow| first != second ==> #[trigger] ext_order()(first, second) || ext_order()(second, first),
             finished ==> consumed == groups.entries().len(), cursor.work() >= 0,
         decreases if finished { 0int } else { cursor.work() + 1 },
     {
         let (name, value) = match cursor.next() { Some(row) => row, None => { finished = true; continue; } };
-        let count = if multiplier == 1 { *value } else { some_or_return!((*value).checked_mul(multiplier)) };
+        let count = (*value).mul(multiplier);
         proof {
-            if multiplier == 1 {
-                assert(count as int == *value as int * multiplier as int);
-            }
+            assert(groups.entries()[consumed].1@ > 0);
+            assert(count@ > 0) by(nonlinear_arith) requires count@ == value@ * multiplier@, value@ > 0, multiplier@ > 0;
         }
-        if count <= 0 { return None; }
-        let ghost row = OutRow { s_name: name.view().1, numwait: count as int };
+        let ghost row = OutRow { s_name: name.view().1, numwait: count@ };
         proof {
             assert(row == all_rows[consumed]);
             lemma_sort_by(all_rows.take(consumed), ext_order());
@@ -216,17 +222,24 @@ fn select(groups: &Counts, multiplier: i128) -> (result: Option<Vec<(Vec<u8>, i6
     while position < selected.len()
         invariant
             position <= selected.len(), selected.len() <= 100,
-            forall|index: int| 0 <= index < selected.len() ==> (#[trigger] selected@[index]).count > 0,
+            forall|index: int| 0 <= index < selected.len() ==> (#[trigger] selected@[index]).count@ > 0,
             candidate_rows(selected@) == limit_rows(sort_by(all_rows, ext_order()), 100),
             out_view(output@) == candidate_rows(selected@).take(position as int),
         decreases selected.len() - position,
     {
         let candidate = &selected[position];
-        if candidate.count > i64::MAX as i128 { return None; }
+        let small = match candidate.count.to_i128() { Some(value) if value <= i64::MAX as i128 => value as i64, _ => {
+            proof {
+                assert(candidate_rows(selected@)[position as int] == candidate.row());
+                assert(!out_fits(candidate.row()));
+                assert(!rows_fit(candidate_rows(selected@)));
+            }
+            return None;
+        } };
         let ghost previous_output = out_view(output@);
-        output.push(((*candidate.name.text).clone(), candidate.count as i64));
+        output.push(((*candidate.name.text).clone(), small));
         proof {
-            assert(candidate.count as i64 as int == candidate.count as int);
+            assert(small as int == candidate.count@);
             assert(out_view(output@) =~= previous_output.push(candidate.row()));
             assert(candidate_rows(selected@).take(position as int + 1) =~= candidate_rows(selected@).take(position as int).push(candidate.row()));
         }
@@ -237,11 +250,11 @@ fn select(groups: &Counts, multiplier: i128) -> (result: Option<Vec<(Vec<u8>, i6
     Some(output)
 }
 
-fn merge_groups(target: &mut Counts, source: &Counts, multiplier: i128) -> (result: Option<()>)
-    requires positive(*old(target)), positive(*source), multiplier > 0,
-    ensures result.is_some() ==> positive(*final(target)),
-        result.is_some() ==> forall|key: KeyView| #![trigger count(*final(target), key)] count(*final(target), key)
-            == count(*old(target), key) + multiplier as int * count(*source, key),
+fn merge_groups(target: &mut Counts, source: &Counts, multiplier: &Wide)
+    requires positive(*old(target)), positive(*source), multiplier@ > 0,
+    ensures positive(*final(target)),
+        forall|key: KeyView| #![trigger count(*final(target), key)] count(*final(target), key)
+            == count(*old(target), key) + multiplier@ * count(*source, key),
 {
     hide(Tree::at);
     hide(Tree::entries);
@@ -250,11 +263,11 @@ fn merge_groups(target: &mut Counts, source: &Counts, multiplier: i128) -> (resu
     let mut cursor = source.cursor();
     let ghost mut consumed = 0int;
     loop
-        invariant positive(*target), positive(*source), 0 <= consumed <= source.entries().len(),
+        invariant positive(*target), positive(*source), 0 <= consumed <= source.entries().len(), multiplier@ > 0,
             previous == *old(target),
             cursor.remaining() == source.entries().skip(consumed),
             forall|key: KeyView| #![trigger count(*target, key)] count(*target, key) == count(previous, key)
-                + multiplier as int * sum(source.entries().take(consumed), entry_weight(key)),
+                + multiplier@ * sum(source.entries().take(consumed), entry_weight(key)),
         decreases cursor.work(),
     {
         let (key, value) = match cursor.next() {
@@ -263,41 +276,45 @@ fn merge_groups(target: &mut Counts, source: &Counts, multiplier: i128) -> (resu
                 proof {
                     assert(consumed == source.entries().len());
                     assert(source.entries().take(consumed) =~= source.entries());
-                    assert forall|key: KeyView| #![trigger count(*target, key)] count(*target, key) == count(previous, key) + multiplier as int * count(*source, key) by {
+                    assert forall|key: KeyView| #![trigger count(*target, key)] count(*target, key) == count(previous, key) + multiplier@ * count(*source, key) by {
                         lemma_count_sum(source, key);
                     }
                 }
-                return Some(());
+                return;
             },
         };
         let ghost changed_key = key.view();
-        let ghost changed_value = *value as int;
-        proof { assert(source.entries()[consumed] == (changed_key, *value)); }
-        let weighted = some_or_return!((*value).checked_mul(multiplier));
-        proof { assert(weighted as int == multiplier as int * changed_value) by(nonlinear_arith)
-            requires weighted as int == changed_value * multiplier as int; }
-        some_or_return!(adjust(target, key, weighted, true));
+        let ghost changed_value = value@;
+        proof { assert(source.entries()[consumed] == (changed_key, *value)); source.model(); assert(changed_value > 0); }
+        let weighted = (*value).mul(multiplier);
+        proof {
+            assert(weighted@ == multiplier@ * changed_value) by(nonlinear_arith)
+                requires weighted@ == changed_value * multiplier@;
+            assert(weighted@ >= 0) by(nonlinear_arith) requires weighted@ == multiplier@ * changed_value, multiplier@ > 0, changed_value > 0;
+        }
+        add_nonneg(target, key, &weighted);
         proof {
             assert forall|key: KeyView| #![trigger count(*target, key)] count(*target, key) == count(previous, key)
-                + multiplier as int * sum(source.entries().take(consumed + 1), entry_weight(key)) by {
+                + multiplier@ * sum(source.entries().take(consumed + 1), entry_weight(key)) by {
                 lemma_sum_take(source.entries(), consumed, entry_weight(key));
                 let subtotal = sum(source.entries().take(consumed), entry_weight(key));
                 let term = entry_weight(key)(source.entries()[consumed]);
-                assert(multiplier as int * (subtotal + term) == multiplier as int * subtotal + multiplier as int * term) by(nonlinear_arith);
+                assert(multiplier@ * (subtotal + term) == multiplier@ * subtotal + multiplier@ * term) by(nonlinear_arith);
             }
             consumed = consumed + 1;
         }
     }
 }
 
-pub open spec fn merge_weight(buckets: Slices, key: KeyView) -> spec_fn((Key, Arc<i128>)) -> int {
-    |row: (Key, Arc<i128>)| *row.1 as int * nested_count(buckets, row.0.view(), key)
+pub open spec fn merge_weight(buckets: Slices, key: KeyView) -> spec_fn((Key, Arc<Wide>)) -> int {
+    |row: (Key, Arc<Wide>)| (*row.1)@ * nested_count(buckets, row.0.view(), key)
 }
 
 #[verifier::rlimit(20)]
 pub fn answer(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): Ghost<Db>) -> (result: Option<Vec<(Vec<u8>, i64)>>)
     requires nations_for(*nations, db), buckets_for(*buckets, db),
     ensures result matches Some(out) ==> query_result(db, params(parameter@), out_view(out@)),
+        result.is_none() ==> !answer_fits(db, params(parameter@)),
 {
     hide(Tree::at);
     hide(Tree::entries);
@@ -335,22 +352,30 @@ pub fn answer(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): G
             lemma_bucket_names(buckets, db, nation.view(), &groups);
             assert(matches.entries() =~= seq![(nation.view(), **multiplicity)]);
             assert(matches.entries()[0].1 == **multiplicity);
-            assert(**multiplicity > 0);
+            assert((**multiplicity)@ > 0);
             assert forall|name: Seq<u8>| #![trigger group_count(db, params(parameter@), name)]
-                group_count(db, params(parameter@), name) == **multiplicity as int * count(groups, (0int, name)) by {
+                group_count(db, params(parameter@), name) == (**multiplicity)@ * count(groups, (0int, name)) by {
                 lemma_group_indexed(db, params(parameter@), &*matches, buckets, name);
-                lemma_sum_singleton((nation.view(), **multiplicity), |row: (KeyView, i128)| row.1 as int * nested_count(*buckets, row.0, (0int, name)));
+                lemma_sum_singleton((nation.view(), **multiplicity), |row: (KeyView, Wide)| row.1@ * nested_count(*buckets, row.0, (0int, name)));
                 assert(count(groups, (0int, name)) == nested_count(*buckets, nation.view(), (0int, name)));
             }
-            lemma_groups_result(db, params(parameter@), &groups, **multiplicity as int);
+            lemma_groups_result(db, params(parameter@), &groups, (**multiplicity)@);
         }
-        return select(&groups, **multiplicity);
+        let selected = select(&groups, &**multiplicity);
+        proof {
+            if selected.is_none() {
+                let model = limit_rows(sort_by(group_rows(groups.entries(), (**multiplicity)@), ext_order()), 100);
+                assert(query_result(db, params(parameter@), model));
+                assert(!answer_fits(db, params(parameter@)));
+            }
+        }
+        return selected;
     }
     let mut merged = Counts::new();
     let mut position = 0usize;
     while position < rows.len()
         invariant position <= rows.len(), positive(merged), matches_for(*matches, db, params(parameter@)), buckets_for(*buckets, db),
-            rows@.map_values(|row: (Key, Arc<i128>)| (row.0.view(), *row.1)) == matches.entries(),
+            rows@.map_values(|row: (Key, Arc<Wide>)| (row.0.view(), *row.1)) == matches.entries(),
             forall|key: KeyView| #![trigger count(merged, key)] count(merged, key) == sum(rows@.take(position as int), merge_weight(*buckets, key)),
         decreases rows.len() - position,
     {
@@ -359,9 +384,9 @@ pub fn answer(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): G
         proof {
             matches.model();
             assert(matches.entries()[position as int] == (nation.view(), **multiplicity));
-            assert(**multiplicity > 0);
+            assert((**multiplicity)@ > 0);
         }
-        some_or_return!(merge_groups(&mut merged, &groups, **multiplicity));
+        merge_groups(&mut merged, &groups, &**multiplicity);
         proof {
             assert forall|key: KeyView| #![trigger count(merged, key)] count(merged, key) == sum(rows@.take(position as int + 1), merge_weight(*buckets, key)) by {
                 lemma_sum_take(rows@, position as int, merge_weight(*buckets, key));
@@ -381,12 +406,21 @@ pub fn answer(nations: &Slices, buckets: &Slices, parameter: &[u8], Ghost(db): G
         }
         assert forall|name: Seq<u8>| #![trigger group_count(db, params(parameter@), name)] group_count(db, params(parameter@), name) == 1int * count(merged, (0int, name)) by {
             lemma_group_indexed(db, params(parameter@), &*matches, buckets, name);
-            lemma_sum_map(rows@, |row: (Key, Arc<i128>)| (row.0.view(), *row.1),
-                |row: (KeyView, i128)| row.1 as int * nested_count(*buckets, row.0, (0int, name)), merge_weight(*buckets, (0int, name)));
+            lemma_sum_map(rows@, |row: (Key, Arc<Wide>)| (row.0.view(), *row.1),
+                |row: (KeyView, Wide)| row.1@ * nested_count(*buckets, row.0, (0int, name)), merge_weight(*buckets, (0int, name)));
         }
         lemma_groups_result(db, params(parameter@), &merged, 1int);
     }
-    select(&merged, 1)
+    let one = Wide::from_i128(1);
+    let selected = select(&merged, &one);
+    proof {
+        if selected.is_none() {
+            let model = limit_rows(sort_by(group_rows(merged.entries(), 1int), ext_order()), 100);
+            assert(query_result(db, params(parameter@), model));
+            assert(!answer_fits(db, params(parameter@)));
+        }
+    }
+    selected
 }
 
 }

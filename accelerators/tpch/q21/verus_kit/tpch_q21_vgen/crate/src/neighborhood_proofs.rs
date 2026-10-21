@@ -1,5 +1,6 @@
 use vstd::prelude::*;
 use verus_common::sums::*;
+use verus_prooflib::wide::Wide;
 use crate::gen_spec::*;
 use crate::aggregates::*;
 use crate::index::*;
@@ -140,13 +141,13 @@ pub open spec fn in_group_weight(db: Db, keys: Counts, supplier: int, key: KeyVi
 pub proof fn lemma_waiting_split(db: Db, keys: &Counts, supplier: int)
     requires keys.wf(),
         forall|position: int| 0 <= position < keys.entries().len() ==> (#[trigger] keys.entries()[position]).0.1 == Seq::<u8>::empty(),
-    ensures waiting(db, supplier) == sum(keys.entries(), |row: (KeyView, i128)| neighborhood_waiting(db, row.0.0, supplier)) + sum(db.lineitem, outside_weight(db, *keys, supplier)),
+    ensures waiting(db, supplier) == sum(keys.entries(), |row: (KeyView, Wide)| neighborhood_waiting(db, row.0.0, supplier)) + sum(db.lineitem, outside_weight(db, *keys, supplier)),
 {
     hide(Tree::at);
     hide(Tree::entries);
     hide(Tree::wf);
     keys.model();
-    let key_rows = keys.entries().map_values(|row: (KeyView, i128)| row.0);
+    let key_rows = keys.entries().map_values(|row: (KeyView, Wide)| row.0);
     let key_of = |line: LineitemRow| (line.l_orderkey, Seq::<u8>::empty());
     let inside = inside_weight(db, *keys, supplier);
     let outside = outside_weight(db, *keys, supplier);
@@ -169,9 +170,9 @@ pub proof fn lemma_waiting_split(db: Db, keys: &Counts, supplier: int)
         lemma_sum_ext(db.lineitem, in_group_weight(db, *keys, supplier, key), |line: LineitemRow| if key_of(line) == key { inside(line) } else { 0 });
     }
     lemma_sum_group(db.lineitem, key_rows, key_of, inside, grouped);
-    let from_entries = |row: (KeyView, i128)| grouped(row.0);
-    lemma_sum_map(keys.entries(), |row: (KeyView, i128)| row.0, grouped, from_entries);
-    let contributions = |row: (KeyView, i128)| neighborhood_waiting(db, row.0.0, supplier);
+    let from_entries = |row: (KeyView, Wide)| grouped(row.0);
+    lemma_sum_map(keys.entries(), |row: (KeyView, Wide)| row.0, grouped, from_entries);
+    let contributions = |row: (KeyView, Wide)| neighborhood_waiting(db, row.0.0, supplier);
     assert forall|position: int| #![trigger keys.entries()[position]] 0 <= position < keys.entries().len() implies from_entries(keys.entries()[position]) == contributions(keys.entries()[position]) by {
         let key = keys.entries()[position].0;
         assert(key.1 == Seq::<u8>::empty());
@@ -192,7 +193,7 @@ pub proof fn lemma_waiting_delta(db: Db, db2: Db, keys: &Counts, lines: Seq<Line
         forall|position: int| 0 <= position < keys.entries().len() ==> (#[trigger] keys.entries()[position]).0.1 == Seq::<u8>::empty(),
         bag_step(db.lineitem, db2.lineitem, lineitem_delta_seq_view(lines)),
         bag_step(db.orders, db2.orders, full), orders_delta_ok(orders, full), delta_keys_covered(*keys, lines, orders),
-    ensures waiting(db2, supplier) - waiting(db, supplier) == sum(keys.entries(), |row: (KeyView, i128)| neighborhood_waiting(db2, row.0.0, supplier) - neighborhood_waiting(db, row.0.0, supplier)),
+    ensures waiting(db2, supplier) - waiting(db, supplier) == sum(keys.entries(), |row: (KeyView, Wide)| neighborhood_waiting(db2, row.0.0, supplier) - neighborhood_waiting(db, row.0.0, supplier)),
 {
     let before = outside_weight(db, *keys, supplier);
     let after = outside_weight(db2, *keys, supplier);
@@ -213,9 +214,9 @@ pub proof fn lemma_waiting_delta(db: Db, db2: Db, keys: &Counts, lines: Seq<Line
     assert(sum(db2.lineitem, before) == sum(db.lineitem, before) + sum(lineitem_delta_seq_view(lines), signed));
     lemma_waiting_split(db, keys, supplier);
     lemma_waiting_split(db2, keys, supplier);
-    let old_weight = |row: (KeyView, i128)| neighborhood_waiting(db, row.0.0, supplier);
-    let new_weight = |row: (KeyView, i128)| neighborhood_waiting(db2, row.0.0, supplier);
-    let difference = |row: (KeyView, i128)| neighborhood_waiting(db2, row.0.0, supplier) - neighborhood_waiting(db, row.0.0, supplier);
+    let old_weight = |row: (KeyView, Wide)| neighborhood_waiting(db, row.0.0, supplier);
+    let new_weight = |row: (KeyView, Wide)| neighborhood_waiting(db2, row.0.0, supplier);
+    let difference = |row: (KeyView, Wide)| neighborhood_waiting(db2, row.0.0, supplier) - neighborhood_waiting(db, row.0.0, supplier);
     lemma_sum_sub(keys.entries(), new_weight, old_weight, difference);
 }
 

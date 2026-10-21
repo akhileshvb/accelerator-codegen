@@ -1,6 +1,7 @@
 use vstd::prelude::*;
 use std::sync::Arc;
 use verus_common::sums::*;
+use verus_prooflib::wide::Wide;
 use verus_common::order::*;
 use crate::index::*;
 use crate::aggregates::*;
@@ -85,7 +86,7 @@ pub proof fn lemma_weighted_index<Value>(index: &Index<Value>, keys: Seq<KeyView
 }
 
 pub open spec fn supplier_keys(index: Slices) -> Seq<KeyView> { index.entries().map_values(|row: (KeyView, Counts)| row.0) }
-pub open spec fn count_keys(index: Counts) -> Seq<KeyView> { index.entries().map_values(|row: (KeyView, i128)| row.0) }
+pub open spec fn count_keys(index: Counts) -> Seq<KeyView> { index.entries().map_values(|row: (KeyView, Wide)| row.0) }
 pub open spec fn bucket_factor(waiting_index: Counts, suppliers: Slices, nation: int, name: Seq<u8>) -> int {
     weighted_index(suppliers, |key: KeyView| count(waiting_index, key), |slice: Counts| count(slice, (nation, name)))
 }
@@ -139,9 +140,9 @@ pub open spec fn supplier_group_weight(db: Db, nation: int, name: Seq<u8>, key: 
     |row: SupplierRow| if key == (row.s_suppkey, Seq::<u8>::empty()) && row.s_nationkey == nation && row.s_name == name { waiting(db, row.s_suppkey) } else { 0 }
 }
 
-pub open spec fn waiting_bucket_weight(suppliers: Slices, outer: KeyView, inner: KeyView) -> spec_fn((Key, Arc<i128>)) -> int {
-    |row: (Key, Arc<i128>)| if outer.1 == Seq::<u8>::empty() && inner.0 == 0 {
-        *row.1 as int * nested_count(suppliers, row.0.view(), (outer.0, inner.1))
+pub open spec fn waiting_bucket_weight(suppliers: Slices, outer: KeyView, inner: KeyView) -> spec_fn((Key, Arc<Wide>)) -> int {
+    |row: (Key, Arc<Wide>)| if outer.1 == Seq::<u8>::empty() && inner.0 == 0 {
+        (*row.1)@ * nested_count(suppliers, row.0.view(), (outer.0, inner.1))
     } else { 0 }
 }
 
@@ -157,13 +158,13 @@ pub open spec fn waiting_change_for(changes: Counts, before: Db, after: Db) -> b
 }
 
 pub open spec fn waiting_bucket_factor(changes: Counts, suppliers: Slices, nation: int, name: Seq<u8>) -> int {
-    weighted_index(changes, |key: KeyView| nested_count(suppliers, key, (nation, name)), |value: i128| value as int)
+    weighted_index(changes, |key: KeyView| nested_count(suppliers, key, (nation, name)), |value: Wide| value@)
 }
 
 pub proof fn lemma_bucket_delta_rows(waiting_delta: &Counts, supplier_delta: &Slices, old_suppliers: Slices, new_waiting: Counts,
-    waiting_rows: Seq<(Key, Arc<i128>)>, supplier_rows: Seq<(Key, Arc<Counts>)>, outer: KeyView, inner: KeyView)
+    waiting_rows: Seq<(Key, Arc<Wide>)>, supplier_rows: Seq<(Key, Arc<Counts>)>, outer: KeyView, inner: KeyView)
     requires
-        waiting_rows.map_values(|row: (Key, Arc<i128>)| (row.0.view(), *row.1)) == waiting_delta.entries(),
+        waiting_rows.map_values(|row: (Key, Arc<Wide>)| (row.0.view(), *row.1)) == waiting_delta.entries(),
         supplier_rows.map_values(|row: (Key, Arc<Counts>)| (row.0.view(), *row.1)) == supplier_delta.entries(),
     ensures
         sum(waiting_rows, waiting_bucket_weight(old_suppliers, outer, inner)) + sum(supplier_rows, supplier_bucket_weight(new_waiting, outer, inner)) ==
@@ -171,24 +172,24 @@ pub proof fn lemma_bucket_delta_rows(waiting_delta: &Counts, supplier_delta: &Sl
             waiting_bucket_factor(*waiting_delta, old_suppliers, outer.0, inner.1) + bucket_factor(new_waiting, *supplier_delta, outer.0, inner.1)
         } else { 0 },
 {
-    let w = |row: (KeyView, i128)| if outer.1 == Seq::<u8>::empty() && inner.0 == 0 {
-        row.1 as int * nested_count(old_suppliers, row.0, (outer.0, inner.1))
+    let w = |row: (KeyView, Wide)| if outer.1 == Seq::<u8>::empty() && inner.0 == 0 {
+        row.1@ * nested_count(old_suppliers, row.0, (outer.0, inner.1))
     } else { 0 };
     let s = |row: (KeyView, Counts)| if outer.1 == Seq::<u8>::empty() && inner.0 == 0 {
         count(new_waiting, row.0) * count(row.1, (outer.0, inner.1))
     } else { 0 };
-    lemma_sum_map(waiting_rows, |row: (Key, Arc<i128>)| (row.0.view(), *row.1), w, waiting_bucket_weight(old_suppliers, outer, inner));
+    lemma_sum_map(waiting_rows, |row: (Key, Arc<Wide>)| (row.0.view(), *row.1), w, waiting_bucket_weight(old_suppliers, outer, inner));
     lemma_sum_map(supplier_rows, |row: (Key, Arc<Counts>)| (row.0.view(), *row.1), s, supplier_bucket_weight(new_waiting, outer, inner));
     if outer.1 == Seq::<u8>::empty() && inner.0 == 0 {
-        let factor = |row: (KeyView, i128)| nested_count(old_suppliers, row.0, (outer.0, inner.1)) * row.1 as int;
-        assert forall|row: (KeyView, i128)| #[trigger] w(row) == factor(row) by {
-            let amount = row.1 as int;
+        let factor = |row: (KeyView, Wide)| nested_count(old_suppliers, row.0, (outer.0, inner.1)) * row.1@;
+        assert forall|row: (KeyView, Wide)| #[trigger] w(row) == factor(row) by {
+            let amount = row.1@;
             let variants = nested_count(old_suppliers, row.0, (outer.0, inner.1));
             assert(amount * variants == variants * amount) by (nonlinear_arith);
         }
         lemma_sum_ext_all(waiting_delta.entries(), w, factor);
         lemma_sum_ext_all(waiting_delta.entries(), factor, weighted_entry(
-            |key: KeyView| nested_count(old_suppliers, key, (outer.0, inner.1)), |value: i128| value as int));
+            |key: KeyView| nested_count(old_suppliers, key, (outer.0, inner.1)), |value: Wide| value@));
         assert(sum(waiting_rows, waiting_bucket_weight(old_suppliers, outer, inner)) == waiting_bucket_factor(*waiting_delta, old_suppliers, outer.0, inner.1));
         let supplier_factor = |row: (KeyView, Counts)| count(new_waiting, row.0) * count(row.1, (outer.0, inner.1));
         lemma_sum_ext_all(supplier_delta.entries(), s, supplier_factor);
@@ -245,7 +246,7 @@ pub proof fn lemma_bucket_update(old_waiting: &Counts, old_suppliers: &Slices, n
     let new_weight = |key: KeyView| count(*new_waiting, key);
     let value = |slice: Counts| count(slice, (nation, name));
     let variant_weight = |key: KeyView| nested_count(*old_suppliers, key, (nation, name));
-    let count_value = |value: i128| value as int;
+    let count_value = |value: Wide| value@;
     lemma_weighted_index(old_suppliers, keys, old_weight, value);
     lemma_weighted_index(new_suppliers, keys, new_weight, value);
     lemma_weighted_index(supplier_delta, keys, new_weight, value);
