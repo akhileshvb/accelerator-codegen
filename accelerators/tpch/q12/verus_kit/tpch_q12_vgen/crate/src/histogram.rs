@@ -163,8 +163,8 @@ impl Sparse {
 pub struct Layers {
     pub base: Arc<Sparse>,
     pub tiers: Vec<Arc<Sparse>>,
-    pub live: usize,
-    pub physical: usize,
+    pub live: u128,
+    pub physical: u128,
 }
 
 impl Layers {
@@ -334,7 +334,7 @@ impl Layers {
     {
         proof { reveal(Layers::wf); }
         let size = base.keys.len();
-        let out = Layers { base: Arc::new(base), tiers: Vec::new(), live: size, physical: size };
+        let out = Layers { base: Arc::new(base), tiers: Vec::new(), live: size as u128, physical: size as u128 };
         proof {
             reveal(Layers::at);
             out.base.keys@.to_set_ensures();
@@ -437,7 +437,7 @@ impl Layers {
         assert(full.keys@.take(full.keys@.len() as int) =~= full.keys@);
     }
 
-    #[verifier::rlimit(60)]
+    #[verifier::rlimit(100)]
     pub fn replace(&self, patch: Sparse) -> (next: Self)
         requires self.wf(), patch.wf(),
             forall|day: i32| #![trigger patch.values@[day]]
@@ -500,7 +500,7 @@ impl Layers {
         }
         let total = self.live as i128 + live_change;
         proof { assert(total >= 0 && total <= 4294967296); }
-        let live = total as usize;
+        let live = total as u128;
         proof {
             assert(live as int == self.live as int + sum(replacements.keys@, self.support_change(replacements)));
         }
@@ -538,7 +538,7 @@ impl Layers {
             assert(self.tiers@.take(0) =~= Seq::<Arc<Sparse>>::empty());
         }
         let mut tiers = Vec::new();
-        let mut physical = self.base.keys.len();
+        let mut physical = self.base.keys.len() as u128;
         index = 0;
         while index < depth
             invariant index <= depth, depth <= self.tiers@.len(), self.wf(), merged.wf(), replacements.wf(),
@@ -559,7 +559,7 @@ impl Layers {
                 verus_common::sums::lemma_sum_take(self.tiers@, index as int, |tier: Arc<Sparse>| tier.keys@.len() as int);
                 lemma_tier_prefix(self.tiers@, index as int + 1);
             }
-            physical = physical + self.tiers[index].keys.len();
+            physical = physical + self.tiers[index].keys.len() as u128;
             tiers.push(self.tiers[index].clone());
             proof {
                 assert(tiers@ =~= self.tiers@.take(index as int + 1));
@@ -574,7 +574,7 @@ impl Layers {
             assert(self.physical <= 4 * self.live);
             assert(self.live <= 4294967296);
         }
-        physical = physical + merged.keys.len();
+        physical = physical + merged.keys.len() as u128;
         let ghost latest = merged;
         if merged.keys.len() > 0 {
             let newest = Arc::new(merged);
@@ -619,7 +619,7 @@ impl Layers {
                 0 <= offset < next.tiers@.len() - 1 implies
                     next.tiers@[offset].keys@.len() > 2 * next.tiers@[offset + 1].keys@.len() by {}
         }
-        if physical as u128 > 4 * live as u128 {
+        if physical > 4 * live {
             let full = next.materialize();
             let mut clean = Sparse::new();
             index = 0;
@@ -663,7 +663,7 @@ impl Layers {
         let mut total = Tally::zero();
         if end <= start { return total; }
         let width = end as i64 - start as i64;
-        if width as u128 <= self.physical as u128 / (self.tiers.len() as u128 + 1) {
+        if width as u128 <= self.physical / (self.tiers.len() as u128 + 1) {
             let mut day = start as i64;
             while day < end as i64
                 invariant start as i64 <= day <= end as i64, total@.nonnegative(), self.wf(),
