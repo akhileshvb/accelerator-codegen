@@ -41,3 +41,5 @@ pub mod emitw;
 pub mod raw;
 pub mod slow;
 pub mod pmap;
+pub mod gidx;
+pub mod gnames;
