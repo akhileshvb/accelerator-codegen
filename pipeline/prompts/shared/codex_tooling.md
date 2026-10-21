@@ -113,7 +113,7 @@ Implementation is **sequential layers** (`layers.md`): `capture` → `epochs` �
    **Do not** treat host `cmake`, `ninja`, or `docker exec` of the harness as
    the pass bar — MCP is the official in-container (or host_cmake) gate.
 5. Do **not** author `test_<engine>_adversarial.cpp` during implementation.
-6. Do not start later layers or finish on cmake-only success.
+6. Do not implement later layers' contracts (this layer's own wiring in their files is yours), and do not finish on cmake-only success or a question.
 7. **Prior-layer patch (narrow):** if this layer is blocked by a real bug or
    design flaw in an earlier layer, make the smallest fix there, keep that
    prior harness green (add the missing assert if needed), and `request_gate`

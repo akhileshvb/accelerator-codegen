@@ -110,9 +110,13 @@ def _user_message(
             f"until both return status=pass. Do not substitute host cmake or "
             f"`docker exec` of the harness for the MCP gates. "
             f"host_runtime.kind=`{(workload.get('host_runtime') or {}).get('kind') or 'host_cmake'}`. "
-            "Do not start later layers. Prior layers: reuse; smallest patch "
-            "only if a real bug/design flaw blocks this layer — then re-gate "
-            "the prior layer too."
+            "Do not implement later layers' contracts, but the wiring this "
+            "layer's contract needs (plugin or extension registration, SQL "
+            "that host.sh installs, a binding into another layer's object) is "
+            "this layer's work, wherever the file lives. Prior layers: reuse; "
+            "smallest patch only if a real bug/design flaw blocks this layer — "
+            "then re-gate the prior layer too. You run unattended: never stop "
+            "to ask for scope or permission; make the change."
         )
     if extra.strip():
         return base + "\n\n" + extra.strip()

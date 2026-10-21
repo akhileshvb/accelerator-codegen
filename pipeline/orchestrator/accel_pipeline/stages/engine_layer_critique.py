@@ -133,8 +133,11 @@ def format_layer_critique_feedback(critique: dict[str, Any], *, round_idx: int) 
     )
     lines.append("")
     lines.append(
-        "Fix this layer (and a prior layer only if a real bug there blocks this "
-        "contract — smallest patch, keep that prior harness green). Add harness "
+        "Fix this layer, including the wiring it needs in files other layers "
+        "own (plugin registration, host.sh, runtime binding); change a prior "
+        "layer's logic only if a real bug there blocks this contract (smallest "
+        "patch, keep that prior harness green). Never stop to ask: nobody "
+        "answers, so make the change. Add harness "
         "asserts for any untested contract path. Mid-loop `request_gate` "
         "`engine_build` then this layer's gate until green. Do not weaken the "
         "harness to greenwash."

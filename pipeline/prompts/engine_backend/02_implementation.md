@@ -34,6 +34,10 @@ some document but absent from the tree does not exist, and is never a reason to 
 the layer needs. Where the analysis calls a mechanic unavailable, the layer contracts give the design
 that works without it (no pre-commit hook, no exact reader epoch, no shareable snapshot): build that.
 A layer always ships code and its harness; "blocked" is not a result.
+You run unattended: nobody answers a question, and a turn that ends asking for scope or
+permission changes nothing. A layer owns its contract, not a set of files: the wiring the
+contract needs (plugin or extension registration, SQL that `host.sh` installs, a binding into
+another layer's object) is this layer's work. Make it and keep every harness green.
 A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
 
 ## Required reads (before writing code)
