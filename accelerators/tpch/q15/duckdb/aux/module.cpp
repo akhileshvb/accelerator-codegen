@@ -17,8 +17,8 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-// Windows per slice (untimed): a rescan walks every supplier slot.
-constexpr std::size_t kWindowGrain = 8;
+// Windows per slice: a rescan walks every supplier slot, so one each.
+constexpr std::size_t kWindowGrain = 1;
 // Lineitem deltas below which a commit applies its month windows inline (untimed).
 constexpr std::size_t kDeltaOpThreshold = 4096;
 
