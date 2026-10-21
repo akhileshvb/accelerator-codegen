@@ -23,5 +23,6 @@ pub mod query_semantics;
 pub mod output_validation;
 pub mod maintenance_semantics;
 pub mod bounds;
+pub mod apply_proofs;
 pub mod wanted;
 pub mod contrib;
