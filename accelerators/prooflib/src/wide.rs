@@ -3,6 +3,7 @@
 // and a sign and little-endian base-2^64 magnitude (`Big`) after an overflow, so the common case
 // does not allocate.  The view `@` is the integer; no operation can overflow or decline.
 use vstd::prelude::*;
+use std::sync::Arc;
 
 verus! {
 
@@ -566,18 +567,19 @@ impl Big {
 }
 
 
-/// An exact signed integer: an i128 while it fits, `Big` otherwise.  Use for any total sum or
-/// product whose size the envelope does not bound by 2^127.
+/// An exact signed integer: an i128 while it fits, a shared `Big` otherwise (so a copy is
+/// structurally equal to the original).  Use for any total sum or product whose size the envelope
+/// does not bound by 2^127.
 pub enum Wide {
     Small(i128),
-    Big(Big),
+    Big(Arc<Big>),
 }
 
 impl View for Wide {
     type V = int;
 
     closed spec fn view(&self) -> int {
-        match self { Wide::Small(x) => *x as int, Wide::Big(b) => b@ }
+        match self { Wide::Small(x) => *x as int, Wide::Big(b) => (**b)@ }
     }
 }
 
@@ -592,19 +594,19 @@ impl Wide {
         ensures r@ == x as int,
     { Wide::Small(x) }
 
-    /// A copy.
+    /// A copy, structurally equal to the original.
     pub fn dup(&self) -> (r: Wide)
-        ensures r@ == self@,
-    { match self { Wide::Small(x) => Wide::Small(*x), Wide::Big(b) => Wide::Big(b.dup()) } }
+        ensures r == *self,
+    { match self { Wide::Small(x) => Wide::Small(*x), Wide::Big(b) => Wide::Big(b.clone()) } }
 
     fn to_big(&self) -> (r: Big)
         ensures r@ == self@,
-    { match self { Wide::Small(x) => Big::from_i128(*x), Wide::Big(b) => b.dup() } }
+    { match self { Wide::Small(x) => Big::from_i128(*x), Wide::Big(b) => (**b).dup() } }
 
     /// Demotes a Big that fits an i128.
     fn norm(b: Big) -> (r: Wide)
         ensures r@ == b@,
-    { match b.to_i128() { Some(x) => Wide::Small(x), None => Wide::Big(b) } }
+    { match b.to_i128() { Some(x) => Wide::Small(x), None => Wide::Big(Arc::new(b)) } }
 
     /// -self.
     pub fn neg(&self) -> (r: Wide)
@@ -649,17 +651,17 @@ impl Wide {
     /// self == 0.
     pub fn is_zero(&self) -> (r: bool)
         ensures r == (self@ == 0),
-    { match self { Wide::Small(x) => *x == 0, Wide::Big(b) => b.is_zero() } }
+    { match self { Wide::Small(x) => *x == 0, Wide::Big(b) => (**b).is_zero() } }
 
     /// self > 0.
     pub fn is_pos(&self) -> (r: bool)
         ensures r == (self@ > 0),
-    { match self { Wide::Small(x) => *x > 0, Wide::Big(b) => b.is_pos() } }
+    { match self { Wide::Small(x) => *x > 0, Wide::Big(b) => (**b).is_pos() } }
 
     /// self < 0.
     pub fn is_neg(&self) -> (r: bool)
         ensures r == (self@ < 0),
-    { match self { Wide::Small(x) => *x < 0, Wide::Big(b) => b.is_neg() } }
+    { match self { Wide::Small(x) => *x < 0, Wide::Big(b) => (**b).is_neg() } }
 
     /// self < o.
     pub fn lt(&self, o: &Wide) -> (r: bool)
@@ -682,7 +684,7 @@ impl Wide {
         ensures
             r matches Some(v) ==> v as int == self@,
             i128::MIN <= self@ <= i128::MAX ==> r is Some,
-    { match self { Wide::Small(x) => Some(*x), Wide::Big(b) => b.to_i128() } }
+    { match self { Wide::Small(x) => Some(*x), Wide::Big(b) => (**b).to_i128() } }
 }
 
 }
