@@ -487,6 +487,31 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
     lemma_answer_ok(db, params);
 }
 
+// ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──
+
+/// No divisor of the query is zero (it has none).
+pub open spec fn defined(db: Db, params: Params) -> bool {
+    true
+}
+
+/// With non-zero divisors the query has an answer.
+pub proof fn lemma_defined_exists(db: Db, params: Params)
+    requires
+        defined(db, params),
+    ensures
+        exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o),
+{
+    lemma_query_result_iff(db, params, answer(db, params));
+    assert(query_result(db, params, limit_rows(answer(db, params), 20)));
+}
+
+/// An answer exists only if the divisors are non-zero.
+pub proof fn lemma_exists_defined(db: Db, params: Params)
+    ensures
+        (exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)) ==> defined(db, params),
+{
+}
+
 // ── Permutation invariance (verified by Verus, not trusted) ──────────────────
 // A table is a bag: the answers do not depend on the order of any table's rows.
 

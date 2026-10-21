@@ -1105,10 +1105,12 @@ pub(crate) async fn obligations(
     writeln!(w, "}}\n").unwrap();
     writeln!(w, "/// An answer row whose values fit the result's runtime types.").unwrap();
     writeln!(w, "pub open spec fn out_fits(r: OutRow) -> bool {{\n    {}\n}}\n", if out_fits.is_empty() { "true".to_string() } else { out_fits.join("\n    && ") }).unwrap();
-    writeln!(w, "/// A correct answer exists (none does, e.g., for a zero divisor) and every correct").unwrap();
-    writeln!(w, "/// answer fits the result's runtime types.").unwrap();
+    writeln!(w, "/// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves").unwrap();
+    writeln!(w, "/// `defined <==> exists an answer`) and every correct answer fits the result's").unwrap();
+    writeln!(w, "/// runtime types.  A kernel that declines because no answer exists must prove").unwrap();
+    writeln!(w, "/// `!defined`.").unwrap();
     writeln!(w, "pub open spec fn answer_fits(db: Db, params: Params) -> bool {{").unwrap();
-    writeln!(w, "    &&& exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)").unwrap();
+    writeln!(w, "    &&& defined(db, params)").unwrap();
     writeln!(w, "    &&& forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])\n}}\n").unwrap();
     writeln!(w, "// ── Obligations: the host calls only these ──\n").unwrap();
     let mut stub = String::new();
