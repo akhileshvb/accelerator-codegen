@@ -58,10 +58,15 @@ pub fn prepare_apply(
     requires
         base.timeline() == store.timeline(),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+        lines_for_orders_keys@ == crate::kernel::rescan_lines_for_orders_wanted(base.state_spec(), lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_lines_for_orders_ok(store.db_at((base.epoch() + 1) as nat), lines_for_orders_keys@, lines_for_orders_rows@),
+        lines_for_parts_keys@ == crate::kernel::rescan_lines_for_parts_wanted(base.state_spec(), lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_lines_for_parts_ok(store.db_at((base.epoch() + 1) as nat), lines_for_parts_keys@, lines_for_parts_rows@),
+        lines_for_suppliers_keys@ == crate::kernel::rescan_lines_for_suppliers_wanted(base.state_spec(), lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_lines_for_suppliers_ok(store.db_at((base.epoch() + 1) as nat), lines_for_suppliers_keys@, lines_for_suppliers_rows@),
+        partsupp_for_parts_keys@ == crate::kernel::rescan_partsupp_for_parts_wanted(base.state_spec(), lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_partsupp_for_parts_ok(store.db_at((base.epoch() + 1) as nat), partsupp_for_parts_keys@, partsupp_for_parts_rows@),
+        orders_for_keys_keys@ == crate::kernel::rescan_orders_for_keys_wanted(base.state_spec(), lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_orders_for_keys_ok(store.db_at((base.epoch() + 1) as nat), orders_for_keys_keys@, orders_for_keys_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),

@@ -51,7 +51,9 @@ pub fn prepare_apply(
     requires
         base.timeline() == store.timeline(),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+        stocks_for_parts_keys@ == crate::kernel::rescan_stocks_for_parts_wanted(base.state_spec(), lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_stocks_for_parts_ok(store.db_at((base.epoch() + 1) as nat), stocks_for_parts_keys@, stocks_for_parts_rows@),
+        shipments_for_parts_keys@ == crate::kernel::rescan_shipments_for_parts_wanted(base.state_spec(), lineitem_delta@, nation_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_shipments_for_parts_ok(store.db_at((base.epoch() + 1) as nat), shipments_for_parts_keys@, shipments_for_parts_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),

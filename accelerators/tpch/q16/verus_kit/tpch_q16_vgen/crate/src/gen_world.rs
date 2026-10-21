@@ -55,9 +55,13 @@ pub fn prepare_apply(
         base.timeline() == store.timeline(),
         supplier_delta_ok(supplier_delta@, supplier_full),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), part_delta_seq_view(part_delta@), edge_delta_seq_view(partsupp_delta@), supplier_full),
+        edges_for_parts_keys@ == crate::kernel::rescan_edges_for_parts_wanted(base.state_spec(), part_delta@, partsupp_delta@, supplier_delta@),
         rescan_edges_for_parts_ok(store.db_at((base.epoch() + 1) as nat), edges_for_parts_keys@, edges_for_parts_rows@),
+        edges_for_suppliers_keys@ == crate::kernel::rescan_edges_for_suppliers_wanted(base.state_spec(), part_delta@, partsupp_delta@, supplier_delta@),
         rescan_edges_for_suppliers_ok(store.db_at((base.epoch() + 1) as nat), edges_for_suppliers_keys@, edges_for_suppliers_rows@),
+        parts_for_neighbors_keys@ == crate::kernel::rescan_parts_for_neighbors_wanted(base.state_spec(), part_delta@, partsupp_delta@, supplier_delta@),
         rescan_parts_for_neighbors_ok(store.db_at((base.epoch() + 1) as nat), parts_for_neighbors_keys@, parts_for_neighbors_rows@),
+        blockers_for_suppliers_keys@ == crate::kernel::rescan_blockers_for_suppliers_wanted(base.state_spec(), part_delta@, partsupp_delta@, supplier_delta@),
         rescan_blockers_for_suppliers_ok(store.db_at((base.epoch() + 1) as nat), blockers_for_suppliers_keys@, blockers_for_suppliers_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),
