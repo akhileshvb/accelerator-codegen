@@ -12,8 +12,12 @@ Generated and frozen (read them; never edit):
     `query_result(s.db(), params(..), out_view(out@))`;
   * `apply(&State, deltas..., [rescan keys, rows]..., Ghost(..), Ghost(db2)) -> Result<State, u32>`
     ensures `s2.db() == db2`;
-  * `rescan_<name>_keys(&State, deltas...) -> Vec<key>` (no contract: apply
-    must check every key it relies on was rescanned).
+  * `rescan_<name>_keys(&State, deltas...) -> Vec<key>` ensures
+    `r@ == rescan_<name>_wanted(*s, delta views...)`, a spec fn you define in
+    `kernel.rs` (the stub declares it): the keys you ask for. The host passes
+    back exactly those keys, so apply's `requires` says `<name>_keys@ ==
+    rescan_<name>_wanted(..)`; choose `wanted` so the rows it covers are all
+    apply needs, and apply need not check coverage.
 * `gen_world.rs`, `gen_ffi.rs`: the adapter that puts your `State` into the
   database's one Verus store, and the C ABI (no kernel work). The store is
   global: one verified store, one reader-writer lock, every accelerator of the

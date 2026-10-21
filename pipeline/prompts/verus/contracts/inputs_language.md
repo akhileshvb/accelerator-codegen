@@ -16,7 +16,7 @@ Rules (sql2verus enforces them; `verus_check_inputs` shows its verdict):
   bag. A scan is read at build time.
 * **rescan**: a scan restricted to rows whose `KEYS` column (which must be one
   of the SELECT columns) is in a key list the kernel computes during apply
-  (`rescan_<name>_keys`). It reads the database **after** the transaction.
+  (`rescan_<name>_keys`, which the host passes back to apply unchanged). It reads the database **after** the transaction.
   Use it when a change needs rows the state does not keep (e.g. an order
   becomes relevant and its lines were never tracked). Cost: one keyed query
   per transaction that needs it.

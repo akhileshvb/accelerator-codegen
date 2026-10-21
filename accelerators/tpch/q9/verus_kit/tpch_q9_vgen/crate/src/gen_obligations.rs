@@ -501,8 +501,8 @@ pub fn ob_execute(
     kernel::execute(s, p1)
 }
 
-/// The keys whose rows the host rescans (rescan lines_for_orders) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan lines_for_orders) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_lines_for_orders_keys(
     s: &State,
     lineitem_delta: &[LineDelta],
@@ -512,12 +512,14 @@ pub fn ob_rescan_lines_for_orders_keys(
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_lines_for_orders_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 {
     kernel::rescan_lines_for_orders_keys(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta)
 }
 
-/// The keys whose rows the host rescans (rescan lines_for_parts) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan lines_for_parts) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_lines_for_parts_keys(
     s: &State,
     lineitem_delta: &[LineDelta],
@@ -527,12 +529,14 @@ pub fn ob_rescan_lines_for_parts_keys(
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_lines_for_parts_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 {
     kernel::rescan_lines_for_parts_keys(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta)
 }
 
-/// The keys whose rows the host rescans (rescan lines_for_suppliers) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan lines_for_suppliers) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_lines_for_suppliers_keys(
     s: &State,
     lineitem_delta: &[LineDelta],
@@ -542,12 +546,14 @@ pub fn ob_rescan_lines_for_suppliers_keys(
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_lines_for_suppliers_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 {
     kernel::rescan_lines_for_suppliers_keys(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta)
 }
 
-/// The keys whose rows the host rescans (rescan partsupp_for_parts) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan partsupp_for_parts) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_partsupp_for_parts_keys(
     s: &State,
     lineitem_delta: &[LineDelta],
@@ -557,12 +563,14 @@ pub fn ob_rescan_partsupp_for_parts_keys(
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_partsupp_for_parts_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 {
     kernel::rescan_partsupp_for_parts_keys(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta)
 }
 
-/// The keys whose rows the host rescans (rescan orders_for_keys) for apply.  No contract:
-/// apply's result does not depend on trusting them.
+/// The keys whose rows the host rescans (rescan orders_for_keys) for apply: the kernel's
+/// requested keys, which the host passes back to apply.
 pub fn ob_rescan_orders_for_keys_keys(
     s: &State,
     lineitem_delta: &[LineDelta],
@@ -572,6 +580,8 @@ pub fn ob_rescan_orders_for_keys_keys(
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
+    ensures
+        r@ == crate::kernel::rescan_orders_for_keys_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
 {
     kernel::rescan_orders_for_keys_keys(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta)
 }
@@ -600,10 +610,15 @@ pub fn ob_apply(
 ) -> (r: Result<State, u32>)
     requires
         capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+        lines_for_orders_keys@ == crate::kernel::rescan_lines_for_orders_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_lines_for_orders_ok(db2, lines_for_orders_keys@, lines_for_orders_rows@),
+        lines_for_parts_keys@ == crate::kernel::rescan_lines_for_parts_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
+        lines_for_suppliers_keys@ == crate::kernel::rescan_lines_for_suppliers_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_lines_for_suppliers_ok(db2, lines_for_suppliers_keys@, lines_for_suppliers_rows@),
+        partsupp_for_parts_keys@ == crate::kernel::rescan_partsupp_for_parts_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_partsupp_for_parts_ok(db2, partsupp_for_parts_keys@, partsupp_for_parts_rows@),
+        orders_for_keys_keys@ == crate::kernel::rescan_orders_for_keys_wanted(*s, lineitem_delta@, nation_delta@, orders_delta@, part_delta@, partsupp_delta@, supplier_delta@),
         rescan_orders_for_keys_ok(db2, orders_for_keys_keys@, orders_for_keys_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,

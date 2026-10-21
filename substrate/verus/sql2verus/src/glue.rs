@@ -10,7 +10,8 @@
 // contracts restated against the store's timeline:
 //   prepare_apply(store, base, <apply's inputs>)   from the newest version
 //     (base: its state, with the proof that it answers for that version);
-//     requires apply's contracts with s.db() := version e, db2 := e + 1;
+//     requires apply's contracts with s.db() := version e, db2 := e + 1
+//     (and the kernel state := the base's);
 //   prepare_build(store, e, <build's inputs>)      requires build's
 //     contracts with db := version e + 1;
 //   prepare_invalid(store, e).
@@ -124,7 +125,7 @@ pub(crate) fn world(m: &Model) -> String {
     writeln!(w, "pub fn prepare_apply(\n    {},\n) -> (r: Result<QPrepared, u32>)", ps.join(",\n    ")).unwrap();
     writeln!(w, "    requires\n        {bs}.timeline() == {st}.timeline(),").unwrap();
     for r in &apply.requires {
-        writeln!(w, "        {},", inst(r, &sdb, "", &db2)).unwrap();
+        writeln!(w, "        {},", inst(r, &format!("{bs}.state_spec()"), &sdb, "", &db2)).unwrap();
     }
     writeln!(w, "    ensures\n        r matches Ok(p) ==> p.epoch() == {bs}.epoch() && p.timeline() == {st}.timeline(),").unwrap();
     writeln!(w, "{{\n    let {e} = {bs}.version();\n    let {s} = {bs}.state();").unwrap();
@@ -148,7 +149,7 @@ pub(crate) fn world(m: &Model) -> String {
     writeln!(w, "pub fn prepare_build(\n    {},\n) -> (p: QPrepared)", ps.join(",\n    ")).unwrap();
     writeln!(w, "    requires\n        {e} < u64::MAX,").unwrap();
     for r in &build.requires {
-        writeln!(w, "        {},", inst(r, "", &db, "")).unwrap();
+        writeln!(w, "        {},", inst(r, "", "", &db, "")).unwrap();
     }
     writeln!(w, "    ensures\n        p.epoch() == {e},\n        p.timeline() == {st}.timeline(),").unwrap();
     writeln!(w, "{{\n    let {s} = ob_build({});\n    prepare({st}, {e}, {s})\n}}\n", args.join(", ")).unwrap();
