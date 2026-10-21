@@ -12,6 +12,9 @@ use crate::counts::*;
 use verus_common::sums::*;
 use crate::input_proofs::*;
 use crate::bounds::*;
+use crate::apply_proofs::*;
+use crate::maintenance::*;
+use crate::wanted::*;
 use crate::wanted::*;
 use crate::contrib::*;
 use crate::maintenance_proofs::*;
@@ -519,8 +522,42 @@ pub fn apply(
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
         r matches Ok(s2) ==> history(s2) <= history(*s) + part_delta@.len() + partsupp_delta@.len() + supplier_delta@.len(),
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
-    Err(0)
+    proof { use_type_invariant(s); }
+    let suppliers = supplier_set(&s.links, part_delta, partsupp_delta, supplier_delta);
+    let changed = part_set(part_delta);
+    let listed_suppliers = keys_sorted(&suppliers);
+    let listed_parts = keys_sorted(&changed);
+    proof {
+        let supplier_predicate = supplier_pred(s.links, part_delta@, partsupp_delta@, supplier_delta@);
+        let part_predicate = part_pred(part_delta@);
+        assert forall|key: int| seq_view_i64(listed_suppliers@).contains(key) <==> supplier_predicate(key) by {
+            assert(suppliers.at((key, Seq::<u8>::empty())).is_some() == (integer_at(suppliers, (key, Seq::<u8>::empty())) > 0));
+        }
+        assert forall|key: int| seq_view_i64(listed_parts@).contains(key) <==> part_predicate(key) by {
+            assert(changed.at((key, Seq::<u8>::empty())).is_some() == (integer_at(changed, (key, Seq::<u8>::empty())) > 0));
+        }
+        lemma_wanted_keys(listed_suppliers@, supplier_predicate);
+        lemma_wanted_keys(listed_parts@, part_predicate);
+        assert forall|key: int| suppliers.at((key, Seq::<u8>::empty())).is_some() == supplier_wanted(s.links, part_delta@, partsupp_delta@, supplier_delta@, key) by {
+            assert(suppliers.at((key, Seq::<u8>::empty())).is_some() == (integer_at(suppliers, (key, Seq::<u8>::empty())) > 0));
+        }
+        assert forall|key: int| changed.at((key, Seq::<u8>::empty())).is_some() == part_wanted(part_delta@, key) by {
+            assert(changed.at((key, Seq::<u8>::empty())).is_some() == (integer_at(changed, (key, Seq::<u8>::empty())) > 0));
+        }
+        lemma_coverage(s.db(), db2, s.links, part_delta@, partsupp_delta@, supplier_delta@, supplier_full, suppliers, changed);
+        assert(edges_for_suppliers_keys@ == listed_suppliers@);
+        assert(blockers_for_suppliers_keys@ == listed_suppliers@);
+        assert(parts_for_neighbors_keys@ == listed_parts@);
+    }
+    match maintain(&s.counts, &s.ranks, &s.parts, &s.edges, &s.blocked, &s.links, &suppliers, &changed,
+        edges_for_suppliers_rows, blockers_for_suppliers_rows, parts_for_neighbors_rows,
+        Ghost(s.db()), Ghost(db2), Ghost(edges_for_suppliers_keys@), Ghost(parts_for_neighbors_keys@)) {
+        Ok((counts, ranks, parts, edges, blocked, links)) =>
+            Ok(State { db: Ghost(db2), counts, ranks, parts, edges, blocked, links }),
+        Err(code) => Err(code),
+    }
 }
 
 } // verus!
