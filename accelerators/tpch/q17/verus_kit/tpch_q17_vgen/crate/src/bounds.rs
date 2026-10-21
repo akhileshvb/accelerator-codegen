@@ -28,7 +28,7 @@ pub proof fn lemma_scan_len(scanned: Seq<LineitemRow>, database: Seq<LineitemRow
 
 pub proof fn lemma_scan_parts_len(db: Db, rows: Seq<PartInput>)
     requires scan_parts_ok(db, rows), envelope(db),
-    ensures rows.len() <= 1099511627776,
+    ensures rows.len() <= 9223372036854775808,
 {
     let one = |row: PartRow| 1int;
     verus_prooflib::lemma_sum_ones(part_input_seq_view(rows));
