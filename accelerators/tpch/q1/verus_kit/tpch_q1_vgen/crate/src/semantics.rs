@@ -6,7 +6,6 @@ use verus_common::sums::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::values::*;
-use crate::kernel::Output;
 
 verus! {
 
@@ -140,24 +139,28 @@ pub open spec fn group_lt(left: Group, right: Group) -> bool {
         || (left.key().0 == right.key().0 && bytes_lt(left.key().1, right.key().1))
 }
 
-pub open spec fn group_directory(groups: Seq<Group>) -> bool {
-    &&& forall|index: int| 0 <= index < groups.len() ==> (#[trigger] groups[index]).totals.count > 0
-    &&& forall|first: int, second: int| 0 <= first < second < groups.len() ==>
+pub open spec fn group_keys_unique(groups: Seq<Group>) -> bool {
+    forall|first: int, second: int| 0 <= first < second < groups.len() ==>
         (#[trigger] groups[first]).key() != (#[trigger] groups[second]).key()
+}
+
+pub open spec fn group_directory(groups: Seq<Group>) -> bool {
+    &&& forall|index: int| 0 <= index < groups.len() ==> (#[trigger] groups[index]).totals.count@ > 0
+    &&& group_keys_unique(groups)
 }
 
 pub open spec fn group_row(group: Group) -> OutRow {
     OutRow { l_returnflag: group.key().0, l_linestatus: group.key().1,
-        sum_qty: group.totals.quantity as int, sum_base_price: group.totals.price as int,
-        sum_disc_price: group.totals.discounted as int, sum_charge: group.totals.charge as int,
-        avg_qty: Rat { num: group.totals.quantity as int, den: 100 * group.totals.count },
-        avg_price: Rat { num: group.totals.price as int, den: 100 * group.totals.count },
-        avg_disc: Rat { num: group.totals.discount as int, den: 100 * group.totals.count },
-        count_order: group.totals.count as int }
+        sum_qty: group.totals.quantity@, sum_base_price: group.totals.price@,
+        sum_disc_price: group.totals.discounted@, sum_charge: group.totals.charge@,
+        avg_qty: Rat { num: group.totals.quantity@, den: 100 * group.totals.count@ },
+        avg_price: Rat { num: group.totals.price@, den: 100 * group.totals.count@ },
+        avg_disc: Rat { num: group.totals.discount@, den: 100 * group.totals.count@ },
+        count_order: group.totals.count@ }
 }
 
 pub proof fn lemma_group_at(groups: Seq<Group>, index: int, component: int)
-    requires group_directory(groups), 0 <= index < groups.len(),
+    requires group_keys_unique(groups), 0 <= index < groups.len(),
     ensures aggregate(groups, groups[index].key().0, groups[index].key().1, component) == groups[index].totals.at(component),
 {
     let f = group_weight(groups[index].key().0, groups[index].key().1, component);
@@ -168,17 +171,16 @@ pub proof fn lemma_group_at(groups: Seq<Group>, index: int, component: int)
     lemma_sum_single_match(groups, f, index);
 }
 
-pub proof fn lemma_execute_result(db: Db, parameter: int, groups: Seq<Group>, output: Seq<Output>)
+pub proof fn lemma_execute_result(db: Db, parameter: int, groups: Seq<Group>, rows: Seq<OutRow>)
     requires group_directory(groups),
         forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 ==>
             #[trigger] aggregate(groups, flag, status, component) == prefix_sum(db, 10561 - parameter, flag, status, component),
         forall|first: int, second: int| 0 <= first < second < groups.len() ==>
             !#[trigger] group_lt(groups[second], groups[first]),
-        output.len() == groups.len(),
-        forall|index: int| 0 <= index < output.len() ==> (#[trigger] out_view(output)[index]) == group_row(groups[index]),
-    ensures query_result(db, params(parameter), out_view(output)),
+        rows.len() == groups.len(),
+        forall|index: int| 0 <= index < rows.len() ==> (#[trigger] rows[index]) == group_row(groups[index]),
+    ensures query_result(db, params(parameter), rows),
 {
-    let rows = out_view(output);
     assert forall|index: int| 0 <= index < rows.len() implies row_ok(db, params(parameter), #[trigger] rows[index]) by {
         let group = groups[index];
         assert forall|component: int| 0 <= component < 6 implies
@@ -191,17 +193,17 @@ pub proof fn lemma_execute_result(db: Db, parameter: int, groups: Seq<Group>, ou
         lemma_query_sums(db, parameter, group.key().0, group.key().1, 3);
         lemma_query_sums(db, parameter, group.key().0, group.key().1, 4);
         lemma_query_sums(db, parameter, group.key().0, group.key().1, 5);
-        assert(group_count(db, params(parameter), group.key().0, group.key().1) == group.totals.count);
+        assert(group_count(db, params(parameter), group.key().0, group.key().1) == group.totals.count@);
         assert(group_sum(db, params(parameter), group.key().0, group.key().1, |tuple: Tuple| tuple.lineitem.l_quantity)
-            == group.totals.quantity);
+            == group.totals.quantity@);
         assert(group_sum(db, params(parameter), group.key().0, group.key().1, |tuple: Tuple| tuple.lineitem.l_extendedprice)
-            == group.totals.price);
+            == group.totals.price@);
         assert(group_sum(db, params(parameter), group.key().0, group.key().1,
-            |tuple: Tuple| tuple.lineitem.l_extendedprice * (100 - tuple.lineitem.l_discount)) == group.totals.discounted);
+            |tuple: Tuple| tuple.lineitem.l_extendedprice * (100 - tuple.lineitem.l_discount)) == group.totals.discounted@);
         assert(group_sum(db, params(parameter), group.key().0, group.key().1,
-            |tuple: Tuple| tuple.lineitem.l_extendedprice * (100 - tuple.lineitem.l_discount) * (100 + tuple.lineitem.l_tax)) == group.totals.charge);
+            |tuple: Tuple| tuple.lineitem.l_extendedprice * (100 - tuple.lineitem.l_discount) * (100 + tuple.lineitem.l_tax)) == group.totals.charge@);
         assert(group_sum(db, params(parameter), group.key().0, group.key().1, |tuple: Tuple| tuple.lineitem.l_discount)
-            == group.totals.discount);
+            == group.totals.discount@);
     }
     assert forall|first: int, second: int| 0 <= first < second < rows.len() implies
         !same_group(#[trigger] rows[first], #[trigger] rows[second]) && !row_lt(rows[second], rows[first]) by {
@@ -219,6 +221,27 @@ pub proof fn lemma_execute_result(db: Db, parameter: int, groups: Seq<Group>, ou
         assert(group_weight(flag, status, 0)(groups[index]) != 0);
         assert(rows[index].l_returnflag == flag && rows[index].l_linestatus == status);
     }
+}
+
+
+pub proof fn lemma_prefix_count_nonneg(db: Db, cutoff: int, flag: Seq<u8>, status: Seq<u8>)
+    ensures prefix_sum(db, cutoff, flag, status, 0) >= 0,
+{
+    lemma_sum_nonneg(db.lineitem, prefix_weight(cutoff, flag, status, 0));
+}
+
+/// A group without rows has no sum of any component.
+pub proof fn lemma_prefix_empty(db: Db, cutoff: int, flag: Seq<u8>, status: Seq<u8>, component: int)
+    requires prefix_sum(db, cutoff, flag, status, 0) == 0,
+    ensures prefix_sum(db, cutoff, flag, status, component) == 0,
+{
+    let count = prefix_weight(cutoff, flag, status, 0);
+    assert forall|index: int| 0 <= index < db.lineitem.len() implies count(#[trigger] db.lineitem[index]) >= 0 by {}
+    assert forall|index: int| 0 <= index < db.lineitem.len() implies
+        prefix_weight(cutoff, flag, status, component)(#[trigger] db.lineitem[index]) == 0 by {
+        lemma_sum_ge_term(db.lineitem, count, index);
+    }
+    lemma_sum_zero(db.lineitem, prefix_weight(cutoff, flag, status, component));
 }
 
 }

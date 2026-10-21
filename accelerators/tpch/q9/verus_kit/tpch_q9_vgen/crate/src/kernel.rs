@@ -367,6 +367,11 @@ pub fn execute(
     general_answer(&s.gen, p1, Ghost(s.db()))
 }
 
+/// The state keeps nothing that grows with past writes.
+pub open spec fn history(s: State) -> nat {
+    0
+}
+
 /// The lines of the changed orders (the host rescans them to move their lines between years).
 pub open spec fn rescan_lines_for_orders_wanted(s: State, lineitem_delta: Seq<LineDelta>, nation_delta: Seq<NationDelta>, orders_delta: Seq<OrderDelta>,
     part_delta: Seq<PartDelta>, partsupp_delta: Seq<PartsuppDelta>, supplier_delta: Seq<SupplierDelta>) -> Seq<i64> {

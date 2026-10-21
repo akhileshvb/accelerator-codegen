@@ -22,7 +22,7 @@ impl Bucket {
     pub open spec fn wf(self, hash: u64, positive: bool) -> bool {
         &&& forall|index: int| 0 <= index < self.groups.len() ==>
             group_hash((#[trigger] self.groups@[index]).key().0, self.groups@[index].key().1) == hash
-            && (positive ==> self.groups@[index].totals.count > 0)
+            && (positive ==> !self.groups@[index].totals.vanishes())
         &&& forall|first: int, second: int| 0 <= first < second < self.groups.len() ==>
             (#[trigger] self.groups@[first]).key() != (#[trigger] self.groups@[second]).key()
     }
@@ -42,10 +42,10 @@ impl Bucket {
         Self { groups }
     }
 
-    pub fn add(&mut self, flag: &Vec<u8>, status: &Vec<u8>, totals: &Totals, positive: bool) -> (result: bool)
+    pub fn add(&mut self, flag: &Vec<u8>, status: &Vec<u8>, totals: &Totals, positive: bool)
         requires old(self).wf(group_hash(flag@, status@), positive),
-        ensures result ==> final(self).wf(group_hash(flag@, status@), positive),
-            result ==> forall|other_flag: Seq<u8>, other_status: Seq<u8>, component: int|
+        ensures final(self).wf(group_hash(flag@, status@), positive),
+            forall|other_flag: Seq<u8>, other_status: Seq<u8>, component: int|
                 #[trigger] final(self).value(other_flag, other_status, component)
                     == old(self).value(other_flag, other_status, component)
                         + if (other_flag, other_status) == (flag@, status@) { totals.at(component) } else { 0 },
@@ -60,9 +60,8 @@ impl Bucket {
         {
             let group = &self.groups[index];
             if bytes_eq_exec(&group.flag, flag) && bytes_eq_exec(&group.status, status) {
-                let next = match group.totals.add(totals) { Some(value) => value, None => return false };
-                if positive && next.count <= 0 {
-                    if next.count < 0 || !next.is_zero() { return false; }
+                let next = group.totals.add(totals);
+                if positive && next.is_zero() {
                     self.groups.remove(index);
                     proof {
                         assert forall|other_flag: Seq<u8>, other_status: Seq<u8>, component: int|
@@ -89,11 +88,11 @@ impl Bucket {
                         }
                     }
                 }
-                return true;
+                return;
             }
             index += 1;
         }
-        if positive && totals.count <= 0 { return totals.is_zero(); }
+        if positive && totals.is_zero() { return; }
         self.groups.push(Group { flag: Arc::new(copy_bytes(flag)), status: Arc::new(copy_bytes(status)), totals: totals.copy() });
         proof {
             assert forall|other_flag: Seq<u8>, other_status: Seq<u8>, component: int|
@@ -103,7 +102,6 @@ impl Bucket {
                 lemma_sum_push(initial, self.groups@.last(), group_weight(other_flag, other_status, component));
             }
         }
-        true
     }
 }
 
@@ -120,11 +118,6 @@ pub proof fn lemma_flat_wf_key(keys: Seq<u64>, buckets: Map<u64, Bucket>, key: u
     ensures buckets[key].wf(key, false),
 {
     let index = choose|index: int| 0 <= index < keys.len() && #[trigger] keys[index] == key;
-}
-
-pub open spec fn group_keys_unique(groups: Seq<Group>) -> bool {
-    forall|first: int, second: int| 0 <= first < second < groups.len() ==>
-        (#[trigger] groups[first]).key() != (#[trigger] groups[second]).key()
 }
 
 pub proof fn lemma_flat_unique(keys: Seq<u64>, buckets: Map<u64, Bucket>)
@@ -213,10 +206,10 @@ impl FlatGroups {
             forall|flag: Seq<u8>, status: Seq<u8>, component: int| #[trigger] result.value(flag, status, component) == 0,
     { Self { buckets: HashMap::new(), keys: Vec::new() } }
 
-    pub fn add(&mut self, flag: &Vec<u8>, status: &Vec<u8>, totals: &Totals) -> (result: bool)
+    pub fn add(&mut self, flag: &Vec<u8>, status: &Vec<u8>, totals: &Totals)
         requires old(self).wf(),
-        ensures result ==> final(self).wf(),
-            result ==> forall|other_flag: Seq<u8>, other_status: Seq<u8>, component: int|
+        ensures final(self).wf(),
+            forall|other_flag: Seq<u8>, other_status: Seq<u8>, component: int|
                 #[trigger] final(self).value(other_flag, other_status, component)
                 == old(self).value(other_flag, other_status, component)
                     + if (other_flag, other_status) == (flag@, status@) { totals.at(component) } else { 0 },
@@ -229,7 +222,7 @@ impl FlatGroups {
             Some(bucket) => bucket,
             None => { self.keys.push(hash); Bucket { groups: Vec::new() } },
         };
-        if !bucket.add(flag, status, totals, false) { return false; }
+        bucket.add(flag, status, totals, false);
         self.buckets.insert(hash, bucket);
         proof {
             lemma_push_contains(old_keys, hash);
@@ -248,7 +241,6 @@ impl FlatGroups {
                 lemma_flat_lookup(self.keys@, self.buckets@, other_flag, other_status, component);
             }
         }
-        true
     }
 
     pub fn collect(&self) -> (result: Vec<Group>)
@@ -292,9 +284,9 @@ impl FlatGroups {
         result
     }
 
-    pub fn publish(&self) -> (result: Option<Groups>)
+    pub fn publish(&self) -> (groups: Groups)
         requires self.wf(),
-        ensures result matches Some(groups) ==> groups.wf()
+        ensures groups.wf()
             && forall|flag: Seq<u8>, status: Seq<u8>, component: int|
                 #[trigger] groups.value(flag, status, component) == self.value(flag, status, component),
     {
@@ -353,9 +345,9 @@ impl Groups {
         ensures result == *self,
     { Self { buckets: self.buckets.share() } }
 
-    pub fn updated(&self, delta: &FlatGroups) -> (result: Option<Self>)
+    pub fn updated(&self, delta: &FlatGroups) -> (groups: Self)
         requires self.wf(), delta.wf(),
-        ensures result matches Some(groups) ==> groups.wf()
+        ensures groups.wf()
             && forall|flag: Seq<u8>, status: Seq<u8>, component: int|
                 #[trigger] groups.value(flag, status, component) == self.value(flag, status, component) + delta.value(flag, status, component),
     {
@@ -374,7 +366,7 @@ impl Groups {
             proof { lemma_flat_wf_key(delta.keys@, delta.buckets@, hash); }
             let mut bucket = match buckets.get(hash) { Some(bucket) => bucket.copy(), None => Bucket { groups: Vec::new() } };
             let ghost original = bucket.groups@;
-            let changes = match delta.buckets.get(&hash) { Some(changes) => changes, None => return None };
+            let changes = delta.buckets.get(&hash).unwrap();
             {
                 let mut group_index = 0usize;
                 while group_index < changes.groups.len()
@@ -392,7 +384,7 @@ impl Groups {
                     decreases changes.groups.len() - group_index,
                 {
                     let group = &changes.groups[group_index];
-                    if !bucket.add(&group.flag, &group.status, &group.totals, true) { return None; }
+                    bucket.add(&group.flag, &group.status, &group.totals, true);
                     proof {
                         assert forall|flag: Seq<u8>, status: Seq<u8>, component: int|
                             #[trigger] bucket.value(flag, status, component) == aggregate(original, flag, status, component)
@@ -443,7 +435,7 @@ impl Groups {
             index += 1;
         }
         proof { assert(delta.keys@.take(index as int) =~= delta.keys@); }
-        Some(Self { buckets })
+        Self { buckets }
     }
 
     pub fn collect(&self) -> (result: Vec<Group>)

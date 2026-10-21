@@ -119,6 +119,11 @@ pub fn execute(
     Some(out)
 }
 
+/// The state keeps nothing that grows with past writes.
+pub open spec fn history(s: State) -> nat {
+    0
+}
+
 /// The orderkeys whose orders the host rescans: those of the transaction's lineitem and orders changes.
 pub open spec fn rescan_orders_by_key_wanted(s: State, customer_delta: Seq<CustomerDelta>,
     lineitem_delta: Seq<ShipmentKeyDelta>, orders_delta: Seq<OrderKeyDelta>) -> Seq<i64> {

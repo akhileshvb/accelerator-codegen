@@ -14,6 +14,9 @@ use crate::semantics::*;
 
 verus! {
 
+/// The kernel keeps no state that grows with the changed rows.
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub type Output = (Vec<u8>, Vec<u8>, i128, i128, i128, i128,
     (i128, i128), (i128, i128), (i128, i128), i64);
 
@@ -96,10 +99,9 @@ pub open spec fn tile_contains(tile: Tile, offset: int) -> bool {
 }
 
 pub open spec fn tile_prefix(tiles: Seq<Tile>) -> bool {
-    forall|index: int| 0 <= index < tiles.len() ==>
-        #[trigger] tiles[index].start
-            == sum(tiles.take(index), |tile: Tile| tile.width as int)
-            && tile_ok(tiles[index])
+    &&& forall|index: int| 0 <= index < tiles.len() ==>
+        #[trigger] tiles[index].start == sum(tiles.take(index), |tile: Tile| tile.width as int)
+    &&& forall|index: int| 0 <= index < tiles.len() ==> tile_ok(#[trigger] tiles[index])
 }
 
 pub open spec fn tile_sum(tiles: Seq<Tile>) -> int {
@@ -118,6 +120,13 @@ pub open spec fn prefix_bound_weight(end: int, flag: Seq<u8>, status: Seq<u8>, c
         && row.l_returnflag == flag && row.l_linestatus == status { weight(row, component) } else { 0 }
 }
 
+proof fn lemma_power2_double(exponent: int)
+    requires 0 <= exponent < 32,
+    ensures power2(exponent + 1) == 2 * power2(exponent),
+{
+    assert(exponent == 0 || exponent == 1 || exponent == 2 || exponent == 3 || exponent >= 4);
+}
+
 proof fn lemma_power2_add(left: int, right: int)
     requires 0 <= left <= 32, 0 <= right, left + right <= 32,
     ensures power2(left + right) == power2(left) * power2(right),
@@ -127,6 +136,8 @@ proof fn lemma_power2_add(left: int, right: int)
         assert(power2(right) == 1 * power2(right));
     } else {
         lemma_power2_add(left - 1, right);
+        lemma_power2_double(left - 1);
+        lemma_power2_double(left - 1 + right);
         assert(power2(left) == 2 * power2(left - 1));
         assert(power2(left + right) == 2 * power2(left - 1 + right));
     }
@@ -275,6 +286,13 @@ proof fn lemma_tile_interval_weight(tile: Tile, row: LineitemRow,
     lemma_aligned_range(offset, tile.start, tile.width, base);
 }
 
+proof fn lemma_tile_prefix_at(tiles: Seq<Tile>, index: int)
+    requires tile_prefix(tiles), 0 <= index < tiles.len(),
+    ensures tiles[index].start == sum(tiles.take(index), |tile: Tile| tile.width as int), tile_ok(tiles[index]),
+{
+    assert(tiles[index].start == tiles[index].start);
+}
+
 proof fn lemma_tile_row_sum(tiles: Seq<Tile>, row: LineitemRow,
     flag: Seq<u8>, status: Seq<u8>, component: int)
     requires tile_prefix(tiles), -2147483648 <= row.l_shipdate <= 2147483647,
@@ -286,8 +304,7 @@ proof fn lemma_tile_row_sum(tiles: Seq<Tile>, row: LineitemRow,
     assert forall|index: int| 0 <= index < tiles.len() implies
         #[trigger] interval(tiles[index]) == tile_weight(tiles[index]) by {
         let tile = tiles[index];
-        assert(tile.start == sum(tiles.take(index), |item: Tile| item.width as int)
-            && tile_ok(tile));
+        lemma_tile_prefix_at(tiles, index);
         lemma_tile_interval_weight(tile, row, flag, status, component);
     }
     lemma_sum_ext(tiles, interval, tile_weight);
@@ -764,14 +781,14 @@ impl FlatIntervals {
         ensures result.wf(), result.keys.len() == 0,
     { Self { intervals: HashMap::new(), keys: Vec::new() } }
 
-    fn add(&mut self, key: u64, flag: &Vec<u8>, status: &Vec<u8>, totals: &Totals) -> (result: bool)
+    fn add(&mut self, key: u64, flag: &Vec<u8>, status: &Vec<u8>, totals: &Totals)
         requires old(self).wf(), 1 <= key < 8589934592,
-        ensures result ==> final(self).wf(),
-            result ==> final(self).keys@ == if old(self).intervals@.contains_key(key) { old(self).keys@ } else { old(self).keys@.push(key) },
-            result ==> forall|other: u64| other != key ==>
+        ensures final(self).wf(),
+            final(self).keys@ == if old(self).intervals@.contains_key(key) { old(self).keys@ } else { old(self).keys@.push(key) },
+            forall|other: u64| other != key ==>
                 (#[trigger] final(self).intervals@.contains_key(other) <==> old(self).intervals@.contains_key(other))
                     && (old(self).intervals@.contains_key(other) ==> final(self).intervals@[other] == old(self).intervals@[other]),
-            result ==> forall|other: u64, other_flag: Seq<u8>, other_status: Seq<u8>, component: int|
+            forall|other: u64, other_flag: Seq<u8>, other_status: Seq<u8>, component: int|
                 #[trigger] final(self).value(other, other_flag, other_status, component)
                 == old(self).value(other, other_flag, other_status, component)
                     + if other == key && (other_flag, other_status) == (flag@, status@) { totals.at(component) } else { 0 },
@@ -789,7 +806,7 @@ impl FlatIntervals {
             None => { self.keys.push(key); FlatGroups::new() },
         };
         let ghost initial_groups = groups;
-        if !groups.add(flag, status, totals) { return false; }
+        groups.add(flag, status, totals);
         self.intervals.insert(key, groups);
         proof {
             crate::seqfacts::lemma_push_contains(original_keys, key);
@@ -812,18 +829,17 @@ impl FlatIntervals {
                 }
             }
         }
-        true
     }
 
-    fn add_ancestors(&mut self, leaf: u64, group: &Group) -> (result: bool)
+    fn add_ancestors(&mut self, leaf: u64, group: &Group)
         requires old(self).wf(), 4294967296 <= leaf < 8589934592,
-        ensures result ==> final(self).wf(),
-            result ==> final(self).keys@.take(old(self).keys.len() as int) == old(self).keys@,
-            result ==> old(self).keys.len() <= final(self).keys.len(),
-            result ==> forall|key: u64| key >= 4294967296 ==>
+        ensures final(self).wf(),
+            final(self).keys@.take(old(self).keys.len() as int) == old(self).keys@,
+            old(self).keys.len() <= final(self).keys.len(),
+            forall|key: u64| key >= 4294967296 ==>
                 (#[trigger] final(self).intervals@.contains_key(key) <==> old(self).intervals@.contains_key(key))
                     && (old(self).intervals@.contains_key(key) ==> final(self).intervals@[key] == old(self).intervals@[key]),
-            result ==> forall|key: u64, flag: Seq<u8>, status: Seq<u8>, component: int|
+            forall|key: u64, flag: Seq<u8>, status: Seq<u8>, component: int|
                 #[trigger] final(self).value(key, flag, status, component) == old(self).value(key, flag, status, component)
                     + if key < 4294967296 && ancestor(leaf as int, key) && (flag, status) == group.key() { group.totals.at(component) } else { 0 },
     {
@@ -847,7 +863,7 @@ impl FlatIntervals {
                             && (flag, status) == group.key() { group.totals.at(component) } else { 0 },
             decreases parent,
         {
-            if !self.add(parent, &group.flag, &group.status, &group.totals) { return false; }
+            self.add(parent, &group.flag, &group.status, &group.totals);
             proof {
                 assert forall|key: u64, flag: Seq<u8>, status: Seq<u8>, component: int|
                     #[trigger] self.value(key, flag, status, component) == initial.value(key, flag, status, component)
@@ -862,20 +878,19 @@ impl FlatIntervals {
             }
             parent /= 2;
         }
-        true
     }
 
-    fn hierarchy(&mut self) -> (result: bool)
+    fn hierarchy(&mut self)
         requires old(self).wf(),
             forall|index: int| 0 <= index < old(self).keys.len() ==> #[trigger] old(self).keys@[index] >= 4294967296,
-        ensures result ==> final(self).wf(),
-            result ==> final(self).keys@.take(old(self).keys.len() as int) == old(self).keys@,
-            result ==> forall|leaf: u64| leaf >= 4294967296 ==>
+        ensures final(self).wf(),
+            final(self).keys@.take(old(self).keys.len() as int) == old(self).keys@,
+            forall|leaf: u64| leaf >= 4294967296 ==>
                 (#[trigger] final(self).intervals@.contains_key(leaf) <==>
                     old(self).intervals@.contains_key(leaf))
                     && (old(self).intervals@.contains_key(leaf) ==>
                         final(self).intervals@[leaf] == old(self).intervals@[leaf]),
-            result ==> forall|key: u64, flag: Seq<u8>, status: Seq<u8>, component: int|
+            forall|key: u64, flag: Seq<u8>, status: Seq<u8>, component: int|
                 #[trigger] final(self).value(key, flag, status, component)
                 == sum(old(self).keys@, |leaf: u64| if ancestor(leaf as int, key) { old(self).value(leaf, flag, status, component) } else { 0 }),
     {
@@ -904,7 +919,7 @@ impl FlatIntervals {
                 assert(self.intervals@.contains_key(leaf));
                 assert(self.intervals@[leaf] == initial.intervals@[leaf]);
             }
-            let contributions = match self.intervals.get(&leaf) { Some(groups) => groups.collect(), None => return false };
+            let contributions = self.intervals.get(&leaf).unwrap().collect();
             let ghost before = *self;
             let mut group_index = 0usize;
             while group_index < contributions.len()
@@ -930,7 +945,7 @@ impl FlatIntervals {
                 decreases contributions.len() - group_index,
             {
                 let group = &contributions[group_index];
-                if !self.add_ancestors(leaf, group) { return false; }
+                self.add_ancestors(leaf, group);
                 proof {
                     assert forall|key: u64, flag: Seq<u8>, status: Seq<u8>, component: int|
                         #[trigger] self.value(key, flag, status, component) == before.value(key, flag, status, component)
@@ -976,13 +991,12 @@ impl FlatIntervals {
                 }
             }
         }
-        true
     }
 }
 
 pub fn build(lineitem_build: Vec<LineitemInput>, Ghost(db): Ghost<Db>) -> (result: Option<State>)
     requires scan_lineitem_build_ok(db, lineitem_build@),
-    ensures result matches Some(state) ==> state.db() == db,
+    ensures result matches Some(state) ==> state.db() == db, result is Some,
 {
     let mut daily = FlatIntervals::new();
     let mut index = 0usize;
@@ -997,9 +1011,9 @@ pub fn build(lineitem_build: Vec<LineitemInput>, Ghost(db): Ghost<Db>) -> (resul
     {
         let row = &lineitem_build[index];
         let ghost before = daily;
-        let totals = match contribution(row) { Some(totals) => totals, None => return None };
+        let totals = contribution(row);
         let key = 4294967296u64 + (row.l_shipdate as i64 + 2147483648i64) as u64;
-        if !daily.add(key, &row.l_returnflag, &row.l_linestatus, &totals) { return None; }
+        daily.add(key, &row.l_returnflag, &row.l_linestatus, &totals);
         proof {
             assert forall|other: u64, flag: Seq<u8>, status: Seq<u8>, component: int|
                 other >= 4294967296 && 0 <= component < 6 implies #[trigger] daily.value(other, flag, status, component)
@@ -1044,7 +1058,7 @@ pub fn build(lineitem_build: Vec<LineitemInput>, Ghost(db): Ghost<Db>) -> (resul
             }
         };
     }
-    if !daily.hierarchy() { return None; }
+    daily.hierarchy();
     let ghost leaf_keys = initial_daily.keys@;
     let ghost leaf_groups = initial_daily.intervals@;
     let ghost directory_keys = daily.keys@;
@@ -1074,10 +1088,7 @@ pub fn build(lineitem_build: Vec<LineitemInput>, Ghost(db): Ghost<Db>) -> (resul
             decreases daily.keys.len() - key_index,
     {
         let key = daily.keys[key_index];
-        let groups = match daily.intervals.get(&key) {
-            Some(groups) => match groups.publish() { Some(groups) => groups, None => return None },
-            None => return None,
-        };
+        let groups = daily.intervals.get(&key).unwrap().publish();
         let ghost before_intervals = intervals;
         let ghost published = groups;
         let empty = groups.is_empty();
@@ -1173,7 +1184,7 @@ pub fn build(lineitem_build: Vec<LineitemInput>, Ghost(db): Ghost<Db>) -> (resul
 
 pub fn apply(state: &State, lineitem_delta: &Vec<LineitemDelta>, Ghost(db2): Ghost<Db>) -> (result: Result<State, u32>)
     requires capture_ok(state.db(), db2, lineitem_delta_seq_view(lineitem_delta@)),
-    ensures result matches Ok(next) ==> next.db() == db2,
+    ensures result matches Ok(next) ==> next.db() == db2, result is Ok,
 {
     proof { use_type_invariant(state); }
     let mut changes = FlatIntervals::new();
@@ -1200,10 +1211,10 @@ pub fn apply(state: &State, lineitem_delta: &Vec<LineitemDelta>, Ghost(db2): Gho
         let delta = &lineitem_delta[index];
         let ghost before = changes;
         if delta.sign != 0 {
-            let totals = match contribution(&delta.row) { Some(totals) => totals, None => return Err(1) };
-            let signed = match totals.scaled(delta.sign) { Some(totals) => totals, None => return Err(1) };
+            let totals = contribution(&delta.row);
+            let signed = totals.scaled(delta.sign);
             let key = 4294967296u64 + (delta.row.l_shipdate as i64 + 2147483648i64) as u64;
-            if !changes.add(key, &delta.row.l_returnflag, &delta.row.l_linestatus, &signed) { return Err(1); }
+            changes.add(key, &delta.row.l_returnflag, &delta.row.l_linestatus, &signed);
             proof {
                 assert(key as int == row_leaf(lineitem_input_view(delta.row)));
                 assert((row_leaf(lineitem_input_view(delta.row))) as u64 == key);
@@ -1224,6 +1235,9 @@ pub fn apply(state: &State, lineitem_delta: &Vec<LineitemDelta>, Ghost(db2): Gho
                             } else { 0 } by {
                     assert(signed.at(component) == totals.at(component) * delta.sign);
                     assert(totals.at(component) == weight(lineitem_input_view(delta.row), component));
+                    assert(signed.at(component) == delta.sign * weight(lineitem_input_view(delta.row), component)) by (nonlinear_arith)
+                        requires signed.at(component) == totals.at(component) * delta.sign,
+                            totals.at(component) == weight(lineitem_input_view(delta.row), component);
                 }
             }
         }
@@ -1266,7 +1280,7 @@ pub fn apply(state: &State, lineitem_delta: &Vec<LineitemDelta>, Ghost(db2): Gho
                 lineitem_delta_seq_view(lineitem_delta@));
         }
     }
-    if !changes.hierarchy() { return Err(1); }
+    changes.hierarchy();
     let ghost leaf_keys = initial_changes.keys@;
     let ghost leaf_groups = initial_changes.intervals@;
     let mut intervals = state.intervals.share();
@@ -1284,10 +1298,10 @@ pub fn apply(state: &State, lineitem_delta: &Vec<LineitemDelta>, Ghost(db2): Gho
         decreases changes.keys.len() - key_index,
     {
         let key = changes.keys[key_index];
-        let delta = match changes.intervals.get(&key) { Some(delta) => delta, None => return Err(2) };
+        let delta = changes.intervals.get(&key).unwrap();
         let old_groups = match state.intervals.get(key) { Some(interval) => interval.groups.share(), None => Groups::new() };
         let old_empty = old_groups.is_empty();
-        let groups = match old_groups.updated(delta) { Some(groups) => groups, None => return Err(2) };
+        let groups = old_groups.updated(delta);
         let empty = groups.is_empty();
         let replacement = if empty { None } else { Some(Arc::new(Interval { key, groups })) };
         let ghost before_intervals = intervals;
@@ -1566,6 +1580,7 @@ fn ordered(groups: Vec<Group>) -> (result: Vec<Group>)
     requires group_keys_unique(groups@),
     ensures result@ == sort_dups(groups@, |left: Group, right: Group| group_lt(left, right)),
         result@.to_multiset() =~= groups@.to_multiset(),
+        forall|group: Group| #[trigger] result@.contains(group) <==> groups@.contains(group),
         group_keys_unique(result@),
         forall|first: int, second: int| 0 <= first < second < result.len() ==>
             !#[trigger] group_lt(result@[second], result@[first]),
@@ -1584,6 +1599,9 @@ fn ordered(groups: Vec<Group>) -> (result: Vec<Group>)
     proof {
         assert(groups@.take(groups.len() as int) =~= groups@);
         lemma_sort_dups(groups@, |left: Group, right: Group| group_lt(left, right));
+        assert forall|group: Group| #[trigger] sorted@.contains(group) <==> groups@.contains(group) by {
+            assert(sorted@ == sort_dups(groups@, |left: Group, right: Group| group_lt(left, right)));
+        }
         assert forall|first: int, second: int| 0 <= first < second < sorted.len() implies
             #[trigger] sorted@[first].key() != #[trigger] sorted@[second].key() by {
             if sorted@[first].key() == sorted@[second].key() {
@@ -1632,8 +1650,108 @@ fn ordered(groups: Vec<Group>) -> (result: Vec<Group>)
     sorted
 }
 
+/// The groups with rows; a group without rows has no sums (see lemma_prefix_empty).
+fn positive_groups(source: &Vec<Group>, Ghost(db): Ghost<Db>, Ghost(cutoff): Ghost<int>) -> (result: Vec<Group>)
+    requires group_keys_unique(source@),
+        forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 ==>
+            #[trigger] aggregate(source@, flag, status, component) == prefix_sum(db, cutoff, flag, status, component),
+    ensures group_directory(result@),
+        forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 ==>
+            #[trigger] aggregate(result@, flag, status, component) == aggregate(source@, flag, status, component),
+{
+    let mut result: Vec<Group> = Vec::new();
+    let mut index = 0usize;
+    while index < source.len()
+        invariant index <= source.len(), group_keys_unique(source@),
+            forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 ==>
+                #[trigger] aggregate(source@, flag, status, component) == prefix_sum(db, cutoff, flag, status, component),
+            group_directory(result@),
+            forall|position: int| 0 <= position < result.len() ==> source@.take(index as int).contains(#[trigger] result@[position]),
+            forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 ==>
+                #[trigger] aggregate(result@, flag, status, component) == aggregate(source@.take(index as int), flag, status, component),
+        decreases source.len() - index,
+    {
+        let group = &source[index];
+        let ghost before = result@;
+        proof {
+            assert forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 implies
+                #[trigger] aggregate(before, flag, status, component) == aggregate(source@.take(index as int), flag, status, component) by {}
+            assert forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 implies
+                #[trigger] aggregate(source@.take(index as int + 1), flag, status, component)
+                    == aggregate(source@.take(index as int), flag, status, component)
+                        + group_weight(flag, status, component)(source@[index as int]) by {
+                lemma_sum_take(source@, index as int, group_weight(flag, status, component));
+            }
+        }
+        if group.totals.count.is_pos() {
+            result.push(group.share());
+            proof {
+                assert(result@ == before.push(source@[index as int]));
+                assert forall|position: int| 0 <= position < result.len() implies
+                    source@.take(index as int + 1).contains(#[trigger] result@[position]) by {
+                    if position < before.len() {
+                        let earlier = source@.take(index as int);
+                        assert(earlier.contains(before[position]));
+                        let j = choose|j: int| 0 <= j < earlier.len() && earlier[j] == before[position];
+                        assert(source@.take(index as int + 1)[j] == before[position]);
+                    } else {
+                        assert(source@.take(index as int + 1)[index as int] == result@[position]);
+                    }
+                }
+                assert forall|first: int, second: int| 0 <= first < second < result@.len() implies
+                    (#[trigger] result@[first]).key() != (#[trigger] result@[second]).key() by {
+                    if second == before.len() {
+                        let earlier = source@.take(index as int);
+                        assert(earlier.contains(before[first]));
+                        let j = choose|j: int| 0 <= j < earlier.len() && earlier[j] == before[first];
+                        assert(source@[j] == before[first]);
+                        assert(source@[j].key() != source@[index as int].key());
+                    }
+                }
+                assert forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 implies
+                    #[trigger] aggregate(result@, flag, status, component)
+                        == aggregate(source@.take(index as int + 1), flag, status, component) by {
+                    lemma_sum_push(before, source@[index as int], group_weight(flag, status, component));
+                    assert(aggregate(before, flag, status, component) == aggregate(source@.take(index as int), flag, status, component));
+                    assert(aggregate(source@.take(index as int + 1), flag, status, component)
+                        == aggregate(source@.take(index as int), flag, status, component)
+                            + group_weight(flag, status, component)(source@[index as int]));
+                    assert(aggregate(result@, flag, status, component)
+                        == aggregate(before, flag, status, component) + group_weight(flag, status, component)(source@[index as int]));
+                }
+            }
+        } else {
+            proof {
+                let key = source@[index as int].key();
+                lemma_prefix_count_nonneg(db, cutoff, key.0, key.1);
+                assert forall|component: int| 0 <= component < 6 implies #[trigger] source@[index as int].totals.at(component) == 0 by {
+                    lemma_group_at(source@, index as int, 0);
+                    lemma_group_at(source@, index as int, component);
+                    lemma_prefix_empty(db, cutoff, key.0, key.1, component);
+                }
+                assert forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 implies
+                    #[trigger] aggregate(result@, flag, status, component)
+                        == aggregate(source@.take(index as int + 1), flag, status, component) by {
+                    assert(group_weight(flag, status, component)(source@[index as int]) == 0);
+                }
+                assert forall|position: int| 0 <= position < result.len() implies
+                    source@.take(index as int + 1).contains(#[trigger] result@[position]) by {
+                    let earlier = source@.take(index as int);
+                    assert(earlier.contains(result@[position]));
+                    let j = choose|j: int| 0 <= j < earlier.len() && earlier[j] == result@[position];
+                    assert(source@.take(index as int + 1)[j] == result@[position]);
+                }
+            }
+        }
+        index += 1;
+    }
+    proof { assert(source@.take(index as int) =~= source@); }
+    result
+}
+
 pub fn execute(state: &State, p1: i64) -> (result: Option<Vec<Output>>)
     ensures result matches Some(output) ==> query_result(state.db(), params(p1 as int), out_view(output@)),
+        answer_fits(state.db(), params(p1 as int)) ==> result is Some,
 {
     proof { use_type_invariant(state); }
     let cutoff = 10561i128 - p1 as i128;
@@ -1644,7 +1762,7 @@ pub fn execute(state: &State, p1: i64) -> (result: Option<Vec<Output>>)
                 #[trigger] aggregate(Seq::empty(), flag, status, component) == prefix_sum(state.db(), 10561 - p1, flag, status, component) by {
                 lemma_sum_zero(state.db().lineitem, prefix_weight(10561 - p1, flag, status, component));
             }
-            lemma_execute_result(state.db(), p1 as int, Seq::empty(), output@);
+            lemma_execute_result(state.db(), p1 as int, Seq::empty(), out_view(output@));
         }
         return Some(output);
     }
@@ -1687,10 +1805,7 @@ pub fn execute(state: &State, p1: i64) -> (result: Option<Vec<Output>>)
                 proof {
                     assert(width == power2(level as int));
                 }
-                let offset = match power2_exec(32 - level).checked_add(start / width) {
-                Some(value) => value,
-                None => return None,
-            };
+            let offset = power2_exec(32 - level) + start / width;
             let key = offset;
             if let Some(interval) = state.intervals.get(key) {
                 let groups = interval.groups.collect();
@@ -1719,10 +1834,8 @@ pub fn execute(state: &State, p1: i64) -> (result: Option<Vec<Output>>)
                     let flag = copy_bytes(&group.flag);
                     let status = copy_bytes(&group.status);
                     let totals = group.totals.copy();
-                    let added = accumulated.add(&flag, &status, &totals);
-                    if !added { return None; }
+                    accumulated.add(&flag, &status, &totals);
                     proof {
-                        assert(added);
                         accumulated.lemma_value_entries();
                         before_group.lemma_value_entries();
                         before_accumulated.lemma_value_entries();
@@ -1827,82 +1940,100 @@ pub fn execute(state: &State, p1: i64) -> (result: Option<Vec<Output>>)
                     |tile: Tile| tile.width as int);
                 assert(tile_sum(selected@) == previous_start as int + width as int);
                 assert(start as int == previous_start as int + width as int);
+                let quotient = previous_start as int / width as int + 1;
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(previous_start as int, width as int);
+                assert(start as int == quotient * width as int) by (nonlinear_arith)
+                    requires previous_start as int == width as int * (previous_start as int / width as int) + previous_start as int % width as int,
+                        previous_start as int % width as int == 0, start as int == previous_start as int + width as int,
+                        quotient == previous_start as int / width as int + 1;
+                vstd::arithmetic::div_mod::lemma_mod_multiples_basic(quotient, width as int);
+                assert(width as int == power2(level as int));
             }
         }
     }
     let collected = accumulated.collect();
     let ghost collected_view = collected@;
-    let groups = ordered(collected);
     proof {
         assert(remaining == 0);
         assert(tile_sum(selected@) == target);
         assert(target == if cutoff >= 2147483647 { 4294967296int }
             else { cutoff + 2147483649 });
         assert forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 implies
-            #[trigger] aggregate(groups@, flag, status, component)
+            #[trigger] aggregate(collected_view, flag, status, component)
                 == prefix_sum(state.db(), 10561 - p1, flag, status, component) by {
-            lemma_sum_perm(groups@, collected_view, group_weight(flag, status, component));
             assert(aggregate(collected_view, flag, status, component)
                 == accumulated.value(flag, status, component));
-            assert(accumulated.value(flag, status, component)
-                == sum(selected@, |tile: Tile| at_value(state.intervals, tile.key as u64,
-                    flag, status, component)));
             lemma_tiles_query(state.intervals, state.db(), selected@, cutoff as int,
                 flag, status, component);
         }
     }
+    let kept = positive_groups(&collected, Ghost(state.db()), Ghost(10561 - p1 as int));
+    let ghost kept_view = kept@;
+    let groups = ordered(kept);
+    proof {
+        broadcast use vstd::seq_lib::group_to_multiset_ensures;
+        assert forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 implies
+            #[trigger] aggregate(groups@, flag, status, component)
+                == prefix_sum(state.db(), 10561 - p1, flag, status, component) by {
+            lemma_sum_perm(groups@, kept_view, group_weight(flag, status, component));
+            assert(aggregate(kept_view, flag, status, component) == aggregate(collected_view, flag, status, component));
+        }
+        assert forall|index: int| 0 <= index < groups.len() implies
+            (#[trigger] groups@[index]).totals.count@ > 0 by {
+            assert(groups@.contains(groups@[index]));
+            assert(kept_view.contains(groups@[index]));
+        }
+    }
+    let ghost answer = groups@.map_values(|group: Group| group_row(group));
+    proof { lemma_execute_result(state.db(), p1 as int, groups@, answer); }
     let mut output = Vec::new();
     let mut index = 0usize;
     while index < groups.len()
         invariant index <= groups.len(), output.len() == index,
-            forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 ==>
-                #[trigger] aggregate(groups@, flag, status, component)
-                    == prefix_sum(state.db(), 10561 - p1, flag, status, component),
+            answer == groups@.map_values(|group: Group| group_row(group)),
+            query_result(state.db(), params(p1 as int), answer),
+            forall|position: int| 0 <= position < groups.len() ==>
+                0 < #[trigger] groups@[position].totals.count@,
             forall|position: int| 0 <= position < index ==>
-                0 < #[trigger] groups@[position].totals.count <= i64::MAX,
-            forall|position: int| 0 <= position < index ==>
-                (#[trigger] out_view(output@)[position]) == group_row(groups@[position]),
+                (#[trigger] out_view(output@)[position]) == answer[position],
         decreases groups.len() - index,
     {
         let group = &groups[index];
         let totals = &group.totals;
-        if totals.count <= 0 || totals.count > i64::MAX as i128 { return None; }
-        let denominator = match totals.count.checked_mul(100) { Some(value) => value, None => return None };
-        let ghost previous_output = output@;
-        let ghost previous_rows = out_view(previous_output);
-        output.push((copy_bytes(&group.flag), copy_bytes(&group.status), totals.quantity, totals.price,
-            totals.discounted, totals.charge, (totals.quantity, denominator), (totals.price, denominator),
-            (totals.discount, denominator), totals.count as i64));
-        proof {
-            let row = output@.last();
-            assert(row.0@ == group.flag@);
-            assert(row.1@ == group.status@);
-            assert(row.2 == totals.quantity && row.3 == totals.price && row.4 == totals.discounted && row.5 == totals.charge);
-            assert(row.6 == (totals.quantity, denominator) && row.7 == (totals.price, denominator)
-                && row.8 == (totals.discount, denominator) && row.9 == totals.count as i64);
-            assert(output@ == previous_output.push(row));
-            assert forall|position: int| 0 <= position < out_view(output@).len() implies
-                #[trigger] out_view(output@)[position] == if position < index as int {
-                    previous_rows[position]
-                } else {
-                    group_row(*group)
-                } by {
-                if position == index as int {
-                    assert(output@[position] == row);
+        let count = totals.count.to_i128();
+        let quantity = totals.quantity.to_i128();
+        let price = totals.price.to_i128();
+        let discounted = totals.discounted.to_i128();
+        let charge = totals.charge.to_i128();
+        let discount = totals.discount.to_i128();
+        if count.is_none() || quantity.is_none() || price.is_none() || discounted.is_none()
+            || charge.is_none() || discount.is_none() || count.unwrap() > i64::MAX as i128 {
+            proof {
+                let row = answer[index as int];
+                assert(row == group_row(groups@[index as int]));
+                assert(!out_fits(row));
+                assert(!answer_fits(state.db(), params(p1 as int))) by {
+                    if answer_fits(state.db(), params(p1 as int)) { assert(out_fits(answer[index as int])); }
                 }
             }
+            return None;
+        }
+        let count = count.unwrap();
+        let denominator = count * 100;
+        let ghost previous_output = output@;
+        let ghost previous_rows = out_view(previous_output);
+        output.push((copy_bytes(&group.flag), copy_bytes(&group.status), quantity.unwrap(), price.unwrap(),
+            discounted.unwrap(), charge.unwrap(), (quantity.unwrap(), denominator), (price.unwrap(), denominator),
+            (discount.unwrap(), denominator), count as i64));
+        proof {
+            let row = output@.last();
+            assert(output@ == previous_output.push(row));
             assert(out_view(output@) =~= previous_rows.push(group_row(*group)));
-            assert(out_view(output@)[index as int] == group_row(*group));
+            assert(out_view(output@)[index as int] == answer[index as int]);
         }
         index += 1;
     }
-    proof {
-        assert forall|flag: Seq<u8>, status: Seq<u8>, component: int| 0 <= component < 6 implies
-            #[trigger] aggregate(groups@, flag, status, component)
-                == prefix_sum(state.db(), 10561 - p1, flag, status, component) by {
-        }
-        lemma_execute_result(state.db(), p1 as int, groups@, output@);
-    }
+    proof { assert(out_view(output@) =~= answer); }
     Some(output)
 }
 

@@ -1,6 +1,7 @@
 use vstd::prelude::*;
 use std::sync::Arc;
 use verus_common::sums::*;
+use verus_prooflib::wide::Wide;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::cube::*;
@@ -8,6 +9,9 @@ use crate::runs::*;
 use crate::proofs::*;
 
 verus! {
+
+/// The kernel keeps no state that grows with the changed rows.
+pub open spec fn history(s: State) -> nat { 0 }
 
 pub struct Overlay {
     pub cells: Arc<Vec<Cell>>,
@@ -125,7 +129,7 @@ impl State {
 
 pub fn build(lineitem_cube: &[LineitemInput], Ghost(db): Ghost<Db>) -> (result: Option<State>)
     requires scan_lineitem_cube_ok(db, lineitem_cube@),
-    ensures result matches Some(state) ==> state.db() == db,
+    ensures result matches Some(state) ==> state.db() == db, result is Some,
 {
     let mut accumulator = Accumulator::new();
     let mut position = 0usize;
@@ -137,7 +141,7 @@ pub fn build(lineitem_cube: &[LineitemInput], Ghost(db): Ghost<Db>) -> (result: 
                 input_weight(lineitem_cube@.take(processed@), weight, revenue),
         decreases lineitem_cube.len() - position,
     {
-        if !accumulator.add(lineitem_cube[position], 1) { return None; }
+        accumulator.add(lineitem_cube[position], 1);
         proof {
             assert forall|weight: spec_fn(Key) -> int, revenue: bool| #[trigger] input_weight(lineitem_cube@.take(position as int + 1), weight, revenue) ==
                 input_weight(lineitem_cube@.take(position as int), weight, revenue) +
@@ -148,7 +152,7 @@ pub fn build(lineitem_cube: &[LineitemInput], Ghost(db): Ghost<Db>) -> (result: 
         position += 1;
         processed = Ghost(position as int);
     }
-    let cells = match seal(accumulator.cells) { Some(value) => value, None => return None };
+    let cells = seal(accumulator.cells);
     proof {
         assert(lineitem_cube@.take(position as int) == lineitem_cube@);
         lemma_build_transfer(db, lineitem_cube@);
@@ -157,8 +161,10 @@ pub fn build(lineitem_cube: &[LineitemInput], Ghost(db): Ghost<Db>) -> (result: 
 }
 
 pub fn execute(state: &State, p1: i32, p2: i64, p3: i64, p4: i32) -> (result: Option<Vec<Option<i128>>>)
-    ensures result matches Some(output) ==>
-        query_result(state.db(), params(p1 as int, p2 as int, p3 as int, p4 as int), out_view(output@)),
+    ensures
+        result matches Some(output) ==>
+            query_result(state.db(), params(p1 as int, p2 as int, p3 as int, p4 as int), out_view(output@)),
+        answer_fits(state.db(), params(p1 as int, p2 as int, p3 as int, p4 as int)) ==> result is Some,
 {
     proof { use_type_invariant(state); }
     let ghost parameters = params(p1 as int, p2 as int, p3 as int, p4 as int);
@@ -173,8 +179,8 @@ pub fn execute(state: &State, p1: i32, p2: i64, p3: i64, p4: i32) -> (result: Op
         }
         return Some(output);
     }
-    let mut count = 0i128;
-    let mut revenue = 0i128;
+    let mut count = Wide::zero();
+    let mut revenue = Wide::zero();
     let mut offset = 0usize;
     proof {
         lemma_sum_zero(state.db().lineitem, |row: LineitemRow| (prefix_weight(parameters, 0))(row_key(row)) * row_measure(row, false));
@@ -186,12 +192,12 @@ pub fn execute(state: &State, p1: i32, p2: i64, p3: i64, p4: i32) -> (result: Op
         invariant
             state.wf(), p1 < p4, offset <= 3,
             parameters == params(p1 as int, p2 as int, p3 as int, p4 as int),
-            count == state.logical(prefix_weight(parameters, offset as int), false),
-            revenue == state.logical(prefix_weight(parameters, offset as int), true),
+            count@ == state.logical(prefix_weight(parameters, offset as int), false),
+            revenue@ == state.logical(prefix_weight(parameters, offset as int), true),
         decreases 3 - offset,
     {
-        let ghost previous_count = count;
-        let ghost previous_revenue = revenue;
+        let ghost previous_count = count@;
+        let ghost previous_revenue = revenue@;
         proof {
             state.lemma_query_step(parameters, offset as int, false);
             state.lemma_query_step(parameters, offset as int, true);
@@ -199,13 +205,11 @@ pub fn execute(state: &State, p1: i32, p2: i64, p3: i64, p4: i32) -> (result: Op
         let discount = p2 as i128 - 1 + offset as i128;
         if discount >= i64::MIN as i128 && discount <= i64::MAX as i128 {
             let discount = discount as i64;
-            let weights = match query_run(&*state.base, discount, p1, p3, p4) {
-                Some(value) => value, None => return None,
-            };
-            count = match count.checked_add(weights.0) { Some(value) => value, None => return None };
-            revenue = match revenue.checked_add(weights.1) { Some(value) => value, None => return None };
-            let ghost count_before_runs = count;
-            let ghost revenue_before_runs = revenue;
+            let weights = query_run(&*state.base, discount, p1, p3, p4);
+            count = count.add(&weights.0);
+            revenue = revenue.add(&weights.1);
+            let ghost count_before_runs = count@;
+            let ghost revenue_before_runs = revenue@;
             let mut index = 0usize;
             while index < state.overlays.len()
                 invariant
@@ -216,15 +220,13 @@ pub fn execute(state: &State, p1: i32, p2: i64, p3: i64, p4: i32) -> (result: Op
                     previous_revenue == state.logical(prefix_weight(parameters, offset as int), true),
                     count_before_runs == previous_count + weighted((*state.base)@, selection_weight(discount as int, p1 as int, p3 as int, p4 as int), false),
                     revenue_before_runs == previous_revenue + weighted((*state.base)@, selection_weight(discount as int, p1 as int, p3 as int, p4 as int), true),
-                    count == count_before_runs + overlay_weight(state.overlays@.take(index as int), selection_weight(discount as int, p1 as int, p3 as int, p4 as int), false),
-                    revenue == revenue_before_runs + overlay_weight(state.overlays@.take(index as int), selection_weight(discount as int, p1 as int, p3 as int, p4 as int), true),
+                    count@ == count_before_runs + overlay_weight(state.overlays@.take(index as int), selection_weight(discount as int, p1 as int, p3 as int, p4 as int), false),
+                    revenue@ == revenue_before_runs + overlay_weight(state.overlays@.take(index as int), selection_weight(discount as int, p1 as int, p3 as int, p4 as int), true),
                 decreases state.overlays.len() - index,
             {
-                let weights = match query_run(&*state.overlays[index].cells, discount, p1, p3, p4) {
-                    Some(value) => value, None => return None,
-                };
-                count = match count.checked_add(weights.0) { Some(value) => value, None => return None };
-                revenue = match revenue.checked_add(weights.1) { Some(value) => value, None => return None };
+                let weights = query_run(&*state.overlays[index].cells, discount, p1, p3, p4);
+                count = count.add(&weights.0);
+                revenue = revenue.add(&weights.1);
                 proof { lemma_overlay_take(state.overlays@, index as int); }
                 index += 1;
             }
@@ -238,27 +240,55 @@ pub fn execute(state: &State, p1: i32, p2: i64, p3: i64, p4: i32) -> (result: Op
         proof {
             state.lemma_query_step(parameters, offset as int, false);
             state.lemma_query_step(parameters, offset as int, true);
-            assert(count == previous_count + state.logical(selection_weight(parameters.p2 - 1 + offset as int, parameters.p1, parameters.p3, parameters.p4), false));
-            assert(revenue == previous_revenue + state.logical(selection_weight(parameters.p2 - 1 + offset as int, parameters.p1, parameters.p3, parameters.p4), true));
+            assert(count@ == previous_count + state.logical(selection_weight(parameters.p2 - 1 + offset as int, parameters.p1, parameters.p3, parameters.p4), false));
+            assert(revenue@ == previous_revenue + state.logical(selection_weight(parameters.p2 - 1 + offset as int, parameters.p1, parameters.p3, parameters.p4), true));
         }
         offset += 1;
     }
-    if count < 0 { return None; }
-    output.push(if count > 0 { Some(revenue) } else { None });
     proof {
         assert(prefix_weight(parameters, 3) == query_weight(parameters)) by {
             assert forall|key: Key| #[trigger] (prefix_weight(parameters, 3))(key) == (query_weight(parameters))(key) by {};
         }
         lemma_query_transfer(state.db(), parameters);
-        assert(out_view(output@) == rows(state.db(), parameters));
+        lemma_query_result_iff(state.db(), parameters, Seq::empty());
+        assert(count@ == group_count(state.db(), parameters));
+    }
+    if count.is_pos() {
+        match revenue.to_i128() {
+            Some(value) => output.push(Some(value)),
+            None => {
+                proof {
+                    let answer = rows(state.db(), parameters);
+                    assert(answer[0].revenue == Some(revenue@));
+                    assert(!out_fits(answer[0]));
+                    assert(query_result(state.db(), parameters, answer));
+                    assert(!answer_fits(state.db(), parameters)) by {
+                        if answer_fits(state.db(), parameters) { assert(out_fits(answer[0])); }
+                    }
+                }
+                return None;
+            },
+        }
+    } else {
+        output.push(None);
+    }
+    proof {
+        assert(out_view(output@) =~= rows(state.db(), parameters));
         lemma_query_result_iff(state.db(), parameters, out_view(output@));
     }
     Some(output)
 }
 
+/// Saturating doubling: credit only paces compaction, so no overflow can decline.
+fn double(credit: usize) -> (result: usize)
+    ensures result == if credit <= usize::MAX / 2 { 2 * credit } else { usize::MAX as int },
+{
+    if credit <= usize::MAX / 2 { credit * 2 } else { usize::MAX }
+}
+
 pub fn apply(state: &State, lineitem_delta: &[LineitemDelta], Ghost(db2): Ghost<Db>) -> (result: Result<State, u32>)
     requires capture_ok(state.db(), db2, lineitem_delta_seq_view(lineitem_delta@)),
-    ensures result matches Ok(next) ==> next.db() == db2,
+    ensures result matches Ok(next) ==> next.db() == db2, result is Ok,
 {
     proof { use_type_invariant(state); }
     let mut accumulator = Accumulator::new();
@@ -272,8 +302,7 @@ pub fn apply(state: &State, lineitem_delta: &[LineitemDelta], Ghost(db2): Ghost<
         decreases lineitem_delta.len() - position,
     {
         let delta = lineitem_delta[position];
-        if delta.sign != 1 && delta.sign != -1 { return Err(1); }
-        if !accumulator.add(delta.row, delta.sign) { return Err(2); }
+        accumulator.add(delta.row, delta.sign);
         proof {
             assert forall|weight: spec_fn(Key) -> int, revenue: bool| #[trigger] delta_weight(lineitem_delta@.take(position as int + 1), weight, revenue) ==
                 delta_weight(lineitem_delta@.take(position as int), weight, revenue) + weight(row_key(lineitem_input_view(delta.row))) *
@@ -285,7 +314,7 @@ pub fn apply(state: &State, lineitem_delta: &[LineitemDelta], Ghost(db2): Ghost<
         position += 1;
         processed = Ghost(position as int);
     }
-    let cells = match seal(accumulator.cells) { Some(value) => value, None => return Err(2) };
+    let cells = seal(accumulator.cells);
     proof {
         assert(lineitem_delta@.take(position as int) == lineitem_delta@);
         lemma_apply_transfer(state.db(), db2, lineitem_delta@);
@@ -298,12 +327,10 @@ pub fn apply(state: &State, lineitem_delta: &[LineitemDelta], Ghost(db2): Ghost<
     {
         let ghost previous_credit = credit;
         proof { assert(credit > 0); }
-        credit = match credit.checked_mul(2) { Some(value) => value, None => return Err(3) };
-        proof { assert(credit as int == 2 * previous_credit as int); }
+        credit = double(credit);
+        proof { assert(credit as int == 2 * previous_credit as int || credit == usize::MAX); }
     }
-    let incoming_credit = match state.incoming_credit.checked_add(credit) {
-        Some(value) => value, None => return Err(3),
-    };
+    let incoming_credit = state.incoming_credit.saturating_add(credit);
     let mut carry = Arc::new(cells);
     let mut overlays = Vec::new();
     let mut index = 0usize;
@@ -327,8 +354,8 @@ pub fn apply(state: &State, lineitem_delta: &[LineitemDelta], Ghost(db2): Ghost<
             }
             index += 1;
         } else if old.credit == credit {
-            let merged = match merge(&*old.cells, &*carry) { Some(value) => value, None => return Err(2) };
-            credit = match credit.checked_mul(2) { Some(value) => value, None => return Err(3) };
+            let merged = merge(&*old.cells, &*carry);
+            credit = double(credit);
             carry = Arc::new(merged);
             proof { lemma_overlay_take(state.overlays@, index as int); }
             index += 1;
@@ -366,20 +393,12 @@ pub fn apply(state: &State, lineitem_delta: &[LineitemDelta], Ghost(db2): Ghost<
                     overlay_weight(overlays@.take(index as int), weight, revenue),
             decreases overlays.len() - index,
         {
-            combined = match merge(&combined, &*overlays[index].cells) { Some(value) => value, None => return Err(2) };
+            combined = merge(&combined, &*overlays[index].cells);
             proof { lemma_overlay_take(overlays@, index as int); }
             index += 1;
         }
         proof { assert(overlays@.take(index as int) == overlays@); }
-        let base = match merge(&*state.base, &combined) { Some(value) => value, None => return Err(2) };
-        let mut index = 0usize;
-        while index < base.len()
-            invariant index <= base.len(), sorted(base@), nonzero(base@),
-            decreases base.len() - index,
-        {
-            if base[index].count <= 0 { return Err(4); }
-            index += 1;
-        }
+        let base = merge(&*state.base, &combined);
         Ok(State { base: Arc::new(base), overlays: Vec::new(), incoming_credit: 0, database: Ghost(db2) })
     } else {
         Ok(State { base: state.base.clone(), overlays, incoming_credit, database: Ghost(db2) })
