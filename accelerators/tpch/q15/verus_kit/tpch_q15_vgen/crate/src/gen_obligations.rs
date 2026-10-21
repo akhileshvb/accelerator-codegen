@@ -186,10 +186,12 @@ pub open spec fn out_fits(r: OutRow) -> bool {
     && -170141183460469231731687303715884105728 <= r.total_revenue <= 170141183460469231731687303715884105727
 }
 
-/// A correct answer exists (none does, e.g., for a zero divisor) and every correct
-/// answer fits the result's runtime types.
+/// A correct answer exists (`defined`: no divisor is zero; gen_spec.rs proves
+/// `defined <==> exists an answer`) and every correct answer fits the result's
+/// runtime types.  A kernel that declines because no answer exists must prove
+/// `!defined`.
 pub open spec fn answer_fits(db: Db, params: Params) -> bool {
-    &&& exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)
+    &&& defined(db, params)
     &&& forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
 }
 

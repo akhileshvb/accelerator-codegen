@@ -2788,11 +2788,8 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
                 None if c.key.is_none() => writeln!(w, "    &&& {f} == {}", row_expr(c)).unwrap(),
                 None => {}
             }
-            for d in &v.den_conds {
-                match &v.guard {
-                    Some(g) if c.nullable => writeln!(w, "    &&& {g} ==> {d}").unwrap(),
-                    _ => writeln!(w, "    &&& {d}").unwrap(),
-                }
+            for e in den_exprs(c) {
+                writeln!(w, "    &&& {e}").unwrap();
             }
         }
     };
@@ -2855,14 +2852,7 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
             writeln!(w, "    &&& out.to_multiset() == rows(db, params).to_multiset()").unwrap();
             writeln!(w, "    &&& forall|i: int, j: int| 0 <= i < j < out.len() ==> !row_lt(#[trigger] out[j], #[trigger] out[i])").unwrap();
             if !defined.is_empty() {
-                // grouped: the divisors of each group (keyed by a tuple of it) that passes HAVING
-                let lets: String = keys.iter().map(|(g, v)| format!(" let {g} = {};", v.code)).collect();
-                let cond = if b.shape == Shape::Grouped {
-                    format!("having(db, params{ka}) ==> ({})", defined.join(" && "))
-                } else {
-                    defined.join(" && ")
-                };
-                writeln!(w, "    &&& forall|i: int| 0 <= i < tuples(db, params).len() ==> {{ let t = #[trigger] tuples(db, params)[i];{lets} {cond} }}").unwrap();
+                writeln!(w, "    &&& {}", tuple_defined(b, &defined)).unwrap();
             }
         }
         Shape::Scalar => {
@@ -2895,11 +2885,33 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         writeln!(w, "    full_result(db, params, out)").unwrap();
         writeln!(w, "}}\n").unwrap();
     }
-    print_facts(w, top, approx, &defined);
+    let avail = print_facts(w, top, approx, &defined);
+    print_defined(w, top, avail, &defined);
     let tables: Vec<String> = tr.used.keys().map(|t| table_field(t)).collect();
     tr.perm.print(w, &tables, top, &defined);
     writeln!(w, "}} // verus!").unwrap();
     o
+}
+
+/// The divisor guards of one output column, as row_ok states them.
+fn den_exprs(c: &OutCol) -> Vec<String> {
+    c.val
+        .den_conds
+        .iter()
+        .map(|d| match &c.val.guard {
+            Some(g) if c.nullable => format!("{g} ==> {d}"),
+            _ => d.clone(),
+        })
+        .collect()
+}
+
+/// Every tuple's divisors are non-zero; for a grouped query, those of each group
+/// (keyed by a tuple of it) that passes HAVING.
+fn tuple_defined(b: &Block, defined: &[String]) -> String {
+    let lets: String = b.keys.iter().map(|(g, v)| format!(" let {g} = {};", v.code)).collect();
+    let ka: String = b.keys.iter().map(|(g, _)| format!(", {g}")).collect();
+    let cond = if b.shape == Shape::Grouped { format!("having(db, params{ka}) ==> ({})", defined.join(" && ")) } else { defined.join(" && ") };
+    format!("forall|i: int| 0 <= i < tuples(db, params).len() ==> {{ let t = #[trigger] tuples(db, params)[i];{lets} {cond} }}")
 }
 
 /// The answer is stated as a bag of rows (plain SELECT, or GROUP BY whose
@@ -2940,14 +2952,30 @@ fn lex_lt(b: &Block, order: &[(usize, bool)]) -> String {
     lex_lt_cols(&cols)
 }
 
+/// Which existence facts `print_facts` generated (what `lemma_defined_exists` builds on).
+#[derive(Clone, Copy, PartialEq)]
+enum Facts {
+    /// None (a rounded float aggregate, or a column with no canonical order).
+    None,
+    /// `lemma_query_result_iff` for the single aggregate row.
+    Scalar,
+    /// `lemma_query_result_iff` for a bag-shaped answer.
+    Plain,
+    /// A bag-shaped grouped answer with divisors: existence is not stated.
+    BagNoExistence,
+    /// `lemma_query_result_iff` for a grouped answer; with divisors it requires the
+    /// `defined` that `print_grouped_facts` declares.
+    Grouped,
+}
+
 /// Facts: existence and uniqueness of the answer.
-fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) {
+fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) -> Facts {
     let b = &top.block;
     writeln!(w, "// ── Facts about this spec (verified by Verus, not trusted) ─────────────────").unwrap();
     if approx {
         writeln!(w, "// No facts: a rounded float aggregate has many acceptable values (the bound").unwrap();
         writeln!(w, "// admits the correctly rounded result, but that is not proved here).\n").unwrap();
-        return;
+        return Facts::None;
     }
     if b.shape == Shape::Scalar {
         writeln!(w, "// The answer is the single aggregate row.\n").unwrap();
@@ -2967,7 +2995,7 @@ fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) {
             writeln!(w, "    }}").unwrap();
         }
         writeln!(w, "}}\n").unwrap();
-        return;
+        return Facts::Scalar;
     }
     // ORDER BY, extended so that it orders every pair of different rows
     let ordered: Vec<usize> = top.order.iter().map(|(i, _)| *i).collect();
@@ -2980,7 +3008,7 @@ fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) {
             total = false;
             if t.val.ty == Ty::Rat || t.nullable {
                 writeln!(w, "// No facts: column {} has no canonical order.\n", t.sql).unwrap();
-                return;
+                return Facts::None;
             }
             ext.push((t.field.clone(), t.val.ty, false));
         }
@@ -3017,10 +3045,99 @@ fn print_facts(w: &mut String, top: &Top, approx: bool, defined: &[String]) {
     writeln!(w, "/// ORDER BY implies the extended order{}.", if total { " (they are the same)" } else { "" }).unwrap();
     writeln!(w, "pub proof fn lemma_row_lt_ext(a: OutRow, b: OutRow)\n    ensures\n        row_lt(a, b) ==> ext_order()(a, b),{}\n{{\n}}\n", if total { "\n        row_lt(a, b) == ext_order()(a, b)," } else { "" }).unwrap();
     if as_bag(b) {
-        print_plain_facts(w, top, total, defined);
+        print_plain_facts(w, top, total, defined)
     } else {
         print_grouped_facts(w, top, total, defined);
+        Facts::Grouped
     }
+}
+
+/// `defined`: the query's divisors are non-zero, so that it has an answer; with
+/// the lemmas that make `defined <==> exists an answer` a verified fact.
+fn print_defined(w: &mut String, top: &Top, facts: Facts, defined: &[String]) {
+    let b = &top.block;
+    let own = facts == Facts::Grouped && !defined.is_empty() && !as_bag(b);
+    writeln!(w, "// ── The answer exists exactly when `defined` (verified by Verus, not trusted) ──\n").unwrap();
+    if !own {
+        writeln!(w, "/// No divisor of the query is zero{}.", if defined.is_empty() { " (it has none)" } else { "" }).unwrap();
+        writeln!(w, "pub open spec fn defined(db: Db, params: Params) -> bool {{").unwrap();
+        if defined.is_empty() {
+            writeln!(w, "    true").unwrap();
+        } else if b.shape == Shape::Scalar {
+            let conj: Vec<String> = b.outs.iter().flat_map(den_exprs).collect();
+            if b.having.is_empty() {
+                for e in &conj {
+                    writeln!(w, "    &&& {e}").unwrap();
+                }
+            } else {
+                let all: Vec<String> = conj.iter().map(|e| format!("({e})")).collect();
+                writeln!(w, "    having(db, params) ==> ({})", all.join(" && ")).unwrap();
+            }
+        } else {
+            writeln!(w, "    {}", tuple_defined(b, defined)).unwrap();
+        }
+        writeln!(w, "}}\n").unwrap();
+    }
+    let keys = &b.keys;
+    let kcols = key_cols(b);
+    let tk = |t: &str| -> String { keys.iter().map(|(_, v)| format!(", {}", subst_t(&v.code, t))).collect() };
+    let cut_ans = |a: &str| cut(top, a);
+    // ── defined ==> an answer exists ──
+    let scalar_having = b.shape == Shape::Scalar && !b.having.is_empty() && !defined.is_empty();
+    let forward = match facts {
+        Facts::None | Facts::BagNoExistence => false,
+        Facts::Scalar => !scalar_having,
+        Facts::Plain | Facts::Grouped => true,
+    };
+    if forward {
+        writeln!(w, "/// With non-zero divisors the query has an answer.").unwrap();
+        writeln!(w, "pub proof fn lemma_defined_exists(db: Db, params: Params)\n    requires\n        defined(db, params),\n    ensures\n        exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o),\n{{").unwrap();
+        let a = if facts == Facts::Scalar { "rows(db, params)" } else { "answer(db, params)" };
+        if facts == Facts::Scalar && !defined.is_empty() {
+            writeln!(w, "    assert(row_ok(db, params, row_of(db, params)));").unwrap();
+        }
+        if facts == Facts::Plain && !defined.is_empty() {
+            writeln!(w, "    assert forall|i: int| 0 <= i < tuples(db, params).len() implies #[trigger] full_result_defined(tuples(db, params)[i]) by {{\n        assert(full_result_defined(tuples(db, params)[i]));\n    }}").unwrap();
+        }
+        writeln!(w, "    lemma_query_result_iff(db, params, {a});\n    assert(query_result(db, params, {}));\n}}\n", cut_ans(a)).unwrap();
+    }
+    // ── an answer exists ==> defined ──
+    let converse = defined.is_empty() || facts != Facts::None;
+    if !converse {
+        writeln!(w, "// (No existence lemmas: see the facts above.)\n").unwrap();
+        return;
+    }
+    writeln!(w, "/// An answer exists only if the divisors are non-zero.").unwrap();
+    writeln!(w, "pub proof fn lemma_exists_defined(db: Db, params: Params)\n    ensures\n        (exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)) ==> defined(db, params),\n{{").unwrap();
+    if !defined.is_empty() {
+        writeln!(w, "    if exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o) {{").unwrap();
+        writeln!(w, "        let o = choose|o: Seq<OutRow>| #[trigger] query_result(db, params, o);").unwrap();
+        if top.limit.is_some() || top.offset > 0 {
+            writeln!(w, "        let full = choose|full: Seq<OutRow>| #[trigger] full_result(db, params, full) && o == {};", cut(top, "full")).unwrap();
+        } else {
+            writeln!(w, "        let full = o;").unwrap();
+        }
+        writeln!(w, "        assert(full_result(db, params, full));").unwrap();
+        if b.shape == Shape::Scalar {
+            writeln!(w, "        assert(full.len() == rows(db, params).len());\n        if full.len() > 0 {{\n            assert(row_ok(db, params, full[0]));\n        }}").unwrap();
+        } else if own {
+            writeln!(w, "        assert forall|i: int| 0 <= i < tuples(db, params).len() implies #[trigger] row_ok(db, params, present_row(db, params)(tuples(db, params)[i])) || !present_keep(db, params)(tuples(db, params)[i]) by {{").unwrap();
+            writeln!(w, "            let t = tuples(db, params)[i];\n            if present_keep(db, params)(t) {{\n                lemma_tuple_group(db, params, i);").unwrap();
+            let om: Vec<String> = kcols
+                .iter()
+                .enumerate()
+                .map(|(n, c)| {
+                    let kv = subst_t(&keys[c.key.unwrap()].1.code, "t");
+                    if n == 0 { format!("(#[trigger] full[j]).{} == {kv}", c.field) } else { format!("full[j].{} == {kv}", c.field) }
+                })
+                .collect();
+            writeln!(w, "                assert(group_count(db, params{}) > 0 && having(db, params{}));", tk("t"), tk("t")).unwrap();
+            writeln!(w, "                let j = choose|j: int| 0 <= j < full.len() && {};", om.join(" && ")).unwrap();
+            writeln!(w, "                assert(row_ok(db, params, full[j]));\n                assert(row_ok(db, params, present_row(db, params)(t)));\n            }}\n        }}").unwrap();
+        }
+        writeln!(w, "        assert(defined(db, params));\n    }}").unwrap();
+    }
+    writeln!(w, "}}\n").unwrap();
 }
 
 fn lim(top: &Top, a: &str) -> String {
@@ -3044,7 +3161,7 @@ fn print_iff(w: &mut String, top: &Top, total: bool, pre: &str) {
     writeln!(w, "}}\n").unwrap();
 }
 
-fn print_plain_facts(w: &mut String, top: &Top, total: bool, defined: &[String]) {
+fn print_plain_facts(w: &mut String, top: &Top, total: bool, defined: &[String]) -> Facts {
     writeln!(w, "/// The answer before any LIMIT: the rows, sorted by the extended order.").unwrap();
     writeln!(w, "pub open spec fn answer(db: Db, params: Params) -> Seq<OutRow> {{\n    sort_dups(rows(db, params), ext_order())\n}}\n").unwrap();
     writeln!(w, "proof fn lemma_answer(db: Db, params: Params)\n    ensures\n        strict_order(ext_order()),\n        total_on(ext_order(), rows(db, params)),").unwrap();
@@ -3055,7 +3172,7 @@ fn print_plain_facts(w: &mut String, top: &Top, total: bool, defined: &[String])
     writeln!(w, "    lemma_sort_dups(rows(db, params), ext_order());\n}}\n").unwrap();
     if !defined.is_empty() && top.block.shape != Shape::Plain {
         writeln!(w, "// (Existence needs non-zero divisors in every group; not stated here.)\n").unwrap();
-        return;
+        return Facts::BagNoExistence;
     }
     let pre = if defined.is_empty() {
         String::new()
@@ -3088,6 +3205,7 @@ fn print_plain_facts(w: &mut String, top: &Top, total: bool, defined: &[String])
         writeln!(w, "    lemma_nondesc_unique(ans, out, ext_order());\n}}\n").unwrap();
     }
     print_iff(w, top, total, &pre);
+    Facts::Plain
 }
 
 fn print_grouped_facts(w: &mut String, top: &Top, total: bool, defined: &[String]) {
