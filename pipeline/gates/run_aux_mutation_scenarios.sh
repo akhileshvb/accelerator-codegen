@@ -25,7 +25,7 @@ fi
 if ! engine_ready; then
   emit_result "${OUT}/aux_mutation_scenarios.json" aux_mutation_scenarios fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
-engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" -R "${PATTERN}" --output-on-failure
+engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=error -R "${PATTERN}" --output-on-failure
 
 STATUS="pass"
 if [[ ${RC} -ne 0 ]]; then

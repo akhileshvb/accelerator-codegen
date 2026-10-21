@@ -29,7 +29,7 @@ fi
 if ! engine_ready; then
   emit_result "${OUT}/aux_unit.json" aux_unit fail "${ENGINE_FAIL}" "${ENGINE_LOG}" "query:=${QUERY}"
 fi
-engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" -R "${PATTERN}" -E "${EXCLUDE}" --output-on-failure
+engine_run ctest --test-dir "${ACCEL_BUILD_DIR}" --no-tests=error -R "${PATTERN}" -E "${EXCLUDE}" --output-on-failure
 
 STATUS="pass"
 if [[ ${RC} -ne 0 ]]; then
