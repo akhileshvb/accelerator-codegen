@@ -846,11 +846,19 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
         into.insert(into.end(), from.begin(), from.end());
       });
   std::unordered_set<int64_t> needed_custkeys;
+  for (const auto &[order, sum] : survivors)
+    needed_custkeys.insert(order.custkey);
+  // ~48 entries per shard whatever the scale, so a commit clones little.
+  using Sums = core::ShardedCowHashMap<int64_t, 8>;
+  state.quantity_overflow = Sums(Sums::ShardBitsFor(survivors.size()));
+  state.survivors = core::ShardedCowHashMap<TpchQ18SurvivorMeta, 8>(
+      Sums::ShardBitsFor(survivors.size()));
+  state.customer_names = core::ShardedCowHashMap<std::string, 8>(
+      Sums::ShardBitsFor(needed_custkeys.size()));
   for (const auto &[order, sum] : survivors) {
     state.SetOrderQuantitySum(order.key, sum);
     state.SetOrderMeta(order.key, order.custkey, order.orderdate_days,
                        order.totalprice_raw);
-    needed_custkeys.insert(order.custkey);
   }
 
   using Names = std::vector<std::pair<int64_t, std::string>>;
