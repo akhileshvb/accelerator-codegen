@@ -31,3 +31,4 @@ pub mod yw;
 pub mod applyspec;
 pub mod applydiff;
 pub mod finish;
+pub mod wide;
