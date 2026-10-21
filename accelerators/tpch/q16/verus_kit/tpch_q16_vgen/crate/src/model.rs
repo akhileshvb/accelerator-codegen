@@ -51,13 +51,11 @@ pub type Parts = Index<Counts>;
 pub type Edges = Index<Index<i64>>;
 pub struct BrandRanks {
     pub rows: Counts,
-    pub groups: i64,
 }
 
 pub struct SizeRanks {
     pub brands: Index<BrandRanks>,
     pub rows: Counts,
-    pub groups: i64,
 }
 
 pub type Ranks = Index<SizeRanks>;
@@ -268,7 +266,6 @@ pub open spec fn stream_valid(rows: Counts, counts: Counts, size: int, brand: Op
 
 pub open spec fn size_profile_valid(rows: SizeRanks, counts: Counts, size: int) -> bool {
     &&& rows.brands.wf() && stream_valid(rows.rows, counts, size, None)
-    &&& rows.groups == rows.rows.entries().len()
     &&& brands_valid(rows.brands, counts, size)
 }
 
@@ -276,14 +273,13 @@ pub open spec fn brands_valid(brands: Index<BrandRanks>, counts: Counts, size: i
     &&& brands.wf()
     &&& forall|brand: KeyView| #[trigger] brands.at(brand).is_some() ==>
         brand.0 == 0 && stream_valid(brands.at(brand).unwrap().rows, counts, size, Some(brand.1))
-        && brands.at(brand).unwrap().groups == brands.at(brand).unwrap().rows.entries().len()
-        && brands.at(brand).unwrap().groups > 0
+        && brands.at(brand).unwrap().rows.entries().len() > 0
     &&& forall|key: KeyView| #[trigger] counts.at(key).is_some() && counts.at(key).unwrap().group.size == size ==>
         brands.at((0int, (*counts.at(key).unwrap().group.brand)@)).is_some()
 }
 
 pub open spec fn size_valid(rows: SizeRanks, counts: Counts, size: int) -> bool {
-    size_profile_valid(rows, counts, size) && rows.groups > 0
+    size_profile_valid(rows, counts, size) && rows.rows.entries().len() > 0
 }
 
 }

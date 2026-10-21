@@ -614,10 +614,10 @@ pub fn join(parts: &Parts, edges: &Index<i64>) -> (out: Option<Counts>)
     }
 }
 
-pub fn load_size(ranks: &Ranks, counts: &Counts, size: &Key, Ghost(preserve): Ghost<bool>) -> (out: (Index<BrandRanks>, Counts, i64))
+pub fn load_size(ranks: &Ranks, counts: &Counts, size: &Key, Ghost(preserve): Ghost<bool>) -> (out: (Index<BrandRanks>, Counts))
     requires size.view().1 == Seq::<u8>::empty(), preserve ==> ranks_valid(*ranks, *counts),
     ensures out.0.wf(), out.1.wf(), preserve ==> brands_valid(out.0, *counts, size.view().0)
-        && stream_valid(out.1, *counts, size.view().0, None) && out.2 == out.1.entries().len(),
+        && stream_valid(out.1, *counts, size.view().0, None),
 {
     hide(stream_valid);
     hide(brands_valid);
@@ -634,7 +634,7 @@ pub fn load_size(ranks: &Ranks, counts: &Counts, size: &Key, Ghost(preserve): Gh
                     lemma_brands_equal(&value.brands, &brands, *counts, size.view().0);
                 }
             }
-            (brands, rows, value.groups)
+            (brands, rows)
         },
         None => {
             let brands = Index::new();
@@ -652,15 +652,14 @@ pub fn load_size(ranks: &Ranks, counts: &Counts, size: &Key, Ghost(preserve): Gh
                     lemma_empty_brands(brands, *counts, size.view().0);
                 }
             }
-            (brands, rows, 0)
+            (brands, rows)
         },
     }
 }
 
-pub fn load_brand(brands: &Index<BrandRanks>, counts: &Counts, size: i64, brand: &Key, Ghost(preserve): Ghost<bool>) -> (out: (Counts, i64))
+pub fn load_brand(brands: &Index<BrandRanks>, counts: &Counts, size: i64, brand: &Key, Ghost(preserve): Ghost<bool>) -> (out: Counts)
     requires brand.view().0 == 0, preserve ==> brands_valid(*brands, *counts, size as int),
-    ensures out.0.wf(), preserve ==> stream_valid(out.0, *counts, size as int, Some(brand.view().1))
-        && out.1 == out.0.entries().len(),
+    ensures out.wf(), preserve ==> stream_valid(out, *counts, size as int, Some(brand.view().1)),
 {
     hide(stream_valid);
     match brands.get(brand) {
@@ -673,7 +672,7 @@ pub fn load_brand(brands: &Index<BrandRanks>, counts: &Counts, size: i64, brand:
                     lemma_stream_equal(&value.rows, &rows, *counts, size as int, Some(brand.view().1));
                 }
             }
-            (rows, value.groups)
+            rows
         },
         None => {
             let rows = Index::new();
@@ -689,7 +688,7 @@ pub fn load_brand(brands: &Index<BrandRanks>, counts: &Counts, size: i64, brand:
                     lemma_empty_stream(rows, *counts, size as int, Some(brand.view().1));
                 }
             }
-            (rows, 0)
+            rows
         },
     }
 }
@@ -717,8 +716,8 @@ pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, c
     if after < 0 { return false; }
     let size_key = Key::number(group.size);
     let brand_key = Key::composite(0, copy_bytes(group.brand.as_slice()));
-    let (mut brands, mut size_rows, mut size_groups) = load_size(ranks, counts, &size_key, preserve);
-    let (mut stream, mut brand_groups) = load_brand(&brands, counts, group.size, &brand_key, preserve);
+    let (mut brands, mut size_rows) = load_size(ranks, counts, &size_key, preserve);
+    let mut stream = load_brand(&brands, counts, group.size, &brand_key, preserve);
     proof {
         if preserve@ {
             lemma_ranks_positive(previous_ranks@, previous_counts@);
@@ -735,10 +734,6 @@ pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, c
     let previous_size_rows = Ghost(size_rows);
     let previous_stream = Ghost(stream);
     let previous_brands = Ghost(brands);
-    let membership = (if after > 0 { 1i64 } else { 0i64 }) - (if before > 0 { 1i64 } else { 0i64 });
-    size_groups = match add(size_groups, membership) { Some(value) => value, None => return false };
-    brand_groups = match add(brand_groups, membership) { Some(value) => value, None => return false };
-    if size_groups < 0 || brand_groups < 0 { return false; }
     if before > 0 {
         stream.remove(&Key::composite(-before, copy_bytes(group.kind.as_slice())));
         size_rows.remove(&group.order.with_number(-before));
@@ -776,22 +771,20 @@ pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, c
             assert(stream_step(previous_stream@, stream, target@, before, after, Some((*target@.brand)@)));
             lemma_stream_update(previous_size_rows@, size_rows, previous_counts@, *counts, target@, before, after, target@.size as int, None);
             lemma_stream_update(previous_stream@, stream, previous_counts@, *counts, target@, before, after, target@.size as int, Some((*target@.brand)@));
-            assert(size_groups == size_rows.entries().len());
-            assert(brand_groups == stream.entries().len());
         }
     }
     let updated_stream = Ghost(stream);
     if stream.is_empty() { brands.remove(&brand_key); }
-    else { brands.put(brand_key, Arc::new(BrandRanks { rows: stream, groups: brand_groups })); }
+    else { brands.put(brand_key, Arc::new(BrandRanks { rows: stream })); }
     proof {
         if preserve@ {
-            assert(brand_step(previous_brands@, brands, target@, updated_stream@, brand_groups));
-            lemma_brands_update(previous_brands@, brands, previous_counts@, *counts, target@, after, updated_stream@, brand_groups);
+            assert(brand_step(previous_brands@, brands, target@, updated_stream@));
+            lemma_brands_update(previous_brands@, brands, previous_counts@, *counts, target@, after, updated_stream@);
         }
     }
-    let updated_profile = Ghost(SizeRanks { brands, rows: size_rows, groups: size_groups });
+    let updated_profile = Ghost(SizeRanks { brands, rows: size_rows });
     if brands.is_empty() { ranks.remove(&size_key); }
-    else { ranks.put(size_key, Arc::new(SizeRanks { brands, rows: size_rows, groups: size_groups })); }
+    else { ranks.put(size_key, Arc::new(SizeRanks { brands, rows: size_rows })); }
     proof {
         if preserve@ {
             assert(size_profile_valid(updated_profile@, *counts, target@.size as int)) by { reveal(size_profile_valid); }
