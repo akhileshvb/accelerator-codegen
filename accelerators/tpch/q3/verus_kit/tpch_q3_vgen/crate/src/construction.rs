@@ -122,7 +122,7 @@ pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &V
 pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<GroupCell>>)
     requires customers.wf(), orders_sorted(work.orders@), ships_sorted(work.ships@),
         forall|position: int| #![trigger work.orders@[position]] 0 <= position < work.orders@.len() ==> work.orders@[position].count > 0,
-        forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> work.ships@[position].positive >= 0,
+        forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> ship_ok(work.ships@[position]),
         forall|target: verus_prooflib::ordered::KeyView| #![trigger customers.at(target)]
             customers.at(target).is_some() ==> customer_shape(customers.at(target).unwrap()),
     ensures result matches Some(groups) ==> {
@@ -152,7 +152,7 @@ pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<Gr
         invariant order_index <= work.orders.len(), customers.wf(), orders_sorted(work.orders@), ships_sorted(work.ships@),
             groups_sorted(groups@),
             forall|position: int| #![trigger work.orders@[position]] 0 <= position < work.orders@.len() ==> work.orders@[position].count > 0,
-            forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> work.ships@[position].positive >= 0,
+            forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> ship_ok(work.ships@[position]),
             forall|target: verus_prooflib::ordered::KeyView| #![trigger customers.at(target)] customers.at(target).is_some() ==> customer_shape(customers.at(target).unwrap()),
             forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> {
                 let group = groups@[position];
@@ -294,7 +294,7 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                 segment_count(previous.segments@, segment) == scratch_customer_at(before, row.c_custkey, segment) by {}
         }
         let name = intern(&mut names, &row.c_mktsegment);
-        if !segment_change(&mut cell, &name, 1) { return None; }
+        if !segment_change(&mut cell, &name, 1i128) { return None; }
         customer_work.insert(row.c_custkey, cell);
         proof {
             assert(customer_work@ == before.insert(row.c_custkey, cell));
@@ -620,12 +620,11 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
             let work = match pages_work.remove(&key) { Some(work) => work, None => return None };
             let ghost original_work = work;
             let groups = match make_groups(&work, &customer_index) { Some(groups) => groups, None => return None };
-            let packed_orders = match crate::packed::PackedOrders::pack(&work.orders, key) { Some(value) => value, None => return None };
-            let packed_ships = match crate::packed::PackedShips::pack(&work.ships, key) { Some(value) => value, None => return None };
-            let packed_groups = match crate::packed::PackedGroups::pack(&groups, key) { Some(value) => value, None => return None };
+            let packed_orders = crate::packed::PackedOrders::pack(&work.orders, key);
+            let packed_ships = crate::packed::PackedShips::pack(&work.ships, key);
+            let packed_groups = crate::packed::PackedGroups::pack(&groups, key);
             let page = Page { orders: Arc::new(packed_orders), ships: Arc::new(packed_ships), groups: Arc::new(packed_groups) };
             let page_groups = page.groups.to_vec();
-            page.groups.fits();
             ranks::append_groups(&mut rank_index, &page_groups);
             proof { published_groups = published_groups + page_groups@; }
             proof { crate::semantics::lemma_page_publication_equiv(page, groups@, original_work, key as int, customer_index, db); }

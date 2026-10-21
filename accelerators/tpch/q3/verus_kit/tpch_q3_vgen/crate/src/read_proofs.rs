@@ -6,7 +6,7 @@ use verus_common::order::*;
 use verus_common::sums::*;
 use verus_prooflib::ordered::{Index, KeyView};
 use crate::gen_spec::*;
-use crate::gen_obligations::{params, out_view};
+use crate::gen_obligations::params;
 use crate::output::*;
 use crate::model::*;
 use crate::values::*;
@@ -19,12 +19,12 @@ pub proof fn lemma_row_unique(db: Db, parameters: Params, left: OutRow, right: O
     ensures left == right,
 {}
 
-pub proof fn lemma_out_membership(rows: Seq<(i64, i128, i32, i64)>)
-    ensures forall|row: OutRow| #![trigger out_view(rows).contains(row)]
-        out_view(rows).contains(row) == (exists|position: int| #![trigger rows[position]]
+pub proof fn lemma_out_membership(rows: Seq<WRow>)
+    ensures forall|row: OutRow| #![trigger wide_out(rows).contains(row)]
+        wide_out(rows).contains(row) == (exists|position: int| #![trigger rows[position]]
             0 <= position < rows.len() && output_row(rows[position]) == row),
 {
-    let out = out_view(rows);
+    let out = wide_out(rows);
     assert forall|row: OutRow| #![trigger out.contains(row)] out.contains(row) ==
         (exists|position: int| #![trigger rows[position]] 0 <= position < rows.len() && output_row(rows[position]) == row) by {
         if out.contains(row) {
@@ -38,15 +38,15 @@ pub proof fn lemma_out_membership(rows: Seq<(i64, i128, i32, i64)>)
     }
 }
 
-pub proof fn lemma_top_result(db: Db, parameters: Params, rows: Seq<(i64, i128, i32, i64)>)
+pub proof fn lemma_top_result(db: Db, parameters: Params, rows: Seq<WRow>)
     requires rows.len() <= 10, output_sorted(rows), output_distinct(rows),
         forall|position: int| #![trigger rows[position]] 0 <= position < rows.len() ==> row_ok(db, parameters, output_row(rows[position])),
         forall|row: OutRow| #![trigger row_ok(db, parameters, row)] row_ok(db, parameters, row) ==> top_covers(rows, row),
-    ensures query_result(db, parameters, out_view(rows)),
+    ensures query_result(db, parameters, wide_out(rows)),
 {
     lemma_answer_ok(db, parameters);
     lemma_out_membership(rows);
-    let out = out_view(rows);
+    let out = wide_out(rows);
     let answer_rows = answer(db, parameters);
     let keep = |row: OutRow| !out.contains(row);
     let relation = |left: OutRow, right: OutRow| !same_group(left, right) && !row_lt(right, left);
@@ -130,7 +130,7 @@ pub proof fn lemma_candidate_info(customers: Custs, pages: Index<Page>, ranks: I
     ensures {
         let group = selected_group(pages, segment, row);
         &&& candidate_present(pages, segment, row, group)
-        &&& group.weight > 0 && group.bound >= 0 && row.revenue <= group.bound
+        &&& group.weight > 0 && group.bound >= 0 && (row.revenue <= group.bound as int || group.bound == i64::MAX)
         &&& group.last_ship.is_some() && group.id.date < date < group.last_ship.unwrap()
         &&& exists|level: int| #![trigger listed(ranks, ancestor_node(date as int, level), segment, group)]
             0 <= level <= 26 && listed(ranks, ancestor_node(date as int, level), segment, group)
@@ -174,9 +174,9 @@ pub proof fn lemma_candidate_info(customers: Custs, pages: Index<Page>, ranks: I
         lemma_sum_zero(db.lineitem, |entry: LineitemRow| if entry.l_orderkey == key && entry.l_shipdate > date { line_measure(entry, 0) } else { 0int });
     }
     lemma_suffix_bound(db, key, date as int);
-    assert(row.revenue <= group.bound) by (nonlinear_arith)
+    assert(row.revenue <= group.weight as int * positive_sum(db, key)) by (nonlinear_arith)
         requires row.revenue == weight * line_suffix(db, key, date as int, 1),
-            group.bound == weight * positive_sum(db, key), weight > 0,
+            group.weight as int == weight, weight > 0,
             line_suffix(db, key, date as int, 1) <= positive_sum(db, key);
     lemma_group_ancestor(group, date);
     let level = choose|level: int| #![trigger covers(group, ancestor_node(date as int, level))]

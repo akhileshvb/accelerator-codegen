@@ -8,6 +8,8 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use verus_prooflib::ordered::Index;
 use crate::model::*;
+use crate::wide;
+use crate::output::wide_out;
 
 verus! {
 
@@ -66,7 +68,38 @@ pub fn execute(
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@, p2 as int), out_view(out@)),
 {
-    crate::output::read(s, p1, p2)
+    let rows = match crate::output::read(s, p1, p2) { Some(rows) => rows, None => return None };
+    let mut out: Vec<(i64, i128, i32, i64)> = Vec::new();
+    let mut index = 0;
+    while index < rows.len()
+        invariant index <= rows.len(), out@.len() == index, out_view(out@) == wide_out(rows@.take(index as int)),
+        decreases rows.len() - index,
+    {
+        let row = rows[index];
+        let revenue = match wide::to_i128(row.1) { Some(value) => value, None => return None };
+        let ghost before = out@;
+        out.push((row.0, revenue, row.2, row.3));
+        proof {
+            let target = rows@.take(index as int + 1);
+            assert(target =~= rows@.take(index as int).push(rows@[index as int]));
+            assert(out@ =~= before.push((row.0, revenue, row.2, row.3)));
+            assert(out_view(out@) =~= wide_out(target)) by {
+                assert(out_view(out@).len() == out@.len() && wide_out(target).len() == target.len());
+                assert forall|i: int| 0 <= i < out_view(out@).len() implies out_view(out@)[i] == wide_out(target)[i] by {
+                    if i < index as int {
+                        assert(out@[i] == before[i]);
+                        assert(target[i] == rows@.take(index as int)[i]);
+                        assert(out_view(before)[i] == wide_out(rows@.take(index as int))[i]);
+                    } else {
+                        assert(target[i] == rows@[index as int]);
+                    }
+                }
+            }
+        }
+        index += 1;
+    }
+    proof { assert(rows@.take(index as int) =~= rows@); }
+    Some(out)
 }
 
 pub fn rescan_orders_by_key_keys(

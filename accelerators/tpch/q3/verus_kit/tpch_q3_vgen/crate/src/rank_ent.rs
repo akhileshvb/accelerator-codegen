@@ -8,63 +8,15 @@ use crate::values::*;
 
 verus! {
 
-pub open spec fn id_fits(id: GroupId) -> bool {
-    0 <= id.key < 1099511627776 && 0 <= id.date <= 65535 && -128 <= id.priority <= 127
-}
-
-pub open spec fn decode_id(word: u64) -> GroupId {
-    GroupId { key: (word >> 24) as i64, date: ((word >> 8) & 0xFFFF) as i32, priority: ((word & 0xFF) as u8) as i8 as i64 }
-}
-
-/// A group id of 40 key bits, 16 date bits and 8 priority bits in one word.
-pub fn encode_id(id: GroupId) -> (word: u64)
-    requires id_fits(id),
-    ensures decode_id(word) == id,
-{
-    let key = id.key;
-    let date = id.date;
-    let priority = id.priority;
-    let word = ((key as u64) << 24) | ((date as u64) << 8) | ((priority as i8 as u8) as u64);
-    proof {
-        assert((word >> 24) as i64 == key) by (bit_vector)
-            requires word == ((key as u64) << 24) | ((date as u64) << 8) | ((priority as i8 as u8) as u64),
-                0 <= key < 1099511627776i64, 0 <= date <= 65535i32, -128 <= priority <= 127i64;
-        assert(((word >> 8) & 0xFFFF) as i32 == date) by (bit_vector)
-            requires word == ((key as u64) << 24) | ((date as u64) << 8) | ((priority as i8 as u8) as u64),
-                0 <= key < 1099511627776i64, 0 <= date <= 65535i32, -128 <= priority <= 127i64;
-        assert((((word & 0xFF) as u8) as i8 as i64) == priority) by (bit_vector)
-            requires word == ((key as u64) << 24) | ((date as u64) << 8) | ((priority as i8 as u8) as u64),
-                0 <= key < 1099511627776i64, 0 <= date <= 65535i32, -128 <= priority <= 127i64;
-    }
-    word
-}
-
-pub proof fn lemma_decode_injective(left: u64, right: u64)
-    ensures decode_id(left) == decode_id(right) ==> left == right,
-{
-    if decode_id(left) == decode_id(right) {
-        assert(left == right) by (bit_vector)
-            requires (left >> 24) as i64 == (right >> 24) as i64,
-                ((left >> 8) & 0xFFFF) as i32 == ((right >> 8) & 0xFFFF) as i32,
-                ((left & 0xFF) as u8) as i8 as i64 == ((right & 0xFF) as u8) as i8 as i64;
-    }
-}
-
-pub fn decode_word(word: u64) -> (id: GroupId)
-    ensures id == decode_id(word),
-{
-    GroupId { key: (word >> 24) as i64, date: ((word >> 8) & 0xFFFF) as i32, priority: ((word & 0xFF) as u8) as i8 as i64 }
-}
-
 #[derive(Clone, Copy)]
 pub struct RankEnt {
     pub upper: i64,
-    pub word: u64,
+    pub id: GroupId,
 }
 
 impl RankEnt {
     pub open spec fn id(self) -> GroupId {
-        decode_id(self.word)
+        self.id
     }
 }
 
@@ -91,7 +43,7 @@ impl Ent for RankEnt {
     open spec fn kv(self) -> KeyView { rank_of(self.upper as int, self.id()) }
     open spec fn top() -> KeyView { (i64::MAX as int, Seq::new(25, |position: int| 255u8)) }
     fn key(&self) -> (result: Key) {
-        Key::composite(-1i64 - self.upper, encode(decode_word(self.word)))
+        Key::composite(-1i64 - self.upper, encode(&self.id))
     }
     fn top_key() -> (result: Key) {
         let mut bytes = Vec::new();
@@ -108,15 +60,15 @@ impl Ent for RankEnt {
     }
     fn before(&self, other: &Self) -> (result: bool) {
         proof { lemma_rank_order(*self, *other); }
-        let left = decode_word(self.word);
-        let right = decode_word(other.word);
+        let left = self.id;
+        let right = other.id;
         self.upper > other.upper || (self.upper == other.upper && ((left.key as u64) < (right.key as u64)
             || (left.key as u64 == right.key as u64 && ((left.date as u32) < (right.date as u32)
             || (left.date as u32 == right.date as u32 && (left.priority as u64) < (right.priority as u64))))))
     }
     fn same_key(&self, other: &Self) -> (result: bool) {
-        proof { lemma_rank_order(*self, *other); lemma_decode_injective(self.word, other.word); }
-        self.upper == other.upper && self.word == other.word
+        proof { lemma_rank_order(*self, *other); }
+        self.upper == other.upper && self.id.key == other.id.key && self.id.date == other.id.date && self.id.priority == other.id.priority
     }
     proof fn top_above(entry: Self) {
         lemma_group_bytes_len(entry.id());
@@ -125,14 +77,13 @@ impl Ent for RankEnt {
     }
 }
 
-pub fn rank_ent(bound: i128, id: GroupId) -> (result: RankEnt)
-    requires bound >= 0, id_fits(id),
+pub fn rank_ent(bound: i64, id: GroupId) -> (result: RankEnt)
+    requires bound >= 0,
     ensures result.id() == id,
-        result.kv() == rank_of(if bound >= i64::MAX { i64::MAX as int } else { bound as int }, id),
+        result.kv() == rank_of(bound as int, id),
         result.upper >= 0,
 {
-    let capped = if bound >= i64::MAX as i128 { i64::MAX } else { bound as i64 };
-    RankEnt { upper: capped, word: encode_id(id) }
+    RankEnt { upper: bound, id }
 }
 
 }

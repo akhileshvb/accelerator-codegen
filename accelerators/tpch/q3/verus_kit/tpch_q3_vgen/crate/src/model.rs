@@ -10,12 +10,13 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::values::*;
 use crate::packed::{PackedOrders, PackedShips, PackedGroups};
+use crate::wide::Wide;
 pub use verus_prooflib::dyadic_width as pow2;
 
 verus! {
 
 pub struct CustomerCell {
-    pub segments: Vec<(Arc<Vec<u8>>, i64)>,
+    pub segments: Vec<(Arc<Vec<u8>>, i128)>,
     pub orders: Vec<(i64, i64)>,
 }
 
@@ -33,15 +34,15 @@ pub struct ShipCell {
     pub key: i64,
     pub date: i32,
     pub count: i64,
-    pub revenue: i128,
-    pub positive: i128,
+    pub revenue: Wide,
+    pub positive: Wide,
 }
 
 pub struct GroupCell {
     pub segment: Arc<Vec<u8>>,
     pub id: GroupId,
     pub weight: i128,
-    pub bound: i128,
+    pub bound: i64,
     pub last_ship: Option<i32>,
 }
 
@@ -56,8 +57,8 @@ pub struct PageWork {
     pub ships: Vec<ShipCell>,
 }
 
-pub open spec fn segment_count(rows: Seq<(Arc<Vec<u8>>, i64)>, segment: Seq<u8>) -> int {
-    sum(rows, |entry: (Arc<Vec<u8>>, i64)| if (*entry.0)@ == segment { entry.1 as int } else { 0 })
+pub open spec fn segment_count(rows: Seq<(Arc<Vec<u8>>, i128)>, segment: Seq<u8>) -> int {
+    sum(rows, |entry: (Arc<Vec<u8>>, i128)| if (*entry.0)@ == segment { entry.1 as int } else { 0 })
 }
 
 pub open spec fn reverse_count(rows: Seq<(i64, i64)>, key: int) -> int {
@@ -68,7 +69,7 @@ pub open spec fn order_reverse_count(rows: Seq<OrderCell>, customer: i64, key: i
     sum(rows, |row: OrderCell| if row.key == key && row.customer == customer { row.count as int } else { 0int })
 }
 
-pub open spec fn segments_sorted(rows: Seq<(Arc<Vec<u8>>, i64)>) -> bool {
+pub open spec fn segments_sorted(rows: Seq<(Arc<Vec<u8>>, i128)>) -> bool {
     forall|left: int, right: int| #![trigger rows[left], rows[right]]
         0 <= left < right < rows.len() ==> bytes_lt((*rows[left].0)@, (*rows[right].0)@)
 }
@@ -105,7 +106,7 @@ pub open spec fn work_page_shape(page: PageWork, number: int) -> bool {
     &&& orders_sorted(page.orders@) && ships_sorted(page.ships@)
     &&& orders_owner(page.orders@, number) && ships_owner(page.ships@, number)
     &&& forall|index: int| #![trigger page.orders@[index]] 0 <= index < page.orders@.len() ==> page.orders@[index].count > 0
-    &&& forall|index: int| #![trigger page.ships@[index]] 0 <= index < page.ships@.len() ==> page.ships@[index].count > 0 && page.ships@[index].positive >= 0
+    &&& forall|index: int| #![trigger page.ships@[index]] 0 <= index < page.ships@.len() ==> ship_ok(page.ships@[index])
 }
 
 pub open spec fn work_database_ok(work: PageWork, number: int, db: Db) -> bool {
@@ -139,12 +140,25 @@ pub open spec fn order_count(rows: Seq<OrderCell>, key: int, customer: int, date
 
 pub open spec fn ship_count(rows: Seq<ShipCell>, key: int, date: int, kind: int) -> int {
     sum(rows, |row: ShipCell| if row.key == key && row.date == date {
-        if kind == 0 { row.count as int } else if kind == 1 { row.revenue as int } else { row.positive as int }
+        if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() }
     } else { 0 })
 }
 
+/// A shipment cell: counted rows, and revenues within what that many rows (each below 2^127) can add up to.
+pub open spec fn ship_ok(cell: ShipCell) -> bool {
+    &&& cell.count > 0
+    &&& 0 <= cell.positive.int() <= cell.count as int * 0x8000_0000_0000_0000_0000_0000_0000_0000int
+    &&& -(cell.count as int * 0x8000_0000_0000_0000_0000_0000_0000_0000int) <= cell.revenue.int()
+    &&& cell.revenue.int() <= cell.count as int * 0x8000_0000_0000_0000_0000_0000_0000_0000int
+}
+
+/// A group's weight times its shipments' positive revenue, capped to the largest rank bound.
+pub open spec fn capped(value: int) -> int {
+    if value > i64::MAX as int { i64::MAX as int } else { value }
+}
+
 pub open spec fn ship_positive_weight(key: int) -> spec_fn(ShipCell) -> int {
-    |row: ShipCell| if row.key == key { row.positive as int } else { 0int }
+    |row: ShipCell| if row.key == key { row.positive.int() } else { 0int }
 }
 
 pub open spec fn ship_positive(rows: Seq<ShipCell>, key: int) -> int {
@@ -165,7 +179,7 @@ pub open spec fn ship_last_ok(rows: Seq<ShipCell>, key: int, last: Option<i32>) 
 }
 
 pub open spec fn group_ship_ok(group: GroupCell, ships: Seq<ShipCell>) -> bool {
-    group.bound == group.weight * ship_positive(ships, group.id.key as int)
+    group.bound as int == capped(group.weight * ship_positive(ships, group.id.key as int))
         && ship_last_ok(ships, group.id.key as int, group.last_ship)
 }
 
@@ -395,7 +409,7 @@ pub open spec fn page_shape(page: Page, number: int, db: Db) -> bool {
     &&& forall|left: int, right: int| #![trigger (*page.orders)@[left], (*page.orders)@[right]]
         0 <= left < right < (*page.orders)@.len() ==> order_lt((*page.orders)@[left], (*page.orders)@[right])
     &&& forall|index: int| #![trigger (*page.ships)@[index]] 0 <= index < (*page.ships)@.len() ==> {
-        let row = (*page.ships)@[index]; row.key as int / 256 == number && row.count > 0 && row.positive >= 0
+        let row = (*page.ships)@[index]; row.key as int / 256 == number && ship_ok(row)
     }
     &&& forall|left: int, right: int| #![trigger (*page.ships)@[left], (*page.ships)@[right]]
         0 <= left < right < (*page.ships)@.len() ==> ship_lt((*page.ships)@[left], (*page.ships)@[right])
@@ -405,7 +419,7 @@ pub open spec fn page_shape(page: Page, number: int, db: Db) -> bool {
         let group = (*page.groups)@[index];
         &&& group.id.key as int / 256 == number
         &&& group.weight > 0
-        &&& group.bound == group.weight * positive_sum(db, group.id.key as int)
+        &&& group.bound as int == capped(group.weight * positive_sum(db, group.id.key as int))
         &&& match group.last_ship {
             None => forall|position: int| #![trigger db.lineitem[position]] 0 <= position < db.lineitem.len() ==> db.lineitem[position].l_orderkey != group.id.key,
             Some(last) => {
@@ -423,7 +437,7 @@ pub open spec fn listed(ranks: Index<Paged<RankEnt>>, node: int, segment: Seq<u8
 }
 
 pub open spec fn group_rank(group: GroupCell) -> KeyView {
-    rank_of(if group.bound >= i64::MAX { i64::MAX as int } else { group.bound as int }, group.id)
+    rank_of(group.bound as int, group.id)
 }
 
 pub open spec fn rank_at(ranks: Index<Paged<RankEnt>>, outer: KeyView, key: KeyView) -> bool {

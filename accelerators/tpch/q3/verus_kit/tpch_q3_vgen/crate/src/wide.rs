@@ -3,7 +3,7 @@ use vstd::prelude::*;
 
 verus! {
 
-pub open spec fn wide_limit() -> int { (u128::MAX as int + 1) * (u128::MAX as int + 1) / 16 }
+pub open spec fn wide_limit() -> int { (u128::MAX as int + 1) * (u128::MAX as int + 1) / 4 }
 
 #[derive(Clone, Copy)]
 pub struct Wide {
@@ -136,6 +136,25 @@ pub fn mul_wide(x: u128, y: u128) -> (result: (u128, u128))
         }
     }
     (hi, lo)
+}
+
+/// a * w, for a with a high word within 2^21 in magnitude and w below 2^100.
+pub fn mul(a: Wide, w: u128) -> (result: Wide)
+    requires
+        -0x20_0000 <= a.hi <= 0x20_0000,
+        w < 0x10_0000_0000_0000_0000_0000_0000u128,
+    ensures result.int() == a.int() * w as int,
+{
+    let (carry, lo) = mul_wide(a.lo, w);
+    proof {
+        let (h, v) = (a.hi as int, w as int);
+        assert(-0x2000_0000_0000_0000_0000_0000_0000_0000int < h * v < 0x2000_0000_0000_0000_0000_0000_0000_0000int) by (nonlinear_arith)
+            requires -0x200000int <= h <= 0x200000int, 0 <= v < 0x10_0000_0000_0000_0000_0000_0000int;
+        assert(a.int() * v == (h * v + carry as int) * (u128::MAX as int + 1) + lo as int) by (nonlinear_arith)
+            requires a.int() == h * (u128::MAX as int + 1) + a.lo as int,
+                carry as int * (u128::MAX as int + 1) + lo as int == a.lo as int * v;
+    }
+    Wide { hi: a.hi * w as i128 + carry as i128, lo }
 }
 
 } // verus!

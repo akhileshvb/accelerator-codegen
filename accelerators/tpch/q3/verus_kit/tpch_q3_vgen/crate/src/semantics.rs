@@ -47,7 +47,7 @@ pub proof fn lemma_work_scan(db: Db, customers: Seq<CustomerInput>, orders: Seq<
     assert forall|key: int, date: int, kind: int| #![trigger ship_count(page.ships@, key, date, kind)]
         0 <= kind <= 2 implies ship_count(page.ships@, key, date, kind) == if key / 256 == number { ship_sum(db, key, date, kind) } else { 0int } by {
         let weight = |row: ShipCell| if row.key == key && row.date == date {
-            if kind == 0 { row.count as int } else if kind == 1 { row.revenue as int } else { row.positive as int }
+            if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() }
         } else { 0int };
         if key / 256 != number {
             lemma_sum_zero(page.ships@, weight);
@@ -110,7 +110,7 @@ pub proof fn lemma_work_positive(work: PageWork, number: int, db: Db, key: int)
     let left = work.ships@;
     let left_project = |row: ShipCell| (row.key as int, row.date as int);
     let right_project = |row: LineitemRow| (row.l_orderkey, row.l_shipdate);
-    let left_count = |row: ShipCell| row.positive as int;
+    let left_count = |row: ShipCell| row.positive.int();
     let right_count = |row: LineitemRow| if row.l_orderkey / 256 == number {
         let value = row.l_extendedprice * (100 - row.l_discount);
         if value > 0 { value } else { 0int }
@@ -118,7 +118,7 @@ pub proof fn lemma_work_positive(work: PageWork, number: int, db: Db, key: int)
     assert forall|identity: (int, int)| #![trigger class_total(left, left_project, left_count, identity)]
         class_total(left, left_project, left_count, identity) == class_total(db.lineitem, right_project, right_count, identity) by {
         lemma_sum_ext_all(left, |row: ShipCell| if left_project(row) == identity { left_count(row) } else { 0int },
-            |row: ShipCell| if row.key == identity.0 && row.date == identity.1 { row.positive as int } else { 0int });
+            |row: ShipCell| if row.key == identity.0 && row.date == identity.1 { row.positive.int() } else { 0int });
         let right_selected = |row: LineitemRow| if right_project(row) == identity { right_count(row) } else { 0int };
         assert(ship_count(left, identity.0, identity.1, 2)
             == if identity.0 / 256 == number { ship_sum(db, identity.0, identity.1, 2) } else { 0int });
@@ -169,7 +169,7 @@ pub proof fn lemma_work_ship_presence(work: PageWork, number: int, db: Db, key: 
 pub proof fn lemma_ship_measures(rows: Seq<ShipCell>, db: Db, key: int, date: int, kind: int)
     ensures
         ship_count(rows, key, date, kind) == sum(rows, |row: ShipCell| if row.key == key && row.date == date {
-            if kind == 0 { row.count as int } else if kind == 1 { row.revenue as int } else { row.positive as int }
+            if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() }
         } else { 0int }),
         ship_sum(db, key, date, kind) == sum(db.lineitem, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate == date {
             let value = row.l_extendedprice * (100 - row.l_discount);
@@ -177,13 +177,13 @@ pub proof fn lemma_ship_measures(rows: Seq<ShipCell>, db: Db, key: int, date: in
         } else { 0int }),
         kind == 0 ==> ship_count(rows, key, date, kind) == sum(rows, |row: ShipCell| if row.key == key && row.date == date { row.count as int } else { 0int }),
         kind == 0 ==> ship_sum(db, key, date, kind) == sum(db.lineitem, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate == date { 1int } else { 0int }),
-        kind == 2 ==> ship_count(rows, key, date, kind) == sum(rows, |row: ShipCell| if row.key == key && row.date == date { row.positive as int } else { 0int }),
+        kind == 2 ==> ship_count(rows, key, date, kind) == sum(rows, |row: ShipCell| if row.key == key && row.date == date { row.positive.int() } else { 0int }),
         kind == 2 ==> ship_sum(db, key, date, kind) == sum(db.lineitem, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate == date {
             let value = row.l_extendedprice * (100 - row.l_discount); if value > 0 { value } else { 0int }
         } else { 0int }),
 {
     let left_weight = |row: ShipCell| if row.key == key && row.date == date {
-        if kind == 0 { row.count as int } else if kind == 1 { row.revenue as int } else { row.positive as int }
+        if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() }
     } else { 0int };
     let right_weight = |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate == date {
         let value = row.l_extendedprice * (100 - row.l_discount);
@@ -194,7 +194,7 @@ pub proof fn lemma_ship_measures(rows: Seq<ShipCell>, db: Db, key: int, date: in
         lemma_sum_ext_all(db.lineitem, right_weight, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate == date { 1int } else { 0int });
     }
     if kind == 2 {
-        lemma_sum_ext_all(rows, left_weight, |row: ShipCell| if row.key == key && row.date == date { row.positive as int } else { 0int });
+        lemma_sum_ext_all(rows, left_weight, |row: ShipCell| if row.key == key && row.date == date { row.positive.int() } else { 0int });
         lemma_sum_ext_all(db.lineitem, right_weight, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate == date {
             let value = row.l_extendedprice * (100 - row.l_discount); if value > 0 { value } else { 0int }
         } else { 0int });
@@ -301,7 +301,7 @@ pub proof fn lemma_page_publication(page: Page, work: PageWork, number: int, cus
         let group = (*page.groups)@[position];
         &&& group.id.key as int / 256 == number
         &&& group.weight > 0
-        &&& group.bound == group.weight * positive_sum(db, group.id.key as int)
+        &&& group.bound as int == capped(group.weight * positive_sum(db, group.id.key as int))
         &&& match group.last_ship {
             None => forall|source: int| #![trigger db.lineitem[source]] 0 <= source < db.lineitem.len() ==> db.lineitem[source].l_orderkey != group.id.key,
             Some(last) => {
@@ -424,7 +424,7 @@ pub open spec fn shipment_suffix(rows: Seq<ShipCell>, key: int, cutoff: int, kin
 
 pub open spec fn shipment_weight(key: int, cutoff: int, kind: int) -> spec_fn(ShipCell) -> int {
     |row: ShipCell| if row.key == key && row.date > cutoff {
-        if kind == 0 { row.count as int } else { row.revenue as int }
+        if kind == 0 { row.count as int } else { row.revenue.int() }
     } else { 0int }
 }
 
@@ -566,9 +566,8 @@ pub proof fn lemma_page_bounds(page: &Page, db: Db, number: int)
         (*page.groups)@[index].weight > 0 && (*page.groups)@[index].bound >= 0 by {
         let group = (*page.groups)@[index];
         lemma_positive_revenue(db, group.id.key as int);
-        assert(group.bound >= 0) by (nonlinear_arith)
-            requires group.weight > 0, positive_sum(db, group.id.key as int) >= 0,
-                group.bound as int == group.weight as int * positive_sum(db, group.id.key as int);
+        assert(group.weight as int * positive_sum(db, group.id.key as int) >= 0) by (nonlinear_arith)
+            requires group.weight > 0, positive_sum(db, group.id.key as int) >= 0;
     }
 }
 
@@ -653,7 +652,7 @@ pub proof fn lemma_shipment_suffix(customers: Custs, pages: Index<Page>, ranks: 
     let left = (*page.ships)@;
     let left_project = |row: ShipCell| (row.key as int, row.date as int);
     let right_project = |row: LineitemRow| (row.l_orderkey, row.l_shipdate);
-    let left_count = |row: ShipCell| if kind == 0 { row.count as int } else { row.revenue as int };
+    let left_count = |row: ShipCell| if kind == 0 { row.count as int } else { row.revenue.int() };
     let right_count = |row: LineitemRow| if row.l_orderkey / 256 == number { line_measure(row, kind) } else { 0int };
     assert forall|identity: (int, int)| #![trigger class_total(left, left_project, left_count, identity)]
         class_total(left, left_project, left_count, identity) == class_total(db.lineitem, right_project, right_count, identity) by {
@@ -662,7 +661,7 @@ pub proof fn lemma_shipment_suffix(customers: Custs, pages: Index<Page>, ranks: 
         if identity.0 / 256 == number {
             assert(ship_at(pages, identity.0, identity.1, kind) == ship_sum(db, identity.0, identity.1, kind));
             lemma_sum_ext_all(left, left_selected, |row: ShipCell| if row.key == identity.0 && row.date == identity.1 {
-                if kind == 0 { row.count as int } else if kind == 1 { row.revenue as int } else { row.positive as int }
+                if kind == 0 { row.count as int } else if kind == 1 { row.revenue.int() } else { row.positive.int() }
             } else { 0int });
             lemma_sum_ext_all(db.lineitem, right_selected, |row: LineitemRow| if row.l_orderkey == identity.0 && row.l_shipdate == identity.1 {
                 let value = row.l_extendedprice * (100 - row.l_discount);
@@ -682,7 +681,7 @@ pub proof fn lemma_shipment_suffix(customers: Custs, pages: Index<Page>, ranks: 
     let right_weight = |row: LineitemRow| right_count(row) * weight(right_project(row));
     assert(sum(left, left_weight) == sum(db.lineitem, right_weight));
     lemma_sum_ext_all(left, left_weight, |row: ShipCell| if row.key == key && row.date > cutoff {
-        if kind == 0 { row.count as int } else { row.revenue as int }
+        if kind == 0 { row.count as int } else { row.revenue.int() }
     } else { 0int });
     lemma_sum_ext_all(db.lineitem, right_weight, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate > cutoff { line_measure(row, kind) } else { 0int });
 }

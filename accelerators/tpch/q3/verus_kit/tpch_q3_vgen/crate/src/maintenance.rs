@@ -120,7 +120,7 @@ pub fn publish_changes(mut work: HashMapWithView<i64, CustomerCell>, keys: &Vec<
         assert forall|customer: i64, segment: Seq<u8>| #![trigger customer_at(after, customer as int, segment)]
             customer_at(after, customer as int, segment) == customer_overlay(original, *before, customer, segment) by {
             if original.contains_key(customer) && original[customer].segments@.len() == 0 && original[customer].orders@.len() == 0 {
-                lemma_sum_zero(original[customer].segments@, |entry: (Arc<Vec<u8>>, i64)| if (*entry.0)@ == segment { entry.1 as int } else { 0int });
+                lemma_sum_zero(original[customer].segments@, |entry: (Arc<Vec<u8>>, i128)| if (*entry.0)@ == segment { entry.1 as int } else { 0int });
             }
         }
         assert forall|customer: i64, key: i64| #![trigger reverse_at(after, customer as int, key as int)]
@@ -326,7 +326,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
         let mut cell = take_customer(&mut customers_work, &mut customer_keys, &state.customers, key);
         let ghost previous_cell = cell;
         let name = Arc::new(copy_bytes(&delta.row.c_mktsegment));
-        if !segment_change(&mut cell, &name, delta.sign) { return Err(2); }
+        if !segment_change(&mut cell, &name, delta.sign as i128) { return Err(2); }
         customers_work.insert(key, cell);
         proof {
             assert(customers_work@ == previous_work.insert(key, cell));
@@ -553,7 +553,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                         0 <= kind <= 2 implies ship_count(work.ships@, key as int, date as int, kind) ==
                             if fact_set@.dom().contains(key) { 0int } else { ship_count((*page.ships)@.take(processed + 1), key as int, date as int, kind) } by {
                         let weight = |entry: ShipCell| if entry.key == key as int && entry.date == date as int {
-                            if kind == 0 { entry.count as int } else if kind == 1 { entry.revenue as int } else { entry.positive as int }
+                            if kind == 0 { entry.count as int } else if kind == 1 { entry.revenue.int() } else { entry.positive.int() }
                         } else { 0int };
                         assert(ship_count(before_ships, key as int, date as int, kind) ==
                             if fact_set@.dom().contains(key) { 0int } else { ship_count((*page.ships)@.take(processed), key as int, date as int, kind) });
@@ -1056,9 +1056,9 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
         }
         let groups = match crate::construction::make_groups(&work, &customers) { Some(groups) => groups, None => return Err(2) };
         let ghost completed_work = work;
-        let packed_orders = match crate::packed::PackedOrders::pack(&work.orders, key) { Some(value) => value, None => return Err(2) };
-        let packed_ships = match crate::packed::PackedShips::pack(&work.ships, key) { Some(value) => value, None => return Err(2) };
-        let packed_groups = match crate::packed::PackedGroups::pack(&groups, key) { Some(value) => value, None => return Err(2) };
+        let packed_orders = crate::packed::PackedOrders::pack(&work.orders, key);
+        let packed_ships = crate::packed::PackedShips::pack(&work.ships, key);
+        let packed_groups = crate::packed::PackedGroups::pack(&groups, key);
         let page = Page { orders: Arc::new(packed_orders), ships: Arc::new(packed_ships), groups: Arc::new(packed_groups) };
         proof { crate::semantics::lemma_page_publication_equiv(page, groups@, completed_work, key as int, customers, db2); }
         let ghost previous = pages;

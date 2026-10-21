@@ -9,6 +9,7 @@ use crate::model::*;
 use crate::packed::{PackedOrders, PackedShips, PackedGroups};
 use crate::values::*;
 use crate::values::{add, mul};
+use crate::wide::{self, Wide};
 
 verus! {
 
@@ -60,7 +61,7 @@ pub fn copy_customer(source: &CustomerCell) -> (result: CustomerCell)
     CustomerCell { segments, orders }
 }
 
-pub fn segment_change(cell: &mut CustomerCell, segment: &Arc<Vec<u8>>, delta: i64) -> (result: bool)
+pub fn segment_change(cell: &mut CustomerCell, segment: &Arc<Vec<u8>>, delta: i128) -> (result: bool)
     requires
         segments_sorted(old(cell).segments@),
         forall|index: int| #![trigger old(cell).segments@[index]] 0 <= index < old(cell).segments@.len() ==> old(cell).segments@[index].1 != 0,
@@ -108,7 +109,7 @@ pub fn segment_change(cell: &mut CustomerCell, segment: &Arc<Vec<u8>>, delta: i6
         cell.segments[low].1
     } else { 0 };
     let count = match old.checked_add(delta) { Some(value) => value, None => return false };
-    let ghost less = |left: (Arc<Vec<u8>>, i64), right: (Arc<Vec<u8>>, i64)| bytes_lt((*left.0)@, (*right.0)@);
+    let ghost less = |left: (Arc<Vec<u8>>, i128), right: (Arc<Vec<u8>>, i128)| bytes_lt((*left.0)@, (*right.0)@);
     if old != 0 {
         if count == 0 {
             cell.segments.remove(low);
@@ -135,7 +136,7 @@ pub fn segment_change(cell: &mut CustomerCell, segment: &Arc<Vec<u8>>, delta: i6
         assert forall|target: Seq<u8>| #![trigger segment_count(cell.segments@, target)]
             segment_count(cell.segments@, target) == segment_count(before, target)
                 + if target == segment@ { delta as int } else { 0 } by {
-            let weight = |entry: (Arc<Vec<u8>>, i64)| if (*entry.0)@ == target { entry.1 as int } else { 0 };
+            let weight = |entry: (Arc<Vec<u8>>, i128)| if (*entry.0)@ == target { entry.1 as int } else { 0 };
             if old != 0 {
                 if count == 0 { lemma_sum_remove(before, low as int, weight); }
                 else { lemma_sum_update(before, low as int, cell.segments@[low as int], weight); }
@@ -376,9 +377,9 @@ pub fn insert_order(rows: &mut Vec<OrderCell>, row: OrderInput) -> (result: bool
 
 pub fn insert_ship(rows: &mut Vec<ShipCell>, row: ShipmentInput) -> (result: bool)
     requires ships_sorted(old(rows)@),
-        forall|index: int| #![trigger old(rows)@[index]] 0 <= index < old(rows)@.len() ==> old(rows)@[index].count > 0 && old(rows)@[index].positive >= 0,
+        forall|index: int| #![trigger old(rows)@[index]] 0 <= index < old(rows)@.len() ==> ship_ok(old(rows)@[index]),
     ensures ships_sorted(final(rows)@),
-        forall|index: int| #![trigger final(rows)@[index]] 0 <= index < final(rows)@.len() ==> final(rows)@[index].count > 0 && final(rows)@[index].positive >= 0,
+        forall|index: int| #![trigger final(rows)@[index]] 0 <= index < final(rows)@.len() ==> ship_ok(final(rows)@[index]),
         !result ==> final(rows)@ == old(rows)@,
         forall|page: int| #![trigger ships_owner(final(rows)@, page)]
             ships_owner(old(rows)@, page) && row.l_orderkey as int / 256 == page ==> ships_owner(final(rows)@, page),
@@ -390,9 +391,9 @@ pub fn insert_ship(rows: &mut Vec<ShipCell>, row: ShipmentInput) -> (result: boo
                 } else { 0 },
 {
     let ghost before = rows@;
-    let revenue = match revenue(row.l_extendedprice, row.l_discount) { Some(value) => value, None => return false };
+    let revenue = revenue(row.l_extendedprice, row.l_discount);
     let mut value = ShipCell { key: row.l_orderkey, date: row.l_shipdate,
-        count: 1, revenue, positive: if revenue > 0 { revenue } else { 0 } };
+        count: 1, revenue: wide::from_i128(revenue), positive: wide::from_i128(if revenue > 0 { revenue } else { 0 }) };
     let mut low = 0;
     let mut high = rows.len();
     while low < high
@@ -409,8 +410,9 @@ pub fn insert_ship(rows: &mut Vec<ShipCell>, row: ShipmentInput) -> (result: boo
     let found = low < rows.len() && rows[low].key == value.key && rows[low].date == value.date;
     if found {
         value.count = match rows[low].count.checked_add(1) { Some(count) => count, None => return false };
-        value.revenue = match add(rows[low].revenue, value.revenue) { Some(total) => total, None => return false };
-        value.positive = match add(rows[low].positive, value.positive) { Some(total) => total, None => return false };
+        proof { assert(ship_ok(rows@[low as int])); }
+        value.revenue = wide::add(rows[low].revenue, value.revenue);
+        value.positive = wide::add(rows[low].positive, value.positive);
         rows.set(low, value);
         proof { verus_prooflib::lemma_sorted_update_at(before, low as int, value, |left: ShipCell, right: ShipCell| ship_lt(left, right)); }
     } else {
@@ -430,12 +432,12 @@ pub fn insert_ship(rows: &mut Vec<ShipCell>, row: ShipmentInput) -> (result: boo
                     if kind == 0 { 1 } else if kind == 1 { value } else { if value > 0 { value } else { 0 } }
                 } else { 0 } by {
             let weight = |entry: ShipCell| if entry.key == key && entry.date == date {
-                if kind == 0 { entry.count as int } else if kind == 1 { entry.revenue as int } else { entry.positive as int }
+                if kind == 0 { entry.count as int } else if kind == 1 { entry.revenue.int() } else { entry.positive.int() }
             } else { 0 };
             if found { lemma_sum_update(before, low as int, value, weight); }
             else { verus_prooflib::lemma_sum_insert(before, low as int, value, weight); }
         }
-        assert forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() implies rows@[index].count > 0 && rows@[index].positive >= 0 by {
+        assert forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() implies ship_ok(rows@[index]) by {
             if index != low {
                 let prior = if found || index < low { index } else { index - 1 };
                 assert(rows@[index] == before[prior]);
@@ -633,9 +635,37 @@ pub proof fn lemma_group_search_order(left: GroupCell, right: GroupCell, segment
     }
 }
 
+/// weight * positive, capped to the largest rank bound.
+pub fn capped_product(weight: i128, positive: Wide) -> (result: i64)
+    requires weight > 0, positive.int() >= 0,
+    ensures result as int == capped(weight as int * positive.int()), result >= 0,
+{
+    let max = i64::MAX as i128;
+    let ghost (w, p) = (weight as int, positive.int());
+    if positive.hi == 0 && positive.lo == 0 {
+        proof { assert(p == 0); assert(w * p == 0) by (nonlinear_arith) requires p == 0; }
+        return 0;
+    }
+    if positive.hi != 0 || positive.lo > i64::MAX as u128 || weight > max {
+        proof {
+            assert(p >= 1);
+            assert(w * p >= w && w * p >= p) by (nonlinear_arith) requires w >= 1, p >= 1;
+            assert(w * p > i64::MAX as int);
+        }
+        return i64::MAX;
+    }
+    proof {
+        assert(w * p >= w && w * p >= p) by (nonlinear_arith) requires w >= 1, p >= 1;
+        assert(w * p <= 0x7FFF_FFFF_FFFF_FFFFint * 0x7FFF_FFFF_FFFF_FFFFint) by (nonlinear_arith)
+            requires 1 <= w <= 0x7FFF_FFFF_FFFF_FFFFint, 1 <= p <= 0x7FFF_FFFF_FFFF_FFFFint;
+    }
+    let product = weight * positive.lo as i128;
+    if product > max { i64::MAX } else { product as i64 }
+}
+
 pub fn increment_group(groups: &mut Vec<GroupCell>, segment: Arc<Vec<u8>>, id: GroupId,
-    increment: i128, positive: i128, last_ship: Option<i32>) -> (result: bool)
-    requires increment > 0, positive >= 0,
+    increment: i128, positive: Wide, last_ship: Option<i32>) -> (result: bool)
+    requires increment > 0, positive.int() >= 0,
         forall|index: int| #![trigger old(groups)@[index]] 0 <= index < old(groups)@.len() ==> old(groups)@[index].weight > 0 && old(groups)@[index].bound >= 0,
     ensures
         forall|index: int| #![trigger final(groups)@[index]] 0 <= index < final(groups)@.len() ==> final(groups)@[index].weight > 0 && final(groups)@[index].bound >= 0,
@@ -644,7 +674,7 @@ pub fn increment_group(groups: &mut Vec<GroupCell>, segment: Arc<Vec<u8>>, id: G
             0 <= index < final(groups)@.len() ==> {
                 let row = final(groups)@[index];
                 old(groups)@.contains(row) || (group_matches(row, (*segment)@, id)
-                    && row.bound == row.weight * positive && row.last_ship == last_ship)
+                    && row.bound as int == capped(row.weight * positive.int()) && row.last_ship == last_ship)
             },
         result ==> forall|target: Seq<u8>, key: int, date: int, priority: int| #![trigger column_weight(final(groups)@, target, key, date, priority)]
             column_weight(final(groups)@, target, key, date, priority) == column_weight(old(groups)@, target, key, date, priority)
@@ -657,12 +687,7 @@ pub fn increment_group(groups: &mut Vec<GroupCell>, segment: Arc<Vec<u8>>, id: G
     let weight = if found {
         match add(groups[position].weight, increment) { Some(value) => value, None => return false }
     } else { increment };
-    let bound = match mul(weight, positive) { Some(value) => value, None => return false };
-    proof {
-        assert(weight > 0);
-        assert(bound >= 0) by (nonlinear_arith)
-            requires weight > 0, positive >= 0, bound as int == weight as int * positive as int;
-    }
+    let bound = capped_product(weight, positive);
     let ghost previous = groups@;
     let group = GroupCell { segment, id, weight, bound, last_ship };
     proof {
@@ -700,7 +725,7 @@ pub fn increment_group(groups: &mut Vec<GroupCell>, segment: Arc<Vec<u8>>, id: G
         }
         assert forall|offset: int| #![trigger groups@[offset]] 0 <= offset < groups@.len() implies
             previous.contains(groups@[offset]) || (group_matches(groups@[offset], (*group.segment)@, id)
-                && groups@[offset].bound == groups@[offset].weight * positive && groups@[offset].last_ship == last_ship) by {
+                && groups@[offset].bound as int == capped(groups@[offset].weight * positive.int()) && groups@[offset].last_ship == last_ship) by {
             if offset != position {
                 let prior = if found || offset < position { offset } else { offset - 1 };
                 assert(groups@[offset] == previous[prior]);
@@ -721,7 +746,7 @@ pub fn compute_key(groups: &mut Vec<GroupCell>, orders: &Vec<OrderCell>, ships: 
     customers: &Custs, key: i64) -> (result: bool)
     requires customers.wf(),
         orders_sorted(orders@), ships_sorted(ships@),
-        forall|index: int| #![trigger ships@[index]] 0 <= index < ships@.len() ==> ships@[index].positive >= 0,
+        forall|index: int| #![trigger ships@[index]] 0 <= index < ships@.len() ==> ship_ok(ships@[index]),
         forall|index: int| #![trigger orders@[index]] 0 <= index < orders@.len() ==> orders@[index].count > 0,
         forall|target: verus_prooflib::ordered::KeyView| #![trigger customers.at(target)] customers.at(target).is_some() ==> customer_shape(customers.at(target).unwrap()),
         forall|index: int| #![trigger old(groups)@[index]] 0 <= index < old(groups)@.len() ==> old(groups)@[index].weight > 0 && old(groups)@[index].bound >= 0,
@@ -736,17 +761,18 @@ pub fn compute_key(groups: &mut Vec<GroupCell>, orders: &Vec<OrderCell>, ships: 
                 + if target_key == key { column_join(orders@, *customers, target, target_key, date, priority) } else { 0int },
 {
     let ghost original_groups = groups@;
-    let mut positive: i128 = 0;
+    let mut positive: Wide = wide::zero();
     let mut last_ship: Option<i32> = None;
     let mut index = ships_start(ships, key);
     proof { lemma_sum_zero(ships@.take(index as int), ship_positive_weight(key as int)); }
     while index < ships.len() && ships[index].key == key
-        invariant index <= ships.len(), positive >= 0,
+        invariant index <= ships.len(), positive.int() >= 0,
+            positive.int() <= index as int * (0x8000_0000_0000_0000int * 0x8000_0000_0000_0000_0000_0000_0000_0000int),
             ships_sorted(ships@),
-            positive as int == ship_positive(ships@.take(index as int), key as int),
+            positive.int() == ship_positive(ships@.take(index as int), key as int),
             ship_last_ok(ships@.take(index as int), key as int, last_ship),
             forall|position: int| #![trigger ships@[position]] index <= position < ships@.len() ==> ships@[position].key >= key,
-            forall|position: int| #![trigger ships@[position]] 0 <= position < ships@.len() ==> ships@[position].positive >= 0,
+            forall|position: int| #![trigger ships@[position]] 0 <= position < ships@.len() ==> ship_ok(ships@[position]),
             forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> groups@[position].weight > 0 && groups@[position].bound >= 0,
         decreases ships.len() - index,
     {
@@ -758,7 +784,8 @@ pub fn compute_key(groups: &mut Vec<GroupCell>, orders: &Vec<OrderCell>, ships: 
             }
             assert(ships@.take(index as int + 1)[index as int] == ships@[index as int]);
         }
-        positive = match add(positive, ships[index].positive) { Some(value) => value, None => return false };
+        proof { assert(ship_ok(ships@[index as int])); assert(index < ships@.len() <= usize::MAX); }
+        positive = wide::add(positive, ships[index].positive);
         last_ship = Some(ships[index].date);
         index += 1;
     }
@@ -780,8 +807,8 @@ pub fn compute_key(groups: &mut Vec<GroupCell>, orders: &Vec<OrderCell>, ships: 
         }
     }
     while index < orders.len() && orders[index].key == key
-        invariant index <= orders.len(), positive >= 0, customers.wf(),
-            positive as int == ship_positive(ships@, key as int), ship_last_ok(ships@, key as int, last_ship),
+        invariant index <= orders.len(), positive.int() >= 0, customers.wf(),
+            positive.int() == ship_positive(ships@, key as int), ship_last_ok(ships@, key as int, last_ship),
             forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==>
                 original_groups.contains(groups@[position]) || (groups@[position].id.key == key && group_ship_ok(groups@[position], ships@)),
             orders_sorted(orders@),
@@ -805,8 +832,8 @@ pub fn compute_key(groups: &mut Vec<GroupCell>, orders: &Vec<OrderCell>, ships: 
         if let Some(customer) = customers.get(order.customer) {
             let mut segment_index = 0;
             while segment_index < customer.segments.len()
-                invariant segment_index <= customer.segments.len(), customer_shape(*customer), customers.wf(), order.count > 0, order.key == key, positive >= 0,
-                    positive as int == ship_positive(ships@, key as int), ship_last_ok(ships@, key as int, last_ship),
+                invariant segment_index <= customer.segments.len(), customer_shape(*customer), customers.wf(), order.count > 0, order.key == key, positive.int() >= 0,
+                    positive.int() == ship_positive(ships@, key as int), ship_last_ok(ships@, key as int, last_ship),
                     forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==>
                         original_groups.contains(groups@[position]) || (groups@[position].id.key == key && group_ship_ok(groups@[position], ships@)),
                     groups_sorted(original_groups) ==> groups_sorted(groups@),
@@ -845,7 +872,7 @@ pub fn compute_key(groups: &mut Vec<GroupCell>, orders: &Vec<OrderCell>, ships: 
                             + if target_key == order.key && date == order.date && priority == order.priority {
                                 order.count as int * segment_count(customer.segments@.take(processed + 1), target)
                             } else { 0int } by {
-                        let measure = |entry: (Arc<Vec<u8>>, i64)| if (*entry.0)@ == target { entry.1 as int } else { 0int };
+                        let measure = |entry: (Arc<Vec<u8>>, i128)| if (*entry.0)@ == target { entry.1 as int } else { 0int };
                         lemma_sum_take(customer.segments@, processed, measure);
                         assert(segment_count(customer.segments@.take(processed + 1), target) == segment_count(customer.segments@.take(processed), target)
                             + if selected_segment == target { customer.segments@[processed].1 as int } else { 0int });
