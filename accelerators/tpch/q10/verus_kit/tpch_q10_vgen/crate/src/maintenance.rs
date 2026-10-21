@@ -10,20 +10,21 @@ use crate::dimensions::*;
 use crate::calendar::*;
 use crate::paged::*;
 use crate::customers::*;
+use crate::dimension_updates::customer_eq;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
 broadcast use vstd::std_specs::hash::group_hash_axioms;
 
-#[derive(Clone, Copy)]
 pub struct OrderCell {
     pub customer: i64,
     pub day: i32,
-    pub count: i128,
+    pub count: Wide,
 }
 
 pub type Orders = Index<Index<OrderCell>>;
-pub type Patches = Index<Index<Moments>>;
+pub type Patches = Index<Index<Moms>>;
 
 pub open spec fn order_key_view(customer: int, day: int) -> (int, Seq<u8>) {
     (customer, encode_nat((day - i64::MIN as int) as nat, 8))
@@ -40,7 +41,7 @@ pub fn order_key(customer: i64, day: i32) -> (result: Key)
 pub open spec fn order_count(orders: Orders, order: int, customer: int, day: int) -> int {
     match orders.at((order, Seq::empty())) {
         Some(inner) => match inner.at(order_key_view(customer, day)) {
-            Some(cell) => if cell.customer as int == customer && cell.day as int == day { cell.count as int } else { 0 },
+            Some(cell) => if cell.customer as int == customer && cell.day as int == day { cell.count@ } else { 0 },
             None => 0,
         },
         None => 0,
@@ -51,7 +52,7 @@ pub open spec fn order_leaf_valid(inner: Index<OrderCell>) -> bool {
     &&& inner.wf()
     &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
         let cell = inner.at(key).unwrap();
-        &&& cell.count != 0
+        &&& cell.count@ != 0
         &&& key == order_key_view(cell.customer as int, cell.day as int)
     }
 }
@@ -67,12 +68,12 @@ pub open spec fn orders_valid(orders: Orders) -> bool {
 }
 
 #[verifier::rlimit(60)]
-pub fn change_order(orders: &mut Orders, row: OrderInput, change: i128) -> (result: bool)
+pub fn change_order(orders: &mut Orders, row: OrderInput, change: &Wide)
     requires orders_valid(*old(orders)),
-    ensures result ==> orders_valid(*final(orders)),
-        result ==> forall|order: int, customer: int, day: int| #[trigger] order_count(*final(orders), order, customer, day)
+    ensures orders_valid(*final(orders)),
+        forall|order: int, customer: int, day: int| #[trigger] order_count(*final(orders), order, customer, day)
             == order_count(*old(orders), order, customer, day)
-                + if order == row.o_orderkey && customer == row.o_custkey && day == row.o_orderdate { change as int } else { 0 },
+                + if order == row.o_orderkey && customer == row.o_custkey && day == row.o_orderdate { change@ } else { 0 },
 {
     let ghost before = *orders;
     let outer_key = Key::number(row.o_orderkey);
@@ -98,12 +99,12 @@ pub fn change_order(orders: &mut Orders, row: OrderInput, change: i128) -> (resu
     let old = match inner.get(&key) {
         Some(value) => {
             proof { crate::key_facts::lemma_order_key_injective(value.customer, value.day, row.o_custkey, row.o_orderdate); }
-            value.count
+            value.count.dup()
         },
-        None => 0i128,
+        None => Wide::zero(),
     };
-    let count = match old.checked_add(change) { Some(value) => value, None => return false };
-    if count == 0 { inner.remove(&key); }
+    let count = old.add(change);
+    if count.is_zero() { inner.remove(&key); }
     else { inner.put(key, Arc::new(OrderCell { customer: row.o_custkey, day: row.o_orderdate, count })); }
     proof {
         inner.model();
@@ -119,11 +120,11 @@ pub fn change_order(orders: &mut Orders, row: OrderInput, change: i128) -> (resu
         assert(orders_valid(*orders));
         assert forall|order: int, customer: int, day: int| #[trigger] order_count(*orders, order, customer, day)
             == order_count(before, order, customer, day)
-                + if order == row.o_orderkey && customer == row.o_custkey && day == row.o_orderdate { change as int } else { 0 } by {
+                + if order == row.o_orderkey && customer == row.o_custkey && day == row.o_orderdate { change@ } else { 0 } by {
             if order == row.o_orderkey {
                 if customer == row.o_custkey && day == row.o_orderdate {
-                    assert(order_count(before, order, customer, day) == old as int);
-                    assert(order_count(*orders, order, customer, day) == count as int);
+                    assert(order_count(before, order, customer, day) == old@);
+                    assert(order_count(*orders, order, customer, day) == count@);
                 } else {
                     if order_key_view(customer, day) == key.view() {
                         assert(customer != row.o_custkey || day != row.o_orderdate);
@@ -136,12 +137,11 @@ pub fn change_order(orders: &mut Orders, row: OrderInput, change: i128) -> (resu
             }
         }
     }
-    true
 }
 
-pub fn collect_orders(rows: &[OrderInput]) -> (result: Option<Orders>)
-    ensures result matches Some(orders) ==> orders_valid(orders),
-        result matches Some(orders) ==> forall|order: int, customer: int, day: int| #[trigger] order_count(orders, order, customer, day)
+pub fn collect_orders(rows: &[OrderInput]) -> (orders: Orders)
+    ensures orders_valid(orders),
+        forall|order: int, customer: int, day: int| #[trigger] order_count(orders, order, customer, day)
             == sum(rows@, |row: OrderInput|
                 if row.o_orderkey == order && row.o_custkey == customer && row.o_orderdate == day { 1 } else { 0 }),
 {
@@ -155,7 +155,7 @@ pub fn collect_orders(rows: &[OrderInput]) -> (result: Option<Orders>)
         decreases rows.len() - index,
     {
         let ghost processed = index as int;
-        if !change_order(&mut orders, rows[index], 1) { return None; }
+        change_order(&mut orders, rows[index], &Wide::from_i128(1));
         proof {
             assert forall|order: int, customer: int, day: int| #[trigger] order_count(orders, order, customer, day)
                 == sum(rows@.take(index as int + 1), |row: OrderInput|
@@ -167,7 +167,7 @@ pub fn collect_orders(rows: &[OrderInput]) -> (result: Option<Orders>)
         index += 1;
     }
     proof { assert(rows@.take(index as int) =~= rows@); }
-    Some(orders)
+    orders
 }
 
 pub open spec fn projected_line_weight(row: ReturnedLineInput, component: int) -> int {
@@ -178,9 +178,9 @@ pub open spec fn projected_line_weight(row: ReturnedLineInput, component: int) -
     }
 }
 
-pub fn collect_lines(rows: &[ReturnedLineInput]) -> (result: Option<Index<Moments>>)
-    ensures result matches Some(lines) ==> moment_index_valid(lines),
-        result matches Some(lines) ==> forall|key: int, component: int|
+pub fn collect_lines(rows: &[ReturnedLineInput]) -> (lines: Index<Moms>)
+    ensures moment_index_valid(lines),
+        forall|key: int, component: int|
         #[trigger] moment_at(lines, key).component(component)
             == sum(rows@, |row: ReturnedLineInput| if row.l_orderkey == key { projected_line_weight(row, component) } else { 0 }),
 {
@@ -195,7 +195,7 @@ pub fn collect_lines(rows: &[ReturnedLineInput]) -> (result: Option<Index<Moment
     {
         let ghost processed = index as int;
         let row = rows[index];
-        if !add_moments(&mut lines, row.l_orderkey, line_moments(row.l_extendedprice, row.l_discount)) { return None; }
+        add_moments(&mut lines, row.l_orderkey, &line_moments(row.l_extendedprice, row.l_discount));
         proof {
             assert forall|key: int, component: int| #[trigger] moment_at(lines, key).component(component)
                 == sum(rows@.take(index as int + 1), |row: ReturnedLineInput|
@@ -207,12 +207,13 @@ pub fn collect_lines(rows: &[ReturnedLineInput]) -> (result: Option<Index<Moment
         index += 1;
     }
     proof { assert(rows@.take(index as int) =~= rows@); }
-    Some(lines)
+    lines
 }
 
-pub fn collect_order_changes(rows: &[OrderDelta]) -> (result: Option<Orders>)
-    ensures result matches Some(orders) ==> orders_valid(orders),
-        result matches Some(orders) ==> forall|order: int, customer: int, day: int| #[trigger] order_count(orders, order, customer, day)
+#[verifier::rlimit(40)]
+pub fn collect_order_changes(rows: &[OrderDelta]) -> (orders: Orders)
+    ensures orders_valid(orders),
+        forall|order: int, customer: int, day: int| #[trigger] order_count(orders, order, customer, day)
             == sum(rows@, |delta: OrderDelta|
                 if delta.row.o_orderkey == order && delta.row.o_custkey == customer && delta.row.o_orderdate == day
                     { delta.sign as int } else { 0 }),
@@ -228,7 +229,7 @@ pub fn collect_order_changes(rows: &[OrderDelta]) -> (result: Option<Orders>)
         decreases rows.len() - index,
     {
         let ghost processed = index as int;
-        if !change_order(&mut orders, rows[index].row, rows[index].sign as i128) { return None; }
+        change_order(&mut orders, rows[index].row, &Wide::from_i128(rows[index].sign as i128));
         proof {
             assert forall|order: int, customer: int, day: int| #[trigger] order_count(orders, order, customer, day)
                 == sum(rows@.take(index as int + 1), |delta: OrderDelta|
@@ -242,7 +243,7 @@ pub fn collect_order_changes(rows: &[OrderDelta]) -> (result: Option<Orders>)
         index += 1;
     }
     proof { assert(rows@.take(index as int) =~= rows@); }
-    Some(orders)
+    orders
 }
 
 pub open spec fn delta_line_weight(row: LineDelta, component: int) -> int {
@@ -257,9 +258,9 @@ pub open spec fn delta_line_weight(row: LineDelta, component: int) -> int {
     }
 }
 
-pub fn collect_line_changes(rows: &[LineDelta]) -> (result: Option<Index<Moments>>)
-    ensures result matches Some(lines) ==> moment_index_valid(lines),
-        result matches Some(lines) ==> forall|key: int, component: int|
+pub fn collect_line_changes(rows: &[LineDelta]) -> (lines: Index<Moms>)
+    ensures moment_index_valid(lines),
+        forall|key: int, component: int|
         #[trigger] moment_at(lines, key).component(component)
             == sum(rows@, |row: LineDelta| if row.l_orderkey == key { delta_line_weight(row, component) } else { 0 }),
 {
@@ -275,10 +276,8 @@ pub fn collect_line_changes(rows: &[LineDelta]) -> (result: Option<Index<Moments
         let ghost processed = index as int;
         let row = rows[index];
         if row.is_returned != 0 {
-            let change = match line_moments(row.l_extendedprice, row.l_discount).scale(row.sign as i128) {
-                Some(value) => value, None => return None,
-            };
-            if !add_moments(&mut lines, row.l_orderkey, change) { return None; }
+            let change = line_moments(row.l_extendedprice, row.l_discount).scale(&Wide::from_i128(row.sign as i128));
+            add_moments(&mut lines, row.l_orderkey, &change);
         }
         proof {
             assert forall|key: int, component: int| #[trigger] moment_at(lines, key).component(component)
@@ -291,154 +290,165 @@ pub fn collect_line_changes(rows: &[LineDelta]) -> (result: Option<Index<Moments
         index += 1;
     }
     proof { assert(rows@.take(index as int) =~= rows@); }
-    Some(lines)
+    lines
 }
 
-pub fn order_support(orders: &Orders) -> (result: Index<()>)
-    requires orders_valid(*orders),
-    ensures forall|key: (int, Seq<u8>)| #[trigger] result.at(key).is_some() ==>
-            key.1 == Seq::<u8>::empty() && i64::MIN <= key.0 <= i64::MAX,
-        forall|key: (int, Seq<u8>)| #[trigger] orders.at(key).is_some() ==> result.at(key).is_some(),
+pub open spec fn extend_distinct(acc: Seq<i64>, keys: Seq<i64>) -> Seq<i64>
+    decreases keys.len(),
 {
-    let order_snapshot = orders.share();
-    proof { orders.model(); }
-    let ghost order_entries = orders.entries();
-    let mut keys = Index::new();
-    let ghost mut processed = 0int;
-    let mut order_cursor = orders.cursor();
-    loop
-        invariant 0 <= processed <= order_entries.len(),
-            order_cursor.remaining() == order_entries.skip(processed),
-            order_entries == orders.entries(), orders.wf(), orders_valid(*orders),
-            forall|position: int| #![trigger order_entries[position]] 0 <= position < order_entries.len()
-                ==> orders.at(order_entries[position].0).is_some(),
-            forall|position: int| #![trigger order_entries[position]] 0 <= position < processed
-                ==> keys.at(order_entries[position].0).is_some(),
-            forall|key: (int, Seq<u8>)| #[trigger] keys.at(key).is_some() ==>
-                key.1 == Seq::<u8>::empty() && i64::MIN <= key.0 <= i64::MAX,
-        decreases order_cursor.remaining().len(),
-    {
-        let (key, _) = match order_cursor.next() {
-            Some(row) => row,
-            None => {
-                proof {
-                    assert(processed == order_entries.len());
-                    orders.model();
-                    assert forall|query: (int, Seq<u8>)| #[trigger] orders.at(query).is_some()
-                        implies keys.at(query).is_some() by {
-                        let position = choose|position: int| #![trigger order_entries[position]]
-                            0 <= position < order_entries.len() && order_entries[position].0 == query;
-                    }
-                }
-                return keys;
-            },
-        };
-        proof { assert(key.view() == order_entries[processed].0); }
-        keys.put(key, Arc::new(()));
-        proof { processed = processed + 1; }
+    if keys.len() == 0 { acc } else {
+        let before = extend_distinct(acc, keys.drop_last());
+        if before.contains(keys.last()) { before } else { before.push(keys.last()) }
     }
 }
 
-pub fn support(orders: &Orders, lines: &Index<Moments>) -> (result: Index<()>)
-    requires orders_valid(*orders), moment_index_valid(*lines),
-    ensures forall|key: (int, Seq<u8>)| #[trigger] result.at(key).is_some() ==>
-            key.1 == Seq::<u8>::empty() && i64::MIN <= key.0 <= i64::MAX,
-        forall|key: (int, Seq<u8>)| #![trigger orders.at(key), lines.at(key)]
-            orders.at(key).is_some() || lines.at(key).is_some() ==> result.at(key).is_some(),
+pub proof fn lemma_extend_distinct(acc: Seq<i64>, keys: Seq<i64>)
+    ensures forall|key: i64| #![trigger extend_distinct(acc, keys).contains(key)]
+            extend_distinct(acc, keys).contains(key) <==> acc.contains(key) || keys.contains(key),
+    decreases keys.len(),
 {
-    let mut keys = order_support(orders);
-    let line_snapshot = lines.share();
-    proof { lines.model(); }
-    let ghost line_entries = lines.entries();
-    let ghost mut processed = 0int;
-    let mut line_cursor = lines.cursor();
-    loop
-        invariant 0 <= processed <= line_entries.len(),
-            line_cursor.remaining() == line_entries.skip(processed),
-            line_entries == lines.entries(), lines.wf(), moment_index_valid(*lines),
-            forall|position: int| #![trigger line_entries[position]] 0 <= position < line_entries.len()
-                ==> lines.at(line_entries[position].0).is_some(),
-            forall|position: int| #![trigger line_entries[position]] 0 <= position < processed
-                ==> keys.at(line_entries[position].0).is_some(),
-            forall|query: (int, Seq<u8>)| #[trigger] orders.at(query).is_some() ==> keys.at(query).is_some(),
-            forall|key: (int, Seq<u8>)| #[trigger] keys.at(key).is_some() ==>
-                key.1 == Seq::<u8>::empty() && i64::MIN <= key.0 <= i64::MAX,
-        decreases line_cursor.remaining().len(),
-    {
-        let (key, _) = match line_cursor.next() {
-            Some(row) => row,
-            None => {
-                proof {
-                    assert(processed == line_entries.len());
-                    lines.model();
-                    assert forall|query: (int, Seq<u8>)| #[trigger] lines.at(query).is_some()
-                        implies keys.at(query).is_some() by {
-                        let position = choose|position: int| #![trigger line_entries[position]]
-                            0 <= position < line_entries.len() && line_entries[position].0 == query;
-                    }
-                }
-                return keys;
-            },
-        };
-        proof { assert(key.view() == line_entries[processed].0); }
-        keys.put(key, Arc::new(()));
-        proof { processed = processed + 1; }
+    if keys.len() > 0 {
+        let init = keys.drop_last();
+        lemma_extend_distinct(acc, init);
+        let before = extend_distinct(acc, init);
+        let last = keys.last();
+        verus_prooflib::lemma_push_membership(init, last);
+        verus_prooflib::lemma_push_membership(before, last);
+        assert(keys =~= init.push(last));
     }
 }
 
-pub fn key_vec(keys: &Index<()>) -> Vec<i64> {
-    let mut result = Vec::new();
-    let mut cursor = keys.cursor();
-    loop
-        decreases cursor.remaining().len(),
-    {
-        let (key, _) = match cursor.next() { Some(row) => row, None => break };
-        result.push(key.number);
-    }
-    result
+pub open spec fn order_delta_keys(orders: Seq<OrderDelta>) -> Seq<i64> {
+    orders.map_values(|delta: OrderDelta| delta.row.o_orderkey)
 }
 
-pub fn raw_support(orders: &[OrderDelta], lines: &[LineDelta]) -> Index<()> {
-    let mut keys = Index::new();
+pub open spec fn returned_keys(lines: Seq<LineDelta>) -> Seq<i64>
+    decreases lines.len(),
+{
+    if lines.len() == 0 { Seq::empty() } else {
+        let before = returned_keys(lines.drop_last());
+        if lines.last().is_returned != 0 { before.push(lines.last().l_orderkey) } else { before }
+    }
+}
+
+/// The order keys whose rows are rescanned: each key of a changed order or returned line, once.
+pub open spec fn wanted_keys(orders: Seq<OrderDelta>, lines: Seq<LineDelta>) -> Seq<i64> {
+    extend_distinct(extend_distinct(Seq::empty(), order_delta_keys(orders)), returned_keys(lines))
+}
+
+pub proof fn lemma_wanted_keys(orders: Seq<OrderDelta>, lines: Seq<LineDelta>, key: i64)
+    ensures wanted_keys(orders, lines).contains(key) <==>
+        order_delta_keys(orders).contains(key) || returned_keys(lines).contains(key),
+{
+    lemma_extend_distinct(Seq::empty(), order_delta_keys(orders));
+    lemma_extend_distinct(extend_distinct(Seq::empty(), order_delta_keys(orders)), returned_keys(lines));
+}
+
+pub proof fn lemma_returned_keys_contain(lines: Seq<LineDelta>, key: i64)
+    ensures returned_keys(lines).contains(key) <==> exists|index: int| 0 <= index < lines.len()
+        && (#[trigger] lines[index]).l_orderkey == key && lines[index].is_returned != 0,
+    decreases lines.len(),
+{
+    if lines.len() > 0 {
+        let init = lines.drop_last();
+        lemma_returned_keys_contain(init, key);
+        reveal_with_fuel(returned_keys, 2);
+        let before = returned_keys(init);
+        let last = lines.last();
+        if last.is_returned != 0 {
+            assert(returned_keys(lines) =~= before.push(last.l_orderkey));
+            verus_prooflib::lemma_push_membership(before, last.l_orderkey);
+        } else {
+            assert(returned_keys(lines) =~= before);
+        }
+        assert(lines[lines.len() - 1] == last);
+        if returned_keys(lines).contains(key) {
+            if last.is_returned != 0 && last.l_orderkey == key {
+                assert(lines[lines.len() - 1].l_orderkey == key);
+            } else {
+                let index = choose|index: int| 0 <= index < init.len() && (#[trigger] init[index]).l_orderkey == key && init[index].is_returned != 0;
+                assert(lines[index] == init[index]);
+            }
+        }
+        if exists|index: int| 0 <= index < lines.len() && (#[trigger] lines[index]).l_orderkey == key && lines[index].is_returned != 0 {
+            let index = choose|index: int| 0 <= index < lines.len() && (#[trigger] lines[index]).l_orderkey == key && lines[index].is_returned != 0;
+            if index < init.len() { assert(init[index] == lines[index]); }
+        }
+    }
+}
+
+pub fn planned_keys(orders: &[OrderDelta], lines: &[LineDelta]) -> (out: Vec<i64>)
+    ensures out@ == wanted_keys(orders@, lines@),
+{
+    let mut out: Vec<i64> = Vec::new();
+    let mut seen: HashMap<i64, bool> = HashMap::new();
     let mut index = 0usize;
     while index < orders.len()
-        invariant index <= orders.len(),
+        invariant index <= orders.len(), seen@.dom() == out@.to_set(),
+            out@ == extend_distinct(Seq::empty(), order_delta_keys(orders@).take(index as int)),
         decreases orders.len() - index,
     {
-        let ghost processed = index as int;
-        keys.put(Key::number(orders[index].row.o_orderkey), Arc::new(()));
+        let key = orders[index].row.o_orderkey;
+        proof {
+            assert(order_delta_keys(orders@).take(index as int + 1).drop_last() =~= order_delta_keys(orders@).take(index as int));
+            assert(order_delta_keys(orders@).take(index as int + 1).last() == key);
+            out@.to_set_ensures();
+        }
+        if !seen.contains_key(&key) {
+            proof { verus_prooflib::lemma_push_to_set(out@, key); }
+            seen.insert(key, true);
+            out.push(key);
+        }
         index += 1;
     }
-    index = 0;
+    proof { assert(order_delta_keys(orders@).take(index as int) =~= order_delta_keys(orders@)); }
+    let ghost ordered = out@;
+    let mut index = 0usize;
     while index < lines.len()
-        invariant index <= lines.len(),
+        invariant index <= lines.len(), seen@.dom() == out@.to_set(),
+            out@ == extend_distinct(ordered, returned_keys(lines@.take(index as int))),
         decreases lines.len() - index,
     {
-        let ghost processed = index as int;
-        if lines[index].is_returned != 0 { keys.put(Key::number(lines[index].l_orderkey), Arc::new(())); }
+        let key = lines[index].l_orderkey;
+        let ghost prior = out@;
+        proof {
+            assert(lines@.take(index as int + 1).drop_last() =~= lines@.take(index as int));
+            assert(lines@.take(index as int + 1).last() == lines@[index as int]);
+            out@.to_set_ensures();
+        }
+        if lines[index].is_returned != 0 && !seen.contains_key(&key) {
+            proof { verus_prooflib::lemma_push_to_set(out@, key); }
+            seen.insert(key, true);
+            out.push(key);
+        }
+        proof {
+            let before_keys = returned_keys(lines@.take(index as int));
+            let after_keys = returned_keys(lines@.take(index as int + 1));
+            reveal_with_fuel(returned_keys, 2);
+            if lines@[index as int].is_returned != 0 {
+                assert(after_keys =~= before_keys.push(key));
+                assert(before_keys.push(key).drop_last() =~= before_keys);
+                assert(before_keys.push(key).last() == key);
+                reveal_with_fuel(extend_distinct, 2);
+                prior.to_set_ensures();
+            } else {
+                assert(after_keys =~= before_keys);
+            }
+        }
         index += 1;
     }
-    keys
-}
-
-pub fn planned_keys(orders: &[OrderDelta], lines: &[LineDelta]) -> Vec<i64> {
-    let order_changes = match collect_order_changes(orders) {
-        Some(value) => value, None => return key_vec(&raw_support(orders, lines)),
-    };
-    let line_changes = match collect_line_changes(lines) {
-        Some(value) => value, None => return key_vec(&raw_support(orders, lines)),
-    };
-    key_vec(&support(&order_changes, &line_changes))
+    proof { assert(lines@.take(index as int) =~= lines@); }
+    out
 }
 
 pub fn key_set(rows: &[i64]) -> (result: Index<()>)
-    ensures forall|key: (int, Seq<u8>)| #[trigger] result.at(key).is_some()
+    ensures result.wf(), forall|key: (int, Seq<u8>)| #[trigger] result.at(key).is_some()
         <==> key.1 == Seq::<u8>::empty() && seq_view_i64(rows@).contains(key.0),
 {
     let mut result = Index::new();
     let mut index = 0usize;
     while index < rows.len()
-        invariant index <= rows.len(),
+        invariant index <= rows.len(), result.wf(),
             forall|key: (int, Seq<u8>)| #[trigger] result.at(key).is_some()
                 <==> key.1 == Seq::<u8>::empty() && seq_view_i64(rows@.take(index as int)).contains(key.0),
         decreases rows.len() - index,
@@ -457,47 +467,6 @@ pub fn key_set(rows: &[i64]) -> (result: Index<()>)
     result
 }
 
-pub fn covers(expected: &Index<()>, rows: &[i64]) -> (result: bool)
-    ensures result ==> forall|key: (int, Seq<u8>)| #[trigger] expected.at(key).is_some() ==> seq_view_i64(rows@).contains(key.0),
-{
-    let snapshot = expected.share();
-    proof { expected.model(); }
-    let ghost entries = expected.entries();
-    let available = key_set(rows);
-    let mut cursor = expected.cursor();
-    let ghost mut processed = 0int;
-    loop
-        invariant 0 <= processed <= entries.len(), cursor.remaining() == entries.skip(processed),
-            entries == expected.entries(), expected.wf(),
-            forall|key: (int, Seq<u8>)| #[trigger] available.at(key).is_some()
-                <==> key.1 == Seq::<u8>::empty() && seq_view_i64(rows@).contains(key.0),
-            forall|position: int| 0 <= position < processed ==> seq_view_i64(rows@).contains((#[trigger] entries[position]).0.0),
-        decreases cursor.remaining().len(),
-    {
-        let (key, _) = match cursor.next() {
-            Some(row) => row,
-            None => {
-                proof {
-                    assert(processed == entries.len());
-                    expected.model();
-                    assert forall|key: (int, Seq<u8>)| #[trigger] expected.at(key).is_some()
-                        implies seq_view_i64(rows@).contains(key.0) by {
-                        let position = choose|position: int| 0 <= position < entries.len()
-                            && (#[trigger] entries[position]).0 == key;
-                    }
-                }
-                return true;
-            },
-        };
-        if available.get(&key).is_none() { return false; }
-        proof {
-            assert(key.view() == entries[processed].0);
-            assert(seq_view_i64(rows@).contains(entries[processed].0.0));
-            processed = processed + 1;
-        }
-    }
-}
-
 pub open spec fn patches_valid(patches: Patches) -> bool {
     forall|key: (int, Seq<u8>)| #[trigger] patches.at(key).is_some() ==> {
         &&& key.1 == Seq::<u8>::empty()
@@ -514,39 +483,39 @@ pub open spec fn patch_at(patches: Patches, day: int, customer: int) -> Moments 
     }
 }
 
-pub open spec fn moment_row_weight(customer: int, component: int) -> spec_fn(((int, Seq<u8>), Moments)) -> int {
-    |entry: ((int, Seq<u8>), Moments)| if entry.0.0 == customer { entry.1.component(component) } else { 0 }
+pub open spec fn moment_row_weight(customer: int, component: int) -> spec_fn(((int, Seq<u8>), Moms)) -> int {
+    |entry: ((int, Seq<u8>), Moms)| if entry.0.0 == customer { entry.1@.component(component) } else { 0 }
 }
 
-pub open spec fn moment_rows_sum(rows: Seq<((int, Seq<u8>), Moments)>, customer: int, component: int) -> int {
+pub open spec fn moment_rows_sum(rows: Seq<((int, Seq<u8>), Moms)>, customer: int, component: int) -> int {
     sum(rows, moment_row_weight(customer, component))
 }
 
-pub open spec fn patch_row_weight(day: int, customer: int, grain: int, component: int) -> spec_fn(((int, Seq<u8>), Index<Moments>)) -> int {
-    |entry: ((int, Seq<u8>), Index<Moments>)| if period_of(entry.0.0, grain) == day {
+pub open spec fn patch_row_weight(day: int, customer: int, grain: int, component: int) -> spec_fn(((int, Seq<u8>), Index<Moms>)) -> int {
+    |entry: ((int, Seq<u8>), Index<Moms>)| if period_of(entry.0.0, grain) == day {
         moment_at(entry.1, customer).component(component) } else { 0 }
 }
 
-pub open spec fn patch_rows_sum(rows: Seq<((int, Seq<u8>), Index<Moments>)>, day: int, customer: int, grain: int, component: int) -> int {
+pub open spec fn patch_rows_sum(rows: Seq<((int, Seq<u8>), Index<Moms>)>, day: int, customer: int, grain: int, component: int) -> int {
     sum(rows, patch_row_weight(day, customer, grain, component))
 }
 
-pub proof fn lemma_moment_rows(index: &Index<Moments>, customer: int, component: int)
+pub proof fn lemma_moment_rows(index: &Index<Moms>, customer: int, component: int)
     requires index.wf(), moment_index_valid(*index),
     ensures moment_rows_sum(index.entries(), customer, component) == moment_at(*index, customer).component(component),
 {
     index.model();
-    let weight = |entry: ((int, Seq<u8>), Moments)| entry.1.component(component);
+    let weight = |entry: ((int, Seq<u8>), Moms)| entry.1@.component(component);
     verus_prooflib::ordered::lemma_key_contribution(index, (customer, Seq::<u8>::empty()), weight);
     verus_common::sums::lemma_sum_ext(index.entries(),
         moment_row_weight(customer, component),
-        |entry: ((int, Seq<u8>), Moments)| if entry.0 == (customer, Seq::<u8>::empty()) { weight(entry) } else { 0 });
+        |entry: ((int, Seq<u8>), Moms)| if entry.0 == (customer, Seq::<u8>::empty()) { weight(entry) } else { 0 });
     assert(verus_prooflib::ordered::contribution(*index, (customer, Seq::<u8>::empty()), weight)
         == moment_at(*index, customer).component(component));
     verus_common::sums::lemma_sum_ext_all(index.entries(),
-        |entry: ((int, Seq<u8>), Moments)| if entry.0 == (customer, Seq::<u8>::empty()) { weight(entry) } else { 0 },
-        |row: ((int, Seq<u8>), Moments)| if row.0 == (customer, Seq::<u8>::empty()) { weight(row) } else { 0 });
-    assert(sum(index.entries(), |row: ((int, Seq<u8>), Moments)| if row.0 == (customer, Seq::<u8>::empty()) { weight(row) } else { 0 })
+        |entry: ((int, Seq<u8>), Moms)| if entry.0 == (customer, Seq::<u8>::empty()) { weight(entry) } else { 0 },
+        |row: ((int, Seq<u8>), Moms)| if row.0 == (customer, Seq::<u8>::empty()) { weight(row) } else { 0 });
+    assert(sum(index.entries(), |row: ((int, Seq<u8>), Moms)| if row.0 == (customer, Seq::<u8>::empty()) { weight(row) } else { 0 })
         == verus_prooflib::ordered::contribution(*index, (customer, Seq::<u8>::empty()), weight));
 }
 
@@ -555,28 +524,28 @@ pub proof fn lemma_patch_rows(index: &Patches, day: int, customer: int, componen
     ensures patch_rows_sum(index.entries(), day, customer, 0, component) == patch_at(*index, day, customer).component(component),
 {
     index.model();
-    let weight = |entry: ((int, Seq<u8>), Index<Moments>)| moment_at(entry.1, customer).component(component);
+    let weight = |entry: ((int, Seq<u8>), Index<Moms>)| moment_at(entry.1, customer).component(component);
     verus_prooflib::ordered::lemma_key_contribution(index, (day, Seq::<u8>::empty()), weight);
     verus_common::sums::lemma_sum_ext(index.entries(),
         patch_row_weight(day, customer, 0, component),
-        |entry: ((int, Seq<u8>), Index<Moments>)| if entry.0 == (day, Seq::<u8>::empty()) { weight(entry) } else { 0 });
+        |entry: ((int, Seq<u8>), Index<Moms>)| if entry.0 == (day, Seq::<u8>::empty()) { weight(entry) } else { 0 });
 }
 
 #[verifier::rlimit(20)]
-pub fn add_patch(patches: &mut Patches, day: i32, customer: i64, change: Moments) -> (result: bool)
+pub fn add_patch(patches: &mut Patches, day: i32, customer: i64, change: &Moms) 
     requires patches_valid(*old(patches)),
-    ensures result ==> patches_valid(*final(patches)),
-        result ==> forall|target_day: int, target_customer: int, component: int|
+    ensures patches_valid(*final(patches)),
+        forall|target_day: int, target_customer: int, component: int|
             #[trigger] patch_at(*final(patches), target_day, target_customer).component(component)
                 == patch_at(*old(patches), target_day, target_customer).component(component)
-                    + if target_day == day && target_customer == customer { change.component(component) } else { 0 },
-        result ==> forall|target_day: int, target_customer: int, grain: int, component: int|
+                    + if target_day == day && target_customer == customer { change@.component(component) } else { 0 },
+        forall|target_day: int, target_customer: int, grain: int, component: int|
             #[trigger] patch_rows_sum(final(patches).entries(), target_day, target_customer, grain, component)
                 == patch_rows_sum(old(patches).entries(), target_day, target_customer, grain, component)
                     + if period_of(day as int, grain) == target_day && target_customer == customer {
-                        change.component(component) } else { 0 },
+                        change@.component(component) } else { 0 },
 {
-    if change.is_zero() { return true; }
+    if change.is_zero() { return; }
     let before_snapshot = patches.share();
     let ghost before = *patches;
     proof {
@@ -601,7 +570,7 @@ pub fn add_patch(patches: &mut Patches, day: i32, customer: i64, change: Moments
         assert(moment_index_valid(inner));
         assert forall|target: int| #[trigger] moment_at(inner, target) == patch_at(before, day as int, target) by {}
     }
-    if !add_moments(&mut inner, customer, change) { return false; }
+    add_moments(&mut inner, customer, change);
     proof { inner.model(); }
     if inner.is_empty() { patches.remove(&key); }
     else { patches.put(key, Arc::new(inner)); }
@@ -613,7 +582,7 @@ pub fn add_patch(patches: &mut Patches, day: i32, customer: i64, change: Moments
         assert forall|target_day: int, target_customer: int, component: int|
             #[trigger] patch_at(*patches, target_day, target_customer).component(component)
                 == patch_at(before, target_day, target_customer).component(component)
-                    + if target_day == day && target_customer == customer { change.component(component) } else { 0 } by {
+                    + if target_day == day && target_customer == customer { change@.component(component) } else { 0 } by {
             if target_day == day {
                 assert(patch_at(*patches, target_day, target_customer) == moment_at(inner, target_customer));
             }
@@ -622,20 +591,19 @@ pub fn add_patch(patches: &mut Patches, day: i32, customer: i64, change: Moments
             #[trigger] patch_rows_sum(patches.entries(), target_day, target_customer, grain, component)
                 == patch_rows_sum(before_snapshot.entries(), target_day, target_customer, grain, component)
                     + if period_of(day as int, grain) == target_day && target_customer == customer {
-                        change.component(component) } else { 0 } by {
+                        change@.component(component) } else { 0 } by {
             let weight = patch_row_weight(target_day, target_customer, grain, component);
             verus_prooflib::ordered::lemma_sum_unchanged_except(&before_snapshot, &after_snapshot,
                 (day as int, Seq::empty()), weight);
             assert(patch_at(*patches, day as int, target_customer).component(component)
                 == patch_at(before, day as int, target_customer).component(component)
-                    + if target_customer == customer { change.component(component) } else { 0 });
+                    + if target_customer == customer { change@.component(component) } else { 0 });
         }
     }
-    true
 }
 
 pub open spec fn order_patch_weight(cell: OrderCell, day: int, customer: int, lines: Moments, component: int) -> int {
-    if cell.day as int == day && cell.customer as int == customer { lines.component(component) * cell.count as int } else { 0 }
+    if cell.day as int == day && cell.customer as int == customer { lines.component(component) * cell.count@ } else { 0 }
 }
 
 pub open spec fn order_patch_sum(entries: Seq<((int, Seq<u8>), OrderCell)>, day: int, customer: int, lines: Moments, component: int) -> int {
@@ -644,24 +612,24 @@ pub open spec fn order_patch_sum(entries: Seq<((int, Seq<u8>), OrderCell)>, day:
 
 pub open spec fn order_group_weight(day: int, customer: int, grain: int) -> spec_fn(((int, Seq<u8>), OrderCell)) -> int {
     |entry: ((int, Seq<u8>), OrderCell)| if entry.1.customer as int == customer && period_of(entry.1.day as int, grain) == day {
-        entry.1.count as int } else { 0 }
+        entry.1.count@ } else { 0 }
 }
 
 pub open spec fn order_group_sum(entries: Seq<((int, Seq<u8>), OrderCell)>, day: int, customer: int, grain: int) -> int {
     sum(entries, order_group_weight(day, customer, grain))
 }
 
-pub fn join_patch(patches: &mut Patches, orders: &Index<OrderCell>, lines: Moments) -> (result: bool)
+pub fn join_patch(patches: &mut Patches, orders: &Index<OrderCell>, lines: &Moms) 
     requires patches_valid(*old(patches)),
-    ensures result ==> patches_valid(*final(patches)),
-        result ==> forall|day: int, customer: int, component: int|
+    ensures patches_valid(*final(patches)),
+        forall|day: int, customer: int, component: int|
             #[trigger] patch_at(*final(patches), day, customer).component(component)
                 == patch_at(*old(patches), day, customer).component(component)
-                    + order_patch_sum(orders.entries(), day, customer, lines, component),
-        result ==> forall|day: int, customer: int, grain: int, component: int|
+                    + order_patch_sum(orders.entries(), day, customer, lines@, component),
+        forall|day: int, customer: int, grain: int, component: int|
             #[trigger] patch_rows_sum(final(patches).entries(), day, customer, grain, component)
                 == patch_rows_sum(old(patches).entries(), day, customer, grain, component)
-                    + order_group_sum(orders.entries(), day, customer, grain) * lines.component(component),
+                    + order_group_sum(orders.entries(), day, customer, grain) * lines@.component(component),
 {
     let ghost before = *patches;
     let ghost entries = orders.entries();
@@ -675,11 +643,11 @@ pub fn join_patch(patches: &mut Patches, orders: &Index<OrderCell>, lines: Momen
             forall|day: int, customer: int, component: int|
                 #[trigger] patch_at(*patches, day, customer).component(component)
                     == patch_at(before, day, customer).component(component)
-                        + order_patch_sum(entries.take(processed), day, customer, lines, component),
+                        + order_patch_sum(entries.take(processed), day, customer, lines@, component),
             forall|day: int, customer: int, grain: int, component: int|
                 #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
                     == patch_rows_sum(before.entries(), day, customer, grain, component)
-                        + order_group_sum(entries.take(processed), day, customer, grain) * lines.component(component),
+                        + order_group_sum(entries.take(processed), day, customer, grain) * lines@.component(component),
         decreases cursor.remaining().len(),
     {
         let (_, order) = match cursor.next() {
@@ -691,41 +659,41 @@ pub fn join_patch(patches: &mut Patches, orders: &Index<OrderCell>, lines: Momen
                     assert forall|day: int, customer: int, component: int|
                         #[trigger] patch_at(*patches, day, customer).component(component)
                             == patch_at(before, day, customer).component(component)
-                                + order_patch_sum(orders.entries(), day, customer, lines, component) by {}
+                                + order_patch_sum(orders.entries(), day, customer, lines@, component) by {}
                 }
-                return true;
+                return;
             },
         };
-        let change = match lines.scale(order.count) { Some(value) => value, None => return false };
-        if !add_patch(patches, order.day, order.customer, change) { return false; }
+        let change = lines.scale(&order.count);
+        add_patch(patches, order.day, order.customer, &change);
         proof {
             assert(*order == entries[processed].1);
             assert forall|day: int, customer: int, component: int|
                 #[trigger] patch_at(*patches, day, customer).component(component)
                     == patch_at(before, day, customer).component(component)
-                        + order_patch_sum(entries.take(processed + 1), day, customer, lines, component) by {
+                        + order_patch_sum(entries.take(processed + 1), day, customer, lines@, component) by {
                 verus_common::sums::lemma_sum_take(entries, processed,
-                    |entry: ((int, Seq<u8>), OrderCell)| order_patch_weight(entry.1, day, customer, lines, component));
+                    |entry: ((int, Seq<u8>), OrderCell)| order_patch_weight(entry.1, day, customer, lines@, component));
             }
             assert forall|day: int, customer: int, grain: int, component: int|
                 #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
                     == patch_rows_sum(before.entries(), day, customer, grain, component)
-                        + order_group_sum(entries.take(processed + 1), day, customer, grain) * lines.component(component) by {
+                        + order_group_sum(entries.take(processed + 1), day, customer, grain) * lines@.component(component) by {
                 verus_common::sums::lemma_sum_take(entries, processed, order_group_weight(day, customer, grain));
-                assert(change.component(component) == lines.component(component) * order.count as int);
+                assert(change@.component(component) == lines@.component(component) * order.count@);
                 assert((order_group_sum(entries.take(processed), day, customer, grain)
-                    + order_group_weight(day, customer, grain)(entries[processed])) * lines.component(component)
-                    == order_group_sum(entries.take(processed), day, customer, grain) * lines.component(component)
-                        + order_group_weight(day, customer, grain)(entries[processed]) * lines.component(component)) by (nonlinear_arith);
-                assert(order.count as int * lines.component(component) == lines.component(component) * order.count as int) by (nonlinear_arith);
+                    + order_group_weight(day, customer, grain)(entries[processed])) * lines@.component(component)
+                    == order_group_sum(entries.take(processed), day, customer, grain) * lines@.component(component)
+                        + order_group_weight(day, customer, grain)(entries[processed]) * lines@.component(component)) by (nonlinear_arith);
+                assert(order.count@ * lines@.component(component) == lines@.component(component) * order.count@) by (nonlinear_arith);
             }
             processed = processed + 1;
         }
     }
 }
 
-pub open spec fn hash_moment_at<KeyType>(index: Map<KeyType, Moments>, key: KeyType) -> Moments {
-    if index.dom().contains(key) { index[key] }
+pub open spec fn hash_moment_at<KeyType>(index: Map<KeyType, Moms>, key: KeyType) -> Moments {
+    if index.dom().contains(key) { index[key]@ }
     else { Moments { count: 0, revenue: 0, upper: 0 } }
 }
 
@@ -772,11 +740,11 @@ pub proof fn lemma_scanned_fact_split(orders: Seq<OrderInput>, rows: Seq<Returne
             scanned_line_sum(rows, order.o_orderkey as int, component) } else { 0 });
 }
 
-pub fn scan_lines(rows: &[ReturnedLineInput]) -> (result: Option<HashMap<i64, Moments>>)
-    ensures result matches Some(lines) ==> forall|key: i64, component: int|
+pub fn scan_lines(rows: &[ReturnedLineInput]) -> (lines: HashMap<i64, Moms>)
+    ensures forall|key: i64, component: int|
         #[trigger] hash_moment_at(lines@, key).component(component) == scanned_line_sum(rows@, key as int, component),
 {
-    let mut lines: HashMap<i64, Moments> = HashMap::new();
+    let mut lines: HashMap<i64, Moms> = HashMap::new();
     let mut index = 0usize;
     while index < rows.len()
         invariant index <= rows.len(),
@@ -788,12 +756,10 @@ pub fn scan_lines(rows: &[ReturnedLineInput]) -> (result: Option<HashMap<i64, Mo
         let ghost processed = index as int;
         let row = rows[index];
         let ghost before = lines@;
-        let old = match lines.get(&row.l_orderkey) { Some(value) => *value, None => Moments::zero() };
-        proof { assert(old == hash_moment_at(before, row.l_orderkey)); }
+        let old = match lines.get(&row.l_orderkey) { Some(value) => value.dup(), None => Moms::zero() };
+        proof { assert(old@ == hash_moment_at(before, row.l_orderkey)); }
         let moment = line_moments(row.l_extendedprice, row.l_discount);
-        let next = match old.add(moment) {
-            Some(value) => value, None => return None,
-        };
+        let next = old.add(&moment);
         lines.insert(row.l_orderkey, next);
         proof {
             assert forall|key: i64, component: int| #[trigger] hash_moment_at(lines@, key).component(component)
@@ -803,7 +769,7 @@ pub fn scan_lines(rows: &[ReturnedLineInput]) -> (result: Option<HashMap<i64, Mo
                     == sum(rows@.take(index as int), |row: ReturnedLineInput|
                         if row.l_orderkey == key { projected_line_weight(row, component) } else { 0 }));
                 assert(hash_moment_at(lines@, key).component(component)
-                    == hash_moment_at(before, key).component(component) + if key == row.l_orderkey { moment.component(component) } else { 0 });
+                    == hash_moment_at(before, key).component(component) + if key == row.l_orderkey { moment@.component(component) } else { 0 });
                 verus_common::sums::lemma_sum_take(rows@, index as int,
                     |row: ReturnedLineInput| if row.l_orderkey == key { projected_line_weight(row, component) } else { 0 });
             }
@@ -811,17 +777,17 @@ pub fn scan_lines(rows: &[ReturnedLineInput]) -> (result: Option<HashMap<i64, Mo
         index += 1;
     }
     proof { assert(rows@.take(index as int) =~= rows@); }
-    Some(lines)
+    lines
 }
 
-pub fn build_chunk_patches(orders: &[OrderInput], Ghost(rows): Ghost<Seq<ReturnedLineInput>>, lines: &HashMap<i64, Moments>) -> (result: Option<Patches>)
+pub fn build_chunk_patches(orders: &[OrderInput], Ghost(rows): Ghost<Seq<ReturnedLineInput>>, lines: &HashMap<i64, Moms>) -> (patches: Patches)
     requires forall|key: i64, component: int| #[trigger] hash_moment_at(lines@, key).component(component)
         == scanned_line_sum(rows, key as int, component),
-    ensures result matches Some(patches) ==> patches_valid(patches),
-        result matches Some(patches) ==> forall|day: int, customer: int, component: int|
+    ensures patches_valid(patches),
+        forall|day: int, customer: int, component: int|
             #[trigger] patch_at(patches, day, customer).component(component)
                 == scanned_fact_sum(orders@, rows, day, customer, 0, component),
-        result matches Some(patches) ==> forall|day: int, customer: int, grain: int, component: int|
+        forall|day: int, customer: int, grain: int, component: int|
             #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
                 == scanned_fact_sum(orders@, rows, day, customer, grain, component),
 {
@@ -842,14 +808,14 @@ pub fn build_chunk_patches(orders: &[OrderInput], Ghost(rows): Ghost<Seq<Returne
     {
         let ghost processed = index as int;
         let row = orders[index];
-        let moment = match lines.get(&row.o_orderkey) { Some(line) => *line, None => Moments::zero() };
-        proof { assert(moment == hash_moment_at(line_table, row.o_orderkey)); }
-        if !add_patch(&mut patches, row.o_orderdate, row.o_custkey, moment) { return None; }
+        let moment = match lines.get(&row.o_orderkey) { Some(line) => line.dup(), None => Moms::zero() };
+        proof { assert(moment@ == hash_moment_at(line_table, row.o_orderkey)); }
+        add_patch(&mut patches, row.o_orderdate, row.o_custkey, &moment);
         proof {
             assert forall|day: int, customer: int, component: int|
                 #[trigger] patch_at(patches, day, customer).component(component)
                     == scanned_fact_sum(orders@.take(index as int + 1), rows, day, customer, 0, component) by {
-                assert(moment.component(component) == scanned_line_sum(rows, row.o_orderkey as int, component));
+                assert(moment@.component(component) == scanned_line_sum(rows, row.o_orderkey as int, component));
                 verus_common::sums::lemma_sum_take(orders@, index as int,
                     |order: OrderInput| if period_of(order.o_orderdate as int, 0) == day && order.o_custkey == customer {
                         scanned_line_sum(rows, order.o_orderkey as int, component) } else { 0 });
@@ -857,7 +823,7 @@ pub fn build_chunk_patches(orders: &[OrderInput], Ghost(rows): Ghost<Seq<Returne
             assert forall|day: int, customer: int, grain: int, component: int|
                 #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
                     == scanned_fact_sum(orders@.take(index as int + 1), rows, day, customer, grain, component) by {
-                assert(moment.component(component) == scanned_line_sum(rows, row.o_orderkey as int, component));
+                assert(moment@.component(component) == scanned_line_sum(rows, row.o_orderkey as int, component));
                 verus_common::sums::lemma_sum_take(orders@, index as int,
                     |order: OrderInput| if period_of(order.o_orderdate as int, grain) == day && order.o_custkey == customer {
                         scanned_line_sum(rows, order.o_orderkey as int, component) } else { 0 });
@@ -866,14 +832,14 @@ pub fn build_chunk_patches(orders: &[OrderInput], Ghost(rows): Ghost<Seq<Returne
         index += 1;
     }
     proof { assert(orders@.take(index as int) =~= orders@); }
-    Some(patches)
+    patches
 }
 
-pub fn merge_moment_patch(target: &mut Index<Moments>, source: &Index<Moments>) -> (result: bool)
+pub fn merge_moment_patch(target: &mut Index<Moms>, source: &Index<Moms>) 
     requires moment_index_valid(*old(target)), moment_index_valid(*source),
-    ensures result ==> moment_index_valid(*final(target)),
-        result ==> final(target).wf(),
-        result ==> forall|customer: int, component: int| #[trigger] moment_at(*final(target), customer).component(component)
+    ensures moment_index_valid(*final(target)),
+        final(target).wf(),
+        forall|customer: int, component: int| #[trigger] moment_at(*final(target), customer).component(component)
             == moment_at(*old(target), customer).component(component) + moment_at(*source, customer).component(component),
 {
     let target_snapshot = target.share();
@@ -904,7 +870,7 @@ pub fn merge_moment_patch(target: &mut Index<Moments>, source: &Index<Moments>) 
                         lemma_moment_rows(source, customer, component);
                     }
                 }
-                return true;
+                return;
             },
         };
         proof {
@@ -912,7 +878,7 @@ pub fn merge_moment_patch(target: &mut Index<Moments>, source: &Index<Moments>) 
             assert(source.at(key.view()).is_some());
             assert(key.view().1 == Seq::<u8>::empty());
         }
-        if !add_moments(target, key.number, *change) { return false; }
+        add_moments(target, key.number, &*change);
         proof {
             assert forall|customer: int, component: int| #[trigger] moment_at(*target, customer).component(component)
                 == moment_at(before, customer).component(component) + moment_rows_sum(entries.take(processed + 1), customer, component) by {
@@ -923,14 +889,14 @@ pub fn merge_moment_patch(target: &mut Index<Moments>, source: &Index<Moments>) 
     }
 }
 
-pub fn coarsen_patches(patches: &Patches, grain: u8) -> (result: Option<Patches>)
+pub fn coarsen_patches(patches: &Patches, grain: u8) -> (result: Patches)
     requires patches_valid(*patches), 0 <= grain <= 5,
-    ensures result matches Some(coarse) ==> patches_valid(coarse),
-        result matches Some(coarse) ==> forall|day: int, customer: int, component: int|
-            #[trigger] patch_at(coarse, day, customer).component(component)
+    ensures patches_valid(result),
+        forall|day: int, customer: int, component: int|
+            #[trigger] patch_at(result, day, customer).component(component)
                 == patch_rows_sum(patches.entries(), day, customer, grain as int, component),
 {
-    let mut coarse: Index<Index<Moments>> = Index::new();
+    let mut coarse: Index<Index<Moms>> = Index::new();
     let snapshot = patches.share();
     proof {
         patches.model();
@@ -957,7 +923,7 @@ pub fn coarsen_patches(patches: &Patches, grain: u8) -> (result: Option<Patches>
             Some(row) => row,
             None => {
                 proof { assert(processed == entries.len()); assert(entries.take(processed) =~= entries); }
-                return Some(coarse);
+                return coarse;
             },
         };
         proof {
@@ -988,7 +954,7 @@ pub fn coarsen_patches(patches: &Patches, grain: u8) -> (result: Option<Patches>
             assert forall|customer: int| #[trigger] moment_at(coarse_cells, customer)
                 == patch_at(before_coarse, coarse_key.number as int, customer) by {}
         }
-        if !merge_moment_patch(&mut coarse_cells, &*customers) { return None; }
+        merge_moment_patch(&mut coarse_cells, &*customers);
         proof { coarse_cells.model(); }
         if coarse_cells.is_empty() { coarse.remove(&coarse_key); }
         else { coarse.put(coarse_key, Arc::new(coarse_cells)); }
@@ -1011,10 +977,54 @@ pub fn coarsen_patches(patches: &Patches, grain: u8) -> (result: Option<Patches>
     }
 }
 
-pub fn install_slice_patches(slices: &mut Index<Slice>, day: i64, customers: &Index<Moments>) -> (result: bool)
+pub proof fn lemma_rows_before_zero(customers: &Index<Moms>, position: int)
+    requires customers.wf(), moment_index_valid(*customers), 0 <= position < customers.entries().len(),
+    ensures forall|component: int| #[trigger] moment_rows_sum(customers.entries().take(position),
+        customers.entries()[position].0.0, component) == 0,
+{
+    customers.model();
+    let entries = customers.entries();
+    verus_prooflib::ordered::lemma_ordered_unique(entries);
+    assert forall|component: int| #[trigger] moment_rows_sum(entries.take(position), entries[position].0.0, component) == 0 by {
+        let weight = moment_row_weight(entries[position].0.0, component);
+        assert forall|other: int| 0 <= other < entries.take(position).len()
+            implies #[trigger] weight(entries.take(position)[other]) == 0 by {
+            assert(entries.take(position)[other] == entries[other]);
+            assert(customers.at(entries[other].0).is_some());
+            assert(customers.at(entries[position].0).is_some());
+            assert(entries[other].0 != entries[position].0);
+        }
+        verus_common::sums::lemma_sum_zero(entries.take(position), weight);
+    }
+}
+
+pub proof fn lemma_patches_before_zero(patches: &Patches, position: int)
+    requires patches.wf(), patches_valid(*patches), 0 <= position < patches.entries().len(),
+    ensures forall|customer: int, component: int| #[trigger] patch_rows_sum(patches.entries().take(position),
+        patches.entries()[position].0.0, customer, 0, component) == 0,
+{
+    patches.model();
+    let entries = patches.entries();
+    verus_prooflib::ordered::lemma_ordered_unique(entries);
+    assert forall|customer: int, component: int| #[trigger] patch_rows_sum(entries.take(position),
+        entries[position].0.0, customer, 0, component) == 0 by {
+        let weight = patch_row_weight(entries[position].0.0, customer, 0, component);
+        assert forall|other: int| 0 <= other < entries.take(position).len()
+            implies #[trigger] weight(entries.take(position)[other]) == 0 by {
+            assert(entries.take(position)[other] == entries[other]);
+            assert(patches.at(entries[other].0).is_some());
+            assert(patches.at(entries[position].0).is_some());
+            assert(entries[other].0 != entries[position].0);
+        }
+        verus_common::sums::lemma_sum_zero(entries.take(position), weight);
+    }
+}
+
+pub fn install_slice_patches(slices: &mut Index<Slice>, day: i64, customers: &Index<Moms>) 
     requires slices_valid(*old(slices)), moment_index_valid(*customers),
-    ensures result ==> slices_valid(*final(slices)),
-        result ==> forall|target_day: int, customer: int, component: int|
+        forall|customer: int| moment_ok(plus(#[trigger] slice_at(*old(slices), day as int, customer), moment_at(*customers, customer))),
+    ensures slices_valid(*final(slices)),
+        forall|target_day: int, customer: int, component: int|
             #[trigger] slice_at(*final(slices), target_day, customer).component(component)
                 == slice_at(*old(slices), target_day, customer).component(component)
                     + if target_day == day { moment_at(*customers, customer).component(component) } else { 0 },
@@ -1028,10 +1038,11 @@ pub fn install_slice_patches(slices: &mut Index<Slice>, day: i64, customers: &In
     let key = Key::number(day);
     let mut slice = take_slice(&*slices, &key, Ghost(day as int));
     let ghost start = slice;
-    proof { assert(entries.take(0) =~= Seq::<((int, Seq<u8>), Moments)>::empty()); }
+    proof { assert(entries.take(0) =~= Seq::<((int, Seq<u8>), Moms)>::empty()); }
     let mut cursor = customers.cursor();
     loop
         invariant slices_valid(*slices), *slices == before, before == *old(slices), slice.valid(), start.valid(),
+            forall|customer: int| moment_ok(plus(#[trigger] slice_at(before, day as int, customer), moment_at(*customers, customer))),
             key.view() == (day as int, Seq::<u8>::empty()),
             forall|target: int| #[trigger] cell_at(start.cells, target) == slice_at(before, day as int, target),
             customers.wf(), moment_index_valid(*customers), entries == customers.entries(),
@@ -1065,7 +1076,7 @@ pub fn install_slice_patches(slices: &mut Index<Slice>, day: i64, customers: &In
                         }
                     }
                 }
-                return true;
+                return;
             },
         };
         proof {
@@ -1073,7 +1084,16 @@ pub fn install_slice_patches(slices: &mut Index<Slice>, day: i64, customers: &In
             assert(customers.at(customer.view()).is_some());
             assert(customer.view().1 == Seq::<u8>::empty());
         }
-        if !edit_cell(&mut slice, customer.number, *change) { return false; }
+        proof {
+            lemma_rows_before_zero(customers, processed);
+            let target = customer.number as int;
+            assert(customer.view() == entries[processed].0);
+            assert(target == entries[processed].0.0);
+            assert(moment_at(*customers, target) == change@);
+            lemma_moments_ext(cell_at(slice.cells, target), slice_at(before, day as int, target));
+            assert(moment_ok(plus(slice_at(before, day as int, target), moment_at(*customers, target))));
+        }
+        edit_cell(&mut slice, customer.number, &*change);
         proof {
             assert forall|target: int, component: int| #[trigger] cell_at(slice.cells, target).component(component)
                 == cell_at(start.cells, target).component(component) + moment_rows_sum(entries.take(processed + 1), target, component) by {
@@ -1084,10 +1104,12 @@ pub fn install_slice_patches(slices: &mut Index<Slice>, day: i64, customers: &In
     }
 }
 
-pub fn install_patches(slices: &mut Index<Slice>, patches: &Patches) -> (result: bool)
+pub fn install_patches(slices: &mut Index<Slice>, patches: &Patches) 
     requires slices_valid(*old(slices)), patches_valid(*patches),
-    ensures result ==> slices_valid(*final(slices)),
-        result ==> forall|day: int, customer: int, component: int|
+        forall|day: int, customer: int| moment_ok(plus(slice_at(*old(slices), day, customer),
+            #[trigger] patch_at(*patches, day, customer))),
+    ensures slices_valid(*final(slices)),
+        forall|day: int, customer: int, component: int|
             #[trigger] slice_at(*final(slices), day, customer).component(component)
                 == slice_at(*old(slices), day, customer).component(component)
                     + patch_at(*patches, day, customer).component(component),
@@ -1101,6 +1123,8 @@ pub fn install_patches(slices: &mut Index<Slice>, patches: &Patches) -> (result:
     loop
         invariant slices_valid(*slices),
             before == *old(slices), patches.wf(), patches_valid(*patches), entries == patches.entries(),
+            forall|day: int, customer: int| moment_ok(plus(slice_at(before, day, customer),
+                #[trigger] patch_at(*patches, day, customer))),
             0 <= processed <= entries.len(), outer.remaining() == entries.skip(processed),
             forall|position: int| #![trigger entries[position]]
                 0 <= position < entries.len() ==> patches.at(entries[position].0) == Some(entries[position].1),
@@ -1123,7 +1147,7 @@ pub fn install_patches(slices: &mut Index<Slice>, patches: &Patches) -> (result:
                         lemma_patch_rows(patches, day, customer, component);
                     }
                 }
-                return true;
+                return;
             },
         };
         proof {
@@ -1132,7 +1156,20 @@ pub fn install_patches(slices: &mut Index<Slice>, patches: &Patches) -> (result:
             assert(patches.at(slice_key.view()).is_some());
             assert(moment_index_valid(*customers));
         }
-        if !install_slice_patches(slices, slice_key.number, &*customers) { return false; }
+        proof {
+            lemma_patches_before_zero(patches, processed);
+            let target_day = slice_key.number as int;
+            assert(slice_key.view() == entries[processed].0);
+            assert(target_day == entries[processed].0.0);
+            assert(patches.at((target_day, Seq::<u8>::empty())) == Some(*customers));
+            assert forall|customer: int| moment_ok(plus(#[trigger] slice_at(*slices, target_day, customer),
+                moment_at(*customers, customer))) by {
+                assert(patch_at(*patches, target_day, customer) == moment_at(*customers, customer));
+                assert(moment_ok(plus(slice_at(before, target_day, customer), patch_at(*patches, target_day, customer))));
+                lemma_moments_ext(slice_at(*slices, target_day, customer), slice_at(before, target_day, customer));
+            }
+        }
+        install_slice_patches(slices, slice_key.number, &*customers);
         proof {
             assert forall|day: int, customer: int, component: int|
                 #[trigger] slice_at(*slices, day, customer).component(component)
@@ -1145,23 +1182,39 @@ pub fn install_patches(slices: &mut Index<Slice>, patches: &Patches) -> (result:
     }
 }
 
-pub fn apply_patches(days: &mut Index<Slice>, periods: &mut Periods, patches: &Patches) -> (result: bool)
+pub open spec fn patch_total(patches: Patches, day: int, customer: int, grain: int) -> Moments {
+    Moments {
+        count: patch_rows_sum(patches.entries(), day, customer, grain, 0),
+        revenue: patch_rows_sum(patches.entries(), day, customer, grain, 1),
+        upper: patch_rows_sum(patches.entries(), day, customer, grain, 2),
+    }
+}
+
+pub fn apply_patches(days: &mut Index<Slice>, periods: &mut Periods, patches: &Patches) 
     requires slices_valid(*old(days)),
         slices_valid(old(periods).quarters), patches_valid(*patches),
         slices_valid(old(periods).quarters1), slices_valid(old(periods).quarters2),
-    ensures result ==> slices_valid(*final(days)),
-        result ==> slices_valid(final(periods).quarters),
-        result ==> slices_valid(final(periods).quarters1), result ==> slices_valid(final(periods).quarters2),
-        result ==> forall|day: int, customer: int, component: int|
+        forall|day: int, customer: int| moment_ok(plus(slice_at(*old(days), day, customer),
+            #[trigger] patch_total(*patches, day, customer, 0))),
+        forall|day: int, customer: int| moment_ok(plus(slice_at(old(periods).quarters, day, customer),
+            #[trigger] patch_total(*patches, day, customer, 2))),
+        forall|day: int, customer: int| moment_ok(plus(slice_at(old(periods).quarters1, day, customer),
+            #[trigger] patch_total(*patches, day, customer, 4))),
+        forall|day: int, customer: int| moment_ok(plus(slice_at(old(periods).quarters2, day, customer),
+            #[trigger] patch_total(*patches, day, customer, 5))),
+    ensures slices_valid(*final(days)),
+        slices_valid(final(periods).quarters),
+        slices_valid(final(periods).quarters1), slices_valid(final(periods).quarters2),
+        forall|day: int, customer: int, component: int|
             #[trigger] slice_at(*final(days), day, customer).component(component)
                 == slice_at(*old(days), day, customer).component(component) + patch_at(*patches, day, customer).component(component),
-        result ==> forall|day: int, customer: int, component: int|
+        forall|day: int, customer: int, component: int|
             #[trigger] slice_at(final(periods).quarters, day, customer).component(component)
                 == slice_at(old(periods).quarters, day, customer).component(component) + patch_rows_sum(patches.entries(), day, customer, 2, component),
-        result ==> forall|day: int, customer: int, component: int|
+        forall|day: int, customer: int, component: int|
             #[trigger] slice_at(final(periods).quarters1, day, customer).component(component)
                 == slice_at(old(periods).quarters1, day, customer).component(component) + patch_rows_sum(patches.entries(), day, customer, 4, component),
-        result ==> forall|day: int, customer: int, component: int|
+        forall|day: int, customer: int, component: int|
             #[trigger] slice_at(final(periods).quarters2, day, customer).component(component)
                 == slice_at(old(periods).quarters2, day, customer).component(component) + patch_rows_sum(patches.entries(), day, customer, 5, component),
 {
@@ -1174,25 +1227,54 @@ pub fn apply_patches(days: &mut Index<Slice>, periods: &mut Periods, patches: &P
                 lemma_patch_rows(patches, day, customer, component);
             }
         }
-        return true;
+        return;
     }
-    if !install_patches(days, patches) { return false; }
-    let quarters = match coarsen_patches(patches, 2) { Some(value) => value, None => return false };
-    if !install_patches(&mut periods.quarters, &quarters) { return false; }
-    let quarters1 = match coarsen_patches(patches, 4) { Some(value) => value, None => return false };
-    if !install_patches(&mut periods.quarters1, &quarters1) { return false; }
-    let quarters2 = match coarsen_patches(patches, 5) { Some(value) => value, None => return false };
-    install_patches(&mut periods.quarters2, &quarters2)
+    let snapshot = patches.share();
+    proof {
+        patches.model();
+        assert forall|day: int, customer: int| moment_ok(plus(slice_at(*days, day, customer),
+            #[trigger] patch_at(*patches, day, customer))) by {
+            lemma_patch_rows(patches, day, customer, 0);
+            lemma_patch_rows(patches, day, customer, 1);
+            lemma_patch_rows(patches, day, customer, 2);
+            lemma_moments_ext(patch_at(*patches, day, customer), patch_total(*patches, day, customer, 0));
+        }
+    }
+    install_patches(days, patches);
+    let quarters = coarsen_patches(patches, 2);
+    proof {
+        assert forall|day: int, customer: int| moment_ok(plus(slice_at(periods.quarters, day, customer),
+            #[trigger] patch_at(quarters, day, customer))) by {
+            lemma_moments_ext(patch_at(quarters, day, customer), patch_total(*patches, day, customer, 2));
+        }
+    }
+    install_patches(&mut periods.quarters, &quarters);
+    let quarters1 = coarsen_patches(patches, 4);
+    proof {
+        assert forall|day: int, customer: int| moment_ok(plus(slice_at(periods.quarters1, day, customer),
+            #[trigger] patch_at(quarters1, day, customer))) by {
+            lemma_moments_ext(patch_at(quarters1, day, customer), patch_total(*patches, day, customer, 4));
+        }
+    }
+    install_patches(&mut periods.quarters1, &quarters1);
+    let quarters2 = coarsen_patches(patches, 5);
+    proof {
+        assert forall|day: int, customer: int| moment_ok(plus(slice_at(periods.quarters2, day, customer),
+            #[trigger] patch_at(quarters2, day, customer))) by {
+            lemma_moments_ext(patch_at(quarters2, day, customer), patch_total(*patches, day, customer, 5));
+        }
+    }
+    install_patches(&mut periods.quarters2, &quarters2);
 }
 
 #[verifier::rlimit(20)]
-pub fn subtract_order_variant(target: &mut Index<OrderCell>, key: &Key, change: &OrderCell) -> (result: bool)
+pub fn subtract_order_variant(target: &mut Index<OrderCell>, key: &Key, change: &OrderCell) 
     requires order_leaf_valid(*old(target)), key.view() == order_key_view(change.customer as int, change.day as int),
-    ensures result ==> order_leaf_valid(*final(target)),
-        result ==> forall|day: int, customer: int, grain: int|
+    ensures order_leaf_valid(*final(target)),
+        forall|day: int, customer: int, grain: int|
             #[trigger] order_group_sum(final(target).entries(), day, customer, grain)
                 == order_group_sum(old(target).entries(), day, customer, grain)
-                    - if change.customer as int == customer && period_of(change.day as int, grain) == day { change.count as int } else { 0 },
+                    - if change.customer as int == customer && period_of(change.day as int, grain) == day { change.count@ } else { 0 },
 {
     let previous = target.share();
     proof {
@@ -1206,22 +1288,21 @@ pub fn subtract_order_variant(target: &mut Index<OrderCell>, key: &Key, change: 
                     == order_key_view(change.customer as int, change.day as int));
                 crate::key_facts::lemma_order_key_injective(value.customer, value.day, change.customer, change.day);
             }
-            value.count
+            value.count.dup()
         },
-        None => 0i128,
+        None => Wide::zero(),
     };
     proof {
         assert(previous.at(key.view()).is_some() ==> {
             let cell = previous.at(key.view()).unwrap();
             &&& cell.customer == change.customer
             &&& cell.day == change.day
-            &&& cell.count == after_count
+            &&& cell.count@ == after_count@
         });
-        assert(previous.at(key.view()).is_none() ==> after_count == 0);
+        assert(previous.at(key.view()).is_none() ==> after_count@ == 0);
     }
-    let before_count = match after_count.checked_sub(change.count) { Some(value) => value, None => return false };
-    if before_count < 0 { return false; }
-    if before_count == 0 { target.remove(key); }
+    let before_count = after_count.sub(&change.count);
+    if before_count.is_zero() { target.remove(key); }
     else { target.put(key.share(), Arc::new(OrderCell {
         customer: change.customer, day: change.day, count: before_count,
     })); }
@@ -1236,18 +1317,17 @@ pub fn subtract_order_variant(target: &mut Index<OrderCell>, key: &Key, change: 
         assert forall|day: int, customer: int, grain: int|
             #[trigger] order_group_sum(target.entries(), day, customer, grain)
                 == order_group_sum(previous.entries(), day, customer, grain)
-                    - if change.customer as int == customer && period_of(change.day as int, grain) == day { change.count as int } else { 0 } by {
+                    - if change.customer as int == customer && period_of(change.day as int, grain) == day { change.count@ } else { 0 } by {
             let weight = order_group_weight(day, customer, grain);
             verus_prooflib::ordered::lemma_sum_unchanged_except(&previous, &next, key.view(), weight);
         }
     }
-    true
 }
 
-pub fn subtract_order_variants(target: &mut Index<OrderCell>, changes: &Index<OrderCell>) -> (result: bool)
+pub fn subtract_order_variants(target: &mut Index<OrderCell>, changes: &Index<OrderCell>) 
     requires order_leaf_valid(*old(target)), order_leaf_valid(*changes),
-    ensures result ==> order_leaf_valid(*final(target)),
-        result ==> forall|day: int, customer: int, grain: int|
+    ensures order_leaf_valid(*final(target)),
+        forall|day: int, customer: int, grain: int|
             #[trigger] order_group_sum(final(target).entries(), day, customer, grain)
                 == order_group_sum(old(target).entries(), day, customer, grain)
                     - order_group_sum(changes.entries(), day, customer, grain),
@@ -1275,7 +1355,7 @@ pub fn subtract_order_variants(target: &mut Index<OrderCell>, changes: &Index<Or
             Some(row) => row,
             None => {
                 proof { assert(processed == entries.len()); assert(entries.take(processed) =~= entries); }
-                return true;
+                return;
             },
         };
         proof {
@@ -1283,7 +1363,7 @@ pub fn subtract_order_variants(target: &mut Index<OrderCell>, changes: &Index<Or
             assert(changes.at(key.view()).is_some());
             assert(key.view() == order_key_view(change.customer as int, change.day as int));
         }
-        if !subtract_order_variant(target, &key, &*change) { return false; }
+        subtract_order_variant(target, &key, &*change);
         proof {
             assert forall|day: int, customer: int, grain: int|
                 #[trigger] order_group_sum(target.entries(), day, customer, grain)
@@ -1304,7 +1384,7 @@ pub open spec fn order_group_at(orders: Orders, key: int, day: int, customer: in
     }
 }
 
-pub open spec fn changed_key_weight(order_changes: Orders, line_changes: Index<Moments>, post_orders: Orders, post_lines: Index<Moments>,
+pub open spec fn changed_key_weight(order_changes: Orders, line_changes: Index<Moms>, post_orders: Orders, post_lines: Index<Moms>,
     day: int, customer: int, grain: int, component: int) -> spec_fn(((int, Seq<u8>), ())) -> int {
     |entry: ((int, Seq<u8>), ())| {
         let delta = order_group_at(order_changes, entry.0.0, day, customer, grain);
@@ -1314,12 +1394,12 @@ pub open spec fn changed_key_weight(order_changes: Orders, line_changes: Index<M
     }
 }
 
-pub fn changed_patches(keys: &Index<()>, order_changes: &Orders, line_changes: &Index<Moments>,
-    post_orders: &Orders, post_lines: &Index<Moments>) -> (result: Option<Patches>)
+pub fn changed_patches(keys: &Index<()>, order_changes: &Orders, line_changes: &Index<Moms>,
+    post_orders: &Orders, post_lines: &Index<Moms>) -> (patches: Patches)
     requires orders_valid(*order_changes), orders_valid(*post_orders),
         forall|key: (int, Seq<u8>)| #[trigger] keys.at(key).is_some() ==> key.1 == Seq::<u8>::empty(),
-    ensures result matches Some(patches) ==> patches_valid(patches),
-        result matches Some(patches) ==> forall|day: int, customer: int, grain: int, component: int|
+    ensures patches_valid(patches),
+        forall|day: int, customer: int, grain: int, component: int|
             #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
                 == sum(keys.entries(), changed_key_weight(*order_changes, *line_changes, *post_orders, *post_lines,
                     day, customer, grain, component)),
@@ -1347,16 +1427,12 @@ pub fn changed_patches(keys: &Index<()>, order_changes: &Orders, line_changes: &
             Some(row) => row,
             None => {
                 proof { assert(processed == entries.len()); assert(entries.take(processed) =~= entries); }
-                return Some(patches);
+                return patches;
             },
         };
         proof { assert(key.view() == entries[processed].0); assert(key.view().1 == Seq::<u8>::empty()); }
         let lines_after = get_moments(post_lines, key.number);
         let delta_lines = get_moments(line_changes, key.number);
-        let neg_lines = match delta_lines.scale(-1) { Some(value) => value, None => return None };
-        let lines_before = match lines_after.add(neg_lines) { Some(value) => value, None => return None };
-        if lines_before.count < 0 || lines_before.upper < 0 || lines_before.revenue > lines_before.upper
-            || (lines_before.count == 0 && !lines_before.is_zero()) { return None; }
         let mut orders_before = match post_orders.get(&key) {
             Some(value) => {
                 let shared = value.share();
@@ -1378,8 +1454,8 @@ pub fn changed_patches(keys: &Index<()>, order_changes: &Orders, line_changes: &
         match order_changes.get(&key) {
             Some(changes) => {
                 proof { assert(order_changes.at(key.view()).is_some()); assert(order_leaf_valid(*changes)); }
-                if !subtract_order_variants(&mut orders_before, &*changes) { return None; }
-                if !join_patch(&mut patches, &*changes, lines_after) { return None; }
+                subtract_order_variants(&mut orders_before, &*changes);
+                join_patch(&mut patches, &*changes, &lines_after);
             },
             None => {},
         }
@@ -1391,9 +1467,9 @@ pub fn changed_patches(keys: &Index<()>, order_changes: &Orders, line_changes: &
             assert forall|day: int, customer: int, grain: int, component: int|
                 #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
                     == patch_rows_sum(original_patches.entries(), day, customer, grain, component)
-                        + order_group_at(*order_changes, key.number as int, day, customer, grain) * lines_after.component(component) by {}
+                        + order_group_at(*order_changes, key.number as int, day, customer, grain) * lines_after@.component(component) by {}
         }
-        if !join_patch(&mut patches, &orders_before, delta_lines) { return None; }
+        join_patch(&mut patches, &orders_before, &delta_lines);
         proof {
             assert forall|day: int, customer: int, grain: int, component: int|
                 #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
@@ -1407,16 +1483,20 @@ pub fn changed_patches(keys: &Index<()>, order_changes: &Orders, line_changes: &
     }
 }
 
-pub fn apply_dimensions(dimensions: &mut Dimensions, customers: &Vec<CustomerDelta>, nations: &Vec<NationDelta>) -> (result: bool)
+pub fn apply_dimensions(dimensions: &mut Dimensions, customers: &Vec<CustomerDelta>, nations: &Vec<NationDelta>) 
     requires crate::dimension_updates::shape(*old(dimensions)),
-    ensures result ==> crate::dimension_updates::shape(*final(dimensions)),
-        result ==> forall|weight: spec_fn(crate::gen_spec::CustomerRow) -> int| #[trigger] table_sum(final(dimensions).customers, weight)
+        forall|row: crate::gen_spec::CustomerRow| table_sum(old(dimensions).customers, #[trigger] customer_eq(row))
+            + sum(customers@, |delta: CustomerDelta| if customer_input_view(delta.row) == row { delta.sign as int } else { 0 }) >= 0,
+        forall|key: int| #[trigger] total_at(old(dimensions).nation_totals, key)
+            + sum(nations@, |delta: NationDelta| if delta.row.n_nationkey == key { delta.sign as int } else { 0 }) >= 0,
+    ensures crate::dimension_updates::shape(*final(dimensions)),
+        forall|weight: spec_fn(crate::gen_spec::CustomerRow) -> int| #[trigger] table_sum(final(dimensions).customers, weight)
             == table_sum(old(dimensions).customers, weight)
                 + sum(customers@, |delta: CustomerDelta| delta.sign as int * weight(customer_input_view(delta.row))),
-        result ==> forall|row: crate::gen_spec::NationRow| #[trigger] nation_count(final(dimensions).nations, row)
+        forall|row: crate::gen_spec::NationRow| #[trigger] nation_count(final(dimensions).nations, row)
             == nation_count(old(dimensions).nations, row)
                 + sum(nations@, |delta: NationDelta| if nation_input_view(delta.row) == row { delta.sign as int } else { 0 }),
-        result ==> forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key)
+        forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key)
             == total_at(old(dimensions).nation_totals, key)
                 + sum(nations@, |delta: NationDelta| if delta.row.n_nationkey == key { delta.sign as int } else { 0 }),
 {
@@ -1432,7 +1512,7 @@ pub fn apply_dimensions(dimensions: &mut Dimensions, customers: &Vec<CustomerDel
         decreases customers.len() - index,
     {
         let ghost processed = index as int;
-        if !change_customer(&mut customer_changes, &customers[index].row, customers[index].sign as i128) { return false; }
+        change_customer(&mut customer_changes, &customers[index].row, &Wide::from_i128(customers[index].sign as i128));
         proof {
             assert forall|row: crate::gen_spec::CustomerRow| #[trigger] customer_count(customer_changes, row)
                 == sum(customers@.take(index as int + 1), |delta: CustomerDelta|
@@ -1459,7 +1539,7 @@ pub fn apply_dimensions(dimensions: &mut Dimensions, customers: &Vec<CustomerDel
         decreases nations.len() - index,
     {
         let ghost processed = index as int;
-        if !change_nation(&mut nation_changes, &nations[index].row, nations[index].sign as i128) { return false; }
+        change_nation(&mut nation_changes, &nations[index].row, &Wide::from_i128(nations[index].sign as i128));
         proof {
             assert forall|row: crate::gen_spec::NationRow| #[trigger] nation_count(nation_changes, row)
                 == sum(nations@.take(index as int + 1), |delta: NationDelta|
@@ -1500,8 +1580,14 @@ pub fn apply_dimensions(dimensions: &mut Dimensions, customers: &Vec<CustomerDel
                 |delta: NationDelta| if delta.row.n_nationkey == key { delta.sign as int } else { 0 });
         }
     }
-    if !crate::dimension_updates::install_customers(dimensions, &customer_changes) { return false; }
-    crate::dimension_updates::install_nations(dimensions, &nation_changes)
+    proof {
+        assert forall|row: crate::gen_spec::CustomerRow| #[trigger] table_sum(dimensions.customers, customer_eq(row))
+            + customer_count(customer_changes, row) >= 0 by {}
+        assert forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
+            + crate::dimension_updates::nation_index_sum(nation_changes.entries(), crate::dimension_updates::nation_key_weight(key)) >= 0 by {}
+    }
+    crate::dimension_updates::install_customers(dimensions, &customer_changes);
+    crate::dimension_updates::install_nations(dimensions, &nation_changes);
 }
 
 }

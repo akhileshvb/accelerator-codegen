@@ -13,42 +13,37 @@ verus! {
 
 broadcast use vstd::seq_lib::group_seq_properties;
 
-pub fn rescan_keys(delta: &Vec<PartDelta>) -> Vec<i64> {
+pub fn rescan_keys(delta: &Vec<PartDelta>) -> (out: Vec<i64>)
+    ensures out@ == wanted_keys(delta@),
+{
     let mut out = Vec::new();
-    match coalesce_parts(delta) {
-        Some(work) => {
-            let mut index = 0usize;
-            while index < work.keys.len()
-                invariant index <= work.keys.len(),
-                decreases work.keys.len() - index,
-            {
-                let key = work.keys[index];
-                match work.map.get(&key) {
-                    Some(cells) => { if changed(cells) { out.push(key as i64); } },
-                    None => {},
-                }
-                index += 1;
-            }
-        },
-        None => {
-            let mut seen = HashMap::new();
-            let mut index = 0usize;
-            while index < delta.len()
-                invariant index <= delta.len(),
-                decreases delta.len() - index,
-            {
-                let key = delta[index].p_partkey;
-                if !seen.contains_key(&key) { seen.insert(key, true); out.push(key); }
-                index += 1;
-            }
-        },
+    let mut seen: HashMap<i64, bool> = HashMap::new();
+    let mut index = 0usize;
+    while index < delta.len()
+        invariant index <= delta.len(), out@ == wanted_keys(delta@.take(index as int)),
+            seen@.dom() == out@.to_set(),
+        decreases delta.len() - index,
+    {
+        let row = &delta[index];
+        proof {
+            assert(delta@.take(index as int + 1).drop_last() =~= delta@.take(index as int));
+            assert(delta@.take(index as int + 1).last() == delta@[index as int]);
+            out@.to_set_ensures();
+        }
+        if (row.small != 0 || row.medium != 0 || row.large != 0) && !seen.contains_key(&row.p_partkey) {
+            proof { lemma_push_to_set(out@, row.p_partkey); }
+            seen.insert(row.p_partkey, true);
+            out.push(row.p_partkey);
+        }
+        index += 1;
     }
+    proof { assert(delta@.take(delta.len() as int) =~= delta@); }
     out
 }
 
-fn publish_parts(old: &Store<PartCell>, changes: &Work<PartCell>) -> (result: Option<Store<PartCell>>)
+fn publish_parts(old: &Store<PartCell>, changes: &Work<PartCell>) -> (next: Store<PartCell>)
     requires parts_valid(*old), part_patch_valid(*changes),
-    ensures result matches Some(next) ==> parts_valid(next) && forall|key: int, class: u8, brand: Seq<u8>|
+    ensures parts_valid(next) && forall|key: int, class: u8, brand: Seq<u8>|
         #![trigger part_value(next, key, class, brand)]
         part_value(next, key, class, brand) == part_value(*old, key, class, brand) + part_work_value(*changes, key, class, brand),
 {
@@ -63,14 +58,15 @@ fn publish_parts(old: &Store<PartCell>, changes: &Work<PartCell>) -> (result: Op
         decreases changes.keys.len() - index,
     {
         let key = changes.keys[index];
-        let delta = match changes.map.get(&key) { Some(cells) => cells, None => return None };
+        proof { changes.keys@.to_set_ensures(); }
+        let delta = changes.map.get(&key).unwrap();
         proof { assert(changes.lookup(key) == delta@); }
         proof { lemma_prefix_fresh(changes.keys@, index as int); }
         if changed(delta) {
             let empty = Vec::new();
             let old_cells = old.get(key);
             let base = match &old_cells { Some(cells) => &**cells, None => &empty };
-            let final_cells = match merge_parts(base, delta) { Some(cells) => cells, None => return None };
+            let final_cells = merge_parts(base, delta);
             parts.replace(key, final_cells);
         } else {
             proof {
@@ -90,12 +86,12 @@ fn publish_parts(old: &Store<PartCell>, changes: &Work<PartCell>) -> (result: Op
             }
         }
     }
-    Some(parts)
+    parts
 }
 
-fn publish_histogram(old: &Store<HistCell>, patch: &Work<HistCell>) -> (result: Option<Store<HistCell>>)
+fn publish_histogram(old: &Store<HistCell>, patch: &Work<HistCell>) -> (next: Store<HistCell>)
     requires histogram_valid(*old), hist_patch_valid(*patch),
-    ensures result matches Some(next) ==> histogram_valid(next) && forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
+    ensures histogram_valid(next) && forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
         #![trigger hist_value(next, class, brand, quantity, revenue)]
         hist_value(next, class, brand, quantity, revenue) == hist_value(*old, class, brand, quantity, revenue)
             + hist_work_value(*patch, class, brand, quantity, revenue),
@@ -112,13 +108,14 @@ fn publish_histogram(old: &Store<HistCell>, patch: &Work<HistCell>) -> (result: 
         decreases patch.keys.len() - index,
     {
         let key = patch.keys[index];
-        let delta = match patch.map.get(&key) { Some(cells) => cells, None => return None };
+        proof { patch.keys@.to_set_ensures(); }
+        let delta = patch.map.get(&key).unwrap();
         proof { assert(patch.lookup(key) == delta@); }
         proof { lemma_prefix_fresh(patch.keys@, index as int); }
         let empty = Vec::new();
         let old_cells = old.get(key);
         let base = match &old_cells { Some(cells) => &**cells, None => &empty };
-        let final_cells = match merge_histogram(base, delta, key) { Some(cells) => cells, None => return None };
+        let final_cells = merge_histogram(base, delta, key);
         histogram.replace(key, final_cells);
         proof { assert(patch.keys@.take(index as int + 1) =~= patch.keys@.take(index as int).push(key)); }
         index += 1;
@@ -133,76 +130,33 @@ fn publish_histogram(old: &Store<HistCell>, patch: &Work<HistCell>) -> (result: 
             }
         }
     }
-    Some(histogram)
+    histogram
 }
 
+#[verifier::rlimit(100)]
 pub fn update(state: &State, lineitem_delta: &[LineDelta], part_delta: &Vec<PartDelta>,
     keys: &[i64], rows: &[LineInput], Ghost(lineitem_full): Ghost<Seq<(LineitemRow, int)>>,
     Ghost(part_full): Ghost<Seq<(PartRow, int)>>, Ghost(db2): Ghost<Db>)
-    -> (result: Option<(Store<PartCell>, Store<HistCell>)>)
+    -> (result: (Store<PartCell>, Store<HistCell>))
     requires lineitem_delta_ok(lineitem_delta@, lineitem_full), part_delta_ok(part_delta@, part_full),
-        capture_ok(state.db(), db2, lineitem_full, part_full), rescan_lines_for_parts_ok(db2, keys@, rows@),
-    ensures result matches Some(next) ==> {
-        &&& parts_valid(next.0)
-        &&& histogram_valid(next.1)
-        &&& forall|key: int, class: u8, brand: Seq<u8>| #![trigger part_value(next.0, key, class, brand)]
-            part_value(next.0, key, class, brand) == part_sum(db2, key, class, brand)
-        &&& forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
-            #![trigger hist_value(next.1, class, brand, quantity, revenue)]
-            hist_value(next.1, class, brand, quantity, revenue) == hist_sum(db2, class, brand, quantity, revenue)
-    },
+        capture_ok(state.db(), db2, lineitem_full, part_full), keys@ == wanted_keys(part_delta@),
+        rescan_lines_for_parts_ok(db2, keys@, rows@),
+    ensures
+        parts_valid(result.0),
+        histogram_valid(result.1),
+        forall|key: int, class: u8, brand: Seq<u8>| #![trigger part_value(result.0, key, class, brand)]
+            part_value(result.0, key, class, brand) == part_sum(db2, key, class, brand),
+        forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
+            #![trigger hist_value(result.1, class, brand, quantity, revenue)]
+            hist_value(result.1, class, brand, quantity, revenue) == hist_sum(db2, class, brand, quantity, revenue),
 {
     proof { state.facts(); }
-    let changes = match coalesce_parts(part_delta) { Some(work) => work, None => return None };
-    let mut covered = HashMap::new();
-    let mut index = 0usize;
-    while index < keys.len()
-        invariant index <= keys.len(), changes_for(changes, part_delta@),
-            covered@.dom() == keys_u64(keys@.take(index as int)).to_set(),
-        decreases keys.len() - index,
-    {
-        proof {
-            assert(keys_u64(keys@.take(index as int + 1)) =~= keys_u64(keys@.take(index as int)).push(keys@[index as int] as u64));
-            lemma_push_to_set(keys_u64(keys@.take(index as int)), keys@[index as int] as u64);
-        }
-        covered.insert(keys[index] as u64, true);
-        index += 1;
-    }
-    let mut index = 0usize;
-    while index < changes.keys.len()
-        invariant index <= changes.keys.len(), changes_for(changes, part_delta@),
-            covered@.dom() == keys_u64(keys@).to_set(),
-            forall|key: u64, class: u8, brand: Seq<u8>| #![trigger part_cells_value(changes.lookup(key), class, brand)]
-                changes.keys@.take(index as int).contains(key) && !covered@.dom().contains(key) ==>
-                    part_cells_value(changes.lookup(key), class, brand) == 0,
-        decreases changes.keys.len() - index,
-    {
-        let key = changes.keys[index];
-        match changes.map.get(&key) {
-            Some(cells) => {
-                if changed(cells) {
-                    if !covered.contains_key(&key) { return None; }
-                } else {
-                    proof {
-                        assert(changes.lookup(key) == cells@);
-                        assert forall|class: u8, brand: Seq<u8>| #[trigger] part_cells_value(cells@, class, brand) == 0 by {
-                            lemma_sum_zero(cells@, |cell: PartCell| part_cell_weight(cell, class, brand));
-                        }
-                    }
-                }
-            },
-            None => return None,
-        }
-        proof { assert(changes.keys@.take(index as int + 1) =~= changes.keys@.take(index as int).push(key)); }
-        index += 1;
-    }
+    let changes = coalesce_parts(part_delta);
     proof {
         assert forall|key: int, class: u8, brand: Seq<u8>| #![trigger part_work_value(changes, key, class, brand)]
             !seq_view_i64(keys@).contains(key) implies part_work_value(changes, key, class, brand) == 0 by {
-            if i64::MIN <= key <= i64::MAX {
-                lemma_signed_keys(keys@, key as i64);
-                if !changes.keys@.contains((key as i64) as u64) { assert(changes.lookup((key as i64) as u64) =~= Seq::empty()); }
-            }
+            lemma_wanted_covers(part_delta@, key, class, brand);
+            lemma_sum_take_full(part_delta@, |row: PartDelta| part_delta_weight(row, key, class, brand));
         }
     }
     let mut patch = Work::new();
@@ -226,18 +180,38 @@ pub fn update(state: &State, lineitem_delta: &[LineDelta], part_delta: &Vec<Part
                         assert forall|class: u8, brand: Seq<u8>| #![trigger part_value(state.parts, row.l_partkey as int, class, brand)]
                             part_value(state.parts, row.l_partkey as int, class, brand) == part_cells_value((*cells)@, class, brand) by {}
                     }
-                    let value = match amount(row.l_extendedprice, row.l_discount) { Some(value) => value, None => return None };
-                    if !contribute(&mut patch, &*cells, row.l_quantity, row.sign as i128, value) { return None; }
+                    let value = amount(row.l_extendedprice, row.l_discount);
+                    contribute(&mut patch, &*cells, row.l_quantity, row.sign, &value);
+                    proof {
+            assert forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
+                #![trigger hist_work_value(patch, class, brand, quantity, revenue)]
+                hist_work_value(patch, class, brand, quantity, revenue) == hist_work_value(previous, class, brand, quantity, revenue)
+                    + line_delta_weight(state.parts, *row, class, brand, quantity, revenue) by {}
+                    }
                 },
                 None => {
                     proof {
                         assert(state.parts.lookup(row.l_partkey as u64) =~= Seq::empty());
                         assert forall|class: u8, brand: Seq<u8>| #[trigger] part_value(state.parts, row.l_partkey as int, class, brand) == 0 by {}
+
+                assert forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
+                    #![trigger hist_work_value(patch, class, brand, quantity, revenue)]
+                    hist_work_value(patch, class, brand, quantity, revenue) == hist_work_value(previous, class, brand, quantity, revenue)
+                        + line_delta_weight(state.parts, *row, class, brand, quantity, revenue) by {
+                        let factor = if revenue { row.l_extendedprice as int * (100 - row.l_discount as int) } else { 1 };
+                        assert(0int * (row.sign as int) * factor == 0) by (nonlinear_arith);
+                    }
                     }
                 },
             }
         } else {
-            proof { assert(patch == previous); }
+            proof {
+                assert(patch == previous);
+            assert forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
+                #![trigger hist_work_value(patch, class, brand, quantity, revenue)]
+                hist_work_value(patch, class, brand, quantity, revenue) == hist_work_value(previous, class, brand, quantity, revenue)
+                    + line_delta_weight(state.parts, *row, class, brand, quantity, revenue) by {}
+            }
         }
         proof {
             assert forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
@@ -246,6 +220,8 @@ pub fn update(state: &State, lineitem_delta: &[LineDelta], part_delta: &Vec<Part
                     == line_delta_prefix(state.parts, lineitem_delta@, index as int + 1, class, brand, quantity, revenue) by {
                 assert(hist_work_value(previous, class, brand, quantity, revenue) == line_delta_prefix(state.parts, lineitem_delta@, index as int, class, brand, quantity, revenue));
                 lemma_sum_take(lineitem_delta@, index as int, |row: LineDelta| line_delta_weight(state.parts, row, class, brand, quantity, revenue));
+                assert(lineitem_delta@[index as int] == *row);
+                assert(hist_work_value(patch, class, brand, quantity, revenue) == hist_work_value(previous, class, brand, quantity, revenue) + line_delta_weight(state.parts, *row, class, brand, quantity, revenue));
             }
         }
         index += 1;
@@ -265,8 +241,8 @@ pub fn update(state: &State, lineitem_delta: &[LineDelta], part_delta: &Vec<Part
         match changes.map.get(&(row.l_partkey as u64)) {
             Some(cells) => {
                 proof { assert(changes.lookup(row.l_partkey as u64) == cells@); }
-                let value = match amount(row.l_extendedprice, row.l_discount) { Some(value) => value, None => return None };
-                if !contribute(&mut patch, cells, row.l_quantity, 1, value) { return None; }
+                let value = amount(row.l_extendedprice, row.l_discount);
+                contribute(&mut patch, cells, row.l_quantity, 1, &value);
             },
             None => {},
         }
@@ -282,8 +258,8 @@ pub fn update(state: &State, lineitem_delta: &[LineDelta], part_delta: &Vec<Part
         index += 1;
     }
     proof { state.facts(); }
-    let parts = match publish_parts(&state.parts, &changes) { Some(parts) => parts, None => return None };
-    let histogram = match publish_histogram(&state.histogram, &patch) { Some(histogram) => histogram, None => return None };
+    let parts = publish_parts(&state.parts, &changes);
+    let histogram = publish_histogram(&state.histogram, &patch);
     proof {
         assert forall|key: int, class: u8, brand: Seq<u8>| #![trigger part_value(parts, key, class, brand)]
             part_value(parts, key, class, brand) == part_sum(db2, key, class, brand) by {
@@ -296,7 +272,7 @@ pub fn update(state: &State, lineitem_delta: &[LineDelta], part_delta: &Vec<Part
                 rows@, keys@, lineitem_full, part_full, class, brand, quantity, revenue);
         }
     }
-    Some((parts, histogram))
+    (parts, histogram)
 }
 
 }

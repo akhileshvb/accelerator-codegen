@@ -4,12 +4,13 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::storage::*;
 use crate::meaning::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
-pub fn customers(rows: &[CustomerInput], Ghost(db): Ghost<Db>) -> (out: Option<Table>)
+pub fn customers(rows: &[CustomerInput], Ghost(db): Ghost<Db>) -> (table: Table)
     requires scan_customers_ok(db, rows@),
-    ensures out matches Some(table) ==> customers_match(table, db),
+    ensures customers_match(table, db),
         forall|position: int| 0 <= position < db.customer.len() ==> #[trigger] customer_representable(db.customer[position]),
 {
     proof {
@@ -34,8 +35,8 @@ pub fn customers(rows: &[CustomerInput], Ghost(db): Ghost<Db>) -> (out: Option<T
                 (sum(rows@.take(processed@), |row: CustomerInput| ind(row.c_custkey == key && row.c_nationkey == nation && day == 0)), 0),
         decreases rows.len() - index,
     {
-        let row = rows[index];
-        if !bucket.add(row.c_custkey, row.c_nationkey, 0, 1, 0) { return None; }
+        let row = &rows[index];
+        bucket.add(row.c_custkey, row.c_nationkey, 0, &Wide::from_i128(1), &Wide::zero());
         proof {
             assert forall|key: i64, nation: i64, day: i32| #[trigger] bucket.at(key, nation, day) ==
                 (sum(rows@.take(index as int + 1), |row: CustomerInput| ind(row.c_custkey == key && row.c_nationkey == nation && day == 0)), 0) by {
@@ -62,13 +63,14 @@ pub fn customers(rows: &[CustomerInput], Ghost(db): Ghost<Db>) -> (out: Option<T
         }
         assert(table.dimension());
     }
-    Some(table)
+    table
 }
 
-pub fn nations(rows: &Vec<NationInput>, Ghost(db): Ghost<Db>) -> (out: Option<Vec<crate::catalog::Binding>>)
+pub fn nations(rows: &Vec<NationInput>, Ghost(db): Ghost<Db>) -> (values: Vec<crate::catalog::Binding>)
     requires scan_nations_ok(db, rows@),
-    ensures out matches Some(values) ==> (forall|key: i64, area: i64, text: Seq<u8>| #[trigger] crate::catalog::binding_count(values@, key, area, text) == nation_count(db, key, area, text))
-        && (forall|position: int| 0 <= position < values@.len() ==> (#[trigger] values@[position]).count > 0),
+    ensures (forall|key: i64, area: i64, text: Seq<u8>| #[trigger] crate::catalog::binding_count(values@, key, area, text) == nation_count(db, key, area, text))
+        && (forall|position: int| 0 <= position < values@.len() ==> (#[trigger] values@[position]).count@ > 0)
+        && crate::catalog::bindings_unique(values@),
         forall|position: int| 0 <= position < db.nation.len() ==> #[trigger] nation_representable(db.nation[position]),
 {
     proof { verus_prooflib::lemma_scan_property(nation_input_seq_view(rows@), db.nation, |row: NationRow| nation_representable(row)); }
@@ -78,13 +80,14 @@ pub fn nations(rows: &Vec<NationInput>, Ghost(db): Ghost<Db>) -> (out: Option<Ve
     while index < rows.len()
         invariant index <= rows.len(), processed@ == index,
             forall|position: int| 0 <= position < db.nation.len() ==> #[trigger] nation_representable(db.nation[position]),
-            forall|position: int| 0 <= position < values@.len() ==> (#[trigger] values@[position]).count > 0,
+            forall|position: int| 0 <= position < values@.len() ==> (#[trigger] values@[position]).count@ > 0,
+            crate::catalog::bindings_unique(values@),
             forall|key: i64, area: i64, text: Seq<u8>| #[trigger] crate::catalog::binding_count(values@, key, area, text) ==
                 sum(rows@.take(processed@), |row: NationInput| ind(row.n_nationkey == key && row.n_regionkey == area && row.n_name@ == text)),
         decreases rows.len() - index,
     {
         let row = &rows[index];
-        if !crate::catalog::add(&mut values, row.n_nationkey, row.n_regionkey, &row.n_name, 1) { return None; }
+        crate::catalog::add(&mut values, row.n_nationkey, row.n_regionkey, &row.n_name, 1);
         proof {
             assert forall|key: i64, area: i64, text: Seq<u8>| #[trigger] crate::catalog::binding_count(values@, key, area, text) ==
                 sum(rows@.take(index as int + 1), |row: NationInput| ind(row.n_nationkey == key && row.n_regionkey == area && row.n_name@ == text)) by {
@@ -102,13 +105,14 @@ pub fn nations(rows: &Vec<NationInput>, Ghost(db): Ghost<Db>) -> (out: Option<Ve
             assert(sum(nation_input_seq_view(rows@), weight) == sum(db.nation, weight));
         }
     }
-    Some(values)
+    values
 }
 
-pub fn regions(rows: &Vec<RegionInput>, Ghost(db): Ghost<Db>) -> (out: Option<Vec<crate::catalog::Binding>>)
+pub fn regions(rows: &Vec<RegionInput>, Ghost(db): Ghost<Db>) -> (values: Vec<crate::catalog::Binding>)
     requires scan_regions_ok(db, rows@),
-    ensures out matches Some(values) ==> (forall|key: i64, area: i64, text: Seq<u8>| #[trigger] crate::catalog::binding_count(values@, key, area, text) == if area == 0 { region_count(db, key, text) } else { 0 })
-        && (forall|position: int| 0 <= position < values@.len() ==> (#[trigger] values@[position]).count > 0),
+    ensures (forall|key: i64, area: i64, text: Seq<u8>| #[trigger] crate::catalog::binding_count(values@, key, area, text) == if area == 0 { region_count(db, key, text) } else { 0 })
+        && (forall|position: int| 0 <= position < values@.len() ==> (#[trigger] values@[position]).count@ > 0)
+        && crate::catalog::bindings_unique(values@),
         forall|position: int| 0 <= position < db.region.len() ==> #[trigger] region_representable(db.region[position]),
 {
     proof { verus_prooflib::lemma_scan_property(region_input_seq_view(rows@), db.region, |row: RegionRow| region_representable(row)); }
@@ -118,13 +122,14 @@ pub fn regions(rows: &Vec<RegionInput>, Ghost(db): Ghost<Db>) -> (out: Option<Ve
     while index < rows.len()
         invariant index <= rows.len(), processed@ == index,
             forall|position: int| 0 <= position < db.region.len() ==> #[trigger] region_representable(db.region[position]),
-            forall|position: int| 0 <= position < values@.len() ==> (#[trigger] values@[position]).count > 0,
+            forall|position: int| 0 <= position < values@.len() ==> (#[trigger] values@[position]).count@ > 0,
+            crate::catalog::bindings_unique(values@),
             forall|key: i64, area: i64, text: Seq<u8>| #[trigger] crate::catalog::binding_count(values@, key, area, text) ==
                 sum(rows@.take(processed@), |row: RegionInput| ind(row.r_regionkey == key && area == 0 && row.r_name@ == text)),
         decreases rows.len() - index,
     {
         let row = &rows[index];
-        if !crate::catalog::add(&mut values, row.r_regionkey, 0, &row.r_name, 1) { return None; }
+        crate::catalog::add(&mut values, row.r_regionkey, 0, &row.r_name, 1);
         proof {
             assert forall|key: i64, area: i64, text: Seq<u8>| #[trigger] crate::catalog::binding_count(values@, key, area, text) ==
                 sum(rows@.take(index as int + 1), |row: RegionInput| ind(row.r_regionkey == key && area == 0 && row.r_name@ == text)) by {
@@ -144,12 +149,12 @@ pub fn regions(rows: &Vec<RegionInput>, Ghost(db): Ghost<Db>) -> (out: Option<Ve
             else { lemma_sum_ext_all(db.region, weight, |row: RegionRow| ind(row.r_regionkey == key && row.r_name == text)); }
         }
     }
-    Some(values)
+    values
 }
 
-pub fn suppliers(rows: &[SupplierInput], Ghost(db): Ghost<Db>) -> (out: Option<Table>)
+pub fn suppliers(rows: &[SupplierInput], Ghost(db): Ghost<Db>) -> (table: Table)
     requires scan_suppliers_ok(db, rows@),
-    ensures out matches Some(table) ==> suppliers_match(table, db),
+    ensures suppliers_match(table, db),
         forall|position: int| 0 <= position < db.supplier.len() ==> #[trigger] supplier_representable(db.supplier[position]),
 {
     proof {
@@ -174,8 +179,8 @@ pub fn suppliers(rows: &[SupplierInput], Ghost(db): Ghost<Db>) -> (out: Option<T
                 (sum(rows@.take(processed@), |row: SupplierInput| ind(row.s_suppkey == key && row.s_nationkey == nation && day == 0)), 0),
         decreases rows.len() - index,
     {
-        let row = rows[index];
-        if !bucket.add(row.s_suppkey, row.s_nationkey, 0, 1, 0) { return None; }
+        let row = &rows[index];
+        bucket.add(row.s_suppkey, row.s_nationkey, 0, &Wide::from_i128(1), &Wide::zero());
         proof {
             assert forall|key: i64, nation: i64, day: i32| #[trigger] bucket.at(key, nation, day) ==
                 (sum(rows@.take(index as int + 1), |row: SupplierInput| ind(row.s_suppkey == key && row.s_nationkey == nation && day == 0)), 0) by {
@@ -202,12 +207,12 @@ pub fn suppliers(rows: &[SupplierInput], Ghost(db): Ghost<Db>) -> (out: Option<T
         }
         assert(table.dimension());
     }
-    Some(table)
+    table
 }
 
-pub fn orders(rows: &[OrdersInput], Ghost(db): Ghost<Db>) -> (out: Option<(Table, Table)>)
+pub fn orders(rows: &[OrdersInput], Ghost(db): Ghost<Db>) -> (out: (Table, Table))
     requires scan_orders_ok(db, rows@),
-    ensures out matches Some(tables) ==> orders_match(tables.0, db) && reverse_match(tables.1, db),
+    ensures orders_match(out.0, db) && reverse_match(out.1, db),
         forall|position: int| 0 <= position < db.orders.len() ==> #[trigger] order_representable(db.orders[position]),
 {
     proof { verus_prooflib::lemma_scan_property(orders_input_seq_view(rows@), db.orders, |row: OrdersRow| order_representable(row)); }
@@ -235,15 +240,15 @@ pub fn orders(rows: &[OrdersInput], Ghost(db): Ghost<Db>) -> (out: Option<(Table
                 (sum(rows@.take(processed@), |row: OrdersInput| ind(row.o_orderkey == key && row.o_custkey == customer && day == 0)), 0),
         decreases rows.len() - index,
     {
-        let row = rows[index];
-        if !order_rows.add(row.o_orderkey, row.o_custkey, row.o_orderdate, 1, 0) { return None; }
+        let row = &rows[index];
+        order_rows.add(row.o_orderkey, row.o_custkey, row.o_orderdate, &Wide::from_i128(1), &Wide::zero());
         proof {
             assert forall|key: i64, customer: i64, day: i32| #[trigger] order_rows.at(key, customer, day) ==
                 (sum(rows@.take(index as int + 1), |row: OrdersInput| ind(row.o_orderkey == key && row.o_custkey == customer && row.o_orderdate == day)), 0) by {
                 lemma_sum_take(rows@, index as int, |row: OrdersInput| ind(row.o_orderkey == key && row.o_custkey == customer && row.o_orderdate == day));
             }
         }
-        if !reverse_rows.add(row.o_custkey, row.o_orderkey, 0, 1, 0) { return None; }
+        reverse_rows.add(row.o_custkey, row.o_orderkey, 0, &Wide::from_i128(1), &Wide::zero());
         proof {
             assert forall|customer: i64, key: i64, day: i32| #[trigger] reverse_rows.at(customer, key, day) ==
                 (sum(rows@.take(index as int + 1), |row: OrdersInput| ind(row.o_orderkey == key && row.o_custkey == customer && day == 0)), 0) by {
@@ -286,15 +291,15 @@ pub fn orders(rows: &[OrdersInput], Ghost(db): Ghost<Db>) -> (out: Option<(Table
         }
         assert(reverse.dimension());
     }
-    Some((orders, reverse))
+    (orders, reverse)
 }
 
 pub fn profiles(customers: &Table, orders: &Table, suppliers: &Table,
-    rows: &[LineitemInput], Ghost(db): Ghost<Db>) -> (out: Option<Table>)
+    rows: &[LineitemInput], Ghost(db): Ghost<Db>) -> (table: Table)
     requires customers_match(*customers, db), orders_match(*orders, db), suppliers_match(*suppliers, db),
         scan_lines_ok(db, rows@),
         forall|position: int| 0 <= position < db.orders.len() ==> #[trigger] order_representable(db.orders[position]),
-    ensures out matches Some(table) ==> table.wf() && table.daily() &&
+    ensures table.wf() && table.daily() &&
         forall|nation: i64, sub: i64, day: i32| #[trigger] table.at(nation, sub, day) ==
             if sub == 0 { profile(db, nation, day) } else { (0, 0) },
 {
@@ -309,7 +314,7 @@ pub fn profiles(customers: &Table, orders: &Table, suppliers: &Table,
                  sum(rows@.take(processed@), |line: LineitemInput| if sub == 0 { crate::maintenance::contribution(*customers, *orders, *suppliers, line, nation, day).1 } else { 0 })),
         decreases rows.len() - index,
     {
-        if !crate::maintenance::contribute(customers, orders, suppliers, rows[index], 1, &mut bucket) { return None; }
+        crate::maintenance::contribute(customers, orders, suppliers, rows[index], 1, &mut bucket);
         proof {
             assert forall|nation: i64, sub: i64, day: i32| #[trigger] bucket.at(nation, sub, day) ==
                 (sum(rows@.take(index as int + 1), |line: LineitemInput| if sub == 0 { crate::maintenance::contribution(*customers, *orders, *suppliers, line, nation, day).0 } else { 0 }),
@@ -321,7 +326,7 @@ pub fn profiles(customers: &Table, orders: &Table, suppliers: &Table,
         index += 1;
         processed = Ghost(index as int);
     }
-    let table = match freeze(bucket) { Some(table) => table, None => return None };
+    let table = freeze(bucket);
     proof {
         assert(rows@.take(rows@.len() as int) =~= rows@);
         assert forall|nation: i64, sub: i64, day: i32| #[trigger] table.at(nation, sub, day) ==
@@ -362,7 +367,7 @@ pub fn profiles(customers: &Table, orders: &Table, suppliers: &Table,
         }
         assert(table.daily());
     }
-    Some(table)
+    table
 }
 
 }

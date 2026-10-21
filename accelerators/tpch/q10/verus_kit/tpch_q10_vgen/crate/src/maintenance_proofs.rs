@@ -15,7 +15,7 @@ verus! {
 
 #[verifier::rlimit(10)]
 pub proof fn lemma_patch_capture(before: Db, after: Db, keys: &Index<()>, patches: Patches,
-    order_changes: Orders, line_changes: Index<Moments>, post_orders: Orders, post_lines: Index<Moments>,
+    order_changes: Orders, line_changes: Index<Moms>, post_orders: Orders, post_lines: Index<Moms>,
     order_rows: Seq<OrderDelta>, line_rows: Seq<LineDelta>, full_lines: Seq<(LineitemRow, int)>,
     order_keys: Seq<i64>, order_rescan: Seq<OrderInput>, line_keys: Seq<i64>, line_rescan: Seq<ReturnedLineInput>,
     day: int, customer: int, grain: int, component: int)
@@ -104,11 +104,87 @@ pub proof fn lemma_updated_facts(before: Db, after: Db, previous: Index<Slice>, 
             let ckey = choose|ckey: (int, Seq<u8>)| slice.cells.at(ckey).is_some();
             lemma_cell_key(slice.cells, ckey);
             let cell = slice.cells.at(ckey).unwrap();
-            assert(cell.count > 0);
+            assert(cell.moments().count > 0);
             lemma_patch_bounds(patches, key.0, ckey.0, grain, 0);
-            assert(slice_at(next, key.0, ckey.0).count == cell.count as int);
+            assert(slice_at(next, key.0, ckey.0).count == cell.moments().count);
             assert(slice_at(next, key.0, ckey.0).component(0) == 0);
         }
+    }
+}
+
+pub proof fn lemma_view_contains(keys: Seq<i64>, value: int)
+    ensures seq_view_i64(keys).contains(value) <==> (i64::MIN <= value <= i64::MAX && keys.contains(value as i64)),
+{
+    if seq_view_i64(keys).contains(value) {
+        let position = choose|position: int| 0 <= position < keys.len() && seq_view_i64(keys)[position] == value;
+        assert(keys[position] as int == value);
+    }
+    if i64::MIN <= value <= i64::MAX && keys.contains(value as i64) {
+        let position = choose|position: int| 0 <= position < keys.len() && keys[position] == value as i64;
+        assert(seq_view_i64(keys)[position] == value);
+    }
+}
+
+pub proof fn lemma_change_keys_wanted(order_changes: Orders, line_changes: Index<Moms>, orders: Seq<OrderDelta>, lines: Seq<LineDelta>)
+    requires orders_valid(order_changes), moment_index_valid(line_changes),
+        forall|key: int, customer: int, day: int| #[trigger] order_count(order_changes, key, customer, day)
+            == sum(orders, |delta: OrderDelta| if delta.row.o_orderkey == key && delta.row.o_custkey == customer
+                && delta.row.o_orderdate == day { delta.sign as int } else { 0 }),
+        forall|key: int, component: int| #[trigger] moment_at(line_changes, key).component(component)
+            == sum(lines, |row: LineDelta| if row.l_orderkey == key { delta_line_weight(row, component) } else { 0 }),
+    ensures forall|key: (int, Seq<u8>)| #![trigger order_changes.at(key), line_changes.at(key)]
+        order_changes.at(key).is_some() || line_changes.at(key).is_some() ==>
+            key.1 == Seq::<u8>::empty() && i64::MIN <= key.0 <= i64::MAX && wanted_keys(orders, lines).contains(key.0 as i64),
+{
+    assert forall|key: (int, Seq<u8>)| #![trigger order_changes.at(key), line_changes.at(key)]
+        order_changes.at(key).is_some() || line_changes.at(key).is_some() implies
+            key.1 == Seq::<u8>::empty() && i64::MIN <= key.0 <= i64::MAX && wanted_keys(orders, lines).contains(key.0 as i64) by {
+        lemma_wanted_keys(orders, lines, key.0 as i64);
+        if order_changes.at(key).is_some() {
+            let inner = order_changes.at(key).unwrap();
+            inner.model();
+            let cell = inner.entries()[0].1;
+            assert(inner.at(inner.entries()[0].0) == Some(cell));
+            assert(order_count(order_changes, key.0, cell.customer as int, cell.day as int) == cell.count@);
+            let position = verus_common::sums::lemma_sum_nonzero_witness(orders, |delta: OrderDelta|
+                if delta.row.o_orderkey == key.0 && delta.row.o_custkey == cell.customer as int
+                    && delta.row.o_orderdate == cell.day as int { delta.sign as int } else { 0 });
+            assert(order_delta_keys(orders)[position] == key.0 as i64);
+            assert(order_delta_keys(orders).contains(key.0 as i64));
+        } else {
+            assert(line_changes.at(key).is_some());
+            let value = line_changes.at(key).unwrap();
+            assert(key == (key.0, Seq::<u8>::empty()));
+            let component = if value@.count != 0 { 0int } else if value@.revenue != 0 { 1int } else { 2int };
+            assert(moment_at(line_changes, key.0).component(component) != 0);
+            let position = verus_common::sums::lemma_sum_nonzero_witness(lines, |row: LineDelta|
+                if row.l_orderkey == key.0 { delta_line_weight(row, component) } else { 0 });
+            assert(lines[position].is_returned != 0);
+            lemma_returned_keys_contain(lines, key.0 as i64);
+        }
+    }
+}
+
+/// Patching a valid slice with the difference of two fact tables leaves consistent moments.
+pub proof fn lemma_patch_ready(before: Db, after: Db, slices: Index<Slice>, patches: Patches, grain: int)
+    requires facts_valid(before, slices, grain),
+        forall|day: int, customer: int, component: int| #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
+            == fact_sum(after, day, customer, grain, component) - fact_sum(before, day, customer, grain, component),
+    ensures forall|day: int, customer: int| moment_ok(plus(slice_at(slices, day, customer),
+        #[trigger] patch_total(patches, day, customer, grain))),
+{
+    reveal(facts_valid);
+    assert forall|day: int, customer: int| moment_ok(plus(slice_at(slices, day, customer),
+        #[trigger] patch_total(patches, day, customer, grain))) by {
+        lemma_fact_moments_ok(after, day, customer, grain);
+        assert(slice_at(slices, day, customer).component(0) == fact_sum(before, day, customer, grain, 0));
+        assert(slice_at(slices, day, customer).component(1) == fact_sum(before, day, customer, grain, 1));
+        assert(slice_at(slices, day, customer).component(2) == fact_sum(before, day, customer, grain, 2));
+        assert(patch_rows_sum(patches.entries(), day, customer, grain, 0) == fact_sum(after, day, customer, grain, 0) - fact_sum(before, day, customer, grain, 0));
+        assert(patch_rows_sum(patches.entries(), day, customer, grain, 1) == fact_sum(after, day, customer, grain, 1) - fact_sum(before, day, customer, grain, 1));
+        assert(patch_rows_sum(patches.entries(), day, customer, grain, 2) == fact_sum(after, day, customer, grain, 2) - fact_sum(before, day, customer, grain, 2));
+        lemma_moments_ext(plus(slice_at(slices, day, customer), patch_total(patches, day, customer, grain)),
+            fact_moments(after, day, customer, grain));
     }
 }
 

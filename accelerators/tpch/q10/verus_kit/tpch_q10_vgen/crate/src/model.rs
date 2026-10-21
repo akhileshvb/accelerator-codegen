@@ -4,6 +4,7 @@ use verus_prooflib::ordered::Index;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::values::*;
+use verus_prooflib::wide::Wide;
 use crate::facts::*;
 use crate::dimensions::*;
 use crate::paged::*;
@@ -31,6 +32,58 @@ pub open spec fn fact_sum(db: Db, slice: int, customer: int, grain: int, compone
     })
 }
 
+pub open spec fn fact_moments(db: Db, slice: int, customer: int, grain: int) -> Moments {
+    Moments {
+        count: fact_sum(db, slice, customer, grain, 0),
+        revenue: fact_sum(db, slice, customer, grain, 1),
+        upper: fact_sum(db, slice, customer, grain, 2),
+    }
+}
+
+pub proof fn lemma_line_weight_ok(row: LineitemRow)
+    ensures moment_ok(Moments { count: line_weight(row, 0), revenue: line_weight(row, 1), upper: line_weight(row, 2) }),
+{}
+
+/// Every group of facts holds consistent moments.
+pub proof fn lemma_fact_moments_ok(db: Db, slice: int, customer: int, grain: int)
+    ensures moment_ok(fact_moments(db, slice, customer, grain)),
+{
+    reveal(fact_sum);
+    let k0 = 0int;
+    let k1 = 1int;
+    let k2 = 2int;
+    let f0 = |order: OrdersRow| {
+        if order.o_custkey == customer && period_of(order.o_orderdate, grain) == slice {
+            sum(db.lineitem, |line: LineitemRow|
+                if line.l_orderkey == order.o_orderkey { line_weight(line, k0) } else { 0 })
+        } else { 0 }
+    };
+    let f1 = |order: OrdersRow| {
+        if order.o_custkey == customer && period_of(order.o_orderdate, grain) == slice {
+            sum(db.lineitem, |line: LineitemRow|
+                if line.l_orderkey == order.o_orderkey { line_weight(line, k1) } else { 0 })
+        } else { 0 }
+    };
+    let f2 = |order: OrdersRow| {
+        if order.o_custkey == customer && period_of(order.o_orderdate, grain) == slice {
+            sum(db.lineitem, |line: LineitemRow|
+                if line.l_orderkey == order.o_orderkey { line_weight(line, k2) } else { 0 })
+        } else { 0 }
+    };
+    assert forall|order: OrdersRow| moment_ok(Moments { count: #[trigger] f0(order), revenue: f1(order), upper: f2(order) }) by {
+        if order.o_custkey == customer && period_of(order.o_orderdate, grain) == slice {
+            let g0 = |line: LineitemRow| if line.l_orderkey == order.o_orderkey { line_weight(line, k0) } else { 0 };
+            let g1 = |line: LineitemRow| if line.l_orderkey == order.o_orderkey { line_weight(line, k1) } else { 0 };
+            let g2 = |line: LineitemRow| if line.l_orderkey == order.o_orderkey { line_weight(line, k2) } else { 0 };
+            assert forall|line: LineitemRow| moment_ok(Moments { count: #[trigger] g0(line), revenue: g1(line), upper: g2(line) }) by {
+                lemma_line_weight_ok(line);
+            }
+            lemma_sum_moment_ok(db.lineitem, g0, g1, g2);
+        }
+    }
+    lemma_sum_moment_ok(db.orders, f0, f1, f2);
+}
+
 #[verifier::opaque]
 pub open spec fn facts_valid(db: Db, slices: Index<Slice>, grain: int) -> bool {
     &&& forall|slice: int, customer: int, component: int|
@@ -45,43 +98,46 @@ pub open spec fn facts_valid(db: Db, slices: Index<Slice>, grain: int) -> bool {
     }
 }
 
-pub open spec fn maxima_valid(totals: Index<i128>, maxima: Index<i128>) -> bool {
+pub open spec fn maxima_valid(totals: Index<Wide>, maxima: Index<Wide>) -> bool {
     &&& forall|key: (int, Seq<u8>)| #[trigger] totals.at(key).is_some() ==> {
         let value = totals.at(key).unwrap();
         &&& key.1 == Seq::<u8>::empty() && i64::MIN <= key.0 <= i64::MAX
-        &&& value > 0
-        &&& maxima.at(rank_view(value as int, key.0)) == Some(value)
+        &&& value@ > 0
+        &&& maxima.at(rank_view(sat(value@), key.0)).is_some()
+        &&& maxima.at(rank_view(sat(value@), key.0)).unwrap()@ == value@
     }
     &&& forall|key: (int, Seq<u8>)| #[trigger] maxima.at(key).is_some() ==> {
         let value = maxima.at(key).unwrap();
-        &&& value > 0
-        &&& exists|join_key: int| #[trigger] totals.at((join_key, Seq::empty())) == Some(value)
-            && key == rank_view(value as int, join_key)
+        &&& value@ > 0
+        &&& exists|join_key: int| #[trigger] totals.at((join_key, Seq::empty())).is_some()
+            && totals.at((join_key, Seq::empty())).unwrap()@ == value@
+            && key == rank_view(sat(value@), join_key)
     }
 }
 
-pub open spec fn ranked_values_valid(maxima: Index<i128>) -> bool {
+pub open spec fn ranked_values_valid(maxima: Index<Wide>) -> bool {
     forall|key: (int, Seq<u8>)| #[trigger] maxima.at(key).is_some() ==> {
         let value = maxima.at(key).unwrap();
-        &&& value > 0
-        &&& exists|tie: i64| #[trigger] rank_view(value as int, tie as int) == key
+        &&& value@ > 0
+        &&& exists|tie: i64| #[trigger] rank_view(sat(value@), tie as int) == key
     }
 }
 
-pub proof fn lemma_maxima_ranked_values(totals: Index<i128>, maxima: Index<i128>)
+pub proof fn lemma_maxima_ranked_values(totals: Index<Wide>, maxima: Index<Wide>)
     requires maxima_valid(totals, maxima),
     ensures ranked_values_valid(maxima),
 {
     assert forall|key: (int, Seq<u8>)| #[trigger] maxima.at(key).is_some() implies {
         let value = maxima.at(key).unwrap();
-        &&& value > 0
-        &&& exists|tie: i64| #[trigger] rank_view(value as int, tie as int) == key
+        &&& value@ > 0
+        &&& exists|tie: i64| #[trigger] rank_view(sat(value@), tie as int) == key
     } by {
         let value = maxima.at(key).unwrap();
-        let join_key = choose|join_key: int| #[trigger] totals.at((join_key, Seq::empty())) == Some(value)
-            && key == rank_view(value as int, join_key);
+        let join_key = choose|join_key: int| #[trigger] totals.at((join_key, Seq::empty())).is_some()
+            && totals.at((join_key, Seq::empty())).unwrap()@ == value@
+            && key == rank_view(sat(value@), join_key);
         assert(i64::MIN <= join_key <= i64::MAX);
-        assert(rank_view(value as int, join_key as i64 as int) == key);
+        assert(rank_view(sat(value@), join_key as i64 as int) == key);
     }
 }
 
@@ -101,7 +157,7 @@ pub open spec fn dimensions_valid(db: Db, dimensions: Dimensions) -> bool {
         &&& inner.entries().len() > 0
         &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
             let value = inner.at(key).unwrap();
-            &&& value.count > 0
+            &&& value.count@ > 0
             &&& nation_input_view(*value.row).n_nationkey == outer.0
             &&& nation_inner_view(nation_input_view(*value.row)) == key
         }
@@ -178,7 +234,7 @@ pub proof fn lemma_dimensions_from_counts(db: Db, dimensions: Dimensions)
         &&& inner.entries().len() > 0
         &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
             let value = inner.at(key).unwrap();
-            &&& value.count > 0
+            &&& value.count@ > 0
             &&& nation_input_view(*value.row).n_nationkey == outer.0
             &&& nation_inner_view(nation_input_view(*value.row)) == key
         }
@@ -186,13 +242,13 @@ pub proof fn lemma_dimensions_from_counts(db: Db, dimensions: Dimensions)
         let inner = dimensions.nations.at(outer).unwrap();
         assert forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() implies {
             let value = inner.at(key).unwrap();
-            &&& value.count > 0
+            &&& value.count@ > 0
             &&& nation_input_view(*value.row).n_nationkey == outer.0
             &&& nation_inner_view(nation_input_view(*value.row)) == key
         } by {
             let value = inner.at(key).unwrap();
             let row = nation_input_view(*value.row);
-            assert(nation_count(dimensions.nations, row) == value.count as int);
+            assert(nation_count(dimensions.nations, row) == value.count@);
             lemma_nation_count_nonnegative(db, dimensions, row);
         }
     }
@@ -224,7 +280,7 @@ pub proof fn lemma_dimensions_equal(db: Db, previous: Dimensions, next: Dimensio
     lemma_dimensions_from_counts(db, next);
 }
 
-pub proof fn lemma_maxima_equal(totals: Index<i128>, maxima: Index<i128>, other_totals: Index<i128>, other_maxima: Index<i128>)
+pub proof fn lemma_maxima_equal(totals: Index<Wide>, maxima: Index<Wide>, other_totals: Index<Wide>, other_maxima: Index<Wide>)
     requires maxima_valid(totals, maxima), totals.tree() == other_totals.tree(), maxima.tree() == other_maxima.tree(),
     ensures maxima_valid(other_totals, other_maxima),
 {
@@ -232,14 +288,16 @@ pub proof fn lemma_maxima_equal(totals: Index<i128>, maxima: Index<i128>, other_
     assert forall|key: (int, Seq<u8>)| #[trigger] other_maxima.at(key) == maxima.at(key) by {}
     assert forall|key: (int, Seq<u8>)| #[trigger] other_maxima.at(key).is_some() implies {
         let value = other_maxima.at(key).unwrap();
-        &&& value > 0
-        &&& exists|join_key: int| #[trigger] other_totals.at((join_key, Seq::empty())) == Some(value)
-            && key == rank_view(value as int, join_key)
+        &&& value@ > 0
+        &&& exists|join_key: int| #[trigger] other_totals.at((join_key, Seq::empty())).is_some()
+            && other_totals.at((join_key, Seq::empty())).unwrap()@ == value@
+            && key == rank_view(sat(value@), join_key)
     } by {
         let value = other_maxima.at(key).unwrap();
-        let join_key = choose|join_key: int| #[trigger] totals.at((join_key, Seq::empty())) == Some(value)
-            && key == rank_view(value as int, join_key);
-        assert(other_totals.at((join_key, Seq::empty())) == Some(value));
+        let join_key = choose|join_key: int| #[trigger] totals.at((join_key, Seq::empty())).is_some()
+            && totals.at((join_key, Seq::empty())).unwrap()@ == value@
+            && key == rank_view(sat(value@), join_key);
+        assert(other_totals.at((join_key, Seq::empty())) == totals.at((join_key, Seq::empty())));
     }
 }
 

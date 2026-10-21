@@ -55,12 +55,12 @@ pub proof fn lemma_order_key_injective(left_customer: i64, left_day: i32, right_
     lemma_number_frame(left, right, 8, Seq::empty(), Seq::empty());
 }
 
-pub proof fn lemma_rank_key_injective(left_upper: i128, left_customer: i64, right_upper: i128, right_customer: i64)
-    requires left_upper >= 0, right_upper >= 0,
-        rank_view(left_upper as int, left_customer as int) == rank_view(right_upper as int, right_customer as int),
+pub proof fn lemma_rank_key_injective(left_upper: int, left_customer: i64, right_upper: int, right_customer: i64)
+    requires 0 <= left_upper <= i128::MAX, 0 <= right_upper <= i128::MAX,
+        rank_view(left_upper, left_customer as int) == rank_view(right_upper, right_customer as int),
     ensures left_upper == right_upper, left_customer == right_customer,
 {
-    verus_prooflib::lemma_i128_rank_order(left_upper, right_upper, left_customer, right_customer);
+    verus_prooflib::lemma_i128_rank_order(left_upper as i128, right_upper as i128, left_customer, right_customer);
 }
 
 }

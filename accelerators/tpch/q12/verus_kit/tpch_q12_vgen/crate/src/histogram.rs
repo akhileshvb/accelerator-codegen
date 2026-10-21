@@ -2,21 +2,59 @@ use vstd::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::bytes;
-use crate::counts::Counts;
+use crate::counts::{Counts, Tally};
 use verus_common::sums::{sum, rng};
 
 verus! {
 
 broadcast use vstd::seq_lib::group_seq_properties;
 
+pub proof fn lemma_set_len_i32(days: Set<i32>)
+    ensures days.len() <= 4294967296,
+{
+    let span = vstd::set_lib::set_int_range(-2147483648, 2147483648);
+    vstd::set_lib::lemma_int_range(-2147483648, 2147483648);
+    let widen = |day: i32| day as int;
+    let image = days.map(widen);
+    assert(days.injective_on(widen));
+    assert forall|value: int| image.contains(value) implies span.contains(value) by {
+        broadcast use Set::lemma_map_contains;
+    }
+    vstd::set_lib::lemma_map_size(days, image, widen);
+    vstd::set_lib::lemma_len_subset(image, span);
+}
+
+pub proof fn lemma_keys_len(keys: Seq<i32>)
+    requires keys.no_duplicates(),
+    ensures keys.len() <= 4294967296,
+{
+    keys.unique_seq_to_set();
+    lemma_set_len_i32(keys.to_set());
+}
+
+pub proof fn lemma_tier_prefix(tiers: Seq<Arc<Sparse>>, index: int)
+    requires 0 <= index <= tiers.len(),
+    ensures sum(tiers.take(index), |tier: Arc<Sparse>| tier.keys@.len() as int)
+        <= sum(tiers, |tier: Arc<Sparse>| tier.keys@.len() as int),
+    decreases tiers.len() - index,
+{
+    let length = |tier: Arc<Sparse>| tier.keys@.len() as int;
+    if index == tiers.len() {
+        verus_common::sums::lemma_sum_take_full(tiers, length);
+    } else {
+        verus_common::sums::lemma_sum_take(tiers, index, length);
+        lemma_tier_prefix(tiers, index + 1);
+    }
+}
+
 pub struct Sparse {
-    pub values: HashMap<i32, Counts>,
+    pub values: HashMap<i32, Tally>,
     pub keys: Vec<i32>,
 }
 
 impl Sparse {
     pub open spec fn at(self, day: i32) -> Counts {
-        if self.values@.contains_key(day) { self.values@[day] }
+        if self.values@.contains_key(day) { self.values@[day]@ }
         else { Counts { high: 0, low: 0 } }
     }
 
@@ -47,15 +85,15 @@ impl Sparse {
         out
     }
 
-    pub fn get(&self, day: i32) -> (out: Counts)
-        ensures out == self.at(day),
+    pub fn get(&self, day: i32) -> (out: Tally)
+        ensures out@ == self.at(day),
     {
-        match self.values.get(&day) { Some(value) => *value, None => Counts::zero() }
+        match self.values.get(&day) { Some(value) => value.dup(), None => Tally::zero() }
     }
 
-    pub fn put(&mut self, day: i32, value: Counts)
+    pub fn put(&mut self, day: i32, value: Tally)
         requires old(self).wf(),
-        ensures final(self).wf(), final(self).at(day) == value,
+        ensures final(self).wf(), final(self).at(day) == value@,
             final(self).values@ == old(self).values@.insert(day, value),
             forall|other: i32| #![trigger final(self).at(other)]
                 other != day ==> final(self).at(other) == old(self).at(other),
@@ -75,18 +113,16 @@ impl Sparse {
         }
     }
 
-    pub fn add(&mut self, day: i32, value: Counts) -> (out: bool)
+    pub fn add(&mut self, day: i32, value: &Tally)
         requires old(self).wf(),
         ensures final(self).wf(),
-            out ==> final(self).at(day).high == old(self).at(day).high + value.high
-                && final(self).at(day).low == old(self).at(day).low + value.low,
-            !out ==> final(self).at(day) == old(self).at(day),
+            final(self).at(day).high == old(self).at(day).high + value@.high
+                && final(self).at(day).low == old(self).at(day).low + value@.low,
             forall|other: i32| #![trigger final(self).at(other)]
                 other != day ==> final(self).at(other) == old(self).at(other),
     {
-        let next = match self.get(day).add(value) { Some(value) => value, None => return false };
+        let next = self.get(day).add(value);
         self.put(day, next);
-        true
     }
 
     pub fn absorb_older(&mut self, older: &Sparse)
@@ -127,8 +163,8 @@ impl Sparse {
 pub struct Layers {
     pub base: Arc<Sparse>,
     pub tiers: Vec<Arc<Sparse>>,
-    pub live: usize,
-    pub physical: usize,
+    pub live: u128,
+    pub physical: u128,
 }
 
 impl Layers {
@@ -227,7 +263,7 @@ impl Layers {
 
     pub proof fn lemma_wf(self)
         requires self.wf(),
-        ensures self.structure_wf(), self.live == self.support().len(),
+        ensures self.structure_wf(), self.live == self.support().len(), self.physical <= 4 * self.live,
             self.physical as int == self.base.keys@.len() as int + sum(self.tiers@, |tier: Arc<Sparse>| tier.keys@.len() as int),
             forall|day: i32| #![trigger self.at(day)] self.at(day).nonnegative(),
             forall|index: int| #![trigger self.tiers@[index]] 0 <= index < self.tiers@.len() - 1 ==>
@@ -269,9 +305,9 @@ impl Layers {
     {
     }
 
-    pub fn get(&self, day: i32) -> (out: Counts)
+    pub fn get(&self, day: i32) -> (out: Tally)
         requires self.wf(),
-        ensures out == self.at(day), out.nonnegative(),
+        ensures out@ == self.at(day), out@.nonnegative(),
     {
         proof { reveal(Layers::at); self.lemma_wf(); }
         let mut depth = self.tiers.len();
@@ -282,7 +318,7 @@ impl Layers {
             depth -= 1;
             let tier = &*self.tiers[depth];
             match tier.values.get(&day) {
-                Some(value) => { proof { assert(*value == tier.at(day)); } return *value; },
+                Some(value) => { proof { assert(value@ == tier.at(day)); } return value.dup(); },
                 None => {}
             }
         }
@@ -298,7 +334,7 @@ impl Layers {
     {
         proof { reveal(Layers::wf); }
         let size = base.keys.len();
-        let out = Layers { base: Arc::new(base), tiers: Vec::new(), live: size, physical: size };
+        let out = Layers { base: Arc::new(base), tiers: Vec::new(), live: size as u128, physical: size as u128 };
         proof {
             reveal(Layers::at);
             out.base.keys@.to_set_ensures();
@@ -401,23 +437,24 @@ impl Layers {
         assert(full.keys@.take(full.keys@.len() as int) =~= full.keys@);
     }
 
-    #[verifier::rlimit(60)]
-    pub fn replace(&self, patch: Sparse) -> (out: Option<Self>)
+    #[verifier::rlimit(100)]
+    pub fn replace(&self, patch: Sparse) -> (next: Self)
         requires self.wf(), patch.wf(),
             forall|day: i32| #![trigger patch.values@[day]]
                 patch.values@.contains_key(day) ==> patch.at(day).nonnegative(),
-        ensures out matches Some(next) ==> next.wf()
+        ensures next.wf()
             && forall|day: i32| #![trigger next.at(day)]
                 next.at(day) == if patch.values@.contains_key(day) { patch.at(day) } else { self.at(day) },
     {
         proof { reveal(Layers::wf); }
         let ghost replacements = patch;
-        let mut live = self.live;
+        let mut live_change = 0i128;
         let mut index = 0;
         while index < patch.keys.len()
             invariant index <= patch.keys@.len(), self.wf(), patch.wf(), replacements == patch,
                 forall|day: i32| #![trigger patch.values@[day]] patch.values@.contains_key(day) ==> patch.at(day).nonnegative(),
-                live as int == self.live as int + sum(patch.keys@.take(index as int), self.support_change(patch)),
+                live_change as int == sum(patch.keys@.take(index as int), self.support_change(patch)),
+                -(index as int) <= live_change as int <= index as int,
             decreases patch.keys@.len() - index,
         {
             let day = patch.keys[index];
@@ -426,18 +463,47 @@ impl Layers {
             proof {
                 patch.keys@.to_set_ensures();
                 verus_common::sums::lemma_sum_take(patch.keys@, index as int, self.support_change(patch));
-                assert(before.nonnegative());
-                assert(after.nonnegative());
+                assert(before@.nonnegative());
+                assert(after@.nonnegative());
             }
             if before.is_zero() && !after.is_zero() {
-                live = match live.checked_add(1) { Some(value) => value, None => return None };
+                live_change += 1;
             } else if !before.is_zero() && after.is_zero() {
-                if live == 0 { return None; }
-                live -= 1;
+                live_change -= 1;
             }
             index += 1;
         }
-        proof { assert(patch.keys@.take(index as int) =~= patch.keys@); }
+        proof {
+            assert(patch.keys@.take(index as int) =~= patch.keys@);
+            patch.keys@.to_set_ensures();
+            self.lemma_wf();
+            let present = |day: i32| replacements.at(day).positive();
+            verus_prooflib::lemma_replacement_support(self.support(), replacements.keys@, present);
+            assert forall|day: i32| #[trigger] self.support_change(replacements)(day)
+                == (if present(day) { 1int } else { 0int }) - (if self.support().contains(day) { 1int } else { 0int }) by {
+                self.lemma_support(day);
+            }
+            verus_common::sums::lemma_sum_ext_all(replacements.keys@, self.support_change(replacements),
+                |day: i32| (if present(day) { 1int } else { 0int })
+                    - (if self.support().contains(day) { 1int } else { 0int }));
+            lemma_set_len_i32(self.support().difference(replacements.keys@.to_set())
+                .union(replacements.keys@.to_set().filter(present)));
+            lemma_set_len_i32(self.support());
+        }
+        proof {
+            let after = self.support().difference(replacements.keys@.to_set()).union(replacements.keys@.to_set().filter(|day: i32| replacements.at(day).positive()));
+            assert(patch == replacements);
+            assert(live_change as int == sum(replacements.keys@, self.support_change(replacements)));
+            assert(self.live == self.support().len());
+            assert(self.live as int + live_change as int == after.len() as int);
+            assert(0 <= self.live as int + live_change as int <= 4294967296);
+        }
+        let total = self.live as i128 + live_change;
+        proof { assert(total >= 0 && total <= 4294967296); }
+        let live = total as u128;
+        proof {
+            assert(live as int == self.live as int + sum(replacements.keys@, self.support_change(replacements)));
+        }
         let mut depth = self.tiers.len();
         let mut merged = patch;
         while depth > 0 && 2 * merged.keys.len() as u128 >= self.tiers[depth - 1].keys.len() as u128
@@ -465,14 +531,21 @@ impl Layers {
                 }
             }
         }
+        proof {
+            self.lemma_wf();
+            lemma_set_len_i32(self.support());
+            lemma_tier_prefix(self.tiers@, 0);
+            assert(self.tiers@.take(0) =~= Seq::<Arc<Sparse>>::empty());
+        }
         let mut tiers = Vec::new();
-        let mut physical = self.base.keys.len();
+        let mut physical = self.base.keys.len() as u128;
         index = 0;
         while index < depth
             invariant index <= depth, depth <= self.tiers@.len(), self.wf(), merged.wf(), replacements.wf(),
                 tiers@ == self.tiers@.take(index as int),
                 physical as int == self.base.keys@.len() as int
                     + sum(self.tiers@.take(index as int), |tier: Arc<Sparse>| tier.keys@.len() as int),
+                physical <= self.physical, self.physical <= 4 * self.live, self.live <= 4294967296,
                 live as int == self.live as int + sum(replacements.keys@, self.support_change(replacements)),
                 forall|day: i32| #![trigger replacements.values@[day]]
                     replacements.values@.contains_key(day) ==> replacements.at(day).nonnegative(),
@@ -481,19 +554,27 @@ impl Layers {
                 depth > 0 ==> self.tiers@[depth as int - 1].keys@.len() > 2 * merged.keys@.len(),
             decreases depth - index,
         {
-            physical = match physical.checked_add(self.tiers[index].keys.len()) {
-                Some(value) => value, None => return None,
-            };
+            proof {
+                self.lemma_wf();
+                verus_common::sums::lemma_sum_take(self.tiers@, index as int, |tier: Arc<Sparse>| tier.keys@.len() as int);
+                lemma_tier_prefix(self.tiers@, index as int + 1);
+            }
+            physical = physical + self.tiers[index].keys.len() as u128;
             tiers.push(self.tiers[index].clone());
             proof {
-                verus_common::sums::lemma_sum_take(self.tiers@, index as int, |tier: Arc<Sparse>| tier.keys@.len() as int);
                 assert(tiers@ =~= self.tiers@.take(index as int + 1));
             }
             index += 1;
         }
-        physical = match physical.checked_add(merged.keys.len()) {
-            Some(value) => value, None => return None,
-        };
+        proof {
+            assert(merged.keys@.no_duplicates());
+            lemma_keys_len(merged.keys@);
+            assert(merged.keys.len() <= 4294967296);
+            assert(physical <= self.physical);
+            assert(self.physical <= 4 * self.live);
+            assert(self.live <= 4294967296);
+        }
+        physical = physical + merged.keys.len() as u128;
         let ghost latest = merged;
         if merged.keys.len() > 0 {
             let newest = Arc::new(merged);
@@ -538,7 +619,7 @@ impl Layers {
                 0 <= offset < next.tiers@.len() - 1 implies
                     next.tiers@[offset].keys@.len() > 2 * next.tiers@[offset + 1].keys@.len() by {}
         }
-        if physical as u128 > 4 * live as u128 {
+        if physical > 4 * live {
             let full = next.materialize();
             let mut clean = Sparse::new();
             index = 0;
@@ -568,26 +649,26 @@ impl Layers {
                     assert(full.at(day) == next.at(day));
                 }
             }
-            Some(Layers::from_base(clean))
-        } else { Some(next) }
+            Layers::from_base(clean)
+        } else { next }
     }
 
-    pub fn range(&self, start: i32, end: i32) -> (out: Option<Counts>)
+    pub fn range(&self, start: i32, end: i32) -> (total: Tally)
         requires self.wf(),
-        ensures out matches Some(value) ==> value.nonnegative()
-            && value.high == self.range_count(start as int, end as int, true)
-            && value.low == self.range_count(start as int, end as int, false),
+        ensures total@.nonnegative()
+            && total@.high == self.range_count(start as int, end as int, true)
+            && total@.low == self.range_count(start as int, end as int, false),
     {
         proof { reveal(Layers::wf); }
-        let mut total = Counts::zero();
-        if end <= start { return Some(total); }
+        let mut total = Tally::zero();
+        if end <= start { return total; }
         let width = end as i64 - start as i64;
-        if width as u128 <= self.physical as u128 / (self.tiers.len() as u128 + 1) {
+        if width as u128 <= self.physical / (self.tiers.len() as u128 + 1) {
             let mut day = start as i64;
             while day < end as i64
-                invariant start as i64 <= day <= end as i64, total.nonnegative(), self.wf(),
-                    total.high == self.range_count(start as int, day as int, true),
-                    total.low == self.range_count(start as int, day as int, false),
+                invariant start as i64 <= day <= end as i64, total@.nonnegative(), self.wf(),
+                    total@.high == self.range_count(start as int, day as int, true),
+                    total@.low == self.range_count(start as int, day as int, false),
                 decreases end as i64 - day,
             {
                 proof {
@@ -595,9 +676,7 @@ impl Layers {
                     verus_prooflib::lemma_range_step(day as int - start as int, self.range_weight(start as int, true));
                     verus_prooflib::lemma_range_step(day as int - start as int, self.range_weight(start as int, false));
                 }
-                total = match total.add(self.get(day as i32)) {
-                    Some(value) => value, None => return None,
-                };
+                total = total.add(&self.get(day as i32));
                 day += 1;
             }
         } else {
@@ -608,12 +687,12 @@ impl Layers {
             }
             let mut index = 0;
             while index < full.keys.len()
-                invariant index <= full.keys@.len(), total.nonnegative(), self.wf(), full.wf(),
+                invariant index <= full.keys@.len(), total@.nonnegative(), self.wf(), full.wf(),
                     forall|day: i32| #![trigger full.at(day)] full.at(day) == self.at(day),
                     self.range_count(start as int, end as int, true) == full.range_prefix(start as int, end as int, full.keys@.len() as int, true),
                     self.range_count(start as int, end as int, false) == full.range_prefix(start as int, end as int, full.keys@.len() as int, false),
-                    total.high == full.range_prefix(start as int, end as int, index as int, true),
-                    total.low == full.range_prefix(start as int, end as int, index as int, false),
+                    total@.high == full.range_prefix(start as int, end as int, index as int, true),
+                    total@.low == full.range_prefix(start as int, end as int, index as int, false),
                 decreases full.keys@.len() - index,
             {
                 let day = full.keys[index];
@@ -623,18 +702,13 @@ impl Layers {
                     verus_common::sums::lemma_sum_take(full.keys@, index as int, full.range_day_weight(start as int, end as int, false));
                 }
                 if start <= day && day < end {
-                    let value = match full.values.get(&day) {
-                        Some(value) => *value,
-                        None => Counts::zero(),
-                    };
-                    total = match total.add(value) {
-                        Some(value) => value, None => return None,
-                    };
+                    let value = full.get(day);
+                    total = total.add(&value);
                 }
                 index += 1;
             }
         }
-        Some(total)
+        total
     }
 }
 
@@ -900,7 +974,7 @@ impl Directory {
             }
     }
 
-    #[verifier::rlimit(15)]
+    #[verifier::rlimit(60)]
     pub fn install(&mut self, mode: Arc<Vec<u8>>, days: Arc<Layers>)
         requires old(self).wf(), days.wf(),
         ensures final(self).wf(),

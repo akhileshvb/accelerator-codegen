@@ -11,6 +11,8 @@ use crate::gen_spec::CustomerRow;
 use crate::gen_obligations::{CustomerInput, customer_input_view};
 use crate::dimensions::{Customer, copy_customer};
 use crate::paged::*;
+use crate::dimension_query::lemma_customer_join_key;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -42,7 +44,7 @@ impl Ent for CustEnt {
 }
 
 pub open spec fn variant_weight(weight: spec_fn(CustomerRow) -> int) -> spec_fn(Customer) -> int {
-    |variant: Customer| variant.count as int * weight(customer_input_view(*variant.row))
+    |variant: Customer| variant.count@ * weight(customer_input_view(*variant.row))
 }
 
 pub open spec fn variants_sum(variants: Seq<Customer>, weight: spec_fn(CustomerRow) -> int) -> int {
@@ -58,17 +60,27 @@ pub open spec fn table_sum(table: Paged<CustEnt>, weight: spec_fn(CustomerRow) -
 }
 
 pub open spec fn variant_count() -> spec_fn(Customer) -> int {
-    |variant: Customer| variant.count as int
+    |variant: Customer| variant.count@
 }
 
 pub open spec fn variants_count(variants: Seq<Customer>) -> int {
     sum(variants, variant_count())
 }
 
+pub open spec fn variants_distinct(variants: Seq<Customer>) -> bool {
+    forall|first: int, second: int| #![trigger variants[first], variants[second]] 0 <= first < second < variants.len() ==>
+        customer_input_view(*variants[first].row) != customer_input_view(*variants[second].row)
+}
+
+pub open spec fn row_indicator(row: CustomerRow) -> spec_fn(CustomerRow) -> int {
+    |other: CustomerRow| if other == row { 1int } else { 0int }
+}
+
 pub open spec fn entry_valid(entry: CustEnt) -> bool {
-    &&& entry.variants@.len() > 0 && entry.variants@.len() <= 1000000
+    &&& entry.variants@.len() > 0
+    &&& variants_distinct(entry.variants@)
     &&& forall|index: int| #![trigger entry.variants@[index]] 0 <= index < entry.variants@.len() ==> {
-        &&& entry.variants@[index].count > 0
+        &&& entry.variants@[index].count@ > 0
         &&& customer_input_view(*entry.variants@[index].row).c_custkey == entry.custkey as int
     }
 }
@@ -135,29 +147,29 @@ pub fn find_row(variants: &Vec<Customer>, row: &CustomerInput) -> (result: Optio
 pub fn dup_customer(variant: &Customer) -> (result: Customer)
     ensures result == *variant,
 {
-    Customer { row: variant.row.clone(), count: variant.count }
+    Customer { row: variant.row.clone(), count: variant.count.dup() }
 }
 
-pub fn variants_recount(variants: &Vec<Customer>, position: usize, count: i128) -> (result: Vec<Customer>)
+pub fn variants_recount(variants: &Vec<Customer>, position: usize, count: &Wide) -> (result: Vec<Customer>)
     requires position < variants.len(),
-    ensures result@ == variants@.update(position as int, Customer { row: variants@[position as int].row, count }),
+    ensures result@ == variants@.update(position as int, Customer { row: variants@[position as int].row, count: *count }),
 {
     let mut result = Vec::with_capacity(variants.len());
     let mut index = 0usize;
     while index < variants.len()
         invariant index <= variants.len(), position < variants.len(),
-            result@ == variants@.update(position as int, Customer { row: variants@[position as int].row, count }).take(index as int),
+            result@ == variants@.update(position as int, Customer { row: variants@[position as int].row, count: *count }).take(index as int),
         decreases variants.len() - index,
     {
-        if index == position { result.push(Customer { row: variants[index].row.clone(), count }); }
+        if index == position { result.push(Customer { row: variants[index].row.clone(), count: count.dup() }); }
         else { result.push(dup_customer(&variants[index])); }
         proof {
-            let whole = variants@.update(position as int, Customer { row: variants@[position as int].row, count });
+            let whole = variants@.update(position as int, Customer { row: variants@[position as int].row, count: *count });
             assert(whole.take(index as int + 1) =~= whole.take(index as int).push(whole[index as int]));
         }
         index += 1;
     }
-    proof { assert(result@ =~= variants@.update(position as int, Customer { row: variants@[position as int].row, count })); }
+    proof { assert(result@ =~= variants@.update(position as int, Customer { row: variants@[position as int].row, count: *count })); }
     result
 }
 
@@ -190,10 +202,9 @@ pub fn variants_drop(variants: &Vec<Customer>, position: usize) -> (result: Vec<
 }
 
 pub fn variants_append(variants: &Vec<Customer>, variant: Customer) -> (result: Vec<Customer>)
-    requires variants.len() < 0x1000_0000,
     ensures result@ == variants@.push(variant),
 {
-    let mut result = Vec::with_capacity(variants.len() + 1);
+    let mut result = Vec::new();
     let mut index = 0usize;
     while index < variants.len()
         invariant index <= variants.len(), result@ == variants@.take(index as int),
@@ -210,26 +221,26 @@ pub fn variants_append(variants: &Vec<Customer>, variant: Customer) -> (result: 
 
 // ---- sums over variant lists ------------------------------------------------------------------
 
-pub proof fn lemma_recount_sum(old: Seq<Customer>, position: int, count: i128, weight: spec_fn(CustomerRow) -> int)
+pub proof fn lemma_recount_sum(old: Seq<Customer>, position: int, count: Wide, weight: spec_fn(CustomerRow) -> int)
     requires 0 <= position < old.len(),
     ensures
         variants_sum(old.update(position, Customer { row: old[position].row, count }), weight)
-            == variants_sum(old, weight) + (count as int - old[position].count as int) * weight(customer_input_view(*old[position].row)),
+            == variants_sum(old, weight) + (count@ - old[position].count@) * weight(customer_input_view(*old[position].row)),
         variants_count(old.update(position, Customer { row: old[position].row, count }))
-            == variants_count(old) + count as int - old[position].count as int,
+            == variants_count(old) + count@ - old[position].count@,
 {
     let updated = Customer { row: old[position].row, count };
     verus_common::sums::lemma_sum_update(old, position, updated, variant_weight(weight));
     verus_common::sums::lemma_sum_update(old, position, updated, variant_count());
     let w = weight(customer_input_view(*old[position].row));
-    assert(count as int * w - old[position].count as int * w == (count as int - old[position].count as int) * w) by (nonlinear_arith);
+    assert(count@ * w - old[position].count@ * w == (count@ - old[position].count@) * w) by (nonlinear_arith);
 }
 
 pub proof fn lemma_drop_sum(old: Seq<Customer>, position: int, weight: spec_fn(CustomerRow) -> int)
     requires 0 <= position < old.len(),
     ensures
-        variants_sum(old.remove(position), weight) == variants_sum(old, weight) - old[position].count as int * weight(customer_input_view(*old[position].row)),
-        variants_count(old.remove(position)) == variants_count(old) - old[position].count as int,
+        variants_sum(old.remove(position), weight) == variants_sum(old, weight) - old[position].count@ * weight(customer_input_view(*old[position].row)),
+        variants_count(old.remove(position)) == variants_count(old) - old[position].count@,
 {
     verus_common::sums::lemma_sum_remove(old, position, variant_weight(weight));
     verus_common::sums::lemma_sum_remove(old, position, variant_count());
@@ -237,8 +248,8 @@ pub proof fn lemma_drop_sum(old: Seq<Customer>, position: int, weight: spec_fn(C
 
 pub proof fn lemma_append_sum(old: Seq<Customer>, variant: Customer, weight: spec_fn(CustomerRow) -> int)
     ensures
-        variants_sum(old.push(variant), weight) == variants_sum(old, weight) + variant.count as int * weight(customer_input_view(*variant.row)),
-        variants_count(old.push(variant)) == variants_count(old) + variant.count as int,
+        variants_sum(old.push(variant), weight) == variants_sum(old, weight) + variant.count@ * weight(customer_input_view(*variant.row)),
+        variants_count(old.push(variant)) == variants_count(old) + variant.count@,
 {
     verus_common::sums::lemma_sum_push(old, variant, variant_weight(weight));
     verus_common::sums::lemma_sum_push(old, variant, variant_count());
@@ -269,9 +280,10 @@ proof fn lemma_table_remove(old: Paged<CustEnt>, new: Paged<CustEnt>, key: KeyVi
 
 /// A non-empty variant list with positive counts of one key is a valid entry.
 pub open spec fn variants_valid(variants: Seq<Customer>, custkey: int) -> bool {
-    &&& variants.len() > 0 && variants.len() <= 1000000
+    &&& variants.len() > 0
+    &&& variants_distinct(variants)
     &&& forall|index: int| #![trigger variants[index]] 0 <= index < variants.len() ==> {
-        &&& variants[index].count > 0
+        &&& variants[index].count@ > 0
         &&& customer_input_view(*variants[index].row).c_custkey == custkey
     }
 }
@@ -315,38 +327,71 @@ fn store_variants(table: &mut Paged<CustEnt>, custkey: i64, variants: Vec<Custom
     }
 }
 
-pub fn edit_table(table: &mut Paged<CustEnt>, shared: &Arc<CustomerInput>, change: i128) -> (result: bool)
+pub open spec fn variant_row_at(variants: Seq<Customer>, index: int) -> CustomerRow {
+    customer_input_view(*variants[index].row)
+}
+
+pub proof fn lemma_row_indicator_sum(variants: Seq<Customer>, index: int)
+    requires 0 <= index < variants.len(), variants_distinct(variants),
+    ensures variants_sum(variants, row_indicator(customer_input_view(*variants[index].row))) == variants[index].count@,
+{
+    let row = variant_row_at(variants, index);
+    let weight = variant_weight(row_indicator(row));
+    assert forall|other: int| 0 <= other < variants.len() && other != index implies weight(#[trigger] variants[other]) == 0 by {
+        if other < index { assert(customer_input_view(*variants[other].row) != customer_input_view(*variants[index].row)); }
+        else { assert(customer_input_view(*variants[index].row) != customer_input_view(*variants[other].row)); }
+    }
+    verus_common::sums::lemma_sum_single_match(variants, weight, index);
+    assert(weight(variants[index]) == variants[index].count@ * 1) by {}
+}
+
+pub proof fn lemma_row_indicator_absent(variants: Seq<Customer>, row: CustomerRow)
+    requires forall|index: int| #![trigger variants[index]] 0 <= index < variants.len() ==> customer_input_view(*variants[index].row) != row,
+    ensures variants_sum(variants, row_indicator(row)) == 0,
+{
+    let weight = variant_weight(row_indicator(row));
+    assert forall|index: int| 0 <= index < variants.len() implies weight(#[trigger] variants[index]) == 0 by {}
+    verus_common::sums::lemma_sum_zero(variants, weight);
+}
+
+pub fn edit_table(table: &mut Paged<CustEnt>, shared: &Arc<CustomerInput>, change: &Wide)
     requires table_valid(*old(table)),
-    ensures result ==> table_valid(*final(table)),
-        result ==> forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(*final(table), weight)
-            == table_sum(*old(table), weight) + change as int * weight(customer_input_view(**shared)),
-        result ==> forall|key: KeyView| key != (shared.c_custkey as int, Seq::<u8>::empty()) ==> final(table).at(key) == old(table).at(key),
+        table_sum(*old(table), row_indicator(customer_input_view(**shared))) + change@ >= 0,
+    ensures table_valid(*final(table)),
+        forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(*final(table), weight)
+            == table_sum(*old(table), weight) + change@ * weight(customer_input_view(**shared)),
+        forall|key: KeyView| key != (shared.c_custkey as int, Seq::<u8>::empty()) ==> final(table).at(key) == old(table).at(key),
 {
     let row: &CustomerInput = &**shared;
     let ghost before = *table;
     let ghost ckey = (row.c_custkey as int, Seq::<u8>::empty());
     let probe = CustEnt { custkey: row.c_custkey, variants: Arc::new(Vec::new()) };
-    proof { assert(probe.kv() == ckey); }
+    proof {
+        assert(probe.kv() == ckey);
+        assert forall|other: CustomerRow| other.c_custkey != row.c_custkey as int implies #[trigger] row_indicator(customer_input_view(*row))(other) == 0 by {}
+        lemma_customer_join_key(before, row.c_custkey as int, row_indicator(customer_input_view(*row)));
+    }
     let existing = table.get(&probe);
     match existing {
         None => {
-            if change < 0 { return false; }
-            if change == 0 { return true; }
+            proof {
+                assert(variants_at(before, row.c_custkey as int) == Seq::<Customer>::empty());
+                assert(table_sum(before, row_indicator(customer_input_view(*row))) == 0);
+            }
+            if change.is_zero() { return; }
             let mut variants = Vec::new();
-            let added = Customer { row: shared.clone(), count: change };
+            let added = Customer { row: shared.clone(), count: change.dup() };
             variants.push(added);
             proof {
                 assert(variants@ =~= seq![added]);
-                assert(variants_at(before, row.c_custkey as int) == Seq::<Customer>::empty());
             }
             store_variants(table, row.c_custkey, variants);
             proof {
                 assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(*table, weight)
-                    == table_sum(before, weight) + change as int * weight(customer_input_view(*row)) by {
+                    == table_sum(before, weight) + change@ * weight(customer_input_view(*row)) by {
                     verus_common::sums::lemma_sum_singleton(added, variant_weight(weight));
                 }
             }
-            true
         },
         Some(entry) => {
             let old_variants = &*entry.variants;
@@ -356,22 +401,33 @@ pub fn edit_table(table: &mut Paged<CustEnt>, shared: &Arc<CustomerInput>, chang
             }
             match find_row(old_variants, row) {
                 Some(index) => {
-                    let current = old_variants[index].count;
-                    let new_count = match current.checked_add(change) { Some(value) => value, None => return false };
-                    if new_count < 0 { return false; }
-                    if new_count == 0 {
+                    let current = old_variants[index].count.dup();
+                    let new_count = current.add(change);
+                    proof {
+                        lemma_row_indicator_sum(old_variants@, index as int);
+                        assert(customer_input_view(*old_variants@[index as int].row) == customer_input_view(*row));
+                        assert(new_count@ >= 0);
+                    }
+                    if new_count.is_zero() {
                         let rest = variants_drop(old_variants, index);
                         proof {
                             lemma_drop_sum(old_variants@, index as int, weight_unit());
                             assert(rest@.len() == 0 || variants_valid(rest@, row.c_custkey as int)) by {
                                 if rest@.len() > 0 {
                                     assert forall|j: int| #![trigger rest@[j]] 0 <= j < rest@.len() implies {
-                                        &&& rest@[j].count > 0
+                                        &&& rest@[j].count@ > 0
                                         &&& customer_input_view(*rest@[j].row).c_custkey == row.c_custkey as int
                                     } by {
                                         assert(rest@[j] == old_variants@.remove(index as int)[j]);
                                         if j < index as int { assert(old_variants@.remove(index as int)[j] == old_variants@[j]); }
                                         else { assert(old_variants@.remove(index as int)[j] == old_variants@[j + 1]); }
+                                    }
+                                    assert forall|first: int, second: int| #![trigger rest@[first], rest@[second]] 0 <= first < second < rest@.len() implies
+                                        customer_input_view(*rest@[first].row) != customer_input_view(*rest@[second].row) by {
+                                        let source_first = if first < index as int { first } else { first + 1 };
+                                        let source_second = if second < index as int { second } else { second + 1 };
+                                        assert(rest@[first] == old_variants@[source_first]);
+                                        assert(rest@[second] == old_variants@[source_second]);
                                     }
                                 }
                             }
@@ -379,23 +435,22 @@ pub fn edit_table(table: &mut Paged<CustEnt>, shared: &Arc<CustomerInput>, chang
                         store_variants(table, row.c_custkey, rest);
                         proof {
                             assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(*table, weight)
-                                == table_sum(before, weight) + change as int * weight(customer_input_view(*row)) by {
+                                == table_sum(before, weight) + change@ * weight(customer_input_view(*row)) by {
                                 lemma_drop_sum(old_variants@, index as int, weight);
                                 assert(customer_input_view(*old_variants@[index as int].row) == customer_input_view(*row));
                                 let w = weight(customer_input_view(*row));
-                                assert(current as int + change as int == 0);
-                                assert(change as int * w == -(current as int * w)) by (nonlinear_arith)
-                                    requires current as int + change as int == 0;
+                                assert(current@ + change@ == 0);
+                                assert(change@ * w == -(current@ * w)) by (nonlinear_arith)
+                                    requires current@ + change@ == 0;
                             }
                         }
-                        true
                     } else {
-                        let updated = variants_recount(old_variants, index, new_count);
+                        let updated = variants_recount(old_variants, index, &new_count);
                         proof {
                             assert(updated@.len() == old_variants@.len());
                             assert(variants_valid(updated@, row.c_custkey as int)) by {
                                 assert forall|j: int| #![trigger updated@[j]] 0 <= j < updated@.len() implies {
-                                    &&& updated@[j].count > 0
+                                    &&& updated@[j].count@ > 0
                                     &&& customer_input_view(*updated@[j].row).c_custkey == row.c_custkey as int
                                 } by {
                                     if j == index as int {
@@ -404,44 +459,54 @@ pub fn edit_table(table: &mut Paged<CustEnt>, shared: &Arc<CustomerInput>, chang
                                         assert(updated@[j] == old_variants@[j]);
                                     }
                                 }
+                                assert forall|first: int, second: int| #![trigger updated@[first], updated@[second]] 0 <= first < second < updated@.len() implies
+                                    customer_input_view(*updated@[first].row) != customer_input_view(*updated@[second].row) by {
+                                    assert(updated@[first].row == old_variants@[first].row);
+                                    assert(updated@[second].row == old_variants@[second].row);
+                                }
                             }
                         }
                         store_variants(table, row.c_custkey, updated);
                         proof {
                             assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(*table, weight)
-                                == table_sum(before, weight) + change as int * weight(customer_input_view(*row)) by {
+                                == table_sum(before, weight) + change@ * weight(customer_input_view(*row)) by {
                                 lemma_recount_sum(old_variants@, index as int, new_count, weight);
                                 assert(customer_input_view(*old_variants@[index as int].row) == customer_input_view(*row));
                             }
                         }
-                        true
                     }
                 },
                 None => {
-                    if change < 0 { return false; }
-                    if change == 0 { return true; }
-                    if old_variants.len() >= 1000000 { return false; }
-                    let added = Customer { row: shared.clone(), count: change };
+                    proof {
+                        lemma_row_indicator_absent(old_variants@, customer_input_view(*row));
+                        assert(change@ >= 0);
+                    }
+                    if change.is_zero() { return; }
+                    let added = Customer { row: shared.clone(), count: change.dup() };
                     let appended = variants_append(old_variants, added);
                     proof {
                         assert(variants_valid(appended@, row.c_custkey as int)) by {
                             assert forall|j: int| #![trigger appended@[j]] 0 <= j < appended@.len() implies {
-                                &&& appended@[j].count > 0
+                                &&& appended@[j].count@ > 0
                                 &&& customer_input_view(*appended@[j].row).c_custkey == row.c_custkey as int
                             } by {
                                 if j < old_variants@.len() as int { assert(appended@[j] == old_variants@[j]); }
                                 else { assert(appended@[j] == added); }
+                            }
+                            assert forall|first: int, second: int| #![trigger appended@[first], appended@[second]] 0 <= first < second < appended@.len() implies
+                                customer_input_view(*appended@[first].row) != customer_input_view(*appended@[second].row) by {
+                                if second < old_variants@.len() as int { assert(appended@[first] == old_variants@[first]); assert(appended@[second] == old_variants@[second]); }
+                                else { assert(appended@[second] == added); assert(appended@[first] == old_variants@[first]); }
                             }
                         }
                     }
                     store_variants(table, row.c_custkey, appended);
                     proof {
                         assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(*table, weight)
-                            == table_sum(before, weight) + change as int * weight(customer_input_view(*row)) by {
+                            == table_sum(before, weight) + change@ * weight(customer_input_view(*row)) by {
                             lemma_append_sum(old_variants@, added, weight);
                         }
                     }
-                    true
                 },
             }
         },
@@ -450,33 +515,33 @@ pub fn edit_table(table: &mut Paged<CustEnt>, shared: &Arc<CustomerInput>, chang
 
 pub open spec fn weight_unit() -> spec_fn(CustomerRow) -> int { |row: CustomerRow| 1int }
 
-fn count_variants(variants: &Vec<Customer>) -> (result: Option<i128>)
-    requires forall|index: int| #![trigger variants@[index]] 0 <= index < variants.len() ==> variants@[index].count > 0,
-    ensures result matches Some(total) ==> total as int == variants_count(variants@) && total >= 0,
+fn count_variants(variants: &Vec<Customer>) -> (result: Wide)
+    requires forall|index: int| #![trigger variants@[index]] 0 <= index < variants.len() ==> variants@[index].count@ > 0,
+    ensures result@ == variants_count(variants@) && result@ >= 0,
 {
-    let mut total = 0i128;
+    let mut total = Wide::zero();
     let mut index = 0usize;
     while index < variants.len()
-        invariant index <= variants.len(), total as int == variants_count(variants@.take(index as int)), total >= 0,
-            forall|other: int| #![trigger variants@[other]] 0 <= other < variants.len() ==> variants@[other].count > 0,
+        invariant index <= variants.len(), total@ == variants_count(variants@.take(index as int)), total@ >= 0,
+            forall|other: int| #![trigger variants@[other]] 0 <= other < variants.len() ==> variants@[other].count@ > 0,
         decreases variants.len() - index,
     {
         proof { verus_common::sums::lemma_sum_take(variants@, index as int, variant_count()); }
-        total = match total.checked_add(variants[index].count) { Some(value) => value, None => return None };
+        total = total.add(&variants[index].count);
         index += 1;
     }
     proof { assert(variants@.take(variants.len() as int) =~= variants@); }
-    Some(total)
+    total
 }
 
-pub fn custkey_total(table: &Paged<CustEnt>, custkey: i64) -> (result: Option<i128>)
+pub fn custkey_total(table: &Paged<CustEnt>, custkey: i64) -> (result: Wide)
     requires table_valid(*table),
-    ensures result matches Some(total) ==> total as int == variants_count(variants_at(*table, custkey as int)) && total >= 0,
+    ensures result@ == variants_count(variants_at(*table, custkey as int)) && result@ >= 0,
 {
     let probe = CustEnt { custkey, variants: Arc::new(Vec::new()) };
     proof { assert(probe.kv() == (custkey as int, Seq::<u8>::empty())); }
     match table.get(&probe) {
-        None => Some(0i128),
+        None => Wide::zero(),
         Some(entry) => {
             proof { assert(entry_valid(entry)); }
             count_variants(&*entry.variants)
