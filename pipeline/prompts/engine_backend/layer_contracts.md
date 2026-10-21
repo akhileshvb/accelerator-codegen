@@ -70,7 +70,10 @@ the engine side must hold up. Each names its layer.
 Writes `backends/{engine}/host.sh` against `host_contract.md` (binding; the prompt carries
 it) and the minimal `backends/{engine}/backend.cmake` (the `accel_backend_{engine}`
 INTERFACE target and the test glob), so that `engine_build` configures and builds the
-backend from the first layer on. Later layers extend `build` and `backend.cmake`.
+backend from the first layer on. Later layers extend `build` and `backend.cmake`. At this
+layer there is nothing to install or load yet (no module, extension or plugin exists):
+`build` configures and compiles, and the layer that first produces a loadable unit adds
+installing and loading it. Do not fail `hostctl` for a missing install or load step.
 
 **Harness:** none of its own; the gate `engine_hostctl` drives the script: `info` names
 the engine and all eight verbs, `up` writes `env`, `load` twice (the second a no-op),
