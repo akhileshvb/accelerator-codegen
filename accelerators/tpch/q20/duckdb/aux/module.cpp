@@ -1339,8 +1339,12 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
   // size of the base image itself.
   const std::size_t max_overlay_weight =
       std::max<std::size_t>(4000000, parent->base->series_key.size() / 2);
+  const uint64_t dimension_delta_count = buffer.PartsuppDeltas().size() +
+                                         buffer.PartNameDeltas().size() +
+                                         buffer.SupplierDeltas().size();
   if (parent->OverlayWeight() + delta_count > max_overlay_weight ||
-      parent->DimensionOverlayWeight() + delta_count > TpchQ20State::kMaxDimensionOverlay) {
+      parent->DimensionOverlayWeight() + dimension_delta_count >
+          TpchQ20State::kMaxDimensionOverlay) {
     core::FinishRebuildAll(outcome);
     return outcome;
   }
