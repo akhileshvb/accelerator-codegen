@@ -356,9 +356,11 @@ pub open spec fn out_fits(r: OutRow) -> bool {
     true
 }
 
-/// Every correct answer fits the result's runtime types.
+/// A correct answer exists (none does, e.g., for a zero divisor) and every correct
+/// answer fits the result's runtime types.
 pub open spec fn answer_fits(db: Db, params: Params) -> bool {
-    forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
+    &&& exists|o: Seq<OutRow>| #[trigger] query_result(db, params, o)
+    &&& forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
 }
 
 // ── Obligations: the host calls only these ──
@@ -386,7 +388,7 @@ pub fn ob_build(
 }
 
 /// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
-/// outside the envelope or when a correct answer overflows the result's types.
+/// outside the envelope, or when no correct answer exists or one overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: i32,
