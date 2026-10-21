@@ -40,6 +40,8 @@ pub open spec fn directory_at(directory: Arc<Directory>, mode: Seq<u8>, day: int
     else { Counts { high: 0, low: 0 } }
 }
 
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub struct State {
     directory: Arc<Directory>,
     database: Ghost<Db>,

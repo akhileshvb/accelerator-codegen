@@ -133,6 +133,7 @@ fn publish_histogram(old: &Store<HistCell>, patch: &Work<HistCell>) -> (next: St
     histogram
 }
 
+#[verifier::rlimit(100)]
 pub fn update(state: &State, lineitem_delta: &[LineDelta], part_delta: &Vec<PartDelta>,
     keys: &[i64], rows: &[LineInput], Ghost(lineitem_full): Ghost<Seq<(LineitemRow, int)>>,
     Ghost(part_full): Ghost<Seq<(PartRow, int)>>, Ghost(db2): Ghost<Db>)
@@ -181,16 +182,36 @@ pub fn update(state: &State, lineitem_delta: &[LineDelta], part_delta: &Vec<Part
                     }
                     let value = amount(row.l_extendedprice, row.l_discount);
                     contribute(&mut patch, &*cells, row.l_quantity, row.sign, &value);
+                    proof {
+            assert forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
+                #![trigger hist_work_value(patch, class, brand, quantity, revenue)]
+                hist_work_value(patch, class, brand, quantity, revenue) == hist_work_value(previous, class, brand, quantity, revenue)
+                    + line_delta_weight(state.parts, *row, class, brand, quantity, revenue) by {}
+                    }
                 },
                 None => {
                     proof {
                         assert(state.parts.lookup(row.l_partkey as u64) =~= Seq::empty());
                         assert forall|class: u8, brand: Seq<u8>| #[trigger] part_value(state.parts, row.l_partkey as int, class, brand) == 0 by {}
+
+                assert forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
+                    #![trigger hist_work_value(patch, class, brand, quantity, revenue)]
+                    hist_work_value(patch, class, brand, quantity, revenue) == hist_work_value(previous, class, brand, quantity, revenue)
+                        + line_delta_weight(state.parts, *row, class, brand, quantity, revenue) by {
+                        let factor = if revenue { row.l_extendedprice as int * (100 - row.l_discount as int) } else { 1 };
+                        assert(0int * (row.sign as int) * factor == 0) by (nonlinear_arith);
+                    }
                     }
                 },
             }
         } else {
-            proof { assert(patch == previous); }
+            proof {
+                assert(patch == previous);
+            assert forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
+                #![trigger hist_work_value(patch, class, brand, quantity, revenue)]
+                hist_work_value(patch, class, brand, quantity, revenue) == hist_work_value(previous, class, brand, quantity, revenue)
+                    + line_delta_weight(state.parts, *row, class, brand, quantity, revenue) by {}
+            }
         }
         proof {
             assert forall|class: u8, brand: Seq<u8>, quantity: int, revenue: bool|
@@ -199,6 +220,8 @@ pub fn update(state: &State, lineitem_delta: &[LineDelta], part_delta: &Vec<Part
                     == line_delta_prefix(state.parts, lineitem_delta@, index as int + 1, class, brand, quantity, revenue) by {
                 assert(hist_work_value(previous, class, brand, quantity, revenue) == line_delta_prefix(state.parts, lineitem_delta@, index as int, class, brand, quantity, revenue));
                 lemma_sum_take(lineitem_delta@, index as int, |row: LineDelta| line_delta_weight(state.parts, row, class, brand, quantity, revenue));
+                assert(lineitem_delta@[index as int] == *row);
+                assert(hist_work_value(patch, class, brand, quantity, revenue) == hist_work_value(previous, class, brand, quantity, revenue) + line_delta_weight(state.parts, *row, class, brand, quantity, revenue));
             }
         }
         index += 1;
