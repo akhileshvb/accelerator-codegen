@@ -49,7 +49,7 @@ python3 -m venv .venv && .venv/bin/pip install -q -r pipeline/orchestrator/requi
 export PY="$PWD/.venv/bin/python" PYTHONPATH="$PWD/pipeline/orchestrator"
 export ACCEL_DATASET_DIR=/flash1/akhilvb/datasets/tpch_sf1_tbl
 export ACCEL_TPCH_DB=$PWD/.data/tpch_sf1.duckdb
-mkdir -p .data && cp /flash1/akhilvb/tpch_sf1.pristine_20261016.duckdb "$ACCEL_TPCH_DB"
+mkdir -p .data && install -m 644 /flash1/akhilvb/tpch_sf1.pristine_20261016.duckdb "$ACCEL_TPCH_DB"   # a writable copy
 # Optional, faster container builds: a prebuilt in-container DuckDB for the engine being built
 # (~/.cache/accel_pg/build/duckdb for postgres, ~/.cache/accel_mysql/... for mysql; bind them via ACCEL_DUCKDB_SEED_DIRS).
 # export ACCEL_DUCKDB_SEED=...
