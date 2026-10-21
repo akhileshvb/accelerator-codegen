@@ -183,7 +183,7 @@ pub fn build(
             }
             continue;
         }
-        let groups = match join(&parts, &*edges) { Some(value) => value, None => return None };
+        let groups = join(&parts, &*edges);
         if !collect_contribution(&mut counts, &groups, 1) { return None; }
         proof {
             assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(counts, key)

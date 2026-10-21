@@ -685,7 +685,7 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
         if before < 0 || after < 0 { return Err(6); }
         if before == 0 {
             if let Some(edges) = old_edges.get(&supplier) {
-                let groups = match join(old_parts, &*edges) { Some(value) => value, None => return Err(4) };
+                let groups = join(old_parts, &*edges);
                 if !collect_contribution(&mut group_changes, &groups, -1) { return Err(4); }
             }
         }
@@ -695,7 +695,7 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
         }
         if after == 0 {
             if let Some(edges) = new_edges.get(&supplier) {
-                let groups = match join(new_parts, &*edges) { Some(value) => value, None => return Err(4) };
+                let groups = join(new_parts, &*edges);
                 if !collect_contribution(&mut group_changes, &groups, 1) { return Err(4); }
             }
         }

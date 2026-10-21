@@ -1,6 +1,6 @@
 use vstd::prelude::*;
 use std::sync::Arc;
-use verus_prooflib::ordered::{Index, Key};
+use verus_prooflib::ordered::{Index, Key, KeyView};
 use crate::gen_obligations::*;
 use crate::model::*;
 use verus_common::sums::*;
@@ -484,130 +484,212 @@ pub fn covered(needed: &Index<i64>, supplied: &Index<i64>) -> (ok: bool)
     }
 }
 
-pub fn accumulate_counts(target: &mut Counts, source: &Counts, factor: i64) -> (ok: bool)
-    requires cell_keys_valid(*target), cell_keys_valid(*source), factor >= 0,
+pub fn mark_group(set: &mut Counts, group: Arc<Group>)
+    requires group.valid(), cell_keys_valid(*old(set)),
+    ensures cell_keys_valid(*final(set)),
+        forall|query: verus_prooflib::ordered::KeyView| #[trigger] count_at(*final(set), query)
+            == if query == group.key() { 1int } else { count_at(*old(set), query) },
+{
+    let key = key_for(&*group);
+    set.put(key, Arc::new(Cell::new(group, 1)));
+}
+
+pub open spec fn unit_counts(counts: Counts) -> bool {
+    forall|key: verus_prooflib::ordered::KeyView| 0 <= #[trigger] count_at(counts, key) <= 1
+}
+
+pub fn union_groups(target: &mut Counts, source: &Counts)
+    requires cell_keys_valid(*old(target)), cell_keys_valid(*source), unit_counts(*old(target)),
     ensures cell_keys_valid(*final(target)),
-        ok ==> forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*final(target), key)
-            == count_at(*old(target), key) + count_at(*source, key) * factor as int,
+        forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*final(target), key)
+            == if count_at(*old(target), key) > 0 || count_at(*source, key) > 0 { 1int } else { 0int },
 {
     let initial = Ghost(*target);
     proof { source.model(); }
     let mut cursor = source.cursor();
     let mut processed: Ghost<int> = Ghost(0);
     loop
-        invariant cell_keys_valid(*target), cell_keys_valid(*source), factor >= 0,
-            initial@ == *old(target),
+        invariant cell_keys_valid(*target), cell_keys_valid(*source), initial@ == *old(target), unit_counts(initial@),
             0 <= processed@ <= source.entries().len(), cursor.remaining() == source.entries().skip(processed@),
             forall|position: int| 0 <= position < source.entries().len() ==>
                 #[trigger] source.at(source.entries()[position].0) == Some(source.entries()[position].1),
             forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*target, key)
-                == count_at(initial@, key) + sum(source.entries().take(processed@),
-                    |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == key { row.1.count as int * factor as int } else { 0int }),
+                == if count_at(initial@, key) > 0 || exists|position: int| 0 <= position < processed@
+                    && (#[trigger] source.entries()[position]).0 == key && source.entries()[position].1.count > 0 { 1int } else { 0int },
         decreases cursor.remaining().len(),
     {
-        let remaining = Ghost(cursor.remaining());
         let (key, cell) = match cursor.next() {
             Some(row) => row,
             None => {
                 proof {
-                    assert(remaining@.len() == 0);
+                    source.model();
                     assert(processed@ == source.entries().len());
-                    assert(source.entries().take(processed@) =~= source.entries());
                     assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(*target, key)
-                        == count_at(initial@, key) + count_at(*source, key) * factor as int by {
-                        verus_prooflib::lemma_ordered_selected_weight(source, key,
-                            |row: (verus_prooflib::ordered::KeyView, Cell)| row.1.count as int, factor as int,
-                            |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == key { row.1.count as int * factor as int } else { 0int });
+                        == if count_at(initial@, key) > 0 || count_at(*source, key) > 0 { 1int } else { 0int } by {
+                        if exists|position: int| 0 <= position < processed@
+                            && (#[trigger] source.entries()[position]).0 == key && source.entries()[position].1.count > 0 {
+                            let position = choose|position: int| 0 <= position < processed@
+                                && (#[trigger] source.entries()[position]).0 == key && source.entries()[position].1.count > 0;
+                            assert(source.at(source.entries()[position].0) == Some(source.entries()[position].1));
+                            assert(count_at(*source, key) > 0);
+                        }
+                        if count_at(*source, key) > 0 {
+                            assert(source.at(key).is_some());
+                            let position = choose|position: int| #![auto] 0 <= position < source.entries().len()
+                                && source.entries()[position].0 == key;
+                            assert(source.at(source.entries()[position].0) == Some(source.entries()[position].1));
+                            assert(0 <= position < processed@ && source.entries()[position].0 == key && source.entries()[position].1.count > 0);
+                        }
                     }
                 }
-                return true;
+                return;
             },
         };
-        if cell.count < 0 { return false; }
         proof {
             assert((key.view(), *cell) == source.entries()[processed@]);
-            assert(source.at(source.entries()[processed@].0) == Some(source.entries()[processed@].1));
             assert(source.at(key.view()) == Some(*cell));
-            assert(source.at(key.view()).is_some());
             assert(source.at(key.view()).unwrap().group.valid());
-            verus_prooflib::lemma_i64_product(cell.count, factor);
         }
-        let product = cell.count as i128 * factor as i128;
-        proof {
-            assert(product >= 0) by (nonlinear_arith)
-                requires product as int == cell.count as int * factor as int, cell.count >= 0, factor >= 0;
-        }
-        if product > i64::MAX as i128 { return false; }
-        if !bump_group(target, cell.group.clone(), product as i64) { return false; }
+        let before = Ghost(*target);
+        if cell.count > 0 { mark_group(target, cell.group.clone()); }
         proof {
             assert forall|query: verus_prooflib::ordered::KeyView| #[trigger] count_at(*target, query)
-                == count_at(initial@, query) + sum(source.entries().take(processed@ + 1),
-                    |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == query { row.1.count as int * factor as int } else { 0int }) by {
-                lemma_sum_take(source.entries(), processed@,
-                    |row: (verus_prooflib::ordered::KeyView, Cell)| if row.0 == query { row.1.count as int * factor as int } else { 0int });
+                == if count_at(initial@, query) > 0 || exists|position: int| 0 <= position < processed@ + 1
+                    && (#[trigger] source.entries()[position]).0 == query && source.entries()[position].1.count > 0 { 1int } else { 0int } by {
+                if cell.count > 0 {
+                    assert(cell.group.key() == key.view());
+                    if query == key.view() { assert(source.entries()[processed@].0 == query); }
+                }
+                if exists|position: int| 0 <= position < processed@ + 1
+                    && (#[trigger] source.entries()[position]).0 == query && source.entries()[position].1.count > 0 {
+                    let position = choose|position: int| 0 <= position < processed@ + 1
+                        && (#[trigger] source.entries()[position]).0 == query && source.entries()[position].1.count > 0;
+                    if position < processed@ { assert(count_at(before@, query) == 1); }
+                }
             }
         }
         processed = Ghost(processed@ + 1);
     }
 }
 
-pub fn join(parts: &Parts, edges: &Index<i64>) -> (out: Option<Counts>)
-    requires parts_keys_valid(*parts), integer_keys(*edges),
-    ensures out matches Some(groups) ==> cell_keys_valid(groups)
-        && forall|key: verus_prooflib::ordered::KeyView|
-            #[trigger] count_at(groups, key) == joined_count(*parts, *edges, key),
+/// Some neighbour part with a positive multiplicity holds a positive count of the group.
+pub open spec fn hit(parts: Parts, rows: Seq<(KeyView, i64)>, key: KeyView) -> bool {
+    exists|position: int| 0 <= position < rows.len() && (#[trigger] rows[position]).1 > 0
+        && part_at(parts, rows[position].0.0, key) > 0
+}
+
+pub open spec fn nonneg_parts(parts: Parts) -> bool {
+    forall|part: int, key: KeyView| #[trigger] part_at(parts, part, key) >= 0
+}
+
+pub open spec fn nonneg_rows(rows: Seq<(KeyView, i64)>) -> bool {
+    forall|position: int| 0 <= position < rows.len() ==> (#[trigger] rows[position]).1 >= 0
+}
+
+pub proof fn lemma_hit_extend(parts: Parts, rows: Seq<(KeyView, i64)>, position: int, key: KeyView)
+    requires 0 <= position < rows.len(),
+    ensures hit(parts, rows.take(position + 1), key)
+        == (hit(parts, rows.take(position), key) || (rows[position].1 > 0 && part_at(parts, rows[position].0.0, key) > 0)),
+{
+    let longer = rows.take(position + 1);
+    let shorter = rows.take(position);
+    assert(longer[position] == rows[position]);
+    if hit(parts, longer, key) && !(rows[position].1 > 0 && part_at(parts, rows[position].0.0, key) > 0) {
+        let at = choose|at: int| 0 <= at < longer.len() && (#[trigger] longer[at]).1 > 0 && part_at(parts, longer[at].0.0, key) > 0;
+        assert(at < position);
+        assert(shorter[at] == longer[at]);
+    }
+    if hit(parts, shorter, key) {
+        let at = choose|at: int| 0 <= at < shorter.len() && (#[trigger] shorter[at]).1 > 0 && part_at(parts, shorter[at].0.0, key) > 0;
+        assert(longer[at] == shorter[at]);
+    }
+}
+
+pub proof fn lemma_hit_joined(parts: Parts, rows: Seq<(KeyView, i64)>, key: KeyView)
+    requires nonneg_parts(parts), nonneg_rows(rows),
+    ensures hit(parts, rows, key) == (sum(rows, |row: (KeyView, i64)| row.1 as int * part_at(parts, row.0.0, key)) > 0),
+{
+    let weight = |row: (KeyView, i64)| row.1 as int * part_at(parts, row.0.0, key);
+    assert forall|position: int| 0 <= position < rows.len() implies weight(#[trigger] rows[position]) >= 0 by {
+        let row = rows[position];
+        assert(row.1 as int * part_at(parts, row.0.0, key) >= 0) by (nonlinear_arith)
+            requires row.1 >= 0, part_at(parts, row.0.0, key) >= 0;
+    }
+    lemma_sum_nonneg(rows, weight);
+    if hit(parts, rows, key) {
+        let position = choose|position: int| 0 <= position < rows.len() && (#[trigger] rows[position]).1 > 0
+            && part_at(parts, rows[position].0.0, key) > 0;
+        let a = rows[position].1 as int;
+        let b = part_at(parts, rows[position].0.0, key);
+        assert(a * b > 0) by (nonlinear_arith) requires a > 0, b > 0;
+        assert(weight(rows[position]) == a * b);
+        lemma_sum_pos(rows, weight, position);
+    }
+    if sum(rows, weight) > 0 {
+        let position = lemma_sum_nonzero_witness(rows, weight);
+        assert(rows[position].1 > 0 && part_at(parts, rows[position].0.0, key) > 0) by {
+            let row = rows[position];
+            if row.1 == 0 { assert(weight(row) == 0); }
+            let b = part_at(parts, row.0.0, key);
+            if b == 0 { assert(row.1 as int * b == 0) by (nonlinear_arith) requires b == 0; }
+        }
+    }
+}
+
+pub fn join(parts: &Parts, edges: &Index<i64>) -> (out: Counts)
+    requires parts_keys_valid(*parts), integer_keys(*edges), nonneg_rows(edges.entries()),
+    ensures cell_keys_valid(out), unit_counts(out),
+        forall|key: verus_prooflib::ordered::KeyView| (#[trigger] count_at(out, key) > 0) == hit(*parts, edges.entries(), key),
 {
     let mut groups = Index::new();
     proof { edges.model(); }
     let mut cursor = edges.cursor();
     let mut processed: Ghost<int> = Ghost(0);
     loop
-        invariant 0 <= processed@ <= edges.entries().len(), cell_keys_valid(groups),
+        invariant 0 <= processed@ <= edges.entries().len(), cell_keys_valid(groups), unit_counts(groups),
             parts_keys_valid(*parts), integer_keys(*edges),
             forall|position: int| 0 <= position < edges.entries().len() ==>
                 #[trigger] edges.at(edges.entries()[position].0) == Some(edges.entries()[position].1),
             cursor.remaining() == edges.entries().skip(processed@),
-            forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, key)
-                == sum(edges.entries().take(processed@), |row: (verus_prooflib::ordered::KeyView, i64)|
-                    row.1 as int * part_at(*parts, row.0.0, key)),
+            forall|key: verus_prooflib::ordered::KeyView| (#[trigger] count_at(groups, key) > 0)
+                == hit(*parts, edges.entries().take(processed@), key),
         decreases cursor.remaining().len(),
     {
-        let remaining = Ghost(cursor.remaining());
         let (part, multiplicity) = match cursor.next() {
             Some(row) => row,
             None => {
                 proof {
-                    assert(remaining@.len() == 0);
                     assert(processed@ == edges.entries().len());
                     assert(edges.entries().take(processed@) =~= edges.entries());
                 }
-                return Some(groups);
+                return groups;
             },
         };
-        if *multiplicity < 0 { return None; }
         let before = Ghost(groups);
         proof {
+            assert forall|key: verus_prooflib::ordered::KeyView| (#[trigger] count_at(before@, key) > 0)
+                == hit(*parts, edges.entries().take(processed@), key) by {}
             assert((part.view(), *multiplicity) == edges.entries()[processed@]);
             assert(edges.at(edges.entries()[processed@].0) == Some(edges.entries()[processed@].1));
             assert(edges.at(part.view()) == Some(*multiplicity));
             assert(edges.at(part.view()).is_some());
             assert(part.view().1 == Seq::<u8>::empty());
         }
-        if let Some(variants) = parts.get(&part) {
-            if !accumulate_counts(&mut groups, &*variants, *multiplicity) { return None; }
-            proof {
-                assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, key)
-                    == count_at(before@, key) + *multiplicity as int * part_at(*parts, part.number as int, key) by {
-                    assert(part_at(*parts, part.number as int, key) == count_at(*variants, key));
-                    assert(count_at(*variants, key) * *multiplicity as int == *multiplicity as int * count_at(*variants, key)) by (nonlinear_arith);
-                }
+        let found = parts.get(&part);
+        if *multiplicity > 0 {
+            if let Some(variants) = &found {
+                union_groups(&mut groups, &**variants);
             }
         }
         proof {
-            assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, key)
-                == sum(edges.entries().take(processed@ + 1), |row: (verus_prooflib::ordered::KeyView, i64)|
-                    row.1 as int * part_at(*parts, row.0.0, key)) by {
-                lemma_sum_take(edges.entries(), processed@, |row: (verus_prooflib::ordered::KeyView, i64)| row.1 as int * part_at(*parts, row.0.0, key));
+            let number = part.number as int;
+            assert(part.view() == (number, Seq::<u8>::empty()));
+            assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] part_at(*parts, number, key)
+                == match found { Some(variants) => count_at(*variants, key), None => 0int } by {}
+            assert forall|key: verus_prooflib::ordered::KeyView| (#[trigger] count_at(groups, key) > 0)
+                == hit(*parts, edges.entries().take(processed@ + 1), key) by {
+                lemma_hit_extend(*parts, edges.entries(), processed@, key);
+                assert(edges.entries().take(processed@ + 1)[processed@] == edges.entries()[processed@]);
             }
         }
         processed = Ghost(processed@ + 1);
