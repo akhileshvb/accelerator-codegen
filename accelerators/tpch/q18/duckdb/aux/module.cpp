@@ -849,12 +849,12 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   for (const auto &[order, sum] : survivors)
     needed_custkeys.insert(order.custkey);
   // ~48 entries per shard whatever the scale, so a commit clones little.
-  using Sums = core::ShardedCowHashMap<int64_t, 8>;
-  state.quantity_overflow = Sums(Sums::ShardBitsFor(survivors.size()));
+  using SumMap = core::ShardedCowHashMap<int64_t, 8>;
+  state.quantity_overflow = SumMap(SumMap::ShardBitsFor(survivors.size()));
   state.survivors = core::ShardedCowHashMap<TpchQ18SurvivorMeta, 8>(
-      Sums::ShardBitsFor(survivors.size()));
+      SumMap::ShardBitsFor(survivors.size()));
   state.customer_names = core::ShardedCowHashMap<std::string, 8>(
-      Sums::ShardBitsFor(needed_custkeys.size()));
+      SumMap::ShardBitsFor(needed_custkeys.size()));
   for (const auto &[order, sum] : survivors) {
     state.SetOrderQuantitySum(order.key, sum);
     state.SetOrderMeta(order.key, order.custkey, order.orderdate_days,
