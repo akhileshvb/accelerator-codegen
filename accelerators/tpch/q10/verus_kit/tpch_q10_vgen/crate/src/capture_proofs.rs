@@ -6,7 +6,7 @@ use verus_common::sums::*;
 use verus_prooflib::{join_sum, left_join_delta, right_join_delta};
 use verus_prooflib::ordered::Index;
 use crate::maintenance::{Orders, order_group_at, changed_key_weight};
-use crate::values::{Moments, moment_at};
+use crate::values::{Moments, Moms, moment_at};
 
 verus! {
 
@@ -253,8 +253,8 @@ pub proof fn lemma_left_fact_delta(orders: Seq<OrdersRow>, changes: Seq<(Lineite
 }
 
 #[verifier::rlimit(10)]
-pub proof fn lemma_changed_key_sum(before: Db, after: Db, keys: &Index<()>, order_changes: Orders, line_changes: Index<Moments>,
-    post_orders: Orders, post_lines: Index<Moments>, order_capture: Seq<(OrdersRow, int)>, line_capture: Seq<(LineitemRow, int)>,
+pub proof fn lemma_changed_key_sum(before: Db, after: Db, keys: &Index<()>, order_changes: Orders, line_changes: Index<Moms>,
+    post_orders: Orders, post_lines: Index<Moms>, order_capture: Seq<(OrdersRow, int)>, line_capture: Seq<(LineitemRow, int)>,
     slice: int, customer: int, grain: int, component: int)
     requires keys.wf(), bag_step(before.orders, after.orders, order_capture), bag_step(before.lineitem, after.lineitem, line_capture),
         forall|key: (int, Seq<u8>)| #[trigger] keys.at(key).is_some() ==> key.1 == Seq::<u8>::empty(),

@@ -8,6 +8,7 @@ use crate::dimensions::*;
 use crate::model::maxima_valid;
 use crate::paged::*;
 use crate::customers::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -18,7 +19,7 @@ pub open spec fn shape(dimensions: Dimensions) -> bool {
 }
 
 pub open spec fn customer_eq(row: CustomerRow) -> spec_fn(CustomerRow) -> int {
-    |target: CustomerRow| if target == row { 1int } else { 0int }
+    row_indicator(row)
 }
 
 pub open spec fn nation_eq(row: NationRow) -> spec_fn(NationRow) -> int {
@@ -34,11 +35,11 @@ pub open spec fn nation_key_weight(key: int) -> spec_fn(NationRow) -> int {
 }
 
 pub open spec fn customer_weight(weight: spec_fn(CustomerRow) -> int) -> spec_fn(((int, Seq<u8>), Customer)) -> int {
-    |entry: ((int, Seq<u8>), Customer)| entry.1.count as int * weight(customer_input_view(*entry.1.row))
+    |entry: ((int, Seq<u8>), Customer)| entry.1.count@ * weight(customer_input_view(*entry.1.row))
 }
 
 pub open spec fn nation_weight(weight: spec_fn(NationRow) -> int) -> spec_fn(((int, Seq<u8>), Nation)) -> int {
-    |entry: ((int, Seq<u8>), Nation)| entry.1.count as int * weight(nation_input_view(*entry.1.row))
+    |entry: ((int, Seq<u8>), Nation)| entry.1.count@ * weight(nation_input_view(*entry.1.row))
 }
 
 pub open spec fn customer_leaf_sum(rows: Seq<((int, Seq<u8>), Customer)>, weight: spec_fn(CustomerRow) -> int) -> int {
@@ -166,11 +167,11 @@ pub open spec fn nation_outer_transform() -> spec_fn(((int, Seq<u8>), Index<Nati
 }
 
 pub open spec fn customer_value_weight(weight: spec_fn(CustomerRow) -> int) -> spec_fn(Customer) -> int {
-    |value: Customer| value.count as int * weight(customer_input_view(*value.row))
+    |value: Customer| value.count@ * weight(customer_input_view(*value.row))
 }
 
 pub open spec fn nation_value_weight(weight: spec_fn(NationRow) -> int) -> spec_fn(Nation) -> int {
-    |value: Nation| value.count as int * weight(nation_input_view(*value.row))
+    |value: Nation| value.count@ * weight(nation_input_view(*value.row))
 }
 
 pub open spec fn customer_representatives(rows: Seq<((int, Seq<u8>), Index<Customer>)>) -> Seq<Customer> {
@@ -219,7 +220,7 @@ pub proof fn lemma_customer_capture_sum(index: &Index<Index<Customer>>, rows: Se
     let input_view = |delta: CustomerDelta| customer_input_view(delta.row);
     let input_count = |delta: CustomerDelta| delta.sign as int;
     let representative_view = |value: Customer| customer_input_view(*value.row);
-    let representative_count = |value: Customer| value.count as int;
+    let representative_count = |value: Customer| value.count@;
     assert forall|row: CustomerRow| #[trigger] verus_prooflib::class_total(rows, input_view, input_count, row)
         == verus_prooflib::class_total(representatives, representative_view, representative_count, row) by {
         lemma_customer_point(index, row);
@@ -249,7 +250,7 @@ pub proof fn lemma_nation_capture_sum(index: &Index<Index<Nation>>, rows: Seq<Na
     let input_view = |delta: NationDelta| nation_input_view(delta.row);
     let input_count = |delta: NationDelta| delta.sign as int;
     let representative_view = |value: Nation| nation_input_view(*value.row);
-    let representative_count = |value: Nation| value.count as int;
+    let representative_count = |value: Nation| value.count@;
     assert forall|row: NationRow| #[trigger] verus_prooflib::class_total(rows, input_view, input_count, row)
         == verus_prooflib::class_total(representatives, representative_view, representative_count, row) by {
         lemma_nation_point(index, row);
@@ -269,10 +270,49 @@ pub proof fn lemma_nation_capture_sum(index: &Index<Index<Nation>>, rows: Seq<Na
         |delta: NationDelta| delta.sign as int * weight(nation_input_view(delta.row)));
 }
 
-pub fn install_customer_leaf(dimensions: &mut Dimensions, values: &Index<Customer>) -> (result: bool)
-    requires shape(*old(dimensions)),
-    ensures result ==> shape(*final(dimensions)),
-        result ==> forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(final(dimensions).customers, weight)
+/// The rows of a customer leaf are pairwise different.
+pub proof fn lemma_customer_leaf_distinct(values: &Index<Customer>, custkey: int, first: int, second: int)
+    requires values.wf(), customer_leaf_valid(*values, custkey), 0 <= first < second < values.entries().len(),
+    ensures customer_input_view(*values.entries()[first].1.row) != customer_input_view(*values.entries()[second].1.row),
+{
+    values.model();
+    let entries = values.entries();
+    assert(verus_prooflib::ordered::key_lt(entries[first].0, entries[second].0));
+    assert(values.at(entries[first].0).is_some());
+    assert(values.at(entries[second].0).is_some());
+    verus_prooflib::ordered::lemma_key_order(entries[first].0, entries[second].0);
+}
+
+/// In a customer leaf, the sum of a row's indicator is that row's own count.
+pub proof fn lemma_customer_leaf_row(values: &Index<Customer>, custkey: int, position: int)
+    requires values.wf(), customer_leaf_valid(*values, custkey), 0 <= position < values.entries().len(),
+    ensures customer_leaf_sum(values.entries(), customer_eq(customer_input_view(*values.entries()[position].1.row)))
+        == values.entries()[position].1.count@,
+{
+    let entries = values.entries();
+    let row = leaf_row_at(entries, position);
+    let weight = customer_weight(customer_eq(row));
+    assert forall|other: int| 0 <= other < entries.len() && other != position implies weight(#[trigger] entries[other]) == 0 by {
+        if other < position { lemma_customer_leaf_distinct(values, custkey, other, position); }
+        else { lemma_customer_leaf_distinct(values, custkey, position, other); }
+    }
+    lemma_sum_single_match(entries, weight, position);
+}
+
+pub open spec fn leaf_row_at(entries: Seq<((int, Seq<u8>), Customer)>, position: int) -> CustomerRow {
+    customer_input_view(*entries[position].1.row)
+}
+
+pub open spec fn leaf_nonneg(dimensions: Dimensions, entries: Seq<((int, Seq<u8>), Customer)>, from: int) -> bool {
+    forall|index: int| from <= index < entries.len() ==>
+        table_sum(dimensions.customers, customer_eq(leaf_row_at(entries, index))) + entries[index].1.count@ >= 0
+}
+
+pub fn install_customer_leaf(dimensions: &mut Dimensions, values: &Index<Customer>, Ghost(custkey): Ghost<int>)
+    requires shape(*old(dimensions)), values.wf(), customer_leaf_valid(*values, custkey),
+        leaf_nonneg(*old(dimensions), values.entries(), 0),
+    ensures shape(*final(dimensions)),
+        forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(final(dimensions).customers, weight)
             == table_sum(old(dimensions).customers, weight) + customer_leaf_sum(values.entries(), weight),
         final(dimensions).nations == old(dimensions).nations,
         final(dimensions).nation_totals == old(dimensions).nation_totals,
@@ -282,84 +322,132 @@ pub fn install_customer_leaf(dimensions: &mut Dimensions, values: &Index<Custome
     let ghost entries = values.entries();
     let ghost mut processed = 0int;
     let mut cursor = values.cursor();
+    proof { values.model(); }
     loop
         invariant shape(*dimensions), before == *old(dimensions), entries == values.entries(),
+            values.wf(), customer_leaf_valid(*values, custkey),
             0 <= processed <= entries.len(), cursor.remaining() == entries.skip(processed),
             forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(dimensions.customers, weight)
                 == table_sum(before.customers, weight) + customer_leaf_sum(entries.take(processed), weight),
             dimensions.nations == before.nations, dimensions.nation_totals == before.nation_totals,
             dimensions.nation_maxima == before.nation_maxima,
+            leaf_nonneg(*dimensions, entries, processed),
         decreases cursor.remaining().len(),
     {
         let (_, value) = match cursor.next() {
             Some(row) => row,
             None => {
                 proof { assert(processed == entries.len()); assert(entries.take(processed) =~= entries); }
-                return true;
+                return;
             },
         };
         proof { assert(*value == entries[processed].1); }
-        if !dimensions.edit_customer(&value.row, value.count) { return false; }
+        let ghost previous = *dimensions;
+        proof {
+            assert(table_sum(dimensions.customers, customer_eq(leaf_row_at(entries, processed))) + entries[processed].1.count@ >= 0);
+        }
+        dimensions.edit_customer(&value.row, &value.count);
         proof {
             assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(dimensions.customers, weight)
                 == table_sum(before.customers, weight) + customer_leaf_sum(entries.take(processed + 1), weight) by {
                 lemma_sum_take(entries, processed, customer_weight(weight));
             }
+            assert forall|index: int| processed + 1 <= index < entries.len() implies
+                table_sum(dimensions.customers, customer_eq(leaf_row_at(entries, index))) + entries[index].1.count@ >= 0 by {
+                lemma_customer_leaf_distinct(values, custkey, processed, index);
+                let weight = customer_eq(leaf_row_at(entries, index));
+                assert(weight(customer_input_view(*entries[processed].1.row)) == 0);
+                assert(table_sum(previous.customers, weight) + entries[index].1.count@ >= 0);
+                assert(table_sum(dimensions.customers, weight)
+                    == table_sum(previous.customers, weight) + value.count@ * weight(customer_input_view(*value.row)));
+            }
             processed = processed + 1;
         }
     }
 }
 
-pub fn install_nation_leaf(dimensions: &mut Dimensions, values: &Index<Nation>) -> (result: bool)
-    requires shape(*old(dimensions)),
-    ensures result ==> shape(*final(dimensions)),
-        result ==> forall|row: NationRow| #[trigger] nation_count(final(dimensions).nations, row)
+pub open spec fn nation_leaf_total(entries: Seq<((int, Seq<u8>), Nation)>) -> int {
+    nation_leaf_sum(entries, |row: NationRow| 1int)
+}
+
+#[verifier::rlimit(40)]
+pub fn install_nation_leaf(dimensions: &mut Dimensions, values: &Index<Nation>, number: i64)
+    requires shape(*old(dimensions)), values.wf(), nation_leaf_valid(*values, number as int),
+        total_at(old(dimensions).nation_totals, number as int) + nation_leaf_total(values.entries()) >= 0,
+    ensures shape(*final(dimensions)),
+        forall|row: NationRow| #[trigger] nation_count(final(dimensions).nations, row)
             == nation_count(old(dimensions).nations, row) + nation_leaf_sum(values.entries(), nation_eq(row)),
-        result ==> forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key)
-            == total_at(old(dimensions).nation_totals, key) + nation_leaf_sum(values.entries(), nation_key_weight(key)),
+        forall|target: int| #[trigger] total_at(final(dimensions).nation_totals, target)
+            == total_at(old(dimensions).nation_totals, target) + nation_leaf_sum(values.entries(), nation_key_weight(target)),
         final(dimensions).customers == old(dimensions).customers, final(dimensions).customer_max == old(dimensions).customer_max,
 {
+    let ghost key = number as int;
     let ghost before = *dimensions;
     let ghost entries = values.entries();
     let ghost mut processed = 0int;
+    let mut leaf_total = Wide::zero();
     let mut cursor = values.cursor();
+    proof { values.model(); }
     loop
         invariant shape(*dimensions), before == *old(dimensions), entries == values.entries(),
+            values.wf(), nation_leaf_valid(*values, key), key == number as int,
             0 <= processed <= entries.len(), cursor.remaining() == entries.skip(processed),
             forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row)
                 == nation_count(before.nations, row) + nation_leaf_sum(entries.take(processed), nation_eq(row)),
-            forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
-                == total_at(before.nation_totals, key) + nation_leaf_sum(entries.take(processed), nation_key_weight(key)),
+            dimensions.nation_totals == before.nation_totals, dimensions.nation_maxima == before.nation_maxima,
             dimensions.customers == before.customers, dimensions.customer_max == before.customer_max,
+            leaf_total@ == nation_leaf_total(entries.take(processed)),
+            total_at(before.nation_totals, key) + nation_leaf_total(entries) >= 0,
+            forall|position: int| #![trigger entries[position]] 0 <= position < entries.len()
+                ==> values.at(entries[position].0) == Some(entries[position].1),
         decreases cursor.remaining().len(),
     {
         let (_, value) = match cursor.next() {
             Some(row) => row,
             None => {
-                proof { assert(processed == entries.len()); assert(entries.take(processed) =~= entries); }
-                return true;
+                proof {
+                assert(processed == entries.len());
+                assert(entries.take(processed) =~= entries);
+                assert(leaf_total@ == nation_leaf_total(entries));
+                assert forall|target: int| nation_leaf_sum(entries, nation_key_weight(target)) == if target == key { nation_leaf_total(entries) } else { 0 } by {
+                    if target == key {
+                        assert forall|position: int| 0 <= position < entries.len() implies
+                            nation_weight(nation_key_weight(target))(#[trigger] entries[position]) == nation_weight(|row: NationRow| 1int)(entries[position]) by {
+                            assert(entries[position].1 == values.at(entries[position].0).unwrap());
+                        }
+                        lemma_sum_ext(entries, nation_weight(nation_key_weight(target)), nation_weight(|row: NationRow| 1int));
+                    } else {
+                        assert forall|position: int| 0 <= position < entries.len() implies
+                            nation_weight(nation_key_weight(target))(#[trigger] entries[position]) == 0 by {
+                            assert(entries[position].1 == values.at(entries[position].0).unwrap());
+                        }
+                        lemma_sum_zero(entries, nation_weight(nation_key_weight(target)));
+                    }
+                }
+            }
+                edit_total(&mut dimensions.nation_totals, &mut dimensions.nation_maxima, number, &leaf_total);
+                return;
             },
         };
         proof { assert(*value == entries[processed].1); }
-        if !dimensions.edit_nation(&*value.row, value.count) { return false; }
+        change_nation(&mut dimensions.nations, &*value.row, &value.count);
+        leaf_total = leaf_total.add(&value.count);
         proof {
             assert forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row)
                 == nation_count(before.nations, row) + nation_leaf_sum(entries.take(processed + 1), nation_eq(row)) by {
                 lemma_sum_take(entries, processed, nation_weight(nation_eq(row)));
             }
-            assert forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
-                == total_at(before.nation_totals, key) + nation_leaf_sum(entries.take(processed + 1), nation_key_weight(key)) by {
-                lemma_sum_take(entries, processed, nation_weight(nation_key_weight(key)));
-            }
+            lemma_sum_take(entries, processed, nation_weight(|row: NationRow| 1int));
             processed = processed + 1;
         }
     }
 }
 
-pub fn install_customers(dimensions: &mut Dimensions, changes: &Index<Index<Customer>>) -> (result: bool)
-    requires shape(*old(dimensions)),
-    ensures result ==> shape(*final(dimensions)),
-        result ==> forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(final(dimensions).customers, weight)
+pub fn install_customers(dimensions: &mut Dimensions, changes: &Index<Index<Customer>>)
+    requires shape(*old(dimensions)), changes.wf(), customer_index_valid(*changes),
+        forall|row: CustomerRow| #[trigger] table_sum(old(dimensions).customers, customer_eq(row)) + customer_count(*changes, row) >= 0,
+    ensures shape(*final(dimensions)),
+        forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(final(dimensions).customers, weight)
             == table_sum(old(dimensions).customers, weight) + customer_index_sum(changes.entries(), weight),
         final(dimensions).nations == old(dimensions).nations,
         final(dimensions).nation_totals == old(dimensions).nation_totals,
@@ -369,40 +457,97 @@ pub fn install_customers(dimensions: &mut Dimensions, changes: &Index<Index<Cust
     let ghost entries = changes.entries();
     let ghost mut processed = 0int;
     let mut cursor = changes.cursor();
+    proof {
+        changes.model();
+        assert forall|row: CustomerRow| #[trigger] table_sum(dimensions.customers, customer_eq(row)) + customer_index_sum(entries.skip(0), customer_eq(row)) >= 0 by {
+            lemma_customer_point(changes, row);
+            assert(entries.skip(0) =~= entries);
+        }
+    }
     loop
         invariant shape(*dimensions), before == *old(dimensions), entries == changes.entries(),
+            changes.wf(), customer_index_valid(*changes),
             0 <= processed <= entries.len(), cursor.remaining() == entries.skip(processed),
             forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(dimensions.customers, weight)
                 == table_sum(before.customers, weight) + customer_index_sum(entries.take(processed), weight),
             dimensions.nations == before.nations, dimensions.nation_totals == before.nation_totals,
             dimensions.nation_maxima == before.nation_maxima,
+            forall|position: int| #![trigger entries[position]] 0 <= position < entries.len()
+                ==> changes.at(entries[position].0) == Some(entries[position].1),
+            forall|row: CustomerRow| #[trigger] table_sum(dimensions.customers, customer_eq(row)) + customer_index_sum(entries.skip(processed), customer_eq(row)) >= 0,
         decreases cursor.remaining().len(),
     {
-        let (_, values) = match cursor.next() {
+        let (key, values) = match cursor.next() {
             Some(row) => row,
             None => {
                 proof { assert(processed == entries.len()); assert(entries.take(processed) =~= entries); }
-                return true;
+                return;
             },
         };
-        proof { assert(*values == entries[processed].1); }
-        if !install_customer_leaf(dimensions, &*values) { return false; }
+        proof {
+            assert(*values == entries[processed].1);
+            assert(changes.at(entries[processed].0).is_some());
+            assert(customer_leaf_valid(*values, entries[processed].0.0));
+            values.model();
+            assert forall|index: int| 0 <= index < values.entries().len() implies
+                table_sum(dimensions.customers, customer_eq(leaf_row_at(values.entries(), index))) + values.entries()[index].1.count@ >= 0 by {
+                let row = leaf_row_at(values.entries(), index);
+                assert(values.at(values.entries()[index].0) == Some(values.entries()[index].1));
+                assert(row.c_custkey == entries[processed].0.0);
+                lemma_customer_leaf_row(&*values, entries[processed].0.0, index);
+                lemma_customer_tail_zero(changes, processed, row);
+                lemma_sum_drop_first(entries.skip(processed), customer_outer_weight(customer_eq(row)));
+                assert(entries.skip(processed).drop_first() =~= entries.skip(processed + 1));
+            }
+        }
+        install_customer_leaf(dimensions, &*values, Ghost(entries[processed].0.0));
         proof {
             assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(dimensions.customers, weight)
                 == table_sum(before.customers, weight) + customer_index_sum(entries.take(processed + 1), weight) by {
                 lemma_sum_take(entries, processed, customer_outer_weight(weight));
+            }
+            assert forall|row: CustomerRow| #[trigger] table_sum(dimensions.customers, customer_eq(row)) + customer_index_sum(entries.skip(processed + 1), customer_eq(row)) >= 0 by {
+                lemma_sum_drop_first(entries.skip(processed), customer_outer_weight(customer_eq(row)));
+                assert(entries.skip(processed).drop_first() =~= entries.skip(processed + 1));
             }
             processed = processed + 1;
         }
     }
 }
 
-pub fn install_nations(dimensions: &mut Dimensions, changes: &Index<Index<Nation>>) -> (result: bool)
-    requires shape(*old(dimensions)),
-    ensures result ==> shape(*final(dimensions)),
-        result ==> forall|row: NationRow| #[trigger] nation_count(final(dimensions).nations, row)
+/// The changes of the later leaves do not touch the rows of the current leaf.
+pub proof fn lemma_customer_tail_zero(changes: &Index<Index<Customer>>, position: int, row: CustomerRow)
+    requires changes.wf(), customer_index_valid(*changes), 0 <= position < changes.entries().len(),
+        row.c_custkey == changes.entries()[position].0.0,
+    ensures customer_index_sum(changes.entries().skip(position + 1), customer_eq(row)) == 0,
+{
+    changes.model();
+    let entries = changes.entries();
+    let tail = entries.skip(position + 1);
+    assert forall|index: int| 0 <= index < tail.len() implies customer_outer_weight(customer_eq(row))(#[trigger] tail[index]) == 0 by {
+        let entry = tail[index];
+        assert(entry == entries[position + 1 + index]);
+        assert(verus_prooflib::ordered::key_lt(entries[position].0, entry.0));
+        verus_prooflib::ordered::lemma_key_order(entries[position].0, entry.0);
+        assert(changes.at(entry.0).is_some());
+        let inner = entry.1;
+        inner.model();
+        assert forall|inner_position: int| 0 <= inner_position < inner.entries().len() implies
+            customer_weight(customer_eq(row))(#[trigger] inner.entries()[inner_position]) == 0 by {
+            assert(inner.at(inner.entries()[inner_position].0).is_some());
+        }
+        lemma_sum_zero(inner.entries(), customer_weight(customer_eq(row)));
+    }
+    lemma_sum_zero(tail, customer_outer_weight(customer_eq(row)));
+}
+
+pub fn install_nations(dimensions: &mut Dimensions, changes: &Index<Index<Nation>>)
+    requires shape(*old(dimensions)), changes.wf(), nation_index_valid(*changes),
+        forall|key: int| #[trigger] total_at(old(dimensions).nation_totals, key) + nation_index_sum(changes.entries(), nation_key_weight(key)) >= 0,
+    ensures shape(*final(dimensions)),
+        forall|row: NationRow| #[trigger] nation_count(final(dimensions).nations, row)
             == nation_count(old(dimensions).nations, row) + nation_index_sum(changes.entries(), nation_eq(row)),
-        result ==> forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key)
+        forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key)
             == total_at(old(dimensions).nation_totals, key) + nation_index_sum(changes.entries(), nation_key_weight(key)),
         final(dimensions).customers == old(dimensions).customers, final(dimensions).customer_max == old(dimensions).customer_max,
 {
@@ -410,25 +555,44 @@ pub fn install_nations(dimensions: &mut Dimensions, changes: &Index<Index<Nation
     let ghost entries = changes.entries();
     let ghost mut processed = 0int;
     let mut cursor = changes.cursor();
+    proof {
+        changes.model();
+        assert forall|key: int| #[trigger] total_at(dimensions.nation_totals, key) + nation_index_sum(entries.skip(0), nation_key_weight(key)) >= 0 by {
+            assert(entries.skip(0) =~= entries);
+        }
+    }
     loop
         invariant shape(*dimensions), before == *old(dimensions), entries == changes.entries(),
+            changes.wf(), nation_index_valid(*changes),
             0 <= processed <= entries.len(), cursor.remaining() == entries.skip(processed),
             forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row)
                 == nation_count(before.nations, row) + nation_index_sum(entries.take(processed), nation_eq(row)),
             forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
                 == total_at(before.nation_totals, key) + nation_index_sum(entries.take(processed), nation_key_weight(key)),
+            forall|position: int| #![trigger entries[position]] 0 <= position < entries.len()
+                ==> changes.at(entries[position].0) == Some(entries[position].1),
+            forall|key: int| #[trigger] total_at(dimensions.nation_totals, key) + nation_index_sum(entries.skip(processed), nation_key_weight(key)) >= 0,
             dimensions.customers == before.customers, dimensions.customer_max == before.customer_max,
         decreases cursor.remaining().len(),
     {
-        let (_, values) = match cursor.next() {
+        let (key, values) = match cursor.next() {
             Some(row) => row,
             None => {
                 proof { assert(processed == entries.len()); assert(entries.take(processed) =~= entries); }
-                return true;
+                return;
             },
         };
-        proof { assert(*values == entries[processed].1); }
-        if !install_nation_leaf(dimensions, &*values) { return false; }
+        proof {
+            assert(*values == entries[processed].1);
+            assert(changes.at(entries[processed].0).is_some());
+            assert(nation_leaf_valid(*values, entries[processed].0.0));
+            lemma_nation_leaf_key(changes, processed);
+            let leaf_key = entries[processed].0.0;
+            lemma_sum_drop_first(entries.skip(processed), nation_outer_weight(nation_key_weight(leaf_key)));
+            assert(entries.skip(processed).drop_first() =~= entries.skip(processed + 1));
+        }
+        proof { assert(key.view().0 == key.number as int); }
+        install_nation_leaf(dimensions, &*values, key.number);
         proof {
             assert forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row)
                 == nation_count(before.nations, row) + nation_index_sum(entries.take(processed + 1), nation_eq(row)) by {
@@ -438,9 +602,48 @@ pub fn install_nations(dimensions: &mut Dimensions, changes: &Index<Index<Nation
                 == total_at(before.nation_totals, key) + nation_index_sum(entries.take(processed + 1), nation_key_weight(key)) by {
                 lemma_sum_take(entries, processed, nation_outer_weight(nation_key_weight(key)));
             }
+            assert forall|key: int| #[trigger] total_at(dimensions.nation_totals, key) + nation_index_sum(entries.skip(processed + 1), nation_key_weight(key)) >= 0 by {
+                lemma_sum_drop_first(entries.skip(processed), nation_outer_weight(nation_key_weight(key)));
+                assert(entries.skip(processed).drop_first() =~= entries.skip(processed + 1));
+            }
             processed = processed + 1;
         }
     }
+}
+
+/// The changes of the later leaves do not touch the total of the current leaf's key; the leaf's own weight is its total.
+pub proof fn lemma_nation_leaf_key(changes: &Index<Index<Nation>>, position: int)
+    requires changes.wf(), nation_index_valid(*changes), 0 <= position < changes.entries().len(),
+    ensures nation_index_sum(changes.entries().skip(position + 1), nation_key_weight(changes.entries()[position].0.0)) == 0,
+        nation_outer_weight(nation_key_weight(changes.entries()[position].0.0))(changes.entries()[position])
+            == nation_leaf_total(changes.entries()[position].1.entries()),
+{
+    changes.model();
+    let entries = changes.entries();
+    let key = entries[position].0.0;
+    let tail = entries.skip(position + 1);
+    assert forall|index: int| 0 <= index < tail.len() implies nation_outer_weight(nation_key_weight(key))(#[trigger] tail[index]) == 0 by {
+        let entry = tail[index];
+        assert(entry == entries[position + 1 + index]);
+        assert(verus_prooflib::ordered::key_lt(entries[position].0, entry.0));
+        verus_prooflib::ordered::lemma_key_order(entries[position].0, entry.0);
+        assert(changes.at(entry.0).is_some());
+        let inner = entry.1;
+        inner.model();
+        assert forall|inner_position: int| 0 <= inner_position < inner.entries().len() implies
+            nation_weight(nation_key_weight(key))(#[trigger] inner.entries()[inner_position]) == 0 by {
+            assert(inner.at(inner.entries()[inner_position].0).is_some());
+        }
+        lemma_sum_zero(inner.entries(), nation_weight(nation_key_weight(key)));
+    }
+    lemma_sum_zero(tail, nation_outer_weight(nation_key_weight(key)));
+    let leaf = entries[position].1;
+    leaf.model();
+    assert forall|inner_position: int| 0 <= inner_position < leaf.entries().len() implies
+        nation_weight(nation_key_weight(key))(#[trigger] leaf.entries()[inner_position]) == nation_weight(|row: NationRow| 1int)(leaf.entries()[inner_position]) by {
+        assert(leaf.at(leaf.entries()[inner_position].0).is_some());
+    }
+    lemma_sum_ext(leaf.entries(), nation_weight(nation_key_weight(key)), nation_weight(|row: NationRow| 1int));
 }
 
 pub proof fn lemma_dimensions_capture(before: Db, after: Db, previous: Dimensions, next: Dimensions, customers: Seq<CustomerDelta>, nations: Seq<NationDelta>)
@@ -489,6 +692,45 @@ pub proof fn lemma_dimensions_capture(before: Db, after: Db, previous: Dimension
         assert(total_at(previous.nation_totals, key) == sum(before.nation, |row: NationRow| if row.n_nationkey == key { 1int } else { 0int }));
     }
     crate::model::lemma_dimensions_from_counts(after, next);
+}
+
+pub proof fn lemma_dimension_nonneg(before: Db, after: Db, previous: Dimensions, customers: Seq<CustomerDelta>, nations: Seq<NationDelta>)
+    requires crate::model::dimensions_valid(before, previous),
+        bag_step(before.customer, after.customer, customer_delta_seq_view(customers)),
+        bag_step(before.nation, after.nation, nation_delta_seq_view(nations)),
+    ensures forall|row: CustomerRow| #[trigger] table_sum(previous.customers, customer_eq(row))
+            + sum(customers, |delta: CustomerDelta| if customer_input_view(delta.row) == row { delta.sign as int } else { 0 }) >= 0,
+        forall|key: int| #[trigger] total_at(previous.nation_totals, key)
+            + sum(nations, |delta: NationDelta| if delta.row.n_nationkey == key { delta.sign as int } else { 0 }) >= 0,
+{
+    reveal(crate::model::dimensions_valid);
+    assert forall|row: CustomerRow| #[trigger] table_sum(previous.customers, customer_eq(row))
+        + sum(customers, |delta: CustomerDelta| if customer_input_view(delta.row) == row { delta.sign as int } else { 0 }) >= 0 by {
+        let weight = customer_eq(row);
+        assert(sum(after.customer, weight) == sum(before.customer, weight)
+            + sum(customer_delta_seq_view(customers), |entry: (CustomerRow, int)| entry.1 * weight(entry.0)));
+        lemma_sum_map(customers, |delta: CustomerDelta| (customer_input_view(delta.row), delta.sign as int),
+            |entry: (CustomerRow, int)| entry.1 * weight(entry.0),
+            |delta: CustomerDelta| delta.sign as int * weight(customer_input_view(delta.row)));
+        lemma_sum_ext_all(customers, |delta: CustomerDelta| delta.sign as int * weight(customer_input_view(delta.row)),
+            |delta: CustomerDelta| if customer_input_view(delta.row) == row { delta.sign as int } else { 0 });
+        assert(table_sum(previous.customers, weight) == sum(before.customer, weight));
+        assert forall|index: int| 0 <= index < after.customer.len() implies weight(#[trigger] after.customer[index]) >= 0 by {}
+        lemma_sum_nonneg(after.customer, weight);
+    }
+    assert forall|key: int| #[trigger] total_at(previous.nation_totals, key)
+        + sum(nations, |delta: NationDelta| if delta.row.n_nationkey == key { delta.sign as int } else { 0 }) >= 0 by {
+        let weight = nation_key_weight(key);
+        assert(sum(after.nation, weight) == sum(before.nation, weight)
+            + sum(nation_delta_seq_view(nations), |entry: (NationRow, int)| entry.1 * weight(entry.0)));
+        lemma_sum_map(nations, |delta: NationDelta| (nation_input_view(delta.row), delta.sign as int),
+            |entry: (NationRow, int)| entry.1 * weight(entry.0),
+            |delta: NationDelta| if delta.row.n_nationkey == key { delta.sign as int } else { 0 });
+        lemma_sum_ext_all(before.nation, weight, |row: NationRow| if row.n_nationkey == key { 1int } else { 0int });
+        assert(total_at(previous.nation_totals, key) == sum(before.nation, |row: NationRow| if row.n_nationkey == key { 1int } else { 0int }));
+        assert forall|index: int| 0 <= index < after.nation.len() implies weight(#[trigger] after.nation[index]) >= 0 by {}
+        lemma_sum_nonneg(after.nation, weight);
+    }
 }
 
 }

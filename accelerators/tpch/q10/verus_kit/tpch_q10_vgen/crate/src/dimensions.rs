@@ -5,6 +5,7 @@ use verus_prooflib::ordered::{Key, Index};
 use crate::gen_spec::{CustomerRow, NationRow};
 use crate::gen_obligations::{CustomerInput, NationInput, customer_input_view, nation_input_view};
 use crate::values::*;
+use verus_prooflib::wide::Wide;
 use crate::key_facts::lemma_customer_key_injective;
 use crate::paged::*;
 use crate::customers::*;
@@ -13,26 +14,26 @@ verus! {
 
 pub struct Customer {
     pub row: Arc<CustomerInput>,
-    pub count: i128,
+    pub count: Wide,
 }
 
 pub struct Nation {
     pub row: Arc<NationInput>,
-    pub count: i128,
+    pub count: Wide,
 }
 
 pub struct Dimensions {
     pub customers: Paged<CustEnt>,
-    pub customer_max: i128,
+    pub customer_max: Wide,
     pub nations: Index<Index<Nation>>,
-    pub nation_totals: Index<i128>,
-    pub nation_maxima: Index<i128>,
+    pub nation_totals: Index<Wide>,
+    pub nation_maxima: Index<Wide>,
 }
 
 /// The customer part of the dimensions is well formed.
 pub open spec fn customer_shape(dimensions: Dimensions) -> bool {
     &&& table_valid(dimensions.customers)
-    &&& table_bounded(dimensions.customers, dimensions.customer_max as int)
+    &&& table_bounded(dimensions.customers, dimensions.customer_max@)
 }
 
 pub open spec fn customer_ref_view(row: &CustomerInput) -> CustomerRow { customer_input_view(*row) }
@@ -41,7 +42,7 @@ pub open spec fn customer_leaf_valid(inner: Index<Customer>, customer: int) -> b
     &&& inner.wf()
     &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
         let value = inner.at(key).unwrap();
-        &&& value.count != 0
+        &&& value.count@ != 0
         &&& customer_input_view(*value.row).c_custkey == customer
         &&& customer_inner_view(customer_input_view(*value.row)) == key
     }
@@ -51,7 +52,7 @@ pub open spec fn nation_leaf_valid(inner: Index<Nation>, nation: int) -> bool {
     &&& inner.wf()
     &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
         let value = inner.at(key).unwrap();
-        &&& value.count != 0
+        &&& value.count@ != 0
         &&& nation_input_view(*value.row).n_nationkey == nation
         &&& nation_inner_view(nation_input_view(*value.row)) == key
     }
@@ -86,7 +87,7 @@ pub open spec fn nation_inner_view(row: NationRow) -> (int, Seq<u8>) { (0, row.n
 pub open spec fn customer_count(index: Index<Index<Customer>>, row: CustomerRow) -> int {
     match index.at((row.c_custkey, Seq::empty())) {
         Some(inner) => match inner.at(customer_inner_view(row)) {
-            Some(value) => if customer_input_view(*value.row) == row { value.count as int } else { 0 },
+            Some(value) => if customer_input_view(*value.row) == row { value.count@ } else { 0 },
             None => 0,
         },
         None => 0,
@@ -96,15 +97,15 @@ pub open spec fn customer_count(index: Index<Index<Customer>>, row: CustomerRow)
 pub open spec fn nation_count(index: Index<Index<Nation>>, row: NationRow) -> int {
     match index.at((row.n_nationkey, Seq::empty())) {
         Some(inner) => match inner.at(nation_inner_view(row)) {
-            Some(value) => if nation_input_view(*value.row) == row { value.count as int } else { 0 },
+            Some(value) => if nation_input_view(*value.row) == row { value.count@ } else { 0 },
             None => 0,
         },
         None => 0,
     }
 }
 
-pub open spec fn total_at(index: Index<i128>, key: int) -> int {
-    match index.at((key, Seq::empty())) { Some(value) => value as int, None => 0 }
+pub open spec fn total_at(index: Index<Wide>, key: int) -> int {
+    match index.at((key, Seq::empty())) { Some(value) => value@, None => 0 }
 }
 
 pub fn customer_key(row: &CustomerInput) -> (result: Key)
@@ -140,11 +141,11 @@ pub fn copy_nation(row: &NationInput) -> (result: Arc<NationInput>)
 }
 
 #[verifier::rlimit(20)]
-pub fn change_customer(index: &mut Index<Index<Customer>>, row: &CustomerInput, change: i128) -> (result: bool)
+pub fn change_customer(index: &mut Index<Index<Customer>>, row: &CustomerInput, change: &Wide)
     requires customer_index_valid(*old(index)),
-    ensures result ==> customer_index_valid(*final(index)),
-        result ==> forall|target: CustomerRow| #[trigger] customer_count(*final(index), target)
-            == customer_count(*old(index), target) + if target == customer_input_view(*row) { change as int } else { 0 },
+    ensures customer_index_valid(*final(index)),
+        forall|target: CustomerRow| #[trigger] customer_count(*final(index), target)
+            == customer_count(*old(index), target) + if target == customer_input_view(*row) { change@ } else { 0 },
 {
     let ghost before = *index;
     let outer_key = Key::number(row.c_custkey);
@@ -173,19 +174,22 @@ pub fn change_customer(index: &mut Index<Index<Customer>>, row: &CustomerInput, 
             let ghost stored = customer_ref_view(&*value.row);
             let ghost incoming = customer_ref_view(row);
             proof { lemma_customer_key_injective(stored, incoming); }
-            (value.count, value.row.clone())
+            (value.count.dup(), value.row.clone())
         },
-        None => (0i128, copy_customer(row)),
+        None => (Wide::zero(), copy_customer(row)),
     };
-    proof { assert(customer_input_view(*payload) == customer_input_view(*row)); }
-    let count = match old.checked_add(change) { Some(value) => value, None => return false };
-    if count == 0 { inner.remove(&key); }
+    proof {
+        assert(customer_input_view(*payload) == customer_input_view(*row));
+        assert(old@ == customer_count(before, customer_input_view(*row)));
+    }
+    let count = old.add(change);
+    if count.is_zero() { inner.remove(&key); }
     else { inner.put(key, Arc::new(Customer { row: payload, count })); }
     proof { inner.model(); }
     proof {
         assert forall|target_key: (int, Seq<u8>)| #[trigger] inner.at(target_key).is_some() implies {
             let value = inner.at(target_key).unwrap();
-            &&& value.count != 0
+            &&& value.count@ != 0
             &&& customer_input_view(*value.row).c_custkey == row.c_custkey as int
             &&& customer_inner_view(customer_input_view(*value.row)) == target_key
         } by {
@@ -197,25 +201,33 @@ pub fn change_customer(index: &mut Index<Index<Customer>>, row: &CustomerInput, 
     else { index.put(outer_key, Arc::new(inner)); }
     proof {
         assert forall|target: CustomerRow| #[trigger] customer_count(*index, target)
-            == customer_count(before, target) + if target == customer_input_view(*row) { change as int } else { 0 } by {
+            == customer_count(before, target) + if target == customer_input_view(*row) { change@ } else { 0 } by {
                 if target.c_custkey != row.c_custkey {
                     assert(index.at((target.c_custkey, Seq::empty())) == before.at((target.c_custkey, Seq::empty())));
                 } else if target == customer_input_view(*row) {
-                    assert(customer_count(before, target) == old as int);
+                    assert(customer_count(before, target) == old@);
+                    assert(customer_inner_view(target) == key.view());
+                    assert(new_inner.at(key.view()).is_some() == (count@ != 0));
+                    assert(index.at((target.c_custkey, Seq::empty())).is_some() == (new_inner.entries().len() > 0));
+                    assert(customer_count(*index, target) == count@);
+                    assert(count@ == old@ + change@);
                 } else if customer_inner_view(target) == key.view() {
                     assert(customer_count(before, target) == 0);
                     assert(customer_count(*index, target) == 0);
+                } else {
+                    assert(index.at((target.c_custkey, Seq::empty())).is_some() == (new_inner.entries().len() > 0));
+                    assert(new_inner.at(customer_inner_view(target)) == before_inner.at(customer_inner_view(target)));
+                    assert(customer_count(*index, target) == customer_count(before, target));
                 }
             }
     }
-    true
 }
 
-pub fn change_nation(index: &mut Index<Index<Nation>>, row: &NationInput, change: i128) -> (result: bool)
+pub fn change_nation(index: &mut Index<Index<Nation>>, row: &NationInput, change: &Wide)
     requires nation_index_valid(*old(index)),
-    ensures result ==> nation_index_valid(*final(index)),
-        result ==> forall|target: NationRow| #[trigger] nation_count(*final(index), target)
-            == nation_count(*old(index), target) + if target == nation_input_view(*row) { change as int } else { 0 },
+    ensures nation_index_valid(*final(index)),
+        forall|target: NationRow| #[trigger] nation_count(*final(index), target)
+            == nation_count(*old(index), target) + if target == nation_input_view(*row) { change@ } else { 0 },
 {
     let ghost before = *index;
     let outer_key = Key::number(row.n_nationkey);
@@ -240,18 +252,18 @@ pub fn change_nation(index: &mut Index<Index<Nation>>, row: &NationInput, change
     }
     let key = Key::text(copy_bytes(row.n_name.as_slice()));
     let (old, payload) = match inner.get(&key) {
-        Some(value) => (value.count, value.row.clone()),
-        None => (0i128, copy_nation(row)),
+        Some(value) => (value.count.dup(), value.row.clone()),
+        None => (Wide::zero(), copy_nation(row)),
     };
     proof { assert(nation_input_view(*payload) == nation_input_view(*row)); }
-    let count = match old.checked_add(change) { Some(value) => value, None => return false };
-    if count == 0 { inner.remove(&key); }
+    let count = old.add(change);
+    if count.is_zero() { inner.remove(&key); }
     else { inner.put(key, Arc::new(Nation { row: payload, count })); }
     proof { inner.model(); }
     proof {
         assert forall|target_key: (int, Seq<u8>)| #[trigger] inner.at(target_key).is_some() implies {
             let value = inner.at(target_key).unwrap();
-            &&& value.count != 0
+            &&& value.count@ != 0
             &&& nation_input_view(*value.row).n_nationkey == row.n_nationkey as int
             &&& nation_inner_view(nation_input_view(*value.row)) == target_key
         } by {
@@ -263,80 +275,84 @@ pub fn change_nation(index: &mut Index<Index<Nation>>, row: &NationInput, change
     else { index.put(outer_key, Arc::new(inner)); }
     proof {
         assert forall|target: NationRow| #[trigger] nation_count(*index, target)
-            == nation_count(before, target) + if target == nation_input_view(*row) { change as int } else { 0 } by {
+            == nation_count(before, target) + if target == nation_input_view(*row) { change@ } else { 0 } by {
                 if target.n_nationkey != row.n_nationkey {
                     assert(index.at((target.n_nationkey, Seq::empty())) == before.at((target.n_nationkey, Seq::empty())));
                 } else if nation_inner_view(target) == key.view() {
                     assert(target == nation_input_view(*row));
-                    assert(nation_count(before, target) == old as int);
-                    assert(nation_count(*index, target) == count as int);
+                    assert(nation_count(before, target) == old@);
+                    assert(nation_count(*index, target) == count@);
                 } else {
                     assert(new_inner.at(nation_inner_view(target)) == before_inner.at(nation_inner_view(target)));
                     assert(nation_count(*index, target) == nation_count(before, target));
                 }
             }
     }
-    true
 }
 
 #[verifier::rlimit(20)]
-pub fn edit_total(totals: &mut Index<i128>, maxima: &mut Index<i128>, key: i64, change: i128) -> (result: bool)
+pub fn edit_total(totals: &mut Index<Wide>, maxima: &mut Index<Wide>, key: i64, change: &Wide)
     requires crate::model::maxima_valid(*old(totals), *old(maxima)),
-    ensures result ==> crate::model::maxima_valid(*final(totals), *final(maxima)),
-        result ==> forall|target: int| #[trigger] total_at(*final(totals), target)
-            == total_at(*old(totals), target) + if target == key { change as int } else { 0 },
+        total_at(*old(totals), key as int) + change@ >= 0,
+    ensures crate::model::maxima_valid(*final(totals), *final(maxima)),
+        forall|target: int| #[trigger] total_at(*final(totals), target)
+            == total_at(*old(totals), target) + if target == key { change@ } else { 0 },
 {
     let ghost before_totals = *totals;
     let ghost before_maxima = *maxima;
     let lookup = Key::number(key);
-    let old = match totals.get(&lookup) { Some(value) => *value, None => 0i128 };
-    let next = match old.checked_add(change) { Some(value) => value, None => return false };
-    if next < 0 { return false; }
-    if old > 0 { maxima.remove(&rank_key(old, key)); }
-    if next == 0 { totals.remove(&lookup); }
+    let old = match totals.get(&lookup) { Some(value) => value.dup(), None => Wide::zero() };
+    let next = old.add(change);
+    let ghost old_value = old@;
+    let ghost next_value = next@;
+    if old.is_pos() { maxima.remove(&rank_key(saturate(&old), key)); }
+    if next.is_zero() { totals.remove(&lookup); }
     else {
-        totals.put(lookup, Arc::new(next));
-        maxima.put(rank_key(next, key), Arc::new(next));
+        let rank = rank_key(saturate(&next), key);
+        totals.put(lookup, Arc::new(next.dup()));
+        maxima.put(rank, Arc::new(next));
     }
     proof {
         assert forall|target: (int, Seq<u8>)| #[trigger] totals.at(target).is_some() implies {
             let value = totals.at(target).unwrap();
             &&& target.1 == Seq::<u8>::empty() && i64::MIN <= target.0 <= i64::MAX
-            &&& value > 0
-            &&& maxima.at(rank_view(value as int, target.0)) == Some(value)
+            &&& value@ > 0
+            &&& maxima.at(rank_view(sat(value@), target.0)).is_some()
+            &&& maxima.at(rank_view(sat(value@), target.0)).unwrap()@ == value@
         } by {
             if target != lookup.view() {
                 let value = totals.at(target).unwrap();
                 assert(before_totals.at(target) == Some(value));
-                if rank_view(value as int, target.0) == rank_view(old as int, key as int) {
-                    lemma_rank_key_injective(value, target.0 as i64, old, key);
+                if rank_view(sat(value@), target.0) == rank_view(sat(old_value), key as int) {
+                    lemma_rank_key_injective(sat(value@), target.0 as i64, sat(old_value), key);
                 }
-                if rank_view(value as int, target.0) == rank_view(next as int, key as int) {
-                    lemma_rank_key_injective(value, target.0 as i64, next, key);
+                if rank_view(sat(value@), target.0) == rank_view(sat(next_value), key as int) {
+                    lemma_rank_key_injective(sat(value@), target.0 as i64, sat(next_value), key);
                 }
             }
         }
         assert forall|target: (int, Seq<u8>)| #[trigger] maxima.at(target).is_some() implies {
             let value = maxima.at(target).unwrap();
-            &&& value > 0
-            &&& exists|join_key: int| #[trigger] totals.at((join_key, Seq::empty())) == Some(value)
-                && target == rank_view(value as int, join_key)
+            &&& value@ > 0
+            &&& exists|join_key: int| #[trigger] totals.at((join_key, Seq::empty())).is_some()
+                && totals.at((join_key, Seq::empty())).unwrap()@ == value@
+                && target == rank_view(sat(value@), join_key)
         } by {
             let value = maxima.at(target).unwrap();
-            if next > 0 && target == rank_view(next as int, key as int) {
-                assert(totals.at((key as int, Seq::empty())) == Some(value));
+            if next_value > 0 && target == rank_view(sat(next_value), key as int) {
+                assert(totals.at((key as int, Seq::empty())).is_some());
             } else {
                 assert(before_maxima.at(target) == Some(value));
-                let join_key = choose|join_key: int| #[trigger] before_totals.at((join_key, Seq::empty())) == Some(value)
-                    && target == rank_view(value as int, join_key);
+                let join_key = choose|join_key: int| #[trigger] before_totals.at((join_key, Seq::empty())).is_some()
+                    && before_totals.at((join_key, Seq::empty())).unwrap()@ == value@
+                    && target == rank_view(sat(value@), join_key);
                 if join_key == key {
-                    assert(value == old);
+                    assert(value@ == old_value);
                 }
-                assert(totals.at((join_key, Seq::empty())) == Some(value));
+                assert(totals.at((join_key, Seq::empty())).is_some());
             }
         }
     }
-    true
 }
 
 impl Dimensions {
@@ -347,10 +363,11 @@ impl Dimensions {
             forall|key: int| #[trigger] total_at(result.nation_totals, key) == 0,
             forall|row: NationRow| #[trigger] nation_count(result.nations, row) == 0,
     {
-        let result = Self { customers: Paged::new(), customer_max: 0, nations: Index::new(),
+        let result = Self { customers: Paged::new(), customer_max: Wide::zero(), nations: Index::new(),
             nation_totals: Index::new(), nation_maxima: Index::new() };
         proof {
             assert(table_valid(result.customers));
+            assert(result.customer_max@ == 0);
             assert(table_bounded(result.customers, 0));
         }
         result
@@ -368,7 +385,7 @@ impl Dimensions {
             crate::model::maxima_valid(self.nation_totals, self.nation_maxima)
                 ==> crate::model::maxima_valid(result.nation_totals, result.nation_maxima),
     {
-        let result = Self { customers: self.customers.share(), customer_max: self.customer_max, nations: self.nations.share(),
+        let result = Self { customers: self.customers.share(), customer_max: self.customer_max.dup(), nations: self.nations.share(),
             nation_totals: self.nation_totals.share(), nation_maxima: self.nation_maxima.share() };
         proof {
             assert forall|key: (int, Seq<u8>)| #[trigger] result.nation_totals.at(key) == self.nation_totals.at(key) by {}
@@ -378,7 +395,7 @@ impl Dimensions {
             }
             if customer_shape(*self) {
                 assert forall|key: (int, Seq<u8>)| #[trigger] result.customers.at(key).is_some() implies
-                    variants_count(result.customers.at(key).unwrap().variants@) <= result.customer_max as int by {
+                    variants_count(result.customers.at(key).unwrap().variants@) <= result.customer_max@ by {
                     assert(self.customers.at(key) == result.customers.at(key));
                 }
             }
@@ -386,55 +403,48 @@ impl Dimensions {
         result
     }
 
-    pub fn edit_customer(&mut self, row: &Arc<CustomerInput>, change: i128) -> (result: bool)
+    pub fn edit_customer(&mut self, row: &Arc<CustomerInput>, change: &Wide)
         requires customer_shape(*old(self)),
-        ensures result ==> customer_shape(*final(self)),
-            result ==> forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(final(self).customers, weight)
-                == table_sum(old(self).customers, weight) + change as int * weight(customer_input_view(**row)),
+            table_sum(old(self).customers, row_indicator(customer_input_view(**row))) + change@ >= 0,
+        ensures customer_shape(*final(self)),
+            forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(final(self).customers, weight)
+                == table_sum(old(self).customers, weight) + change@ * weight(customer_input_view(**row)),
             final(self).nations == old(self).nations,
             final(self).nation_totals == old(self).nation_totals,
             final(self).nation_maxima == old(self).nation_maxima,
     {
         let ghost before = *self;
-        if !edit_table(&mut self.customers, row, change) { return false; }
-        let total = match custkey_total(&self.customers, row.c_custkey) { Some(value) => value, None => return false };
-        if total > self.customer_max { self.customer_max = total; }
+        edit_table(&mut self.customers, row, change);
+        let total = custkey_total(&self.customers, row.c_custkey);
+        if self.customer_max.lt(&total) { self.customer_max = total; }
         proof {
             let ckey = (row.c_custkey as int, Seq::<u8>::empty());
             assert forall|key: (int, Seq<u8>)| #[trigger] self.customers.at(key).is_some() implies
-                variants_count(self.customers.at(key).unwrap().variants@) <= self.customer_max as int by {
+                variants_count(self.customers.at(key).unwrap().variants@) <= self.customer_max@ by {
                 if key == ckey {
                     assert(self.customers.at(key).unwrap().variants@ == variants_at(self.customers, row.c_custkey as int));
                 } else {
                     assert(self.customers.at(key) == before.customers.at(key));
                 }
             }
-            assert(table_bounded(self.customers, self.customer_max as int));
+            assert(table_bounded(self.customers, self.customer_max@));
         }
-        true
     }
 
-    pub fn edit_nation(&mut self, row: &NationInput, change: i128) -> (result: bool)
+    pub fn edit_nation(&mut self, row: &NationInput, change: &Wide)
         requires nation_index_valid(old(self).nations),
             crate::model::maxima_valid(old(self).nation_totals, old(self).nation_maxima),
-        ensures result ==> nation_index_valid(final(self).nations),
-            result ==> forall|target: NationRow| #[trigger] nation_count(final(self).nations, target)
-                == nation_count(old(self).nations, target) + if target == nation_input_view(*row) { change as int } else { 0 },
+            total_at(old(self).nation_totals, row.n_nationkey as int) + change@ >= 0,
+        ensures nation_index_valid(final(self).nations),
+            forall|target: NationRow| #[trigger] nation_count(final(self).nations, target)
+                == nation_count(old(self).nations, target) + if target == nation_input_view(*row) { change@ } else { 0 },
             final(self).customers == old(self).customers, final(self).customer_max == old(self).customer_max,
-            result ==> crate::model::maxima_valid(final(self).nation_totals, final(self).nation_maxima),
-            result ==> forall|key: int| #[trigger] total_at(final(self).nation_totals, key)
-                == total_at(old(self).nation_totals, key) + if key == row.n_nationkey { change as int } else { 0 },
+            crate::model::maxima_valid(final(self).nation_totals, final(self).nation_maxima),
+            forall|key: int| #[trigger] total_at(final(self).nation_totals, key)
+                == total_at(old(self).nation_totals, key) + if key == row.n_nationkey { change@ } else { 0 },
     {
-        let old = match self.nations.get(&Key::number(row.n_nationkey)) {
-            Some(inner) => match inner.get(&Key::text(copy_bytes(row.n_name.as_slice()))) {
-                Some(value) => value.count, None => 0i128,
-            },
-            None => 0i128,
-        };
-        let next = match old.checked_add(change) { Some(value) => value, None => return false };
-        if next < 0 { return false; }
-        change_nation(&mut self.nations, row, change)
-            && edit_total(&mut self.nation_totals, &mut self.nation_maxima, row.n_nationkey, change)
+        change_nation(&mut self.nations, row, change);
+        edit_total(&mut self.nation_totals, &mut self.nation_maxima, row.n_nationkey, change);
     }
 }
 

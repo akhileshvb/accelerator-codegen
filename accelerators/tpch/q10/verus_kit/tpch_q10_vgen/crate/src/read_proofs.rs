@@ -9,6 +9,7 @@ use crate::calendar::*;
 use crate::model::*;
 use crate::gen_spec::*;
 use crate::query_semantics::*;
+use verus_prooflib::wide::Wide;
 
 verus! {
 
@@ -196,32 +197,34 @@ pub proof fn lemma_fact_cover(db: Db, grain: int, lower: int, first: int, last: 
     lemma_range_coarsen(db, grain, first, last, customer, component);
 }
 
-pub proof fn lemma_dimension_maximum(index: &Index<i128>, key: KeyView, value: i128)
+pub proof fn lemma_dimension_maximum(index: &Index<Wide>, key: KeyView, value: int)
     requires index.wf(), ranked_values_valid(*index),
-        index.entries().len() > 0, index.entries()[0] == (key, value),
-    ensures forall|query: KeyView| #[trigger] index.at(query).is_some() ==> index.at(query).unwrap() <= value,
+        index.entries().len() > 0, index.entries()[0].0 == key, index.entries()[0].1@ == value, value < i128::MAX as int,
+    ensures forall|query: KeyView| #[trigger] index.at(query).is_some() ==> index.at(query).unwrap()@ <= value,
 {
     index.model();
-    assert(index.at(key) == Some(value));
-    let first_tie = choose|tie: i64| #[trigger] rank_view(value as int, tie as int) == key;
-    assert forall|query: KeyView| #[trigger] index.at(query).is_some() implies index.at(query).unwrap() <= value by {
+    assert(index.at(key) == Some(index.entries()[0].1));
+    let first_tie = choose|tie: i64| #[trigger] rank_view(sat(value), tie as int) == key;
+    assert(index.entries()[0].1@ > 0);
+    assert forall|query: KeyView| #[trigger] index.at(query).is_some() implies index.at(query).unwrap()@ <= value by {
         let other = index.at(query).unwrap();
-        let other_tie = choose|tie: i64| #[trigger] rank_view(other as int, tie as int) == query;
+        assert(other@ > 0);
+        let other_tie = choose|tie: i64| #[trigger] rank_view(sat(other@), tie as int) == query;
         let position = choose|position: int| #![trigger index.entries()[position]]
             0 <= position < index.entries().len() && index.entries()[position].0 == query;
         assert(index.entries()[position].1 == other);
         if position > 0 {
             assert(verus_prooflib::ordered::key_lt(key, query));
-            verus_prooflib::lemma_i128_rank_order(value, other, first_tie, other_tie);
+            verus_prooflib::lemma_i128_rank_order(sat(value) as i128, sat(other@) as i128, first_tie, other_tie);
         }
     }
 }
 
 pub proof fn lemma_slice_unseen_bound(slice: crate::output::ReadSlice, customer: i64, seen: Set<i64>)
-    requires crate::output::read_slice_valid(slice), !seen.contains(customer),
+    requires crate::output::read_slice_valid(slice), !seen.contains(customer), crate::output::exact_head(slice),
         forall|position: int| #![trigger slice.slice.ranks.entries()[position]]
             0 <= position < slice.consumed@ ==> seen.contains(slice.slice.ranks.entries()[position].customer),
-    ensures cell_at(slice.slice.cells, customer as int).upper as int <= crate::output::head_upper(slice),
+    ensures cell_at(slice.slice.cells, customer as int).upper <= crate::output::head_upper(slice),
         slice.head.is_none() ==> cell_at(slice.slice.cells, customer as int).count == 0,
 {
     let ghost cells = crate::output::read_cell_index(slice);
@@ -253,7 +256,7 @@ pub proof fn lemma_slice_unseen_bound(slice: crate::output::ReadSlice, customer:
 
 pub proof fn lemma_window_unseen_bound(slices: Seq<crate::output::ReadSlice>, db: Db, parameters: Params,
     customer: i64, seen: Set<i64>)
-    requires crate::output::read_slices_valid(slices), !seen.contains(customer),
+    requires crate::output::read_slices_valid(slices), !seen.contains(customer), crate::output::heads_exact(slices),
         crate::output::read_moment_sum(slices, customer as int, 2) == window_fact(db, parameters, customer as int, 2),
         forall|slice_position: int, rank_position: int| #![trigger slices[slice_position].slice.ranks.entries()[rank_position]]
             0 <= slice_position < slices.len() && 0 <= rank_position < slices[slice_position].consumed@
@@ -269,6 +272,7 @@ pub proof fn lemma_window_unseen_bound(slices: Seq<crate::output::ReadSlice>, db
                 0 <= rank_position < slice.consumed@ implies seen.contains(slice.slice.ranks.entries()[rank_position].customer) by {
                 assert(slice.slice.ranks.entries()[rank_position] == slices[position].slice.ranks.entries()[rank_position]);
             }
+            assert(crate::output::exact_head(slices[position]));
             lemma_slice_unseen_bound(slice, customer, seen);
         }
     }

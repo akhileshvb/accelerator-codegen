@@ -106,15 +106,15 @@ pub proof fn lemma_captured_orders(rows: Seq<OrderDelta>, key: int, customer: in
 pub proof fn lemma_order_class(inner: &Index<OrderCell>, customer: int, day: int)
     requires order_leaf_valid(*inner),
     ensures sum(inner.entries(), |entry: ((int, Seq<u8>), OrderCell)|
-        if entry.1.customer as int == customer && entry.1.day as int == day { entry.1.count as int } else { 0 })
+        if entry.1.customer as int == customer && entry.1.day as int == day { entry.1.count@ } else { 0 })
         == match inner.at(order_key_view(customer, day)) {
-            Some(cell) => if cell.customer as int == customer && cell.day as int == day { cell.count as int } else { 0 },
+            Some(cell) => if cell.customer as int == customer && cell.day as int == day { cell.count@ } else { 0 },
             None => 0,
         },
 {
     inner.model();
     let weight = |entry: ((int, Seq<u8>), OrderCell)|
-        if entry.1.customer as int == customer && entry.1.day as int == day { entry.1.count as int } else { 0 };
+        if entry.1.customer as int == customer && entry.1.day as int == day { entry.1.count@ } else { 0 };
     verus_prooflib::ordered::lemma_key_contribution(inner, order_key_view(customer, day), weight);
     assert forall|position: int| #![trigger inner.entries()[position]]
         0 <= position < inner.entries().len() implies
@@ -144,7 +144,7 @@ pub proof fn lemma_order_group_rows<Row>(orders: Orders, rows: Seq<Row>, project
     let source_class = |row: Row| (project(row).1, project(row).2);
     let entry_class = |entry: ((int, Seq<u8>), OrderCell)| (entry.1.customer as int, entry.1.day as int);
     let source_count = |row: Row| if project(row).0 == key { multiplicity(row) } else { 0 };
-    let entry_count = |entry: ((int, Seq<u8>), OrderCell)| entry.1.count as int;
+    let entry_count = |entry: ((int, Seq<u8>), OrderCell)| entry.1.count@;
     let weight = |class: (int, int)| if class.0 == customer && period_of(class.1, grain) == day { 1int } else { 0int };
     assert forall|class: (int, int)| #[trigger] verus_prooflib::class_total(rows, source_class, source_count, class)
         == verus_prooflib::class_total(entries, entry_class, entry_count, class) by {
@@ -159,14 +159,14 @@ pub proof fn lemma_order_group_rows<Row>(orders: Orders, rows: Seq<Row>, project
             None => {},
         }
         assert(sum(entries, |entry: ((int, Seq<u8>), OrderCell)|
-            if entry.1.customer as int == class.0 && entry.1.day as int == class.1 { entry.1.count as int } else { 0 })
+            if entry.1.customer as int == class.0 && entry.1.day as int == class.1 { entry.1.count@ } else { 0 })
             == order_count(orders, key, class.0, class.1));
         lemma_sum_ext_all(rows,
             |row: Row| if source_class(row) == class { source_count(row) } else { 0 },
             |row: Row| if project(row).0 == key && project(row).1 == class.0 && project(row).2 == class.1 { multiplicity(row) } else { 0 });
         lemma_sum_ext_all(entries,
             |entry: ((int, Seq<u8>), OrderCell)| if entry_class(entry) == class { entry_count(entry) } else { 0 },
-            |entry: ((int, Seq<u8>), OrderCell)| if entry.1.customer as int == class.0 && entry.1.day as int == class.1 { entry.1.count as int } else { 0 });
+            |entry: ((int, Seq<u8>), OrderCell)| if entry.1.customer as int == class.0 && entry.1.day as int == class.1 { entry.1.count@ } else { 0 });
     }
     verus_prooflib::lemma_equal_classes(rows, entries, source_class, entry_class, source_count, entry_count, weight);
     lemma_sum_ext_all(rows, |row: Row| source_count(row) * weight(source_class(row)),
@@ -246,6 +246,39 @@ pub proof fn lemma_scanned_facts(db: Db, orders: Seq<OrderInput>, rows: Seq<Retu
         } else { 0 });
 }
 
+/// Every group of scanned facts holds consistent moments.
+pub proof fn lemma_scanned_moments_ok(orders: Seq<OrderInput>, rows: Seq<ReturnedLineInput>, day: int, customer: int, grain: int)
+    ensures moment_ok(Moments {
+        count: scanned_fact_sum(orders, rows, day, customer, grain, 0),
+        revenue: scanned_fact_sum(orders, rows, day, customer, grain, 1),
+        upper: scanned_fact_sum(orders, rows, day, customer, grain, 2),
+    }),
+{
+    let k0 = 0int;
+    let k1 = 1int;
+    let k2 = 2int;
+    let f0 = |order: OrderInput| if period_of(order.o_orderdate as int, grain) == day && order.o_custkey == customer {
+        scanned_line_sum(rows, order.o_orderkey as int, k0)
+    } else { 0 };
+    let f1 = |order: OrderInput| if period_of(order.o_orderdate as int, grain) == day && order.o_custkey == customer {
+        scanned_line_sum(rows, order.o_orderkey as int, k1)
+    } else { 0 };
+    let f2 = |order: OrderInput| if period_of(order.o_orderdate as int, grain) == day && order.o_custkey == customer {
+        scanned_line_sum(rows, order.o_orderkey as int, k2)
+    } else { 0 };
+    assert forall|order: OrderInput| moment_ok(Moments { count: #[trigger] f0(order), revenue: f1(order), upper: f2(order) }) by {
+        if period_of(order.o_orderdate as int, grain) == day && order.o_custkey == customer {
+            let key = order.o_orderkey as int;
+            let g0 = |row: ReturnedLineInput| if row.l_orderkey == key { projected_line_weight(row, k0) } else { 0 };
+            let g1 = |row: ReturnedLineInput| if row.l_orderkey == key { projected_line_weight(row, k1) } else { 0 };
+            let g2 = |row: ReturnedLineInput| if row.l_orderkey == key { projected_line_weight(row, k2) } else { 0 };
+            assert forall|row: ReturnedLineInput| moment_ok(Moments { count: #[trigger] g0(row), revenue: g1(row), upper: g2(row) }) by {}
+            lemma_sum_moment_ok(rows, g0, g1, g2);
+        }
+    }
+    lemma_sum_moment_ok(orders, f0, f1, f2);
+}
+
 pub proof fn lemma_scanned_bounds(orders: Seq<OrderInput>, rows: Seq<ReturnedLineInput>, day: int, customer: int, grain: int, component: int)
     requires 0 <= grain <= 5,
         day < period_of(i32::MIN as int, grain) || day > period_of(i32::MAX as int, grain),
@@ -286,12 +319,56 @@ pub proof fn lemma_facts_from_scans(db: Db, slices: Index<Slice>, orders: Seq<Or
             let ckey = choose|ckey: (int, Seq<u8>)| slice.cells.at(ckey).is_some();
             lemma_cell_key(slice.cells, ckey);
             let cell = slice.cells.at(ckey).unwrap();
-            assert(cell.count > 0);
+            assert(cell.moments().count > 0);
             lemma_scanned_bounds(orders, rows, key.0, ckey.0, grain, 0);
-            assert(slice_at(slices, key.0, ckey.0).count == cell.count as int);
+            assert(slice_at(slices, key.0, ckey.0).count == cell.moments().count);
             assert(slice_at(slices, key.0, ckey.0).component(0) == 0);
         }
     }
+}
+
+/// Patching the scan of a prefix with the scan of the next chunk leaves consistent moments.
+pub proof fn lemma_chunk_ready(orders: Seq<OrderInput>, rows: Seq<ReturnedLineInput>, start: int, end: int,
+    slices: Index<Slice>, patches: Patches, grain: int)
+    requires 0 <= start <= end <= orders.len(),
+        forall|day: int, customer: int, component: int| #[trigger] slice_at(slices, day, customer).component(component)
+            == scanned_fact_sum(orders.take(start), rows, day, customer, grain, component),
+        forall|day: int, customer: int, component: int| #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
+            == scanned_fact_sum(orders.subrange(start, end), rows, day, customer, grain, component),
+    ensures forall|day: int, customer: int| moment_ok(plus(slice_at(slices, day, customer),
+        #[trigger] patch_total(patches, day, customer, grain))),
+{
+    assert forall|day: int, customer: int| moment_ok(plus(slice_at(slices, day, customer),
+        #[trigger] patch_total(patches, day, customer, grain))) by {
+        lemma_chunk_group_ready(orders, rows, start, end, slices, patches, grain, day, customer);
+    }
+}
+
+pub proof fn lemma_chunk_group_ready(orders: Seq<OrderInput>, rows: Seq<ReturnedLineInput>, start: int, end: int,
+    slices: Index<Slice>, patches: Patches, grain: int, day: int, customer: int)
+    requires 0 <= start <= end <= orders.len(),
+        forall|component: int| #[trigger] slice_at(slices, day, customer).component(component)
+            == scanned_fact_sum(orders.take(start), rows, day, customer, grain, component),
+        forall|component: int| #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
+            == scanned_fact_sum(orders.subrange(start, end), rows, day, customer, grain, component),
+    ensures moment_ok(plus(slice_at(slices, day, customer), patch_total(patches, day, customer, grain))),
+{
+    lemma_scanned_moments_ok(orders.take(end), rows, day, customer, grain);
+    lemma_scanned_fact_split(orders, rows, start, end, day, customer, grain, 0);
+    lemma_scanned_fact_split(orders, rows, start, end, day, customer, grain, 1);
+    lemma_scanned_fact_split(orders, rows, start, end, day, customer, grain, 2);
+    assert(slice_at(slices, day, customer).component(0) == scanned_fact_sum(orders.take(start), rows, day, customer, grain, 0));
+    assert(slice_at(slices, day, customer).component(1) == scanned_fact_sum(orders.take(start), rows, day, customer, grain, 1));
+    assert(slice_at(slices, day, customer).component(2) == scanned_fact_sum(orders.take(start), rows, day, customer, grain, 2));
+    assert(patch_rows_sum(patches.entries(), day, customer, grain, 0) == scanned_fact_sum(orders.subrange(start, end), rows, day, customer, grain, 0));
+    assert(patch_rows_sum(patches.entries(), day, customer, grain, 1) == scanned_fact_sum(orders.subrange(start, end), rows, day, customer, grain, 1));
+    assert(patch_rows_sum(patches.entries(), day, customer, grain, 2) == scanned_fact_sum(orders.subrange(start, end), rows, day, customer, grain, 2));
+    lemma_moments_ext(plus(slice_at(slices, day, customer), patch_total(patches, day, customer, grain)),
+        Moments {
+            count: scanned_fact_sum(orders.take(end), rows, day, customer, grain, 0),
+            revenue: scanned_fact_sum(orders.take(end), rows, day, customer, grain, 1),
+            upper: scanned_fact_sum(orders.take(end), rows, day, customer, grain, 2),
+        });
 }
 
 }

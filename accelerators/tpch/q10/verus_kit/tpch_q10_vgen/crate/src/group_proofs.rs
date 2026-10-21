@@ -27,21 +27,21 @@ pub open spec fn group_columns(group: Group) -> OutRow {
 }
 
 pub open spec fn group_total(index: Index<Group>, key: KeyView) -> int {
-    match index.at(key) { Some(group) => group.multiplicity as int, None => 0int }
+    match index.at(key) { Some(group) => group.multiplicity@, None => 0int }
 }
 
 pub open spec fn groups_valid(index: Index<Group>, customer: int) -> bool {
     &&& index.wf()
     &&& forall|key: KeyView| #[trigger] index.at(key).is_some() ==> {
         let group = index.at(key).unwrap();
-        &&& group.multiplicity > 0
+        &&& group.multiplicity@ > 0
         &&& customer_input_view(*group.customer).c_custkey == customer
         &&& key == group_key_view(customer_input_view(*group.customer), nation_input_view(*group.nation))
     }
 }
 
 pub open spec fn nation_group_weight(customer: CustomerRow, key: KeyView) -> spec_fn((KeyView, Nation)) -> int {
-    |entry: (KeyView, Nation)| if group_key_view(customer, nation_input_view(*entry.1.row)) == key { entry.1.count as int } else { 0int }
+    |entry: (KeyView, Nation)| if group_key_view(customer, nation_input_view(*entry.1.row)) == key { entry.1.count@ } else { 0int }
 }
 
 pub open spec fn nation_group_sum(dimensions: Dimensions, customer: CustomerRow, key: KeyView) -> int {
@@ -51,7 +51,7 @@ pub open spec fn nation_group_sum(dimensions: Dimensions, customer: CustomerRow,
 }
 
 pub open spec fn customer_group_weight(dimensions: Dimensions, key: KeyView) -> spec_fn(Customer) -> int {
-    |variant: Customer| variant.count as int * nation_group_sum(dimensions, customer_input_view(*variant.row), key)
+    |variant: Customer| variant.count@ * nation_group_sum(dimensions, customer_input_view(*variant.row), key)
 }
 
 pub open spec fn joined_group_sum(dimensions: Dimensions, customer: int, key: KeyView) -> int {
@@ -135,9 +135,9 @@ pub proof fn lemma_coalesced_candidate(db: Db, parameters: Params, dimensions: D
         groups_valid(groups, customer as int),
         forall|key: KeyView| #[trigger] group_total(groups, key) == joined_group_sum(dimensions, customer as int, key),
         groups.at(output_group_key(candidate.view())) == Some(*candidate.group),
-        moments.count > 0, moments.count as int == crate::query_semantics::window_fact(db, parameters, customer as int, 0),
-        moments.revenue as int == crate::query_semantics::window_fact(db, parameters, customer as int, 1),
-        candidate.revenue as int == moments.revenue as int * candidate.group.multiplicity as int,
+        moments.count > 0, moments.count == crate::query_semantics::window_fact(db, parameters, customer as int, 0),
+        moments.revenue == crate::query_semantics::window_fact(db, parameters, customer as int, 1),
+        candidate.revenue@ == moments.revenue * candidate.group.multiplicity@,
     ensures row_ok(db, parameters, candidate.view()),
 {
     let row = candidate.view();
@@ -159,11 +159,11 @@ pub proof fn lemma_singleton_candidate(db: Db, parameters: Params, dimensions: D
         nations.entries().len() == 1, nations.entries()[0].1 == *nation,
         customer_input_view(*candidate.group.customer) == customer_input_view(*cust.row),
         nation_input_view(*candidate.group.nation) == nation_input_view(*nation.row),
-        candidate.group.multiplicity as int == cust.count as int * nation.count as int,
-        cust.count > 0, nation.count > 0, moments.count > 0,
-        moments.count as int == crate::query_semantics::window_fact(db, parameters, customer_input_view(*cust.row).c_custkey, 0),
-        moments.revenue as int == crate::query_semantics::window_fact(db, parameters, customer_input_view(*cust.row).c_custkey, 1),
-        candidate.revenue as int == moments.revenue as int * candidate.group.multiplicity as int,
+        candidate.group.multiplicity@ == cust.count@ * nation.count@,
+        cust.count@ > 0, nation.count@ > 0, moments.count > 0,
+        moments.count == crate::query_semantics::window_fact(db, parameters, customer_input_view(*cust.row).c_custkey, 0),
+        moments.revenue == crate::query_semantics::window_fact(db, parameters, customer_input_view(*cust.row).c_custkey, 1),
+        candidate.revenue@ == moments.revenue * candidate.group.multiplicity@,
     ensures row_ok(db, parameters, candidate.view()),
 {
     let row = candidate.view();
@@ -175,9 +175,9 @@ pub proof fn lemma_singleton_candidate(db: Db, parameters: Params, dimensions: D
     assert(nations.entries() =~= seq![nations.entries()[0]]);
     lemma_sum_singleton(nations.entries()[0], nation_weight);
     lemma_sum_singleton(variants[0], customer_weight);
-    assert(crate::query_semantics::dimension_multiplicity(db, row) == cust.count as int * nation.count as int);
-    assert(cust.count as int * nation.count as int > 0) by (nonlinear_arith)
-        requires cust.count > 0, nation.count > 0;
+    assert(crate::query_semantics::dimension_multiplicity(db, row) == cust.count@ * nation.count@);
+    assert(cust.count@ * nation.count@ > 0) by (nonlinear_arith)
+        requires cust.count@ > 0, nation.count@ > 0;
     crate::query_semantics::lemma_row_factor(db, parameters, row);
 }
 
