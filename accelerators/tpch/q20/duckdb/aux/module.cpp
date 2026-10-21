@@ -11,6 +11,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <set>
 #include <unordered_set>
 #include <utility>
 
@@ -136,63 +137,309 @@ int64_t DenseLimit(std::size_t rows) {
   return std::max<int64_t>(kMinDense, 4 * static_cast<int64_t>(rows));
 }
 
+// ---- bulk build: rows dealt into key-range buckets, each sorted on its own ----
+
+constexpr std::size_t kSortBuckets = 4096;
+constexpr std::size_t kSamplesPerPiece = 64;
+
+template <class Row> using Pieces = std::vector<std::vector<Row>>;
+
+// The scan partials of one table in partition order: merging only links them.
+template <class Row> struct RowPieces {
+  std::vector<Row> rows;
+  Pieces<Row> merged;
+
+  void Absorb(RowPieces &&from) {
+    merged.push_back(std::move(from.rows));
+    for (auto &piece : from.merged)
+      merged.push_back(std::move(piece));
+  }
+  Pieces<Row> Take() && {
+    Pieces<Row> all;
+    all.push_back(std::move(rows));
+    for (auto &piece : merged)
+      all.push_back(std::move(piece));
+    return all;
+  }
+};
+
+// Splitters from a sample of the keys cut the rows into key-range buckets;
+// sorting each bucket on its own gives the globally sorted rows as the
+// concatenation of the buckets. Rows with equal keys keep table order.
+template <class Row, class Key, class Less>
+Pieces<Row> SortIntoBuckets(const core::AuxEngineServices &services, Pieces<Row> pieces,
+                            Key key, Less less) {
+  std::vector<uint64_t> sample;
+  for (const auto &piece : pieces) {
+    const std::size_t stride = std::max<std::size_t>(1, piece.size() / kSamplesPerPiece);
+    for (std::size_t i = 0; i < piece.size(); i += stride)
+      sample.push_back(key(piece[i]));
+  }
+  std::sort(sample.begin(), sample.end());
+  std::vector<uint64_t> splitters;
+  for (std::size_t b = 1; b < kSortBuckets && !sample.empty(); ++b)
+    splitters.push_back(sample[b * sample.size() / kSortBuckets]);
+  splitters.erase(std::unique(splitters.begin(), splitters.end()), splitters.end());
+  const std::size_t buckets = splitters.size() + 1;
+
+  struct Scattered {
+    std::vector<Row> rows;
+    std::vector<std::size_t> start; // bucket b is rows[start[b], start[b + 1])
+  };
+  std::vector<Scattered> scattered(pieces.size());
+  core::ParallelEach(services, pieces.size(), 1, [&](std::size_t p) {
+    auto &piece = pieces[p];
+    auto &out = scattered[p];
+    std::vector<uint16_t> bucket(piece.size());
+    out.start.assign(buckets + 1, 0);
+    for (std::size_t i = 0; i < piece.size(); ++i) {
+      bucket[i] = static_cast<uint16_t>(
+          std::upper_bound(splitters.begin(), splitters.end(), key(piece[i])) -
+          splitters.begin());
+      ++out.start[bucket[i] + 1];
+    }
+    for (std::size_t b = 0; b < buckets; ++b)
+      out.start[b + 1] += out.start[b];
+    std::vector<std::size_t> next(out.start.begin(), out.start.end() - 1);
+    out.rows.resize(piece.size());
+    for (std::size_t i = 0; i < piece.size(); ++i)
+      out.rows[next[bucket[i]]++] = std::move(piece[i]);
+    std::vector<Row>().swap(piece);
+  });
+
+  Pieces<Row> sorted(buckets);
+  core::ParallelEach(services, buckets, 1, [&](std::size_t b) {
+    auto &out = sorted[b];
+    for (auto &from : scattered)
+      out.insert(out.end(), std::make_move_iterator(from.rows.begin() + from.start[b]),
+                 std::make_move_iterator(from.rows.begin() + from.start[b + 1]));
+    std::stable_sort(out.begin(), out.end(), less);
+  });
+  return sorted;
+}
+
+// Start offset of every piece in the concatenation, then the total.
+template <class Row> std::vector<std::size_t> PieceOffsets(const Pieces<Row> &pieces) {
+  std::vector<std::size_t> at(pieces.size() + 1, 0);
+  for (std::size_t i = 0; i < pieces.size(); ++i)
+    at[i + 1] = at[i] + pieces[i].size();
+  return at;
+}
+
+// Strings sort by their first 8 bytes past the prefix every name shares
+// (the common prefix of the smallest and the largest), so numbered names
+// ("Supplier#000000042") still spread over the buckets.
+uint64_t NamePrefixKey(std::string_view name, std::size_t skip) {
+  uint64_t key = 0;
+  for (std::size_t i = 0; i < 8; ++i)
+    key = key << 8 | (skip + i < name.size() ? static_cast<unsigned char>(name[skip + i]) : 0);
+  return key;
+}
+
+template <class Row, class NameOf>
+std::size_t SharedPrefixLength(const core::AuxEngineServices &services,
+                               const Pieces<Row> &pieces, NameOf name_of) {
+  struct Extremes {
+    std::string_view lo, hi;
+    bool any = false;
+  };
+  std::vector<Extremes> per_piece(pieces.size());
+  core::ParallelEach(services, pieces.size(), 1, [&](std::size_t p) {
+    auto &e = per_piece[p];
+    for (const auto &row : pieces[p]) {
+      const std::string_view name = name_of(row);
+      if (!e.any || name < e.lo)
+        e.lo = name;
+      if (!e.any || name > e.hi)
+        e.hi = name;
+      e.any = true;
+    }
+  });
+  Extremes all;
+  for (const auto &e : per_piece) {
+    if (!e.any)
+      continue;
+    if (!all.any || e.lo < all.lo)
+      all.lo = e.lo;
+    if (!all.any || e.hi > all.hi)
+      all.hi = e.hi;
+    all.any = true;
+  }
+  std::size_t n = 0;
+  while (n < all.lo.size() && n < all.hi.size() && all.lo[n] == all.hi[n])
+    ++n;
+  return n;
+}
+
+// Lowers *slot to `value` (slices write the same slot only for repeated keys).
+void AtomicMin(uint32_t *slot, uint32_t value) {
+  uint32_t seen = __atomic_load_n(slot, __ATOMIC_RELAXED);
+  while (value < seen &&
+         !__atomic_compare_exchange_n(slot, &seen, value, true, __ATOMIC_RELAXED,
+                                      __ATOMIC_RELAXED)) {
+  }
+}
+
+struct SeriesRow {
+  uint64_t key;
+  int32_t date;
+  int64_t qty;
+};
+
+struct NameRow {
+  int64_t key;
+  const char *data;
+  uint32_t len;
+  std::string_view View() const { return {data, len}; }
+};
+
+struct SupplierRow {
+  int64_t key;
+  TpchQ20SupplierRecord record;
+};
+
+// The lineitem series of one sorted bucket, in the layout of TpchQ20Base.
+struct SeriesBucket {
+  std::vector<uint64_t> keys;
+  std::vector<uint64_t> ends; // per series: end offset into `entries`
+  std::vector<TpchQ20Base::Entry> entries;
+  std::vector<std::pair<uint32_t, std::vector<TpchQ20DateQuantity>>> wide; // local idx
+};
+
+SeriesBucket GroupSeries(const std::vector<SeriesRow> &rows) {
+  SeriesBucket out;
+  std::vector<TpchQ20DateQuantity> run;
+  for (std::size_t begin = 0, end = 0; begin < rows.size(); begin = end) {
+    run.clear();
+    for (end = begin; end < rows.size() && rows[end].key == rows[begin].key; ++end)
+      run.push_back({rows[end].date, rows[end].qty});
+    std::stable_sort(run.begin(), run.end(),
+                     [](const TpchQ20DateQuantity &a, const TpchQ20DateQuantity &b) {
+                       return a.shipdate_days < b.shipdate_days;
+                     });
+    const bool fits = std::all_of(run.begin(), run.end(), [](const TpchQ20DateQuantity &e) {
+      return e.quantity_raw >= std::numeric_limits<int32_t>::min() &&
+             e.quantity_raw <= std::numeric_limits<int32_t>::max();
+    });
+    if (fits) {
+      for (const auto &e : run)
+        out.entries.push_back({e.shipdate_days, static_cast<int32_t>(e.quantity_raw)});
+    } else {
+      out.wide.emplace_back(static_cast<uint32_t>(out.keys.size()), run);
+    }
+    out.keys.push_back(rows[begin].key);
+    out.ends.push_back(out.entries.size());
+  }
+  return out;
+}
+
 class BaseBuilder {
 public:
-  // Without services (state decoding) the finishing passes run serially.
-  explicit BaseBuilder(const core::AuxEngineServices *services = nullptr)
-      : services(services), base(std::make_shared<TpchQ20Base>()) {
-    base->series_off.push_back(0);
-  }
+  explicit BaseBuilder(const core::AuxEngineServices &services)
+      : services(services), base(std::make_shared<TpchQ20Base>()) {}
 
-  // Rows must arrive in nondecreasing pair-key order.
-  void AddSeriesRow(uint64_t key, int32_t date, int64_t qty) {
-    if (has_cur && key != cur_key) {
-      if (key < cur_key)
-        throw std::logic_error("TPC-H Q20 aux: lineitem scan not ordered");
-      CloseSeries();
+  // Every Adopt takes the rows of one table, sorted (bucket by bucket).
+  void AdoptSeries(Pieces<SeriesRow> sorted) {
+    std::vector<SeriesBucket> groups(sorted.size());
+    core::ParallelEach(services, sorted.size(), 1, [&](std::size_t b) {
+      groups[b] = GroupSeries(sorted[b]);
+      std::vector<SeriesRow>().swap(sorted[b]);
+    });
+    std::vector<std::size_t> series_at(groups.size() + 1, 0), entries_at(groups.size() + 1, 0);
+    for (std::size_t b = 0; b < groups.size(); ++b) {
+      series_at[b + 1] = series_at[b] + groups[b].keys.size();
+      entries_at[b + 1] = entries_at[b] + groups[b].entries.size();
     }
-    cur_key = key;
-    has_cur = true;
-    cur.push_back({date, qty});
-  }
-  void FinishSeries() { CloseSeries(); }
-
-  // Rows must arrive in nondecreasing (partkey, suppkey) order.
-  void AddPartsupp(int64_t partkey, int64_t suppkey, int64_t availqty) {
-    if (partkey < 0 || suppkey < 0)
-      return;
-    RequirePairKey(partkey, suppkey);
-    PsRow e;
-    e.partkey = partkey;
-    e.availqty = availqty;
-    e.suppkey = static_cast<int32_t>(suppkey);
-    ps.push_back(e);
-  }
-
-  // One part name: its key and the bytes at [off, off + len) of an arena.
-  struct NameRef {
-    int64_t key;
-    uint64_t off;
-    uint32_t len;
-  };
-  void AddPart(int64_t key, std::string_view name) {
-    if (key < 0)
-      return;
-    names.push_back({key, static_cast<uint64_t>(arena.size()),
-                     static_cast<uint32_t>(name.size())});
-    arena.append(name);
-  }
-  // Takes the names of a parallel scan (offsets into `name_bytes`) as they are.
-  void AdoptNames(std::string name_bytes, std::vector<NameRef> refs) {
-    arena = std::move(name_bytes);
-    names = std::move(refs);
+    if (series_at.back() > TpchQ20Base::kNoSeries)
+      throw std::runtime_error("TPC-H Q20 aux: too many lineitem series");
+    base->series_key.resize(series_at.back());
+    base->series_off.assign(series_at.back() + 1, 0);
+    base->series_entries.resize(entries_at.back());
+    core::ParallelEach(services, groups.size(), 1, [&](std::size_t b) {
+      const auto &g = groups[b];
+      std::copy(g.keys.begin(), g.keys.end(), base->series_key.begin() + series_at[b]);
+      for (std::size_t i = 0; i < g.ends.size(); ++i)
+        base->series_off[series_at[b] + i + 1] = entries_at[b] + g.ends[i];
+      std::copy(g.entries.begin(), g.entries.end(), base->series_entries.begin() + entries_at[b]);
+    });
+    for (std::size_t b = 0; b < groups.size(); ++b)
+      for (auto &[local, run] : groups[b].wide)
+        base->series_wide[static_cast<uint32_t>(series_at[b] + local)] = std::move(run);
   }
 
-  void AddSupplier(int64_t key, std::string name, std::string address,
-                   int32_t nationkey) {
-    if (key < 0)
-      return;
-    suppliers[key] = {std::move(name), std::move(address), nationkey};
+  void AdoptPartsupp(Pieces<TpchQ20PartsuppInput> sorted) {
+    const auto at = PieceOffsets(sorted);
+    ps.resize(at.back());
+    core::ParallelEach(services, sorted.size(), 1, [&](std::size_t b) {
+      std::size_t out = at[b];
+      for (const auto &row : sorted[b]) {
+        auto &e = ps[out++];
+        e.partkey = row.partkey;
+        e.availqty = row.availqty;
+        e.suppkey = static_cast<int32_t>(row.suppkey);
+      }
+      std::vector<TpchQ20PartsuppInput>().swap(sorted[b]);
+    });
+  }
+
+  // Part names sorted bytewise (and the ranks they give each part key).
+  void AdoptNames(const Pieces<NameRow> &sorted) {
+    const auto at = PieceOffsets(sorted);
+    const std::size_t n = at.back();
+    std::vector<std::size_t> bytes_at(sorted.size() + 1, 0);
+    for (std::size_t b = 0; b < sorted.size(); ++b) {
+      std::size_t bytes = 0;
+      for (const auto &row : sorted[b])
+        bytes += row.len;
+      bytes_at[b + 1] = bytes_at[b] + bytes;
+    }
+    auto &base_ref = *base;
+    base_ref.name_arena.resize(bytes_at.back());
+    base_ref.name_off.resize(n + 1);
+    base_ref.name_partkey.resize(n);
+    core::ParallelEach(services, sorted.size(), 1, [&](std::size_t b) {
+      std::size_t rank = at[b], off = bytes_at[b];
+      for (const auto &row : sorted[b]) {
+        std::memcpy(&base_ref.name_arena[off], row.data, row.len);
+        base_ref.name_off[rank] = off;
+        base_ref.name_partkey[rank++] = row.key;
+        off += row.len;
+      }
+    });
+    base_ref.name_off[n] = bytes_at.back();
+    AssignRanks();
+  }
+
+  void AdoptSuppliers(Pieces<SupplierRow> sorted) {
+    const auto at = PieceOffsets(sorted);
+    auto &b = *base;
+    b.supplier_keys.resize(at.back());
+    b.supplier_records.resize(at.back());
+    core::ParallelEach(services, sorted.size(), 1, [&](std::size_t piece) {
+      std::size_t out = at[piece];
+      for (auto &row : sorted[piece]) {
+        b.supplier_keys[out] = row.key;
+        b.supplier_records[out++] = std::move(row.record);
+      }
+      std::vector<SupplierRow>().swap(sorted[piece]);
+    });
+    const int64_t dense = DenseLimit(b.supplier_keys.size());
+    const int64_t max_key = MaxKeyBelow(b.supplier_keys, dense);
+    b.supp_nation.assign(static_cast<std::size_t>(max_key + 1), -1);
+    b.supp_rank.assign(static_cast<std::size_t>(max_key + 1), TpchQ20Base::kNoRank);
+    Slices(b.supplier_keys.size(), kPartsuppGrain,
+           [&](std::size_t, std::size_t begin, std::size_t end) {
+             for (std::size_t r = begin; r < end; ++r) {
+               const int64_t key = b.supplier_keys[r];
+               if (key > max_key)
+                 continue;
+               b.supp_nation[static_cast<std::size_t>(key)] = b.supplier_records[r].nationkey;
+               b.supp_rank[static_cast<std::size_t>(key)] = static_cast<uint32_t>(r);
+             }
+           });
+    for (std::size_t r = 0; r < b.supplier_keys.size(); ++r)
+      if (b.supplier_keys[r] > max_key)
+        b.sparse_supp_rank[b.supplier_keys[r]] = static_cast<uint32_t>(r);
   }
 
   void AddNation(int32_t key, const std::string &name) {
@@ -203,47 +450,14 @@ public:
   }
 
   std::shared_ptr<const TpchQ20Base> Finish() {
-    CloseSeries();
-    // series index resolution (both sides sorted by pair key); each slice
-    // starts its merge cursor at its first key.
-    {
-      const auto &keys = base->series_key;
-      Slices(ps.size(), kPartsuppGrain,
-             [&](std::size_t, std::size_t begin, std::size_t end) {
-               if (begin == end)
-                 return;
-               const auto &first = ps[begin];
-               std::size_t j = std::lower_bound(keys.begin(), keys.end(),
-                                                MakePairKey(first.partkey, first.suppkey)) -
-                               keys.begin();
-               for (std::size_t i = begin; i < end; ++i) {
-                 auto &e = ps[i];
-                 const uint64_t key = MakePairKey(e.partkey, e.suppkey);
-                 while (j < keys.size() && keys[j] < key)
-                   ++j;
-                 if (j < keys.size() && keys[j] == key) {
-                   e.series_idx = static_cast<uint32_t>(j);
-                 } else {
-                   const auto it = std::lower_bound(keys.begin(), keys.end(), key);
-                   e.series_idx = (it != keys.end() && *it == key)
-                                      ? static_cast<uint32_t>(it - keys.begin())
-                                      : TpchQ20Base::kNoSeries;
-                 }
-               }
-             });
-    }
-    FinishNames();
-    FinishSuppliers();
+    ResolveSeriesIndexes();
     FinishPairs();
     return std::move(base);
   }
 
 private:
   template <class Fn> void Slices(std::size_t n, std::size_t grain, Fn &&fn) const {
-    if (services)
-      core::ParallelSlices(*services, n, grain, fn);
-    else
-      fn(std::size_t{0}, std::size_t{0}, n);
+    core::ParallelSlices(services, n, grain, fn);
   }
 
   struct PsRow {
@@ -253,26 +467,102 @@ private:
     uint32_t series_idx = TpchQ20Base::kNoSeries;
   };
 
+  // The largest key below `dense`, or -1.
+  int64_t MaxKeyBelow(const std::vector<int64_t> &keys, int64_t dense) const {
+    int64_t max_key = -1;
+    core::ParallelReduce(
+        services, keys.size(), kPartsuppGrain, max_key,
+        [&](int64_t &acc, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i)
+            if (keys[i] < dense)
+              acc = std::max(acc, keys[i]);
+        },
+        [](int64_t &into, int64_t &&from) { into = std::max(into, from); });
+    return max_key;
+  }
+
+  // part_rank: a part key's first (lowest) rank; further ranks of a key go to
+  // extra_ranks, keys past the dense range to sparse_rank.
+  void AssignRanks() {
+    auto &b = *base;
+    const std::size_t n = b.name_partkey.size();
+    const int64_t dense = DenseLimit(n);
+    const int64_t max_key = MaxKeyBelow(b.name_partkey, dense);
+    b.part_rank.assign(static_cast<std::size_t>(max_key + 1), TpchQ20Base::kNoRank);
+    Slices(n, kPartsuppGrain, [&](std::size_t, std::size_t begin, std::size_t end) {
+      for (std::size_t r = begin; r < end; ++r)
+        if (b.name_partkey[r] < dense)
+          AtomicMin(&b.part_rank[static_cast<std::size_t>(b.name_partkey[r])],
+                    static_cast<uint32_t>(r));
+    });
+    // Ranks that are not their key's first, in rank order (normally none).
+    const std::size_t slices = core::SliceCount(services, n, kPartsuppGrain);
+    std::vector<std::vector<uint32_t>> later(slices);
+    core::RunSlices(services, slices, n, [&](std::size_t slice, std::size_t begin, std::size_t end) {
+      for (std::size_t r = begin; r < end; ++r) {
+        const int64_t key = b.name_partkey[r];
+        if (key >= dense || b.part_rank[static_cast<std::size_t>(key)] != r)
+          later[slice].push_back(static_cast<uint32_t>(r)); // sparse, or not the first
+      }
+    });
+    for (const auto &ranks : later)
+      for (const uint32_t rank : ranks) {
+        const int64_t key = b.name_partkey[rank];
+        const bool first = key >= dense && b.sparse_rank.emplace(key, rank).second;
+        if (!first)
+          b.extra_ranks[key].push_back(rank);
+      }
+  }
+
+  // Resolves each partsupp row's lineitem series; both sides are sorted by pair
+  // key, each slice starts its merge cursor at its first key.
+  void ResolveSeriesIndexes() {
+    const auto &keys = base->series_key;
+    Slices(ps.size(), kPartsuppGrain, [&](std::size_t, std::size_t begin, std::size_t end) {
+      if (begin == end)
+        return;
+      const auto &first = ps[begin];
+      std::size_t j = std::lower_bound(keys.begin(), keys.end(),
+                                       MakePairKey(first.partkey, first.suppkey)) -
+                      keys.begin();
+      for (std::size_t i = begin; i < end; ++i) {
+        auto &e = ps[i];
+        const uint64_t key = MakePairKey(e.partkey, e.suppkey);
+        while (j < keys.size() && keys[j] < key)
+          ++j;
+        if (j < keys.size() && keys[j] == key)
+          e.series_idx = static_cast<uint32_t>(j);
+      }
+    });
+  }
+
   // Lays the partsupp rows out nation-major (see TpchQ20Base::pairs): one
   // entry per (row, base name of its part), bucketed by the supplier's slot,
-  // then each slot sorted by (rank, suppkey).
+  // then each slot sorted by (rank, suppkey). Slices count, then fill, in row
+  // order, so the layout is the serial one at any thread count.
   void FinishPairs() {
     auto &b = *base;
     // Slots: one per distinct base nation of a supplier, then "no supplier".
-    std::vector<int32_t> slot_nations;
-    for (const auto &rec : b.supplier_records)
-      if (b.nation_slot.emplace(rec.nationkey, 0).second)
-        slot_nations.push_back(rec.nationkey);
-    std::sort(slot_nations.begin(), slot_nations.end());
-    for (std::size_t s = 0; s < slot_nations.size(); ++s)
-      b.nation_slot[slot_nations[s]] = static_cast<uint32_t>(s);
-    const std::size_t slots = slot_nations.size() + 1;
+    std::set<int32_t> nations;
+    core::ParallelReduce(
+        services, b.supplier_records.size(), kPartsuppGrain, nations,
+        [&](std::set<int32_t> &acc, std::size_t begin, std::size_t end) {
+          for (std::size_t r = begin; r < end; ++r)
+            acc.insert(b.supplier_records[r].nationkey);
+        },
+        [](std::set<int32_t> &into, std::set<int32_t> &&from) { into.merge(from); });
+    for (const int32_t nationkey : nations)
+      b.nation_slot.emplace(nationkey, static_cast<uint32_t>(b.nation_slot.size()));
+    const std::size_t slots = nations.size() + 1;
     const auto no_supplier = static_cast<uint32_t>(slots - 1);
     std::vector<uint32_t> dense_slot(b.supp_nation.size(), no_supplier);
-    for (std::size_t r = 0; r < b.supplier_keys.size(); ++r)
-      if (static_cast<std::size_t>(b.supplier_keys[r]) < dense_slot.size())
-        dense_slot[static_cast<std::size_t>(b.supplier_keys[r])] =
-            b.nation_slot.at(b.supplier_records[r].nationkey);
+    Slices(b.supplier_keys.size(), kPartsuppGrain,
+           [&](std::size_t, std::size_t begin, std::size_t end) {
+             for (std::size_t r = begin; r < end; ++r)
+               if (static_cast<std::size_t>(b.supplier_keys[r]) < dense_slot.size())
+                 dense_slot[static_cast<std::size_t>(b.supplier_keys[r])] =
+                     b.nation_slot.at(b.supplier_records[r].nationkey);
+           });
     const auto slot_of = [&](int32_t suppkey) -> uint32_t {
       if (static_cast<std::size_t>(suppkey) < dense_slot.size())
         return dense_slot[static_cast<std::size_t>(suppkey)];
@@ -294,35 +584,58 @@ private:
       return true;
     };
 
-    std::vector<std::size_t> count(slots + 1, 0);
-    for (const auto &row : ps) {
-      const uint32_t slot = slot_of(row.suppkey);
-      if (!for_each_rank(row.partkey, [&](uint32_t) { ++count[slot + 1]; }))
-        b.orphan_pairs.push_back(
-            {row.partkey, row.availqty, row.suppkey, row.series_idx});
+    const std::size_t rows = ps.size();
+    const std::size_t slices = core::SliceCount(services, rows, kPartsuppGrain);
+    std::vector<std::vector<std::size_t>> count(slices, std::vector<std::size_t>(slots, 0));
+    std::vector<std::vector<TpchQ20Base::OrphanPair>> orphans(slices);
+    core::RunSlices(services, slices, rows, [&](std::size_t slice, std::size_t begin, std::size_t end) {
+      for (std::size_t i = begin; i < end; ++i) {
+        const auto &row = ps[i];
+        const uint32_t slot = slot_of(row.suppkey);
+        if (!for_each_rank(row.partkey, [&](uint32_t) { ++count[slice][slot]; }))
+          orphans[slice].push_back({row.partkey, row.availqty, row.suppkey, row.series_idx});
+      }
+    });
+    // cursor[slice][slot]: where the slice writes its next entry of the slot.
+    std::vector<std::size_t> offsets(slots + 1, 0);
+    auto cursor = count;
+    for (std::size_t slot = 0; slot < slots; ++slot) {
+      std::size_t at = offsets[slot];
+      for (std::size_t slice = 0; slice < slices; ++slice) {
+        cursor[slice][slot] = at;
+        at += count[slice][slot];
+      }
+      offsets[slot + 1] = at;
     }
-    for (std::size_t s = 1; s <= slots; ++s)
-      count[s] += count[s - 1];
-    if (count[slots] > std::numeric_limits<uint32_t>::max())
+    if (offsets[slots] > std::numeric_limits<uint32_t>::max())
       throw std::runtime_error("TPC-H Q20 aux: too many partsupp pairs");
-    b.slot_off.assign(count.begin(), count.end());
-    b.pairs.resize(count[slots]);
-    for (const auto &row : ps) {
-      const uint32_t slot = slot_of(row.suppkey);
-      for_each_rank(row.partkey, [&](uint32_t rank) {
-        auto &e = b.pairs[count[slot]++];
-        e.rank = rank;
-        e.suppkey = row.suppkey;
-        e.series_idx = row.series_idx;
-        if (row.availqty > std::numeric_limits<int32_t>::min() &&
-            row.availqty <= std::numeric_limits<int32_t>::max()) {
-          e.availqty = static_cast<int32_t>(row.availqty);
-        } else {
-          e.availqty = TpchQ20Base::kWideAvail;
-          b.avail_wide[MakePairKey(row.partkey, row.suppkey)] = row.availqty;
-        }
-      });
-    }
+    for (auto &slice_orphans : orphans)
+      b.orphan_pairs.insert(b.orphan_pairs.end(), slice_orphans.begin(), slice_orphans.end());
+    b.slot_off.assign(offsets.begin(), offsets.end());
+    b.pairs.resize(offsets[slots]);
+    std::vector<std::vector<std::pair<uint64_t, int64_t>>> wide(slices);
+    core::RunSlices(services, slices, rows, [&](std::size_t slice, std::size_t begin, std::size_t end) {
+      for (std::size_t i = begin; i < end; ++i) {
+        const auto &row = ps[i];
+        const uint32_t slot = slot_of(row.suppkey);
+        for_each_rank(row.partkey, [&](uint32_t rank) {
+          auto &e = b.pairs[cursor[slice][slot]++];
+          e.rank = rank;
+          e.suppkey = row.suppkey;
+          e.series_idx = row.series_idx;
+          if (row.availqty > std::numeric_limits<int32_t>::min() &&
+              row.availqty <= std::numeric_limits<int32_t>::max()) {
+            e.availqty = static_cast<int32_t>(row.availqty);
+          } else {
+            e.availqty = TpchQ20Base::kWideAvail;
+            wide[slice].emplace_back(MakePairKey(row.partkey, row.suppkey), row.availqty);
+          }
+        });
+      }
+    });
+    for (const auto &slice_wide : wide)
+      for (const auto &[key, availqty] : slice_wide)
+        b.avail_wide[key] = availqty;
     ps.clear();
     ps.shrink_to_fit();
     Slices(slots, 1, [&](std::size_t, std::size_t begin, std::size_t end) {
@@ -335,128 +648,8 @@ private:
     });
   }
 
-  void CloseSeries() {
-    if (!has_cur)
-      return;
-    std::stable_sort(cur.begin(), cur.end(),
-                     [](const TpchQ20DateQuantity &a,
-                        const TpchQ20DateQuantity &b) {
-                       return a.shipdate_days < b.shipdate_days;
-                     });
-    bool fits = true;
-    for (const auto &e : cur) {
-      if (e.quantity_raw < std::numeric_limits<int32_t>::min() ||
-          e.quantity_raw > std::numeric_limits<int32_t>::max()) {
-        fits = false;
-        break;
-      }
-    }
-    if (base->series_key.size() >= TpchQ20Base::kNoSeries)
-      throw std::runtime_error("TPC-H Q20 aux: too many lineitem series");
-    const uint32_t idx = static_cast<uint32_t>(base->series_key.size());
-    base->series_key.push_back(cur_key);
-    if (fits) {
-      for (const auto &e : cur)
-        base->series_entries.push_back(
-            {e.shipdate_days, static_cast<int32_t>(e.quantity_raw)});
-    } else {
-      base->series_wide[idx] = cur;
-    }
-    base->series_off.push_back(base->series_entries.size());
-    cur.clear();
-    has_cur = false;
-  }
-
-  void FinishNames() {
-    const auto view = [&](const NameRef &n) {
-      return std::string_view(arena.data() + n.off, n.len);
-    };
-    const auto less = [&](const NameRef &a, const NameRef &b) {
-      return view(a) < view(b);
-    };
-    if (!std::is_sorted(names.begin(), names.end(), less))
-      std::sort(names.begin(), names.end(), less);
-    base->name_arena.reserve(arena.size());
-    base->name_off.reserve(names.size() + 1);
-    base->name_partkey.reserve(names.size());
-    base->name_off.push_back(0);
-    for (const auto &n : names) {
-      base->name_arena.append(arena.data() + n.off, n.len);
-      base->name_off.push_back(base->name_arena.size());
-      base->name_partkey.push_back(n.key);
-    }
-    const int64_t dense = DenseLimit(names.size());
-    int64_t max_key = -1;
-    for (const auto &n : names)
-      if (n.key < dense)
-        max_key = std::max(max_key, n.key);
-    base->part_rank.assign(static_cast<std::size_t>(max_key + 1),
-                           TpchQ20Base::kNoRank);
-    for (std::size_t r = 0; r < names.size(); ++r) {
-      const int64_t key = names[r].key;
-      const auto rank = static_cast<uint32_t>(r);
-      bool first = false;
-      if (key < dense) {
-        auto &slot = base->part_rank[static_cast<std::size_t>(key)];
-        first = slot == TpchQ20Base::kNoRank;
-        if (first)
-          slot = rank;
-      } else {
-        first = base->sparse_rank.emplace(key, rank).second;
-      }
-      if (!first)
-        base->extra_ranks[key].push_back(rank);
-    }
-    names.clear();
-    names.shrink_to_fit();
-    arena.clear();
-    arena.shrink_to_fit();
-  }
-
-  void FinishSuppliers() {
-    auto &b = *base;
-    std::vector<std::pair<int64_t, TpchQ20SupplierRecord>> rows(
-        std::make_move_iterator(suppliers.begin()),
-        std::make_move_iterator(suppliers.end()));
-    suppliers.clear();
-    std::sort(rows.begin(), rows.end(), [](const auto &x, const auto &y) {
-      return x.second.name != y.second.name ? x.second.name < y.second.name
-                                            : x.first < y.first;
-    });
-    b.supplier_keys.reserve(rows.size());
-    b.supplier_records.reserve(rows.size());
-    for (auto &[key, rec] : rows) {
-      b.supplier_keys.push_back(key);
-      b.supplier_records.push_back(std::move(rec));
-    }
-    const int64_t dense = DenseLimit(rows.size());
-    int64_t max_key = -1;
-    for (const int64_t key : b.supplier_keys)
-      if (key < dense)
-        max_key = std::max(max_key, key);
-    b.supp_nation.assign(static_cast<std::size_t>(max_key + 1), -1);
-    b.supp_rank.assign(static_cast<std::size_t>(max_key + 1),
-                       TpchQ20Base::kNoRank);
-    for (std::size_t r = 0; r < b.supplier_keys.size(); ++r) {
-      const int64_t key = b.supplier_keys[r];
-      if (key <= max_key) {
-        b.supp_nation[static_cast<std::size_t>(key)] =
-            b.supplier_records[r].nationkey;
-        b.supp_rank[static_cast<std::size_t>(key)] = static_cast<uint32_t>(r);
-      } else {
-        b.sparse_supp_rank[key] = static_cast<uint32_t>(r);
-      }
-    }
-  }
-
-  const core::AuxEngineServices *services;
+  const core::AuxEngineServices &services;
   std::shared_ptr<TpchQ20Base> base;
-  std::vector<TpchQ20DateQuantity> cur;
-  uint64_t cur_key = 0;
-  bool has_cur = false;
-  std::vector<NameRef> names;
-  std::string arena;
-  std::unordered_map<int64_t, TpchQ20SupplierRecord> suppliers;
   // partsupp rows in (partkey, suppkey) order; consumed by FinishPairs.
   std::vector<PsRow> ps;
 };
@@ -1446,125 +1639,171 @@ void TpchQ20Module::Execute(core::AuxEngineServices &services,
              nation_name, services, sink);
 }
 
-TpchQ20State
-TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
-  if (!initial_scan)
-    throw std::logic_error(
-        "TPC-H Q20 aux requires a typed initial scan source");
+namespace {
 
-  BaseBuilder builder(&services);
+template <class Row, class Scan, class Consume>
+Pieces<Row> ScanPieces(const core::AuxEngineServices &services, Scan &&scan, Consume &&consume) {
+  return core::PartitionedBuild<RowPieces<Row>>(
+             services, [] { return RowPieces<Row>{}; }, std::forward<Scan>(scan),
+             std::forward<Consume>(consume),
+             [](RowPieces<Row> &into, RowPieces<Row> &&from) { into.Absorb(std::move(from)); })
+      .Take();
+}
 
-  // Lineitem series, grouped per (partkey, suppkey): the rows of all
-  // partitions in table order, stably sorted by pair.
-  struct SeriesRow {
-    uint64_t key;
-    int32_t date;
-    int64_t qty;
-  };
-  using SeriesRows = std::vector<SeriesRow>;
-  auto series_rows = core::PartitionedBuild<SeriesRows>(
-      services, [] { return SeriesRows{}; },
+Pieces<SeriesRow> SortedSeries(core::AuxEngineServices &services,
+                               TpchQ20InitialScan &initial_scan) {
+  auto pieces = ScanPieces<SeriesRow>(
+      services,
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitems(services, parts,
+        initial_scan.ScanLineitems(services, parts,
                                     [&](std::size_t p, const TpchQ20LineitemInput &input) {
                                       sink(p, core::SingleRowBatch<TpchQ20LineitemInput>{input});
                                     });
       },
-      [](SeriesRows &rows, const TpchQ20LineitemInput &input) {
+      [](RowPieces<SeriesRow> &partial, const TpchQ20LineitemInput &input) {
         if (input.partkey < 0 || input.suppkey < 0)
           return;
         RequirePairKey(input.partkey, input.suppkey);
-        rows.push_back({MakePairKey(input.partkey, input.suppkey), input.shipdate_days,
-                        input.quantity_raw});
-      },
-      [](SeriesRows &into, SeriesRows &&from) {
-        into.insert(into.end(), from.begin(), from.end());
+        partial.rows.push_back({MakePairKey(input.partkey, input.suppkey), input.shipdate_days,
+                                input.quantity_raw});
       });
-  core::ParallelStableSort(services, series_rows,
-                     [](const SeriesRow &a, const SeriesRow &b) { return a.key < b.key; },
-                     kSortGrain);
-  for (const auto &r : series_rows)
-    builder.AddSeriesRow(r.key, r.date, r.qty);
-  series_rows = {};
-  builder.FinishSeries();
+  return SortIntoBuckets(
+      services, std::move(pieces), [](const SeriesRow &r) { return r.key; },
+      [](const SeriesRow &a, const SeriesRow &b) { return a.key < b.key; });
+}
 
-  using PartsuppRows = std::vector<TpchQ20PartsuppInput>;
-  auto partsupp_rows = core::PartitionedBuild<PartsuppRows>(
-      services, [] { return PartsuppRows{}; },
+Pieces<TpchQ20PartsuppInput> SortedPartsupps(core::AuxEngineServices &services,
+                                             TpchQ20InitialScan &initial_scan) {
+  auto pieces = ScanPieces<TpchQ20PartsuppInput>(
+      services,
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanPartsupps(services, parts,
+        initial_scan.ScanPartsupps(services, parts,
                                     [&](std::size_t p, const TpchQ20PartsuppInput &input) {
                                       sink(p, core::SingleRowBatch<TpchQ20PartsuppInput>{input});
                                     });
       },
-      [](PartsuppRows &rows, const TpchQ20PartsuppInput &input) { rows.push_back(input); },
-      [](PartsuppRows &into, PartsuppRows &&from) {
-        into.insert(into.end(), from.begin(), from.end());
+      [](RowPieces<TpchQ20PartsuppInput> &partial, const TpchQ20PartsuppInput &input) {
+        if (input.partkey < 0 || input.suppkey < 0)
+          return;
+        RequirePairKey(input.partkey, input.suppkey);
+        partial.rows.push_back(input);
       });
-  core::ParallelStableSort(services, partsupp_rows,
-                     [](const TpchQ20PartsuppInput &a, const TpchQ20PartsuppInput &b) {
-                       return a.partkey != b.partkey ? a.partkey < b.partkey
-                                                     : a.suppkey < b.suppkey;
-                     },
-                     kSortGrain);
-  for (const auto &r : partsupp_rows)
-    builder.AddPartsupp(r.partkey, r.suppkey, r.availqty);
-  partsupp_rows = {};
-
-  struct PartNames {
-    std::string bytes;
-    std::vector<BaseBuilder::NameRef> refs;
+  const auto pair_key = [](const TpchQ20PartsuppInput &r) {
+    return MakePairKey(r.partkey, r.suppkey);
   };
-  auto names = core::PartitionedBuild<PartNames>(
-      services, [] { return PartNames{}; },
+  return SortIntoBuckets(services, std::move(pieces), pair_key,
+                         [&](const TpchQ20PartsuppInput &a, const TpchQ20PartsuppInput &b) {
+                           return pair_key(a) < pair_key(b);
+                         });
+}
+
+// A scan partial of part names: the bytes of its names and where each starts.
+struct NamePiece {
+  struct Ref {
+    int64_t key;
+    uint64_t off;
+    uint32_t len;
+  };
+  std::string bytes;
+  std::vector<Ref> refs;
+  // Pieces merged into this one, in partition order; heap-stable so the
+  // NameRows built later can point into their bytes.
+  std::vector<std::unique_ptr<NamePiece>> merged;
+
+  void Absorb(NamePiece &&from) {
+    auto piece = std::make_unique<NamePiece>();
+    piece->bytes = std::move(from.bytes);
+    piece->refs = std::move(from.refs);
+    merged.push_back(std::move(piece));
+    for (auto &later : from.merged)
+      merged.push_back(std::move(later));
+  }
+};
+
+// Part names sorted; the rows point into the scanned bytes, which `owner` keeps.
+struct SortedNameRows {
+  std::unique_ptr<NamePiece> owner;
+  Pieces<NameRow> rows;
+};
+
+SortedNameRows SortedNames(core::AuxEngineServices &services,
+                           TpchQ20InitialScan &initial_scan) {
+  struct Name {
+    int64_t key;
+    std::string_view name;
+  };
+  auto scanned = std::make_unique<NamePiece>(core::PartitionedBuild<NamePiece>(
+      services, [] { return NamePiece{}; },
       [&](std::size_t parts, auto &&sink) {
-        struct Name {
-          int64_t key;
-          std::string_view name;
-        };
-        initial_scan->ScanPartNames(services, parts,
+        initial_scan.ScanPartNames(services, parts,
                                     [&](std::size_t p, int64_t key, std::string_view name) {
                                       sink(p, core::SingleRowBatch<Name>{{key, name}});
                                     });
       },
-      [](PartNames &partial, const auto &part) {
+      [](NamePiece &partial, const Name &part) {
         if (part.key < 0)
           return;
         partial.refs.push_back({part.key, partial.bytes.size(),
                                 static_cast<uint32_t>(part.name.size())});
         partial.bytes.append(part.name);
       },
-      [](PartNames &into, PartNames &&from) {
-        const uint64_t shift = into.bytes.size();
-        into.bytes.append(from.bytes);
-        for (auto ref : from.refs) {
-          ref.off += shift;
-          into.refs.push_back(ref);
-        }
-      });
-  builder.AdoptNames(std::move(names.bytes), std::move(names.refs));
+      [](NamePiece &into, NamePiece &&from) { into.Absorb(std::move(from)); }));
+  std::vector<const NamePiece *> sources{scanned.get()};
+  for (const auto &piece : scanned->merged)
+    sources.push_back(piece.get());
+  Pieces<NameRow> pieces(sources.size());
+  core::ParallelEach(services, sources.size(), 1, [&](std::size_t i) {
+    pieces[i].reserve(sources[i]->refs.size());
+    for (const auto &ref : sources[i]->refs)
+      pieces[i].push_back({ref.key, sources[i]->bytes.data() + ref.off, ref.len});
+  });
+  const std::size_t skip =
+      SharedPrefixLength(services, pieces, [](const NameRow &r) { return r.View(); });
+  return {std::move(scanned),
+          SortIntoBuckets(
+              services, std::move(pieces),
+              [&](const NameRow &r) { return NamePrefixKey(r.View(), skip); },
+              [](const NameRow &a, const NameRow &b) { return a.View() < b.View(); })};
+}
 
-  using Suppliers = std::unordered_map<int64_t, TpchQ20SupplierRecord>;
-  auto suppliers = core::PartitionedBuild<Suppliers>(
-      services, [] { return Suppliers{}; },
+Pieces<SupplierRow> SortedSuppliers(core::AuxEngineServices &services,
+                                    TpchQ20InitialScan &initial_scan) {
+  auto pieces = ScanPieces<SupplierRow>(
+      services,
       [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanSuppliers(services, parts,
+        initial_scan.ScanSuppliers(services, parts,
                                     [&](std::size_t p, const TpchQ20SupplierInput &input) {
                                       sink(p, core::SingleRowBatch<TpchQ20SupplierInput>{input});
                                     });
       },
-      [](Suppliers &partial, const TpchQ20SupplierInput &input) {
+      [](RowPieces<SupplierRow> &partial, const TpchQ20SupplierInput &input) {
         if (input.key >= 0)
-          partial[input.key] = {input.name, input.address, input.nationkey};
-      },
-      [](Suppliers &into, Suppliers &&from) {
-        for (auto &[key, record] : from)
-          into[key] = std::move(record);
+          partial.rows.push_back({input.key, {input.name, input.address, input.nationkey}});
       });
-  for (auto &[key, record] : suppliers)
-    builder.AddSupplier(key, std::move(record.name), std::move(record.address),
-                        record.nationkey);
+  const std::size_t skip = SharedPrefixLength(
+      services, pieces, [](const SupplierRow &r) { return std::string_view(r.record.name); });
+  return SortIntoBuckets(
+      services, std::move(pieces),
+      [&](const SupplierRow &r) { return NamePrefixKey(r.record.name, skip); },
+      [](const SupplierRow &a, const SupplierRow &b) {
+        return a.record.name != b.record.name ? a.record.name < b.record.name : a.key < b.key;
+      });
+}
 
+} // namespace
+
+TpchQ20State
+TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
+  if (!initial_scan)
+    throw std::logic_error(
+        "TPC-H Q20 aux requires a typed initial scan source");
+
+  BaseBuilder builder(services);
+  builder.AdoptSeries(SortedSeries(services, *initial_scan));
+  builder.AdoptPartsupp(SortedPartsupps(services, *initial_scan));
+  const auto names = SortedNames(services, *initial_scan);
+  builder.AdoptNames(names.rows);
+  builder.AdoptSuppliers(SortedSuppliers(services, *initial_scan));
   initial_scan->ScanNationsSerial([&](const TpchQ20NationInput &input) {
     builder.AddNation(input.key, input.name);
   });
