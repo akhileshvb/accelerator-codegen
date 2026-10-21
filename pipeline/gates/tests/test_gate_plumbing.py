@@ -308,7 +308,7 @@ def test_host_bootstrap_builds_every_harness_and_smokes_each(repo):
 
 def test_host_bootstrap_smokes_the_differential_on_a_registered_query(repo):
     host_bootstrap_repo(repo)
-    register = repo / "accelerators" / "tpch" / "q6" / "fake"
+    register = repo / "accelerators" / "tpch" / "q6" / "fake" / "aux"
     register.mkdir(parents=True)
     (register / "register.cpp").write_text("// q6\n")
     proc, calls, _, _, _ = run_gate(repo, "run_host_bootstrap.sh", "0", ctx_extra={"engine_host": HARNESS_HOST})
