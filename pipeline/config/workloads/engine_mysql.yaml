@@ -29,7 +29,7 @@ engine_profile:
     placement_candidates: [in_process]
     requires_in_process_host: true
     prod_target: accelerator_codegen_mysql
-    test_target: "accelerator_codegen_mysql (built as the test variant with -DACCEL_MYSQL_TEST_UDFS=ON, selected by build_accel_mysql_plugin.sh --test)"
+    test_target: "accelerator_codegen_mysql (built as a test variant of the plugin with gate-test UDFs)"
     install_path: "/usr/lib/mysql/plugin/accelerator_codegen_mysql.so (Oracle images may use /usr/lib64/mysql/plugin)"
     test_only_code_rule: "Gate-test UDFs and toy modules live in backends/mysql/tests/ and compile only into the test variant of the plugin; the production plugin holds only the real entry points. Server-only symbols belong only in the plugin, never in a host shared library that standalone harnesses link."
 
@@ -163,6 +163,3 @@ engine_profile:
       layers: [runtime, hostctl]
 
 allowed_commands:
-  - "^bash scripts/ensure_accel_mysql_test\\.sh( .*)?$"
-  - "^bash scripts/start_accel_mysql_test\\.sh( .*)?$"
-  - "^bash scripts/build_accel_mysql_plugin\\.sh( .*)?$"

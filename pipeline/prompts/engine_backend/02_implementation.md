@@ -29,6 +29,9 @@ contracts**.
 Facts and hazards of the engine, not instructions; `n/a` is a declared decision.
 
 {{engine_profile}}
+Build from these facts and the contracts. The backend tree starts empty: a file you see named in
+some document but absent from the tree does not exist, and is never a reason to stop. Write what
+the layer needs.
 A profile field given as `{na: reason}` declares that mechanic absent on this engine: it is not a requirement here. Do not fail, implement or test it; only make sure nothing depends on it.
 
 ## Required reads (before writing code)

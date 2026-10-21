@@ -145,6 +145,14 @@ generated:
   - scripts/validate_shared_duckdb_differential.sh
 
 drop:
+  # the clean-tree machinery itself: it names every generated file (that is how it prunes them),
+  # so it never ships inside a clean tree where agents would read those names
+  - pipeline/clean_tree/manifest.yaml
+  - pipeline/clean_tree/manifest.py
+  - pipeline/clean_tree/check_leakage.py
+  - pipeline/clean_tree/leakage_allowlist.yaml
+  - pipeline/clean_tree/leakage_baseline.json
+  - pipeline/orchestrator/tests/test_clean_tree.py
   # results data and caches
   - eval/**/results/**
   - eval/**/results_*/**

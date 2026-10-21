@@ -65,12 +65,9 @@ cmake --build build
 `ACCEL_AUX_COST_MODEL_DIR` (runtime env) names a subdirectory of each query's
 `config/` to prefer when looking up cost models.
 
-PostgreSQL and MySQL are built by scripts that configure the matching CMake targets:
-
-- `scripts/build_accel_postgres_extension.sh` (module `accelerator_codegen_pg`; the
-  test-only module `accelerator_codegen_pg_test` is built when a requested target needs it)
-- `scripts/build_accel_mysql_plugin.sh` (production plugin; `--test` builds the test variant
-  with the gate-test UDFs, `-DACCEL_MYSQL_TEST_UDFS=ON`)
+Every backend, whatever the engine, is built, started and loaded through its own
+`backends/<engine>/host.sh` (`build`, `up`, `load`, ...; see
+`pipeline/prompts/engine_backend/host_contract.md`), which the engine_backend pipeline generates.
 
 Verus kits (needs the Verus toolchain under `tools/verus`, or `VERUS_BIN`):
 

@@ -9,9 +9,8 @@
   "engine": 10
  },
  "README.md": {
-  "engine": 9,
-  "path": 1,
-  "target": 1
+  "engine": 4,
+  "path": 1
  },
  "cmake/Backend.cmake": {
   "engine": 4
@@ -553,9 +552,6 @@
   "engine": 9,
   "path": 4,
   "symbol": 1
- },
- "pipeline/orchestrator/tests/test_clean_tree.py": {
-  "path": 2
  },
  "pipeline/orchestrator/tests/test_codex_backend.py": {
   "engine": 17,
