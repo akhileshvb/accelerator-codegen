@@ -96,7 +96,8 @@ for q in queries:
             continue
         mm = j.get("mismatches", 0) + j.get("order_mismatches", 0) + j.get("reader_failures", 0)
         fb = j.get("executes", {}).get("fallback", 0)
-        bad += mm > 0 or rc != "0"
+        # inside the envelope a kernel may not decline: a differential fallback is a failure
+        bad += mm > 0 or rc != "0" or (m == "differential" and fb > 0)
         cells.append(f"mm={mm} fb={fb} rfb={j.get('reader_fallbacks', 0)} we={j.get('write_errors', 0)} "
                      f"re={j.get('reference_errors', 0)} chk={j.get('checks')}" + ("" if rc == "0" else f" rc={rc}"))
     print(f"q{q:<4}" + "".join(f"| {c:<{W.get(m, 44)}}" for m, c in zip(modes, cells)))

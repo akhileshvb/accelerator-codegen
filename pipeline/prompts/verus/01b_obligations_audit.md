@@ -16,7 +16,12 @@ For each declaration, compare the SQL with its contract (all inlined below):
 * the delta views and `<table>_delta_ok` (lossy): each runtime field is the
   declared expression of the changed row; `capture_ok`: every table of `db2`
   is `db`'s plus the signed changes;
-* the `ob_*` signatures: what each requires and ensures.
+* the `ob_*` signatures: what each requires and ensures;
+* the envelope: `<table>_in_type` bounds each read column by its declared SQL
+  type (INTEGER as i32, DECIMAL(p,s) as |x| < 10^p scaled, DATE as i32 days),
+  `out_fits` bounds each result column by its runtime type, and each `ob_*`
+  carries its completeness clause (build and apply answer inside the
+  envelope; execute also unless `answer_fits` fails).
 
 Use `verus_sql` to settle a question with data. Write
 `analysis/obligations_audit.json`:

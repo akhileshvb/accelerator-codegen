@@ -15,8 +15,10 @@ efficiently for ANY value in the parameter's TPC-H domain. A design
 specialized to one value (e.g. only the parts of one color, one nation, one
 pattern, one fraction) is not allowed. Its benchmarks and tests draw fresh
 random values from the domain on every run, which you cannot see ahead of
-time. The kernel may decline (host falls back to SQL) only for values outside
-the TPC-H domain; declines count against it.
+time. Beyond that domain the kernel must still answer every value of the
+parameter's type (any LIKE pattern, any date, any fraction): it may decline
+only outside the envelope (`contracts/verus_kernel.md`). A design that tracks
+chosen values for speed needs a total general path for all other values.
 
 Decide:
 

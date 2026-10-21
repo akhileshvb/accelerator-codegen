@@ -57,8 +57,11 @@ pub fn prepare_apply(
         lineitem_delta_ok(lineitem_delta@, lineitem_full),
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), customer_delta_seq_view(customer_delta@), lineitem_full, nation_delta_seq_view(nation_delta@), orders_full, supplier_delta_seq_view(supplier_delta@)),
+        relevant_orders_for_keys_keys@ == crate::kernel::rescan_relevant_orders_for_keys_wanted(base.state_spec(), customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_relevant_orders_for_keys_ok(store.db_at((base.epoch() + 1) as nat), relevant_orders_for_keys_keys@, relevant_orders_for_keys_rows@),
+        window_lines_for_orders_keys@ == crate::kernel::rescan_window_lines_for_orders_wanted(base.state_spec(), customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_window_lines_for_orders_ok(store.db_at((base.epoch() + 1) as nat), window_lines_for_orders_keys@, window_lines_for_orders_rows@),
+        window_lines_for_suppliers_keys@ == crate::kernel::rescan_window_lines_for_suppliers_wanted(base.state_spec(), customer_delta@, lineitem_delta@, nation_delta@, orders_delta@, supplier_delta@),
         rescan_window_lines_for_suppliers_ok(store.db_at((base.epoch() + 1) as nat), window_lines_for_suppliers_keys@, window_lines_for_suppliers_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),
