@@ -570,6 +570,27 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 }
 
+// Current quantity sums of the orders the state does not know and the
+// transaction did not create, fetched in one batch.
+std::unordered_map<int64_t, int64_t>
+ScanUnknownOrderSums(TpchQ18InitialScan *scan, const std::shared_ptr<const TpchQ18State> &state,
+                     const TpchQ18TxnBuffer &buffer,
+                     const std::unordered_map<int64_t, int64_t> &net_by_order) {
+  std::vector<int64_t> unknown;
+  for (const auto &[orderkey, net] : net_by_order)
+    if (net > 0 && !state->HasOrderMeta(orderkey) &&
+        !(buffer.InsertedOrders().count(orderkey) && !buffer.DeletedOrders().count(orderkey)))
+      unknown.push_back(orderkey);
+  std::sort(unknown.begin(), unknown.end());
+  std::unordered_map<int64_t, int64_t> sums;
+  if (scan && !unknown.empty()) {
+    for (const auto orderkey : unknown)
+      sums[orderkey] = 0; // an order the scan does not report has no lineitems
+    scan->LookupOrderQuantitySums(unknown, [&](int64_t orderkey, int64_t sum) { sums[orderkey] = sum; });
+  }
+  return sums;
+}
+
 core::StagedMaintenanceOutcome
 TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
                                 const core::InvalidationPlan &,
@@ -652,6 +673,7 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
       mut().customer_names.Upsert(custkey, name);
   }
 
+  const auto scanned_sums = ScanUnknownOrderSums(initial_scan, base_state, buffer, net_by_order);
   std::set<int64_t> missing_names; // customers of new survivors, resolved in one batch
   for (const auto &[orderkey, net] : net_by_order) {
     if (net == 0)
@@ -668,9 +690,8 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
                !buffer.DeletedOrders().count(orderkey)) {
       // Order created in this transaction: previous sum is 0.
       after = net;
-    } else if (initial_scan &&
-               initial_scan->LookupOrderQuantitySum(orderkey, after)) {
-      // Scan includes this transaction: do not add `net` again.
+    } else if (const auto scanned = scanned_sums.find(orderkey); scanned != scanned_sums.end()) {
+      after = scanned->second; // the scan includes this transaction: `net` is not added again
     } else {
       core::FinishRebuildAll(outcome);
       return outcome;

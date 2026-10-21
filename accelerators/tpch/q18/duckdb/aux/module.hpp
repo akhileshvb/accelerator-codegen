@@ -100,6 +100,12 @@ public:
   virtual bool LookupOrderQuantitySum(int64_t, int64_t &) {
     return false;
   }
+
+  // Current SUM(l_quantity) of many orders in one query; orders without
+  // lineitems are not reported.
+  virtual void LookupOrderQuantitySums(
+      const std::vector<int64_t> &,
+      const std::function<void(int64_t, int64_t)> &) {}
 };
 
 struct TpchQ18SurvivorMeta {
