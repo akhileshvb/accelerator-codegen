@@ -25,6 +25,9 @@ use crate::answer_transactions::*;
 use std::sync::Arc;
 
 verus! {
+
+pub open spec fn history(s: State) -> nat { 0 }
+
 broadcast use vstd::seq_lib::group_seq_properties;
 
 pub struct State {

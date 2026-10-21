@@ -14,6 +14,9 @@ use verus_prooflib::wide::Wide;
 
 verus! {
 
+pub open spec fn history(s: State) -> nat { 0 }
+
+
 broadcast use { vstd::std_specs::hash::group_hash_axioms, vstd::seq_lib::group_seq_properties };
 
 pub open spec fn order_change(values: Map<i64, Wide>, key: i64) -> int {

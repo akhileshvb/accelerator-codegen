@@ -23,6 +23,9 @@ use verus_common::sums::lemma_sum_take;
 use verus_prooflib::{lemma_unique_push, lemma_push_membership};
 
 verus! {
+
+pub open spec fn history(s: State) -> nat { 0 }
+
 pub struct State {
     db: Ghost<Db>,
     data: Data,

@@ -15,6 +15,9 @@ use crate::aggregation_proofs::*;
 
 verus! {
 
+pub open spec fn history(s: State) -> nat { 0 }
+
+
 pub struct State {
     pub(crate) waiting: Counts,
     pub(crate) suppliers: Slices,
