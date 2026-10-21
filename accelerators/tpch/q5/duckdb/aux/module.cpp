@@ -26,6 +26,12 @@ constexpr std::size_t kShardGrain = 16;
 // Touched mid arrays per slice when publishing a side index (untimed).
 constexpr std::size_t kFinishGrain = 16;
 
+template <class Builder> auto FinishShards(core::AuxEngineServices &services, Builder &index) {
+  return index.Finish([&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, 1, fn);
+  });
+}
+
 template <class Builder>
 void SortShards(core::AuxEngineServices &services, Builder &index) {
   index.Sort([&](std::size_t n, const auto &fn) {
@@ -1173,9 +1179,9 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
           flat[static_cast<std::size_t>(i * 2 + 1) * stride + c];
 
   state.tree = PaginateTree(flat, tree_size, stride);
-  state.orders = orders.Finish();
-  state.supps = supps.Finish();
-  state.custs = custs.Finish();
+  state.orders = FinishShards(services, orders);
+  state.supps = FinishShards(services, supps);
+  state.custs = FinishShards(services, custs);
   state.meta = std::move(meta_ptr);
   return state;
 }

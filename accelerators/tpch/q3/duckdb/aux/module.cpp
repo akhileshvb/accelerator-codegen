@@ -986,6 +986,12 @@ using OrderBuilder = TpchQ3ShardIndex<TpchQ3OrderRec>::Builder;
 using CustBuilder = TpchQ3ShardIndex<TpchQ3CustRec>::Builder;
 using StagingMap = std::map<std::pair<core::PartitionId, uint16_t>, Staging>;
 
+template <class Builder> auto FinishShards(core::AuxEngineServices &services, Builder &index) {
+  return index.Finish([&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, 1, fn);
+  });
+}
+
 template <class Builder> void SortShards(core::AuxEngineServices &services, Builder &index) {
   index.Sort([&](std::size_t n, const auto &fn) {
     core::ParallelEach(services, n, kSortShardGrain, fn);
@@ -1585,8 +1591,8 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   auto staging = StageLineitems(services, *initial_scan, orders);
   for (auto &[id, segment] : BuildSegments(services, staging))
     built.segments[id] = segment;
-  built.side.orders = orders.Finish();
-  built.side.custs = custs.Finish();
+  built.side.orders = FinishShards(services, orders);
+  built.side.custs = FinishShards(services, custs);
   return built;
 }
 

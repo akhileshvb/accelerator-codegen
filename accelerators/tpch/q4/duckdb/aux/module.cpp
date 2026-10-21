@@ -761,7 +761,9 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
           state.tree[static_cast<std::size_t>(i * 2 + 1) * num_p + pi];
 
   // Pack shards into the immutable index (moves, no copies).
-  state.order_eligibility = shards.Finish();
+  state.order_eligibility = shards.Finish([&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, 1, fn);
+  });
   return state;
 }
 

@@ -403,11 +403,14 @@ public:
       for (auto &e : shards_[g])
         f(e);
   }
-  Map Finish() {
+  // `parallel_for(n, fn)` must run fn(0..n-1), possibly on several threads; each
+  // call builds one Mid.
+  template <class ParallelFor> Map Finish(ParallelFor &&parallel_for) {
     Map out;
     out.bits_ = bits_;
     out.top_.resize(Map::TopCount(bits_));
-    for (std::size_t hi = 0; hi < out.top_.size(); ++hi) {
+    std::vector<std::size_t> sizes(out.top_.size(), 0);
+    parallel_for(out.top_.size(), [&](std::size_t hi) {
       std::shared_ptr<Mid> mid;
       for (uint32_t lo = 0; lo < kMidSize; ++lo) {
         const std::size_t g = (hi << kMidBits) | lo;
@@ -418,13 +421,21 @@ public:
           continue;
         if (!mid)
           mid = std::make_shared<Mid>();
-        out.size_ += shard.size();
+        sizes[hi] += shard.size();
         mid->leaves[lo] = std::make_shared<const Leaf>(std::move(shard));
       }
       out.top_[hi] = std::move(mid);
-    }
+    });
+    for (const std::size_t n : sizes)
+      out.size_ += n;
     shards_.clear();
     return out;
+  }
+  Map Finish() {
+    return Finish([](std::size_t n, const auto &fn) {
+      for (std::size_t i = 0; i < n; ++i)
+        fn(i);
+    });
   }
 
 private:
