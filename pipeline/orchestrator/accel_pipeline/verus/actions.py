@@ -972,6 +972,7 @@ FORBIDDEN = [
     (r"#\s*!?\[\s*verifier::external_body", "#[verifier::external_body] (unverified code)"),
     (r"#\s*!?\[\s*verifier::external\b", "#[verifier::external]"),
     (r"external_fn_specification|assume_specification", "an assumed specification"),
+    (r"exec_allows_no_decreases_clause", "a loop or function without a termination proof"),
     (r"\bunsafe\b", "unsafe code"),
     (r"extern\s+\"C\"|#\s*\[\s*no_mangle", "a C ABI item (the C ABI is generated)"),
     (r"\bstd::(fs|net|process|env)\b", "I/O or process access"),

@@ -477,6 +477,29 @@ struct Schema {
     /// how the target engine compares CHAR(n): "bytes" or "padded" (and why)
     char_semantics: (&'static str, &'static str),
     col_ty: HashMap<(String, String), (Option<Ty>, bool)>,
+    /// the inclusive value range of a numeric or date column's SQL type
+    col_range: HashMap<(String, String), (i128, i128)>,
+}
+
+/// The values a column of this type can hold, as the model stores them
+/// (decimals scaled, dates as day numbers); None: unbounded (text, booleans).
+fn type_range(dt: &DataType) -> Option<(i128, i128)> {
+    let bits = |b: u32| (-(1i128 << (b - 1)), (1i128 << (b - 1)) - 1);
+    Some(match dt {
+        DataType::Int8 => bits(8),
+        DataType::Int16 => bits(16),
+        DataType::Int32 | DataType::Date32 => bits(32),
+        DataType::Int64 => bits(64),
+        DataType::UInt8 => (0, u8::MAX as i128),
+        DataType::UInt16 => (0, u16::MAX as i128),
+        DataType::UInt32 => (0, u32::MAX as i128),
+        DataType::UInt64 => (0, u64::MAX as i128),
+        DataType::Decimal128(p, _) => {
+            let m = 10i128.pow(*p as u32) - 1;
+            (-m, m)
+        }
+        _ => return None,
+    })
 }
 
 /// An identifier as DataFusion names it: quoted keeps its case, unquoted is
@@ -491,6 +514,7 @@ async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static 
     let mut ddl_cols = HashMap::new();
     let mut char_cols = HashSet::new();
     let mut col_ty = HashMap::new();
+    let mut col_range = HashMap::new();
     for st in stmts {
         match &st {
             ast::Statement::CreateTable(ct) => {
@@ -541,6 +565,9 @@ async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static 
                 let prov = ctx.table_provider(datafusion::common::TableReference::bare(t.clone())).await.map_err(|e| format!("schema: {e}"))?;
                 for f in prov.schema().fields() {
                     col_ty.insert((t.clone(), f.name().clone()), (ty_of(f.data_type()), f.is_nullable()));
+                    if let Some(r) = type_range(f.data_type()) {
+                        col_range.insert((t.clone(), f.name().clone()), r);
+                    }
                 }
             }
             // views are expanded where they are used (as derived tables)
@@ -552,7 +579,7 @@ async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static 
             other => bail!("schema: statement not supported: {}", other.to_string().lines().next().unwrap_or("")),
         }
     }
-    Ok(Schema { ddl_cols, char_cols, char_semantics, col_ty })
+    Ok(Schema { ddl_cols, char_cols, char_semantics, col_ty, col_range })
 }
 
 /// Verus names for a table: its Db field and its row struct.

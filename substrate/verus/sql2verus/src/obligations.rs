@@ -494,6 +494,14 @@ impl<'t, 'a> Ob<'t, 'a> {
     }
 }
 
+/// Rows a table may hold before the kernel may decline: above any target
+/// database (TPC-H SF3000 lineitem has about 2^34 rows).
+const MAX_ROWS: i128 = 1 << 40;
+
+fn range_of(x: &str, lo: i128, hi: i128) -> String {
+    format!("{lo} <= {x} <= {hi}")
+}
+
 fn prim_tag(rt: &str) -> &'static str {
     match rt {
         "i64" => "i64",
@@ -890,6 +898,7 @@ pub(crate) async fn obligations(
     let mut out_tys = vec![];
     let mut out_views = vec![];
     let mut outs_rt: Vec<(&'static str, bool, Ty)> = vec![];
+    let mut out_fits = vec![];
     for (k, c) in b.outs.iter().enumerate() {
         if c.val.approx.is_some() {
             bail!("result column {}: a rounded float has no exact runtime value", c.sql);
@@ -904,6 +913,21 @@ pub(crate) async fn obligations(
             other => bail!("result column {}: {other:?}", c.sql),
         };
         outs_rt.push((rt, c.nullable, c.val.ty));
+        let fits = |x: &str| match rt {
+            "i128" => Some(range_of(x, i128::MIN, i128::MAX)),
+            "i64" => Some(range_of(x, i64::MIN as i128, i64::MAX as i128)),
+            "i32" => Some(range_of(x, i32::MIN as i128, i32::MAX as i128)),
+            "(i128, i128)" => Some(format!("{} && {}", range_of(&format!("{x}.num"), i128::MIN, i128::MAX),
+                                           range_of(&format!("{x}.den"), i128::MIN, i128::MAX))),
+            _ => None,
+        };
+        if let Some(f) = fits("v") {
+            out_fits.push(if c.nullable {
+                format!("match r.{} {{ Some(v) => {f}, None => true }}", c.field)
+            } else {
+                fits(&format!("r.{}", c.field)).unwrap()
+            });
+        }
         let acc = if b.outs.len() == 1 { "r".to_string() } else { format!("r.{k}") };
         if c.nullable {
             out_tys.push(format!("Option<{rt}>"));
@@ -927,21 +951,24 @@ pub(crate) async fn obligations(
         }
         ps.push(P { name: "db".into(), ty: "Db".into(), ghost: true, arg: Arg::Ghost });
         fns.push(ObFn {
-            doc: "Build: a state for db, or None (the host then answers with SQL).".into(),
+            doc: "Build: a state for db; None only outside the envelope.".into(),
             name: "build".into(),
             params: ps,
             ret: "(r: Option<State>)".into(),
             requires: req,
-            ensures: vec!["r matches Some(s) ==> s.db() == db".into()],
+            ensures: vec!["r matches Some(s) ==> s.db() == db".into(), "envelope(db) ==> r is Some".into()],
         });
     }
     fns.push(ObFn {
-        doc: "Execute: the query's answer on s.db(), or None (the host then answers with SQL).".into(),
+        doc: "Execute: the query's answer on s.db(); None (the host then answers with SQL) only\n/// outside the envelope or when a correct answer overflows the result's types.".into(),
         name: "execute".into(),
         params: exec_params,
         ret: format!("(r: Option<Vec<{out_ty}>>)"),
         requires: vec![],
-        ensures: vec![format!("r matches Some(out) ==> query_result(s.db(), params({}), out_view(out@))", pargs.join(", "))],
+        ensures: vec![
+            format!("r matches Some(out) ==> query_result(s.db(), params({}), out_view(out@))", pargs.join(", ")),
+            format!("envelope(s.db()) && answer_fits(s.db(), params({})) ==> r is Some", pargs.join(", ")),
+        ],
     });
     let delta_params = |deltas: &BTreeMap<String, DeltaOut>| -> Vec<P> {
         deltas
@@ -990,12 +1017,12 @@ pub(crate) async fn obligations(
         }
         ps.push(P { name: "db2".into(), ty: "Db".into(), ghost: true, arg: Arg::Ghost });
         fns.push(ObFn {
-            doc: "Apply one transaction: a state for db2, or Err (the host then rebuilds).".into(),
+            doc: "Apply one transaction: a state for db2; Err (the host then rebuilds) only outside\n/// the envelope.".into(),
             name: "apply".into(),
             params: ps,
             ret: "(r: Result<State, u32>)".into(),
             requires: req,
-            ensures: vec!["r matches Ok(s2) ==> s2.db() == db2".into()],
+            ensures: vec!["r matches Ok(s2) ==> s2.db() == db2".into(), "envelope(s.db()) && envelope(db2) ==> r is Ok".into()],
         });
     }
 
@@ -1037,6 +1064,35 @@ pub(crate) async fn obligations(
         writeln!(w, "    &&& bag_step(db.{f}, db2.{f}, {f})", f = table_field(t)).unwrap();
     }
     writeln!(w, "}}\n").unwrap();
+    writeln!(w, "// ── The envelope: where the kernel may not decline ──\n").unwrap();
+    writeln!(w, "/// Most rows a table may hold.\npub open spec fn max_rows() -> int {{\n    {MAX_ROWS}\n}}\n").unwrap();
+    let mut env = vec![];
+    for t in &tables {
+        let f = table_field(t);
+        env.push(format!("db.{f}.len() <= max_rows()"));
+        let bounds: Vec<String> = ob
+            .db_cols(t)
+            .iter()
+            .filter_map(|c| ob.tr.sch.col_range.get(&(t.clone(), c.clone())).map(|&(lo, hi)| range_of(&format!("r.{}", sanitize(c)), lo, hi)))
+            .collect();
+        if !bounds.is_empty() {
+            writeln!(w, "/// Each value of {t} lies in the range of its column's SQL type.").unwrap();
+            writeln!(w, "pub open spec fn {f}_in_type(r: {}) -> bool {{\n    {}\n}}\n", table_row(t), bounds.join("\n    && ")).unwrap();
+            env.push(format!("forall|i: int| 0 <= i < db.{f}.len() ==> {f}_in_type(#[trigger] db.{f}[i])"));
+        }
+    }
+    writeln!(w, "/// The databases the host can deliver: each table within max_rows(), each value").unwrap();
+    writeln!(w, "/// within its column's SQL type (which the DBMS enforces).").unwrap();
+    writeln!(w, "pub open spec fn envelope(db: Db) -> bool {{").unwrap();
+    for e in &env {
+        writeln!(w, "    &&& {e}").unwrap();
+    }
+    writeln!(w, "}}\n").unwrap();
+    writeln!(w, "/// An answer row whose values fit the result's runtime types.").unwrap();
+    writeln!(w, "pub open spec fn out_fits(r: OutRow) -> bool {{\n    {}\n}}\n", if out_fits.is_empty() { "true".to_string() } else { out_fits.join("\n    && ") }).unwrap();
+    writeln!(w, "/// Every correct answer fits the result's runtime types.").unwrap();
+    writeln!(w, "pub open spec fn answer_fits(db: Db, params: Params) -> bool {{").unwrap();
+    writeln!(w, "    forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])\n}}\n").unwrap();
     writeln!(w, "// ── Obligations: the host calls only these ──\n").unwrap();
     let mut stub = String::new();
     writeln!(stub, "// Kernel skeleton GENERATED by {VERSION} for {src_name}: the entry points").unwrap();

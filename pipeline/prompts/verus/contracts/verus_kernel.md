@@ -25,10 +25,16 @@ modules you add (declare them in `lib.rs`; keep the five `pub mod gen_* /
 kernel` lines). `State` must have `pub closed spec fn db(self) -> Db`, the
 database it answers for, tied to its executable fields by a type invariant.
 
-`None` / `Err` are always sound: the host then answers with SQL or
-rebuilds. But a kernel that declines often fails the integration gate
-(fallback rate), so decline only on genuine limits (arithmetic overflow,
-inconsistent input).
+Declining (`None` / `Err`) is part of the obligations: the kernel may decline
+only outside the `envelope` (a table above `max_rows()` rows, or a value
+outside its column's SQL type), and `execute` also when `answer_fits` fails (a
+correct answer does not fit the result's runtime types). Inside the envelope,
+`build`, `apply` and `execute` must answer for every parameter value. So size
+accumulators for the envelope, not for the data you expect (a sum of 2^40
+products of two DECIMAL(15,2) values needs more than 128 bits), and prove
+"impossible" maintenance branches unreachable from the invariant instead of
+returning `Err`. To decline on overflow, exhibit the correct answer (in `int`)
+that does not fit.
 
 Libraries you can use (`ref/`): `verus_common` (the spec vocabulary: bags and
 sums over tables, byte order, rationals, SQL functions, sorting) and
@@ -48,4 +54,4 @@ check). Keep functions small and proofs local; prefer lemmas with explicit
 triggers over large `assert forall` blocks; watch verification time (it is
 recorded and can count against a change in optimization).
 
-**Never stub out the kernel to make verification pass.** An `execute` that returns `None` for every read (or a `build` / `apply` that always declines) verifies trivially but answers nothing: the tests then reject it (at most 25% of reads may fall back to SQL), and the round is wasted. Prove the real code; if a part is too hard, simplify that part's design instead.
+**Never stub out the kernel to make verification pass.** Prove the real code; if a part is too hard, simplify that part's design instead.

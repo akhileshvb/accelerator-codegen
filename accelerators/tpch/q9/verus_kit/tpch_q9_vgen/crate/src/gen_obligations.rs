@@ -388,9 +388,83 @@ pub open spec fn capture_ok(db: Db, db2: Db, lineitem: Seq<(LineitemRow, int)>, 
     &&& bag_step(db.supplier, db2.supplier, supplier)
 }
 
+// ── The envelope: where the kernel may not decline ──
+
+/// Most rows a table may hold.
+pub open spec fn max_rows() -> int {
+    1099511627776
+}
+
+/// Each value of lineitem lies in the range of its column's SQL type.
+pub open spec fn lineitem_in_type(r: LineitemRow) -> bool {
+    -2147483648 <= r.l_orderkey <= 2147483647
+    && -2147483648 <= r.l_partkey <= 2147483647
+    && -2147483648 <= r.l_suppkey <= 2147483647
+    && -999999999999999 <= r.l_quantity <= 999999999999999
+    && -999999999999999 <= r.l_extendedprice <= 999999999999999
+    && -999999999999999 <= r.l_discount <= 999999999999999
+}
+
+/// Each value of nation lies in the range of its column's SQL type.
+pub open spec fn nation_in_type(r: NationRow) -> bool {
+    -2147483648 <= r.n_nationkey <= 2147483647
+}
+
+/// Each value of orders lies in the range of its column's SQL type.
+pub open spec fn orders_in_type(r: OrdersRow) -> bool {
+    -2147483648 <= r.o_orderkey <= 2147483647
+    && -2147483648 <= r.o_orderdate <= 2147483647
+}
+
+/// Each value of part lies in the range of its column's SQL type.
+pub open spec fn part_in_type(r: PartRow) -> bool {
+    -2147483648 <= r.p_partkey <= 2147483647
+}
+
+/// Each value of partsupp lies in the range of its column's SQL type.
+pub open spec fn partsupp_in_type(r: PartsuppRow) -> bool {
+    -2147483648 <= r.ps_partkey <= 2147483647
+    && -2147483648 <= r.ps_suppkey <= 2147483647
+    && -999999999999999 <= r.ps_supplycost <= 999999999999999
+}
+
+/// Each value of supplier lies in the range of its column's SQL type.
+pub open spec fn supplier_in_type(r: SupplierRow) -> bool {
+    -2147483648 <= r.s_suppkey <= 2147483647
+    && -2147483648 <= r.s_nationkey <= 2147483647
+}
+
+/// The databases the host can deliver: each table within max_rows(), each value
+/// within its column's SQL type (which the DBMS enforces).
+pub open spec fn envelope(db: Db) -> bool {
+    &&& db.lineitem.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.lineitem.len() ==> lineitem_in_type(#[trigger] db.lineitem[i])
+    &&& db.nation.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.nation.len() ==> nation_in_type(#[trigger] db.nation[i])
+    &&& db.orders.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.orders.len() ==> orders_in_type(#[trigger] db.orders[i])
+    &&& db.part.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.part.len() ==> part_in_type(#[trigger] db.part[i])
+    &&& db.partsupp.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.partsupp.len() ==> partsupp_in_type(#[trigger] db.partsupp[i])
+    &&& db.supplier.len() <= max_rows()
+    &&& forall|i: int| 0 <= i < db.supplier.len() ==> supplier_in_type(#[trigger] db.supplier[i])
+}
+
+/// An answer row whose values fit the result's runtime types.
+pub open spec fn out_fits(r: OutRow) -> bool {
+    -9223372036854775808 <= r.o_year <= 9223372036854775807
+    && -170141183460469231731687303715884105728 <= r.sum_profit <= 170141183460469231731687303715884105727
+}
+
+/// Every correct answer fits the result's runtime types.
+pub open spec fn answer_fits(db: Db, params: Params) -> bool {
+    forall|o: Seq<OutRow>| #[trigger] query_result(db, params, o) ==> forall|i: int| 0 <= i < o.len() ==> out_fits(#[trigger] o[i])
+}
+
 // ── Obligations: the host calls only these ──
 
-/// Build: a state for db, or None (the host then answers with SQL).
+/// Build: a state for db; None only outside the envelope.
 pub fn ob_build(
     all_parts: Vec<PartIn>,
     all_orders: &[OrderIn],
@@ -409,17 +483,20 @@ pub fn ob_build(
         scan_all_lines_ok(db, all_lines@),
     ensures
         r matches Some(s) ==> s.db() == db,
+        envelope(db) ==> r is Some,
 {
     kernel::build(all_parts, all_orders, supplier_nations, nation_names, all_partsupp, all_lines, Ghost(db))
 }
 
-/// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
+/// Execute: the query's answer on s.db(); None (the host then answers with SQL) only
+/// outside the envelope or when a correct answer overflows the result's types.
 pub fn ob_execute(
     s: &State,
     p1: &[u8],
 ) -> (r: Option<Vec<(Vec<u8>, i64, i128)>>)
     ensures
         r matches Some(out) ==> query_result(s.db(), params(p1@), out_view(out@)),
+        envelope(s.db()) && answer_fits(s.db(), params(p1@)) ==> r is Some,
 {
     kernel::execute(s, p1)
 }
@@ -499,7 +576,8 @@ pub fn ob_rescan_orders_for_keys_keys(
     kernel::rescan_orders_for_keys_keys(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta)
 }
 
-/// Apply one transaction: a state for db2, or Err (the host then rebuilds).
+/// Apply one transaction: a state for db2; Err (the host then rebuilds) only outside
+/// the envelope.
 pub fn ob_apply(
     s: &State,
     lineitem_delta: &[LineDelta],
@@ -529,6 +607,7 @@ pub fn ob_apply(
         rescan_orders_for_keys_ok(db2, orders_for_keys_keys@, orders_for_keys_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
+        envelope(s.db()) && envelope(db2) ==> r is Ok,
 {
     kernel::apply(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta, lines_for_orders_keys, lines_for_orders_rows, lines_for_parts_keys, lines_for_parts_rows, lines_for_suppliers_keys, lines_for_suppliers_rows, partsupp_for_parts_keys, partsupp_for_parts_rows, orders_for_keys_keys, orders_for_keys_rows, Ghost(db2))
 }

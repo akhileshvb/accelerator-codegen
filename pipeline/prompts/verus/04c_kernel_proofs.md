@@ -29,7 +29,7 @@ worked, with verification times) with `playbook_append` (section `proofs`).
 End with a short summary: what verifies (count and time), the lemmas you
 added or published, and what was hard.
 
-**Never stub out the kernel to make verification pass.** An `execute` that returns `None` for every read (or a `build` / `apply` that always declines) verifies trivially but answers nothing: the tests then reject it (at most 25% of reads may fall back to SQL), and the round is wasted. Prove the real code; if a part is too hard, simplify that part's design instead.
+**Never stub out the kernel to make verification pass.** The obligations forbid declining inside the envelope (`contracts/verus_kernel.md`), so a kernel that declines to avoid a proof does not verify. Prove the real code; if a part is too hard, simplify that part's design instead.
 
 ## Proven code in this tree
 
