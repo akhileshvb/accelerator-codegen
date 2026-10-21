@@ -841,6 +841,43 @@ def test_layer_critique_exhausted_rounds_raises(tmp_path, monkeypatch):
         )
 
 
+def test_relaunched_layer_starts_from_the_feedback_its_last_run_stopped_on(tmp_path, monkeypatch):
+    import pytest
+    from accel_pipeline.gates import GateFailure
+    from accel_pipeline.stages import engine_backend as eb
+    from accel_pipeline.stages.engine_backend import run_implementation_layer
+
+    pc = load_pipeline_config(repo_root=REPO_ROOT)
+    mc = load_model_config(repo_root=REPO_ROOT)
+    w = load_workload("engine_mysql", REPO_ROOT)
+    layer = next(L for L in implementation_layers(w) if L["id"] == "capture")
+    messages = []
+
+    def fake_impl(**kwargs):
+        messages.append(kwargs.get("user_message") or "")
+        return object()
+
+    def fake_critique(*args, **kwargs):
+        (tmp_path / "layer_critique_capture.json").write_text(json.dumps({
+            "engine_name": "mysql", "layer": "capture", "status": "fail", "summary": "still broken",
+            "violations": [{"rule": "contract", "evidence": "updated_attnums never set"}],
+            "feedback_for_implementation": "Set updated_attnums on UPDATE batches.",
+        }) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(eb, "run_agent_stage", fake_impl)
+    monkeypatch.setattr(eb, "run_layer_critique_agent", fake_critique)
+    monkeypatch.setattr(eb, "query_artifacts_dir", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(eb, "append_experiment_log", lambda *a, **k: tmp_path)
+    with pytest.raises(GateFailure):
+        run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer, skip_gates=True)
+    assert "Carried over" not in messages[0]  # a first run starts clean
+
+    messages.clear()
+    with pytest.raises(GateFailure):
+        run_implementation_layer(pc, mc, "engine_mysql", 0, {}, False, layer, skip_gates=True)
+    assert "Carried over" in messages[0] and "updated_attnums" in messages[0]
+
+
 def test_dry_run_impl_capture_skips_critique(monkeypatch):
     from accel_pipeline.stages import engine_backend as eb
 

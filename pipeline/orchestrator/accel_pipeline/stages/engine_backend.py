@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
@@ -140,6 +141,23 @@ def _layer_extra_context(workload: dict, layer: dict) -> dict[str, str]:
 _GATE_LOG_TAIL_CHARS = 8000
 
 
+def _carried_layer_feedback(art: Path, lid: str) -> str:
+    """The feedback the previous run of this layer stopped on (a relaunch starts from it), or ""
+    when that run passed or there is none."""
+    if (art / f"layer_{lid}.passed").exists():
+        return ""
+    rounds = list(art.glob(f"layer_gate_{lid}_feedback_round*.md")) + list(
+        art.glob(f"layer_critique_{lid}_feedback_round*.md")
+    )
+    if not rounds:
+        return ""
+    last = max(rounds, key=lambda p: p.stat().st_mtime)
+    return (
+        "## Carried over: the previous run of this layer stopped on this feedback\n\n"
+        + last.read_text(encoding="utf-8")
+    )
+
+
 def format_layer_gate_feedback(
     failed: GateResult,
     *,
@@ -201,7 +219,11 @@ def run_implementation_layer(
     workload = load_run_workload(pipeline_config, workload_name)
     stage = layer_stage_name(str(layer.get("id") or "layer"))
     extra_context = _layer_extra_context(workload, layer)
-    extra = extra_user_message
+    lid = str(layer.get("id") or "")
+    art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+    art.mkdir(parents=True, exist_ok=True)
+    extra = "\n\n".join(x for x in (extra_user_message.strip(), _carried_layer_feedback(art, lid)) if x)
+    (art / f"layer_{lid}.passed").unlink(missing_ok=True)
     configured_rounds = int(workload.get("layer_critique_max_rounds") or 0)
     run_critique = (not dry_run) and configured_rounds > 0
     max_rounds = 1 if dry_run or not run_critique else max(1, configured_rounds)
@@ -209,7 +231,6 @@ def run_implementation_layer(
     max_gate = 1 if dry_run or skip_gates else max(1, configured_gate)
 
     result = None
-    lid = str(layer.get("id") or "")
     gate_fails = 0
     critique_round = 0
     while True:
@@ -276,6 +297,7 @@ def run_implementation_layer(
                     )
                 continue
         if not run_critique:
+            (art / f"layer_{lid}.passed").touch()
             return result
 
         critique_round += 1
@@ -310,6 +332,7 @@ def run_implementation_layer(
                 f"- layer critique `{lid}` round {critique_round}: PASS",
                 workload=workload,
             )
+            (art / f"layer_{lid}.passed").touch()
             return result
 
         feedback = format_layer_critique_feedback(critique, round_idx=critique_round)
