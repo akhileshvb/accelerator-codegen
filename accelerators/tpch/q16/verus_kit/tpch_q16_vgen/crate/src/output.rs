@@ -479,27 +479,6 @@ pub open spec fn stream_work(slot: Vec<Stream>) -> int {
     else { 0 }
 }
 
-pub open spec fn winners_valid(winners: Seq<Option<usize>>, length: int) -> bool {
-    forall|position: int| 0 <= position < winners.len() ==>
-        ((#[trigger] winners[position]) matches Some(index) ==> index < length)
-}
-
-pub fn choose_stream(vocab: &Vocab, streams: &Vec<Vec<Stream>>, left: Option<usize>, right: Option<usize>, Ghost(counts): Ghost<Counts>) -> (winner: Option<usize>)
-    requires vocab.ok(), forall|j: int| 0 <= j < streams@.len() ==> (#[trigger] streams@[j])@.len() == 1 && source_cell(*streams@[j]@[0].head, counts),
-        left matches Some(index) ==> index < streams.len(),
-        right matches Some(index) ==> index < streams.len(),
-    ensures winner matches Some(index) ==> index < streams.len(),
-{
-    match (left, right) {
-        (None, other) => other,
-        (other, None) => other,
-        (Some(first), Some(second)) => {
-            if head_lt(vocab, &*streams[second][0].head, &*streams[first][0].head) { Some(second) }
-            else { Some(first) }
-        },
-    }
-}
-
 pub open spec fn heads_source(streams: Seq<Vec<Stream>>, counts: Counts) -> bool {
     forall|j: int| 0 <= j < streams.len() ==> (#[trigger] streams[j])@.len() == 1 && source_cell(*streams[j]@[0].head, counts)
 }
@@ -510,81 +489,49 @@ pub proof fn lemma_state_heads(streams: Seq<Vec<Stream>>, counts: Counts, exclud
 {
 }
 
-pub fn merge_small(mut streams: Vec<Vec<Stream>>, Ghost(start): Ghost<Seq<Vec<Stream>>>, vis: &mut Vis, vocab: &Vocab, excluded: &[u8], pattern: &[u8], Ghost(counts): Ghost<Counts>, Ghost(sizes): Ghost<Seq<i64>>) -> (result: Option<Vec<Arc<Cell>>>)
-    requires streams.len() <= 8, start == streams@, streams_state(streams@, counts, excluded@, pattern@, sizes, Seq::empty()),
+pub fn merge_small(mut streams: Vec<Vec<Stream>>, Ghost(start): Ghost<Seq<Vec<Stream>>>, vis: &mut Vis, vocab: &Vocab, excluded: &[u8], pattern: &[u8], Ghost(counts): Ghost<Counts>, Ghost(sizes): Ghost<Seq<i64>>) -> (cells: Vec<Arc<Cell>>)
+    requires start == streams@, streams_state(streams@, counts, excluded@, pattern@, sizes, Seq::empty()),
         old(vis).ok(excluded@, pattern@), vocab.ok(),
     ensures final(vis).ok(excluded@, pattern@),
-        result matches Some(cells) ==> cells_source(cells@, counts)
+        cells_source(cells@, counts)
             && cells_selected(cells@, excluded@, pattern@, sizes)
             && forall|j: int, pos: int| 0 <= j < start.len() && 0 <= pos < start[j]@[0].orig@.len()
                 && visible((#[trigger] start[j]@[0].orig@[pos]).1, excluded@, pattern@) ==>
                     cell_has(cells@, start[j]@[0].orig@[pos].1),
 {
     let mut out: Vec<Arc<Cell>> = Vec::new();
-    let mut width = 1;
-    while width < streams.len()
-        invariant streams.len() <= 8, width == 1 || width == 2 || width == 4 || width == 8,
-        decreases 8 - width,
-    {
-        width = width * 2;
-    }
-    let mut winners: Vec<Option<usize>> = Vec::new();
-    while winners.len() < width * 2
-        invariant 1 <= width <= 8, streams.len() <= width, winners.len() <= width * 2,
-            winners_valid(winners@, streams.len() as int),
-        decreases width * 2 - winners.len(),
-    {
-        winners.push(None);
-    }
-    let mut index = 0;
-    while index < streams.len()
-        invariant index <= streams.len(), streams.len() <= width, 1 <= width <= 8,
-            winners.len() == width * 2, winners_valid(winners@, streams.len() as int),
-            streams_state(streams@, counts, excluded@, pattern@, sizes, out@),
-        decreases streams.len() - index,
-    {
-        if !streams[index][0].finished { winners.set(width + index, Some(index)); }
-        index += 1;
-    }
-    proof { lemma_state_heads(streams@, counts, excluded@, pattern@, sizes, out@); }
-    let mut node = width;
-    while node > 1
-        invariant 1 <= node <= width, 1 <= width <= 8, winners.len() == width * 2,
-            winners_valid(winners@, streams.len() as int), heads_source(streams@, counts), vocab.ok(),
-        decreases node,
-    {
-        node -= 1;
-        let winner = choose_stream(vocab, &streams, winners[node * 2], winners[node * 2 + 1], Ghost(counts));
-        winners.set(node, winner);
-    }
     proof { lemma_sum_nonneg(streams@, |slot: Vec<Stream>| stream_work(slot)); }
     loop
         invariant sum(streams@, |slot: Vec<Stream>| stream_work(slot)) >= 0, vis.ok(excluded@, pattern@), vocab.ok(),
             streams_state(streams@, counts, excluded@, pattern@, sizes, out@),
             cells_source(out@, counts), cells_selected(out@, excluded@, pattern@, sizes),
-            1 <= width <= 8, streams.len() <= width, winners.len() == width * 2,
-            winners_valid(winners@, streams.len() as int),
             streams@.len() == start.len(),
             forall|j: int| 0 <= j < streams@.len() ==> (#[trigger] streams@[j])@[0].orig@ == start[j]@[0].orig@,
         decreases sum(streams@, |slot: Vec<Stream>| stream_work(slot)),
     {
         let before = Ghost(streams@);
         let before_out = Ghost(out@);
-        let selected = match winners[1] {
+        proof { lemma_state_heads(streams@, counts, excluded@, pattern@, sizes, out@); }
+        let mut best: Option<usize> = None;
+        let mut probe = 0;
+        while probe < streams.len()
+            invariant probe <= streams.len(), vocab.ok(), heads_source(streams@, counts),
+                streams_state(streams@, counts, excluded@, pattern@, sizes, out@),
+                best matches Some(index) ==> index < probe && !streams@[index as int]@[0].finished,
+                best is None ==> forall|k: int| 0 <= k < probe ==> (#[trigger] streams@[k])@[0].finished,
+            decreases streams.len() - probe,
+        {
+            if !streams[probe][0].finished {
+                best = match best {
+                    None => Some(probe),
+                    Some(index) => if head_lt(vocab, &*streams[probe][0].head, &*streams[index][0].head) { Some(probe) } else { Some(index) },
+                };
+            }
+            probe += 1;
+        }
+        let selected = match best {
             Some(value) => value,
             None => {
-                let mut check = 0;
-                while check < streams.len()
-                    invariant check <= streams.len(), streams_state(streams@, counts, excluded@, pattern@, sizes, out@),
-                        vis.ok(excluded@, pattern@), cells_source(out@, counts), cells_selected(out@, excluded@, pattern@, sizes),
-                        streams@.len() == start.len(),
-                        forall|j: int| 0 <= j < streams@.len() ==> (#[trigger] streams@[j])@[0].orig@ == start[j]@[0].orig@,
-                        forall|j: int| 0 <= j < check ==> (#[trigger] streams@[j])@[0].finished,
-                    decreases streams.len() - check,
-                {
-                    if !streams[check][0].finished { return None; }
-                    check += 1;
-                }
                 proof {
                     assert forall|j: int, pos: int| 0 <= j < start.len() && 0 <= pos < start[j]@[0].orig@.len()
                         && visible((#[trigger] start[j]@[0].orig@[pos]).1, excluded@, pattern@) implies
@@ -594,11 +541,13 @@ pub fn merge_small(mut streams: Vec<Vec<Stream>>, Ghost(start): Ghost<Seq<Vec<St
                         assert(s.finished);
                     }
                 }
-                return Some(out);
+                return out;
             },
         };
-        if streams[selected][0].finished { return None; }
-        let mut stream = match streams[selected].pop() { Some(value) => value, None => return None };
+        let mut stream = match streams[selected].pop() {
+            Some(value) => value,
+            None => { proof { assert(false); } return out; },
+        };
         let previous_stream = Ghost(stream);
         out.push(stream.head.clone());
         proof {
@@ -667,18 +616,6 @@ pub fn merge_small(mut streams: Vec<Vec<Stream>>, Ghost(start): Ghost<Seq<Vec<St
             assert(stream_work(streams@[selected as int]) < stream_work(before@[selected as int]));
             lemma_small_stream_update(before@, streams@, selected as int);
             lemma_sum_nonneg(streams@, |slot: Vec<Stream>| stream_work(slot));
-        }
-        proof { lemma_state_heads(streams@, counts, excluded@, pattern@, sizes, out@); }
-        let mut node = width + selected;
-        winners.set(node, if streams[selected][0].finished { None } else { Some(selected) });
-        while node > 1
-            invariant 1 <= node < width * 2, 1 <= width <= 8, winners.len() == width * 2,
-                winners_valid(winners@, streams.len() as int), heads_source(streams@, counts), vocab.ok(),
-            decreases node,
-        {
-            node = node / 2;
-            let winner = choose_stream(vocab, &streams, winners[node * 2], winners[node * 2 + 1], Ghost(counts));
-            winners.set(node, winner);
         }
     }
 }
@@ -750,16 +687,16 @@ pub proof fn lemma_held_open(streams: Seq<Vec<Stream>>, rows: &Counts, counts: C
     }
 }
 
-pub fn read(ranks: &Ranks, vis: &mut Vis, vocab: &Vocab, excluded: &[u8], pattern: &[u8], sizes: &[i64], Ghost(counts): Ghost<Counts>) -> (result: Option<Vec<Arc<Cell>>>)
-    requires sizes.len() <= 8, ranks_valid(*ranks, counts), old(vis).ok(excluded@, pattern@), vocab.ok(),
+pub fn read(ranks: &Ranks, vis: &mut Vis, vocab: &Vocab, excluded: &[u8], pattern: &[u8], sizes: &[i64], Ghost(counts): Ghost<Counts>) -> (cells: Vec<Arc<Cell>>)
+    requires ranks_valid(*ranks, counts), old(vis).ok(excluded@, pattern@), vocab.ok(),
     ensures final(vis).ok(excluded@, pattern@),
-        result matches Some(cells) ==> cells_source(cells@, counts) && cells_selected(cells@, excluded@, pattern@, sizes@)
+        cells_source(cells@, counts) && cells_selected(cells@, excluded@, pattern@, sizes@)
             && cells_cover(cells@, counts, excluded@, pattern@, sizes@),
 {
     let mut streams: Vec<Vec<Stream>> = Vec::new();
     let mut index = 0;
     while index < sizes.len()
-        invariant index <= sizes.len(), sizes.len() <= 8, ranks_valid(*ranks, counts), vis.ok(excluded@, pattern@),
+        invariant index <= sizes.len(), ranks_valid(*ranks, counts), vis.ok(excluded@, pattern@),
             streams_state(streams@, counts, excluded@, pattern@, sizes@, Seq::empty()), streams.len() <= index,
             covered(streams@, counts, excluded@, pattern@, sizes@, index as int),
         decreases sizes.len() - index,
@@ -821,20 +758,17 @@ pub fn read(ranks: &Ranks, vis: &mut Vis, vocab: &Vocab, excluded: &[u8], patter
         }
         index += 1;
     }
-    let result = merge_small(streams, Ghost(streams@), vis, vocab, excluded, pattern, Ghost(counts), Ghost(sizes@));
+    let cells = merge_small(streams, Ghost(streams@), vis, vocab, excluded, pattern, Ghost(counts), Ghost(sizes@));
     proof {
-        if result is Some {
-            let cells = result->Some_0;
-            assert forall|key: KeyView| #[trigger] counts.at(key).is_some()
-                && sizes@.contains(counts.at(key).unwrap().group.size)
-                && visible(counts.at(key).unwrap(), excluded@, pattern@) implies cell_has(cells@, counts.at(key).unwrap()) by {
-                let cell = counts.at(key).unwrap();
-                let q = choose|q: int| 0 <= q < sizes@.len() && sizes@[q] == cell.group.size;
-                assert(streams_hold(streams@, cell));
-            }
+        assert forall|key: KeyView| #[trigger] counts.at(key).is_some()
+            && sizes@.contains(counts.at(key).unwrap().group.size)
+            && visible(counts.at(key).unwrap(), excluded@, pattern@) implies cell_has(cells@, counts.at(key).unwrap()) by {
+            let cell = counts.at(key).unwrap();
+            let q = choose|q: int| 0 <= q < sizes@.len() && sizes@[q] == cell.group.size;
+            assert(streams_hold(streams@, cell));
         }
     }
-    result
+    cells
 }
 
 pub open spec fn streams_hold(streams: Seq<Vec<Stream>>, cell: Cell) -> bool {

@@ -35,6 +35,12 @@ impl State {
     }
 }
 
+
+pub open spec fn rescan_edges_for_parts_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
+pub open spec fn rescan_edges_for_suppliers_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
+pub open spec fn rescan_parts_for_neighbors_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
+pub open spec fn rescan_blockers_for_suppliers_wanted(s: State, pd: Seq<PartDelta>, ed: Seq<EdgeDelta>, sd: Seq<SupplierDelta>) -> Seq<i64> { Seq::empty() }
+
 #[verifier::rlimit(20)]
 pub fn build(
     parts_rows: Vec<PartInput>,
@@ -276,10 +282,17 @@ pub fn execute(
     let sizes = [p3, p4, p5, p6, p7, p8, p9, p10];
     let vocab = crate::vocab::new_vocab();
     let mut vis = crate::output::new_vis(&vocab, p1, p2);
-    let cells = match crate::output::read(&s.ranks, &mut vis, &vocab, p1, p2, &sizes, Ghost(s.counts)) { Some(cells) => cells, None => return None };
-    let out = match crate::output_validation::materialize(&vocab, &cells, Ghost(s.counts), Ghost(p1@), Ghost(p2@), Ghost(sizes@)) {
-        Some(out) => out,
-        None => return None,
+    let read_cells = crate::output::read(&s.ranks, &mut vis, &vocab, p1, p2, &sizes, Ghost(s.counts));
+    let (cells, out) = match crate::output_validation::materialize(&vocab, &read_cells, Ghost(s.counts), Ghost(p1@), Ghost(p2@), Ghost(sizes@)) {
+        Some(out) => (read_cells, out),
+        None => {
+            let sorted = crate::output_validation::sort_cells(&vocab, &read_cells, Ghost(s.counts));
+            proof { crate::output_validation::lemma_sorted_selected(read_cells@, sorted@, p1@, p2@, sizes@); }
+            match crate::output_validation::materialize(&vocab, &sorted, Ghost(s.counts), Ghost(p1@), Ghost(p2@), Ghost(sizes@)) {
+                Some(out) => (sorted, out),
+                None => { proof { assert(false); } return None; },
+            }
+        },
     };
     proof {
         crate::output_validation::lemma_output_model(s.counts, s.ranks, out_view(out@), cells@, p1@, p2@, sizes@);
