@@ -11,7 +11,7 @@ use crate::maintenance_proofs::*;
 use crate::rank_proofs::*;
 use crate::bounds::*;
 use crate::contrib::*;
-use crate::maintenance_semantics::database_suppliers;
+use crate::maintenance_semantics::*;
 
 verus! {
 
@@ -762,6 +762,126 @@ pub fn rewrite_links(links: &mut Edges, source: &Edges, suppliers: &Index<i64>, 
         }
         processed = Ghost(processed@ + 1);
     }
+}
+
+pub open spec fn part_unchanged(db: Db, db2: Db, changed: Index<i64>) -> bool {
+    forall|part: int, key: KeyView| changed.at((part, Seq::<u8>::empty())).is_none() ==>
+        #[trigger] part_database_sum(db2, part, key) == part_database_sum(db, part, key)
+}
+
+pub proof fn lemma_no_entry_no_edge(edges: Edges, supplier: int, part: int)
+    requires !edge_entry(edges, supplier, part),
+    ensures edge_at(edges, supplier, part) == 0,
+{
+}
+
+#[verifier::rlimit(400)]
+pub fn maintain(counts: &Counts, ranks: &Ranks, parts: &Parts, edges: &Edges, blocked: &Index<i64>, links: &Edges,
+    suppliers: &Index<i64>, changed: &Index<i64>,
+    edge_rows: &[EdgeInput], block_rows: &[BlockerInput], part_rows: &Vec<PartInput>,
+    Ghost(db): Ghost<Db>, Ghost(db2): Ghost<Db>, Ghost(supplier_keys): Ghost<Seq<i64>>, Ghost(part_keys): Ghost<Seq<i64>>,
+) -> (out: Result<(Counts, Ranks, Parts, Edges, Index<i64>, Edges), u32>)
+    requires counts_valid(*counts, db), ranks_valid(*ranks, *counts), tables_valid(*parts, *edges, *blocked, *links, db),
+        key_set(*suppliers), key_set(*changed),
+        rescan_edges_for_suppliers_ok(db2, supplier_keys, edge_rows@),
+        rescan_blockers_for_suppliers_ok(db2, supplier_keys, block_rows@),
+        rescan_parts_for_neighbors_ok(db2, part_keys, part_rows@),
+        forall|key: int| seq_view_i64(supplier_keys).contains(key) <==> suppliers.at((key, Seq::<u8>::empty())).is_some(),
+        forall|key: int| seq_view_i64(part_keys).contains(key) <==> changed.at((key, Seq::<u8>::empty())).is_some(),
+        unaffected(db, db2, *suppliers), part_unchanged(db, db2, *changed),
+    ensures out matches Ok(state) ==> counts_valid(state.0, db2) && ranks_valid(state.1, state.0)
+            && tables_valid(state.2, state.3, state.4, state.5, db2),
+        out is Err ==> !within(db, db2),
+{
+    hide(counts_valid);
+    hide(ranks_valid);
+    let fits = Ghost(within(db, db2));
+    proof {
+        reveal(counts_valid);
+        reveal(ranks_valid);
+        lemma_rescan_parts_len(db2, part_keys, part_rows@);
+        lemma_rescan_edges_len(db2, supplier_keys, edge_rows@);
+        lemma_rescan_blockers_len(db2, supplier_keys, block_rows@);
+        assert forall|part: int, key: KeyView| #[trigger] part_at(*parts, part, key) <= db.part.len() by { lemma_part_sum_bound(db, part, key); }
+        assert forall|supplier: int, part: int| #[trigger] edge_at(*edges, supplier, part) <= db.partsupp.len() by { lemma_edge_count_bound(db, part, supplier); }
+        assert forall|supplier: int| #[trigger] integer_at(*blocked, (supplier, Seq::<u8>::empty())) <= db.supplier.len() by { lemma_blocker_count_bound(db, supplier); }
+        assert(max_rows() == 1099511627776int);
+    }
+    let new_parts = match replace_parts(parts, changed, part_rows, fits) { Some(value) => value, None => return Err(4) };
+    let new_edges = match replace_edges(edges, suppliers, edge_rows, fits) { Some(value) => value, None => return Err(4) };
+    let new_blocked = match replace_blockers(blocked, suppliers, block_rows, fits) { Some(value) => value, None => return Err(4) };
+    proof {
+        assert forall|part: int, key: KeyView| #[trigger] part_at(new_parts, part, key) == part_database_sum(db2, part, key) by {
+            if changed.at((part, Seq::<u8>::empty())).is_some() {
+                assert(seq_view_i64(part_keys).contains(part));
+                lemma_parts_rescan(db2, part_keys, part_rows@, part, key);
+            } else {
+                assert(!seq_view_i64(part_keys).contains(part));
+                lemma_parts_rescan_absent(db2, part_keys, part_rows@, part, key);
+            }
+        }
+        assert forall|supplier: int, part: int| #[trigger] edge_at(new_edges, supplier, part) == edge_count(db2, part, supplier) by {
+            if suppliers.at((supplier, Seq::<u8>::empty())).is_some() {
+                assert(seq_view_i64(supplier_keys).contains(supplier));
+                lemma_edges_supplier_rescan(db2, supplier_keys, edge_rows@, supplier, part);
+            } else {
+                assert(!seq_view_i64(supplier_keys).contains(supplier));
+                lemma_edges_supplier_rescan_absent(db2, supplier_keys, edge_rows@, supplier, part);
+            }
+        }
+        assert forall|supplier: int| #[trigger] integer_at(new_blocked, (supplier, Seq::<u8>::empty())) == blocker_count(db2, supplier) by {
+            if suppliers.at((supplier, Seq::<u8>::empty())).is_some() {
+                assert(seq_view_i64(supplier_keys).contains(supplier));
+                lemma_blockers_rescan(db2, supplier_keys, block_rows@, supplier);
+            } else {
+                assert(!seq_view_i64(supplier_keys).contains(supplier));
+                lemma_blockers_rescan_absent(db2, supplier_keys, block_rows@, supplier);
+            }
+        }
+    }
+    let mut new_links = share_edges(links);
+    rewrite_links(&mut new_links, edges, suppliers, false);
+    let cleared = Ghost(new_links);
+    rewrite_links(&mut new_links, &new_edges, suppliers, true);
+    proof {
+        assert forall|part: int, supplier: int| #[trigger] edge_at(new_links, part, supplier) == edge_count(db2, part, supplier) by {
+            assert(edge_at(*links, part, supplier) == edge_count(db, part, supplier));
+            assert(edge_at(*edges, supplier, part) == edge_count(db, part, supplier));
+            assert(edge_at(new_edges, supplier, part) == edge_count(db2, part, supplier));
+            if suppliers.at((supplier, Seq::<u8>::empty())).is_some() {
+                if !edge_entry(*edges, supplier, part) { lemma_no_entry_no_edge(*edges, supplier, part); }
+                if !edge_entry(new_edges, supplier, part) { lemma_no_entry_no_edge(new_edges, supplier, part); }
+                assert(edge_at(cleared@, part, supplier) == 0);
+            } else {
+                assert(edge_at(cleared@, part, supplier) == edge_at(*links, part, supplier));
+                assert(edge_count(db2, part, supplier) == edge_count(db, part, supplier));
+            }
+        }
+    }
+    let changes = match collect_changes(parts, edges, blocked, &new_parts, &new_edges, &new_blocked, suppliers, Ghost(db), Ghost(db2)) {
+        Ok(value) => value,
+        Err(code) => return Err(code),
+    };
+    proof {
+        lemma_changes_are_totals(db, db2, *suppliers, *parts, *edges, *blocked, new_parts, new_edges, new_blocked, changes);
+        lemma_ranks_positive(*ranks, *counts);
+        assert forall|brand: Seq<u8>, kind: Seq<u8>, size: int| fits@ ==>
+            0 <= count_at(*counts, #[trigger] group_key(brand, kind, size)) + count_at(changes, group_key(brand, kind, size)) <= i64::MAX as int by {
+            if fits@ {
+                lemma_total_bound(db2, brand, kind, size);
+                lemma_database_suppliers_len(db2);
+                assert(max_rows() == 1099511627776int);
+            }
+        }
+    }
+    let state = match publish_changes(counts, ranks, &changes, fits) {
+        Ok(value) => value,
+        Err(code) => return Err(code),
+    };
+    proof {
+        lemma_apply_correct(db, db2, *counts, state.0, changes, state.1);
+    }
+    Ok((state.0, state.1, new_parts, new_edges, new_blocked, new_links))
 }
 
 }
