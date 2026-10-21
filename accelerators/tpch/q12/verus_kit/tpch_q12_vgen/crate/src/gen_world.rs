@@ -52,8 +52,11 @@ pub fn prepare_apply(
         base.timeline() == store.timeline(),
         orders_delta_ok(orders_delta@, orders_full),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), line_delta_seq_view(lineitem_delta@), orders_full),
+        high_orders_for_keys_keys@ == crate::kernel::rescan_high_orders_for_keys_wanted(base.state_spec(), lineitem_delta@, orders_delta@),
         rescan_high_orders_for_keys_ok(store.db_at((base.epoch() + 1) as nat), high_orders_for_keys_keys@, high_orders_for_keys_rows@),
+        low_orders_for_keys_keys@ == crate::kernel::rescan_low_orders_for_keys_wanted(base.state_spec(), lineitem_delta@, orders_delta@),
         rescan_low_orders_for_keys_ok(store.db_at((base.epoch() + 1) as nat), low_orders_for_keys_keys@, low_orders_for_keys_rows@),
+        qualifying_lines_for_keys_keys@ == crate::kernel::rescan_qualifying_lines_for_keys_wanted(base.state_spec(), lineitem_delta@, orders_delta@),
         rescan_qualifying_lines_for_keys_ok(store.db_at((base.epoch() + 1) as nat), qualifying_lines_for_keys_keys@, qualifying_lines_for_keys_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),

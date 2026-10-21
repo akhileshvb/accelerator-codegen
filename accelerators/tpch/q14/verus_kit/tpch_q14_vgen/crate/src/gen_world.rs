@@ -50,7 +50,9 @@ pub fn prepare_apply(
         base.timeline() == store.timeline(),
         part_delta_ok(part_delta@, part_full),
         capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), line_delta_seq_view(lineitem_delta@), part_full),
+        parts_for_lines_keys@ == crate::kernel::rescan_parts_for_lines_wanted(base.state_spec(), lineitem_delta@, part_delta@),
         rescan_parts_for_lines_ok(store.db_at((base.epoch() + 1) as nat), parts_for_lines_keys@, parts_for_lines_rows@),
+        lines_for_parts_keys@ == crate::kernel::rescan_lines_for_parts_wanted(base.state_spec(), lineitem_delta@, part_delta@),
         rescan_lines_for_parts_ok(store.db_at((base.epoch() + 1) as nat), lines_for_parts_keys@, lines_for_parts_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),

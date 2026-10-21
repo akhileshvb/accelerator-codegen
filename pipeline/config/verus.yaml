@@ -38,7 +38,7 @@ stages:
   glue_fix_rounds: 3            # glue fix rounds (build, contract check, glue audit)
 
 gates:
-  max_fallback_rate: 0.25       # answered with SQL / all accelerator queries (integration)
+  max_fallback_rate: 0.0        # answered with SQL / all accelerator queries: inside the envelope any fallback is a bug
   snapshot_writes: 200
   snapshot_readers: 4
   differential_every: 10        # all parameter tuples every N transactions
