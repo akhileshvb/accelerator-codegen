@@ -288,6 +288,9 @@ def cmd_tpch(a):
     gives each stream its own seed) and its own query order (qgen's stream permutations); the refresh functions are the
     dbgen update sets.  Results: <out>/tpch_<system>_r<k>.json, and the summary."""
     log = os.path.join(a.out, "tpch.log")
+    if a.rf_smoke:  # load, build, one RF1 and one RF2, per-accelerator results, exit
+        a.runs, a.streams, a.no_base, a.systems = 1, 1, True, ["cpp"]
+        os.environ["ACCEL_TPCH_RF_SMOKE"] = "1"
     per_run = a.streams + 1
     base = a.seed if a.seed is not None else int.from_bytes(os.urandom(4), "little")
     seeds = [base + i for i in range(a.runs * per_run)]  # draw i: run i // (S+1), stream i % (S+1)
@@ -319,6 +322,8 @@ def cmd_tpch(a):
         rs = run([a.bin, "tpch", db, phase, spec_path, str(a.streams), str(a.runs), f"{a.sf:g}", "1" if a.check else "0"],
                  env, log, a.timeout, lines=a.runs)
         drop(db)
+        if a.rf_smoke:
+            return print_rf_smoke(rs)
         rs = rs if isinstance(rs, list) else [rs] * a.runs
         for k, r in enumerate(rs):
             r = dict(r, system=name, run=k, seeds=seeds[k * per_run:(k + 1) * per_run])
@@ -328,6 +333,19 @@ def cmd_tpch(a):
                 print(f"  build (load) {r['build_ms'] / 1000:.0f}s", flush=True)
             print(f"  run {k}: " + tpch_line(r), flush=True)
     summary_tpch(a.out)
+
+
+def print_rf_smoke(r):
+    if "error" in r:
+        print("RF smoke ERROR " + r["error"], flush=True)
+        return 1
+    print(f"RF smoke: build {r['build_ms'] / 1000:.0f}s, peak RSS {r['rss_peak_mb'] / 1024:.1f} GB", flush=True)
+    for rf in r["refresh"]:
+        print(f"{rf['kind']}: {rf['us'] / 1e6:.2f}s (statement {rf['statement_us'] / 1e6:.2f}s, engine commit "
+              f"{rf['engine_commit_us'] / 1e6:.2f}s), RSS {rf['rss_mb'] / 1024:.1f} GB", flush=True)
+        for x in sorted(rf["accelerators"], key=lambda x: -x["apply_us"]):
+            print(f"  {x['id']:>10} {x['action']:<18} {x['apply_us'] / 1e6:8.3f}s", flush=True)
+    return 0
 
 
 def tpch_line(r):
@@ -714,6 +732,9 @@ def main():
                    help="DuckDB's thread count (default: all cores, as a TPC-H run would; the accelerators' read kernels are single-threaded)")
     t.add_argument("--duckdb-memory", default="16GB", help="DuckDB memory_limit")
     t.add_argument("--no-base", action="store_true", help="skip the DuckDB run (pair with an earlier run's, same --seed)")
+    t.add_argument("--rf-smoke", action="store_true",
+                   help="load, build the accelerators, run one RF1 and one RF2 (use with ACCEL_AUX_TRACE_MAINT=1), "
+                   "print per-accelerator results and peak RSS, exit")
     t.add_argument("--no-check", dest="check", action="store_false",
                    help="do not compare the power test's accelerator answers with DuckDB's (untimed)")
     t.set_defaults(timeout=12 * 3600)
@@ -743,7 +764,7 @@ def main():
     assert os.path.exists(a.bin), f"no {a.bin} (cmake --build build-verus-duckdb --target aux_compare)"
     assert os.path.exists(a.db), f"no database {a.db}"
     os.makedirs(a.work, exist_ok=True)
-    {"read": cmd_read, "refresh": cmd_refresh, "concurrent": cmd_concurrent, "multi": cmd_multi, "cycle": cmd_cycle, "tpch": cmd_tpch}[a.mode](a)
+    sys.exit({"read": cmd_read, "refresh": cmd_refresh, "concurrent": cmd_concurrent, "multi": cmd_multi, "cycle": cmd_cycle, "tpch": cmd_tpch}[a.mode](a) or 0)
 
 
 if __name__ == "__main__":

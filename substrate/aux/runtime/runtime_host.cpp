@@ -1,5 +1,7 @@
 // SCAFFOLDING
 #include "substrate/aux/runtime/runtime_host.hpp"
+#include "substrate/aux/core/maintenance_trace.hpp"
+#include "substrate/aux/state/versioned_aux_store.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -206,6 +208,7 @@ void RuntimeHost::PreCommit(uint64_t txn) {
     }
   }
   std::vector<AcceleratorRuntime *> staged;
+  const core::trace::Span tracing("precommit", "txn=" + std::to_string(txn) + " accelerators=" + std::to_string(order.size()));
   try {
     for (auto *runtime : order) {
       runtime->BeginCommit(txn, std::move(per_runtime[runtime]));
@@ -224,10 +227,16 @@ void RuntimeHost::PreCommit(uint64_t txn) {
 
 void RuntimeHost::Commit(uint64_t txn, Epoch epoch) {
   const auto staged = impl->TakeTxn(txn).staged;
+  core::trace::Span tracing("commit", "txn=" + std::to_string(txn) + " epoch=" + std::to_string(epoch) +
+                                          " accelerators=" + std::to_string(staged.size()) +
+                                          " maint_threads=" + std::to_string(impl->threads.MaintenanceLimit()));
   // Each accelerator maintains independently; fork-join over the maintenance cap
   // (1: in id order on this thread).
   impl->threads.ParallelFor(
       staged.size(), [&](std::size_t i) { staged[i]->PublishCommit(epoch); }, impl->threads.MaintenanceLimit());
+  if (core::trace::Enabled()) {
+    tracing.SetEndDetail("reclaim_backlog=" + std::to_string(VersionedAuxStore::ReclaimBacklog()));
+  }
 }
 
 void RuntimeHost::Abort(uint64_t txn) {

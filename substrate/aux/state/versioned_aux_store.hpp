@@ -175,6 +175,7 @@ public:
   // Process-wide background reclaimer: batches destroyed so far, and a
   // barrier that returns once every queued batch is destroyed.
   static uint64_t ReclaimedBatchCount();
+  static std::size_t ReclaimBacklog(); // superseded versions waiting to be freed
   static void DrainReclaimer();
   bool HasPendingCommit() const;
 

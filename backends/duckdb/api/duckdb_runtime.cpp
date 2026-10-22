@@ -14,6 +14,7 @@
 #include "backends/duckdb/api/verus_host.hpp"
 #include "backends/duckdb/engine/scan.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
+#include "substrate/aux/core/maintenance_trace.hpp"
 #include "substrate/aux/state/aux_state_footprint.hpp"
 #include "substrate/aux/state/verus_aux_store.hpp"
 
@@ -297,10 +298,16 @@ void DuckdbRuntime::ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes,
   auto &connection = runtimes.front()->connection_;
   auto start = Clock::now();
   connection.BeginTransaction();
-  RunWriteQuery(connection, sql);
+  {
+    const core::trace::Span statement("engine-statement"); // includes the capture of the changed rows
+    RunWriteQuery(connection, sql);
+  }
   const double statement_us = MicrosSince(start);
   start = Clock::now();
-  runtimes.front()->CommitWrite();
+  {
+    const core::trace::Span commit("engine-commit"); // precommit, commit and the engine's own commit
+    runtimes.front()->CommitWrite();
+  }
   if (!timing) {
     return;
   }

@@ -70,6 +70,7 @@
 #include "backends/duckdb/api/register.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
 #include "substrate/aux/core/aux_maintenance_decision_log.hpp"
+#include "substrate/aux/core/maintenance_trace.hpp"
 #include "substrate/aux/maintenance/maintenance_action.hpp"
 #include "substrate/verus/kit/verus_kit.hpp"
 #include "catalog/query_catalog.hpp"
@@ -92,6 +93,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -1404,9 +1406,11 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
     std::string kind, actions;
     double us = 0, statement_us = 0, engine_commit_us = 0;
     std::vector<double> apply_us; // per accelerator, the maintenance of this commit
+    std::vector<std::string> action; // per accelerator ("none": not maintained)
   };
   const auto refresh = [&]() {
     const auto [kind, sql] = writes.Next();
+    const core::trace::Span tracing("refresh", kind);
     Refresh r{kind, "", 0};
     DuckdbRuntime::WriteAllTiming timing;
     const auto t0 = Clock::now();
@@ -1424,6 +1428,7 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
       r.statement_us = timing.statement_us;
       r.engine_commit_us = timing.engine_commit_us;
       r.apply_us = timing.pre_commit_us;
+      r.action = timing.action;
       std::map<std::string, int> n;
       for (const auto &a : timing.action)
         if (a != "none" && a != "NoOp")
@@ -1466,6 +1471,26 @@ int Tpch(const std::string &path, const std::string &phase, const std::string &s
     }
     return j + "]";
   };
+
+  // ACCEL_TPCH_RF_SMOKE=1: the load and build above, then exactly one RF1 and one RF2, per-accelerator results
+  // and peak memory, and exit (the check before a long run at a scale that has not been refreshed yet).
+  if (std::getenv("ACCEL_TPCH_RF_SMOKE")) {
+    Require(accel, "ACCEL_TPCH_RF_SMOKE needs the accel phase");
+    std::string rfs = "[";
+    for (int i = 0; i < 2; ++i) {
+      const auto r = refresh();
+      std::string accelerators = "[";
+      for (std::size_t k = 0; k < live.size(); ++k)
+        accelerators += std::string(k ? "," : "") + "{\"id\":" + Json(specs[k].id) + ",\"action\":" + Json(r.action[k]) +
+                        ",\"apply_us\":" + std::to_string(r.apply_us[k]) + "}";
+      rfs += std::string(i ? "," : "") + "{\"kind\":" + Json(r.kind) + ",\"us\":" + std::to_string(r.us) +
+             ",\"statement_us\":" + std::to_string(r.statement_us) + ",\"engine_commit_us\":" + std::to_string(r.engine_commit_us) +
+             ",\"rss_mb\":" + std::to_string(RssMb().first) + ",\"accelerators\":" + accelerators + "]}";
+    }
+    std::cout << "{\"mode\":\"tpch-rf-smoke\",\"sf\":" << sf << ",\"build_ms\":" << build_ms_total
+              << ",\"rss_peak_mb\":" << RssMb().second << ",\"refresh\":" << rfs << "]}" << std::endl;
+    return 0;
+  }
 
   for (int run = 0; run < runs; ++run) {
     // ---- power test: RF1, stream 0, RF2
@@ -1728,6 +1753,8 @@ int main(int argc, char **argv) {
   try {
     Require(argc >= 5, "usage: aux_compare read|concurrent|multi|refresh <db> ...");
     const std::string mode = argv[1];
+    if (const char *pidfile = std::getenv("ACCEL_COMPARE_PIDFILE"); pidfile && *pidfile) // for an outside watchdog
+      std::ofstream(pidfile) << getpid() << "\n";
     if (mode == "multi") {
       Require(argc >= 8, "multi: <db> <phase> <spec.tsv> <readers> <seconds> <writes_per_sec> [seed] [warmup_sec] "
                          "[rotate|pinned]");

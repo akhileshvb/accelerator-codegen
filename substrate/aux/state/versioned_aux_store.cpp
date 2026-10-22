@@ -2,6 +2,7 @@
 // VersionedAuxStore: multi-version partition store, commit protocol, async reclaim.
 #include "substrate/aux/state/versioned_aux_store.hpp"
 #include "substrate/aux/core/aux_execute_stats.hpp"
+#include "substrate/aux/core/maintenance_trace.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -39,6 +40,10 @@ public:
     return enabled;
   }
   uint64_t Reclaimed() const { return reclaimed.load(); }
+  std::size_t Backlog() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return queue.size();
+  }
   // Returns once every batch deferred so far is destroyed.
   void Drain() {
     std::unique_lock<std::mutex> lock(mutex);
@@ -380,6 +385,7 @@ void VersionedAuxStore::Reclaim(std::vector<StateVersion> &&dropped,
   if (dropped.empty() && !extra) {
     return;
   }
+  const core::trace::CreditScope reclaiming("reclaim");
   if (!options.async_reclaim || !VersionReclaimer::Enabled()) {
     return; // `dropped` (and `extra`) are destroyed here, off the lock
   }
@@ -391,6 +397,7 @@ void VersionedAuxStore::Reclaim(std::vector<StateVersion> &&dropped,
       std::make_shared<Garbage>(Garbage{std::move(dropped), std::move(extra)}));
 }
 
+std::size_t VersionedAuxStore::ReclaimBacklog() { return VersionReclaimer::Instance().Backlog(); }
 uint64_t VersionedAuxStore::ReclaimedBatchCount() { return VersionReclaimer::Instance().Reclaimed(); }
 void VersionedAuxStore::DrainReclaimer() { VersionReclaimer::Instance().Drain(); }
 

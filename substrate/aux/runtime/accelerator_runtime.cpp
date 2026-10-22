@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#include "substrate/aux/core/maintenance_trace.hpp"
 #include "substrate/aux/runtime/thread_budget.hpp"
 
 namespace accelerator_codegen::aux_state::runtime {
@@ -376,6 +377,7 @@ ReadResult AcceleratorRuntime::Read(const ReadOptions &options,
 
 core::StagedMaintenanceOutcome
 AcceleratorRuntime::Stage(const std::vector<ColumnarBatchRef> &batches) {
+  core::trace::EnterPhase("stage");
   auto buffer = module->CreateTxnBuffer();
   core::InvalidationPlan plan;
   for (const auto &batch : batches) {
@@ -393,7 +395,10 @@ AcceleratorRuntime::Stage(const std::vector<ColumnarBatchRef> &batches) {
   if (plan.IsEmpty() && !buffer->HasPendingChanges()) {
     plan = core::AllPartitionsPlan();
   }
-  return module->StageMaintenance(*impl->module_services, plan, *buffer);
+  core::trace::EnterPhase("apply");
+  auto outcome = module->StageMaintenance(*impl->module_services, plan, *buffer);
+  core::trace::SetAction(maintenance::MaintenanceActionName(outcome.action));
+  return outcome;
 }
 
 // Publishes `outcome` at `epoch`. Returns false if the state is left invalid
@@ -410,6 +415,7 @@ bool AcceleratorRuntime::Publish(const core::StagedMaintenanceOutcome &outcome, 
       invalidate.scope == InvalidationScope::AllPartitions) {
     invalidate = core::PartitionSetPlanFromImages(outcome.updates);
   }
+  core::trace::EnterPhase("publish");
   auto &store = *impl->store.store;
   impl->store_epoch = epoch;
   store.BeginCommit(id, invalidate);
@@ -428,6 +434,11 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
   if (change.empty_commit) {
     return true;
   }
+  uint64_t rows = 0;
+  for (const auto &batch : change.batches) {
+    rows += batch->row_count;
+  }
+  const core::trace::Maintenance tracing(id, rows);
   const core::ScopedThreadMaintenanceDecisionLog decision_log; // commits of several accelerators publish concurrently
   core::ClearMaintenanceDecisionLog();
   const PhaseScope maintaining(this, Phase::Maintenance);
@@ -441,6 +452,7 @@ bool AcceleratorRuntime::ApplyChange(const CommittedChange &change) {
   } catch (...) {
     reason = "the module threw";
   }
+  core::trace::EnterPhase("finish");
   std::lock_guard<std::mutex> lock(impl->state_mutex);
   impl->stats.last_decision = core::LastMaintenanceDecision();
   if (!reason.empty()) {

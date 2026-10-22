@@ -125,6 +125,7 @@ function(accel_collect_stateful_sources OUT_VAR)
         substrate/aux/core/aux_cost_model_path.cpp
         substrate/aux/core/aux_store_diagnostics.cpp
         substrate/aux/core/aux_execute_stats.cpp
+        substrate/aux/core/maintenance_trace.cpp
         substrate/aux/runtime/accelerator_runtime.cpp
         substrate/aux/runtime/columnar_batch.cpp
         substrate/aux/runtime/wire.cpp
