@@ -245,18 +245,25 @@ def _run_aux_quick_sweep(
             freqs=freqs,
         ),
     }
-    proc = subprocess.run(
-        [str(bin_path)],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
-    output = (proc.stdout or "") + (proc.stderr or "")
-    if proc.returncode != 0:
-        return [], output
-    rows = parse_aux_benchmark_output(output)
+    # The bench CLI (bench_sweep_contract.md): one write-frequency point per run, as the sweep gate calls it.
+    from accel_pipeline.optimization_eval import _sweep_csv
+
+    env.pop(f"ACCEL_Q{query}_WRITE_FREQUENCY_PCT", None)
+    outputs: list[str] = []
+    for pct in freqs:
+        proc = subprocess.run(
+            [str(bin_path), "--query", str(query), str(pct)],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        outputs.append((proc.stdout or "") + (proc.stderr or ""))
+        if proc.returncode != 0:
+            return [], "\n".join(outputs)
+    output = "\n".join(outputs)
+    rows = parse_aux_benchmark_output(_sweep_csv(outputs))
     if len(rows) < len(freqs):
         return [], (
             f"expected {len(freqs)} sweep rows, got {len(rows)}\n{output[-4000:]}"
