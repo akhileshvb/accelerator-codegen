@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload
-from accel_pipeline.stages.gate_plan import run_post_stage_gates, workload_post_audit_gates
+from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
+from accel_pipeline.stages.gate_plan import workload_post_audit_gates
 from accel_pipeline.stages.base import run_agent_stage
+
+AUDIT_FIX_ROUNDS = 3
 
 
 def run(
@@ -28,10 +31,16 @@ def run(
         dry_run=dry_run,
     )
     if not dry_run:
-        run_post_stage_gates(
+        # a failing audit gate goes back to a bounded crash-debug fix (the failure details, then the gates again)
+        # instead of ending the run after all the work before it
+        run_post_stage_gates_with_crash_debug(
             pipeline_config,
+            model_config,
             workload_name,
             query,
             workload_post_audit_gates(load_run_workload(pipeline_config, workload_name)),
+            change_kind="audit",
+            model_overrides=model_overrides,
+            max_rounds=AUDIT_FIX_ROUNDS,
         )
     return result

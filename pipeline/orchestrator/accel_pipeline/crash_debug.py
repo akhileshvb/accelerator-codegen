@@ -77,9 +77,11 @@ def format_gate_failure_diagnosis(
     return "\n".join(lines)
 
 
-def _crash_debug_limit(pipeline_config: PipelineConfig, round_idx: int) -> None:
-    """Raise when crash-debug rounds exceed configured limits."""
-    max_rounds = max(0, int(getattr(pipeline_config, "crash_debug_max_rounds", 0)))
+def _crash_debug_limit(pipeline_config: PipelineConfig, round_idx: int, max_rounds: int | None = None) -> None:
+    """Raise when crash-debug rounds exceed configured limits (`max_rounds` overrides the configured one)."""
+    if max_rounds is None:
+        max_rounds = int(getattr(pipeline_config, "crash_debug_max_rounds", 0))
+    max_rounds = max(0, max_rounds)
     safety_cap = max(1, int(getattr(pipeline_config, "crash_debug_safety_cap", 25)))
     if max_rounds > 0 and round_idx >= max_rounds:
         raise GateFailure(
@@ -104,8 +106,9 @@ def run_post_stage_gates_with_crash_debug(
     iteration: int = 0,
     model_overrides: dict[str, str] | None = None,
     dry_run: bool = False,
+    max_rounds: int | None = None,
 ) -> list[GateResult]:
-    """Run gates; on failure invoke crash-debug agent turns until gates pass."""
+    """Run gates; on failure invoke crash-debug agent turns until gates pass (at most `max_rounds`)."""
     if dry_run:
         return []
 
@@ -155,7 +158,7 @@ def run_post_stage_gates_with_crash_debug(
             workload=workload,
         )
 
-        _crash_debug_limit(pipeline_config, round_idx)
+        _crash_debug_limit(pipeline_config, round_idx, max_rounds)
 
         run_agent_stage(
             stage="crash_debug",
