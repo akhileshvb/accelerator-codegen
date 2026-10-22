@@ -430,6 +430,19 @@ def _metrics_from_aux_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return attach_store_diagnostics(metrics)
 
 
+def _sweep_csv(outputs: list[str]) -> str:
+    """One CSV from per-point bench outputs: the header once, then each run's data rows (as the sweep gate keeps them)."""
+    lines: list[str] = []
+    for out in outputs:
+        for line in out.splitlines():
+            if line.startswith("suite,"):
+                if not lines:
+                    lines.append(line)
+            elif line.count(",") >= 9 and not line.startswith(("speedup_gate", "#")):
+                lines.append(line)
+    return "\n".join(lines)
+
+
 def _run_aux_sweep_once(
     bin_path: str,
     *,
@@ -439,14 +452,14 @@ def _run_aux_sweep_once(
     workload: dict[str, Any],
     art_dir: Path | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
-    """One benchmark process: multi-frequency sweep via ACCEL_AUX_WRITE_FREQUENCIES."""
+    """The aux benchmark at each sampled write frequency (one bench run per point)."""
     freqs = _aux_write_frequencies(workload, art_dir=art_dir)
     env = {
         **os.environ,
         **_aux_quick_env(paths, query=query, workload=workload, freqs=freqs),
     }
     _log_benchmark(
-        f"aux quick sweep (1 process): freqs={freqs} "
+        f"aux quick sweep ({len(freqs)} runs): freqs={freqs} "
         f"queries={env.get('ACCEL_BENCH_QUERIES')} warmup={env.get('ACCEL_BENCH_WARMUP')}"
     )
     # Pathological write mixes (or DuckDB lock contention under pack fan-out) can
@@ -456,35 +469,41 @@ def _run_aux_sweep_once(
         or os.environ.get("ACCEL_BENCH_TIMEOUT_SEC")
         or 300
     )
-    try:
-        proc = subprocess.run(
-            [bin_path],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-            timeout=timeout_sec,
-        )
-    except subprocess.TimeoutExpired as exc:
-        out = ((exc.stdout or "") if isinstance(exc.stdout, str) else "") + (
-            (exc.stderr or "") if isinstance(exc.stderr, str) else ""
-        )
-        return None, (
-            f"benchmark timed out after {timeout_sec}s "
-            f"(freqs={freqs}); refuse to block the optimization worker\n{out[-2000:]}"
-        )
-    output = (proc.stdout or "") + (proc.stderr or "")
-    if proc.returncode != 0:
-        rc = proc.returncode
-        if rc == -9 or rc == 137:
-            hint = (
-                "benchmark subprocess killed (SIGKILL); likely OOM from a bad patch "
-                "or stale binary after a reverted patch"
+    # The bench CLI (bench_sweep_contract.md): one write-frequency point per run, as the sweep gate calls it.
+    env.pop(f"ACCEL_Q{query}_WRITE_FREQUENCY_PCT", None)
+    outputs: list[str] = []
+    for pct in freqs:
+        try:
+            proc = subprocess.run(
+                [bin_path, "--query", str(query), str(pct)],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+                timeout=timeout_sec,
             )
-            return None, hint + (f"\n{output[-2000:]}" if output.strip() else "")
-        return None, output or f"benchmark exited with code {rc}"
-    rows = parse_aux_benchmark_output(output)
+        except subprocess.TimeoutExpired as exc:
+            out = ((exc.stdout or "") if isinstance(exc.stdout, str) else "") + (
+                (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+            )
+            return None, (
+                f"benchmark timed out after {timeout_sec}s "
+                f"(write {pct}%); refuse to block the optimization worker\n{out[-2000:]}"
+            )
+        point = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode != 0:
+            rc = proc.returncode
+            if rc == -9 or rc == 137:
+                hint = (
+                    "benchmark subprocess killed (SIGKILL); likely OOM from a bad patch "
+                    "or stale binary after a reverted patch"
+                )
+                return None, hint + (f"\n{point[-2000:]}" if point.strip() else "")
+            return None, point or f"benchmark exited with code {rc} (write {pct}%)"
+        outputs.append(point)
+    output = "\n".join(outputs)
+    rows = parse_aux_benchmark_output(_sweep_csv(outputs))
     if len(rows) < len(freqs):
         return None, (
             f"expected {len(freqs)} sweep rows, got {len(rows)}\n{output[-4000:]}"
