@@ -113,7 +113,7 @@ def _try_honor_saturation(
         payload=payload or {},
         optimization_iter=optimization_iter,
         attempt=attempt,
-        workload=workload.get("name"),
+        workload_name=workload.get("name"),
     )
     if ok:
         append_experiment_log(
@@ -1224,7 +1224,7 @@ def run_optimization_iteration(
                 "optimization_worker_gate_verdict",
                 verdict=outcome.verdict,
                 improvement_pct=outcome.improvement_pct,
-                workload=workload.get("name", workload_name),
+                workload_name=workload.get("name", workload_name),
             )
 
             if outcome.verdict in ("reject_broken", "reject_regress"):
