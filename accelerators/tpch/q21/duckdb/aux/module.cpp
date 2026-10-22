@@ -1,5 +1,7 @@
 #include "tpch/q21/duckdb/aux/module.hpp"
 #include "tpch/q21/calibration_writes.hpp"
+#include "prims/bucketed_rows.hpp"
+#include "prims/key_range_sort.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"
@@ -695,46 +697,199 @@ void PublishImages(core::StagedMaintenanceOutcome &outcome, const TpchQ21TxnBuff
 // lineitem counts (an OrderSummary) of the orders seen. The shards are the
 // coarsest level of the final order map's shard hash, so a task owning one
 // build shard writes only its own shards of that map.
-struct OrderShards {
-  static constexpr unsigned kBits = 6;
-  static constexpr std::size_t kShards = std::size_t{1} << kBits;
-  using Shard = core::FlatHashMap<OrderSummary>;
-  std::array<Shard, kShards> shards;
+void AddSupplier(OrderSummary &summary, int64_t suppkey, int64_t total, int64_t late) {
+  if (auto *info = summary.FindSupplier(suppkey)) {
+    info->total_count += total;
+    info->late_count += late;
+  } else {
+    summary.suppliers.push_back({suppkey, total, late});
+  }
+}
 
-  static std::size_t ShardOf(int64_t orderkey) {
-    return core::ShardedCowHashMap<OrderSummary, 7>::ShardOf(orderkey, kBits);
-  }
-  void Fulfilled(int64_t orderkey) { shards[ShardOf(orderkey)][orderkey].orderstatus = 'F'; }
-  bool IsFulfilled(int64_t orderkey) const { return shards[ShardOf(orderkey)].Contains(orderkey); }
-  void Add(const TpchQ21LineitemInput &input) {
-    auto &summary = shards[ShardOf(input.orderkey)][input.orderkey];
-    summary.orderstatus = 'F';
-    AddSupplier(summary, input.suppkey, 1, input.receiptdate > input.commitdate ? 1 : 0);
-  }
-  static void AddSupplier(OrderSummary &summary, int64_t suppkey, int64_t total, int64_t late) {
-    if (auto *info = summary.FindSupplier(suppkey)) {
-      info->total_count += total;
-      info->late_count += late;
-    } else {
-      summary.suppliers.push_back({suppkey, total, late});
-    }
-  }
+// Build rows are dealt into buckets by the hash prefix of their key. A map of
+// shard_bits >= kRowBucketBits shards refines the buckets, so whole shards
+// belong to one bucket; a coarser one groups buckets.
+std::size_t BucketOf(int64_t key) {
+  return core::ShardedCowHashMap<int64_t, 7>::ShardOf(key, core::kRowBucketBits);
+}
+
+// Runs fn(first_bucket, last_bucket) per group of buckets that a sharded map of
+// `shard_bits` writes from one task: no two groups touch the same shard.
+template <class Fn>
+void ForEachShardGroup(const core::AuxEngineServices &services, unsigned shard_bits, Fn &&fn) {
+  const unsigned group_bits = std::min(shard_bits, core::kRowBucketBits);
+  const std::size_t per_group = std::size_t{1} << (core::kRowBucketBits - group_bits);
+  core::ParallelEach(services, std::size_t{1} << group_bits, 1, [&](std::size_t g) {
+    fn(g * per_group, (g + 1) * per_group);
+  });
+}
+
+struct LineRow {
+  int64_t orderkey;
+  int64_t suppkey;
+  bool late;
 };
 
-// Folds `from` into `into`, one pool task per run of shards.
-void FoldShards(const core::AuxEngineServices &services, OrderShards &into, OrderShards &&from) {
-  core::ParallelSlices(services, OrderShards::kShards, 1,
-                       [&](std::size_t, std::size_t first, std::size_t last) {
-                         for (std::size_t s = first; s < last; ++s)
-                           for (auto [orderkey, theirs] : from.shards[s]) {
-                             auto &mine = into.shards[s][orderkey];
-                             if (theirs.orderstatus)
-                               mine.orderstatus = theirs.orderstatus;
-                             for (const auto &info : theirs.suppliers)
-                               OrderShards::AddSupplier(mine, info.suppkey, info.total_count,
-                                                        info.late_count);
-                           }
-                       });
+// The orders of one bucket that contribute to the answer.
+struct OrderBucket {
+  std::vector<std::pair<int64_t, OrderSummary>> contributing;
+  std::vector<std::pair<int64_t, int64_t>> numwait; // (suppkey, late lineitems) per order
+};
+
+OrderBucket SummarizeBucket(std::vector<LineRow> lines) {
+  // Stable: an order's suppliers stay in table order.
+  std::stable_sort(lines.begin(), lines.end(), [](const LineRow &a, const LineRow &b) {
+    return a.orderkey < b.orderkey;
+  });
+  OrderBucket out;
+  for (std::size_t begin = 0, end = 0; begin < lines.size(); begin = end) {
+    OrderSummary summary;
+    summary.orderstatus = 'F';
+    for (end = begin; end < lines.size() && lines[end].orderkey == lines[begin].orderkey; ++end)
+      AddSupplier(summary, lines[end].suppkey, 1, lines[end].late ? 1 : 0);
+    int64_t suppkey = 0, count = 0;
+    if (!ComputeOrderContribution(summary, suppkey, count))
+      continue;
+    if (count != 0)
+      out.numwait.emplace_back(suppkey, count);
+    out.contributing.emplace_back(lines[begin].orderkey, std::move(summary));
+  }
+  return out;
+}
+
+using Fulfilled = std::vector<std::vector<int64_t>>; // per bucket, sorted
+
+Fulfilled ScanFulfilledOrders(core::AuxEngineServices &services, TpchQ21InitialScan &scan) {
+  auto rows = core::PartitionedBuild<core::BucketedRows<int64_t>>(
+      services, [] { return core::BucketedRows<int64_t>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanOrders(services, parts, [&](std::size_t p, const TpchQ21OrderInput &input) {
+          sink(p, core::SingleRowBatch<TpchQ21OrderInput>{input});
+        });
+      },
+      [](core::BucketedRows<int64_t> &partial, const TpchQ21OrderInput &input) {
+        if (input.orderstatus == 'F')
+          partial.Add(BucketOf(input.orderkey), input.orderkey);
+      },
+      [](core::BucketedRows<int64_t> &into, core::BucketedRows<int64_t> &&from) {
+        into.Absorb(std::move(from));
+      });
+  Fulfilled fulfilled(core::kRowBuckets);
+  core::ParallelEach(services, core::kRowBuckets, 1, [&](std::size_t b) {
+    auto &keys = fulfilled[b];
+    keys = rows.Take(b);
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  });
+  return fulfilled;
+}
+
+// The lineitems of fulfilled orders, dealt by order.
+core::BucketedRows<LineRow> ScanFulfilledLineitems(core::AuxEngineServices &services,
+                                                   TpchQ21InitialScan &scan,
+                                                   const Fulfilled &fulfilled) {
+  return core::PartitionedBuild<core::BucketedRows<LineRow>>(
+      services, [] { return core::BucketedRows<LineRow>{}; },
+      [&](std::size_t parts, auto &&sink) {
+        scan.ScanLineitems(services, parts, [&](std::size_t p, const TpchQ21LineitemInput &input) {
+          sink(p, core::SingleRowBatch<TpchQ21LineitemInput>{input});
+        });
+      },
+      [&](core::BucketedRows<LineRow> &partial, const TpchQ21LineitemInput &input) {
+        const std::size_t bucket = BucketOf(input.orderkey);
+        if (std::binary_search(fulfilled[bucket].begin(), fulfilled[bucket].end(), input.orderkey))
+          partial.Add(bucket, {input.orderkey, input.suppkey, input.receiptdate > input.commitdate});
+      },
+      [](core::BucketedRows<LineRow> &into, core::BucketedRows<LineRow> &&from) {
+        into.Absorb(std::move(from));
+      });
+}
+
+// Per-supplier numwait totals: the (suppkey, count) rows of all buckets summed
+// per supplier bucket.
+struct NumwaitRow {
+  int64_t suppkey;
+  int64_t count;
+};
+
+std::vector<std::vector<NumwaitRow>>
+TotalNumwait(const core::AuxEngineServices &services, const std::vector<OrderBucket> &buckets) {
+  // Counting scatter of each order bucket's rows by supplier bucket.
+  struct Scattered {
+    std::vector<NumwaitRow> rows;
+    std::vector<std::size_t> start;
+  };
+  std::vector<Scattered> scattered(buckets.size());
+  core::ParallelEach(services, buckets.size(), 1, [&](std::size_t b) {
+    auto &out = scattered[b];
+    const auto &rows = buckets[b].numwait;
+    out.start.assign(core::kRowBuckets + 1, 0);
+    for (const auto &row : rows)
+      ++out.start[BucketOf(row.first) + 1];
+    for (std::size_t g = 0; g < core::kRowBuckets; ++g)
+      out.start[g + 1] += out.start[g];
+    auto next = std::vector<std::size_t>(out.start.begin(), out.start.end() - 1);
+    out.rows.resize(rows.size());
+    for (const auto &row : rows)
+      out.rows[next[BucketOf(row.first)]++] = {row.first, row.second};
+  });
+  std::vector<std::vector<NumwaitRow>> totals(core::kRowBuckets);
+  core::ParallelEach(services, core::kRowBuckets, 1, [&](std::size_t g) {
+    core::FlatHashMap<int64_t> sums;
+    for (const auto &from : scattered)
+      for (std::size_t i = from.start[g]; i < from.start[g + 1]; ++i)
+        sums[from.rows[i].suppkey] += from.rows[i].count;
+    for (auto entry : sums)
+      totals[g].push_back({entry.first, entry.second});
+  });
+  return totals;
+}
+
+// The answer rows of every nation: its suppliers' numwait merged by name and
+// ordered (numwait DESC, name ASC).
+std::map<int32_t, std::shared_ptr<const TpchQ21NationRows>>
+NationRows(const core::AuxEngineServices &services, const TpchQ21State &state,
+           const std::vector<std::vector<NumwaitRow>> &numwait) {
+  using ByNation = std::map<int32_t, std::vector<TpchQ21ImageRow>>;
+  std::vector<ByNation> per_group(numwait.size());
+  core::ParallelEach(services, numwait.size(), 1, [&](std::size_t g) {
+    for (const auto &row : numwait[g]) {
+      if (row.count <= 0)
+        continue;
+      if (const auto *supplier = state.dir->Find(row.suppkey))
+        per_group[g][supplier->nationkey].push_back({supplier->name, row.count});
+    }
+  });
+  std::set<int32_t> nationkeys;
+  for (const auto &by_nation : per_group)
+    for (const auto &entry : by_nation)
+      nationkeys.insert(entry.first);
+  const std::vector<int32_t> keys(nationkeys.begin(), nationkeys.end());
+  std::vector<std::shared_ptr<TpchQ21NationRows>> rows(keys.size());
+  core::ParallelEach(services, keys.size(), 1, [&](std::size_t i) {
+    std::vector<TpchQ21ImageRow> all;
+    for (const auto &by_nation : per_group) {
+      const auto it = by_nation.find(keys[i]);
+      if (it != by_nation.end())
+        all.insert(all.end(), it->second.begin(), it->second.end());
+    }
+    std::stable_sort(all.begin(), all.end(), [](const TpchQ21ImageRow &a, const TpchQ21ImageRow &b) {
+      return *a.name < *b.name;
+    });
+    auto merged = std::make_shared<TpchQ21NationRows>();
+    for (const auto &row : all) {
+      if (!merged->rows.empty() && *merged->rows.back().name == *row.name)
+        merged->rows.back().numwait += row.numwait;
+      else
+        merged->rows.push_back(row);
+    }
+    std::sort(merged->rows.begin(), merged->rows.end(), ImageRowBefore);
+    rows[i] = std::move(merged);
+  });
+  std::map<int32_t, std::shared_ptr<const TpchQ21NationRows>> nations;
+  for (std::size_t i = 0; i < keys.size(); ++i)
+    nations[keys[i]] = std::move(rows[i]);
+  return nations;
 }
 
 } // namespace
@@ -1155,137 +1310,77 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q21 aux requires a typed initial scan source");
 
-  // Suppliers.
+  // Suppliers: the scan's pieces become the directory in one pass.
   using Suppliers = std::unordered_map<int64_t, TpchQ21Supplier>;
-  state.dir->base = std::make_shared<const Suppliers>(core::PartitionedBuild<Suppliers>(
-      services, [] { return Suppliers{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanSuppliers(services, parts,
-                                    [&](std::size_t p, const TpchQ21SupplierInput &input) {
-                                      sink(p, core::SingleRowBatch<TpchQ21SupplierInput>{input});
-                                    });
-      },
-      [](Suppliers &partial, const TpchQ21SupplierInput &input) {
-        partial[input.suppkey] = {std::make_shared<const std::string>(input.name),
-                                  input.nationkey};
-      },
-      [](Suppliers &into, Suppliers &&from) {
-        for (auto &[suppkey, supplier] : from)
-          into[suppkey] = std::move(supplier);
-      }));
+  using SupplierPieces = core::PartitionPieces<std::pair<int64_t, TpchQ21Supplier>>;
+  auto supplier_pieces = core::PartitionedBuild<SupplierPieces>(
+                             services, [] { return SupplierPieces{}; },
+                             [&](std::size_t parts, auto &&sink) {
+                               initial_scan->ScanSuppliers(
+                                   services, parts,
+                                   [&](std::size_t p, const TpchQ21SupplierInput &input) {
+                                     sink(p, core::SingleRowBatch<TpchQ21SupplierInput>{input});
+                                   });
+                             },
+                             [](SupplierPieces &partial, const TpchQ21SupplierInput &input) {
+                               partial.Add({input.suppkey,
+                                            {std::make_shared<const std::string>(input.name),
+                                             input.nationkey}});
+                             },
+                             [](SupplierPieces &into, SupplierPieces &&from) {
+                               into.Absorb(std::move(from));
+                             })
+                             .Take();
+  auto suppliers = std::make_shared<Suppliers>();
+  suppliers->reserve(core::PieceOffsets(supplier_pieces).back());
+  for (auto &piece : supplier_pieces)
+    for (auto &[suppkey, supplier] : piece)
+      (*suppliers)[suppkey] = std::move(supplier); // a later row of a key wins
+  state.dir->base = std::move(suppliers);
 
-  // Nations.
   initial_scan->ScanNationsSerial([&](const TpchQ21NationInput &input) {
     state.nation_index->nation_name_to_keys[input.name].push_back(
         input.nationkey);
   });
 
-  // Fulfilled orders, then their per-supplier lineitem counts; both in hash
-  // shards so partial states fold shard by shard in parallel.
-  const auto fulfilled = core::PartitionedBuild<OrderShards>(
-      services, [] { return OrderShards{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanOrders(services, parts,
-                                 [&](std::size_t p, const TpchQ21OrderInput &input) {
-                                   sink(p, core::SingleRowBatch<TpchQ21OrderInput>{input});
-                                 });
-      },
-      [](OrderShards &partial, const TpchQ21OrderInput &input) {
-        if (input.orderstatus == 'F')
-          partial.Fulfilled(input.orderkey);
-      },
-      [&](OrderShards &into, OrderShards &&from) { FoldShards(services, into, std::move(from)); });
-  auto summaries = core::PartitionedBuild<OrderShards>(
-      services, [] { return OrderShards{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanLineitems(services, parts,
-                                    [&](std::size_t p, const TpchQ21LineitemInput &input) {
-                                      sink(p, core::SingleRowBatch<TpchQ21LineitemInput>{input});
-                                    });
-      },
-      [&](OrderShards &partial, const TpchQ21LineitemInput &input) {
-        if (fulfilled.IsFulfilled(input.orderkey))
-          partial.Add(input);
-      },
-      [&](OrderShards &into, OrderShards &&from) { FoldShards(services, into, std::move(from)); });
-
-  // Contributions: count the contributing orders and their numwait, then copy
-  // exactly those into the final map, shard by shard. The copies are fresh,
-  // exactly-sized allocations: the build's per-order scratch (most of it for
-  // orders that do not contribute) frees without leaving the state scattered
-  // through half-used heap pages.
-  struct Contributions {
-    std::unordered_map<int64_t, int64_t> numwait;
-    std::size_t orders = 0;
-  };
-  Contributions totals;
-  core::ParallelReduce(
-      services, OrderShards::kShards, 1, totals,
-      [&](Contributions &acc, std::size_t first, std::size_t last) {
-        for (std::size_t s = first; s < last; ++s)
-          for (auto entry : summaries.shards[s]) {
-            int64_t suppkey = 0, count = 0;
-            if (!ComputeOrderContribution(entry.second, suppkey, count))
-              continue;
-            ++acc.orders;
-            if (count != 0)
-              acc.numwait[suppkey] += count;
-          }
-      },
-      [](Contributions &into, Contributions &&from) {
-        into.orders += from.orders;
-        for (const auto &[suppkey, nw] : from.numwait)
-          into.numwait[suppkey] += nw;
-      });
-  const auto &numwait = totals.numwait;
-  state.core = std::make_shared<TpchQ21Core>(
-      std::max(OrderShards::kBits,
-               core::ShardedCowHashMap<OrderSummary, 7>::ShardBitsFor(totals.orders)),
-      core::ShardedCowHashMap<int64_t, 7>::ShardBitsFor(numwait.size()));
-  core::ParallelSlices(services, OrderShards::kShards, 1,
-                       [&](std::size_t, std::size_t first, std::size_t last) {
-                         for (std::size_t s = first; s < last; ++s)
-                           for (auto [orderkey, order] : summaries.shards[s]) {
-                             int64_t suppkey = 0, count = 0;
-                             if (!ComputeOrderContribution(order, suppkey, count))
-                               continue;
-                             auto &kept = state.core->orders[orderkey];
-                             kept.orderstatus = order.orderstatus;
-                             kept.suppliers.assign(order.suppliers.begin(), order.suppliers.end());
-                           }
-                       });
-  for (const auto &[suppkey, nw] : numwait)
-    state.core->numwait[suppkey] = nw;
-
-  // Per-nation answer rows.
-  std::map<int32_t, std::map<std::string,
-                             std::pair<std::shared_ptr<const std::string>, int64_t>>>
-      per_nation;
-  for (const auto &[suppkey, nw] : numwait) {
-    if (nw <= 0)
-      continue;
-    const auto *supplier = state.dir->Find(suppkey);
-    if (!supplier)
-      continue;
-    auto &slot = per_nation[supplier->nationkey][*supplier->name];
-    if (!slot.first)
-      slot.first = supplier->name;
-    slot.second += nw;
-  }
-  std::vector<decltype(per_nation)::iterator> groups;
-  for (auto it = per_nation.begin(); it != per_nation.end(); ++it)
-    groups.push_back(it);
-  std::vector<std::shared_ptr<TpchQ21NationRows>> nation_rows(groups.size());
-  core::ParallelEach(services, groups.size(), 1, [&](std::size_t i) {
-    auto rows = std::make_shared<TpchQ21NationRows>();
-    rows->rows.reserve(groups[i]->second.size());
-    for (auto &name_entry : groups[i]->second)
-      rows->rows.push_back({name_entry.second.first, name_entry.second.second});
-    std::sort(rows->rows.begin(), rows->rows.end(), ImageRowBefore);
-    nation_rows[i] = std::move(rows);
+  // The contributing orders and the late lineitems of their suppliers, bucket by bucket.
+  const auto fulfilled = ScanFulfilledOrders(services, *initial_scan);
+  auto lines = ScanFulfilledLineitems(services, *initial_scan, fulfilled);
+  std::vector<OrderBucket> buckets(core::kRowBuckets);
+  core::ParallelEach(services, core::kRowBuckets, 1, [&](std::size_t b) {
+    buckets[b] = SummarizeBucket(lines.Take(b));
   });
-  for (std::size_t i = 0; i < groups.size(); ++i)
-    state.nations[groups[i]->first] = std::move(nation_rows[i]);
+
+  // Both maps keep ~48 entries per shard; the shards of an order or supplier
+  // bucket are written by one task.
+  std::size_t contributing = 0;
+  for (const auto &bucket : buckets)
+    contributing += bucket.contributing.size();
+  const auto numwait = TotalNumwait(services, buckets);
+  std::size_t suppliers_waiting = 0;
+  for (const auto &group : numwait)
+    suppliers_waiting += group.size();
+  const unsigned order_bits =
+      std::max(6u, core::ShardedCowHashMap<OrderSummary, 7>::ShardBitsFor(contributing));
+  const unsigned numwait_bits = core::ShardedCowHashMap<int64_t, 7>::ShardBitsFor(suppliers_waiting);
+  state.core = std::make_shared<TpchQ21Core>(order_bits, numwait_bits);
+  // Fresh, exactly-sized copies: the build's per-order scratch frees without
+  // leaving the state scattered through half-used heap pages.
+  ForEachShardGroup(services, order_bits, [&](std::size_t first, std::size_t last) {
+    for (std::size_t b = first; b < last; ++b)
+      for (auto &[orderkey, order] : buckets[b].contributing) {
+        auto &kept = state.core->orders[orderkey];
+        kept.orderstatus = order.orderstatus;
+        kept.suppliers.assign(order.suppliers.begin(), order.suppliers.end());
+      }
+  });
+  ForEachShardGroup(services, numwait_bits, [&](std::size_t first, std::size_t last) {
+    for (std::size_t g = first; g < last; ++g)
+      for (const auto &row : numwait[g])
+        state.core->numwait[row.suppkey] = row.count;
+  });
+
+  state.nations = NationRows(services, state, numwait);
   return state;
 }
 

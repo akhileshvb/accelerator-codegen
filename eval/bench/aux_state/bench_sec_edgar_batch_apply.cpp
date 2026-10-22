@@ -180,8 +180,8 @@ bool Same(duckdb::MaterializedQueryResult &a, duckdb::MaterializedQueryResult &b
           continue;
         try {
           const long double p = std::stold(x[i][c]), q = std::stold(y[i][c]);
-          const long double s = std::max<long double>({1.0L, std::fabsl(p), std::fabsl(q)});
-          if (std::fabsl(p - q) > s * 1e-6L)
+          const long double s = std::max<long double>({1.0L, std::fabs(p), std::fabs(q)});
+          if (std::fabs(p - q) > s * 1e-6L)
             return false;
         } catch (...) {
           return false;

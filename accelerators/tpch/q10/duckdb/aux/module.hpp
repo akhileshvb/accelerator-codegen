@@ -58,6 +58,8 @@ struct TpchQ10Order {
 struct TpchQ10CustomerRank {
   int64_t acctbal_raw = 0;
   int32_t nationkey = 0;
+  uint32_t index = 0;   // position in the customers segment (base ranks only)
+  uint16_t segment = 0; // customers segment (base ranks only)
   uint8_t present = 0;
 };
 
@@ -98,19 +100,40 @@ public:
   }
 };
 
-using TpchQ10CustomerMap = std::unordered_map<int64_t, TpchQ10Customer>;
-
 // Immutable (once published) customer side: dense rank array + result strings.
+// The strings live in segments (the build fills one per bucket, in parallel), so
+// memory follows the number of customers whatever their keys.
 struct TpchQ10SideBase {
   core::DenseIdArray<TpchQ10CustomerRank> ranks;
-  TpchQ10CustomerMap customers;
+  std::vector<std::vector<TpchQ10Customer>> segments;
 
-  void SetCustomerRank(int64_t custkey, int64_t acctbal_raw, int32_t nationkey) {
-    TpchQ10CustomerRank rank;
-    rank.acctbal_raw = acctbal_raw;
-    rank.nationkey = nationkey;
+  const TpchQ10Customer *CustomerOf(int64_t custkey) const {
+    const auto rank = ranks.Get(custkey);
+    return rank.present ? &segments[rank.segment][rank.index] : nullptr;
+  }
+
+  void SetCustomer(int64_t custkey, TpchQ10Customer customer) {
+    auto rank = ranks.Get(custkey);
+    if (!rank.present) {
+      if (segments.empty())
+        segments.resize(1);
+      rank.segment = 0;
+      rank.index = static_cast<uint32_t>(segments[0].size());
+      segments[0].emplace_back();
+    }
+    rank.acctbal_raw = customer.acctbal_raw;
+    rank.nationkey = customer.nationkey;
     rank.present = 1;
+    segments[rank.segment][rank.index] = std::move(customer);
     ranks.Set(custkey, rank);
+  }
+
+  void EraseCustomer(int64_t custkey) {
+    const auto rank = ranks.Get(custkey);
+    if (!rank.present)
+      return;
+    segments[rank.segment][rank.index] = TpchQ10Customer{};
+    ranks.Set(custkey, TpchQ10CustomerRank{});
   }
 };
 
@@ -316,8 +339,7 @@ struct TpchQ10State {
       if (it != customer_overlay->end())
         return it->second.present ? &it->second.customer : nullptr;
     }
-    const auto it = side_base->customers.find(custkey);
-    return it == side_base->customers.end() ? nullptr : &it->second;
+    return side_base->CustomerOf(custkey);
   }
 };
 

@@ -1,5 +1,6 @@
 #include "tpch/q2/duckdb/aux/module.hpp"
 #include "tpch/q2/calibration_writes.hpp"
+#include "prims/row_pieces.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
 #include "substrate/aux/core/parallel_sort.hpp"
@@ -202,37 +203,32 @@ void AddOfferRaw(TpchQ2State &st, int64_t partkey, int64_t suppkey,
       .push_back(static_cast<int32_t>(partkey));
 }
 
-// Partsupp rows of one scan partition, by part and by supplier.
-struct OffersPartial {
-  TpchQ2Paged<std::vector<TpchQ2Offer>, 9> offers;
-  TpchQ2Paged<std::vector<int32_t>, 6> supp_parts;
+// One partsupp row as scanned.
+struct PartsuppRow {
+  int64_t partkey = 0;
+  int64_t suppkey = 0;
+  int64_t cost_raw = 0;
 };
 
-// Appends every list of `from` to the list of the same key in `into`.
-template <class Paged> void AppendLists(Paged &into, const Paged &from) {
-  for (std::size_t ci = 0; ci < from.NumChunks(); ++ci) {
-    const auto *chunk = from.ChunkAt(ci);
-    if (!chunk)
-      continue;
-    const int64_t base = Paged::ChunkBase(ci);
-    for (std::size_t i = 0; i < chunk->size(); ++i) {
-      const auto &list = (*chunk)[i];
-      if (list.empty())
-        continue;
-      auto &target = into.Mutable(base + static_cast<int64_t>(i));
-      target.insert(target.end(), list.begin(), list.end());
-    }
-  }
-}
+// Scanned rows of the part and supplier tables; `type` / `index` of a part is the
+// piece's own p_type numbering until the pieces are unified.
+struct PartRow {
+  int64_t key = 0;
+  std::string mfgr;
+  int32_t type = 0;
+  int32_t size = 0;
+};
 
 using GroupAcc = std::unordered_map<int64_t, std::vector<TpchQ2Entry>>;
 
-// Builds the sorted candidate lists from scratch (Build / Decode).
-void BuildGroups(core::AuxEngineServices &services, TpchQ2State &st) {
-  GroupAcc acc;
-  core::ParallelReduce(
-      services, TpchQ2Capacity(*st.parts), kPartGrain, acc,
-      [&](GroupAcc &into, std::size_t begin, std::size_t end) {
+// The candidate entries of every group, one map per slice of part slots.
+std::vector<GroupAcc> ComputeGroupEntries(core::AuxEngineServices &services,
+                                          const TpchQ2State &st) {
+  const std::size_t capacity = TpchQ2Capacity(*st.parts);
+  std::vector<GroupAcc> slices(core::SliceCount(services, capacity, kPartGrain));
+  core::ParallelSlices(
+      services, capacity, kPartGrain,
+      [&](std::size_t slice, std::size_t begin, std::size_t end) {
         std::vector<GroupEntry> tmp;
         for (std::size_t k = begin; k < end; ++k) {
           const auto *p = st.parts->Find(static_cast<int64_t>(k));
@@ -241,23 +237,33 @@ void BuildGroups(core::AuxEngineServices &services, TpchQ2State &st) {
           tmp.clear();
           ComputeEntries(st, static_cast<int64_t>(k), tmp);
           for (const auto &ge : tmp)
-            into[ge.group].push_back(ge.e);
-        }
-      },
-      [](GroupAcc &into, GroupAcc &&from) {
-        for (auto &kv : from) {
-          auto &v = into[kv.first];
-          v.insert(v.end(), kv.second.begin(), kv.second.end());
+            slices[slice][ge.group].push_back(ge.e);
         }
       });
-  std::vector<GroupAcc::value_type *> items;
-  items.reserve(acc.size());
-  for (auto &kv : acc)
-    items.push_back(&kv);
-  std::vector<std::shared_ptr<TpchQ2GroupList>> lists(items.size());
+  return slices;
+}
+
+// Builds the sorted candidate lists from scratch (Build / Decode): the slices'
+// entries of each group are joined in slice order and sorted, groups in parallel.
+void BuildGroups(core::AuxEngineServices &services, TpchQ2State &st) {
+  auto slices = ComputeGroupEntries(services, st);
+  std::vector<int64_t> keys;
+  for (const auto &slice : slices)
+    for (const auto &kv : slice)
+      keys.push_back(kv.first);
+  std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  std::vector<std::shared_ptr<TpchQ2GroupList>> lists(keys.size());
   const EntryLess less{&st};
-  core::ParallelEach(services, items.size(), kListGrain, [&](std::size_t i) {
-    auto &v = items[i]->second;
+  core::ParallelEach(services, keys.size(), kListGrain, [&](std::size_t i) {
+    std::vector<TpchQ2Entry> v;
+    for (auto &slice : slices) {
+      const auto it = slice.find(keys[i]);
+      if (it == slice.end())
+        continue;
+      v.insert(v.end(), it->second.begin(), it->second.end());
+      std::vector<TpchQ2Entry>().swap(it->second);
+    }
     std::sort(v.begin(), v.end(), less);
     auto list = std::make_shared<TpchQ2GroupList>();
     list->chunks.reserve(v.size() / kChunkTarget + 1);
@@ -269,12 +275,11 @@ void BuildGroups(core::AuxEngineServices &services, TpchQ2State &st) {
       list->chunks.push_back(std::move(chunk));
     }
     lists[i] = std::move(list);
-    std::vector<TpchQ2Entry>().swap(v);
   });
   auto groups = std::make_shared<TpchQ2GroupMap>();
-  groups->reserve(acc.size());
-  for (std::size_t i = 0; i < items.size(); ++i)
-    (*groups)[items[i]->first] = std::move(lists[i]);
+  groups->reserve(keys.size());
+  for (std::size_t i = 0; i < keys.size(); ++i)
+    (*groups)[keys[i]] = std::move(lists[i]);
   st.groups = std::move(groups);
 }
 
@@ -1179,80 +1184,106 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   state.nation_region = std::move(nation_regions);
   BuildNationRank(state);
 
+  const auto parallelism = core::Parallelism::OnPool(services);
   {
-    auto &paged = TpchQ2MutOf(state.parts);
-    for (const auto &input : CollectTable<TpchQ2PartInput>(
-             services, *initial_scan, "part",
-             {scan::IntColumn("p_partkey"), scan::TextColumn("p_mfgr"),
-              scan::TextColumn("p_type"), scan::IntColumn("p_size")},
-             [](const auto &row) {
-               return TpchQ2PartInput{row.Int(0), row.Text(1), row.Text(2),
-                                      static_cast<int32_t>(row.Int(3))};
-             })) {
-      if (!AcceptDenseKey(input.key))
-        continue;
-      auto &slot = paged.Mutable(input.key);
-      slot.mfgr = input.mfgr;
-      slot.type_id = static_cast<int32_t>(types.Intern(input.type));
-      slot.size = input.size;
-      slot.valid = true;
-    }
+    using Rows = core::InternedPieces<PartRow>;
+    auto scanned = core::PartitionedBuild<Rows>(
+        services, [] { return Rows{}; },
+        [&](std::size_t parts, auto &&sink) {
+          initial_scan->ScanTable(services, "part",
+                                  {scan::IntColumn("p_partkey"), scan::TextColumn("p_mfgr"),
+                                   scan::TextColumn("p_type"), scan::IntColumn("p_size")},
+                                  parts, sink);
+        },
+        [](Rows &into, const auto &row) {
+          AcceptDenseKey(row.Int(0));
+          into.Add({row.Int(0), row.Text(1), into.Intern(row.Text(2)),
+                    static_cast<int32_t>(row.Int(3))});
+        },
+        Rows::Merge);
+    scanned.Unify(
+        parallelism, [&](const std::string &type) { return static_cast<int32_t>(types.Intern(type)); },
+        [](PartRow &row, const std::vector<int32_t> &table) { row.type = table[row.type]; });
+    core::FillChunks(
+        parallelism, TpchQ2MutOf(state.parts), scanned.pieces,
+        [](const PartRow &row) { return row.key; },
+        [](TpchQ2PartInfo &slot, PartRow &row) {
+          slot.mfgr = std::move(row.mfgr);
+          slot.type_id = row.type;
+          slot.size = row.size;
+          slot.valid = true;
+        });
   }
   state.types = std::make_shared<const TpchQ2TypeDict>(std::move(types));
   {
-    auto &paged = TpchQ2MutOf(state.suppliers);
-    for (const auto &input : CollectTable<TpchQ2SupplierInput>(
-             services, *initial_scan, "supplier",
-             {scan::IntColumn("s_suppkey"), scan::TextColumn("s_name"),
-              scan::TextColumn("s_address"), scan::IntColumn("s_nationkey"),
-              scan::TextColumn("s_phone"), scan::DecimalColumn("s_acctbal", 2),
-              scan::TextColumn("s_comment")},
-             [](const auto &row) {
-               return TpchQ2SupplierInput{row.Int(0),  row.Text(1),
-                                          row.Text(2), static_cast<int32_t>(row.Int(3)),
-                                          row.Text(4), row.Decimal(5),
-                                          row.Text(6)};
-             })) {
-      if (!AcceptDenseKey(input.key))
-        continue;
-      auto &slot = paged.Mutable(input.key);
-      slot.name = input.name;
-      slot.address = input.address;
-      slot.nationkey = input.nationkey;
-      slot.phone = input.phone;
-      slot.acctbal_raw = input.acctbal_raw;
-      slot.comment = input.comment;
-      slot.valid = true;
-    }
+    using Rows = core::RowPieces<TpchQ2SupplierInput>;
+    auto scanned = core::PartitionedBuild<Rows>(
+        services, [] { return Rows{}; },
+        [&](std::size_t parts, auto &&sink) {
+          initial_scan->ScanTable(
+              services, "supplier",
+              {scan::IntColumn("s_suppkey"), scan::TextColumn("s_name"),
+               scan::TextColumn("s_address"), scan::IntColumn("s_nationkey"),
+               scan::TextColumn("s_phone"), scan::DecimalColumn("s_acctbal", 2),
+               scan::TextColumn("s_comment")},
+              parts, sink);
+        },
+        [](Rows &into, const auto &row) {
+          AcceptDenseKey(row.Int(0));
+          into.Add({row.Int(0), row.Text(1), row.Text(2), static_cast<int32_t>(row.Int(3)),
+                    row.Text(4), row.Decimal(5), row.Text(6)});
+        },
+        Rows::Merge);
+    core::FillChunks(
+        parallelism, TpchQ2MutOf(state.suppliers), scanned.pieces,
+        [](const TpchQ2SupplierInput &input) { return input.key; },
+        [](TpchQ2SupplierInfo &slot, TpchQ2SupplierInput &input) {
+          slot.name = std::move(input.name);
+          slot.address = std::move(input.address);
+          slot.nationkey = input.nationkey;
+          slot.phone = std::move(input.phone);
+          slot.acctbal_raw = input.acctbal_raw;
+          slot.comment = std::move(input.comment);
+          slot.valid = true;
+        });
   }
 
-  // Partsupp rows go into per-partition offer lists, appended in partition
-  // order (the order of the serial scan).
+  // Partsupp rows are kept as pieces in scan order and appended to the per-part
+  // offer lists and per-supplier part lists chunk by chunk, in parallel.
   using scan::DecimalColumn;
   using scan::IntColumn;
-  auto offers = core::PartitionedBuild<OffersPartial>(
-      services, [] { return OffersPartial{}; },
+  using Rows = core::RowPieces<PartsuppRow>;
+  auto partsupps = core::PartitionedBuild<Rows>(
+      services, [] { return Rows{}; },
       [&](std::size_t parts, auto &&sink) {
         initial_scan->ScanTable(services, "partsupp",
                                 {IntColumn("ps_partkey"), IntColumn("ps_suppkey"),
                                  DecimalColumn("ps_supplycost", 2)},
                                 parts, sink);
       },
-      [](OffersPartial &p, const auto &row) {
-        const int64_t partkey = row.Int(0), suppkey = row.Int(1);
-        AcceptDenseKey(suppkey);
-        AcceptDenseKey(partkey);
-        p.offers.Mutable(partkey).push_back({row.Decimal(2), static_cast<int32_t>(suppkey)});
-        p.supp_parts.Mutable(suppkey).push_back(static_cast<int32_t>(partkey));
+      [](Rows &into, const auto &row) {
+        AcceptDenseKey(row.Int(1));
+        AcceptDenseKey(row.Int(0));
+        into.Add({row.Int(0), row.Int(1), row.Decimal(2)});
       },
-      [](OffersPartial &into, OffersPartial &&from) {
-        AppendLists(into.offers, from.offers);
-        AppendLists(into.supp_parts, from.supp_parts);
+      Rows::Merge);
+  decltype(partsupps.pieces) by_supplier(partsupps.pieces.size());
+  parallelism.For(by_supplier.size(), [&](std::size_t p) { by_supplier[p] = partsupps.pieces[p]; });
+  TpchQ2Paged<std::vector<TpchQ2Offer>, 9> offers;
+  core::FillChunks(
+      parallelism, offers, partsupps.pieces, [](const PartsuppRow &row) { return row.partkey; },
+      [](std::vector<TpchQ2Offer> &list, const PartsuppRow &row) {
+        list.push_back({row.cost_raw, static_cast<int32_t>(row.suppkey)});
       });
-  state.offers = std::make_shared<const TpchQ2Paged<std::vector<TpchQ2Offer>, 9>>(
-      std::move(offers.offers));
-  state.supp_parts = std::make_shared<const TpchQ2Paged<std::vector<int32_t>, 6>>(
-      std::move(offers.supp_parts));
+  TpchQ2Paged<std::vector<int32_t>, 6> supp_parts;
+  core::FillChunks(
+      parallelism, supp_parts, by_supplier, [](const PartsuppRow &row) { return row.suppkey; },
+      [](std::vector<int32_t> &list, const PartsuppRow &row) {
+        list.push_back(static_cast<int32_t>(row.partkey));
+      });
+  state.offers = std::make_shared<const TpchQ2Paged<std::vector<TpchQ2Offer>, 9>>(std::move(offers));
+  state.supp_parts =
+      std::make_shared<const TpchQ2Paged<std::vector<int32_t>, 6>>(std::move(supp_parts));
   BuildGroups(services, state);
   return state;
 }

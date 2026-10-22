@@ -3,7 +3,9 @@
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/dealt_rows.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -24,9 +26,13 @@ constexpr std::size_t kSlotGrain = 16;
 // Profit slots per slice when copying them or folding them into the cube (~80 us).
 constexpr std::size_t kSlotFoldGrain = 8;
 // Profit slots per slice when applying buffered pair aggregates at build (untimed).
-constexpr std::size_t kPairSlotGrain = 4;
+constexpr std::size_t kPairSlotGrain = 1;
 // Candidate parts per read slice (~800 us): a hash lookup, substring test and cells.
 constexpr std::size_t kCandidateGrain = 8192;
+// Affected pairs per slice of the parallel sort (~1000 us).
+constexpr std::size_t kAffectedSortGrain = 32768;
+// Lineitem deltas per slice when resolving their order years (~500 us).
+constexpr std::size_t kYearGrain = 16384;
 // Affected pairs per snapshot chunk.
 constexpr std::size_t kPairChunk = 4096;
 // Pair chunks per slice (untimed).
@@ -41,10 +47,16 @@ constexpr int32_t kDenseYearBase = Q9TokenCube::kYearBase;
 // One (part, supplier, order year) lineitem aggregate: rev = SUM(extendedprice_raw
 // * (100 - discount_raw)), qty = SUM(quantity_raw).
 struct PairAgg {
-  int64_t partkey, suppkey;
+  int64_t partkey, rev, qty;
+  int32_t suppkey; // fits (PairKeyFits)
   int32_t year;
-  int64_t rev, qty;
 };
+
+// Chunks of a ChunkedCowArray dealt round-robin to `buckets`: a bucket owns whole chunks,
+// so threads that each take a bucket write disjoint chunks of one array.
+template <class Array> std::size_t ChunkBucket(int64_t key, std::size_t buckets) {
+  return key >= 0 ? static_cast<std::size_t>(key) / Array::kChunkSize % buckets : 0;
+}
 
 // Keys that do not fit the int32 pair index are not supported incrementally.
 bool PairKeyFits(int64_t suppkey) {
@@ -119,7 +131,7 @@ bool PostingContains(const std::vector<int32_t> &posting, int64_t partkey) {
                             static_cast<int32_t>(partkey));
 }
 
-// Sorted insert (postings stay sorted outside bulk-build mode).
+// Sorted insert (postings stay sorted).
 void PostingInsertSorted(std::vector<int32_t> &posting, int64_t partkey) {
   if (partkey < std::numeric_limits<int32_t>::min() ||
       partkey > std::numeric_limits<int32_t>::max())
@@ -317,45 +329,6 @@ void ApplySlotDeltas(TpchQ9State &state, std::vector<TpchQ9State::CellDelta> &de
       }
     }
   }
-}
-
-// Lineitems become per-(part, supplier, order year) aggregates, bucketed by
-// profit slot: partitions fill their own buckets, then every slot (which owns
-// disjoint part records) is applied by one worker.
-void BuildPairAggregates(const core::AuxEngineServices &services,
-                         TpchQ9InitialScan &initial_scan, TpchQ9State &state) {
-  using SlotPairs = std::vector<std::vector<PairAgg>>;
-  const auto slots = state.profit_slot_count;
-  SlotPairs pairs = core::PartitionedBuild<SlotPairs>(
-      services, [slots] { return SlotPairs(slots); },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan.ScanLineitems(services, parts,
-                                   [&](std::size_t p, const TpchQ9LineitemInput &input) {
-                                     sink(p, core::SingleRowBatch<TpchQ9LineitemInput>{input});
-                                   });
-      },
-      [&](SlotPairs &partial, const TpchQ9LineitemInput &input) {
-        int32_t year = 0;
-        if (!PairKeyFits(input.suppkey) ||
-            !state.LookupOrderYear(input.orderkey, year))
-          return;
-        partial[TpchQ9State::HashPartition(input.partkey, slots)].push_back(
-            {input.partkey, input.suppkey, year,
-             input.extendedprice_raw * (static_cast<int64_t>(100) - input.discount_raw),
-             input.quantity_raw});
-      },
-      [](SlotPairs &into, SlotPairs &&from) {
-        for (std::size_t slot = 0; slot < into.size(); ++slot) {
-          into[slot].insert(into[slot].end(), from[slot].begin(), from[slot].end());
-          std::vector<PairAgg>().swap(from[slot]);
-        }
-      });
-  core::ParallelEach(services, pairs.size(), kPairSlotGrain, [&](std::size_t slot) {
-    for (const auto &agg : pairs[slot])
-      TpchQ9State::AddPairAgg(state.PartRecord(agg.partkey), static_cast<int32_t>(agg.suppkey),
-                              agg.year, agg.rev, agg.qty);
-    std::vector<PairAgg>().swap(pairs[slot]);
-  });
 }
 
 // Part mutations: name changes affect the postings; a key change is a delete
@@ -732,7 +705,7 @@ private:
         for (const auto &pair : rec->pairs)
           affected.emplace_back(partkey, pair.suppkey);
     }
-    std::sort(affected.begin(), affected.end());
+    core::ParallelStableSort(services, affected, std::less<>(), kAffectedSortGrain);
     affected.erase(std::unique(affected.begin(), affected.end()), affected.end());
     chunk_count = (affected.size() + kPairChunk - 1) / kPairChunk;
     net_chunks.resize(chunk_count);
@@ -788,11 +761,33 @@ private:
     }
 
     const auto &deltas = buffer.Deltas();
+    // Slices resolve what the overlay and the side image hold; the engine fallback
+    // (not thread-safe) serves the few years they miss.
     std::vector<int32_t> years(deltas.size());
+    std::vector<uint8_t> missed(deltas.size(), 0);
+    core::ParallelSlices(services, deltas.size(), kYearGrain,
+                         [&](std::size_t, std::size_t begin, std::size_t end) {
+                           for (std::size_t k = begin; k < end; ++k)
+                             missed[k] = !ResolveOrderYear(*join_side, nullptr, deltas[k].orderkey,
+                                                           years[k], year_overlay);
+                         });
+    std::vector<int64_t> missing;
     for (std::size_t k = 0; k < deltas.size(); ++k)
-      if (!ResolveOrderYear(*join_side, initial_scan, deltas[k].orderkey, years[k],
-                            year_overlay))
+      if (missed[k])
+        missing.push_back(deltas[k].orderkey);
+    std::sort(missing.begin(), missing.end());
+    missing.erase(std::unique(missing.begin(), missing.end()), missing.end());
+    std::unordered_map<int64_t, int32_t> fetched;
+    if (!missing.empty() && initial_scan)
+      initial_scan->LookupOrderYears(missing, fetched);
+    for (std::size_t k = 0; k < deltas.size(); ++k) {
+      if (!missed[k])
+        continue;
+      const auto it = fetched.find(deltas[k].orderkey);
+      if (it == fetched.end())
         return false;
+      years[k] = it->second;
+    }
     std::vector<std::vector<uint32_t>> by_slot(slot_count);
     for (uint32_t k = 0; k < deltas.size(); ++k)
       by_slot[TpchQ9State::HashPartition(deltas[k].partkey, slot_count)].push_back(k);
@@ -1282,79 +1277,90 @@ core::PartitionId TpchQ9State::ChooseProfitSlots(std::size_t part_count) {
   return slots;
 }
 
+void Q9TokenCube::Add(int32_t nation, int32_t year, int64_t delta) {
+  const int32_t yi = year - kYearBase;
+  if (nation >= 0 && nation < kNations && yi >= 0 && yi < kYears) {
+    dense[nation][yi] += delta;
+    return;
+  }
+  for (auto it = sparse.begin(); it != sparse.end(); ++it) {
+    if (it->Nation() != nation || it->Year() != year)
+      continue;
+    it->profit += delta;
+    if (it->profit == 0)
+      sparse.erase(it);
+    return;
+  }
+  sparse.push_back(Q9ProfitCell::Make(nation, year, delta));
+}
+
+Q9TokenCube &TpchQ9State::CubeOf(const std::string &token) {
+  auto &slot = cube[token];
+  if (!slot)
+    slot = std::make_shared<Q9TokenCube>();
+  else if (slot.use_count() > 1)
+    slot = std::make_shared<Q9TokenCube>(*slot);
+  return *slot;
+}
+
 void TpchQ9State::CubeAdd(const std::vector<std::string> &tokens,
                           int32_t nation, int32_t year, int64_t delta) {
   if (delta == 0)
     return;
-  for (const auto &token : tokens) {
-    auto &slot = cube[token];
-    if (!slot)
-      slot = std::make_shared<Q9TokenCube>();
-    else if (slot.use_count() > 1)
-      slot = std::make_shared<Q9TokenCube>(*slot);
-    const int32_t yi = year - Q9TokenCube::kYearBase;
-    if (nation >= 0 && nation < Q9TokenCube::kNations && yi >= 0 &&
-        yi < Q9TokenCube::kYears) {
-      slot->dense[nation][yi] += delta;
-      continue;
-    }
-    auto &sp = slot->sparse;
-    bool found = false;
-    for (auto it = sp.begin(); it != sp.end(); ++it) {
-      if (it->Nation() != nation || it->Year() != year)
-        continue;
-      it->profit += delta;
-      if (it->profit == 0)
-        sp.erase(it);
-      found = true;
-      break;
-    }
-    if (!found)
-      sp.push_back(Q9ProfitCell::Make(nation, year, delta));
-  }
+  for (const auto &token : tokens)
+    CubeOf(token).Add(nation, year, delta);
 }
 
 void TpchQ9State::CubeApplyRecord(const Q9PartRecord &record, int sign) {
   if (record.cells.empty())
     return;
   const auto tokens = NameTokens(record.normalized_name);
-  if (tokens.empty())
-    return;
+  std::vector<Q9TokenCube *> cubes; // one lookup per token, not per cell
+  cubes.reserve(tokens.size());
+  for (const auto &token : tokens)
+    cubes.push_back(&CubeOf(token));
   for (const auto &cell : record.cells)
-    CubeAdd(tokens, cell.Nation(), cell.Year(), sign * cell.profit);
+    for (auto *token_cube : cubes)
+      token_cube->Add(cell.Nation(), cell.Year(), sign * cell.profit);
 }
 
 void TpchQ9State::BuildCube(const core::AuxEngineServices &services) {
   cube.clear();
   cube_active = true;
-  // Slices fill their own cube (states used as cube holders); the cubes are
-  // added into this one in slice order.
-  core::ParallelReduce(
-      services, profit_partitions.size(), kSlotFoldGrain, *this,
-      [&](TpchQ9State &into, std::size_t begin, std::size_t end) {
-        for (std::size_t p = begin; p < end; ++p)
-          for (const auto &entry : profit_partitions[p].parts)
-            into.CubeApplyRecord(*entry.second, +1);
-      },
-      [](TpchQ9State &into, TpchQ9State &&from) {
-        for (const auto &[token, part] : from.cube) {
-          const std::vector<std::string> one{token};
-          for (int32_t n = 0; n < Q9TokenCube::kNations; ++n)
-            for (int32_t y = 0; y < Q9TokenCube::kYears; ++y)
-              into.CubeAdd(one, n, Q9TokenCube::kYearBase + y, part->dense[n][y]);
-          for (const auto &cell : part->sparse)
-            into.CubeAdd(one, cell.Nation(), cell.Year(), cell.profit);
-        }
-      });
-}
-
-void TpchQ9State::FinalizePostings() {
-  for (auto &entry : name_postings) {
-    auto &posting = *entry.second;
-    std::sort(posting.begin(), posting.end());
-    posting.erase(std::unique(posting.begin(), posting.end()), posting.end());
-  }
-  postings_bulk = false;
+  // Slices fill their own cube (states used as cube holders); the cubes are then
+  // added up token by token, in slice order.
+  const std::size_t slices = core::SliceCount(services, profit_partitions.size(), kSlotFoldGrain);
+  std::vector<TpchQ9State> holders(slices);
+  core::RunSlices(services, slices, profit_partitions.size(),
+                  [&](std::size_t slice, std::size_t begin, std::size_t end) {
+                    for (std::size_t p = begin; p < end; ++p)
+                      for (const auto &entry : profit_partitions[p].parts)
+                        holders[slice].CubeApplyRecord(*entry.second, +1);
+                  });
+  std::vector<std::pair<std::string, std::shared_ptr<Q9TokenCube>>> totals;
+  std::unordered_map<std::string, std::size_t> position;
+  for (const auto &holder : holders)
+    for (const auto &entry : holder.cube)
+      if (position.emplace(entry.first, totals.size()).second)
+        totals.emplace_back(entry.first, nullptr);
+  core::ParallelEach(services, totals.size(), 1, [&](std::size_t t) {
+    auto total = std::make_shared<Q9TokenCube>();
+    for (const auto &holder : holders) {
+      const auto it = holder.cube.find(totals[t].first);
+      if (it == holder.cube.end())
+        continue;
+      const Q9TokenCube &part = *it->second;
+      for (int32_t n = 0; n < Q9TokenCube::kNations; ++n)
+        for (int32_t y = 0; y < Q9TokenCube::kYears; ++y)
+          if (part.dense[n][y] != 0)
+            total->Add(n, Q9TokenCube::kYearBase + y, part.dense[n][y]);
+      for (const auto &cell : part.sparse)
+        total->Add(cell.Nation(), cell.Year(), cell.profit);
+    }
+    totals[t].second = std::move(total);
+  });
+  for (auto &entry : totals)
+    cube.emplace(std::move(entry.first), std::move(entry.second));
 }
 
 void TpchQ9State::RebuildNationEmitOrder() {
@@ -1377,13 +1383,7 @@ void TpchQ9State::AddNamePostings(int64_t partkey,
       slot = std::make_shared<Posting>();
     else if (slot.use_count() > 1)
       slot = std::make_shared<Posting>(*slot); // COW: shared with an image
-    if (postings_bulk) {
-      if (partkey >= std::numeric_limits<int32_t>::min() &&
-          partkey <= std::numeric_limits<int32_t>::max())
-        slot->push_back(static_cast<int32_t>(partkey));
-    } else {
-      PostingInsertSorted(*slot, partkey);
-    }
+    PostingInsertSorted(*slot, partkey);
   }
 }
 
@@ -1538,21 +1538,38 @@ void TpchQ9State::BuildCellsFromPairs(const core::AuxEngineServices &services) {
       });
 }
 
-void TpchQ9State::BuildSuppPairsIndex() {
-  std::unordered_map<int32_t, std::vector<int64_t>> by_supp;
-  for (const auto &partition : profit_partitions) {
-    for (const auto &entry : partition.parts) {
+void TpchQ9State::BuildSuppPairsIndex(const core::AuxEngineServices &services) {
+  using SuppPart = std::pair<int32_t, int64_t>; // suppkey, partkey
+  using SuppChunks = decltype(supp_pairs);
+  // Every slot deals its pairs to buckets of whole supp_pairs chunks; a bucket then
+  // sorts its pairs and publishes the supplier lists of its chunks.
+  std::vector<DealtRows<SuppPart>> dealt_by_slot(profit_partitions.size(), DealtRows<SuppPart>(kDealBuckets));
+  core::ParallelEach(services, profit_partitions.size(), kSlotGrain, [&](std::size_t slot) {
+    auto &dealt = dealt_by_slot[slot];
+    for (const auto &entry : profit_partitions[slot].parts)
       for (const auto &pair : entry.second->pairs)
-        by_supp[pair.suppkey].push_back(entry.first);
-    }
-  }
+        if (Q9InRange(pair.suppkey))
+          dealt.Add(ChunkBucket<SuppChunks>(pair.suppkey, kDealBuckets), pair.suppkey,
+                    {pair.suppkey, entry.first});
+  });
+  DealtRows<SuppPart> dealt(kDealBuckets);
+  for (auto &part : dealt_by_slot)
+    dealt.Merge(std::move(part));
+
   supp_pairs.Clear();
-  for (auto &[suppkey, parts] : by_supp) {
-    std::sort(parts.begin(), parts.end());
-    Q9BoundedSet(supp_pairs, suppkey,
-                 std::shared_ptr<const std::vector<int64_t>>(
-                     std::make_shared<std::vector<int64_t>>(std::move(parts))));
-  }
+  if (dealt.MaxKey() >= 0)
+    supp_pairs.Reserve(dealt.MaxKey());
+  core::ParallelEach(services, kDealBuckets, 1, [&](std::size_t bucket) {
+    auto pairs = dealt.TakeBucket(bucket);
+    std::sort(pairs.begin(), pairs.end());
+    for (std::size_t begin = 0, end = 0; begin < pairs.size(); begin = end) {
+      auto parts = std::make_shared<std::vector<int64_t>>();
+      for (end = begin; end < pairs.size() && pairs[end].first == pairs[begin].first; ++end)
+        parts->push_back(pairs[end].second);
+      Q9BoundedSet(supp_pairs, pairs[begin].first,
+                   std::shared_ptr<const std::vector<int64_t>>(std::move(parts)));
+    }
+  });
 }
 
 void TpchQ9State::ApplyNetCellDeltas(
@@ -1658,6 +1675,183 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ9Module::CreateTxnBuffer() const {
 }
 
 
+namespace {
+
+// Writes the rows of every bucket on its own thread, keeping the overflow entries the
+// writes produce apart; they are returned in bucket order.
+template <class Overflow, class Rows, class Write>
+std::vector<Overflow> WriteBuckets(const core::AuxEngineServices &services, Rows &rows,
+                                   Write &&write) {
+  std::vector<Overflow> overflows(rows.BucketCount());
+  core::ParallelEach(services, rows.BucketCount(), 1, [&](std::size_t bucket) {
+    rows.ForEach(bucket, [&](const auto &row) { write(overflows[bucket], row); });
+  });
+  return overflows;
+}
+
+void FillOrderYears(const core::AuxEngineServices &services, TpchQ9InitialScan &source,
+                    TpchQ9State &state) {
+  using Years = decltype(state.order_years);
+  auto rows = DealScan<TpchQ9OrdersInput, TpchQ9OrdersInput>(
+      services, kDealBuckets,
+      [&](std::size_t partitions, const auto &sink) {
+        source.ScanOrders(services, partitions, sink);
+      },
+      [](auto &dealt, const TpchQ9OrdersInput &input) {
+        dealt.Add(Q9InRange(input.orderkey, kQ9MaxOrderKey)
+                      ? ChunkBucket<Years>(input.orderkey, kDealBuckets)
+                      : 0,
+                  input.orderkey, input);
+      });
+  if (rows.MaxKey() >= 0)
+    state.order_years.Reserve(std::min(rows.MaxKey(), kQ9MaxOrderKey - 1));
+  auto overflows = WriteBuckets<TpchQ9State::OrderYearOverflow>(
+      services, rows, [&](auto &overflow, const TpchQ9OrdersInput &input) {
+        state.SetOrderYear(overflow, input.orderkey, TpchQ9ExtractYear(input.orderdate_days));
+      });
+  for (auto &overflow : overflows)
+    state.order_year_overflow.merge(overflow);
+}
+
+void FillPartsuppCosts(const core::AuxEngineServices &services, TpchQ9InitialScan &source,
+                       TpchQ9State &state) {
+  using Costs = decltype(state.partsupp_rows);
+  auto rows = DealScan<TpchQ9PartsuppInput, TpchQ9PartsuppInput>(
+      services, kDealBuckets,
+      [&](std::size_t partitions, const auto &sink) {
+        source.ScanPartsupps(services, partitions, sink);
+      },
+      [](auto &dealt, const TpchQ9PartsuppInput &input) {
+        dealt.Add(Q9InRange(input.partkey) ? ChunkBucket<Costs>(input.partkey, kDealBuckets) : 0,
+                  input.partkey, input);
+      });
+  if (rows.MaxKey() >= 0)
+    state.partsupp_rows.Reserve(std::min(rows.MaxKey(), kQ9MaxId - 1));
+  auto overflows = WriteBuckets<TpchQ9State::PartsuppOverflow>(
+      services, rows, [&](auto &overflow, const TpchQ9PartsuppInput &input) {
+        state.SetPartsuppCost(overflow, input.partkey, input.suppkey, input.supplycost_raw);
+      });
+  for (auto &overflow : overflows)
+    state.partsupp_overflow.merge(overflow);
+}
+
+// Lineitems become per-(part, supplier, order year) aggregates, dealt by profit slot.
+DealtRows<PairAgg> ScanPairAggregates(const core::AuxEngineServices &services,
+                                      TpchQ9InitialScan &source, const TpchQ9State &state) {
+  const auto slots = state.profit_slot_count;
+  return DealScan<PairAgg, TpchQ9LineitemInput>(
+      services, slots,
+      [&](std::size_t partitions, const auto &sink) {
+        source.ScanLineitems(services, partitions, sink);
+      },
+      [&](auto &dealt, const TpchQ9LineitemInput &input) {
+        int32_t year = 0;
+        if (!PairKeyFits(input.suppkey) || !state.LookupOrderYear(input.orderkey, year))
+          return;
+        dealt.Add(TpchQ9State::HashPartition(input.partkey, slots), input.partkey,
+                  {input.partkey,
+                   input.extendedprice_raw * (static_cast<int64_t>(100) - input.discount_raw),
+                   input.quantity_raw, static_cast<int32_t>(input.suppkey), year});
+      });
+}
+
+using SlotPostings = std::unordered_map<std::string, std::vector<int32_t>>;
+
+// One slot's part records, from its part rows and its lineitem aggregates (in table
+// order), sorted by partkey; the part names' tokens go to `postings`, in partkey order.
+void BuildSlot(TpchQ9State::PartProfitPartition &partition, std::vector<TpchQ9PartInput> &&parts,
+               std::vector<PairAgg> &&pairs, SlotPostings &postings) {
+  const auto by_partkey = [](const auto &a, const auto &b) { return a.partkey < b.partkey; };
+  std::stable_sort(parts.begin(), parts.end(), by_partkey);
+  std::vector<Q9PartMap::Entry> entries;
+  for (auto &part : parts) {
+    std::string normalized = NormalizeForIndex(part.name);
+    if (part.partkey >= std::numeric_limits<int32_t>::min() &&
+        part.partkey <= std::numeric_limits<int32_t>::max())
+      for (const auto &token : NameTokens(normalized))
+        postings[token].push_back(static_cast<int32_t>(part.partkey));
+    if (entries.empty() || entries.back().first != part.partkey)
+      entries.emplace_back(part.partkey, std::make_shared<Q9PartRecord>());
+    entries.back().second->normalized_name = std::move(normalized);
+    entries.back().second->exists = true;
+  }
+  parts = {};
+
+  // Aggregates of parts without a part row get a record of their own.
+  const std::size_t known = entries.size();
+  std::stable_sort(pairs.begin(), pairs.end(), by_partkey);
+  Q9PartRecord *record = nullptr;
+  int64_t record_key = 0;
+  for (const auto &agg : pairs) {
+    if (!record || record_key != agg.partkey) {
+      const auto found = std::lower_bound(
+          entries.begin(), entries.begin() + static_cast<std::ptrdiff_t>(known), agg.partkey,
+          [](const Q9PartMap::Entry &e, int64_t key) { return e.first < key; });
+      if (found != entries.begin() + static_cast<std::ptrdiff_t>(known) && found->first == agg.partkey) {
+        record = found->second.get();
+      } else {
+        if (entries.size() == known || entries.back().first != agg.partkey)
+          entries.emplace_back(agg.partkey, std::make_shared<Q9PartRecord>());
+        record = entries.back().second.get();
+      }
+      record_key = agg.partkey;
+    }
+    TpchQ9State::AddPairAgg(*record, static_cast<int32_t>(agg.suppkey), agg.year, agg.rev, agg.qty);
+  }
+  std::inplace_merge(entries.begin(), entries.begin() + static_cast<std::ptrdiff_t>(known),
+                     entries.end(), [](const Q9PartMap::Entry &a, const Q9PartMap::Entry &b) {
+                       return a.first < b.first;
+                     });
+  partition.parts.Assign(std::move(entries));
+}
+
+// The name index: per token, the sorted unique partkeys of all slots.
+void PublishPostings(const core::AuxEngineServices &services,
+                     std::vector<SlotPostings> &by_slot, TpchQ9State &state) {
+  std::unordered_map<std::string, std::vector<const std::vector<int32_t> *>> runs;
+  for (const auto &postings : by_slot)
+    for (const auto &[token, keys] : postings)
+      runs[token].push_back(&keys);
+  std::vector<std::pair<std::string, std::shared_ptr<TpchQ9State::Posting>>> merged;
+  for (const auto &entry : runs)
+    merged.emplace_back(entry.first, nullptr);
+  core::ParallelEach(services, merged.size(), 1, [&](std::size_t i) {
+    auto posting = std::make_shared<TpchQ9State::Posting>();
+    for (const auto *keys : runs.at(merged[i].first))
+      posting->insert(posting->end(), keys->begin(), keys->end());
+    std::sort(posting->begin(), posting->end());
+    posting->erase(std::unique(posting->begin(), posting->end()), posting->end());
+    merged[i].second = std::move(posting);
+  });
+  for (auto &entry : merged)
+    state.name_postings.emplace(entry.first, std::move(entry.second));
+}
+
+// Parts are dealt by partkey modulo the largest slot count, so a slot (partkey modulo
+// a smaller power-of-two multiple of kMinProfitSlots) owns whole buckets.
+std::size_t PartBucket(int64_t partkey) {
+  return partkey < 0 ? 0 : static_cast<std::size_t>(partkey) % TpchQ9Layout::kMaxProfitSlots;
+}
+
+void BuildPartRecords(const core::AuxEngineServices &services, TpchQ9State &state,
+                      DealtRows<TpchQ9PartInput> &parts, DealtRows<PairAgg> &pairs) {
+  const std::size_t slots = state.profit_slot_count;
+  std::vector<SlotPostings> postings(slots);
+  core::ParallelEach(services, slots, kPairSlotGrain, [&](std::size_t slot) {
+    std::vector<TpchQ9PartInput> slot_parts;
+    for (std::size_t bucket = slot; bucket < parts.BucketCount(); bucket += slots) {
+      auto rows = parts.TakeBucket(bucket);
+      slot_parts.insert(slot_parts.end(), std::make_move_iterator(rows.begin()),
+                        std::make_move_iterator(rows.end()));
+    }
+    BuildSlot(state.profit_partitions[slot], std::move(slot_parts), pairs.TakeBucket(slot),
+              postings[slot]);
+  });
+  PublishPostings(services, postings, state);
+}
+
+} // namespace
+
 void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
                                   TpchQ9State &state) const {
   if (!initial_scan)
@@ -1667,46 +1861,36 @@ void TpchQ9Module::BuildStateInto(const core::AuxEngineServices &services,
     state.nation_names.emplace(input.nationkey, input.name);
   });
 
-  // Scan parts for the name index, then size the profit slots from cardinality.
-  auto parts = core::CollectRows<TpchQ9PartInput>(
-      services, [&](std::size_t partitions, auto &&sink) {
+  // Parts size the profit slots; their records are built once the lineitem
+  // aggregates are known.
+  auto parts = DealScan<TpchQ9PartInput, TpchQ9PartInput>(
+      services, TpchQ9Layout::kMaxProfitSlots,
+      [&](std::size_t partitions, const auto &sink) {
         initial_scan->ScanParts(services, partitions, sink);
+      },
+      [](auto &dealt, const TpchQ9PartInput &input) {
+        dealt.Add(PartBucket(input.partkey), input.partkey, input);
       });
-  state.InitPartitions(parts.size());
-  state.BeginBulkParts();
-  state.postings_bulk = true;
-  for (const auto &part : parts)
-    state.AddNamePostings(part.partkey, part.name);
-  parts.clear();
-  parts.shrink_to_fit();
+  state.InitPartitions(parts.Size());
 
   // Join-side maps (kept in state: maintenance resolves dimension and RF
   // writes against them, never point SQL).
-  // The state's maps are copy-on-write arrays and hashes: the pool decodes the
-  // rows, one thread applies them in table order.
   for (const auto &input : core::CollectRows<TpchQ9SupplierInput>(
            services, [&](std::size_t partitions, auto &&sink) {
              initial_scan->ScanSuppliers(services, partitions, sink);
            }))
     state.SetSupplierNation(input.suppkey, input.nationkey);
-  for (const auto &input : core::CollectRows<TpchQ9OrdersInput>(
-           services, [&](std::size_t partitions, auto &&sink) {
-             initial_scan->ScanOrders(services, partitions, sink);
-           }))
-    state.SetOrderYear(input.orderkey, TpchQ9ExtractYear(input.orderdate_days));
-  for (const auto &input : core::CollectRows<TpchQ9PartsuppInput>(
-           services, [&](std::size_t partitions, auto &&sink) {
-             initial_scan->ScanPartsupps(services, partitions, sink);
-           }))
-    state.SetPartsuppCost(input.partkey, input.suppkey, input.supplycost_raw);
+  FillOrderYears(services, *initial_scan, state);
+  FillPartsuppCosts(services, *initial_scan, state);
 
-  BuildPairAggregates(services, *initial_scan, state);
+  auto pairs = ScanPairAggregates(services, *initial_scan, state);
+  BuildPartRecords(services, state, parts, pairs);
+  parts.Release(services);
+  pairs.Release(services);
 
-  state.FinishBulkParts();
-  state.FinalizePostings();
   state.RebuildNationEmitOrder();
   state.BuildCellsFromPairs(services);
-  state.BuildSuppPairsIndex();
+  state.BuildSuppPairsIndex(services);
   state.BuildCube(services);
 }
 

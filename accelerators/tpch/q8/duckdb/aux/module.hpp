@@ -106,9 +106,9 @@ public:
   }
 };
 
-// core::ShardedSortedMap: 2^12 shards (64 x 64) for the small dictionaries and
-// 2^16 (256 x 256) for the order table.  Copying a map copies the top pointers;
-// a Txn clones the touched mid arrays and shards once per version.
+// core::ShardedSortedMap, built with Builder(expected) so a shard holds ~256
+// entries at any scale.  Copying a map copies the top pointers; a Txn clones the
+// touched mid arrays and shards once per version.
 template <class V, unsigned kBits, unsigned kMid>
 using TpchQ8ShardedMap =
     core::ShardedSortedKvMap<int64_t, V, core::ShardedSortedMapHash<int64_t>,
@@ -142,8 +142,8 @@ struct TpchQ8OrderInfo {
   // transaction skip the point scan of lineitem.
   int32_t lines = -1;
 };
-using TpchQ8SmallMap = TpchQ8ShardedMap<int32_t, 12, 6>;
-using TpchQ8OrderMap = TpchQ8ShardedMap<TpchQ8OrderInfo, 16, 8>;
+using TpchQ8SmallMap = TpchQ8ShardedMap<int32_t, 24, 8>;
+using TpchQ8OrderMap = TpchQ8ShardedMap<TpchQ8OrderInfo, 26, 8>;
 
 struct TpchQ8Dimensions {
   std::shared_ptr<TpchQ8Dict> dict = std::make_shared<TpchQ8Dict>();
@@ -225,6 +225,13 @@ struct TpchQ8DimNet {
   std::string type;       // part
 };
 
+// One order change in arrival order: an insert or update to `info`, or a delete.
+struct OrderOp {
+  int64_t key = 0;
+  bool add = false;
+  TpchQ8OrderInfo info;
+};
+
 class TpchQ8TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -236,9 +243,7 @@ public:
   void AddDelta(TpchQ8LineitemDelta delta);
   void AddOrderInfo(int64_t orderkey, int64_t custkey, int32_t orderdate_days);
   void EraseOrder(int64_t orderkey);
-  const std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> &
-  OrderInfoOverlay() const;
-  const std::unordered_set<int64_t> &OrderErase() const;
+  const std::vector<OrderOp> &OrderOps() const;
 
   void SetPart(int64_t key, bool present, std::string type);
   void SetSupplier(int64_t key, bool present, int32_t nationkey);
@@ -251,8 +256,7 @@ private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ8LineitemDelta> deltas;
-  std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> order_info_overlay;
-  std::unordered_set<int64_t> order_erase;
+  std::vector<OrderOp> order_ops;
   std::unordered_map<int64_t, TpchQ8DimNet> part_net, supplier_net,
       customer_net;
 };

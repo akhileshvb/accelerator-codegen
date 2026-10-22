@@ -67,15 +67,9 @@ template <class Row> void AppendBuckets(Buckets<Row> &into, Buckets<Row> &&from)
   }
 }
 
-// Partitions = `partitions`, by default services.WorkerCount() (the build cap).
-//   make()                          a new empty Partial
-//   scan(partitions, sink)          the engine's partitioned scan
-//   consume(Partial &, row)         adds one row
-//   merge(Partial &into, Partial &&from)
-template <class Partial, class Make, class Scan, class Consume, class Merge>
-Partial PartitionedBuild(const AuxEngineServices &services, Make &&make, Scan &&scan,
-                         Consume &&consume, Merge &&merge, std::size_t partitions = 0) {
-  partitions = std::max<std::size_t>(1, partitions ? partitions : services.WorkerCount());
+// One partial per partition, filled by the engine's partitioned scan.
+template <class Partial, class Make, class Scan, class Consume>
+std::vector<Partial> ScanPartials(Make &&make, Scan &&scan, Consume &&consume, std::size_t partitions) {
   std::vector<Partial> partials;
   partials.reserve(partitions);
   for (std::size_t p = 0; p < partitions; ++p) {
@@ -87,9 +81,44 @@ Partial PartitionedBuild(const AuxEngineServices &services, Make &&make, Scan &&
       consume(partial, batch.Row(row));
     }
   });
+  return partials;
+}
+
+// Partitions = `partitions`, by default services.WorkerCount() (the build cap).
+//   make()                          a new empty Partial
+//   scan(partitions, sink)          the engine's partitioned scan
+//   consume(Partial &, row)         adds one row
+//   merge(Partial &into, Partial &&from)
+// The merge is a serial chain in partition order: merging pairwise instead
+// re-merges the grown partials at every level (total work x log partitions).
+template <class Partial, class Make, class Scan, class Consume, class Merge>
+Partial PartitionedBuild(const AuxEngineServices &services, Make &&make, Scan &&scan,
+                         Consume &&consume, Merge &&merge, std::size_t partitions = 0) {
+  partitions = std::max<std::size_t>(1, partitions ? partitions : services.WorkerCount());
+  auto partials = ScanPartials<Partial>(make, scan, consume, partitions);
   for (std::size_t p = 1; p < partitions; ++p) {
     merge(partials[0], std::move(partials[p]));
   }
+  return std::move(partials[0]);
+}
+
+// PartitionedBuild for a Partial made of `buckets` independent parts, merged
+// bucket by bucket in parallel (each bucket still chains the partitions in
+// order, so the result equals the serial chain's):
+//   merge_bucket(Partial &into, Partial &&from, bucket)
+// must move only that bucket out of `from` (and touch only that bucket of
+// `into`); a bucket-less remainder of the Partial is merged with bucket 0.
+template <class Partial, class Make, class Scan, class Consume, class MergeBucket>
+Partial PartitionedBucketBuild(const AuxEngineServices &services, Make &&make, Scan &&scan,
+                               Consume &&consume, MergeBucket &&merge_bucket, std::size_t buckets,
+                               std::size_t partitions = 0) {
+  partitions = std::max<std::size_t>(1, partitions ? partitions : services.WorkerCount());
+  auto partials = ScanPartials<Partial>(make, scan, consume, partitions);
+  services.ParallelFor(buckets, [&](std::size_t bucket) {
+    for (std::size_t p = 1; p < partitions; ++p) {
+      merge_bucket(partials[0], std::move(partials[p]), bucket);
+    }
+  });
   return std::move(partials[0]);
 }
 

@@ -138,8 +138,8 @@ bool CellsClose(const std::string &a, const std::string &b) {
     if (ia != a.size() || ib != b.size()) {
       return false;
     }
-    const long double scale = std::max<long double>({1.0L, std::fabsl(x), std::fabsl(y)});
-    return std::fabsl(x - y) <= scale * 1e-6L;
+    const long double scale = std::max<long double>({1.0L, std::fabs(x), std::fabs(y)});
+    return std::fabs(x - y) <= scale * 1e-6L;
   } catch (...) {
     return false;
   }

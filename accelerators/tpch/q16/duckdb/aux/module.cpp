@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -27,8 +28,6 @@ constexpr std::size_t kBatchOpThreshold = 1024;
 constexpr std::size_t kPsPageGrain = 16;
 // Supplier pages per slice (~200 us): a page is a few us.
 constexpr std::size_t kSuppPageGrain = 64;
-// Groups per slice (untimed): counting a group's eligible suppliers is ~1 us per 50 members.
-constexpr std::size_t kGroupGrain = 4096;
 // Distinct (size, brand, type) slots the build is willing to index.
 constexpr std::size_t kMaxGroupSlots = std::size_t{1} << 26;
 
@@ -459,72 +458,49 @@ struct InvTemp {
   std::vector<uint32_t> code;
 };
 
-struct PartsuppPartial {
-  std::vector<PsTemp> ps_temp;
-  std::vector<uint32_t> gindex; // group slot -> index in `groups`
-  std::vector<TpchQ16GroupMembers> groups;
-
-  explicit PartsuppPartial(std::size_t group_slots) : gindex(group_slots, kNoGroup) {}
-
-  TpchQ16GroupMembers &Group(std::size_t slot, uint16_t type_id) {
-    if (gindex[slot] == kNoGroup) {
-      gindex[slot] = static_cast<uint32_t>(groups.size());
-      groups.emplace_back();
-      groups.back().type_id = type_id;
-    }
-    return groups[gindex[slot]];
+// One partsupp row's membership of a (size, brand, type) group.
+struct Member {
+  uint32_t slot;
+  int64_t suppkey;
+  bool operator<(const Member &o) const {
+    return slot != o.slot ? slot < o.slot : suppkey < o.suppkey;
   }
-  void AddMember(std::size_t slot, uint16_t type_id, int64_t suppkey) {
-    auto &gm = Group(slot, type_id);
-    const auto pos = std::lower_bound(gm.suppkeys.begin(), gm.suppkeys.end(), suppkey);
-    const auto idx = pos - gm.suppkeys.begin();
-    if (pos != gm.suppkeys.end() && *pos == suppkey) {
-      ++gm.ref_counts[static_cast<std::size_t>(idx)];
-      return;
-    }
-    gm.suppkeys.insert(pos, suppkey);
-    gm.ref_counts.insert(gm.ref_counts.begin() + idx, 1);
+};
+
+// Members are bucketed by contiguous slot ranges, so a partition keeps O(rows
+// seen) and one task later owns whole groups.
+constexpr std::size_t kMemberBuckets = 1024;
+
+std::size_t SlotStride(std::size_t slot_count) {
+  return std::max<std::size_t>(1, (slot_count + kMemberBuckets - 1) / kMemberBuckets);
+}
+
+// Partsupp rows per partkey chunk, and the members of the partition's rows.
+// Merging collects the member runs in table order; groups are built afterwards.
+struct PartsuppPartial {
+  using Buckets = std::vector<std::vector<Member>>;
+  std::map<std::size_t, PsTemp> ps_temp;
+  std::vector<Buckets> runs;
+  std::size_t stride;
+
+  explicit PartsuppPartial(std::size_t slot_stride)
+      : runs(1, Buckets(kMemberBuckets)), stride(slot_stride) {}
+
+  void AddMember(std::size_t slot, int64_t suppkey) {
+    runs.back()[slot / stride].push_back({static_cast<uint32_t>(slot), suppkey});
   }
   void MergeFrom(PartsuppPartial &&from) {
-    if (ps_temp.size() < from.ps_temp.size())
-      ps_temp.resize(from.ps_temp.size());
-    for (std::size_t chunk = 0; chunk < from.ps_temp.size(); ++chunk) {
+    for (auto &[chunk, theirs] : from.ps_temp) {
       auto &mine = ps_temp[chunk];
-      auto &theirs = from.ps_temp[chunk];
+      if (mine.local.empty()) {
+        mine = std::move(theirs);
+        continue;
+      }
       mine.local.insert(mine.local.end(), theirs.local.begin(), theirs.local.end());
       mine.sk.insert(mine.sk.end(), theirs.sk.begin(), theirs.sk.end());
     }
-    for (std::size_t slot = 0; slot < from.gindex.size(); ++slot) {
-      if (from.gindex[slot] == kNoGroup)
-        continue;
-      auto &theirs = from.groups[from.gindex[slot]];
-      if (gindex[slot] == kNoGroup) {
-        Group(slot, theirs.type_id) = std::move(theirs);
-        continue;
-      }
-      auto &mine = groups[gindex[slot]];
-      std::vector<int64_t> keys;
-      std::vector<int32_t> refs;
-      std::size_t i = 0, j = 0;
-      while (i < mine.suppkeys.size() || j < theirs.suppkeys.size()) {
-        const bool take_mine = j == theirs.suppkeys.size() ||
-                               (i < mine.suppkeys.size() && mine.suppkeys[i] <= theirs.suppkeys[j]);
-        const bool both = i < mine.suppkeys.size() && j < theirs.suppkeys.size() &&
-                          mine.suppkeys[i] == theirs.suppkeys[j];
-        if (both) {
-          keys.push_back(mine.suppkeys[i]);
-          refs.push_back(mine.ref_counts[i++] + theirs.ref_counts[j++]);
-        } else if (take_mine) {
-          keys.push_back(mine.suppkeys[i]);
-          refs.push_back(mine.ref_counts[i++]);
-        } else {
-          keys.push_back(theirs.suppkeys[j]);
-          refs.push_back(theirs.ref_counts[j++]);
-        }
-      }
-      mine.suppkeys = std::move(keys);
-      mine.ref_counts = std::move(refs);
-    }
+    runs.insert(runs.end(), std::make_move_iterator(from.runs.begin()),
+                std::make_move_iterator(from.runs.end()));
   }
 };
 
@@ -591,7 +567,7 @@ PartsuppPartial ScanPartsupp(
     const core::AuxEngineServices &services, TpchQ16InitialScan &scan, const GroupSlots &slots,
     const std::vector<std::unique_ptr<TpchQ16PartPage>> &part_pages) {
   return core::PartitionedBuild<PartsuppPartial>(
-      services, [&] { return PartsuppPartial(slots.Count()); },
+      services, [stride = SlotStride(slots.Count())] { return PartsuppPartial(stride); },
       [&](std::size_t parts, auto &&sink) {
         scan.ScanPartsupp(services, parts, [&](std::size_t p, const TpchQ16PartsuppInput &input) {
           sink(p, core::SingleRowBatch<TpchQ16PartsuppInput>{input});
@@ -600,12 +576,10 @@ PartsuppPartial ScanPartsupp(
       [&](PartsuppPartial &partial, const TpchQ16PartsuppInput &input) {
         CheckKey(input.partkey, "partkey");
         CheckKey(input.suppkey, "suppkey");
-        const auto pchunk = static_cast<std::size_t>(input.partkey >> Layout::kPsShift);
-        if (pchunk >= partial.ps_temp.size())
-          partial.ps_temp.resize(pchunk + 1);
-        partial.ps_temp[pchunk].local.push_back(static_cast<uint16_t>(
+        auto &temp = partial.ps_temp[static_cast<std::size_t>(input.partkey >> Layout::kPsShift)];
+        temp.local.push_back(static_cast<uint16_t>(
             static_cast<std::size_t>(input.partkey) & (kPsPageSize - 1)));
-        partial.ps_temp[pchunk].sk.push_back(input.suppkey);
+        temp.sk.push_back(input.suppkey);
 
         const auto part_chunk = static_cast<std::size_t>(input.partkey >> Layout::kPartShift);
         if (part_chunk >= part_pages.size() || !part_pages[part_chunk])
@@ -614,8 +588,7 @@ PartsuppPartial ScanPartsupp(
                                                         (kPartPageSize - 1)];
         if (info.brand_id == kNoBrand || !SizeInRange(info.size))
           return;
-        partial.AddMember(slots.Of(info.size, info.brand_id, info.type_id), info.type_id,
-                          input.suppkey);
+        partial.AddMember(slots.Of(info.size, info.brand_id, info.type_id), input.suppkey);
       },
       [](PartsuppPartial &into, PartsuppPartial &&from) { into.MergeFrom(std::move(from)); });
 }
@@ -628,40 +601,100 @@ bool EligibleAt(const std::vector<std::unique_ptr<TpchQ16SupplierPage>> &supp_pa
   return supp_pages[chunk]->eligible[static_cast<std::size_t>(suppkey) & (kSuppPageSize - 1)] != 0;
 }
 
-// Counts each group's eligible suppliers.
-void CountEligible(const core::AuxEngineServices &services,
-                   const std::vector<std::unique_ptr<TpchQ16SupplierPage>> &supp_pages,
-                   std::vector<TpchQ16GroupMembers> &groups) {
-  core::ParallelEach(services, groups.size(), kGroupGrain, [&](std::size_t g) {
-    auto &gm = groups[g];
-    gm.eligible_count = static_cast<int32_t>(std::count_if(
-        gm.suppkeys.begin(), gm.suppkeys.end(),
-        [&](int64_t suppkey) { return EligibleAt(supp_pages, suppkey); }));
-  });
+// A supplier's membership of a group, routed to the task owning its supplier chunk.
+struct Inversion {
+  std::size_t supp_chunk;
+  uint16_t local;
+  uint32_t code;
+};
+constexpr std::size_t kInversionBuckets = 256;
+
+struct PartsuppGroups {
+  std::vector<uint32_t> gindex; // group slot -> index in `groups`
+  std::vector<TpchQ16GroupMembers> groups;
+  std::vector<InvTemp> inv_temp; // the groups each supplier belongs to, per supplier page
+};
+
+// The groups of one slot bucket: distinct suppliers with their row counts and
+// the eligible count, plus the inverted memberships bucketed by supplier chunk.
+struct BucketGroups {
+  std::vector<std::pair<uint32_t, TpchQ16GroupMembers>> groups;
+  std::vector<std::vector<Inversion>> inversions =
+      std::vector<std::vector<Inversion>>(kInversionBuckets);
+  std::size_t max_supp_chunk = 0;
+};
+
+BucketGroups BuildBucketGroups(PartsuppPartial &partsupp, std::size_t bucket,
+                               const GroupSlots &slots,
+                               const std::vector<std::unique_ptr<TpchQ16SupplierPage>> &supp_pages) {
+  std::vector<Member> members;
+  for (auto &run : partsupp.runs) {
+    members.insert(members.end(), run[bucket].begin(), run[bucket].end());
+    run[bucket] = {};
+  }
+  std::sort(members.begin(), members.end());
+
+  BucketGroups out;
+  for (std::size_t i = 0; i < members.size();) {
+    const uint32_t slot = members[i].slot;
+    TpchQ16GroupMembers group;
+    group.type_id = slots.TypeOf(slot);
+    const auto code = GroupCode(slots.SizeOf(slot), slots.BrandOf(slot), slots.TypeOf(slot));
+    for (; i < members.size() && members[i].slot == slot; ++i) {
+      const int64_t suppkey = members[i].suppkey;
+      if (!group.suppkeys.empty() && group.suppkeys.back() == suppkey) {
+        ++group.ref_counts.back();
+        continue;
+      }
+      group.suppkeys.push_back(suppkey);
+      group.ref_counts.push_back(1);
+      group.eligible_count += EligibleAt(supp_pages, suppkey);
+      const auto supp_chunk = static_cast<std::size_t>(suppkey >> Layout::kSuppShift);
+      out.max_supp_chunk = std::max(out.max_supp_chunk, supp_chunk);
+      out.inversions[supp_chunk % kInversionBuckets].push_back(
+          {supp_chunk,
+           static_cast<uint16_t>(static_cast<std::size_t>(suppkey) & (kSuppPageSize - 1)), code});
+    }
+    out.groups.emplace_back(slot, std::move(group));
+  }
+  return out;
 }
 
-// The groups each supplier belongs to, per supplier page.
-std::vector<InvTemp> InvertGroups(const PartsuppPartial &partsupp, const GroupSlots &slots) {
-  std::vector<InvTemp> inv_temp;
-  for (std::size_t slot = 0; slot < partsupp.gindex.size(); ++slot) {
-    if (partsupp.gindex[slot] == kNoGroup)
-      continue;
-    const auto code = GroupCode(slots.SizeOf(slot), slots.BrandOf(slot), slots.TypeOf(slot));
-    for (const auto suppkey : partsupp.groups[partsupp.gindex[slot]].suppkeys) {
-      const auto schunk = static_cast<std::size_t>(suppkey >> Layout::kSuppShift);
-      if (schunk >= inv_temp.size())
-        inv_temp.resize(schunk + 1);
-      inv_temp[schunk].local.push_back(
-          static_cast<uint16_t>(static_cast<std::size_t>(suppkey) & (kSuppPageSize - 1)));
-      inv_temp[schunk].code.push_back(code);
+// Groups of all partsupp members. Slot buckets build in parallel; the
+// inversion then gathers per supplier chunk in bucket (= slot) order.
+PartsuppGroups BuildGroups(const core::AuxEngineServices &services,
+                           PartsuppPartial &partsupp, const GroupSlots &slots,
+                           const std::vector<std::unique_ptr<TpchQ16SupplierPage>> &supp_pages) {
+  std::vector<BucketGroups> buckets(kMemberBuckets);
+  core::ParallelEach(services, kMemberBuckets, 1, [&](std::size_t bucket) {
+    buckets[bucket] = BuildBucketGroups(partsupp, bucket, slots, supp_pages);
+  });
+
+  PartsuppGroups out;
+  out.gindex.assign(slots.Count(), kNoGroup);
+  std::size_t supp_chunks = 0;
+  for (auto &bucket : buckets) {
+    for (auto &[slot, group] : bucket.groups) {
+      out.gindex[slot] = static_cast<uint32_t>(out.groups.size());
+      out.groups.push_back(std::move(group));
     }
+    if (!bucket.groups.empty())
+      supp_chunks = std::max(supp_chunks, bucket.max_supp_chunk + 1);
   }
-  return inv_temp;
+  out.inv_temp.resize(supp_chunks);
+  core::ParallelEach(services, kInversionBuckets, 1, [&](std::size_t part) {
+    for (const auto &bucket : buckets)
+      for (const auto &inv : bucket.inversions[part]) {
+        out.inv_temp[inv.supp_chunk].local.push_back(inv.local);
+        out.inv_temp[inv.supp_chunk].code.push_back(inv.code);
+      }
+  });
+  return out;
 }
 
 // Group pages (one per size and brand) and the per-size sorted result lists.
 // Releases the groups.
-void AddGroupImages(PartsuppPartial &partsupp, const GroupSlots &slots, const TpchQ16Meta &meta,
+void AddGroupImages(PartsuppGroups &partsupp, const GroupSlots &slots, const TpchQ16Meta &meta,
                     std::vector<core::StateImage> &images) {
   std::vector<TpchQ16SizeList> lists(GroupSlots::kSizes + 1);
   for (int32_t size = Layout::kMinSize; size <= Layout::kMaxSize; ++size) {
@@ -1084,13 +1117,15 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
 
   const GroupSlots slots(*meta);
   auto partsupp = ScanPartsupp(services, *initial_scan, slots, parts.pages);
-  CountEligible(services, suppliers.pages, partsupp.groups);
-  auto inv_temp = InvertGroups(partsupp, slots);
+  auto groups = BuildGroups(services, partsupp, slots, suppliers.pages);
+  std::vector<PsTemp> ps_temp(partsupp.ps_temp.empty() ? 0 : partsupp.ps_temp.rbegin()->first + 1);
+  for (auto &[chunk, temp] : partsupp.ps_temp)
+    ps_temp[chunk] = std::move(temp);
 
   TpchQ16State state;
-  AddGroupImages(partsupp, slots, *meta, state.images);
-  AddPartsuppImages(services, partsupp.ps_temp, state.images);
-  AddSupplierImages(services, suppliers.pages, inv_temp, state.images);
+  AddGroupImages(groups, slots, *meta, state.images);
+  AddPartsuppImages(services, ps_temp, state.images);
+  AddSupplierImages(services, suppliers.pages, groups.inv_temp, state.images);
   AddPartImages(parts.pages, std::move(meta), state.images);
   return state;
 }

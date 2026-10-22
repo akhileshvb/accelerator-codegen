@@ -3,7 +3,9 @@
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/dealt_rows.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +25,9 @@ namespace sql_date = core::sql_date;
 
 // Lineitem deltas per slice when resolving them against the orders map (untimed).
 constexpr std::size_t kResolveGrain = 4096;
+// Order deltas per sorted slice, and shards per task, when applying order deltas.
+constexpr std::size_t kOrderSortGrain = 65536;
+constexpr std::size_t kShardRunGrain = 64;
 // Month or window images per slice when building or publishing (untimed).
 constexpr std::size_t kImageGrain = 1;
 // Month tables per slice when sorting them after the scan (untimed).
@@ -134,15 +139,10 @@ CompactSideBase(const TpchQ10State &state) {
   auto base = std::make_shared<TpchQ10SideBase>(*state.side_base);
   if (state.customer_overlay) {
     for (const auto &[key, slot] : *state.customer_overlay) {
-      if (slot.present) {
-        base->SetCustomerRank(key, slot.customer.acctbal_raw,
-                              slot.customer.nationkey);
-        base->customers[key] = slot.customer;
-      } else {
-        if (base->ranks.Get(key).present != 0)
-          base->ranks.Set(key, TpchQ10CustomerRank{});
-        base->customers.erase(key);
-      }
+      if (slot.present)
+        base->SetCustomer(key, slot.customer);
+      else
+        base->EraseCustomer(key);
     }
   }
   return base;
@@ -368,6 +368,27 @@ private:
            remaining.empty();
   }
 
+  // Runs op(delta) for the order deltas of `sign`, shards in parallel (a shard's
+  // deltas keep their arrival order). False when there was none.
+  template <class Op> bool ForOrderDeltasByShard(int sign, Op &&op) {
+    const auto &deltas = buffer.OrderDeltas();
+    const auto &orders = order_metadata->orders;
+    std::vector<std::pair<std::size_t, uint32_t>> by_shard; // (shard, delta index)
+    for (uint32_t i = 0; i < deltas.size(); ++i)
+      if ((deltas[i].sign > 0) == (sign > 0))
+        by_shard.emplace_back(orders.ShardOf(deltas[i].orderkey), i);
+    const auto shard_of = [](const auto &entry) { return entry.first; };
+    core::ParallelStableSort(
+        services, by_shard, [&](const auto &l, const auto &r) { return l.first < r.first; },
+        kOrderSortGrain);
+    const auto runs = core::RunStarts(by_shard, shard_of);
+    core::ParallelEach(services, runs.size() - 1, kShardRunGrain, [&](std::size_t run) {
+      for (std::size_t k = runs[run]; k < runs[run + 1]; ++k)
+        op(deltas[by_shard[k].second]);
+    });
+    return !by_shard.empty();
+  }
+
   // Loads a private copy of the Orders partition when the build kept one, and
   // applies the inserts to it. SQL-pushdown builds skip it and resolve via
   // LookupOrders; publishing a sparse RF-only map would break later lookups
@@ -385,15 +406,11 @@ private:
         break;
       }
     }
-    if (!buffer.OrderDeltas().empty() && order_metadata) {
-      for (const auto &delta : buffer.OrderDeltas()) {
-        if (delta.sign > 0) {
+    if (order_metadata && ForOrderDeltasByShard(+1, [&](const auto &delta) {
           order_metadata->orders.Upsert(
               delta.orderkey, TpchQ10Order{delta.custkey, delta.orderdate_days});
-          orders_changed = true;
-        }
-      }
-    }
+        }))
+      orders_changed = true;
     return order_metadata || buffer.Deltas().empty() || LookupTouchedOrders();
   }
 
@@ -570,13 +587,10 @@ private:
   void PublishOrders(core::Version version, bool erase_after_deltas) {
     if (!order_metadata)
       return;
-    for (const auto &delta : buffer.OrderDeltas()) {
-      if (delta.sign < 0) {
-        order_metadata->orders.Erase(delta.orderkey);
-        if (erase_after_deltas)
-          orders_changed = true;
-      }
-    }
+    const bool erased = ForOrderDeltasByShard(
+        -1, [&](const auto &delta) { order_metadata->orders.Erase(delta.orderkey); });
+    if (erased && erase_after_deltas)
+      orders_changed = true;
     if (!orders_changed)
       return;
     if (erase_after_deltas)
@@ -1210,6 +1224,137 @@ void TpchQ10Module::Execute(core::AuxEngineServices &services,
                   sink);
 }
 
+namespace {
+
+using scan::DateColumn;
+using scan::DecimalColumn;
+using scan::IntColumn;
+using scan::TextColumn;
+
+struct CustomerRow {
+  int64_t key = 0;
+  TpchQ10Customer customer;
+};
+
+using DenseRanks = core::DenseIdArray<TpchQ10CustomerRank>;
+
+// Customers are dealt by rank-array leaf, so a bucket owns whole leaves.
+DealtRows<CustomerRow> ScanCustomers(core::AuxEngineServices &services, TpchQ10InitialScan &source) {
+  return DealTable<CustomerRow>(
+      services, source, "customer",
+      {IntColumn("c_custkey"), TextColumn("c_name"), DecimalColumn("c_acctbal", 2),
+       IntColumn("c_nationkey"), TextColumn("c_address"), TextColumn("c_phone"),
+       TextColumn("c_comment")},
+      kDealBuckets, [](DealtRows<CustomerRow> &rows, const auto &row) {
+        const int64_t key = row.Int(0);
+        if (!DenseRanks::Fits(key))
+          return;
+        rows.Add(static_cast<std::size_t>(key >> DenseRanks::kShift) % kDealBuckets, key,
+                 {key,
+                  {row.Text(1), row.Decimal(2), static_cast<int32_t>(row.Int(3)), row.Text(4),
+                   row.Text(5), row.Text(6)}});
+      });
+}
+
+// Each bucket becomes one segment of strings and sets the ranks of its own leaves.
+void FillCustomerSide(core::AuxEngineServices &services, DealtRows<CustomerRow> &&rows,
+                      TpchQ10SideBase &base) {
+  if (rows.MaxKey() >= 0)
+    base.ranks.Ensure(rows.MaxKey()); // sizes the leaf directory
+  base.segments.resize(rows.BucketCount());
+  core::ParallelEach(services, rows.BucketCount(), 1, [&](std::size_t bucket) {
+    auto &segment = base.segments[bucket];
+    for (auto &row : rows.TakeBucket(bucket)) {
+      TpchQ10CustomerRank rank;
+      rank.acctbal_raw = row.customer.acctbal_raw;
+      rank.nationkey = row.customer.nationkey;
+      rank.index = static_cast<uint32_t>(segment.size());
+      rank.segment = static_cast<uint16_t>(bucket);
+      rank.present = 1;
+      base.ranks.Set(row.key, rank);
+      segment.push_back(std::move(row.customer));
+    }
+  });
+}
+
+struct OrderRow {
+  int64_t key = 0;
+  TpchQ10Order order;
+};
+using OrderMap = decltype(TpchQ10State::orders);
+
+// Orders are dealt by the top bits of their shard, so each bucket owns whole shards.
+constexpr unsigned kOrderBucketBits = 10;
+// Small shards bound what a touched shard copies.
+constexpr std::size_t kOrdersPerShard = 512;
+
+OrderMap ScanOrders(core::AuxEngineServices &services, TpchQ10InitialScan &source) {
+  auto dealt = DealTable<OrderRow>(
+      services, source, "orders",
+      {IntColumn("o_orderkey"), IntColumn("o_custkey"), DateColumn("o_orderdate")},
+      std::size_t{1} << kOrderBucketBits, [](DealtRows<OrderRow> &rows, const auto &row) {
+        const int64_t key = row.Int(0);
+        rows.Add(OrderMap::ShardOf(key, kOrderBucketBits), key,
+                 {key, TpchQ10Order{row.Int(1), row.Date(2)}});
+      });
+  OrderMap orders(std::max(kOrderBucketBits, OrderMap::ShardBitsFor(dealt.Size(), kOrdersPerShard)));
+  ParallelForEachRow(services, dealt,
+                     [&](std::size_t, const OrderRow &row) { orders.Upsert(row.key, row.order); });
+  return orders;
+}
+
+using MonthTables = std::map<int32_t, std::vector<TpchQ10KV>>;
+
+// Returned-lineitem revenue entries per order month, unsorted. The partitions' tables
+// are gathered month by month.
+std::map<int32_t, std::vector<TpchQ10KV>>
+ScanReturnedRevenue(core::AuxEngineServices &services, TpchQ10InitialScan &source,
+                    const OrderMap &orders) {
+  std::vector<MonthTables> runs = core::PartitionedBuild<std::vector<MonthTables>>(
+      services, [] { return std::vector<MonthTables>(1); },
+      [&](std::size_t parts, auto &&sink) {
+        source.ScanTable(services, "lineitem",
+                         {IntColumn("l_orderkey"), DecimalColumn("l_extendedprice", 2),
+                          DecimalColumn("l_discount", 2), TextColumn("l_returnflag")},
+                         parts, sink);
+      },
+      [&](std::vector<MonthTables> &partial, const auto &row) {
+        if (row.Char(3) != 'R')
+          return;
+        const TpchQ10Order *order = orders.Find(row.Int(0));
+        if (!order)
+          return;
+        const auto revenue = TpchQ10RevenueRaw(static_cast<double>(row.Decimal(1)) / 100.0,
+                                               static_cast<double>(row.Decimal(2)) / 100.0);
+        partial.front()[MonthKey(order->orderdate_days)].push_back({order->custkey, revenue});
+      },
+      [](std::vector<MonthTables> &into, std::vector<MonthTables> &&from) {
+        std::move(from.begin(), from.end(), std::back_inserter(into));
+      },
+      core::BuildPartitions(services));
+
+  std::map<int32_t, std::vector<TpchQ10KV>> months;
+  for (const auto &run : runs)
+    for (const auto &entry : run)
+      months[entry.first];
+  std::vector<std::pair<const int32_t, std::vector<TpchQ10KV>> *> slots;
+  for (auto &entry : months)
+    slots.push_back(&entry);
+  core::ParallelEach(services, slots.size(), 1, [&](std::size_t i) {
+    auto &[month, table] = *slots[i];
+    for (auto &run : runs) {
+      const auto it = run.find(month);
+      if (it == run.end())
+        continue;
+      table.insert(table.end(), it->second.begin(), it->second.end());
+      it->second = {};
+    }
+  });
+  return months;
+}
+
+} // namespace
+
 TpchQ10BuildData
 TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ10BuildData data;
@@ -1218,28 +1363,7 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
     throw std::logic_error("TPC-H Q10 requires a typed initial scan source");
 
   auto base = std::make_shared<TpchQ10SideBase>();
-  using scan::DateColumn;
-  using scan::DecimalColumn;
-  using scan::IntColumn;
-  using scan::TextColumn;
-  base->customers = core::PartitionedBuild<TpchQ10CustomerMap>(
-      services, [] { return TpchQ10CustomerMap{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanTable(services, "customer",
-                                {IntColumn("c_custkey"), TextColumn("c_name"),
-                                 DecimalColumn("c_acctbal", 2), IntColumn("c_nationkey"),
-                                 TextColumn("c_address"), TextColumn("c_phone"),
-                                 TextColumn("c_comment")},
-                                parts, sink);
-      },
-      [](TpchQ10CustomerMap &customers, const auto &row) {
-        customers[row.Int(0)] = {row.Text(1), row.Decimal(2),
-                                 static_cast<int32_t>(row.Int(3)), row.Text(4),
-                                 row.Text(5), row.Text(6)};
-      },
-      [](TpchQ10CustomerMap &into, TpchQ10CustomerMap &&from) { into.merge(from); });
-  for (const auto &[key, customer] : base->customers)
-    base->SetCustomerRank(key, customer.acctbal_raw, customer.nationkey);
+  FillCustomerSide(services, ScanCustomers(services, *initial_scan), *base);
   state.side_base = std::move(base);
 
   initial_scan->ScanNationsSerial([&](const TpchQ10NationInput &input) {
@@ -1258,41 +1382,8 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
       });
 
   if (!used_sql_revenue) {
-    using OrderEntry = std::pair<int64_t, TpchQ10Order>;
-    const auto orders = CollectTable<OrderEntry>(
-        services, *initial_scan, "orders",
-        {IntColumn("o_orderkey"), IntColumn("o_custkey"), DateColumn("o_orderdate")},
-        [](const auto &row) {
-          return OrderEntry{row.Int(0), TpchQ10Order{row.Int(1), row.Date(2)}};
-        });
-    for (const auto &[key, order] : orders)
-      state.orders.Upsert(key, order);
-
-    using MonthTables = std::map<int32_t, std::vector<TpchQ10KV>>;
-    data.months = core::PartitionedBuild<MonthTables>(
-        services, [] { return MonthTables{}; },
-        [&](std::size_t parts, auto &&sink) {
-          initial_scan->ScanTable(services, "lineitem",
-                                  {IntColumn("l_orderkey"), DecimalColumn("l_extendedprice", 2),
-                                   DecimalColumn("l_discount", 2), TextColumn("l_returnflag")},
-                                  parts, sink);
-        },
-        [&](MonthTables &months, const auto &row) {
-          if (row.Char(3) != 'R')
-            return;
-          const TpchQ10Order *order = state.orders.Find(row.Int(0));
-          if (!order)
-            return;
-          const auto revenue = TpchQ10RevenueRaw(static_cast<double>(row.Decimal(1)) / 100.0,
-                                                 static_cast<double>(row.Decimal(2)) / 100.0);
-          months[MonthKey(order->orderdate_days)].push_back({order->custkey, revenue});
-        },
-        [](MonthTables &into, MonthTables &&from) {
-          for (auto &[month, entries] : from) {
-            auto &target = into[month];
-            target.insert(target.end(), entries.begin(), entries.end());
-          }
-        });
+    state.orders = ScanOrders(services, *initial_scan);
+    data.months = ScanReturnedRevenue(services, *initial_scan, state.orders);
   }
   // Key-sorted, deduplicated (summed), nonzero month tables.
   std::vector<std::vector<TpchQ10KV> *> tables;

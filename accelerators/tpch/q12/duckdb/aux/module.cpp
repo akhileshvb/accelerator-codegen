@@ -57,18 +57,18 @@ int64_t LeafNode(int32_t day) {
   return kTreeN + (static_cast<int64_t>(day) - kTreeBase);
 }
 
-// Adds (shipmode, high, low) for `day` to the leaf-to-root path (or overflow)
+void MergeModes(TpchQ12Modes &dst, const TpchQ12Modes &src);
+
+// Adds the ship-mode counts of `day` to the leaf-to-root path (or overflow)
 // of a map of nodes (Build only; maintenance uses the flat level walk).
 void AddToTree(std::map<core::PartitionId, TpchQ12Node> &nodes, int32_t day,
-               const std::string &shipmode, int64_t high, int64_t low) {
-  const int slot = TpchQ12ModeSlot(shipmode);
+               const TpchQ12Modes &modes) {
   if (!InTree(day)) {
-    nodes[kOverflowPartition].overflow_days[day].Add(slot, shipmode, high, low);
+    MergeModes(nodes[kOverflowPartition].overflow_days[day], modes);
     return;
   }
   for (int64_t n = LeafNode(day); n >= 1; n >>= 1)
-    nodes[static_cast<core::PartitionId>(n)].modes.Add(slot, shipmode, high,
-                                                        low);
+    MergeModes(nodes[static_cast<core::PartitionId>(n)].modes, modes);
 }
 
 // A fresh node image (the node is stored inline in the image).
@@ -93,21 +93,6 @@ void MergeModes(TpchQ12Modes &dst, const TpchQ12Modes &src) {
   for (const auto &entry : src.extra)
     dst.Add(-1, entry.shipmode, entry.high_line_count, entry.low_line_count);
 }
-
-void ApplyContribution(TpchQ12DayShipmodeStats &stats,
-                       TpchQ12PriorityClass priority, int8_t sign) {
-  switch (priority) {
-  case TpchQ12PriorityClass::High:
-    stats.high_line_count += sign;
-    break;
-  case TpchQ12PriorityClass::Low:
-    stats.low_line_count += sign;
-    break;
-  default:
-    break;
-  }
-}
-
 
 bool ReadLineitem(const core::AuxRow &row, TpchQ12LineitemInput &out) {
   int64_t orderkey = 0;
@@ -613,13 +598,11 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ12Module::CreateTxnBuffer() const {
 
 void TpchQ12Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  auto state_owned = BuildState(services);
+  TpchQ12DayModes days;
+  auto state_owned = BuildState(services, days);
   std::map<core::PartitionId, TpchQ12Node> nodes;
-  for (const auto &day : state_owned.day_partitions)
-    for (const auto &entry : day.second)
-      AddToTree(nodes, day.first, entry.first, entry.second.high_line_count,
-                entry.second.low_line_count);
-  state_owned.day_partitions.clear();
+  for (const auto &[day, modes] : days)
+    AddToTree(nodes, day, modes);
   const auto typed_state =
       std::make_shared<const TpchQ12State>(std::move(state_owned));
   builder.Write(core::StateImage::Make(
@@ -755,7 +738,8 @@ void TpchQ12Module::Execute(core::AuxEngineServices &services,
   TpchQ12FinalizeAndEmit(parts, part_count, *shipmode1, *shipmode2, sink);
 }
 
-TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const {
+TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services,
+                                       TpchQ12DayModes &day_modes) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q12 requires a typed initial scan source");
   using Priorities = decltype(TpchQ12State::order_priorities);
@@ -780,8 +764,18 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
       });
 
   struct LineitemPartial {
-    TpchQ12State::DayMap days;
+    TpchQ12DayModes days;
     Counts counts;
+    int32_t last_day = 0;
+    TpchQ12Modes *last_modes = nullptr; // receipt days arrive in runs
+
+    TpchQ12Modes &ModesOf(int32_t day) {
+      if (!last_modes || day != last_day) {
+        last_day = day;
+        last_modes = &days[day];
+      }
+      return *last_modes;
+    }
   };
   auto lineitems = core::PartitionedBuild<LineitemPartial>(
       services, [] { return LineitemPartial{}; },
@@ -799,24 +793,22 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
         if (!TpchQ12LineitemQualifies(input.commitdate_days, input.receiptdate_days,
                                       input.shipdate_days))
           return;
-        ApplyContribution(partial.days[input.receiptdate_days][input.shipmode], priority, 1);
+        partial.ModesOf(input.receiptdate_days)
+            .Add(TpchQ12ModeSlot(input.shipmode), input.shipmode,
+                 priority == TpchQ12PriorityClass::High, priority == TpchQ12PriorityClass::Low);
         const auto count = partial.counts.Get(input.orderkey);
         if (count != std::numeric_limits<uint16_t>::max())
           partial.counts.Set(input.orderkey, static_cast<uint16_t>(count + 1));
       },
       [](LineitemPartial &into, LineitemPartial &&from) {
-        for (auto &[day, modes] : from.days)
-          for (auto &[mode, stats] : modes) {
-            auto &merged = into.days[day][mode];
-            merged.high_line_count += stats.high_line_count;
-            merged.low_line_count += stats.low_line_count;
-          }
+        for (const auto &[day, modes] : from.days)
+          MergeModes(into.ModesOf(day), modes);
         into.counts.MergeFrom(std::move(from.counts), [](uint16_t mine, uint16_t theirs) {
           return static_cast<uint16_t>(std::min<uint32_t>(
               std::numeric_limits<uint16_t>::max(), uint32_t{mine} + theirs));
         });
       });
-  state.day_partitions = std::move(lineitems.days);
+  day_modes = std::move(lineitems.days);
   state.line_counts = std::move(lineitems.counts);
   return state;
 }

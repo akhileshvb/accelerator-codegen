@@ -116,13 +116,49 @@ core::ScaledDecimal128 WideDecimal(const duckdb::hugeint_t &value, int32_t scale
   return {wide, scale};
 }
 
-// A fresh image of `node` holding the stored one plus the deltas order[range]
-// (copy-on-write: published images are never mutated). Null if the stored
-// image is foreign or a group table overflows.
+void AddStats(Q1DayGroupStats &into, const Q1DayGroupStats &add) {
+  into.count += add.count;
+  into.sum_qty += add.sum_qty;
+  into.sum_base_price += add.sum_base_price;
+  into.sum_disc_price += add.sum_disc_price;
+  into.sum_charge += add.sum_charge;
+  into.sum_discount += add.sum_discount;
+}
+
+// Adds partition `add` into `into`; false when the group slots overflow.
+bool AddPartition(Q1DayPartition &into, const Q1DayPartition &add) {
+  for (uint32_t g = 0; g < add.n; ++g) {
+    auto *stats = into.FindOrAdd(add.keys[g]);
+    if (!stats)
+      return false;
+    AddStats(*stats, add.stats[g]);
+  }
+  return true;
+}
+
+// Net contribution of one leaf's deltas (deltas[order[range]]), groups that
+// cancel to zero included. False when the group slots overflow.
+bool LeafDelta(const std::vector<TpchQ1LineitemDelta> &deltas,
+               const std::vector<std::pair<uint32_t, uint32_t>> &order,
+               std::pair<uint32_t, uint32_t> range, Q1DayPartition &out) {
+  for (uint32_t i = range.first; i < range.second; ++i) {
+    const auto &delta = deltas[order[i].second];
+    auto *group = out.FindOrAdd(delta.group_key);
+    if (!group)
+      return false;
+    ::accelerator_codegen::ApplyQ1RowContribution(
+        *group, delta.quantity_raw, delta.extended_price_raw,
+        delta.discount_raw, delta.tax_raw, delta.sign);
+  }
+  return true;
+}
+
+// A fresh image of `node` holding the stored one plus the leaf deltas
+// leaves[range] (copy-on-write: published images are never mutated). Null if
+// the stored image is foreign or a group table overflows.
 std::shared_ptr<TpchQ1StateImage>
 ApplyToNode(core::PartitionId node, const core::StateImage *stored,
-            const std::vector<TpchQ1LineitemDelta> &deltas,
-            const std::vector<std::pair<uint32_t, uint32_t>> &order,
+            const std::vector<Q1DayPartition> &leaves,
             std::pair<uint32_t, uint32_t> range) {
   auto image = std::make_shared<TpchQ1StateImage>();
   image->shipdate_days = static_cast<int32_t>(node);
@@ -133,17 +169,12 @@ ApplyToNode(core::PartitionId node, const core::StateImage *stored,
     image->partition = typed->partition;
   }
   auto &part = image->partition;
-  for (uint32_t i = range.first; i < range.second; ++i) {
-    const auto &delta = deltas[order[i].second];
-    auto *group = part.FindOrAdd(delta.group_key);
-    if (!group)
+  for (uint32_t i = range.first; i < range.second; ++i)
+    if (!AddPartition(part, leaves[i]))
       return nullptr;
-    ::accelerator_codegen::ApplyQ1RowContribution(
-        *group, delta.quantity_raw, delta.extended_price_raw,
-        delta.discount_raw, delta.tax_raw, delta.sign);
-    if (group->count == 0)
-      part.EraseAt(static_cast<uint32_t>(group - part.stats));
-  }
+  for (uint32_t g = part.n; g-- > 0;)
+    if (part.stats[g].count == 0)
+      part.EraseAt(g);
   return image;
 }
 
@@ -304,11 +335,10 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
     }
   }
 
-  // Every delta updates its leaf and all ancestors (copy-on-write: each
-  // touched node is copied into a fresh image; published images are never
-  // mutated). Deltas are visited in leaf order, so the deltas of one node are a
-  // contiguous run of `order` and the nodes of a level are found by a
-  // forward-only walk (no maps, no searches).
+  // Each leaf's deltas are folded once (in parallel); every ancestor then adds
+  // the net deltas of the leaves below it, so the work is O(deltas + touched
+  // leaves x levels), not O(deltas x levels). Deltas are visited in leaf order,
+  // so one leaf's deltas are a contiguous run of `order`.
   const auto &deltas = buffer.Deltas();
   constexpr uint32_t kLevels = kLeafBits + 1; // leaf level 0 .. root level 16
   std::vector<std::pair<uint32_t, uint32_t>> order; // (leaf node, delta index)
@@ -317,16 +347,30 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
     order.emplace_back(LeafNode(deltas[i].shipdate_days), i);
   std::sort(order.begin(), order.end());
 
+  const auto leaf_starts = core::RunStarts(
+      order, [](const auto &entry) { return entry.first; });
+  const std::size_t leaf_count = leaf_starts.size() - 1;
+  std::vector<Q1DayPartition> leaf_deltas(leaf_count);
+  std::vector<core::PartitionId> leaf_ids(leaf_count);
+  std::atomic<bool> unusable{false};
+  core::ParallelEach(services, leaf_count, kNodeGrain, [&](std::size_t leaf) {
+    leaf_ids[leaf] = static_cast<core::PartitionId>(order[leaf_starts[leaf]].first);
+    if (!LeafDelta(deltas, order, {leaf_starts[leaf], leaf_starts[leaf + 1]},
+                   leaf_deltas[leaf]))
+      unusable = true;
+  });
+  if (unusable) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
+
   std::vector<core::PartitionId> partitions; // touched nodes, level by level
-  std::vector<std::pair<uint32_t, uint32_t>> runs; // per node: range in `order`
-  partitions.reserve(order.size() * 4 + kLevels);
-  runs.reserve(partitions.capacity());
+  std::vector<std::pair<uint32_t, uint32_t>> runs; // per node: range in leaf_deltas
   for (uint32_t level = 0; level < kLevels; ++level) {
     const auto starts = core::RunStarts(
-        order, [level](const auto &entry) { return entry.first >> level; });
+        leaf_ids, [level](core::PartitionId leaf) { return leaf >> level; });
     for (std::size_t run = 0; run + 1 < starts.size(); ++run) {
-      partitions.push_back(
-          static_cast<core::PartitionId>(order[starts[run]].first >> level));
+      partitions.push_back(leaf_ids[starts[run]] >> level);
       runs.emplace_back(starts[run], starts[run + 1]);
     }
   }
@@ -338,11 +382,10 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
 
   // Nodes are independent: each slice builds its own images.
   outcome.updates.resize(partitions.size());
-  std::atomic<bool> unusable{false};
   core::ParallelEach(services, partitions.size(), kNodeGrain, [&](std::size_t slot) {
     if (unusable)
       return;
-    auto image = ApplyToNode(partitions[slot], matched[slot], deltas, order,
+    auto image = ApplyToNode(partitions[slot], matched[slot], leaf_deltas,
                              runs[slot]);
     if (!image) {
       unusable = true;

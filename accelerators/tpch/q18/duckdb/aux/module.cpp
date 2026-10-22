@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <set>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -31,6 +32,20 @@ bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey,
   if (scale != 2)
     return false;
   quantity_raw = raw;
+  return true;
+}
+
+// Cells follow the captured projection: key, custkey, orderdate, totalprice.
+bool ReadOrder(const core::AuxRow &row, TpchQ18OrderInput &order) {
+  int64_t price = 0;
+  int32_t scale = 0;
+  if (!core::IntCell(row, 0, order.key) || !core::IntCell(row, 1, order.custkey) ||
+      row.values.size() < 4 || row.values[2].is_null ||
+      !std::holds_alternative<core::AuxDate>(row.values[2].payload) ||
+      !core::DecimalCell(row, 3, price, scale) || scale != 2)
+    return false;
+  order.orderdate_days = std::get<core::AuxDate>(row.values[2].payload).days_since_epoch;
+  order.totalprice_raw = price;
   return true;
 }
 
@@ -74,17 +89,23 @@ void CollectSparseQuantities(
   std::sort(entries.begin(), entries.end());
 }
 
-// Quantity sum per order key in hash shards: partial states of a parallel
-// build fold shard by shard in parallel. A run of rows of one order (lineitem
-// is clustered by order) is summed before it touches a shard.
+// Quantity sums per order key, bucketed by key hash so a partition keeps
+// O(runs seen) and one task later owns whole orders. A run of rows of one
+// order (lineitem is clustered by order) is summed before it is stored.
+constexpr std::size_t kSumBuckets = 1024;
+
 struct OrderSums {
-  static constexpr std::size_t kShards = 64;
-  std::array<std::unordered_map<int64_t, int64_t>, kShards> shards;
+  struct Partial {
+    int64_t orderkey;
+    int64_t sum;
+  };
+  std::vector<std::vector<std::vector<Partial>>> runs{
+      1, std::vector<std::vector<Partial>>(kSumBuckets)};
   int64_t run_key = -1;
   int64_t run_sum = 0;
 
-  static std::size_t ShardOf(int64_t orderkey) {
-    return (static_cast<uint64_t>(orderkey) * 0x9E3779B97F4A7C15ULL) >> 58;
+  static std::size_t BucketOf(int64_t orderkey) {
+    return (static_cast<uint64_t>(orderkey) * 0x9E3779B97F4A7C15ULL) >> 54;
   }
   void Add(int64_t orderkey, int64_t quantity_raw) {
     if (orderkey != run_key) {
@@ -93,18 +114,40 @@ struct OrderSums {
     }
     run_sum += quantity_raw;
   }
-  // Moves the open run into its shard; call before reading or folding.
+  // Stores the open run; call before the partial is merged or read.
   void Flush() {
     if (run_key >= 0)
-      shards[ShardOf(run_key)][run_key] += run_sum;
+      runs.back()[BucketOf(run_key)].push_back({run_key, run_sum});
     run_key = -1;
     run_sum = 0;
   }
-  void FoldShard(std::size_t shard, const OrderSums &from) {
-    for (const auto &[orderkey, sum] : from.shards[shard])
-      shards[shard][orderkey] += sum;
+  void MergeFrom(OrderSums &&from) {
+    Flush();
+    from.Flush();
+    runs.insert(runs.end(), std::make_move_iterator(from.runs.begin()),
+                std::make_move_iterator(from.runs.end()));
   }
 };
+
+// Appends the orders of one bucket whose total quantity is above the persist
+// threshold.
+void AppendOrdersAbove(OrderSums &sums, std::size_t bucket,
+                       std::vector<std::pair<int64_t, int64_t>> &found) {
+  std::vector<OrderSums::Partial> all;
+  for (auto &run : sums.runs) {
+    all.insert(all.end(), run[bucket].begin(), run[bucket].end());
+    run[bucket] = {};
+  }
+  std::sort(all.begin(), all.end(), [](const auto &a, const auto &b) { return a.orderkey < b.orderkey; });
+  for (std::size_t i = 0; i < all.size();) {
+    const int64_t orderkey = all[i].orderkey;
+    int64_t sum = 0;
+    for (; i < all.size() && all[i].orderkey == orderkey; ++i)
+      sum += all[i].sum;
+    if (sum > TpchQ18State::kMinPersistQuantityRaw)
+      found.emplace_back(orderkey, sum);
+  }
+}
 
 // Per-order quantity sums from the tables. The state holds only orders above
 // kMinPersistQuantityRaw, so a lower threshold needs these.
@@ -353,15 +396,16 @@ const std::vector<std::pair<int64_t, std::string>> &
 TpchQ18TxnBuffer::CustomerNames() const {
   return customer_names;
 }
-void TpchQ18TxnBuffer::NoteOrderInserted(int64_t orderkey) {
+void TpchQ18TxnBuffer::NoteOrderInserted(const TpchQ18OrderInput &order) {
   pending = true;
-  inserted_orders.insert(orderkey);
+  inserted_orders[order.key] = order;
 }
 void TpchQ18TxnBuffer::NoteOrderDeleted(int64_t orderkey) {
   pending = true;
   deleted_orders.insert(orderkey);
 }
-const std::unordered_set<int64_t> &TpchQ18TxnBuffer::InsertedOrders() const {
+const std::unordered_map<int64_t, TpchQ18OrderInput> &
+TpchQ18TxnBuffer::InsertedOrders() const {
   return inserted_orders;
 }
 const std::unordered_set<int64_t> &TpchQ18TxnBuffer::DeletedOrders() const {
@@ -454,9 +498,14 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
     int64_t key = 0;
     switch (mutation.kind) {
     case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        if (core::IntCell(row, 0, key))
-          buffer.NoteOrderInserted(key);
+      for (const auto &row : mutation.new_rows) {
+        TpchQ18OrderInput order;
+        if (!ReadOrder(row, order)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        buffer.NoteOrderInserted(order);
+      }
       break;
     case core::MutationKind::Delete:
       for (const auto &row : mutation.old_rows)
@@ -519,6 +568,27 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
     break;
   }
+}
+
+// Current quantity sums of the orders the state does not know and the
+// transaction did not create, fetched in one batch.
+std::unordered_map<int64_t, int64_t>
+ScanUnknownOrderSums(TpchQ18InitialScan *scan, const std::shared_ptr<const TpchQ18State> &state,
+                     const TpchQ18TxnBuffer &buffer,
+                     const std::unordered_map<int64_t, int64_t> &net_by_order) {
+  std::vector<int64_t> unknown;
+  for (const auto &[orderkey, net] : net_by_order)
+    if (net > 0 && !state->HasOrderMeta(orderkey) &&
+        !(buffer.InsertedOrders().count(orderkey) && !buffer.DeletedOrders().count(orderkey)))
+      unknown.push_back(orderkey);
+  std::sort(unknown.begin(), unknown.end());
+  std::unordered_map<int64_t, int64_t> sums;
+  if (scan && !unknown.empty()) {
+    for (const auto orderkey : unknown)
+      sums[orderkey] = 0; // an order the scan does not report has no lineitems
+    scan->LookupOrderQuantitySums(unknown, [&](int64_t orderkey, int64_t sum) { sums[orderkey] = sum; });
+  }
+  return sums;
 }
 
 core::StagedMaintenanceOutcome
@@ -603,6 +673,8 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
       mut().customer_names.Upsert(custkey, name);
   }
 
+  const auto scanned_sums = ScanUnknownOrderSums(initial_scan, base_state, buffer, net_by_order);
+  std::set<int64_t> missing_names; // customers of new survivors, resolved in one batch
   for (const auto &[orderkey, net] : net_by_order) {
     if (net == 0)
       continue;
@@ -618,9 +690,8 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
                !buffer.DeletedOrders().count(orderkey)) {
       // Order created in this transaction: previous sum is 0.
       after = net;
-    } else if (initial_scan &&
-               initial_scan->LookupOrderQuantitySum(orderkey, after)) {
-      // Scan includes this transaction: do not add `net` again.
+    } else if (const auto scanned = scanned_sums.find(orderkey); scanned != scanned_sums.end()) {
+      after = scanned->second; // the scan includes this transaction: `net` is not added again
     } else {
       core::FinishRebuildAll(outcome);
       return outcome;
@@ -640,26 +711,35 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
     st.SetOrderQuantitySum(orderkey, after);
     if (!is_survivor) {
       TpchQ18OrderInput order;
-      if (!initial_scan || !initial_scan->LookupOrder(orderkey, order) ||
-          order.custkey <= 0) {
+      const auto inserted = buffer.InsertedOrders().find(orderkey);
+      if (inserted != buffer.InsertedOrders().end())
+        order = inserted->second;
+      else if (!initial_scan || !initial_scan->LookupOrder(orderkey, order))
+        order.custkey = 0;
+      if (order.custkey <= 0) {
         core::FinishRebuildAll(outcome);
         return outcome;
       }
       st.SetOrderMeta(order.key, order.custkey, order.orderdate_days,
                       order.totalprice_raw);
-      if (!st.customer_names.Contains(order.custkey)) {
-        std::string name;
-        if (initial_scan->LookupCustomerName(order.custkey, name))
-          st.customer_names.Upsert(order.custkey, std::move(name));
-        else
-          initial_scan->ScanCustomersSerial([&](const TpchQ18CustomerInput &input) {
-            if (input.key == order.custkey)
-              st.customer_names.Upsert(input.key, input.name);
-          });
-      }
+      if (!st.customer_names.Contains(order.custkey))
+        missing_names.insert(order.custkey);
     } else {
       st.SyncSurvivorQuantity(orderkey);
     }
+  }
+
+  if (!missing_names.empty()) {
+    const std::vector<int64_t> custkeys(missing_names.begin(), missing_names.end());
+    auto &st = mut();
+    initial_scan->LookupCustomerNames(custkeys, [&](int64_t custkey, const std::string &name) {
+      st.customer_names.Upsert(custkey, name);
+    });
+    for (const auto custkey : custkeys)
+      if (!st.customer_names.Contains(custkey)) {
+        core::FinishRebuildAll(outcome);
+        return outcome;
+      }
   }
 
   if (!new_state)
@@ -721,8 +801,7 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q18 aux requires a typed initial scan source");
 
-  // Quantity sum per order, hash-sharded so the partials fold shard by shard
-  // in parallel.
+  // Quantity sum per order; the orders above the persist threshold survive.
   auto sums = core::PartitionedBuild<OrderSums>(
       services, [] { return OrderSums{}; },
       [&](std::size_t parts, auto &&sink) {
@@ -735,25 +814,15 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
         if (input.orderkey >= 0)
           partial.Add(input.orderkey, input.quantity_raw);
       },
-      [&](OrderSums &into, OrderSums &&from) {
-        into.Flush();
-        from.Flush();
-        core::ParallelSlices(services, OrderSums::kShards, 1,
-                             [&](std::size_t, std::size_t first, std::size_t last) {
-                               for (std::size_t s = first; s < last; ++s)
-                                 into.FoldShard(s, from);
-                             });
-      });
+      [](OrderSums &into, OrderSums &&from) { into.MergeFrom(std::move(from)); });
   sums.Flush();
   using Sums = std::vector<std::pair<int64_t, int64_t>>;
   Sums above_sums;
   core::ParallelReduce(
-      services, OrderSums::kShards, 1, above_sums,
+      services, kSumBuckets, 1, above_sums,
       [&](Sums &found, std::size_t first, std::size_t last) {
-        for (std::size_t s = first; s < last; ++s)
-          for (const auto &entry : sums.shards[s])
-            if (entry.second > TpchQ18State::kMinPersistQuantityRaw)
-              found.push_back(entry);
+        for (std::size_t bucket = first; bucket < last; ++bucket)
+          AppendOrdersAbove(sums, bucket, found);
       },
       [](Sums &into, Sums &&from) { into.insert(into.end(), from.begin(), from.end()); });
   const std::unordered_map<int64_t, int64_t> above(above_sums.begin(), above_sums.end());
@@ -777,11 +846,19 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
         into.insert(into.end(), from.begin(), from.end());
       });
   std::unordered_set<int64_t> needed_custkeys;
+  for (const auto &[order, sum] : survivors)
+    needed_custkeys.insert(order.custkey);
+  // ~48 entries per shard whatever the scale, so a commit clones little.
+  using SumMap = core::ShardedCowHashMap<int64_t, 8>;
+  state.quantity_overflow = SumMap(SumMap::ShardBitsFor(survivors.size()));
+  state.survivors = core::ShardedCowHashMap<TpchQ18SurvivorMeta, 8>(
+      SumMap::ShardBitsFor(survivors.size()));
+  state.customer_names = core::ShardedCowHashMap<std::string, 8>(
+      SumMap::ShardBitsFor(needed_custkeys.size()));
   for (const auto &[order, sum] : survivors) {
     state.SetOrderQuantitySum(order.key, sum);
     state.SetOrderMeta(order.key, order.custkey, order.orderdate_days,
                        order.totalprice_raw);
-    needed_custkeys.insert(order.custkey);
   }
 
   using Names = std::vector<std::pair<int64_t, std::string>>;

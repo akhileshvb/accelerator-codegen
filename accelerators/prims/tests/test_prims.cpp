@@ -1500,6 +1500,72 @@ static void TestShardedSortedMap() {
   }
 }
 
+// Batched ApplyGrouped (groups run in reverse and on threads) equals serial writes.
+static void TestShardedSortedMapApplyGrouped() {
+  using M = ShardedSortedMap<uint32_t, SsmRec, SsmRecKey,
+                             ShardedSortedMapHash<uint32_t>, 12, 2>;
+  struct Edit {
+    SsmRec rec;
+    bool erase;
+  };
+  std::mt19937 rng(7);
+  std::map<uint32_t, SsmRec> ref;
+  M map = [&] {
+    M::Builder b(std::size_t{20000}, 8);
+    for (uint32_t k = 0; k < 20000; k += 2) {
+      b.Add({k, 1, int64_t(k)});
+      ref[k] = {k, 1, int64_t(k)};
+    }
+    b.Sort();
+    return b.Finish();
+  }();
+  for (int round = 0; round < 6; ++round) {
+    const std::size_t n = round == 0 ? 10 : 30000;
+    std::vector<std::vector<Edit>> pieces(3);
+    for (std::size_t i = 0; i < n; ++i) {
+      const uint32_t k = rng() % 25000;
+      const bool erase = rng() % 3 == 0;
+      const SsmRec rec{k, uint16_t(round), int64_t(i)};
+      pieces[i % 3].push_back({rec, erase});
+    }
+    // piece order is the order within a key
+    for (const auto &piece : pieces)
+      for (const auto &e : piece) {
+        if (e.erase)
+          ref.erase(e.rec.key);
+        else
+          ref[e.rec.key] = e.rec;
+      }
+    M::Txn tx(map);
+    auto par = [&](std::size_t groups, const auto &fn) {
+      if (round % 2) {
+        ReversePar{}(groups, fn);
+        return;
+      }
+      std::vector<std::thread> th;
+      for (std::size_t t = 0; t < 4; ++t)
+        th.emplace_back([&, t] {
+          for (std::size_t g = t; g < groups; g += 4)
+            fn(g);
+        });
+      for (auto &x : th)
+        x.join();
+    };
+    tx.ApplyGrouped(pieces, [](const Edit &e) -> const uint32_t & { return e.rec.key; }, par,
+                    [&](std::size_t, M::Txn::Scope &scope, std::vector<Edit> &rows) {
+                      for (const auto &e : rows) {
+                        if (e.erase)
+                          scope.Erase(e.rec.key);
+                        else
+                          scope.Upsert(e.rec);
+                      }
+                    });
+    CHECK(tx.size() == ref.size());
+    map = tx.Finish(par);
+    SsmCheckEqual(map, ref, [](const SsmRec &a, const SsmRec &b) { return a == b; });
+  }
+}
+
 int main() {
   TestDenseIdArray();
   TestCow();
@@ -1524,6 +1590,7 @@ int main() {
   TestCowBox();
   TestShardedCowMap();
   TestShardedSortedMap();
+  TestShardedSortedMapApplyGrouped();
   std::puts("test_prims: PASS");
   return 0;
 }

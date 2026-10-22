@@ -5,6 +5,7 @@
 #include <climits>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -111,6 +112,13 @@ public:
 
   // Point lookup of an order's year; false when unsupported or absent.
   virtual bool LookupOrderYear(int64_t, int32_t &) { return false; }
+  // The years of the orders `keys` that exist, in one engine round trip.
+  virtual void LookupOrderYears(const std::vector<int64_t> &keys,
+                                std::unordered_map<int64_t, int32_t> &years) {
+    for (const auto key : keys)
+      if (int32_t year = 0; LookupOrderYear(key, year))
+        years[key] = year;
+  }
 };
 
 struct Q9CellKey {
@@ -181,82 +189,155 @@ struct Q9PartRecord {
   std::vector<Q9ExtraAgg> extras;
 };
 
-// Part records of one profit slot, sorted by partkey. Records are shared_ptr'd
-// so copying a slot (every maintenance write copies each slot it touches out of
-// the published image) copies only pointers; Mutable() clones just the records
-// a write changes. Bulk mode (build) appends through a hash index; FinishBulk()
-// sorts and drops it.
+// Part records of one profit slot, sorted by partkey, in small pages. Copying a slot
+// (every maintenance write copies each slot it touches out of the published image)
+// copies one pointer per page; a write clones its page (kPageSize entries of record
+// pointers) and then only the records it changes (Mutable() clones the record), so the
+// cost of a commit follows the parts it changes, not the parts the slot holds.
 class Q9PartMap {
 public:
   using Entry = std::pair<int64_t, std::shared_ptr<Q9PartRecord>>;
+  static constexpr std::size_t kPageSize = 32;
 
-  std::vector<Entry>::const_iterator begin() const { return entries.begin(); }
-  std::vector<Entry>::const_iterator end() const { return entries.end(); }
-  std::size_t size() const { return entries.size(); }
-  bool empty() const { return entries.empty(); }
+private:
+  struct Page {
+    std::vector<Entry> entries;
+  };
+
+public:
+
+  class const_iterator {
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = Entry;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const Entry *;
+    using reference = const Entry &;
+
+    const_iterator() = default;
+    reference operator*() const { return (*pages_)[page_]->entries[at_]; }
+    pointer operator->() const { return &**this; }
+    const_iterator &operator++() {
+      if (++at_ == (*pages_)[page_]->entries.size()) {
+        ++page_;
+        at_ = 0;
+      }
+      return *this;
+    }
+    bool operator==(const const_iterator &o) const { return page_ == o.page_ && at_ == o.at_; }
+    bool operator!=(const const_iterator &o) const { return !(*this == o); }
+
+  private:
+    friend class Q9PartMap;
+    const_iterator(const std::vector<std::shared_ptr<Page>> *pages, std::size_t page)
+        : pages_(pages), page_(page) {}
+    const std::vector<std::shared_ptr<Page>> *pages_ = nullptr;
+    std::size_t page_ = 0, at_ = 0;
+  };
+
+  const_iterator begin() const { return {&pages, 0}; }
+  const_iterator end() const { return {&pages, pages.size()}; }
+  std::size_t size() const { return count; }
+  bool empty() const { return count == 0; }
   void clear() {
-    entries.clear();
-    bulk_index.clear();
+    pages.clear();
+    lows.clear();
+    count = 0;
   }
 
-  void BeginBulk() { bulk = true; }
-  void FinishBulk() {
-    if (!bulk)
-      return;
-    bulk = false;
-    bulk_index.clear();
-    bulk_index.rehash(0);
-    std::sort(entries.begin(), entries.end(),
-              [](const Entry &a, const Entry &b) { return a.first < b.first; });
+  // Installs the whole map from entries sorted by partkey (build).
+  void Assign(std::vector<Entry> &&sorted) {
+    clear();
+    for (std::size_t i = 0; i < sorted.size(); i += kPageSize) {
+      const auto last = std::min(sorted.size(), i + kPageSize);
+      auto page = std::make_shared<Page>();
+      page->entries.assign(std::make_move_iterator(sorted.begin() + static_cast<std::ptrdiff_t>(i)),
+                           std::make_move_iterator(sorted.begin() + static_cast<std::ptrdiff_t>(last)));
+      lows.push_back(page->entries.front().first);
+      pages.push_back(std::move(page));
+    }
+    count = sorted.size();
   }
 
   const Q9PartRecord *Find(int64_t partkey) const {
-    const auto it = Lower(partkey);
-    return it != entries.end() && it->first == partkey ? it->second.get()
-                                                       : nullptr;
+    if (pages.empty())
+      return nullptr;
+    const auto &entries = pages[PageOf(partkey)]->entries;
+    const auto it = Lower(entries, partkey);
+    return it != entries.end() && it->first == partkey ? it->second.get() : nullptr;
   }
   // The record for writing (cloned if a published image shares it); null if absent.
   Q9PartRecord *Mutable(int64_t partkey) {
-    if (bulk) {
-      const auto it = bulk_index.find(partkey);
-      return it == bulk_index.end() ? nullptr : Own(entries[it->second].second);
-    }
-    const auto it = Lower(partkey);
-    return it != entries.end() && it->first == partkey ? Own(it->second)
-                                                       : nullptr;
+    if (pages.empty() || Find(partkey) == nullptr)
+      return nullptr;
+    auto &entries = OwnPage(PageOf(partkey)).entries;
+    return Own(Lower(entries, partkey)->second);
   }
   // The record for writing, created empty if absent.
   Q9PartRecord &Get(int64_t partkey) {
-    if (bulk) {
-      const auto [it, inserted] = bulk_index.emplace(partkey, entries.size());
-      if (inserted)
-        entries.emplace_back(partkey, std::make_shared<Q9PartRecord>());
-      return *Own(entries[it->second].second);
+    if (pages.empty()) {
+      pages.push_back(std::make_shared<Page>());
+      lows.push_back(partkey);
     }
-    auto it = Lower(partkey);
-    if (it == entries.end() || it->first != partkey)
+    const auto index = PageOf(partkey);
+    auto &entries = OwnPage(index).entries;
+    auto it = Lower(entries, partkey);
+    if (it == entries.end() || it->first != partkey) {
       it = entries.insert(it, {partkey, std::make_shared<Q9PartRecord>()});
-    return *Own(it->second);
+      ++count;
+      lows[index] = std::min(lows[index], entries.front().first);
+      if (entries.size() > 2 * kPageSize)
+        Split(index);
+    }
+    return *Own(Lower(OwnPage(PageOf(partkey)).entries, partkey)->second);
   }
   void Emplace(int64_t partkey, Q9PartRecord record) {
     Get(partkey) = std::move(record);
   }
   void Erase(int64_t partkey) {
-    const auto it = Lower(partkey);
-    if (it != entries.end() && it->first == partkey)
-      entries.erase(it);
+    if (pages.empty() || Find(partkey) == nullptr)
+      return;
+    const auto index = PageOf(partkey);
+    auto &entries = OwnPage(index).entries;
+    entries.erase(Lower(entries, partkey));
+    --count;
+    if (entries.empty()) {
+      pages.erase(pages.begin() + static_cast<std::ptrdiff_t>(index));
+      lows.erase(lows.begin() + static_cast<std::ptrdiff_t>(index));
+    } else {
+      lows[index] = entries.front().first;
+    }
   }
 
 private:
-  std::vector<Entry>::const_iterator Lower(int64_t partkey) const {
-    return std::lower_bound(
-        entries.begin(), entries.end(), partkey,
-        [](const Entry &e, int64_t k) { return e.first < k; });
+  // The page that holds, or would take, partkey: the last whose lowest key is <= it.
+  std::size_t PageOf(int64_t partkey) const {
+    const auto it = std::upper_bound(lows.begin(), lows.end(), partkey);
+    return it == lows.begin() ? 0 : static_cast<std::size_t>(it - lows.begin()) - 1;
   }
-  std::vector<Entry>::iterator Lower(int64_t partkey) {
-    return std::lower_bound(
-        entries.begin(), entries.end(), partkey,
-        [](const Entry &e, int64_t k) { return e.first < k; });
+  static std::vector<Entry>::const_iterator Lower(const std::vector<Entry> &entries,
+                                                  int64_t partkey) {
+    return std::lower_bound(entries.begin(), entries.end(), partkey,
+                            [](const Entry &e, int64_t k) { return e.first < k; });
+  }
+  static std::vector<Entry>::iterator Lower(std::vector<Entry> &entries, int64_t partkey) {
+    return std::lower_bound(entries.begin(), entries.end(), partkey,
+                            [](const Entry &e, int64_t k) { return e.first < k; });
+  }
+  Page &OwnPage(std::size_t index) {
+    auto &page = pages[index];
+    if (page.use_count() > 1)
+      page = std::make_shared<Page>(*page);
+    return *page;
+  }
+  void Split(std::size_t index) {
+    auto &entries = pages[index]->entries;
+    auto upper = std::make_shared<Page>();
+    const auto middle = entries.begin() + static_cast<std::ptrdiff_t>(entries.size() / 2);
+    upper->entries.assign(std::make_move_iterator(middle), std::make_move_iterator(entries.end()));
+    entries.erase(middle, entries.end());
+    lows.insert(lows.begin() + static_cast<std::ptrdiff_t>(index) + 1, upper->entries.front().first);
+    pages.insert(pages.begin() + static_cast<std::ptrdiff_t>(index) + 1, std::move(upper));
   }
   static Q9PartRecord *Own(std::shared_ptr<Q9PartRecord> &rec) {
     if (rec.use_count() > 1)
@@ -264,9 +345,9 @@ private:
     return rec.get();
   }
 
-  std::vector<Entry> entries;
-  bool bulk = false;
-  std::unordered_map<int64_t, std::size_t> bulk_index;
+  std::vector<std::shared_ptr<Page>> pages;
+  std::vector<int64_t> lows; // lowest key of each page
+  std::size_t count = 0;
 };
 
 // Ids beyond these are never stored in the dense COW arrays (a directory entry
@@ -301,7 +382,6 @@ struct TpchQ9State {
   // tokens' vectors; published images never mutate them.
   using Posting = std::vector<int32_t>;
   std::unordered_map<std::string, std::shared_ptr<Posting>> name_postings;
-  bool postings_bulk = false; // build mode: append now, sort in Finalize
 
   // Nations sorted by name for ORDER BY nation ASC without per-query sort.
   std::vector<std::pair<std::string, int32_t>> nation_emit_order;
@@ -316,7 +396,8 @@ struct TpchQ9State {
   core::ChunkedCowArray<uint8_t, 16> order_years{kAbsentYearCode};
   // suppkey -> partkeys that have a lineitem-aggregate pair with that supplier.
   core::ChunkedCowArray<std::shared_ptr<const std::vector<int64_t>>, 10> supp_pairs;
-  std::unordered_map<int64_t, int32_t> order_year_overflow;
+  using OrderYearOverflow = std::unordered_map<int64_t, int32_t>;
+  OrderYearOverflow order_year_overflow;
 
   struct PackedPartsuppRow {
     static constexpr int kSlots = 4;
@@ -338,12 +419,15 @@ struct TpchQ9State {
              (std::hash<int64_t>()(k.suppkey) << 1);
     }
   };
-  std::unordered_map<PartsuppKey, int64_t, PartsuppKeyHash> partsupp_overflow;
+  using PartsuppOverflow = std::unordered_map<PartsuppKey, int64_t, PartsuppKeyHash>;
+  PartsuppOverflow partsupp_overflow;
 
   // Token cube (published in its own partition; null/inactive elsewhere).
   std::unordered_map<std::string, std::shared_ptr<Q9TokenCube>> cube;
   bool cube_active = false;
 
+  // The token's cube for writing (created, or cloned if a published image shares it).
+  Q9TokenCube &CubeOf(const std::string &token);
   void CubeAdd(const std::vector<std::string> &tokens, int32_t nation,
                int32_t year, int64_t delta);
   // Add (sign=+1) / subtract (sign=-1) all cells of a record into the cube.
@@ -403,15 +487,20 @@ struct TpchQ9State {
     return true;
   }
   void SetOrderYear(int64_t orderkey, int32_t year) {
+    SetOrderYear(order_year_overflow, orderkey, year);
+  }
+  // As SetOrderYear, recording out-of-range years in `overflow`: build threads that own
+  // disjoint order chunks keep their own overflow maps.
+  void SetOrderYear(OrderYearOverflow &overflow, int64_t orderkey, int32_t year) {
     if (year > kPackedYearBias && year <= kPackedYearBias + 254 &&
         Q9BoundedSet(order_years, orderkey,
                      static_cast<uint8_t>(year - kPackedYearBias),
                      kQ9MaxOrderKey)) {
-      order_year_overflow.erase(orderkey);
+      overflow.erase(orderkey);
       return;
     }
     Q9BoundedSet(order_years, orderkey, kAbsentYearCode, kQ9MaxOrderKey);
-    order_year_overflow[orderkey] = year;
+    overflow[orderkey] = year;
   }
   void EraseOrderYear(int64_t orderkey) {
     Q9BoundedSet(order_years, orderkey, kAbsentYearCode, kQ9MaxOrderKey);
@@ -458,14 +547,19 @@ struct TpchQ9State {
     ErasePackedPartsupp(partkey, suppkey);
   }
   void SetPartsuppCost(int64_t partkey, int64_t suppkey, int64_t cost) {
-    if (!partsupp_overflow.empty())
-      partsupp_overflow.erase(PartsuppKey{partkey, suppkey});
+    SetPartsuppCost(partsupp_overflow, partkey, suppkey, cost);
+  }
+  // As SetPartsuppCost, with the overflow entries in `overflow` (see SetOrderYear).
+  void SetPartsuppCost(PartsuppOverflow &overflow, int64_t partkey, int64_t suppkey,
+                       int64_t cost) {
+    if (!overflow.empty())
+      overflow.erase(PartsuppKey{partkey, suppkey});
     if (!Q9InRange(partkey) || suppkey < 1 ||
         suppkey > static_cast<int64_t>(INT32_MAX) ||
         cost < static_cast<int64_t>(INT32_MIN) ||
         cost > static_cast<int64_t>(INT32_MAX)) {
       ErasePackedPartsupp(partkey, suppkey);
-      partsupp_overflow[PartsuppKey{partkey, suppkey}] = cost;
+      overflow[PartsuppKey{partkey, suppkey}] = cost;
       return;
     }
     auto row = partsupp_rows.Get(partkey);
@@ -486,7 +580,7 @@ struct TpchQ9State {
       Q9BoundedSet(partsupp_rows, partkey, row);
       return;
     }
-    partsupp_overflow[PartsuppKey{partkey, suppkey}] = cost;
+    overflow[PartsuppKey{partkey, suppkey}] = cost;
   }
 
   static core::PartitionId ChooseProfitSlots(std::size_t part_count);
@@ -528,16 +622,6 @@ struct TpchQ9State {
     return GetPartition(partkey).parts.Find(partkey);
   }
 
-  void BeginBulkParts() {
-    for (auto &partition : profit_partitions)
-      partition.parts.BeginBulk();
-  }
-  void FinishBulkParts() {
-    for (auto &partition : profit_partitions)
-      partition.parts.FinishBulk();
-  }
-
-  void FinalizePostings();
   void RebuildNationEmitOrder();
 
   static Q9Pair *FindPair(Q9PartRecord &rec, int32_t suppkey) {
@@ -587,7 +671,7 @@ struct TpchQ9State {
                   int32_t nation, int32_t year, int64_t delta);
   // Build-time: derive cells of every existing part from its pairs.
   void BuildCellsFromPairs(const core::AuxEngineServices &services);
-  void BuildSuppPairsIndex();
+  void BuildSuppPairsIndex(const core::AuxEngineServices &services);
 
   void AddNamePostings(int64_t partkey, const std::string &raw_name);
   void RemoveNamePostings(int64_t partkey);
@@ -600,6 +684,9 @@ struct Q9TokenCube {
   int64_t dense[kNations][kYears] = {};
   // Cells outside the dense range (profit != 0 only).
   std::vector<Q9ProfitCell> sparse;
+
+  // Adds `delta` to the cell, dropping a sparse cell that reaches zero.
+  void Add(int32_t nation, int32_t year, int64_t delta);
 };
 
 enum class TpchQ9ImageKind : uint8_t {

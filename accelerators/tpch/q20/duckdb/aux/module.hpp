@@ -456,14 +456,26 @@ struct TpchQ20State {
   // pair_key -> complete current series (empty vector = no lineitems), sorted
   // by shipdate.
   TpchQ20SeriesOverlay series;
+  // Dimension overlays are bounded by kMaxDimensionOverlay entries (Stage rebuilds past
+  // it) and sharded at ~48 entries per shard, so a commit copies the shards of its touched
+  // keys only, whatever the scale factor.
+  static constexpr std::size_t kMaxDimensionOverlay = 1000000;
+  template <class V> using DimensionMap = core::ShardedCowHashMap<V, 15>;
+  static unsigned DimensionShardBits() {
+    return DimensionMap<int>::ShardBitsFor(kMaxDimensionOverlay);
+  }
   // partkey -> complete current partsupp list (empty = none).
-  core::ShardedCowHashMap<std::vector<TpchQ20PsPair>, 7> partsupps;
-  core::ShardedCowHashMap<TpchQ20PartOverlay, 7> parts;
-  core::ShardedCowHashMap<TpchQ20SupplierOverlay, 7> suppliers;
+  DimensionMap<std::vector<TpchQ20PsPair>> partsupps{DimensionShardBits()};
+  DimensionMap<TpchQ20PartOverlay> parts{DimensionShardBits()};
+  DimensionMap<TpchQ20SupplierOverlay> suppliers{DimensionShardBits()};
+
+  std::size_t DimensionOverlayWeight() const {
+    return partsupps.size() + parts.size() + suppliers.size();
+  }
 
   // Total overlay population; Stage requests a rebuild past a bound.
   std::size_t OverlayWeight() const {
-    return series.Size() + partsupps.size() + parts.size() + suppliers.size();
+    return series.Size() + DimensionOverlayWeight();
   }
 
   // Effective-state helpers (overlay first, then base).

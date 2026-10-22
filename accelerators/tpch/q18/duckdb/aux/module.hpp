@@ -91,10 +91,21 @@ public:
     return false;
   }
 
+  // Names of many customers in one query; absent customers are not reported.
+  virtual void LookupCustomerNames(
+      const std::vector<int64_t> &,
+      const std::function<void(int64_t, const std::string &)> &) {}
+
   // Current SUM(l_quantity) for one order, including the open transaction.
   virtual bool LookupOrderQuantitySum(int64_t, int64_t &) {
     return false;
   }
+
+  // Current SUM(l_quantity) of many orders in one query; orders without
+  // lineitems are not reported.
+  virtual void LookupOrderQuantitySums(
+      const std::vector<int64_t> &,
+      const std::function<void(int64_t, int64_t)> &) {}
 };
 
 struct TpchQ18SurvivorMeta {
@@ -174,14 +185,14 @@ public:
   void AddDelta(TpchQ18LineitemDelta delta);
   void AddCustomerName(int64_t custkey, std::string name);
   const std::vector<std::pair<int64_t, std::string>> &CustomerNames() const;
-  void NoteOrderInserted(int64_t orderkey);
+  void NoteOrderInserted(const TpchQ18OrderInput &order);
   void NoteOrderDeleted(int64_t orderkey);
-  const std::unordered_set<int64_t> &InsertedOrders() const;
+  const std::unordered_map<int64_t, TpchQ18OrderInput> &InsertedOrders() const;
   const std::unordered_set<int64_t> &DeletedOrders() const;
 
 private:
   std::vector<std::pair<int64_t, std::string>> customer_names;
-  std::unordered_set<int64_t> inserted_orders;
+  std::unordered_map<int64_t, TpchQ18OrderInput> inserted_orders;
   std::unordered_set<int64_t> deleted_orders;
   bool pending = false;
   bool requires_rebuild = false;

@@ -105,7 +105,7 @@ inline uint8_t PackTpchQ3Shippriority(int32_t shippriority) {
 }
 
 // Persistent (copy-on-write) hash-sharded sorted maps keyed by uint64 `key`
-// (core::ShardedSortedMap, 2^18 shards: 1024 top slots x 256 leaves per mid).
+// (core::ShardedSortedMap; Builder(expected) keeps shards at ~256 entries at any scale).
 // A published index is never mutated: a write copies the top array, the
 // touched mid arrays and the touched leaves (a few hundred entries);
 // everything else stays shared.
@@ -117,7 +117,7 @@ struct TpchQ3KeyOf {
 template <typename E>
 using TpchQ3ShardIndex =
     core::ShardedSortedMap<uint64_t, E, TpchQ3KeyOf,
-                           core::ShardedSortedMapHash<uint64_t>, 18, 8>;
+                           core::ShardedSortedMapHash<uint64_t>, 26, 8>;
 
 // Per-order record (every order whose customer is in a tracked segment).
 // `bound` is an upper bound on the order's revenue for ANY cutoff: the sum of

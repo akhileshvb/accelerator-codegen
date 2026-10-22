@@ -2,11 +2,15 @@
 #include "tpch/q8/calibration_writes.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
+#include "tpch/common/dealt_rows.hpp"
 
 #include <algorithm>
 #include <cstddef>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -15,12 +19,17 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
+// Rows per ApplyGrouped group (the substrate test grain can lower it).
+constexpr std::size_t kRowsPerGroup = 2048;
+
 // Lineitem deltas per slice when resolving them against the dimensions (untimed).
 constexpr std::size_t kResolveGrain = 2048;
 // Touched mid arrays per slice when publishing a dimension map (untimed).
 constexpr std::size_t kMidArrayGrain = 16;
 // Shards per slice when sorting a built index (untimed).
 constexpr std::size_t kSortShardGrain = 1024;
+// Elements per sorted slice when sorting a commit's changes (untimed).
+constexpr std::size_t kSortGrain = 1 << 16;
 
 // The cube covers these two order years.
 constexpr int32_t kFirstYear = 1995;
@@ -158,16 +167,20 @@ private:
 
 // Read-only dense key -> int32 lookup used to speed up the build scan.
 struct DenseI32 {
-  static constexpr int64_t kMaxKey = int64_t(1) << 27;
+  static constexpr int64_t kMaxKey = int64_t(1) << 30;
   std::vector<int32_t> v;
-  template <class M> void Fill(M &m, int64_t max_key) {
+  // Keys are unique, so shards fill disjoint slots.
+  template <class M> void Fill(const core::AuxEngineServices &services, M &m, int64_t max_key) {
     if (max_key < 0 || max_key > kMaxKey)
       return;
     v.assign(static_cast<std::size_t>(max_key) + 1, kAbsent);
-    m.ForEach([&](const TpchQ8SmallMap::Element &e) {
-      if (e.key >= 0 && e.key <= max_key)
-        v[static_cast<std::size_t>(e.key)] = e.value;
-    });
+    core::ParallelSlices(services, m.shard_count(), kSortShardGrain,
+                         [&](std::size_t, std::size_t begin, std::size_t end) {
+                           m.ForEachInShards(begin, end, [&](const TpchQ8SmallMap::Element &e) {
+                             if (e.key >= 0 && e.key <= max_key)
+                               v[static_cast<std::size_t>(e.key)] = e.value;
+                           });
+                         });
   }
   template <class M>
   bool Get(M &m, int64_t k, int32_t &out) const {
@@ -240,11 +253,64 @@ void AccumulateDim(const core::MutationBatch &mutation, TpchQ8TxnBuffer &buffer,
   }
 }
 
-// Orders of one scan partition.
-struct OrdersPartial {
-  TpchQ8OrderMap::Builder orders;
-  int64_t max_key = 0;
+struct PartRow {
+  int64_t key = 0;
+  int32_t local_type = 0; // index into the type dictionary of the partition that scanned the row
 };
+
+// Parts of every partition, each partition with its own type dictionary.
+struct PartScan {
+  DealtRows<PartRow> rows{kDealBuckets};
+  std::vector<std::vector<std::string>> types{1}; // per partition, in first-appearance order
+  std::map<std::string, int32_t, std::less<>> index; // the scanning partition's types
+};
+
+// Adds the parts to `builder` as (key, index into dims.dict->part_types), numbering the
+// types by first appearance in the table: the partitions' dictionaries are folded in
+// table order.
+ScannedMap<TpchQ8SmallMap> ScanParts(core::AuxEngineServices &services,
+                                     TpchQ8InitialScan &source, TpchQ8Dimensions &dims) {
+  auto scanned = core::PartitionedBuild<PartScan>(
+      services, [] { return PartScan{}; },
+      [&](std::size_t parts, auto &&sink) {
+        source.ScanTable(services, "part",
+                         {scan::IntColumn("p_partkey"), scan::TextColumn("p_type")}, parts, sink);
+      },
+      [&](PartScan &partial, const auto &row) {
+        const int64_t key = row.Int(0);
+        if (key <= 0)
+          return;
+        auto &types = partial.types.front();
+        auto it = partial.index.find(row.TextView(1));
+        if (it == partial.index.end()) {
+          it = partial.index.emplace(row.Text(1), static_cast<int32_t>(types.size())).first;
+          types.push_back(it->first);
+        }
+        partial.rows.Add(TpchQ8SmallMap::ShardOf(key, kDealBucketBits), key, {key, it->second});
+      },
+      [](PartScan &into, PartScan &&from) {
+        into.rows.Merge(std::move(from.rows));
+        std::move(from.types.begin(), from.types.end(), std::back_inserter(into.types));
+      });
+
+  auto &dict = *dims.dict;
+  std::vector<std::vector<int32_t>> global_index(scanned.types.size());
+  for (std::size_t run = 0; run < scanned.types.size(); ++run) {
+    for (const auto &type : scanned.types[run]) {
+      const auto it = dict.part_type_to_index.emplace(type, static_cast<int32_t>(dict.part_types.size()));
+      if (it.second)
+        dict.part_types.push_back(type);
+      global_index[run].push_back(it.first->second);
+    }
+  }
+  ScannedMap<TpchQ8SmallMap> out{TpchQ8SmallMap::Builder(scanned.rows.Size()), scanned.rows.MaxKey()};
+  ParallelBucketGroups(services, kDealBuckets, out.builder.shard_count(), [&](std::size_t bucket) {
+    scanned.rows.ForEachWithPartition(bucket, [&](std::size_t run, const PartRow &row) {
+      out.builder.Add({row.key, global_index[run][static_cast<std::size_t>(row.local_type)]});
+    });
+  });
+  return out;
+}
 
 // A partition's cube: the state and its editor (the editor keeps a reference,
 // so both live behind pointers and the partial can move).
@@ -268,12 +334,12 @@ void MergeCubes(TpchQ8State &into, TpchQ8State &from) {
       into.pages[i] = std::move(from.pages[i]);
       continue;
     }
-    auto sum = std::make_shared<TpchQ8CubePage>(*into.pages[i]);
+    // Pages of a partition's cube are not shared yet: add into them in place.
+    const auto sum = std::const_pointer_cast<TpchQ8CubePage>(into.pages[i]);
     for (std::size_t c = 0; c < sum->cell.size(); ++c)
       sum->cell[c] += from.pages[i]->cell[c];
     for (std::size_t c = 0; c < sum->roll.size(); ++c)
       sum->roll[c] += from.pages[i]->roll[c];
-    into.pages[i] = std::move(sum);
   }
 }
 
@@ -285,6 +351,14 @@ struct ResolvedDelta {
   int year_idx = -1; // -1: outside the cube's years
   int32_t part_type = 0, cust_slot = 0, supp_slot = 0;
   bool unrepresentable = false;
+};
+
+// The net change of one order in a transaction (see NetOrderOps).
+struct NetOrder {
+  int64_t key;
+  bool has_add;
+  bool present;
+  TpchQ8OrderInfo info;
 };
 
 // Delta maintenance of the cube for one commit.
@@ -397,7 +471,7 @@ private:
                                           : NewCust(k);
   }
   const TpchQ8OrderInfo *OldOrder(int64_t k) const {
-    return heavy_keys[kOrder].count(k) ? TpchQ8Val(old_dims->order_info.Find(k))
+    return IsHeavyOrder(k) ? TpchQ8Val(old_dims->order_info.Find(k))
                                        : NewOrder(k);
   }
 
@@ -416,27 +490,108 @@ private:
     return idx;
   }
 
-  // Net lineitem row count change per order, and the fresh keys this
-  // transaction's lineitem deltas reference.
+  // Net lineitem row count change per order (sorted by order key, zero nets
+  // dropped), the net order changes, and the fresh keys this transaction's
+  // lineitem deltas reference.
   void CollectDeltaFacts() {
-    line_delta_sum.reserve(buffer.Deltas().size());
-    for (const auto &delta : buffer.Deltas())
-      line_delta_sum[delta.orderkey] += delta.sign;
+    NetLineDeltas();
+    NetOrderOps();
+    struct FreshRefs {
+      std::vector<int64_t> keys[3];
+    };
+    FreshRefs refs;
+    const auto merge = [](FreshRefs &into, FreshRefs &&from) {
+      for (int k = 0; k < 3; ++k)
+        into.keys[k].insert(into.keys[k].end(), from.keys[k].begin(), from.keys[k].end());
+    };
+    const auto &deltas = buffer.Deltas();
+    core::ParallelReduce(
+        services, deltas.size(), kResolveGrain, refs,
+        [&](FreshRefs &part, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            if (deltas[i].partkey > old_dims->part_build_max)
+              part.keys[kPart].push_back(deltas[i].partkey);
+            if (deltas[i].suppkey > old_dims->supp_build_max)
+              part.keys[kSupplier].push_back(deltas[i].suppkey);
+          }
+        },
+        merge);
+    core::ParallelReduce(
+        services, line_net.size(), kResolveGrain, refs,
+        [&](FreshRefs &part, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            const auto *oi = ReferencedOrderInfo(line_net[i].first);
+            if (oi && oi->custkey > old_dims->cust_build_max)
+              part.keys[kCustomer].push_back(oi->custkey);
+          }
+        },
+        merge);
+    for (int k = 0; k < 3; ++k)
+      referenced_fresh[k].insert(refs.keys[k].begin(), refs.keys[k].end());
+  }
 
-    for (const auto &delta : buffer.Deltas()) {
-      if (delta.partkey > old_dims->part_build_max)
-        referenced_fresh[kPart].insert(delta.partkey);
-      if (delta.suppkey > old_dims->supp_build_max)
-        referenced_fresh[kSupplier].insert(delta.suppkey);
-      const TpchQ8Dimensions::OrderInfo *oi = nullptr;
-      const auto ov = buffer.OrderInfoOverlay().find(delta.orderkey);
-      if (ov != buffer.OrderInfoOverlay().end())
-        oi = &ov->second;
+  // (orderkey, net sign sum) of the lineitem deltas, by order key.
+  void NetLineDeltas() {
+    const auto &deltas = buffer.Deltas();
+    line_net.reserve(deltas.size());
+    for (const auto &delta : deltas)
+      line_net.emplace_back(delta.orderkey, delta.sign);
+    const auto by_key = [](const auto &a, const auto &b) { return a.first < b.first; };
+    if (!std::is_sorted(line_net.begin(), line_net.end(), by_key))
+      core::ParallelStableSort(services, line_net, by_key, kSortGrain);
+    std::size_t out = 0;
+    for (std::size_t i = 0; i < line_net.size(); ++i) {
+      if (out > 0 && line_net[out - 1].first == line_net[i].first)
+        line_net[out - 1].second += line_net[i].second;
       else
-        oi = TpchQ8Val(old_dims->order_info.Find(delta.orderkey));
-      if (oi && oi->custkey > old_dims->cust_build_max)
-        referenced_fresh[kCustomer].insert(oi->custkey);
+        line_net[out++] = line_net[i];
     }
+    line_net.resize(out);
+    line_net.erase(std::remove_if(line_net.begin(), line_net.end(),
+                                  [](const auto &e) { return e.second == 0; }),
+                   line_net.end());
+  }
+
+  // The last operation per order decides whether it is present afterwards; the last
+  // insert's info stays visible to this transaction's lineitem deltas even when a
+  // delete follows it.
+  void NetOrderOps() {
+    std::vector<OrderOp> ops = buffer.OrderOps();
+    core::ParallelStableSort(services, ops,
+                             [](const OrderOp &a, const OrderOp &b) { return a.key < b.key; },
+                             kSortGrain);
+    for (std::size_t i = 0; i < ops.size(); ++i) {
+      if (net_orders.empty() || net_orders.back().key != ops[i].key)
+        net_orders.push_back({ops[i].key, false, false, {}});
+      auto &net = net_orders.back();
+      net.present = ops[i].add;
+      if (ops[i].add) {
+        net.has_add = true;
+        net.info = ops[i].info;
+      }
+    }
+  }
+
+  const NetOrder *FindNetOrder(int64_t key) const {
+    const auto it = std::lower_bound(net_orders.begin(), net_orders.end(), key,
+                                     [](const NetOrder &n, int64_t k) { return n.key < k; });
+    return it != net_orders.end() && it->key == key ? &*it : nullptr;
+  }
+
+  // The order a lineitem delta refers to: this transaction's last insert, else the old one.
+  const TpchQ8OrderInfo *ReferencedOrderInfo(int64_t orderkey) const {
+    const auto *net = FindNetOrder(orderkey);
+    return net && net->has_add ? &net->info : TpchQ8Val(old_dims->order_info.Find(orderkey));
+  }
+
+  int32_t NetLines(int64_t orderkey) const {
+    const auto it = std::lower_bound(line_net.begin(), line_net.end(), orderkey,
+                                     [](const auto &e, int64_t k) { return e.first < k; });
+    return it != line_net.end() && it->first == orderkey ? it->second : 0;
+  }
+
+  bool IsHeavyOrder(int64_t key) const {
+    return std::binary_search(heavy_orders.begin(), heavy_orders.end(), key);
   }
 
   void ApplyPartChanges() {
@@ -482,54 +637,87 @@ private:
     }
   }
 
+  auto ParallelEachGroup() const {
+    return [this](std::size_t n, const auto &fn) { core::ParallelEach(services, n, 1, fn); };
+  }
+
+  // One order of the net changes: the old order record and what to do with it.
+  struct OrderMutation {
+    int64_t key;
+    bool present;
+    TpchQ8OrderInfo info;
+  };
+  struct OrderEffects {
+    std::vector<OrderMutation> mutations;
+    std::vector<int64_t> heavy, skip; // key order
+  };
+
+  // Decides each changed order against the old index in parallel slices (key
+  // order is kept by merging the slices in order), then writes the index.
   void ApplyOrderChanges() {
-    std::unordered_set<int64_t> order_keys;
-    for (const auto &kv : buffer.OrderInfoOverlay())
-      order_keys.insert(kv.first);
-    for (const auto k : buffer.OrderErase())
-      order_keys.insert(k);
-    for (const auto okey : order_keys) {
-      const auto ov = buffer.OrderInfoOverlay().find(okey);
-      const bool new_present = ov != buffer.OrderInfoOverlay().end() &&
-                               !buffer.OrderErase().count(okey);
-      const auto *cur = TpchQ8Val(old_dims->order_info.Find(okey));
-      const bool same = (cur != nullptr) == new_present &&
-                        (!new_present ||
-                         (cur->custkey == ov->second.custkey &&
-                          cur->orderdate_days == ov->second.orderdate_days));
-      if (same)
-        continue;
-      // Fresh order: a new key above every key seen at build, never deleted
-      // with lineitems left behind.  Its lineitems can only arrive as deltas.
-      const bool fresh = new_present && !cur &&
-                         okey > old_dims->order_build_max &&
-                         !old_dims->deleted_orders.count(okey);
-      if (!fresh) {
-        heavy_orders.push_back(okey);
-        if (cur && cur->lines >= 0) {
-          const auto ds = line_delta_sum.find(okey);
-          if (cur->lines + (ds == line_delta_sum.end() ? 0 : ds->second) == 0)
-            scan_skip.insert(okey);
-        }
-      }
-      EnsureMutableDims();
-      if (new_present) {
-        TpchQ8Dimensions::OrderInfo ni = ov->second;
-        ni.lines = cur ? cur->lines : (fresh ? 0 : -1);
-        order_tx->Upsert({okey, ni});
-        mutable_dims->deleted_orders.erase(okey);
-      } else {
-        order_tx->Erase(okey);
-      }
+    OrderEffects effects;
+    core::ParallelReduce(
+        services, net_orders.size(), kResolveGrain, effects,
+        [&](OrderEffects &part, std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i)
+            DecideOrder(net_orders[i], part);
+        },
+        [](OrderEffects &into, OrderEffects &&from) {
+          const auto append = [](auto &to, auto &src) {
+            to.insert(to.end(), src.begin(), src.end());
+          };
+          append(into.mutations, from.mutations);
+          append(into.heavy, from.heavy);
+          append(into.skip, from.skip);
+        });
+    heavy_orders = std::move(effects.heavy);
+    scan_skip = std::move(effects.skip);
+    if (effects.mutations.empty())
+      return;
+    EnsureMutableDims();
+    if (!dims->deleted_orders.empty())
+      for (const auto &m : effects.mutations)
+        if (m.present)
+          mutable_dims->deleted_orders.erase(m.key);
+    std::vector<std::vector<OrderMutation>> pieces;
+    pieces.push_back(std::move(effects.mutations));
+    order_tx->ApplyGrouped(
+        pieces, [](const OrderMutation &m) -> const int64_t & { return m.key; }, ParallelEachGroup(),
+        [](std::size_t, auto &scope, std::vector<OrderMutation> &rows) {
+          for (const auto &m : rows) {
+            if (m.present)
+              scope.Upsert({m.key, m.info});
+            else
+              scope.Erase(m.key);
+          }
+        }, core::CappedGrain(kRowsPerGroup));
+  }
+
+  void DecideOrder(const NetOrder &net, OrderEffects &out) const {
+    const auto *cur = TpchQ8Val(old_dims->order_info.Find(net.key));
+    const bool same = (cur != nullptr) == net.present &&
+                      (!net.present || (cur->custkey == net.info.custkey &&
+                                        cur->orderdate_days == net.info.orderdate_days));
+    if (same)
+      return;
+    // Fresh order: a new key above every key seen at build, never deleted
+    // with lineitems left behind.  Its lineitems can only arrive as deltas.
+    const bool fresh = net.present && !cur && net.key > old_dims->order_build_max &&
+                       !old_dims->deleted_orders.count(net.key);
+    if (!fresh) {
+      out.heavy.push_back(net.key);
+      if (cur && cur->lines >= 0 && cur->lines + NetLines(net.key) == 0)
+        out.skip.push_back(net.key);
     }
+    TpchQ8OrderInfo info = net.info;
+    info.lines = cur ? cur->lines : (fresh ? 0 : -1);
+    out.mutations.push_back({net.key, net.present, info});
   }
 
   void IndexHeavyKeys() {
     for (const Kind kind : {kPart, kSupplier, kCustomer})
       for (const Change &c : heavy[kind])
         heavy_keys[kind].insert(c.key);
-    for (const auto k : heavy_orders)
-      heavy_keys[kOrder].insert(k);
   }
 
   // Cell of a lineitem in the old (use_old) or new view.
@@ -589,12 +777,12 @@ private:
         const auto consume = [&](const TpchQ8LineitemInput &row) {
           // Dedup: a lineitem touching several changed entities is handled by
           // the highest-priority one (order > part > supplier > customer).
-          if (kind == kPart && heavy_keys[kOrder].count(row.orderkey))
+          if (kind == kPart && IsHeavyOrder(row.orderkey))
             return;
-          if (kind == kSupplier && (heavy_keys[kOrder].count(row.orderkey) ||
+          if (kind == kSupplier && (IsHeavyOrder(row.orderkey) ||
                                     heavy_keys[kPart].count(row.partkey)))
             return;
-          if (kind == kCustomer && (heavy_keys[kOrder].count(row.orderkey) ||
+          if (kind == kCustomer && (IsHeavyOrder(row.orderkey) ||
                                     heavy_keys[kPart].count(row.partkey) ||
                                     heavy_keys[kSupplier].count(row.suppkey)))
             return;
@@ -622,7 +810,7 @@ private:
     std::vector<int64_t> keys;
     keys.reserve(heavy_orders.size());
     for (const int64_t key : heavy_orders)
-      if (!scan_skip.count(key))
+      if (!std::binary_search(scan_skip.begin(), scan_skip.end(), key))
         keys.push_back(key);
     if (keys.empty())
       return true;
@@ -707,18 +895,26 @@ private:
       if (auto *e = TpchQ8ValMut(order_tx->Mutable(sc.first)))
         e->lines = sc.second;
     }
-    for (const auto &ds : line_delta_sum) {
-      if (ds.second == 0 || scanned_lines.count(ds.first))
-        continue;
-      const auto *cur = NewOrder(ds.first);
-      if (!cur || cur->lines < 0)
-        continue;
-      EnsureMutableDims();
-      auto *e = TpchQ8ValMut(order_tx->Mutable(ds.first));
-      e->lines += ds.second;
-      if (e->lines < 0)
-        e->lines = -1;
-    }
+    if (line_net.empty())
+      return;
+    EnsureMutableDims();
+    std::vector<std::vector<std::pair<int64_t, int32_t>>> pieces;
+    pieces.push_back(std::move(line_net));
+    order_tx->ApplyGrouped(
+        pieces, [](const std::pair<int64_t, int32_t> &e) -> const int64_t & { return e.first; },
+        ParallelEachGroup(),
+        [&](std::size_t, auto &scope, std::vector<std::pair<int64_t, int32_t>> &rows) {
+          for (const auto &[key, net] : rows) {
+            if (scanned_lines.count(key))
+              continue;
+            auto *e = TpchQ8ValMut(scope.Mutable(key));
+            if (!e || e->lines < 0)
+              continue;
+            e->lines += net;
+            if (e->lines < 0)
+              e->lines = -1;
+          }
+        }, core::CappedGrain(kRowsPerGroup));
   }
 
   void FinishDimensions() {
@@ -749,12 +945,13 @@ private:
   std::vector<Change> heavy[3];
   std::vector<int64_t> heavy_orders;
   // Heavy keys per kind, for dedup and for the old view.
-  std::unordered_set<int64_t> heavy_keys[4];
+  std::unordered_set<int64_t> heavy_keys[3];
   // Heavy orders whose lineitems are known to be all gone: no point scan needed.
-  std::unordered_set<int64_t> scan_skip;
+  std::vector<int64_t> scan_skip; // key order
   // Current line count of scanned (heavy) orders that remain present.
   std::unordered_map<int64_t, int32_t> scanned_lines;
-  std::unordered_map<int64_t, int32_t> line_delta_sum;
+  std::vector<std::pair<int64_t, int32_t>> line_net;
+  std::vector<NetOrder> net_orders;
   std::unordered_set<int64_t> referenced_fresh[3];
 };
 
@@ -767,8 +964,7 @@ void TpchQ8TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
   deltas.clear();
-  order_info_overlay.clear();
-  order_erase.clear();
+  order_ops.clear();
   part_net.clear();
   supplier_net.clear();
   customer_net.clear();
@@ -790,21 +986,13 @@ void TpchQ8TxnBuffer::AddDelta(TpchQ8LineitemDelta delta) {
 void TpchQ8TxnBuffer::AddOrderInfo(int64_t orderkey, int64_t custkey,
                                   int32_t orderdate_days) {
   pending = true;
-  order_info_overlay[orderkey] = TpchQ8Dimensions::OrderInfo{custkey,
-                                                            orderdate_days};
-  order_erase.erase(orderkey);
+  order_ops.push_back({orderkey, true, TpchQ8OrderInfo{custkey, orderdate_days}});
 }
 void TpchQ8TxnBuffer::EraseOrder(int64_t orderkey) {
   pending = true;
-  order_erase.insert(orderkey);
+  order_ops.push_back({orderkey, false, {}});
 }
-const std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> &
-TpchQ8TxnBuffer::OrderInfoOverlay() const {
-  return order_info_overlay;
-}
-const std::unordered_set<int64_t> &TpchQ8TxnBuffer::OrderErase() const {
-  return order_erase;
-}
+const std::vector<OrderOp> &TpchQ8TxnBuffer::OrderOps() const { return order_ops; }
 void TpchQ8TxnBuffer::SetPart(int64_t key, bool present, std::string type) {
   pending = true;
   auto &n = part_net[key];
@@ -1034,8 +1222,7 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
   const std::size_t work =
-      buffer.Deltas().size() + buffer.OrderInfoOverlay().size() +
-      buffer.OrderErase().size() + buffer.PartNet().size() +
+      buffer.Deltas().size() + buffer.OrderOps().size() + buffer.PartNet().size() +
       buffer.SupplierNet().size() + buffer.CustomerNet().size();
   if (work == 0)
     return outcome;
@@ -1134,77 +1321,53 @@ void TpchQ8Module::Execute(core::AuxEngineServices &services,
 TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ8State state;
   TpchQ8Dimensions dims;
-  TpchQ8SmallMap::Builder part_b, supp_b, cust_b;
-  TpchQ8OrderMap::Builder order_b;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q8 aux requires a typed initial scan source");
 
   // Dimension dictionaries: parts (value = index into part_types)
   using scan::IntColumn;
-  for (const auto &input : CollectTable<TpchQ8PartInput>(
-           services, *initial_scan, "part", {IntColumn("p_partkey"), scan::TextColumn("p_type")},
-           [](const auto &row) { return TpchQ8PartInput{row.Int(0), row.Text(1)}; })) {
-    if (input.key <= 0)
-      continue;
-    auto ti = dims.dict->part_type_to_index.find(input.type);
-    if (ti == dims.dict->part_type_to_index.end()) {
-      ti = dims.dict->part_type_to_index
-               .emplace(input.type, static_cast<int32_t>(dims.dict->part_types.size()))
-               .first;
-      dims.dict->part_types.push_back(input.type);
-    }
-    part_b.Add({input.key, ti->second});
-    dims.part_build_max = std::max(dims.part_build_max, input.key);
-  }
+  auto parts = ScanParts(services, *initial_scan, dims);
+  auto &part_b = parts.builder;
+  dims.part_build_max = parts.max_key;
 
+  // Nation keys per supplier / customer; the largest sizes the cube's nation axis.
   int32_t max_nation = 0;
-  for (const auto &input : CollectTable<TpchQ8SupplierInput>(
-           services, *initial_scan, "supplier",
-           {IntColumn("s_suppkey"), IntColumn("s_nationkey")}, [](const auto &row) {
-             return TpchQ8SupplierInput{row.Int(0), static_cast<int32_t>(row.Int(1))};
-           })) {
-    if (input.key <= 0)
-      continue;
-    supp_b.Add({input.key, input.nationkey});
-    dims.supp_build_max = std::max(dims.supp_build_max, input.key);
-    max_nation = std::max(max_nation, input.nationkey);
-  }
-
-  for (const auto &input : CollectTable<TpchQ8CustomerInput>(
-           services, *initial_scan, "customer",
-           {IntColumn("c_custkey"), IntColumn("c_nationkey")}, [](const auto &row) {
-             return TpchQ8CustomerInput{row.Int(0), static_cast<int32_t>(row.Int(1))};
-           })) {
-    if (input.key <= 0)
-      continue;
-    cust_b.Add({input.key, input.nationkey});
-    dims.cust_build_max = std::max(dims.cust_build_max, input.key);
-    max_nation = std::max(max_nation, input.nationkey);
-  }
+  std::vector<int32_t> max_nation_in_bucket(kDealBuckets, 0);
+  const auto scan_nations = [&](const char *table, const char *key_column,
+                                const char *nation_column) {
+    return ScanIntoBuilder<TpchQ8SmallMap>(
+        services, *initial_scan, table, {IntColumn(key_column), IntColumn(nation_column)},
+        [](std::size_t rows) { return TpchQ8SmallMap::Builder(rows); },
+        [](const auto &row, TpchQ8SmallMap::Element &element) {
+          element = {row.Int(0), static_cast<int32_t>(row.Int(1))};
+          return element.key > 0;
+        },
+        [&](std::size_t bucket, const TpchQ8SmallMap::Element &element) {
+          max_nation_in_bucket[bucket] = std::max(max_nation_in_bucket[bucket], element.value);
+        });
+  };
+  auto suppliers = scan_nations("supplier", "s_suppkey", "s_nationkey");
+  auto customers = scan_nations("customer", "c_custkey", "c_nationkey");
+  auto &supp_b = suppliers.builder;
+  auto &cust_b = customers.builder;
+  dims.supp_build_max = suppliers.max_key;
+  dims.cust_build_max = customers.max_key;
+  for (const int32_t nation : max_nation_in_bucket)
+    max_nation = std::max(max_nation, nation);
 
   using scan::DateColumn;
   using scan::DecimalColumn;
-  auto scanned = core::PartitionedBuild<OrdersPartial>(
-      services, [] { return OrdersPartial{}; },
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanTable(services, "orders",
-                                {IntColumn("o_orderkey"), IntColumn("o_custkey"),
-                                 DateColumn("o_orderdate")},
-                                parts, sink);
+  auto orders = ScanIntoBuilder<TpchQ8OrderMap>(
+      services, *initial_scan, "orders",
+      {IntColumn("o_orderkey"), IntColumn("o_custkey"), DateColumn("o_orderdate")},
+      [](std::size_t rows) { return TpchQ8OrderMap::Builder(rows); },
+      [](const auto &row, TpchQ8OrderMap::Element &element) {
+        element = {row.Int(0), TpchQ8OrderInfo{row.Int(1), row.Date(2), 0}};
+        return element.key > 0;
       },
-      [](OrdersPartial &p, const auto &row) {
-        const int64_t key = row.Int(0);
-        if (key <= 0)
-          return;
-        p.orders.Add({key, TpchQ8OrderInfo{row.Int(1), row.Date(2), 0}});
-        p.max_key = std::max(p.max_key, key);
-      },
-      [](OrdersPartial &into, OrdersPartial &&from) {
-        into.orders.Merge(std::move(from.orders));
-        into.max_key = std::max(into.max_key, from.max_key);
-      });
-  order_b = std::move(scanned.orders);
-  dims.order_build_max = std::max(dims.order_build_max, scanned.max_key);
+      [](std::size_t, const TpchQ8OrderMap::Element &) {});
+  auto &order_b = orders.builder;
+  dims.order_build_max = std::max(dims.order_build_max, orders.max_key);
 
   // Nation/region dictionaries in one pass each.
   std::unordered_map<int32_t, std::string> regionkey_to_name;
@@ -1223,18 +1386,19 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   });
 
   state.nat_dim = max_nation + 1;
-  part_b.SortDedupe();
-  supp_b.SortDedupe();
-  cust_b.SortDedupe();
-  order_b.SortDedupe([&](std::size_t n, const auto &fn) {
+  const auto parallel_shards = [&](std::size_t n, const auto &fn) {
     core::ParallelEach(services, n, kSortShardGrain, fn);
-  });
+  };
+  part_b.SortDedupe(parallel_shards);
+  supp_b.SortDedupe(parallel_shards);
+  cust_b.SortDedupe(parallel_shards);
+  order_b.SortDedupe(parallel_shards);
 
   // Dense key->value arrays make the per-lineitem lookups O(1) array reads.
   DenseI32 part_dense, supp_dense, cust_dense;
-  part_dense.Fill(part_b, dims.part_build_max);
-  supp_dense.Fill(supp_b, dims.supp_build_max);
-  cust_dense.Fill(cust_b, dims.cust_build_max);
+  part_dense.Fill(services, part_b, dims.part_build_max);
+  supp_dense.Fill(services, supp_b, dims.supp_build_max);
+  cust_dense.Fill(services, cust_b, dims.cust_build_max);
 
   {
     // Each partition sums into its own cube; the order index is sorted and
@@ -1280,10 +1444,10 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
     state.pages = std::move(cube.state->pages);
   }
 
-  dims.part_key_to_type = part_b.Finish();
-  dims.suppkey_to_nation = supp_b.Finish();
-  dims.custkey_to_nation = cust_b.Finish();
-  dims.order_info = order_b.Finish();
+  dims.part_key_to_type = part_b.Finish(parallel_shards);
+  dims.suppkey_to_nation = supp_b.Finish(parallel_shards);
+  dims.custkey_to_nation = cust_b.Finish(parallel_shards);
+  dims.order_info = order_b.Finish(parallel_shards);
 
   // Keep reverse maps published. PostgreSQL PreCommit cannot safely run SPI
   // InitialScan lookups, and RF inserts/deletes need order/part/supplier

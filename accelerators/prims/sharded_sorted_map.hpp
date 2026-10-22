@@ -14,7 +14,11 @@
 //            ~100-500 entries. Copy: O(2^bits / 2^kMidBits) pointers. Txn: the
 //            first write to a shard clones that shard (O(shard)); Finish clones
 //            each touched Mid once and swaps the new shards in, optionally in
-//            parallel. Builder: O(n log shard) bulk load.
+//            parallel. Txn::ApplyGrouped splits a batch of changes by shard
+//            range and runs the ranges concurrently. Builder: O(n log shard)
+//            bulk load; Builder(expected) sizes the directory (up to
+//            2^kMaxShardBits shards) so a shard holds <= ~256 entries however
+//            large the map is: pick kMaxShardBits >= log2(max entries / 128).
 // MEMORY     sizeof(T) per entry + ~24 B and one allocation per non-empty shard
 //            + 8 B per directory slot (Builder(expected) picks the shard count
 //            so shards average <= 256 entries; no per-entry node).
@@ -40,6 +44,9 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#include "prims/parallelism.hpp"
+#include "prims/row_pieces.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 
@@ -95,6 +102,16 @@ public:
       return nullptr;
     return FindIn(mid->leaves[shard & (kMidSize - 1)].get(), key);
   }
+  // The shard of `key` in a map of 2^bits shards. The shards of a smaller map
+  // are unions of the shards of a larger one, so builders of any width may be
+  // fed in groups of keys of equal ShardOf(key, b) for b <= their width.
+  static uint32_t ShardOf(const K &key, uint32_t bits) {
+    if (bits == 0)
+      return 0;
+    return static_cast<uint32_t>(
+        (static_cast<uint64_t>(Hash{}(key)) * 0x9E3779B97F4A7C15ULL) >>
+        (64 - bits));
+  }
   std::size_t size() const { return size_; }
   bool empty() const { return size_ == 0; }
   uint32_t shard_bits() const { return bits_; }
@@ -127,13 +144,6 @@ public:
   }
 
 private:
-  static uint32_t ShardOf(const K &key, uint32_t bits) {
-    if (bits == 0)
-      return 0;
-    return static_cast<uint32_t>(
-        (static_cast<uint64_t>(Hash{}(key)) * 0x9E3779B97F4A7C15ULL) >>
-        (64 - bits));
-  }
   static std::size_t TopCount(uint32_t bits) {
     return bits > kMidBits ? std::size_t{1} << (bits - kMidBits) : 1;
   }
@@ -173,6 +183,8 @@ class ShardedSortedMap<K, T, KeyOf, Hash, kMaxShardBits, kMidBits, Less>::Txn {
   using Map = ShardedSortedMap;
 
 public:
+  class Scope;
+
   explicit Txn(const Map &base) : map_(base) {
     if (map_.top_.empty())
       map_.top_.resize(Map::TopCount(map_.bits_));
@@ -183,38 +195,61 @@ public:
     return Map::FindIn(Current(Map::ShardOf(key, map_.bits_)), key);
   }
   // Inserts `value` or replaces the element with the same key.
-  void Upsert(const T &value) {
-    const K &key = KeyOf{}(value);
-    auto &leaf = Own(Map::ShardOf(key, map_.bits_));
-    auto it = Map::LowerIn(leaf, key);
-    if (it != leaf.end() && Map::KeyEq(KeyOf{}(*it), key)) {
-      *it = value;
-    } else {
-      leaf.insert(it, value);
-      ++map_.size_;
-    }
-  }
+  void Upsert(const T &value) { Serial().Upsert(value); }
   // Mutable access to an existing element (nullptr if absent). The caller must
   // not change its key. Clones the shard on first use.
-  T *Mutable(const K &key) {
-    const uint32_t shard = Map::ShardOf(key, map_.bits_);
-    if (!Map::FindIn(Current(shard), key))
-      return nullptr;
-    auto &leaf = Own(shard);
-    return &*Map::LowerIn(leaf, key);
-  }
+  T *Mutable(const K &key) { return Serial().Mutable(key); }
   // Removes `key`; false if it was absent.
-  bool Erase(const K &key) {
-    const uint32_t shard = Map::ShardOf(key, map_.bits_);
-    if (!Map::FindIn(Current(shard), key))
-      return false;
-    auto &leaf = Own(shard);
-    leaf.erase(Map::LowerIn(leaf, key));
-    --map_.size_;
-    return true;
-  }
+  bool Erase(const K &key) { return Serial().Erase(key); }
   bool Dirty() const { return !touched_.empty(); }
-  std::size_t size() const { return map_.size_; }
+  std::size_t size() const { return map_.size_ + delta_; }
+
+  // Runs a batch of changes concurrently. `pieces` are the rows of the batch
+  // (consumed); row_key(row) is the key each row touches. The rows are dealt to
+  // groups of neighbouring shards, and fn(group, scope, rows) runs once per
+  // non-empty group with that group's rows in piece order. A scope reads and
+  // writes only the shards of its group, so groups need no locks; do not use
+  // the Txn itself while the batch runs. `parallel_for(n, fn)` must run
+  // fn(0..n-1), possibly on several threads. Results do not depend on the
+  // thread count. A group gets at least `rows_per_group` rows when the batch
+  // is large enough to split.
+  template <class Row, class RowKey, class ParallelFor, class Fn>
+  void ApplyGrouped(std::vector<std::vector<Row>> &pieces, RowKey &&row_key,
+                    ParallelFor &&parallel_for, Fn &&fn,
+                    std::size_t rows_per_group = kRowsPerGroup) {
+    std::size_t total = 0;
+    for (const auto &piece : pieces)
+      total += piece.size();
+    const unsigned top_bits = map_.bits_ > kMidBits ? map_.bits_ - kMidBits : 0;
+    unsigned group_bits = 0;
+    while (group_bits < std::min(top_bits, kMaxGroupBits) &&
+           (total >> (group_bits + 1)) >= rows_per_group)
+      ++group_bits;
+    const unsigned shift = top_bits - group_bits;
+    const std::size_t groups = std::size_t{1} << group_bits;
+    const auto parallelism = Parallelism{
+        1, [&](std::size_t n, const Parallelism::Fn &f) { parallel_for(n, f); }};
+    auto grouped = GroupRows(parallelism, pieces, groups, [&](const Row &row) {
+      return static_cast<std::size_t>(
+          (Map::ShardOf(row_key(row), map_.bits_) >> kMidBits) >> shift);
+    });
+    std::vector<std::vector<uint32_t>> touched(groups);
+    std::vector<std::ptrdiff_t> delta(groups, 0);
+    parallelism.For(groups, [&](std::size_t g) {
+      std::vector<Row> rows;
+      for (auto &piece : grouped)
+        rows.insert(rows.end(), std::make_move_iterator(piece.rows.begin() + piece.begin[g]),
+                    std::make_move_iterator(piece.rows.begin() + piece.begin[g + 1]));
+      if (rows.empty())
+        return;
+      Scope scope(*this, touched[g], delta[g]);
+      fn(g, scope, rows);
+    });
+    for (std::size_t g = 0; g < groups; ++g) {
+      touched_.insert(touched_.end(), touched[g].begin(), touched[g].end());
+      delta_ += delta[g];
+    }
+  }
 
   // Publishes the new map. `parallel_for(n, fn)` must run fn(0..n-1), possibly
   // on several threads; each call owns one Mid.
@@ -237,6 +272,7 @@ public:
     });
     for (std::size_t t = 0; t < touched_.size(); ++t)
       map_.top_[touched_[t]] = std::move(built[t]);
+    map_.size_ += delta_;
     touched_.clear();
     owned_.clear();
     return std::move(map_);
@@ -249,12 +285,18 @@ public:
   }
 
 private:
+  // Groups of ApplyGrouped: enough to balance 1000+ workers, each with enough
+  // rows to be worth a task.
+  static constexpr unsigned kMaxGroupBits = 10;
+  static constexpr std::size_t kRowsPerGroup = 2048;
+
   // Shards cloned by this transaction, grouped by mid (no hashing on the
   // lookup path); `touched_` lists the mids that have any.
   struct Owned {
     std::array<std::shared_ptr<Leaf>, kMidSize> leaves;
   };
 
+  Scope Serial() { return Scope(*this, touched_, delta_); }
   const Leaf *Current(uint32_t shard) const {
     const uint32_t hi = shard >> kMidBits, lo = shard & (kMidSize - 1);
     if (const auto &own = owned_[hi])
@@ -263,12 +305,12 @@ private:
     const auto &mid = map_.top_[hi];
     return mid ? mid->leaves[lo].get() : nullptr;
   }
-  Leaf &Own(uint32_t shard) {
+  Leaf &Own(uint32_t shard, std::vector<uint32_t> &touched) {
     const uint32_t hi = shard >> kMidBits, lo = shard & (kMidSize - 1);
     auto &own = owned_[hi];
     if (!own) {
       own = std::make_unique<Owned>();
-      touched_.push_back(hi);
+      touched.push_back(hi);
     }
     auto &slot = own->leaves[lo];
     if (slot)
@@ -288,6 +330,55 @@ private:
   Map map_;
   std::vector<std::unique_ptr<Owned>> owned_;
   std::vector<uint32_t> touched_;
+  std::ptrdiff_t delta_ = 0; // size change not yet in map_.size_
+};
+
+// The write operations of a Txn, recording newly touched mids and the size
+// change in the given vectors (the Txn's own, or those of one ApplyGrouped group).
+template <class K, class T, class KeyOf, class Hash, unsigned kMaxShardBits,
+          unsigned kMidBits, class Less>
+class ShardedSortedMap<K, T, KeyOf, Hash, kMaxShardBits, kMidBits, Less>::Txn::Scope {
+  using Map = ShardedSortedMap;
+
+public:
+  const T *Find(const K &key) const { return txn_.Find(key); }
+  void Upsert(const T &value) {
+    const K &key = KeyOf{}(value);
+    auto &leaf = Own(key);
+    auto it = Map::LowerIn(leaf, key);
+    if (it != leaf.end() && Map::KeyEq(KeyOf{}(*it), key)) {
+      *it = value;
+    } else {
+      leaf.insert(it, value);
+      ++delta_;
+    }
+  }
+  T *Mutable(const K &key) {
+    if (!Find(key))
+      return nullptr;
+    auto &leaf = Own(key);
+    return &*Map::LowerIn(leaf, key);
+  }
+  bool Erase(const K &key) {
+    if (!Find(key))
+      return false;
+    auto &leaf = Own(key);
+    leaf.erase(Map::LowerIn(leaf, key));
+    --delta_;
+    return true;
+  }
+
+private:
+  friend class Txn;
+  Scope(Txn &txn, std::vector<uint32_t> &touched, std::ptrdiff_t &delta)
+      : txn_(txn), touched_(touched), delta_(delta) {}
+  Leaf &Own(const K &key) {
+    return txn_.Own(Map::ShardOf(key, txn_.map_.bits_), touched_);
+  }
+
+  Txn &txn_;
+  std::vector<uint32_t> &touched_;
+  std::ptrdiff_t &delta_;
 };
 
 // Bulk loader: Add (any order), Sort / SortDedupe, mutable Find / ForEach,
@@ -325,6 +416,27 @@ public:
       }
       part = Leaf();
     }
+  }
+  // Adds every element of `pieces` as if Add were called in piece order (the
+  // pieces of a partitioned scan, see RowPieces), filling disjoint groups of
+  // shards in parallel. Empties `pieces`.
+  void AddPieces(std::vector<std::vector<T>> &pieces, const Parallelism &parallelism) {
+    const unsigned group_bits = std::min(bits_, kGroupBits);
+    const unsigned shift = bits_ - group_bits;
+    const std::size_t groups = std::size_t{1} << group_bits;
+    auto grouped = GroupRows(parallelism, pieces, groups, [&](const T &e) {
+      return static_cast<std::size_t>(Map::ShardOf(KeyOf{}(e), bits_) >> shift);
+    });
+    parallelism.For(groups, [&](std::size_t g) {
+      const std::size_t first = g << shift;
+      std::vector<std::size_t> extra(std::size_t{1} << shift, 0);
+      ForGroup(grouped, g, [&](T &e) { ++extra[Map::ShardOf(KeyOf{}(e), bits_) - first]; });
+      for (std::size_t k = 0; k < extra.size(); ++k)
+        shards_[first + k].reserve(shards_[first + k].size() + extra[k]);
+      ForGroup(grouped, g, [&](T &e) {
+        shards_[Map::ShardOf(KeyOf{}(e), bits_)].push_back(std::move(e));
+      });
+    });
   }
   // Sorts every shard by key. Keys must be unique. `parallel_for(n, fn)` must
   // run fn(0..n-1), possibly on several threads; each call owns one shard.
@@ -379,11 +491,14 @@ public:
       for (auto &e : shards_[g])
         f(e);
   }
-  Map Finish() {
+  // `parallel_for(n, fn)` must run fn(0..n-1), possibly on several threads; each
+  // call builds one Mid.
+  template <class ParallelFor> Map Finish(ParallelFor &&parallel_for) {
     Map out;
     out.bits_ = bits_;
     out.top_.resize(Map::TopCount(bits_));
-    for (std::size_t hi = 0; hi < out.top_.size(); ++hi) {
+    std::vector<std::size_t> sizes(out.top_.size(), 0);
+    parallel_for(out.top_.size(), [&](std::size_t hi) {
       std::shared_ptr<Mid> mid;
       for (uint32_t lo = 0; lo < kMidSize; ++lo) {
         const std::size_t g = (hi << kMidBits) | lo;
@@ -394,16 +509,32 @@ public:
           continue;
         if (!mid)
           mid = std::make_shared<Mid>();
-        out.size_ += shard.size();
+        sizes[hi] += shard.size();
         mid->leaves[lo] = std::make_shared<const Leaf>(std::move(shard));
       }
       out.top_[hi] = std::move(mid);
-    }
+    });
+    for (const std::size_t n : sizes)
+      out.size_ += n;
     shards_.clear();
     return out;
   }
+  Map Finish() {
+    return Finish([](std::size_t n, const auto &fn) {
+      for (std::size_t i = 0; i < n; ++i)
+        fn(i);
+    });
+  }
 
 private:
+  // Shard groups AddPieces hands to the pool: enough to balance 1000+ workers.
+  static constexpr unsigned kGroupBits = 10;
+
+  template <class Grouped, class F> static void ForGroup(Grouped &grouped, std::size_t g, F &&f) {
+    for (auto &piece : grouped)
+      for (std::size_t i = piece.begin[g]; i < piece.begin[g + 1]; ++i)
+        f(piece.rows[i]);
+  }
   explicit Builder(Bits b) : bits_(b.v), shards_(std::size_t{1} << b.v) {}
   static uint32_t BitsFor(std::size_t n, std::size_t target) {
     uint32_t b = 0;

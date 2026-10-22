@@ -3,10 +3,13 @@
 #include "prims/sql_date.hpp"
 #include "substrate/aux/core/aux_cells.hpp"
 #include "substrate/aux/core/parallel_slices.hpp"
+#include "substrate/aux/core/parallel_sort.hpp"
 #include "substrate/aux/core/partitioned_build.hpp"
 
 #include <algorithm>
 #include <array>
+#include <functional>
+#include <atomic>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -17,12 +20,19 @@ namespace accelerator_codegen::aux_state::query {
 
 namespace {
 
+// Rows per ApplyGrouped group (the substrate test grain can lower it).
+constexpr std::size_t kRowsPerGroup = 2048;
+
 namespace sql_date = core::sql_date;
 
 // Shards per slice when sorting a built index (untimed).
 constexpr std::size_t kSortShardGrain = 1024;
 // Touched mid arrays per slice when publishing a side index (untimed).
 constexpr std::size_t kMidArrayGrain = 16;
+// Lineitem ops per slice when resolving a run of them (untimed).
+constexpr std::size_t kLineOpGrain = 4096;
+// Elements per sorted slice when sorting deleted-order records (untimed).
+constexpr std::size_t kSortGrain = 1 << 16;
 
 // Per-partition sums of the lineitem scan.
 struct LineitemPartial {
@@ -77,6 +87,28 @@ template <class V> struct Overlay {
   void Erase(int64_t key) { txn.Erase(key); }
 };
 
+// One lineitem's effect on the window count of a supplier or customer key.
+struct CountAdjust {
+  int64_t key;
+  int8_t kind;
+};
+// One order change of a run of order ops: kind 0 inserts (key, custkey), 1 deletes key.
+struct OrderChange {
+  int64_t key;
+  int64_t custkey;
+  int8_t kind;
+};
+using KeyPairs = std::vector<std::pair<int64_t, int64_t>>;
+
+// Net effect of one run of lineitem ops: the ops are resolved in parallel slices against the
+// published dimensions (their liveness never changes within a run), then merged in slice order.
+struct LineEffects {
+  std::vector<std::vector<CountAdjust>> supp, cust;
+  std::vector<std::size_t> deferred;
+  std::vector<int64_t> rev95, rev96;
+  bool changed = false;
+};
+
 struct LoadedState {
   std::shared_ptr<const TpchQ7State> side, revenue;
   core::Version side_version = 0, revenue_version = 0;
@@ -108,9 +140,10 @@ LoadedState LoadState(core::AuxEngineServices &services) {
 // Resolve means the delta cannot be applied exactly and the state rebuilds.
 class OpResolver {
 public:
-  OpResolver(const TpchQ7State &side, const TpchQ7State &base_rev,
-             TpchQ7InitialScan *initial_scan, const std::vector<TpchQ7Op> &ops)
-      : side(side), initial_scan(initial_scan), ops(ops),
+  OpResolver(core::AuxEngineServices &services, const TpchQ7State &side,
+             const TpchQ7State &base_rev, TpchQ7InitialScan *initial_scan,
+             const std::vector<TpchQ7Op> &ops)
+      : services(services), side(side), initial_scan(initial_scan), ops(ops),
         slots(base_rev.num_nation_slots > 0 ? base_rev.num_nation_slots
                                             : kTpchQ7MinNationSlots),
         supp(side.supplier_nations), cust(side.customer_nations),
@@ -128,30 +161,32 @@ public:
     }
   }
 
+  // Ops replay in order; a run of order ops or of lineitem ops is applied as one
+  // parallel batch, which is the same as one by one because keys are independent.
   bool Resolve() {
-    std::vector<const TpchQ7Op *> deferred;
-    for (const auto &op : ops) {
-      if (rebuild)
-        break;
-      switch (op.type) {
-      case TpchQ7Op::Supplier:
-        ApplyDimension(supp, true, op);
-        break;
-      case TpchQ7Op::Customer:
-        ApplyDimension(cust, false, op);
-        break;
-      case TpchQ7Op::Order:
-        ApplyOrder(op);
-        break;
-      case TpchQ7Op::Lineitem:
-        if (!ApplyLineitem(op, false))
-          deferred.push_back(&op);
-        break;
+    for (std::size_t i = 0; i < ops.size() && !rebuild;) {
+      const auto type = ops[i].type;
+      if (type == TpchQ7Op::Supplier || type == TpchQ7Op::Customer) {
+        ApplyDimension(type == TpchQ7Op::Supplier ? supp : cust, type == TpchQ7Op::Supplier,
+                       ops[i]);
+        ++i;
+        continue;
       }
+      std::size_t end = i + 1;
+      while (end < ops.size() && ops[end].type == type)
+        ++end;
+      if (type == TpchQ7Op::Order)
+        ApplyOrders(i, end);
+      else
+        ApplyLineitems(end - i, [&](std::size_t k) -> const TpchQ7Op & { return ops[i + k]; }, false);
+      i = end;
     }
-    if (!rebuild)
-      for (const auto *op : deferred)
-        ApplyLineitem(*op, true);
+    if (!rebuild && !deferred.empty()) {
+      const auto pending = std::move(deferred);
+      deferred.clear();
+      ApplyLineitems(pending.size(),
+                     [&](std::size_t k) -> const TpchQ7Op & { return ops[pending[k]]; }, true);
+    }
     return !rebuild;
   }
 
@@ -287,78 +322,157 @@ private:
     }
   }
 
-  void ApplyOrder(const TpchQ7Op &op) {
-    if (op.kind == 0) {
-      if (ords.Get(op.k1))
-        rebuild = true;
-      else
-        ords.Set(op.k1, {op.v1});
-    } else if (op.kind == 1) {
-      const auto cur = ords.Get(op.k0);
-      if (cur) {
-        deleted_orders[op.k0] = cur->custkey;
-        ords.Erase(op.k0);
-      }
-    } else {
-      rebuild = true; // key/custkey change re-targets existing lineitems
-    }
-  }
-
-  static void AdjustCount(Overlay<TpchQ7NationCount> &ov, int64_t key,
-                          std::optional<TpchQ7NationCount> e, int kind) {
-    if (!e) {
-      if (kind < 0)
+  void ApplyOrders(std::size_t begin, std::size_t end) {
+    std::vector<std::vector<OrderChange>> pieces(1);
+    pieces.front().reserve(end - begin);
+    for (std::size_t i = begin; i < end; ++i) {
+      const auto &op = ops[i];
+      if (op.kind > 1) {
+        rebuild = true; // key/custkey change re-targets existing lineitems
         return;
-      e = TpchQ7NationCount{-1, 0};
+      }
+      pieces.front().push_back(op.kind == 0 ? OrderChange{op.k1, op.v1, 0}
+                                            : OrderChange{op.k0, 0, 1});
     }
-    e->window_count += kind;
-    if (e->nation < 0 && e->window_count == 0)
-      ov.Erase(key);
-    else
-      ov.Set(key, *e);
+    std::vector<KeyPairs> group_deleted(kMaxGroups);
+    ords.txn.ApplyGrouped(
+        pieces, [](const OrderChange &c) -> const int64_t & { return c.key; },
+        [&](std::size_t n, const auto &fn) { core::ParallelEach(services, n, 1, fn); },
+        [&](std::size_t group, auto &scope, std::vector<OrderChange> &rows) {
+          for (const auto &c : rows) {
+            const auto *cur = scope.Find(c.key);
+            if (c.kind == 0) {
+              if (cur)
+                rebuild = true;
+              else
+                scope.Upsert({c.key, {c.custkey}});
+            } else if (cur) {
+              group_deleted[group].emplace_back(c.key, cur->value.custkey);
+              scope.Erase(c.key);
+            }
+          }
+        }, core::CappedGrain(kRowsPerGroup));
+    KeyPairs run;
+    for (auto &part : group_deleted)
+      run.insert(run.end(), part.begin(), part.end());
+    core::ParallelStableSort(services, run,
+                             [](const auto &a, const auto &b) { return a.first < b.first; },
+                             kSortGrain);
+    if (!run.empty())
+      deleted_orders.push_back(std::move(run));
   }
 
-  // Returns false when a +1 lineitem cannot be resolved yet (a dimension row
-  // may arrive later in the same transaction).
-  bool ApplyLineitem(const TpchQ7Op &op, bool final) {
-    const auto s = supp.Get(op.v0);
-    std::optional<int64_t> custkey;
-    if (const auto o = ords.Get(op.k0))
-      custkey = o->custkey;
-    else if (op.kind < 0) {
-      const auto d = deleted_orders.find(op.k0);
-      if (d != deleted_orders.end())
-        custkey = d->second;
+  // Custkey of an order deleted earlier in this transaction (the newest record wins).
+  std::optional<int64_t> DeletedOrderCustkey(int64_t orderkey) const {
+    for (auto run = deleted_orders.rbegin(); run != deleted_orders.rend(); ++run) {
+      const auto it = std::upper_bound(run->begin(), run->end(), orderkey,
+                                       [](int64_t k, const auto &e) { return k < e.first; });
+      if (it != run->begin() && std::prev(it)->first == orderkey)
+        return std::prev(it)->second;
     }
-    std::optional<TpchQ7NationCount> c;
+    return std::nullopt;
+  }
+
+  // Applies `kind` adjustments to window counts in order per key: a count that falls to zero
+  // on a tombstone drops the key.
+  void ApplyCountAdjusts(Overlay<TpchQ7NationCount> &ov,
+                         std::vector<std::vector<CountAdjust>> &pieces) {
+    ov.txn.ApplyGrouped(
+        pieces, [](const CountAdjust &a) -> const int64_t & { return a.key; },
+        [&](std::size_t n, const auto &fn) { core::ParallelEach(services, n, 1, fn); },
+        [](std::size_t, auto &scope, std::vector<CountAdjust> &rows) {
+          for (const auto &a : rows) {
+            const auto *cur = scope.Find(a.key);
+            if (!cur && a.kind < 0)
+              continue;
+            TpchQ7NationCount e = cur ? cur->value : TpchQ7NationCount{-1, 0};
+            e.window_count += a.kind;
+            if (e.nation < 0 && e.window_count == 0)
+              scope.Erase(a.key);
+            else
+              scope.Upsert({a.key, e});
+          }
+        }, core::CappedGrain(kRowsPerGroup));
+  }
+
+  // Resolves one lineitem op of a run against the published dimensions into `out`. A +1
+  // lineitem whose dimension row may still arrive in this transaction is deferred.
+  void ResolveLineitem(const TpchQ7Op &op, std::size_t index, bool final, LineEffects &out) {
+    const auto *s = supp.txn.Find(op.v0);
+    std::optional<int64_t> custkey;
+    if (const auto *o = ords.txn.Find(op.k0))
+      custkey = o->value.custkey;
+    else if (op.kind < 0)
+      custkey = DeletedOrderCustkey(op.k0);
+    const auto *c = custkey ? cust.txn.Find(*custkey) : nullptr;
+    const bool s_live = s && s->value.nation >= 0;
+    const bool c_live = c && c->value.nation >= 0;
+    if (op.kind > 0 && !final && (!s_live || !c_live)) {
+      out.deferred.push_back(index);
+      return;
+    }
+    out.supp.back().push_back({op.v0, op.kind});
     if (custkey)
-      c = cust.Get(*custkey);
-    const bool s_live = s && s->nation >= 0;
-    const bool c_live = c && c->nation >= 0;
-    if (op.kind > 0 && !final && (!s_live || !c_live))
-      return false;
-    AdjustCount(supp, op.v0, s, op.kind);
-    if (custkey)
-      AdjustCount(cust, *custkey, c, op.kind);
+      out.cust.back().push_back({*custkey, op.kind});
     if (!s_live || !c_live)
-      return true; // contributes nothing to the join
-    if (s->nation >= slots || c->nation >= slots) {
+      return; // contributes nothing to the join
+    if (s->value.nation >= slots || c->value.nation >= slots) {
       rebuild = true;
-      return true;
+      return;
     }
     const auto year = YearFromDays(static_cast<int32_t>(op.k1));
-    const auto slot = static_cast<std::size_t>(s->nation) * slots + c->nation;
+    const auto slot = static_cast<std::size_t>(s->value.nation) * slots + c->value.nation;
     const int64_t amount = op.kind * op.v1;
     if (year == kTpchQ7MinYear)
-      rev95[slot] += amount;
+      out.rev95[slot] += amount;
     else if (year == kTpchQ7MaxYear)
-      rev96[slot] += amount;
+      out.rev96[slot] += amount;
     else
-      return true;
-    revenue_changed = true;
-    return true;
+      return;
+    out.changed = true;
   }
 
+  template <class OpAt>
+  void ApplyLineitems(std::size_t n, OpAt &&op_at, bool final) {
+    const std::size_t grid = static_cast<std::size_t>(slots) * slots;
+    const auto absolute = [&](std::size_t k) { return &op_at(k) - ops.data(); };
+    LineEffects effects;
+    core::ParallelReduce(
+        services, n, kLineOpGrain, effects,
+        [&](LineEffects &part, std::size_t begin, std::size_t end) {
+          part.supp.resize(1);
+          part.cust.resize(1);
+          part.rev95.assign(grid, 0);
+          part.rev96.assign(grid, 0);
+          for (std::size_t k = begin; k < end; ++k)
+            ResolveLineitem(op_at(k), static_cast<std::size_t>(absolute(k)), final, part);
+        },
+        [](LineEffects &into, LineEffects &&from) {
+          for (auto &piece : from.supp)
+            into.supp.push_back(std::move(piece));
+          for (auto &piece : from.cust)
+            into.cust.push_back(std::move(piece));
+          into.deferred.insert(into.deferred.end(), from.deferred.begin(), from.deferred.end());
+          for (std::size_t i = 0; i < into.rev95.size(); ++i) {
+            into.rev95[i] += from.rev95[i];
+            into.rev96[i] += from.rev96[i];
+          }
+          into.changed |= from.changed;
+        });
+    if (rebuild)
+      return;
+    ApplyCountAdjusts(supp, effects.supp);
+    ApplyCountAdjusts(cust, effects.cust);
+    for (std::size_t i = 0; i < grid; ++i) {
+      rev95[i] += effects.rev95[i];
+      rev96[i] += effects.rev96[i];
+    }
+    revenue_changed |= effects.changed;
+    deferred.insert(deferred.end(), effects.deferred.begin(), effects.deferred.end());
+  }
+
+  static constexpr std::size_t kMaxGroups = 1024; // ApplyGrouped groups
+  core::AuxEngineServices &services;
   const TpchQ7State &side;
   TpchQ7InitialScan *initial_scan;
   const std::vector<TpchQ7Op> &ops;
@@ -366,12 +480,13 @@ private:
   Overlay<TpchQ7NationCount> supp, cust;
   Overlay<TpchQ7OrderCust> ords;
   // Orders deleted in this transaction stay resolvable for lineitem deletes
-  // that arrive after the order delete.
-  std::unordered_map<int64_t, int64_t> deleted_orders;
+  // that arrive after the order delete: one key-sorted run per run of order ops.
+  std::vector<KeyPairs> deleted_orders;
+  std::vector<std::size_t> deferred; // lineitem ops to resolve once every op has run
   std::vector<int64_t> rev95, rev96;
   std::unordered_map<int64_t, Contribution> supp_contrib, cust_contrib;
   bool has_li_order = false, has_supp = false, has_cust = false;
-  bool rebuild = false;
+  std::atomic<bool> rebuild{false};
   bool revenue_changed = false;
 };
 
@@ -646,7 +761,7 @@ TpchQ7Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  OpResolver resolver(*loaded.side, *loaded.revenue, initial_scan, buffer.Ops());
+  OpResolver resolver(services, *loaded.side, *loaded.revenue, initial_scan, buffer.Ops());
   if (!resolver.Resolve()) {
     core::FinishRebuildAll(outcome);
     return outcome;
@@ -723,23 +838,29 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
   for (const auto &[nk, name] : state.nation_names)
     max_nk = std::max(max_nk, nk);
 
-  // Scan into a flat vector first so the page table is sized from the actual
-  // row count (no hard-coded scale-factor constants).
-  using NcEntry = TpchQ7Map<TpchQ7NationCount>::Element;
+  // The nation axis is as wide as the largest nation key of any dimension row.
+  using NationMap = TpchQ7Map<TpchQ7NationCount>;
   using scan::IntColumn;
-  const auto collect_nations = [&](const char *table, const char *key_column,
-                                   const char *nation_column) {
-    auto rows = CollectTable<NcEntry>(
+  std::vector<int32_t> max_nation_in_bucket(kDealBuckets, 0);
+  const auto scan_nations = [&](const char *table, const char *key_column,
+                                const char *nation_column) {
+    return ScanIntoBuilder<NationMap>(
         services, *initial_scan, table, {IntColumn(key_column), IntColumn(nation_column)},
-        [](const auto &row) {
-          return NcEntry{row.Int(0), {static_cast<int32_t>(row.Int(1)), 0}};
+        [](std::size_t rows) { return NationMap::Builder(rows); },
+        [](const auto &row, NationMap::Element &element) {
+          element = {row.Int(0), {static_cast<int32_t>(row.Int(1)), 0}};
+          return true;
+        },
+        [&](std::size_t bucket, const NationMap::Element &element) {
+          max_nation_in_bucket[bucket] = std::max(max_nation_in_bucket[bucket], element.value.nation);
         });
-    for (const auto &e : rows)
-      max_nk = std::max(max_nk, e.value.nation);
-    return rows;
   };
-  auto supplier_rows = collect_nations("supplier", "s_suppkey", "s_nationkey");
-  auto customer_rows = collect_nations("customer", "c_custkey", "c_nationkey");
+  auto suppliers = scan_nations("supplier", "s_suppkey", "s_nationkey");
+  auto customers = scan_nations("customer", "c_custkey", "c_nationkey");
+  auto &supp_b = suppliers.builder;
+  auto &cust_b = customers.builder;
+  for (const int32_t nation : max_nation_in_bucket)
+    max_nk = std::max(max_nk, nation);
   // Dense nation grid wide enough for every nation key present; the revenue
   // image never aliases (supp_nk * slots + cust_nk) across rows.
   state.num_nation_slots = max_nk + 1;
@@ -747,38 +868,27 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
                     static_cast<std::size_t>(state.num_nation_slots);
   state.revenue_1995.assign(grid, 0);
   state.revenue_1996.assign(grid, 0);
-
-  TpchQ7Map<TpchQ7NationCount>::Builder supp_b(supplier_rows.size());
-  for (const auto &e : supplier_rows)
-    supp_b.Add(e);
-  std::vector<NcEntry>().swap(supplier_rows);
-  supp_b.Sort();
-  TpchQ7Map<TpchQ7NationCount>::Builder cust_b(customer_rows.size());
-  for (const auto &e : customer_rows)
-    cust_b.Add(e);
-  std::vector<NcEntry>().swap(customer_rows);
-  cust_b.Sort();
+  const auto sort_shards = [&](std::size_t n, const auto &fn) {
+    core::ParallelEach(services, n, kSortShardGrain, fn);
+  };
+  supp_b.Sort(sort_shards);
+  cust_b.Sort(sort_shards);
 
   const int64_t expected = initial_scan->CountOrders();
-  auto make_orders = [&] {
-    return expected >= 0 ? TpchQ7Map<TpchQ7OrderCust>::Builder(static_cast<std::size_t>(expected))
-                         : TpchQ7Map<TpchQ7OrderCust>::Builder();
-  };
-  auto ob = core::PartitionedBuild<TpchQ7Map<TpchQ7OrderCust>::Builder>(
-      services, make_orders,
-      [&](std::size_t parts, auto &&sink) {
-        initial_scan->ScanTable(services, "orders",
-                                {IntColumn("o_orderkey"), IntColumn("o_custkey")},
-                                parts, sink);
+  auto orders = ScanIntoBuilder<TpchQ7Map<TpchQ7OrderCust>>(
+      services, *initial_scan, "orders", {IntColumn("o_orderkey"), IntColumn("o_custkey")},
+      [&](std::size_t rows) {
+        using Orders = TpchQ7Map<TpchQ7OrderCust>;
+        return expected >= 0 ? Orders::Builder(static_cast<std::size_t>(expected))
+                             : Orders::Builder(rows);
       },
-      [](auto &builder, const auto &row) {
-        builder.Add({row.Int(0), {row.Int(1)}});
+      [](const auto &row, TpchQ7Map<TpchQ7OrderCust>::Element &element) {
+        element = {row.Int(0), {row.Int(1)}};
+        return true;
       },
-      [](auto &into, auto &&from) { into.Merge(std::move(from)); });
-  ob.Sort([&](std::size_t n, const auto &fn) {
-    core::ParallelEach(services, n, kSortShardGrain, fn);
-  });
-  state.order_custkeys = ob.Finish();
+      [](std::size_t, const TpchQ7Map<TpchQ7OrderCust>::Element &) {});
+  orders.builder.Sort(sort_shards);
+  state.order_custkeys = orders.builder.Finish(sort_shards);
 
   const auto add_revenue = [&](int32_t supp_nk, int32_t cust_nk, int32_t year,
                                int64_t revenue) {
@@ -887,10 +997,10 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
     supp_b.Add({k, {-1, static_cast<int32_t>(n)}});
   for (const auto &[k, n] : cust_orphans)
     cust_b.Add({k, {-1, static_cast<int32_t>(n)}});
-  supp_b.Sort();
-  cust_b.Sort();
-  state.supplier_nations = supp_b.Finish();
-  state.customer_nations = cust_b.Finish();
+  supp_b.Sort(sort_shards);
+  cust_b.Sort(sort_shards);
+  state.supplier_nations = supp_b.Finish(sort_shards);
+  state.customer_nations = cust_b.Finish(sort_shards);
   return state;
 }
 
