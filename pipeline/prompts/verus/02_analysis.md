@@ -59,7 +59,8 @@ Decide:
    costs the whole state on every transaction. Use a **persistent** map (a
    write copies only the path to the keys it changes): the shared verified
    one in the proof library, or one proven in another query's kernel (to be
-   lifted into the library), rather than writing a new tree from scratch. A
+   lifted into the library), rather than a new tree; when neither exists, a
+   new one written generic enough to publish to the library. A
    `vstd` `HashMap` / `Vec` behind an `Arc` is NOT persistent: updating it
    copies it. Name the persistent structure for each part of the state.
 

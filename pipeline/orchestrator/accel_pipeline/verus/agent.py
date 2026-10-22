@@ -80,8 +80,9 @@ def completed_kernels(ctx: VerusContext) -> str:
     rows = []
     for crate_dir, digest in sorted(data.items()):
         d = Path(crate_dir)
-        if d.resolve() == Path(ctx.crate_dir).resolve() or not d.is_dir() or actions._crate_hash(d) != digest:
-            continue  # this query, gone, or changed since it verified
+        if (d.resolve() == Path(ctx.crate_dir).resolve() or not d.is_dir() or actions._crate_hash(d) != digest
+                or not d.resolve().is_relative_to(Path(ctx.root).resolve())):
+            continue  # this query, gone, changed since it verified, or another tree's (the cache is shared)
         name = d.parent.name
         mods = [f"{p.name} ({sum(1 for _ in p.open(encoding='utf-8'))} lines)"
                 for p in sorted((d / "src").glob("*.rs")) if not p.name.startswith("gen_") and p.name != "lib.rs"]

@@ -74,8 +74,8 @@ estimate breaks the check.
   tuples whose entries are sums or counts over the database, provable with
   `contracts/proof_method.md`'s patterns, AND persistent: the analysis names
   a structure where a write copies only the path to the keys it changes (the
-  shared verified one in the proof library, or one proven in another query's
-  kernel). It fails if the state would be a `vstd` `HashMap` / `Vec` cloned
+  shared verified one in the proof library, one proven in another query's
+  kernel, or a new generic one when neither exists). It fails if the state would be a `vstd` `HashMap` / `Vec` cloned
   per write, a flat list searched linearly, or an overlay without
   compaction that bounds its depth; or if a new custom encoding (prefix
   arrays, multi-level buckets, compression, packed offsets) comes without

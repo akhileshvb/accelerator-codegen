@@ -588,7 +588,8 @@ after its fix rounds and a reviewer's second opinion; it is archived ({archive})
 
 Implement the state in analysis/analysis.json as plainly as possible, so that it can be proved:
 * persistent maps keyed by tuples: the shared verified one in the proof library, or one proven in
-  another query's kernel lifted into the library (see "Proven code in this tree"). Not a vstd HashMap /
+  another query's kernel lifted into the library (see "Proven code in this tree"); when neither
+  exists, a new generic one, published to the library. Not a vstd HashMap /
   Vec cloned per write (that is O(state) per transaction) and not a flat Vec searched linearly. No new
   custom hash tables, pages, dictionaries, compression, prefix-array encodings or multi-level bucket
   schemes unless the analysis requires one for a cost bound -- and then only that one, kept small;

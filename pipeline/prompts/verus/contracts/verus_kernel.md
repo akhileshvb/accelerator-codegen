@@ -65,9 +65,11 @@ general lemma there when it would serve other queries, then call
 
 How to prove it: `contracts/proof_method.md` (the obligation shapes, their
 standard proofs, the lemmas, the patterns). Do not write a new tree or index
-from scratch (its own proofs are large): reuse a verified one from the shared
-proof library or another kernel (lifted into the library). The state must
-still be persistent (`contracts/scale_principles.md`).
+when a verified one exists (its own proofs are large): reuse the shared proof
+library's or another kernel's (lifted into the library). When none exists,
+write it generic (no query-specific types) and publish it with
+`prooflib_publish`, so later kernels reuse it. The state must still be
+persistent (`contracts/scale_principles.md`).
 
 Verification: `verus_verify` runs Verus on the crate (and the trusted-base
 check). Keep functions small and proofs local; prefer lemmas with explicit

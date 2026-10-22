@@ -122,9 +122,10 @@ accelerator keeps its advantage as data grows:
   persistent only with compaction that keeps the overlay small and lookups
   bounded.)
 * **Proof cost**: the kernel is proved, so do not write a new persistent
-  structure from scratch: use the shared verified one in the proof library,
-  or lift one proven in another query's kernel into the library (see the
-  kernel prompts' "Proven code in this tree"). Never trade the per-write or
+  structure when a verified one exists: use the proof library's, or lift one
+  proven in another query's kernel into the library (see the kernel prompts'
+  "Proven code in this tree"); when none exists, write one generic enough to
+  publish to the library. Never trade the per-write or
   per-read cost bounds above for an easier proof: a kernel that copies its
   state per write, or scans all of it per read, is correct but useless.
 * **Build**: one pass, or close to it, over the scanned rows, with O(1)
