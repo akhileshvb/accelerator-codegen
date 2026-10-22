@@ -18,9 +18,16 @@ args=("$DIR/crate/src/lib.rs" --crate-type=staticlib --crate-name="${WORLD}_veru
       --import "verus_substrate=$OUT/verus_substrate.vir" --extern "verus_substrate=$OUT/libverus_substrate.rlib"
       --import "verus_prooflib=$OUT/verus_prooflib.vir" --extern "verus_prooflib=$OUT/libverus_prooflib.rlib"
       -L "dependency=$OUT")
-# every kit the world names
+# every kit the world names; a kit compiled before the proof library last changed is recompiled
+# (and re-verified) against it, or the world would link two versions of the library
 for kit in $(grep -oE '^pub type S[0-9]+ = [a-z0-9_]+_verus::' "$DIR/crate/src/world.rs" | sed -E 's/.* = ([a-z0-9_]+)_verus::/\1/'); do
   [ -f "$OUT/lib${kit}_verus.rlib" ] || { echo "missing $OUT/lib${kit}_verus.rlib (build_verus_crate.sh ... --rlib)" >&2; exit 1; }
+  if [ "$OUT/libverus_prooflib.rlib" -nt "$OUT/lib${kit}_verus.rlib" ]; then
+    crate="$(ls -d "$ROOT"/accelerators/"$BENCH"/q*/verus_kit/"$kit"/crate 2>/dev/null | head -1)"
+    [ -n "$crate" ] || { echo "stale $kit and no crate to rebuild it from" >&2; exit 1; }
+    echo "world: recompiling $kit against the current proof library"
+    bash "$ROOT/scripts/build_verus_crate.sh" "$crate" "$kit" --rlib
+  fi
   args+=(--import "${kit}_verus=$OUT/${kit}_verus.vir" --extern "${kit}_verus=$OUT/lib${kit}_verus.rlib")
 done
 if [ "$MODE" = "--verify-only" ]; then
