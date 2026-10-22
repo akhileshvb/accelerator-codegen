@@ -118,7 +118,7 @@ def run_build(
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
     if workload.get("workload_kind") == "aux_state":
-        targets = [paths.get("aux_bench_target", ""), paths.get("test_target", "")]
+        targets = [paths.get("aux_bench_target", ""), paths.get("aux_test_target", "")]
     else:
         targets = [paths["bench_target"], paths["test_target"]]
     targets = [t for t in targets if t]
