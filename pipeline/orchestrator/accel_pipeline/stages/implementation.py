@@ -6,6 +6,8 @@ from accel_pipeline.aux_bench import initialize_optimization_state, process_aux_
 from accel_pipeline.base_bench import process_base_bench_after_gates
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_run_workload, resolve_workload_paths
 from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
+
+IMPLEMENTATION_FIX_ROUNDS = 3
 from accel_pipeline.gates import run_gate
 from accel_pipeline.layout import query_dir
 from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
@@ -112,15 +114,17 @@ def run(
             initialize_optimization_state(pipeline_config.repo_root, query, analysis, workload)
         impl_gates = workload_post_implementation_gates(workload)
         if workload.get("workload_kind") == "aux_state":
-            from accel_pipeline.stages.gate_plan import run_post_stage_gates
-
-            run_post_stage_gates(
+            # a failing gate goes back to a bounded crash-debug fix instead of ending the run
+            run_post_stage_gates_with_crash_debug(
                 pipeline_config,
+                model_config,
                 workload_name,
                 query,
                 impl_gates,
                 change_kind="implementation",
                 iteration=0,
+                model_overrides=model_overrides,
+                max_rounds=IMPLEMENTATION_FIX_ROUNDS,
             )
         else:
             run_post_stage_gates_with_crash_debug(
