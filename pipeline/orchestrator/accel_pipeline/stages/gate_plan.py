@@ -8,6 +8,7 @@ GATES_ALLOW_SKIP = frozenset(
         "baseline",
         "sf10",
         "profile",
+        "module_tsan",  # skips when the engine-free TSAN driver has no case for the query (aux_tsan covers it)
         "aux_cost_model_calibrate",
         "aux_speedup_verification",
         "engine_scan_conformance",
