@@ -31,9 +31,17 @@ def _requests(repo_root: Path, engine: str, scope: str) -> list[dict[str, Any]]:
             request = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(request, dict) and request.get("scope", scope) == scope:
+        if isinstance(request, dict) and _route(request.get("scope"), scope):
             out.append(request)
     return out
+
+
+def _route(declared: Any, scope: str) -> bool:
+    """A request reaches the harness run only when it says "harness"; any other scope (agents also write
+    descriptive ones, e.g. "runtime registration") is the backend's; a request without one goes to both."""
+    if declared is None:
+        return True
+    return (str(declared).strip().lower() == "harness") == (scope == "harness")
 
 
 def _done_path(repo_root: Path, engine: str, scope: str) -> Path:
