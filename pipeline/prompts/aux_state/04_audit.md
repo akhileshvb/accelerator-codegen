@@ -74,7 +74,7 @@ Hard gates after this stage verify **correctness** and run a **fair SF1 bench sw
 
 Optional: `request_gate` `fairness` is a **heuristic** static scan (informational). Do not treat substring false-positives as blockers; explain them in the audit.
 
-Post-stage hard gates: `aux_correctness`, `aux_unit`, `prims_tests`, `aux_mutation_scenarios`, `aux_bench_sweep`.
+Post-stage hard gates: `aux_correctness`, `aux_unit`, `prims_tests`, `aux_tsan`, `module_tsan`, `aux_bench_sweep`.
 
 {{shared_docs_reference}}
 
